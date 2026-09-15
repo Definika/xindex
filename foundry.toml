@@ -1,0 +1,37 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+solc = "0.8.28"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 1000
+remappings = [
+    "forge-std/=lib/forge-std/src/",
+    "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
+    "@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/",
+]
+
+[lint]
+# Tests are exercised by `forge test`, not linted: rules like unused-return on `approve` or
+# literal-instead-of-constant are noise there.
+ignore = ["test/**/*"]
+# Rules that conflict with the design rather than flag mistakes:
+#   calls-loop / require-revert-in-loop / costly-loop  a basket is processed component by component
+#   block-timestamp                      user-supplied swap deadlines are compared to block.timestamp
+#   internal-function-used-once          PathLib is shared with the test mocks
+#   asm-keccak256                        gas-only; the salt hash runs once per index creation, so plain Solidity wins
+exclude_lints = ["calls-loop", "require-revert-in-loop", "costly-loop", "block-timestamp", "internal-function-used-once", "asm-keccak256"]
+
+[fuzz]
+runs = 512
+
+[invariant]
+runs = 64
+depth = 32
+fail_on_revert = false
+
+[rpc_endpoints]
+mainnet = "${MAINNET_RPC_URL}"
+
+# See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

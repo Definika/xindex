@@ -1,0 +1,77 @@
+name: CI
+
+permissions: {}
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: Foundry project
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Check submodule commits match foundry.lock
+        run: |
+          set -euo pipefail
+          if ! jq -e 'type == "object" and length > 0' foundry.lock > /dev/null 2>&1; then
+            echo "::error::foundry.lock is missing, empty or not a JSON object"
+            exit 1
+          fi
+          failed=0
+          checked=0
+          while read -r _ dep; do
+            checked=$((checked + 1))
+            if ! want=$(jq -er --arg p "$dep" '.[$p] | to_entries[0].value | if type == "object" then .rev else . end' foundry.lock 2>/dev/null); then
+              echo "::error::$dep has no entry in foundry.lock"
+              failed=1
+              continue
+            fi
+            have=$(git ls-tree HEAD "$dep" | awk '{print $3}')
+            if [ "$want" != "$have" ]; then
+              echo "::error::$dep is committed at ${have:-nothing} but foundry.lock pins $want"
+              failed=1
+            fi
+          done < <(git config -f .gitmodules --get-regexp '^submodule\..*\.path$')
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::.gitmodules lists no submodules to check"
+            exit 1
+          fi
+          exit "$failed"
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with:
+          version: v1.8.1
+
+      - name: Show Forge version
+        run: forge --version
+
+      - name: Run Forge fmt
+        run: forge fmt --check
+
+      - name: Run Forge build
+        run: forge build --sizes
+
+      - name: Require the fork-test RPC on main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
+        run: |
+          if [ -z "$MAINNET_RPC_URL" ]; then
+            echo "::error::Add the MAINNET_RPC_URL repository secret so the mainnet fork tests run on main."
+            exit 1
+          fi
+
+      - name: Run Forge tests
+        run: forge test -vvv
+        env:
+          MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
