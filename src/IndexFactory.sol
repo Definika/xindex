@@ -5,30 +5,41 @@ import {Ownable, Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IIndexFactory} from "./interfaces/IIndexFactory.sol";
+import {IIndexRule} from "./interfaces/IIndexRule.sol";
 import {IIndexToken} from "./interfaces/IIndexToken.sol";
+import {Methodology} from "./libraries/Methodology.sol";
+import {IndexRule} from "./IndexRule.sol";
 import {IndexToken} from "./IndexToken.sol";
 
 /// @title IndexFactory
 /// @notice Permissionless index creation with a curated component whitelist. See {IIndexFactory}.
-/// @dev Roles. The owner proposes listings and guardian changes, delists, and hands over ownership. A listing takes
-///      effect only LISTING_DELAY after it is proposed and a guardian change only GUARDIAN_DELAY after, and either
-///      proposal must be executed within PROPOSAL_WINDOW of becoming ready or proposed again. The guardian can
-///      cancel pending listings and delist, and keeps that power for the whole time its replacement is pending.
-///      Neither role can pause, upgrade, or touch funds held by any index, and ownership cannot be renounced.
+/// @dev Roles. The owner proposes listings, token config changes and guardian changes, delists, and hands over
+///      ownership. A listing or config change takes effect only LISTING_DELAY after it is proposed and a guardian change
+///      only GUARDIAN_DELAY after, and either proposal must be executed within PROPOSAL_WINDOW of becoming ready or
+///      proposed again. The guardian can cancel pending listings and delist, and keeps that power for the whole time its
+///      replacement is pending. Owner and guardian can also cancel a pending rebalance on any index and start one that
+///      leaves chosen components untouched. Neither role can pause, upgrade, set units or prices, or touch funds held by
+///      any index, and ownership cannot be renounced.
 ///
-///      Addresses. Each index is deployed with CREATE2 from a salt over the creator and the full composition,
-///      so an address can never hold a different basket, even after a re-org, and an app can show the address
-///      before the transaction confirms.
+///      Token configs. Each listed token carries the Uniswap V3 WETH pool and the supply definition the rebalance rule
+///      reads. A config shapes future rebalances of every index holding the token, so it changes only through the same
+///      delayed, cancellable proposal as a listing. Delisting keeps it, because existing indexes still rebalance with it.
 ///
-///      Whitelist policy (enforced socially, not on-chain): standard ERC-20s only. No fee-on-transfer,
-///      rebasing or callback (ERC-777 style) tokens; 6-18 decimals. Components that an issuer can pause or
-///      blacklist, such as WBTC, must be labelled in the app; while one is frozen, holders can still take the
-///      other components out with `IndexToken.redeemSkipping`.
+///      Addresses. Each index is deployed with CREATE2 from a salt over the creator, the name, the symbol, the
+///      constituents, the starting units and the methodology, so an address can never hold a different basket or follow
+///      a different rule, even after a re-org, and an app can show the address before the transaction confirms.
+///
+///      Whitelist policy (enforced socially, not on-chain): standard ERC-20s only. No fee-on-transfer, rebasing or
+///      callback (ERC-777 style) tokens; 6-18 decimals; fixed-supply or governance-minted supply; a WETH pool with at least
+///      200 observation slots. Components that an issuer can pause or blacklist, such as WBTC, must be labelled in the
+///      app; while one is frozen, holders can still take the other components out with `IndexToken.redeemSkipping`.
 contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
     uint256 public constant MAX_COMPONENTS = 20;
+    uint256 public constant MIN_CAPPED_COMPONENTS = Methodology.MIN_CAPPED_COMPONENTS;
     uint256 public constant LISTING_DELAY = 2 days;
     uint256 public constant GUARDIAN_DELAY = 7 days;
     uint256 public constant PROPOSAL_WINDOW = 7 days;
+    address public immutable RULE;
     address public immutable IMPLEMENTATION;
 
     address public guardian;
@@ -40,6 +51,8 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
     /// @dev position in `_whitelist` + 1 (0 = absent), for O(1) removal.
     mapping(address => uint256) private _whitelistPos;
     mapping(address => uint256) public listingEta;
+    mapping(address token => TokenConfig config) private _tokenConfig;
+    mapping(address token => TokenConfig config) private _pendingConfig;
 
     mapping(address => bool) public isIndex;
     mapping(address => address) public creatorOf;
@@ -50,12 +63,17 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         _;
     }
 
-    // A zero guardian is allowed on purpose: it means the factory starts without one.
+    // A zero guardian is allowed on purpose: it means the factory starts without one. The rule rejects zero market
+    // addresses.
     // forge-lint: disable-next-item(missing-zero-check)
-    constructor(address initialOwner, address initialGuardian) Ownable(initialOwner) {
+    constructor(address initialOwner, address initialGuardian, address weth, address uniswapV3Factory, address usdc)
+        Ownable(initialOwner)
+    {
         guardian = initialGuardian;
         emit GuardianSet(address(0), initialGuardian);
-        IMPLEMENTATION = address(new IndexToken());
+        address rule = address(new IndexRule(weth, uniswapV3Factory, usdc));
+        RULE = rule;
+        IMPLEMENTATION = address(new IndexToken(rule));
     }
 
     // ---------------------------------------------------------------------
@@ -67,12 +85,14 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         string calldata name,
         string calldata symbol,
         address[] calldata tokens,
-        uint256[] calldata units
+        uint256[] calldata units,
+        uint8 methodology
     ) external nonReentrant returns (address index) {
         if (bytes(name).length == 0 || bytes(symbol).length == 0) revert EmptyString();
         _validateComponents(tokens, units);
+        _validateMethodology(tokens.length, methodology);
 
-        bytes32 salt = _salt(msg.sender, name, symbol, tokens, units);
+        bytes32 salt = _salt(msg.sender, name, symbol, tokens, units, methodology);
         address predicted = Clones.predictDeterministicAddress(IMPLEMENTATION, salt);
         if (predicted.code.length != 0) revert IndexAlreadyExists(predicted);
 
@@ -81,9 +101,9 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         isIndex[index] = true;
         creatorOf[index] = msg.sender;
         allIndexes.push(index);
-        emit IndexCreated(index, msg.sender, name, symbol, tokens, units);
+        emit IndexCreated(index, msg.sender, name, symbol, tokens, units, methodology);
 
-        IIndexToken(index).initialize(name, symbol, tokens, units);
+        IIndexToken(index).initialize(name, symbol, tokens, units, methodology);
     }
 
     /// @inheritdoc IIndexFactory
@@ -92,13 +112,21 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         string calldata name,
         string calldata symbol,
         address[] calldata tokens,
-        uint256[] calldata units
+        uint256[] calldata units,
+        uint8 methodology
     ) external view returns (address) {
-        return Clones.predictDeterministicAddress(IMPLEMENTATION, _salt(creator, name, symbol, tokens, units));
+        return Clones.predictDeterministicAddress(
+            IMPLEMENTATION, _salt(creator, name, symbol, tokens, units, methodology)
+        );
+    }
+
+    /// @inheritdoc IIndexFactory
+    function isOwnerOrGuardian(address account) public view returns (bool) {
+        return account == owner() || (account == guardian && account != address(0));
     }
 
     function _checkOwnerOrGuardian() private view {
-        if (msg.sender != owner() && msg.sender != guardian) revert Unauthorized(msg.sender);
+        if (!isOwnerOrGuardian(msg.sender)) revert Unauthorized(msg.sender);
     }
 
     function _validateComponents(address[] calldata tokens, uint256[] calldata units) private view {
@@ -116,12 +144,20 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         }
     }
 
+    function _validateMethodology(uint256 count, uint8 methodology) private pure {
+        if (methodology >= Methodology.COUNT) revert InvalidMethodology(methodology);
+        if (methodology == Methodology.CAPPED && count < MIN_CAPPED_COMPONENTS) {
+            revert TooFewComponentsForCapped(count);
+        }
+    }
+
     function _salt(
         address creator,
         string calldata name,
         string calldata symbol,
         address[] calldata tokens,
-        uint256[] calldata units
+        uint256[] calldata units,
+        uint8 methodology
     ) private pure returns (bytes32) {
         return keccak256(
             abi.encode(
@@ -129,31 +165,39 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
                 keccak256(bytes(name)),
                 keccak256(bytes(symbol)),
                 keccak256(abi.encode(tokens)),
-                keccak256(abi.encode(units))
+                keccak256(abi.encode(units)),
+                methodology
             )
         );
     }
 
     // ---------------------------------------------------------------------
-    // Whitelist
+    // Whitelist and token configs
     // ---------------------------------------------------------------------
 
     /// @inheritdoc IIndexFactory
-    function proposeListing(address token) external onlyOwner {
+    function proposeListing(address token, TokenConfig calldata config) external onlyOwner {
         if (token.code.length == 0) revert NotAContract(token);
-        if (isWhitelisted[token]) revert AlreadyWhitelisted(token);
         uint256 pending = listingEta[token];
         if (pending != 0 && block.timestamp <= pending + PROPOSAL_WINDOW) revert ListingPending(token, pending);
+        IIndexRule(RULE).checkConfig(token, config);
 
         uint256 eta = block.timestamp + LISTING_DELAY;
         listingEta[token] = eta;
-        emit ListingProposed(token, eta);
+        TokenConfig storage next = _pendingConfig[token];
+        next.pool = config.pool;
+        next.referenceSupply = config.referenceSupply;
+        next.excluded = config.excluded;
+        // The rule call above is a view on a contract this factory deployed; nothing external can run in between.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit ListingProposed(token, eta, config.pool, config.referenceSupply, config.excluded);
     }
 
     /// @inheritdoc IIndexFactory
     function cancelListing(address token) external onlyOwnerOrGuardian {
         if (listingEta[token] == 0) revert NoPendingListing(token);
         delete listingEta[token];
+        delete _pendingConfig[token];
         emit ListingCancelled(token);
     }
 
@@ -165,10 +209,20 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         if (block.timestamp > eta + PROPOSAL_WINDOW) revert ListingExpired(token, eta + PROPOSAL_WINDOW);
 
         delete listingEta[token];
-        isWhitelisted[token] = true;
-        _whitelist.push(token);
-        _whitelistPos[token] = _whitelist.length;
-        emit TokenWhitelisted(token, true);
+        TokenConfig storage next = _pendingConfig[token];
+        TokenConfig storage current = _tokenConfig[token];
+        current.pool = next.pool;
+        current.referenceSupply = next.referenceSupply;
+        current.excluded = next.excluded;
+        delete _pendingConfig[token];
+        emit TokenConfigured(token, current.pool, current.referenceSupply, current.excluded);
+
+        if (!isWhitelisted[token]) {
+            isWhitelisted[token] = true;
+            _whitelist.push(token);
+            _whitelistPos[token] = _whitelist.length;
+            emit TokenWhitelisted(token, true);
+        }
     }
 
     /// @inheritdoc IIndexFactory
@@ -237,6 +291,16 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
 
     function whitelistedTokens() external view returns (address[] memory) {
         return _whitelist;
+    }
+
+    /// @inheritdoc IIndexFactory
+    function tokenConfig(address token) external view returns (TokenConfig memory) {
+        return _tokenConfig[token];
+    }
+
+    /// @inheritdoc IIndexFactory
+    function pendingTokenConfig(address token) external view returns (TokenConfig memory) {
+        return _pendingConfig[token];
     }
 
     function allIndexesLength() external view returns (uint256) {

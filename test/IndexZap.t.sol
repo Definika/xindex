@@ -11,10 +11,12 @@ import {ISwapRouter02} from "../src/interfaces/ISwapRouter02.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockUSDT} from "./mocks/MockUSDT.sol";
 import {MockFeeToken} from "./mocks/MockFeeToken.sol";
+import {MockMarket} from "./mocks/MockMarket.sol";
 import {MockSwapRouter} from "./mocks/MockSwapRouter.sol";
 import {MockPartialFillRouter} from "./mocks/MockPartialFillRouter.sol";
 
 contract IndexZapTest is Test {
+    MockMarket market;
     IndexFactory factory;
     IndexZap zap;
     MockSwapRouter router;
@@ -39,14 +41,17 @@ contract IndexZapTest is Test {
     uint24 constant FEE = 500;
 
     function setUp() public {
-        factory = new IndexFactory(owner, address(0));
+        market = new MockMarket();
+        factory = new IndexFactory(
+            owner, address(0), address(market.weth()), address(market.uniswapV3Factory()), address(market.usdc())
+        );
         router = new MockSwapRouter();
         zap = new IndexZap(factory, router);
 
         wbtc = new MockERC20("Wrapped BTC", "WBTC", 8);
-        weth = new MockERC20("Wrapped Ether", "WETH", 18);
+        weth = market.weth();
         link = new MockERC20("Chainlink", "LINK", 18);
-        usdc = new MockERC20("USD Coin", "USDC", 6);
+        usdc = market.usdc();
         usdt = new MockUSDT();
 
         router.setPrice(address(wbtc), 60_000e18);
@@ -74,7 +79,7 @@ contract IndexZapTest is Test {
         u[0] = U_WBTC;
         u[1] = U_WETH;
         u[2] = U_LINK;
-        index = IndexToken(factory.createIndex("Blue Chip", "BLUE", t, u));
+        index = IndexToken(factory.createIndex("Blue Chip", "BLUE", t, u, 0));
     }
 
     // ---------------------------------------------------------------------
@@ -82,8 +87,9 @@ contract IndexZapTest is Test {
     // ---------------------------------------------------------------------
 
     function _list(address token) internal {
+        IIndexFactory.TokenConfig memory config = market.config(token, 0);
         vm.prank(owner);
-        factory.proposeListing(token);
+        factory.proposeListing(token, config);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(token);
     }
@@ -122,6 +128,7 @@ contract IndexZapTest is Test {
     ) internal view returns (IndexZap.MintParams memory) {
         return IndexZap.MintParams({
             index: idx,
+            expectedNonce: 0,
             tokenIn: tokenIn,
             maxAmountIn: maxIn,
             shares: shares,
@@ -141,6 +148,7 @@ contract IndexZapTest is Test {
     ) internal view returns (IndexZap.BurnParams memory) {
         return IndexZap.BurnParams({
             index: idx,
+            expectedNonce: 0,
             shares: shares,
             tokenOut: tokenOut,
             minAmountOut: minOut,
@@ -167,7 +175,7 @@ contract IndexZapTest is Test {
         t[1] = address(usdc);
         u[0] = U_WETH;
         u[1] = 50e6;
-        idx = IndexToken(factory.createIndex("Mixed", "MIX", t, u));
+        idx = IndexToken(factory.createIndex("Mixed", "MIX", t, u, 0));
     }
 
     function _mixedLegs() internal view returns (IndexZap.MintLeg[] memory legs) {
@@ -431,6 +439,15 @@ contract IndexZapTest is Test {
         vm.stopPrank();
     }
 
+    function test_mint_revertsStaleRebalanceNonce() public {
+        IndexZap.MintParams memory p =
+            _mintParams(address(index), address(usdc), 200e6, 1e18, _mintLegs(address(usdc)), alice);
+        p.expectedNonce = 1;
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IndexZap.StaleRebalanceNonce.selector, 1, 0));
+        zap.mintWithToken(p);
+    }
+
     function test_mint_revertsZeroAmounts() public {
         vm.startPrank(alice);
         vm.expectRevert(IndexZap.ZeroAmount.selector);
@@ -630,6 +647,18 @@ contract IndexZapTest is Test {
         vm.stopPrank();
     }
 
+    function test_burn_revertsStaleRebalanceNonce() public {
+        _mintFor(alice, 1e18, 200e6);
+        IndexZap.BurnParams memory p =
+            _burnParams(address(index), 1e18, address(usdc), 1, _burnLegs(address(usdc)), alice);
+        p.expectedNonce = 7;
+        vm.startPrank(alice);
+        index.approve(address(zap), 1e18);
+        vm.expectRevert(abi.encodeWithSelector(IndexZap.StaleRebalanceNonce.selector, 7, 0));
+        zap.burnToToken(p);
+        vm.stopPrank();
+    }
+
     function test_burn_rejectsFeeOnTransferPayout() public {
         MockFeeToken fot = new MockFeeToken();
         router.setPrice(address(fot), 1e18);
@@ -652,7 +681,7 @@ contract IndexZapTest is Test {
         uint256[] memory u = new uint256[](1);
         t[0] = address(weth);
         u[0] = 1e18;
-        IndexToken idx = IndexToken(factory.createIndex("Ether", "ETH1", t, u));
+        IndexToken idx = IndexToken(factory.createIndex("Ether", "ETH1", t, u, 0));
 
         weth.mint(alice, 1e18);
         vm.startPrank(alice);
@@ -737,6 +766,12 @@ contract IndexZapTest is Test {
             _burnParams(address(usdc), 1e18, address(usdc), 1, _burnLegs(address(usdc)), alice);
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(IndexZap.NotIndex.selector, address(usdc)));
+        zap.burnToTokenWithPermit(p, 27, bytes32(0), bytes32(0));
+
+        p.index = address(index);
+        p.expectedNonce = 1;
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IndexZap.StaleRebalanceNonce.selector, 1, 0));
         zap.burnToTokenWithPermit(p, 27, bytes32(0), bytes32(0));
     }
 

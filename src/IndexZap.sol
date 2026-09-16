@@ -30,6 +30,9 @@ import {PathLib} from "./libraries/PathLib.sol";
 ///        the recipient instead of being stranded or blocking the burn.
 ///      - The zap never calls `redeemSkipping`: a claim recorded for the zap could never be collected.
 ///        While a component is frozen, holders exit directly through the index.
+///      - Every call names the index's `rebalanceNonce` its quote was taken at. A rebalance changes the units, so a
+///        stale quote reverts with `StaleRebalanceNonce` instead of buying or selling a different basket.
+///      - The zap never calls `executeRebalance`.
 contract IndexZap is ReentrancyGuard {
     using SafeERC20 for IERC20;
     using PathLib for bytes;
@@ -50,9 +53,11 @@ contract IndexZap is ReentrancyGuard {
         uint256 minAmountOut;
     }
 
+    /// @param expectedNonce The index's `rebalanceNonce` when the legs were quoted.
     /// @param legs One entry per component, in component order.
     struct MintParams {
         address index;
+        uint256 expectedNonce;
         address tokenIn;
         uint256 maxAmountIn;
         uint256 shares;
@@ -61,9 +66,11 @@ contract IndexZap is ReentrancyGuard {
         uint256 deadline;
     }
 
+    /// @param expectedNonce The index's `rebalanceNonce` when the legs were quoted.
     /// @param legs One entry per component, in component order.
     struct BurnParams {
         address index;
+        uint256 expectedNonce;
         uint256 shares;
         address tokenOut;
         uint256 minAmountOut;
@@ -94,6 +101,7 @@ contract IndexZap is ReentrancyGuard {
     );
 
     error NotIndex(address index);
+    error StaleRebalanceNonce(uint256 expected, uint256 actual);
     error Expired();
     error ZeroAddress();
     error ZeroAmount();
@@ -117,7 +125,7 @@ contract IndexZap is ReentrancyGuard {
     /// @notice Buys exactly `p.shares` of `p.index` spending at most `p.maxAmountIn` of `p.tokenIn`.
     ///         Unspent `tokenIn` is refunded to msg.sender.
     function mintWithToken(MintParams calldata p) external nonReentrant returns (uint256 amountSpent) {
-        _checkCommon(p.index, p.to, p.deadline);
+        _checkCommon(p.index, p.expectedNonce, p.to, p.deadline);
         if (p.shares == 0 || p.maxAmountIn == 0) revert ZeroAmount();
 
         IERC20 tokenIn = IERC20(p.tokenIn);
@@ -292,13 +300,15 @@ contract IndexZap is ReentrancyGuard {
     // ---------------------------------------------------------------------
 
     function _checkBurn(BurnParams calldata p) private view {
-        _checkCommon(p.index, p.to, p.deadline);
+        _checkCommon(p.index, p.expectedNonce, p.to, p.deadline);
         if (p.shares == 0 || p.minAmountOut == 0) revert ZeroAmount();
     }
 
-    function _checkCommon(address index, address to, uint256 deadline) private view {
+    function _checkCommon(address index, uint256 expectedNonce, address to, uint256 deadline) private view {
         if (block.timestamp > deadline) revert Expired();
         if (!FACTORY.isIndex(index)) revert NotIndex(index);
+        uint256 nonce = IIndexToken(index).rebalanceNonce();
+        if (nonce != expectedNonce) revert StaleRebalanceNonce(expectedNonce, nonce);
         if (to == address(0)) revert ZeroAddress();
         if (to == address(this) || to == index) revert InvalidRecipient(to);
     }

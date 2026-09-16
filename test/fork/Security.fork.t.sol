@@ -7,6 +7,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IndexFactory} from "../../src/IndexFactory.sol";
 import {IndexToken} from "../../src/IndexToken.sol";
 import {IndexZap} from "../../src/IndexZap.sol";
+import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {ISwapRouter02} from "../../src/interfaces/ISwapRouter02.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
 
@@ -40,16 +41,21 @@ contract SecurityForkTest is Test {
             return;
         }
         vm.createSelectFork(url, vm.envOr("FORK_BLOCK", A.FORK_BLOCK));
-        factory = new IndexFactory(address(this), address(0));
+        factory = new IndexFactory(address(this), address(0), A.WETH, A.UNISWAP_V3_FACTORY, A.USDC);
         zap = new IndexZap(factory, ISwapRouter02(A.SWAP_ROUTER_02));
 
-        factory.proposeListing(A.WBTC);
-        factory.proposeListing(A.WETH);
-        factory.proposeListing(A.LINK);
+        factory.proposeListing(A.WBTC, _config(A.WBTC_WETH_500, A.BTC_SUPPLY));
+        factory.proposeListing(A.WETH, _config(address(0), A.ETH_SUPPLY));
+        factory.proposeListing(A.LINK, _config(A.LINK_WETH_3000, A.LINK_SUPPLY));
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(A.WBTC);
         factory.executeListing(A.WETH);
         factory.executeListing(A.LINK);
+    }
+
+    function _config(address pool, uint256 referenceSupply) internal pure returns (IIndexFactory.TokenConfig memory c) {
+        c.pool = pool;
+        c.referenceSupply = referenceSupply;
     }
 
     function _create(address a, uint256 ua, address b, uint256 ub) internal returns (IndexToken idx) {
@@ -59,7 +65,7 @@ contract SecurityForkTest is Test {
         t[1] = b;
         u[0] = ua;
         u[1] = ub;
-        idx = IndexToken(factory.createIndex("Fork Security", "FSEC", t, u));
+        idx = IndexToken(factory.createIndex("Fork Security", "FSEC", t, u, 0));
     }
 
     function _issue(IndexToken idx, uint256 shares) internal {
@@ -119,6 +125,7 @@ contract SecurityForkTest is Test {
         zap.burnToToken(
             IndexZap.BurnParams({
                 index: address(idx),
+                expectedNonce: 0,
                 shares: 1e18,
                 tokenOut: A.USDT,
                 minAmountOut: 1,
@@ -142,6 +149,7 @@ contract SecurityForkTest is Test {
         zap.mintWithToken(
             IndexZap.MintParams({
                 index: address(idx),
+                expectedNonce: 0,
                 tokenIn: A.USDT,
                 maxAmountIn: 100e6,
                 shares: 1e17,
@@ -167,6 +175,7 @@ contract SecurityForkTest is Test {
         uint256 spent = zap.mintWithToken(
             IndexZap.MintParams({
                 index: address(idx),
+                expectedNonce: 0,
                 tokenIn: A.WETH,
                 maxAmountIn: maxIn,
                 shares: 1e18,
@@ -198,6 +207,7 @@ contract SecurityForkTest is Test {
         uint256 out = zap.burnToToken(
             IndexZap.BurnParams({
                 index: address(idx),
+                expectedNonce: 0,
                 shares: 1e18,
                 tokenOut: A.USDC,
                 minAmountOut: 1,

@@ -9,13 +9,18 @@ import {IndexFactory} from "../src/IndexFactory.sol";
 import {IndexToken} from "../src/IndexToken.sol";
 import {IndexZap} from "../src/IndexZap.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
+import {IIndexRule} from "../src/interfaces/IIndexRule.sol";
 import {IIndexToken} from "../src/interfaces/IIndexToken.sol";
+import {IRebalanceExecutor} from "../src/interfaces/IRebalanceExecutor.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockFeeToken} from "./mocks/MockFeeToken.sol";
+import {MockMarket} from "./mocks/MockMarket.sol";
 import {MockHookToken, ITokenReceiverHook} from "./mocks/MockHookToken.sol";
 import {MockPartialFillRouter} from "./mocks/MockPartialFillRouter.sol";
 import {MockPausableToken} from "./mocks/MockPausableToken.sol";
+import {MockRebalanceExecutor} from "./mocks/MockRebalanceExecutor.sol";
 import {MockSwapRouter} from "./mocks/MockSwapRouter.sol";
+import {MockUniswapV3Pool} from "./mocks/MockUniswapV3.sol";
 
 /// @notice Watches an index from inside a token callback, the way a third-party protocol could.
 contract NavProbe is ITokenReceiverHook {
@@ -50,9 +55,46 @@ contract NavProbe is ITokenReceiverHook {
     }
 }
 
-/// @notice One regression test per finding of the Xindex v1 security review, each asserting the fixed
-///         behaviour, plus the attacks that already failed before the fixes.
+/// @notice Fills an auction after issuing extra shares in the same transaction and redeems them afterwards, to show
+///         that a larger supply does not let an executor take more than the auction discount.
+contract FlashFiller is IRebalanceExecutor {
+    uint256 public spent;
+
+    /// @return pnl Raw units the filler ends with minus raw units it minted. Every component is worth one WETH per unit.
+    function fill(IndexToken index, uint256 shares) external returns (int256 pnl) {
+        address[] memory t = index.componentTokens();
+        if (shares != 0) {
+            uint256[] memory need = index.previewIssue(shares);
+            for (uint256 i = 0; i < t.length; ++i) {
+                MockERC20(t[i]).mint(address(this), need[i]);
+                MockERC20(t[i]).approve(address(index), need[i]);
+                spent += need[i];
+            }
+            index.issue(shares, address(this));
+        }
+        index.executeRebalance("");
+        if (shares != 0) index.redeem(shares, address(this));
+        uint256 held = 0;
+        for (uint256 i = 0; i < t.length; ++i) {
+            held += MockERC20(t[i]).balanceOf(address(this));
+        }
+        pnl = int256(held) - int256(spent);
+    }
+
+    function onXindexRebalance(uint256[] calldata, uint256[] calldata amountsIn, bytes calldata) external {
+        address[] memory t = IndexToken(msg.sender).componentTokens();
+        for (uint256 i = 0; i < t.length; ++i) {
+            if (amountsIn[i] == 0) continue;
+            MockERC20(t[i]).mint(msg.sender, amountsIn[i]);
+            spent += amountsIn[i];
+        }
+    }
+}
+
+/// @notice One regression test per finding of the Xindex v1 security review and of the v2 rebalancing design review,
+///         each asserting the fixed behaviour, plus the attacks that already failed before the fixes.
 contract SecurityRegressionTest is Test {
+    MockMarket market;
     IndexFactory factory;
     MockSwapRouter router;
     IndexZap zap;
@@ -72,14 +114,17 @@ contract SecurityRegressionTest is Test {
     uint256 constant NAV_USD6 = 105e6; // 0.001 WBTC ($60) + 0.01 WETH ($30) + 1 LINK ($15)
 
     function setUp() public {
-        factory = new IndexFactory(owner, guardian);
+        market = new MockMarket();
+        factory = new IndexFactory(
+            owner, guardian, address(market.weth()), address(market.uniswapV3Factory()), address(market.usdc())
+        );
         router = new MockSwapRouter();
         zap = new IndexZap(factory, router);
 
         wbtc = new MockERC20("Wrapped BTC", "WBTC", 8);
-        weth = new MockERC20("Wrapped Ether", "WETH", 18);
+        weth = market.weth();
         link = new MockERC20("Chainlink", "LINK", 18);
-        usdc = new MockERC20("USD Coin", "USDC", 6);
+        usdc = market.usdc();
 
         router.setPrice(address(wbtc), 60_000e18);
         router.setPrice(address(weth), 3_000e18);
@@ -95,7 +140,7 @@ contract SecurityRegressionTest is Test {
         _list(address(link));
         _list(address(usdc));
 
-        index = IndexToken(factory.createIndex("Blue Chip", "BLUE", _blueTokens(), _units(100_000, 1e16, 1e18)));
+        index = IndexToken(factory.createIndex("Blue Chip", "BLUE", _blueTokens(), _units(100_000, 1e16, 1e18), 0));
     }
 
     // ---------------------------------------------------------------------
@@ -103,8 +148,9 @@ contract SecurityRegressionTest is Test {
     // ---------------------------------------------------------------------
 
     function _list(address token) internal {
+        IIndexFactory.TokenConfig memory config = market.config(token, 0);
         vm.prank(owner);
-        factory.proposeListing(token);
+        factory.proposeListing(token, config);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(token);
     }
@@ -153,6 +199,7 @@ contract SecurityRegressionTest is Test {
     ) internal view returns (IndexZap.MintParams memory) {
         return IndexZap.MintParams({
             index: idx,
+            expectedNonce: 0,
             tokenIn: tokenIn,
             maxAmountIn: maxIn,
             shares: shares,
@@ -172,6 +219,7 @@ contract SecurityRegressionTest is Test {
     ) internal view returns (IndexZap.BurnParams memory) {
         return IndexZap.BurnParams({
             index: idx,
+            expectedNonce: 0,
             shares: shares,
             tokenOut: tokenOut,
             minAmountOut: minOut,
@@ -207,7 +255,7 @@ contract SecurityRegressionTest is Test {
         t[1] = address(weth);
         u[0] = 100_000;
         u[1] = 1e16;
-        IndexToken idx = IndexToken(factory.createIndex("Half Paused", "HALF", t, u));
+        IndexToken idx = IndexToken(factory.createIndex("Half Paused", "HALF", t, u, 0));
 
         pbtc.mint(alice, 100_000);
         weth.mint(alice, 1e16);
@@ -260,12 +308,12 @@ contract SecurityRegressionTest is Test {
 
         uint256 snap = vm.snapshotState();
         vm.prank(creatorA);
-        address seen = factory.createIndex("Bitcoin Heavy", "BTCH", t, btcHeavy);
+        address seen = factory.createIndex("Bitcoin Heavy", "BTCH", t, btcHeavy, 0);
 
         // Re-org: creator B's createIndex is included first on the canonical chain.
         vm.revertToState(snap);
         vm.prank(creatorB);
-        address other = factory.createIndex("Ether Heavy", "ETHH", t, ethHeavy);
+        address other = factory.createIndex("Ether Heavy", "ETHH", t, ethHeavy, 0);
         assertTrue(other != seen, "a different basket can never land at the address the user saw");
 
         // Until creator A's transaction is included again, the user's mint to `seen` cannot execute.
@@ -278,7 +326,7 @@ contract SecurityRegressionTest is Test {
         vm.stopPrank();
 
         vm.prank(creatorA);
-        assertEq(factory.createIndex("Bitcoin Heavy", "BTCH", t, btcHeavy), seen);
+        assertEq(factory.createIndex("Bitcoin Heavy", "BTCH", t, btcHeavy, 0), seen);
         assertEq(IndexToken(seen).symbol(), "BTCH");
     }
 
@@ -310,15 +358,17 @@ contract SecurityRegressionTest is Test {
 
     function test_L05_listingRequiresContractCode() public {
         address typo = makeAddr("typo");
+        IIndexFactory.TokenConfig memory config;
         vm.prank(owner);
         vm.expectRevert(abi.encodeWithSelector(IIndexFactory.NotAContract.selector, typo));
-        factory.proposeListing(typo);
+        factory.proposeListing(typo, config);
     }
 
     function test_L07_hostileListingWaitsAndGuardianCanCancel() public {
         MockERC20 hostile = new MockERC20("Blue Chip Plus", "BLUE+", 18);
+        IIndexFactory.TokenConfig memory config = market.config(address(hostile), 0);
         vm.prank(owner);
-        factory.proposeListing(address(hostile));
+        factory.proposeListing(address(hostile), config);
         uint256 eta = factory.listingEta(address(hostile));
         assertEq(eta, block.timestamp + 2 days);
 
@@ -337,7 +387,7 @@ contract SecurityRegressionTest is Test {
         MockERC20 hostile = new MockERC20("Blue Chip Plus", "BLUE+", 18);
         vm.startPrank(owner); // a compromised owner tries to remove the guardian and list at the same time
         factory.proposeGuardian(address(0));
-        factory.proposeListing(address(hostile));
+        factory.proposeListing(address(hostile), market.config(address(hostile), 0));
         vm.stopPrank();
         assertEq(factory.guardian(), guardian, "the guardian keeps its powers while its removal is pending");
 
@@ -354,8 +404,9 @@ contract SecurityRegressionTest is Test {
 
     function test_FR03_staleListingProposalsExpire() public {
         MockERC20 token = new MockERC20("Stale", "STALE", 18);
+        IIndexFactory.TokenConfig memory config = market.config(address(token), 0);
         vm.prank(owner);
-        factory.proposeListing(address(token));
+        factory.proposeListing(address(token), config);
         uint256 deadline = factory.listingEta(address(token)) + factory.PROPOSAL_WINDOW();
 
         vm.warp(deadline + 1);
@@ -363,7 +414,7 @@ contract SecurityRegressionTest is Test {
         factory.executeListing(address(token));
 
         vm.prank(owner); // proposing again restarts the public delay
-        factory.proposeListing(address(token));
+        factory.proposeListing(address(token), config);
         assertEq(factory.listingEta(address(token)), block.timestamp + factory.LISTING_DELAY());
     }
 
@@ -381,7 +432,7 @@ contract SecurityRegressionTest is Test {
         t[1] = address(weth);
         u[0] = 1e18;
         u[1] = 1e18;
-        IndexToken idx = IndexToken(factory.createIndex("Hooked", "HOOKD", t, u));
+        IndexToken idx = IndexToken(factory.createIndex("Hooked", "HOOKD", t, u, 0));
 
         hook.mint(alice, 2e18);
         weth.mint(alice, 2e18);
@@ -447,7 +498,7 @@ contract SecurityRegressionTest is Test {
         t[1] = address(usdc);
         u[0] = 1e16;
         u[1] = 50e6;
-        IndexToken idx = IndexToken(factory.createIndex("Mixed", "MIX", t, u));
+        IndexToken idx = IndexToken(factory.createIndex("Mixed", "MIX", t, u, 0));
 
         IndexZap.MintLeg[] memory legs = new IndexZap.MintLeg[](2);
         legs[0] = IndexZap.MintLeg({path: abi.encodePacked(address(weth), FEE, address(usdc)), maxAmountIn: 0});
@@ -498,14 +549,14 @@ contract SecurityRegressionTest is Test {
         uint256[] memory u = _units(100_000, 1e16, 1e18);
 
         vm.prank(copier); // front-runs with identical arguments
-        address copy = factory.createIndex("Original", "ORIG", t, u);
+        address copy = factory.createIndex("Original", "ORIG", t, u, 0);
         vm.prank(creator);
-        address original = factory.createIndex("Original", "ORIG", t, u);
+        address original = factory.createIndex("Original", "ORIG", t, u, 0);
 
         assertTrue(copy != original);
         assertEq(factory.creatorOf(original), creator);
         assertEq(factory.creatorOf(copy), copier);
-        assertEq(original, factory.predictIndexAddress(creator, "Original", "ORIG", t, u));
+        assertEq(original, factory.predictIndexAddress(creator, "Original", "ORIG", t, u, 0));
     }
 
     function test_I12_partialFillReturnsTheUnsoldPartToTheRecipient() public {
@@ -517,7 +568,7 @@ contract SecurityRegressionTest is Test {
         uint256[] memory u = new uint256[](1);
         t[0] = address(weth);
         u[0] = 1e18;
-        IndexToken idx = IndexToken(factory.createIndex("Ether", "ETH1", t, u));
+        IndexToken idx = IndexToken(factory.createIndex("Ether", "ETH1", t, u, 0));
 
         weth.mint(alice, 1e18);
         vm.startPrank(alice);
@@ -583,5 +634,427 @@ contract SecurityRegressionTest is Test {
         assertLe(wbtc.balanceOf(attacker), paid[0]);
         assertLe(weth.balanceOf(attacker), paid[1]);
         assertLe(link.balanceOf(attacker), paid[2]);
+    }
+
+    // ---------------------------------------------------------------------
+    // v2: rule-based rebalancing (design review of 2026-09-16)
+    // ---------------------------------------------------------------------
+
+    function _five(uint256 a, uint256 b, uint256 c, uint256 d, uint256 e) internal pure returns (uint256[] memory r) {
+        r = new uint256[](5);
+        (r[0], r[1], r[2], r[3], r[4]) = (a, b, c, d, e);
+    }
+
+    function _hundreds() internal pure returns (uint256[] memory) {
+        return _five(100e18, 100e18, 100e18, 100e18, 100e18);
+    }
+
+    /// @dev Lists `t` with `configs`, creates an uncapped index holding `units`, and issues 10 shares to alice.
+    function _ruleBasketOf(address[] memory t, IIndexFactory.TokenConfig[] memory configs, uint256[] memory units)
+        internal
+        returns (IndexToken idx)
+    {
+        vm.startPrank(owner);
+        for (uint256 i = 0; i < t.length; ++i) {
+            factory.proposeListing(t[i], configs[i]);
+        }
+        vm.stopPrank();
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        for (uint256 i = 0; i < t.length; ++i) {
+            factory.executeListing(t[i]);
+        }
+        idx = IndexToken(factory.createIndex("Rule Basket", "RULE", t, units, 0));
+        _issueRule(idx, alice, 10e18);
+    }
+
+    /// @dev Five fresh 18-decimal tokens worth one WETH each, with reference supplies in the ratio `parts`.
+    function _ruleBasket(uint256[] memory parts, uint256[] memory units)
+        internal
+        returns (IndexToken idx, address[] memory t)
+    {
+        t = new address[](5);
+        IIndexFactory.TokenConfig[] memory configs = new IIndexFactory.TokenConfig[](5);
+        for (uint256 i = 0; i < 5; ++i) {
+            t[i] = address(new MockERC20("Rule", "RULE", 18));
+            configs[i] = market.configWith(t[i], 0, parts[i] * 1e24, new address[](0));
+        }
+        idx = _ruleBasketOf(t, configs, units);
+    }
+
+    /// @dev 100 units each while the rule wants the first at 60%: it grows to 200 units and the rest shrink to 75.
+    function _surgeBasket() internal returns (IndexToken, address[] memory) {
+        return _ruleBasket(_five(6, 1, 1, 1, 1), _hundreds());
+    }
+
+    function _issueRule(IndexToken idx, address who, uint256 shares) internal {
+        address[] memory t = idx.componentTokens();
+        uint256[] memory need = idx.previewIssue(shares);
+        vm.startPrank(who);
+        for (uint256 i = 0; i < t.length; ++i) {
+            MockERC20(t[i]).mint(who, need[i]);
+            MockERC20(t[i]).approve(address(idx), need[i]);
+        }
+        idx.issue(shares, who);
+        vm.stopPrank();
+    }
+
+    /// @dev Starts a rebalance as `caller` at the first allowed moment and warps to the auction's opening.
+    function _openAuction(IndexToken idx, uint256 keepMask, address caller) internal returns (uint256 eta) {
+        uint256 earliest = idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL();
+        if (idx.restartAllowedAt() > earliest) earliest = idx.restartAllowedAt();
+        if (block.timestamp < earliest) vm.warp(earliest);
+        vm.prank(caller);
+        idx.startRebalance(keepMask);
+        (eta,,) = idx.pendingRebalance();
+        vm.warp(eta);
+    }
+
+    function test_R01_meanTickRoundsTowardNegativeInfinity() public {
+        MockERC20 token = new MockERC20("Tick", "TICK", 18);
+        _list(address(token));
+        IIndexRule rule = IIndexRule(factory.RULE());
+        bool token0 = address(token) < address(weth);
+
+        market.setPriceTick(address(token), token0 ? int24(-2) : int24(2));
+        uint256 floored = rule.price(address(token));
+        market.setPriceTick(address(token), token0 ? int24(-1) : int24(1));
+        uint256 truncated = rule.price(address(token));
+
+        market.tokenPool(address(token)).setCumulatives(0, -1801); // a mean pool tick of -1.0006
+        assertEq(rule.price(address(token)), floored);
+        assertTrue(floored != truncated);
+    }
+
+    function test_R02_lookAlikePoolIsRejected() public {
+        MockERC20 token = new MockERC20("Look", "LOOK", 18);
+        market.config(address(token), 0); // the genuine pool exists
+        address lookAlike = address(new MockUniswapV3Pool(address(token), address(weth), 3000));
+        IIndexFactory.TokenConfig memory config;
+        config.pool = lookAlike;
+        config.referenceSupply = 1e24;
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidPool.selector, address(token), lookAlike));
+        factory.proposeListing(address(token), config);
+    }
+
+    function test_R03_poolWithShortPriceHistoryIsRejected() public {
+        MockERC20 token = new MockERC20("Short", "SHORT", 18);
+        IIndexFactory.TokenConfig memory config = market.config(address(token), 0);
+        MockUniswapV3Pool(config.pool).setObservationCardinality(60);
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.PoolHistoryTooShort.selector, config.pool, 60));
+        factory.proposeListing(address(token), config);
+    }
+
+    function test_R04_aLoneExecutorKeepsAtMostTheFloorOfTheBoughtValue() public {
+        (IndexToken idx,) = _surgeBasket();
+        _openAuction(idx, 0, attacker);
+        vm.warp(block.timestamp + idx.AUCTION_DURATION()); // with no competition it waits for the floor
+        (,, uint256[] memory out, uint256[] memory amountsIn) = idx.previewRebalance();
+        new MockRebalanceExecutor().execute(idx, "");
+
+        // Every component is worth one WETH per unit at the snapshot, so values are plain sums of units.
+        uint256 taken = 0;
+        uint256 delivered = 0;
+        for (uint256 i = 0; i < 5; ++i) {
+            taken += out[i];
+            delivered += amountsIn[i];
+        }
+        uint256 boughtAtPar = 1_000e18; // 10 shares times the 100 extra units of the growing component
+        assertEq(taken, boughtAtPar, "the value sold equals the value bought at par");
+        assertEq(taken - delivered, boughtAtPar / 10, "the executor keeps 10% of the bought value");
+        assertLt(taken - delivered, 5_000e18 / 20, "far less than 5% of the whole basket");
+    }
+
+    function test_R05_clippedTargetsKeepTheBasketValue() public {
+        (IndexToken idx,) = _ruleBasket(_five(2, 3, 5, 8, 89), _five(10e18, 10e18, 160e18, 10e18, 10e18));
+        (uint256[] memory targets, uint256 turnover) = idx.previewTarget(0);
+        uint256 value = 0;
+        for (uint256 i = 0; i < 5; ++i) {
+            value += targets[i];
+        }
+        assertEq(value, 200e18, "four redistribution passes, no value lost to the clips");
+        assertEq(targets[2], 120e18);
+        assertEq(turnover, 0.2e18);
+    }
+
+    function test_R06_cappedMethodologyNeedsFiveComponents() public {
+        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.TooFewComponentsForCapped.selector, 3));
+        factory.createIndex("Capped", "CAP", _blueTokens(), _units(100_000, 1e16, 1e18), 1);
+    }
+
+    function test_R07_wrappedAssetsCarryAReferenceSupply() public {
+        IIndexRule rule = IIndexRule(factory.RULE());
+        IIndexFactory.TokenConfig memory onChain;
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidSupplyConfig.selector, address(weth)));
+        rule.checkConfig(address(weth), onChain);
+
+        MockERC20 wrapped = new MockERC20("Wrapped Coin", "WCOIN", 8);
+        wrapped.mint(alice, 116_132e8); // the wrapped float
+        IIndexFactory.TokenConfig memory config = market.configWith(address(wrapped), 0, 20_084_784e8, new address[](0));
+        vm.prank(owner);
+        factory.proposeListing(address(wrapped), config);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        factory.executeListing(address(wrapped));
+        assertEq(rule.supply(address(wrapped)), 20_084_784e8, "the whole underlying supply, not the float");
+    }
+
+    function test_R08_keepMaskKeepsTheRulesProportions() public {
+        (IndexToken idx,) = _ruleBasket(_five(2, 1, 1, 1, 1), _hundreds());
+        (uint256[] memory targets,) = idx.previewTarget(1 << 1);
+        assertEq(targets[1], 100e18);
+        // The four active components share their 400 units of value in the rule's own 2:1:1:1 proportions.
+        assertApproxEqRel(targets[0], 2 * targets[2], 1e3);
+        assertEq(targets[2], targets[4]);
+        assertApproxEqAbs(targets[0] + targets[2] + targets[3] + targets[4], 400e18, 10);
+    }
+
+    function test_R09_untouchedComponentsNeverMoveEvenWithDustOrDonations() public {
+        (IndexToken idx, address[] memory t) = _surgeBasket();
+        _issueRule(idx, attacker, 1e18 + 1); // issue rounds up, leaving dust in every component
+        MockERC20(t[3]).mint(address(idx), 12_345);
+        uint256 balanceBefore = MockERC20(t[3]).balanceOf(address(idx));
+
+        _openAuction(idx, 1 << 3, guardian);
+        (,, uint256[] memory out, uint256[] memory amountsIn) = idx.previewRebalance();
+        assertEq(out[3], 0);
+        assertEq(amountsIn[3], 0);
+        new MockRebalanceExecutor().execute(idx, "");
+        assertEq(MockERC20(t[3]).balanceOf(address(idx)), balanceBefore);
+    }
+
+    function test_R10_anUnderfundedFillNeverSettles() public {
+        (IndexToken idx, address[] memory t) = _surgeBasket();
+        _openAuction(idx, 0, attacker);
+        MockRebalanceExecutor short = new MockRebalanceExecutor();
+        short.setMode(MockRebalanceExecutor.Mode.Short);
+        vm.expectRevert(abi.encodeWithSelector(IIndexToken.RebalanceUnderfunded.selector, t[0], 2_500e18 - 1, 2_500e18));
+        short.execute(idx, "");
+        assertEq(idx.rebalanceNonce(), 0);
+    }
+
+    function test_R11_theExecutorCallbackCannotReenter() public {
+        (IndexToken idx,) = _surgeBasket();
+        _openAuction(idx, 0, attacker);
+        MockRebalanceExecutor reentrant = new MockRebalanceExecutor();
+        reentrant.setMode(MockRebalanceExecutor.Mode.Reentrant);
+        reentrant.execute(idx, "");
+
+        bytes[] memory errors = reentrant.reentryErrors();
+        assertEq(errors.length, 7);
+        for (uint256 i = 0; i < errors.length; ++i) {
+            assertEq(bytes4(errors[i]), ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
+        }
+        assertFalse(reentrant.indexTransferSucceeded(), "it held no index tokens to move");
+        assertEq(idx.rebalanceNonce(), 1);
+    }
+
+    function test_R12_flashIssuingAroundAFillExtractsNothing() public {
+        (IndexToken idx,) = _surgeBasket();
+        _openAuction(idx, 0, attacker);
+        vm.warp(block.timestamp + 18 hours); // multiplier 1.05
+
+        uint256 snapshot = vm.snapshotState();
+        int256 plain = new FlashFiller().fill(idx, 0);
+        vm.revertToState(snapshot);
+        int256 withFlashShares = new FlashFiller().fill(idx, 1_000_000e18);
+        assertEq(withFlashShares, plain, "the extra shares bear exactly what they earn");
+    }
+
+    function test_R13_claimsSurviveRebalancesInBothDirections() public {
+        (IndexToken idx, address[] memory t) = _surgeBasket();
+        vm.prank(alice);
+        idx.redeemSkipping(2e18, alice, (1 << 0) | (1 << 2)); // a growing and a shrinking component
+        _openAuction(idx, 0, attacker);
+        new MockRebalanceExecutor().execute(idx, "");
+
+        vm.startPrank(alice);
+        assertEq(idx.claim(t[0], alice), 200e18);
+        assertEq(idx.claim(t[2], alice), 200e18);
+        vm.stopPrank();
+    }
+
+    function test_R14_anEmptyIndexRebalancesAtParity() public {
+        (IndexToken idx,) = _surgeBasket();
+        vm.prank(alice);
+        idx.redeem(10e18, alice);
+        _openAuction(idx, 0, attacker);
+        vm.warp(block.timestamp + 1 hours);
+        assertEq(idx.currentMultiplier(), 1e18);
+
+        MockRebalanceExecutor noop = new MockRebalanceExecutor();
+        noop.setMode(MockRebalanceExecutor.Mode.Noop);
+        noop.execute(idx, "");
+        (, uint256[] memory units) = idx.components();
+        assertEq(units[0], 200e18, "exactly the snapshot target, whatever the time of the fill");
+        assertEq(units[1], 75e18);
+    }
+
+    function test_R15_cancelCooldownBindsStrangersOnly() public {
+        (IndexToken idx,) = _surgeBasket();
+        _openAuction(idx, 0, attacker);
+        vm.prank(guardian);
+        idx.cancelRebalance();
+
+        vm.prank(attacker);
+        vm.expectRevert(abi.encodeWithSelector(IIndexToken.Unauthorized.selector, attacker));
+        idx.startRebalance(0);
+        vm.prank(guardian);
+        idx.startRebalance(0);
+    }
+
+    function test_R16_onlyOwnerOrGuardianCanKeepComponents() public {
+        (IndexToken idx,) = _surgeBasket();
+        vm.warp(idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL());
+        vm.prank(attacker);
+        vm.expectRevert(abi.encodeWithSelector(IIndexToken.Unauthorized.selector, attacker));
+        idx.startRebalance(1 << 0);
+    }
+
+    function test_R17_supplyInflationMovesUnitsAtMostDouble() public {
+        MockERC20 inflating = new MockERC20("Inflating", "INF", 18);
+        inflating.mint(attacker, 1e24);
+        address[] memory t = new address[](5);
+        IIndexFactory.TokenConfig[] memory configs = new IIndexFactory.TokenConfig[](5);
+        t[0] = address(inflating);
+        configs[0] = market.configWith(t[0], 0, 0, new address[](0)); // on-chain supply
+        for (uint256 i = 1; i < 5; ++i) {
+            t[i] = address(new MockERC20("Fixed", "FIX", 18));
+            configs[i] = market.configWith(t[i], 0, 1e24, new address[](0));
+        }
+        IndexToken idx = _ruleBasketOf(t, configs, _hundreds());
+
+        inflating.mint(attacker, 9e24); // the issuer mints ten times the supply
+        (uint256[] memory targets,) = idx.previewTarget(0);
+        assertEq(targets[0], 200e18, "the rule would want 3.6x; one rebalance moves at most 2x");
+    }
+
+    function test_R18_priceReadingsOnlyShapeTargetsWithinBounds() public {
+        (IndexToken idx, address[] memory t) = _ruleBasket(_five(1, 1, 1, 1, 1), _hundreds());
+        market.setPriceTick(t[0], 46_000); // a hundredfold spike in one component's time-weighted price
+
+        (uint256[] memory targets, uint256 turnover) = idx.previewTarget(0);
+        for (uint256 i = 0; i < 5; ++i) {
+            assertApproxEqAbs(
+                targets[i], 100e18, 1e6, "an uncapped index on target ignores prices, up to weight rounding"
+            );
+        }
+        assertLt(turnover, 1e3);
+
+        vm.prank(attacker);
+        IndexToken capped = IndexToken(factory.createIndex("Capped", "CAP", t, _hundreds(), 1));
+        (targets,) = capped.previewTarget(0);
+        for (uint256 i = 0; i < 5; ++i) {
+            assertGe(targets[i], 50e18, "a capped index reacts, but never below half");
+            assertLe(targets[i], 200e18, "or above double");
+        }
+    }
+
+    function test_R19_aRebalanceWithNothingToTradeCannotStart() public {
+        (IndexToken idx,) = _ruleBasket(_five(1, 1, 1, 1, 1), _hundreds());
+        vm.warp(idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL());
+        vm.prank(attacker);
+        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, 0));
+        idx.startRebalance(0);
+    }
+
+    function test_R20_zapRefusesAQuoteFromBeforeARebalance() public {
+        (IndexToken idx,) = _surgeBasket();
+        _openAuction(idx, 0, attacker);
+        new MockRebalanceExecutor().execute(idx, "");
+
+        IndexZap.BurnParams memory p =
+            _burnParams(address(idx), 1e18, address(usdc), 1, new IndexZap.BurnLeg[](5), alice);
+        vm.startPrank(alice);
+        idx.approve(address(zap), 1e18);
+        vm.expectRevert(abi.encodeWithSelector(IndexZap.StaleRebalanceNonce.selector, 0, 1));
+        zap.burnToToken(p);
+        vm.stopPrank();
+    }
+
+    function test_R21_donationsBeforeAFillStayInTheIndex() public {
+        (IndexToken idx, address[] memory t) = _surgeBasket();
+        _openAuction(idx, 0, attacker);
+        (,, uint256[] memory outBefore,) = idx.previewRebalance();
+        MockERC20(t[2]).mint(address(idx), 1_000e18);
+        (,, uint256[] memory outAfter,) = idx.previewRebalance();
+        assertEq(outAfter[2], outBefore[2]);
+        new MockRebalanceExecutor().execute(idx, "");
+        assertEq(MockERC20(t[2]).balanceOf(address(idx)), 750e18 + 1_000e18);
+    }
+
+    function test_R22_noPriceReadingChangesIssueRedeemOrSettlementAmounts() public {
+        (IndexToken idx, address[] memory t) = _surgeBasket();
+        _openAuction(idx, 0, attacker);
+        vm.warp(block.timestamp + 1 hours);
+        bytes32 holders = keccak256(abi.encode(idx.previewIssue(3e18), idx.previewRedeem(3e18)));
+        bytes32 settlement = keccak256(abi.encode(_preview(idx)));
+
+        for (uint256 i = 0; i < 5; ++i) {
+            market.setPriceTick(t[i], int24(int256(i) * 10_000 - 20_000));
+        }
+        market.setUsdcTick(150_000);
+
+        assertEq(keccak256(abi.encode(idx.previewIssue(3e18), idx.previewRedeem(3e18))), holders);
+        assertEq(keccak256(abi.encode(_preview(idx))), settlement);
+    }
+
+    function _preview(IndexToken idx) internal view returns (bytes memory) {
+        (uint256 m, uint256[] memory units, uint256[] memory out, uint256[] memory amountsIn) = idx.previewRebalance();
+        return abi.encode(m, units, out, amountsIn);
+    }
+
+    function test_R23_aZeroWeightComponentCannotHandTheFirstExecutorAWindfall() public {
+        address[] memory t = new address[](2);
+        IIndexFactory.TokenConfig[] memory configs = new IIndexFactory.TokenConfig[](2);
+        t[0] = address(new MockERC20("Heavy", "HEAVY", 18));
+        t[1] = address(new MockERC20("Dust Cap", "DUST", 18));
+        configs[0] = market.configWith(t[0], 0, 1e30, new address[](0));
+        configs[1] = market.configWith(t[1], 0, 1, new address[](0)); // its weight rounds to zero
+        uint256[] memory units = new uint256[](2);
+        (units[0], units[1]) = (10e18, 100e18);
+        IndexToken idx = _ruleBasketOf(t, configs, units);
+
+        _openAuction(idx, 0, attacker);
+        (,, uint256[] memory out, uint256[] memory amountsIn) = idx.previewRebalance();
+        // Dropping the value the heavy component could not absorb would have sent out 500 units against 150 returned.
+        assertEq(out[1], 100e18, "only what the heavy component can absorb leaves");
+        assertEq(amountsIn[0], 150e18);
+        assertGe(amountsIn[0], out[1], "at the opening an executor delivers more than it takes");
+    }
+
+    function test_control_aWindfallNeedsTheFairMultiplierAboveTheStart() public {
+        (IndexToken idx,) = _surgeBasket();
+        _openAuction(idx, 0, attacker);
+        (uint256 m,, uint256[] memory out, uint256[] memory amountsIn) = idx.previewRebalance();
+        assertEq(m, 1.5e18);
+        // Suppose the growing component's market price halved after the snapshot, so the fair multiplier is 2. At the
+        // opening, the first executor takes 1,000 worth of shrinking components and delivers 1,500 units worth 750.
+        uint256 taken = out[1] + out[2] + out[3] + out[4];
+        assertEq(taken - amountsIn[0] / 2, 250e18, "the gap is (fair - start) times the bought value at par");
+    }
+
+    function test_control_aFrozenComponentNeedsTheGuardianEachRebalance() public {
+        MockPausableToken frozen = new MockPausableToken("Frozen", "FRZ", 18);
+        address[] memory t = new address[](5);
+        IIndexFactory.TokenConfig[] memory configs = new IIndexFactory.TokenConfig[](5);
+        uint256[5] memory parts = [uint256(6), 1, 1, 1, 1];
+        for (uint256 i = 0; i < 5; ++i) {
+            t[i] = i == 1 ? address(frozen) : address(new MockERC20("Rule", "RULE", 18));
+            configs[i] = market.configWith(t[i], 0, parts[i] * 1e24, new address[](0));
+        }
+        IndexToken idx = _ruleBasketOf(t, configs, _hundreds());
+        frozen.setPaused(true);
+
+        _openAuction(idx, 0, attacker);
+        MockRebalanceExecutor executor = new MockRebalanceExecutor();
+        vm.expectRevert(bytes("paused"));
+        executor.execute(idx, "");
+
+        vm.prank(guardian);
+        idx.cancelRebalance();
+        _openAuction(idx, 1 << 1, guardian);
+        executor.execute(idx, "");
+        assertEq(idx.rebalanceNonce(), 1, "the guardian's keep mask routes around the frozen component");
     }
 }

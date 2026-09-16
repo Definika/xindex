@@ -7,11 +7,14 @@ import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
 import {IndexToken} from "../src/IndexToken.sol";
+import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IIndexToken} from "../src/interfaces/IIndexToken.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockFeeToken} from "./mocks/MockFeeToken.sol";
+import {MockMarket} from "./mocks/MockMarket.sol";
 
 contract IndexTokenTest is Test {
+    MockMarket market;
     IndexFactory factory;
     IndexToken index;
 
@@ -32,10 +35,13 @@ contract IndexTokenTest is Test {
     uint256[] units;
 
     function setUp() public {
-        factory = new IndexFactory(owner, address(0));
+        market = new MockMarket();
+        factory = new IndexFactory(
+            owner, address(0), address(market.weth()), address(market.uniswapV3Factory()), address(market.usdc())
+        );
         wbtc = new MockERC20("Wrapped BTC", "WBTC", 8);
-        weth = new MockERC20("Wrapped Ether", "WETH", 18);
-        usdc = new MockERC20("USD Coin", "USDC", 6);
+        weth = market.weth();
+        usdc = market.usdc();
         _list(address(wbtc));
         _list(address(weth));
         _list(address(usdc));
@@ -47,7 +53,7 @@ contract IndexTokenTest is Test {
         units.push(U_WETH);
         units.push(U_USDC);
 
-        index = IndexToken(factory.createIndex("Blue Chip", "BLUE", tokens, units));
+        index = IndexToken(factory.createIndex("Blue Chip", "BLUE", tokens, units, 0));
     }
 
     // ---------------------------------------------------------------------
@@ -55,8 +61,9 @@ contract IndexTokenTest is Test {
     // ---------------------------------------------------------------------
 
     function _list(address token) internal {
+        IIndexFactory.TokenConfig memory config = market.config(token, 0);
         vm.prank(owner);
-        factory.proposeListing(token);
+        factory.proposeListing(token, config);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(token);
     }
@@ -100,6 +107,10 @@ contract IndexTokenTest is Test {
         assertEq(index.decimals(), 18);
         assertEq(index.SHARE_UNIT(), 1e18);
         assertEq(index.FACTORY(), address(factory));
+        assertEq(index.RULE(), factory.RULE());
+        assertEq(index.methodology(), 0);
+        assertEq(index.rebalanceNonce(), 0);
+        assertEq(index.lastRebalance(), block.timestamp);
         assertEq(index.componentCount(), 3);
         (address[] memory t, uint256[] memory u) = index.components();
         assertEq(t.length, 3);
@@ -114,23 +125,28 @@ contract IndexTokenTest is Test {
         assertEq(onlyTokens[2], address(usdc));
     }
 
+    function test_constructor_rejectsZeroRule() public {
+        vm.expectRevert(IIndexToken.ZeroAddress.selector);
+        new IndexToken(address(0));
+    }
+
     function test_cannotReinitialize() public {
         vm.prank(address(factory));
         vm.expectRevert(Initializable.InvalidInitialization.selector);
-        index.initialize("x", "x", tokens, units);
+        index.initialize("x", "x", tokens, units, 0);
     }
 
     function test_implementationCannotBeInitialized() public {
         IndexToken impl = IndexToken(factory.IMPLEMENTATION());
         vm.prank(address(factory));
         vm.expectRevert(Initializable.InvalidInitialization.selector);
-        impl.initialize("x", "x", tokens, units);
+        impl.initialize("x", "x", tokens, units, 0);
     }
 
     function test_nonFactoryCannotInitializeFreshClone() public {
         IndexToken rogue = IndexToken(Clones.clone(factory.IMPLEMENTATION()));
         vm.expectRevert(IIndexToken.NotFactory.selector);
-        rogue.initialize("x", "x", tokens, units);
+        rogue.initialize("x", "x", tokens, units, 0);
     }
 
     /// @dev The factory validates inputs before initializing, so these branches are only reachable
@@ -143,31 +159,31 @@ contract IndexTokenTest is Test {
         vm.startPrank(address(factory));
 
         vm.expectRevert(IIndexToken.InvalidComponents.selector);
-        fresh.initialize("x", "x", t, u);
+        fresh.initialize("x", "x", t, u, 0);
 
         t = new address[](1);
         u = new uint256[](2);
         t[0] = address(wbtc);
         vm.expectRevert(IIndexToken.InvalidComponents.selector);
-        fresh.initialize("x", "x", t, u);
+        fresh.initialize("x", "x", t, u, 0);
 
         u = new uint256[](1);
         u[0] = 1;
         t[0] = address(0);
         vm.expectRevert(IIndexToken.InvalidComponents.selector);
-        fresh.initialize("x", "x", t, u);
+        fresh.initialize("x", "x", t, u, 0);
 
         t[0] = address(wbtc);
         u[0] = 0;
         vm.expectRevert(IIndexToken.InvalidComponents.selector);
-        fresh.initialize("x", "x", t, u);
+        fresh.initialize("x", "x", t, u, 0);
 
         u[0] = uint256(type(uint96).max) + 1;
         vm.expectRevert(abi.encodeWithSelector(SafeCast.SafeCastOverflowedUintDowncast.selector, 96, u[0]));
-        fresh.initialize("x", "x", t, u);
+        fresh.initialize("x", "x", t, u, 0);
 
         u[0] = type(uint96).max;
-        fresh.initialize("x", "x", t, u);
+        fresh.initialize("x", "x", t, u, 0);
         vm.stopPrank();
         (, uint256[] memory uu) = fresh.components();
         assertEq(uu[0], type(uint96).max);
@@ -271,7 +287,7 @@ contract IndexTokenTest is Test {
         uint256[] memory u = new uint256[](1);
         t[0] = address(fee);
         u[0] = 1e18;
-        IndexToken feeIndex = IndexToken(factory.createIndex("Fee", "FEE", t, u));
+        IndexToken feeIndex = IndexToken(factory.createIndex("Fee", "FEE", t, u, 0));
 
         fee.mint(alice, 10e18);
         vm.startPrank(alice);

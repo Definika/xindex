@@ -2,10 +2,15 @@
 pragma solidity 0.8.28;
 
 import {Script, console2} from "forge-std/Script.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
+import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
+import {IIndexRule} from "../src/interfaces/IIndexRule.sol";
+import {IUniswapV3Factory} from "../src/interfaces/IUniswapV3Factory.sol";
 
-/// @notice Drives the two-step listing flow. It never re-proposes a token on its own: proposing is a separate,
-///         explicit run by the owner, so a listing the guardian cancelled stays cancelled.
+/// @notice Drives the two-step flow that lists tokens and sets their market-data configs. It never re-proposes a
+///         token on its own: proposing is a separate, explicit run by the owner, so a listing the guardian cancelled
+///         stays cancelled.
 ///
 ///   Propose, as the factory owner:
 ///     LISTING_MODE=propose FACTORY=0x... WHITELIST=default forge script script/ConfigureWhitelist.s.sol \
@@ -19,24 +24,61 @@ import {IndexFactory} from "../src/IndexFactory.sol";
 /// Env:
 ///   LISTING_MODE  `propose` or `execute`.
 ///   FACTORY       Deployed IndexFactory.
-///   WHITELIST     Comma-separated token addresses, or `default` for the mainnet list below (chain 1 only).
+///   WHITELIST     `default` for the mainnet list below (chain 1 only), or comma-separated entries
+///                 `token:fee[:referenceSupply[:excluded|excluded...]]`. `fee` is the Uniswap V3 fee tier of the token's
+///                 WETH pool, or 0 for WETH itself. An empty or missing referenceSupply means on-chain supply.
 contract ConfigureWhitelist is Script {
+    /// @notice A token and the config to list it with. The pool is looked up from `fee` at proposal time.
+    struct Entry {
+        address token;
+        uint24 fee;
+        uint256 referenceSupply;
+        address[] excluded;
+    }
+
+    uint24 public constant POOL_FEE_LOW = 500;
+    uint24 public constant POOL_FEE_MEDIUM = 3000;
+
     error UnknownMode(string mode);
     error DefaultListOnlyOnMainnet();
+    error MalformedEntry(string entry);
 
-    /// @notice Default mainnet components. WBTC can be paused by its custodian, so the app must label it.
-    function defaultMainnetList() public pure returns (address[] memory list) {
-        list = new address[](5);
-        list[0] = 0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599; // WBTC
-        list[1] = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2; // WETH
-        list[2] = 0x514910771AF9Ca656af840dff83E8264EcF986CA; // LINK
-        list[3] = 0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984; // UNI
-        list[4] = 0x18084fbA666a33d37592fA2633fD49a74DD93a88; // tBTC v2
+    /// @notice Default mainnet components. Reference supplies are circulating supplies reported by CoinGecko on
+    ///         2026-09-15, rounded down to whole tokens; propose a config change when they drift. WBTC and WETH count the
+    ///         whole bitcoin and ether supply, because their on-chain supply is only the wrapped float. tBTC uses its
+    ///         own on-chain supply. WBTC can be paused by its custodian, so the app must label it.
+    function defaultMainnetList() public pure returns (Entry[] memory list) {
+        address[] memory none = new address[](0);
+        list = new Entry[](5);
+        list[0] = Entry({
+            token: 0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599,
+            fee: POOL_FEE_LOW,
+            referenceSupply: 20_084_784e8,
+            excluded: none
+        }); // WBTC, bitcoin supply
+        list[1] = Entry({
+            token: 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2, fee: 0, referenceSupply: 122_050_160e18, excluded: none
+        }); // WETH, ether supply
+        list[2] = Entry({
+            token: 0x514910771AF9Ca656af840dff83E8264EcF986CA,
+            fee: POOL_FEE_MEDIUM,
+            referenceSupply: 748_099_970e18,
+            excluded: none
+        }); // LINK
+        list[3] = Entry({
+            token: 0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984,
+            fee: POOL_FEE_MEDIUM,
+            referenceSupply: 623_212_423e18,
+            excluded: none
+        }); // UNI
+        list[4] = Entry({
+            token: 0x18084fbA666a33d37592fA2633fD49a74DD93a88, fee: POOL_FEE_MEDIUM, referenceSupply: 0, excluded: none
+        }); // tBTC v2
     }
 
     function run() external {
         IndexFactory factory = IndexFactory(vm.envAddress("FACTORY"));
-        address[] memory list = resolveList(vm.envString("WHITELIST"));
+        Entry[] memory list = resolveList(vm.envString("WHITELIST"));
         string memory mode = vm.envString("LISTING_MODE");
         if (_same(mode, "propose")) {
             propose(factory, list);
@@ -48,44 +90,82 @@ contract ConfigureWhitelist is Script {
     }
 
     /// @notice `default` means the mainnet list and is only accepted on chain 1; anything else is parsed as
-    ///         comma-separated addresses.
-    function resolveList(string memory raw) public view returns (address[] memory list) {
+    ///         comma-separated entries.
+    function resolveList(string memory raw) public view returns (Entry[] memory list) {
         if (_same(raw, "default")) {
             if (block.chainid != 1) revert DefaultListOnlyOnMainnet();
             return defaultMainnetList();
         }
         string[] memory parts = vm.split(raw, ",");
-        list = new address[](parts.length);
+        list = new Entry[](parts.length);
         for (uint256 i = 0; i < parts.length; ++i) {
-            list[i] = vm.parseAddress(vm.trim(parts[i]));
+            list[i] = parseEntry(vm.trim(parts[i]));
         }
     }
 
-    /// @notice Owner only. Proposes every token that is neither listed nor pending; an expired proposal is
-    ///         proposed again.
-    function propose(IndexFactory factory, address[] memory list) public {
+    /// @notice Parses `token:fee[:referenceSupply[:excluded|excluded...]]`.
+    function parseEntry(string memory raw) public pure returns (Entry memory entry) {
+        string[] memory fields = vm.split(raw, ":");
+        if (fields.length < 2 || fields.length > 4) revert MalformedEntry(raw);
+        entry.token = vm.parseAddress(fields[0]);
+        entry.fee = SafeCast.toUint24(vm.parseUint(fields[1]));
+        if (fields.length > 2 && bytes(fields[2]).length != 0) entry.referenceSupply = vm.parseUint(fields[2]);
+        if (fields.length > 3 && bytes(fields[3]).length != 0) {
+            string[] memory excluded = vm.split(fields[3], "|");
+            entry.excluded = new address[](excluded.length);
+            for (uint256 i = 0; i < excluded.length; ++i) {
+                entry.excluded[i] = vm.parseAddress(excluded[i]);
+            }
+        }
+    }
+
+    /// @notice The config `entry` proposes: its pool is the Uniswap V3 factory's WETH pool at `entry.fee`, or none for
+    ///         a zero fee.
+    function configFor(Entry memory entry, address weth, address uniswapV3Factory)
+        public
+        view
+        returns (IIndexFactory.TokenConfig memory config)
+    {
+        config.referenceSupply = entry.referenceSupply;
+        config.excluded = entry.excluded;
+        if (entry.fee != 0) config.pool = IUniswapV3Factory(uniswapV3Factory).getPool(entry.token, weth, entry.fee);
+    }
+
+    /// @notice Owner only. Proposes every entry that is not pending and not already listed with exactly its config; an
+    ///         expired proposal is proposed again. An entry the rule rejects, for example because its pool keeps too
+    ///         little price history, is skipped and the reason logged.
+    function propose(IndexFactory factory, Entry[] memory list) public {
+        IIndexRule rule = IIndexRule(factory.RULE());
+        address weth = rule.WETH();
+        address uniswapV3Factory = rule.UNISWAP_V3_FACTORY();
         vm.startBroadcast();
         for (uint256 i = 0; i < list.length; ++i) {
-            address token = list[i];
-            if (factory.isWhitelisted(token)) continue;
+            address token = list[i].token;
+            IIndexFactory.TokenConfig memory config = configFor(list[i], weth, uniswapV3Factory);
             uint256 eta = factory.listingEta(token);
             if (eta != 0 && block.timestamp <= eta + factory.PROPOSAL_WINDOW()) {
                 console2.log("already pending", token);
                 continue;
             }
-            factory.proposeListing(token);
-            console2.log("proposed", token);
+            if (factory.isWhitelisted(token) && _sameConfig(factory.tokenConfig(token), config)) continue;
+            try rule.checkConfig(token, config) {
+                factory.proposeListing(token, config);
+                console2.log("proposed", token);
+            } catch (bytes memory reason) {
+                console2.log("skipped, the rule rejects this config", token);
+                console2.logBytes(reason);
+            }
         }
         vm.stopBroadcast();
     }
 
     /// @notice Any account. Executes every proposal that is due and skips everything else.
-    function execute(IndexFactory factory, address[] memory list) public {
+    function execute(IndexFactory factory, Entry[] memory list) public {
         vm.startBroadcast();
         for (uint256 i = 0; i < list.length; ++i) {
-            address token = list[i];
+            address token = list[i].token;
             uint256 eta = factory.listingEta(token);
-            if (eta == 0) continue; // listed already, never proposed, or cancelled
+            if (eta == 0) continue; // nothing pending: listed with this config already, never proposed, or cancelled
             if (block.timestamp < eta) {
                 console2.log("not ready yet", token);
             } else if (block.timestamp > eta + factory.PROPOSAL_WINDOW()) {
@@ -96,6 +176,15 @@ contract ConfigureWhitelist is Script {
             }
         }
         vm.stopBroadcast();
+    }
+
+    function _sameConfig(IIndexFactory.TokenConfig memory a, IIndexFactory.TokenConfig memory b)
+        private
+        pure
+        returns (bool)
+    {
+        return a.pool == b.pool && a.referenceSupply == b.referenceSupply
+            && keccak256(abi.encode(a.excluded)) == keccak256(abi.encode(b.excluded));
     }
 
     function _same(string memory a, string memory b) private pure returns (bool) {

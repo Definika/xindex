@@ -7,6 +7,8 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IndexFactory} from "../../src/IndexFactory.sol";
 import {IndexToken} from "../../src/IndexToken.sol";
 import {IndexZap} from "../../src/IndexZap.sol";
+import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
+import {IIndexRule} from "../../src/interfaces/IIndexRule.sol";
 import {ISwapRouter02} from "../../src/interfaces/ISwapRouter02.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
 
@@ -28,6 +30,11 @@ interface IQuoterV2 {
             uint32[] memory initializedTicksCrossedList,
             uint256 gasEstimate
         );
+}
+
+interface IUniswapV3PoolOracle {
+    function slot0() external view returns (uint160, int24, uint16, uint16, uint16, uint8, bool);
+    function increaseObservationCardinalityNext(uint16 observationCardinalityNext) external;
 }
 
 /// @notice End-to-end against real Uniswap V3, USDC and USDT. Skips when MAINNET_RPC_URL is unset.
@@ -59,17 +66,16 @@ contract IndexZapForkTest is Test {
         // FORK_BLOCK env overrides the pin (e.g. for non-archive RPCs that only serve recent state).
         vm.createSelectFork(url, vm.envOr("FORK_BLOCK", A.FORK_BLOCK));
 
-        factory = new IndexFactory(address(this), address(0));
+        factory = new IndexFactory(address(this), address(0), A.WETH, A.UNISWAP_V3_FACTORY, A.USDC);
         zap = new IndexZap(factory, ISwapRouter02(A.SWAP_ROUTER_02));
 
-        address[4] memory list = [A.WBTC, A.WETH, A.LINK, A.TBTC];
-        for (uint256 i = 0; i < list.length; ++i) {
-            factory.proposeListing(list[i]);
-        }
+        factory.proposeListing(A.WBTC, _config(A.WBTC_WETH_500, A.BTC_SUPPLY));
+        factory.proposeListing(A.WETH, _config(address(0), A.ETH_SUPPLY));
+        factory.proposeListing(A.LINK, _config(A.LINK_WETH_3000, A.LINK_SUPPLY));
         vm.warp(block.timestamp + factory.LISTING_DELAY());
-        for (uint256 i = 0; i < list.length; ++i) {
-            factory.executeListing(list[i]);
-        }
+        factory.executeListing(A.WBTC);
+        factory.executeListing(A.WETH);
+        factory.executeListing(A.LINK);
 
         address[] memory t = new address[](3);
         uint256[] memory u = new uint256[](3);
@@ -79,7 +85,37 @@ contract IndexZapForkTest is Test {
         u[0] = U_WBTC;
         u[1] = U_WETH;
         u[2] = U_LINK;
-        index = IndexToken(factory.createIndex("Blue Chip", "BLUE", t, u));
+        index = IndexToken(factory.createIndex("Blue Chip", "BLUE", t, u, 0));
+    }
+
+    function _config(address pool, uint256 referenceSupply) internal pure returns (IIndexFactory.TokenConfig memory c) {
+        c.pool = pool;
+        c.referenceSupply = referenceSupply;
+    }
+
+    /// @dev Grows a pool's observation ring the way anyone can on mainnet: raise the target, then trade in new blocks,
+    ///      alternating direction so the tick moves each time, until the pool writes past its old ring.
+    function _growObservations(address pool, address token) internal {
+        IUniswapV3PoolOracle(pool).increaseObservationCardinalityNext(200);
+        deal(A.WETH, address(this), 10 ether);
+        IERC20(A.WETH).forceApprove(A.SWAP_ROUTER_02, type(uint256).max);
+        IERC20(token).forceApprove(A.SWAP_ROUTER_02, type(uint256).max);
+        for (uint256 i = 0; i < 300; ++i) {
+            (,,, uint16 cardinality,,,) = IUniswapV3PoolOracle(pool).slot0();
+            if (cardinality >= 200) return;
+            vm.roll(block.number + 1);
+            vm.warp(block.timestamp + 12);
+            bytes memory path =
+                i % 2 == 0 ? abi.encodePacked(A.WETH, F3000, token) : abi.encodePacked(token, F3000, A.WETH);
+            uint256 amountIn = i % 2 == 0 ? 0.05 ether : IERC20(token).balanceOf(address(this));
+            ISwapRouter02(A.SWAP_ROUTER_02)
+                .exactInput(
+                    ISwapRouter02.ExactInputParams({
+                        path: path, recipient: address(this), amountIn: amountIn, amountOutMinimum: 0
+                    })
+                );
+        }
+        revert("observation ring did not grow");
     }
 
     // ---------------------------------------------------------------------
@@ -123,6 +159,7 @@ contract IndexZapForkTest is Test {
         return zap.mintWithToken(
             IndexZap.MintParams({
                 index: address(idx),
+                expectedNonce: 0, // these indexes never rebalance; reading the nonce here would consume vm.expectRevert
                 tokenIn: tokenIn,
                 maxAmountIn: maxIn,
                 shares: shares,
@@ -140,6 +177,7 @@ contract IndexZapForkTest is Test {
         return zap.burnToToken(
             IndexZap.BurnParams({
                 index: address(idx),
+                expectedNonce: 0, // these indexes never rebalance; reading the nonce here would consume vm.expectRevert
                 shares: shares,
                 tokenOut: tokenOut,
                 minAmountOut: minOut,
@@ -326,7 +364,24 @@ contract IndexZapForkTest is Test {
         t[1] = A.TBTC;
         u[0] = 50_000; // 0.0005 WBTC (8 decimals)
         u[1] = 5e14; // 0.0005 tBTC (18 decimals)
-        IndexToken btc = IndexToken(factory.createIndex("BTC Basket", "BTC2", t, u));
+
+        // tBTC's 0.3% WETH pool keeps too little price history for the rule, so listing it fails until someone grows
+        // the pool's observation ring, which anyone can do.
+        IIndexFactory.TokenConfig memory tbtc = _config(A.TBTC_WETH_3000, 0);
+        (,,, uint16 cardinality,,,) = IUniswapV3PoolOracle(A.TBTC_WETH_3000).slot0();
+        if (cardinality < 200) {
+            vm.expectRevert(
+                abi.encodeWithSelector(IIndexRule.PoolHistoryTooShort.selector, A.TBTC_WETH_3000, cardinality)
+            );
+            factory.proposeListing(A.TBTC, tbtc);
+            _growObservations(A.TBTC_WETH_3000, A.TBTC);
+        }
+        vm.warp(block.timestamp + 1 hours);
+        factory.proposeListing(A.TBTC, tbtc);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        factory.executeListing(A.TBTC);
+
+        IndexToken btc = IndexToken(factory.createIndex("BTC Basket", "BTC2", t, u, 0));
 
         bytes[] memory mintPaths = new bytes[](2);
         mintPaths[0] = abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDC);

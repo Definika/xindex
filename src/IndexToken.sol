@@ -12,35 +12,63 @@ import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC2
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import {IIndexFactory} from "./interfaces/IIndexFactory.sol";
+import {IIndexRule} from "./interfaces/IIndexRule.sol";
 import {IIndexToken} from "./interfaces/IIndexToken.sol";
+import {IRebalanceExecutor} from "./interfaces/IRebalanceExecutor.sol";
 
 /// @title IndexToken
-/// @notice Fully collateralized, fixed-composition index token. See {IIndexToken}.
-/// @dev Deployed as an EIP-1167 clone by {IndexFactory}. The implementation is deployed from the
-///      factory constructor so `FACTORY` can be an immutable (immutables live in bytecode, which clones
-///      delegate to, so every clone sees the same value).
+/// @notice Fully collateralized index token with fixed constituents whose units follow an on-chain weighting rule.
+///         See {IIndexToken}.
+/// @dev Deployed as an EIP-1167 clone by {IndexFactory}. The implementation is deployed from the factory constructor,
+///      so `FACTORY` and `RULE` can be immutables (immutables live in bytecode, which clones delegate to, so every clone
+///      sees the same values).
 ///
-///      The storage-based {ReentrancyGuard} is used deliberately: its namespaced slot reads as
-///      "not entered" when zero, so it needs no initializer and is safe in a clone.
+///      The storage-based {ReentrancyGuard} is used deliberately: its namespaced slot reads as "not entered" when zero,
+///      so it needs no initializer and is safe in a clone. Every function that mints, burns, pays a claim or changes a
+///      rebalance shares it.
 ///
-///      Only an initialized clone can issue or redeem. The implementation and any clone deployed outside
-///      the factory have no components and would otherwise mint unbacked shares.
+///      Only an initialized clone can issue, redeem or rebalance. The implementation and any clone deployed outside the
+///      factory have no components and would otherwise mint unbacked shares.
 ///
 ///      Invariant, for every component i:
 ///          token_i.balanceOf(index) >= floor(totalSupply * units_i / 1e18) + totalClaims[token_i]
-///      Issue rounds up and redeem rounds down, so rounding drift is at most one raw unit per call and
-///      is always in favour of the remaining holders. A claim is recorded only for an amount that stayed in
-///      the index, so claims never dilute other holders. Nothing is ever computed from balances, so there
-///      is no share price to manipulate and no first-depositor attack.
+///      Issue rounds up and redeem rounds down, so rounding drift is at most one raw unit per call and is always in
+///      favour of the remaining holders. A claim is recorded only for an amount that stayed in the index, so claims
+///      never dilute other holders. Nothing is ever computed from balances, so there is no share price to manipulate
+///      and no first-depositor attack.
+///
+///      Rebalancing. Once MIN_REBALANCE_INTERVAL has passed, anyone can snapshot the rule's target units. After
+///      REBALANCE_DELAY of notice, an auction runs for AUCTION_DURATION. The executor receives what the index no longer
+///      needs of every shrinking component, and must send back what the growing components need. The multiplier
+///      scales only the growing components' extra units: it opens at AUCTION_START_MULTIPLIER, so an executor first has
+///      to deliver more value than it takes, and falls linearly to AUCTION_END_MULTIPLIER. Transfer amounts come from
+///      supply and units alone, and the settlement stands only if the invariant holds with the new units. Prices
+///      never enter this step.
 contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, ReentrancyGuard, IIndexToken {
     using SafeERC20 for IERC20;
 
     uint256 public constant SHARE_UNIT = 1e18;
+    uint256 public constant REBALANCE_DELAY = 2 days;
+    uint256 public constant MIN_REBALANCE_INTERVAL = 28 days;
+    uint256 public constant AUCTION_DURATION = 24 hours;
+    uint256 public constant AUCTION_START_MULTIPLIER = 1.5e18;
+    uint256 public constant AUCTION_END_MULTIPLIER = 0.9e18;
+    uint256 public constant MIN_TURNOVER = 0.005e18;
     address public immutable FACTORY;
+    address public immutable RULE;
+
+    uint256 private constant WAD = 1e18;
 
     struct Component {
         address token;
         uint96 units;
+    }
+
+    /// @dev `eta == 0` means no rebalance is pending.
+    struct PendingRebalance {
+        uint40 eta;
+        uint24 keepMask;
     }
 
     Component[] private _components;
@@ -51,13 +79,30 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
     /// @inheritdoc IIndexToken
     mapping(address token => uint256 amount) public totalClaims;
 
+    PendingRebalance private _pending;
+    uint96[] private _targetUnits;
+
+    /// @inheritdoc IIndexToken
+    uint256 public rebalanceNonce;
+
+    /// @inheritdoc IIndexToken
+    uint256 public lastRebalance;
+
+    /// @inheritdoc IIndexToken
+    uint256 public restartAllowedAt;
+
+    /// @inheritdoc IIndexToken
+    uint8 public methodology;
+
     modifier onlyInitialized() {
         _checkInitialized();
         _;
     }
 
-    constructor() {
+    constructor(address rule) {
+        if (rule == address(0)) revert ZeroAddress();
         FACTORY = msg.sender;
+        RULE = rule;
         _disableInitializers();
     }
 
@@ -66,7 +111,8 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
         string calldata name_,
         string calldata symbol_,
         address[] calldata tokens,
-        uint256[] calldata units
+        uint256[] calldata units,
+        uint8 methodology_
     ) external initializer {
         if (msg.sender != FACTORY) revert NotFactory();
         uint256 n = tokens.length;
@@ -79,6 +125,10 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
             if (tokens[i] == address(0) || units[i] == 0) revert InvalidComponents();
             _components.push(Component({token: tokens[i], units: SafeCast.toUint96(units[i])}));
         }
+        methodology = methodology_;
+        // Set once at creation, in the same transaction as the factory's IndexCreated event.
+        // forge-lint: disable-next-line(missing-events-arithmetic)
+        lastRebalance = block.timestamp;
     }
 
     // ---------------------------------------------------------------------
@@ -164,6 +214,146 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
         }
     }
 
+    // ---------------------------------------------------------------------
+    // Rebalance
+    // ---------------------------------------------------------------------
+
+    /// @inheritdoc IIndexToken
+    function startRebalance(uint256 keepMask) external nonReentrant onlyInitialized {
+        uint256 earliest = lastRebalance + MIN_REBALANCE_INTERVAL;
+        if (block.timestamp < earliest) revert RebalanceTooSoon(earliest);
+        uint256 pendingEta = _pending.eta;
+        if (pendingEta != 0 && block.timestamp <= pendingEta + AUCTION_DURATION) {
+            revert RebalancePending(pendingEta + AUCTION_DURATION);
+        }
+        uint256 n = _components.length;
+        if (keepMask >> n != 0 || keepMask == (1 << n) - 1) revert InvalidKeepMask(keepMask);
+        if (
+            (keepMask != 0 || block.timestamp < restartAllowedAt)
+                && !IIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender)
+        ) revert Unauthorized(msg.sender);
+
+        (uint256[] memory targets, uint256 turnover) = _previewTarget(keepMask);
+        if (turnover < MIN_TURNOVER) revert TurnoverTooLow(turnover);
+
+        delete _targetUnits;
+        for (uint256 i = 0; i < n; ++i) {
+            _targetUnits.push(SafeCast.toUint96(targets[i]));
+        }
+        uint256 eta = block.timestamp + REBALANCE_DELAY;
+        _pending = PendingRebalance({eta: SafeCast.toUint40(eta), keepMask: SafeCast.toUint24(keepMask)});
+        // The calls above are views on the factory and the rule; nothing external can run in between.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit RebalanceStarted(rebalanceNonce + 1, msg.sender, targets, keepMask, eta);
+    }
+
+    /// @inheritdoc IIndexToken
+    function cancelRebalance() external nonReentrant onlyInitialized {
+        if (_pending.eta == 0) revert NoPendingRebalance();
+        if (!IIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender)) revert Unauthorized(msg.sender);
+        delete _pending;
+        delete _targetUnits;
+        uint256 restartAt = block.timestamp + REBALANCE_DELAY;
+        restartAllowedAt = restartAt;
+        // The factory call above is a view; nothing external can run in between.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit RebalanceCancelled(rebalanceNonce + 1, msg.sender, restartAt);
+    }
+
+    /// @inheritdoc IIndexToken
+    function executeRebalance(bytes calldata data) external nonReentrant onlyInitialized {
+        (uint256 multiplier, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn) =
+            _previewRebalance(totalSupply());
+
+        // Effects: the new units, the nonce and the cleared proposal are in place before any token moves.
+        uint256 id = _applyRebalance(units);
+        // No external call precedes this event: the transfers and the executor callback come after it.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit Rebalanced(id, msg.sender, multiplier, units, amountsOut, amountsIn);
+
+        uint256 n = units.length;
+        for (uint256 i = 0; i < n; ++i) {
+            if (amountsOut[i] != 0) IERC20(_components[i].token).safeTransfer(msg.sender, amountsOut[i]);
+        }
+        // The executor has to be called back to deliver the growing components, so this cannot be the last interaction.
+        // Every function that mints, burns, pays a claim or rebalances shares the guard, and the backing check below
+        // reads only the final state. Wake's reentrancy detector does not model the guard, hence the suppression.
+        // wake-disable-next-line reentrancy
+        IRebalanceExecutor(msg.sender).onXindexRebalance(amountsOut, amountsIn, data);
+        _checkBacking(units);
+    }
+
+    function _applyRebalance(uint256[] memory units) private returns (uint256 id) {
+        uint256 n = units.length;
+        for (uint256 i = 0; i < n; ++i) {
+            _components[i].units = SafeCast.toUint96(units[i]);
+        }
+        id = ++rebalanceNonce;
+        lastRebalance = block.timestamp;
+        delete _pending;
+        delete _targetUnits;
+    }
+
+    /// @dev The backing invariant with the new units, checked after the executor has returned.
+    function _checkBacking(uint256[] memory units) private view {
+        uint256 supply = totalSupply();
+        uint256 n = units.length;
+        for (uint256 i = 0; i < n; ++i) {
+            address token = _components[i].token;
+            uint256 required = Math.mulDiv(supply, units[i], SHARE_UNIT) + totalClaims[token];
+            uint256 balance = IERC20(token).balanceOf(address(this));
+            if (balance < required) revert RebalanceUnderfunded(token, balance, required);
+        }
+    }
+
+    /// @dev Settlement for the current block. A shrinking component moves straight to its target; a growing component
+    ///      gains its extra units times the multiplier, rounded up. Amounts are the change in required backing, so they
+    ///      depend only on supply and units: the index never sends out rounding dust or donations.
+    function _previewRebalance(uint256 supply)
+        private
+        view
+        returns (uint256 multiplier, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn)
+    {
+        uint256 eta = _pending.eta;
+        if (eta == 0) revert NoPendingRebalance();
+        if (block.timestamp < eta) revert RebalanceNotReady(eta);
+        if (block.timestamp > eta + AUCTION_DURATION) revert RebalanceExpired(eta + AUCTION_DURATION);
+        multiplier = _multiplier(eta, supply);
+
+        uint256 n = _components.length;
+        units = new uint256[](n);
+        amountsOut = new uint256[](n);
+        amountsIn = new uint256[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            uint256 current = _components[i].units;
+            uint256 target = _targetUnits[i];
+            uint256 next = target < current
+                ? target
+                : current + Math.mulDiv(target - current, multiplier, WAD, Math.Rounding.Ceil);
+            units[i] = next;
+            uint256 oldRequired = Math.mulDiv(supply, current, SHARE_UNIT);
+            uint256 newRequired = Math.mulDiv(supply, next, SHARE_UNIT);
+            if (oldRequired > newRequired) {
+                amountsOut[i] = oldRequired - newRequired;
+            } else {
+                amountsIn[i] = newRequired - oldRequired;
+            }
+        }
+    }
+
+    /// @dev Linear decay from the start to the end multiplier; the decrement rounds down, so the multiplier rounds up.
+    ///      An empty index settles at parity, because nothing moves and its new units should not depend on timing.
+    function _multiplier(uint256 eta, uint256 supply) private view returns (uint256) {
+        if (supply == 0) return WAD;
+        return AUCTION_START_MULTIPLIER
+            - Math.mulDiv(AUCTION_START_MULTIPLIER - AUCTION_END_MULTIPLIER, block.timestamp - eta, AUCTION_DURATION);
+    }
+
+    function _previewTarget(uint256 keepMask) private view returns (uint256[] memory targets, uint256 turnover) {
+        (address[] memory tokens, uint256[] memory units) = _componentArrays();
+        return IIndexRule(RULE).targetUnits(tokens, units, methodology, keepMask);
+    }
+
     function _checkInitialized() private view {
         if (_getInitializedVersion() != 1) revert NotInitialized();
     }
@@ -192,13 +382,7 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
 
     /// @inheritdoc IIndexToken
     function components() external view returns (address[] memory tokens, uint256[] memory units) {
-        uint256 n = _components.length;
-        tokens = new address[](n);
-        units = new uint256[](n);
-        for (uint256 i = 0; i < n; ++i) {
-            tokens[i] = _components[i].token;
-            units[i] = _components[i].units;
-        }
+        return _componentArrays();
     }
 
     /// @inheritdoc IIndexToken
@@ -209,6 +393,48 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
     /// @inheritdoc IIndexToken
     function previewRedeem(uint256 shares) external view returns (uint256[] memory amountsOut) {
         return _amounts(shares, Math.Rounding.Floor);
+    }
+
+    /// @inheritdoc IIndexToken
+    function previewTarget(uint256 keepMask) external view returns (uint256[] memory targetUnits, uint256 turnover) {
+        return _previewTarget(keepMask);
+    }
+
+    /// @inheritdoc IIndexToken
+    function pendingRebalance() external view returns (uint256 eta, uint256 keepMask, uint256[] memory targetUnits) {
+        eta = _pending.eta;
+        keepMask = _pending.keepMask;
+        uint256 n = _targetUnits.length;
+        targetUnits = new uint256[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            targetUnits[i] = _targetUnits[i];
+        }
+    }
+
+    /// @inheritdoc IIndexToken
+    function currentMultiplier() external view returns (uint256) {
+        uint256 eta = _pending.eta;
+        if (eta == 0 || block.timestamp < eta || block.timestamp > eta + AUCTION_DURATION) return 0;
+        return _multiplier(eta, totalSupply());
+    }
+
+    /// @inheritdoc IIndexToken
+    function previewRebalance()
+        external
+        view
+        returns (uint256 multiplier, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn)
+    {
+        return _previewRebalance(totalSupply());
+    }
+
+    function _componentArrays() private view returns (address[] memory tokens, uint256[] memory units) {
+        uint256 n = _components.length;
+        tokens = new address[](n);
+        units = new uint256[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            tokens[i] = _components[i].token;
+            units[i] = _components[i].units;
+        }
     }
 
     /// @dev Raw amount of every component corresponding to `shares`, with the given rounding.

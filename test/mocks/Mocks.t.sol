@@ -8,6 +8,12 @@ import {MockUSDT} from "./MockUSDT.sol";
 import {MockSwapRouter} from "./MockSwapRouter.sol";
 import {MockPausableToken} from "./MockPausableToken.sol";
 import {MockPartialFillRouter} from "./MockPartialFillRouter.sol";
+import {MockMarket} from "./MockMarket.sol";
+import {MockUniswapV3Factory, MockUniswapV3Pool} from "./MockUniswapV3.sol";
+import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
+import {IndexFactory} from "../../src/IndexFactory.sol";
+import {IndexToken} from "../../src/IndexToken.sol";
+import {RebalanceExecutorV3} from "../fork/RebalanceExecutorV3.sol";
 
 /// @notice Exercises the mocks' own guard rails so their behaviour in the real tests is trustworthy.
 contract MocksTest is Test {
@@ -202,5 +208,171 @@ contract MocksTest is Test {
         half.exactOutput(
             ISwapRouter02.ExactOutputParams({path: "", recipient: alice, amountOut: 1, amountInMaximum: 1})
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // MockUniswapV3Pool and MockUniswapV3Factory
+    // ---------------------------------------------------------------------
+
+    function test_uniswapFactory_registersBothOrdersAndSortsTokens() public {
+        MockUniswapV3Factory f = new MockUniswapV3Factory();
+        address pool = f.createPool(address(weth), address(usdc), 500);
+        assertEq(f.getPool(address(weth), address(usdc), 500), pool);
+        assertEq(f.getPool(address(usdc), address(weth), 500), pool);
+        assertEq(f.getPool(address(usdc), address(weth), 3000), address(0));
+
+        address low = address(0x1000);
+        address high = address(0xF000);
+        MockUniswapV3Pool ascending = new MockUniswapV3Pool(low, high, 3000);
+        MockUniswapV3Pool descending = new MockUniswapV3Pool(high, low, 3000);
+        assertEq(ascending.token0(), low);
+        assertEq(ascending.token1(), high);
+        assertEq(descending.token0(), low);
+        assertEq(descending.token1(), high);
+        assertEq(descending.fee(), 3000);
+    }
+
+    function test_uniswapPool_observeSlot0AndSwitches() public {
+        MockUniswapV3Pool p = new MockUniswapV3Pool(address(weth), address(usdc), 500);
+        uint32[] memory ago = new uint32[](2);
+        ago[0] = 1800;
+
+        p.setTick(-120);
+        (int56[] memory cumulatives, uint160[] memory perLiquidity) = p.observe(ago);
+        assertEq(cumulatives[1] - cumulatives[0], -120 * 1800);
+        assertEq(perLiquidity.length, 2);
+        (, int24 tick,, uint16 cardinality, uint16 next,, bool unlocked) = p.slot0();
+        assertEq(tick, -120);
+        assertEq(cardinality, 1_000);
+        assertEq(next, 1_000);
+        assertTrue(unlocked);
+
+        p.setCumulatives(-1801, 0);
+        assertTrue(p.rawCumulatives());
+        (cumulatives,) = p.observe(ago);
+        assertEq(cumulatives[0], -1801);
+        assertEq(cumulatives[1], 0);
+
+        p.setTick(5);
+        assertFalse(p.rawCumulatives());
+        (cumulatives,) = p.observe(ago);
+        assertEq(cumulatives[1] - cumulatives[0], 5 * 1800);
+
+        p.setObservationCardinality(60);
+        (,,, cardinality,,,) = p.slot0();
+        assertEq(cardinality, 60);
+
+        p.setHistoryTooShort(true);
+        vm.expectRevert(bytes("OLD"));
+        p.observe(ago);
+    }
+
+    // ---------------------------------------------------------------------
+    // MockMarket
+    // ---------------------------------------------------------------------
+
+    function _tickOf(MockUniswapV3Pool pool) internal view returns (int24 tick) {
+        (, tick,,,,,) = pool.slot0();
+    }
+
+    function test_market_pricesAndConfigs() public {
+        MockMarket m = new MockMarket();
+        address mWeth = address(m.weth());
+        MockUniswapV3Pool usdPool = m.usdPool();
+        assertEq(m.uniswapV3Factory().getPool(address(m.usdc()), mWeth, 500), address(usdPool));
+        int24 usdTick = address(m.usdc()) < mWeth ? m.USDC_TICK() : -m.USDC_TICK();
+        assertEq(_tickOf(usdPool), usdTick);
+
+        IIndexFactory.TokenConfig memory c = m.config(mWeth, 7);
+        assertEq(c.pool, address(0));
+        assertEq(c.referenceSupply, m.ETH_SUPPLY());
+
+        // A token below WETH is token0, one above is token1; the market flips the tick for the latter.
+        deployCodeTo("MockERC20.sol:MockERC20", abi.encode("Low", "LOW", uint8(18)), address(0x1000));
+        deployCodeTo("MockERC20.sol:MockERC20", abi.encode("High", "HIGH", uint8(18)), address(type(uint160).max));
+        address lowToken = address(0x1000);
+        address highToken = address(type(uint160).max);
+
+        assertEq(address(m.tokenPool(lowToken)), address(0));
+        c = m.config(lowToken, 42);
+        assertEq(c.pool, address(m.tokenPool(lowToken)));
+        assertEq(c.referenceSupply, m.DEFAULT_SUPPLY());
+        assertEq(_tickOf(MockUniswapV3Pool(c.pool)), 42);
+
+        c = m.config(highToken, 42);
+        assertEq(_tickOf(MockUniswapV3Pool(c.pool)), -42);
+
+        address[] memory excluded = new address[](1);
+        excluded[0] = alice;
+        IIndexFactory.TokenConfig memory again = m.configWith(lowToken, -3, 0, excluded);
+        assertEq(again.pool, address(m.tokenPool(lowToken)), "the pool is created once");
+        assertEq(again.referenceSupply, 0);
+        assertEq(again.excluded[0], alice);
+        assertEq(_tickOf(MockUniswapV3Pool(again.pool)), -3);
+
+        m.setPriceTick(highToken, 9);
+        assertEq(_tickOf(m.tokenPool(highToken)), -9);
+        m.setUsdcTick(1);
+        assertEq(_tickOf(usdPool), address(m.usdc()) < mWeth ? int24(1) : int24(-1));
+    }
+
+    // ---------------------------------------------------------------------
+    // RebalanceExecutorV3 (used by the fork tests), driven through the mock router
+    // ---------------------------------------------------------------------
+
+    function test_rebalanceExecutorV3_sellsBuysAndSettlesThroughARouter() public {
+        MockMarket m = new MockMarket();
+        IndexFactory f = new IndexFactory(
+            address(this), address(0), address(m.weth()), address(m.uniswapV3Factory()), address(m.usdc())
+        );
+        MockERC20 shrinking = new MockERC20("Shrinking", "SHR", 18);
+        MockERC20 growing = new MockERC20("Growing", "GRO", 18);
+        MockERC20 mWeth = m.weth();
+        address[] memory t = new address[](3);
+        (t[0], t[1], t[2]) = (address(shrinking), address(mWeth), address(growing));
+
+        // WETH and the growing token weigh ten times the shrinking one: it halves, and the other two gain 25% each.
+        f.proposeListing(t[0], m.configWith(t[0], 0, 12e24, new address[](0)));
+        f.proposeListing(t[1], m.config(t[1], 0));
+        f.proposeListing(t[2], m.configWith(t[2], 0, 120e24, new address[](0)));
+        vm.warp(block.timestamp + f.LISTING_DELAY());
+        for (uint256 i = 0; i < 3; ++i) {
+            f.executeListing(t[i]);
+        }
+        uint256[] memory u = new uint256[](3);
+        (u[0], u[1], u[2]) = (100e18, 100e18, 100e18);
+        IndexToken idx = IndexToken(f.createIndex("Executor", "EXEC", t, u, 0));
+        shrinking.mint(address(this), 100e18);
+        mWeth.mint(address(this), 100e18);
+        growing.mint(address(this), 100e18);
+        shrinking.approve(address(idx), 100e18);
+        mWeth.approve(address(idx), 100e18);
+        growing.approve(address(idx), 100e18);
+        idx.issue(1e18, address(this));
+
+        MockSwapRouter r = new MockSwapRouter();
+        r.setPrice(address(shrinking), 1e18);
+        r.setPrice(address(mWeth), 1e18);
+        r.setPrice(address(growing), 1e18);
+        mWeth.mint(address(r), 1_000e18);
+        growing.mint(address(r), 1_000e18);
+
+        RebalanceExecutorV3 executor = new RebalanceExecutorV3(r, address(mWeth));
+        executor.setFee(address(shrinking), 3000);
+        executor.setFee(address(growing), 3000);
+        assertEq(executor.feeOf(address(growing)), 3000);
+
+        vm.warp(idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL());
+        idx.startRebalance(0);
+        (uint256 eta,,) = idx.pendingRebalance();
+        vm.warp(eta + idx.AUCTION_DURATION());
+        executor.fill(idx);
+
+        (, uint256[] memory units) = idx.components();
+        assertEq(units[0], 50e18, "the shrinking component went to target");
+        assertEq(units[1], 122.5e18, "WETH gained 90% of its extra units, delivered without a swap");
+        assertEq(units[2], 122.5e18, "the growing component was bought with WETH");
+        assertEq(mWeth.balanceOf(address(executor)), 5e18, "sold 50, spent 22.5 on the purchase and 22.5 on delivery");
+        assertEq(shrinking.balanceOf(address(r)), 50e18);
     }
 }
