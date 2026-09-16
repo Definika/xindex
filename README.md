@@ -29,8 +29,8 @@ This repository holds the smart contracts (Foundry). The web app lives elsewhere
 > 7. we need to find a solution for layer-1 tokens.
 
 v2 adds the rebalancing and index-price methodology from the team's Numbers model (`index_MODEL.numbers`): market-cap
-weights, uncapped or capped with the largest coin at 30% and the second at most 20%. The coins in that model were
-examples; the methodology is the requirement.
+weights, uncapped or capped with the largest coin at 30% and the second at most 20%, and the rest sharing 50-70% by
+market cap with no cap of their own. The coins in that model were examples; the methodology is the requirement.
 
 ## Design decisions (v2)
 
@@ -38,9 +38,9 @@ examples; the methodology is the requirement.
 |---|---|
 | Chain | Ethereum mainnet |
 | Swaps | Uniswap V3 via SwapRouter02; quotes via QuoterV2. V4 / Universal Router / aggregators are a drop-in replacement for the zap later. |
-| Composition | Constituents fixed at creation. Units follow the index's methodology: `0` uncapped market cap, `1` capped market cap (30% / at most 20% / the rest by cap, at least 5 components). |
-| Rebalancing | On-chain rule, no bots or keys. Anyone starts a rebalance 28 days after the last one; 2 days of notice; a 24-hour auction that any contract can fill; each component moves between half and double its units per rebalance. |
-| Market data | Supplies on-chain (total supply minus excluded burn or lock wallets) or a timelocked reference supply for wrapped assets; prices are Uniswap V3 30-minute time-weighted averages against WETH. |
+| Composition | Constituents fixed at creation. Units follow the index's methodology: `0` uncapped market cap, `1` capped market cap (30% / at most 20% / the rest by cap, at least 5 components; ranks 3 and below are not capped and one of them can outweigh the first two). |
+| Rebalancing | On-chain rule, no bots or keys. Anyone starts a rebalance 28 days after the last one; 2 days of notice; a 24-hour auction that any contract can fill; each target lies between half and double a component's units, and a growing component settles at its extra units times the auction multiplier, so between half and 2.5 times per rebalance. |
+| Market data | Supplies on-chain (total supply minus excluded burn or lock wallets) or a timelocked reference supply for wrapped assets; prices are Uniswap V3 30-minute time-weighted averages against WETH. A rebalance snapshot accepts a price only from a window with enough liquidity (a timelocked per-token minimum) and agreeing 10-minute parts. |
 | Index price | The basket's value per index token, `IndexRule.navPerToken`, in WETH and USDC. For an uncapped index it equals the Numbers model's divisor price; for a capped index it replaces it. Display only. |
 | Fees | None in v2. |
 | Layer-1 coins | Only tokens that exist on mainnet can be components (WBTC, WETH, LINK, ...). Coins with no credible wrapper (ADA, XRP, ...) are out of scope until one exists. |
@@ -134,11 +134,18 @@ already holds the components or shares.
 - **Index price.** `IndexRule.navPerToken(index)` returns WETH wei and raw USDC per whole index token from 30-minute
   time-weighted prices. Show it as the index price. It lags fast moves; never use it, or a thin DEX pool of the index
   token, as an oracle.
-- **Weights.** `IndexRule.weights(tokens, methodology)` returns current target weights (1e18 = 100%), prices and supplies.
+- **Weights.** `IndexRule.weights(tokens, methodology)` returns current target weights (1e18 = 100%), prices and
+  supplies. Show them before a capped index is created: its third- or lower-ranked component can outweigh the top two.
 - **Rebalance status.** Show `lastRebalance + MIN_REBALANCE_INTERVAL`, and a "rebalance due" button when that time has
-  passed, no rebalance is pending (`pendingRebalance().eta == 0`) and `restartAllowedAt` has passed. Before starting,
-  `previewTarget(0)` shows the targets and turnover; a turnover below `MIN_TURNOVER` reverts. During the notice, show
-  `pendingRebalance()` and the auction start; during the auction, `currentMultiplier()` and `previewRebalance()`.
+  passed, no live rebalance exists (`pendingRebalance().eta == 0`, or `block.timestamp > eta + AUCTION_DURATION`: an
+  auction nobody filled keeps its `eta` after it expires) and `restartAllowedAt` has passed. Before starting,
+  `previewTarget(0)` shows the targets and turnover; a turnover below `MIN_TURNOVER` reverts, and so does a snapshot
+  whose price window is too thin (`ThinPriceHistory`) or uneven (`PriceHistoryDeviates`): retry later. During the
+  notice, show `pendingRebalance()` and the auction start; during the auction, `currentMultiplier()` and
+  `previewRebalance()`.
+- **Guardian duty.** During every notice period, compare `pendingRebalance()` targets with targets computed from
+  independent prices and cancel a snapshot that disagrees. A snapshot price read low by a factor f on a sold component
+  hands the first executor about (1/f - 1.5) of the bought value.
 - **Zap calls take a params struct.** `MintParams {index, expectedNonce, tokenIn, maxAmountIn, shares, legs, to,
   deadline}` with `MintLeg {path, maxAmountIn}`, and `BurnParams {index, expectedNonce, shares, tokenOut, minAmountOut,
   legs, to, deadline}` with `BurnLeg {path, minAmountOut}`. `legs` has one entry per component, in component order.
@@ -153,28 +160,45 @@ already holds the components or shares.
   `eth_call` of the whole zap call returns the exact amount.
 - **Check quotes against an independent price.** Compare each Uniswap quote with a reference price and refuse to sign
   when they diverge beyond a threshold. Send transactions through a private relay and use short deadlines.
-- **Approvals.** USDC supports `permit`; USDT does not (plain `approve`). Index tokens support `permit`. Approve exact
-  amounts.
+- **Approvals.** USDC supports `permit`; USDT does not (plain `approve`), and USDT's `approve` reverts when it changes a
+  non-zero allowance to another non-zero value: if `allowance(user, zap)` is not 0 (for example after a mint that
+  reverted), send `approve(zap, 0)` first. Index tokens support `permit`. Approve exact amounts.
 - **Fee-charging currencies are unsupported.** Zap calls revert with `TransferShortfall`. Simulate every transaction
   first and offer the direct `redeem` or `redeemSkipping` exit.
 - **Label pausable components.** WBTC can be paused by its custodian. Show that on every index that holds it, and surface
   `redeemSkipping` plus any pending `claimOf` balance.
 - **Show pending proposals.** A token or config change becomes effective only between `ListingProposed` plus
-  `LISTING_DELAY` and 7 days after that (`pendingTokenConfig` shows it), and a new guardian only after `GuardianProposed`
-  plus `GUARDIAN_DELAY`. A config change reshapes future rebalances of every index holding the token.
+  `LISTING_DELAY` and 7 days after that (`pendingTokenConfig` shows it; `pendingIsListing` and the event's `listing`
+  flag say whether it whitelists the token), and a new guardian only after `GuardianProposed` plus `GUARDIAN_DELAY`. A
+  config change reshapes future rebalances of every index holding the token. `delist` also emits `ListingCancelled` when
+  it drops a pending listing proposal. Treat `GuardianProposed` as a security alert: once it executes, the owner's
+  config changes no longer face the old guardian's veto, so it is the earliest warning, 9 days ahead, of an unchecked
+  change.
 - **Returned components.** If the router sells less of a component than the zap gave it, that part goes to the
   recipient and `ComponentReturned` is emitted. Show it on the receipt.
 - **Value an index from units, not balances.** Never derive a price from `balanceOf(index)` and `totalSupply()`.
+- **ABIs.** Encode calls and decode events and errors from the interfaces in `src/interfaces/` (`IIndexFactory`,
+  `IIndexToken`, `IIndexRule`, `IIndexZap`, `IRebalanceExecutor`), for example with `forge inspect IIndexZap abi`; they
+  are the canonical lists, and the lists below are a summary as of 2026-09-17. Errors that several contracts raise
+  (`ZeroAddress`, `LengthMismatch`, `InvalidMethodology`, `TooFewComponentsForCapped`, `Unauthorized`, `NotIndex`,
+  `InvalidRecipient`) are declared once, in `IXindexErrors`, which the factory, rule, token and zap interfaces extend.
 - **Events.** `IndexFactory`: `IndexCreated`, `ListingProposed`, `ListingCancelled`, `TokenConfigured`,
   `TokenWhitelisted`, `GuardianProposed`, `GuardianChangeCancelled`, `GuardianSet`. `IndexToken`: `Issued`, `Redeemed`,
   `ClaimRecorded`, `Claimed`, `RebalanceStarted`, `RebalanceCancelled`, `Rebalanced`. `IndexZap`: `ZapMint`, `ZapBurn`,
   `ComponentReturned`.
-- **Errors worth handling.** `IndexZap`: `ZeroAmount`, `InvalidRecipient`, `LegCountMismatch`, `BadPath`,
-  `InsufficientBudget`, `InsufficientOutput`, `TransferShortfall`, `StaleRebalanceNonce`, plus the router's
-  `Too much requested` / `Too little received`. `IndexToken`: `InvalidSkipMask`, `NothingToClaim`, `RebalanceTooSoon`,
-  `RebalancePending`, `TurnoverTooLow`, `InvalidKeepMask`, `Unauthorized`, `RebalanceNotReady`, `RebalanceExpired`,
-  `RebalanceUnderfunded`. `IndexRule`: `InvalidPool`, `PoolHistoryTooShort`, `InvalidSupplyConfig`, `ZeroSupply`,
-  `ZeroPrice`, `TooFewComponentsForCapped`.
+- **Errors.** `IndexZap`: `NotIndex`, `StaleRebalanceNonce`, `Expired`, `ZeroAddress`, `ZeroAmount`, `InvalidRecipient`,
+  `LegCountMismatch`, `BadPath`, `InsufficientBudget`, `InsufficientOutput`, `TransferShortfall`, plus the router's
+  `STF`, `Too much requested` and `Too little received`. `IndexToken`: `NotFactory`, `NotInitialized`,
+  `InvalidComponents`, `ZeroShares`, `ZeroAddress`, `InvalidRecipient`, `InvalidSkipMask`, `NothingToClaim`,
+  `TransferAmountMismatch`, `Unauthorized`, `RebalanceTooSoon`, `RebalancePending`, `InvalidKeepMask`, `TurnoverTooLow`,
+  `NoPendingRebalance`, `RebalanceNotReady`, `RebalanceExpired`, `RebalanceUnderfunded`, and OpenZeppelin's ERC-20 and
+  ERC-2612 errors. `IndexFactory`: `EmptyString`, `InvalidComponentCount`, `LengthMismatch`, `TokenNotWhitelisted`,
+  `DuplicateToken`, `InvalidUnits`, `InvalidMethodology`, `TooFewComponentsForCapped`, `IndexAlreadyExists`,
+  `NotAContract`, `NotConfigured`, `ListingPending`, `NoPendingListing`, `ListingNotReady`, `ListingExpired`,
+  `NotWhitelisted`, `NoPendingGuardianChange`, `GuardianChangeNotReady`, `GuardianChangeExpired`, `Unauthorized`,
+  `RenounceDisabled`. `IndexRule`: `ZeroAddress`, `InvalidPool`, `PoolHistoryTooShort`, `InvalidSupplyConfig`,
+  `InvalidMinLiquidity`, `ThinPriceHistory`, `PriceHistoryDeviates`, `ZeroPrice`, `ZeroSupply`, `InvalidMethodology`,
+  `TooFewComponentsForCapped`, `DegenerateBasket`, `LengthMismatch`, `NotIndex`.
 
 ## Whitelist policy
 
@@ -188,22 +212,31 @@ Every listed token carries a config that the rule validates:
 - **Pool:** the Uniswap V3 factory's own pool for the token and WETH, at the fee tier the config names, with at least 200
   observation slots. A pool below that must be prepared first: anyone can call `increaseObservationCardinalityNext(200)`,
   and the ring grows as the pool trades. On 2026-09-16 the tBTC/WETH 0.3% pool had 60 slots.
+- **Minimum liquidity:** the least harmonic-mean liquidity over the 30-minute window for which a rebalance snapshot
+  accepts the pool's price. The policy is a tenth of the pool's harmonic-mean liquidity when the config is proposed; the
+  listing check requires the pool to meet it at that moment. Refresh it with a config change when a pool's liquidity
+  moves for good.
 - **Supply:** on-chain total supply minus up to 8 excluded addresses (burn or lock wallets), or a reference supply.
   Wrapped assets need a reference supply: on-chain WBTC is the wrapped float (116,132 BTC on 2026-09-16), not bitcoin's
   supply. Reference supplies drift and are refreshed with a config change.
-- WETH itself has no pool and needs a reference supply.
+- WETH itself has no pool, no minimum liquidity and needs a reference supply.
 
-Listings and config changes take two steps: the owner calls `proposeListing(token, config)`, and from `LISTING_DELAY`
-(2 days) until a further `PROPOSAL_WINDOW` (7 days) anyone can call `executeListing`; after that the proposal expires.
-Until then the owner or the guardian can `cancelListing` it, and either can `delist` a token at any time. Delisting only
-affects indexes created afterwards and keeps the config existing indexes rebalance with.
+Listings and config changes take two steps: the owner calls `proposeListing(token, config)` to list a token (or change a
+listed token's config), or `proposeConfig(token, config)` to change the config of a listed or delisted token without
+listing it, and from `LISTING_DELAY` (2 days) until a further `PROPOSAL_WINDOW` (7 days) anyone can call
+`executeListing`; after that the proposal expires. Until then the owner or the guardian can `cancelListing` it, and
+either can `delist` a token at any time. Delisting only affects indexes created afterwards, keeps the config existing
+indexes rebalance with, and cancels a pending `proposeListing` proposal, so a delisted token is listed again only
+through a fresh proposal and delay.
 
 ## Known limitations
 
 - Airdrops, rewards and governance votes that accrue to tokens held by an index cannot be claimed or used; by design
   there is no admin who could sweep them.
-- A rebalance clears only when the value it trades covers gas and swap costs many times over, so small indexes on mainnet
-  rarely rebalance. Unfilled auctions expire harmlessly.
+- A rebalance clears only when the value it trades covers gas and swap costs many times over, so small indexes on
+  mainnet rarely rebalance. Unfilled auctions expire and anyone can restart them at once. A griefer who distorts every
+  snapshot so that even 0.9 does not pay an executor can stall an index; the snapshot price checks make that expensive,
+  and the guardian answers by cancelling and starting an honest snapshot in its 2-day window.
 - Without competing executors, a filler can wait for the 0.9 floor and keep up to 10% of the bought value; the notice
   period also lets traders position ahead of a public rebalance.
 - A permanently frozen component needs the guardian's keep mask at every rebalance.
@@ -229,8 +262,9 @@ affects indexes created afterwards and keeps the config existing indexes rebalan
 | USDC/WETH 0.05% pool | `0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640` |
 | IndexFactory / IndexRule / IndexZap | not deployed yet |
 
-Token pools used by the default whitelist and the fork tests are listed in `test/fork/ForkAddresses.sol` and
-`ARCHITECTURE.md`.
+The scripts read mainnet addresses, reference supplies and minimum liquidities from `script/MainnetAddresses.sol`, which
+`test/fork/MainnetAddresses.fork.t.sol` checks on-chain; the pools the fork tests use are in
+`test/fork/ForkAddresses.sol` and `ARCHITECTURE.md`.
 
 ## Development
 
@@ -246,9 +280,11 @@ MAINNET_RPC_URL=https://... forge test --match-path 'test/fork/*' -vvv
 MAINNET_RPC_URL=https://... FORK_BLOCK=<recent block> forge test --match-path 'test/fork/*'
 ```
 
-CI (`.github/workflows/test.yml`) checks that every submodule commit matches `foundry.lock`, then runs fmt,
-build and tests with a pinned Foundry version. Pushes to `main` fail until a `MAINNET_RPC_URL` repository secret
-exists, so the fork tests always run there; it needs an archive node for the pinned fork block.
+CI (`.github/workflows/test.yml`) checks that every submodule commit matches `foundry.lock`, then runs fmt, build,
+`forge lint -D notes`, tests, 100% coverage on every file (offline suites) and the Wake detectors on `src/`, with pinned
+Foundry and Wake versions. Pushes to `main` and pull requests into it from this repository fail until a
+`MAINNET_RPC_URL` repository secret exists, so the fork tests always run there; it needs an archive node for the pinned
+fork block. Pull requests from forks get no secrets and skip the fork suites, so re-run them before merging.
 
 ### Deploy
 
@@ -258,36 +294,72 @@ wallet with `--ledger`:
 ```bash
 cast wallet import deployer --interactive
 cp .env.example .env   # fill MAINNET_RPC_URL, OWNER (a Safe on mainnet) and GUARDIAN
+# forge loads .env by itself: with MAINNET_RPC_URL set, plain `forge test` also runs the fork suites (see FORK_BLOCK)
 source .env
 forge script script/Deploy.s.sol --rpc-url mainnet --account deployer --sender <deployer address> --broadcast --verify
 ```
 
-`OWNER` and `GUARDIAN` are required and must differ. On mainnet the owner must be a contract that is not an
-EIP-7702 delegated account, and a Safe must need at least two signatures. `SWAP_ROUTER`, `WETH`, `UNISWAP_V3_FACTORY`
-and `USDC` default to the mainnet contracts on chain 1 and are required anywhere else. The factory's constructor checks
-that the USDC/WETH 0.05% pool can serve a 30-minute price.
+`OWNER` and `GUARDIAN` are required and must differ. On mainnet the owner must be a contract that is not an EIP-7702
+delegated account, and a Safe must need at least two signatures and have no enabled module, because a module acts as the
+Safe without signatures (keep it that way after deployment; the script cannot see later changes). The guardian must not
+be the broadcasting key, which must hold no role, and neither role may be one of the market contracts. `SWAP_ROUTER`,
+`WETH`, `UNISWAP_V3_FACTORY` and `USDC` default to the mainnet contracts on chain 1, where any other value is rejected,
+and are required anywhere else. The factory's constructor checks that the USDC/WETH 0.05% pool can serve a 30-minute
+price.
+
+**Deployment record.** `forge script --broadcast` writes `broadcast/Deploy.s.sol/<chain id>/run-latest.json`: the git
+commit, each transaction with its init code, and the factory, rule, implementation and zap addresses. Broadcast from a
+clean, committed tree so the recorded commit is the deployed source, commit the record with the README address table (on
+mainnet with `git add -f`: `.gitignore` keeps chain-1 records out, because fork rehearsals keep chain id 1), and verify
+the source on the explorer (`--verify` needs `ETHERSCAN_API_KEY`). Anyone can then rebuild that commit with `forge
+build` and compare `cast code <address>` with the build's runtime code (immutables differ only in their slots).
+Addresses come from the deployer's nonce, not CREATE2: the owner and guardian are constructor arguments, so a
+deterministic address would still change with them, and nothing pins the factory address across chains.
 
 Listing components takes two runs of `script/ConfigureWhitelist.s.sol`, or the equivalent calls through the Safe:
 
 ```bash
-# as the owner: propose every entry that is not pending and not already listed with exactly its config
-LISTING_MODE=propose FACTORY=0x... WHITELIST=default forge script script/ConfigureWhitelist.s.sol --rpc-url mainnet --account deployer --sender <owner> --broadcast
+# owner is a key you hold (testnets and local forks only; on mainnet the owner is a Safe, so use safe mode below):
+# propose every entry that is not pending and not already listed with exactly its config
+LISTING_MODE=propose FACTORY=0x... WHITELIST=<entries> forge script script/ConfigureWhitelist.s.sol --rpc-url <rpc> --account <owner key> --sender <owner> --broadcast
 # owner is a Safe: print the same proposals as calldata to sign in the Safe app (any account, nothing is broadcast)
 LISTING_MODE=safe FACTORY=0x... WHITELIST=default forge script script/ConfigureWhitelist.s.sol --rpc-url mainnet
 # 2 to 9 days later, from any account: execute every proposal that is due
 LISTING_MODE=execute FACTORY=0x... WHITELIST=default forge script script/ConfigureWhitelist.s.sol --rpc-url mainnet --account deployer --sender <any account> --broadcast
 ```
 
-`WHITELIST` is `default` for the mainnet list, or comma-separated entries `token:fee[:referenceSupply[:excluded|excluded...]]`,
-where `fee` is the fee tier of the token's WETH pool, or 0 for WETH. The default list is WBTC (0.05%, bitcoin's
-supply), WETH (ether's supply), LINK and UNI (0.3%, circulating supplies), and tBTC (0.3%, on-chain supply); the
-reference supplies are CoinGecko's circulating figures from 2026-09-15. Propose mode skips any entry the rule would
-reject, such as tBTC while its pool has too few observation slots, and logs why. Execute mode never proposes anything,
-so a listing the guardian cancelled stays cancelled until the owner proposes it again on purpose. For a local stack:
-`anvil --fork-url $MAINNET_RPC_URL` and run the same scripts against `http://127.0.0.1:8545`.
+`WHITELIST` is `default` for the mainnet list, or comma-separated entries
+`token:fee:minLiquidity[:referenceSupply[:excluded|excluded...]]`, where `fee` is the fee tier of the token's WETH pool,
+or 0 for WETH, `minLiquidity` is 0 for WETH, and `referenceSupply` is in the token's raw units. The default list is WBTC
+(0.05%, bitcoin's supply), WETH (ether's supply), LINK and UNI (0.3%, circulating supplies), and tBTC (0.3%, on-chain
+supply); the reference supplies are CoinGecko's circulating figures from 2026-09-15, and the minimum liquidities are a
+tenth of each pool's harmonic-mean liquidity at block 25,992,129 (2026-09-16). Propose mode skips any entry the rule
+would reject, such as tBTC while its pool has too few observation slots, and any entry outside the whitelist policy the
+script can check (6 to 18 decimals, no USDC or USDT), and logs why; it also logs each reference supply in whole tokens,
+where a decimals slip shows. A token the guardian delisted gets only `proposeConfig` changes; set
+`RELIST=<token>[,<token>...]` to propose listing it again. Execute mode never proposes anything, so a listing the
+guardian cancelled stays cancelled until the owner proposes it again on purpose, and it executes only a proposal whose
+pending config is exactly the entry's. `LISTING_MODE=status` is read-only: for every entry it logs whether the token is
+listed with the entry's config and any pending proposal with its window. For a local stack: `anvil --fork-url
+$MAINNET_RPC_URL` and run the same scripts against `http://127.0.0.1:8545`; the fork keeps chain id 1, and `.gitignore`
+keeps those rehearsal records out of git.
 
 In the Safe app, safe mode's output becomes one Transaction Builder batch: one transaction per logged line, each to the
 factory with value 0 and the line as custom data. Two signers sign it, and one executes it.
+
+### Operations runbook
+
+No bot runs Xindex, so these duties have owners and deadlines. Watch the events that start each clock.
+
+| Duty | Starts with | Deadline | Who | How |
+|---|---|---|---|---|
+| Execute a listing or config change | `ListingProposed` | `eta + PROPOSAL_WINDOW` (2 to 9 days after proposing), or it expires silently | anyone | `LISTING_MODE=execute`; check with `LISTING_MODE=status` |
+| Veto a hostile listing or config change | `ListingProposed` | before `eta` | guardian or owner | `cancelListing(token)` |
+| Check each rebalance snapshot | `RebalanceStarted` | before `eta` (2 days) | guardian | compare `pendingRebalance()` targets with targets from independent prices; `cancelRebalance()` on a mismatch |
+| Trigger the monthly rebalance | `lastRebalance + MIN_REBALANCE_INTERVAL` | none, but indexes drift from their rule | anyone | `startRebalance(0)`; retry later on `ThinPriceHistory` or `PriceHistoryDeviates` |
+| Rebalance around a frozen component | a paused or blacklisting component, at every rebalance | each auction | guardian | `cancelRebalance()`, then `startRebalance(keepMask)` |
+| Refresh drifting reference supplies and minimum liquidities | monthly review | when a supply or a pool's liquidity has moved for good | owner Safe | new `MainnetAddresses` values, `LISTING_MODE=safe` |
+| Watch guardian changes | `GuardianProposed` | `eta` (7 days) | owner signers, guardian, app | the new guardian's veto replaces the old one once executed |
 
 ### Testnet (Sepolia)
 
@@ -349,7 +421,7 @@ Add `--verify` with `ETHERSCAN_API_KEY` set to verify the contracts, so testers 
   price lags them.
 - Timing is mainnet's: listings take 2 days, and an index can start its first rebalance 28 days after creation, followed
   by 2 days of notice and a 24-hour auction. `test/fork/RebalanceExecutorV3.sol` fills auctions through the Sepolia
-  router.
+  router. It is a test fixture without slippage limits: never fund it on mainnet.
 - Faucet tokens have no value, and their supply grows with every drip, so their listings use fixed reference supplies.
 
 ## Layout
@@ -359,13 +431,13 @@ src/IndexToken.sol            index implementation (ERC20 + in-kind issue, redee
 src/IndexRule.sol             market data, weights, rebalance targets, index price (view-only)
 src/IndexFactory.sol          listing delay, token configs, guardian, registry, CREATE2 clone deployer
 src/IndexZap.sol              Uniswap V3 mint/burn router with per-leg limits
-src/interfaces/               IIndexToken, IIndexFactory, IIndexRule, IRebalanceExecutor, Uniswap subsets
+src/interfaces/               IIndexToken, IIndexFactory, IIndexRule, IIndexZap, IXindexErrors, IRebalanceExecutor, Uniswap subsets
 src/libraries/                PathLib, TickMath (vendored from Uniswap v4-core), Methodology
 test/*.t.sol                  unit, fuzz, invariant and script tests
-test/Security.t.sol           one regression test per security review finding
+test/Security.t.sol           regression tests for the security review findings (some ids are tested elsewhere; see AGENTS.md gate 6)
 test/mocks/                   mock tokens, routers, Uniswap V3 pools, market fixture and rebalance executor, with their own tests
 test/fork/                    mainnet fork tests, including rebalancing through real Uniswap pools and security regressions on real tokens
-script/                       Deploy, ConfigureWhitelist
+script/                       Deploy, ConfigureWhitelist, MainnetAddresses, and the interfaces the scripts call
 script/testnet/               SetupTestMarket and FaucetToken for the Sepolia test market
 ```
 

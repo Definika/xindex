@@ -7,6 +7,7 @@ import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC2
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IIndexFactory} from "./interfaces/IIndexFactory.sol";
 import {IIndexToken} from "./interfaces/IIndexToken.sol";
+import {IIndexZap} from "./interfaces/IIndexZap.sol";
 import {ISwapRouter02} from "./interfaces/ISwapRouter02.sol";
 import {PathLib} from "./libraries/PathLib.sol";
 
@@ -25,92 +26,24 @@ import {PathLib} from "./libraries/PathLib.sol";
 ///        limit only". The overall burn limit must be non-zero.
 ///      - What the user pays and receives is measured as balance changes inside the call, so tokens
 ///        already sitting in the zap are never used. A fee-on-transfer currency reverts with
-///        `TransferShortfall`. When the router takes less of a component than it was given, because a pool
-///        reached its price limit or the router paid WETH from ETH it was holding, the unsold part goes to
-///        the recipient instead of being stranded or blocking the burn.
+///        `TransferShortfall`. When the router takes less of a component than it was given, because the first
+///        pool of a leg reached its price limit or the router paid WETH from ETH it was holding, the unsold
+///        part goes to the recipient instead of being stranded or blocking the burn. The zap cannot see a
+///        partial fill on a later hop of a multi-hop leg: that intermediate token stays in the router, so
+///        apps should prefer single-hop burn legs and set per-leg minimums.
 ///      - The zap never calls `redeemSkipping`: a claim recorded for the zap could never be collected.
 ///        While a component is frozen, holders exit directly through the index.
 ///      - Every call names the index's `rebalanceNonce` its quote was taken at. A rebalance changes the units, so a
 ///        stale quote reverts with `StaleRebalanceNonce` instead of buying or selling a different basket.
 ///      - The zap never calls `executeRebalance`.
-contract IndexZap is ReentrancyGuard {
+contract IndexZap is ReentrancyGuard, IIndexZap {
     using SafeERC20 for IERC20;
     using PathLib for bytes;
 
-    /// @param path Exact-output Uniswap V3 path from the component back to `tokenIn`; empty when the
-    ///             component is `tokenIn` itself.
-    /// @param maxAmountIn Most `tokenIn` this leg may spend, or 0 for the overall limit only.
-    struct MintLeg {
-        bytes path;
-        uint256 maxAmountIn;
-    }
-
-    /// @param path Exact-input Uniswap V3 path from the component to `tokenOut`; empty when the component
-    ///             is `tokenOut` itself.
-    /// @param minAmountOut Least `tokenOut` this leg must return, or 0 for the overall limit only.
-    struct BurnLeg {
-        bytes path;
-        uint256 minAmountOut;
-    }
-
-    /// @param expectedNonce The index's `rebalanceNonce` when the legs were quoted.
-    /// @param legs One entry per component, in component order.
-    struct MintParams {
-        address index;
-        uint256 expectedNonce;
-        address tokenIn;
-        uint256 maxAmountIn;
-        uint256 shares;
-        MintLeg[] legs;
-        address to;
-        uint256 deadline;
-    }
-
-    /// @param expectedNonce The index's `rebalanceNonce` when the legs were quoted.
-    /// @param legs One entry per component, in component order.
-    struct BurnParams {
-        address index;
-        uint256 expectedNonce;
-        uint256 shares;
-        address tokenOut;
-        uint256 minAmountOut;
-        BurnLeg[] legs;
-        address to;
-        uint256 deadline;
-    }
-
+    /// @inheritdoc IIndexZap
     IIndexFactory public immutable FACTORY;
+    /// @inheritdoc IIndexZap
     ISwapRouter02 public immutable ROUTER;
-
-    event ZapMint(
-        address indexed index,
-        address indexed user,
-        address indexed to,
-        address tokenIn,
-        uint256 amountSpent,
-        uint256 shares
-    );
-    event ComponentReturned(address indexed index, address indexed to, address indexed component, uint256 amount);
-    event ZapBurn(
-        address indexed index,
-        address indexed user,
-        address indexed to,
-        address tokenOut,
-        uint256 shares,
-        uint256 amountOut
-    );
-
-    error NotIndex(address index);
-    error StaleRebalanceNonce(uint256 expected, uint256 actual);
-    error Expired();
-    error ZeroAddress();
-    error ZeroAmount();
-    error InvalidRecipient(address to);
-    error LegCountMismatch();
-    error BadPath(uint256 i);
-    error InsufficientBudget(uint256 needed, uint256 available);
-    error InsufficientOutput(uint256 amountOut, uint256 minAmountOut);
-    error TransferShortfall(address token);
 
     constructor(IIndexFactory factory, ISwapRouter02 router) {
         if (address(factory) == address(0) || address(router) == address(0)) revert ZeroAddress();
@@ -122,8 +55,7 @@ contract IndexZap is ReentrancyGuard {
     // Mint
     // ---------------------------------------------------------------------
 
-    /// @notice Buys exactly `p.shares` of `p.index` spending at most `p.maxAmountIn` of `p.tokenIn`.
-    ///         Unspent `tokenIn` is refunded to msg.sender.
+    /// @inheritdoc IIndexZap
     function mintWithToken(MintParams calldata p) external nonReentrant returns (uint256 amountSpent) {
         _checkCommon(p.index, p.expectedNonce, p.to, p.deadline);
         if (p.shares == 0 || p.maxAmountIn == 0) revert ZeroAmount();
@@ -149,6 +81,9 @@ contract IndexZap is ReentrancyGuard {
         // forge-lint: disable-next-line(reentrancy-events)
         emit ZapMint(p.index, msg.sender, p.to, p.tokenIn, amountSpent, p.shares);
 
+        // The swaps and the refund run outside the index's guard, so a token callback could have settled a rebalance
+        // since the check on entry; issuing then would buy a basket the legs were not quoted for.
+        _checkNonce(p.index, p.expectedNonce);
         IIndexToken(p.index).issue(p.shares, p.to);
     }
 
@@ -200,15 +135,13 @@ contract IndexZap is ReentrancyGuard {
     // Burn
     // ---------------------------------------------------------------------
 
-    /// @notice Burns `p.shares` of `p.index` (pulled from msg.sender, which must have approved the zap)
-    ///         and delivers at least `p.minAmountOut` of `p.tokenOut` to `p.to`.
+    /// @inheritdoc IIndexZap
     function burnToToken(BurnParams calldata p) external nonReentrant returns (uint256 amountOut) {
         _checkBurn(p);
         amountOut = _burnBasket(p);
     }
 
-    /// @notice {burnToToken} in one transaction, using an EIP-2612 permit for exactly `p.shares` that expires
-    ///         at `p.deadline`.
+    /// @inheritdoc IIndexZap
     function burnToTokenWithPermit(BurnParams calldata p, uint8 v, bytes32 r, bytes32 s)
         external
         nonReentrant
@@ -261,8 +194,14 @@ contract IndexZap is ReentrancyGuard {
             if (component == p.tokenOut) {
                 if (p.legs[i].path.length != 0) revert BadPath(i);
                 reported += got[i];
-            } else if (got[i] != 0) {
+                continue;
+            }
+            // Every leg is validated, including one that sells nothing, whose minimum then cannot be met.
+            _checkPath(p.legs[i].path, component, p.tokenOut, i);
+            if (got[i] != 0) {
                 reported += _sell(p, component, got[i], i);
+            } else if (p.legs[i].minAmountOut != 0) {
+                revert InsufficientOutput(0, p.legs[i].minAmountOut);
             }
         }
         return reported;
@@ -273,7 +212,6 @@ contract IndexZap is ReentrancyGuard {
         returns (uint256 amountOut)
     {
         BurnLeg calldata leg = p.legs[i];
-        _checkPath(leg.path, component, p.tokenOut, i);
         IERC20 token = IERC20(component);
         uint256 before = token.balanceOf(address(this));
         token.forceApprove(address(ROUTER), amountIn);
@@ -307,10 +245,15 @@ contract IndexZap is ReentrancyGuard {
     function _checkCommon(address index, uint256 expectedNonce, address to, uint256 deadline) private view {
         if (block.timestamp > deadline) revert Expired();
         if (!FACTORY.isIndex(index)) revert NotIndex(index);
+        _checkNonce(index, expectedNonce);
+        if (to == address(0)) revert ZeroAddress();
+        // Tokens left in SwapRouter02 can be swept by anyone.
+        if (to == address(this) || to == index || to == address(ROUTER)) revert InvalidRecipient(to);
+    }
+
+    function _checkNonce(address index, uint256 expectedNonce) private view {
         uint256 nonce = IIndexToken(index).rebalanceNonce();
         if (nonce != expectedNonce) revert StaleRebalanceNonce(expectedNonce, nonce);
-        if (to == address(0)) revert ZeroAddress();
-        if (to == address(this) || to == index) revert InvalidRecipient(to);
     }
 
     /// @dev A path must be well formed, start at `first` and end at `last`. For exact-output paths

@@ -102,20 +102,29 @@ A stateless, view-only contract the factory deploys in its constructor. It never
   `OracleLibrary.getQuoteAtTick`, with `getSqrtPriceAtTick` vendored from Uniswap v4-core (MIT) in
   `src/libraries/TickMath.sol`. WETH is `1e18`; USDC is read from the USDC/WETH 0.05% pool (`USD_POOL`).
 - **Supplies:** a token's reference supply, or its total supply minus the balances of excluded addresses.
-- **Weights:** `market cap = supply * price`. Uncapped: `cap_i / sum`. Capped (`src/libraries/Methodology.sol`, at least 5
-  components): the largest weighs 30%; the second gets `min(70% * cap_2 / (cap_2 + rest), 20%)`; the others share the
-  rest of 70% by cap. This closed form reproduces the Numbers model's formula. Ties rank by position.
+- **Weights:** `market cap = supply * price`. Uncapped: `cap_i / sum`. Capped (`src/libraries/Methodology.sol`, at least
+  5 components): the largest weighs 30%; the second gets `min(70% * cap_2 / (cap_2 + rest), 20%)`; the others share the
+  rest of 70% by cap. This closed form reproduces the Numbers model's formula. Ties rank by position. Ranks 3 and below
+  are not capped: when the second is capped they share 50%, so one of them can outweigh the first two. With caps in the
+  ratio of WBTC, WETH, LINK, UNI and tBTC in September 2026, LINK would weigh about 35% (illustrative; it moves with
+  prices). The app should show `weights(tokens, 1)` before a capped index is created.
 - **targetUnits(tokens, units, methodology, keepMask):** weights over all components; the components not kept share
-  their current value at snapshot prices by weight; each target is clipped to `[units / 2, units * 2]` (and below
-  `MAX_TARGET_UNITS`, so the auction's premium still fits `uint96`); whatever value the clips remove or add is shared
-  among components still inside their bounds, pass by pass, until a pass pins no new component; a weight that rounds to
-  zero counts as one wei, so no clipped value is left unplaced. Returns the targets
+  their current value at snapshot prices by weight. A snapshot price is the same mean-tick price, accepted only when the
+  pool's harmonic-mean liquidity over the window reaches the token's `minLiquidity` (else `ThinPriceHistory`) and the
+  mean ticks of the window's three 10-minute parts lie within `MAX_TICK_DEVIATION` (2,000 ticks, about 22%) of each
+  other (else `PriceHistoryDeviates`). Kept components are not read at all under the uncapped methodology, whose weights
+  renormalise them away; the capped methodology still ranks them, from the plain price; each target is clipped to
+  `[units / 2, units * 2]` (and below `MAX_TARGET_UNITS`, so the auction's premium still fits `uint96`); whatever value
+  the clips remove or add is shared among components still inside their bounds, pass by pass, until a pass pins no new
+  component; a weight that rounds to zero counts as one wei, so no clipped value is left unplaced. Returns the targets
   and the turnover, the sold value as a share of the rebalanced value.
-- **checkConfig(token, config):** used by the factory before a listing or config change. WETH needs a reference supply
-  and no pool. Any other token needs the Uniswap V3 factory's own pool for the token and WETH at the pool's fee tier,
-  at least `MIN_OBSERVATION_CARDINALITY` (200) observation slots so a 30-minute average can never run out of history, a
-  pool that serves that average now, a non-zero supply, and at most `MAX_EXCLUDED` (8) distinct exclusions, none next to
-  a reference supply.
+- **checkConfig(token, config):** used by the factory before a listing or config change. WETH needs a reference supply,
+  no pool and no minimum liquidity. Any other token needs the Uniswap V3 factory's own pool for the token and WETH at
+  the pool's fee tier, at least `MIN_OBSERVATION_CARDINALITY` (200) observation slots (a pool writes at most one
+  observation per block, so 200 slots cover 30 minutes while blocks are at least 9.05 seconds apart), a pool that serves
+  that average now, a non-zero `minLiquidity` that the pool's current window meets, a non-zero supply, and at most
+  `MAX_EXCLUDED` (8) distinct exclusions, none next to a reference supply. The mainnet policy for `minLiquidity` is a
+  tenth of the pool's harmonic-mean liquidity when it is proposed.
 - **navPerToken(index):** the value of one whole index token, `sum(units_i * price_i)`, in WETH and in USDC. For an
   uncapped index whose units follow the rule this equals the Numbers model's divisor price at every price; for a capped
   index it is the basket's own value, which the divisor formula would misstate. Display only.
@@ -135,10 +144,13 @@ A stateless, view-only contract the factory deploys in its constructor. It never
 - `predictIndexAddress(creator, name, symbol, tokens, units, methodology)`: the address `createIndex` will use.
 - Listings and token configs take two steps. `proposeListing(token, config)` (owner only; the token must be a contract
   with no live proposal, and the rule must accept the config) starts `LISTING_DELAY` = 2 days; for a listed token it
-  proposes a config change. `executeListing(token)` is permissionless from then until `PROPOSAL_WINDOW` = 7 days later;
-  it applies the config and whitelists the token if needed. The owner and the guardian can `cancelListing` a pending or
-  expired proposal and `delist` a token; delisting is immediate, never affects existing indexes, and keeps the config
-  those indexes still rebalance with.
+  proposes a config change. `proposeConfig(token, config)` does the same for a token that was listed before, listed or
+  delisted, but never whitelists it, so a delisted token's config can be refreshed for the indexes still holding it.
+  `executeListing(token)` is permissionless from then until `PROPOSAL_WINDOW` = 7 days later; it applies the config and,
+  for a `proposeListing` proposal, whitelists the token if needed (`pendingIsListing` tells which). The owner and the
+  guardian can `cancelListing` a pending or expired proposal and `delist` a token; delisting is immediate, never affects
+  existing indexes, keeps the config those indexes still rebalance with, and cancels a pending `proposeListing`
+  proposal, so relisting always takes a fresh proposal and delay.
 - Guardian changes take `GUARDIAN_DELAY` = 7 days, as in v1. `isOwnerOrGuardian(account)` tells indexes who may cancel a
   rebalance or pass a keep mask. `renounceOwnership` always reverts.
 - Neither role can pause, upgrade, set units or prices, or touch funds held by any index.
@@ -149,8 +161,9 @@ The user-facing convenience layer. Stateless, ownerless, holds no funds between 
 
 - `mintWithToken(MintParams{index, expectedNonce, tokenIn, maxAmountIn, shares, legs, to, deadline})` and
   `burnToToken(BurnParams{index, expectedNonce, shares, tokenOut, minAmountOut, legs, to, deadline})` work as in v1:
-  path endpoints validated, per-leg limits, balance-measured accounting, the unsold part of a partial fill returned,
-  shortfalls reverted, `issue` as the final interaction of a mint.
+  path endpoints validated, per-leg limits, balance-measured accounting, the unsold part of a first-hop partial fill
+  returned (a later hop's unsold intermediate token stays in the router), shortfalls reverted, `issue` as the final
+  interaction of a mint.
 - `expectedNonce` is the index's `rebalanceNonce` when the legs were quoted. A rebalance in between reverts the call with
   `StaleRebalanceNonce` instead of buying or selling a different basket.
 - `burnToTokenWithPermit(BurnParams, v, r, s)` runs the same checks before the permit.
@@ -162,9 +175,10 @@ Decodes Uniswap V3 packed paths (`token(20) | fee(3) | token(20) ...`): shape ch
 
 ## 3. Flows
 
-**Create.** The app calls `IndexRule.initialUnits(tokens, methodology, startPrice)` so the index starts on its rule at the
-chosen price, shows `predictIndexAddress`, and calls `createIndex`. Creator-chosen units also work; the first rebalances
-then move them toward the rule, at most doubling or halving each time.
+**Create.** The app calls `IndexRule.initialUnits(tokens, methodology, startPrice)` so the index starts on its rule at
+the chosen price, shows `predictIndexAddress`, and calls `createIndex`. Creator-chosen units also work; the first
+rebalances then move them toward the rule, at most halving or doubling the target each time (a fill at the 1.5 opening
+multiplier settles a growing component at up to 2.5 times its units).
 
 **Mint with a stablecoin.** Quote each leg with `QuoterV2.quoteExactOutput`, set per-leg and overall limits, read
 `rebalanceNonce()`, and call `mintWithToken`. Exact shares are minted; unspent stable is refunded.
@@ -181,7 +195,10 @@ then move them toward the rule, at most doubling or halving each time.
 3. With competition, the fill lands near the fair multiplier, the value of the sold legs over the value of the bought legs
    at execution prices, minus swap costs. Without competition, an executor waits until the multiplier reaches 0.9 and
    keeps at most 10% of the bought value.
-4. If nobody fills, the auction expires harmlessly and anyone can start a fresh one from new prices.
+4. If nobody fills, the auction expires and anyone can start a fresh one from new prices at once. A snapshot whose
+   prices are distorted so that even 0.9 does not pay an executor is never filled, and a griefer who wins the start at
+   every expiry can stall an index that way. The snapshot price checks make each attempt expensive; if it happens
+   anyway, the guardian cancels and starts an honest snapshot during its 2-day exclusive window.
 
 **Rebalance while a component is frozen.** A paused component that has to move makes the fill revert. The guardian
 cancels and starts again with that component's bit in `keepMask`: it keeps its units, the other components share their
@@ -191,7 +208,8 @@ own value by the rule's weights, and the fill never touches the frozen token.
 the frozen amount; `claim` pays it once transfers resume.
 
 **Index price.** `IndexRule.navPerToken(index)` returns the basket's value in WETH and USDC from the same 30-minute
-prices. It is what a burn returns before swap costs.
+prices: units valued at 30-minute averages. A burn instead sells at spot prices, after rounding down and swap costs,
+so its proceeds can differ, especially while prices move fast.
 
 **Direct.** Anyone holding the components can `issue`, and any holder can `redeem`, `redeemSkipping` and `claim`, without
 the zap.
@@ -220,10 +238,13 @@ the index on average instead of 5%.
 
 **Start above par, end below.** Starting at 1.5 means an executor first has to deliver more value than it takes, so a
 competitive fill finds the fair multiplier; a windfall needs the bought legs to lose a third of their value against the
-sold legs within three days. Ending at 0.9 covers swap costs and ordinary drift; simulated at medium volatility, 5% of
-auctions expire and restart.
+sold legs within three days, or a snapshot price that was already off by that much. A snapshot price read low by a
+factor f on a component the rebalance sells, or high on one it buys, sets the fair multiplier to about 1/f, so the
+snapshot itself has to be guarded: see the price checks under `targetUnits`. Ending at 0.9 covers swap costs and
+ordinary drift; simulated at medium volatility, 5% of auctions expire and restart.
 
-**Clip, then redistribute.** Each rebalance moves a component between half and double its units, so a manipulated price,
+**Clip, then redistribute.** Each rebalance targets between half and double a component's units (a fill at the opening
+multiplier settles a growing one at up to 2.5 times, with the executor delivering the extra), so a manipulated price,
 an inflating supply or a misconfigured token can distort a basket's shape only gradually and publicly. Redistributing
 the clipped value pass by pass keeps the rebalance value-neutral; a single pass left up to 28% of value unplaced on
 random baskets.
@@ -242,7 +263,7 @@ buyer paying it after the top coin doubles would pay 27% more than a burn return
 reference liquidity for these pairs, and V3's built-in oracle, which V4 pools do not provide by default.
 
 **Burner chooses the exit token; whitelist only; no fees; skip-and-claim; public delays; balance-measured zap.**
-Unchanged from v1. Fees are still not in v2.
+Unchanged from v1 and described above (see the zap in section 2 and section 5). Fees are still not in v2.
 
 **Creator-bound CREATE2 addresses.** The address commits to the creator, the constituents, the starting units and the
 methodology, so it can never hold a different token list or follow a different rule, and a front-runner's copy lands at
@@ -251,14 +272,23 @@ its own address.
 ## 5. Security model
 
 - **Trust:** the factory owner (Safe), who proposes listings, token configs and guardian changes behind public delays;
-  the guardian, who can cancel listings and rebalances, delist, and start a rebalance with a keep mask; the whitelisted
+  the guardian, who can cancel listings and rebalances, delist, and start a rebalance with a keep mask, and whom the
+  owner can replace or remove after `GUARDIAN_DELAY` without the guardian being able to block it (a `GuardianProposed`
+  event is therefore the earliest warning of an owner acting unchecked, 9 days ahead); the whitelisted
   tokens and their issuers; Uniswap V3, including the time-weighted prices of listed pools. Executors and the account
   that starts a rebalance are untrusted. Users trust no one with custody.
-- **Shape versus value.** Nothing can move value out of an index. What can distort a basket's shape, always within half
-  to double per component per rebalance: an issuer minting supply (policy: fixed-supply or governance-minted tokens); the
-  owner changing a pool, exclusions or a reference supply, behind the 2-day delay and the guardian's cancel; a
-  multi-block TWAP manipulation at the snapshot; the caller choosing the snapshot moment. The owner and guardian can stall
-  rebalancing or keep chosen components unchanged, never extract.
+- **Shape versus value.** Issue, redeem and claims never read a price. What can distort a basket's shape, with targets
+  always within half to double per component per rebalance and settled units within half to 2.5 times: an issuer minting
+  supply (policy: fixed-supply or governance-minted tokens); the owner changing a pool, a minimum liquidity, exclusions
+  or a reference supply, behind the 2-day delay and the guardian's cancel; the caller choosing the snapshot moment. A
+  distorted snapshot price can also move value: read low by a factor f on a sold component, it sets the auction's fair
+  multiplier to about 1/f, and below f = 2/3 the first executor takes value (the 2026-09-16 audit measured 2.48% of an
+  off-target uncapped index from one 12-second block at an extreme tick in an empty range). Rebalance snapshots
+  therefore reject windows whose harmonic-mean liquidity fell below the token's minimum or whose 10-minute parts
+  disagree by more than 2,000 ticks. What remains is manipulation sustained over the whole window through deep
+  liquidity, for example by a validator holding many consecutive slots; the guardian's duty is to compare
+  `pendingRebalance()` targets with targets from independent prices during every notice period and cancel a distorted
+  snapshot. The owner and guardian can stall rebalancing or keep chosen components unchanged.
 - **Level:** set by the auction. A price error of δ on a traded component moves the fair multiplier by about δ. A lone
   executor on an honest snapshot keeps at most `(1 - 0.9)` of the bought value. A windfall needs the fair multiplier
   above 1.5.
@@ -279,19 +309,32 @@ its own address.
   a basket: `redeemSkipping` exits everything else, `claim` collects the frozen part later, and a keep mask rebalances
   around it. Policy: standard ERC-20s, 6-18 decimals, no fee-on-transfer, rebasing or callback tokens, fixed-supply or
   governance-minted supply, a WETH pool with at least 200 observation slots; stables are mint currencies, not components;
-  pausable components are labelled in the app.
-- **Zap:** as in v1, plus `expectedNonce`.
+  pausable components are labelled in the app. Two wrappers of one asset are valued by their own configs: WBTC with
+  bitcoin's whole supply, tBTC with its on-chain float, so an index holding both weighs them by wrapper, not by bitcoin;
+  list a second wrapper with a reference supply that states which share of the asset it should represent.
+- **Zap:** stateless and ownerless; every path's endpoints are checked, legs sell nothing into a third token, per-leg
+  and overall limits apply, payments and payouts are measured as balance changes inside the call (tokens already in
+  the zap are never used), fee-charging currencies revert with `TransferShortfall`, a first-hop partial fill's unsold
+  part goes to the recipient, the zap, the index and the router are rejected as recipients, the permit is tried and a
+  front-run permit is accepted, and `expectedNonce` is checked on entry and again right before `issue`. It never calls
+  `redeemSkipping` or `executeRebalance`.
 - **Operations:** `OWNER` and `GUARDIAN` are required at deploy; on mainnet the owner must be a contract that is not an
-  EIP-7702 delegated account, and a Safe must need at least two signatures. Reference supplies drift and need periodic
-  config changes. A pool with fewer than 200 observation slots, such as tBTC/WETH 0.3% on 2026-09-16, must be grown
-  with `increaseObservationCardinalityNext` and trade until the ring grows before its token can be listed.
+  EIP-7702 delegated account, and a Safe must need at least two signatures and have no enabled module (a module acts as
+  the Safe without signatures; the owner must keep none afterwards). Reference supplies drift and need periodic
+  config changes, and so do minimum liquidities when a pool's liquidity moves for good: a minimum above the pool's
+  liquidity makes every snapshot of that component revert until the config changes. A pool with fewer than 200
+  observation slots, such as tBTC/WETH 0.3% on 2026-09-16, must be grown with `increaseObservationCardinalityNext` and
+  trade until the ring grows before its token can be listed. If block times ever fall below 9.05 seconds, a busy pool's
+  200 slots no longer cover 30 minutes and `startRebalance` and `navPerToken` revert with `OLD` until someone grows the
+  ring; issue and redeem are unaffected.
 - **Gas:** `MAX_COMPONENTS = 20`; the UI should suggest about 10. `startRebalance` reads a pool, a supply and a config
   per component; `executeRebalance` costs little beyond the executor's own swaps.
 - **Overflow:** `units <= 2^96-1`, targets below `MAX_TARGET_UNITS`, 512-bit `mulDiv`.
-- **Known limitations:** airdrops, rewards and votes that accrue to index-held tokens are unrecoverable. Rebalances clear
-  only when the bought value covers gas and swap costs many times over, so small indexes on mainnet rarely rebalance.
-  A permanently frozen component needs the guardian's keep mask at every rebalance. The factory's deployment bytecode is
-  close to the EIP-3860 initcode limit. Bytecode targets Cancun.
+- **Known limitations:** airdrops, rewards and votes that accrue to index-held tokens are unrecoverable. Rebalances
+  clear only when the bought value covers gas and swap costs many times over, so small indexes on mainnet rarely
+  rebalance. A permanently frozen component needs the guardian's keep mask at every rebalance. Under the capped
+  methodology a kept component is still ranked, so a component whose pool cannot be read blocks rebalancing until its
+  config changes. The factory's deployment bytecode is close to the EIP-3860 initcode limit. Bytecode targets Cancun.
 
 ## 6. Verification
 
@@ -303,14 +346,17 @@ its own address.
   starts, cancels, honest fills, short fills and staged time jumps; asserts every component stays backed including open
   claims, supply equals the sum of holder balances, claims add up, the nonce counts executed rebalances, short fills never
   settle, units move between half and 2.5 times per rebalance, and targets exist exactly while a rebalance is pending.
-- Security regression suite (`test/Security.t.sol`): one test per finding of the 2026-09-15 security review and of the
-  2026-09-16 rebalancing design review (R01–R23), plus controls.
+- Security regression suite (`test/Security.t.sol`): a test per testable finding of the 2026-09-15 security review, the
+  2026-09-16 rebalancing design review (R01–R23) and the 2026-09-16 whole-repo audit (XA ids), plus controls. v1 L06,
+  L08, I09, I10, I11 and FR04–FR06 are enforced elsewhere (script tests, CI, the pragma pin) or are documentation only;
+  AGENTS.md gate 6 maps each one.
 - Mainnet fork tests: v1's zap and security cases on the v2 contracts; the rule's prices against QuoterV2; uncapped and
   capped indexes rebalancing through real Uniswap V3 swaps with a fork executor; a guardian keep mask around a real WBTC
   pause; tBTC's short-history pool rejected until its observation ring is grown.
 - Script tests execute `Deploy`, `ConfigureWhitelist` and the Sepolia `SetupTestMarket` in-process.
-- Gates: `forge fmt --check`, lint-free `forge build`, 100% coverage on every file, Wake analyzer clean on `src/`, and the
-  CI submodule check against `foundry.lock`.
+- Gates, all enforced in CI: `forge fmt --check`, `forge build`, `forge lint -D notes`, `forge test` (fork suites
+  required on `main` and on pull requests into it), 100% coverage on every file, Wake detectors clean on `src/`, and the
+  submodule check against `foundry.lock`.
 
 ## 7. Mainnet addresses
 

@@ -27,10 +27,20 @@ import {TickMath} from "./libraries/TickMath.sol";
 ///      A weight that rounds to zero counts as one wei here, so no clipped value is ever left unplaced.
 contract IndexRule is IIndexRule {
     uint32 public constant TWAP_WINDOW = 30 minutes;
-    /// @dev Pools write at most one observation per 12-second block, so 200 slots always cover 40 minutes.
+    uint32 public constant TWAP_SUB_WINDOWS = 3;
+    /// @inheritdoc IIndexRule
+    /// @dev 1.0001^2000 is about 1.22. One 12-second block at an extreme tick moves the mean tick of its 10-minute part
+    ///      by up to 887,272 * 12 / 600, about 17,700 ticks.
+    uint256 public constant MAX_TICK_DEVIATION = 2_000;
+    /// @inheritdoc IIndexRule
+    /// @dev A pool writes at most one observation per block, so 200 slots cover TWAP_WINDOW while blocks are at least
+    ///      1800 / 199 = 9.05 seconds apart (12-second slots give 2,388 seconds). If slots ever get shorter, anyone can
+    ///      grow a pool's ring with `increaseObservationCardinalityNext`.
     uint16 public constant MIN_OBSERVATION_CARDINALITY = 200;
     uint256 public constant MAX_EXCLUDED = 8;
-    /// @dev An auction can deliver 1.5 times a growing component's extra units, so targets stay below 2/3 of uint96.
+    /// @inheritdoc IIndexRule
+    /// @dev An auction can deliver 1.5 times a growing component's extra units, so a raised target stays at most 2/3 of
+    ///      uint96 and 1.5 times it is exactly type(uint96).max.
     uint256 public constant MAX_TARGET_UNITS = uint256(type(uint96).max) * 2 / 3;
     uint24 public constant USD_POOL_FEE = 500;
 
@@ -41,10 +51,9 @@ contract IndexRule is IIndexRule {
     address public immutable USD_POOL;
 
     uint256 private constant WAD = 1e18;
-    int56 private constant SIGNED_TWAP_WINDOW = 30 minutes;
     uint256 private constant CAPPED_TOP_WEIGHT = 0.3e18;
     uint256 private constant CAPPED_SECOND_MAX_WEIGHT = 0.2e18;
-    uint256 private constant CAPPED_REMAINDER = 0.7e18;
+    uint256 private constant CAPPED_REMAINDER = WAD - CAPPED_TOP_WEIGHT;
 
     /// @dev Snapshot prices, weights and per-component bounds of one rebalance, kept in one struct for the stack.
     struct Basket {
@@ -71,19 +80,19 @@ contract IndexRule is IIndexRule {
 
     /// @inheritdoc IIndexRule
     function checkConfig(address token, IIndexFactory.TokenConfig calldata config) external view {
-        uint256 n = config.excluded.length;
-        if (n > MAX_EXCLUDED || (config.referenceSupply != 0 && n != 0)) revert InvalidSupplyConfig(token);
-        for (uint256 i = 1; i < n; ++i) {
-            for (uint256 j = 0; j < i; ++j) {
-                if (config.excluded[i] == config.excluded[j]) revert InvalidSupplyConfig(token);
-            }
-        }
+        _checkExclusions(token, config);
         if (token == WETH) {
             if (config.pool != address(0)) revert InvalidPool(token, config.pool);
+            if (config.minLiquidity != 0) revert InvalidMinLiquidity(token);
             if (config.referenceSupply == 0) revert InvalidSupplyConfig(token);
             return;
         }
+        if (config.minLiquidity == 0) revert InvalidMinLiquidity(token);
         _checkPool(token, config.pool);
+        (,, uint256 harmonicLiquidity) = _observe(config.pool);
+        if (harmonicLiquidity < config.minLiquidity) {
+            revert ThinPriceHistory(config.pool, harmonicLiquidity, config.minLiquidity);
+        }
         if (_supply(token, config.referenceSupply, config.excluded) == 0) revert ZeroSupply(token);
     }
 
@@ -126,7 +135,7 @@ contract IndexRule is IIndexRule {
     {
         uint256 n = tokens.length;
         if (n != units.length) revert LengthMismatch();
-        (uint256[] memory prices,, uint256[] memory caps) = _market(tokens);
+        (uint256[] memory prices, uint256[] memory caps) = _snapshotMarket(tokens, methodology, keepMask);
         Basket memory basket =
             Basket({prices: prices, weights: _weights(caps, methodology), lo: new uint256[](n), hi: new uint256[](n)});
         return _targets(units, basket, keepMask);
@@ -165,8 +174,19 @@ contract IndexRule is IIndexRule {
     // Market data internals
     // ---------------------------------------------------------------------
 
+    /// @dev At most MAX_EXCLUDED distinct exclusions, and none next to a reference supply.
+    function _checkExclusions(address token, IIndexFactory.TokenConfig calldata config) private pure {
+        uint256 n = config.excluded.length;
+        if (n > MAX_EXCLUDED || (config.referenceSupply != 0 && n != 0)) revert InvalidSupplyConfig(token);
+        for (uint256 i = 1; i < n; ++i) {
+            for (uint256 j = 0; j < i; ++j) {
+                if (config.excluded[i] == config.excluded[j]) revert InvalidSupplyConfig(token);
+            }
+        }
+    }
+
     /// @dev A pool must be the Uniswap V3 factory's pool for the token and WETH at its own fee tier, keep enough
-    ///      observations that a TWAP_WINDOW average can never run out of history, and serve one now.
+    ///      observations that a TWAP_WINDOW average does not run out of history, and serve one now.
     function _checkPool(address token, address pool) private view {
         if (pool.code.length == 0) revert InvalidPool(token, pool);
         if (IUniswapV3Factory(UNISWAP_V3_FACTORY).getPool(token, WETH, IUniswapV3Pool(pool).fee()) != pool) {
@@ -176,29 +196,74 @@ contract IndexRule is IIndexRule {
         // forge-lint: disable-next-line(unused-return)
         (,,, uint16 cardinality,,,) = IUniswapV3Pool(pool).slot0();
         if (cardinality < MIN_OBSERVATION_CARDINALITY) revert PoolHistoryTooShort(pool, cardinality);
-        if (_poolPrice(token, pool) == 0) revert ZeroPrice(token);
+        (int24 tick,,) = _observe(pool);
+        if (_quoteAtTick(tick, token < WETH) == 0) revert ZeroPrice(token);
     }
 
+    /// @dev The window's mean tick quoted as a WAD price, for display, ranking kept components and starting units.
     function _price(address token, address pool) private view returns (uint256 p) {
         if (token == WETH) return WAD;
-        p = _poolPrice(token, pool);
+        (int24 tick,,) = _observe(pool);
+        p = _quoteAtTick(tick, token < WETH);
         if (p == 0) revert ZeroPrice(token);
     }
 
-    /// @dev Mean tick over TWAP_WINDOW, rounded toward negative infinity, quoted as a WAD price. It can round to zero;
-    ///      callers reject that.
-    function _poolPrice(address token, address pool) private view returns (uint256) {
-        uint32[] memory secondsAgos = new uint32[](2);
-        secondsAgos[0] = TWAP_WINDOW;
-        // Only the tick accumulators matter for a price; the liquidity accumulators are not needed.
-        // forge-lint: disable-next-line(unused-return)
-        (int56[] memory tickCumulatives,) = IUniswapV3Pool(pool).observe(secondsAgos);
-        int56 delta = tickCumulatives[1] - tickCumulatives[0];
+    /// @dev The price of a component a rebalance moves. It is the same mean-tick price, accepted only from a window
+    ///      whose harmonic-mean liquidity reached the token's minimum and whose sub-window mean ticks agree, so the
+    ///      price was neither pushed through thin or empty ranges nor dominated by a few outlier blocks.
+    function _snapshotPrice(address token, IIndexFactory.TokenConfig memory config) private view returns (uint256 p) {
+        if (token == WETH) return WAD;
+        (int24 tick, uint256 spread, uint256 harmonicLiquidity) = _observe(config.pool);
+        if (harmonicLiquidity < config.minLiquidity) {
+            revert ThinPriceHistory(config.pool, harmonicLiquidity, config.minLiquidity);
+        }
+        if (spread > MAX_TICK_DEVIATION) revert PriceHistoryDeviates(config.pool, spread);
+        p = _quoteAtTick(tick, token < WETH);
+        if (p == 0) revert ZeroPrice(token);
+    }
+
+    /// @dev One read of `pool` over TWAP_WINDOW split into TWAP_SUB_WINDOWS equal parts: the window's mean tick, the
+    ///      spread between the highest and lowest part's mean tick, and the window's harmonic-mean liquidity. Mean
+    ///      ticks round toward negative infinity and the liquidity is computed as Uniswap's OracleLibrary.consult does.
+    function _observe(address pool) private view returns (int24 tick, uint256 spread, uint256 harmonicLiquidity) {
+        uint256 parts = TWAP_SUB_WINDOWS;
+        uint32 part = TWAP_WINDOW / TWAP_SUB_WINDOWS;
+        uint32[] memory secondsAgos = new uint32[](parts + 1);
+        uint32 ago = TWAP_WINDOW;
+        for (uint256 i = 0; i < parts; ++i) {
+            secondsAgos[i] = ago;
+            ago -= part;
+        }
+        (int56[] memory tickCumulatives, uint160[] memory secondsPerLiquidity) =
+            IUniswapV3Pool(pool).observe(secondsAgos);
+
+        tick = _meanTick(tickCumulatives[parts] - tickCumulatives[0], TWAP_WINDOW);
+        int24 low = type(int24).max;
+        int24 high = type(int24).min;
+        for (uint256 i = 0; i < parts; ++i) {
+            int24 partTick = _meanTick(tickCumulatives[i + 1] - tickCumulatives[i], part);
+            if (partTick < low) low = partTick;
+            if (partTick > high) high = partTick;
+        }
+        // Every part updates both bounds, so high >= low and the difference is never negative.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        spread = uint256(int256(high) - int256(low));
+
+        uint160 liquidityDelta;
+        // Uniswap V3 accumulators wrap on overflow, so the difference is taken modulo 2^160 as in OracleLibrary.
+        unchecked {
+            liquidityDelta = secondsPerLiquidity[parts] - secondsPerLiquidity[0];
+        }
+        harmonicLiquidity = uint256(TWAP_WINDOW) * type(uint160).max / (uint256(liquidityDelta) << 32);
+    }
+
+    /// @dev Mean tick of a tick-accumulator change over `period` seconds, rounded toward negative infinity.
+    function _meanTick(int56 delta, uint32 period) private pure returns (int24 tick) {
+        int56 signedPeriod = int56(uint56(period));
         // The mean of ticks that Uniswap keeps within [MIN_TICK, MAX_TICK] fits in int24; TickMath rejects anything else.
         // forge-lint: disable-next-line(unsafe-typecast)
-        int24 tick = int24(delta / SIGNED_TWAP_WINDOW);
-        if (delta < 0 && delta % SIGNED_TWAP_WINDOW != 0) --tick;
-        return _quoteAtTick(tick, token < WETH);
+        tick = int24(delta / signedPeriod);
+        if (delta < 0 && delta % signedPeriod != 0) --tick;
     }
 
     /// @dev WETH wei per 1e18 raw units of the token, as Uniswap's OracleLibrary.getQuoteAtTick computes it. The pool
@@ -243,6 +308,29 @@ contract IndexRule is IIndexRule {
             supplies[i] = _supply(tokens[i], config.referenceSupply, config.excluded);
             if (supplies[i] == 0) revert ZeroSupply(tokens[i]);
             caps[i] = supplies[i] * prices[i];
+        }
+    }
+
+    /// @dev Prices and caps for a rebalance snapshot. Every component that can move needs a snapshot price. A kept
+    ///      component never trades: the uncapped methodology does not read it at all (its weight is renormalised away
+    ///      and a zero price and cap leave the targets unchanged), and the capped methodology only ranks it, from the
+    ///      plain TWAP price.
+    function _snapshotMarket(address[] calldata tokens, uint8 methodology, uint256 keepMask)
+        private
+        view
+        returns (uint256[] memory prices, uint256[] memory caps)
+    {
+        uint256 n = tokens.length;
+        prices = new uint256[](n);
+        caps = new uint256[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            bool kept = _kept(keepMask, i);
+            if (kept && methodology == Methodology.UNCAPPED) continue;
+            IIndexFactory.TokenConfig memory config = IIndexFactory(FACTORY).tokenConfig(tokens[i]);
+            prices[i] = kept ? _price(tokens[i], config.pool) : _snapshotPrice(tokens[i], config);
+            uint256 circulating = _supply(tokens[i], config.referenceSupply, config.excluded);
+            if (circulating == 0) revert ZeroSupply(tokens[i]);
+            caps[i] = circulating * prices[i];
         }
     }
 

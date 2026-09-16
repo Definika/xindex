@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/// @notice Uniswap V3 pool stand-in for the rebalance rule. Its tick is constant over time, so any time-weighted
-///         average returns exactly that tick; tests can also set the two accumulators directly, cap the observation
-///         cardinality, or make `observe` revert as a pool with too little history does.
+/// @notice Uniswap V3 pool stand-in for the rebalance rule. Its tick and liquidity are constant over time, so any
+///         time-weighted average returns exactly that tick and that liquidity. Tests can also set the tick accumulators
+///         of the oldest and newest point directly, set every returned accumulator, cap the observation cardinality, or
+///         make `observe` revert as a pool with too little history does. It does not model a ring that was just grown:
+///         a real pool then keeps its old history until the new slots fill, which tests reproduce with
+///         `setHistoryTooShort`.
 contract MockUniswapV3Pool {
     address public immutable token0;
     address public immutable token1;
@@ -11,6 +14,8 @@ contract MockUniswapV3Pool {
 
     uint160 public sqrtPriceX96;
     int24 public tick;
+    /// @notice In-range liquidity behind the seconds-per-liquidity accumulator; zero counts as one, as in Uniswap.
+    uint128 public liquidity = 1e18;
     uint16 public observationCardinality = 1_000;
     /// @notice Largest cardinality requested through `increaseObservationCardinalityNext`.
     uint16 public observationCardinalityNext;
@@ -18,6 +23,10 @@ contract MockUniswapV3Pool {
     bool public rawCumulatives;
     int56 public olderCumulative;
     int56 public newerCumulative;
+    bool public rawObservations;
+    mapping(uint32 secondsAgo => bool) private _observed;
+    mapping(uint32 secondsAgo => int56) private _tickCumulativeAt;
+    mapping(uint32 secondsAgo => uint160) private _secondsPerLiquidityAt;
 
     constructor(address tokenA, address tokenB, uint24 fee_) {
         (token0, token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
@@ -28,13 +37,32 @@ contract MockUniswapV3Pool {
     function setTick(int24 tick_) external {
         tick = tick_;
         rawCumulatives = false;
+        rawObservations = false;
     }
 
-    /// @notice Makes `observe` return these accumulators for the older and newer point.
+    function setLiquidity(uint128 liquidity_) external {
+        liquidity = liquidity_;
+    }
+
+    /// @notice Makes `observe` return these tick accumulators for the oldest and newest point, and values on the
+    ///         straight line between them for the points in between.
     function setCumulatives(int56 older, int56 newer) external {
         olderCumulative = older;
         newerCumulative = newer;
         rawCumulatives = true;
+        rawObservations = false;
+    }
+
+    /// @notice Makes `observe` return exactly these accumulators for `secondsAgo`. From then on `observe` serves only
+    ///         points set this way, until `setTick` or `setCumulatives`.
+    function setObservation(uint32 secondsAgo, int56 tickCumulative, uint160 secondsPerLiquidityCumulativeX128)
+        external
+    {
+        _observed[secondsAgo] = true;
+        _tickCumulativeAt[secondsAgo] = tickCumulative;
+        _secondsPerLiquidityAt[secondsAgo] = secondsPerLiquidityCumulativeX128;
+        rawObservations = true;
+        rawCumulatives = false;
     }
 
     function setObservationCardinality(uint16 cardinality) external {
@@ -43,6 +71,11 @@ contract MockUniswapV3Pool {
 
     function setHistoryTooShort(bool tooShort) external {
         historyTooShort = tooShort;
+    }
+
+    /// @notice Moves the current price, as a swap through the pool would; the tick stays whatever `setTick` set.
+    function setSqrtPriceX96(uint160 sqrtPriceX96_) external {
+        sqrtPriceX96 = sqrtPriceX96_;
     }
 
     /// @notice Records the starting price once, like the real pool; the tick stays whatever `setTick` set.
@@ -70,12 +103,22 @@ contract MockUniswapV3Pool {
         uint256 n = secondsAgos.length;
         tickCumulatives = new int56[](n);
         secondsPerLiquidityCumulativeX128s = new uint160[](n);
+        int56 oldest = int56(uint56(secondsAgos[0]));
         for (uint256 i = 0; i < n; ++i) {
-            if (rawCumulatives) {
-                tickCumulatives[i] = i == 0 ? olderCumulative : newerCumulative;
-            } else {
-                tickCumulatives[i] = int56(tick) * (1_000_000_000 - int56(uint56(secondsAgos[i])));
+            if (rawObservations) {
+                require(_observed[secondsAgos[i]], "NO OBSERVATION");
+                tickCumulatives[i] = _tickCumulativeAt[secondsAgos[i]];
+                secondsPerLiquidityCumulativeX128s[i] = _secondsPerLiquidityAt[secondsAgos[i]];
+                continue;
             }
+            int56 ago = int56(uint56(secondsAgos[i]));
+            uint256 elapsed = 1_000_000_000 - uint256(secondsAgos[i]);
+            if (rawCumulatives) {
+                tickCumulatives[i] = newerCumulative - (newerCumulative - olderCumulative) * ago / oldest;
+            } else {
+                tickCumulatives[i] = int56(tick) * (1_000_000_000 - ago);
+            }
+            secondsPerLiquidityCumulativeX128s[i] = uint160((elapsed << 128) / (liquidity == 0 ? 1 : liquidity));
         }
     }
 }

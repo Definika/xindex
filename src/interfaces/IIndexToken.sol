@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
+import {IXindexErrors} from "./IXindexErrors.sol";
 
 /// @title IIndexToken
 /// @notice An index is a plain ERC-20 fully backed, in kind, by a basket of component tokens. 1e18 shares (one whole
@@ -14,18 +15,43 @@ import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC2
 ///      `totalSupply()`: inside `issue`, `redeem` and `executeRebalance` they change at different moments, and a
 ///      component with transfer callbacks could expose that intermediate state to a reading contract. Only
 ///      `IndexFactory.isIndex` proves an address is an index.
-interface IIndexToken is IERC20, IERC20Permit {
+///      Recipients: `to` can be neither zero (ZeroAddress) nor the index itself (InvalidRecipient). Callers other than
+///      the factory owner or guardian get Unauthorized where those roles are required.
+interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
+    /// @notice `sender` paid `amounts` (per component, in component order, rounded up) and `to` received `shares`.
     event Issued(address indexed sender, address indexed to, uint256 shares, uint256[] amounts);
+    /// @notice `sender` burned `shares` for `amounts` (per component, in component order, rounded down). With
+    ///         {redeemSkipping}, the skipped components' amounts are recorded as claims for `sender` instead of being
+    ///         sent to `to`.
     event Redeemed(address indexed sender, address indexed to, uint256 shares, uint256[] amounts);
+    /// @notice {redeemSkipping} kept `amount` of `token` in the index for `account` to collect with {claim}.
     event ClaimRecorded(address indexed account, address indexed token, uint256 amount);
+    /// @notice `account`'s claim of `amount` of `token` was paid to `to`.
     event Claimed(address indexed account, address indexed to, address indexed token, uint256 amount);
 
-    /// @param id The value {rebalanceNonce} takes if this rebalance executes.
+    /// @notice A rebalance proposal, replacing any earlier one. `id` is the value {rebalanceNonce} takes if it executes,
+    ///         so a proposal that was cancelled or expired and then started again carries the same `id`, and the owner
+    ///         or guardian can even cancel and restart in one block with the same `eta`: read the events in log order,
+    ///         each one replacing the last. No event marks an expiry: a proposal nobody filled expires after
+    ///         `eta + AUCTION_DURATION`.
+    /// @param caller The account that started it.
+    /// @param targetUnits Snapshot target units per component, in component order, in raw units per 1e18 shares.
+    /// @param keepMask Bit i set leaves component i untouched.
+    /// @param eta Start of the auction, after REBALANCE_DELAY of notice.
     event RebalanceStarted(
         uint256 indexed id, address indexed caller, uint256[] targetUnits, uint256 keepMask, uint256 eta
     );
+    /// @notice Cancels the latest proposal with this `id`.
+    /// @param id The value {rebalanceNonce} would have taken had the cancelled proposal executed.
+    /// @param caller The factory owner or guardian who cancelled it.
     /// @param restartAllowedAt Before this time only the factory owner or guardian can start a rebalance.
     event RebalanceCancelled(uint256 indexed id, address indexed caller, uint256 restartAllowedAt);
+    /// @notice The pending rebalance settled, and {rebalanceNonce} is now `id`.
+    /// @param executor The contract that filled the auction.
+    /// @param multiplier Multiplier applied to the growing components' extra units (1e18 = parity).
+    /// @param units New units per component, in component order.
+    /// @param amountsOut What the index sent `executor` per component.
+    /// @param amountsIn What the index needed back per component; see `IRebalanceExecutor`.
     event Rebalanced(
         uint256 indexed id,
         address indexed executor,
@@ -35,23 +61,36 @@ interface IIndexToken is IERC20, IERC20Permit {
         uint256[] amountsIn
     );
 
+    /// @notice {initialize} was called by an address other than FACTORY.
     error NotFactory();
+    /// @notice The implementation, or a clone the factory did not initialize, cannot issue, redeem or rebalance.
     error NotInitialized();
+    /// @notice {initialize} got no components, arrays of different lengths, a zero token or zero units.
     error InvalidComponents();
+    /// @notice `shares` is zero.
     error ZeroShares();
-    error ZeroAddress();
-    error InvalidRecipient(address to);
+    /// @notice `skipMask` is zero or sets a bit at or above {componentCount}.
     error InvalidSkipMask(uint256 skipMask);
+    /// @notice The caller has no claim on `token`.
     error NothingToClaim(address token);
+    /// @notice {issue} received less `token` than it pulled, as with a fee-on-transfer token.
     error TransferAmountMismatch(address token);
-    error Unauthorized(address account);
+    /// @notice MIN_REBALANCE_INTERVAL has not passed since the last rebalance; it does at `earliest`.
     error RebalanceTooSoon(uint256 earliest);
+    /// @notice A rebalance is pending until `deadline`, the end of its auction.
     error RebalancePending(uint256 deadline);
+    /// @notice `keepMask` sets a bit at or above {componentCount}, or keeps every component.
     error InvalidKeepMask(uint256 keepMask);
+    /// @notice The snapshot would sell `turnover` of the rebalanced value, less than MIN_TURNOVER.
     error TurnoverTooLow(uint256 turnover);
+    /// @notice No rebalance is pending.
     error NoPendingRebalance();
+    /// @notice The auction opens at `eta`.
     error RebalanceNotReady(uint256 eta);
+    /// @notice The auction closed at `deadline`; start a new rebalance.
     error RebalanceExpired(uint256 deadline);
+    /// @notice After the executor returned, the index held `balance` of `token`, below the `required` backing:
+    ///         totalSupply * new units / 1e18, plus open claims on `token`.
     error RebalanceUnderfunded(address token, uint256 balance, uint256 required);
 
     /// @notice Number of shares that make up one whole index token (1e18).
@@ -82,6 +121,11 @@ interface IIndexToken is IERC20, IERC20Permit {
     function RULE() external view returns (address);
 
     /// @notice One-time initializer called by the factory in the same transaction as the clone.
+    /// @param name_ ERC-20 name, also the EIP-712 domain name for permits.
+    /// @param symbol_ ERC-20 symbol.
+    /// @param tokens Components, in the order every array of this index uses.
+    /// @param units Starting raw units per 1e18 shares, non-zero and within uint96.
+    /// @param methodology_ Weighting rule id. Not checked here: the factory validates it before initializing.
     function initialize(
         string calldata name_,
         string calldata symbol_,
@@ -92,18 +136,28 @@ interface IIndexToken is IERC20, IERC20Permit {
 
     /// @notice Pulls the exact basket for `shares` from msg.sender and mints `shares` to `to`.
     ///         Amounts are rounded up per component. Caller must have approved every component.
+    /// @param shares Shares to mint; 1e18 is one whole index token.
+    /// @param to Receives the shares.
     function issue(uint256 shares, address to) external;
 
     /// @notice Burns `shares` from msg.sender and sends the pro-rata basket to `to`, rounded down.
     ///         Reverts if any component transfer reverts; use {redeemSkipping} when a component is frozen.
+    /// @param shares Shares to burn.
+    /// @param to Receives the components.
     function redeem(uint256 shares, address to) external;
 
     /// @notice Burns `shares` from msg.sender, sends every component whose bit is clear in `skipMask` to `to`,
     ///         and records the skipped amounts as claims that msg.sender can collect later with {claim}.
+    /// @param shares Shares to burn.
+    /// @param to Receives the components that are not skipped.
     /// @param skipMask Bit i set skips component i. Must be non-zero and use only bits below {componentCount}.
     function redeemSkipping(uint256 shares, address to, uint256 skipMask) external;
 
-    /// @notice Pays msg.sender's recorded claim on `token` to `to`.
+    /// @notice Pays msg.sender's whole recorded claim on `token` to `to`. Reverts while `token` still refuses the
+    ///         transfer; the claim stays recorded.
+    /// @param token Component whose claim is paid.
+    /// @param to Receives the tokens.
+    /// @return amount Raw units of `token` paid.
     function claim(address token, address to) external returns (uint256 amount);
 
     /// @notice Amount of `token` that `account` can collect with {claim}.
@@ -112,6 +166,7 @@ interface IIndexToken is IERC20, IERC20Permit {
     /// @notice Sum of all open claims on `token`. Always covered by the index's balance.
     function totalClaims(address token) external view returns (uint256);
 
+    /// @notice Number of components, fixed at initialization.
     function componentCount() external view returns (uint256);
 
     /// @notice Component token addresses only (cheaper than {components} when units are not needed).
@@ -139,7 +194,10 @@ interface IIndexToken is IERC20, IERC20Permit {
     function restartAllowedAt() external view returns (uint256);
 
     /// @notice Snapshots the rule's target units and starts the notice period. Anyone can call it once
-    ///         MIN_REBALANCE_INTERVAL has passed since the last rebalance, while no unexpired rebalance is pending.
+    ///         MIN_REBALANCE_INTERVAL has passed since the last rebalance, while no unexpired rebalance is pending, and
+    ///         once {restartAllowedAt} has passed; before that only the factory owner or guardian can. Reverts with
+    ///         TurnoverTooLow when the targets would sell less than MIN_TURNOVER, and with the rule's ThinPriceHistory
+    ///         or PriceHistoryDeviates when a moving component's price window fails the snapshot checks.
     /// @param keepMask Bit i set leaves component i untouched, for example while it is paused. Only the factory owner or
     ///        guardian can pass a non-zero mask, and it must leave at least one component to rebalance.
     function startRebalance(uint256 keepMask) external;
@@ -151,18 +209,30 @@ interface IIndexToken is IERC20, IERC20Permit {
     /// @notice Settles the pending rebalance during its auction. Sends msg.sender what the index no longer needs of each
     ///         shrinking component, calls `IRebalanceExecutor.onXindexRebalance` on it, and reverts unless every
     ///         component then backs the new units. Only a contract can execute.
+    /// @param data Passed unchanged to the executor's callback.
     function executeRebalance(bytes calldata data) external;
 
-    /// @notice Targets and turnover {startRebalance} would snapshot now with `keepMask`.
+    /// @notice Targets and turnover {startRebalance} would snapshot now with `keepMask`, with the same price checks. It
+    ///         checks neither the caller nor the mask: bits at or above {componentCount} and a turnover below
+    ///         MIN_TURNOVER are accepted here but make {startRebalance} revert. A mask that keeps every component
+    ///         reverts with the rule's DegenerateBasket.
+    /// @return targetUnits Target raw units per 1e18 shares, per component in component order.
+    /// @return turnover Value the rebalance would sell, as a share of the rebalanced components' value (1e18 = 100%).
     function previewTarget(uint256 keepMask) external view returns (uint256[] memory targetUnits, uint256 turnover);
 
-    /// @notice The pending rebalance: auction start (0 if none), keep mask and target units.
+    /// @notice The last started rebalance: auction start, keep mask and target units. `eta` is 0 when none was started
+    ///         or the last one was executed or cancelled; an auction nobody filled keeps its `eta` after `eta +
+    ///         AUCTION_DURATION`, and a new rebalance can then be started.
     function pendingRebalance() external view returns (uint256 eta, uint256 keepMask, uint256[] memory targetUnits);
 
     /// @notice Multiplier an execution in this block would use, or 0 outside an auction.
     function currentMultiplier() external view returns (uint256);
 
     /// @notice Exact settlement an execution in this block would use. Reverts like {executeRebalance} outside an auction.
+    /// @return multiplier Multiplier on the growing components' extra units (1e18 = parity).
+    /// @return units New units per component, in component order.
+    /// @return amountsOut What the index would send the executor per component.
+    /// @return amountsIn What the index would need back per component, given no surplus.
     function previewRebalance()
         external
         view

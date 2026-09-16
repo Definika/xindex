@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test} from "forge-std/Test.sol";
+import {XindexTest} from "./XindexTest.sol";
+import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
@@ -9,20 +10,18 @@ import {IndexFactory} from "../src/IndexFactory.sol";
 import {IndexToken} from "../src/IndexToken.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IIndexToken} from "../src/interfaces/IIndexToken.sol";
+import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockFeeToken} from "./mocks/MockFeeToken.sol";
 import {MockMarket} from "./mocks/MockMarket.sol";
 
-contract IndexTokenTest is Test {
-    MockMarket market;
-    IndexFactory factory;
+contract IndexTokenTest is XindexTest {
     IndexToken index;
 
     MockERC20 wbtc; // 8 decimals
     MockERC20 weth; // 18 decimals
     MockERC20 usdc; // 6 decimals
 
-    address owner = makeAddr("owner");
     address alice = makeAddr("alice");
     address bob = makeAddr("bob");
 
@@ -59,14 +58,6 @@ contract IndexTokenTest is Test {
     // ---------------------------------------------------------------------
     // helpers
     // ---------------------------------------------------------------------
-
-    function _list(address token) internal {
-        IIndexFactory.TokenConfig memory config = market.config(token, 0);
-        vm.prank(owner);
-        factory.proposeListing(token, config);
-        vm.warp(block.timestamp + factory.LISTING_DELAY());
-        factory.executeListing(token);
-    }
 
     function _fund(address who, uint256 shares) internal {
         uint256[] memory need = index.previewIssue(shares);
@@ -126,7 +117,7 @@ contract IndexTokenTest is Test {
     }
 
     function test_constructor_rejectsZeroRule() public {
-        vm.expectRevert(IIndexToken.ZeroAddress.selector);
+        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
         new IndexToken(address(0));
     }
 
@@ -264,9 +255,9 @@ contract IndexTokenTest is Test {
     function test_issue_revertsBadRecipients() public {
         _fund(alice, 1e18);
         vm.startPrank(alice);
-        vm.expectRevert(IIndexToken.ZeroAddress.selector);
+        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
         index.issue(1e18, address(0));
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.InvalidRecipient.selector, address(index)));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(index)));
         index.issue(1e18, address(index));
         vm.stopPrank();
     }
@@ -275,7 +266,9 @@ contract IndexTokenTest is Test {
         uint256[] memory need = index.previewIssue(1e18);
         wbtc.mint(alice, need[0]);
         vm.prank(alice);
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, address(index), 0, need[0])
+        );
         index.issue(1e18, alice);
     }
 
@@ -361,9 +354,9 @@ contract IndexTokenTest is Test {
         _fund(alice, 1e18);
         vm.startPrank(alice);
         index.issue(1e18, alice);
-        vm.expectRevert(IIndexToken.ZeroAddress.selector);
+        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
         index.redeem(1e18, address(0));
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.InvalidRecipient.selector, address(index)));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(index)));
         index.redeem(1e18, address(index));
         vm.stopPrank();
     }
@@ -372,7 +365,7 @@ contract IndexTokenTest is Test {
         _fund(alice, 1e18);
         vm.startPrank(alice);
         index.issue(1e18, alice);
-        vm.expectRevert();
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientBalance.selector, alice, 1e18, 1e18 + 1));
         index.redeem(1e18 + 1, alice);
         vm.stopPrank();
     }
@@ -444,9 +437,9 @@ contract IndexTokenTest is Test {
         index.issue(1e18, alice);
         vm.expectRevert(IIndexToken.ZeroShares.selector);
         index.redeemSkipping(0, alice, 1);
-        vm.expectRevert(IIndexToken.ZeroAddress.selector);
+        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
         index.redeemSkipping(1e18, address(0), 1);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.InvalidRecipient.selector, address(index)));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(index)));
         index.redeemSkipping(1e18, address(index), 1);
         vm.stopPrank();
     }
@@ -476,9 +469,9 @@ contract IndexTokenTest is Test {
         vm.startPrank(alice);
         vm.expectRevert(abi.encodeWithSelector(IIndexToken.NothingToClaim.selector, address(wbtc)));
         index.claim(address(wbtc), alice);
-        vm.expectRevert(IIndexToken.ZeroAddress.selector);
+        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
         index.claim(address(wbtc), address(0));
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.InvalidRecipient.selector, address(index)));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(index)));
         index.claim(address(wbtc), address(index));
         vm.stopPrank();
     }

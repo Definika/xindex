@@ -7,10 +7,11 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IndexFactory} from "../../src/IndexFactory.sol";
 import {IndexToken} from "../../src/IndexToken.sol";
 import {IndexZap} from "../../src/IndexZap.sol";
+import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {IIndexRule} from "../../src/interfaces/IIndexRule.sol";
 import {ISwapRouter02} from "../../src/interfaces/ISwapRouter02.sol";
-import {ForkAddresses as A} from "./ForkAddresses.sol";
+import {ForkAddresses as A, IPoolLiquidity} from "./ForkAddresses.sol";
 
 interface IQuoterV2 {
     function quoteExactInput(bytes memory path, uint256 amountIn)
@@ -88,8 +89,11 @@ contract IndexZapForkTest is Test {
         index = IndexToken(factory.createIndex("Blue Chip", "BLUE", t, u, 0));
     }
 
-    function _config(address pool, uint256 referenceSupply) internal pure returns (IIndexFactory.TokenConfig memory c) {
+    /// @dev A listing config whose minimum liquidity is a tenth of the pool's liquidity at the fork block, the policy
+    ///      of the mainnet list.
+    function _config(address pool, uint256 referenceSupply) internal view returns (IIndexFactory.TokenConfig memory c) {
         c.pool = pool;
+        if (pool != address(0)) c.minLiquidity = IPoolLiquidity(pool).liquidity() / 10;
         c.referenceSupply = referenceSupply;
     }
 
@@ -138,26 +142,26 @@ contract IndexZapForkTest is Test {
         p[2] = abi.encodePacked(A.LINK, F3000, A.WETH, F500, tokenOut);
     }
 
-    function _mintLegs(bytes[] memory paths) internal pure returns (IndexZap.MintLeg[] memory legs) {
-        legs = new IndexZap.MintLeg[](paths.length);
+    function _mintLegs(bytes[] memory paths) internal pure returns (IIndexZap.MintLeg[] memory legs) {
+        legs = new IIndexZap.MintLeg[](paths.length);
         for (uint256 i = 0; i < paths.length; ++i) {
-            legs[i] = IndexZap.MintLeg({path: paths[i], maxAmountIn: 0});
+            legs[i] = IIndexZap.MintLeg({path: paths[i], maxAmountIn: 0});
         }
     }
 
-    function _burnLegs(bytes[] memory paths) internal pure returns (IndexZap.BurnLeg[] memory legs) {
-        legs = new IndexZap.BurnLeg[](paths.length);
+    function _burnLegs(bytes[] memory paths) internal pure returns (IIndexZap.BurnLeg[] memory legs) {
+        legs = new IIndexZap.BurnLeg[](paths.length);
         for (uint256 i = 0; i < paths.length; ++i) {
-            legs[i] = IndexZap.BurnLeg({path: paths[i], minAmountOut: 0});
+            legs[i] = IIndexZap.BurnLeg({path: paths[i], minAmountOut: 0});
         }
     }
 
-    function _mintCall(IndexToken idx, address tokenIn, uint256 maxIn, uint256 shares, IndexZap.MintLeg[] memory legs)
+    function _mintCall(IndexToken idx, address tokenIn, uint256 maxIn, uint256 shares, IIndexZap.MintLeg[] memory legs)
         internal
         returns (uint256)
     {
         return zap.mintWithToken(
-            IndexZap.MintParams({
+            IIndexZap.MintParams({
                 index: address(idx),
                 expectedNonce: 0, // these indexes never rebalance; reading the nonce here would consume vm.expectRevert
                 tokenIn: tokenIn,
@@ -170,12 +174,15 @@ contract IndexZapForkTest is Test {
         );
     }
 
-    function _burnCall(IndexToken idx, uint256 shares, address tokenOut, uint256 minOut, IndexZap.BurnLeg[] memory legs)
-        internal
-        returns (uint256)
-    {
+    function _burnCall(
+        IndexToken idx,
+        uint256 shares,
+        address tokenOut,
+        uint256 minOut,
+        IIndexZap.BurnLeg[] memory legs
+    ) internal returns (uint256) {
         return zap.burnToToken(
-            IndexZap.BurnParams({
+            IIndexZap.BurnParams({
                 index: address(idx),
                 expectedNonce: 0, // these indexes never rebalance; reading the nonce here would consume vm.expectRevert
                 shares: shares,
@@ -264,7 +271,7 @@ contract IndexZapForkTest is Test {
         IERC20(A.USDC).approve(address(zap), maxIn);
         // SwapRouter02 checks amountInMaximum only after the pool pulled the input, so an underfunded leg
         // surfaces as "STF" rather than "Too much requested". Either way the whole mint reverts.
-        vm.expectRevert();
+        vm.expectRevert(bytes("STF"));
         _mintCall(index, A.USDC, maxIn, 1e18, _mintLegs(_mintPaths(A.USDC)));
         vm.stopPrank();
         assertEq(IERC20(A.USDC).balanceOf(alice), maxIn);
@@ -274,11 +281,11 @@ contract IndexZapForkTest is Test {
     function testFork_mintAndBurnWithPerLegLimits() public {
         uint256[] memory need = index.previewIssue(1e18);
         bytes[] memory mintPaths = _mintPaths(A.USDC);
-        IndexZap.MintLeg[] memory mintLegs = new IndexZap.MintLeg[](3);
+        IIndexZap.MintLeg[] memory mintLegs = new IIndexZap.MintLeg[](3);
         uint256 total;
         for (uint256 i = 0; i < 3; ++i) {
             (uint256 legQuote,,,) = quoter.quoteExactOutput(mintPaths[i], need[i]);
-            mintLegs[i] = IndexZap.MintLeg({path: mintPaths[i], maxAmountIn: legQuote + legQuote / 200});
+            mintLegs[i] = IIndexZap.MintLeg({path: mintPaths[i], maxAmountIn: legQuote + legQuote / 200});
             total += legQuote;
         }
         uint256 maxIn = total + total / 100;
@@ -291,11 +298,11 @@ contract IndexZapForkTest is Test {
 
         uint256[] memory got = index.previewRedeem(1e18);
         bytes[] memory burnPaths = _burnPaths(A.USDC);
-        IndexZap.BurnLeg[] memory burnLegs = new IndexZap.BurnLeg[](3);
+        IIndexZap.BurnLeg[] memory burnLegs = new IIndexZap.BurnLeg[](3);
         uint256 quoteOut;
         for (uint256 i = 0; i < 3; ++i) {
             (uint256 legOut,,,) = quoter.quoteExactInput(burnPaths[i], got[i]);
-            burnLegs[i] = IndexZap.BurnLeg({path: burnPaths[i], minAmountOut: legOut - legOut / 200});
+            burnLegs[i] = IIndexZap.BurnLeg({path: burnPaths[i], minAmountOut: legOut - legOut / 200});
             quoteOut += legOut;
         }
         vm.startPrank(alice);
@@ -325,10 +332,10 @@ contract IndexZapForkTest is Test {
     function testFork_burnToWBTC() public {
         _mint(A.USDC, 1e18, 100);
 
-        IndexZap.BurnLeg[] memory legs = new IndexZap.BurnLeg[](3);
-        legs[0] = IndexZap.BurnLeg({path: "", minAmountOut: 0}); // WBTC is the payout token
-        legs[1] = IndexZap.BurnLeg({path: abi.encodePacked(A.WETH, F500, A.WBTC), minAmountOut: 0});
-        legs[2] = IndexZap.BurnLeg({path: abi.encodePacked(A.LINK, F3000, A.WETH, F500, A.WBTC), minAmountOut: 0});
+        IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](3);
+        legs[0] = IIndexZap.BurnLeg({path: "", minAmountOut: 0}); // WBTC is the payout token
+        legs[1] = IIndexZap.BurnLeg({path: abi.encodePacked(A.WETH, F500, A.WBTC), minAmountOut: 0});
+        legs[2] = IIndexZap.BurnLeg({path: abi.encodePacked(A.LINK, F3000, A.WETH, F500, A.WBTC), minAmountOut: 0});
 
         (uint256 wethOut,,,) = quoter.quoteExactInput(legs[1].path, U_WETH);
         (uint256 linkOut,,,) = quoter.quoteExactInput(legs[2].path, U_LINK);
@@ -350,7 +357,7 @@ contract IndexZapForkTest is Test {
         uint256 quote = _quoteBurn(A.USDC, 1e18);
         vm.startPrank(alice);
         index.approve(address(zap), 1e18);
-        vm.expectPartialRevert(IndexZap.InsufficientOutput.selector);
+        vm.expectPartialRevert(IIndexZap.InsufficientOutput.selector);
         _burnCall(index, 1e18, A.USDC, quote + 1, _burnLegs(_burnPaths(A.USDC)));
         vm.stopPrank();
         assertEq(index.balanceOf(alice), 1e18);

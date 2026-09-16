@@ -12,6 +12,8 @@ import {IUniswapV3Pool} from "../../src/interfaces/IUniswapV3Pool.sol";
 import {INonfungiblePositionManager} from "../interfaces/INonfungiblePositionManager.sol";
 import {IUniswapV3FactorySetup} from "../interfaces/IUniswapV3FactorySetup.sol";
 import {IUniswapV3PoolSetup} from "../interfaces/IUniswapV3PoolSetup.sol";
+import {MainnetAddresses} from "../MainnetAddresses.sol";
+import {ScriptUtils} from "../ScriptUtils.sol";
 import {IWETH9} from "../interfaces/IWETH9.sol";
 import {FaucetToken} from "./FaucetToken.sol";
 
@@ -37,6 +39,10 @@ contract SetupTestMarket is Script {
     using SafeERC20 for IERC20;
 
     /// @notice A test token, its WETH pool and how the rule should see it.
+    /// @param name ERC-20 name.
+    /// @param symbol ERC-20 symbol; `seed` identifies the tokens by it.
+    /// @param decimals Token decimals.
+    /// @param fee Fee tier of the token's WETH pool: POOL_FEE_LOW or POOL_FEE_MEDIUM.
     /// @param wethPerToken WETH wei per whole token at the starting price.
     /// @param supply Minted to the deployer at creation, for pool liquidity.
     /// @param dripAmount What each faucet drip mints.
@@ -53,18 +59,24 @@ contract SetupTestMarket is Script {
     }
 
     /// @notice Uniswap V3 contracts and WETH the market is built on.
+    /// @param factory Uniswap V3 factory that creates the pools.
+    /// @param positionManager NonfungiblePositionManager that adds liquidity.
+    /// @param weth Wrapped ether every pool pairs with.
     struct Uniswap {
         address factory;
         address positionManager;
         address weth;
     }
 
-    uint24 public constant POOL_FEE_LOW = 500;
-    uint24 public constant POOL_FEE_MEDIUM = 3000;
+    /// @notice Fee tiers the market's pools use (0.05% and 0.3%) and their Uniswap V3 tick spacings.
+    uint24 public constant POOL_FEE_LOW = ScriptUtils.POOL_FEE_LOW;
+    uint24 public constant POOL_FEE_MEDIUM = ScriptUtils.POOL_FEE_MEDIUM;
     int24 public constant TICK_SPACING_LOW = 10;
     int24 public constant TICK_SPACING_MEDIUM = 60;
+    /// @notice Decimals of the test tokens that mirror 18-decimal mainnet tokens.
     uint8 public constant STANDARD_DECIMALS = 18;
 
+    /// @notice The only chain {run} accepts.
     uint256 public constant SEPOLIA_CHAIN_ID = 11_155_111;
     /// @dev Checked on Sepolia on 2026-09-16: the position manager's `factory()` and `WETH9()` return these, and so do
     ///      SwapRouter02 0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E and QuoterV2 0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3.
@@ -76,17 +88,31 @@ contract SetupTestMarket is Script {
     uint16 public constant OBSERVATION_CARDINALITY = 200;
     /// @notice Liquidity sits between half and double the starting price: 1.0001^6932 is just above 2.
     int24 public constant RANGE_TICKS = 6932;
+    /// @notice `seed` refuses a pool whose square-root price is more than 1/this away from its spec price.
+    uint160 public constant PRICE_TOLERANCE_DIVISOR = 100;
+    /// @notice A listed pool's minimum liquidity is its liquidity divided by this, the mainnet list's policy.
+    uint128 public constant MIN_LIQUIDITY_DIVISOR = 10;
     /// @notice Ether supply the WETH listing uses, as in the mainnet default whitelist.
-    uint256 public constant ETH_SUPPLY = 122_050_160e18;
+    uint256 public constant ETH_SUPPLY = MainnetAddresses.ETH_SUPPLY;
+    /// @notice WETH `seed` puts in the tUSDC pool unless USD_POOL_WETH is set.
     uint256 public constant DEFAULT_USD_POOL_WETH = 0.3 ether;
+    /// @notice WETH `seed` puts in each other pool unless TOKEN_POOL_WETH is set.
     uint256 public constant DEFAULT_TOKEN_POOL_WETH = 0.1 ether;
 
+    /// @notice {run} on a chain other than Sepolia.
     error NotSepolia(uint256 chainId);
+    /// @notice MARKET_MODE is not `create` or `seed`.
     error UnknownMode(string mode);
+    /// @notice MARKET_TOKENS lists `given` tokens instead of the `expected` number from {specs}.
     error TokenCountMismatch(uint256 expected, uint256 given);
+    /// @notice The token at position `i` does not have the symbol {specs} lists there.
     error UnexpectedToken(uint256 i, address token);
+    /// @notice No WETH pool exists for `token` at its spec's fee tier; run `create` first.
     error PoolMissing(address token);
+    /// @notice {rangeAround} got a fee tier other than POOL_FEE_LOW or POOL_FEE_MEDIUM.
     error UnsupportedFee(uint24 fee);
+    /// @notice `pool`'s square-root price moved more than 1% from the spec's before liquidity was added.
+    error PoolPriceMoved(address pool, uint160 current, uint160 expected);
 
     /// @notice The market, tUSDC first. Prices are mainnet Uniswap time-weighted prices on 2026-09-16, rounded; the
     ///         reference supplies are the mainnet default whitelist's, and for AAVE its mainnet total supply that day.
@@ -110,7 +136,7 @@ contract SetupTestMarket is Script {
             wethPerToken: 31.6e18,
             supply: 10e8,
             dripAmount: 0.001e8,
-            referenceSupply: 20_084_784e8
+            referenceSupply: MainnetAddresses.BTC_SUPPLY
         });
         list[2] = Spec({
             name: "Xindex Test LINK",
@@ -120,7 +146,7 @@ contract SetupTestMarket is Script {
             wethPerToken: 0.0045e18,
             supply: 100_000e18,
             dripAmount: 10e18,
-            referenceSupply: 748_099_970e18
+            referenceSupply: MainnetAddresses.LINK_SUPPLY
         });
         list[3] = Spec({
             name: "Xindex Test UNI",
@@ -130,7 +156,7 @@ contract SetupTestMarket is Script {
             wethPerToken: 0.00264e18,
             supply: 200_000e18,
             dripAmount: 20e18,
-            referenceSupply: 623_212_423e18
+            referenceSupply: MainnetAddresses.UNI_SUPPLY
         });
         list[4] = Spec({
             name: "Xindex Test AAVE",
@@ -144,6 +170,7 @@ contract SetupTestMarket is Script {
         });
     }
 
+    /// @notice The Sepolia Uniswap V3 deployment and WETH.
     function sepoliaUniswap() public pure returns (Uniswap memory) {
         return
             Uniswap({
@@ -151,12 +178,14 @@ contract SetupTestMarket is Script {
             });
     }
 
+    /// @notice Runs MARKET_MODE on Sepolia.
+    /// @return tokens The market's tokens, tUSDC first.
     function run() external returns (address[] memory tokens) {
         if (block.chainid != SEPOLIA_CHAIN_ID) revert NotSepolia(block.chainid);
         string memory mode = vm.envString("MARKET_MODE");
-        if (_same(mode, "create")) {
+        if (ScriptUtils.same(mode, "create")) {
             tokens = create(sepoliaUniswap());
-        } else if (_same(mode, "seed")) {
+        } else if (ScriptUtils.same(mode, "seed")) {
             tokens = vm.envAddress("MARKET_TOKENS", ",");
             seed(
                 sepoliaUniswap(),
@@ -170,6 +199,8 @@ contract SetupTestMarket is Script {
     }
 
     /// @notice Deploys every token in {specs}, creates its WETH pool at the spec price and reserves oracle slots.
+    /// @param uniswap The Uniswap deployment to build on.
+    /// @return tokens The new tokens, in {specs} order.
     function create(Uniswap memory uniswap) public returns (address[] memory tokens) {
         Spec[] memory list = specs();
         tokens = new address[](list.length);
@@ -195,16 +226,21 @@ contract SetupTestMarket is Script {
     /// @notice Wraps ether and adds each pool's liquidity between half and double its current price. The tUSDC pool
     ///         gets `usdPoolWeth` of WETH, every other pool `tokenPoolWeth`, each matched by up to twice that value of
     ///         the token. The positions go to msg.sender.
+    /// @param uniswap The Uniswap deployment `create` used.
+    /// @param tokens The tokens `create` logged, in {specs} order.
+    /// @param usdPoolWeth WETH wei for the tUSDC pool.
+    /// @param tokenPoolWeth WETH wei for each other pool.
     function seed(Uniswap memory uniswap, address[] memory tokens, uint256 usdPoolWeth, uint256 tokenPoolWeth) public {
         Spec[] memory list = specs();
         if (tokens.length != list.length) revert TokenCountMismatch(list.length, tokens.length);
         address[] memory pools = new address[](list.length);
         for (uint256 i = 0; i < list.length; ++i) {
-            if (keccak256(bytes(IERC20Metadata(tokens[i]).symbol())) != keccak256(bytes(list[i].symbol))) {
+            if (!ScriptUtils.same(IERC20Metadata(tokens[i]).symbol(), list[i].symbol)) {
                 revert UnexpectedToken(i, tokens[i]);
             }
             pools[i] = IUniswapV3Factory(uniswap.factory).getPool(tokens[i], uniswap.weth, list[i].fee);
             if (pools[i] == address(0)) revert PoolMissing(tokens[i]);
+            _checkPrice(uniswap, list[i], tokens[i], pools[i]);
         }
 
         vm.startBroadcast();
@@ -220,22 +256,38 @@ contract SetupTestMarket is Script {
         console2.log("Deploy Xindex 30 minutes after `create` with:");
         console2.log("  USDC=%s WETH=%s", tokens[0], uniswap.weth);
         console2.log("  UNISWAP_V3_FACTORY=%s", uniswap.factory);
-        console2.log("List the components with WHITELIST=%s", whitelist(tokens, uniswap.weth));
+        console2.log("List the components with WHITELIST=%s", whitelist(uniswap, tokens));
     }
 
     /// @notice `ConfigureWhitelist` entries for the market's components, in mainnet order: tWBTC, WETH, tLINK, tUNI,
-    ///         tAAVE. tUSDC is a currency and is not listed.
-    function whitelist(address[] memory tokens, address weth) public pure returns (string memory entries) {
+    ///         tAAVE. tUSDC is a currency and is not listed. Each pooled token's minimum liquidity is a tenth of its
+    ///         pool's current liquidity, the mainnet policy, so call it once the pools are seeded.
+    /// @param uniswap The Uniswap deployment.
+    /// @param tokens The market's tokens, in {specs} order.
+    /// @return entries A WHITELIST value for `ConfigureWhitelist`.
+    function whitelist(Uniswap memory uniswap, address[] memory tokens) public view returns (string memory entries) {
         Spec[] memory list = specs();
-        entries = _entry(tokens[1], list[1].fee, list[1].referenceSupply);
-        entries = string.concat(entries, ",", _entry(weth, 0, ETH_SUPPLY));
+        entries =
+            _entry(tokens[1], list[1].fee, _minLiquidity(uniswap, tokens[1], list[1].fee), list[1].referenceSupply);
+        entries = string.concat(entries, ",", _entry(uniswap.weth, 0, 0, ETH_SUPPLY));
         for (uint256 i = 2; i < list.length; ++i) {
-            entries = string.concat(entries, ",", _entry(tokens[i], list[i].fee, list[i].referenceSupply));
+            uint128 minLiquidity = _minLiquidity(uniswap, tokens[i], list[i].fee);
+            entries = string.concat(entries, ",", _entry(tokens[i], list[i].fee, minLiquidity, list[i].referenceSupply));
         }
+    }
+
+    /// @dev The liquidity in `token`'s WETH pool at `fee`, divided by MIN_LIQUIDITY_DIVISOR.
+    function _minLiquidity(Uniswap memory uniswap, address token, uint24 fee) private view returns (uint128) {
+        address pool = IUniswapV3Factory(uniswap.factory).getPool(token, uniswap.weth, fee);
+        return IUniswapV3PoolSetup(pool).liquidity() / MIN_LIQUIDITY_DIVISOR;
     }
 
     /// @notice Square root of the pool price, token1 raw units per token0 raw unit, in Q64.96, for `token` worth
     ///         `wethPerToken` WETH wei per whole token.
+    /// @param token The pool's token besides WETH.
+    /// @param weth WETH, which decides the pool's token order.
+    /// @param decimals The token's decimals.
+    /// @param wethPerToken WETH wei per whole token.
     function sqrtPriceX96(address token, address weth, uint8 decimals, uint256 wethPerToken)
         public
         pure
@@ -249,6 +301,10 @@ contract SetupTestMarket is Script {
     }
 
     /// @notice Ticks from RANGE_TICKS below `tick` to RANGE_TICKS above it, widened to the fee tier's tick spacing.
+    /// @param tick The pool's current tick.
+    /// @param fee POOL_FEE_LOW or POOL_FEE_MEDIUM.
+    /// @return lower The position's lower tick.
+    /// @return upper The position's upper tick.
     function rangeAround(int24 tick, uint24 fee) public pure returns (int24 lower, int24 upper) {
         int24 spacing;
         if (fee == POOL_FEE_LOW) {
@@ -278,6 +334,19 @@ contract SetupTestMarket is Script {
         console2.log("  liquidity %s, raw amounts %s and %s", liquidity, amount0, amount1);
     }
 
+    /// @dev Anyone can move the price of a pool with no liquidity for free, so a pool more than 1% (in square-root
+    ///      price) away from its spec price is refused before anything is broadcast.
+    function _checkPrice(Uniswap memory uniswap, Spec memory spec, address token, address pool) private view {
+        // Only the current price matters here; the pool has no narrower getter for it.
+        // forge-lint: disable-next-line(unused-return)
+        (uint160 current,,,,,,) = IUniswapV3Pool(pool).slot0();
+        uint160 expected = sqrtPriceX96(token, uniswap.weth, spec.decimals, spec.wethPerToken);
+        uint160 tolerance = expected / PRICE_TOLERANCE_DIVISOR;
+        if (current > expected + tolerance || current < expected - tolerance) {
+            revert PoolPriceMoved(pool, current, expected);
+        }
+    }
+
     /// @dev A position between half and double the pool's current price, holding `wethAmount` and up to twice its value
     ///      in `token` at the spec price, owned by msg.sender.
     function _mintParams(Uniswap memory uniswap, Spec memory spec, address token, address pool, uint256 wethAmount)
@@ -299,8 +368,14 @@ contract SetupTestMarket is Script {
         params.deadline = block.timestamp + 1 hours;
     }
 
-    function _entry(address token, uint24 fee, uint256 referenceSupply) private pure returns (string memory) {
-        return string.concat(vm.toString(token), ":", vm.toString(fee), ":", vm.toString(referenceSupply));
+    function _entry(address token, uint24 fee, uint128 minLiquidity, uint256 referenceSupply)
+        private
+        pure
+        returns (string memory)
+    {
+        return string.concat(
+            vm.toString(token), ":", vm.toString(fee), ":", vm.toString(minLiquidity), ":", vm.toString(referenceSupply)
+        );
     }
 
     function _wholeToken(uint8 decimals) private pure returns (uint256) {
@@ -312,9 +387,5 @@ contract SetupTestMarket is Script {
         int24 remainder = tick % spacing;
         if (remainder < 0) remainder += spacing;
         return tick - remainder;
-    }
-
-    function _same(string memory a, string memory b) private pure returns (bool) {
-        return keccak256(bytes(a)) == keccak256(bytes(b));
     }
 }

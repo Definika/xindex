@@ -8,6 +8,7 @@ import {IndexFactory} from "../src/IndexFactory.sol";
 import {IndexToken} from "../src/IndexToken.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IIndexToken} from "../src/interfaces/IIndexToken.sol";
+import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockMarket} from "./mocks/MockMarket.sol";
 import {MockPausableToken} from "./mocks/MockPausableToken.sol";
@@ -167,7 +168,7 @@ contract IndexTokenRebalanceTest is Test {
     function test_startRebalance_keepMaskRules() public {
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
         vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.Unauthorized.selector, stranger));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, stranger));
         index.startRebalance(1);
 
         vm.startPrank(guardian);
@@ -213,7 +214,7 @@ contract IndexTokenRebalanceTest is Test {
 
         _start(index);
         vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.Unauthorized.selector, stranger));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, stranger));
         index.cancelRebalance();
 
         uint256 restartAt = block.timestamp + index.REBALANCE_DELAY();
@@ -228,7 +229,7 @@ contract IndexTokenRebalanceTest is Test {
         assertEq(index.restartAllowedAt(), restartAt);
 
         vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.Unauthorized.selector, stranger));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, stranger));
         index.startRebalance(0);
 
         vm.prank(owner);
@@ -345,11 +346,18 @@ contract IndexTokenRebalanceTest is Test {
     }
 
     function test_executeRebalance_growingUnitsRoundUp() public {
-        uint256 eta = _start(index);
+        uint256[] memory odd = new uint256[](5);
+        (odd[0], odd[1], odd[2], odd[3], odd[4]) = (100e18 + 7, 100e18, 100e18, 100e18, 100e18);
+        vm.prank(stranger);
+        IndexToken idx = IndexToken(factory.createIndex("Odd", "ODD", tokens, odd, 0));
+        _issue(idx, alice, SHARES);
+        uint256 eta = _start(idx);
+        (,, uint256[] memory targets) = idx.pendingRebalance();
         vm.warp(eta + 1);
-        (uint256 m, uint256[] memory units,,) = index.previewRebalance();
-        uint256 exact = 100e18 * m;
-        assertEq(units[0], 100e18 + exact / WAD + (exact % WAD == 0 ? 0 : 1));
+        (uint256 m, uint256[] memory units,,) = idx.previewRebalance();
+        uint256 exact = (targets[0] - odd[0]) * m;
+        assertTrue(exact % WAD != 0, "the growth does not divide evenly, so the rounding shows");
+        assertEq(units[0], odd[0] + exact / WAD + 1, "growing units round up, in the index's favour");
     }
 
     function test_executeRebalance_emptyIndexSettlesAtParity() public {
@@ -388,7 +396,7 @@ contract IndexTokenRebalanceTest is Test {
         uint256 eta = _start(index);
         vm.warp(eta);
         vm.prank(stranger);
-        vm.expectRevert();
+        vm.expectRevert(bytes("")); // the callback to an account without code reverts with no data
         index.executeRebalance("");
     }
 

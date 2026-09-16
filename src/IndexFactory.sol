@@ -53,6 +53,8 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
     mapping(address => uint256) public listingEta;
     mapping(address token => TokenConfig config) private _tokenConfig;
     mapping(address token => TokenConfig config) private _pendingConfig;
+    /// @inheritdoc IIndexFactory
+    mapping(address token => bool listing) public pendingIsListing;
 
     mapping(address => bool) public isIndex;
     mapping(address => address) public creatorOf;
@@ -177,6 +179,18 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
 
     /// @inheritdoc IIndexFactory
     function proposeListing(address token, TokenConfig calldata config) external onlyOwner {
+        _propose(token, config, true);
+    }
+
+    /// @inheritdoc IIndexFactory
+    function proposeConfig(address token, TokenConfig calldata config) external onlyOwner {
+        TokenConfig storage current = _tokenConfig[token];
+        // Every config in force has a pool or a reference supply: the rule accepts no other.
+        if (current.pool == address(0) && current.referenceSupply == 0) revert NotConfigured(token);
+        _propose(token, config, false);
+    }
+
+    function _propose(address token, TokenConfig calldata config, bool listing) private {
         if (token.code.length == 0) revert NotAContract(token);
         uint256 pending = listingEta[token];
         if (pending != 0 && block.timestamp <= pending + PROPOSAL_WINDOW) revert ListingPending(token, pending);
@@ -184,19 +198,28 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
 
         uint256 eta = block.timestamp + LISTING_DELAY;
         listingEta[token] = eta;
+        pendingIsListing[token] = listing;
         TokenConfig storage next = _pendingConfig[token];
         next.pool = config.pool;
+        next.minLiquidity = config.minLiquidity;
         next.referenceSupply = config.referenceSupply;
         next.excluded = config.excluded;
         // The rule call above is a view on a contract this factory deployed; nothing external can run in between.
         // forge-lint: disable-next-line(reentrancy-events)
-        emit ListingProposed(token, eta, config.pool, config.referenceSupply, config.excluded);
+        emit ListingProposed(
+            token, eta, listing, config.pool, config.minLiquidity, config.referenceSupply, config.excluded
+        );
     }
 
     /// @inheritdoc IIndexFactory
     function cancelListing(address token) external onlyOwnerOrGuardian {
         if (listingEta[token] == 0) revert NoPendingListing(token);
+        _dropProposal(token);
+    }
+
+    function _dropProposal(address token) private {
         delete listingEta[token];
+        delete pendingIsListing[token];
         delete _pendingConfig[token];
         emit ListingCancelled(token);
     }
@@ -208,16 +231,19 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         if (block.timestamp < eta) revert ListingNotReady(token, eta);
         if (block.timestamp > eta + PROPOSAL_WINDOW) revert ListingExpired(token, eta + PROPOSAL_WINDOW);
 
+        bool listing = pendingIsListing[token];
         delete listingEta[token];
+        delete pendingIsListing[token];
         TokenConfig storage next = _pendingConfig[token];
         TokenConfig storage current = _tokenConfig[token];
         current.pool = next.pool;
+        current.minLiquidity = next.minLiquidity;
         current.referenceSupply = next.referenceSupply;
         current.excluded = next.excluded;
         delete _pendingConfig[token];
-        emit TokenConfigured(token, current.pool, current.referenceSupply, current.excluded);
+        emit TokenConfigured(token, current.pool, current.minLiquidity, current.referenceSupply, current.excluded);
 
-        if (!isWhitelisted[token]) {
+        if (listing && !isWhitelisted[token]) {
             isWhitelisted[token] = true;
             _whitelist.push(token);
             _whitelistPos[token] = _whitelist.length;
@@ -240,6 +266,8 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         _whitelist.pop();
         delete _whitelistPos[token];
         emit TokenWhitelisted(token, false);
+        // A listing proposal would undo the delist once executed; a config-only change would not.
+        if (listingEta[token] != 0 && pendingIsListing[token]) _dropProposal(token);
     }
 
     // ---------------------------------------------------------------------
@@ -250,6 +278,7 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
     // forge-lint: disable-next-item(missing-zero-check)
     /// @inheritdoc IIndexFactory
     function proposeGuardian(address newGuardian) external onlyOwner {
+        if (pendingGuardianEta != 0) emit GuardianChangeCancelled(pendingGuardian);
         uint256 eta = block.timestamp + GUARDIAN_DELAY;
         pendingGuardian = newGuardian;
         pendingGuardianEta = eta;

@@ -17,6 +17,7 @@ import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {IndexFactory} from "../../src/IndexFactory.sol";
 import {IndexToken} from "../../src/IndexToken.sol";
 import {RebalanceExecutorV3} from "../fork/RebalanceExecutorV3.sol";
+import {IIndexToken} from "../../src/interfaces/IIndexToken.sol";
 
 /// @notice Exercises the mocks' own guard rails so their behaviour in the real tests is trustworthy.
 contract MocksTest is Test {
@@ -270,6 +271,45 @@ contract MocksTest is Test {
         p.observe(ago);
     }
 
+    function test_uniswapPool_liquidityInterpolationAndInjectedObservations() public {
+        MockUniswapV3Pool p = new MockUniswapV3Pool(address(weth), address(usdc), 500);
+        uint32[] memory ago = new uint32[](3);
+        (ago[0], ago[1]) = (1800, 600);
+
+        (, uint160[] memory perLiquidity) = p.observe(ago);
+        assertEq(p.liquidity(), 1e18);
+        assertEq(perLiquidity[0], (uint256(1_000_000_000 - 1800) << 128) / 1e18);
+        assertEq(perLiquidity[2], (uint256(1_000_000_000) << 128) / 1e18);
+        p.setLiquidity(0); // counted as one, like Uniswap
+        (, perLiquidity) = p.observe(ago);
+        assertEq(perLiquidity[1], uint256(1_000_000_000 - 600) << 128);
+
+        p.setCumulatives(0, -1800);
+        (int56[] memory cumulatives,) = p.observe(ago);
+        assertEq(cumulatives[0], 0);
+        assertEq(cumulatives[1], -1200, "points in between lie on the straight line");
+        assertEq(cumulatives[2], -1800);
+
+        p.setObservation(1800, 7, 11);
+        p.setObservation(600, 8, 12);
+        vm.expectRevert(bytes("NO OBSERVATION"));
+        p.observe(ago);
+        p.setObservation(0, 9, 13);
+        assertTrue(p.rawObservations());
+        assertFalse(p.rawCumulatives());
+        (cumulatives, perLiquidity) = p.observe(ago);
+        assertEq(cumulatives[1], 8);
+        assertEq(perLiquidity[2], 13);
+
+        p.setCumulatives(0, 1);
+        assertFalse(p.rawObservations());
+        p.setObservation(0, 9, 13);
+        p.setTick(3);
+        assertFalse(p.rawObservations());
+        (cumulatives,) = p.observe(ago);
+        assertEq(cumulatives[2] - cumulatives[0], 3 * 1800);
+    }
+
     function test_uniswapPool_initializeOnceAndReserveObservations() public {
         MockUniswapV3Pool p = new MockUniswapV3Pool(address(weth), address(usdc), 500);
         p.initialize(1 << 96);
@@ -277,6 +317,10 @@ contract MocksTest is Test {
         assertEq(sqrtPriceX96, 1 << 96);
         vm.expectRevert(bytes("AI"));
         p.initialize(1);
+
+        p.setSqrtPriceX96(2 << 96); // a swap moved the price
+        (sqrtPriceX96,,,,,,) = p.slot0();
+        assertEq(sqrtPriceX96, 2 << 96);
 
         p.increaseObservationCardinalityNext(200);
         assertEq(p.observationCardinalityNext(), 200);
@@ -446,5 +490,30 @@ contract MocksTest is Test {
         assertEq(units[2], 122.5e18, "the growing component was bought with WETH");
         assertEq(mWeth.balanceOf(address(executor)), 5e18, "sold 50, spent 22.5 on the purchase and 22.5 on delivery");
         assertEq(shrinking.balanceOf(address(r)), 50e18);
+    }
+
+    function test_XA12_rebalanceExecutorV3_takesCallbacksOnlyFromTheIndexItFills() public {
+        MockERC20 mWeth = new MockERC20("Wrapped Ether", "WETH", 18);
+        RebalanceExecutorV3 executor = new RebalanceExecutorV3(new MockSwapRouter(), address(mWeth));
+        mWeth.mint(address(executor), 10e18); // the operator's float
+
+        // A contract posing as an index that holds only WETH asks for the whole float.
+        address fake = makeAddr("fake index");
+        vm.etch(fake, hex"00");
+        address[] memory onlyWeth = new address[](1);
+        onlyWeth[0] = address(mWeth);
+        vm.mockCall(fake, abi.encodeWithSelector(IIndexToken.componentTokens.selector), abi.encode(onlyWeth));
+        uint256[] memory nothing = new uint256[](1);
+        uint256[] memory everything = new uint256[](1);
+        everything[0] = 10e18;
+        vm.prank(fake);
+        vm.expectRevert(abi.encodeWithSelector(RebalanceExecutorV3.UnexpectedCaller.selector, fake));
+        executor.onXindexRebalance(nothing, everything, "");
+        assertEq(mWeth.balanceOf(address(executor)), 10e18, "the float stays");
+
+        address stranger = makeAddr("stranger");
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(RebalanceExecutorV3.NotOwner.selector, stranger));
+        executor.setFee(address(mWeth), 3000);
     }
 }

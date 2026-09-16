@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {Deploy} from "../script/Deploy.s.sol";
+import {MainnetAddresses} from "../script/MainnetAddresses.sol";
 import {ConfigureWhitelist} from "../script/ConfigureWhitelist.s.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
 import {IndexToken} from "../src/IndexToken.sol";
@@ -14,7 +15,7 @@ import {FaucetToken} from "../script/testnet/FaucetToken.sol";
 import {INonfungiblePositionManager} from "../script/interfaces/INonfungiblePositionManager.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
-import {MockMarket} from "./mocks/MockMarket.sol";
+import {DEFAULT_MIN_LIQUIDITY, MockMarket} from "./mocks/MockMarket.sol";
 import {MockPositionManager} from "./mocks/MockPositionManager.sol";
 import {MockSwapRouter} from "./mocks/MockSwapRouter.sol";
 import {MockUniswapV3Factory, MockUniswapV3Pool} from "./mocks/MockUniswapV3.sol";
@@ -22,6 +23,45 @@ import {MockWETH} from "./mocks/MockWETH.sol";
 
 /// @notice Stand-in for a Safe: the deploy script only reads its signature threshold.
 contract MockSafe {
+    uint256 public getThreshold;
+    address[] internal _modules;
+    bool internal _malformedModules;
+
+    constructor(uint256 threshold) {
+        getThreshold = threshold;
+    }
+
+    function enableModule(address module) external {
+        _modules.push(module);
+    }
+
+    function setMalformedModules(bool malformed) external {
+        _malformedModules = malformed;
+    }
+
+    /// @notice Safe's module list, one page from the sentinel; a single word instead when set malformed.
+    function getModulesPaginated(address, uint256 pageSize)
+        external
+        view
+        returns (address[] memory page, address next)
+    {
+        if (_malformedModules) {
+            assembly ("memory-safe") {
+                mstore(0, 1)
+                return(0, 32)
+            }
+        }
+        uint256 n = _modules.length < pageSize ? _modules.length : pageSize;
+        page = new address[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            page[i] = _modules[i];
+        }
+        next = n < _modules.length ? _modules[n] : address(1);
+    }
+}
+
+/// @notice A multisig that reports a threshold but no Safe module list.
+contract ThresholdOnly {
     uint256 public getThreshold;
 
     constructor(uint256 threshold) {
@@ -38,10 +78,10 @@ contract SilentFallback {
 /// @dev Environment variables are process-global and tests run in parallel, so each variable name is
 ///      set by exactly one test. In tests, script broadcasts come from DEFAULT_SENDER.
 contract ScriptsTest is Test {
-    address constant MAINNET_SWAP_ROUTER_02 = 0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45;
-    address constant MAINNET_WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
-    address constant MAINNET_UNISWAP_V3_FACTORY = 0x1F98431c8aD98523631AE4a59f267346ea31F984;
-    address constant MAINNET_USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+    address constant MAINNET_SWAP_ROUTER_02 = MainnetAddresses.SWAP_ROUTER_02;
+    address constant MAINNET_WETH = MainnetAddresses.WETH;
+    address constant MAINNET_UNISWAP_V3_FACTORY = MainnetAddresses.UNISWAP_V3_FACTORY;
+    address constant MAINNET_USDC = MainnetAddresses.USDC;
 
     Deploy deployer;
     ConfigureWhitelist configure;
@@ -84,9 +124,19 @@ contract ScriptsTest is Test {
         address[] memory excluded = new address[](1);
         excluded[0] = makeAddr("burn");
         list = new ConfigureWhitelist.Entry[](2);
-        list[0] = ConfigureWhitelist.Entry({token: address(tokenA), fee: 3000, referenceSupply: 0, excluded: excluded});
+        list[0] = ConfigureWhitelist.Entry({
+            token: address(tokenA),
+            fee: 3000,
+            minLiquidity: DEFAULT_MIN_LIQUIDITY,
+            referenceSupply: 0,
+            excluded: excluded
+        });
         list[1] = ConfigureWhitelist.Entry({
-            token: address(tokenB), fee: 3000, referenceSupply: 21_000_000e8, excluded: new address[](0)
+            token: address(tokenB),
+            fee: 3000,
+            minLiquidity: DEFAULT_MIN_LIQUIDITY,
+            referenceSupply: 21_000_000e8,
+            excluded: new address[](0)
         });
     }
 
@@ -125,6 +175,25 @@ contract ScriptsTest is Test {
         deployer.checkOwner(address(new MockSafe(2))); // a real multisig
         deployer.checkOwner(address(router)); // a contract without getThreshold, such as a timelock
         deployer.checkOwner(address(new SilentFallback())); // an empty answer is not a threshold
+    }
+
+    function test_XA07_checkOwnerRejectsASafeWithModules() public {
+        vm.chainId(1);
+        // A module executes as the Safe without any signature, so the threshold would not protect the factory.
+        MockSafe withModule = new MockSafe(2);
+        address module = makeAddr("module");
+        withModule.enableModule(module);
+        vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerHasModules.selector, address(withModule), module));
+        deployer.checkOwner(address(withModule));
+
+        // A multisig whose module list cannot be read is not accepted on faith.
+        address unknown = address(new ThresholdOnly(2));
+        vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerModulesUnknown.selector, unknown));
+        deployer.checkOwner(unknown);
+        MockSafe malformed = new MockSafe(2);
+        malformed.setMalformedModules(true);
+        vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerModulesUnknown.selector, address(malformed)));
+        deployer.checkOwner(address(malformed));
     }
 
     function test_checkGuardian() public {
@@ -173,6 +242,44 @@ contract ScriptsTest is Test {
         assertEq(defaults.usdc, MAINNET_USDC);
     }
 
+    function test_XA25_guardianCannotBeTheBroadcastingKey() public {
+        // The deploy key is the most exposed key; it must hold no role in the factory.
+        vm.prank(guardian);
+        vm.expectRevert(abi.encodeWithSelector(Deploy.GuardianIsBroadcaster.selector, guardian));
+        deployer.checkGuardian(owner, guardian);
+    }
+
+    function test_XA39_rolesCannotBeMarketContracts() public {
+        Deploy.Market memory given = _market(); // built before each expectRevert: it reads the market
+        Deploy.Market memory resolved = deployer.resolveMarket(given);
+        deployer.checkRolesAreNotMarket(owner, guardian, resolved);
+        vm.expectRevert(abi.encodeWithSelector(Deploy.RoleIsMarketContract.selector, resolved.router));
+        deployer.checkRolesAreNotMarket(owner, resolved.router, resolved);
+        vm.expectRevert(abi.encodeWithSelector(Deploy.RoleIsMarketContract.selector, resolved.weth));
+        deployer.deploy(resolved.weth, guardian, given); // a market address pasted as OWNER
+        vm.expectRevert(abi.encodeWithSelector(Deploy.RoleIsMarketContract.selector, resolved.usdc));
+        deployer.deploy(owner, resolved.usdc, given);
+        vm.expectRevert(abi.encodeWithSelector(Deploy.RoleIsMarketContract.selector, resolved.uniswapV3Factory));
+        deployer.deploy(owner, resolved.uniswapV3Factory, given);
+        vm.expectRevert(abi.encodeWithSelector(Deploy.RoleIsMarketContract.selector, resolved.router));
+        deployer.deploy(resolved.router, guardian, given);
+    }
+
+    function test_XA47_mainnetMarketCannotBeOverridden() public {
+        vm.chainId(1);
+        vm.etch(MAINNET_SWAP_ROUTER_02, hex"00");
+        vm.etch(MAINNET_WETH, hex"00");
+        vm.etch(MAINNET_UNISWAP_V3_FACTORY, hex"00");
+        vm.etch(MAINNET_USDC, hex"00");
+        Deploy.Market memory overridden;
+        address otherUsdc = address(market.usdc()); // a contract, but not mainnet USDC
+        overridden.usdc = otherUsdc;
+        vm.expectRevert(abi.encodeWithSelector(Deploy.MainnetOverride.selector, "USDC", otherUsdc));
+        deployer.resolveMarket(overridden);
+        overridden.usdc = MAINNET_USDC; // naming the default itself is fine
+        assertEq(deployer.resolveMarket(overridden).usdc, MAINNET_USDC);
+    }
+
     function test_deploy() public {
         (IndexFactory factory, IndexZap zap) = deployer.deploy(owner, guardian, _market());
         assertEq(factory.owner(), owner);
@@ -201,40 +308,49 @@ contract ScriptsTest is Test {
     // ConfigureWhitelist
     // ---------------------------------------------------------------------
 
+    /// @dev No token named for relisting.
+    address[] none;
+
     function test_parseEntry() public {
         string memory token = vm.toString(address(router));
         address burnA = makeAddr("burnA");
         address burnB = makeAddr("burnB");
 
-        ConfigureWhitelist.Entry memory e = configure.parseEntry(string.concat(token, ":3000"));
+        ConfigureWhitelist.Entry memory e = configure.parseEntry(string.concat(token, ":3000:5"));
         assertEq(e.token, address(router));
         assertEq(e.fee, 3000);
+        assertEq(e.minLiquidity, 5);
         assertEq(e.referenceSupply, 0);
         assertEq(e.excluded.length, 0);
 
-        e = configure.parseEntry(string.concat(token, ":0:120000000000000000000000000"));
+        e = configure.parseEntry(string.concat(token, ":0:0:120000000000000000000000000"));
         assertEq(e.fee, 0);
+        assertEq(e.minLiquidity, 0);
         assertEq(e.referenceSupply, 120_000_000e18);
 
-        e = configure.parseEntry(string.concat(token, ":500::", vm.toString(burnA), "|", vm.toString(burnB)));
+        e = configure.parseEntry(string.concat(token, ":500:9::", vm.toString(burnA), "|", vm.toString(burnB)));
+        assertEq(e.minLiquidity, 9);
         assertEq(e.referenceSupply, 0);
         assertEq(e.excluded.length, 2);
         assertEq(e.excluded[0], burnA);
         assertEq(e.excluded[1], burnB);
 
-        e = configure.parseEntry(string.concat(token, ":500:7:"));
+        e = configure.parseEntry(string.concat(token, ":500:9:7:"));
         assertEq(e.referenceSupply, 7);
         assertEq(e.excluded.length, 0);
 
         vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.MalformedEntry.selector, token));
         configure.parseEntry(token);
-        string memory tooMany = string.concat(token, ":1:2:3:4");
+        string memory noMinimum = string.concat(token, ":3000");
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.MalformedEntry.selector, noMinimum));
+        configure.parseEntry(noMinimum);
+        string memory tooMany = string.concat(token, ":1:2:3:4:5");
         vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.MalformedEntry.selector, tooMany));
         configure.parseEntry(tooMany);
     }
 
     function test_resolveList() public {
-        string memory raw = string.concat(vm.toString(address(router)), ":3000, ", vm.toString(owner), ":0:5");
+        string memory raw = string.concat(vm.toString(address(router)), ":3000:1, ", vm.toString(owner), ":0:0:5");
         ConfigureWhitelist.Entry[] memory parsed = configure.resolveList(raw);
         assertEq(parsed.length, 2);
         assertEq(parsed[0].token, address(router));
@@ -251,6 +367,7 @@ contract ScriptsTest is Test {
         for (uint256 i = 0; i < defaults.length; ++i) {
             assertEq(defaults[i].token, expected[i].token);
             assertEq(defaults[i].fee, expected[i].fee);
+            assertEq(defaults[i].minLiquidity, expected[i].minLiquidity);
             assertEq(defaults[i].referenceSupply, expected[i].referenceSupply);
         }
         assertEq(defaults[1].token, MAINNET_WETH);
@@ -262,10 +379,11 @@ contract ScriptsTest is Test {
         IIndexFactory.TokenConfig memory config = _configFor(list[0]);
         assertEq(config.pool, address(market.tokenPool(list[0].token)));
         assertEq(config.excluded.length, 1);
+        assertEq(config.minLiquidity, DEFAULT_MIN_LIQUIDITY);
         assertEq(config.referenceSupply, 0);
 
         ConfigureWhitelist.Entry memory wethEntry = ConfigureWhitelist.Entry({
-            token: address(market.weth()), fee: 0, referenceSupply: 1e27, excluded: new address[](0)
+            token: address(market.weth()), fee: 0, minLiquidity: 0, referenceSupply: 1e27, excluded: new address[](0)
         });
         config = _configFor(wethEntry);
         assertEq(config.pool, address(0));
@@ -279,14 +397,14 @@ contract ScriptsTest is Test {
         configure.execute(factory, list); // nothing proposed yet: nothing happens
         assertEq(factory.listingEta(list[0].token), 0);
 
-        configure.propose(factory, list);
+        configure.propose(factory, list, none);
         uint256 eta = block.timestamp + factory.LISTING_DELAY();
         assertEq(factory.listingEta(list[0].token), eta);
         assertEq(factory.listingEta(list[1].token), eta);
         assertEq(factory.pendingTokenConfig(list[1].token).referenceSupply, 21_000_000e8);
 
         vm.warp(block.timestamp + 1 hours);
-        configure.propose(factory, list); // already pending: skipped, eta unchanged
+        configure.propose(factory, list, none); // already pending: skipped, eta unchanged
         assertEq(factory.listingEta(list[0].token), eta);
 
         configure.execute(factory, list); // not ready yet: skipped
@@ -298,13 +416,13 @@ contract ScriptsTest is Test {
         assertTrue(factory.isWhitelisted(list[1].token));
         assertEq(factory.tokenConfig(list[0].token).excluded[0], list[0].excluded[0]);
 
-        configure.propose(factory, list); // listed with exactly this config: skipped
+        configure.propose(factory, list, none); // listed with exactly this config: skipped
         assertEq(factory.listingEta(list[0].token), 0);
         configure.execute(factory, list); // nothing pending: skipped
         assertEq(factory.whitelistedTokens().length, 2);
 
         list[1].referenceSupply = 21_000_001e8; // a different config is proposed as a config change
-        configure.propose(factory, list);
+        configure.propose(factory, list, none);
         assertEq(factory.listingEta(list[0].token), 0);
         assertEq(factory.listingEta(list[1].token), block.timestamp + factory.LISTING_DELAY());
     }
@@ -315,7 +433,7 @@ contract ScriptsTest is Test {
         market.tokenPool(list[0].token).setObservationCardinality(60); // a pool nobody has prepared
         list[1].fee = 500; // no 0.05% pool exists for B
 
-        configure.propose(factory, list);
+        configure.propose(factory, list, none);
         assertEq(factory.listingEta(list[0].token), 0);
         assertEq(factory.listingEta(list[1].token), 0);
     }
@@ -343,14 +461,14 @@ contract ScriptsTest is Test {
     function test_expiredProposalsAreSkippedThenProposedAgain() public {
         IndexFactory factory = _factory(DEFAULT_SENDER, address(0));
         ConfigureWhitelist.Entry[] memory list = _twoEntries();
-        configure.propose(factory, list);
+        configure.propose(factory, list, none);
         uint256 eta = factory.listingEta(list[0].token);
 
         vm.warp(eta + factory.PROPOSAL_WINDOW() + 1);
         configure.execute(factory, list); // expired: skipped
         assertFalse(factory.isWhitelisted(list[0].token));
 
-        configure.propose(factory, list); // proposed again with a fresh delay
+        configure.propose(factory, list, none); // proposed again with a fresh delay
         assertEq(factory.listingEta(list[0].token), block.timestamp + factory.LISTING_DELAY());
     }
 
@@ -358,7 +476,7 @@ contract ScriptsTest is Test {
         IndexFactory factory = _factory(owner, guardian);
         ConfigureWhitelist.Entry[] memory list = _twoEntries();
 
-        bytes[] memory calls = configure.safeCalldata(factory, list);
+        bytes[] memory calls = configure.safeCalldata(factory, list, none);
         assertEq(calls.length, 2);
         for (uint256 i = 0; i < list.length; ++i) {
             assertEq(calls[i], abi.encodeCall(IIndexFactory.proposeListing, (list[i].token, _configFor(list[i]))));
@@ -369,20 +487,127 @@ contract ScriptsTest is Test {
         assertTrue(ok);
         assertEq(factory.listingEta(list[0].token), block.timestamp + factory.LISTING_DELAY());
 
-        calls = configure.safeCalldata(factory, list); // the first is pending now
+        calls = configure.safeCalldata(factory, list, none); // the first is pending now
         assertEq(calls.length, 1);
         assertEq(calls[0], abi.encodeCall(IIndexFactory.proposeListing, (list[1].token, _configFor(list[1]))));
 
         market.tokenPool(list[1].token).setObservationCardinality(60); // the rule rejects the second
-        assertEq(configure.safeCalldata(factory, list).length, 0);
+        assertEq(configure.safeCalldata(factory, list, none).length, 0);
+    }
+
+    function test_XA11_proposeSkipsADelistedTokenUnlessNamedForRelisting() public {
+        IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
+        ConfigureWhitelist.Entry[] memory list = _twoEntries();
+        configure.propose(factory, list, none);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        configure.execute(factory, list);
+        vm.prank(guardian);
+        factory.delist(list[0].token);
+
+        configure.propose(factory, list, none); // a routine run with the same list must not undo the guardian
+        assertEq(factory.listingEta(list[0].token), 0);
+        assertEq(configure.safeCalldata(factory, list, none).length, 0);
+
+        // A changed config for the delisted token is proposed as a config change, which leaves it delisted.
+        list[0].minLiquidity = DEFAULT_MIN_LIQUIDITY / 2;
+        bytes[] memory calls = configure.safeCalldata(factory, list, none);
+        assertEq(calls.length, 1);
+        assertEq(calls[0], abi.encodeCall(IIndexFactory.proposeConfig, (list[0].token, _configFor(list[0]))));
+        configure.propose(factory, list, none);
+        assertFalse(factory.pendingIsListing(list[0].token));
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        configure.execute(factory, list);
+        assertFalse(factory.isWhitelisted(list[0].token));
+        assertEq(factory.tokenConfig(list[0].token).minLiquidity, DEFAULT_MIN_LIQUIDITY / 2);
+
+        // Named in the relist argument, it is proposed as a listing again.
+        address[] memory relist = new address[](2);
+        (relist[0], relist[1]) = (list[1].token, list[0].token); // naming a listed token too changes nothing for it
+        calls = configure.safeCalldata(factory, list, relist);
+        assertEq(calls.length, 1);
+        assertEq(calls[0], abi.encodeCall(IIndexFactory.proposeListing, (list[0].token, _configFor(list[0]))));
+        configure.propose(factory, list, relist);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        configure.execute(factory, list);
+        assertTrue(factory.isWhitelisted(list[0].token));
+    }
+
+    function test_parseAddresses() public view {
+        assertEq(configure.parseAddresses("").length, 0);
+        address[] memory parsed =
+            configure.parseAddresses(string.concat(vm.toString(owner), " , ", vm.toString(guardian)));
+        assertEq(parsed.length, 2);
+        assertEq(parsed[0], owner);
+        assertEq(parsed[1], guardian);
+    }
+
+    function test_XA06_executeSkipsAPendingConfigThatDiffersFromTheEntry() public {
+        IndexFactory factory = _factory(owner, guardian);
+        ConfigureWhitelist.Entry[] memory list = _twoEntries();
+        IIndexFactory.TokenConfig memory other = _configFor(list[1]);
+        other.referenceSupply = 1; // not what the WHITELIST entry says
+        vm.prank(owner);
+        factory.proposeListing(list[1].token, other);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+
+        configure.execute(factory, list);
+        assertFalse(factory.isWhitelisted(list[1].token), "a config the entry did not ask for is not executed");
+        assertGt(factory.listingEta(list[1].token), 0);
+        vm.prank(owner); // the Safe calldata for the other entry is still produced; this one waits for a cancel
+        assertEq(configure.safeCalldata(factory, list, none).length, 1);
+    }
+
+    function test_XA40_proposeSkipsTokensOutsideTheWhitelistPolicy() public {
+        IndexFactory factory = _factory(DEFAULT_SENDER, address(0));
+        MockERC20 twoDecimals = new MockERC20("Two", "TWO", 2);
+        market.config(address(twoDecimals), 0);
+        ConfigureWhitelist.Entry[] memory list = new ConfigureWhitelist.Entry[](3);
+        list[0] = ConfigureWhitelist.Entry({
+            token: address(twoDecimals),
+            fee: 3000,
+            minLiquidity: DEFAULT_MIN_LIQUIDITY,
+            referenceSupply: 1_000_000e2,
+            excluded: new address[](0)
+        });
+        list[1] = ConfigureWhitelist.Entry({
+            token: MainnetAddresses.USDC, fee: 500, minLiquidity: 1, referenceSupply: 0, excluded: new address[](0)
+        }); // a mint currency, never a component
+        list[2] = ConfigureWhitelist.Entry({
+            token: address(router), fee: 3000, minLiquidity: 1, referenceSupply: 0, excluded: new address[](0)
+        }); // a contract without decimals()
+
+        configure.propose(factory, list, none);
+        for (uint256 i = 0; i < list.length; ++i) {
+            assertEq(factory.listingEta(list[i].token), 0);
+        }
+        assertEq(configure.safeCalldata(factory, list, none).length, 0);
+    }
+
+    function test_XA42_statusReportsListingsAndPendingProposals() public {
+        IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
+        ConfigureWhitelist.Entry[] memory list = _twoEntries();
+        configure.status(factory, list); // nothing listed or pending
+        configure.propose(factory, list, none);
+        configure.status(factory, list); // listings pending, as the entries say
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        configure.execute(factory, list);
+        assertTrue(factory.isWhitelisted(list[1].token));
+
+        IIndexFactory.TokenConfig memory other = _configFor(list[1]);
+        other.referenceSupply = 1;
+        vm.prank(DEFAULT_SENDER);
+        factory.proposeConfig(list[1].token, other);
+        configure.status(factory, list); // listed as the entry says, with a different config change pending
+        assertFalse(factory.pendingIsListing(list[1].token));
     }
 
     function test_configureRun_readsEnvironment() public {
         IndexFactory factory = _factory(DEFAULT_SENDER, address(0));
         ConfigureWhitelist.Entry[] memory list = _twoEntries();
         vm.setEnv("FACTORY", vm.toString(address(factory)));
-        vm.setEnv("WHITELIST", string.concat(vm.toString(list[0].token), ":3000"));
+        vm.setEnv("WHITELIST", string.concat(vm.toString(list[0].token), ":3000:", vm.toString(DEFAULT_MIN_LIQUIDITY)));
 
+        vm.setEnv("RELIST", vm.toString(list[0].token)); // parsed by run; nothing here is delisted
         vm.setEnv("LISTING_MODE", "safe"); // logs the calldata only
         configure.run();
         assertEq(factory.listingEta(list[0].token), 0);
@@ -395,6 +620,9 @@ contract ScriptsTest is Test {
         vm.setEnv("LISTING_MODE", "execute");
         configure.run();
         assertTrue(factory.isWhitelisted(list[0].token));
+
+        vm.setEnv("LISTING_MODE", "status"); // read-only
+        configure.run();
 
         vm.setEnv("LISTING_MODE", "sideways");
         vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.UnknownMode.selector, "sideways"));
@@ -525,6 +753,24 @@ contract ScriptsTest is Test {
         assertEq(MockWETH(uniswap.weth).balanceOf(uniswap.positionManager), 0.7 ether);
     }
 
+    function test_XA26_seedRefusesAPoolWhosePriceMoved() public {
+        SetupTestMarket.Uniswap memory uniswap = _uniswap();
+        address[] memory tokens = testMarket.create(uniswap);
+        SetupTestMarket.Spec[] memory list = testMarket.specs();
+        MockUniswapV3Pool pool = _pool(uniswap, tokens[1], list[1].fee);
+        uint160 expected = testMarket.sqrtPriceX96(tokens[1], uniswap.weth, list[1].decimals, list[1].wethPerToken);
+        uint160 moved = expected + expected / 10; // anyone can swap dust through the empty pool between the two runs
+        pool.setSqrtPriceX96(moved);
+        vm.deal(DEFAULT_SENDER, 1 ether);
+        vm.expectRevert(abi.encodeWithSelector(SetupTestMarket.PoolPriceMoved.selector, address(pool), moved, expected));
+        testMarket.seed(uniswap, tokens, 0.3 ether, 0.1 ether);
+
+        moved = expected - expected / 10; // and below
+        pool.setSqrtPriceX96(moved);
+        vm.expectRevert(abi.encodeWithSelector(SetupTestMarket.PoolPriceMoved.selector, address(pool), moved, expected));
+        testMarket.seed(uniswap, tokens, 0.3 ether, 0.1 ether);
+    }
+
     function test_seedTestMarket_rejectsTokensThatDoNotMatch() public {
         SetupTestMarket.Uniswap memory uniswap = _uniswap();
         address[] memory tokens = testMarket.create(uniswap);
@@ -548,17 +794,20 @@ contract ScriptsTest is Test {
         address[] memory tokens = testMarket.create(uniswap);
         SetupTestMarket.Spec[] memory list = testMarket.specs();
 
-        ConfigureWhitelist.Entry[] memory entries = configure.resolveList(testMarket.whitelist(tokens, uniswap.weth));
+        ConfigureWhitelist.Entry[] memory entries = configure.resolveList(testMarket.whitelist(uniswap, tokens));
         assertEq(entries.length, 5);
         assertEq(entries[0].token, tokens[1]);
         assertEq(entries[0].fee, list[1].fee);
+        assertEq(entries[0].minLiquidity, 1e17, "a tenth of the pool's liquidity");
         assertEq(entries[0].referenceSupply, list[1].referenceSupply);
         assertEq(entries[1].token, uniswap.weth);
         assertEq(entries[1].fee, 0);
+        assertEq(entries[1].minLiquidity, 0);
         assertEq(entries[1].referenceSupply, testMarket.ETH_SUPPLY());
         for (uint256 i = 2; i < 5; ++i) {
             assertEq(entries[i].token, tokens[i]);
             assertEq(entries[i].fee, list[i].fee);
+            assertEq(entries[i].minLiquidity, 1e17);
             assertEq(entries[i].referenceSupply, list[i].referenceSupply);
         }
     }

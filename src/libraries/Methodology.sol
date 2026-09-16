@@ -9,13 +9,15 @@ library Methodology {
     uint8 internal constant UNCAPPED = 0;
 
     /// @notice The largest constituent weighs 30%, the second largest at most 20%, and the others share the rest in
-    ///         proportion to market cap.
+    ///         proportion to market cap. Ranks 3 and below are not capped: when the second is capped they share 50%, so
+    ///         one of them can outweigh the first two.
     uint8 internal constant CAPPED = 1;
 
     /// @notice Number of defined methodologies; valid ids are below it.
     uint8 internal constant COUNT = 2;
 
-    /// @notice Below five constituents the capped rule contradicts its own cap: with three the smallest always weighs
-    ///         at least 50%, and with four a third- or fourth-ranked constituent always exceeds 20%.
+    /// @notice Below five constituents a third- or lower-ranked constituent always weighs more than the second's 20%
+    ///         cap (with three the smallest weighs at least 50%). Five or more make that possible rather than certain;
+    ///         the rule never caps ranks 3 and below.
     uint256 internal constant MIN_CAPPED_COMPONENTS = 5;
 }

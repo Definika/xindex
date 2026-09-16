@@ -7,10 +7,11 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IndexFactory} from "../../src/IndexFactory.sol";
 import {IndexToken} from "../../src/IndexToken.sol";
 import {IndexZap} from "../../src/IndexZap.sol";
+import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {IIndexRule} from "../../src/interfaces/IIndexRule.sol";
 import {ISwapRouter02} from "../../src/interfaces/ISwapRouter02.sol";
-import {ForkAddresses as A} from "./ForkAddresses.sol";
+import {ForkAddresses as A, IPoolLiquidity} from "./ForkAddresses.sol";
 import {RebalanceExecutorV3} from "./RebalanceExecutorV3.sol";
 
 interface IQuoterV2ExactInput {
@@ -80,8 +81,11 @@ contract RebalanceForkTest is Test {
     // helpers
     // ---------------------------------------------------------------------
 
-    function _config(address pool, uint256 referenceSupply) internal pure returns (IIndexFactory.TokenConfig memory c) {
+    /// @dev A listing config whose minimum liquidity is a tenth of the pool's liquidity at the fork block, the policy
+    ///      of the mainnet list.
+    function _config(address pool, uint256 referenceSupply) internal view returns (IIndexFactory.TokenConfig memory c) {
         c.pool = pool;
+        if (pool != address(0)) c.minLiquidity = IPoolLiquidity(pool).liquidity() / 10;
         c.referenceSupply = referenceSupply;
     }
 
@@ -190,11 +194,11 @@ contract RebalanceForkTest is Test {
             navUsdc, _quoteInUsdc(index, 1e18), 0.03e18, "the displayed price matches what the basket sells for"
         );
 
-        IndexZap.BurnLeg[] memory legs = new IndexZap.BurnLeg[](tokens.length);
+        IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](tokens.length);
         for (uint256 i = 0; i < tokens.length; ++i) {
-            legs[i] = IndexZap.BurnLeg({path: _toUsdc(tokens[i]), minAmountOut: 0});
+            legs[i] = IIndexZap.BurnLeg({path: _toUsdc(tokens[i]), minAmountOut: 0});
         }
-        IndexZap.BurnParams memory p = IndexZap.BurnParams({
+        IIndexZap.BurnParams memory p = IIndexZap.BurnParams({
             index: address(index),
             expectedNonce: 0,
             shares: 1e18,
@@ -206,7 +210,7 @@ contract RebalanceForkTest is Test {
         });
         vm.startPrank(alice);
         index.approve(address(zap), 1e18);
-        vm.expectRevert(abi.encodeWithSelector(IndexZap.StaleRebalanceNonce.selector, 0, 1));
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.StaleRebalanceNonce.selector, 0, 1));
         zap.burnToToken(p);
         p.expectedNonce = 1;
         uint256 out = zap.burnToToken(p);
@@ -223,7 +227,9 @@ contract RebalanceForkTest is Test {
         vm.prank(IWbtcPauser(A.WBTC).owner());
         IWbtcPauser(A.WBTC).pause();
         vm.warp(eta + index.AUCTION_DURATION());
-        vm.expectRevert();
+        (,, uint256[] memory amountsOut,) = index.previewRebalance();
+        assertGt(amountsOut[0], 0, "WBTC is a shrinking leg");
+        vm.expectRevert(bytes("")); // WBTC's whenNotPaused reverts with no data, and the index passes it on
         executor.fill(index); // WBTC must shrink, and its transfer fails
 
         uint256 wbtcHeld = IERC20(A.WBTC).balanceOf(address(index));

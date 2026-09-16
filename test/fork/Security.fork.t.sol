@@ -7,9 +7,10 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IndexFactory} from "../../src/IndexFactory.sol";
 import {IndexToken} from "../../src/IndexToken.sol";
 import {IndexZap} from "../../src/IndexZap.sol";
+import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {ISwapRouter02} from "../../src/interfaces/ISwapRouter02.sol";
-import {ForkAddresses as A} from "./ForkAddresses.sol";
+import {ForkAddresses as A, IPoolLiquidity} from "./ForkAddresses.sol";
 
 interface IWbtcAdmin {
     function owner() external view returns (address);
@@ -53,8 +54,11 @@ contract SecurityForkTest is Test {
         factory.executeListing(A.LINK);
     }
 
-    function _config(address pool, uint256 referenceSupply) internal pure returns (IIndexFactory.TokenConfig memory c) {
+    /// @dev A listing config whose minimum liquidity is a tenth of the pool's liquidity at the fork block, the policy
+    ///      of the mainnet list.
+    function _config(address pool, uint256 referenceSupply) internal view returns (IIndexFactory.TokenConfig memory c) {
         c.pool = pool;
+        if (pool != address(0)) c.minLiquidity = IPoolLiquidity(pool).liquidity() / 10;
         c.referenceSupply = referenceSupply;
     }
 
@@ -90,14 +94,14 @@ contract SecurityForkTest is Test {
         IWbtcAdmin(A.WBTC).pause();
 
         vm.startPrank(user);
-        vm.expectRevert();
+        vm.expectRevert(bytes("")); // WBTC's whenNotPaused reverts with no data
         idx.redeem(1e18, user);
 
         idx.redeemSkipping(1e18, user, 1 << 0);
         assertEq(IERC20(A.WETH).balanceOf(user), 1e15, "WETH comes out while WBTC is paused");
         assertEq(idx.claimOf(user, A.WBTC), 10_000);
 
-        vm.expectRevert();
+        vm.expectRevert(bytes("")); // still paused
         idx.claim(A.WBTC, user);
         vm.stopPrank();
 
@@ -116,14 +120,14 @@ contract SecurityForkTest is Test {
         vm.prank(IUsdtAdmin(A.USDT).owner());
         IUsdtAdmin(A.USDT).setParams(10, 5); // Tether switches on a 0.10% transfer fee
 
-        IndexZap.BurnLeg[] memory burnLegs = new IndexZap.BurnLeg[](2);
-        burnLegs[0] = IndexZap.BurnLeg({path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDT), minAmountOut: 0});
-        burnLegs[1] = IndexZap.BurnLeg({path: abi.encodePacked(A.WETH, F500, A.USDT), minAmountOut: 0});
+        IIndexZap.BurnLeg[] memory burnLegs = new IIndexZap.BurnLeg[](2);
+        burnLegs[0] = IIndexZap.BurnLeg({path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDT), minAmountOut: 0});
+        burnLegs[1] = IIndexZap.BurnLeg({path: abi.encodePacked(A.WETH, F500, A.USDT), minAmountOut: 0});
         vm.startPrank(user);
         idx.approve(address(zap), 1e18);
-        vm.expectRevert(abi.encodeWithSelector(IndexZap.TransferShortfall.selector, A.USDT));
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.TransferShortfall.selector, A.USDT));
         zap.burnToToken(
-            IndexZap.BurnParams({
+            IIndexZap.BurnParams({
                 index: address(idx),
                 expectedNonce: 0,
                 shares: 1e18,
@@ -140,14 +144,14 @@ contract SecurityForkTest is Test {
 
         // Minting with fee-charging USDT stops before any swap.
         deal(A.USDT, user, 100e6);
-        IndexZap.MintLeg[] memory mintLegs = new IndexZap.MintLeg[](2);
-        mintLegs[0] = IndexZap.MintLeg({path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDT), maxAmountIn: 0});
-        mintLegs[1] = IndexZap.MintLeg({path: abi.encodePacked(A.WETH, F500, A.USDT), maxAmountIn: 0});
+        IIndexZap.MintLeg[] memory mintLegs = new IIndexZap.MintLeg[](2);
+        mintLegs[0] = IIndexZap.MintLeg({path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDT), maxAmountIn: 0});
+        mintLegs[1] = IIndexZap.MintLeg({path: abi.encodePacked(A.WETH, F500, A.USDT), maxAmountIn: 0});
         vm.startPrank(user);
         IERC20(A.USDT).forceApprove(address(zap), 100e6);
-        vm.expectRevert(abi.encodeWithSelector(IndexZap.TransferShortfall.selector, A.USDT));
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.TransferShortfall.selector, A.USDT));
         zap.mintWithToken(
-            IndexZap.MintParams({
+            IIndexZap.MintParams({
                 index: address(idx),
                 expectedNonce: 0,
                 tokenIn: A.USDT,
@@ -163,9 +167,9 @@ contract SecurityForkTest is Test {
 
     function test_I03_strayRouterEthIsRefundedNotLocked() public {
         IndexToken idx = _create(A.WBTC, 10_000, A.LINK, 1e18);
-        IndexZap.MintLeg[] memory legs = new IndexZap.MintLeg[](2);
-        legs[0] = IndexZap.MintLeg({path: abi.encodePacked(A.WBTC, F500, A.WETH), maxAmountIn: 0});
-        legs[1] = IndexZap.MintLeg({path: abi.encodePacked(A.LINK, F3000, A.WETH), maxAmountIn: 0});
+        IIndexZap.MintLeg[] memory legs = new IIndexZap.MintLeg[](2);
+        legs[0] = IIndexZap.MintLeg({path: abi.encodePacked(A.WBTC, F500, A.WETH), maxAmountIn: 0});
+        legs[1] = IIndexZap.MintLeg({path: abi.encodePacked(A.LINK, F3000, A.WETH), maxAmountIn: 0});
 
         vm.deal(A.SWAP_ROUTER_02, 10 ether); // stray ETH sitting in SwapRouter02
         uint256 maxIn = 1 ether;
@@ -173,7 +177,7 @@ contract SecurityForkTest is Test {
         vm.startPrank(user);
         IERC20(A.WETH).forceApprove(address(zap), maxIn);
         uint256 spent = zap.mintWithToken(
-            IndexZap.MintParams({
+            IIndexZap.MintParams({
                 index: address(idx),
                 expectedNonce: 0,
                 tokenIn: A.WETH,
@@ -197,15 +201,15 @@ contract SecurityForkTest is Test {
         IndexToken idx = _create(A.WBTC, 10_000, A.WETH, 1e15);
         _issue(idx, 1e18);
 
-        IndexZap.BurnLeg[] memory legs = new IndexZap.BurnLeg[](2);
-        legs[0] = IndexZap.BurnLeg({path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDC), minAmountOut: 0});
-        legs[1] = IndexZap.BurnLeg({path: abi.encodePacked(A.WETH, F500, A.USDC), minAmountOut: 0});
+        IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](2);
+        legs[0] = IIndexZap.BurnLeg({path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDC), minAmountOut: 0});
+        legs[1] = IIndexZap.BurnLeg({path: abi.encodePacked(A.WETH, F500, A.USDC), minAmountOut: 0});
 
         vm.deal(A.SWAP_ROUTER_02, 10 ether); // a griefer, or a careless user, leaves ETH in the router
         vm.startPrank(user);
         idx.approve(address(zap), 1e18);
         uint256 out = zap.burnToToken(
-            IndexZap.BurnParams({
+            IIndexZap.BurnParams({
                 index: address(idx),
                 expectedNonce: 0,
                 shares: 1e18,

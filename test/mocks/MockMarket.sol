@@ -5,6 +5,10 @@ import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {MockERC20} from "./MockERC20.sol";
 import {MockUniswapV3Factory, MockUniswapV3Pool} from "./MockUniswapV3.sol";
 
+/// @dev Minimum liquidity `MockMarket.configWith` gives a pooled token: a tenth of a mock pool's default liquidity, the
+///      policy the mainnet list uses. File-level so pure test helpers can use it.
+uint128 constant DEFAULT_MIN_LIQUIDITY = 1e17;
+
 /// @notice WETH, USDC, a Uniswap V3 factory and pools for tests. Prices are set as ticks in token terms:
 ///         `tick` means 1.0001^tick raw WETH units per raw unit of the token, whichever side of its pool it sits on.
 contract MockMarket {
@@ -16,6 +20,8 @@ contract MockMarket {
     uint256 public constant DEFAULT_SUPPLY = 1e30;
     /// @notice About 3,000 USDC per ETH: 1.0001^196_257 is close to 1e18 / 3000e6 raw WETH per raw USDC.
     int24 public constant USDC_TICK = 196_257;
+    /// @notice Minimum liquidity `configWith` gives a pooled token.
+    uint128 public constant MIN_LIQUIDITY = DEFAULT_MIN_LIQUIDITY;
 
     MockERC20 public immutable weth;
     MockERC20 public immutable usdc;
@@ -64,6 +70,7 @@ contract MockMarket {
         }
         setPriceTick(token, tick);
         c.pool = address(tokenPool(token));
+        c.minLiquidity = MIN_LIQUIDITY;
     }
 
     function _setTick(MockUniswapV3Pool pool, address token, int24 tick) private {

@@ -308,7 +308,8 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
 
     /// @dev Settlement for the current block. A shrinking component moves straight to its target; a growing component
     ///      gains its extra units times the multiplier, rounded up. Amounts are the change in required backing, so they
-    ///      depend only on supply and units: the index never sends out rounding dust or donations.
+    ///      depend only on supply and units: the index never sends out rounding dust or donations. The backing check
+    ///      does count them, so an executor may deliver up to that surplus less.
     function _previewRebalance(uint256 supply)
         private
         view
@@ -342,7 +343,10 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
     }
 
     /// @dev Linear decay from the start to the end multiplier; the decrement rounds down, so the multiplier rounds up.
-    ///      An empty index settles at parity, because nothing moves and its new units should not depend on timing.
+    ///      An empty index settles at parity, because nothing moves and its new units should not depend on timing. An
+    ///      index with only dust supply still decays: a lone executor then picks the multiplier in [0.9, 1.5] for next
+    ///      to nothing, which sets the new units within their bounds but moves no holder's value. Any supply threshold
+    ///      for parity would be arbitrary and cheap to step over.
     function _multiplier(uint256 eta, uint256 supply) private view returns (uint256) {
         if (supply == 0) return WAD;
         return AUCTION_START_MULTIPLIER
@@ -450,6 +454,7 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
     // Overrides
     // ---------------------------------------------------------------------
 
+    /// @inheritdoc IERC20Permit
     function nonces(address owner) public view override(IERC20Permit, ERC20PermitUpgradeable) returns (uint256) {
         return super.nonces(owner);
     }

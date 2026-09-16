@@ -1,17 +1,20 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test} from "forge-std/Test.sol";
+import {XindexTest} from "./XindexTest.sol";
+import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
 import {IndexToken} from "../src/IndexToken.sol";
 import {IndexZap} from "../src/IndexZap.sol";
+import {IIndexZap} from "../src/interfaces/IIndexZap.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IIndexRule} from "../src/interfaces/IIndexRule.sol";
 import {IIndexToken} from "../src/interfaces/IIndexToken.sol";
 import {IRebalanceExecutor} from "../src/interfaces/IRebalanceExecutor.sol";
+import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockFeeToken} from "./mocks/MockFeeToken.sol";
 import {MockMarket} from "./mocks/MockMarket.sol";
@@ -91,11 +94,16 @@ contract FlashFiller is IRebalanceExecutor {
     }
 }
 
+/// @notice XA-62: an integrator's single interface over the factory, rule and token. It compiles only while the three
+///         interfaces declare their common errors once, in a shared base, instead of each declaring them again.
+interface IXindexCore is IIndexFactory, IIndexRule, IIndexToken {
+    function FACTORY() external view override(IIndexRule, IIndexToken) returns (address);
+    function RULE() external view override(IIndexFactory, IIndexToken) returns (address);
+}
+
 /// @notice One regression test per finding of the Xindex v1 security review and of the v2 rebalancing design review,
 ///         each asserting the fixed behaviour, plus the attacks that already failed before the fixes.
-contract SecurityRegressionTest is Test {
-    MockMarket market;
-    IndexFactory factory;
+contract SecurityRegressionTest is XindexTest {
     MockSwapRouter router;
     IndexZap zap;
     IndexToken index;
@@ -105,7 +113,6 @@ contract SecurityRegressionTest is Test {
     MockERC20 link; // 18
     MockERC20 usdc; // 6
 
-    address owner = makeAddr("owner");
     address guardian = makeAddr("guardian");
     address alice = makeAddr("alice");
     address attacker = makeAddr("attacker");
@@ -147,14 +154,6 @@ contract SecurityRegressionTest is Test {
     // helpers
     // ---------------------------------------------------------------------
 
-    function _list(address token) internal {
-        IIndexFactory.TokenConfig memory config = market.config(token, 0);
-        vm.prank(owner);
-        factory.proposeListing(token, config);
-        vm.warp(block.timestamp + factory.LISTING_DELAY());
-        factory.executeListing(token);
-    }
-
     function _blueTokens() internal view returns (address[] memory t) {
         t = new address[](3);
         t[0] = address(wbtc);
@@ -169,22 +168,22 @@ contract SecurityRegressionTest is Test {
         u[2] = c;
     }
 
-    function _mintLegs(address stable) internal view returns (IndexZap.MintLeg[] memory legs) {
-        legs = new IndexZap.MintLeg[](3);
+    function _mintLegs(address stable) internal view returns (IIndexZap.MintLeg[] memory legs) {
+        legs = new IIndexZap.MintLeg[](3);
         legs[0] =
-            IndexZap.MintLeg({path: abi.encodePacked(address(wbtc), FEE, address(weth), FEE, stable), maxAmountIn: 0});
-        legs[1] = IndexZap.MintLeg({path: abi.encodePacked(address(weth), FEE, stable), maxAmountIn: 0});
+            IIndexZap.MintLeg({path: abi.encodePacked(address(wbtc), FEE, address(weth), FEE, stable), maxAmountIn: 0});
+        legs[1] = IIndexZap.MintLeg({path: abi.encodePacked(address(weth), FEE, stable), maxAmountIn: 0});
         legs[2] =
-            IndexZap.MintLeg({path: abi.encodePacked(address(link), FEE, address(weth), FEE, stable), maxAmountIn: 0});
+            IIndexZap.MintLeg({path: abi.encodePacked(address(link), FEE, address(weth), FEE, stable), maxAmountIn: 0});
     }
 
-    function _burnLegs(address tokenOut) internal view returns (IndexZap.BurnLeg[] memory legs) {
-        legs = new IndexZap.BurnLeg[](3);
-        legs[0] = IndexZap.BurnLeg({
+    function _burnLegs(address tokenOut) internal view returns (IIndexZap.BurnLeg[] memory legs) {
+        legs = new IIndexZap.BurnLeg[](3);
+        legs[0] = IIndexZap.BurnLeg({
             path: abi.encodePacked(address(wbtc), FEE, address(weth), FEE, tokenOut), minAmountOut: 0
         });
-        legs[1] = IndexZap.BurnLeg({path: abi.encodePacked(address(weth), FEE, tokenOut), minAmountOut: 0});
-        legs[2] = IndexZap.BurnLeg({
+        legs[1] = IIndexZap.BurnLeg({path: abi.encodePacked(address(weth), FEE, tokenOut), minAmountOut: 0});
+        legs[2] = IIndexZap.BurnLeg({
             path: abi.encodePacked(address(link), FEE, address(weth), FEE, tokenOut), minAmountOut: 0
         });
     }
@@ -194,10 +193,10 @@ contract SecurityRegressionTest is Test {
         address tokenIn,
         uint256 maxIn,
         uint256 shares,
-        IndexZap.MintLeg[] memory legs,
+        IIndexZap.MintLeg[] memory legs,
         address to
-    ) internal view returns (IndexZap.MintParams memory) {
-        return IndexZap.MintParams({
+    ) internal view returns (IIndexZap.MintParams memory) {
+        return IIndexZap.MintParams({
             index: idx,
             expectedNonce: 0,
             tokenIn: tokenIn,
@@ -214,10 +213,10 @@ contract SecurityRegressionTest is Test {
         uint256 shares,
         address tokenOut,
         uint256 minOut,
-        IndexZap.BurnLeg[] memory legs,
+        IIndexZap.BurnLeg[] memory legs,
         address to
-    ) internal view returns (IndexZap.BurnParams memory) {
-        return IndexZap.BurnParams({
+    ) internal view returns (IIndexZap.BurnParams memory) {
+        return IIndexZap.BurnParams({
             index: idx,
             expectedNonce: 0,
             shares: shares,
@@ -321,7 +320,7 @@ contract SecurityRegressionTest is Test {
         usdc.mint(alice, maxIn);
         vm.startPrank(alice);
         usdc.approve(address(zap), maxIn);
-        vm.expectRevert(abi.encodeWithSelector(IndexZap.NotIndex.selector, seen));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotIndex.selector, seen));
         zap.mintWithToken(_mintParams(seen, address(usdc), maxIn, 1e18, _mintLegs(address(usdc)), alice));
         vm.stopPrank();
 
@@ -332,7 +331,7 @@ contract SecurityRegressionTest is Test {
 
     function test_L03_legLimitStopsASandwichOnOneLeg() public {
         uint256 maxIn = NAV_USD6 + NAV_USD6 / 100;
-        IndexZap.MintLeg[] memory legs = _mintLegs(address(usdc));
+        IIndexZap.MintLeg[] memory legs = _mintLegs(address(usdc));
         legs[0].maxAmountIn = 60_600_000;
         legs[1].maxAmountIn = 30_300_000;
         legs[2].maxAmountIn = 15_150_000;
@@ -351,7 +350,7 @@ contract SecurityRegressionTest is Test {
         _issueBlue(alice, 1e18);
         vm.startPrank(alice);
         index.approve(address(zap), 1e18);
-        vm.expectRevert(IndexZap.ZeroAmount.selector);
+        vm.expectRevert(IIndexZap.ZeroAmount.selector);
         zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 0, _burnLegs(address(usdc)), alice));
         vm.stopPrank();
     }
@@ -463,14 +462,14 @@ contract SecurityRegressionTest is Test {
 
         vm.startPrank(alice);
         fot.approve(address(zap), 200e18);
-        vm.expectRevert(abi.encodeWithSelector(IndexZap.TransferShortfall.selector, address(fot)));
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.TransferShortfall.selector, address(fot)));
         zap.mintWithToken(_mintParams(address(index), address(fot), 200e18, 1e18, _mintLegs(address(fot)), alice));
         vm.stopPrank();
 
         _issueBlue(alice, 1e18);
         vm.startPrank(alice);
         index.approve(address(zap), 1e18);
-        vm.expectRevert(abi.encodeWithSelector(IndexZap.TransferShortfall.selector, address(fot)));
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.TransferShortfall.selector, address(fot)));
         zap.burnToToken(_burnParams(address(index), 1e18, address(fot), 1, _burnLegs(address(fot)), alice));
         index.redeem(1e18, alice); // the in-kind exit is unaffected
         vm.stopPrank();
@@ -480,13 +479,13 @@ contract SecurityRegressionTest is Test {
     function test_I04_indexAndZapRejectThemselvesAsRecipient() public {
         _issueBlue(alice, 1e18);
         vm.startPrank(alice);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.InvalidRecipient.selector, address(index)));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(index)));
         index.redeem(1e18, address(index));
 
         index.approve(address(zap), 1e18);
-        vm.expectRevert(abi.encodeWithSelector(IndexZap.InvalidRecipient.selector, address(zap)));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(zap)));
         zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, _burnLegs(address(usdc)), address(zap)));
-        vm.expectRevert(abi.encodeWithSelector(IndexZap.InvalidRecipient.selector, address(index)));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(index)));
         zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, _burnLegs(address(usdc)), address(index)));
         vm.stopPrank();
     }
@@ -500,14 +499,14 @@ contract SecurityRegressionTest is Test {
         u[1] = 50e6;
         IndexToken idx = IndexToken(factory.createIndex("Mixed", "MIX", t, u, 0));
 
-        IndexZap.MintLeg[] memory legs = new IndexZap.MintLeg[](2);
-        legs[0] = IndexZap.MintLeg({path: abi.encodePacked(address(weth), FEE, address(usdc)), maxAmountIn: 0});
-        legs[1] = IndexZap.MintLeg({path: "", maxAmountIn: 0});
+        IIndexZap.MintLeg[] memory legs = new IIndexZap.MintLeg[](2);
+        legs[0] = IIndexZap.MintLeg({path: abi.encodePacked(address(weth), FEE, address(usdc)), maxAmountIn: 0});
+        legs[1] = IIndexZap.MintLeg({path: "", maxAmountIn: 0});
 
         usdc.mint(alice, 10e6);
         vm.startPrank(alice);
         usdc.approve(address(zap), 10e6);
-        vm.expectRevert(abi.encodeWithSelector(IndexZap.InsufficientBudget.selector, 50e6, 10e6));
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.InsufficientBudget.selector, 50e6, 10e6));
         zap.mintWithToken(_mintParams(address(idx), address(usdc), 10e6, 1e18, legs, alice));
         vm.stopPrank();
     }
@@ -522,7 +521,7 @@ contract SecurityRegressionTest is Test {
     function test_I07_burnWithPermitInOneTransaction() public {
         (address signer, uint256 pk) = makeAddrAndKey("signer");
         _issueBlue(signer, 1e18);
-        IndexZap.BurnParams memory p =
+        IIndexZap.BurnParams memory p =
             _burnParams(address(index), 1e18, address(usdc), NAV_USD6, _burnLegs(address(usdc)), signer);
         bytes32 structHash = keccak256(
             abi.encode(
@@ -575,8 +574,8 @@ contract SecurityRegressionTest is Test {
         weth.approve(address(idx), 1e18);
         idx.issue(1e18, alice);
         idx.approve(address(halfZap), 1e18);
-        IndexZap.BurnLeg[] memory legs = new IndexZap.BurnLeg[](1);
-        legs[0] = IndexZap.BurnLeg({path: abi.encodePacked(address(weth), FEE, address(usdc)), minAmountOut: 0});
+        IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](1);
+        legs[0] = IIndexZap.BurnLeg({path: abi.encodePacked(address(weth), FEE, address(usdc)), minAmountOut: 0});
         uint256 out = halfZap.burnToToken(_burnParams(address(idx), 1e18, address(usdc), 1_000e6, legs, alice));
         vm.stopPrank();
 
@@ -598,11 +597,18 @@ contract SecurityRegressionTest is Test {
         index.approve(address(zap), type(uint256).max);
         vm.stopPrank();
 
+        IIndexZap.MintParams memory mint =
+            _mintParams(address(index), address(usdc), 1_000e6, 1e18, _mintLegs(address(usdc)), attacker);
+        IIndexZap.BurnParams memory burn =
+            _burnParams(address(index), 1e18, address(usdc), 1, _burnLegs(address(usdc)), attacker);
         vm.startPrank(attacker);
-        vm.expectRevert();
-        zap.mintWithToken(_mintParams(address(index), address(usdc), 1_000e6, 1e18, _mintLegs(address(usdc)), attacker));
-        vm.expectRevert();
-        zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, _burnLegs(address(usdc)), attacker));
+        // Alice's approvals let the zap pull only from whoever calls it: the attacker has approved nothing.
+        vm.expectRevert(
+            abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, address(zap), 0, 1_000e6)
+        );
+        zap.mintWithToken(mint);
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, address(zap), 0, 1e18));
+        zap.burnToToken(burn);
         vm.stopPrank();
 
         assertEq(usdc.balanceOf(alice), 1_000e6);
@@ -731,6 +737,7 @@ contract SecurityRegressionTest is Test {
         address lookAlike = address(new MockUniswapV3Pool(address(token), address(weth), 3000));
         IIndexFactory.TokenConfig memory config;
         config.pool = lookAlike;
+        config.minLiquidity = market.MIN_LIQUIDITY();
         config.referenceSupply = 1e24;
         vm.prank(owner);
         vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidPool.selector, address(token), lookAlike));
@@ -779,7 +786,7 @@ contract SecurityRegressionTest is Test {
     }
 
     function test_R06_cappedMethodologyNeedsFiveComponents() public {
-        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.TooFewComponentsForCapped.selector, 3));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.TooFewComponentsForCapped.selector, 3));
         factory.createIndex("Capped", "CAP", _blueTokens(), _units(100_000, 1e16, 1e18), 1);
     }
 
@@ -810,8 +817,11 @@ contract SecurityRegressionTest is Test {
     }
 
     function test_R09_untouchedComponentsNeverMoveEvenWithDustOrDonations() public {
-        (IndexToken idx, address[] memory t) = _surgeBasket();
-        _issueRule(idx, attacker, 1e18 + 1); // issue rounds up, leaving dust in every component
+        uint256 odd = 100e18 + 1; // units that do not divide evenly, so issuing rounds up
+        (IndexToken idx, address[] memory t) = _ruleBasket(_five(6, 1, 1, 1, 1), _five(odd, odd, odd, odd, odd));
+        _issueRule(idx, attacker, 1e18 + 1);
+        uint256 required = idx.totalSupply() * odd / 1e18;
+        assertGt(MockERC20(t[3]).balanceOf(address(idx)), required, "issuing rounded up and left dust");
         MockERC20(t[3]).mint(address(idx), 12_345);
         uint256 balanceBefore = MockERC20(t[3]).balanceOf(address(idx));
 
@@ -897,7 +907,7 @@ contract SecurityRegressionTest is Test {
         idx.cancelRebalance();
 
         vm.prank(attacker);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.Unauthorized.selector, attacker));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, attacker));
         idx.startRebalance(0);
         vm.prank(guardian);
         idx.startRebalance(0);
@@ -907,11 +917,11 @@ contract SecurityRegressionTest is Test {
         (IndexToken idx,) = _surgeBasket();
         vm.warp(idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL());
         vm.prank(attacker);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.Unauthorized.selector, attacker));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, attacker));
         idx.startRebalance(1 << 0);
     }
 
-    function test_R17_supplyInflationMovesUnitsAtMostDouble() public {
+    function test_R17_supplyInflationClipsTheTargetAtDouble() public {
         MockERC20 inflating = new MockERC20("Inflating", "INF", 18);
         inflating.mint(attacker, 1e24);
         address[] memory t = new address[](5);
@@ -926,7 +936,14 @@ contract SecurityRegressionTest is Test {
 
         inflating.mint(attacker, 9e24); // the issuer mints ten times the supply
         (uint256[] memory targets,) = idx.previewTarget(0);
-        assertEq(targets[0], 200e18, "the rule would want 3.6x; one rebalance moves at most 2x");
+        assertEq(targets[0], 200e18, "the rule would want 3.6x; one rebalance targets at most 2x");
+
+        // A fill at the 1.5 opening multiplier settles the growth at 1.5 times the target's extra units: 2.5x at most.
+        uint256 eta = _openAuction(idx, 0, attacker);
+        assertEq(block.timestamp, eta);
+        new MockRebalanceExecutor().execute(idx, "");
+        (, uint256[] memory units) = idx.components();
+        assertEq(units[0], 250e18);
     }
 
     function test_R18_priceReadingsOnlyShapeTargetsWithinBounds() public {
@@ -963,11 +980,11 @@ contract SecurityRegressionTest is Test {
         _openAuction(idx, 0, attacker);
         new MockRebalanceExecutor().execute(idx, "");
 
-        IndexZap.BurnParams memory p =
-            _burnParams(address(idx), 1e18, address(usdc), 1, new IndexZap.BurnLeg[](5), alice);
+        IIndexZap.BurnParams memory p =
+            _burnParams(address(idx), 1e18, address(usdc), 1, new IIndexZap.BurnLeg[](5), alice);
         vm.startPrank(alice);
         idx.approve(address(zap), 1e18);
-        vm.expectRevert(abi.encodeWithSelector(IndexZap.StaleRebalanceNonce.selector, 0, 1));
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.StaleRebalanceNonce.selector, 0, 1));
         zap.burnToToken(p);
         vm.stopPrank();
     }
@@ -1023,6 +1040,98 @@ contract SecurityRegressionTest is Test {
         assertGe(amountsIn[0], out[1], "at the opening an executor delivers more than it takes");
     }
 
+    // ---------------------------------------------------------------------
+    // Whole-repo audit of 2026-09-16 (XA ids, audit/2026-09-16-whole-repo-audit.md)
+    // ---------------------------------------------------------------------
+
+    /// @dev One 12-second block at the extreme tick that makes `token` look cheapest, in the last third of the
+    ///      30-minute window, with the true tick 0 everywhere else. With `emptyRange` the block sat past every
+    ///      position, where Uniswap counts liquidity as one.
+    function _extremeBlock(address token, bool emptyRange) internal returns (MockUniswapV3Pool pool, uint256 delta) {
+        pool = market.tokenPool(token);
+        int56 outlier = (token < address(weth) ? int56(-887_272) : int56(887_272)) * 12;
+        uint256 perSecond = (uint256(1) << 128) / pool.liquidity();
+        delta = 1788 * perSecond + (emptyRange ? uint256(12) << 128 : 12 * perSecond);
+        pool.setObservation(1800, 0, 0);
+        pool.setObservation(1200, 0, uint160(600 * perSecond));
+        pool.setObservation(600, 0, uint160(1200 * perSecond));
+        pool.setObservation(0, outlier, uint160(delta));
+    }
+
+    /// @dev The distorted snapshot of the finding: this basket lost 248 bps to the first executor at the opening.
+    function _offTargetBasket() internal returns (IndexToken idx, address[] memory t) {
+        (idx, t) = _ruleBasket(_five(1, 1, 1, 1, 1), _five(200e18, 100e18, 100e18, 100e18, 100e18));
+        vm.warp(idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL());
+    }
+
+    function test_XA01_aSnapshotThroughAnEmptyRangeCannotStart() public {
+        (IndexToken idx, address[] memory t) = _offTargetBasket();
+        (MockUniswapV3Pool pool, uint256 delta) = _extremeBlock(t[0], true);
+        uint256 harmonic = uint256(1800) * type(uint160).max / (delta << 32);
+        assertLt(harmonic, 200, "twelve seconds at liquidity one dominate the harmonic mean");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IIndexRule.ThinPriceHistory.selector, address(pool), harmonic, market.MIN_LIQUIDITY()
+            )
+        );
+        vm.prank(attacker);
+        idx.startRebalance(0);
+    }
+
+    function test_XA01_aOneBlockOutlierThroughLiquidityCannotStart() public {
+        (IndexToken idx, address[] memory t) = _offTargetBasket();
+        (MockUniswapV3Pool pool,) = _extremeBlock(t[0], false);
+        // The last third's mean tick is 887,272 * 12 / 600, rounded toward negative infinity.
+        uint256 spread = t[0] < address(weth) ? 17_746 : 17_745;
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.PriceHistoryDeviates.selector, address(pool), spread));
+        vm.prank(attacker);
+        idx.startRebalance(0);
+    }
+
+    function test_XA02_anUnfillableSnapshotThroughAnEmptyRangeCannotStart() public {
+        // On the original rule this snapshot started, and even at the 0.9 floor an executor had to deliver more than it
+        // received, so nobody filled and a griefer could restart it at every expiry.
+        (IndexToken idx, address[] memory t) = _offTargetBasket();
+        (MockUniswapV3Pool pool, uint256 delta) = _extremeBlock(t[1], true); // a component the rebalance buys
+        uint256 harmonic = uint256(1800) * type(uint160).max / (delta << 32);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IIndexRule.ThinPriceHistory.selector, address(pool), harmonic, market.MIN_LIQUIDITY()
+            )
+        );
+        vm.prank(attacker);
+        idx.startRebalance(0);
+    }
+
+    function test_XA03_delistCancelsAPendingListingProposal() public {
+        // A config change proposed while LINK was listed must not relist it once the guardian delists it.
+        IIndexFactory.TokenConfig memory next = market.config(address(link), 0);
+        vm.prank(owner);
+        factory.proposeListing(address(link), next);
+        uint256 eta = factory.listingEta(address(link));
+        vm.prank(guardian);
+        factory.delist(address(link));
+
+        vm.warp(eta);
+        vm.prank(attacker);
+        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.NoPendingListing.selector, address(link)));
+        factory.executeListing(address(link));
+        assertFalse(factory.isWhitelisted(address(link)));
+    }
+
+    function test_XA03_aConfigRefreshOfADelistedTokenKeepsItDelisted() public {
+        vm.prank(guardian);
+        factory.delist(address(link));
+        IIndexFactory.TokenConfig memory refresh = market.configWith(address(link), 0, 2e30, new address[](0));
+        vm.prank(owner);
+        factory.proposeConfig(address(link), refresh);
+        vm.warp(factory.listingEta(address(link)));
+        vm.prank(attacker);
+        factory.executeListing(address(link));
+        assertEq(factory.tokenConfig(address(link)).referenceSupply, 2e30, "existing indexes rebalance with it");
+        assertFalse(factory.isWhitelisted(address(link)), "a refresh does not relist");
+    }
+
     function test_control_aWindfallNeedsTheFairMultiplierAboveTheStart() public {
         (IndexToken idx,) = _surgeBasket();
         _openAuction(idx, 0, attacker);
@@ -1031,7 +1140,7 @@ contract SecurityRegressionTest is Test {
         // Suppose the growing component's market price halved after the snapshot, so the fair multiplier is 2. At the
         // opening, the first executor takes 1,000 worth of shrinking components and delivers 1,500 units worth 750.
         uint256 taken = out[1] + out[2] + out[3] + out[4];
-        assertEq(taken - amountsIn[0] / 2, 250e18, "the gap is (fair - start) times the bought value at par");
+        assertEq(taken - amountsIn[0] / 2, 250e18, "the gap is (fair - start) times the bought value at current prices");
     }
 
     function test_control_aFrozenComponentNeedsTheGuardianEachRebalance() public {
@@ -1056,5 +1165,12 @@ contract SecurityRegressionTest is Test {
         _openAuction(idx, 1 << 1, guardian);
         executor.execute(idx, "");
         assertEq(idx.rebalanceNonce(), 1, "the guardian's keep mask routes around the frozen component");
+    }
+
+    function test_XA62_oneInterfaceExtendsTheFactoryRuleAndToken() public view {
+        IXindexCore core = IXindexCore(address(index));
+        assertEq(core.FACTORY(), address(factory), "the combined interface compiles and reads an index");
+        assertEq(core.RULE(), factory.RULE());
+        assertEq(core.componentCount(), index.componentCount());
     }
 }
