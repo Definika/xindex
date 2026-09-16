@@ -14,5 +14,16 @@
         "halmos-cheatcodes/=lib/openzeppelin-contracts/lib/halmos-cheatcodes/src/",
         "openzeppelin-contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/",
         "openzeppelin-contracts/=lib/openzeppelin-contracts/"
-    ]
+    ],
+    "wake.compiler.solc.exclude_paths": [
+        "node_modules",
+        "venv",
+        ".venv",
+        "lib",
+        "script",
+        "test",
+        "audit"
+    ],
+    "wake.compiler.solc.optimizer.enabled": true,
+    "wake.compiler.solc.optimizer.runs": 1000
 }
