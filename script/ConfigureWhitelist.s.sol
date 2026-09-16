@@ -19,10 +19,12 @@ import {IUniswapV3Factory} from "../src/interfaces/IUniswapV3Factory.sol";
 ///     LISTING_MODE=execute FACTORY=0x... WHITELIST=default forge script script/ConfigureWhitelist.s.sol \
 ///       --rpc-url mainnet --account deployer --sender <any account> --broadcast
 ///
-/// When the owner is a Safe, submit `proposeListing` through the Safe; `executeListing` is permissionless.
+///   Propose for an owner that is a Safe: log the `proposeListing` calldata to sign in the Safe app, one transaction per
+///   line, each to the factory with no value. Any account can run it, and nothing is broadcast:
+///     LISTING_MODE=safe FACTORY=0x... WHITELIST=default forge script script/ConfigureWhitelist.s.sol --rpc-url mainnet
 ///
 /// Env:
-///   LISTING_MODE  `propose` or `execute`.
+///   LISTING_MODE  `propose`, `execute` or `safe`.
 ///   FACTORY       Deployed IndexFactory.
 ///   WHITELIST     `default` for the mainnet list below (chain 1 only), or comma-separated entries
 ///                 `token:fee[:referenceSupply[:excluded|excluded...]]`. `fee` is the Uniswap V3 fee tier of the token's
@@ -84,6 +86,12 @@ contract ConfigureWhitelist is Script {
             propose(factory, list);
         } else if (_same(mode, "execute")) {
             execute(factory, list);
+        } else if (_same(mode, "safe")) {
+            bytes[] memory calls = safeCalldata(factory, list);
+            console2.log("Safe transactions to the factory, value 0:", address(factory));
+            for (uint256 i = 0; i < calls.length; ++i) {
+                console2.logBytes(calls[i]);
+            }
         } else {
             revert UnknownMode(mode);
         }
@@ -142,21 +150,30 @@ contract ConfigureWhitelist is Script {
         for (uint256 i = 0; i < list.length; ++i) {
             address token = list[i].token;
             IIndexFactory.TokenConfig memory config = configFor(list[i], weth, uniswapV3Factory);
-            uint256 eta = factory.listingEta(token);
-            if (eta != 0 && block.timestamp <= eta + factory.PROPOSAL_WINDOW()) {
-                console2.log("already pending", token);
-                continue;
-            }
-            if (factory.isWhitelisted(token) && _sameConfig(factory.tokenConfig(token), config)) continue;
-            try rule.checkConfig(token, config) {
-                factory.proposeListing(token, config);
-                console2.log("proposed", token);
-            } catch (bytes memory reason) {
-                console2.log("skipped, the rule rejects this config", token);
-                console2.logBytes(reason);
-            }
+            if (!_shouldPropose(factory, rule, token, config)) continue;
+            factory.proposeListing(token, config);
+            console2.log("proposed", token);
         }
         vm.stopBroadcast();
+    }
+
+    /// @notice Any account, nothing is broadcast. For an owner that is a Safe: the `proposeListing` calldata of every
+    ///         entry `propose` would submit, each to be sent to the factory with no value.
+    function safeCalldata(IndexFactory factory, Entry[] memory list) public view returns (bytes[] memory calls) {
+        IIndexRule rule = IIndexRule(factory.RULE());
+        address weth = rule.WETH();
+        address uniswapV3Factory = rule.UNISWAP_V3_FACTORY();
+        bytes[] memory all = new bytes[](list.length);
+        uint256 count = 0;
+        for (uint256 i = 0; i < list.length; ++i) {
+            IIndexFactory.TokenConfig memory config = configFor(list[i], weth, uniswapV3Factory);
+            if (!_shouldPropose(factory, rule, list[i].token, config)) continue;
+            all[count++] = abi.encodeCall(IIndexFactory.proposeListing, (list[i].token, config));
+        }
+        calls = new bytes[](count);
+        for (uint256 i = 0; i < count; ++i) {
+            calls[i] = all[i];
+        }
     }
 
     /// @notice Any account. Executes every proposal that is due and skips everything else.
@@ -176,6 +193,29 @@ contract ConfigureWhitelist is Script {
             }
         }
         vm.stopBroadcast();
+    }
+
+    /// @dev False, with the reason logged, for an entry that is pending, already listed with exactly `config`, or rejected
+    ///      by the rule.
+    function _shouldPropose(
+        IndexFactory factory,
+        IIndexRule rule,
+        address token,
+        IIndexFactory.TokenConfig memory config
+    ) private view returns (bool) {
+        uint256 eta = factory.listingEta(token);
+        if (eta != 0 && block.timestamp <= eta + factory.PROPOSAL_WINDOW()) {
+            console2.log("already pending", token);
+            return false;
+        }
+        if (factory.isWhitelisted(token) && _sameConfig(factory.tokenConfig(token), config)) return false;
+        try rule.checkConfig(token, config) {
+            return true;
+        } catch (bytes memory reason) {
+            console2.log("skipped, the rule rejects this config", token);
+            console2.logBytes(reason);
+            return false;
+        }
     }
 
     function _sameConfig(IIndexFactory.TokenConfig memory a, IIndexFactory.TokenConfig memory b)

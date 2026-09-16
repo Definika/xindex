@@ -148,7 +148,9 @@ already holds the components or shares.
   **burn**, it is exact-input encoded: starts with the component, ends with `tokenOut`. Use an empty path when the
   component *is* the stable or `tokenOut`. Burn legs whose amount rounds to zero are skipped.
 - **Slippage.** Set a limit on every leg, not only the total. A leg limit of 0 means "overall limit only". The overall
-  burn limit must be non-zero. Legs share pools, so summed per-leg quotes are a little optimistic.
+  burn limit must be non-zero. Legs share pools, since every leg crosses the dollar currency's WETH pool, so summed
+  per-leg quotes are optimistic: a little on mainnet, several percent on thin pools such as the Sepolia test market. An
+  `eth_call` of the whole zap call returns the exact amount.
 - **Check quotes against an independent price.** Compare each Uniswap quote with a reference price and refuse to sign
   when they diverge beyond a threshold. Send transactions through a private relay and use short deadlines.
 - **Approvals.** USDC supports `permit`; USDT does not (plain `approve`). Index tokens support `permit`. Approve exact
@@ -270,6 +272,8 @@ Listing components takes two runs of `script/ConfigureWhitelist.s.sol`, or the e
 ```bash
 # as the owner: propose every entry that is not pending and not already listed with exactly its config
 LISTING_MODE=propose FACTORY=0x... WHITELIST=default forge script script/ConfigureWhitelist.s.sol --rpc-url mainnet --account deployer --sender <owner> --broadcast
+# owner is a Safe: print the same proposals as calldata to sign in the Safe app (any account, nothing is broadcast)
+LISTING_MODE=safe FACTORY=0x... WHITELIST=default forge script script/ConfigureWhitelist.s.sol --rpc-url mainnet
 # 2 to 9 days later, from any account: execute every proposal that is due
 LISTING_MODE=execute FACTORY=0x... WHITELIST=default forge script script/ConfigureWhitelist.s.sol --rpc-url mainnet --account deployer --sender <any account> --broadcast
 ```
@@ -281,6 +285,72 @@ reference supplies are CoinGecko's circulating figures from 2026-09-15. Propose 
 reject, such as tBTC while its pool has too few observation slots, and logs why. Execute mode never proposes anything,
 so a listing the guardian cancelled stays cancelled until the owner proposes it again on purpose. For a local stack:
 `anvil --fork-url $MAINNET_RPC_URL` and run the same scripts against `http://127.0.0.1:8545`.
+
+In the Safe app, safe mode's output becomes one Transaction Builder batch: one transaction per logged line, each to the
+factory with value 0 and the line as custom data. Two signers sign it, and one executes it.
+
+### Testnet (Sepolia)
+
+Sepolia runs the mainnet contracts and timing constants on a test market. `script/testnet/SetupTestMarket.s.sol` deploys
+stand-ins for USDC, WBTC, LINK, UNI and AAVE as `FaucetToken`s, where any account can `drip()` a small amount once a day,
+and gives each a Uniswap V3 WETH pool at mainnet prices from 2026-09-16 with 200 oracle slots. Only Sepolia ETH is needed.
+A rehearsal on an anvil fork of Sepolia used 48.7M gas for `create`, 3.4M for `seed`, 10.2M for the deploy and 0.7M to
+execute the listings, plus 0.7 ETH of pool liquidity: 0.89 ETH in total at 3 gwei, 1.02 ETH at 5 gwei, 1.33 ETH at
+10 gwei. The Safe signer who executes the listing batch pays about 0.6M gas more.
+
+| Sepolia contract | Address |
+|---|---|
+| WETH | `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14` |
+| Uniswap SwapRouter02 | `0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E` |
+| Uniswap QuoterV2 | `0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3` |
+| Uniswap V3 factory | `0x0227628f3F023bb0B980b67D528571c95c6DaC1c` |
+| Uniswap NonfungiblePositionManager | `0x1238536071E1c677A632429e3655c799b22cDA52` |
+| IndexFactory | `0x3541347212cc20603F6dBBC49da3fFfE75e12CB1` |
+| IndexRule | `0x09DA95249a049a121B0dC072E109643fde34a234` |
+| IndexToken implementation | `0x0EB86aeFd70f63B181001ff00F2bF0BC6F12a311` |
+| IndexZap | `0xf021fA4D07E217a005D331ed573bF8E4a2202E1F` |
+| Factory owner (Safe, 2 of 2) | `0x11a9bF6866f4a35E6Ac854C1b4AF52B3D098a719` |
+| Guardian | `0x8cef9aAa300aA0A1EA5A0D8593EFc9ADED7B55a1` |
+| tUSDC / its 0.05% WETH pool | `0x740235f52c8Ba428436F91a28A1A1A93B9A1907c` / `0x67347BD955E225f68F6583e09cf59e4CeA283D03` |
+| tWBTC / its 0.05% WETH pool | `0x15559fc37C00e7d0608F8D8183e1D762405df30c` / `0x4cc282f213CDCB03e05dC08D10EC4Cc0f007578D` |
+| tLINK / its 0.3% WETH pool | `0x7d32b6Eb66849eBFc6eaA6a957A29a7d649498ab` / `0x59999Ac1D6652e84b91F8A36583ec60ea7C693Ea` |
+| tUNI / its 0.3% WETH pool | `0x48b784c154CAE3E76528EDA9Dc13F20a83C57781` / `0x59038Fbc04da127199e7A8f7e00f4B45F686eCEF` |
+| tAAVE / its 0.3% WETH pool | `0x172a586996A8C495dBe3A4dD79667e63E9109D88` / `0xdf3c0aF02C9CD35c836C933bD39B39D60E8596Fe` |
+
+Deployed on 2026-09-16 from commit `8c28c7d`, with 0.8 WETH in the tUSDC pool and 0.25 WETH in each other pool. The Safe
+proposed tWBTC, WETH, tLINK, tUNI and tAAVE the same day; any account can execute the listings from 2026-09-18 13:05 UTC
+until 2026-09-25 13:05 UTC.
+
+```bash
+export SEPOLIA_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com
+DEPLOYER=$(cast wallet address --account sepolia-deployer)
+
+# 1. tokens and priced pools, then liquidity in a later block: 0.3 WETH in the tUSDC pool, 0.1 WETH in each other
+MARKET_MODE=create forge script script/testnet/SetupTestMarket.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast
+MARKET_MODE=seed MARKET_TOKENS=<logged by create> forge script script/testnet/SetupTestMarket.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast
+
+# 2. at least 30 minutes after create, so the pools can serve a 30-minute price
+OWNER=<Safe> GUARDIAN=<guardian> USDC=<tUSDC logged by seed> WETH=0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14 \
+  UNISWAP_V3_FACTORY=0x0227628f3F023bb0B980b67D528571c95c6DaC1c SWAP_ROUTER=0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E \
+  forge script script/Deploy.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast
+
+# 3. print the listing proposals and sign them as one batch in the Safe app
+LISTING_MODE=safe FACTORY=<factory> WHITELIST=<logged by seed> forge script script/ConfigureWhitelist.s.sol --rpc-url sepolia
+
+# 4. 2 to 9 days later, from any account
+LISTING_MODE=execute FACTORY=<factory> WHITELIST=<same> forge script script/ConfigureWhitelist.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast
+```
+
+Add `--verify` with `ETHERSCAN_API_KEY` set to verify the contracts, so testers can call `drip()` from Etherscan.
+`USD_POOL_WETH` and `TOKEN_POOL_WETH` (in wei) change the liquidity `seed` adds.
+
+- The test pools are shallow and nobody arbitrages them. In the rehearsal a zap mint cost 0.6% over the basket's value
+  at $10, 2% at $50 and 4 to 6% at $100, and $1,000 could not be quoted. Trades move prices, and the rule's 30-minute
+  price lags them.
+- Timing is mainnet's: listings take 2 days, and an index can start its first rebalance 28 days after creation, followed
+  by 2 days of notice and a 24-hour auction. `test/fork/RebalanceExecutorV3.sol` fills auctions through the Sepolia
+  router.
+- Faucet tokens have no value, and their supply grows with every drip, so their listings use fixed reference supplies.
 
 ## Layout
 
@@ -296,6 +366,7 @@ test/Security.t.sol           one regression test per security review finding
 test/mocks/                   mock tokens, routers, Uniswap V3 pools, market fixture and rebalance executor, with their own tests
 test/fork/                    mainnet fork tests, including rebalancing through real Uniswap pools and security regressions on real tokens
 script/                       Deploy, ConfigureWhitelist
+script/testnet/               SetupTestMarket and FaucetToken for the Sepolia test market
 ```
 
 ## Not in v2 (candidates for later)

@@ -10,6 +10,9 @@ import {MockPausableToken} from "./MockPausableToken.sol";
 import {MockPartialFillRouter} from "./MockPartialFillRouter.sol";
 import {MockMarket} from "./MockMarket.sol";
 import {MockUniswapV3Factory, MockUniswapV3Pool} from "./MockUniswapV3.sol";
+import {MockWETH} from "./MockWETH.sol";
+import {MockPositionManager} from "./MockPositionManager.sol";
+import {INonfungiblePositionManager} from "../../script/interfaces/INonfungiblePositionManager.sol";
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {IndexFactory} from "../../src/IndexFactory.sol";
 import {IndexToken} from "../../src/IndexToken.sol";
@@ -265,6 +268,75 @@ contract MocksTest is Test {
         p.setHistoryTooShort(true);
         vm.expectRevert(bytes("OLD"));
         p.observe(ago);
+    }
+
+    function test_uniswapPool_initializeOnceAndReserveObservations() public {
+        MockUniswapV3Pool p = new MockUniswapV3Pool(address(weth), address(usdc), 500);
+        p.initialize(1 << 96);
+        (uint160 sqrtPriceX96,,,,,,) = p.slot0();
+        assertEq(sqrtPriceX96, 1 << 96);
+        vm.expectRevert(bytes("AI"));
+        p.initialize(1);
+
+        p.increaseObservationCardinalityNext(200);
+        assertEq(p.observationCardinalityNext(), 200);
+        (,,,, uint16 next,,) = p.slot0();
+        assertEq(next, 1_000, "the larger of the active and reserved slots");
+        p.increaseObservationCardinalityNext(100); // never shrinks
+        assertEq(p.observationCardinalityNext(), 200);
+        p.setObservationCardinality(1);
+        (,,,, next,,) = p.slot0();
+        assertEq(next, 200);
+    }
+
+    // ---------------------------------------------------------------------
+    // MockWETH and MockPositionManager
+    // ---------------------------------------------------------------------
+
+    function test_weth_depositWrapsEther() public {
+        MockWETH w = new MockWETH();
+        vm.deal(alice, 1 ether);
+        vm.prank(alice);
+        w.deposit{value: 0.4 ether}();
+        assertEq(w.balanceOf(alice), 0.4 ether);
+        assertEq(address(w).balance, 0.4 ether);
+    }
+
+    function test_positionManager_takesDesiredAmountsAndRecordsThem() public {
+        MockPositionManager positions = new MockPositionManager();
+        weth.mint(alice, 2e18);
+        usdc.mint(alice, 3_000e6);
+        INonfungiblePositionManager.MintParams memory params = INonfungiblePositionManager.MintParams({
+            token0: address(usdc),
+            token1: address(weth),
+            fee: 500,
+            tickLower: -60,
+            tickUpper: 60,
+            amount0Desired: 3_000e6,
+            amount1Desired: 1e18,
+            amount0Min: 0,
+            amount1Min: 0,
+            recipient: bob,
+            deadline: 7
+        });
+        vm.startPrank(alice);
+        usdc.approve(address(positions), 3_000e6);
+        weth.approve(address(positions), 1e18);
+        (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1) = positions.mint(params);
+        vm.stopPrank();
+
+        assertEq(tokenId, 1);
+        assertEq(liquidity, 1);
+        assertEq(amount0, 3_000e6);
+        assertEq(amount1, 1e18);
+        assertEq(positions.mints(), 1);
+        assertEq(usdc.balanceOf(address(positions)), 3_000e6);
+        assertEq(weth.balanceOf(alice), 1e18);
+        INonfungiblePositionManager.MintParams memory recorded = positions.position(1);
+        assertEq(recorded.tickLower, -60);
+        assertEq(recorded.tickUpper, 60);
+        assertEq(recorded.recipient, bob);
+        assertEq(recorded.deadline, 7);
     }
 
     // ---------------------------------------------------------------------

@@ -9,8 +9,11 @@ contract MockUniswapV3Pool {
     address public immutable token1;
     uint24 public immutable fee;
 
+    uint160 public sqrtPriceX96;
     int24 public tick;
     uint16 public observationCardinality = 1_000;
+    /// @notice Largest cardinality requested through `increaseObservationCardinalityNext`.
+    uint16 public observationCardinalityNext;
     bool public historyTooShort;
     bool public rawCumulatives;
     int56 public olderCumulative;
@@ -42,8 +45,20 @@ contract MockUniswapV3Pool {
         historyTooShort = tooShort;
     }
 
+    /// @notice Records the starting price once, like the real pool; the tick stays whatever `setTick` set.
+    function initialize(uint160 sqrtPriceX96_) external {
+        require(sqrtPriceX96 == 0, "AI");
+        sqrtPriceX96 = sqrtPriceX96_;
+    }
+
+    function increaseObservationCardinalityNext(uint16 next) external {
+        if (next > observationCardinalityNext) observationCardinalityNext = next;
+    }
+
     function slot0() external view returns (uint160, int24, uint16, uint16, uint16, uint8, bool) {
-        return (0, tick, 0, observationCardinality, observationCardinality, 0, true);
+        uint16 next =
+            observationCardinalityNext > observationCardinality ? observationCardinalityNext : observationCardinality;
+        return (sqrtPriceX96, tick, 0, observationCardinality, next, 0, true);
     }
 
     function observe(uint32[] calldata secondsAgos)

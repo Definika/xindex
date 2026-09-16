@@ -24,7 +24,8 @@ MAINNET_RPC_URL=https://... forge test --match-path 'test/fork/*' -vvv
 MAINNET_RPC_URL=https://ethereum-rpc.publicnode.com FORK_BLOCK=$(( $(cast block-number --rpc-url https://ethereum-rpc.publicnode.com) - 8 )) forge test --match-path 'test/fork/*'
 ```
 
-Deployment: `script/Deploy.s.sol` then `script/ConfigureWhitelist.s.sol` (see README).
+Deployment: `script/Deploy.s.sol` then `script/ConfigureWhitelist.s.sol` (see README). Sepolia first needs its test
+market from `script/testnet/SetupTestMarket.s.sol`.
 
 ## Definition of done for any change
 
@@ -56,9 +57,10 @@ src/libraries/TickMath.sol    getSqrtPriceAtTick vendored from Uniswap v4-core (
 src/libraries/Methodology.sol methodology ids and the capped minimum
 test/*.t.sol                  unit / fuzz / invariant / script tests
 test/Security.t.sol           one regression test per security review finding
-test/mocks/                   mock tokens, routers, Uniswap V3 pools and factory, market fixture, rebalance executor (+ Mocks.t.sol)
+test/mocks/                   mock tokens, WETH, routers, Uniswap V3 pools, factory and position manager, market fixture, rebalance executor (+ Mocks.t.sol)
 test/fork/                    mainnet addresses, end-to-end fork tests, fork rebalance executor, fork security regressions
 script/                       Deploy, ConfigureWhitelist
+script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test market (never deploy on mainnet)
 ```
 
 ## Design rules that must not be broken

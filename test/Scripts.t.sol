@@ -9,9 +9,16 @@ import {IndexToken} from "../src/IndexToken.sol";
 import {IndexZap} from "../src/IndexZap.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IIndexRule} from "../src/interfaces/IIndexRule.sol";
+import {SetupTestMarket} from "../script/testnet/SetupTestMarket.s.sol";
+import {FaucetToken} from "../script/testnet/FaucetToken.sol";
+import {INonfungiblePositionManager} from "../script/interfaces/INonfungiblePositionManager.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockMarket} from "./mocks/MockMarket.sol";
+import {MockPositionManager} from "./mocks/MockPositionManager.sol";
 import {MockSwapRouter} from "./mocks/MockSwapRouter.sol";
+import {MockUniswapV3Factory, MockUniswapV3Pool} from "./mocks/MockUniswapV3.sol";
+import {MockWETH} from "./mocks/MockWETH.sol";
 
 /// @notice Stand-in for a Safe: the deploy script only reads its signature threshold.
 contract MockSafe {
@@ -38,6 +45,7 @@ contract ScriptsTest is Test {
 
     Deploy deployer;
     ConfigureWhitelist configure;
+    SetupTestMarket testMarket;
     MockSwapRouter router;
     MockMarket market;
     address owner = makeAddr("owner");
@@ -46,6 +54,7 @@ contract ScriptsTest is Test {
     function setUp() public {
         deployer = new Deploy();
         configure = new ConfigureWhitelist();
+        testMarket = new SetupTestMarket();
         router = new MockSwapRouter();
         market = new MockMarket();
     }
@@ -345,11 +354,38 @@ contract ScriptsTest is Test {
         assertEq(factory.listingEta(list[0].token), block.timestamp + factory.LISTING_DELAY());
     }
 
+    function test_safeCalldata_matchesProposeAndWorksWhenTheOwnerSendsIt() public {
+        IndexFactory factory = _factory(owner, guardian);
+        ConfigureWhitelist.Entry[] memory list = _twoEntries();
+
+        bytes[] memory calls = configure.safeCalldata(factory, list);
+        assertEq(calls.length, 2);
+        for (uint256 i = 0; i < list.length; ++i) {
+            assertEq(calls[i], abi.encodeCall(IIndexFactory.proposeListing, (list[i].token, _configFor(list[i]))));
+        }
+
+        vm.prank(owner);
+        (bool ok,) = address(factory).call(calls[0]);
+        assertTrue(ok);
+        assertEq(factory.listingEta(list[0].token), block.timestamp + factory.LISTING_DELAY());
+
+        calls = configure.safeCalldata(factory, list); // the first is pending now
+        assertEq(calls.length, 1);
+        assertEq(calls[0], abi.encodeCall(IIndexFactory.proposeListing, (list[1].token, _configFor(list[1]))));
+
+        market.tokenPool(list[1].token).setObservationCardinality(60); // the rule rejects the second
+        assertEq(configure.safeCalldata(factory, list).length, 0);
+    }
+
     function test_configureRun_readsEnvironment() public {
         IndexFactory factory = _factory(DEFAULT_SENDER, address(0));
         ConfigureWhitelist.Entry[] memory list = _twoEntries();
         vm.setEnv("FACTORY", vm.toString(address(factory)));
         vm.setEnv("WHITELIST", string.concat(vm.toString(list[0].token), ":3000"));
+
+        vm.setEnv("LISTING_MODE", "safe"); // logs the calldata only
+        configure.run();
+        assertEq(factory.listingEta(list[0].token), 0);
 
         vm.setEnv("LISTING_MODE", "propose");
         configure.run();
@@ -363,5 +399,198 @@ contract ScriptsTest is Test {
         vm.setEnv("LISTING_MODE", "sideways");
         vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.UnknownMode.selector, "sideways"));
         configure.run();
+    }
+
+    // ---------------------------------------------------------------------
+    // SetupTestMarket
+    // ---------------------------------------------------------------------
+
+    function _uniswap() internal returns (SetupTestMarket.Uniswap memory uniswap) {
+        uniswap.factory = address(new MockUniswapV3Factory());
+        uniswap.positionManager = address(new MockPositionManager());
+        uniswap.weth = address(new MockWETH());
+    }
+
+    function _pool(SetupTestMarket.Uniswap memory uniswap, address token, uint24 fee)
+        internal
+        view
+        returns (MockUniswapV3Pool)
+    {
+        return MockUniswapV3Pool(MockUniswapV3Factory(uniswap.factory).getPool(token, uniswap.weth, fee));
+    }
+
+    function test_testMarketSpecs() public view {
+        SetupTestMarket.Spec[] memory list = testMarket.specs();
+        assertEq(list.length, 5);
+        assertEq(list[0].symbol, "tUSDC");
+        assertEq(list[0].decimals, 6);
+        assertEq(list[0].fee, 500, "the rule prices dollars from the 0.05% pool");
+        assertEq(list[0].referenceSupply, 0, "a currency, never listed");
+        assertEq(list[1].symbol, "tWBTC");
+        assertEq(list[2].symbol, "tLINK");
+        assertEq(list[3].symbol, "tUNI");
+        assertEq(list[4].symbol, "tAAVE");
+        for (uint256 i = 1; i < list.length; ++i) {
+            assertGt(list[i].referenceSupply, 0, "faucet supply grows, so components list with a reference supply");
+            assertGt(list[i].supply, list[i].dripAmount);
+        }
+    }
+
+    function test_sepoliaUniswap() public view {
+        SetupTestMarket.Uniswap memory uniswap = testMarket.sepoliaUniswap();
+        assertEq(uniswap.factory, 0x0227628f3F023bb0B980b67D528571c95c6DaC1c);
+        assertEq(uniswap.positionManager, 0x1238536071E1c677A632429e3655c799b22cDA52);
+        assertEq(uniswap.weth, 0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14);
+    }
+
+    function test_sqrtPriceX96() public view {
+        address low = address(0x1000);
+        address high = address(0xF000);
+        assertEq(testMarket.sqrtPriceX96(low, high, 18, 1e18), 1 << 96);
+        assertEq(testMarket.sqrtPriceX96(high, low, 18, 1e18), 1 << 96);
+        // 4e14 WETH wei per whole 6-decimal token is 4e8 raw WETH per raw token, whose square root is 2e4.
+        assertEq(testMarket.sqrtPriceX96(low, high, 6, 4e14), 2e4 * (1 << 96));
+        assertApproxEqAbs(uint256(testMarket.sqrtPriceX96(high, low, 6, 4e14)), uint256(1 << 96) / 2e4, 1);
+    }
+
+    function test_rangeAround() public {
+        (int24 lower, int24 upper) = testMarket.rangeAround(0, 500);
+        assertEq(lower, -6940);
+        assertEq(upper, 6940);
+        (lower, upper) = testMarket.rangeAround(68, 3000);
+        assertEq(lower, -6900);
+        assertEq(upper, 7020);
+        (lower, upper) = testMarket.rangeAround(-32, 3000); // upper bound already on a multiple of the spacing
+        assertEq(lower, -7020);
+        assertEq(upper, 6900);
+        (lower, upper) = testMarket.rangeAround(6932, 500); // lower bound already on a multiple of the spacing
+        assertEq(lower, 0);
+        assertEq(upper, 13_870);
+        vm.expectRevert(abi.encodeWithSelector(SetupTestMarket.UnsupportedFee.selector, 10_000));
+        testMarket.rangeAround(0, 10_000);
+    }
+
+    function test_createTestMarket() public {
+        SetupTestMarket.Uniswap memory uniswap = _uniswap();
+        address[] memory tokens = testMarket.create(uniswap);
+        SetupTestMarket.Spec[] memory list = testMarket.specs();
+        assertEq(tokens.length, list.length);
+        for (uint256 i = 0; i < list.length; ++i) {
+            FaucetToken token = FaucetToken(tokens[i]);
+            assertEq(token.symbol(), list[i].symbol);
+            assertEq(token.decimals(), list[i].decimals);
+            assertEq(token.DRIP_AMOUNT(), list[i].dripAmount);
+            assertEq(token.balanceOf(DEFAULT_SENDER), list[i].supply, "the broadcaster holds the starting supply");
+
+            MockUniswapV3Pool pool = _pool(uniswap, tokens[i], list[i].fee);
+            assertTrue(address(pool) != address(0));
+            assertEq(
+                pool.sqrtPriceX96(),
+                testMarket.sqrtPriceX96(tokens[i], uniswap.weth, list[i].decimals, list[i].wethPerToken)
+            );
+            assertEq(pool.observationCardinalityNext(), testMarket.OBSERVATION_CARDINALITY());
+        }
+    }
+
+    function test_seedTestMarket() public {
+        SetupTestMarket.Uniswap memory uniswap = _uniswap();
+        address[] memory tokens = testMarket.create(uniswap);
+        SetupTestMarket.Spec[] memory list = testMarket.specs();
+        _pool(uniswap, tokens[0], list[0].fee).setTick(-198_481);
+        _pool(uniswap, tokens[2], list[2].fee).setTick(54_045);
+        vm.deal(DEFAULT_SENDER, 1 ether);
+
+        testMarket.seed(uniswap, tokens, 0.3 ether, 0.1 ether);
+
+        MockPositionManager positions = MockPositionManager(uniswap.positionManager);
+        assertEq(positions.mints(), list.length);
+        assertEq(DEFAULT_SENDER.balance, 0.3 ether, "0.3 + 4 * 0.1 ether wrapped");
+        for (uint256 i = 0; i < list.length; ++i) {
+            INonfungiblePositionManager.MintParams memory p = positions.position(i + 1);
+            uint256 wethAmount = i == 0 ? 0.3 ether : 0.1 ether;
+            uint256 tokenAmount = Math.mulDiv(wethAmount * 2, 10 ** list[i].decimals, list[i].wethPerToken);
+            bool tokenFirst = tokens[i] < uniswap.weth;
+            assertEq(p.token0, tokenFirst ? tokens[i] : uniswap.weth);
+            assertEq(p.token1, tokenFirst ? uniswap.weth : tokens[i]);
+            assertEq(p.fee, list[i].fee);
+            assertEq(tokenFirst ? p.amount1Desired : p.amount0Desired, wethAmount);
+            assertEq(tokenFirst ? p.amount0Desired : p.amount1Desired, tokenAmount);
+            (int24 lower, int24 upper) = testMarket.rangeAround(_pool(uniswap, tokens[i], list[i].fee).tick(), p.fee);
+            assertEq(p.tickLower, lower);
+            assertEq(p.tickUpper, upper);
+            assertEq(p.recipient, address(this), "positions go to the caller");
+            assertEq(p.deadline, block.timestamp + 1 hours);
+            assertEq(FaucetToken(tokens[i]).balanceOf(DEFAULT_SENDER), list[i].supply - tokenAmount);
+        }
+        assertEq(MockWETH(uniswap.weth).balanceOf(uniswap.positionManager), 0.7 ether);
+    }
+
+    function test_seedTestMarket_rejectsTokensThatDoNotMatch() public {
+        SetupTestMarket.Uniswap memory uniswap = _uniswap();
+        address[] memory tokens = testMarket.create(uniswap);
+
+        address[] memory short = new address[](4);
+        vm.expectRevert(abi.encodeWithSelector(SetupTestMarket.TokenCountMismatch.selector, 5, 4));
+        testMarket.seed(uniswap, short, 1, 1);
+
+        (tokens[1], tokens[2]) = (tokens[2], tokens[1]);
+        vm.expectRevert(abi.encodeWithSelector(SetupTestMarket.UnexpectedToken.selector, 1, tokens[1]));
+        testMarket.seed(uniswap, tokens, 1, 1);
+        (tokens[1], tokens[2]) = (tokens[2], tokens[1]);
+
+        tokens[0] = address(new FaucetToken("Other", "tUSDC", 6, 1, 1)); // right symbol, no pool
+        vm.expectRevert(abi.encodeWithSelector(SetupTestMarket.PoolMissing.selector, tokens[0]));
+        testMarket.seed(uniswap, tokens, 1, 1);
+    }
+
+    function test_testMarketWhitelist_parsesAsConfigureWhitelistEntries() public {
+        SetupTestMarket.Uniswap memory uniswap = _uniswap();
+        address[] memory tokens = testMarket.create(uniswap);
+        SetupTestMarket.Spec[] memory list = testMarket.specs();
+
+        ConfigureWhitelist.Entry[] memory entries = configure.resolveList(testMarket.whitelist(tokens, uniswap.weth));
+        assertEq(entries.length, 5);
+        assertEq(entries[0].token, tokens[1]);
+        assertEq(entries[0].fee, list[1].fee);
+        assertEq(entries[0].referenceSupply, list[1].referenceSupply);
+        assertEq(entries[1].token, uniswap.weth);
+        assertEq(entries[1].fee, 0);
+        assertEq(entries[1].referenceSupply, testMarket.ETH_SUPPLY());
+        for (uint256 i = 2; i < 5; ++i) {
+            assertEq(entries[i].token, tokens[i]);
+            assertEq(entries[i].fee, list[i].fee);
+            assertEq(entries[i].referenceSupply, list[i].referenceSupply);
+        }
+    }
+
+    function test_setupTestMarketRun_readsEnvironment() public {
+        vm.expectRevert(abi.encodeWithSelector(SetupTestMarket.NotSepolia.selector, block.chainid));
+        testMarket.run();
+
+        vm.etch(testMarket.SEPOLIA_UNISWAP_V3_FACTORY(), address(new MockUniswapV3Factory()).code);
+        vm.etch(testMarket.SEPOLIA_POSITION_MANAGER(), address(new MockPositionManager()).code);
+        vm.etch(testMarket.SEPOLIA_WETH(), address(new MockWETH()).code);
+        vm.chainId(testMarket.SEPOLIA_CHAIN_ID());
+
+        vm.setEnv("MARKET_MODE", "create");
+        address[] memory tokens = testMarket.run();
+        assertEq(tokens.length, 5);
+
+        string memory joined = vm.toString(tokens[0]);
+        for (uint256 i = 1; i < tokens.length; ++i) {
+            joined = string.concat(joined, ",", vm.toString(tokens[i]));
+        }
+        vm.setEnv("MARKET_MODE", "seed");
+        vm.setEnv("MARKET_TOKENS", joined);
+        vm.setEnv("USD_POOL_WETH", "200000000000000000");
+        vm.setEnv("TOKEN_POOL_WETH", "50000000000000000");
+        vm.deal(DEFAULT_SENDER, 1 ether);
+        assertEq(testMarket.run(), tokens);
+        assertEq(MockPositionManager(testMarket.SEPOLIA_POSITION_MANAGER()).mints(), 5);
+        assertEq(DEFAULT_SENDER.balance, 0.6 ether, "0.2 + 4 * 0.05 ether wrapped");
+
+        vm.setEnv("MARKET_MODE", "upside-down");
+        vm.expectRevert(abi.encodeWithSelector(SetupTestMarket.UnknownMode.selector, "upside-down"));
+        testMarket.run();
     }
 }

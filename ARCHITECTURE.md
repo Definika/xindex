@@ -308,7 +308,7 @@ its own address.
 - Mainnet fork tests: v1's zap and security cases on the v2 contracts; the rule's prices against QuoterV2; uncapped and
   capped indexes rebalancing through real Uniswap V3 swaps with a fork executor; a guardian keep mask around a real WBTC
   pause; tBTC's short-history pool rejected until its observation ring is grown.
-- Script tests execute `Deploy` and `ConfigureWhitelist` in-process.
+- Script tests execute `Deploy`, `ConfigureWhitelist` and the Sepolia `SetupTestMarket` in-process.
 - Gates: `forge fmt --check`, lint-free `forge build`, 100% coverage on every file, Wake analyzer clean on `src/`, and the
   CI submodule check against `foundry.lock`.
 
