@@ -41,7 +41,19 @@ contract SecurityForkTest is Test {
             vm.skip(true);
             return;
         }
-        vm.createSelectFork(url, vm.envOr("FORK_BLOCK", A.FORK_BLOCK));
+        // FORK_BLOCK overrides the pin, for a non-archive RPC that only serves recent state. Forge loads .env
+        // automatically, so a MAINNET_RPC_URL set there makes a plain `forge test` run these suites too.
+        uint256 forkBlock = vm.envOr("FORK_BLOCK", A.FORK_BLOCK);
+        try vm.createSelectFork(url, forkBlock) returns (uint256) {}
+        catch {
+            revert(
+                string.concat(
+                    "MAINNET_RPC_URL cannot serve block ",
+                    vm.toString(forkBlock),
+                    ": use an archive node, set FORK_BLOCK near the chain head, or run forge test --no-match-path 'test/fork/*'"
+                )
+            );
+        }
         factory = new IndexFactory(address(this), address(0), A.WETH, A.UNISWAP_V3_FACTORY, A.USDC);
         zap = new IndexZap(factory, ISwapRouter02(A.SWAP_ROUTER_02));
 
@@ -224,7 +236,10 @@ contract SecurityForkTest is Test {
 
         assertGt(out, 0);
         assertEq(IERC20(A.USDC).balanceOf(user), out);
-        assertEq(IERC20(A.WETH).balanceOf(user), 1e15, "the WETH the router never pulled comes back to the user");
+        // The WETH leg's whole input comes back, and so does the WETH the WBTC leg's first hop bought: its second hop
+        // is swapped on its own, and the router paid that one from its stray ETH too instead of pulling the WETH.
+        // Before the per-hop fix (XA-08) that intermediate WETH stayed in the router for anyone to sweep.
+        assertGt(IERC20(A.WETH).balanceOf(user), 1e15, "the WETH the router never pulled comes back to the user");
         assertEq(IERC20(A.WETH).balanceOf(address(zap)), 0);
         assertLt(A.SWAP_ROUTER_02.balance, 10 ether, "the router's ETH paid for the swap");
     }

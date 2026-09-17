@@ -32,7 +32,19 @@ contract MainnetAddressesForkTest is Test {
             vm.skip(true);
             return;
         }
-        vm.createSelectFork(url, vm.envOr("FORK_BLOCK", A.FORK_BLOCK));
+        // FORK_BLOCK overrides the pin, for a non-archive RPC that only serves recent state. Forge loads .env
+        // automatically, so a MAINNET_RPC_URL set there makes a plain `forge test` run these suites too.
+        uint256 forkBlock = vm.envOr("FORK_BLOCK", A.FORK_BLOCK);
+        try vm.createSelectFork(url, forkBlock) returns (uint256) {}
+        catch {
+            revert(
+                string.concat(
+                    "MAINNET_RPC_URL cannot serve block ",
+                    vm.toString(forkBlock),
+                    ": use an archive node, set FORK_BLOCK near the chain head, or run forge test --no-match-path 'test/fork/*'"
+                )
+            );
+        }
     }
 
     function _assertToken(address token, string memory symbol, uint8 decimals) internal view {
@@ -40,7 +52,7 @@ contract MainnetAddressesForkTest is Test {
         assertEq(IERC20Metadata(token).decimals(), decimals);
     }
 
-    function testFork_tokensAreWhatTheirNamesSay() public view {
+    function testFork_XA13_tokensAreWhatTheirNamesSay() public view {
         _assertToken(M.WETH, "WETH", 18);
         _assertToken(M.USDC, "USDC", 6);
         _assertToken(M.WBTC, "WBTC", 8);
@@ -49,7 +61,7 @@ contract MainnetAddressesForkTest is Test {
         _assertToken(M.TBTC, "tBTC", 18);
     }
 
-    function testFork_uniswapContractsAgree() public view {
+    function testFork_XA13_uniswapContractsAgree() public view {
         assertEq(IRouterImmutables(M.SWAP_ROUTER_02).factory(), M.UNISWAP_V3_FACTORY);
         assertEq(IRouterImmutables(M.SWAP_ROUTER_02).WETH9(), M.WETH);
         IUniswapV3Factory v3 = IUniswapV3Factory(M.UNISWAP_V3_FACTORY);
@@ -60,7 +72,7 @@ contract MainnetAddressesForkTest is Test {
         assertEq(v3.getPool(M.TBTC, M.WETH, 3000), A.TBTC_WETH_3000);
     }
 
-    function testFork_deployResolvesTheMainnetMarket() public {
+    function testFork_XA13_deployResolvesTheMainnetMarket() public {
         Deploy deployer = new Deploy();
         Deploy.Market memory market =
             deployer.resolveMarket(Deploy.Market(address(0), address(0), address(0), address(0)));
@@ -70,7 +82,7 @@ contract MainnetAddressesForkTest is Test {
         assertEq(market.usdc, M.USDC);
     }
 
-    function testFork_defaultWhitelistMatchesMainnet() public {
+    function testFork_XA13_XA24_defaultWhitelistMatchesMainnet() public {
         IndexFactory factory = new IndexFactory(address(this), address(0), M.WETH, M.UNISWAP_V3_FACTORY, M.USDC);
         IIndexRule rule = IIndexRule(factory.RULE());
         assertEq(rule.USD_POOL(), A.USDC_WETH_500);

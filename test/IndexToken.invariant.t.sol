@@ -181,25 +181,22 @@ contract IndexHandler is Test {
         }
     }
 
-    /// @dev Delivers one raw unit too little of a growing component. It can settle only when the index already holds at
-    ///      least that much surplus of the component, from rounding or donations, so holders stay fully backed.
+    /// @dev Delivers one raw unit too little of a growing component. It can never settle: the index requires the whole
+    ///      of amountsIn on top of what it held, so surplus from rounding or donations stays with the holders.
     function executeRebalanceShort(uint256 offset) external {
         if (!_toAuction(offset)) return;
-        (, uint256[] memory units,, uint256[] memory amountsIn) = index.previewRebalance();
+        (,,, uint256[] memory amountsIn) = index.previewRebalance();
         uint256 growing = amountsIn.length;
         for (uint256 i = 0; i < amountsIn.length; ++i) {
             if (growing == amountsIn.length && amountsIn[i] != 0) growing = i;
         }
         if (growing == amountsIn.length) return; // an empty index moves nothing
-        MockERC20 token = comps[growing];
-        uint256 required = Math.mulDiv(index.totalSupply(), units[growing], 1e18) + index.totalClaims(address(token));
-        uint256 surplus = token.balanceOf(address(index)) + amountsIn[growing] - required;
 
         executor.setMode(MockRebalanceExecutor.Mode.Short);
         executor.setShortComponent(growing);
         (bool settled,) = address(executor).call(abi.encodeCall(MockRebalanceExecutor.execute, (index, "")));
-        if (settled) ++ghostExecutions;
-        shortFillSucceeded = shortFillSucceeded || (settled && surplus == 0);
+        // A settlement here would break the nonce-against-ghost invariant as well, on top of this flag.
+        shortFillSucceeded = shortFillSucceeded || settled;
     }
 }
 
@@ -292,19 +289,22 @@ contract IndexTokenInvariantTest is Test {
         (eta,,) = index.pendingRebalance();
         assertGt(eta, 0);
 
-        // Holders act during the notice; then a short fill fails without surplus and settles once donations cover it.
+        // Holders act during the notice; then a short fill fails, and keeps failing once donations could have covered
+        // the missing unit, because the index requires the whole of amountsIn on top of what it already held.
         handler.issue(0, 0, 3e18);
         handler.redeem(0, 0, 1e18);
         handler.redeemSkipping(0, 0, 1e18, 1);
         handler.claim(0, 0, 0);
         handler.transfer(0, 1, 5e17);
         handler.executeRebalanceShort(0);
-        assertEq(index.rebalanceNonce(), 1, "no surplus, no settlement");
+        assertEq(index.rebalanceNonce(), 1, "one raw unit short, no settlement");
         for (uint256 i = 0; i < comps.length; ++i) {
             handler.donate(i, 1e30);
         }
         handler.executeRebalanceShort(0);
-        assertEq(index.rebalanceNonce(), 2, "the donations covered the missing unit");
+        assertEq(index.rebalanceNonce(), 1, "the donations belong to the holders, not to the executor");
+        handler.executeRebalance(0);
+        assertEq(index.rebalanceNonce(), 2, "an honest fill settles");
         assertEq(handler.ghostExecutions(), 2);
         assertFalse(handler.shortFillSucceeded());
 
@@ -346,7 +346,7 @@ contract IndexTokenInvariantTest is Test {
 
     function invariant_rebalanceBookkeeping() public view {
         assertEq(index.rebalanceNonce(), handler.ghostExecutions(), "the nonce counts executed rebalances");
-        assertFalse(handler.shortFillSucceeded(), "a short fill never settles without surplus to cover it");
+        assertFalse(handler.shortFillSucceeded(), "a short fill never settles, whatever surplus the index holds");
         assertFalse(handler.unitBoundsBroken(), "units move between half and 2.5 times per rebalance");
         (uint256 eta,, uint256[] memory targets) = index.pendingRebalance();
         assertEq(targets.length, eta == 0 ? 0 : comps.length, "targets exist exactly while a rebalance is pending");

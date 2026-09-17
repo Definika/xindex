@@ -137,7 +137,7 @@ contract IndexTokenRebalanceTest is Test {
         assertEq(turnover, 0.2e18);
         uint256 eta = block.timestamp + index.REBALANCE_DELAY();
         vm.expectEmit(true, true, true, true, address(index));
-        emit IIndexToken.RebalanceStarted(1, stranger, _expectedTargets(), 0, eta);
+        emit IIndexToken.RebalanceStarted(1, 1, stranger, _expectedTargets(), 0, eta);
         vm.prank(stranger);
         index.startRebalance(0);
 
@@ -154,13 +154,23 @@ contract IndexTokenRebalanceTest is Test {
         uint256 eta = _start(index);
         uint256 deadline = eta + index.AUCTION_DURATION();
         vm.warp(deadline);
+        assertFalse(index.canStartRebalance());
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(IIndexToken.RebalancePending.selector, deadline));
         index.startRebalance(0);
 
+        // An auction nobody filled holds strangers off for REBALANCE_DELAY more, so the guardian gets the first
+        // restart; afterwards anyone can start again from a fresh snapshot.
         vm.warp(deadline + 1);
+        assertFalse(index.canStartRebalance());
         vm.prank(stranger);
-        index.startRebalance(0); // an expired auction can be restarted at once, from a fresh snapshot
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, stranger));
+        index.startRebalance(0);
+
+        vm.warp(deadline + index.REBALANCE_DELAY());
+        assertTrue(index.canStartRebalance());
+        vm.prank(stranger);
+        index.startRebalance(0);
         (uint256 nextEta,,) = index.pendingRebalance();
         assertEq(nextEta, block.timestamp + index.REBALANCE_DELAY());
     }
@@ -304,7 +314,7 @@ contract IndexTokenRebalanceTest is Test {
         );
 
         vm.expectEmit(true, true, true, true, address(index));
-        emit IIndexToken.Rebalanced(1, address(executor), 1.5e18, units, amountsOut, amountsIn);
+        emit IIndexToken.Rebalanced(1, 1, address(executor), 1.5e18, units, amountsOut, amountsIn);
         executor.execute(index, "fill");
 
         assertEq(keccak256(abi.encode(_units(index))), keccak256(abi.encode(units)));

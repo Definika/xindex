@@ -83,6 +83,9 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
     uint96[] private _targetUnits;
 
     /// @inheritdoc IIndexToken
+    uint256 public proposalCount;
+
+    /// @inheritdoc IIndexToken
     uint256 public rebalanceNonce;
 
     /// @inheritdoc IIndexToken
@@ -229,7 +232,7 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
         uint256 n = _components.length;
         if (keepMask >> n != 0 || keepMask == (1 << n) - 1) revert InvalidKeepMask(keepMask);
         if (
-            (keepMask != 0 || block.timestamp < restartAllowedAt)
+            (keepMask != 0 || block.timestamp < _permissionlessAt(pendingEta))
                 && !IIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender)
         ) revert Unauthorized(msg.sender);
 
@@ -242,9 +245,19 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
         }
         uint256 eta = block.timestamp + REBALANCE_DELAY;
         _pending = PendingRebalance({eta: SafeCast.toUint40(eta), keepMask: SafeCast.toUint24(keepMask)});
+        uint256 proposalId = ++proposalCount;
         // The calls above are views on the factory and the rule; nothing external can run in between.
         // forge-lint: disable-next-line(reentrancy-events)
-        emit RebalanceStarted(rebalanceNonce + 1, msg.sender, targets, keepMask, eta);
+        emit RebalanceStarted(proposalId, rebalanceNonce + 1, msg.sender, targets, keepMask, eta);
+    }
+
+    /// @dev First moment anyone may start a rebalance. A cancel holds strangers off for REBALANCE_DELAY, and so does an
+    ///      auction that expired unfilled (`pendingEta` is then the expired proposal's): that gives the owner and the
+    ///      guardian the first move after an expiry, so a griefer cannot take every restart with a snapshot nobody can
+    ///      fill. The owner and guardian are never held off.
+    function _permissionlessAt(uint256 pendingEta) private view returns (uint256) {
+        uint256 afterExpiry = pendingEta == 0 ? 0 : pendingEta + AUCTION_DURATION + REBALANCE_DELAY;
+        return Math.max(restartAllowedAt, afterExpiry);
     }
 
     /// @inheritdoc IIndexToken
@@ -257,7 +270,7 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
         restartAllowedAt = restartAt;
         // The factory call above is a view; nothing external can run in between.
         // forge-lint: disable-next-line(reentrancy-events)
-        emit RebalanceCancelled(rebalanceNonce + 1, msg.sender, restartAt);
+        emit RebalanceCancelled(proposalCount, msg.sender, restartAt);
     }
 
     /// @inheritdoc IIndexToken
@@ -265,13 +278,21 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
         (uint256 multiplier, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn) =
             _previewRebalance(totalSupply());
 
+        // What the index holds before it pays out, so the check afterwards can require the whole of `amountsIn` back:
+        // surplus from rounding or a donation belongs to the holders, not to the executor.
+        uint256 n = units.length;
+        uint256[] memory held = new uint256[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            held[i] = IERC20(_components[i].token).balanceOf(address(this));
+        }
+
         // Effects: the new units, the nonce and the cleared proposal are in place before any token moves.
+        uint256 proposalId = proposalCount;
         uint256 id = _applyRebalance(units);
         // No external call precedes this event: the transfers and the executor callback come after it.
         // forge-lint: disable-next-line(reentrancy-events)
-        emit Rebalanced(id, msg.sender, multiplier, units, amountsOut, amountsIn);
+        emit Rebalanced(proposalId, id, msg.sender, multiplier, units, amountsOut, amountsIn);
 
-        uint256 n = units.length;
         for (uint256 i = 0; i < n; ++i) {
             if (amountsOut[i] != 0) IERC20(_components[i].token).safeTransfer(msg.sender, amountsOut[i]);
         }
@@ -280,7 +301,7 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
         // reads only the final state. Wake's reentrancy detector does not model the guard, hence the suppression.
         // wake-disable-next-line reentrancy
         IRebalanceExecutor(msg.sender).onXindexRebalance(amountsOut, amountsIn, data);
-        _checkBacking(units);
+        _checkBacking(units, amountsOut, amountsIn, held);
     }
 
     function _applyRebalance(uint256[] memory units) private returns (uint256 id) {
@@ -294,13 +315,23 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
         delete _targetUnits;
     }
 
-    /// @dev The backing invariant with the new units, checked after the executor has returned.
-    function _checkBacking(uint256[] memory units) private view {
+    /// @dev The backing invariant with the new units, and the whole of `amountsIn` on top of what the index held
+    ///      before it paid out, checked after the executor has returned. The second bound is the stricter one whenever
+    ///      the index held a surplus, from rounding or a donation: it keeps that surplus with the holders instead of
+    ///      letting the executor deliver that much less.
+    function _checkBacking(
+        uint256[] memory units,
+        uint256[] memory amountsOut,
+        uint256[] memory amountsIn,
+        uint256[] memory held
+    ) private view {
         uint256 supply = totalSupply();
         uint256 n = units.length;
         for (uint256 i = 0; i < n; ++i) {
             address token = _components[i].token;
             uint256 required = Math.mulDiv(supply, units[i], SHARE_UNIT) + totalClaims[token];
+            uint256 delivered = held[i] - amountsOut[i] + amountsIn[i];
+            if (delivered > required) required = delivered;
             uint256 balance = IERC20(token).balanceOf(address(this));
             if (balance < required) revert RebalanceUnderfunded(token, balance, required);
         }
@@ -308,8 +339,8 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
 
     /// @dev Settlement for the current block. A shrinking component moves straight to its target; a growing component
     ///      gains its extra units times the multiplier, rounded up. Amounts are the change in required backing, so they
-    ///      depend only on supply and units: the index never sends out rounding dust or donations. The backing check
-    ///      does count them, so an executor may deliver up to that surplus less.
+    ///      depend only on supply and units: the index never sends out rounding dust or donations, and the executor has
+    ///      to deliver every amount in full.
     function _previewRebalance(uint256 supply)
         private
         view
@@ -319,36 +350,42 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
         if (eta == 0) revert NoPendingRebalance();
         if (block.timestamp < eta) revert RebalanceNotReady(eta);
         if (block.timestamp > eta + AUCTION_DURATION) revert RebalanceExpired(eta + AUCTION_DURATION);
-        multiplier = _multiplier(eta, supply);
 
         uint256 n = _components.length;
         units = new uint256[](n);
         amountsOut = new uint256[](n);
         amountsIn = new uint256[](n);
+        // A shrinking component moves straight to its target, so what leaves the index does not depend on the
+        // multiplier: it can be settled before the auction's price is known.
+        bool sells = false;
         for (uint256 i = 0; i < n; ++i) {
             uint256 current = _components[i].units;
             uint256 target = _targetUnits[i];
-            uint256 next = target < current
-                ? target
-                : current + Math.mulDiv(target - current, multiplier, WAD, Math.Rounding.Ceil);
+            if (target >= current) continue;
+            units[i] = target;
+            amountsOut[i] = Math.mulDiv(supply, current, SHARE_UNIT) - Math.mulDiv(supply, target, SHARE_UNIT);
+            if (amountsOut[i] != 0) sells = true;
+        }
+        multiplier = sells ? _multiplier(eta) : WAD;
+
+        for (uint256 i = 0; i < n; ++i) {
+            uint256 current = _components[i].units;
+            uint256 target = _targetUnits[i];
+            if (target < current) continue;
+            uint256 next = current + Math.mulDiv(target - current, multiplier, WAD, Math.Rounding.Ceil);
             units[i] = next;
-            uint256 oldRequired = Math.mulDiv(supply, current, SHARE_UNIT);
-            uint256 newRequired = Math.mulDiv(supply, next, SHARE_UNIT);
-            if (oldRequired > newRequired) {
-                amountsOut[i] = oldRequired - newRequired;
-            } else {
-                amountsIn[i] = newRequired - oldRequired;
-            }
+            amountsIn[i] = Math.mulDiv(supply, next, SHARE_UNIT) - Math.mulDiv(supply, current, SHARE_UNIT);
         }
     }
 
     /// @dev Linear decay from the start to the end multiplier; the decrement rounds down, so the multiplier rounds up.
-    ///      An empty index settles at parity, because nothing moves and its new units should not depend on timing. An
-    ///      index with only dust supply still decays: a lone executor then picks the multiplier in [0.9, 1.5] for next
-    ///      to nothing, which sets the new units within their bounds but moves no holder's value. Any supply threshold
-    ///      for parity would be arbitrary and cheap to step over.
-    function _multiplier(uint256 eta, uint256 supply) private view returns (uint256) {
-        if (supply == 0) return WAD;
+    ///      A settlement that sends nothing out (an empty index, or one whose supply is so small that every shrinking
+    ///      leg rounds to zero) is priced at parity instead, because the auction has nothing to pay for and the new
+    ///      units should not depend on timing. A dust supply that still moves a few raw units does decay: a lone
+    ///      executor then picks the multiplier in [0.9, 1.5] for next to nothing, which sets the new units within their
+    ///      bounds but moves no holder's value. Any supply threshold for parity would be arbitrary and cheap to step
+    ///      over.
+    function _multiplier(uint256 eta) private view returns (uint256) {
         return AUCTION_START_MULTIPLIER
             - Math.mulDiv(AUCTION_START_MULTIPLIER - AUCTION_END_MULTIPLIER, block.timestamp - eta, AUCTION_DURATION);
     }
@@ -416,10 +453,18 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
     }
 
     /// @inheritdoc IIndexToken
-    function currentMultiplier() external view returns (uint256) {
+    function currentMultiplier() external view returns (uint256 multiplier) {
         uint256 eta = _pending.eta;
         if (eta == 0 || block.timestamp < eta || block.timestamp > eta + AUCTION_DURATION) return 0;
-        return _multiplier(eta, totalSupply());
+        (multiplier,,,) = _previewRebalance(totalSupply());
+    }
+
+    /// @inheritdoc IIndexToken
+    function canStartRebalance() external view returns (bool) {
+        if (block.timestamp < lastRebalance + MIN_REBALANCE_INTERVAL) return false;
+        uint256 pendingEta = _pending.eta;
+        if (pendingEta != 0 && block.timestamp <= pendingEta + AUCTION_DURATION) return false;
+        return block.timestamp >= _permissionlessAt(pendingEta);
     }
 
     /// @inheritdoc IIndexToken

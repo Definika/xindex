@@ -26,11 +26,10 @@ import {PathLib} from "./libraries/PathLib.sol";
 ///        limit only". The overall burn limit must be non-zero.
 ///      - What the user pays and receives is measured as balance changes inside the call, so tokens
 ///        already sitting in the zap are never used. A fee-on-transfer currency reverts with
-///        `TransferShortfall`. When the router takes less of a component than it was given, because the first
-///        pool of a leg reached its price limit or the router paid WETH from ETH it was holding, the unsold
-///        part goes to the recipient instead of being stranded or blocking the burn. The zap cannot see a
-///        partial fill on a later hop of a multi-hop leg: that intermediate token stays in the router, so
-///        apps should prefer single-hop burn legs and set per-leg minimums.
+///        `TransferShortfall`. When the router takes less than it was given, because a pool reached its price
+///        limit or the router paid WETH from ETH it was holding, the unsold part goes to the recipient instead
+///        of being stranded or blocking the burn. A burn leg is swapped hop by hop, so this holds for every hop
+///        of a multi-hop leg, not only the first; unsold `tokenOut` stays here and is paid out with the rest.
 ///      - The zap never calls `redeemSkipping`: a claim recorded for the zap could never be collected.
 ///        While a component is frozen, holders exit directly through the index.
 ///      - Every call names the index's `rebalanceNonce` its quote was taken at. A rebalance changes the units, so a
@@ -207,29 +206,51 @@ contract IndexZap is ReentrancyGuard, IIndexZap {
         return reported;
     }
 
+    /// @dev Sells `amountIn` of `component` along the leg's path, one hop at a time. SwapRouter02 can take less than
+    ///      the input of any hop: a pool can stop at its price limit, and the router pays WETH from any ETH it holds
+    ///      instead of pulling it. A multi-hop call would hide that on every hop after the first and leave those tokens
+    ///      in the router for anyone to sweep, so each hop is swapped on its own and its unsold input is measured. The
+    ///      leg's minimum applies to the last hop's output; the overall minimum bounds the whole burn.
     function _sell(BurnParams calldata p, address component, uint256 amountIn, uint256 i)
         private
         returns (uint256 amountOut)
     {
         BurnLeg calldata leg = p.legs[i];
-        IERC20 token = IERC20(component);
-        uint256 before = token.balanceOf(address(this));
-        token.forceApprove(address(ROUTER), amountIn);
-        amountOut = ROUTER.exactInput(
-            ISwapRouter02.ExactInputParams({
-                path: leg.path, recipient: address(this), amountIn: amountIn, amountOutMinimum: leg.minAmountOut
-            })
-        );
+        bytes calldata path = leg.path;
+        address hopIn = component;
+        amountOut = amountIn;
+        while (true) {
+            bool last = path.length == PathLib.ADDR_SIZE + PathLib.HOP_SIZE;
+            IERC20 token = IERC20(hopIn);
+            uint256 given = amountOut;
+            uint256 before = token.balanceOf(address(this));
+            token.forceApprove(address(ROUTER), given);
+            amountOut = ROUTER.exactInput(
+                ISwapRouter02.ExactInputParams({
+                    path: path[:PathLib.ADDR_SIZE + PathLib.HOP_SIZE],
+                    recipient: address(this),
+                    amountIn: given,
+                    amountOutMinimum: last ? leg.minAmountOut : 0
+                })
+            );
 
-        // SwapRouter02 can take less than amountIn: a pool can stop at its price limit, and the router pays WETH
-        // from any ETH it holds instead of pulling it. The per-leg and overall minimums still bound the price of
-        // what was sold; whatever was not sold goes to the recipient.
-        uint256 unsold = amountIn - (before - token.balanceOf(address(this)));
-        if (unsold != 0) {
-            token.forceApprove(address(ROUTER), 0);
-            // forge-lint: disable-next-line(reentrancy-events)
-            emit ComponentReturned(p.index, p.to, component, unsold);
-            token.safeTransfer(p.to, unsold);
+            uint256 unsold = given - (before - token.balanceOf(address(this)));
+            if (unsold != 0) {
+                token.forceApprove(address(ROUTER), 0);
+                // Unsold `tokenOut` stays here: the payout is measured as this contract's `tokenOut` balance change,
+                // so it reaches the recipient with the rest of the proceeds instead of being paid out twice.
+                if (hopIn != p.tokenOut) {
+                    // forge-lint: disable-next-line(reentrancy-events)
+                    emit ComponentReturned(p.index, p.to, hopIn, unsold);
+                    token.safeTransfer(p.to, unsold);
+                }
+            }
+            if (last) return amountOut;
+            // A zero amountIn is SwapRouter02's "spend my whole balance" sentinel, which would reach for tokens this
+            // burn's other legs still need.
+            if (amountOut == 0) revert InsufficientOutput(0, leg.minAmountOut);
+            hopIn = address(bytes20(path[PathLib.HOP_SIZE:PathLib.HOP_SIZE + PathLib.ADDR_SIZE]));
+            path = path[PathLib.HOP_SIZE:];
         }
     }
 

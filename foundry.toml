@@ -12,6 +12,10 @@ remappings = [
     "@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/",
 ]
 
+# Read-only access for test/Repo.t.sol, which checks the repository files review findings rest on: the pinned compiler,
+# the CI gates and toolchain, the dependency lock against .gitmodules, the ABIs and the docs.
+fs_permissions = [{ access = "read", path = "./" }]
+
 [lint]
 # Tests are exercised by `forge test`, not linted: rules like unused-return on `approve` or
 # literal-instead-of-constant are noise there.

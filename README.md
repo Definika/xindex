@@ -29,8 +29,9 @@ This repository holds the smart contracts (Foundry). The web app lives elsewhere
 > 7. we need to find a solution for layer-1 tokens.
 
 v2 adds the rebalancing and index-price methodology from the team's Numbers model (`index_MODEL.numbers`): market-cap
-weights, uncapped or capped with the largest coin at 30% and the second at most 20%, and the rest sharing 50-70% by
-market cap with no cap of their own. The coins in that model were examples; the methodology is the requirement.
+weights, uncapped or capped with the largest coin at 30% and every other coin at most 20%, sharing the remaining 70% by
+market cap. The coins in that model were examples; the methodology is the requirement. (The model capped only the second
+coin; a third-ranked coin could then outweigh both, so the cap now applies to every coin below the largest.)
 
 ## Design decisions (v2)
 
@@ -38,7 +39,7 @@ market cap with no cap of their own. The coins in that model were examples; the 
 |---|---|
 | Chain | Ethereum mainnet |
 | Swaps | Uniswap V3 via SwapRouter02; quotes via QuoterV2. V4 / Universal Router / aggregators are a drop-in replacement for the zap later. |
-| Composition | Constituents fixed at creation. Units follow the index's methodology: `0` uncapped market cap, `1` capped market cap (30% / at most 20% / the rest by cap, at least 5 components; ranks 3 and below are not capped and one of them can outweigh the first two). |
+| Composition | Constituents fixed at creation. Units follow the index's methodology: `0` uncapped market cap, `1` capped market cap (largest 30%, every other component at most 20%, the rest of the 70% by cap, at least 5 components). |
 | Rebalancing | On-chain rule, no bots or keys. Anyone starts a rebalance 28 days after the last one; 2 days of notice; a 24-hour auction that any contract can fill; each target lies between half and double a component's units, and a growing component settles at its extra units times the auction multiplier, so between half and 2.5 times per rebalance. |
 | Market data | Supplies on-chain (total supply minus excluded burn or lock wallets) or a timelocked reference supply for wrapped assets; prices are Uniswap V3 30-minute time-weighted averages against WETH. A rebalance snapshot accepts a price only from a window with enough liquidity (a timelocked per-token minimum) and agreeing 10-minute parts. |
 | Index price | The basket's value per index token, `IndexRule.navPerToken`, in WETH and USDC. For an uncapped index it equals the Numbers model's divisor price; for a capped index it replaces it. Display only. |
@@ -135,14 +136,20 @@ already holds the components or shares.
   time-weighted prices. Show it as the index price. It lags fast moves; never use it, or a thin DEX pool of the index
   token, as an oracle.
 - **Weights.** `IndexRule.weights(tokens, methodology)` returns current target weights (1e18 = 100%), prices and
-  supplies. Show them before a capped index is created: its third- or lower-ranked component can outweigh the top two.
-- **Rebalance status.** Show `lastRebalance + MIN_REBALANCE_INTERVAL`, and a "rebalance due" button when that time has
-  passed, no live rebalance exists (`pendingRebalance().eta == 0`, or `block.timestamp > eta + AUCTION_DURATION`: an
-  auction nobody filled keeps its `eta` after it expires) and `restartAllowedAt` has passed. Before starting,
+  supplies. Show them before a capped index is created: under the cap several components can sit at exactly 20%.
+- **Rebalance status.** Show `lastRebalance + MIN_REBALANCE_INTERVAL`, and a "rebalance due" button when
+  `canStartRebalance()` is true. That one view answers the whole predicate: the interval has passed, no auction is live
+  (an auction nobody filled keeps its `eta` after `eta + AUCTION_DURATION`, so `pendingRebalance().eta == 0` on its own
+  is the wrong test), and the waits after a cancel and after an unfilled auction are over. Those waits are
+  `REBALANCE_DELAY` each and hold off everyone but the owner and guardian, who can start straight away. Before starting,
   `previewTarget(0)` shows the targets and turnover; a turnover below `MIN_TURNOVER` reverts, and so does a snapshot
   whose price window is too thin (`ThinPriceHistory`) or uneven (`PriceHistoryDeviates`): retry later. During the
   notice, show `pendingRebalance()` and the auction start; during the auction, `currentMultiplier()` and
   `previewRebalance()`.
+- **Rebalance events.** `RebalanceStarted`, `RebalanceCancelled` and `Rebalanced` carry `proposalId` (`proposalCount`,
+  counting every attempt on that index) as their first topic, so cancelled, expired and settled attempts can be told
+  apart; `RebalanceStarted` and `Rebalanced` also carry `id`, the `rebalanceNonce` the settlement takes. Nothing is
+  emitted when an auction expires unfilled: the next `RebalanceStarted`, with a new `proposalId`, is the first sign.
 - **Guardian duty.** During every notice period, compare `pendingRebalance()` targets with targets computed from
   independent prices and cancel a snapshot that disagrees. A snapshot price read low by a factor f on a sold component
   hands the first executor about (1/f - 1.5) of the bought value.
@@ -174,12 +181,16 @@ already holds the components or shares.
   it drops a pending listing proposal. Treat `GuardianProposed` as a security alert: once it executes, the owner's
   config changes no longer face the old guardian's veto, so it is the earliest warning, 9 days ahead, of an unchecked
   change.
-- **Returned components.** If the router sells less of a component than the zap gave it, that part goes to the
-  recipient and `ComponentReturned` is emitted. Show it on the receipt.
+- **Returned components.** A burn leg is swapped one hop at a time, so whenever the router takes less than it was
+  given, the unsold part goes to the recipient with a `ComponentReturned` event, whether it is the component or an
+  intermediate token of a multi-hop leg. Unsold `tokenOut` is paid out with the rest instead. Show them on the receipt.
 - **Value an index from units, not balances.** Never derive a price from `balanceOf(index)` and `totalSupply()`.
-- **ABIs.** Encode calls and decode events and errors from the interfaces in `src/interfaces/` (`IIndexFactory`,
-  `IIndexToken`, `IIndexRule`, `IIndexZap`, `IRebalanceExecutor`), for example with `forge inspect IIndexZap abi`; they
-  are the canonical lists, and the lists below are a summary as of 2026-09-17. Errors that several contracts raise
+- **ABIs.** `abi/IndexFactory.json`, `abi/IndexToken.json`, `abi/IndexRule.json` and `abi/IndexZap.json` are committed
+  and regenerated by CI, which fails on a diff, so they always match the contracts; decode every event and revert with
+  them (`forge inspect <contract> abi --json` reproduces them, and the interfaces in `src/interfaces/` carry the
+  NatSpec). Read the timing constants (`LISTING_DELAY`, `PROPOSAL_WINDOW`, `MIN_REBALANCE_INTERVAL`, `REBALANCE_DELAY`,
+  `AUCTION_DURATION`, the auction multipliers, `MIN_TURNOVER`, `MAX_COMPONENTS`) on chain rather than hard-coding them.
+  The lists below are a summary as of 2026-09-17. Errors that several contracts raise
   (`ZeroAddress`, `LengthMismatch`, `InvalidMethodology`, `TooFewComponentsForCapped`, `Unauthorized`, `NotIndex`,
   `InvalidRecipient`) are declared once, in `IXindexErrors`, which the factory, rule, token and zap interfaces extend.
 - **Events.** `IndexFactory`: `IndexCreated`, `ListingProposed`, `ListingCancelled`, `TokenConfigured`,
@@ -234,13 +245,19 @@ through a fresh proposal and delay.
 - Airdrops, rewards and governance votes that accrue to tokens held by an index cannot be claimed or used; by design
   there is no admin who could sweep them.
 - A rebalance clears only when the value it trades covers gas and swap costs many times over, so small indexes on
-  mainnet rarely rebalance. Unfilled auctions expire and anyone can restart them at once. A griefer who distorts every
-  snapshot so that even 0.9 does not pay an executor can stall an index; the snapshot price checks make that expensive,
-  and the guardian answers by cancelling and starting an honest snapshot in its 2-day window.
+  mainnet rarely rebalance. An unfilled auction expires, and for `REBALANCE_DELAY` afterwards only the owner and
+  guardian can restart it, so a griefer who distorts every snapshot so that even 0.9 does not pay an executor cannot
+  take every restart. The cost is that an honest restart after an expiry also waits those two days unless the owner or
+  guardian starts it; the snapshot price checks make the distortion expensive in the first place.
+- An index with so little supply that a settlement moves no raw unit at all is priced at parity, so its units follow the
+  rule whoever executes. One that still moves a few wei does decay with the auction, and a lone executor can then pick
+  the multiplier in [0.9, 1.5] for next to nothing: it sets the level of a near-empty index within the half-to-2.5-times
+  bound but moves no holder's value.
 - Without competing executors, a filler can wait for the 0.9 floor and keep up to 10% of the bought value; the notice
   period also lets traders position ahead of a public rebalance.
 - A permanently frozen component needs the guardian's keep mask at every rebalance.
-- If a multi-hop burn leg stops partway, the intermediate token stays in the Uniswap router rather than the zap.
+- A multi-hop burn leg costs one router call per hop, and a hop that sells nothing reverts the burn instead of leaving
+  the next hop to spend the zap's balance.
 - Bytecode targets the Cancun EVM (`evm_version = "cancun"`). The factory's deployment code is close to the EIP-3860
   initcode limit. Re-check both before deploying to any other chain.
 
@@ -312,14 +329,18 @@ commit, each transaction with its init code, and the factory, rule, implementati
 clean, committed tree so the recorded commit is the deployed source, commit the record with the README address table (on
 mainnet with `git add -f`: `.gitignore` keeps chain-1 records out, because fork rehearsals keep chain id 1), and verify
 the source on the explorer (`--verify` needs `ETHERSCAN_API_KEY`). Anyone can then rebuild that commit with `forge
-build` and compare `cast code <address>` with the build's runtime code (immutables differ only in their slots).
+build` and compare `cast code <address>` with the build's runtime code (immutables differ only in their slots). The
+deploy log ends with the runtime code hash of the factory, the rule, the implementation and the zap: record them with
+the addresses, and `Deploy.checkDeployment(factory, zap)` re-reads them later (it also refuses a factory and a zap that
+are not one deployment) so a deployment can be checked against its record at any time.
 Addresses come from the deployer's nonce, not CREATE2: the owner and guardian are constructor arguments, so a
 deterministic address would still change with them, and nothing pins the factory address across chains.
 
 Listing components takes two runs of `script/ConfigureWhitelist.s.sol`, or the equivalent calls through the Safe:
 
 ```bash
-# owner is a key you hold (testnets and local forks only; on mainnet the owner is a Safe, so use safe mode below):
+# owner is a key you hold (testnets and local forks only; a contract owner such as the mainnet Safe cannot sign, and
+# propose mode then reverts with OwnerIsContract: use safe mode below):
 # propose every entry that is not pending and not already listed with exactly its config
 LISTING_MODE=propose FACTORY=0x... WHITELIST=<entries> forge script script/ConfigureWhitelist.s.sol --rpc-url <rpc> --account <owner key> --sender <owner> --broadcast
 # owner is a Safe: print the same proposals as calldata to sign in the Safe app (any account, nothing is broadcast)
@@ -359,7 +380,8 @@ No bot runs Xindex, so these duties have owners and deadlines. Watch the events 
 | Trigger the monthly rebalance | `lastRebalance + MIN_REBALANCE_INTERVAL` | none, but indexes drift from their rule | anyone | `startRebalance(0)`; retry later on `ThinPriceHistory` or `PriceHistoryDeviates` |
 | Rebalance around a frozen component | a paused or blacklisting component, at every rebalance | each auction | guardian | `cancelRebalance()`, then `startRebalance(keepMask)` |
 | Refresh drifting reference supplies and minimum liquidities | monthly review | when a supply or a pool's liquidity has moved for good | owner Safe | new `MainnetAddresses` values, `LISTING_MODE=safe` |
-| Watch guardian changes | `GuardianProposed` | `eta` (7 days) | owner signers, guardian, app | the new guardian's veto replaces the old one once executed |
+| Watch guardian changes | `GuardianProposed` | `eta` (7 days) | owner signers, guardian, app | treat it as a security alert: once executed, the new guardian's veto replaces the old one, and config changes can no longer be cancelled by the current guardian. The guardian can cancel a change to the zero address (its own removal) but not its replacement |
+| Restart an index after an unfilled auction | `eta + AUCTION_DURATION` passed with no `Rebalanced` | anyone after `REBALANCE_DELAY` more | guardian first, then anyone | `canStartRebalance()`, then `startRebalance(0)` |
 
 ### Testnet (Sepolia)
 

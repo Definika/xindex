@@ -233,7 +233,9 @@ interface IIndexFactory is IXindexErrors {
     /// @param newGuardian The next guardian, or zero for none.
     function proposeGuardian(address newGuardian) external;
 
-    /// @notice Owner only. Cancels the pending guardian change.
+    /// @notice Cancels the pending guardian change. The owner can cancel any; the current guardian can cancel only a
+    ///         change that removes the role (`pendingGuardian` zero), so it cannot block its own replacement. Anyone
+    ///         else gets Unauthorized.
     function cancelGuardianChange() external;
 
     /// @notice Permissionless between the change's eta and eta + PROPOSAL_WINDOW. Installs the pending guardian.

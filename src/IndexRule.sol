@@ -18,8 +18,14 @@ import {TickMath} from "./libraries/TickMath.sol";
 ///      state, holds no funds, and every function is a view.
 ///
 ///      A WAD price is WETH wei per 1e18 raw units of a token, from the token's WETH pool averaged over TWAP_WINDOW with
-///      the mean tick rounded toward negative infinity, as Uniswap's OracleLibrary does. A market cap is supply times
-///      WAD price. Units, supplies and prices are all raw, so token decimals cancel out.
+///      the mean tick rounded toward negative infinity, as Uniswap's OracleLibrary does. Units, supplies and prices are
+///      all raw, so token decimals cancel out.
+///
+///      A WAD price reaches about 3.4e56 at MAX_TICK, so the rule's products have to be kept inside 256 bits. A market
+///      cap is supply times price over WAD, floored at one wei; weights use only ratios of caps, so that scale cancels
+///      out. A holding's value is units times price, exact while every price is at most MAX_EXACT_PRICE and divided by
+///      WAD above it (`Basket.scale`). Ordinary baskets are therefore unchanged to the wei, and a mean tick manipulated
+///      toward MAX_TICK yields a snapshot instead of an arithmetic panic.
 ///
 ///      Rebalance targets keep the value of the rebalanced components at snapshot prices. Each target starts at
 ///      `value * weight / price` and is clipped to [units / 2, units * 2]. Whatever value the clip removes or adds is
@@ -51,16 +57,22 @@ contract IndexRule is IIndexRule {
     address public immutable USD_POOL;
 
     uint256 private constant WAD = 1e18;
+    /// @dev Highest WAD price whose value products stay inside 256 bits: MAX_COMPONENTS holdings of up to 2^96 - 1
+    ///      units come to about 1.6e76, below type(uint256).max. One raw unit of a token priced this high is worth 1e28
+    ///      ETH, which no market reaches; only a mean tick manipulated toward MAX_TICK gets there.
+    uint256 private constant MAX_EXACT_PRICE = 1e46;
     uint256 private constant CAPPED_TOP_WEIGHT = 0.3e18;
-    uint256 private constant CAPPED_SECOND_MAX_WEIGHT = 0.2e18;
+    uint256 private constant CAPPED_MAX_WEIGHT = 0.2e18;
     uint256 private constant CAPPED_REMAINDER = WAD - CAPPED_TOP_WEIGHT;
 
     /// @dev Snapshot prices, weights and per-component bounds of one rebalance, kept in one struct for the stack.
+    ///      `scale` divides every value (units times price): 1 while the exact products fit, WAD above that.
     struct Basket {
         uint256[] prices;
         uint256[] weights;
         uint256[] lo;
         uint256[] hi;
+        uint256 scale;
     }
 
     constructor(address weth, address uniswapV3Factory, address usdc) {
@@ -136,8 +148,13 @@ contract IndexRule is IIndexRule {
         uint256 n = tokens.length;
         if (n != units.length) revert LengthMismatch();
         (uint256[] memory prices, uint256[] memory caps) = _snapshotMarket(tokens, methodology, keepMask);
-        Basket memory basket =
-            Basket({prices: prices, weights: _weights(caps, methodology), lo: new uint256[](n), hi: new uint256[](n)});
+        Basket memory basket = Basket({
+            prices: prices,
+            weights: _weights(caps, methodology),
+            lo: new uint256[](n),
+            hi: new uint256[](n),
+            scale: _valueScale(prices)
+        });
         return _targets(units, basket, keepMask);
     }
 
@@ -293,6 +310,22 @@ contract IndexRule is IIndexRule {
         }
     }
 
+    /// @dev WAD as soon as one price is too high for exact value products, 1 otherwise. One scale for the whole
+    ///      basket, so values stay comparable.
+    function _valueScale(uint256[] memory prices) private pure returns (uint256) {
+        uint256 n = prices.length;
+        for (uint256 i = 0; i < n; ++i) {
+            if (prices[i] > MAX_EXACT_PRICE) return WAD;
+        }
+        return 1;
+    }
+
+    /// @dev Market cap in WAD-scaled WETH: supply times price over WAD, floored at one wei so a component with a
+    ///      supply and a price never ranks as worthless. Weights only use ratios of caps, so the scale cancels out.
+    function _cap(uint256 circulating, uint256 p) private pure returns (uint256) {
+        return Math.max(Math.mulDiv(circulating, p, WAD), 1);
+    }
+
     function _market(address[] calldata tokens)
         private
         view
@@ -307,7 +340,7 @@ contract IndexRule is IIndexRule {
             prices[i] = _price(tokens[i], config.pool);
             supplies[i] = _supply(tokens[i], config.referenceSupply, config.excluded);
             if (supplies[i] == 0) revert ZeroSupply(tokens[i]);
-            caps[i] = supplies[i] * prices[i];
+            caps[i] = _cap(supplies[i], prices[i]);
         }
     }
 
@@ -330,7 +363,7 @@ contract IndexRule is IIndexRule {
             prices[i] = kept ? _price(tokens[i], config.pool) : _snapshotPrice(tokens[i], config);
             uint256 circulating = _supply(tokens[i], config.referenceSupply, config.excluded);
             if (circulating == 0) revert ZeroSupply(tokens[i]);
-            caps[i] = circulating * prices[i];
+            caps[i] = _cap(circulating, prices[i]);
         }
     }
 
@@ -357,44 +390,52 @@ contract IndexRule is IIndexRule {
         }
     }
 
-    /// @dev Closed form of the model: rank 1 gets 30%; rank 2 gets 70% of its share of ranks 2 and below, at most 20%;
-    ///      ranks 3 and below share the rest of the 70% in proportion to market cap.
+    /// @dev Rank 1 takes CAPPED_TOP_WEIGHT; every other component shares CAPPED_REMAINDER in proportion to market cap,
+    ///      capped at CAPPED_MAX_WEIGHT. Each pass pins at least one component at the cap and shares what is left among
+    ///      the rest, so at most one pass per component runs. MIN_CAPPED_COMPONENTS components always leave room: the
+    ///      remainder is below the cap times the number of ranks below the first, so a pass that pins nothing always
+    ///      comes. A basket whose unpinned ranks all have a zero cap has nowhere left to place the remainder and is
+    ///      degenerate.
     function _cappedWeights(uint256[] memory caps) private pure returns (uint256[] memory w) {
         uint256 n = caps.length;
         if (n < Methodology.MIN_CAPPED_COMPONENTS) revert TooFewComponentsForCapped(n);
-        (uint256 first, uint256 second) = _topTwo(caps);
-        uint256 rest = 0;
+        uint256 first = _top(caps);
+        uint256 pool = 0;
         for (uint256 i = 0; i < n; ++i) {
-            if (i != first && i != second) rest += caps[i];
+            if (i != first) pool += caps[i];
         }
-        if (rest == 0) revert DegenerateBasket();
-        uint256 secondWeight =
-            Math.min(Math.mulDiv(CAPPED_REMAINDER, caps[second], caps[second] + rest), CAPPED_SECOND_MAX_WEIGHT);
-        uint256 share = CAPPED_REMAINDER - secondWeight;
+        if (pool == 0) revert DegenerateBasket();
+
         w = new uint256[](n);
-        for (uint256 i = 0; i < n; ++i) {
-            if (i == first) {
-                w[i] = CAPPED_TOP_WEIGHT;
-            } else if (i == second) {
-                w[i] = secondWeight;
-            } else {
-                w[i] = Math.mulDiv(share, caps[i], rest);
+        w[first] = CAPPED_TOP_WEIGHT;
+        uint256 share = CAPPED_REMAINDER;
+        for (uint256 pass = 0; pass < n; ++pass) {
+            uint256 pinnedWeight = 0;
+            uint256 pinnedCap = 0;
+            for (uint256 i = 0; i < n; ++i) {
+                if (i == first || w[i] == CAPPED_MAX_WEIGHT) continue;
+                uint256 weight = Math.mulDiv(share, caps[i], pool);
+                if (weight < CAPPED_MAX_WEIGHT) {
+                    w[i] = weight;
+                } else {
+                    w[i] = CAPPED_MAX_WEIGHT;
+                    pinnedWeight += CAPPED_MAX_WEIGHT;
+                    pinnedCap += caps[i];
+                }
             }
+            if (pinnedWeight == 0) return w;
+            share -= pinnedWeight;
+            pool -= pinnedCap;
+            if (pool == 0) revert DegenerateBasket();
         }
     }
 
-    /// @dev Positions of the largest and second-largest caps. On a tie the lower position ranks first.
-    function _topTwo(uint256[] memory caps) private pure returns (uint256 first, uint256 second) {
-        (first, second) = (0, 1);
-        if (caps[1] > caps[0]) (first, second) = (1, 0);
+    /// @dev Position of the largest cap. On a tie the lower position ranks first.
+    function _top(uint256[] memory caps) private pure returns (uint256 first) {
+        first = 0;
         uint256 n = caps.length;
-        for (uint256 i = 2; i < n; ++i) {
-            if (caps[i] > caps[first]) {
-                second = first;
-                first = i;
-            } else if (caps[i] > caps[second]) {
-                second = i;
-            }
+        for (uint256 i = 1; i < n; ++i) {
+            if (caps[i] > caps[first]) first = i;
         }
     }
 
@@ -410,7 +451,7 @@ contract IndexRule is IIndexRule {
             targets[i] = _kept(keepMask, i)
                 ? units[i]
                 : _clamp(
-                    Math.mulDiv(activeValue, basket.weights[i], activeWeight * basket.prices[i]),
+                    Math.mulDiv(activeValue, basket.weights[i] * basket.scale, activeWeight * basket.prices[i]),
                     basket.lo[i],
                     basket.hi[i]
                 );
@@ -419,7 +460,7 @@ contract IndexRule is IIndexRule {
 
         uint256 sold = 0;
         for (uint256 i = 0; i < n; ++i) {
-            if (targets[i] < units[i]) sold += (units[i] - targets[i]) * basket.prices[i];
+            if (targets[i] < units[i]) sold += Math.mulDiv(units[i] - targets[i], basket.prices[i], basket.scale);
         }
         turnover = Math.mulDiv(sold, WAD, activeValue);
     }
@@ -435,7 +476,7 @@ contract IndexRule is IIndexRule {
         uint256 n = units.length;
         for (uint256 i = 0; i < n; ++i) {
             uint256 u = units[i];
-            uint256 value = u * basket.prices[i];
+            uint256 value = Math.mulDiv(u, basket.prices[i], basket.scale);
             totalValue += value;
             // A weight that rounds to zero still counts as one wei, so that component can take value the clips move.
             if (basket.weights[i] == 0) basket.weights[i] = 1;
@@ -443,7 +484,8 @@ contract IndexRule is IIndexRule {
                 basket.lo[i] = u;
                 basket.hi[i] = u;
             } else {
-                activeValue += value;
+                // A value the scale rounds away still counts as one wei, so an active component is never worthless.
+                activeValue += Math.max(value, 1);
                 activeWeight += basket.weights[i];
                 basket.lo[i] = (u + 1) / 2;
                 basket.hi[i] = Math.max(u, Math.min(2 * u, MAX_TARGET_UNITS));
@@ -459,7 +501,7 @@ contract IndexRule is IIndexRule {
         for (uint256 pass = 0; pass < n; ++pass) {
             uint256 value = 0;
             for (uint256 i = 0; i < n; ++i) {
-                value += targets[i] * basket.prices[i];
+                value += Math.mulDiv(targets[i], basket.prices[i], basket.scale);
             }
             bool raise = value < totalValue;
             uint256 gap = raise ? totalValue - value : value - totalValue;
@@ -485,7 +527,7 @@ contract IndexRule is IIndexRule {
         for (uint256 i = 0; i < n; ++i) {
             uint256 t = targets[i];
             if (raise ? t >= basket.hi[i] : t <= basket.lo[i]) continue;
-            uint256 step = Math.mulDiv(gap, basket.weights[i], eligibleWeight * basket.prices[i]);
+            uint256 step = Math.mulDiv(gap, basket.weights[i] * basket.scale, eligibleWeight * basket.prices[i]);
             if (raise && t + step >= basket.hi[i]) {
                 targets[i] = basket.hi[i];
                 pinned = true;

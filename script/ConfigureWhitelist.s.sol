@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {Script, console2} from "forge-std/Script.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
@@ -15,8 +16,8 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///         cancelled. A token the guardian delisted gets config changes only; it is listed again only when named in
 ///         RELIST. Execute mode runs only proposals whose pending config is exactly the entry's.
 ///
-///   Propose, as a factory owner that is a key you hold (testnets and local forks; on mainnet the owner is a Safe, so
-///   use safe mode below):
+///   Propose, as a factory owner that is a key you hold (testnets and local forks; a contract owner, such as the
+///   mainnet Safe, cannot sign, and propose mode then reverts with OwnerIsContract: use safe mode below):
 ///     LISTING_MODE=propose FACTORY=0x... WHITELIST=<entries> forge script script/ConfigureWhitelist.s.sol \
 ///       --rpc-url <rpc> --account <owner key> --sender <owner> --broadcast
 ///   Execute, from any account, between LISTING_DELAY and LISTING_DELAY + PROPOSAL_WINDOW later:
@@ -78,6 +79,9 @@ contract ConfigureWhitelist is Script {
     error DefaultListOnlyOnMainnet();
     /// @notice A WHITELIST entry has fewer than three or more than five fields.
     error MalformedEntry(string entry);
+    /// @notice Propose mode needs an owner that can sign transactions, and this factory's owner is a contract (a Safe
+    ///         on mainnet). Use `LISTING_MODE=safe` and submit the calldata it logs from the owner.
+    error OwnerIsContract(address owner);
 
     /// @notice Default mainnet components, from `MainnetAddresses`: reference supplies are CoinGecko's circulating
     ///         supplies of 2026-09-15 (propose a config change when they drift), minimum liquidities a tenth of each
@@ -218,10 +222,14 @@ contract ConfigureWhitelist is Script {
     ///         or is named in `relist`, and a config change for any other token whose config differs from the entry. A
     ///         token the guardian delisted is therefore never listed again by a routine run. An expired proposal is
     ///         proposed again. An entry the rule rejects is skipped and the reason logged.
+    ///         Reverts with OwnerIsContract when the owner cannot sign, which is always the case on mainnet: safe mode
+    ///         logs the same calls as calldata instead.
     /// @param factory The deployed factory; the broadcasting key must be its owner.
     /// @param list Entries to propose.
     /// @param relist Delisted tokens that may be listed again.
     function propose(IIndexFactory factory, Entry[] memory list, address[] memory relist) public {
+        address factoryOwner = Ownable(address(factory)).owner();
+        if (factoryOwner.code.length != 0) revert OwnerIsContract(factoryOwner);
         IIndexRule rule = IIndexRule(factory.RULE());
         address weth = rule.WETH();
         address uniswapV3Factory = rule.UNISWAP_V3_FACTORY();

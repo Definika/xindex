@@ -48,7 +48,19 @@ contract RebalanceForkTest is Test {
             vm.skip(true);
             return;
         }
-        vm.createSelectFork(url, vm.envOr("FORK_BLOCK", A.FORK_BLOCK));
+        // FORK_BLOCK overrides the pin, for a non-archive RPC that only serves recent state. Forge loads .env
+        // automatically, so a MAINNET_RPC_URL set there makes a plain `forge test` run these suites too.
+        uint256 forkBlock = vm.envOr("FORK_BLOCK", A.FORK_BLOCK);
+        try vm.createSelectFork(url, forkBlock) returns (uint256) {}
+        catch {
+            revert(
+                string.concat(
+                    "MAINNET_RPC_URL cannot serve block ",
+                    vm.toString(forkBlock),
+                    ": use an archive node, set FORK_BLOCK near the chain head, or run forge test --no-match-path 'test/fork/*'"
+                )
+            );
+        }
 
         factory = new IndexFactory(address(this), guardian, A.WETH, A.UNISWAP_V3_FACTORY, A.USDC);
         rule = IIndexRule(factory.RULE());

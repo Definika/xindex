@@ -381,20 +381,44 @@ contract IndexRuleTest is Test {
         assertEq(w[0], 0.3e18);
         assertEq(w[1], 0.175e18);
         assertEq(w[4], 0.175e18);
-        // The largest can sit anywhere; here rank 2 would take 31.5% and is capped.
+        // The largest can sit anywhere; here ranks 2 to 4 would take 31.5%, 17.5% and 17.5% of the whole and pin at
+        // the cap over two passes, leaving the smallest the remaining 10%.
         w = rule.weightsFromCaps(_arr(1, 9, 5, 5, 40), CAPPED);
         assertEq(w[4], 0.3e18);
         assertEq(w[1], 0.2e18);
-        assertEq(w[0], uint256(0.5e18) / 11);
-        assertEq(w[2], uint256(0.5e18) * 5 / 11);
+        assertEq(w[2], 0.2e18);
+        assertEq(w[3], 0.2e18);
+        assertEq(w[0], 0.1e18);
 
-        // Ranks 3 and below are not capped. Caps in the ratio of WBTC, WETH, LINK, UNI and tBTC in September 2026 put
-        // LINK above the 30% of the largest component.
+        // Every rank below the first is capped. Caps in the ratio of WBTC, WETH, LINK, UNI and tBTC in September 2026
+        // used to put LINK at 34.9%; three ranks now pin at the cap and the smallest takes what is left.
         w = rule.weightsFromCaps(_arr(2000e9, 488e9, 15e9, 6e9, 0.5e9), CAPPED);
         assertEq(w[0], 0.3e18);
         assertEq(w[1], 0.2e18);
-        assertEq(w[2], 348837209302325581);
-        assertGt(w[2], w[0], "the third-ranked component outweighs the first");
+        assertEq(w[2], 0.2e18);
+        assertEq(w[3], 0.2e18);
+        assertEq(w[4], 0.1e18);
+    }
+
+    /// @dev XA-04: no constituent below the first outweighs the 20% cap, whatever the caps.
+    function test_XA04_cappedCapsEveryRankBelowTheFirst() public view {
+        uint256[] memory w = rule.weightsFromCaps(_arr(2000e9, 488e9, 15e9, 6e9, 0.5e9), CAPPED);
+        assertLe(w[2], 0.2e18, "the third-ranked component stays under the cap");
+        assertLt(w[2], w[0], "and under the first");
+
+        // Several ranks pin in the same pass and the redistribution still terminates and places the whole weight.
+        w = rule.weightsFromCaps(_arr(100, 99, 98, 97, 1), CAPPED);
+        uint256 sum = 0;
+        for (uint256 i = 0; i < 5; ++i) {
+            if (i != 0) assertLe(w[i], 0.2e18);
+            sum += w[i];
+        }
+        assertEq(w[0], 0.3e18);
+        assertEq(w[1], 0.2e18);
+        assertEq(w[2], 0.2e18);
+        assertEq(w[3], 0.2e18);
+        assertEq(w[4], 0.1e18);
+        assertEq(sum, WAD);
     }
 
     function test_weights_reverts() public {
@@ -406,7 +430,9 @@ contract IndexRuleTest is Test {
         rule.weightsFromCaps(four, CAPPED);
 
         vm.expectRevert(IIndexRule.DegenerateBasket.selector);
-        rule.weightsFromCaps(_arr(10, 5, 0, 0, 0), CAPPED);
+        rule.weightsFromCaps(_arr(10, 0, 0, 0, 0), CAPPED); // nothing below the first to share the 70%
+        vm.expectRevert(IIndexRule.DegenerateBasket.selector);
+        rule.weightsFromCaps(_arr(10, 5, 0, 0, 0), CAPPED); // and nothing left once the second pins at the cap
         vm.expectRevert(IIndexRule.DegenerateBasket.selector);
         rule.weightsFromCaps(_arr(0, 0, 0, 0, 0), UNCAPPED);
     }
@@ -437,7 +463,9 @@ contract IndexRuleTest is Test {
             }
         }
         assertEq(w[first], 0.3e18);
-        assertLe(w[second], 0.2e18);
+        for (uint256 i = 0; i < n; ++i) {
+            if (i != first) assertLe(w[i], 0.2e18, "every rank below the first stays under the cap");
+        }
         assertLe(sum, WAD);
         assertGe(sum, WAD - n);
     }
@@ -479,6 +507,38 @@ contract IndexRuleTest is Test {
 
     function _hundreds() internal pure returns (uint256[] memory) {
         return _arr(100e18, 100e18, 100e18, 100e18, 100e18);
+    }
+
+    /// @dev XA-23: a mean tick near the extreme, with a supply large enough that supply * price would not fit in 256
+    ///      bits, must still produce a snapshot instead of an arithmetic panic.
+    function test_XA23_extremeTicksDoNotOverflowTheRule() public {
+        int24[] memory ticks = new int24[](5);
+        uint256[] memory supplies = new uint256[](5);
+        ticks[0] = 880_000; // 1.0001^880000 is about 1.6e38, so a WAD price near 1.6e56
+        supplies[0] = 1e33; // a SHIB-sized supply: the plain product is about 1.6e89
+        for (uint256 i = 1; i < 5; ++i) {
+            supplies[i] = 1e24;
+        }
+        address[] memory tokens = _basket(ticks, supplies);
+
+        (uint256[] memory w,,) = rule.weights(tokens, UNCAPPED);
+        assertGt(w[0], 0.99e18, "the extreme component takes almost the whole basket");
+        // Units large enough that units * price would not fit either, so the basket's values are scaled as well.
+        uint256[] memory units = _arr(1e24, 100e18, 100e18, 100e18, 100e18);
+        (uint256[] memory t, uint256 turnover) = rule.targetUnits(tokens, units, UNCAPPED, 0);
+        assertApproxEqRel(t[0], 1e24, 1e12, "it already holds the basket's value, so it barely moves");
+        assertEq(t[1], 200e18, "the dust-weight components still take value up to their clip");
+        assertEq(turnover, 0, "what it gives up is nothing next to the basket's value");
+
+        // The same extreme price on a component the rule wants to shrink: the clips and the redistribution still work.
+        supplies[0] = 1e33;
+        for (uint256 i = 1; i < 5; ++i) {
+            supplies[i] = 1e72; // caps far above the extreme component's
+        }
+        tokens = _basket(ticks, supplies);
+        (t,) = rule.targetUnits(tokens, _hundreds(), UNCAPPED, 0);
+        assertApproxEqAbs(t[0], 100e18, 1, "clipped at half, then raised back by the redistribution");
+        assertEq(t[1], 200e18, "the others are clipped at double");
     }
 
     function test_targetUnits_clipAndRedistribute() public {
@@ -616,7 +676,7 @@ contract IndexRuleTest is Test {
         assertGt(rule.price(tokens[0]), 0, "display prices still read the window");
     }
 
-    function test_targetUnits_keptComponentsNeedNoSnapshotPrice() public {
+    function test_XA05_keptComponentsNeedNoSnapshotPrice() public {
         address[] memory tokens = _flatBasket(_arr(6, 1, 1, 1, 1));
         (uint256[] memory readable,) = rule.targetUnits(tokens, _hundreds(), UNCAPPED, 1 << 4);
         MockUniswapV3Pool broken = market.tokenPool(tokens[4]);
@@ -670,7 +730,7 @@ contract IndexRuleTest is Test {
         rule.targetUnits(tokens, _hundreds(), UNCAPPED, 0);
     }
 
-    function test_constants_stayInTheirRelationships() public view {
+    function test_XA09_XA45_constantsStayInTheirRelationships() public view {
         assertEq(rule.TWAP_WINDOW() % rule.TWAP_SUB_WINDOWS(), 0, "the parts split the window exactly");
         // One observation per block at most: the ring covers the window at 12-second slots, and down to 9.05 seconds.
         assertGe(uint256(rule.MIN_OBSERVATION_CARDINALITY() - 1) * 12, rule.TWAP_WINDOW());

@@ -17,7 +17,8 @@ import {IndexToken} from "./IndexToken.sol";
 ///      ownership. A listing or config change takes effect only LISTING_DELAY after it is proposed and a guardian change
 ///      only GUARDIAN_DELAY after, and either proposal must be executed within PROPOSAL_WINDOW of becoming ready or
 ///      proposed again. The guardian can cancel pending listings and delist, and keeps that power for the whole time its
-///      replacement is pending. Owner and guardian can also cancel a pending rebalance on any index and start one that
+///      replacement is pending; it can also cancel its own removal, so the factory is never left without a guardian
+///      unless the guardian agrees, though the owner can still replace it with another address. Owner and guardian can also cancel a pending rebalance on any index and start one that
 ///      leaves chosen components untouched. Neither role can pause, upgrade, set units or prices, or touch funds held by
 ///      any index, and ownership cannot be renounced.
 ///
@@ -286,9 +287,15 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
     }
 
     /// @inheritdoc IIndexFactory
-    function cancelGuardianChange() external onlyOwner {
+    function cancelGuardianChange() external {
         if (pendingGuardianEta == 0) revert NoPendingGuardianChange();
         address cancelled = pendingGuardian;
+        // The owner can cancel any guardian change. The guardian can cancel only its own removal: the owner must stay
+        // able to replace a guardian that turned hostile or lost its keys, but it cannot leave the factory without one
+        // over the guardian's objection.
+        if (msg.sender != owner() && !(cancelled == address(0) && msg.sender == guardian && msg.sender != address(0))) {
+            revert Unauthorized(msg.sender);
+        }
         delete pendingGuardian;
         delete pendingGuardianEta;
         emit GuardianChangeCancelled(cancelled);

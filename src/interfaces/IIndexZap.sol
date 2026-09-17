@@ -20,9 +20,11 @@ interface IIndexZap is IXindexErrors {
     }
 
     /// @param path Exact-input Uniswap V3 path from the component to `tokenOut`; empty when the component is
-    ///        `tokenOut` itself. Checked even when the component redeems to zero.
-    /// @param minAmountOut Least `tokenOut` this leg must return, or 0 for the overall limit only. A non-zero minimum
-    ///        on a leg that sells nothing reverts.
+    ///        `tokenOut` itself. Checked even when the component redeems to zero. Each hop is swapped on its own, so
+    ///        the unsold input of any hop, not only the first, comes back to `to`; an intermediate hop that sells
+    ///        nothing reverts with InsufficientOutput.
+    /// @param minAmountOut Least `tokenOut` this leg must return, or 0 for the overall limit only. It applies to the
+    ///        last hop's output. A non-zero minimum on a leg that sells nothing reverts.
     struct BurnLeg {
         bytes path;
         uint256 minAmountOut;
@@ -78,7 +80,9 @@ interface IIndexZap is IXindexErrors {
         uint256 amountSpent,
         uint256 shares
     );
-    /// @notice The router sold less of `component` than the zap gave it; `amount` went to `to` instead.
+    /// @notice The router sold less of `component` than the zap gave it; `amount` went to `to` instead. `component`
+    ///         is the input of the hop that was not filled, so on a multi-hop leg it can be an intermediate token.
+    ///         Unsold `tokenOut` raises the payout instead and is not reported here.
     event ComponentReturned(address indexed index, address indexed to, address indexed component, uint256 amount);
     /// @notice `user` burned `shares` of `index` and `to` received `amountOut` of `tokenOut`.
     /// @param user The caller whose shares were burned.
@@ -122,7 +126,7 @@ interface IIndexZap is IXindexErrors {
     function mintWithToken(MintParams calldata p) external returns (uint256 amountSpent);
 
     /// @notice Burns `p.shares` of `p.index` (pulled from msg.sender, which must have approved the zap) and delivers at
-    ///         least `p.minAmountOut` of `p.tokenOut` to `p.to`. Any part of a component the router did not take also
+    ///         least `p.minAmountOut` of `p.tokenOut` to `p.to`. Any part of a hop's input the router did not take also
     ///         goes to `p.to`, with a ComponentReturned event.
     /// @param p The burn; see {BurnParams}.
     /// @return amountOut `tokenOut` delivered.

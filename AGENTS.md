@@ -18,8 +18,10 @@ forge build --sizes          # compile (must print "Compiler run successful!"); 
 forge lint -D notes          # lint gate CI runs: fails on any warning or note
 forge fmt                    # format; CI runs `forge fmt --check`
 forge test                   # unit + fuzz + invariant tests, no RPC needed; forge auto-loads .env, and a MAINNET_RPC_URL
-                             # there makes the fork suites run too (archive node, or FORK_BLOCK, or --no-match-path 'test/fork/*')
+                             # there makes the fork suites run too (archive node, or FORK_BLOCK, or --no-match-path 'test/fork/*');
+                             # an RPC that cannot serve the pinned block fails with that sentence, not a raw fork error
 forge coverage               # must stay at 100% for every file (lines, statements, branches, functions)
+for c in IndexFactory IndexToken IndexRule IndexZap; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
 
 # mainnet fork tests (real Uniswap V3 / USDC / USDT / WBTC); skipped when the env var is unset
 MAINNET_RPC_URL=https://... forge test --match-path 'test/fork/*' -vvv
@@ -44,13 +46,17 @@ market from `script/testnet/SetupTestMarket.s.sol`.
 5. The Wake VS Code analyzer reports no errors or warnings on `src/`. Its reentrancy detector does not model reentrancy
    guards; the three documented suppressions are on the `redeem` call in `IndexZap._burnBasket`, the `permit` call in
    `IndexZap.burnToTokenWithPermit`, and the executor callback in `IndexToken.executeRebalance`.
-6. Every testable finding of the security reviews keeps its regression test passing in `test/Security.t.sol` (v1
-   findings by id, v2 rebalancing findings as `R01`..`R23`, whole-repo audit findings of 2026-09-16 as `XA..`),
-   `test/fork/Security.fork.t.sol`, or the named test. v1 ids without an id-named test: L06 and FR06 are
-   `test_checkOwner` and `test_checkGuardian`; FR05 is `test_proposeThenExecute` and
-   `test_execute_worksFromAnyAccount_andNeverReproposesACancelledListing`; L08 and FR04 are the CI submodule lock check;
-   I11 is the pinned CI toolchain and the required fork RPC; I10 is the `0.8.28` pragma pin; I09 is documentation only
-   (README known limitations). Audit findings fixed by documentation alone are listed in `audit/triage.md`.
+6. Every testable finding of the security reviews keeps its regression test passing, named after its id (a test that
+   covers two findings carries both): v1 findings by id, v2 rebalancing findings as `R01`..`R23`, whole-repo audit
+   findings of 2026-09-16 as `XA..`. The v1 and R tests live in `test/Security.t.sol` and
+   `test/fork/Security.fork.t.sol`, except the ids a contract test cannot reach: L06 and FR06 are `test_L06_checkOwner`
+   and `test_FR06_checkGuardian` and FR05 the two `test_FR05_*` tests in `test/Scripts.t.sol`, and I09, I10, I11, L08
+   and FR04 are `test/Repo.t.sol` (the known-limitations section, the pinned compiler, the pinned CI toolchain and
+   required fork RPC, and the dependency lock against `.gitmodules`; CI also compares the committed submodule commits,
+   which needs git). An XA test sits in the suite of what it checks, `test/Repo.t.sol` for a repository file, so find it
+   by id. XA-19 to XA-21, XA-32 to XA-37, XA-41, XA-63 and XA-65 have no test of their own, because they changed only
+   tests and mocks or refactored without changing behaviour; neither have the findings fixed by documentation alone.
+   `audit/triage.md` gives the evidence for each.
 
 CI enforces items 1 to 5: fmt, build, `forge lint -D notes`, tests (fork suites required on `main` and on pull requests
 into it from this repository), 100% coverage on every file and `wake detect all src`. Run them locally before pushing;
@@ -69,9 +75,11 @@ src/libraries/TickMath.sol    getSqrtPriceAtTick vendored from Uniswap v4-core (
 src/libraries/Methodology.sol methodology ids and the capped minimum
 test/*.t.sol                  unit / fuzz / invariant / script tests
 test/Security.t.sol           regression tests for the security review findings (see gate 6 for ids tested elsewhere)
+test/Repo.t.sol               repository facts findings rest on: pinned compiler, CI gates and toolchain, dependency lock, ABIs, docs
 test/mocks/                   mock tokens, WETH, routers, Uniswap V3 pools, factory and position manager, market fixture, rebalance executor (+ Mocks.t.sol)
 test/fork/                    test-only mainnet addresses, end-to-end fork tests, fork rebalance executor, fork security regressions
 script/                       Deploy, ConfigureWhitelist, MainnetAddresses (the one copy of mainnet addresses and market data)
+abi/                          generated ABIs the web app decodes with; CI regenerates them and fails on a diff
 script/interfaces/            the Safe, WETH and Uniswap setup calls the scripts make
 script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test market (never deploy on mainnet)
 ```
@@ -83,18 +91,22 @@ script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test 
   never add a share price to the token. Prices from `IndexRule` only shape rebalance targets and display prices.
 - **No admin power over funds, no rebalancing key.** The factory owner proposes listings and token configs
   (`LISTING_DELAY`) and guardian changes (`GUARDIAN_DELAY`), each executable only within `PROPOSAL_WINDOW` afterwards,
-  delists, and transfers ownership. The guardian can cancel pending listings, delist, cancel a rebalance, and start one
-  with a keep mask. No pause, no upgrade, no sweep, no renounce, no instant guardian change, and no keeper or bot role.
-  Keep it that way.
+  delists, and transfers ownership. The guardian can cancel pending listings, delist, cancel a rebalance, start one with
+  a keep mask, start one before strangers may, and cancel a guardian change that would remove the role (it cannot block
+  its own replacement). No pause, no upgrade, no sweep, no renounce, no instant guardian change, and no keeper or bot
+  role. Keep it that way.
 - **Fixed constituents, rule-rebalanced units.** The token list is immutable after `initialize`. Units change only in
   `executeRebalance`, from the `IndexRule.targetUnits` snapshot that a permissionless `startRebalance` took after
   `MIN_REBALANCE_INTERVAL`, after `REBALANCE_DELAY` of notice, within the auction's multiplier band: targets lie within
-  half to double each component's units, and settled units within half to 2.5 times (the growth scaled by the band).
+  half to double each component's units, and settled units within half to 2.5 times (the growth scaled by the band). A
+  cancel, and an auction that expired unfilled, hold strangers off for `REBALANCE_DELAY` (`canStartRebalance` answers
+  it), so the owner and guardian get the first restart; the trigger stays permissionless after that.
 - **Invariant:** for every component `i`,
   `token_i.balanceOf(index) >= floor(totalSupply * units_i / 1e18) + totalClaims[token_i]`.
   Issue rounds up, redeem rounds down, a claim is only recorded for an amount that stayed in the index, a rebalance moves
-  exactly the change in required backing, and its post-check is the invariant with the new units. The invariant test
-  enforces this; keep it passing.
+  exactly the change in required backing, and its post-check is the invariant with the new units plus the whole of
+  `amountsIn` on top of what the index held, so surplus from rounding or a donation stays with the holders instead of
+  paying for part of a fill. The invariant test enforces this; keep it passing.
 - **Holders can always leave.** `redeemSkipping` must keep working when any subset of components is frozen, claims must
   be payable once transfers resume, and the notice period never freezes issue or redeem.
 - **Index addresses commit to their contents.** Clones are CREATE2-deployed from a salt over the creator, the full
@@ -112,8 +124,8 @@ script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test 
 - **The zap is stateless and replaceable.** New UX features (ETH in/out, aggregators, V4) go in a new or extended zap,
   never in the token, rule or factory. The zap must validate every swap path's endpoints, honour per-leg limits, check
   `expectedNonce`, measure what the user pays and receives as balance changes inside the call (never using tokens
-  already in the zap), send the unsold part of a leg's partially filled first hop to the recipient, revert on transfer
-  shortfalls, and never call `redeemSkipping` (a claim recorded for the zap could never be collected) or
+  already in the zap), swap a burn leg one hop at a time and send every hop's unsold input to the recipient (unsold
+  `tokenOut` stays in the zap and is paid out), revert on transfer shortfalls, and never call `redeemSkipping` (a claim recorded for the zap could never be collected) or
   `executeRebalance`.
 - **Checks-effects-interactions.** Emit events and write state before external calls where the data is available; make
   the call into a user-supplied address the last interaction when possible.
@@ -125,10 +137,11 @@ script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test 
 
 - `pragma solidity 0.8.28;` in `src/` and `script/`; tests use `^0.8.24`. The compiler is pinned to 0.8.28
   in `foundry.toml`, and CI pins Foundry v1.8.1 and eth-wake 4.22.1 in `.github/workflows/test.yml`. CI generates
-  its Wake config from `foundry.toml`, but the Wake VS Code extension reads `.vscode/settings.json`: its copy of
-  `forge remappings` (paste the new output there whenever a dependency or remapping changes), the optimizer settings of
-  `foundry.toml` (without them the factory's initcode looks too large to deploy), and Wake's default excluded folders
-  plus `audit/`, whose PoC tests only compile inside `test/poc/` of the audited commit.
+  its Wake config from `foundry.toml` and adds `audit/` to its excluded folders, because the PoC tests there only
+  compile inside `test/poc/` of the audited commit and would stop Wake before any detector runs. The Wake VS Code
+  extension reads `.vscode/settings.json` instead: its copy of `forge remappings` (paste the new output there whenever
+  a dependency or remapping changes), the optimizer settings of `foundry.toml` (without them the factory's initcode
+  looks too large to deploy), and Wake's default excluded folders plus `audit/`.
 - OpenZeppelin v5.7.0 and forge-std v1.16.2, pinned in `foundry.lock`; the staged submodule commits must match
   it, and CI checks that. The token uses the upgradeable ERC20 because clones skip constructors, and the
   storage-based `ReentrancyGuard` because its zeroed slot is "not entered" in a clone.
@@ -161,9 +174,9 @@ script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test 
 ## Product decisions already made (do not re-litigate silently)
 
 Ethereum mainnet; Uniswap V3 (SwapRouter02 + QuoterV2, pool time-weighted prices for the rule); fixed constituents with
-units that follow an on-chain rule; methodologies uncapped market cap and capped 30/20 (at least 5 components; ranks 3
-and below uncapped); monthly cadence with 2 days of notice and a 24-hour auction from 1.5 to 0.9 on the bought legs; no
-protocol bots or hot keys; no fees; component whitelist only (no synthetics for L1 coins without a mainnet wrapper);
+units that follow an on-chain rule; methodologies uncapped market cap and capped 30/20 (at least 5 components; the 20%
+cap applies to every component below the largest, changed from the Numbers model's closed form on 2026-09-17); monthly
+cadence with 2 days of notice and a 24-hour auction from 1.5 to 0.9 on the bought legs; no protocol bots or hot keys; no fees; component whitelist only (no synthetics for L1 coins without a mainnet wrapper);
 burner chooses the exit token (mint currency is not tracked per holder); the index price is the basket's value, not a
 divisor level. The Numbers model's tokens were examples; its methodology is the requirement. Rationale in
 `ARCHITECTURE.md`. If a change would alter one of these, say so explicitly.

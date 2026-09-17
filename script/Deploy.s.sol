@@ -67,6 +67,8 @@ contract Deploy is Script {
     error AddressRequired(string name);
     /// @notice The market address `name` has no code.
     error AddressHasNoCode(string name, address account);
+    /// @notice `name` points at `actual` instead of `expected`, so these contracts are not one deployment.
+    error WrongWiring(string name, address expected, address actual);
 
     /// @notice Reads OWNER, GUARDIAN and the optional market addresses from the environment and calls {deploy}.
     function run() external returns (IndexFactory factory, IndexZap zap) {
@@ -108,6 +110,28 @@ contract Deploy is Script {
         console2.log("Guardian:                ", guardian);
         console2.log("Swap router:             ", market.router);
         console2.log("USDC/WETH pool:          ", IIndexRule(factory.RULE()).USD_POOL());
+
+        // The release record: the addresses above plus the code they ended up with, so a later run of
+        // {checkDeployment} against the recorded addresses proves a deployment is this build.
+        bytes32[4] memory codehashes = checkDeployment(factory, zap);
+        console2.log("IndexFactory codehash:   ", vm.toString(codehashes[0]));
+        console2.log("IndexRule codehash:      ", vm.toString(codehashes[1]));
+        console2.log("IndexToken impl codehash:", vm.toString(codehashes[2]));
+        console2.log("IndexZap codehash:       ", vm.toString(codehashes[3]));
+    }
+
+    /// @notice Checks that a factory and a zap are one deployment and returns the runtime code hashes to freeze in the
+    ///         release record (README, "Deployment record"). Run it again later against the recorded addresses: equal
+    ///         hashes prove the deployed code is unchanged and still the build the record names.
+    /// @param factory The deployed factory, which names the rule and the IndexToken implementation.
+    /// @param zap The deployed zap, which must point back at `factory`.
+    /// @return codehashes keccak256 of the runtime code of the factory, the rule, the implementation and the zap.
+    function checkDeployment(IndexFactory factory, IndexZap zap) public view returns (bytes32[4] memory codehashes) {
+        address rule = factory.RULE();
+        address implementation = factory.IMPLEMENTATION();
+        address zapFactory = address(zap.FACTORY());
+        if (zapFactory != address(factory)) revert WrongWiring("IndexZap.FACTORY", address(factory), zapFactory);
+        codehashes = [address(factory).codehash, rule.codehash, implementation.codehash, address(zap).codehash];
     }
 
     /// @notice Rejects a missing owner and Foundry's default sender. On mainnet the owner must be a contract, not

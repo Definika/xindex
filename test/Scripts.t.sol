@@ -152,7 +152,7 @@ contract ScriptsTest is Test {
     // Deploy
     // ---------------------------------------------------------------------
 
-    function test_checkOwner() public {
+    function test_L06_checkOwner() public {
         vm.expectRevert(Deploy.OwnerRequired.selector);
         deployer.checkOwner(address(0));
         vm.expectRevert(Deploy.OwnerRequired.selector);
@@ -196,7 +196,7 @@ contract ScriptsTest is Test {
         deployer.checkOwner(address(malformed));
     }
 
-    function test_checkGuardian() public {
+    function test_FR06_checkGuardian() public {
         vm.expectRevert(Deploy.GuardianRequired.selector);
         deployer.checkGuardian(owner, address(0));
         vm.expectRevert(Deploy.GuardianRequired.selector);
@@ -390,7 +390,42 @@ contract ScriptsTest is Test {
         assertEq(config.referenceSupply, 1e27);
     }
 
-    function test_proposeThenExecute() public {
+    /// @dev XA-18: propose mode broadcasts as the owner, so it cannot work for a contract owner such as the mainnet
+    ///      Safe; safe mode logs the same calls as calldata instead.
+    function test_XA18_proposeRefusesAContractOwner() public {
+        MockSafe safe = new MockSafe(2);
+        IndexFactory factory = _factory(address(safe), address(0));
+        ConfigureWhitelist.Entry[] memory list = _twoEntries();
+
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.OwnerIsContract.selector, address(safe)));
+        configure.propose(factory, list, none);
+
+        // The same list in safe mode produces the calls for the Safe to sign, and nothing is proposed on chain.
+        bytes[] memory calls = configure.safeCalldata(factory, list, none);
+        assertEq(calls.length, 2);
+        assertEq(factory.listingEta(list[0].token), 0);
+    }
+
+    /// @dev XA-38: the release record freezes what was deployed, and the check proves a deployment is one build.
+    function test_XA38_checkDeploymentFreezesTheCodeHashes() public {
+        address safeOwner = address(new MockSafe(2));
+        (IndexFactory factory, IndexZap zap) = deployer.deploy(safeOwner, guardian, _market());
+
+        bytes32[4] memory codehashes = deployer.checkDeployment(factory, zap);
+        assertEq(codehashes[0], keccak256(address(factory).code));
+        assertEq(codehashes[1], keccak256(factory.RULE().code));
+        assertEq(codehashes[2], keccak256(factory.IMPLEMENTATION().code));
+        assertEq(codehashes[3], keccak256(address(zap).code));
+
+        // A zap from another deployment is not part of this one.
+        (IndexFactory other,) = deployer.deploy(safeOwner, guardian, _market());
+        vm.expectRevert(
+            abi.encodeWithSelector(Deploy.WrongWiring.selector, "IndexZap.FACTORY", address(other), address(factory))
+        );
+        deployer.checkDeployment(other, zap);
+    }
+
+    function test_FR05_proposeThenExecute() public {
         IndexFactory factory = _factory(DEFAULT_SENDER, address(0));
         ConfigureWhitelist.Entry[] memory list = _twoEntries();
 
@@ -438,7 +473,7 @@ contract ScriptsTest is Test {
         assertEq(factory.listingEta(list[1].token), 0);
     }
 
-    function test_execute_worksFromAnyAccount_andNeverReproposesACancelledListing() public {
+    function test_FR05_executeWorksFromAnyAccountAndNeverReproposesACancelledListing() public {
         IndexFactory factory = _factory(owner, guardian); // the broadcaster is neither owner nor guardian
         ConfigureWhitelist.Entry[] memory list = _twoEntries();
         IIndexFactory.TokenConfig memory configA = _configFor(list[0]);

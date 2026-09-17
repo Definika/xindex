@@ -42,8 +42,9 @@ interface IIndexRule is IXindexErrors {
     error ZeroPrice(address token);
     /// @notice The supply the rule uses for `token` is zero.
     error ZeroSupply(address token);
-    /// @notice Nothing is left to weight or rebalance: every market cap is zero, ranks 3 and below of a capped basket
-    ///         have none, or the components being rebalanced hold no value, as when the keep mask keeps every one.
+    /// @notice Nothing is left to weight or rebalance: every market cap is zero, the constituents of a capped basket
+    ///         still under the 20% cap have none, or the components being rebalanced hold no value, as when the keep
+    ///         mask keeps every one.
     error DegenerateBasket();
 
     /// @notice Length of the time-weighted average price window.

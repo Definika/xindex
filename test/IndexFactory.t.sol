@@ -239,8 +239,12 @@ contract IndexFactoryTest is XindexTest {
         vm.prank(owner);
         factory.proposeGuardian(next);
 
+        // The guardian cannot block its own replacement, and nobody else can cancel at all.
         vm.prank(guardian);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, guardian));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, guardian));
+        factory.cancelGuardianChange();
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, stranger));
         factory.cancelGuardianChange();
 
         vm.expectEmit(true, true, true, true, address(factory));
@@ -253,6 +257,37 @@ contract IndexFactoryTest is XindexTest {
         vm.warp(block.timestamp + factory.GUARDIAN_DELAY());
         vm.expectRevert(IIndexFactory.NoPendingGuardianChange.selector);
         factory.executeGuardianChange();
+    }
+
+    /// @dev XA-61: the owner can replace the guardian, but it cannot remove the role over the guardian's objection.
+    function test_XA61_theGuardianCanCancelItsOwnRemoval() public {
+        vm.prank(owner);
+        factory.proposeGuardian(address(0));
+
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, stranger));
+        factory.cancelGuardianChange();
+
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit IIndexFactory.GuardianChangeCancelled(address(0));
+        vm.prank(guardian);
+        factory.cancelGuardianChange();
+        assertEq(factory.pendingGuardianEta(), 0);
+        assertEq(factory.guardian(), guardian, "the guardian is still there");
+
+        // A factory that already has no guardian has nobody to cancel with, and the owner is unaffected either way.
+        vm.startPrank(owner);
+        factory.proposeGuardian(address(0));
+        vm.warp(block.timestamp + factory.GUARDIAN_DELAY());
+        factory.executeGuardianChange();
+        factory.proposeGuardian(address(0));
+        vm.stopPrank();
+        vm.prank(address(0));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, address(0)));
+        factory.cancelGuardianChange();
+        vm.prank(owner);
+        factory.cancelGuardianChange();
+        assertEq(factory.pendingGuardianEta(), 0);
     }
 
     // ---------------------------------------------------------------------

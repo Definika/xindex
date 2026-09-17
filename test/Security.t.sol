@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {XindexTest} from "./XindexTest.sol";
+import {Vm} from "forge-std/Vm.sol";
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
@@ -1165,6 +1166,222 @@ contract SecurityRegressionTest is XindexTest {
         _openAuction(idx, 1 << 1, guardian);
         executor.execute(idx, "");
         assertEq(idx.rebalanceNonce(), 1, "the guardian's keep mask routes around the frozen component");
+    }
+
+    function test_XA02_aStrangerWaitsOutAnUnfilledAuctionBeforeRestarting() public {
+        (IndexToken idx,) = _surgeBasket();
+        uint256 eta = _openAuction(idx, 0, attacker);
+        uint256 deadline = eta + idx.AUCTION_DURATION();
+
+        // Nobody fills. Before the fix the griefer could restart at once, at every expiry, with a snapshot built so no
+        // executor would fill it either.
+        vm.warp(deadline + 1);
+        assertFalse(idx.canStartRebalance());
+        vm.prank(attacker);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, attacker));
+        idx.startRebalance(0);
+
+        // The guardian is never held off, so it takes the first restart after an expiry.
+        vm.prank(guardian);
+        idx.startRebalance(0);
+        (uint256 vetted,,) = idx.pendingRebalance();
+        assertEq(vetted, block.timestamp + idx.REBALANCE_DELAY());
+
+        // And the trigger stays permissionless: REBALANCE_DELAY after an expiry anyone can start again.
+        vm.prank(guardian);
+        idx.cancelRebalance();
+        vm.warp(idx.restartAllowedAt());
+        assertTrue(idx.canStartRebalance(), "a cancel holds strangers off for the same wait, not longer");
+        vm.prank(attacker);
+        idx.startRebalance(0);
+        (eta,,) = idx.pendingRebalance();
+        vm.warp(eta + idx.AUCTION_DURATION() + idx.REBALANCE_DELAY());
+        assertTrue(idx.canStartRebalance());
+        vm.prank(attacker);
+        idx.startRebalance(0);
+    }
+
+    /// @dev A one-component index of LINK and a router that fills every hop halfway, so each hop of a multi-hop burn
+    ///      leg leaves something unsold.
+    function _halfFilled() internal returns (IndexToken idx, IndexZap halfZap) {
+        MockPartialFillRouter half = new MockPartialFillRouter(1e18); // one output unit per input unit, per hop
+        weth.mint(address(half), 100e18);
+        usdc.mint(address(half), 100e18); // raw units: the mock prices every hop one for one
+        halfZap = new IndexZap(factory, half);
+
+        address[] memory t = new address[](1);
+        uint256[] memory u = new uint256[](1);
+        t[0] = address(link);
+        u[0] = 1e18;
+        idx = IndexToken(factory.createIndex("Link One", "LNK1", t, u, 0));
+
+        link.mint(alice, 1e18);
+        vm.startPrank(alice);
+        link.approve(address(idx), 1e18);
+        idx.issue(1e18, alice);
+        idx.approve(address(halfZap), 1e18);
+        vm.stopPrank();
+    }
+
+    function test_XA08_aLaterHopsUnsoldInputReachesTheRecipient() public {
+        (IndexToken idx, IndexZap halfZap) = _halfFilled();
+        IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](1);
+        legs[0] = IIndexZap.BurnLeg({
+            path: abi.encodePacked(address(link), FEE, address(weth), FEE, address(usdc)), minAmountOut: 0
+        });
+
+        uint256 wethBefore = weth.balanceOf(alice);
+        vm.prank(alice);
+        uint256 out = halfZap.burnToToken(_burnParams(address(idx), 1e18, address(usdc), 1, legs, alice));
+
+        // Half the LINK is sold; of the WETH that buys, half is sold on. Before the fix the second half stayed in the
+        // router, where anyone could sweep it.
+        assertEq(out, 2.5e17, "the payout is what the last hop sold");
+        assertEq(link.balanceOf(alice), 5e17, "the first hop's unsold input comes back");
+        assertEq(weth.balanceOf(alice) - wethBefore, 2.5e17, "and so does the second hop's");
+        assertEq(weth.balanceOf(address(halfZap)), 0);
+        assertEq(link.balanceOf(address(halfZap)), 0);
+    }
+
+    function test_XA08_unsoldTokenOutIsPaidOutAndAnEmptyHopReverts() public {
+        (IndexToken idx, IndexZap halfZap) = _halfFilled();
+        IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](1);
+        // A path whose intermediate token is the payout token itself.
+        legs[0] = IIndexZap.BurnLeg({
+            path: abi.encodePacked(address(link), FEE, address(usdc), FEE, address(weth), FEE, address(usdc)),
+            minAmountOut: 0
+        });
+
+        uint256 usdcBefore = usdc.balanceOf(alice);
+        vm.prank(alice);
+        uint256 out = halfZap.burnToToken(_burnParams(address(idx), 1e18, address(usdc), 1, legs, alice));
+
+        // The 0.25 of USDC the second hop did not sell stays in the zap and is paid out, not returned twice.
+        assertEq(out, 3.75e17, "0.5 bought, 0.25 sold on, 0.125 bought back");
+        assertEq(usdc.balanceOf(alice) - usdcBefore, 3.75e17);
+        assertEq(usdc.balanceOf(address(halfZap)), 0);
+        assertEq(weth.balanceOf(address(halfZap)), 0);
+
+        // A hop that sells nothing would leave the next hop with SwapRouter02's "spend my whole balance" sentinel.
+        legs[0] = IIndexZap.BurnLeg({
+            path: abi.encodePacked(address(link), FEE, address(weth), FEE, address(usdc)), minAmountOut: 0
+        });
+        link.mint(alice, 1);
+        vm.startPrank(alice);
+        link.approve(address(idx), 1);
+        idx.issue(1, alice);
+        idx.approve(address(halfZap), 1);
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.InsufficientOutput.selector, 0, 0));
+        halfZap.burnToToken(_burnParams(address(idx), 1, address(usdc), 1, legs, alice));
+        vm.stopPrank();
+    }
+
+    function test_XA16_theRebalanceDuePredicateSurvivesAnUnfilledAuction() public {
+        (IndexToken idx,) = _surgeBasket();
+        assertFalse(idx.canStartRebalance(), "not due yet");
+        vm.warp(idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL());
+        assertTrue(idx.canStartRebalance());
+
+        uint256 eta = _openAuction(idx, 0, attacker);
+        assertFalse(idx.canStartRebalance(), "an auction is live");
+        vm.warp(eta + idx.AUCTION_DURATION() + idx.REBALANCE_DELAY());
+
+        // The stale eta is what an app reading `pendingRebalance().eta == 0` would trip over.
+        (uint256 stale,,) = idx.pendingRebalance();
+        assertGt(stale, 0, "an unfilled auction keeps its eta");
+        assertTrue(idx.canStartRebalance(), "and the index is due again");
+        vm.prank(attacker);
+        idx.startRebalance(0);
+    }
+
+    function test_XA27_aSettlementThatSendsNothingOutIsPricedAtParity() public {
+        // Units small enough that a dust supply moves no raw unit at all.
+        (IndexToken idx,) = _ruleBasket(_five(6, 1, 1, 1, 1), _five(1e6, 1e6, 1e6, 1e6, 1e6));
+        uint256 dusted = idx.totalSupply() - 1;
+        vm.prank(alice);
+        idx.redeem(dusted, alice);
+        assertEq(idx.totalSupply(), 1);
+
+        uint256 eta = _openAuction(idx, 0, attacker);
+        (uint256[] memory targets,) = idx.previewTarget(0);
+        vm.warp(eta + idx.AUCTION_DURATION()); // where a lone executor would otherwise pick the 0.9 floor
+        assertEq(idx.currentMultiplier(), 1e18, "nothing leaves the index, so the auction has nothing to price");
+        (,, uint256[] memory amountsOut, uint256[] memory amountsIn) = idx.previewRebalance();
+        new MockRebalanceExecutor().execute(idx, "");
+
+        (, uint256[] memory units) = idx.components();
+        for (uint256 i = 0; i < 5; ++i) {
+            assertEq(amountsOut[i], 0);
+            assertEq(amountsIn[i], 0);
+            assertEq(units[i], targets[i], "the units are the rule's targets, whoever executes and whenever");
+        }
+    }
+
+    function test_XA27_aSupplyThatStillMovesUnitsKeepsTheAuction() public {
+        (IndexToken idx,) = _surgeBasket();
+        uint256 eta = _openAuction(idx, 0, attacker);
+        vm.warp(eta + idx.AUCTION_DURATION());
+        assertEq(idx.currentMultiplier(), idx.AUCTION_END_MULTIPLIER(), "a live auction still decays");
+    }
+
+    function test_XA28_anExecutorCannotDeliverLessBecauseTheIndexHoldsASurplus() public {
+        (IndexToken idx, address[] memory t) = _surgeBasket();
+        MockERC20 grown = MockERC20(t[0]); // the component the rebalance buys
+        grown.mint(address(idx), 1e18); // a donation, or rounding dust the index kept
+
+        _openAuction(idx, 0, attacker);
+        (,, uint256[] memory amountsOut, uint256[] memory amountsIn) = idx.previewRebalance();
+        uint256 held = grown.balanceOf(address(idx));
+        uint256 required = held - amountsOut[0] + amountsIn[0];
+
+        MockRebalanceExecutor executor = new MockRebalanceExecutor();
+        executor.setMode(MockRebalanceExecutor.Mode.Short);
+        executor.setShortComponent(0);
+        vm.expectRevert(
+            abi.encodeWithSelector(IIndexToken.RebalanceUnderfunded.selector, address(grown), required - 1, required)
+        );
+        executor.execute(idx, "");
+
+        executor.setMode(MockRebalanceExecutor.Mode.Honest);
+        executor.execute(idx, "");
+        assertEq(grown.balanceOf(address(idx)), required, "the surplus is still in the index");
+    }
+
+    function test_XA59_everyProposalCarriesItsOwnId() public {
+        (IndexToken idx,) = _surgeBasket();
+        uint256 eta = _openAuction(idx, 0, attacker);
+        assertEq(idx.proposalCount(), 1);
+
+        vm.prank(guardian);
+        idx.cancelRebalance();
+        vm.warp(idx.restartAllowedAt());
+        (uint256[] memory targets,) = idx.previewTarget(0);
+        eta = block.timestamp + idx.REBALANCE_DELAY();
+        vm.expectEmit(true, true, true, true, address(idx));
+        emit IIndexToken.RebalanceStarted(2, 1, attacker, targets, 0, eta);
+        vm.prank(attacker);
+        idx.startRebalance(0);
+
+        // The third proposal follows the second's expiry, with no event of its own to mark it.
+        vm.warp(eta + idx.AUCTION_DURATION() + idx.REBALANCE_DELAY());
+        vm.prank(attacker);
+        idx.startRebalance(0);
+        assertEq(idx.proposalCount(), 3, "three attempts, all at rebalance nonce 1");
+        assertEq(idx.rebalanceNonce(), 0);
+
+        (eta,,) = idx.pendingRebalance();
+        vm.warp(eta);
+        vm.recordLogs();
+        new MockRebalanceExecutor().execute(idx, "");
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bool found = false;
+        for (uint256 i = 0; i < logs.length; ++i) {
+            if (logs[i].topics[0] != IIndexToken.Rebalanced.selector) continue;
+            found = true;
+            assertEq(uint256(logs[i].topics[1]), 3, "the settled proposal is the third");
+            assertEq(uint256(logs[i].topics[2]), 1, "and it takes rebalance nonce 1");
+        }
+        assertTrue(found);
     }
 
     function test_XA62_oneInterfaceExtendsTheFactoryRuleAndToken() public view {

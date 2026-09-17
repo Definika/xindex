@@ -29,30 +29,39 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     /// @notice `account`'s claim of `amount` of `token` was paid to `to`.
     event Claimed(address indexed account, address indexed to, address indexed token, uint256 amount);
 
-    /// @notice A rebalance proposal, replacing any earlier one. `id` is the value {rebalanceNonce} takes if it executes,
-    ///         so a proposal that was cancelled or expired and then started again carries the same `id`, and the owner
-    ///         or guardian can even cancel and restart in one block with the same `eta`: read the events in log order,
-    ///         each one replacing the last. No event marks an expiry: a proposal nobody filled expires after
-    ///         `eta + AUCTION_DURATION`.
+    /// @notice A rebalance proposal, replacing any earlier one. Each one carries its own `proposalId` ({proposalCount}
+    ///         after the call), so proposals can be told apart even when several share an `id`, the value
+    ///         {rebalanceNonce} takes if one of them executes. No event marks an expiry: a proposal nobody filled
+    ///         expires after `eta + AUCTION_DURATION`, and the next `RebalanceStarted` is the first sign of it.
+    /// @param proposalId Counts every proposal ever started on this index, from 1.
+    /// @param id The value {rebalanceNonce} takes if this proposal executes.
     /// @param caller The account that started it.
     /// @param targetUnits Snapshot target units per component, in component order, in raw units per 1e18 shares.
     /// @param keepMask Bit i set leaves component i untouched.
     /// @param eta Start of the auction, after REBALANCE_DELAY of notice.
     event RebalanceStarted(
-        uint256 indexed id, address indexed caller, uint256[] targetUnits, uint256 keepMask, uint256 eta
+        uint256 indexed proposalId,
+        uint256 indexed id,
+        address indexed caller,
+        uint256[] targetUnits,
+        uint256 keepMask,
+        uint256 eta
     );
-    /// @notice Cancels the latest proposal with this `id`.
-    /// @param id The value {rebalanceNonce} would have taken had the cancelled proposal executed.
+    /// @notice Cancels the proposal with this `proposalId`, which is the live one.
+    /// @param proposalId The cancelled proposal's id, as its `RebalanceStarted` carried it.
     /// @param caller The factory owner or guardian who cancelled it.
     /// @param restartAllowedAt Before this time only the factory owner or guardian can start a rebalance.
-    event RebalanceCancelled(uint256 indexed id, address indexed caller, uint256 restartAllowedAt);
-    /// @notice The pending rebalance settled, and {rebalanceNonce} is now `id`.
+    event RebalanceCancelled(uint256 indexed proposalId, address indexed caller, uint256 restartAllowedAt);
+    /// @notice The proposal with this `proposalId` settled, and {rebalanceNonce} is now `id`.
+    /// @param proposalId The settled proposal's id, as its `RebalanceStarted` carried it.
+    /// @param id The new {rebalanceNonce}.
     /// @param executor The contract that filled the auction.
     /// @param multiplier Multiplier applied to the growing components' extra units (1e18 = parity).
     /// @param units New units per component, in component order.
     /// @param amountsOut What the index sent `executor` per component.
     /// @param amountsIn What the index needed back per component; see `IRebalanceExecutor`.
     event Rebalanced(
+        uint256 indexed proposalId,
         uint256 indexed id,
         address indexed executor,
         uint256 multiplier,
@@ -89,8 +98,9 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     error RebalanceNotReady(uint256 eta);
     /// @notice The auction closed at `deadline`; start a new rebalance.
     error RebalanceExpired(uint256 deadline);
-    /// @notice After the executor returned, the index held `balance` of `token`, below the `required` backing:
-    ///         totalSupply * new units / 1e18, plus open claims on `token`.
+    /// @notice After the executor returned, the index held `balance` of `token`, below `required`: the higher of the
+    ///         backing (totalSupply * new units / 1e18, plus open claims on `token`) and what the index held before the
+    ///         settlement, less what it sent out and plus the whole of what it asked back.
     error RebalanceUnderfunded(address token, uint256 balance, uint256 required);
 
     /// @notice Number of shares that make up one whole index token (1e18).
@@ -184,6 +194,10 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     /// @notice Weighting rule id, see `Methodology`.
     function methodology() external view returns (uint8);
 
+    /// @notice Number of rebalance proposals ever started, including cancelled and expired ones. Every
+    ///         `RebalanceStarted` carries its own value, so an indexer can tell attempts apart.
+    function proposalCount() external view returns (uint256);
+
     /// @notice Number of executed rebalances. It changes exactly when the units change.
     function rebalanceNonce() external view returns (uint256);
 
@@ -195,7 +209,9 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
 
     /// @notice Snapshots the rule's target units and starts the notice period. Anyone can call it once
     ///         MIN_REBALANCE_INTERVAL has passed since the last rebalance, while no unexpired rebalance is pending, and
-    ///         once {restartAllowedAt} has passed; before that only the factory owner or guardian can. Reverts with
+    ///         once {restartAllowedAt} and, after an auction nobody filled, REBALANCE_DELAY past that auction's end
+    ///         have passed ({canStartRebalance} answers all of this); before those the factory owner or guardian can
+    ///         start it and nobody else. Reverts with
     ///         TurnoverTooLow when the targets would sell less than MIN_TURNOVER, and with the rule's ThinPriceHistory
     ///         or PriceHistoryDeviates when a moving component's price window fails the snapshot checks.
     /// @param keepMask Bit i set leaves component i untouched, for example while it is paused. Only the factory owner or
@@ -207,8 +223,9 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     function cancelRebalance() external;
 
     /// @notice Settles the pending rebalance during its auction. Sends msg.sender what the index no longer needs of each
-    ///         shrinking component, calls `IRebalanceExecutor.onXindexRebalance` on it, and reverts unless every
-    ///         component then backs the new units. Only a contract can execute.
+    ///         shrinking component, calls `IRebalanceExecutor.onXindexRebalance` on it, and reverts unless the index
+    ///         then holds every component's new backing and the whole of `amountsIn` on top of what it held before.
+    ///         Only a contract can execute.
     /// @param data Passed unchanged to the executor's callback.
     function executeRebalance(bytes calldata data) external;
 
@@ -225,14 +242,22 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     ///         AUCTION_DURATION`, and a new rebalance can then be started.
     function pendingRebalance() external view returns (uint256 eta, uint256 keepMask, uint256[] memory targetUnits);
 
-    /// @notice Multiplier an execution in this block would use, or 0 outside an auction.
+    /// @notice Multiplier an execution in this block would use, or 0 outside an auction. It is parity when the
+    ///         settlement would send nothing out, as on an empty index.
     function currentMultiplier() external view returns (uint256);
+
+    /// @notice Whether anyone can start a rebalance now: MIN_REBALANCE_INTERVAL has passed, no auction is live (an
+    ///         unfilled one keeps its `eta` but stops counting after `eta + AUCTION_DURATION`), and the waits after a
+    ///         cancel and after an unfilled auction are over. It does not read the rule, so a start can still revert
+    ///         with TurnoverTooLow or a snapshot price error, and the factory owner and guardian can start when it is
+    ///         false.
+    function canStartRebalance() external view returns (bool);
 
     /// @notice Exact settlement an execution in this block would use. Reverts like {executeRebalance} outside an auction.
     /// @return multiplier Multiplier on the growing components' extra units (1e18 = parity).
     /// @return units New units per component, in component order.
     /// @return amountsOut What the index would send the executor per component.
-    /// @return amountsIn What the index would need back per component, given no surplus.
+    /// @return amountsIn What the index would need back per component, in full.
     function previewRebalance()
         external
         view
