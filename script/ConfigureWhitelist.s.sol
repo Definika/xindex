@@ -57,6 +57,7 @@ contract ConfigureWhitelist is Script {
     /// @notice Uniswap V3 fee tiers of the default list's pools: 0.05% and 0.3%.
     uint24 public constant POOL_FEE_LOW = ScriptUtils.POOL_FEE_LOW;
     uint24 public constant POOL_FEE_MEDIUM = ScriptUtils.POOL_FEE_MEDIUM;
+    uint24 public constant POOL_FEE_HIGH = ScriptUtils.POOL_FEE_HIGH;
     /// @notice Fewest and most decimals the whitelist policy accepts for a component.
     uint8 public constant MIN_DECIMALS = 6;
     uint8 public constant MAX_DECIMALS = 18;
@@ -83,15 +84,21 @@ contract ConfigureWhitelist is Script {
     ///         on mainnet). Use `LISTING_MODE=safe` and submit the calldata it logs from the owner.
     error OwnerIsContract(address owner);
 
-    /// @notice Default mainnet components, from `MainnetAddresses`: reference supplies are CoinGecko's circulating
-    ///         supplies of 2026-09-15 (propose a config change when they drift), minimum liquidities a tenth of each
-    ///         pool's harmonic-mean liquidity on 2026-09-16. WBTC and WETH count the whole bitcoin and ether supply,
-    ///         because their on-chain supply is only the wrapped float. tBTC uses its own on-chain supply. WBTC can be
-    ///         paused by its custodian, so the app must label it.
-    /// @return list WBTC, WETH, LINK, UNI and tBTC, in that order.
+    /// @notice Default mainnet components, from `MainnetAddresses`. Reference supplies are CoinGecko's circulating
+    ///         supplies (propose a config change when they drift) and minimum liquidities a tenth of each pool's
+    ///         harmonic-mean liquidity; `MainnetAddresses` dates both. WBTC and WETH count the whole bitcoin and ether
+    ///         supply, because their on-chain supply is only the wrapped float; tBTC uses its own on-chain supply. The
+    ///         ten DeFi tokens are the largest by market capitalisation in CoinGecko's DeFi category on 2026-09-17 that
+    ///         are governance tokens on Ethereum within the whitelist policy and whose WETH pool held at least 20 WETH.
+    ///         Most of their pools are thin and keep fewer than the 200 observation slots the rule asks for, so
+    ///         propose mode skips them until someone grows the ring; the README lists each pool's depth. WBTC can be
+    ///         paused by its custodian and LDO's transfers can be disabled by its controller, so the app must label
+    ///         both.
+    /// @return list WBTC, WETH, LINK, UNI and tBTC, then AAVE, ONDO, ENA, MORPHO, ETHFI, CRV, PENDLE, OHM, LDO and
+    ///         SYRUP, in that order.
     function defaultMainnetList() public pure returns (Entry[] memory list) {
         address[] memory none = new address[](0);
-        list = new Entry[](5);
+        list = new Entry[](15);
         list[0] = Entry({
             token: MainnetAddresses.WBTC,
             fee: POOL_FEE_LOW,
@@ -125,6 +132,76 @@ contract ConfigureWhitelist is Script {
             fee: POOL_FEE_MEDIUM,
             minLiquidity: MainnetAddresses.TBTC_MIN_LIQUIDITY,
             referenceSupply: 0,
+            excluded: none
+        });
+        list[5] = Entry({
+            token: MainnetAddresses.AAVE,
+            fee: POOL_FEE_MEDIUM,
+            minLiquidity: MainnetAddresses.AAVE_MIN_LIQUIDITY,
+            referenceSupply: MainnetAddresses.AAVE_SUPPLY,
+            excluded: none
+        });
+        list[6] = Entry({
+            token: MainnetAddresses.ONDO,
+            fee: POOL_FEE_MEDIUM,
+            minLiquidity: MainnetAddresses.ONDO_MIN_LIQUIDITY,
+            referenceSupply: MainnetAddresses.ONDO_SUPPLY,
+            excluded: none
+        });
+        list[7] = Entry({
+            token: MainnetAddresses.ENA,
+            fee: POOL_FEE_MEDIUM,
+            minLiquidity: MainnetAddresses.ENA_MIN_LIQUIDITY,
+            referenceSupply: MainnetAddresses.ENA_SUPPLY,
+            excluded: none
+        });
+        list[8] = Entry({
+            token: MainnetAddresses.MORPHO,
+            fee: POOL_FEE_MEDIUM,
+            minLiquidity: MainnetAddresses.MORPHO_MIN_LIQUIDITY,
+            referenceSupply: MainnetAddresses.MORPHO_SUPPLY,
+            excluded: none
+        });
+        list[9] = Entry({
+            token: MainnetAddresses.ETHFI,
+            fee: POOL_FEE_MEDIUM,
+            minLiquidity: MainnetAddresses.ETHFI_MIN_LIQUIDITY,
+            referenceSupply: MainnetAddresses.ETHFI_SUPPLY,
+            excluded: none
+        });
+        list[10] = Entry({
+            token: MainnetAddresses.CRV,
+            fee: POOL_FEE_MEDIUM,
+            minLiquidity: MainnetAddresses.CRV_MIN_LIQUIDITY,
+            referenceSupply: MainnetAddresses.CRV_SUPPLY,
+            excluded: none
+        });
+        list[11] = Entry({
+            token: MainnetAddresses.PENDLE,
+            fee: POOL_FEE_MEDIUM,
+            minLiquidity: MainnetAddresses.PENDLE_MIN_LIQUIDITY,
+            referenceSupply: MainnetAddresses.PENDLE_SUPPLY,
+            excluded: none
+        });
+        list[12] = Entry({
+            token: MainnetAddresses.OHM,
+            fee: POOL_FEE_MEDIUM,
+            minLiquidity: MainnetAddresses.OHM_MIN_LIQUIDITY,
+            referenceSupply: MainnetAddresses.OHM_SUPPLY,
+            excluded: none
+        });
+        list[13] = Entry({
+            token: MainnetAddresses.LDO,
+            fee: POOL_FEE_MEDIUM,
+            minLiquidity: MainnetAddresses.LDO_MIN_LIQUIDITY,
+            referenceSupply: MainnetAddresses.LDO_SUPPLY,
+            excluded: none
+        });
+        list[14] = Entry({
+            token: MainnetAddresses.SYRUP,
+            fee: POOL_FEE_HIGH,
+            minLiquidity: MainnetAddresses.SYRUP_MIN_LIQUIDITY,
+            referenceSupply: MainnetAddresses.SYRUP_SUPPLY,
             excluded: none
         });
     }

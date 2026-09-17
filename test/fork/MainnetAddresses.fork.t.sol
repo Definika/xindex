@@ -58,6 +58,16 @@ contract MainnetAddressesForkTest is Test {
         _assertToken(M.WBTC, "WBTC", 8);
         _assertToken(M.LINK, "LINK", 18);
         _assertToken(M.UNI, "UNI", 18);
+        _assertToken(M.AAVE, "AAVE", 18);
+        _assertToken(M.ONDO, "ONDO", 18);
+        _assertToken(M.ENA, "ENA", 18);
+        _assertToken(M.MORPHO, "MORPHO", 18);
+        _assertToken(M.ETHFI, "ETHFI", 18);
+        _assertToken(M.CRV, "CRV", 18);
+        _assertToken(M.PENDLE, "PENDLE", 18);
+        _assertToken(M.OHM, "OHM", 9);
+        _assertToken(M.LDO, "LDO", 18);
+        _assertToken(M.SYRUP, "SYRUP", 18);
         _assertToken(M.TBTC, "tBTC", 18);
     }
 
@@ -69,6 +79,16 @@ contract MainnetAddressesForkTest is Test {
         assertEq(v3.getPool(M.WBTC, M.WETH, 500), A.WBTC_WETH_500);
         assertEq(v3.getPool(M.LINK, M.WETH, 3000), A.LINK_WETH_3000);
         assertEq(v3.getPool(M.UNI, M.WETH, 3000), A.UNI_WETH_3000);
+        assertEq(v3.getPool(M.AAVE, M.WETH, 3000), A.AAVE_WETH_3000);
+        assertEq(v3.getPool(M.ONDO, M.WETH, 3000), A.ONDO_WETH_3000);
+        assertEq(v3.getPool(M.ENA, M.WETH, 3000), A.ENA_WETH_3000);
+        assertEq(v3.getPool(M.MORPHO, M.WETH, 3000), A.MORPHO_WETH_3000);
+        assertEq(v3.getPool(M.ETHFI, M.WETH, 3000), A.ETHFI_WETH_3000);
+        assertEq(v3.getPool(M.CRV, M.WETH, 3000), A.CRV_WETH_3000);
+        assertEq(v3.getPool(M.PENDLE, M.WETH, 3000), A.PENDLE_WETH_3000);
+        assertEq(v3.getPool(M.OHM, M.WETH, 3000), A.OHM_WETH_3000);
+        assertEq(v3.getPool(M.LDO, M.WETH, 3000), A.LDO_WETH_3000);
+        assertEq(v3.getPool(M.SYRUP, M.WETH, 10000), A.SYRUP_WETH_10000);
         assertEq(v3.getPool(M.TBTC, M.WETH, 3000), A.TBTC_WETH_3000);
     }
 
@@ -88,7 +108,23 @@ contract MainnetAddressesForkTest is Test {
         assertEq(rule.USD_POOL(), A.USDC_WETH_500);
         ConfigureWhitelist configure = new ConfigureWhitelist();
         ConfigureWhitelist.Entry[] memory list = configure.defaultMainnetList();
-        address[5] memory pools = [A.WBTC_WETH_500, address(0), A.LINK_WETH_3000, A.UNI_WETH_3000, A.TBTC_WETH_3000];
+        address[15] memory pools = [
+            A.WBTC_WETH_500,
+            address(0),
+            A.LINK_WETH_3000,
+            A.UNI_WETH_3000,
+            A.TBTC_WETH_3000,
+            A.AAVE_WETH_3000,
+            A.ONDO_WETH_3000,
+            A.ENA_WETH_3000,
+            A.MORPHO_WETH_3000,
+            A.ETHFI_WETH_3000,
+            A.CRV_WETH_3000,
+            A.PENDLE_WETH_3000,
+            A.OHM_WETH_3000,
+            A.LDO_WETH_3000,
+            A.SYRUP_WETH_10000
+        ];
 
         for (uint256 i = 0; i < list.length; ++i) {
             IIndexFactory.TokenConfig memory config = configure.configFor(list[i], M.WETH, M.UNISWAP_V3_FACTORY);

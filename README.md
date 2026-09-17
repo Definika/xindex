@@ -240,6 +240,49 @@ either can `delist` a token at any time. Delisting only affects indexes created 
 indexes rebalance with, and cancels a pending `proposeListing` proposal, so a delisted token is listed again only
 through a fresh proposal and delay.
 
+## Default list: pool depth
+
+The rule prices a component from its Uniswap V3 WETH pool, so that pool's depth decides how much it costs to distort a
+rebalance snapshot, and how large a mint or burn the zap can route. Measured on mainnet at block 25,999,500
+(2026-09-17), by the WETH each pool held:
+
+| Token | WETH pool | WETH held | Observation slots | Listable today |
+|---|---|---|---|---|
+| WBTC | 0.05% | 7,246 | 300 | yes |
+| UNI | 0.3% | 2,919 | 300 | yes |
+| LINK | 0.3% | 1,883 | 360 | yes |
+| OHM | 0.3% | 993 | 128 | after its ring grows |
+| AAVE | 0.3% | 615 | 1,000 | yes |
+| tBTC | 0.3% | 100 | 60 | after its ring grows |
+| ENA | 0.3% | 87 | 600 | yes |
+| SYRUP | 1% | 86 | 100 | after its ring grows |
+| ONDO | 0.3% | 77 | 128 | after its ring grows |
+| CRV | 0.3% | 54 | 180 | after its ring grows |
+| PENDLE | 0.3% | 54 | 100 | after its ring grows |
+| LDO | 0.3% | 33 | 180 | after its ring grows |
+| MORPHO | 0.3% | 33 | 51 | after its ring grows |
+| ETHFI | 0.3% | 25 | 300 | yes |
+
+The ten DeFi tokens are the largest by market capitalisation in CoinGecko's DeFi category that day that are governance
+tokens on Ethereum within the whitelist policy and whose WETH pool held at least 20 WETH. Left out: tokens of other
+chains (HYPE, PUMP, JUP, CAKE, AERO and others), stablecoins and fund tokens, rebasing or staked derivatives (stETH,
+wstETH, stkAAVE, osETH), MKR (being retired for SKY), and tokens whose pool held under 20 WETH, where even a small mint
+would swamp the pool: SKY 7, GNO 7, COMP 9, SNX 4, EIGEN 6, CVX 6, YFI 4, RPL 11, SUSHI 1, BAL 0.
+
+- **Most of these pools are thin.** Below AAVE they hold 25 to 87 WETH, one twentieth to one hundredth of what LINK's or
+  WBTC's hold, so distorting a 30-minute price costs correspondingly less. The snapshot checks (minimum liquidity,
+  10-minute parts that must agree) and the half-to-double clip still apply, but the guardian's duty in every notice
+  period, comparing a snapshot's targets with independent prices, matters most for indexes holding these tokens, and it
+  matters more as such an index grows against its pools. Revisit this table before an index holding them gets large; a
+  price adapter for thin pools is in the backlog.
+- **Most cannot be listed yet.** A pool needs 200 observation slots. Anyone can grow a ring with the pool's
+  `increaseObservationCardinalityNext(200)`, which costs gas for every new slot, after which the ring fills as the pool
+  trades and half an hour of history must pass. Until then propose mode skips the entry and says why.
+- **Pools are compared by the WETH they hold, never by `liquidity()`.** That figure is not comparable between pools: on
+  the same day ENS's abandoned 0.05% pool, parked at tick 500,000 with no WETH in it, reported a larger one than its
+  real 0.3% pool. An app choosing swap routes should do the same.
+- **LDO is a MiniMe token**: its controller, the Lido DAO, can disable transfers, so label it as the app labels WBTC.
+
 ## Known limitations
 
 - Airdrops, rewards and governance votes that accrue to tokens held by an index cannot be claimed or used; by design
@@ -272,6 +315,15 @@ through a fresh proposal and delay.
 | LINK | `0x514910771AF9Ca656af840dff83E8264EcF986CA` |
 | UNI | `0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984` |
 | AAVE | `0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9` |
+| ONDO | `0xfAbA6f8e4a5E8Ab82F62fe7C39859FA577269BE3` |
+| ENA | `0x57e114B691Db790C35207b2e685D4A43181e6061` |
+| MORPHO | `0x58D97B57BB95320F9a05dC918Aef65434969c2B2` |
+| ETHFI | `0xFe0c30065B384F05761f15d0CC899D4F9F9Cc0eB` |
+| CRV | `0xD533a949740bb3306d119CC777fa900bA034cd52` |
+| PENDLE | `0x808507121B80c02388fAd14726482e061B8da827` |
+| OHM (9 decimals) | `0x64aa3364F17a4D01c6f1751Fd97C2BD3D7e7f1D5` |
+| LDO | `0x5A98FcBEA516Cf06857215779Fd812CA3beF1B32` |
+| SYRUP | `0x643C4E15d7d62Ad0aBeC4a9BD4b001aA3Ef52d66` |
 | tBTC v2 | `0x18084fbA666a33d37592fA2633fD49a74DD93a88` |
 | Uniswap SwapRouter02 | `0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45` |
 | Uniswap QuoterV2 | `0x61fFE014bA17989E743c5F6cB21bF9697530B21e` |
@@ -352,18 +404,20 @@ LISTING_MODE=execute FACTORY=0x... WHITELIST=default forge script script/Configu
 `WHITELIST` is `default` for the mainnet list, or comma-separated entries
 `token:fee:minLiquidity[:referenceSupply[:excluded|excluded...]]`, where `fee` is the fee tier of the token's WETH pool,
 or 0 for WETH, `minLiquidity` is 0 for WETH, and `referenceSupply` is in the token's raw units. The default list is WBTC
-(0.05%, bitcoin's supply), WETH (ether's supply), LINK and UNI (0.3%, circulating supplies), and tBTC (0.3%, on-chain
-supply); the reference supplies are CoinGecko's circulating figures from 2026-09-15, and the minimum liquidities are a
-tenth of each pool's harmonic-mean liquidity at block 25,992,129 (2026-09-16). Propose mode skips any entry the rule
-would reject, such as tBTC while its pool has too few observation slots, and any entry outside the whitelist policy the
-script can check (6 to 18 decimals, no USDC or USDT), and logs why; it also logs each reference supply in whole tokens,
-where a decimals slip shows. A token the guardian delisted gets only `proposeConfig` changes; set
-`RELIST=<token>[,<token>...]` to propose listing it again. Execute mode never proposes anything, so a listing the
-guardian cancelled stays cancelled until the owner proposes it again on purpose, and it executes only a proposal whose
-pending config is exactly the entry's. `LISTING_MODE=status` is read-only: for every entry it logs whether the token is
-listed with the entry's config and any pending proposal with its window. For a local stack: `anvil --fork-url
-$MAINNET_RPC_URL` and run the same scripts against `http://127.0.0.1:8545`; the fork keeps chain id 1, and `.gitignore`
-keeps those rehearsal records out of git.
+(0.05%, bitcoin's supply), WETH (ether's supply), LINK and UNI (0.3%, circulating supplies), tBTC (0.3%, on-chain
+supply), and ten DeFi tokens with circulating supplies: AAVE, ONDO, ENA, MORPHO, ETHFI, CRV, PENDLE, OHM and LDO (0.3%)
+and SYRUP (1%). The reference supplies are CoinGecko's circulating figures from 2026-09-15 (the DeFi tokens' from
+2026-09-17), and the minimum liquidities are a tenth of each pool's harmonic-mean liquidity at block 25,992,129
+(2026-09-16; the DeFi tokens' at block 25,999,500, 2026-09-17). "Default list: pool depth" below says how the DeFi
+tokens were chosen and how thin most of their pools are. Propose mode skips any entry the rule would reject, such as
+tBTC while its pool has too few observation slots, and any entry outside the whitelist policy the script can check (6 to
+18 decimals, no USDC or USDT), and logs why; it also logs each reference supply in whole tokens, where a decimals slip
+shows. A token the guardian delisted gets only `proposeConfig` changes; set `RELIST=<token>[,<token>...]` to propose
+listing it again. Execute mode never proposes anything, so a listing the guardian cancelled stays cancelled until the
+owner proposes it again on purpose, and it executes only a proposal whose pending config is exactly the entry's.
+`LISTING_MODE=status` is read-only: for every entry it logs whether the token is listed with the entry's config and any
+pending proposal with its window. For a local stack: `anvil --fork-url $MAINNET_RPC_URL` and run the same scripts
+against `http://127.0.0.1:8545`; the fork keeps chain id 1, and `.gitignore` keeps those rehearsal records out of git.
 
 In the Safe app, safe mode's output becomes one Transaction Builder batch: one transaction per logged line, each to the
 factory with value 0 and the line as custom data. Two signers sign it, and one executes it.

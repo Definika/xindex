@@ -363,7 +363,7 @@ contract ScriptsTest is Test {
         vm.chainId(1);
         ConfigureWhitelist.Entry[] memory defaults = configure.resolveList("default");
         ConfigureWhitelist.Entry[] memory expected = configure.defaultMainnetList();
-        assertEq(defaults.length, 5);
+        assertEq(defaults.length, 15);
         for (uint256 i = 0; i < defaults.length; ++i) {
             assertEq(defaults[i].token, expected[i].token);
             assertEq(defaults[i].fee, expected[i].fee);
