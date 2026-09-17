@@ -17,7 +17,8 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-          submodules: recursive
+          # Only lib/*: the build never reads the dependencies' own nested test submodules.
+          submodules: true
 
       - name: Check submodule commits match foundry.lock
         run: |
@@ -45,6 +46,13 @@ jobs:
             echo "::error::.gitmodules lists no submodules to check"
             exit 1
           fi
+          paths=$(git config -f .gitmodules --get-regexp '^submodule\..*\.path$' | awk '{print $2}')
+          while read -r pinned; do
+            if ! grep -qxF "$pinned" <<< "$paths"; then
+              echo "::error::foundry.lock pins $pinned but .gitmodules has no such submodule"
+              failed=1
+            fi
+          done < <(jq -r 'keys[]' foundry.lock)
           exit "$failed"
 
       - name: Install Foundry
@@ -61,13 +69,30 @@ jobs:
       - name: Run Forge build
         run: forge build --sizes
 
-      - name: Require the fork-test RPC on main
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      # `forge build` prints lint findings but still succeeds, so lint runs on its own and fails on notes too.
+      - name: Run Forge lint
+        run: forge lint -D notes
+
+      # The separate web app decodes events and errors from these; regenerate them whenever an interface changes.
+      - name: Check the committed ABIs are current
+        run: |
+          set -euo pipefail
+          for contract in IndexFactory IndexToken IndexRule IndexZap; do
+            forge inspect "$contract" abi --json > "abi/$contract.json"
+          done
+          git diff --exit-code abi/
+
+      # Pull requests from forks get no secrets; their fork suites skip, so a maintainer re-runs them before merging.
+      - name: Require the fork-test RPC on main and on pull requests into it
+        if: >-
+          (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+          (github.event_name == 'pull_request' && github.base_ref == 'main' &&
+          github.event.pull_request.head.repo.full_name == github.repository)
         env:
           MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
         run: |
           if [ -z "$MAINNET_RPC_URL" ]; then
-            echo "::error::Add the MAINNET_RPC_URL repository secret so the mainnet fork tests run on main."
+            echo "::error::Add the MAINNET_RPC_URL repository secret so the mainnet fork tests run."
             exit 1
           fi
 
@@ -75,3 +100,46 @@ jobs:
         run: forge test -vvv
         env:
           MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
+
+      # Offline suites only; the fork helpers are covered by them. Every file row must show hit == total for lines,
+      # statements, branches and functions, and an empty summary fails.
+      - name: Require 100% coverage on every file
+        run: |
+          set -euo pipefail
+          forge coverage --report summary --no-match-path 'test/fork/*' | tee coverage.txt
+          python3 - <<'EOF'
+          import re
+          import sys
+
+          rows, short = 0, []
+          for line in open("coverage.txt"):
+              cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+              if not re.match(r"^(src|script|test)/", cells[0]):
+                  continue
+              rows += 1
+              if any(hit != total for hit, total in re.findall(r"\((\d+)/(\d+)\)", line)):
+                  short.append(cells[0])
+          if rows == 0:
+              print("::error::the coverage summary lists no files")
+              sys.exit(1)
+          if short:
+              print("::error::coverage is below 100% in " + ", ".join(short))
+              sys.exit(1)
+          print(f"100% coverage on all {rows} files")
+          EOF
+
+      # Wake reads its remappings from foundry.toml, so no second copy is committed. The generated config leaves out
+      # only Wake's default folders, so audit/ is added: its PoC tests compile only inside the audited commit, and Wake
+      # stops on their errors before running a detector. `wake detect` exits non-zero on any detection; the three
+      # documented inline suppressions in src/ still apply.
+      - name: Run the Wake detectors on src
+        run: |
+          set -euo pipefail
+          pipx install eth-wake==4.22.1
+          wake init config --force
+          perl -pi -e 's/^exclude_paths = \[/exclude_paths = ["audit", /' wake.toml
+          if ! grep -q '^exclude_paths = \["audit", ' wake.toml; then
+            echo "::error::the generated wake.toml changed shape, so audit/ is not excluded"
+            exit 1
+          fi
+          wake detect all src
