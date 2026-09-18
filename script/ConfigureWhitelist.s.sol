@@ -16,8 +16,9 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///         cancelled. A token the guardian delisted gets config changes only; it is listed again only when named in
 ///         RELIST. Execute mode runs only proposals whose pending config is exactly the entry's.
 ///
-///   Propose, as a factory owner that is a key you hold (testnets and local forks; a contract owner, such as the
-///   mainnet Safe, cannot sign, and propose mode then reverts with OwnerIsContract: use safe mode below):
+///   Propose, as a factory owner that is a key you hold, delegated under EIP-7702 or not (testnets and local forks; a
+///   contract owner, such as the mainnet Safe, cannot sign, and propose mode then reverts with OwnerIsContract: use
+///   safe mode below):
 ///     LISTING_MODE=propose FACTORY=0x... WHITELIST=<entries> forge script script/ConfigureWhitelist.s.sol \
 ///       --rpc-url <rpc> --account <owner key> --sender <owner> --broadcast
 ///   Execute, from any account, between LISTING_DELAY and LISTING_DELAY + PROPOSAL_WINDOW later:
@@ -52,6 +53,23 @@ contract ConfigureWhitelist is Script {
         uint128 minLiquidity;
         uint256 referenceSupply;
         address[] excluded;
+    }
+
+    /// @notice What `status` found for one entry.
+    /// @param token The entry's token.
+    /// @param listed Whether it is whitelisted.
+    /// @param inForce Whether the config in force is the entry's.
+    /// @param eta When the pending proposal becomes executable, or 0 when nothing is pending; it expires
+    ///        `PROPOSAL_WINDOW` later.
+    /// @param pendingIsListing Whether the pending proposal lists the token rather than only changing its config.
+    /// @param pendingMatches Whether the pending config is the entry's.
+    struct Report {
+        address token;
+        bool listed;
+        bool inForce;
+        uint256 eta;
+        bool pendingIsListing;
+        bool pendingMatches;
     }
 
     /// @notice Uniswap V3 fee tiers of the default list's pools: 0.05% and 0.3%.
@@ -306,7 +324,9 @@ contract ConfigureWhitelist is Script {
     /// @param relist Delisted tokens that may be listed again.
     function propose(IIndexFactory factory, Entry[] memory list, address[] memory relist) public {
         address factoryOwner = Ownable(address(factory)).owner();
-        if (factoryOwner.code.length != 0) revert OwnerIsContract(factoryOwner);
+        // A key that delegated its account under EIP-7702 has code and still signs, so it is not a contract owner.
+        bytes memory ownerCode = factoryOwner.code;
+        if (ownerCode.length != 0 && !ScriptUtils.isDelegatedAccount(ownerCode)) revert OwnerIsContract(factoryOwner);
         IIndexRule rule = IIndexRule(factory.RULE());
         address weth = rule.WETH();
         address uniswapV3Factory = rule.UNISWAP_V3_FACTORY();
@@ -417,7 +437,7 @@ contract ConfigureWhitelist is Script {
             }
             action = Action.ChangeConfig;
         }
-        if (!_followsPolicy(token, config.referenceSupply)) return Action.Skip;
+        if (!_followsPolicy(token, rule.USDC(), config.referenceSupply)) return Action.Skip;
         try rule.checkConfig(token, config) {
             return action;
         } catch (bytes memory reason) {
@@ -427,10 +447,11 @@ contract ConfigureWhitelist is Script {
         }
     }
 
-    /// @dev The parts of the whitelist policy a script can check: 6 to 18 decimals, and no mint currency (USDC, USDT)
-    ///      as a component. Logs a reference supply in whole tokens, where a decimals slip shows.
-    function _followsPolicy(address token, uint256 referenceSupply) private view returns (bool) {
-        if (token == MainnetAddresses.USDC || token == MainnetAddresses.USDT) {
+    /// @dev The parts of the whitelist policy a script can check: 6 to 18 decimals, and no mint currency as a component:
+    ///      mainnet's USDC and USDT, and the rule's own USDC, which is the mint currency on any other chain. Logs a
+    ///      reference supply in whole tokens, where a decimals slip shows.
+    function _followsPolicy(address token, address ruleUsdc, uint256 referenceSupply) private view returns (bool) {
+        if (token == MainnetAddresses.USDC || token == MainnetAddresses.USDT || token == ruleUsdc) {
             console2.log("skipped, a mint currency is not a component", token);
             return false;
         }
@@ -451,26 +472,33 @@ contract ConfigureWhitelist is Script {
         return true;
     }
 
-    /// @notice Any account, read-only. Logs for every entry whether the token is listed, whether the config in force is
-    ///         the entry's, and any pending proposal with its window, so nothing due expires unnoticed.
+    /// @notice Any account, read-only. Reports and logs for every entry whether the token is listed, whether the config
+    ///         in force is the entry's, and any pending proposal with its window, so nothing due expires unnoticed.
     /// @param factory The deployed factory.
     /// @param list Entries to report on.
-    function status(IIndexFactory factory, Entry[] memory list) public view {
+    /// @return reports One report per entry, in entry order; the log lines say the same.
+    function status(IIndexFactory factory, Entry[] memory list) public view returns (Report[] memory reports) {
         IIndexRule rule = IIndexRule(factory.RULE());
         address weth = rule.WETH();
         address uniswapV3Factory = rule.UNISWAP_V3_FACTORY();
+        uint256 window = factory.PROPOSAL_WINDOW();
+        reports = new Report[](list.length);
         for (uint256 i = 0; i < list.length; ++i) {
             address token = list[i].token;
             IIndexFactory.TokenConfig memory config = configFor(list[i], weth, uniswapV3Factory);
-            console2.log(token, factory.isWhitelisted(token) ? "listed" : "not listed");
-            if (!_sameConfig(factory.tokenConfig(token), config)) {
-                console2.log("  the config in force is not the entry's");
-            }
-            uint256 eta = factory.listingEta(token);
-            if (eta == 0) continue;
-            console2.log("  pending from %s until %s", eta, eta + factory.PROPOSAL_WINDOW());
-            console2.log(factory.pendingIsListing(token) ? "  a listing" : "  a config change");
-            if (!_sameConfig(factory.pendingTokenConfig(token), config)) console2.log("  it differs from the entry");
+            Report memory report = reports[i];
+            report.token = token;
+            report.listed = factory.isWhitelisted(token);
+            report.inForce = _sameConfig(factory.tokenConfig(token), config);
+            report.eta = factory.listingEta(token);
+            console2.log(token, report.listed ? "listed" : "not listed");
+            if (!report.inForce) console2.log("  the config in force is not the entry's");
+            if (report.eta == 0) continue;
+            report.pendingIsListing = factory.pendingIsListing(token);
+            report.pendingMatches = _sameConfig(factory.pendingTokenConfig(token), config);
+            console2.log("  pending from %s until %s", report.eta, report.eta + window);
+            console2.log(report.pendingIsListing ? "  a listing" : "  a config change");
+            if (!report.pendingMatches) console2.log("  it differs from the entry");
         }
     }
 

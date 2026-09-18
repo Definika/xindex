@@ -81,7 +81,7 @@ contract RebalanceForkTest is Test {
             factory.executeListing(tokens[i]);
         }
 
-        executor = new RebalanceExecutorV3(ISwapRouter02(A.SWAP_ROUTER_02), A.WETH);
+        executor = new RebalanceExecutorV3(factory, ISwapRouter02(A.SWAP_ROUTER_02), A.WETH);
         executor.setFee(A.WBTC, F500);
         executor.setFee(A.LINK, F3000);
         executor.setFee(A.UNI, F3000);

@@ -28,7 +28,10 @@ import {FaucetToken} from "./FaucetToken.sol";
 ///      Adds liquidity from the deployer's ether. Being in a later block, this writes each pool's second observation,
 ///      which switches the pool to the reserved slots.
 ///
-/// The Xindex factory can be deployed 30 minutes after `create`, once the pools hold that much history.
+/// Deploy the Xindex factory and propose the listings 30 minutes after `seed`. The factory only needs 30 minutes of
+/// price history, which `create` starts, but a listing also needs the window's harmonic-mean liquidity to reach the
+/// token's minimum, and every second before `seed` counts as no liquidity at all: proposed earlier, every pooled token
+/// is rejected with `ThinPriceHistory` (LR-07).
 ///
 /// Env:
 ///   MARKET_MODE      `create` or `seed`.
@@ -253,7 +256,7 @@ contract SetupTestMarket is Script {
         }
         vm.stopBroadcast();
 
-        console2.log("Deploy Xindex 30 minutes after `create` with:");
+        console2.log("Deploy Xindex and propose the listings 30 minutes after this `seed` run, with:");
         console2.log("  USDC=%s WETH=%s", tokens[0], uniswap.weth);
         console2.log("  UNISWAP_V3_FACTORY=%s", uniswap.factory);
         console2.log("List the components with WHITELIST=%s", whitelist(uniswap, tokens));

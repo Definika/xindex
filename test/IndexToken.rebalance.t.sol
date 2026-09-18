@@ -175,6 +175,26 @@ contract IndexTokenRebalanceTest is Test {
         assertEq(nextEta, block.timestamp + index.REBALANCE_DELAY());
     }
 
+    /// @dev LR-05: no test told a fresh snapshot from the expired one, because prices never moved between the two. A
+    ///      restart that kept the old targets, the stale snapshot XA-01 and XA-02 guard against, passed every test.
+    function test_LR05_aRestartAfterAnUnfilledAuctionTakesAFreshSnapshot() public {
+        uint256 eta = _start(index);
+        (,, uint256[] memory first) = index.pendingRebalance();
+        assertEq(keccak256(abi.encode(first)), keccak256(abi.encode(_expectedTargets())));
+
+        // Nobody fills, and the first component's price falls by about a third before anyone restarts.
+        vm.warp(eta + index.AUCTION_DURATION() + index.REBALANCE_DELAY());
+        market.setPriceTick(tokens[0], -4_000);
+        (uint256[] memory fresh,) = index.previewTarget(0);
+        assertTrue(keccak256(abi.encode(fresh)) != keccak256(abi.encode(first)), "the rule now wants other targets");
+
+        vm.prank(stranger);
+        index.startRebalance(0);
+        (,, uint256[] memory second) = index.pendingRebalance();
+        assertEq(second.length, 5, "the expired targets were cleared, not appended to");
+        assertEq(keccak256(abi.encode(second)), keccak256(abi.encode(fresh)), "the restart snapshots the rule again");
+    }
+
     function test_startRebalance_keepMaskRules() public {
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
         vm.prank(stranger);

@@ -473,7 +473,7 @@ contract MocksTest is Test {
         mWeth.mint(address(r), 1_000e18);
         growing.mint(address(r), 1_000e18);
 
-        RebalanceExecutorV3 executor = new RebalanceExecutorV3(r, address(mWeth));
+        RebalanceExecutorV3 executor = new RebalanceExecutorV3(f, r, address(mWeth));
         executor.setFee(address(shrinking), 3000);
         executor.setFee(address(growing), 3000);
         assertEq(executor.feeOf(address(growing)), 3000);
@@ -494,7 +494,8 @@ contract MocksTest is Test {
 
     function test_XA12_rebalanceExecutorV3_takesCallbacksOnlyFromTheIndexItFills() public {
         MockERC20 mWeth = new MockERC20("Wrapped Ether", "WETH", 18);
-        RebalanceExecutorV3 executor = new RebalanceExecutorV3(new MockSwapRouter(), address(mWeth));
+        RebalanceExecutorV3 executor =
+            new RebalanceExecutorV3(IIndexFactory(makeAddr("factory")), new MockSwapRouter(), address(mWeth));
         mWeth.mint(address(executor), 10e18); // the operator's float
 
         // A contract posing as an index that holds only WETH asks for the whole float.
@@ -515,5 +516,52 @@ contract MocksTest is Test {
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(RebalanceExecutorV3.NotOwner.selector, stranger));
         executor.setFee(address(mWeth), 3000);
+    }
+
+    /// @dev LR-04: the XA-12 check trusted whatever index `fill` was pointed at, and anyone could call `fill`. A
+    ///      contract posing as an index then called back from its own `executeRebalance` and asked for the whole
+    ///      float, which the executor paid. Only the deployer starts a fill now, and only on one of the factory's
+    ///      indexes.
+    function test_LR04_rebalanceExecutorV3_fillCannotBePointedAtAFakeIndex() public {
+        MockMarket m = new MockMarket();
+        IndexFactory f = new IndexFactory(
+            address(this), address(0), address(m.weth()), address(m.uniswapV3Factory()), address(m.usdc())
+        );
+        MockERC20 mWeth = m.weth();
+        RebalanceExecutorV3 executor = new RebalanceExecutorV3(f, new MockSwapRouter(), address(mWeth));
+        mWeth.mint(address(executor), 10e18); // the operator's float
+        FakeIndex fake = new FakeIndex(address(mWeth), address(executor));
+
+        address stranger = makeAddr("stranger");
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(RebalanceExecutorV3.NotOwner.selector, stranger));
+        executor.fill(IIndexToken(address(fake)));
+
+        vm.expectRevert(abi.encodeWithSelector(RebalanceExecutorV3.NotIndex.selector, address(fake)));
+        executor.fill(IIndexToken(address(fake)));
+        assertEq(mWeth.balanceOf(address(executor)), 10e18, "the float stays");
+
+        // The fake does what the finding describes: without the two checks above, this callback emptied the float.
+        vm.expectRevert(abi.encodeWithSelector(RebalanceExecutorV3.UnexpectedCaller.selector, address(fake)));
+        fake.executeRebalance("");
+    }
+}
+
+/// @dev Poses as an index whose only component is WETH: its `executeRebalance` calls the executor back and asks for
+///      everything the executor holds.
+contract FakeIndex {
+    address internal immutable WETH;
+    address internal immutable EXECUTOR;
+
+    constructor(address weth, address executor) {
+        WETH = weth;
+        EXECUTOR = executor;
+    }
+
+    function executeRebalance(bytes calldata data) external {
+        uint256[] memory nothing = new uint256[](1);
+        uint256[] memory everything = new uint256[](1);
+        everything[0] = MockERC20(WETH).balanceOf(EXECUTOR);
+        RebalanceExecutorV3(EXECUTOR).onXindexRebalance(nothing, everything, data);
     }
 }

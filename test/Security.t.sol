@@ -856,6 +856,8 @@ contract SecurityRegressionTest is XindexTest {
         for (uint256 i = 0; i < errors.length; ++i) {
             assertEq(bytes4(errors[i]), ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
         }
+        // The executor held no index tokens here, so this only records that nothing moved; the transfer an executor
+        // can make from inside the callback is tested in test_executeRebalance_callbackCannotReenterButIndexTransfersWork.
         assertFalse(reentrant.indexTransferSucceeded(), "it held no index tokens to move");
         assertEq(idx.rebalanceNonce(), 1);
     }

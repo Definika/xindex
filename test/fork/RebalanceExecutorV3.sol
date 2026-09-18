@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {IIndexToken} from "../../src/interfaces/IIndexToken.sol";
 import {IRebalanceExecutor} from "../../src/interfaces/IRebalanceExecutor.sol";
 import {ISwapRouter02} from "../../src/interfaces/ISwapRouter02.sol";
@@ -10,11 +11,14 @@ import {ISwapRouter02} from "../../src/interfaces/ISwapRouter02.sol";
 /// @notice Fills rebalance auctions through Uniswap V3 on a mainnet fork, the way a searcher would: it sells what the
 ///         index sends into WETH, buys what the index needs with WETH, and settles the difference from a WETH float.
 /// @dev Test fixture, not a production executor. Its swaps have no slippage limits, so a sandwich takes the float:
-///      never fund it on mainnet. It accepts the callback only from the index its own `fill` is filling, so a contract
-///      posing as an index cannot pull the float, and only its deployer sets fee tiers.
+///      never fund it on mainnet. Only its deployer starts a fill or sets fee tiers, `fill` settles only an index the
+///      factory registered, and the callback is accepted only from the index that fill is settling. A contract posing
+///      as an index therefore cannot pull the float, neither by calling back on its own nor by having `fill` pointed
+///      at it (LR-04).
 contract RebalanceExecutorV3 is IRebalanceExecutor {
     using SafeERC20 for IERC20;
 
+    IIndexFactory public immutable FACTORY;
     ISwapRouter02 public immutable ROUTER;
     address public immutable WETH;
     address public immutable OWNER;
@@ -24,9 +28,11 @@ contract RebalanceExecutorV3 is IRebalanceExecutor {
     address private _filling;
 
     error NotOwner(address caller);
+    error NotIndex(address index);
     error UnexpectedCaller(address caller);
 
-    constructor(ISwapRouter02 router, address weth) {
+    constructor(IIndexFactory factory, ISwapRouter02 router, address weth) {
+        FACTORY = factory;
         ROUTER = router;
         WETH = weth;
         OWNER = msg.sender;
@@ -40,7 +46,10 @@ contract RebalanceExecutorV3 is IRebalanceExecutor {
         IERC20(token).forceApprove(address(ROUTER), type(uint256).max);
     }
 
+    /// @notice Deployer only. Settles the auction of `index`, one of the factory's indexes, at the current multiplier.
     function fill(IIndexToken index) external {
+        if (msg.sender != OWNER) revert NotOwner(msg.sender);
+        if (!FACTORY.isIndex(address(index))) revert NotIndex(address(index));
         _filling = address(index);
         index.executeRebalance("");
         _filling = address(0);

@@ -48,7 +48,8 @@ market from `script/testnet/SetupTestMarket.s.sol`.
    `IndexZap.burnToTokenWithPermit`, and the executor callback in `IndexToken.executeRebalance`.
 6. Every testable finding of the security reviews keeps its regression test passing, named after its id (a test that
    covers two findings carries both): v1 findings by id, v2 rebalancing findings as `R01`..`R23`, whole-repo audit
-   findings of 2026-09-16 as `XA..`. The v1 and R tests live in `test/Security.t.sol` and
+   findings of 2026-09-16 as `XA..`, and the logic review's findings of 2026-09-18 as `LR..`
+   (`audit/2026-09-18-logic-review.md`). The v1 and R tests live in `test/Security.t.sol` and
    `test/fork/Security.fork.t.sol`, except the ids a contract test cannot reach: L06 and FR06 are `test_L06_checkOwner`
    and `test_FR06_checkGuardian` and FR05 the two `test_FR05_*` tests in `test/Scripts.t.sol`, and I09, I10, I11, L08
    and FR04 are `test/Repo.t.sol` (the known-limitations section, the pinned compiler, the pinned CI toolchain and
@@ -152,6 +153,13 @@ script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test 
   `IXindexErrors.<Error>.selector`, because Solidity does not resolve an inherited error through
   `IIndexFactory.<Error>`. Immutables in SCREAMING_SNAKE_CASE. Loop counters initialised explicitly (`uint256 i = 0`).
   Modifier logic lives in a private function.
+- `foundry.toml` keeps `dynamic_test_linking = false`: with forge's default, a test function ends, reported as a pass,
+  at the first `vm.expectRevert` followed by `new` of a `src/` contract, and every check after it is skipped (LR-01).
+  It also keeps `[invariant] fail_on_revert = true`: the handler only makes calls that must succeed, so a handler
+  action that can legitimately revert has to check its precondition first (`canStartRebalance()`, a non-zero balance).
+- A regression test has to fail without its fix. Check it against the old code or a mutant before relying on it: the
+  logic review found tests that passed either way (mocked return values instead of the real flow, prices that never
+  moved between two snapshots, a salt whose fields were never varied one at a time).
 - Tests: one `*.t.sol` per contract (the token's rebalancing and invariants have their own files), mocks under
   `test/mocks/`, mainnet constants in `script/MainnetAddresses.sol` (re-exported with test-only ones by
   `test/fork/ForkAddresses.sol`). New behaviour needs a unit test; new revert paths
@@ -175,7 +183,9 @@ script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test 
 
 Ethereum mainnet; Uniswap V3 (SwapRouter02 + QuoterV2, pool time-weighted prices for the rule); fixed constituents with
 units that follow an on-chain rule; methodologies uncapped market cap and capped 30/20 (at least 5 components; the 20%
-cap applies to every component below the largest, changed from the Numbers model's closed form on 2026-09-17); monthly
+cap applies to every component below the largest, changed from the Numbers model's closed form on 2026-09-17);
+rebalance targets are the water-filling of value by weight within the half-to-double bounds (a component clipped to
+its floor is no longer handed value back, changed on 2026-09-18, LR-02); monthly
 cadence with 2 days of notice and a 24-hour auction from 1.5 to 0.9 on the bought legs; no protocol bots or hot keys; no fees; component whitelist only (no synthetics for L1 coins without a mainnet wrapper);
 burner chooses the exit token (mint currency is not tracked per holder); the index price is the basket's value, not a
 divisor level. The Numbers model's tokens were examples; its methodology is the requirement. Rationale in

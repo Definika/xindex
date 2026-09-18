@@ -27,10 +27,13 @@ import {TickMath} from "./libraries/TickMath.sol";
 ///      WAD above it (`Basket.scale`). Ordinary baskets are therefore unchanged to the wei, and a mean tick manipulated
 ///      toward MAX_TICK yields a snapshot instead of an arithmetic panic.
 ///
-///      Rebalance targets keep the value of the rebalanced components at snapshot prices. Each target starts at
-///      `value * weight / price` and is clipped to [units / 2, units * 2]. Whatever value the clip removes or adds is
-///      shared among the components still inside their bounds, pass by pass, until a pass pins no new component.
-///      A weight that rounds to zero counts as one wei here, so no clipped value is ever left unplaced.
+///      Rebalance targets keep the value of the rebalanced components at snapshot prices. Each pass shares the value
+///      not yet pinned among the components still free, `value * weight / price` each, and clips every share to
+///      [units / 2, units * 2]. When the clips add more value than they remove, the shares have to come down, so a
+///      component clipped up to its floor is certain to end there and is pinned; otherwise the components clipped down
+///      to their ceiling are. The rest are shared out again, until a pass clips nothing. A pinned component never
+///      moves again, so a component the rule wants to shrink further than its floor is never handed value back. A
+///      weight that rounds to zero counts as one wei here, so no clipped value is ever left unplaced.
 contract IndexRule is IIndexRule {
     uint32 public constant TWAP_WINDOW = 30 minutes;
     uint32 public constant TWAP_SUB_WINDOWS = 3;
@@ -444,19 +447,10 @@ contract IndexRule is IIndexRule {
         pure
         returns (uint256[] memory targets, uint256 turnover)
     {
-        (uint256 activeValue, uint256 activeWeight, uint256 totalValue) = _bound(units, basket, keepMask);
         uint256 n = units.length;
         targets = new uint256[](n);
-        for (uint256 i = 0; i < n; ++i) {
-            targets[i] = _kept(keepMask, i)
-                ? units[i]
-                : _clamp(
-                    Math.mulDiv(activeValue, basket.weights[i] * basket.scale, activeWeight * basket.prices[i]),
-                    basket.lo[i],
-                    basket.hi[i]
-                );
-        }
-        _redistribute(targets, basket, totalValue);
+        (uint256 activeValue, uint256 activeWeight) = _bound(units, targets, basket, keepMask);
+        _fill(targets, basket, activeValue, activeWeight);
 
         uint256 sold = 0;
         for (uint256 i = 0; i < n; ++i) {
@@ -465,86 +459,116 @@ contract IndexRule is IIndexRule {
         turnover = Math.mulDiv(sold, WAD, activeValue);
     }
 
-    /// @dev Fills each component's bounds and returns the value and weight of the components being rebalanced and the
-    ///      value of the whole basket, all at snapshot prices. Kept components are pinned to their current units.
-    function _bound(uint256[] calldata units, Basket memory basket, uint256 keepMask)
+    /// @dev Fills each rebalanced component's bounds and returns their value and weight at snapshot prices. A kept
+    ///      component is pinned to its current units from the start. From here on a zero weight marks a pinned
+    ///      component, which no pass moves again.
+    function _bound(uint256[] calldata units, uint256[] memory targets, Basket memory basket, uint256 keepMask)
         private
         pure
-        returns (uint256 activeValue, uint256 activeWeight, uint256 totalValue)
+        returns (uint256 activeValue, uint256 activeWeight)
     {
-        (activeValue, activeWeight, totalValue) = (0, 0, 0);
+        (activeValue, activeWeight) = (0, 0);
         uint256 n = units.length;
         for (uint256 i = 0; i < n; ++i) {
             uint256 u = units[i];
-            uint256 value = Math.mulDiv(u, basket.prices[i], basket.scale);
-            totalValue += value;
+            if (_kept(keepMask, i)) {
+                targets[i] = u;
+                basket.weights[i] = 0;
+                continue;
+            }
             // A weight that rounds to zero still counts as one wei, so that component can take value the clips move.
             if (basket.weights[i] == 0) basket.weights[i] = 1;
-            if (_kept(keepMask, i)) {
-                basket.lo[i] = u;
-                basket.hi[i] = u;
-            } else {
-                // A value the scale rounds away still counts as one wei, so an active component is never worthless.
-                activeValue += Math.max(value, 1);
-                activeWeight += basket.weights[i];
-                basket.lo[i] = (u + 1) / 2;
-                basket.hi[i] = Math.max(u, Math.min(2 * u, MAX_TARGET_UNITS));
-            }
+            // A value the scale rounds away still counts as one wei, so an active component is never worthless.
+            activeValue += Math.max(Math.mulDiv(u, basket.prices[i], basket.scale), 1);
+            activeWeight += basket.weights[i];
+            basket.lo[i] = (u + 1) / 2;
+            basket.hi[i] = Math.max(u, Math.min(2 * u, MAX_TARGET_UNITS));
         }
         if (activeValue == 0) revert DegenerateBasket();
     }
 
-    /// @dev Restores the basket's value after clipping. Each pass that pins a component at a bound leaves at least one
-    ///      fewer component to move, so at most one pass per component runs.
-    function _redistribute(uint256[] memory targets, Basket memory basket, uint256 totalValue) private pure {
+    /// @dev Shares `value` among the free components by weight, pass by pass. Each pass that clips a share pins at least
+    ///      one component and takes its value and weight out of what is left to share, so at most one pass per
+    ///      component runs. While value products are exact (`scale` of 1), what is left always covers the floors of the
+    ///      components still free; only the rounding of a WAD scale can leave it a few wei short, which the saturating
+    ///      subtraction absorbs.
+    function _fill(uint256[] memory targets, Basket memory basket, uint256 value, uint256 weight) private pure {
         uint256 n = targets.length;
         for (uint256 pass = 0; pass < n; ++pass) {
-            uint256 value = 0;
-            for (uint256 i = 0; i < n; ++i) {
-                value += Math.mulDiv(targets[i], basket.prices[i], basket.scale);
-            }
-            bool raise = value < totalValue;
-            uint256 gap = raise ? totalValue - value : value - totalValue;
-            if (gap == 0 || !_shift(targets, basket, raise, gap)) return;
+            (uint256 pinnedValue, uint256 pinnedWeight) = _share(targets, basket, value, weight);
+            if (pinnedWeight == 0) return;
+            value = Math.saturatingSub(value, pinnedValue);
+            weight -= pinnedWeight;
         }
     }
 
-    /// @dev Moves `gap` of value onto (or off) every component that can still move in that direction, in proportion to
-    ///      weight, and clips at the bounds. Returns whether any component reached a bound.
-    function _shift(uint256[] memory targets, Basket memory basket, bool raise, uint256 gap)
+    /// @dev One pass: gives every free component its share of `value` by weight, clipped to its bounds, and pins the
+    ///      side the clips prove. The clips add `below` of value at the floors and remove `above` at the ceilings. With
+    ///      `below >= above` the clipped basket is worth at least `value`, so the shares can only come down from here
+    ///      and every component at its floor stays there; otherwise they can only go up and every component at its
+    ///      ceiling stays there. Returns the value and weight pinned, zero when nothing was clipped. `weight` is the sum
+    ///      over the free components, so it is never zero where it divides.
+    function _share(uint256[] memory targets, Basket memory basket, uint256 value, uint256 weight)
         private
         pure
-        returns (bool pinned)
+        returns (uint256, uint256)
     {
-        pinned = false;
-        uint256 n = targets.length;
-        uint256 eligibleWeight = 0;
-        for (uint256 i = 0; i < n; ++i) {
-            if (raise ? targets[i] < basket.hi[i] : targets[i] > basket.lo[i]) eligibleWeight += basket.weights[i];
+        uint256 below = 0;
+        uint256 above = 0;
+        for (uint256 i = 0; i < targets.length; ++i) {
+            if (basket.weights[i] == 0) continue;
+            (uint256 added, uint256 removed) = _clip(targets, basket, i, Math.mulDiv(value, basket.weights[i], weight));
+            below += added;
+            above += removed;
         }
-        // Never zero while a gap remains: every weight is at least one wei, and the bounds bracket the basket's value, so
-        // some component can always still move in the needed direction.
+        if (below == 0 && above == 0) return (0, 0);
+        return _pin(targets, basket, below >= above);
+    }
+
+    /// @dev Pins every free component that sits at its floor (`floors`) or at its ceiling, and returns their value and
+    ///      weight. A pass that clipped anything pins at least the component it clipped.
+    function _pin(uint256[] memory targets, Basket memory basket, bool floors)
+        private
+        pure
+        returns (uint256 pinnedValue, uint256 pinnedWeight)
+    {
+        (pinnedValue, pinnedWeight) = (0, 0);
+        uint256 n = targets.length;
         for (uint256 i = 0; i < n; ++i) {
-            uint256 t = targets[i];
-            if (raise ? t >= basket.hi[i] : t <= basket.lo[i]) continue;
-            uint256 step = Math.mulDiv(gap, basket.weights[i] * basket.scale, eligibleWeight * basket.prices[i]);
-            if (raise && t + step >= basket.hi[i]) {
-                targets[i] = basket.hi[i];
-                pinned = true;
-            } else if (!raise && t <= basket.lo[i] + step) {
-                targets[i] = basket.lo[i];
-                pinned = true;
-            } else {
-                targets[i] = raise ? t + step : t - step;
-            }
+            uint256 w = basket.weights[i];
+            if (w == 0 || targets[i] != (floors ? basket.lo[i] : basket.hi[i])) continue;
+            pinnedValue += Math.mulDiv(targets[i], basket.prices[i], basket.scale);
+            pinnedWeight += w;
+            basket.weights[i] = 0;
+        }
+    }
+
+    /// @dev Sets component `i`'s target to the units of its share of value, clipped to its bounds, and returns the value
+    ///      the clip added or removed. The share is compared with the bounds as a value and only turned into units once
+    ///      it lies between them: next to a price above MAX_EXACT_PRICE, the unclipped units of a component priced near
+    ///      zero would not fit in 256 bits. Units from a share are at most the ceiling, because the share is at most
+    ///      the ceiling's value; a WAD scale can round them under the floor, hence the maximum.
+    function _clip(uint256[] memory targets, Basket memory basket, uint256 i, uint256 share)
+        private
+        pure
+        returns (uint256 added, uint256 removed)
+    {
+        (added, removed) = (0, 0);
+        uint256 p = basket.prices[i];
+        uint256 floorValue = Math.mulDiv(basket.lo[i], p, basket.scale);
+        uint256 ceilingValue = Math.mulDiv(basket.hi[i], p, basket.scale);
+        if (share < floorValue) {
+            targets[i] = basket.lo[i];
+            added = floorValue - share;
+        } else if (share > ceilingValue) {
+            targets[i] = basket.hi[i];
+            removed = share - ceilingValue;
+        } else {
+            targets[i] = Math.max(Math.mulDiv(share, basket.scale, p), basket.lo[i]);
         }
     }
 
     function _kept(uint256 keepMask, uint256 i) private pure returns (bool) {
         return (keepMask >> i) & 1 == 1;
-    }
-
-    function _clamp(uint256 x, uint256 lo, uint256 hi) private pure returns (uint256) {
-        return x < lo ? lo : (x > hi ? hi : x);
     }
 }

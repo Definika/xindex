@@ -25,6 +25,7 @@ contract IndexHandler is Test {
     uint256 public ghostExecutions;
     bool public shortFillSucceeded;
     bool public unitBoundsBroken;
+    bool public holdOffMisjudged;
 
     constructor(
         IndexToken index_,
@@ -49,6 +50,17 @@ contract IndexHandler is Test {
         return actors[seed % actors.length];
     }
 
+    /// @dev The first actor from `seed` on that holds shares, or the seeded one if nobody does. A random actor mostly
+    ///      held nothing, so most redeems returned early and few fills met an outstanding claim (LR-06).
+    function _holder(uint256 seed) internal view returns (address) {
+        uint256 first = seed % actors.length;
+        for (uint256 k = 0; k < actors.length; ++k) {
+            address candidate = _actor(first + k);
+            if (index.balanceOf(candidate) != 0) return candidate;
+        }
+        return _actor(first);
+    }
+
     // ---------------------------------------------------------------------
     // holders
     // ---------------------------------------------------------------------
@@ -68,7 +80,7 @@ contract IndexHandler is Test {
     }
 
     function redeem(uint256 seed, uint256 toSeed, uint256 shares) external {
-        address from = _actor(seed);
+        address from = _holder(seed);
         uint256 bal = index.balanceOf(from);
         if (bal == 0) return;
         shares = bound(shares, 1, bal);
@@ -78,7 +90,7 @@ contract IndexHandler is Test {
     }
 
     function redeemSkipping(uint256 seed, uint256 toSeed, uint256 shares, uint256 mask) external {
-        address from = _actor(seed);
+        address from = _holder(seed);
         uint256 bal = index.balanceOf(from);
         if (bal == 0) return;
         shares = bound(shares, 1, bal);
@@ -88,12 +100,17 @@ contract IndexHandler is Test {
         ghostRedeemed += shares;
     }
 
+    /// @dev Pays the first outstanding claim found from the seeded actor and component on, if there is one.
     function claim(uint256 seed, uint256 compSeed, uint256 toSeed) external {
-        address from = _actor(seed);
-        address token = address(comps[compSeed % comps.length]);
-        if (index.claimOf(from, token) == 0) return;
-        vm.prank(from);
-        index.claim(token, _actor(toSeed));
+        (seed, compSeed) = (seed % actors.length, compSeed % comps.length);
+        for (uint256 k = 0; k < actors.length * comps.length; ++k) {
+            address from = _actor(seed + k / comps.length);
+            address token = address(comps[(compSeed + k) % comps.length]);
+            if (index.claimOf(from, token) == 0) continue;
+            vm.prank(from);
+            index.claim(token, _actor(toSeed));
+            return;
+        }
     }
 
     function transfer(uint256 seed, uint256 toSeed, uint256 amount) external {
@@ -140,9 +157,15 @@ contract IndexHandler is Test {
         (uint256 eta,,) = index.pendingRebalance();
         if (eta != 0 && block.timestamp <= eta + index.AUCTION_DURATION()) return;
         uint256 earliest = index.lastRebalance() + index.MIN_REBALANCE_INTERVAL();
-        uint256 restart = index.restartAllowedAt();
-        if (!asGuardian && restart > earliest) earliest = restart;
+        if (!asGuardian) {
+            // A cancel holds strangers off, and so does an auction that expired unfilled (XA-02). The handler used to
+            // model only the first, and the stranger's revert after an expiry was swallowed (LR-06).
+            uint256 afterExpiry = eta == 0 ? 0 : eta + index.AUCTION_DURATION() + index.REBALANCE_DELAY();
+            earliest = Math.max(earliest, Math.max(index.restartAllowedAt(), afterExpiry));
+        }
         if (block.timestamp < earliest) vm.warp(earliest);
+        // The view an app reads has to agree with the moment this handler worked out for a stranger.
+        holdOffMisjudged = holdOffMisjudged || (!asGuardian && !index.canStartRebalance());
 
         uint256 mask = asGuardian ? bound(maskSeed, 0, (1 << comps.length) - 2) : 0;
         (, uint256 turnover) = index.previewTarget(mask);
@@ -348,6 +371,7 @@ contract IndexTokenInvariantTest is Test {
         assertEq(index.rebalanceNonce(), handler.ghostExecutions(), "the nonce counts executed rebalances");
         assertFalse(handler.shortFillSucceeded(), "a short fill never settles, whatever surplus the index holds");
         assertFalse(handler.unitBoundsBroken(), "units move between half and 2.5 times per rebalance");
+        assertFalse(handler.holdOffMisjudged(), "canStartRebalance says when a stranger may start");
         (uint256 eta,, uint256[] memory targets) = index.pendingRebalance();
         assertEq(targets.length, eta == 0 ? 0 : comps.length, "targets exist exactly while a rebalance is pending");
     }
