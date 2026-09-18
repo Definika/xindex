@@ -143,13 +143,36 @@ contract MainnetAddressesForkTest is Test {
                 continue;
             }
             (,,, uint16 cardinality,,,) = IPoolCardinality(config.pool).slot0();
-            if (cardinality < rule.MIN_OBSERVATION_CARDINALITY()) {
-                // tBTC/WETH 0.3% kept 60 slots on 2026-09-16 and cannot be listed until someone grows its ring.
-                vm.expectRevert(
-                    abi.encodeWithSelector(IIndexRule.PoolHistoryTooShort.selector, config.pool, cardinality)
-                );
+            if (cardinality >= rule.MIN_OBSERVATION_CARDINALITY()) {
+                rule.checkConfig(list[i].token, config);
+                continue;
             }
+            // tBTC/WETH 0.3% kept 60 slots on 2026-09-16 and cannot be listed until someone grows its ring.
+            vm.expectRevert(abi.encodeWithSelector(IIndexRule.PoolHistoryTooShort.selector, config.pool, cardinality));
             rule.checkConfig(list[i].token, config);
+            _checkBehindTheSlotCount(rule, list[i].token, config);
         }
+    }
+
+    /// @dev LR-08: the slot count is the first thing `checkConfig` rejects, so for a pool with too few slots the
+    ///      entry's minimum liquidity and supply were never checked against the chain, and most default pools have too
+    ///      few. With the slot count answered as the minimum, the rest of the check runs on the pool's real window. A
+    ///      thin pool that traded within the last 30 minutes cannot serve that window yet and answers `OLD`, which
+    ///      says nothing about the entry; any other rejection fails the test.
+    function _checkBehindTheSlotCount(IIndexRule rule, address token, IIndexFactory.TokenConfig memory config)
+        internal
+    {
+        (uint160 sqrtPriceX96, int24 tick, uint16 index,, uint16 next, uint8 feeProtocol, bool unlocked) =
+            IPoolCardinality(config.pool).slot0();
+        vm.mockCall(
+            config.pool,
+            abi.encodeWithSelector(IPoolCardinality.slot0.selector),
+            abi.encode(sqrtPriceX96, tick, index, rule.MIN_OBSERVATION_CARDINALITY(), next, feeProtocol, unlocked)
+        );
+        try rule.checkConfig(token, config) {}
+        catch Error(string memory reason) {
+            assertEq(reason, "OLD", "the pool rejected the window for another reason than its age");
+        }
+        vm.clearMockedCalls();
     }
 }

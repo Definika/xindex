@@ -14,6 +14,8 @@ import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockUSDT} from "./mocks/MockUSDT.sol";
 import {MockFeeToken} from "./mocks/MockFeeToken.sol";
+import {MockHookToken, ITokenReceiverHook} from "./mocks/MockHookToken.sol";
+import {MockRebalanceExecutor} from "./mocks/MockRebalanceExecutor.sol";
 import {MockMarket} from "./mocks/MockMarket.sol";
 import {MockSwapRouter} from "./mocks/MockSwapRouter.sol";
 import {MockPartialFillRouter} from "./mocks/MockPartialFillRouter.sol";
@@ -588,6 +590,23 @@ contract IndexZapTest is XindexTest {
         assertEq(index.balanceOf(alice), 1e18 - 1e12);
     }
 
+    /// @dev LR-05: a leg's minimum is in `tokenOut` and applies to the last hop only. No test told that from a minimum
+    ///      on every hop, because the intermediate amounts were always the larger numbers. Here 1 LINK sells for 25,000
+    ///      raw WBTC and then 15,000,000 raw USDC, so a USDC minimum on the first hop could never be met.
+    function test_LR05_aLegMinimumAppliesToTheLastHopOnly() public {
+        _mintFor(alice, 2e18, 400e6);
+        IIndexZap.BurnLeg[] memory legs = _burnLegs(address(usdc));
+        legs[2] = IIndexZap.BurnLeg({path: _path3(address(link), address(wbtc), address(usdc)), minAmountOut: 15e6});
+        vm.startPrank(alice);
+        index.approve(address(zap), 2e18);
+        assertEq(zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, legs, alice)), NAV_USD6);
+
+        legs[2].minAmountOut = 15e6 + 1; // and on the last hop it binds
+        vm.expectRevert(bytes("Too little received"));
+        zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, legs, alice));
+        vm.stopPrank();
+    }
+
     function test_XA29_zeroLegsAreStillValidatedAndTheirMinimumsApply() public {
         _mintFor(alice, 1e18, 200e6);
         vm.startPrank(alice);
@@ -631,6 +650,31 @@ contract IndexZapTest is XindexTest {
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(IIndexZap.StaleRebalanceNonce.selector, 0, 1));
         zap.mintWithToken(p);
+    }
+
+    /// @dev LR-05: the XA-22 test above only proves the nonce is read twice, so a recheck moved in front of the swaps
+    ///      passed it. Here a rebalance really settles in the middle of a mint: the minter pays with a callback token,
+    ///      and its hook fills the auction when the zap refunds it, after the swaps and before `issue`. Only a check
+    ///      placed right before `issue` sees the new nonce; without one, `issue` would pull the new basket against
+    ///      approvals sized for the old one and fail with an allowance error instead.
+    function test_LR05_aRebalanceSettledDuringTheRefundStopsTheMint() public {
+        _mintFor(alice, 1e18, 200e6);
+        market.setPriceTick(address(link), -7_000); // LINK halves, so the rule has a rebalance to start
+        vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
+        index.startRebalance(0);
+        (uint256 eta,,) = index.pendingRebalance();
+        vm.warp(eta);
+
+        MockHookToken hook = new MockHookToken();
+        router.setPrice(address(hook), 1e18);
+        RebalancingMinter minter = new RebalancingMinter(zap, index, new MockRebalanceExecutor());
+        hook.mint(address(minter), 200e18);
+
+        IIndexZap.MintParams memory p =
+            _mintParams(address(index), address(hook), 200e18, 1e18, _mintLegs(address(hook)), address(minter));
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.StaleRebalanceNonce.selector, 0, 1));
+        minter.mint(p);
+        assertEq(index.rebalanceNonce(), 0, "the whole mint unwound, the settlement with it");
     }
 
     function test_burn_revertsWithoutApproval() public {
@@ -845,5 +889,27 @@ contract IndexZapTest is XindexTest {
         shares = bound(shares, 1e12, 1_000e18);
         (uint256 spent, uint256 out) = _roundTrip(shares);
         assertLe(spent - out, 600 + 1 + 1 + 3);
+    }
+}
+
+/// @dev Mints through the zap with a callback token and, when the zap refunds it, fills the index's auction.
+contract RebalancingMinter is ITokenReceiverHook {
+    IndexZap internal immutable ZAP;
+    IndexToken internal immutable INDEX;
+    MockRebalanceExecutor internal immutable EXECUTOR;
+
+    constructor(IndexZap zap, IndexToken index, MockRebalanceExecutor executor) {
+        ZAP = zap;
+        INDEX = index;
+        EXECUTOR = executor;
+    }
+
+    function mint(IIndexZap.MintParams calldata p) external {
+        MockHookToken(p.tokenIn).approve(address(ZAP), p.maxAmountIn);
+        ZAP.mintWithToken(p);
+    }
+
+    function onTokenReceived(address from, uint256) external {
+        if (from == address(ZAP)) EXECUTOR.execute(INDEX, "");
     }
 }

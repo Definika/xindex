@@ -3,13 +3,16 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {Vm} from "forge-std/Vm.sol";
+import {IndexToken} from "../src/IndexToken.sol";
+import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 
 /// @notice Repository facts that security-review findings rest on and that no contract test can reach: the pinned
 ///         compiler (v1 I10), the pinned CI toolchain and required fork RPC (I11), the dependency lock against
 ///         `.gitmodules` (L08 and FR04) and the documented known limitations (I09); from the whole-repo audit, the CI
 ///         gates (XA-10, XA-64), the ignored chain-1 broadcasts (XA-43), the committed ABIs (XA-44), the single copy
-///         of the agent instructions (XA-46) and the verification key (XA-58). CI checks the submodule commits
-///         themselves, which needs git; these tests check everything a local run can.
+///         of the agent instructions (XA-46) and the verification key (XA-58); from the logic review of 2026-09-18,
+///         the test linking mode that lets checks after an expected constructor revert run (LR-01). CI checks the
+///         submodule commits themselves, which needs git; these tests check everything a local run can.
 contract RepoTest is Test {
     function _read(string memory path) internal view returns (string memory) {
         return vm.readFile(string.concat(vm.projectRoot(), "/", path));
@@ -139,6 +142,21 @@ contract RepoTest is Test {
         assertTrue(_contains(workflow, "has no entry in foundry.lock"), "every submodule is pinned");
         assertTrue(_contains(workflow, "but .gitmodules has no such submodule"), "every pin is a submodule");
     }
+
+    /// @dev LR-01: forge's default `dynamic_test_linking` deploys a `src/` contract a test creates through a
+    ///      cheatcode, and the test function then ended, reported as a pass, at the first expected constructor revert:
+    ///      the checks after it never ran, and neither did an unmet `expectCall`. Nothing placed after such a revert
+    ///      can detect that mode, so the setting is checked first; the rest shows what it buys, a marker call that is
+    ///      only made if the function runs to its end.
+    function test_LR01_checksAfterAnExpectedConstructorRevertStillRun() public {
+        assertTrue(_contains(_read("foundry.toml"), "\ndynamic_test_linking = false\n"), "test linking stays static");
+        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
+        new IndexToken(address(0));
+        vm.expectCall(address(this), abi.encodeCall(this.reachedAfterTheRevert, ()));
+        this.reachedAfterTheRevert();
+    }
+
+    function reachedAfterTheRevert() external {}
 
     function _count(string memory haystack, string memory needle) internal pure returns (uint256 found) {
         bytes memory hay = bytes(haystack);

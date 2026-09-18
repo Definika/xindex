@@ -230,6 +230,16 @@ contract IndexFactoryTest is XindexTest {
         assertEq(factory.guardian(), guardian);
     }
 
+    /// @dev LR-05: the last moment of the window still executes, as the listing window's last moment is tested to.
+    function test_LR05_aGuardianChangeExecutesAtTheLastMomentOfItsWindow() public {
+        address next = makeAddr("next guardian");
+        vm.prank(owner);
+        factory.proposeGuardian(next);
+        vm.warp(factory.pendingGuardianEta() + factory.PROPOSAL_WINDOW());
+        factory.executeGuardianChange();
+        assertEq(factory.guardian(), next);
+    }
+
     function test_cancelGuardianChange() public {
         vm.prank(owner);
         vm.expectRevert(IIndexFactory.NoPendingGuardianChange.selector);
@@ -496,6 +506,24 @@ contract IndexFactoryTest is XindexTest {
         assertEq(list[1], address(a));
     }
 
+    /// @dev LR-05: the test above never delists the token that swap-and-pop moved. Without the moved token's position
+    ///      being updated, delisting it next panics on an out-of-bounds read, and the guardian loses that power.
+    function test_LR05_aTokenMovedBySwapAndPopCanStillBeDelisted() public {
+        _list(address(c));
+        vm.startPrank(guardian);
+        factory.delist(address(a)); // moves c into a's slot: [c, b]
+        factory.delist(address(c)); // c is now first, and b moves into its slot: [b]
+        vm.stopPrank();
+        address[] memory list = factory.whitelistedTokens();
+        assertEq(list.length, 1);
+        assertEq(list[0], address(b));
+        assertFalse(factory.isWhitelisted(address(c)));
+
+        vm.prank(guardian);
+        factory.delist(address(b));
+        assertEq(factory.whitelistedTokens().length, 0);
+    }
+
     function test_proposeConfig_replacesTheConfigWithoutListing() public {
         IIndexFactory.TokenConfig memory config = market.config(address(c), 0);
         vm.prank(stranger);
@@ -625,6 +653,30 @@ contract IndexFactoryTest is XindexTest {
         assertEq(factory.createIndex("Same", "SAME", t, u, 0), theirs);
         assertEq(factory.creatorOf(theirs), stranger);
         assertEq(factory.allIndexesLength(), 2);
+    }
+
+    /// @dev LR-05: the address also commits to the token list, the name and the symbol, which no test varied on its
+    ///      own: a salt without any one of them passed the suite.
+    function test_LR05_addressCommitsToTheTokenListTheNameAndTheSymbol() public {
+        _list(address(c));
+        (address[] memory t, uint256[] memory u) = _two();
+        address mine = factory.predictIndexAddress(creator, "Same", "SAME", t, u, 0);
+        assertTrue(mine != factory.predictIndexAddress(creator, "Other", "SAME", t, u, 0), "the name");
+        assertTrue(mine != factory.predictIndexAddress(creator, "Same", "OTHER", t, u, 0), "the symbol");
+
+        address[] memory otherTokens = new address[](2);
+        (otherTokens[0], otherTokens[1]) = (t[0], address(c));
+        address other = factory.predictIndexAddress(creator, "Same", "SAME", otherTokens, u, 0);
+        assertTrue(mine != other, "the token list, with the same units");
+        (otherTokens[0], otherTokens[1]) = (t[1], t[0]);
+        assertTrue(mine != factory.predictIndexAddress(creator, "Same", "SAME", otherTokens, u, 0), "and its order");
+
+        // Both baskets can exist side by side, each at its predicted address.
+        (otherTokens[0], otherTokens[1]) = (t[0], address(c));
+        vm.startPrank(creator);
+        assertEq(factory.createIndex("Same", "SAME", t, u, 0), mine);
+        assertEq(factory.createIndex("Same", "SAME", otherTokens, u, 0), other);
+        vm.stopPrank();
     }
 
     function test_createIndex_methodologyChecks() public {

@@ -95,7 +95,8 @@ b)`, burning shares always frees at least that much required backing, so claims 
 out exactly `floor(S * u / 1e18) - floor(S * n / 1e18)` of a shrinking component, so the invariant with the new units
 `n` holds if it held with the old units `u`, and the post-check enforces it for growing components. Nothing is computed
 from balances, so there is no share price to manipulate and no first-depositor attack. Donations only add surplus that no
-holder can redeem; a rebalance executor may use it to cover part of a fill.
+holder can redeem, and a rebalance executor cannot use it to cover part of a fill either: the settlement check asks for
+the whole of `amountsIn` on top of what the index held.
 
 ### IndexRule (`src/IndexRule.sol`)
 
@@ -121,10 +122,14 @@ A stateless, view-only contract the factory deploys in its constructor. It never
   mean ticks of the window's three 10-minute parts lie within `MAX_TICK_DEVIATION` (2,000 ticks, about 22%) of each
   other (else `PriceHistoryDeviates`). Kept components are not read at all under the uncapped methodology, whose weights
   renormalise them away; the capped methodology still ranks them, from the plain price; each target is clipped to
-  `[units / 2, units * 2]` (and below `MAX_TARGET_UNITS`, so the auction's premium still fits `uint96`); whatever value
-  the clips remove or add is shared among components still inside their bounds, pass by pass, until a pass pins no new
-  component; a weight that rounds to zero counts as one wei, so no clipped value is left unplaced. Returns the targets
-  and the turnover, the sold value as a share of the rebalanced value.
+  `[units / 2, units * 2]` (and below `MAX_TARGET_UNITS`, so the auction's premium still fits `uint96`). Each pass
+  shares the value not yet pinned among the components still free, by weight, and clips the shares: when the clips add
+  more value at the floors than they remove at the ceilings, the shares can only come down, so the components at their
+  floor are pinned there; otherwise those at their ceiling are. The rest are shared out again until a pass clips
+  nothing, at most one pass per component. A pinned component never moves again, so the result is the water-filling of
+  value by weight within the bounds: no component above its floor holds more value per unit of weight than one below
+  its ceiling. A weight that rounds to zero counts as one wei, so no clipped value is left unplaced. Returns the
+  targets and the turnover, the sold value as a share of the rebalanced value.
 - **checkConfig(token, config):** used by the factory before a listing or config change. WETH needs a reference supply,
   no pool and no minimum liquidity. Any other token needs the Uniswap V3 factory's own pool for the token and WETH at
   the pool's fee tier, at least `MIN_OBSERVATION_CARDINALITY` (200) observation slots (a pool writes at most one
@@ -257,7 +262,12 @@ ordinary drift; simulated at medium volatility, 5% of auctions expire and restar
 multiplier settles a growing one at up to 2.5 times, with the executor delivering the extra), so a manipulated price,
 an inflating supply or a misconfigured token can distort a basket's shape only gradually and publicly. Redistributing
 the clipped value pass by pass keeps the rebalance value-neutral; a single pass left up to 28% of value unplaced on
-random baskets.
+random baskets. Each pass pins only the side its clips prove. An earlier version clipped once and then spread the gap
+over every component that could still move in that direction, so a component just clipped to its floor for being
+overweight was handed value back (with weights 10/50/40 and holdings 50/10/40 it returned 28/20/52 instead of
+25/20/55): value-neutral and within bounds, but slower to converge than the bounds allow (the logic review's LR-02,
+2026-09-18). Shares are compared with the bounds as values, so a price near zero next to one above `MAX_EXACT_PRICE`
+is clipped instead of overflowing (LR-09).
 
 **Fixed constituents.** Changing which tokens an index holds would need a governance decision per index. The token list
 is part of the index's address; only weights follow the rule.

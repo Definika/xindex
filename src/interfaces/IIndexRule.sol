@@ -128,7 +128,9 @@ interface IIndexRule is IXindexErrors {
 
     /// @notice Rebalance targets for a basket holding `units` of `tokens`. Components whose bit is set in `keepMask`
     ///         keep their units; the others move toward `methodology`'s weights, rescaled to their share, at an
-    ///         unchanged total value at current prices, each clipped to half and double its current units. Every
+    ///         unchanged total value at current prices, each clipped to half and double its current units. Value a
+    ///         clip cannot place goes to the components still between their bounds, by weight, so a component clipped
+    ///         to its floor ends there unless every other component is at its ceiling. Every
     ///         component that moves needs a snapshot price: its window's harmonic-mean liquidity at least its
     ///         `minLiquidity` (else ThinPriceHistory) and sub-window mean ticks within MAX_TICK_DEVIATION (else
     ///         PriceHistoryDeviates). Kept components are not read under the uncapped methodology; the capped

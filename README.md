@@ -112,7 +112,8 @@ overall `minAmountOut`, passes `rebalanceNonce()`, and calls `burnToToken(BurnPa
    needs of each shrinking component and, inside its `onXindexRebalance` callback, must send back what the growing
    components need. The growing components' extra units are multiplied by a factor that falls from 1.5 to 0.9, so
    executors compete the fill toward fair value; a lone executor keeps at most 10% of the bought value.
-3. If nobody fills, the auction expires and anyone can start a fresh snapshot.
+3. If nobody fills, the auction expires. The owner or guardian can start a fresh snapshot at once; anyone else can
+   2 days later.
 4. The owner or guardian can cancel a rebalance; others must then wait 2 days to restart.
 
 **Rebalance around a frozen component.** The guardian cancels and starts again with the component's bit in `keepMask`;
@@ -160,7 +161,8 @@ already holds the components or shares.
 - **Paths.** Uniswap V3 packed paths: `token(20) | fee(3) | token(20) [| fee(3) | token(20)]`. For **mint**, a leg's path
   is exact-output encoded: starts with the component, ends with the stable (e.g. `WBTC 500 WETH 500 USDC`). For
   **burn**, it is exact-input encoded: starts with the component, ends with `tokenOut`. Use an empty path when the
-  component *is* the stable or `tokenOut`. Burn legs whose amount rounds to zero are skipped.
+  component *is* the stable or `tokenOut`. A burn leg whose amount rounds to zero sells nothing, but its path is still
+  validated and its minimum must be 0, or the burn reverts with `InsufficientOutput`.
 - **Slippage.** Set a limit on every leg, not only the total. A leg limit of 0 means "overall limit only". The overall
   burn limit must be non-zero. Legs share pools, since every leg crosses the dollar currency's WETH pool, so summed
   per-leg quotes are optimistic: a little on mainnet, several percent on thin pools such as the Sepolia test market. An
@@ -439,7 +441,9 @@ No bot runs Xindex, so these duties have owners and deadlines. Watch the events 
 
 ### Testnet (Sepolia)
 
-Sepolia runs the mainnet contracts and timing constants on a test market. `script/testnet/SetupTestMarket.s.sol` deploys
+Sepolia runs the contracts and timing constants on a test market. **The deployment in the table below is stale:** it
+was made from commit `8c28c7d`, before the whole-repo audit's fixes, and has to be redeployed from the current code
+before it is used to test anything (see the note under the table). `script/testnet/SetupTestMarket.s.sol` deploys
 stand-ins for USDC, WBTC, LINK, UNI and AAVE as `FaucetToken`s, where any account can `drip()` a small amount once a day,
 and gives each a Uniswap V3 WETH pool at mainnet prices from 2026-09-16 with 200 oracle slots. Only Sepolia ETH is needed.
 A rehearsal on an anvil fork of Sepolia used 48.7M gas for `create`, 3.4M for `seed`, 10.2M for the deploy and 0.7M to
@@ -469,6 +473,21 @@ Deployed on 2026-09-16 from commit `8c28c7d`, with 0.8 WETH in the tUSDC pool an
 proposed tWBTC, WETH, tLINK, tUNI and tAAVE the same day; any account can execute the listings from 2026-09-18 13:05 UTC
 until 2026-09-25 13:05 UTC.
 
+That commit's `TokenConfig` has three fields (no `minLiquidity`), and its factory has no `pendingIsListing`,
+`proposeConfig` or snapshot price checks, so the committed `abi/*.json` do not describe this deployment and the current
+`ConfigureWhitelist` cannot drive it: `LISTING_MODE=execute` and `status` fail decoding `pendingTokenConfig` (checked
+on-chain on 2026-09-18, the logic review's LR-03). `executeListing(address)` itself is unchanged, so the pending
+listings can still be executed one by one, which is only worth doing to keep the old deployment usable until the new one
+exists:
+
+```bash
+cast send 0x3541347212cc20603F6dBBC49da3fFfE75e12CB1 "executeListing(address)" <token> --rpc-url sepolia --account sepolia-deployer
+```
+
+The remedy is a fresh deployment from the current code with the steps below, then replacing the addresses in the
+table. The existing test tokens and pools keep working for a new factory, but `seed` is what logs the `WHITELIST`
+value for step 3, so reusing them means writing those entries by hand in the format the script header gives.
+
 ```bash
 export SEPOLIA_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com
 DEPLOYER=$(cast wallet address --account sepolia-deployer)
@@ -477,7 +496,8 @@ DEPLOYER=$(cast wallet address --account sepolia-deployer)
 MARKET_MODE=create forge script script/testnet/SetupTestMarket.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast
 MARKET_MODE=seed MARKET_TOKENS=<logged by create> forge script script/testnet/SetupTestMarket.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast
 
-# 2. at least 30 minutes after create, so the pools can serve a 30-minute price
+# 2. at least 30 minutes after seed: the factory only needs 30 minutes of price history, but step 3's listings also
+#    need liquidity through the whole window, and proposed earlier they are rejected with ThinPriceHistory
 OWNER=<Safe> GUARDIAN=<guardian> USDC=<tUSDC logged by seed> WETH=0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14 \
   UNISWAP_V3_FACTORY=0x0227628f3F023bb0B980b67D528571c95c6DaC1c SWAP_ROUTER=0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E \
   forge script script/Deploy.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast
@@ -497,7 +517,8 @@ Add `--verify` with `ETHERSCAN_API_KEY` set to verify the contracts, so testers 
   price lags them.
 - Timing is mainnet's: listings take 2 days, and an index can start its first rebalance 28 days after creation, followed
   by 2 days of notice and a 24-hour auction. `test/fork/RebalanceExecutorV3.sol` fills auctions through the Sepolia
-  router. It is a test fixture without slippage limits: never fund it on mainnet.
+  router. It is a test fixture without slippage limits: never fund it on mainnet. Only its deployer can call `fill`,
+  and only on an index of the factory it was built for.
 - Faucet tokens have no value, and their supply grows with every drip, so their listings use fixed reference supplies.
 
 ## Layout

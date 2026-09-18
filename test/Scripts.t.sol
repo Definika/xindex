@@ -406,6 +406,38 @@ contract ScriptsTest is Test {
         assertEq(factory.listingEta(list[0].token), 0);
     }
 
+    /// @dev LR-07: propose mode refused every owner with code. A key that delegated its account under EIP-7702 has 23
+    ///      bytes of code and still signs, which is the usual owner on a testnet or a local fork.
+    function test_LR07_proposeAcceptsAnOwnerKeyDelegatedUnderEip7702() public {
+        IndexFactory factory = _factory(DEFAULT_SENDER, address(0));
+        ConfigureWhitelist.Entry[] memory list = _twoEntries();
+        vm.etch(DEFAULT_SENDER, abi.encodePacked(hex"ef0100", address(this)));
+
+        configure.propose(factory, list, none);
+        assertGt(factory.listingEta(list[0].token), 0, "the delegated key proposed");
+        assertGt(factory.listingEta(list[1].token), 0);
+    }
+
+    /// @dev LR-07: the mint-currency check named mainnet's USDC and USDT only, so off mainnet the rule's own USDC, the
+    ///      currency indexes are minted with there, passed as a component.
+    function test_LR07_theRulesOwnUsdcIsNotProposedAsAComponent() public {
+        IndexFactory factory = _factory(DEFAULT_SENDER, address(0));
+        ConfigureWhitelist.Entry[] memory list = new ConfigureWhitelist.Entry[](1);
+        list[0] = ConfigureWhitelist.Entry({
+            token: address(market.usdc()),
+            fee: 500,
+            minLiquidity: DEFAULT_MIN_LIQUIDITY,
+            referenceSupply: 1_000_000e6,
+            excluded: new address[](0)
+        });
+        // The rule itself accepts the config, so the policy is what stops it.
+        IIndexRule(factory.RULE()).checkConfig(list[0].token, _configFor(list[0]));
+
+        configure.propose(factory, list, none);
+        assertEq(factory.listingEta(list[0].token), 0);
+        assertEq(configure.safeCalldata(factory, list, none).length, 0);
+    }
+
     /// @dev XA-38: the release record freezes what was deployed, and the check proves a deployment is one build.
     function test_XA38_checkDeploymentFreezesTheCodeHashes() public {
         address safeOwner = address(new MockSafe(2));
@@ -588,7 +620,7 @@ contract ScriptsTest is Test {
         configure.execute(factory, list);
         assertFalse(factory.isWhitelisted(list[1].token), "a config the entry did not ask for is not executed");
         assertGt(factory.listingEta(list[1].token), 0);
-        vm.prank(owner); // the Safe calldata for the other entry is still produced; this one waits for a cancel
+        // The Safe calldata for the other entry is still produced; this one waits for a cancel.
         assertEq(configure.safeCalldata(factory, list, none).length, 1);
     }
 
@@ -618,12 +650,29 @@ contract ScriptsTest is Test {
         assertEq(configure.safeCalldata(factory, list, none).length, 0);
     }
 
+    /// @dev LR-05: `status` only logged, so this test could assert nothing about what it said; swapped messages passed.
+    ///      It now returns the report its log lines are written from.
     function test_XA42_statusReportsListingsAndPendingProposals() public {
         IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
         ConfigureWhitelist.Entry[] memory list = _twoEntries();
-        configure.status(factory, list); // nothing listed or pending
+        ConfigureWhitelist.Report[] memory reports = configure.status(factory, list);
+        assertEq(reports.length, 2);
+        for (uint256 i = 0; i < 2; ++i) {
+            assertEq(reports[i].token, list[i].token);
+            assertFalse(reports[i].listed, "nothing is listed yet");
+            assertFalse(reports[i].inForce);
+            assertEq(reports[i].eta, 0, "and nothing is pending");
+        }
+
         configure.propose(factory, list, none);
-        configure.status(factory, list); // listings pending, as the entries say
+        reports = configure.status(factory, list);
+        for (uint256 i = 0; i < 2; ++i) {
+            assertFalse(reports[i].listed);
+            assertEq(reports[i].eta, block.timestamp + factory.LISTING_DELAY(), "a proposal is pending");
+            assertTrue(reports[i].pendingIsListing, "a listing");
+            assertTrue(reports[i].pendingMatches, "as the entry says");
+        }
+
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         configure.execute(factory, list);
         assertTrue(factory.isWhitelisted(list[1].token));
@@ -632,8 +681,15 @@ contract ScriptsTest is Test {
         other.referenceSupply = 1;
         vm.prank(DEFAULT_SENDER);
         factory.proposeConfig(list[1].token, other);
-        configure.status(factory, list); // listed as the entry says, with a different config change pending
-        assertFalse(factory.pendingIsListing(list[1].token));
+        reports = configure.status(factory, list);
+        assertTrue(reports[0].listed);
+        assertTrue(reports[0].inForce, "the first entry is in force with nothing pending");
+        assertEq(reports[0].eta, 0);
+        assertTrue(reports[1].listed);
+        assertTrue(reports[1].inForce, "so is the second");
+        assertEq(reports[1].eta, block.timestamp + factory.LISTING_DELAY());
+        assertFalse(reports[1].pendingIsListing, "with a config change pending");
+        assertFalse(reports[1].pendingMatches, "that differs from the entry");
     }
 
     function test_configureRun_readsEnvironment() public {

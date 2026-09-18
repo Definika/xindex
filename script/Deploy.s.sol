@@ -8,6 +8,7 @@ import {IIndexRule} from "../src/interfaces/IIndexRule.sol";
 import {ISwapRouter02} from "../src/interfaces/ISwapRouter02.sol";
 import {ISafeThreshold} from "./interfaces/ISafeThreshold.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
+import {ScriptUtils} from "./ScriptUtils.sol";
 
 /// @notice Deploys the factory (which deploys the rule and the IndexToken implementation) and the zap.
 ///
@@ -144,7 +145,7 @@ contract Deploy is Script {
         if (block.chainid != 1) return;
 
         bytes memory code = owner.code;
-        if (code.length == 0 || _isDelegatedAccount(code)) revert OwnerMustBeContract(owner);
+        if (code.length == 0 || ScriptUtils.isDelegatedAccount(code)) revert OwnerMustBeContract(owner);
         // A Safe answers getThreshold with one word. A contract that does not, such as a timelock, is accepted as it
         // is. A static call is used because a typed try/catch would revert on an empty answer from a fallback.
         // forge-lint: disable-next-line(low-level-calls)
@@ -215,11 +216,5 @@ contract Deploy is Script {
         }
         if (given.code.length == 0) revert AddressHasNoCode(name, given);
         return given;
-    }
-
-    /// @dev EIP-7702 sets an account's code to 0xef0100 followed by the delegate address. Since EIP-3541 no contract
-    ///      can deploy code that starts with 0xef, so the 0xef01 prefix alone identifies a delegation.
-    function _isDelegatedAccount(bytes memory code) private pure returns (bool) {
-        return code.length >= 2 && code[0] == 0xef && code[1] == 0x01;
     }
 }

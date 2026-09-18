@@ -229,6 +229,13 @@ contract IndexRuleTest is Test {
         vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidSupplyConfig.selector, LOW));
         rule.checkConfig(LOW, _config(pool, 0, tooMany));
 
+        // LR-05: and exactly MAX_EXCLUDED of them is still accepted, the side of the limit no test stood on.
+        address[] memory most = new address[](8);
+        for (uint256 i = 0; i < 8; ++i) {
+            most[i] = tooMany[i];
+        }
+        rule.checkConfig(LOW, _config(pool, 0, most));
+
         address[] memory everyone = new address[](2);
         (everyone[0], everyone[1]) = (alice, burn);
         vm.expectRevert(abi.encodeWithSelector(IIndexRule.ZeroSupply.selector, LOW));
@@ -530,15 +537,36 @@ contract IndexRuleTest is Test {
         assertEq(t[1], 200e18, "the dust-weight components still take value up to their clip");
         assertEq(turnover, 0, "what it gives up is nothing next to the basket's value");
 
-        // The same extreme price on a component the rule wants to shrink: the clips and the redistribution still work.
+        // The same extreme price on a component the rule wants to shrink: the clips and the later passes still work.
         supplies[0] = 1e33;
         for (uint256 i = 1; i < 5; ++i) {
             supplies[i] = 1e72; // caps far above the extreme component's
         }
         tokens = _basket(ticks, supplies);
         (t,) = rule.targetUnits(tokens, _hundreds(), UNCAPPED, 0);
-        assertApproxEqAbs(t[0], 100e18, 1, "clipped at half, then raised back by the redistribution");
+        assertApproxEqAbs(t[0], 100e18, 1, "the others can only double, so it keeps the value they cannot take");
         assertEq(t[1], 200e18, "the others are clipped at double");
+    }
+
+    /// @dev LR-09: XA-23 left one product unbounded. Next to a price above MAX_EXACT_PRICE, the unclipped units of a
+    ///      component priced near zero, value over price, did not fit in 256 bits, and the snapshot panicked instead of
+    ///      clipping that component at double. A share is now compared with the bounds as a value.
+    function test_LR09_aNearZeroPriceNextToAnExtremeOneDoesNotOverflow() public {
+        int24[] memory ticks = new int24[](2);
+        uint256[] memory supplies = new uint256[](2);
+        (ticks[0], ticks[1]) = (880_000, -400_000); // WAD prices of about 1.6e56 and 4
+        (supplies[0], supplies[1]) = (1e18, 1e76); // so that the second carries real weight
+        address[] memory tokens = _basket(ticks, supplies);
+        (uint256[] memory w, uint256[] memory prices,) = rule.weights(tokens, UNCAPPED);
+        assertGt(prices[0], 1e46, "the first price is past the exact range");
+        assertLt(prices[1], 10, "the second is a few wei");
+        assertGt(w[1], 0.1e18, "and still weighs enough to want far more units than 256 bits hold");
+
+        uint256[] memory units = new uint256[](2);
+        (units[0], units[1]) = (1e24, 100e18);
+        (uint256[] memory t,) = rule.targetUnits(tokens, units, UNCAPPED, 0);
+        assertEq(t[1], 200e18, "clipped at double instead of panicking");
+        assertApproxEqRel(t[0], 1e24, 1e12, "what it could not take stays with the first");
     }
 
     function test_targetUnits_clipAndRedistribute() public {
@@ -571,15 +599,80 @@ contract IndexRuleTest is Test {
     }
 
     function test_targetUnits_lowerPassPinsAtTheFloor() public {
-        // The first component wants a fiftieth of the value and is lifted to half its units; the others give that value
-        // back, and the second, just above its own floor, is pinned there on the way down.
+        // The first component wants a fiftieth of the value and is pinned at half its units; the others give that value
+        // back, and the second, just above its own floor, is pinned there by the next pass.
         address[] memory tokens = _flatBasket(_arr(10, 52, 146, 146, 146));
         (uint256[] memory t, uint256 turnover) = rule.targetUnits(tokens, _hundreds(), UNCAPPED, 0);
         assertEq(t[0], 50e18);
-        assertEq(t[1], 50e18, "pinned at its floor during the lowering pass");
+        assertEq(t[1], 50e18, "pinned at its floor by the second pass");
         assertEq(t[2], t[4]);
         assertApproxEqAbs(t[0] + t[1] + t[2] + t[3] + t[4], 500e18, 10, "value kept");
         assertEq(turnover, 0.2e18);
+    }
+
+    /// @dev Tokens at tick 0 whose reference supplies, and so weights, are in the ratio of `parts`.
+    function _threeTokens(uint256 a, uint256 b, uint256 c) internal returns (address[] memory) {
+        uint256[] memory parts = new uint256[](3);
+        (parts[0], parts[1], parts[2]) = (a, b, c);
+        return _flatBasket(parts);
+    }
+
+    function _threeUnits(uint256 a, uint256 b, uint256 c) internal pure returns (uint256[] memory units) {
+        units = new uint256[](3);
+        (units[0], units[1], units[2]) = (a, b, c);
+    }
+
+    /// @dev LR-02: the first component holds five times its weight and the second a fifth of its weight, so one ends
+    ///      at its floor and the other at its ceiling. The value the ceiling leaves unplaced belongs to the third
+    ///      alone. The rule used to share it with every component below its ceiling, the floored one included, and
+    ///      returned 28, 20 and 52: it sold less of the most overweight component than its bounds allow.
+    function test_LR02_aComponentClippedToItsFloorTakesNoValueBack() public {
+        address[] memory tokens = _threeTokens(10, 50, 40);
+        (uint256[] memory t, uint256 turnover) = rule.targetUnits(tokens, _threeUnits(50e18, 10e18, 40e18), UNCAPPED, 0);
+        assertEq(t[0], 25e18, "five times overweight: sold down to its floor and left there");
+        assertEq(t[1], 20e18, "five times underweight: doubled, the most one rebalance allows");
+        assertEq(t[2], 55e18, "the value the ceiling left unplaced goes to the only component still free");
+        assertEq(turnover, 0.25e18);
+    }
+
+    /// @dev LR-02, mirrored: the floor adds more value than the ceilings remove, so the shares come down. The second
+    ///      component was clipped to its ceiling by the first pass and used to be lowered from there like any other;
+    ///      it is shared out again instead, and ends in proportion to its weight with the third.
+    function test_LR02_aComponentClippedToItsCeilingIsSharedOutAgain() public {
+        address[] memory tokens = _threeTokens(10, 10, 80);
+        (uint256[] memory t,) = rule.targetUnits(tokens, _threeUnits(60e18, 4e18, 36e18), UNCAPPED, 0);
+        assertEq(t[0], 30e18, "six times overweight: pinned at its floor");
+        assertApproxEqAbs(t[1], uint256(70e18) / 9, 1, "a ninth of the 70 left, no longer clipped");
+        assertApproxEqAbs(t[2], uint256(560e18) / 9, 1, "and eight ninths");
+        assertApproxEqAbs(t[0] + t[1] + t[2], 100e18, 3, "value kept");
+    }
+
+    /// @dev LR-02: targets are a water-filling of value by weight. A component strictly above its floor never holds
+    ///      more value per unit of weight than a component strictly below its ceiling: otherwise the rule stopped
+    ///      short of moving value from the first to the second.
+    function testFuzz_LR02_targetsAreAWaterFilling(uint256[5] memory unitSeeds, int24[5] memory tickSeeds, bool capped)
+        public
+    {
+        address[] memory tokens = fuzzTokens;
+        uint256[] memory units = new uint256[](5);
+        for (uint256 i = 0; i < 5; ++i) {
+            // Whole-token magnitudes, so that rounding is far below the tolerance.
+            units[i] = bound(unitSeeds[i], 1e18, 1e24);
+            market.setPriceTick(tokens[i], int24(bound(tickSeeds[i], -20_000, 20_000)));
+        }
+        uint8 methodology = capped ? CAPPED : UNCAPPED;
+        (uint256[] memory t,) = rule.targetUnits(tokens, units, methodology, 0);
+        (uint256[] memory w, uint256[] memory prices,) = rule.weights(tokens, methodology);
+
+        for (uint256 i = 0; i < 5; ++i) {
+            if (t[i] <= (units[i] + 1) / 2) continue;
+            for (uint256 j = 0; j < 5; ++j) {
+                if (t[j] >= 2 * units[j]) continue;
+                uint256 heavier = t[i] * prices[i] / WAD * w[j];
+                uint256 lighter = t[j] * prices[j] / WAD * w[i];
+                assertLe(heavier, lighter + lighter / 1e9, "value was left on a component that should have given it up");
+            }
+        }
     }
 
     function test_targetUnits_zeroWeightComponentsStillAbsorbValue() public {
@@ -671,6 +764,11 @@ contract IndexRuleTest is Test {
         rule.targetUnits(tokens, _hundreds(), UNCAPPED, 0);
 
         _parts(pool, 0, -2_001 * 600, 0); // an outlier below counts the same
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.PriceHistoryDeviates.selector, address(pool), 2_001));
+        rule.targetUnits(tokens, _hundreds(), UNCAPPED, 0);
+
+        // LR-05: and so does one in the oldest part, which no test placed there: a spread that skipped it passed.
+        _parts(pool, 2_001 * 600, 0, 0);
         vm.expectRevert(abi.encodeWithSelector(IIndexRule.PriceHistoryDeviates.selector, address(pool), 2_001));
         rule.targetUnits(tokens, _hundreds(), UNCAPPED, 0);
         assertGt(rule.price(tokens[0]), 0, "display prices still read the window");

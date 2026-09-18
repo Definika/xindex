@@ -11,6 +11,10 @@ remappings = [
     "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
     "@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/",
 ]
+# Off on purpose. Forge's default rewrites `new X(...)` in tests into `vm.deployCode`, and an expected revert inside
+# that cheatcode ends the test function there, still reported as a pass: every check after `vm.expectRevert` and a
+# constructor call was silently skipped (LR-01). With it off, a constructor is an ordinary CREATE and the test goes on.
+dynamic_test_linking = false
 
 # Read-only access for test/Repo.t.sol, which checks the repository files review findings rest on: the pinned compiler,
 # the CI gates and toolchain, the dependency lock against .gitmodules, the ABIs and the docs.
@@ -33,7 +37,8 @@ runs = 512
 [invariant]
 runs = 64
 depth = 32
-fail_on_revert = false
+# The handler only makes calls that must succeed, so a revert is a liveness regression, not noise (LR-06).
+fail_on_revert = true
 
 # Source verification for `forge script ... --verify` and `forge verify-contract`; set ETHERSCAN_API_KEY in .env.
 [etherscan]
