@@ -266,7 +266,7 @@ Every listed token carries a config that the rule validates:
   observation slots. A pool below that must be prepared first: anyone can call `increaseObservationCardinalityNext(200)`,
   and the ring grows as the pool trades. On 2026-09-16 the tBTC/WETH 0.3% pool had 60 slots. The slot count is the
   ring's capacity, not the history it holds, so a rebalance snapshot also requires the pool's newest observation to be
-  younger than `MAX_OBSERVATION_AGE` (10 minutes).
+  younger than `MAX_OBSERVATION_AGE` (20 minutes).
 - **Minimum liquidity:** the least harmonic-mean liquidity over the 30-minute window for which a rebalance snapshot
   accepts the pool's price. The policy is a tenth of the pool's harmonic-mean liquidity when the config is proposed; the
   listing check requires the pool to meet it at that moment. Refresh it with a config change when a pool's liquidity

@@ -112,7 +112,7 @@ contract IndexRuleTest is Test {
         assertEq(rule.TWAP_SUB_WINDOWS(), 3);
         assertEq(rule.MAX_TICK_DEVIATION(), 2_000);
         assertEq(rule.MIN_OBSERVATION_CARDINALITY(), 200);
-        assertEq(rule.MAX_OBSERVATION_AGE(), 10 minutes, "one sub-window, so at most a third may be extrapolated");
+        assertEq(rule.MAX_OBSERVATION_AGE(), 20 minutes, "two sub-windows, so the oldest part is always real history");
         assertEq(rule.MAX_EXCLUDED(), 8);
         assertEq(rule.USD_POOL_FEE(), 500);
         assertEq(rule.MAX_TARGET_UNITS(), uint256(type(uint96).max) * 2 / 3);

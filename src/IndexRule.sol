@@ -51,9 +51,20 @@ contract IndexRule is IIndexRule {
     ///      predates the window, `observe` extrapolates every point at the pool's current tick and current liquidity:
     ///      the three sub-window means then agree exactly, so `MAX_TICK_DEVIATION` reads zero, and the harmonic-mean
     ///      liquidity is whatever was minted a moment ago. Both snapshot defences degenerate together on a quiet pool
-    ///      (DA-02). Requiring the newest observation to be younger than one sub-window leaves at most a third of the
-    ///      window extrapolated, which the deviation check can still see.
-    uint32 public constant MAX_OBSERVATION_AGE = TWAP_WINDOW / TWAP_SUB_WINDOWS;
+    ///      (DA-02).
+    ///
+    ///      Two sub-windows is the largest bound that keeps the deviation check load-bearing, which is what makes it
+    ///      the right one. Extrapolation covers the most recent `age` seconds, so an age of at most two sub-windows
+    ///      leaves the oldest part, [TWAP_WINDOW, 2 * TWAP_WINDOW / 3] ago, entirely genuine history; a price held
+    ///      during the extrapolated stretch therefore shows up as a spread between that part and the newest one, and
+    ///      `MAX_TICK_DEVIATION` catches it. Only as the age approaches the whole window do all three parts become
+    ///      equally extrapolated and the spread collapse to zero.
+    ///
+    ///      One sub-window was measured against mainnet on 2026-09-19 and was too strict to ship: over the most recent
+    ///      250 observations of each default pool, LINK stood more than ten minutes stale 43% of the time and AAVE 25%,
+    ///      against 24% and 9% at twenty minutes. Trading frequency turns out not to track depth at all, so the
+    ///      stricter bound cost the deep pools as much as the thin ones.
+    uint32 public constant MAX_OBSERVATION_AGE = 2 * TWAP_WINDOW / TWAP_SUB_WINDOWS;
     uint256 public constant MAX_EXCLUDED = 8;
     /// @inheritdoc IIndexRule
     /// @dev An auction can deliver 1.5 times a growing component's extra units, so a raised target stays at most 2/3 of

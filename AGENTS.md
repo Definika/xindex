@@ -139,7 +139,8 @@ script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test 
   wrapped assets use a reference supply. A pool must be the Uniswap V3 factory's own pool for the token and WETH with
   at least `MIN_OBSERVATION_CARDINALITY` slots and a non-zero `minLiquidity` it meets; that cardinality bounds the
   ring's capacity, which anyone can raise, not the history it holds (DA-19). A rebalance snapshot accepts a price only
-  from a pool whose newest observation is no older than `MAX_OBSERVATION_AGE` (ten minutes, one sub-window) and from a
+  from a pool whose newest observation is no older than `MAX_OBSERVATION_AGE` (twenty minutes, two sub-windows, the
+  largest age that still leaves the oldest part genuine history for the deviation check to compare against) and from a
   window whose harmonic-mean liquidity reaches that minimum and whose 10-minute parts agree within
   `MAX_TICK_DEVIATION`; views do not apply these checks, and prices never enter settlement. The age check is what keeps
   the other two meaningful: on a pool that has not traded inside the window Uniswap extrapolates every point at the

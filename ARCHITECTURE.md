@@ -140,7 +140,7 @@ A stateless, view-only contract the factory deploys in its constructor. It never
   `weights(tokens, 1)` before a capped index is created.
 - **targetUnits(tokens, units, methodology, keepMask):** weights over all components; the components not kept share
   their current value at snapshot prices by weight. A snapshot price is the same mean-tick price, accepted only when the
-  pool's newest observation is at most `MAX_OBSERVATION_AGE` (10 minutes, one sub-window) old (else
+  pool's newest observation is at most `MAX_OBSERVATION_AGE` (20 minutes, two sub-windows) old (else
   `StalePriceHistory`), the pool's harmonic-mean liquidity over the window reaches the token's `minLiquidity` (else
   `ThinPriceHistory`), and the mean ticks of the window's three 10-minute parts lie within `MAX_TICK_DEVIATION` (2,000
   ticks, about 22%) of each other (else `PriceHistoryDeviates`). The display views, `price`, `navPerToken`, `weights`
