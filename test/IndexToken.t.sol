@@ -15,6 +15,14 @@ import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockFeeToken} from "./mocks/MockFeeToken.sol";
 import {MockMarket} from "./mocks/MockMarket.sol";
 
+/// @notice A stateless forwarding router, the shape a zap or an aggregator has: it holds nothing between calls and has
+///         no way to call `claim` on anyone's behalf afterwards.
+contract PassThroughRouter {
+    function redeemSkippingFor(IndexToken index, uint256 shares, address to, uint256 skipMask) external {
+        IIndexToken(address(index)).redeemSkipping(shares, to, skipMask);
+    }
+}
+
 contract IndexTokenTest is XindexTest {
     IndexToken index;
 
@@ -194,6 +202,13 @@ contract IndexTokenTest is XindexTest {
         rogue.redeemSkipping(1, alice, 1);
         assertEq(impl.totalSupply(), 0);
         assertEq(rogue.totalSupply(), 0);
+
+        // DA-22: and they say so. `lastRebalance` is zero on an uninitialized instance, so the rebalance-due
+        // predicate used to answer true for a clone that can never rebalance at all.
+        assertFalse(impl.canStartRebalance(), "the implementation is not waiting to be rebalanced");
+        assertFalse(rogue.canStartRebalance(), "nor is a clone deployed outside the factory");
+        vm.expectRevert(IIndexToken.NotInitialized.selector);
+        rogue.startRebalance(0);
     }
 
     // ---------------------------------------------------------------------
@@ -380,7 +395,7 @@ contract IndexTokenTest is XindexTest {
         index.issue(2e18, alice);
 
         vm.expectEmit(true, true, true, true, address(index));
-        emit IIndexToken.ClaimRecorded(alice, address(wbtc), U_WBTC);
+        emit IIndexToken.ClaimRecorded(bob, address(wbtc), U_WBTC);
         vm.prank(alice);
         index.redeemSkipping(1e18, bob, 1 << 0);
 
@@ -388,10 +403,34 @@ contract IndexTokenTest is XindexTest {
         assertEq(wbtc.balanceOf(bob), 0);
         assertEq(weth.balanceOf(bob), U_WETH);
         assertEq(usdc.balanceOf(bob), U_USDC);
-        assertEq(index.claimOf(alice, address(wbtc)), U_WBTC);
-        assertEq(index.claimOf(bob, address(wbtc)), 0);
+        assertEq(index.claimOf(bob, address(wbtc)), U_WBTC, "the claim follows the components, to the recipient");
+        assertEq(index.claimOf(alice, address(wbtc)), 0);
         assertEq(index.totalClaims(address(wbtc)), U_WBTC);
         assertEq(wbtc.balanceOf(address(index)), 2 * U_WBTC);
+        _assertBacked();
+    }
+
+    /// @dev DA-17. The claim was booked to msg.sender while every other component went to `to`, so a router that
+    ///      redeemed on a holder's behalf kept the claim; a stateless one strands the skipped components for good.
+    ///      The claim now follows the components to the recipient.
+    function test_DA17_aRouterRedemptionLeavesTheClaimWithTheHolder() public {
+        PassThroughRouter router = new PassThroughRouter();
+        _fund(alice, 1e18);
+        vm.startPrank(alice);
+        index.issue(1e18, alice);
+        index.transfer(address(router), 1e18);
+        vm.stopPrank();
+
+        router.redeemSkippingFor(index, 1e18, alice, 1 << 0);
+
+        assertEq(index.claimOf(address(router), address(wbtc)), 0, "the router keeps nothing it could never collect");
+        assertEq(index.claimOf(alice, address(wbtc)), U_WBTC, "the holder owns the claim");
+        assertEq(weth.balanceOf(alice), U_WETH, "and already has the components that were not skipped");
+
+        vm.prank(alice);
+        assertEq(index.claim(address(wbtc), alice), U_WBTC, "and can collect the rest without the router's help");
+        assertEq(wbtc.balanceOf(alice), U_WBTC);
+        assertEq(index.totalClaims(address(wbtc)), 0);
         _assertBacked();
     }
 
@@ -553,14 +592,19 @@ contract IndexTokenTest is XindexTest {
         _fund(alice, shares);
         uint256[] memory owed = index.previewRedeem(shares);
 
-        vm.startPrank(alice);
+        vm.prank(alice);
         index.issue(shares, alice);
+        vm.prank(alice);
         index.redeemSkipping(shares, bob, mask);
         _assertBacked();
+        // The claim belongs to the recipient, so the recipient is who can collect it (DA-17).
         for (uint256 i = 0; i < tokens.length; ++i) {
-            if (index.claimOf(alice, tokens[i]) != 0) index.claim(tokens[i], bob);
+            assertEq(index.claimOf(alice, tokens[i]), 0, "the caller keeps no claim of its own");
+            if (index.claimOf(bob, tokens[i]) != 0) {
+                vm.prank(bob);
+                index.claim(tokens[i], bob);
+            }
         }
-        vm.stopPrank();
 
         assertEq(wbtc.balanceOf(bob), owed[0]);
         assertEq(weth.balanceOf(bob), owed[1]);

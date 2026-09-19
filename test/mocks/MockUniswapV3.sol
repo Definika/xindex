@@ -24,6 +24,9 @@ contract MockUniswapV3Pool {
     int56 public olderCumulative;
     int56 public newerCumulative;
     bool public rawObservations;
+    /// @notice Age of the newest stored observation, which the rule reads to tell a traded window from an
+    ///         extrapolated one. Zero means the pool traded in this block, as a busy pool does.
+    uint32 public newestObservationAge;
     mapping(uint32 secondsAgo => bool) private _observed;
     mapping(uint32 secondsAgo => int56) private _tickCumulativeAt;
     mapping(uint32 secondsAgo => uint160) private _secondsPerLiquidityAt;
@@ -71,6 +74,19 @@ contract MockUniswapV3Pool {
 
     function setHistoryTooShort(bool tooShort) external {
         historyTooShort = tooShort;
+    }
+
+    /// @notice Ages the newest stored observation, as a pool that has not traded for a while has.
+    function setNewestObservationAge(uint32 age) external {
+        newestObservationAge = age;
+    }
+
+    /// @notice The newest observation, the only slot the rule reads. `slot0` reports its index as 0. The timestamp
+    ///         wraps at 2^32 as the real pool's does, so an age beyond the current block time is still well formed.
+    function observations(uint256) external view returns (uint32, int56, uint160, bool) {
+        unchecked {
+            return (uint32(block.timestamp) - newestObservationAge, int56(tick), 0, true);
+        }
     }
 
     /// @notice Moves the current price, as a swap through the pool would; the tick stays whatever `setTick` set.

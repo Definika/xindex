@@ -48,8 +48,9 @@ market from `script/testnet/SetupTestMarket.s.sol`.
    `IndexZap.burnToTokenWithPermit`, and the executor callback in `IndexToken.executeRebalance`.
 6. Every testable finding of the security reviews keeps its regression test passing, named after its id (a test that
    covers two findings carries both): v1 findings by id, v2 rebalancing findings as `R01`..`R23`, whole-repo audit
-   findings of 2026-09-16 as `XA..`, and the logic review's findings of 2026-09-18 as `LR..`
-   (`audit/2026-09-18-logic-review.md`). The v1 and R tests live in `test/Security.t.sol` and
+   findings of 2026-09-16 as `XA..`, the logic review's findings of 2026-09-18 as `LR..`
+   (`audit/2026-09-18-logic-review.md`), and the deep audit's findings of 2026-09-19 as `DA..`
+   (`audit/2026-09-19-deep-audit.md`). The v1 and R tests live in `test/Security.t.sol` and
    `test/fork/Security.fork.t.sol`, except the ids a contract test cannot reach: L06 and FR06 are `test_L06_checkOwner`
    and `test_FR06_checkGuardian` and FR05 the two `test_FR05_*` tests in `test/Scripts.t.sol`, and I09, I10, I11, L08
    and FR04 are `test/Repo.t.sol` (the known-limitations section, the pinned compiler, the pinned CI toolchain and
@@ -57,7 +58,13 @@ market from `script/testnet/SetupTestMarket.s.sol`.
    which needs git). An XA test sits in the suite of what it checks, `test/Repo.t.sol` for a repository file, so find it
    by id. XA-19 to XA-21, XA-32 to XA-37, XA-41, XA-63 and XA-65 have no test of their own, because they changed only
    tests and mocks or refactored without changing behaviour; neither have the findings fixed by documentation alone.
-   `audit/triage.md` gives the evidence for each.
+   `audit/triage.md` gives the evidence for each. A DA test sits in the suite of what it checks too, and
+   `audit/2026-09-19-triage.md` gives the evidence: DA-01 and DA-08 in `test/Security.t.sol`; DA-02, DA-06, DA-09 and
+   the DA-22 value fuzz in `test/IndexRule.t.sol`; DA-13, DA-14 and the DA-22 turnover test in
+   `test/IndexToken.rebalance.t.sol`; DA-17 in `test/IndexToken.t.sol`, where
+   `test_uninitializedInstancesCannotIssueOrRedeem` carries the DA-22 `canStartRebalance` assertion as well; DA-15 in
+   `test/IndexZap.t.sol`; DA-16 in `test/IndexFactory.t.sol`; DA-20 in `test/Scripts.t.sol`. DA-03, DA-04, DA-05,
+   DA-07, DA-10, DA-11, DA-12, DA-18, DA-19, DA-21 and DA-23 have no test, because documentation alone fixed them.
 
 CI enforces items 1 to 5: fmt, build, `forge lint -D notes`, tests (fork suites required on `main` and on pull requests
 into it from this repository), 100% coverage on every file and `wake detect all src`. Run them locally before pushing;
@@ -95,44 +102,96 @@ script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test 
   delists, and transfers ownership. The guardian can cancel pending listings, delist, cancel a rebalance, start one with
   a keep mask, start one before strangers may, and cancel a guardian change that would remove the role (it cannot block
   its own replacement). No pause, no upgrade, no sweep, no renounce, no instant guardian change, and no keeper or bot
-  role. Keep it that way.
+  role. Keep it that way. `cancelRebalance` has no window and no rate limit, so a hostile or compromised guardian can
+  cancel each proposal at the last second of its auction and hold rebalancing off indefinitely while the units drift
+  from the rule: a trust assumption of the role, stated among the guardian's powers and the known limitations, not an
+  oversight to close silently (DA-12). An expired proposal leaves `pendingGuardian`, `pendingGuardianEta` and
+  `listingEta` set, so `guardianChangePending()` and `listingPending(token)` are the views that say whether one is
+  still executable (DA-16).
 - **Fixed constituents, rule-rebalanced units.** The token list is immutable after `initialize`. Units change only in
   `executeRebalance`, from the `IndexRule.targetUnits` snapshot that a permissionless `startRebalance` took after
   `MIN_REBALANCE_INTERVAL`, after `REBALANCE_DELAY` of notice, within the auction's multiplier band: targets lie within
-  half to double each component's units, and settled units within half to 2.5 times (the growth scaled by the band). A
-  cancel, and an auction that expired unfilled, hold strangers off for `REBALANCE_DELAY` (`canStartRebalance` answers
-  it), so the owner and guardian get the first restart; the trigger stays permissionless after that.
+  half to double each component's units, and settled units within half to 2.5 times (the growth scaled by the band).
+  The band bounds the multiplier on the bought legs, not how far the market moves in the up to three days between the
+  snapshot and settlement, which is unbounded (DA-05). A cancel, and an auction that expired unfilled, hold strangers
+  off for `REBALANCE_DELAY` (`canStartRebalance` answers it), so the owner and guardian get the first restart; the
+  trigger stays permissionless after that. `canStartRebalance` also answers false for a clone that was never
+  initialized and can never rebalance at all (DA-22). `MIN_TURNOVER` is measured as `min(sold, bought) / activeValue`,
+  so it certifies value actually traded rather than value merely leaving (DA-08). A keep mask routes around a component
+  that cannot be moved: `executeRebalance` reads `balanceOf` only on a component that sends or receives something, so a
+  component whose `balanceOf` reverts is skipped as well as one whose `transfer` does (DA-14).
 - **Invariant:** for every component `i`,
   `token_i.balanceOf(index) >= floor(totalSupply * units_i / 1e18) + totalClaims[token_i]`.
-  Issue rounds up, redeem rounds down, a claim is only recorded for an amount that stayed in the index, a rebalance moves
-  exactly the change in required backing, and its post-check is the invariant with the new units plus the whole of
-  `amountsIn` on top of what the index held, so surplus from rounding or a donation stays with the holders instead of
-  paying for part of a fill. The invariant test enforces this; keep it passing.
+  Issue rounds up, redeem rounds down, the rule rounds a target's share up into units so the target basket is never
+  worth less than the one it replaces (DA-01), a claim is only recorded for an amount that stayed in the index, a
+  rebalance moves exactly the change in required backing, and its post-check is the invariant with the new units plus
+  the whole of `amountsIn` on top of what the index held, so surplus from rounding or a donation stays with the holders
+  instead of paying for part of a fill. The invariant test enforces this; keep it passing.
 - **Holders can always leave.** `redeemSkipping` must keep working when any subset of components is frozen, claims must
-  be payable once transfers resume, and the notice period never freezes issue or redeem.
+  be payable once transfers resume, and the notice period never freezes issue or redeem. A claim is booked to `to`, who
+  receives every other component of that redemption, and `ClaimRecorded` names `to`, so a router redeeming on a
+  holder's behalf does not strand the skipped components (DA-17).
 - **Index addresses commit to their contents.** Clones are CREATE2-deployed from a salt over the creator, the full
   starting composition and the methodology. Do not switch back to CREATE.
 - **Only initialized clones issue, redeem or rebalance.** Keep the `onlyInitialized` guard on every function that mints,
   burns or touches a rebalance.
-- **The rule is stateless and its inputs are timelocked.** Token configs change only through the listing flow. A pool
-  must be the Uniswap V3 factory's own pool for the token and WETH with at least `MIN_OBSERVATION_CARDINALITY` slots and
-  a non-zero `minLiquidity` it meets. A rebalance snapshot accepts a price only from a window whose harmonic-mean
-  liquidity reaches that minimum and whose 10-minute parts agree within `MAX_TICK_DEVIATION`; views do not apply these
-  checks, and prices never enter settlement.
-  Wrapped assets use a reference supply.
+- **The rule is stateless and its inputs are timelocked.** Token configs change only through the listing flow, and
+  wrapped assets use a reference supply. A pool must be the Uniswap V3 factory's own pool for the token and WETH with
+  at least `MIN_OBSERVATION_CARDINALITY` slots and a non-zero `minLiquidity` it meets; that cardinality bounds the
+  ring's capacity, which anyone can raise, not the history it holds (DA-19). A rebalance snapshot accepts a price only
+  from a pool whose newest observation is no older than `MAX_OBSERVATION_AGE` (ten minutes, one sub-window) and from a
+  window whose harmonic-mean liquidity reaches that minimum and whose 10-minute parts agree within
+  `MAX_TICK_DEVIATION`; views do not apply these checks, and prices never enter settlement. The age check is what keeps
+  the other two meaningful: on a pool that has not traded inside the window Uniswap extrapolates every point at the
+  current tick and the current liquidity, so the three parts agree exactly and the liquidity is whatever was minted a
+  moment ago (DA-02). Anyone can clear that condition by trading the pool; until someone does, a silent component can
+  only be kept or retried. `MAX_TICK_DEVIATION` is an outlier filter for a short spike, not a bound on manipulation: a
+  push held steady across the whole window moves all three parts equally and reads a spread of zero, and with the
+  spread at 2000 a single distorted part still moves the window mean by up to a third of its own shift, about 667 ticks
+  or 6.9%. What is left against a sustained push is the per-token `minLiquidity` floor and the cost of holding a pool
+  off-market for thirty minutes while arbitrageurs trade against you; claim no more than that anywhere (DA-03). The
+  harmonic mean is taken over the whole window and its smallest term dominates it, so twelve seconds at liquidity one
+  blocks every snapshot of that component for the next thirty minutes:
+  that sensitivity is deliberate, it is the XA-01 defence, and measuring each part separately and taking the middle one
+  was rejected because it would equally shake off a real push through an empty range confined to one part; the grief is
+  recoverable, because anyone may retry and the griefer has to pay again every thirty minutes (DA-04). Under the capped
+  methodology a kept component is priced with the snapshot price too, because its market cap sits in the denominator of
+  every other component's weight, which narrows XA-05: under capped a keep mask routes around a component that cannot be
+  transferred, not around one whose pool cannot be read, while under uncapped a kept component is not read at all
+  (DA-06). `executeListing` is permissionless and applies the config the rule validated at propose time without
+  revalidating it; re-validating there was rejected because it would let anyone block a listing by making the pool
+  momentarily thin, and the snapshot re-checks at rebalance time, so a stale config blocks rebalances rather than
+  corrupting prices (DA-11).
 - **Executors are untrusted.** Tokens and the callback go only to `msg.sender`, every mutating entry point shares the
-  reentrancy guard, and state is written before any rebalance transfer.
+  reentrancy guard, and state is written before any rebalance transfer. `executeRebalance(bytes)` settles whatever the
+  supply in the settling block requires; the `executeRebalance(bytes, uint256[] maxAmountsIn)` overload bounds that and
+  reverts `RebalanceMovedOn` when the settlement has grown past what the caller will deliver. Issue stays open through
+  notice and auction, so an executor sized from an off-chain simulation can be griefed by a dust issue: the callback
+  arguments are authoritative (DA-13).
 - **The zap is stateless and replaceable.** New UX features (ETH in/out, aggregators, V4) go in a new or extended zap,
-  never in the token, rule or factory. The zap must validate every swap path's endpoints, honour per-leg limits, check
-  `expectedNonce`, measure what the user pays and receives as balance changes inside the call (never using tokens
-  already in the zap), swap a burn leg one hop at a time and send every hop's unsold input to the recipient (unsold
-  `tokenOut` stays in the zap and is paid out), revert on transfer shortfalls, and never call `redeemSkipping` (a claim recorded for the zap could never be collected) or
+  never in the token, rule or factory. The zap must validate every swap path's endpoints, honour every leg's limit
+  including the pass-through leg, the one whose component is already `tokenOut` on a burn or `tokenIn` on a mint
+  (DA-15), check `expectedNonce`, measure what the user pays and receives as balance changes inside the call (never
+  using tokens already in the zap), swap a burn leg one hop at a time and send every hop's unsold input to the recipient
+  (unsold `tokenOut` stays in the zap and is paid out), revert on transfer shortfalls, and never call `redeemSkipping`
+  (the zap receives the basket, so the claim would be booked to the zap and could never be collected) or
   `executeRebalance`.
 - **Checks-effects-interactions.** Emit events and write state before external calls where the data is available; make
   the call into a user-supplied address the last interaction when possible.
 - **Standard ERC-20s only as components** (whitelist policy). `issue` rejects fee-on-transfer tokens by checking the
   received amount. Components need fixed-supply or governance-minted supply. Do not whitelist USDC/USDT as components in
   scripts or docs; they are fine as mint/burn currencies. Pausable components such as WBTC must be labelled in the app.
+  Never list a token with an excluded address that anyone can deposit into and withdraw from: `IndexRule._supply`
+  subtracts a live `balanceOf` of each excluded address inside the snapshot, so such a config makes the market cap
+  manipulable within one transaction. Every shipped entry uses a reference supply with no exclusions (DA-10).
+  `checkConfig` accepts any non-zero `referenceSupply`, so a stale or mistyped figure drives that component to its
+  floor at the next rebalance; a supply that moves by orders of magnitude deserves scrutiny before the timelock runs
+  out (DA-18). A component whose WETH pool ends with zero in-range liquidity takes no config at all: `minLiquidity` of
+  zero is rejected as `InvalidMinLiquidity` and any positive value as `ThinPriceHistory`, so delisting and the keep
+  mask are the escapes until the pool recovers by itself (DA-07). An index should start priced at roughly 10,000 raw
+  units of every component or more, which for WBTC at 110k USD is about 11 USD a token: a coarser index token makes one
+  raw unit of a component a larger share of it, and `initialUnits` reverts `StartPriceTooLow` rather than flooring a
+  component at one raw unit (DA-09).
 
 ## Conventions
 

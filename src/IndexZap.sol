@@ -105,6 +105,9 @@ contract IndexZap is ReentrancyGuard, IIndexZap {
             address component = tokens[i];
             if (component == p.tokenIn) {
                 if (p.legs[i].path.length != 0) revert BadPath(i);
+                // As on the burn side, the leg that carries no swap still honours its own limit (DA-15).
+                uint256 legCap = p.legs[i].maxAmountIn;
+                if (legCap != 0 && need[i] > legCap) revert InsufficientBudget(need[i], legCap);
             } else {
                 spent += _buy(p.legs[i], component, p.tokenIn, need[i], p.maxAmountIn - spent, i);
             }
@@ -192,6 +195,9 @@ contract IndexZap is ReentrancyGuard, IIndexZap {
             address component = tokens[i];
             if (component == p.tokenOut) {
                 if (p.legs[i].path.length != 0) revert BadPath(i);
+                // The pass-through leg carries no swap, but its limit is still the caller's and is still checked, so
+                // every leg honours the limit its NatSpec promises (DA-15).
+                if (got[i] < p.legs[i].minAmountOut) revert InsufficientOutput(got[i], p.legs[i].minAmountOut);
                 reported += got[i];
                 continue;
             }

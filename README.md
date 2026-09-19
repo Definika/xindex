@@ -41,13 +41,13 @@ coin; a third-ranked coin could then outweigh both, so the cap now applies to ev
 | Swaps | Uniswap V3 via SwapRouter02; quotes via QuoterV2. V4 / Universal Router / aggregators are a drop-in replacement for the zap later. |
 | Composition | Constituents fixed at creation. Units follow the index's methodology: `0` uncapped market cap, `1` capped market cap (largest 30%, every other component at most 20%, the rest of the 70% by cap, at least 5 components). |
 | Rebalancing | On-chain rule, no bots or keys. Anyone starts a rebalance 28 days after the last one; 2 days of notice; a 24-hour auction that any contract can fill; each target lies between half and double a component's units, and a growing component settles at its extra units times the auction multiplier, so between half and 2.5 times per rebalance. |
-| Market data | Supplies on-chain (total supply minus excluded burn or lock wallets) or a timelocked reference supply for wrapped assets; prices are Uniswap V3 30-minute time-weighted averages against WETH. A rebalance snapshot accepts a price only from a window with enough liquidity (a timelocked per-token minimum) and agreeing 10-minute parts. |
+| Market data | Supplies on-chain (total supply minus excluded burn or lock wallets) or a timelocked reference supply for wrapped assets; prices are Uniswap V3 30-minute time-weighted averages against WETH. A rebalance snapshot accepts a price only from a pool whose newest observation is under 10 minutes old, over a window whose liquidity reaches a timelocked per-token minimum and whose 10-minute parts agree. |
 | Index price | The basket's value per index token, `IndexRule.navPerToken`, in WETH and USDC. For an uncapped index it equals the Numbers model's divisor price; for a capped index it replaces it. Display only. |
 | Fees | None in v2. |
 | Layer-1 coins | Only tokens that exist on mainnet can be components (WBTC, WETH, LINK, ...). Coins with no credible wrapper (ADA, XRP, ...) are out of scope until one exists. |
 | Stable in / out | Mint with USDC or USDT. The burner chooses USDC, USDT or any other token at exit. Index tokens are fungible, so the protocol cannot know which stable a given holder used; economically the two are equivalent. |
-| Decentralization | No admin has any power over funds, units or prices. The owner proposes listings and token data configs, which take effect after a public 2-day delay, and guardian changes, which take 7 days; a proposal not executed within 7 days of becoming ready expires. The guardian can cancel a pending listing or rebalance, start a rebalance that leaves a paused component untouched, or delist a token. Neither role can pause, upgrade or touch any index, and ownership cannot be renounced. |
-| Frozen components | If a component's issuer pauses or blacklists transfers, holders take every other component out with `redeemSkipping` and collect the frozen one later with `claim`; the guardian rebalances around it with a keep mask. |
+| Decentralization | No admin can move an index's funds, mint or burn its shares, pause or upgrade it, or set its units by hand. What the roles do hold: the owner proposes listings and token data configs, which take effect after a public 2-day delay, and guardian changes, which take 7 days; a proposal not executed within 7 days of becoming ready expires. Owner and guardian both cancel a pending listing, delist a token, cancel a rebalance on any index, and start one with a keep mask or before strangers may; the guardian can also cancel a change that would remove it, but not one that replaces it. Ownership is handed over in two steps that take effect at once, with no delay and no guardian veto, and it cannot be renounced. A token config reshapes the targets of every index holding that token at its next rebalance, and the power to cancel a rebalance has no window and no rate limit, so it can hold rebalancing off indefinitely (see "Known limitations"). |
+| Frozen components | If a component's issuer pauses or blacklists transfers, holders take every other component out with `redeemSkipping` and collect the frozen one later with `claim`; the guardian rebalances around it with a keep mask. A kept component is neither transferred nor read for its balance, but under the capped methodology its pool is still priced, because its cap enters every other component's weight. |
 
 ## Architecture
 
@@ -68,11 +68,12 @@ coin; a third-ranked coin could then outweigh both, so the cap now applies to ev
 
 - `IndexToken` (`src/IndexToken.sol`) only ever moves amounts derived from supply and units. `issue(shares)` pulls
   `ceil(shares * units_i / 1e18)` of every component and mints; `redeem(shares)` burns and pushes
-  `floor(shares * units_i / 1e18)`; `redeemSkipping` leaves chosen components as claims. `startRebalance`,
-  `cancelRebalance` and `executeRebalance` run the rebalance: a snapshot of the rule's targets, a notice period, and an
-  auction whose settlement stands only if every component still backs the new units. No oracle in any of these steps, no
-  share price, nothing computed from balances, so there is no first-depositor / inflation attack and nothing for an
-  admin to touch. Only initialized clones can issue, redeem or rebalance. Supports EIP-2612 `permit`.
+  `floor(shares * units_i / 1e18)`; `redeemSkipping` leaves chosen components as claims for the recipient.
+  `startRebalance`, `cancelRebalance` and `executeRebalance` run the rebalance: a snapshot of the rule's targets, a
+  notice period, and an auction whose settlement stands only if every component still backs the new units. No oracle in
+  any of these steps, no share price, nothing computed from balances, so there is no first-depositor / inflation attack
+  and nothing for an admin to touch. Only initialized clones can issue, redeem or rebalance. Supports EIP-2612
+  `permit`.
 - `IndexRule` (`src/IndexRule.sol`) is a stateless, view-only contract: token supplies, Uniswap V3 time-weighted prices,
   the uncapped and capped weights, rebalance targets, starting units and the index price.
 - `IndexFactory` (`src/IndexFactory.sol`) is permissionless `createIndex`, a curated token whitelist where every token
@@ -98,6 +99,14 @@ token_i.balanceOf(index) >= floor(totalSupply * units_i / 1e18) + totalClaims[to
 1,000), shows `predictIndexAddress`, and calls `createIndex`. Name and symbol are free-form and not unique; the UI must
 show the index address and `creatorOf` to avoid spoofing.
 
+Pick the starting price so that one index token is worth at least roughly 10,000 raw units of every component. For WBTC,
+whose raw unit is a satoshi, that is about 11 dollars a token at BTC 110k; for an 18-decimal component it binds on
+nothing. The coarser the index token, the larger a share of it one raw unit of a component is: a rebalance target rounds
+up into whole raw units, so a growing component can ask for up to one raw unit per index token more than the rule wants,
+and on a coarse enough index that overshoot eats the auction's margin and the rebalance stops clearing.
+`IndexRule.initialUnits` reverts `StartPriceTooLow(token, startPriceUsdc)` when a price is so low that a component's
+units round away entirely.
+
 **Mint with USDC/USDT.** For each leg the app quotes with QuoterV2 `quoteExactOutput`, sets per-leg limits and the
 overall `maxAmountIn`, reads `rebalanceNonce()`, and calls `mintWithToken(MintParams)`. Exact `shares` are minted;
 unspent USDC comes back.
@@ -111,10 +120,21 @@ overall `minAmountOut`, passes `rebalanceNonce()`, and calls `burnToToken(BurnPa
 2. A 24-hour auction follows. An executor contract calls `executeRebalance(data)`: it receives what the index no longer
    needs of each shrinking component and, inside its `onXindexRebalance` callback, must send back what the growing
    components need. The growing components' extra units are multiplied by a factor that falls from 1.5 to 0.9, so
-   executors compete the fill toward fair value; a lone executor keeps at most 10% of the bought value.
+   executors compete the fill toward fair value; a lone executor that waits for the floor keeps 10% of the bought value
+   at the snapshot's rate. Both sides are recomputed from `totalSupply()` in the block that settles, and issue and
+   redeem stay open throughout, so an executor sizes itself from the callback's arguments, never from an earlier
+   simulation: a stranger's dust `issue` is enough to make a fill funded from `previewRebalance()` fall short.
+   `executeRebalance(data, maxAmountsIn)` is the same settlement with a bound on that, reverting
+   `RebalanceMovedOn(token, required, maxAmountIn)` when the index has come to need more of a component than the caller
+   said it would deliver.
 3. If nobody fills, the auction expires. The owner or guardian can start a fresh snapshot at once; anyone else can
    2 days later.
 4. The owner or guardian can cancel a rebalance; others must then wait 2 days to restart.
+
+The settlement trades at the snapshot's relative prices, and the snapshot is up to three days old by the time it
+settles: 2 days of notice and a 24-hour auction. The 1.5-to-0.9 band bounds the multiplier on the bought legs; it does
+not bound how far the market moved in between, and nothing does. What stands against that is the guardian's check
+during the notice period and a cancel when a snapshot no longer describes the market.
 
 **Rebalance around a frozen component.** The guardian cancels and starts again with the component's bit in `keepMask`;
 that component keeps its units and is never transferred.
@@ -132,7 +152,13 @@ already holds the components or shares.
 
 - **Starting units.** `IndexRule.initialUnits(tokens, methodology, startPriceUsdc)`, with the price in raw USDC units
   (1,000 dollars is `1000e6`). Units must be `> 0` and `<= 2^96 - 1`. Max 20 components; keep it around 10 for gas.
-  The capped methodology needs at least 5.
+  The capped methodology needs at least 5. A price so low that a component would hold less than one whole raw unit
+  reverts `StartPriceTooLow(token, startPriceUsdc)`; the starting price the create flow recommends above is far clear
+  of that floor.
+- **Names and symbols are not unique.** `createIndex` requires only that they are non-empty, so two indexes can present
+  identically in an app or an explorer while holding different baskets. The CREATE2 salt commits to the creator, the
+  composition and the methodology, so their addresses differ: key every index by its address, show `creatorOf`, and
+  mark a name or symbol an existing index already uses.
 - **Index price.** `IndexRule.navPerToken(index)` returns WETH wei and raw USDC per whole index token from 30-minute
   time-weighted prices. Show it as the index price. It lags fast moves; never use it, or a thin DEX pool of the index
   token, as an oracle.
@@ -144,9 +170,10 @@ already holds the components or shares.
   is the wrong test), and the waits after a cancel and after an unfilled auction are over. Those waits are
   `REBALANCE_DELAY` each and hold off everyone but the owner and guardian, who can start straight away. Before starting,
   `previewTarget(0)` shows the targets and turnover; a turnover below `MIN_TURNOVER` reverts, and so does a snapshot
-  whose price window is too thin (`ThinPriceHistory`) or uneven (`PriceHistoryDeviates`): retry later. During the
-  notice, show `pendingRebalance()` and the auction start; during the auction, `currentMultiplier()` and
-  `previewRebalance()`.
+  whose pool's newest observation is older than `MAX_OBSERVATION_AGE` (`StalePriceHistory`), whose price window is too
+  thin (`ThinPriceHistory`) or whose 10-minute parts disagree (`PriceHistoryDeviates`). Anyone can clear the first by
+  trading the pool; for the others, retry later. During the notice, show `pendingRebalance()` and the auction start;
+  during the auction, `currentMultiplier()` and `previewRebalance()`.
 - **Rebalance events.** `RebalanceStarted`, `RebalanceCancelled` and `Rebalanced` carry `proposalId` (`proposalCount`,
   counting every attempt on that index) as their first topic, so cancelled, expired and settled attempts can be told
   apart; `RebalanceStarted` and `Rebalanced` also carry `id`, the `rebalanceNonce` the settlement takes. Nothing is
@@ -163,10 +190,11 @@ already holds the components or shares.
   **burn**, it is exact-input encoded: starts with the component, ends with `tokenOut`. Use an empty path when the
   component *is* the stable or `tokenOut`. A burn leg whose amount rounds to zero sells nothing, but its path is still
   validated and its minimum must be 0, or the burn reverts with `InsufficientOutput`.
-- **Slippage.** Set a limit on every leg, not only the total. A leg limit of 0 means "overall limit only". The overall
-  burn limit must be non-zero. Legs share pools, since every leg crosses the dollar currency's WETH pool, so summed
-  per-leg quotes are optimistic: a little on mainnet, several percent on thin pools such as the Sepolia test market. An
-  `eth_call` of the whole zap call returns the exact amount.
+- **Slippage.** Set a limit on every leg, not only the total; every leg is checked, including the one whose component
+  already is `tokenOut` on a burn or `tokenIn` on a mint and carries no swap. A leg limit of 0 means "overall limit
+  only", and the overall burn limit must be non-zero. Legs share pools, since every leg crosses the dollar currency's
+  WETH pool, so summed per-leg quotes are optimistic: a little on mainnet, several percent on thin pools such as the
+  Sepolia test market. An `eth_call` of the whole zap call returns the exact amount.
 - **Check quotes against an independent price.** Compare each Uniswap quote with a reference price and refuse to sign
   when they diverge beyond a threshold. Send transactions through a private relay and use short deadlines.
 - **Approvals.** USDC supports `permit`; USDT does not (plain `approve`), and USDT's `approve` reverts when it changes a
@@ -176,9 +204,16 @@ already holds the components or shares.
   first and offer the direct `redeem` or `redeemSkipping` exit.
 - **Label pausable components.** WBTC can be paused by its custodian. Show that on every index that holds it, and surface
   `redeemSkipping` plus any pending `claimOf` balance.
+- **Claims follow the recipient.** `redeemSkipping(shares, to, skipMask)` books the skipped components to `to`, the
+  address that receives every other component, and `ClaimRecorded` names `to`. Read `claimOf(to, token)`, not
+  `claimOf(msg.sender, token)`, and have a contract that redeems for a holder pass the holder as `to`, or the claim is
+  the contract's and the holder never collects it.
 - **Show pending proposals.** A token or config change becomes effective only between `ListingProposed` plus
   `LISTING_DELAY` and 7 days after that (`pendingTokenConfig` shows it; `pendingIsListing` and the event's `listing`
-  flag say whether it whitelists the token), and a new guardian only after `GuardianProposed` plus `GUARDIAN_DELAY`. A
+  flag say whether it whitelists the token), and a new guardian only after `GuardianProposed` plus `GUARDIAN_DELAY`.
+  Ask `listingPending(token)` and `guardianChangePending()` whether a proposal can still be executed: one that passed
+  its window is dead but leaves `listingEta`, `pendingGuardian` and `pendingGuardianEta` set, so those fields on their
+  own read as pending forever, and an operator watching them believes a guardian was replaced when it never was. A
   config change reshapes future rebalances of every index holding the token. `delist` also emits `ListingCancelled` when
   it drops a pending listing proposal. Treat `GuardianProposed` as a security alert: once it executes, the owner's
   config changes no longer face the old guardian's veto, so it is the earliest warning, 9 days ahead, of an unchecked
@@ -191,27 +226,32 @@ already holds the components or shares.
   and regenerated by CI, which fails on a diff, so they always match the contracts; decode every event and revert with
   them (`forge inspect <contract> abi --json` reproduces them, and the interfaces in `src/interfaces/` carry the
   NatSpec). Read the timing constants (`LISTING_DELAY`, `PROPOSAL_WINDOW`, `MIN_REBALANCE_INTERVAL`, `REBALANCE_DELAY`,
-  `AUCTION_DURATION`, the auction multipliers, `MIN_TURNOVER`, `MAX_COMPONENTS`) on chain rather than hard-coding them.
-  The lists below are a summary as of 2026-09-17. Errors that several contracts raise
+  `AUCTION_DURATION`, the auction multipliers, `MIN_TURNOVER`, `MAX_COMPONENTS`, `MAX_OBSERVATION_AGE`) on chain rather
+  than hard-coding them. The lists below are a summary as of 2026-09-19. Errors that several contracts raise
   (`ZeroAddress`, `LengthMismatch`, `InvalidMethodology`, `TooFewComponentsForCapped`, `Unauthorized`, `NotIndex`,
   `InvalidRecipient`) are declared once, in `IXindexErrors`, which the factory, rule, token and zap interfaces extend.
 - **Events.** `IndexFactory`: `IndexCreated`, `ListingProposed`, `ListingCancelled`, `TokenConfigured`,
-  `TokenWhitelisted`, `GuardianProposed`, `GuardianChangeCancelled`, `GuardianSet`. `IndexToken`: `Issued`, `Redeemed`,
-  `ClaimRecorded`, `Claimed`, `RebalanceStarted`, `RebalanceCancelled`, `Rebalanced`. `IndexZap`: `ZapMint`, `ZapBurn`,
-  `ComponentReturned`.
+  `TokenWhitelisted`, `GuardianProposed`, `GuardianChangeCancelled`, `GuardianSet`, `OwnershipTransferStarted`,
+  `OwnershipTransferred`. `IndexToken`: `Issued`, `Redeemed`, `ClaimRecorded`, `Claimed`, `RebalanceStarted`,
+  `RebalanceCancelled`, `Rebalanced`. `IndexZap`: `ZapMint`, `ZapBurn`, `ComponentReturned`.
+- **Watch the ownership handover.** `transferOwnership(new owner)` emits `OwnershipTransferStarted` and
+  `acceptOwnership()` emits `OwnershipTransferred`. It is the one admin change with no delay and no guardian veto: the
+  second call takes effect in the block it lands in, and the new owner holds every proposal power from that moment.
+  Surface both events as they happen, alongside `owner()` and `pendingOwner()`.
 - **Errors.** `IndexZap`: `NotIndex`, `StaleRebalanceNonce`, `Expired`, `ZeroAddress`, `ZeroAmount`, `InvalidRecipient`,
   `LegCountMismatch`, `BadPath`, `InsufficientBudget`, `InsufficientOutput`, `TransferShortfall`, plus the router's
   `STF`, `Too much requested` and `Too little received`. `IndexToken`: `NotFactory`, `NotInitialized`,
   `InvalidComponents`, `ZeroShares`, `ZeroAddress`, `InvalidRecipient`, `InvalidSkipMask`, `NothingToClaim`,
   `TransferAmountMismatch`, `Unauthorized`, `RebalanceTooSoon`, `RebalancePending`, `InvalidKeepMask`, `TurnoverTooLow`,
-  `NoPendingRebalance`, `RebalanceNotReady`, `RebalanceExpired`, `RebalanceUnderfunded`, and OpenZeppelin's ERC-20 and
-  ERC-2612 errors. `IndexFactory`: `EmptyString`, `InvalidComponentCount`, `LengthMismatch`, `TokenNotWhitelisted`,
-  `DuplicateToken`, `InvalidUnits`, `InvalidMethodology`, `TooFewComponentsForCapped`, `IndexAlreadyExists`,
-  `NotAContract`, `NotConfigured`, `ListingPending`, `NoPendingListing`, `ListingNotReady`, `ListingExpired`,
-  `NotWhitelisted`, `NoPendingGuardianChange`, `GuardianChangeNotReady`, `GuardianChangeExpired`, `Unauthorized`,
-  `RenounceDisabled`. `IndexRule`: `ZeroAddress`, `InvalidPool`, `PoolHistoryTooShort`, `InvalidSupplyConfig`,
-  `InvalidMinLiquidity`, `ThinPriceHistory`, `PriceHistoryDeviates`, `ZeroPrice`, `ZeroSupply`, `InvalidMethodology`,
-  `TooFewComponentsForCapped`, `DegenerateBasket`, `LengthMismatch`, `NotIndex`.
+  `NoPendingRebalance`, `RebalanceNotReady`, `RebalanceExpired`, `RebalanceUnderfunded`, `RebalanceMovedOn`, and
+  OpenZeppelin's ERC-20 and ERC-2612 errors. `IndexFactory`: `EmptyString`, `InvalidComponentCount`, `LengthMismatch`,
+  `TokenNotWhitelisted`, `DuplicateToken`, `InvalidUnits`, `InvalidMethodology`, `TooFewComponentsForCapped`,
+  `IndexAlreadyExists`, `NotAContract`, `NotConfigured`, `ListingPending`, `NoPendingListing`, `ListingNotReady`,
+  `ListingExpired`, `NotWhitelisted`, `NoPendingGuardianChange`, `GuardianChangeNotReady`, `GuardianChangeExpired`,
+  `Unauthorized`, `RenounceDisabled`. `IndexRule`: `ZeroAddress`, `InvalidPool`, `PoolHistoryTooShort`,
+  `InvalidSupplyConfig`, `InvalidMinLiquidity`, `StalePriceHistory`, `ThinPriceHistory`, `PriceHistoryDeviates`,
+  `ZeroPrice`, `ZeroSupply`, `StartPriceTooLow`, `InvalidMethodology`, `TooFewComponentsForCapped`,
+  `DegenerateBasket`, `LengthMismatch`, `NotIndex`.
 
 ## Whitelist policy
 
@@ -224,14 +264,22 @@ Every listed token carries a config that the rule validates:
 
 - **Pool:** the Uniswap V3 factory's own pool for the token and WETH, at the fee tier the config names, with at least 200
   observation slots. A pool below that must be prepared first: anyone can call `increaseObservationCardinalityNext(200)`,
-  and the ring grows as the pool trades. On 2026-09-16 the tBTC/WETH 0.3% pool had 60 slots.
+  and the ring grows as the pool trades. On 2026-09-16 the tBTC/WETH 0.3% pool had 60 slots. The slot count is the
+  ring's capacity, not the history it holds, so a rebalance snapshot also requires the pool's newest observation to be
+  younger than `MAX_OBSERVATION_AGE` (10 minutes).
 - **Minimum liquidity:** the least harmonic-mean liquidity over the 30-minute window for which a rebalance snapshot
   accepts the pool's price. The policy is a tenth of the pool's harmonic-mean liquidity when the config is proposed; the
   listing check requires the pool to meet it at that moment. Refresh it with a config change when a pool's liquidity
   moves for good.
 - **Supply:** on-chain total supply minus up to 8 excluded addresses (burn or lock wallets), or a reference supply.
   Wrapped assets need a reference supply: on-chain WBTC is the wrapped float (116,132 BTC on 2026-09-16), not bitcoin's
-  supply. Reference supplies drift and are refreshed with a config change.
+  supply. Reference supplies drift and are refreshed with a config change. **Never list a token with an excluded
+  address that anyone can deposit into and withdraw from**: the rule subtracts a live `balanceOf` of every excluded
+  address inside the rebalance snapshot, so such a config makes that token's market cap manipulable within a single
+  transaction. No entry the scripts ship excludes anything: every one takes a reference supply except tBTC, which takes
+  its on-chain supply. Any non-zero reference supply is accepted, so a figure that is stale or mistyped by orders of
+  magnitude sends that component to its floor at the next rebalance: check the number while the proposal is still
+  cancellable.
 - WETH itself has no pool, no minimum liquidity and needs a reference supply.
 
 Listings and config changes take two steps: the owner calls `proposeListing(token, config)` to list a token (or change a
@@ -272,10 +320,11 @@ wstETH, stkAAVE, osETH), MKR (being retired for SKY), and tokens whose pool held
 would swamp the pool: SKY 7, GNO 7, COMP 9, SNX 4, EIGEN 6, CVX 6, YFI 4, RPL 11, SUSHI 1, BAL 0.
 
 - **Most of these pools are thin.** Below AAVE they hold 25 to 87 WETH, one twentieth to one hundredth of what LINK's or
-  WBTC's hold, so distorting a 30-minute price costs correspondingly less. The snapshot checks (minimum liquidity,
-  10-minute parts that must agree) and the half-to-double clip still apply, but the guardian's duty in every notice
-  period, comparing a snapshot's targets with independent prices, matters most for indexes holding these tokens, and it
-  matters more as such an index grows against its pools. Revisit this table before an index holding them gets large; a
+  WBTC's hold, so distorting a 30-minute price costs correspondingly less. The snapshot checks (a newest observation
+  under 10 minutes old, minimum liquidity, 10-minute parts that must agree) and the half-to-double clip still apply,
+  but none of them bounds a push held steadily across the whole window, so the guardian's duty in every notice period,
+  comparing a snapshot's targets with independent prices, matters most for indexes holding these tokens, and it matters
+  more as such an index grows against its pools. Revisit this table before an index holding them gets large; a
   price adapter for thin pools is in the backlog.
 - **Most cannot be listed yet.** A pool needs 200 observation slots. Anyone can grow a ring with the pool's
   `increaseObservationCardinalityNext(200)`, which costs gas for every new slot, after which the ring fills as the pool
@@ -298,9 +347,49 @@ would swamp the pool: SKY 7, GNO 7, COMP 9, SNX 4, EIGEN 6, CVX 6, YFI 4, RPL 11
   rule whoever executes. One that still moves a few wei does decay with the auction, and a lone executor can then pick
   the multiplier in [0.9, 1.5] for next to nothing: it sets the level of a near-empty index within the half-to-2.5-times
   bound but moves no holder's value.
-- Without competing executors, a filler can wait for the 0.9 floor and keep up to 10% of the bought value; the notice
-  period also lets traders position ahead of a public rebalance.
-- A permanently frozen component needs the guardian's keep mask at every rebalance.
+- Without competing executors, a filler can wait for the 0.9 floor and settle 10% under the snapshot's rate; the notice
+  period also lets traders position ahead of a public rebalance. The band bounds that multiplier on the bought legs and
+  nothing else. Settlement is a fixed-rate trade against targets up to three days old, so the index's exposure is the
+  band plus however far the market moved over the notice and the auction, and the second part is unbounded: sold
+  components appreciating against bought ones over two or three days is ordinary for crypto constituents. The
+  guardian's check during the notice period is what catches a snapshot the market has left behind.
+- The snapshot's deviation check compares the window's three 10-minute parts only with each other, so it is an outlier
+  filter for a short spike, not a bound on manipulation: a push held steady across the whole 30 minutes moves all three
+  equally and reads a spread of zero. What it does bound is a single distorted part: at the 2,000-tick limit such a
+  part moves the window mean by at most a third of its own shift, about 667 ticks or 6.9%. Against a sustained push,
+  what is left is the per-token minimum liquidity and the cost of holding a pool off-market for half an hour while
+  arbitrageurs trade against it.
+- A component whose WETH pool has written no observation for 10 minutes (no swap, and no mint or burn in range) cannot
+  be snapshotted, and `startRebalance` reverts `StalePriceHistory`. Past that age Uniswap extrapolates the whole window
+  from the pool's current tick and current liquidity, which would leave the other two checks reading a spread of zero
+  and whatever liquidity was minted a moment earlier. Anyone can clear the condition by trading the pool; until someone
+  does, the keep mask and a retry are the escapes. The 200 observation slots a config requires are the ring's capacity,
+  which anyone can raise, not proof that it holds 30 minutes of history; the age check covers the degenerate case, and
+  `observe` reverting `OLD` remains the backstop for a ring that is simply too young.
+- The window's liquidity is a harmonic mean, which its smallest term dominates, so twelve seconds at almost no in-range
+  liquidity drags the 30-minute figure under any sane minimum and blocks every snapshot of that component, and every
+  listing check on it, for the next half hour. That sensitivity is deliberate: it is what stops a price pushed through
+  an empty range. The grief is recoverable, since anyone may retry and the griefer has to pay again every 30 minutes.
+- A component whose WETH pool ends with no in-range liquidity takes no config at all: a `minLiquidity` of 0 is rejected
+  as `InvalidMinLiquidity` and any positive value as `ThinPriceHistory`. Delisting and the keep mask are the escapes,
+  and the token takes a config again by itself once the pool has liquidity in range.
+- `executeListing` is permissionless and applies the config the rule checked when it was proposed, two days or more
+  earlier, without checking it again. Re-checking there would let anyone block a listing by making the pool momentarily
+  thin, so a config can go stale between the two steps and the token is whitelisted meanwhile; the rebalance snapshot
+  checks it again, so a stale config blocks rebalances rather than corrupting prices.
+- The rule reads each excluded address's balance live inside the snapshot, so a config that excluded an address a third
+  party can fund and drain in one transaction would make that token's market cap manipulable. No shipped entry uses
+  exclusions, and the whitelist policy above forbids listing one that does.
+- Any non-zero reference supply passes the config check, so a stale or mistyped figure drives that component to its
+  floor at the next rebalance and hands the difference to the auction. It is owner-only, behind the 2-day listing delay
+  and the guardian's veto, which makes it an operational hazard rather than an attack.
+- `cancelRebalance` has no window and no rate limit, so a hostile or compromised guardian can cancel each proposal at
+  the last second of its auction and hold rebalancing off indefinitely, with the units drifting from the rule
+  meanwhile. It moves no funds and takes nothing: this is a trust assumption of the guardian role, not something the
+  code bounds.
+- A permanently frozen component needs the guardian's keep mask at every rebalance, and under the capped methodology
+  its pool must still be readable, because its market cap scales every other component's weight; its `balanceOf` need
+  not be.
 - A multi-hop burn leg costs one router call per hop, and a hop that sells nothing reverts the burn instead of leaving
   the next hop to spend the zap's balance.
 - Bytecode targets the Cancun EVM (`evm_version = "cancun"`). The factory's deployment code is close to the EIP-3860
@@ -415,8 +504,10 @@ tokens were chosen and how thin most of their pools are. Propose mode skips any 
 tBTC while its pool has too few observation slots, and any entry outside the whitelist policy the script can check (6 to
 18 decimals, no USDC or USDT), and logs why; it also logs each reference supply in whole tokens, where a decimals slip
 shows. A token the guardian delisted gets only `proposeConfig` changes; set `RELIST=<token>[,<token>...]` to propose
-listing it again. Execute mode never proposes anything, so a listing the guardian cancelled stays cancelled until the
-owner proposes it again on purpose, and it executes only a proposal whose pending config is exactly the entry's.
+listing it again, and if a config-only proposal for that token is already pending, propose mode says so and the
+relisting waits until it is cancelled. Execute mode never proposes anything, so a listing the guardian cancelled stays
+cancelled until the owner proposes it again on purpose, it executes only a proposal whose pending config is exactly the
+entry's, and it reports a config change that leaves the token delisted as what it is rather than as a listing.
 `LISTING_MODE=status` is read-only: for every entry it logs whether the token is listed with the entry's config and any
 pending proposal with its window. For a local stack: `anvil --fork-url $MAINNET_RPC_URL` and run the same scripts
 against `http://127.0.0.1:8545`; the fork keeps chain id 1, and `.gitignore` keeps those rehearsal records out of git.
@@ -430,13 +521,14 @@ No bot runs Xindex, so these duties have owners and deadlines. Watch the events 
 
 | Duty | Starts with | Deadline | Who | How |
 |---|---|---|---|---|
-| Execute a listing or config change | `ListingProposed` | `eta + PROPOSAL_WINDOW` (2 to 9 days after proposing), or it expires silently | anyone | `LISTING_MODE=execute`; check with `LISTING_MODE=status` |
+| Execute a listing or config change | `ListingProposed` | `eta + PROPOSAL_WINDOW` (2 to 9 days after proposing), or it expires silently | anyone | `LISTING_MODE=execute`; check with `LISTING_MODE=status`, and `listingPending(token)` for whether a proposal can still be executed |
 | Veto a hostile listing or config change | `ListingProposed` | before `eta` | guardian or owner | `cancelListing(token)` |
-| Check each rebalance snapshot | `RebalanceStarted` | before `eta` (2 days) | guardian | compare `pendingRebalance()` targets with targets from independent prices; `cancelRebalance()` on a mismatch |
-| Trigger the monthly rebalance | `lastRebalance + MIN_REBALANCE_INTERVAL` | none, but indexes drift from their rule | anyone | `startRebalance(0)`; retry later on `ThinPriceHistory` or `PriceHistoryDeviates` |
+| Check each rebalance snapshot | `RebalanceStarted` | before `eta` (2 days) | guardian | compare `pendingRebalance()` targets with targets from independent prices; `cancelRebalance()` on a mismatch, and on a snapshot the market has since left behind, because the settlement trades at those targets up to three days later |
+| Trigger the monthly rebalance | `lastRebalance + MIN_REBALANCE_INTERVAL` | none, but indexes drift from their rule | anyone | `startRebalance(0)`; on `StalePriceHistory` the pool has to trade before it can be read again, on `ThinPriceHistory` or `PriceHistoryDeviates` retry later |
 | Rebalance around a frozen component | a paused or blacklisting component, at every rebalance | each auction | guardian | `cancelRebalance()`, then `startRebalance(keepMask)` |
 | Refresh drifting reference supplies and minimum liquidities | monthly review | when a supply or a pool's liquidity has moved for good | owner Safe | new `MainnetAddresses` values, `LISTING_MODE=safe` |
-| Watch guardian changes | `GuardianProposed` | `eta` (7 days) | owner signers, guardian, app | treat it as a security alert: once executed, the new guardian's veto replaces the old one, and config changes can no longer be cancelled by the current guardian. The guardian can cancel a change to the zero address (its own removal) but not its replacement |
+| Watch guardian changes | `GuardianProposed` | `eta` (7 days) | owner signers, guardian, app | treat it as a security alert: once executed, the new guardian's veto replaces the old one, and config changes can no longer be cancelled by the current guardian. The guardian can cancel a change to the zero address (its own removal) but not its replacement. `guardianChangePending()` says whether the change is still executable: an expired one leaves `pendingGuardian` set |
+| Hand over factory ownership | the owner's decision, then `OwnershipTransferStarted` | none: it takes effect as soon as the new owner accepts | owner signers, then the new owner | `transferOwnership(new owner)`, then `acceptOwnership()` from the new owner. The one admin change with no delay and no guardian veto, so announce it first and watch both events; the new owner has to meet the rules the deploy script checks, and ownership cannot be renounced |
 | Restart an index after an unfilled auction | `eta + AUCTION_DURATION` passed with no `Rebalanced` | anyone after `REBALANCE_DELAY` more | guardian first, then anyone | `canStartRebalance()`, then `startRebalance(0)` |
 
 ### Testnet (Sepolia)

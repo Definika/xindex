@@ -399,8 +399,15 @@ contract ConfigureWhitelist is Script {
             } else if (block.timestamp > eta + factory.PROPOSAL_WINDOW()) {
                 console2.log("expired, propose again", token);
             } else {
+                bool relisting = factory.pendingIsListing(token);
                 factory.executeListing(token);
-                console2.log("executed", token);
+                // A config change executes cleanly but leaves a delisted token delisted; say so rather than let
+                // "executed" read as a relisting (DA-20).
+                if (!relisting && !factory.isWhitelisted(token)) {
+                    console2.log("executed the config change; the token is still delisted", token);
+                } else {
+                    console2.log("executed", token);
+                }
             }
         }
         vm.stopBroadcast();
@@ -418,7 +425,11 @@ contract ConfigureWhitelist is Script {
     ) private view returns (Action) {
         uint256 eta = factory.listingEta(token);
         if (eta != 0 && block.timestamp <= eta + factory.PROPOSAL_WINDOW()) {
-            if (_sameConfig(factory.pendingTokenConfig(token), config)) {
+            // A config-only proposal never whitelists, so it cannot carry out a relisting however long it waits.
+            // Reporting it as "already pending" left the operator believing RELIST had been acted on (DA-20).
+            if (!factory.isWhitelisted(token) && _contains(relist, token) && !factory.pendingIsListing(token)) {
+                console2.log("skipped, RELIST needs a listing but a config change is pending; cancel it first", token);
+            } else if (_sameConfig(factory.pendingTokenConfig(token), config)) {
                 console2.log("already pending", token);
             } else {
                 console2.log("skipped, a different config is pending; cancel it first", token);

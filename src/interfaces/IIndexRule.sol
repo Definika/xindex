@@ -36,12 +36,19 @@ interface IIndexRule is IXindexErrors {
     error InvalidMinLiquidity(address token);
     /// @notice The pool's harmonic-mean liquidity over TWAP_WINDOW is below the token's configured minimum.
     error ThinPriceHistory(address pool, uint256 harmonicMeanLiquidity, uint256 minLiquidity);
+    /// @notice The pool's newest observation is `age` seconds old, more than MAX_OBSERVATION_AGE, so a snapshot would
+    ///         read a price and a liquidity that Uniswap extrapolated from the pool's current state rather than from
+    ///         its history. Anyone can clear it by trading the pool; the window recovers on its own once it does.
+    error StalePriceHistory(address pool, uint256 age);
     /// @notice The mean ticks of the window's TWAP_SUB_WINDOWS parts are more than MAX_TICK_DEVIATION apart.
     error PriceHistoryDeviates(address pool, uint256 spread);
     /// @notice The window's mean tick quotes `token` at zero WETH wei per 1e18 raw units.
     error ZeroPrice(address token);
     /// @notice The supply the rule uses for `token` is zero.
     error ZeroSupply(address token);
+    /// @notice At `startPriceUsdc` an index token would hold less than one raw unit of `token`, so the basket cannot
+    ///         be described at that price. Pick a higher one; see the starting-price guidance in the README.
+    error StartPriceTooLow(address token, uint256 startPriceUsdc);
     /// @notice Nothing is left to weight or rebalance: every market cap is zero, the constituents of a capped basket
     ///         still under the 20% cap have none, or the components being rebalanced hold no value, as when the keep
     ///         mask keeps every one.
@@ -60,6 +67,11 @@ interface IIndexRule is IXindexErrors {
     ///         9.05 seconds apart (a pool writes at most one observation per block). A ring that was just grown holds
     ///         only the history written so far.
     function MIN_OBSERVATION_CARDINALITY() external view returns (uint16);
+
+    /// @notice Oldest a pool's newest observation may be for a rebalance snapshot to read it. Beyond this the window
+    ///         is mostly extrapolated from the pool's current tick and current liquidity, which is a spot read wearing
+    ///         a time-weighted average's clothes. Views do not apply it.
+    function MAX_OBSERVATION_AGE() external view returns (uint32);
 
     /// @notice Most excluded addresses a token config can list.
     function MAX_EXCLUDED() external view returns (uint256);
@@ -127,14 +139,19 @@ interface IIndexRule is IXindexErrors {
         returns (uint256[] memory w, uint256[] memory prices, uint256[] memory supplies);
 
     /// @notice Rebalance targets for a basket holding `units` of `tokens`. Components whose bit is set in `keepMask`
-    ///         keep their units; the others move toward `methodology`'s weights, rescaled to their share, at an
-    ///         unchanged total value at current prices, each clipped to half and double its current units. Value a
-    ///         clip cannot place goes to the components still between their bounds, by weight, so a component clipped
-    ///         to its floor ends there unless every other component is at its ceiling. Every
-    ///         component that moves needs a snapshot price: its window's harmonic-mean liquidity at least its
+    ///         keep their units; the others move toward `methodology`'s weights at an unchanged total value at
+    ///         snapshot prices, each clipped to half and double its current units. The targets are a water-filling:
+    ///         each pass shares the value not yet pinned among the components still free, by weight, clips every
+    ///         share to that component's bounds, and pins the side the clips prove, the floors when they add at least
+    ///         as much value as the ceilings remove and the ceilings otherwise. A pinned component never moves again,
+    ///         so a component the rule wants to shrink past its floor is never handed value back. Shares round up
+    ///         into units, so the target basket is never worth less than the basket it replaces.
+    ///         Every component the snapshot reads needs a snapshot price: a newest observation no older than
+    ///         MAX_OBSERVATION_AGE (else StalePriceHistory), a window harmonic-mean liquidity at least its
     ///         `minLiquidity` (else ThinPriceHistory) and sub-window mean ticks within MAX_TICK_DEVIATION (else
-    ///         PriceHistoryDeviates). Kept components are not read under the uncapped methodology; the capped
-    ///         methodology ranks them from a plain TWAP price.
+    ///         PriceHistoryDeviates). Kept components are not read at all under the uncapped methodology; under the
+    ///         capped methodology they are read, and checked the same way, because their market cap scales every
+    ///         other component's weight.
     /// @param tokens Components, in index order.
     /// @param units Current raw units per 1e18 shares, one per component.
     /// @param methodology `Methodology` id.

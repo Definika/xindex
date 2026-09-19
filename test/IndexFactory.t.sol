@@ -230,6 +230,39 @@ contract IndexFactoryTest is XindexTest {
         assertEq(factory.guardian(), guardian);
     }
 
+    /// @dev DA-16. An expired proposal can never be executed but still leaves `pendingGuardian` and
+    ///      `pendingGuardianEta` set, so a monitor reading those alone reports a guardian change as pending forever
+    ///      and an operator can believe a compromised guardian was replaced when it never was. The predicate views
+    ///      answer the question the stored fields cannot.
+    function test_DA16_theViewsTellAPendingProposalFromAnExpiredOne() public {
+        address next = makeAddr("next guardian");
+        assertFalse(factory.guardianChangePending(), "nothing proposed");
+
+        vm.prank(owner);
+        factory.proposeGuardian(next);
+        uint256 deadline = factory.pendingGuardianEta() + factory.PROPOSAL_WINDOW();
+        assertTrue(factory.guardianChangePending(), "proposed and executable");
+
+        vm.warp(deadline);
+        assertTrue(factory.guardianChangePending(), "the last moment still counts");
+        vm.warp(deadline + 1);
+        assertFalse(factory.guardianChangePending(), "expired, though the stored fields still read as set");
+        assertEq(factory.pendingGuardian(), next, "which is exactly the trap");
+        assertGt(factory.pendingGuardianEta(), 0);
+        assertEq(factory.guardian(), guardian, "the guardian never changed");
+
+        // Listings carry the same trap and the same answer.
+        MockERC20 token = new MockERC20("Late", "LATE", 18);
+        assertFalse(factory.listingPending(address(token)));
+        IIndexFactory.TokenConfig memory config = market.config(address(token), 0);
+        vm.prank(owner);
+        factory.proposeListing(address(token), config);
+        assertTrue(factory.listingPending(address(token)));
+        vm.warp(factory.listingEta(address(token)) + factory.PROPOSAL_WINDOW() + 1);
+        assertFalse(factory.listingPending(address(token)), "expired listing");
+        assertGt(factory.listingEta(address(token)), 0);
+    }
+
     /// @dev LR-05: the last moment of the window still executes, as the listing window's last moment is tested to.
     function test_LR05_aGuardianChangeExecutesAtTheLastMomentOfItsWindow() public {
         address next = makeAddr("next guardian");

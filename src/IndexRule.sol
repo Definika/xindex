@@ -46,6 +46,14 @@ contract IndexRule is IIndexRule {
     ///      1800 / 199 = 9.05 seconds apart (12-second slots give 2,388 seconds). If slots ever get shorter, anyone can
     ///      grow a pool's ring with `increaseObservationCardinalityNext`.
     uint16 public constant MIN_OBSERVATION_CARDINALITY = 200;
+    /// @inheritdoc IIndexRule
+    /// @dev Cardinality is the ring's capacity, not the history it holds (DA-19). When a pool's newest observation
+    ///      predates the window, `observe` extrapolates every point at the pool's current tick and current liquidity:
+    ///      the three sub-window means then agree exactly, so `MAX_TICK_DEVIATION` reads zero, and the harmonic-mean
+    ///      liquidity is whatever was minted a moment ago. Both snapshot defences degenerate together on a quiet pool
+    ///      (DA-02). Requiring the newest observation to be younger than one sub-window leaves at most a third of the
+    ///      window extrapolated, which the deviation check can still see.
+    uint32 public constant MAX_OBSERVATION_AGE = TWAP_WINDOW / TWAP_SUB_WINDOWS;
     uint256 public constant MAX_EXCLUDED = 8;
     /// @inheritdoc IIndexRule
     /// @dev An auction can deliver 1.5 times a growing component's extra units, so a raised target stays at most 2/3 of
@@ -186,7 +194,11 @@ contract IndexRule is IIndexRule {
         uint256 n = tokens.length;
         units = new uint256[](n);
         for (uint256 i = 0; i < n; ++i) {
-            units[i] = Math.max(Math.mulDiv(value, w[i], prices[i] * WAD), 1);
+            // A start price so low that a component's units round away entirely cannot describe the basket at all,
+            // and the index that came out of it would be coarse enough for a rebalance to move less than one raw unit
+            // of a component (DA-09). Floor it at one unit and the caller never learns; refuse it instead.
+            units[i] = Math.mulDiv(value, w[i], prices[i] * WAD);
+            if (units[i] == 0) revert StartPriceTooLow(tokens[i], startPriceUsdc);
         }
     }
 
@@ -229,10 +241,13 @@ contract IndexRule is IIndexRule {
     }
 
     /// @dev The price of a component a rebalance moves. It is the same mean-tick price, accepted only from a window
-    ///      whose harmonic-mean liquidity reached the token's minimum and whose sub-window mean ticks agree, so the
-    ///      price was neither pushed through thin or empty ranges nor dominated by a few outlier blocks.
+    ///      that carries real history (DA-02), whose sub-window liquidity reached the token's minimum and whose
+    ///      sub-window mean ticks agree, so the price was neither read off a pool that has not traded, nor pushed
+    ///      through thin or empty ranges, nor dominated by a few outlier blocks.
     function _snapshotPrice(address token, IIndexFactory.TokenConfig memory config) private view returns (uint256 p) {
         if (token == WETH) return WAD;
+        uint256 age = _newestObservationAge(config.pool);
+        if (age > MAX_OBSERVATION_AGE) revert StalePriceHistory(config.pool, age);
         (int24 tick, uint256 spread, uint256 harmonicLiquidity) = _observe(config.pool);
         if (harmonicLiquidity < config.minLiquidity) {
             revert ThinPriceHistory(config.pool, harmonicLiquidity, config.minLiquidity);
@@ -274,7 +289,31 @@ contract IndexRule is IIndexRule {
         unchecked {
             liquidityDelta = secondsPerLiquidity[parts] - secondsPerLiquidity[0];
         }
+        // Deliberately the harmonic mean of the whole window, which its smallest term dominates: twelve seconds at
+        // liquidity one drag it under any sane minimum (XA-01). That sensitivity is also what lets one shallow block
+        // block every snapshot of the component for the next half hour (DA-04). Measuring each part separately and
+        // taking the middle one would shake off the griefer, but it would equally shake off a real push through an
+        // empty range confined to one part, which is the attack XA-01 exists to stop; the liveness cost is the
+        // cheaper of the two, and it is recoverable, since anyone may retry and the griefer must pay again every
+        // thirty minutes for as long as they want the index frozen.
         harmonicLiquidity = uint256(TWAP_WINDOW) * type(uint160).max / (uint256(liquidityDelta) << 32);
+    }
+
+    /// @dev Age of the pool's newest observation. Uniswap stores observation timestamps truncated to 32 bits and
+    ///      compares them with wrap-around, so the subtraction is unchecked exactly as the pool's own oracle does.
+    function _newestObservationAge(address pool) private view returns (uint256 age) {
+        // Only the observation index matters here; the pool has no narrower getter for it.
+        // forge-lint: disable-next-line(unused-return)
+        (,, uint16 observationIndex,,,,) = IUniswapV3Pool(pool).slot0();
+        // Only the timestamp matters here.
+        // forge-lint: disable-next-line(unused-return)
+        (uint32 blockTimestamp,,,) = IUniswapV3Pool(pool).observations(observationIndex);
+        unchecked {
+            // Truncating to 32 bits is the point: Uniswap stores observation timestamps that way and compares them
+            // with wrap-around, so the difference is right whichever side of a 2^32-second boundary the two sit on.
+            // forge-lint: disable-next-line(unsafe-typecast)
+            age = uint32(block.timestamp) - blockTimestamp;
+        }
     }
 
     /// @dev Mean tick of a tick-accumulator change over `period` seconds, rounded toward negative infinity.
@@ -347,10 +386,13 @@ contract IndexRule is IIndexRule {
         }
     }
 
-    /// @dev Prices and caps for a rebalance snapshot. Every component that can move needs a snapshot price. A kept
-    ///      component never trades: the uncapped methodology does not read it at all (its weight is renormalised away
-    ///      and a zero price and cap leave the targets unchanged), and the capped methodology only ranks it, from the
-    ///      plain TWAP price.
+    /// @dev Prices and caps for a rebalance snapshot. Every component the snapshot reads at all needs a checked price.
+    ///      A kept component never trades, and the uncapped methodology does not read it (its weight is renormalised
+    ///      away and a zero price and cap leave the targets unchanged). The capped methodology does read it: its cap
+    ///      sits in the denominator of every other component's weight, so a plain TWAP price there would let a
+    ///      manipulated pool reshape the targets and the turnover of the components that do trade (DA-06). It is
+    ///      therefore taken from the snapshot price as well, which narrows XA-05: under the capped methodology a keep
+    ///      mask routes around a component that cannot be transferred, not around one whose pool cannot be read.
     function _snapshotMarket(address[] calldata tokens, uint8 methodology, uint256 keepMask)
         private
         view
@@ -360,10 +402,9 @@ contract IndexRule is IIndexRule {
         prices = new uint256[](n);
         caps = new uint256[](n);
         for (uint256 i = 0; i < n; ++i) {
-            bool kept = _kept(keepMask, i);
-            if (kept && methodology == Methodology.UNCAPPED) continue;
+            if (_kept(keepMask, i) && methodology == Methodology.UNCAPPED) continue;
             IIndexFactory.TokenConfig memory config = IIndexFactory(FACTORY).tokenConfig(tokens[i]);
-            prices[i] = kept ? _price(tokens[i], config.pool) : _snapshotPrice(tokens[i], config);
+            prices[i] = _snapshotPrice(tokens[i], config);
             uint256 circulating = _supply(tokens[i], config.referenceSupply, config.excluded);
             if (circulating == 0) revert ZeroSupply(tokens[i]);
             caps[i] = _cap(circulating, prices[i]);
@@ -452,11 +493,18 @@ contract IndexRule is IIndexRule {
         (uint256 activeValue, uint256 activeWeight) = _bound(units, targets, basket, keepMask);
         _fill(targets, basket, activeValue, activeWeight);
 
+        // Turnover is what the rebalance actually trades, so it is the smaller of the two sides. Gross outflow alone
+        // would certify value that leaves the basket without anything being bought back (DA-08).
         uint256 sold = 0;
+        uint256 bought = 0;
         for (uint256 i = 0; i < n; ++i) {
-            if (targets[i] < units[i]) sold += Math.mulDiv(units[i] - targets[i], basket.prices[i], basket.scale);
+            if (targets[i] < units[i]) {
+                sold += Math.mulDiv(units[i] - targets[i], basket.prices[i], basket.scale);
+            } else if (targets[i] > units[i]) {
+                bought += Math.mulDiv(targets[i] - units[i], basket.prices[i], basket.scale);
+            }
         }
-        turnover = Math.mulDiv(sold, WAD, activeValue);
+        turnover = Math.mulDiv(Math.min(sold, bought), WAD, activeValue);
     }
 
     /// @dev Fills each rebalanced component's bounds and returns their value and weight at snapshot prices. A kept
@@ -546,8 +594,11 @@ contract IndexRule is IIndexRule {
     /// @dev Sets component `i`'s target to the units of its share of value, clipped to its bounds, and returns the value
     ///      the clip added or removed. The share is compared with the bounds as a value and only turned into units once
     ///      it lies between them: next to a price above MAX_EXACT_PRICE, the unclipped units of a component priced near
-    ///      zero would not fit in 256 bits. Units from a share are at most the ceiling, because the share is at most
-    ///      the ceiling's value; a WAD scale can round them under the floor, hence the maximum.
+    ///      zero would not fit in 256 bits. The share rounds UP into units, so the target basket is never worth less
+    ///      than the current one: a floor here dropped everything below one whole raw unit, and the settlement paid that
+    ///      value to the executor for nothing (DA-01). Units from a share are still at most the ceiling, because the
+    ///      share is at most the ceiling's value and the ceiling is a whole number; a WAD scale can round them under the
+    ///      floor, hence the maximum.
     function _clip(uint256[] memory targets, Basket memory basket, uint256 i, uint256 share)
         private
         pure
@@ -564,7 +615,7 @@ contract IndexRule is IIndexRule {
             targets[i] = basket.hi[i];
             removed = share - ceilingValue;
         } else {
-            targets[i] = Math.max(Math.mulDiv(share, basket.scale, p), basket.lo[i]);
+            targets[i] = Math.max(Math.mulDiv(share, basket.scale, p, Math.Rounding.Ceil), basket.lo[i]);
         }
     }
 

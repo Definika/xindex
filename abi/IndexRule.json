@@ -48,6 +48,19 @@
   },
   {
     "type": "function",
+    "name": "MAX_OBSERVATION_AGE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "MAX_TARGET_UNITS",
     "inputs": [],
     "outputs": [
@@ -523,6 +536,38 @@
       },
       {
         "name": "spread",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "StalePriceHistory",
+    "inputs": [
+      {
+        "name": "pool",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "age",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "StartPriceTooLow",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "startPriceUsdc",
         "type": "uint256",
         "internalType": "uint256"
       }

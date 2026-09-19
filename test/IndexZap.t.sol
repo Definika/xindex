@@ -533,6 +533,50 @@ contract IndexZapTest is XindexTest {
         _assertZapEmpty();
     }
 
+    /// @dev DA-15. The leg whose component is already `tokenOut` carries no swap, and its `minAmountOut` was never
+    ///      read, so the one limit the NatSpec, the README and AGENTS.md all promise applies to every leg silently did
+    ///      not apply to that one. The mint side had the same hole for `maxAmountIn` on the `tokenIn` leg.
+    function test_DA15_thePassThroughLegHonoursItsOwnLimit() public {
+        _mintFor(alice, 1e18, 200e6);
+        IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](3);
+        // The pass-through leg can only hand over the WBTC the index held, 100,000 sats a share: ask for one more.
+        legs[0] = IIndexZap.BurnLeg({path: "", minAmountOut: 100_001});
+        legs[1] = IIndexZap.BurnLeg({path: _path2(address(weth), address(wbtc)), minAmountOut: 0});
+        legs[2] = IIndexZap.BurnLeg({path: _path3(address(link), address(weth), address(wbtc)), minAmountOut: 0});
+
+        vm.startPrank(alice);
+        index.approve(address(zap), 1e18);
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.InsufficientOutput.selector, 100_000, 100_001));
+        zap.burnToToken(_burnParams(address(index), 1e18, address(wbtc), 1, legs, alice));
+
+        // Exactly what it can give is accepted.
+        legs[0].minAmountOut = 100_000;
+        zap.burnToToken(_burnParams(address(index), 1e18, address(wbtc), 1, legs, alice));
+        vm.stopPrank();
+        _assertZapEmpty();
+    }
+
+    function test_DA15_theMintPassThroughLegHonoursItsBudget() public {
+        // WETH is a component and also the token paid in, so its leg carries no swap.
+        uint256[] memory need = index.previewIssue(1e18);
+        IIndexZap.MintLeg[] memory legs = new IIndexZap.MintLeg[](3);
+        legs[0] = IIndexZap.MintLeg({path: _path2(address(wbtc), address(weth)), maxAmountIn: 0});
+        legs[1] = IIndexZap.MintLeg({path: "", maxAmountIn: need[1] - 1});
+        legs[2] = IIndexZap.MintLeg({path: _path2(address(link), address(weth)), maxAmountIn: 0});
+
+        weth.mint(alice, 1e18);
+        vm.startPrank(alice);
+        weth.approve(address(zap), 1e18);
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.InsufficientBudget.selector, need[1], need[1] - 1));
+        zap.mintWithToken(_mintParams(address(index), address(weth), 1e18, 1e18, legs, alice));
+
+        legs[1].maxAmountIn = need[1];
+        zap.mintWithToken(_mintParams(address(index), address(weth), 1e18, 1e18, legs, alice));
+        vm.stopPrank();
+        assertEq(index.balanceOf(alice), 1e18);
+        _assertZapEmpty();
+    }
+
     function test_burn_revertsComponentIsTokenOutWithNonEmptyPath() public {
         _mintFor(alice, 1e18, 200e6);
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](3);

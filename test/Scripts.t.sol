@@ -562,6 +562,46 @@ contract ScriptsTest is Test {
         assertEq(configure.safeCalldata(factory, list, none).length, 0);
     }
 
+    /// @dev DA-20. With a config-only proposal already pending for a delisted token, RELIST was silently dropped:
+    ///      the entry was reported as "already pending" and the operator waited out the delay for a relisting that
+    ///      was never proposed, while `execute` reported success and the token stayed delisted.
+    function test_DA20_relistIsNotSwallowedByAPendingConfigChange() public {
+        IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
+        ConfigureWhitelist.Entry[] memory list = _twoEntries();
+        configure.propose(factory, list, none);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        configure.execute(factory, list);
+        vm.prank(guardian);
+        factory.delist(list[0].token);
+
+        // A config change is proposed for the delisted token, and only then is it named for relisting.
+        list[0].minLiquidity = DEFAULT_MIN_LIQUIDITY / 2;
+        configure.propose(factory, list, none);
+        assertFalse(factory.pendingIsListing(list[0].token), "a config change is pending");
+
+        address[] memory relist = new address[](1);
+        relist[0] = list[0].token;
+        // The pending config change cannot relist, so nothing is proposed and the run says why.
+        assertEq(configure.safeCalldata(factory, list, relist).length, 0, "no listing can be proposed yet");
+        configure.propose(factory, list, relist);
+        assertFalse(factory.pendingIsListing(list[0].token), "still only a config change");
+
+        // Executing it leaves the token delisted, as the log now states.
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        configure.execute(factory, list);
+        assertFalse(factory.isWhitelisted(list[0].token));
+
+        // Once the proposal is out of the way, RELIST proposes the listing it always meant to.
+        bytes[] memory calls = configure.safeCalldata(factory, list, relist);
+        assertEq(calls.length, 1);
+        assertEq(calls[0], abi.encodeCall(IIndexFactory.proposeListing, (list[0].token, _configFor(list[0]))));
+        configure.propose(factory, list, relist);
+        assertTrue(factory.pendingIsListing(list[0].token), "now it is a listing");
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        configure.execute(factory, list);
+        assertTrue(factory.isWhitelisted(list[0].token), "and the token is listed again");
+    }
+
     function test_XA11_proposeSkipsADelistedTokenUnlessNamedForRelisting() public {
         IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
         ConfigureWhitelist.Entry[] memory list = _twoEntries();

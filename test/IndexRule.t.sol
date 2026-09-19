@@ -112,6 +112,7 @@ contract IndexRuleTest is Test {
         assertEq(rule.TWAP_SUB_WINDOWS(), 3);
         assertEq(rule.MAX_TICK_DEVIATION(), 2_000);
         assertEq(rule.MIN_OBSERVATION_CARDINALITY(), 200);
+        assertEq(rule.MAX_OBSERVATION_AGE(), 10 minutes, "one sub-window, so at most a third may be extrapolated");
         assertEq(rule.MAX_EXCLUDED(), 8);
         assertEq(rule.USD_POOL_FEE(), 500);
         assertEq(rule.MAX_TARGET_UNITS(), uint256(type(uint96).max) * 2 / 3);
@@ -675,6 +676,34 @@ contract IndexRuleTest is Test {
         }
     }
 
+    /// @dev DA-22, the gap that let DA-01 through. The LR-02 fuzz bounds units to whole-token magnitudes "so that
+    ///      rounding is far below the tolerance", which excludes by construction the coarse regime where a floor can
+    ///      discard a component's whole move. This one starts at a single raw unit and checks the property the shape
+    ///      test cannot see: the target basket is never worth less than the holding it replaces.
+    function testFuzz_DA22_targetsNeverLoseValue(uint256[5] memory unitSeeds, int24[5] memory tickSeeds, bool capped)
+        public
+    {
+        address[] memory tokens = fuzzTokens;
+        uint256[] memory units = new uint256[](5);
+        for (uint256 i = 0; i < 5; ++i) {
+            units[i] = bound(unitSeeds[i], 1, 1e24);
+            market.setPriceTick(tokens[i], int24(bound(tickSeeds[i], -100_000, 100_000)));
+        }
+        uint8 methodology = capped ? CAPPED : UNCAPPED;
+        (uint256[] memory t,) = rule.targetUnits(tokens, units, methodology, 0);
+        (, uint256[] memory prices,) = rule.weights(tokens, methodology);
+
+        uint256 heldValue = 0;
+        uint256 targetValue = 0;
+        for (uint256 i = 0; i < 5; ++i) {
+            heldValue += units[i] * prices[i];
+            targetValue += t[i] * prices[i];
+        }
+        // One wei of slack per component: `_bound` floors a rounded-away value at one wei and `_share` rounds each
+        // share down. Everything else now rounds toward the holders.
+        assertGe(targetValue + 5, heldValue, "the rebalance target is worth less than the basket it replaces");
+    }
+
     function test_targetUnits_zeroWeightComponentsStillAbsorbValue() public {
         int24[] memory ticks = new int24[](2);
         uint256[] memory supplies = new uint256[](2);
@@ -774,7 +803,7 @@ contract IndexRuleTest is Test {
         assertGt(rule.price(tokens[0]), 0, "display prices still read the window");
     }
 
-    function test_XA05_keptComponentsNeedNoSnapshotPrice() public {
+    function test_XA05_keptComponentsNeedNoSnapshotPriceUnderUncapped() public {
         address[] memory tokens = _flatBasket(_arr(6, 1, 1, 1, 1));
         (uint256[] memory readable,) = rule.targetUnits(tokens, _hundreds(), UNCAPPED, 1 << 4);
         MockUniswapV3Pool broken = market.tokenPool(tokens[4]);
@@ -788,19 +817,66 @@ contract IndexRuleTest is Test {
             assertEq(t[i], readable[i]);
         }
         assertGt(turnover, 0);
+    }
 
-        // Capped: a kept component is still ranked, from a price without the snapshot checks.
-        broken.setHistoryTooShort(false);
-        broken.setLiquidity(1);
-        uint256 thin = _harmonicOf(broken);
-        vm.expectRevert(
-            abi.encodeWithSelector(IIndexRule.ThinPriceHistory.selector, address(broken), thin, DEFAULT_MIN_LIQUIDITY)
-        );
-        rule.targetUnits(tokens, _hundreds(), CAPPED, 0);
+    /// @dev DA-02. When a pool's newest observation predates the window, Uniswap extrapolates every requested point at
+    ///      the pool's current tick and current liquidity. The three sub-window means then agree exactly, so the
+    ///      deviation check reads zero, and the harmonic-mean liquidity is whatever was minted a moment ago: both
+    ///      snapshot defences degenerate together, and a 30-minute average becomes a spot read. A snapshot now refuses
+    ///      a window with no recent trade in it. Views are unchanged.
+    function test_DA02_aSnapshotRefusesAPoolThatHasNotTraded() public {
+        address[] memory tokens = _flatBasket(_arr(6, 1, 1, 1, 1));
+        MockUniswapV3Pool quiet = market.tokenPool(tokens[1]);
+        uint256 limit = rule.MAX_OBSERVATION_AGE();
+
+        // The last acceptable age still reads, so the bound is not off by one.
+        quiet.setNewestObservationAge(uint32(limit));
+        (uint256[] memory t,) = rule.targetUnits(tokens, _hundreds(), UNCAPPED, 0);
+        assertGt(t[0], 0);
+
+        quiet.setNewestObservationAge(uint32(limit) + 1);
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.StalePriceHistory.selector, address(quiet), limit + 1));
+        rule.targetUnits(tokens, _hundreds(), UNCAPPED, 0);
+
+        // A pool silent for a month is the degenerate case the check exists for.
+        quiet.setNewestObservationAge(30 days);
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.StalePriceHistory.selector, address(quiet), uint256(30 days)));
+        rule.targetUnits(tokens, _hundreds(), UNCAPPED, 0);
+
+        // Display prices never applied the snapshot checks and still do not.
+        assertGt(rule.price(tokens[1]), 0, "views still read a quiet pool");
+    }
+
+    /// @dev DA-06. Under the capped methodology a kept component's cap sits in the denominator of every other
+    ///      component's weight, so its price reshapes the targets and the turnover of the components that do trade.
+    ///      It used to be read with the plain `price()`, which applies neither snapshot check, so anyone who could
+    ///      move that pool could steer a rebalance they do not otherwise take part in. It is now snapshot-checked like
+    ///      any other component, which narrows XA-05: under the capped methodology the keep mask routes around a
+    ///      component that cannot be transferred, not around one whose pool cannot be read.
+    function test_DA06_aKeptComponentIsSnapshotCheckedUnderCapped() public {
+        address[] memory tokens = _flatBasket(_arr(6, 1, 1, 1, 1));
+        MockUniswapV3Pool kept = market.tokenPool(tokens[4]);
+
+        kept.setLiquidity(1);
+        uint256 thin = _harmonicOf(kept);
+        for (uint256 i = 0; i < 2; ++i) {
+            uint256 keepMask = i == 0 ? 0 : 1 << 4;
+            vm.expectRevert(
+                abi.encodeWithSelector(IIndexRule.ThinPriceHistory.selector, address(kept), thin, DEFAULT_MIN_LIQUIDITY)
+            );
+            rule.targetUnits(tokens, _hundreds(), CAPPED, keepMask);
+        }
+        kept.setLiquidity(1e18);
+
+        // The sub-window agreement check reaches a kept component too.
+        _parts(kept, 0, 0, 2_001 * 600);
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.PriceHistoryDeviates.selector, address(kept), 2_001));
         rule.targetUnits(tokens, _hundreds(), CAPPED, 1 << 4);
-        broken.setHistoryTooShort(true);
-        vm.expectRevert(bytes("OLD"));
-        rule.targetUnits(tokens, _hundreds(), CAPPED, 1 << 4);
+
+        // A kept component whose pool reads cleanly is unaffected.
+        market.setPriceTick(tokens[4], 0);
+        (uint256[] memory t,) = rule.targetUnits(tokens, _hundreds(), CAPPED, 1 << 4);
+        assertEq(t[4], 100e18, "the kept component still keeps its units");
     }
 
     function test_targetUnits_snapshotPricesWethAndRejectsZeroPriceOrSupply() public {
@@ -959,13 +1035,22 @@ contract IndexRuleTest is Test {
         rule.navPerToken(alice);
     }
 
-    function test_initialUnits_areAtLeastOne() public {
+    /// @dev DA-09. `initialUnits` floored a component at one raw unit, so an arbitrarily low start price still
+    ///      produced a basket. The coarser the index token, the larger a share of it one raw unit of a component is,
+    ///      and a whole rebalance can then be worth less than the granularity of the component it buys. A start price
+    ///      that rounds a component away entirely cannot describe the basket, so it is refused rather than floored.
+    function test_DA09_initialUnitsRefuseAStartPriceThatRoundsAComponentAway() public {
         int24[] memory ticks = new int24[](1);
         uint256[] memory supplies = new uint256[](1);
         ticks[0] = 200_000;
         supplies[0] = 1e18;
         address[] memory tokens = _basket(ticks, supplies);
-        uint256[] memory units = rule.initialUnits(tokens, UNCAPPED, 1);
-        assertEq(units[0], 1);
+
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.StartPriceTooLow.selector, tokens[0], uint256(1)));
+        rule.initialUnits(tokens, UNCAPPED, 1);
+
+        // An ordinary start price describes the basket in whole raw units.
+        uint256[] memory units = rule.initialUnits(tokens, UNCAPPED, 100e6);
+        assertGt(units[0], 1, "a hundred dollars a token is plenty of resolution");
     }
 }

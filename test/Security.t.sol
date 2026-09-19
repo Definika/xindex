@@ -6,6 +6,7 @@ import {Vm} from "forge-std/Vm.sol";
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
 import {IndexToken} from "../src/IndexToken.sol";
@@ -852,7 +853,7 @@ contract SecurityRegressionTest is XindexTest {
         reentrant.execute(idx, "");
 
         bytes[] memory errors = reentrant.reentryErrors();
-        assertEq(errors.length, 7);
+        assertEq(errors.length, 8, "both executeRebalance entry points are guarded too");
         for (uint256 i = 0; i < errors.length; ++i) {
             assertEq(bytes4(errors[i]), ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
         }
@@ -1391,5 +1392,112 @@ contract SecurityRegressionTest is XindexTest {
         assertEq(core.FACTORY(), address(factory), "the combined interface compiles and reads an index");
         assertEq(core.RULE(), factory.RULE());
         assertEq(core.componentCount(), index.componentCount());
+    }
+
+    // ---------------------------------------------------------------------
+    // 2026-09-19 deep audit
+    // ---------------------------------------------------------------------
+
+    /// @dev 1.0001^421_417 * 1e18 is about 2e36 WETH wei per 1e18 raw units, so one raw unit of the coarse component
+    ///      is worth about 1% of the basket below: the regime where a sub-unit residue is worth more than MIN_TURNOVER.
+    int24 constant COARSE_TICK = 421_417;
+    uint256 constant COARSE_UNITS = 50;
+    uint256 constant FINE_UNITS = 100e18;
+
+    function _propose(address token, int24 tick, uint256 referenceSupply) private {
+        IIndexFactory.TokenConfig memory config = market.configWith(token, tick, referenceSupply, new address[](0));
+        vm.prank(owner);
+        factory.proposeListing(token, config);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        factory.executeListing(token);
+    }
+
+    /// @dev An index whose ideal target for the coarse component sits 0.8 raw units above its holding, so the whole
+    ///      move is a residue that a floor would discard.
+    function _coarseIndex() private returns (IndexToken idx, MockERC20 coarse, MockERC20 fine) {
+        coarse = new MockERC20("Coarse", "CRS", 8);
+        fine = new MockERC20("Fine", "FIN", 18);
+        IIndexRule rule = IIndexRule(factory.RULE());
+
+        // List once so the prices can be read, then set the supplies that place the ideal target.
+        _propose(address(coarse), COARSE_TICK, 1e18);
+        _propose(address(fine), 0, 1e18);
+        uint256 pc = rule.price(address(coarse));
+        uint256 pf = rule.price(address(fine));
+        uint256 basket = COARSE_UNITS * pc + FINE_UNITS * pf;
+        uint256 capCoarse = ((COARSE_UNITS * 10 + 8) * pc) / 10;
+        _propose(address(coarse), COARSE_TICK, (capCoarse * 1e18) / pc);
+        _propose(address(fine), 0, ((basket - capCoarse) * 1e18) / pf);
+
+        address[] memory t = new address[](2);
+        (t[0], t[1]) = (address(coarse), address(fine));
+        uint256[] memory u = new uint256[](2);
+        (u[0], u[1]) = (COARSE_UNITS, FINE_UNITS);
+        idx = IndexToken(factory.createIndex("Coarse Index", "CRSI", t, u, 0));
+
+        uint256[] memory need = idx.previewIssue(10e18);
+        for (uint256 i = 0; i < 2; ++i) {
+            MockERC20(t[i]).mint(alice, need[i]);
+            vm.prank(alice);
+            MockERC20(t[i]).approve(address(idx), need[i]);
+        }
+        vm.prank(alice);
+        idx.issue(10e18, alice);
+    }
+
+    /// @dev DA-01. `_clip` floored a growing component's target into whole raw units and dropped the residue, so the
+    ///      target basket was worth less than the holding and `executeRebalance` paid the difference out for nothing:
+    ///      `amountsIn` came back all zero against a non-zero `amountsOut`, and an executor that delivered nothing
+    ///      settled the auction and kept the lot. Rounding the share up keeps the value with the holders.
+    function test_DA01_aResidueIsBoughtBackInsteadOfBeingHandedToTheExecutor() public {
+        (IndexToken idx, MockERC20 coarse, MockERC20 fine) = _coarseIndex();
+
+        (uint256[] memory targets, uint256 turnover) = idx.previewTarget(0);
+        assertGt(targets[0], COARSE_UNITS, "the coarse target rounds up, not down to its holding");
+        assertGt(turnover, idx.MIN_TURNOVER(), "and the move still clears the turnover gate");
+
+        vm.warp(idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL());
+        vm.prank(attacker);
+        idx.startRebalance(0);
+        (uint256 eta,,) = idx.pendingRebalance();
+        vm.warp(eta);
+
+        (,, uint256[] memory amountsOut, uint256[] memory amountsIn) = idx.previewRebalance();
+        assertGt(amountsOut[1], 0, "the fine component is sold");
+        assertGt(amountsIn[0], 0, "so the coarse component has to be bought: value cannot simply leave");
+
+        uint256 held = coarse.balanceOf(address(idx));
+        MockRebalanceExecutor noop = new MockRebalanceExecutor();
+        noop.setMode(MockRebalanceExecutor.Mode.Noop);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IIndexToken.RebalanceUnderfunded.selector, address(coarse), held, held + amountsIn[0]
+            )
+        );
+        noop.execute(idx, "");
+        assertEq(idx.rebalanceNonce(), 0, "an executor that delivers nothing cannot settle");
+        assertEq(fine.balanceOf(address(noop)), 0, "and takes nothing");
+    }
+
+    /// @dev DA-08. Turnover counted gross outflow only, so it certified value that left the basket without anything
+    ///      being bought back. It is now the smaller of the two sides, which is what the rebalance actually trades.
+    function test_DA08_turnoverCountsOnlyWhatIsActuallyTraded() public {
+        (IndexToken idx,,) = _coarseIndex();
+        (uint256[] memory targets, uint256 turnover) = idx.previewTarget(0);
+
+        (address[] memory t, uint256[] memory units) = idx.components();
+        IIndexRule rule = IIndexRule(factory.RULE());
+        uint256 sold = 0;
+        uint256 bought = 0;
+        for (uint256 i = 0; i < t.length; ++i) {
+            uint256 p = rule.price(t[i]);
+            if (targets[i] < units[i]) sold += (units[i] - targets[i]) * p;
+            if (targets[i] > units[i]) bought += (targets[i] - units[i]) * p;
+        }
+        assertGt(sold, 0);
+        assertGt(bought, 0);
+        uint256 basket = units[0] * rule.price(t[0]) + units[1] * rule.price(t[1]);
+        assertApproxEqRel(turnover, (Math.min(sold, bought) * 1e18) / basket, 1e12, "turnover is the traded side");
+        assertLt(turnover, (sold * 1e18) / basket + 1, "and never more than the gross outflow");
     }
 }

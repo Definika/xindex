@@ -21,8 +21,8 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     /// @notice `sender` paid `amounts` (per component, in component order, rounded up) and `to` received `shares`.
     event Issued(address indexed sender, address indexed to, uint256 shares, uint256[] amounts);
     /// @notice `sender` burned `shares` for `amounts` (per component, in component order, rounded down). With
-    ///         {redeemSkipping}, the skipped components' amounts are recorded as claims for `sender` instead of being
-    ///         sent to `to`.
+    ///         {redeemSkipping}, the skipped components' amounts are recorded as claims for `to` instead of being
+    ///         sent to it.
     event Redeemed(address indexed sender, address indexed to, uint256 shares, uint256[] amounts);
     /// @notice {redeemSkipping} kept `amount` of `token` in the index for `account` to collect with {claim}.
     event ClaimRecorded(address indexed account, address indexed token, uint256 amount);
@@ -47,7 +47,9 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
         uint256 keepMask,
         uint256 eta
     );
-    /// @notice Cancels the proposal with this `proposalId`, which is the live one.
+    /// @notice Cancels the proposal with this `proposalId`, which is the most recent one: usually the live proposal,
+    ///         but `cancelRebalance` also cancels an auction that expired unfilled, which is what clears the hold-off
+    ///         such an auction otherwise leaves behind.
     /// @param proposalId The cancelled proposal's id, as its `RebalanceStarted` carried it.
     /// @param caller The factory owner or guardian who cancelled it.
     /// @param restartAllowedAt Before this time only the factory owner or guardian can start a rebalance.
@@ -102,6 +104,9 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     ///         backing (totalSupply * new units / 1e18, plus open claims on `token`) and what the index held before the
     ///         settlement, less what it sent out and plus the whole of what it asked back.
     error RebalanceUnderfunded(address token, uint256 balance, uint256 required);
+    /// @notice The settlement needs more of `token` than the caller said it would fill, because the supply grew
+    ///         between the quote and this block. Only raised by the bounded `executeRebalance`.
+    error RebalanceMovedOn(address token, uint256 required, uint256 maxAmountIn);
 
     /// @notice Number of shares that make up one whole index token (1e18).
     function SHARE_UNIT() external view returns (uint256);
@@ -157,9 +162,11 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     function redeem(uint256 shares, address to) external;
 
     /// @notice Burns `shares` from msg.sender, sends every component whose bit is clear in `skipMask` to `to`,
-    ///         and records the skipped amounts as claims that msg.sender can collect later with {claim}.
+    ///         and records the skipped amounts as claims that `to` can collect later with {claim}. The claim follows
+    ///         the components to the recipient, so a contract redeeming on a holder's behalf does not end up holding
+    ///         a claim only it could collect.
     /// @param shares Shares to burn.
-    /// @param to Receives the components that are not skipped.
+    /// @param to Receives the components that are not skipped, and owns the claims for those that are.
     /// @param skipMask Bit i set skips component i. Must be non-zero and use only bits below {componentCount}.
     function redeemSkipping(uint256 shares, address to, uint256 skipMask) external;
 
@@ -226,8 +233,19 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     ///         shrinking component, calls `IRebalanceExecutor.onXindexRebalance` on it, and reverts unless the index
     ///         then holds every component's new backing and the whole of `amountsIn` on top of what it held before.
     ///         Only a contract can execute.
+    /// @dev `amountsOut` and `amountsIn` are recomputed from `totalSupply()` in the block that settles, and issue and
+    ///      redeem stay open throughout the notice and the auction, so they can differ from any earlier simulation.
+    ///      The callback's arguments are authoritative; an executor that sizes itself off chain should either source
+    ///      from them or use the bounded overload.
     /// @param data Passed unchanged to the executor's callback.
     function executeRebalance(bytes calldata data) external;
+
+    /// @notice As {executeRebalance}, but refuses to settle if the supply grew enough since the caller quoted that the
+    ///         index now needs more of some component than the caller is prepared to deliver (RebalanceMovedOn).
+    /// @param data Passed unchanged to the executor's callback.
+    /// @param maxAmountsIn Most of each component, in component order, the caller will deliver. Must have one entry per
+    ///        component (else LengthMismatch); an empty array is the unbounded {executeRebalance}.
+    function executeRebalance(bytes calldata data, uint256[] calldata maxAmountsIn) external;
 
     /// @notice Targets and turnover {startRebalance} would snapshot now with `keepMask`, with the same price checks. It
     ///         checks neither the caller nor the mask: bits at or above {componentCount} and a turnover below

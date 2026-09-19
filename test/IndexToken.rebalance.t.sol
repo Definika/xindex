@@ -233,6 +233,31 @@ contract IndexTokenRebalanceTest is Test {
         balanced.startRebalance(0);
     }
 
+    /// @dev DA-22. The test above only ever produced a turnover of zero, so replacing the MIN_TURNOVER comparison
+    ///      with a plain non-zero check left the whole suite green. This pins the boundary itself: a real but
+    ///      too-small move is refused, and the first move at the threshold is not.
+    function test_DA22_theTurnoverGateIsTheThresholdNotMerelyNonZero() public {
+        uint256[] memory nearTarget = new uint256[](5);
+        (nearTarget[0], nearTarget[1], nearTarget[2], nearTarget[3], nearTarget[4]) =
+        (604e18, 99e18, 99e18, 99e18, 99e18);
+        vm.prank(alice);
+        IndexToken drifted = IndexToken(factory.createIndex("Drifted", "DRIFT", tokens, nearTarget, 0));
+
+        (, uint256 turnover) = drifted.previewTarget(0);
+        assertGt(turnover, 0, "the basket really is off target");
+        assertLt(turnover, drifted.MIN_TURNOVER(), "but by less than the gate allows");
+
+        vm.warp(drifted.lastRebalance() + drifted.MIN_REBALANCE_INTERVAL());
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, turnover));
+        drifted.startRebalance(0);
+
+        // The index in setUp is far enough off target to clear the same gate, so the check is a threshold.
+        (, uint256 enough) = index.previewTarget(0);
+        assertGe(enough, index.MIN_TURNOVER());
+        _start(index);
+    }
+
     // ---------------------------------------------------------------------
     // cancel
     // ---------------------------------------------------------------------
@@ -439,7 +464,7 @@ contract IndexTokenRebalanceTest is Test {
         executor.execute(index, "");
 
         bytes[] memory errors = executor.reentryErrors();
-        assertEq(errors.length, 7);
+        assertEq(errors.length, 8, "both executeRebalance entry points are guarded too");
         for (uint256 i = 0; i < errors.length; ++i) {
             assertEq(bytes4(errors[i]), ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
         }
@@ -536,5 +561,66 @@ contract IndexTokenRebalanceTest is Test {
         assertGe(units[0], 190e18);
         assertLe(units[0], 250e18);
         _assertBacked(index);
+    }
+
+    // ---------------------------------------------------------------------
+    // 2026-09-19 deep audit
+    // ---------------------------------------------------------------------
+
+    /// @dev DA-13. Settlement amounts are recomputed from the supply in the settling block, and issue stays open
+    ///      through the auction, so anyone could enlarge a fill an executor had already funded from a simulation and
+    ///      make it revert for the price of gas. The bounded entry point lets an executor say what it will deliver.
+    function test_DA13_aBoundedFillRefusesAnEnlargedSettlement() public {
+        uint256 eta = _start(index);
+        vm.warp(eta);
+        (,,, uint256[] memory quoted) = index.previewRebalance();
+
+        // A stranger issues dust into the same block, which scales every leg up.
+        _issue(index, stranger, 1e14);
+        (,,, uint256[] memory enlarged) = index.previewRebalance();
+        assertGt(enlarged[0], quoted[0], "the settlement grew under the executor");
+
+        vm.expectRevert(
+            abi.encodeWithSelector(IIndexToken.RebalanceMovedOn.selector, tokens[0], enlarged[0], quoted[0])
+        );
+        executor.executeBounded(index, "", quoted);
+        assertEq(index.rebalanceNonce(), 0, "the bounded fill did not settle");
+
+        // The same executor settles once it is told the larger figure, and the open entry point never bound anything.
+        executor.executeBounded(index, "", enlarged);
+        assertEq(index.rebalanceNonce(), 1);
+        _assertBacked(index);
+    }
+
+    function test_DA13_aBoundedFillRejectsAMalformedBound() public {
+        uint256 eta = _start(index);
+        vm.warp(eta);
+        vm.expectRevert(IXindexErrors.LengthMismatch.selector);
+        executor.executeBounded(index, "", new uint256[](4));
+    }
+
+    /// @dev DA-14. `executeRebalance` read `balanceOf` on every component to build its backing check, so a keep mask
+    ///      routed around a component that could not be transferred but not around one whose reads revert. A component
+    ///      that neither sends nor receives anything is now not read at all.
+    function test_DA14_aKeptComponentWithBrokenReadsDoesNotBlockSettlement() public {
+        pausable.setPaused(true);
+        pausable.setReadsBroken(true);
+        // The component really is unreadable, so the settlement below cannot be passing for some other reason.
+        vm.expectRevert(bytes("reads broken"));
+        pausable.balanceOf(address(index));
+
+        vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
+        vm.prank(owner);
+        index.startRebalance(1 << 1); // keep the broken component
+        (uint256 eta,,) = index.pendingRebalance();
+        vm.warp(eta);
+
+        (,, uint256[] memory amountsOut, uint256[] memory amountsIn) = index.previewRebalance();
+        assertEq(amountsOut[1], 0, "the kept component neither sends");
+        assertEq(amountsIn[1], 0, "nor receives");
+
+        executor.execute(index, "");
+        assertEq(index.rebalanceNonce(), 1, "the settlement no longer touches the kept component at all");
+        assertEq(_units(index)[1], 100e18, "and its units are unchanged");
     }
 }

@@ -204,10 +204,13 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
                 uint256 amount = amounts[i];
                 if (amount == 0 || (skipMask & (1 << i)) == 0) continue;
                 address token = _components[i].token;
-                claimOf[msg.sender][token] += amount;
+                // Booked to `to`, which receives every other component of this redemption. Booking it to msg.sender
+                // stranded the skipped components whenever a router redeemed on a holder's behalf, because only the
+                // router could ever collect them (DA-17).
+                claimOf[to][token] += amount;
                 totalClaims[token] += amount;
                 // forge-lint: disable-next-line(reentrancy-events)
-                emit ClaimRecorded(msg.sender, token, amount);
+                emit ClaimRecorded(to, token, amount);
             }
         }
 
@@ -275,14 +278,45 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
 
     /// @inheritdoc IIndexToken
     function executeRebalance(bytes calldata data) external nonReentrant onlyInitialized {
+        _settle(data, new uint256[](0));
+    }
+
+    /// @inheritdoc IIndexToken
+    function executeRebalance(bytes calldata data, uint256[] calldata maxAmountsIn)
+        external
+        nonReentrant
+        onlyInitialized
+    {
+        _settle(data, maxAmountsIn);
+    }
+
+    function _settle(bytes calldata data, uint256[] memory maxAmountsIn) private {
         (uint256 multiplier, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn) =
             _previewRebalance(totalSupply());
 
+        // Settlement amounts scale with the supply at execution time, and issue stays open through the auction, so a
+        // stranger can enlarge them between an executor's quote and its transaction. An executor that funded itself
+        // from a simulation binds the fill to what it quoted (DA-13); passing nothing keeps the open settlement.
+        uint256 bounds = maxAmountsIn.length;
+        if (bounds != 0) {
+            if (bounds != amountsIn.length) revert LengthMismatch();
+            for (uint256 i = 0; i < bounds; ++i) {
+                if (amountsIn[i] > maxAmountsIn[i]) {
+                    revert RebalanceMovedOn(_components[i].token, amountsIn[i], maxAmountsIn[i]);
+                }
+            }
+        }
+
         // What the index holds before it pays out, so the check afterwards can require the whole of `amountsIn` back:
         // surplus from rounding or a donation belongs to the holders, not to the executor.
+        // A component that neither sends nor receives anything is not read at all: `amountsOut` and `amountsIn` are
+        // exactly the change in its required backing, so both being zero means the requirement and the balance are
+        // both unchanged and the invariant still holds from before. Skipping it keeps a keep mask working around a
+        // component whose `balanceOf` reverts, not only one whose `transfer` does (DA-14).
         uint256 n = units.length;
         uint256[] memory held = new uint256[](n);
         for (uint256 i = 0; i < n; ++i) {
+            if (amountsOut[i] == 0 && amountsIn[i] == 0) continue;
             held[i] = IERC20(_components[i].token).balanceOf(address(this));
         }
 
@@ -328,6 +362,8 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
         uint256 supply = totalSupply();
         uint256 n = units.length;
         for (uint256 i = 0; i < n; ++i) {
+            // Nothing moved and nothing was required to: see the note in executeRebalance (DA-14).
+            if (amountsOut[i] == 0 && amountsIn[i] == 0) continue;
             address token = _components[i].token;
             uint256 required = Math.mulDiv(supply, units[i], SHARE_UNIT) + totalClaims[token];
             uint256 delivered = held[i] - amountsOut[i] + amountsIn[i];
@@ -461,6 +497,9 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
 
     /// @inheritdoc IIndexToken
     function canStartRebalance() external view returns (bool) {
+        // The implementation and any clone deployed outside the factory hold no components and cannot rebalance at
+        // all; without this they answered true, because their `lastRebalance` is zero (DA-22).
+        if (_getInitializedVersion() != 1) return false;
         if (block.timestamp < lastRebalance + MIN_REBALANCE_INTERVAL) return false;
         uint256 pendingEta = _pending.eta;
         if (pendingEta != 0 && block.timestamp <= pendingEta + AUCTION_DURATION) return false;

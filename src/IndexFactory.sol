@@ -330,6 +330,18 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
     }
 
     /// @inheritdoc IIndexFactory
+    function guardianChangePending() external view returns (bool) {
+        uint256 eta = pendingGuardianEta;
+        return eta != 0 && block.timestamp <= eta + PROPOSAL_WINDOW;
+    }
+
+    /// @inheritdoc IIndexFactory
+    function listingPending(address token) external view returns (bool) {
+        uint256 eta = listingEta[token];
+        return eta != 0 && block.timestamp <= eta + PROPOSAL_WINDOW;
+    }
+
+    /// @inheritdoc IIndexFactory
     function tokenConfig(address token) external view returns (TokenConfig memory) {
         return _tokenConfig[token];
     }

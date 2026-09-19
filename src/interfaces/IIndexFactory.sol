@@ -150,6 +150,15 @@ interface IIndexFactory is IXindexErrors {
     /// @notice Configuration {executeListing} will apply, valid only while `listingEta(token)` is non-zero.
     function pendingTokenConfig(address token) external view returns (TokenConfig memory);
 
+    /// @notice Whether a proposed guardian change can still be executed. A proposal that passed its PROPOSAL_WINDOW is
+    ///         dead but leaves `pendingGuardian` and `pendingGuardianEta` set, so those alone read as pending forever
+    ///         and an operator could believe a guardian was replaced when it never was (DA-16). Ask this instead.
+    function guardianChangePending() external view returns (bool);
+
+    /// @notice Whether a proposed listing or config change can still be executed, for the same reason as
+    ///         {guardianChangePending}: `listingEta` alone stays set after the window closes.
+    function listingPending(address token) external view returns (bool);
+
     /// @notice Whether the pending proposal for `token` whitelists it when executed ({proposeListing}) or only replaces
     ///         its config ({proposeConfig}). Valid only while `listingEta(token)` is non-zero.
     function pendingIsListing(address token) external view returns (bool);
