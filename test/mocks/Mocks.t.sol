@@ -418,12 +418,9 @@ contract MocksTest is Test {
         c = m.config(highToken, 42);
         assertEq(_tickOf(MockUniswapV3Pool(c.pool)), -42);
 
-        address[] memory excluded = new address[](1);
-        excluded[0] = alice;
-        IIndexFactory.TokenConfig memory again = m.configWith(lowToken, -3, 0, excluded);
+        IIndexFactory.TokenConfig memory again = m.configWith(lowToken, -3, 0);
         assertEq(again.pool, address(m.tokenPool(lowToken)), "the pool is created once");
         assertEq(again.referenceSupply, 0);
-        assertEq(again.excluded[0], alice);
         assertEq(_tickOf(MockUniswapV3Pool(again.pool)), -3);
 
         m.setPriceTick(highToken, 9);
@@ -448,9 +445,9 @@ contract MocksTest is Test {
         (t[0], t[1], t[2]) = (address(shrinking), address(mWeth), address(growing));
 
         // WETH and the growing token weigh ten times the shrinking one: it halves, and the other two gain 25% each.
-        f.proposeListing(t[0], m.configWith(t[0], 0, 12e24, new address[](0)));
+        f.proposeListing(t[0], m.configWith(t[0], 0, 12e24));
         f.proposeListing(t[1], m.config(t[1], 0));
-        f.proposeListing(t[2], m.configWith(t[2], 0, 120e24, new address[](0)));
+        f.proposeListing(t[2], m.configWith(t[2], 0, 120e24));
         vm.warp(block.timestamp + f.LISTING_DELAY());
         for (uint256 i = 0; i < 3; ++i) {
             f.executeListing(t[i]);

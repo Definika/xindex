@@ -114,29 +114,19 @@ contract ScriptsTest is Test {
         );
     }
 
-    /// @dev Two tokens with 0.3% WETH pools: A on on-chain supply with one exclusion, B on a reference supply.
+    /// @dev Two tokens with 0.3% WETH pools: A on its own total supply, B on a reference supply.
     function _twoEntries() internal returns (ConfigureWhitelist.Entry[] memory list) {
         MockERC20 tokenA = new MockERC20("A", "A", 18);
         MockERC20 tokenB = new MockERC20("B", "B", 8);
         tokenA.mint(address(this), 1_000e18);
         market.config(address(tokenA), 0);
         market.config(address(tokenB), 0);
-        address[] memory excluded = new address[](1);
-        excluded[0] = makeAddr("burn");
         list = new ConfigureWhitelist.Entry[](2);
         list[0] = ConfigureWhitelist.Entry({
-            token: address(tokenA),
-            fee: 3000,
-            minLiquidity: DEFAULT_MIN_LIQUIDITY,
-            referenceSupply: 0,
-            excluded: excluded
+            token: address(tokenA), fee: 3000, minLiquidity: DEFAULT_MIN_LIQUIDITY, referenceSupply: 0
         });
         list[1] = ConfigureWhitelist.Entry({
-            token: address(tokenB),
-            fee: 3000,
-            minLiquidity: DEFAULT_MIN_LIQUIDITY,
-            referenceSupply: 21_000_000e8,
-            excluded: new address[](0)
+            token: address(tokenB), fee: 3000, minLiquidity: DEFAULT_MIN_LIQUIDITY, referenceSupply: 21_000_000e8
         });
     }
 
@@ -313,31 +303,29 @@ contract ScriptsTest is Test {
 
     function test_parseEntry() public {
         string memory token = vm.toString(address(router));
-        address burnA = makeAddr("burnA");
-        address burnB = makeAddr("burnB");
 
         ConfigureWhitelist.Entry memory e = configure.parseEntry(string.concat(token, ":3000:5"));
         assertEq(e.token, address(router));
         assertEq(e.fee, 3000);
         assertEq(e.minLiquidity, 5);
         assertEq(e.referenceSupply, 0);
-        assertEq(e.excluded.length, 0);
 
         e = configure.parseEntry(string.concat(token, ":0:0:120000000000000000000000000"));
         assertEq(e.fee, 0);
         assertEq(e.minLiquidity, 0);
         assertEq(e.referenceSupply, 120_000_000e18);
 
-        e = configure.parseEntry(string.concat(token, ":500:9::", vm.toString(burnA), "|", vm.toString(burnB)));
+        e = configure.parseEntry(string.concat(token, ":500:9:"));
         assertEq(e.minLiquidity, 9);
-        assertEq(e.referenceSupply, 0);
-        assertEq(e.excluded.length, 2);
-        assertEq(e.excluded[0], burnA);
-        assertEq(e.excluded[1], burnB);
+        assertEq(e.referenceSupply, 0, "an empty reference supply field means on-chain supply");
 
-        e = configure.parseEntry(string.concat(token, ":500:9:7:"));
+        e = configure.parseEntry(string.concat(token, ":500:9:7"));
         assertEq(e.referenceSupply, 7);
-        assertEq(e.excluded.length, 0);
+
+        // DA-10 removed the exclusion field, so an entry that still carries one is malformed.
+        string memory withExclusions = string.concat(token, ":500:9:7:", vm.toString(makeAddr("burn")));
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.MalformedEntry.selector, withExclusions));
+        configure.parseEntry(withExclusions);
 
         vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.MalformedEntry.selector, token));
         configure.parseEntry(token);
@@ -378,13 +366,11 @@ contract ScriptsTest is Test {
         ConfigureWhitelist.Entry[] memory list = _twoEntries();
         IIndexFactory.TokenConfig memory config = _configFor(list[0]);
         assertEq(config.pool, address(market.tokenPool(list[0].token)));
-        assertEq(config.excluded.length, 1);
         assertEq(config.minLiquidity, DEFAULT_MIN_LIQUIDITY);
         assertEq(config.referenceSupply, 0);
 
-        ConfigureWhitelist.Entry memory wethEntry = ConfigureWhitelist.Entry({
-            token: address(market.weth()), fee: 0, minLiquidity: 0, referenceSupply: 1e27, excluded: new address[](0)
-        });
+        ConfigureWhitelist.Entry memory wethEntry =
+            ConfigureWhitelist.Entry({token: address(market.weth()), fee: 0, minLiquidity: 0, referenceSupply: 1e27});
         config = _configFor(wethEntry);
         assertEq(config.pool, address(0));
         assertEq(config.referenceSupply, 1e27);
@@ -424,11 +410,7 @@ contract ScriptsTest is Test {
         IndexFactory factory = _factory(DEFAULT_SENDER, address(0));
         ConfigureWhitelist.Entry[] memory list = new ConfigureWhitelist.Entry[](1);
         list[0] = ConfigureWhitelist.Entry({
-            token: address(market.usdc()),
-            fee: 500,
-            minLiquidity: DEFAULT_MIN_LIQUIDITY,
-            referenceSupply: 1_000_000e6,
-            excluded: new address[](0)
+            token: address(market.usdc()), fee: 500, minLiquidity: DEFAULT_MIN_LIQUIDITY, referenceSupply: 1_000_000e6
         });
         // The rule itself accepts the config, so the policy is what stops it.
         IIndexRule(factory.RULE()).checkConfig(list[0].token, _configFor(list[0]));
@@ -481,7 +463,7 @@ contract ScriptsTest is Test {
         configure.execute(factory, list);
         assertTrue(factory.isWhitelisted(list[0].token));
         assertTrue(factory.isWhitelisted(list[1].token));
-        assertEq(factory.tokenConfig(list[0].token).excluded[0], list[0].excluded[0]);
+        assertEq(factory.tokenConfig(list[0].token).referenceSupply, list[0].referenceSupply);
 
         configure.propose(factory, list, none); // listed with exactly this config: skipped
         assertEq(factory.listingEta(list[0].token), 0);
@@ -670,18 +652,11 @@ contract ScriptsTest is Test {
         market.config(address(twoDecimals), 0);
         ConfigureWhitelist.Entry[] memory list = new ConfigureWhitelist.Entry[](3);
         list[0] = ConfigureWhitelist.Entry({
-            token: address(twoDecimals),
-            fee: 3000,
-            minLiquidity: DEFAULT_MIN_LIQUIDITY,
-            referenceSupply: 1_000_000e2,
-            excluded: new address[](0)
+            token: address(twoDecimals), fee: 3000, minLiquidity: DEFAULT_MIN_LIQUIDITY, referenceSupply: 1_000_000e2
         });
-        list[1] = ConfigureWhitelist.Entry({
-            token: MainnetAddresses.USDC, fee: 500, minLiquidity: 1, referenceSupply: 0, excluded: new address[](0)
-        }); // a mint currency, never a component
-        list[2] = ConfigureWhitelist.Entry({
-            token: address(router), fee: 3000, minLiquidity: 1, referenceSupply: 0, excluded: new address[](0)
-        }); // a contract without decimals()
+        list[1] =
+            ConfigureWhitelist.Entry({token: MainnetAddresses.USDC, fee: 500, minLiquidity: 1, referenceSupply: 0}); // a mint currency, never a component
+        list[2] = ConfigureWhitelist.Entry({token: address(router), fee: 3000, minLiquidity: 1, referenceSupply: 0}); // a contract without decimals()
 
         configure.propose(factory, list, none);
         for (uint256 i = 0; i < list.length; ++i) {
@@ -718,7 +693,7 @@ contract ScriptsTest is Test {
         assertTrue(factory.isWhitelisted(list[1].token));
 
         IIndexFactory.TokenConfig memory other = _configFor(list[1]);
-        other.referenceSupply = 1;
+        other.referenceSupply += 1; // differs from the entry, and stays inside DA-18's bound
         vm.prank(DEFAULT_SENDER);
         factory.proposeConfig(list[1].token, other);
         reports = configure.status(factory, list);

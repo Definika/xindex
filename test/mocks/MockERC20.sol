@@ -14,6 +14,10 @@ contract MockERC20 is ERC20 {
         return _decimals;
     }
 
+    function burn(address from, uint256 amount) external {
+        _burn(from, amount);
+    }
+
     function mint(address to, uint256 amount) external {
         _mint(to, amount);
     }

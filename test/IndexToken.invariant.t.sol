@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
+import {IIndexRule} from "../src/interfaces/IIndexRule.sol";
 import {IndexToken} from "../src/IndexToken.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
@@ -15,7 +16,6 @@ contract IndexHandler is Test {
     MockMarket public market;
     MockRebalanceExecutor public executor;
     address public guardian;
-    address public oddExcluded;
     MockERC20[] public comps;
     int24[] public baseTicks;
     address[] public actors;
@@ -33,8 +33,7 @@ contract IndexHandler is Test {
         int24[] memory baseTicks_,
         address[] memory actors_,
         MockMarket market_,
-        address guardian_,
-        address oddExcluded_
+        address guardian_
     ) {
         index = index_;
         comps = comps_;
@@ -42,7 +41,6 @@ contract IndexHandler is Test {
         actors = actors_;
         market = market_;
         guardian = guardian_;
-        oddExcluded = oddExcluded_;
         executor = new MockRebalanceExecutor();
     }
 
@@ -138,10 +136,13 @@ contract IndexHandler is Test {
         market.setPriceTick(address(comps[i]), baseTicks[i] + int24(bound(delta, -20_000, 20_000)));
     }
 
-    /// @dev ODD counts on-chain supply with one excluded holder: minting there leaves its cap unchanged, minting to
-    ///      anyone else raises it.
-    function mintOddSupply(uint256 amount, bool toExcluded) external {
-        comps[3].mint(toExcluded ? oddExcluded : actors[0], bound(amount, 0, 1e30));
+    /// @dev ODD counts its own total supply, so a mint raises its market cap and moves the rule's targets, while a
+    ///      burn lowers it. Nothing a holder does to its balances can move it (DA-10).
+    function mintOddSupply(uint256 amount, bool burning) external {
+        uint256 delta = bound(amount, 0, 1e30);
+        if (!burning) return comps[3].mint(actors[0], delta);
+        uint256 held = comps[3].balanceOf(actors[0]);
+        comps[3].burn(actors[0], delta > held ? held : delta);
     }
 
     function warp(uint256 seconds_) external {
@@ -186,7 +187,22 @@ contract IndexHandler is Test {
         (uint256 eta,,) = index.pendingRebalance();
         if (eta == 0 || block.timestamp > eta + index.AUCTION_DURATION()) return false;
         if (block.timestamp < eta) vm.warp(eta + bound(offset, 0, index.AUCTION_DURATION()));
-        return true;
+        return _settlementClears();
+    }
+
+    /// @dev Whether the fill would clear MIN_SETTLEMENT_RATIO (DA-05). With less than one whole index token
+    ///      outstanding, every growing leg can round to zero while a shrinking one does not, which is a settlement
+    ///      that pays out and receives nothing: legitimately refused, so the handler must not call into it under
+    ///      `fail_on_revert`.
+    function _settlementClears() internal view returns (bool) {
+        (,, uint256[] memory amountsOut, uint256[] memory amountsIn) = index.previewRebalance();
+        address[] memory tokens = new address[](comps.length);
+        for (uint256 i = 0; i < comps.length; ++i) {
+            tokens[i] = address(comps[i]);
+        }
+        (uint256 outValue, uint256 inValue) =
+            IIndexRule(IndexFactory(index.FACTORY()).RULE()).settlementValues(tokens, amountsOut, amountsIn);
+        return inValue >= outValue * index.MIN_SETTLEMENT_RATIO() / 1e18;
     }
 
     function executeRebalance(uint256 offset) external {
@@ -234,7 +250,6 @@ contract IndexTokenInvariantTest is Test {
     function setUp() public {
         address owner = makeAddr("owner");
         address guardian = makeAddr("guardian");
-        address oddExcluded = makeAddr("oddExcluded");
         market = new MockMarket();
         factory = new IndexFactory(
             owner, guardian, address(market.weth()), address(market.uniswapV3Factory()), address(market.usdc())
@@ -256,12 +271,9 @@ contract IndexTokenInvariantTest is Test {
         comps[3].mint(makeAddr("oddHolder"), 7e29);
 
         address[] memory t = new address[](comps.length);
-        address[] memory excluded = new address[](1);
-        excluded[0] = oddExcluded;
         for (uint256 i = 0; i < comps.length; ++i) {
             t[i] = address(comps[i]);
-            IIndexFactory.TokenConfig memory config =
-                market.configWith(t[i], ticks[i], supplies[i], i == 3 ? excluded : new address[](0));
+            IIndexFactory.TokenConfig memory config = market.configWith(t[i], ticks[i], supplies[i]);
             vm.prank(owner);
             factory.proposeListing(t[i], config);
         }
@@ -274,7 +286,7 @@ contract IndexTokenInvariantTest is Test {
         for (uint256 i = 0; i < 5; ++i) {
             actors.push(makeAddr(string(abi.encodePacked("actor", i))));
         }
-        handler = new IndexHandler(index, comps, ticks, actors, market, guardian, oddExcluded);
+        handler = new IndexHandler(index, comps, ticks, actors, market, guardian);
         targetContract(address(handler));
     }
 

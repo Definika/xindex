@@ -90,6 +90,19 @@
   },
   {
     "type": "function",
+    "name": "MIN_SETTLEMENT_RATIO",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "MIN_TURNOVER",
     "inputs": [],
     "outputs": [
@@ -1551,6 +1564,27 @@
         "name": "token",
         "type": "address",
         "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "SettlementValueTooLow",
+    "inputs": [
+      {
+        "name": "inValue",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "outValue",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "required",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ]
   },

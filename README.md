@@ -41,7 +41,7 @@ coin; a third-ranked coin could then outweigh both, so the cap now applies to ev
 | Swaps | Uniswap V3 via SwapRouter02; quotes via QuoterV2. V4 / Universal Router / aggregators are a drop-in replacement for the zap later. |
 | Composition | Constituents fixed at creation. Units follow the index's methodology: `0` uncapped market cap, `1` capped market cap (largest 30%, every other component at most 20%, the rest of the 70% by cap, at least 5 components). |
 | Rebalancing | On-chain rule, no bots or keys. Anyone starts a rebalance 28 days after the last one; 2 days of notice; a 24-hour auction that any contract can fill; each target lies between half and double a component's units, and a growing component settles at its extra units times the auction multiplier, so between half and 2.5 times per rebalance. |
-| Market data | Supplies on-chain (total supply minus excluded burn or lock wallets) or a timelocked reference supply for wrapped assets; prices are Uniswap V3 30-minute time-weighted averages against WETH. A rebalance snapshot accepts a price only from a pool whose newest observation is under 10 minutes old, over a window whose liquidity reaches a timelocked per-token minimum and whose 10-minute parts agree. |
+| Market data | Supplies on-chain (a token's own total supply) or a timelocked reference supply for wrapped assets; prices are Uniswap V3 30-minute time-weighted averages against WETH. A rebalance snapshot accepts a price only from a pool whose newest observation is under 10 minutes old, over a window whose liquidity reaches a timelocked per-token minimum and whose 10-minute parts agree. |
 | Index price | The basket's value per index token, `IndexRule.navPerToken`, in WETH and USDC. For an uncapped index it equals the Numbers model's divisor price; for a capped index it replaces it. Display only. |
 | Fees | None in v2. |
 | Layer-1 coins | Only tokens that exist on mainnet can be components (WBTC, WETH, LINK, ...). Coins with no credible wrapper (ADA, XRP, ...) are out of scope until one exists. |
@@ -132,9 +132,12 @@ overall `minAmountOut`, passes `rebalanceNonce()`, and calls `burnToToken(BurnPa
 4. The owner or guardian can cancel a rebalance; others must then wait 2 days to restart.
 
 The settlement trades at the snapshot's relative prices, and the snapshot is up to three days old by the time it
-settles: 2 days of notice and a 24-hour auction. The 1.5-to-0.9 band bounds the multiplier on the bought legs; it does
-not bound how far the market moved in between, and nothing does. What stands against that is the guardian's check
-during the notice period and a cancel when a snapshot no longer describes the market.
+settles: 2 days of notice and a 24-hour auction. The 1.5-to-0.9 band bounds the multiplier on the bought legs at those
+prices, and not how far the market moved in between. Settlement therefore values both sides again in the block it
+happens in: what the index receives has to reach 85% of what it pays out, at prices read the way a snapshot reads them.
+The test is a ratio, so a market-wide move changes nothing; only drift between the legs sold and the legs bought can
+fail it, and it can only refuse a fill. A refused auction expires, and a fresh snapshot follows 2 days later. The
+guardian's check during the notice period still stands behind it.
 
 **Rebalance around a frozen component.** The guardian cancels and starts again with the component's bit in `keepMask`;
 that component keeps its units and is never transferred.
@@ -271,13 +274,14 @@ Every listed token carries a config that the rule validates:
   accepts the pool's price. The policy is a tenth of the pool's harmonic-mean liquidity when the config is proposed; the
   listing check requires the pool to meet it at that moment. Refresh it with a config change when a pool's liquidity
   moves for good.
-- **Supply:** on-chain total supply minus up to 8 excluded addresses (burn or lock wallets), or a reference supply.
-  Wrapped assets need a reference supply: on-chain WBTC is the wrapped float (116,132 BTC on 2026-09-16), not bitcoin's
-  supply. Reference supplies drift and are refreshed with a config change. **Never list a token with an excluded
-  address that anyone can deposit into and withdraw from**: the rule subtracts a live `balanceOf` of every excluded
-  address inside the rebalance snapshot, so such a config makes that token's market cap manipulable within a single
-  transaction. No entry the scripts ship excludes anything: every one takes a reference supply except tBTC, which takes
-  its on-chain supply. Any non-zero reference supply is accepted, so a figure that is stale or mistyped by orders of
+- **Supply:** the token's own total supply, or a reference supply. Wrapped assets need a reference supply: on-chain
+  WBTC is the wrapped float (116,132 BTC on 2026-09-16), not bitcoin's supply. Reference supplies drift and are
+  refreshed with a config change, which may move one by at most `MAX_SUPPLY_CHANGE` (an order of magnitude) at a time.
+  A config once carried a list of excluded holders, whose balances the rule subtracted with a live `balanceOf` inside
+  the rebalance snapshot; one exclusion a third party could fund and drain would have made that token's market cap
+  manipulable within a single transaction, so the list is gone. Every shipped entry takes a reference supply except
+  tBTC, which takes its on-chain supply. A reference supply within the bound is accepted as given, so a figure that is
+  stale or mistyped by less than an order of
   magnitude sends that component to its floor at the next rebalance: check the number while the proposal is still
   cancellable.
 - WETH itself has no pool, no minimum liquidity and needs a reference supply.
@@ -348,11 +352,13 @@ would swamp the pool: SKY 7, GNO 7, COMP 9, SNX 4, EIGEN 6, CVX 6, YFI 4, RPL 11
   the multiplier in [0.9, 1.5] for next to nothing: it sets the level of a near-empty index within the half-to-2.5-times
   bound but moves no holder's value.
 - Without competing executors, a filler can wait for the 0.9 floor and settle 10% under the snapshot's rate; the notice
-  period also lets traders position ahead of a public rebalance. The band bounds that multiplier on the bought legs and
-  nothing else. Settlement is a fixed-rate trade against targets up to three days old, so the index's exposure is the
-  band plus however far the market moved over the notice and the auction, and the second part is unbounded: sold
-  components appreciating against bought ones over two or three days is ordinary for crypto constituents. The
-  guardian's check during the notice period is what catches a snapshot the market has left behind.
+  period also lets traders position ahead of a public rebalance. The band bounds that multiplier on the bought legs at
+  the snapshot's prices and nothing else, and settlement is a fixed-rate trade against targets up to three days old. The
+  settlement-time ratio check is what bounds the rest: the index has to receive at least 85% of what it pays out at
+  prices read in the settling block, so the worst case is 15% of the traded value rather than the band plus whatever
+  the market did over three days. Sold components appreciating against bought ones over two or three days is ordinary
+  for crypto constituents, and past that point the auction simply expires unfilled. The guardian's check during the
+  notice period still catches a snapshot the market has left behind before it reaches the auction.
 - The snapshot's deviation check compares the window's three 10-minute parts only with each other, so it is an outlier
   filter for a short spike, not a bound on manipulation: a push held steady across the whole 30 minutes moves all three
   equally and reads a spread of zero. What it does bound is a single distorted part: at the 2,000-tick limit such a
@@ -373,16 +379,14 @@ would swamp the pool: SKY 7, GNO 7, COMP 9, SNX 4, EIGEN 6, CVX 6, YFI 4, RPL 11
 - A component whose WETH pool ends with no in-range liquidity takes no config at all: a `minLiquidity` of 0 is rejected
   as `InvalidMinLiquidity` and any positive value as `ThinPriceHistory`. Delisting and the keep mask are the escapes,
   and the token takes a config again by itself once the pool has liquidity in range.
-- `executeListing` is permissionless and applies the config the rule checked when it was proposed, two days or more
-  earlier, without checking it again. Re-checking there would let anyone block a listing by making the pool momentarily
-  thin, so a config can go stale between the two steps and the token is whitelisted meanwhile; the rebalance snapshot
-  checks it again, so a stale config blocks rebalances rather than corrupting prices.
-- The rule reads each excluded address's balance live inside the snapshot, so a config that excluded an address a third
-  party can fund and drain in one transaction would make that token's market cap manipulable. No shipped entry uses
-  exclusions, and the whitelist policy above forbids listing one that does.
-- Any non-zero reference supply passes the config check, so a stale or mistyped figure drives that component to its
-  floor at the next rebalance and hands the difference to the auction. It is owner-only, behind the 2-day listing delay
-  and the guardian's veto, which makes it an operational hazard rather than an attack.
+- `executeListing` is permissionless and runs the rule's config check again on the stored config before applying it, so
+  a pool that thinned out during the notice is not whitelisted on a check up to nine days old. Anyone can therefore
+  hold a listing off by keeping the pool thin, for as long as they keep paying for it; the proposal stays executable
+  for the rest of the 7-day window, and the rebalance snapshot checks the pool again in any case.
+- A reference supply is accepted as given within its bound, so a figure stale or mistyped by less than an order of
+  magnitude drives that component toward its floor at the next rebalance and hands the difference to the auction. It is
+  owner-only, behind the 2-day listing delay and the guardian's veto, which makes it an operational hazard rather than
+  an attack.
 - `cancelRebalance` has no window and no rate limit, so a hostile or compromised guardian can cancel each proposal at
   the last second of its auction and hold rebalancing off indefinitely, with the units drifting from the rule
   meanwhile. It moves no funds and takes nothing: this is a trust assumption of the guardian role, not something the
@@ -493,7 +497,7 @@ LISTING_MODE=execute FACTORY=0x... WHITELIST=default forge script script/Configu
 ```
 
 `WHITELIST` is `default` for the mainnet list, or comma-separated entries
-`token:fee:minLiquidity[:referenceSupply[:excluded|excluded...]]`, where `fee` is the fee tier of the token's WETH pool,
+`token:fee:minLiquidity[:referenceSupply]`, where `fee` is the fee tier of the token's WETH pool,
 or 0 for WETH, `minLiquidity` is 0 for WETH, and `referenceSupply` is in the token's raw units. The default list is WBTC
 (0.05%, bitcoin's supply), WETH (ether's supply), LINK and UNI (0.3%, circulating supplies), tBTC (0.3%, on-chain
 supply), and ten DeFi tokens with circulating supplies: AAVE, ONDO, ENA, MORPHO, ETHFI, CRV, PENDLE, OHM and LDO (0.3%)

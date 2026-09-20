@@ -29,8 +29,7 @@ interface IIndexRule is IXindexErrors {
     ///         more with the pool's `increaseObservationCardinalityNext`; they come into use as the pool writes new
     ///         observations.
     error PoolHistoryTooShort(address pool, uint16 cardinality);
-    /// @notice WETH without a reference supply, more than MAX_EXCLUDED or duplicate exclusions, or exclusions together
-    ///         with a reference supply.
+    /// @notice WETH without a reference supply.
     error InvalidSupplyConfig(address token);
     /// @notice `minLiquidity` is zero for a token with a pool, or non-zero for WETH.
     error InvalidMinLiquidity(address token);
@@ -73,9 +72,6 @@ interface IIndexRule is IXindexErrors {
     ///         a time-weighted average's clothes. Views do not apply it.
     function MAX_OBSERVATION_AGE() external view returns (uint32);
 
-    /// @notice Most excluded addresses a token config can list.
-    function MAX_EXCLUDED() external view returns (uint256);
-
     /// @notice Largest units the rule raises a component to, so an auction's premium on the increase still fits the
     ///         index's uint96 units. A component whose units already exceed it, or that is kept, can keep larger units;
     ///         its target is then never above its current units, and the multiplier applies only to increases.
@@ -102,11 +98,24 @@ interface IIndexRule is IXindexErrors {
     /// @notice Reverts unless `config` is usable for `token`. WETH needs a reference supply, no pool and no minimum
     ///         liquidity. Any other token needs its WETH pool registered in the Uniswap V3 factory, at least
     ///         MIN_OBSERVATION_CARDINALITY observation slots, enough history for a TWAP_WINDOW average, a non-zero
-    ///         `minLiquidity` that the pool's current window meets, and a non-zero supply. A config lists at most
-    ///         MAX_EXCLUDED distinct exclusions, and none together with a reference supply.
+    ///         `minLiquidity` that the pool's current window meets, and a non-zero supply.
     /// @param token Token the config is for.
     /// @param config Config to check, as it would be proposed to the factory.
     function checkConfig(address token, IIndexFactory.TokenConfig calldata config) external view;
+
+    /// @notice WETH value of the two sides of a rebalance settlement, priced the way a snapshot prices a component:
+    ///         only from a pool with a fresh newest observation, liquidity above the token's minimum and agreeing
+    ///         sub-windows. A component that neither sends nor receives anything is not priced at all, so a keep mask
+    ///         still routes around a component whose pool cannot be read.
+    /// @param tokens The index's components, in order.
+    /// @param amountsOut What leaves the index, one per component.
+    /// @param amountsIn What arrives, one per component.
+    /// @return outValue WETH value of `amountsOut`.
+    /// @return inValue WETH value of `amountsIn`.
+    function settlementValues(address[] calldata tokens, uint256[] calldata amountsOut, uint256[] calldata amountsIn)
+        external
+        view
+        returns (uint256 outValue, uint256 inValue);
 
     /// @notice WETH wei per 1e18 raw units of `token` from its configured pool, averaged over TWAP_WINDOW. WETH is
     ///         1e18 and USDC is priced from USD_POOL. It runs none of the snapshot checks {targetUnits} applies.
@@ -114,8 +123,8 @@ interface IIndexRule is IXindexErrors {
     /// @return The WAD price.
     function price(address token) external view returns (uint256);
 
-    /// @notice Supply the rule uses for `token`: its reference supply, or its total supply minus excluded balances,
-    ///         floored at zero. For a token with no config this is its plain total supply.
+    /// @notice Supply the rule uses for `token`: its reference supply, or its own total supply. For a token with no
+    ///         config this is its plain total supply.
     /// @param token Token whose config is read.
     /// @return Supply in the token's raw units.
     function supply(address token) external view returns (uint256);

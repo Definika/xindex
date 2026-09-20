@@ -33,7 +33,7 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///   LISTING_MODE  `propose`, `execute`, `safe`, or `status` (read-only: what is listed, pending and due, per entry).
 ///   FACTORY       Deployed IndexFactory.
 ///   WHITELIST     `default` for the mainnet list below (chain 1 only), or comma-separated entries
-///                 `token:fee:minLiquidity[:referenceSupply[:excluded|excluded...]]`. `fee` is the Uniswap V3 fee tier
+///                 `token:fee:minLiquidity[:referenceSupply]`. `fee` is the Uniswap V3 fee tier
 ///                 of the token's WETH pool, or 0 for WETH itself. `minLiquidity` is the least harmonic-mean liquidity
 ///                 a rebalance snapshot accepts from that pool (0 for WETH); a tenth of the pool's current
 ///                 harmonic-mean liquidity is the policy. `referenceSupply` is in the token's raw units (with its
@@ -46,13 +46,11 @@ contract ConfigureWhitelist is Script {
     /// @param fee Fee tier of the token's Uniswap V3 WETH pool, or 0 for WETH.
     /// @param minLiquidity Least harmonic-mean liquidity a rebalance snapshot accepts from the pool; 0 for WETH.
     /// @param referenceSupply Supply in the token's raw units, or 0 for on-chain supply.
-    /// @param excluded Holders whose balances on-chain supply leaves out; only without a reference supply.
     struct Entry {
         address token;
         uint24 fee;
         uint128 minLiquidity;
         uint256 referenceSupply;
-        address[] excluded;
     }
 
     /// @notice What `status` found for one entry.
@@ -83,7 +81,6 @@ contract ConfigureWhitelist is Script {
     /// @dev Positions of the optional-length fields in a WHITELIST entry; token and fee come first.
     uint256 private constant MIN_LIQUIDITY_FIELD = 2;
     uint256 private constant REFERENCE_SUPPLY_FIELD = 3;
-    uint256 private constant EXCLUDED_FIELD = 4;
 
     /// @notice What `propose` does for an entry: nothing, `proposeListing`, or `proposeConfig`.
     enum Action {
@@ -115,112 +112,93 @@ contract ConfigureWhitelist is Script {
     /// @return list WBTC, WETH, LINK, UNI and tBTC, then AAVE, ONDO, ENA, MORPHO, ETHFI, CRV, PENDLE, OHM, LDO and
     ///         SYRUP, in that order.
     function defaultMainnetList() public pure returns (Entry[] memory list) {
-        address[] memory none = new address[](0);
         list = new Entry[](15);
         list[0] = Entry({
             token: MainnetAddresses.WBTC,
             fee: POOL_FEE_LOW,
             minLiquidity: MainnetAddresses.WBTC_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.BTC_SUPPLY,
-            excluded: none
+            referenceSupply: MainnetAddresses.BTC_SUPPLY
         });
         list[1] = Entry({
-            token: MainnetAddresses.WETH,
-            fee: 0,
-            minLiquidity: 0,
-            referenceSupply: MainnetAddresses.ETH_SUPPLY,
-            excluded: none
+            token: MainnetAddresses.WETH, fee: 0, minLiquidity: 0, referenceSupply: MainnetAddresses.ETH_SUPPLY
         });
         list[2] = Entry({
             token: MainnetAddresses.LINK,
             fee: POOL_FEE_MEDIUM,
             minLiquidity: MainnetAddresses.LINK_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.LINK_SUPPLY,
-            excluded: none
+            referenceSupply: MainnetAddresses.LINK_SUPPLY
         });
         list[3] = Entry({
             token: MainnetAddresses.UNI,
             fee: POOL_FEE_MEDIUM,
             minLiquidity: MainnetAddresses.UNI_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.UNI_SUPPLY,
-            excluded: none
+            referenceSupply: MainnetAddresses.UNI_SUPPLY
         });
         list[4] = Entry({
             token: MainnetAddresses.TBTC,
             fee: POOL_FEE_MEDIUM,
             minLiquidity: MainnetAddresses.TBTC_MIN_LIQUIDITY,
-            referenceSupply: 0,
-            excluded: none
+            referenceSupply: 0
         });
         list[5] = Entry({
             token: MainnetAddresses.AAVE,
             fee: POOL_FEE_MEDIUM,
             minLiquidity: MainnetAddresses.AAVE_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.AAVE_SUPPLY,
-            excluded: none
+            referenceSupply: MainnetAddresses.AAVE_SUPPLY
         });
         list[6] = Entry({
             token: MainnetAddresses.ONDO,
             fee: POOL_FEE_MEDIUM,
             minLiquidity: MainnetAddresses.ONDO_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.ONDO_SUPPLY,
-            excluded: none
+            referenceSupply: MainnetAddresses.ONDO_SUPPLY
         });
         list[7] = Entry({
             token: MainnetAddresses.ENA,
             fee: POOL_FEE_MEDIUM,
             minLiquidity: MainnetAddresses.ENA_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.ENA_SUPPLY,
-            excluded: none
+            referenceSupply: MainnetAddresses.ENA_SUPPLY
         });
         list[8] = Entry({
             token: MainnetAddresses.MORPHO,
             fee: POOL_FEE_MEDIUM,
             minLiquidity: MainnetAddresses.MORPHO_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.MORPHO_SUPPLY,
-            excluded: none
+            referenceSupply: MainnetAddresses.MORPHO_SUPPLY
         });
         list[9] = Entry({
             token: MainnetAddresses.ETHFI,
             fee: POOL_FEE_MEDIUM,
             minLiquidity: MainnetAddresses.ETHFI_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.ETHFI_SUPPLY,
-            excluded: none
+            referenceSupply: MainnetAddresses.ETHFI_SUPPLY
         });
         list[10] = Entry({
             token: MainnetAddresses.CRV,
             fee: POOL_FEE_MEDIUM,
             minLiquidity: MainnetAddresses.CRV_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.CRV_SUPPLY,
-            excluded: none
+            referenceSupply: MainnetAddresses.CRV_SUPPLY
         });
         list[11] = Entry({
             token: MainnetAddresses.PENDLE,
             fee: POOL_FEE_MEDIUM,
             minLiquidity: MainnetAddresses.PENDLE_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.PENDLE_SUPPLY,
-            excluded: none
+            referenceSupply: MainnetAddresses.PENDLE_SUPPLY
         });
         list[12] = Entry({
             token: MainnetAddresses.OHM,
             fee: POOL_FEE_MEDIUM,
             minLiquidity: MainnetAddresses.OHM_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.OHM_SUPPLY,
-            excluded: none
+            referenceSupply: MainnetAddresses.OHM_SUPPLY
         });
         list[13] = Entry({
             token: MainnetAddresses.LDO,
             fee: POOL_FEE_MEDIUM,
             minLiquidity: MainnetAddresses.LDO_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.LDO_SUPPLY,
-            excluded: none
+            referenceSupply: MainnetAddresses.LDO_SUPPLY
         });
         list[14] = Entry({
             token: MainnetAddresses.SYRUP,
             fee: POOL_FEE_HIGH,
             minLiquidity: MainnetAddresses.SYRUP_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.SYRUP_SUPPLY,
-            excluded: none
+            referenceSupply: MainnetAddresses.SYRUP_SUPPLY
         });
     }
 
@@ -275,24 +253,19 @@ contract ConfigureWhitelist is Script {
         }
     }
 
-    /// @notice Parses `token:fee:minLiquidity[:referenceSupply[:excluded|excluded...]]`.
+    /// @notice Parses `token:fee:minLiquidity[:referenceSupply]`.
     /// @param raw One entry, without surrounding spaces.
     /// @return entry The parsed entry; an empty or missing reference supply is 0.
     function parseEntry(string memory raw) public pure returns (Entry memory entry) {
         string[] memory fields = vm.split(raw, ":");
-        if (fields.length <= MIN_LIQUIDITY_FIELD || fields.length > EXCLUDED_FIELD + 1) revert MalformedEntry(raw);
+        if (fields.length <= MIN_LIQUIDITY_FIELD || fields.length > REFERENCE_SUPPLY_FIELD + 1) {
+            revert MalformedEntry(raw);
+        }
         entry.token = vm.parseAddress(fields[0]);
         entry.fee = SafeCast.toUint24(vm.parseUint(fields[1]));
         entry.minLiquidity = SafeCast.toUint128(vm.parseUint(fields[MIN_LIQUIDITY_FIELD]));
         if (fields.length > REFERENCE_SUPPLY_FIELD && bytes(fields[REFERENCE_SUPPLY_FIELD]).length != 0) {
             entry.referenceSupply = vm.parseUint(fields[REFERENCE_SUPPLY_FIELD]);
-        }
-        if (fields.length > EXCLUDED_FIELD && bytes(fields[EXCLUDED_FIELD]).length != 0) {
-            string[] memory excluded = vm.split(fields[EXCLUDED_FIELD], "|");
-            entry.excluded = new address[](excluded.length);
-            for (uint256 i = 0; i < excluded.length; ++i) {
-                entry.excluded[i] = vm.parseAddress(excluded[i]);
-            }
         }
     }
 
@@ -309,7 +282,6 @@ contract ConfigureWhitelist is Script {
     {
         config.minLiquidity = entry.minLiquidity;
         config.referenceSupply = entry.referenceSupply;
-        config.excluded = entry.excluded;
         if (entry.fee != 0) config.pool = IUniswapV3Factory(uniswapV3Factory).getPool(entry.token, weth, entry.fee);
     }
 
@@ -525,7 +497,6 @@ contract ConfigureWhitelist is Script {
         pure
         returns (bool)
     {
-        return a.pool == b.pool && a.minLiquidity == b.minLiquidity && a.referenceSupply == b.referenceSupply
-            && keccak256(abi.encode(a.excluded)) == keccak256(abi.encode(b.excluded));
+        return a.pool == b.pool && a.minLiquidity == b.minLiquidity && a.referenceSupply == b.referenceSupply;
     }
 }

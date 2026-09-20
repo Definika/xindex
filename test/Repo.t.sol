@@ -119,6 +119,19 @@ contract RepoTest is Test {
         assertTrue(_contains(workflow, "git diff --exit-code abi/"), "a stale ABI fails CI");
     }
 
+    /// @dev DA-10. A token config carried a list of excluded holders whose balances `IndexRule._supply` subtracted
+    ///      with a live `balanceOf` inside the rebalance snapshot, so a config naming an address a third party could
+    ///      fund and drain made that component's market cap manipulable inside one transaction: flash loan in, start a
+    ///      rebalance, flash loan out. Nothing shipped used it, and a reference supply behind the listing timelock
+    ///      covers the same need, so the field is gone from the config, the events, the rule and the listing script.
+    function test_DA10_noConfigCanCarryExclusions() public view {
+        assertFalse(_contains(_read("abi/IndexFactory.json"), "excluded"), "the listing ABI has no exclusion list");
+        assertFalse(_contains(_read("abi/IndexRule.json"), "excluded"), "nor the rule's");
+        assertFalse(
+            _contains(_read("script/ConfigureWhitelist.s.sol"), "entry.excluded"), "nor the whitelist script's entries"
+        );
+    }
+
     /// @dev XA-46: the agent instructions have one copy; CLAUDE.md only imports AGENTS.md.
     function test_XA46_claudeMdOnlyImportsAgentsMd() public view {
         string memory claude = _read("CLAUDE.md");

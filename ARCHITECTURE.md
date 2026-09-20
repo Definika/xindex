@@ -124,11 +124,11 @@ A stateless, view-only contract the factory deploys in its constructor. It never
   over `TWAP_WINDOW` (30 minutes). The mean tick rounds toward negative infinity and is quoted like Uniswap's
   `OracleLibrary.getQuoteAtTick`, with `getSqrtPriceAtTick` vendored from Uniswap v4-core (MIT) in
   `src/libraries/TickMath.sol`. WETH is `1e18`; USDC is read from the USDC/WETH 0.05% pool (`USD_POOL`).
-- **Supplies:** a token's reference supply, or its total supply minus the balances of excluded addresses. Exclusions
-  are read as live balances inside the snapshot, so the listing policy is that an excluded address must be one no
-  stranger can fund and drain: a flash loan into such an address and out again would otherwise move that component's
-  market cap within a single transaction (DA-10). Every shipped entry uses a reference supply and excludes nothing, so
-  this is a constraint on future listings rather than a live exposure.
+- **Supplies:** a token's reference supply, or its own total supply. A config once carried a list of excluded holders
+  that the rule subtracted as live balances inside the snapshot; one exclusion a stranger could fund and drain would
+  have moved that component's market cap within a single transaction, so the list is gone and a supply that has to
+  leave holdings out uses a reference figure behind the listing timelock instead (DA-10). A config change may move a
+  reference supply by at most `MAX_SUPPLY_CHANGE` (an order of magnitude) at a time (DA-18).
 - **Weights:** a market cap is `supply * price / 1e18`, floored at one wei; only ratios of caps matter, so the scale
   cancels out. Uncapped: `cap_i / sum`. Capped (`src/libraries/Methodology.sol`, at least 5 components): the largest
   weighs 30%, and every other constituent shares the remaining 70% by cap under a 20% cap of its own. Whatever a cap
@@ -161,14 +161,14 @@ A stateless, view-only contract the factory deploys in its constructor. It never
   no pool and no minimum liquidity. Any other token needs the Uniswap V3 factory's own pool for the token and WETH at
   the pool's fee tier, at least `MIN_OBSERVATION_CARDINALITY` (200) observation slots (a pool writes at most one
   observation per block, so 200 slots cover 30 minutes while blocks are at least 9.05 seconds apart), a pool that serves
-  that average now, a non-zero `minLiquidity` that the pool's current window meets, a non-zero supply, and at most
-  `MAX_EXCLUDED` (8) distinct exclusions, none next to a reference supply. The mainnet policy for `minLiquidity` is a
-  tenth of the pool's harmonic-mean liquidity when it is proposed. Three things this check does not do. Cardinality is
+  that average now, a non-zero `minLiquidity` that the pool's current window meets, and a non-zero supply. The mainnet
+  policy for `minLiquidity` is a tenth of the pool's harmonic-mean liquidity when it is proposed. Three things this
+  check does not do. Cardinality is
   the ring's capacity, which anyone can raise with `increaseObservationCardinalityNext`, not the history the ring
   holds; `observe` reverting `OLD`, and `MAX_OBSERVATION_AGE` at snapshot time, are what catch a pool that has not
-  written enough (DA-19). The supply is only checked for being non-zero, so a stale or mistyped `referenceSupply`
-  passes and drives that component to its floor at the next rebalance: a supply that moves by orders of magnitude is
-  worth reading again before the two days run out (DA-18). And a pool that ends with no in-range liquidity at all takes
+  written enough (DA-19). The supply is checked only for being non-zero and for staying within `MAX_SUPPLY_CHANGE` of
+  the one in force, so a figure stale or mistyped by less than that passes and drives its component toward its floor at
+  the next rebalance: a revised supply is worth reading again before the two days run out (DA-18). And a pool that ends with no in-range liquidity at all takes
   no config whatsoever, since a `minLiquidity` of zero is rejected as `InvalidMinLiquidity` and any positive value as
   `ThinPriceHistory`; such a token can only be delisted or kept out of rebalances with a keep mask until its pool
   recovers, which it does by itself when liquidity comes back (DA-07).
@@ -204,10 +204,10 @@ A stateless, view-only contract the factory deploys in its constructor. It never
   for a `proposeListing` proposal, whitelists the token if needed (`pendingIsListing` tells which). The owner and the
   guardian can `cancelListing` a pending or expired proposal and `delist` a token; delisting is immediate, never affects
   existing indexes, keeps the config those indexes still rebalance with, and cancels a pending `proposeListing`
-  proposal, so relisting always takes a fresh proposal and delay. `executeListing` applies the config the rule accepted
-  two days earlier and does not check it again. Checking it there was considered and rejected: it would let anyone block
-  a listing by making the pool momentarily thin, and the damage from a stale config is bounded because the snapshot
-  checks the pool again at rebalance time, so a stale config blocks rebalances rather than corrupting prices (DA-11).
+  proposal, so relisting always takes a fresh proposal and delay. `executeListing` runs the rule's `checkConfig` again on the
+  stored config before applying it, so a pool that thinned out during the notice is not whitelisted on a check up to
+  nine days old. The cost is that anyone can hold a listing off by keeping that pool thin, for as long as they keep
+  paying for it, and the proposal stays executable for the rest of its `PROPOSAL_WINDOW` (DA-11).
 - A proposal that passes its `PROPOSAL_WINDOW` is dead but leaves `listingEta`, `pendingGuardian` and
   `pendingGuardianEta` set, so those storage reads alone say "pending" forever; `listingPending(token)` and
   `guardianChangePending()` are the views that answer whether a proposal can still be executed, and operators should
@@ -327,11 +327,14 @@ factor f on a component the rebalance sells, or high on one it buys, sets the fa
 snapshot itself has to be guarded: see the price checks under `targetUnits`. Ending at 0.9 covers swap costs and
 ordinary drift; simulated at medium volatility, 5% of auctions expire and restart. The band bounds the multiplier on
 the bought legs and nothing else. Up to three days separate the snapshot from the fill, two of notice and one of
-auction, and the settlement trades at the snapshot's relative prices however far the market has moved since. That drift
-is unbounded: when the sold components appreciate by half against the bought one over the notice period, which two or
-three days of crypto prices can easily do, settling at the 0.9 floor costs the index far more than the 10% the band
-describes (DA-05). The notice period is what makes this a choice rather than a surprise, since holders who dislike the
-snapshot can leave in kind before it settles, and the guardian can cancel a snapshot the market has overtaken.
+auction, and the settlement trades at the snapshot's relative prices however far the market has moved since. Settlement
+therefore values both sides again in its own block, with snapshot-quality prices, and requires what the index receives
+to reach `MIN_SETTLEMENT_RATIO` (0.85) of what it pays out: the auction's own floor, with 5% for the gap between a
+30-minute mean and the spot an executor trades at. The test is a ratio between the two sides, so a market-wide move
+reprices both together and passes; only drift between the legs sold and the legs bought can fail it. It can refuse a
+settlement, never enlarge one, and what it refuses expires unfilled and comes back as a fresh snapshot (DA-05). The
+notice period is what makes this a choice rather than a surprise, since holders who dislike the snapshot can leave in
+kind before it settles, and the guardian can cancel a snapshot the market has overtaken.
 
 **Clip, then redistribute.** Each rebalance targets between half and double a component's units (a fill at the opening
 multiplier settles a growing one at up to 2.5 times, with the executor delivering the extra), so a manipulated price,
@@ -418,8 +421,8 @@ its own address.
   guardian veto, so `OwnershipTransferStarted` deserves the same watch as `GuardianProposed`.
 - **Shape versus value.** Issue, redeem and claims never read a price. What can distort a basket's shape, with targets
   always within half to double per component per rebalance and settled units within half to 2.5 times: an issuer minting
-  supply (policy: fixed-supply or governance-minted tokens); the owner changing a pool, a minimum liquidity, exclusions
-  or a reference supply, behind the 2-day delay and the guardian's cancel; the caller choosing the snapshot moment. A
+  supply (policy: fixed-supply or governance-minted tokens); the owner changing a pool, a minimum liquidity or a
+  reference supply, behind the 2-day delay and the guardian's cancel; the caller choosing the snapshot moment. A
   distorted snapshot price can also move value: read low by a factor f on a sold component, it sets the auction's fair
   multiplier to about 1/f, and below f = 2/3 the first executor takes value (the 2026-09-16 audit measured 2.48% of an
   off-target uncapped index from one 12-second block at an extreme tick in an empty range). Rebalance snapshots
@@ -434,7 +437,8 @@ its own address.
   and guardian can stall rebalancing or keep chosen components unchanged.
 - **Level:** set by the auction. A price error of δ on a traded component moves the fair multiplier by about δ. A lone
   executor on an honest snapshot keeps `(1 - 0.9)` of the bought value at the snapshot's own prices, plus however far
-  the market moved in the up to three days between the snapshot and the fill, which the band does not bound (DA-05). A
+  the market moved in the up to three days between the snapshot and the fill; the band does not bound that second part,
+  and the settlement-time ratio check does, at 15% of what the index pays out (DA-05). A
   windfall needs the fair multiplier above 1.5. When the settlement moves no raw unit at all the multiplier is parity,
   so an empty index follows the rule exactly; when it moves a few wei, the auction still decays and a lone executor
   picks the level of a near-empty index for free, within the half-to-2.5-times bound and without moving any holder's

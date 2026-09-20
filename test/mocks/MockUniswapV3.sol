@@ -139,6 +139,14 @@ contract MockUniswapV3Pool {
     }
 }
 
+/// @notice The harmonic-mean liquidity `IndexRule._observe` reads over `pool`'s window, computed the same way.
+function harmonicOf(MockUniswapV3Pool pool) view returns (uint256) {
+    uint32[] memory ago = new uint32[](4);
+    (ago[0], ago[1], ago[2]) = (1800, 1200, 600);
+    (, uint160[] memory perLiquidity) = pool.observe(ago);
+    return uint256(1800) * type(uint160).max / (uint256(perLiquidity[3] - perLiquidity[0]) << 32);
+}
+
 /// @notice Registry of mock pools that answers `getPool` in either token order, like the real factory.
 contract MockUniswapV3Factory {
     mapping(address tokenA => mapping(address tokenB => mapping(uint24 fee => address pool))) public getPool;

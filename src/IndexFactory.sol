@@ -40,6 +40,7 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
     uint256 public constant LISTING_DELAY = 2 days;
     uint256 public constant GUARDIAN_DELAY = 7 days;
     uint256 public constant PROPOSAL_WINDOW = 7 days;
+    uint256 public constant MAX_SUPPLY_CHANGE = 10;
     address public immutable RULE;
     address public immutable IMPLEMENTATION;
 
@@ -191,10 +192,25 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         _propose(token, config, false);
     }
 
+    /// @dev The rule takes any non-zero reference supply, so a stale or mistyped figure drives its component straight
+    ///      to its floor at the next rebalance and hands the difference to the auction (DA-18). A revision is a
+    ///      correction, so it stays within an order of magnitude of the supply in force; a genuine re-founding goes in
+    ///      steps, each behind its own listing delay and guardian veto. A first listing has nothing to compare against,
+    ///      and a switch between a reference supply and the token's own total supply is a change of kind, not of size.
+    function _checkSupplyChange(address token, uint256 proposed) private view {
+        uint256 inForce = _tokenConfig[token].referenceSupply;
+        if (inForce == 0 || proposed == 0) return;
+        // Divided rather than multiplied, so a supply near the top of the range raises this error instead of a panic.
+        uint256 low = proposed < inForce ? proposed : inForce;
+        uint256 high = proposed < inForce ? inForce : proposed;
+        if (high / MAX_SUPPLY_CHANGE > low) revert SupplyChangeTooLarge(token, inForce, proposed);
+    }
+
     function _propose(address token, TokenConfig calldata config, bool listing) private {
         if (token.code.length == 0) revert NotAContract(token);
         uint256 pending = listingEta[token];
         if (pending != 0 && block.timestamp <= pending + PROPOSAL_WINDOW) revert ListingPending(token, pending);
+        _checkSupplyChange(token, config.referenceSupply);
         IIndexRule(RULE).checkConfig(token, config);
 
         uint256 eta = block.timestamp + LISTING_DELAY;
@@ -204,12 +220,9 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         next.pool = config.pool;
         next.minLiquidity = config.minLiquidity;
         next.referenceSupply = config.referenceSupply;
-        next.excluded = config.excluded;
         // The rule call above is a view on a contract this factory deployed; nothing external can run in between.
         // forge-lint: disable-next-line(reentrancy-events)
-        emit ListingProposed(
-            token, eta, listing, config.pool, config.minLiquidity, config.referenceSupply, config.excluded
-        );
+        emit ListingProposed(token, eta, listing, config.pool, config.minLiquidity, config.referenceSupply);
     }
 
     /// @inheritdoc IIndexFactory
@@ -232,6 +245,13 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         if (block.timestamp < eta) revert ListingNotReady(token, eta);
         if (block.timestamp > eta + PROPOSAL_WINDOW) revert ListingExpired(token, eta + PROPOSAL_WINDOW);
 
+        TokenConfig memory proposed = _pendingConfig[token];
+        // The rule validated this config when it was proposed, up to nine days ago, and execution is permissionless:
+        // without a second look a pool that has since thinned out is whitelisted anyway and stays index-creatable
+        // until someone notices (DA-11). Re-validating lets a griefer hold a listing off by keeping the pool thin, but
+        // only for as long as they keep paying, and the proposal stays executable for the rest of PROPOSAL_WINDOW.
+        IIndexRule(RULE).checkConfig(token, proposed);
+
         bool listing = pendingIsListing[token];
         delete listingEta[token];
         delete pendingIsListing[token];
@@ -240,9 +260,8 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         current.pool = next.pool;
         current.minLiquidity = next.minLiquidity;
         current.referenceSupply = next.referenceSupply;
-        current.excluded = next.excluded;
         delete _pendingConfig[token];
-        emit TokenConfigured(token, current.pool, current.minLiquidity, current.referenceSupply, current.excluded);
+        emit TokenConfigured(token, current.pool, current.minLiquidity, current.referenceSupply);
 
         if (listing && !isWhitelisted[token]) {
             isWhitelisted[token] = true;

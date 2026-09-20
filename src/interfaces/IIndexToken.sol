@@ -108,6 +108,9 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     ///         between the quote and this block. Only raised by the bounded `executeRebalance`.
     error RebalanceMovedOn(address token, uint256 required, uint256 maxAmountIn);
 
+    /// @notice The fill is worth less than MIN_SETTLEMENT_RATIO of what it takes, priced in the settling block.
+    error SettlementValueTooLow(uint256 inValue, uint256 outValue, uint256 required);
+
     /// @notice Number of shares that make up one whole index token (1e18).
     function SHARE_UNIT() external view returns (uint256);
 
@@ -125,6 +128,11 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
 
     /// @notice Multiplier on the growing components' extra units when the auction closes.
     function AUCTION_END_MULTIPLIER() external view returns (uint256);
+
+    /// @notice Least the index may receive as a fraction of what it pays out, valued in the settling block (1e18 =
+    ///         parity). The auction's own floor with room for the difference between a 30-minute mean and the spot an
+    ///         executor trades at.
+    function MIN_SETTLEMENT_RATIO() external view returns (uint256);
 
     /// @notice Least turnover, as a share of the rebalanced value (1e18 = 100%), for which a rebalance can start.
     function MIN_TURNOVER() external view returns (uint256);

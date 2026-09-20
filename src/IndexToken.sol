@@ -55,6 +55,9 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
     uint256 public constant AUCTION_START_MULTIPLIER = 1.5e18;
     uint256 public constant AUCTION_END_MULTIPLIER = 0.9e18;
     uint256 public constant MIN_TURNOVER = 0.005e18;
+    /// @dev AUCTION_END_MULTIPLIER, less 5% for the gap between the rule's 30-minute mean and the spot an executor
+    ///      trades at. See _checkSettlementValue.
+    uint256 public constant MIN_SETTLEMENT_RATIO = 0.85e18;
     address public immutable FACTORY;
     address public immutable RULE;
 
@@ -307,6 +310,8 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
             }
         }
 
+        _checkSettlementValue(amountsOut, amountsIn);
+
         // What the index holds before it pays out, so the check afterwards can require the whole of `amountsIn` back:
         // surplus from rounding or a donation belongs to the holders, not to the executor.
         // A component that neither sends nor receives anything is not read at all: `amountsOut` and `amountsIn` are
@@ -412,6 +417,27 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
             units[i] = next;
             amountsIn[i] = Math.mulDiv(supply, next, SHARE_UNIT) - Math.mulDiv(supply, current, SHARE_UNIT);
         }
+    }
+
+    /// @dev The auction band fixes the multiplier on the bought legs at the snapshot's prices. Settlement happens up
+    ///      to REBALANCE_DELAY + AUCTION_DURATION later, and nothing bounded how far the market moved in between, so a
+    ///      fill was worth whatever three-day-old relative prices said it was and an executor filled only when the
+    ///      drift favoured them (DA-05). The two sides are therefore valued again in the settling block and the fill
+    ///      has to clear MIN_SETTLEMENT_RATIO of what it takes. The test is a ratio, not a price, so a market-wide
+    ///      move reprices both sides together and changes nothing; only the drift between the legs sold and the legs
+    ///      bought can fail it. It can only refuse a settlement, never enlarge one: the amounts still come from supply
+    ///      and units, and the band still bounds them. The cost is liveness. A pool that has gone quiet, or a market
+    ///      that really has moved, makes the auction expire unfilled, and the restart hold-off then gives the owner and
+    ///      the guardian the first move on a fresh snapshot.
+    function _checkSettlementValue(uint256[] memory amountsOut, uint256[] memory amountsIn) private view {
+        uint256 n = amountsOut.length;
+        address[] memory tokens = new address[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            tokens[i] = _components[i].token;
+        }
+        (uint256 outValue, uint256 inValue) = IIndexRule(RULE).settlementValues(tokens, amountsOut, amountsIn);
+        uint256 required = Math.mulDiv(outValue, MIN_SETTLEMENT_RATIO, WAD);
+        if (inValue < required) revert SettlementValueTooLow(inValue, outValue, required);
     }
 
     /// @dev Linear decay from the start to the end multiplier; the decrement rounds down, so the multiplier rounds up.

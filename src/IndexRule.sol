@@ -65,7 +65,6 @@ contract IndexRule is IIndexRule {
     ///      against 24% and 9% at twenty minutes. Trading frequency turns out not to track depth at all, so the
     ///      stricter bound cost the deep pools as much as the thin ones.
     uint32 public constant MAX_OBSERVATION_AGE = 2 * TWAP_WINDOW / TWAP_SUB_WINDOWS;
-    uint256 public constant MAX_EXCLUDED = 8;
     /// @inheritdoc IIndexRule
     /// @dev An auction can deliver 1.5 times a growing component's extra units, so a raised target stays at most 2/3 of
     ///      uint96 and 1.5 times it is exactly type(uint96).max.
@@ -114,7 +113,6 @@ contract IndexRule is IIndexRule {
 
     /// @inheritdoc IIndexRule
     function checkConfig(address token, IIndexFactory.TokenConfig calldata config) external view {
-        _checkExclusions(token, config);
         if (token == WETH) {
             if (config.pool != address(0)) revert InvalidPool(token, config.pool);
             if (config.minLiquidity != 0) revert InvalidMinLiquidity(token);
@@ -127,7 +125,28 @@ contract IndexRule is IIndexRule {
         if (harmonicLiquidity < config.minLiquidity) {
             revert ThinPriceHistory(config.pool, harmonicLiquidity, config.minLiquidity);
         }
-        if (_supply(token, config.referenceSupply, config.excluded) == 0) revert ZeroSupply(token);
+        if (_supply(token, config.referenceSupply) == 0) revert ZeroSupply(token);
+    }
+
+    /// @inheritdoc IIndexRule
+    /// @dev The two sides of a settlement, valued in the settling block. `IndexToken` holds them against its own floor:
+    ///      the auction band fixes the multiplier on the bought legs at snapshot prices, and says nothing about how far
+    ///      the market moved in the up to three days before the fill (DA-05). Prices are snapshot-quality, because a
+    ///      guard read off a manipulable price is no guard; they gate the settlement and never size it, so the amounts
+    ///      that move stay derived from supply and units alone.
+    function settlementValues(address[] calldata tokens, uint256[] calldata amountsOut, uint256[] calldata amountsIn)
+        external
+        view
+        returns (uint256 outValue, uint256 inValue)
+    {
+        if (amountsOut.length != tokens.length || amountsIn.length != tokens.length) revert LengthMismatch();
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            // Nothing moved on this leg, so nothing about its pool matters here (DA-14).
+            if (amountsOut[i] == 0 && amountsIn[i] == 0) continue;
+            uint256 p = _snapshotPrice(tokens[i], IIndexFactory(FACTORY).tokenConfig(tokens[i]));
+            outValue += Math.mulDiv(amountsOut[i], p, WAD);
+            inValue += Math.mulDiv(amountsIn[i], p, WAD);
+        }
     }
 
     /// @inheritdoc IIndexRule
@@ -138,7 +157,7 @@ contract IndexRule is IIndexRule {
     /// @inheritdoc IIndexRule
     function supply(address token) external view returns (uint256) {
         IIndexFactory.TokenConfig memory config = IIndexFactory(FACTORY).tokenConfig(token);
-        return _supply(token, config.referenceSupply, config.excluded);
+        return _supply(token, config.referenceSupply);
     }
 
     // ---------------------------------------------------------------------
@@ -216,17 +235,6 @@ contract IndexRule is IIndexRule {
     // ---------------------------------------------------------------------
     // Market data internals
     // ---------------------------------------------------------------------
-
-    /// @dev At most MAX_EXCLUDED distinct exclusions, and none next to a reference supply.
-    function _checkExclusions(address token, IIndexFactory.TokenConfig calldata config) private pure {
-        uint256 n = config.excluded.length;
-        if (n > MAX_EXCLUDED || (config.referenceSupply != 0 && n != 0)) revert InvalidSupplyConfig(token);
-        for (uint256 i = 1; i < n; ++i) {
-            for (uint256 j = 0; j < i; ++j) {
-                if (config.excluded[i] == config.excluded[j]) revert InvalidSupplyConfig(token);
-            }
-        }
-    }
 
     /// @dev A pool must be the Uniswap V3 factory's pool for the token and WETH at its own fee tier, keep enough
     ///      observations that a TWAP_WINDOW average does not run out of history, and serve one now.
@@ -348,19 +356,13 @@ contract IndexRule is IIndexRule {
         return tokenIsToken0 ? Math.mulDiv(ratioX128, WAD, 1 << 128) : Math.mulDiv(1 << 128, WAD, ratioX128);
     }
 
-    /// @dev The reference supply, or the total supply minus excluded balances, floored at zero. Callers reject zero.
-    function _supply(address token, uint256 referenceSupply, address[] memory excluded)
-        private
-        view
-        returns (uint256 circulating)
-    {
-        if (referenceSupply != 0) return referenceSupply;
-        circulating = IERC20(token).totalSupply();
-        uint256 n = excluded.length;
-        for (uint256 i = 0; i < n; ++i) {
-            uint256 held = IERC20(token).balanceOf(excluded[i]);
-            circulating = circulating > held ? circulating - held : 0;
-        }
+    /// @dev The reference supply, or the token's own total supply. Callers reject zero. A config once carried a list
+    ///      of excluded holders whose balances this subtracted with a live `balanceOf` inside the snapshot, which made
+    ///      a market cap manipulable within one transaction whenever an exclusion was an address a third party could
+    ///      fund and drain; the list is gone, and a supply that has to leave holdings out uses a reference figure
+    ///      behind the listing timelock instead (DA-10).
+    function _supply(address token, uint256 referenceSupply) private view returns (uint256) {
+        return referenceSupply != 0 ? referenceSupply : IERC20(token).totalSupply();
     }
 
     /// @dev WAD as soon as one price is too high for exact value products, 1 otherwise. One scale for the whole
@@ -391,7 +393,7 @@ contract IndexRule is IIndexRule {
         for (uint256 i = 0; i < n; ++i) {
             IIndexFactory.TokenConfig memory config = IIndexFactory(FACTORY).tokenConfig(tokens[i]);
             prices[i] = _price(tokens[i], config.pool);
-            supplies[i] = _supply(tokens[i], config.referenceSupply, config.excluded);
+            supplies[i] = _supply(tokens[i], config.referenceSupply);
             if (supplies[i] == 0) revert ZeroSupply(tokens[i]);
             caps[i] = _cap(supplies[i], prices[i]);
         }
@@ -416,7 +418,7 @@ contract IndexRule is IIndexRule {
             if (_kept(keepMask, i) && methodology == Methodology.UNCAPPED) continue;
             IIndexFactory.TokenConfig memory config = IIndexFactory(FACTORY).tokenConfig(tokens[i]);
             prices[i] = _snapshotPrice(tokens[i], config);
-            uint256 circulating = _supply(tokens[i], config.referenceSupply, config.excluded);
+            uint256 circulating = _supply(tokens[i], config.referenceSupply);
             if (circulating == 0) revert ZeroSupply(tokens[i]);
             caps[i] = _cap(circulating, prices[i]);
         }

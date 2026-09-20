@@ -111,15 +111,20 @@ script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test 
 - **Fixed constituents, rule-rebalanced units.** The token list is immutable after `initialize`. Units change only in
   `executeRebalance`, from the `IndexRule.targetUnits` snapshot that a permissionless `startRebalance` took after
   `MIN_REBALANCE_INTERVAL`, after `REBALANCE_DELAY` of notice, within the auction's multiplier band: targets lie within
-  half to double each component's units, and settled units within half to 2.5 times (the growth scaled by the band).
-  The band bounds the multiplier on the bought legs, not how far the market moves in the up to three days between the
-  snapshot and settlement, which is unbounded (DA-05). A cancel, and an auction that expired unfilled, hold strangers
-  off for `REBALANCE_DELAY` (`canStartRebalance` answers it), so the owner and guardian get the first restart; the
-  trigger stays permissionless after that. `canStartRebalance` also answers false for a clone that was never
-  initialized and can never rebalance at all (DA-22). `MIN_TURNOVER` is measured as `min(sold, bought) / activeValue`,
-  so it certifies value actually traded rather than value merely leaving (DA-08). A keep mask routes around a component
-  that cannot be moved: `executeRebalance` reads `balanceOf` only on a component that sends or receives something, so a
-  component whose `balanceOf` reverts is skipped as well as one whose `transfer` does (DA-14).
+  half to double each component's units, and settled units within half to 2.5 times (the growth scaled by the band). The
+  band bounds the multiplier on the bought legs at the snapshot's prices, and says nothing about how far the market
+  moves in the up to three days before the fill, so settlement values both sides again in the settling block and
+  requires what the index receives to reach `MIN_SETTLEMENT_RATIO` of what it pays out (DA-05). That test is a ratio, so
+  a market-wide move reprices both sides together and changes nothing; only drift between the legs sold and the legs
+  bought can fail it, and it can only refuse a settlement, never enlarge one. Its cost is liveness: a quiet pool or a
+  market that really moved makes the auction expire unfilled. An index with less than one whole token outstanding cannot
+  settle at all, because every growing leg rounds to zero while a shrinking one does not. A cancel, and an auction that
+  expired unfilled, hold strangers off for `REBALANCE_DELAY` (`canStartRebalance` answers it), so the owner and guardian
+  get the first restart; the trigger stays permissionless after that. `canStartRebalance` also answers false for a clone
+  that was never initialized and can never rebalance at all (DA-22). `MIN_TURNOVER` is measured as `min(sold, bought) /
+  activeValue`, so it certifies value actually traded rather than value merely leaving (DA-08). A keep mask routes
+  around a component that cannot be moved: `executeRebalance` reads `balanceOf` only on a component that sends or
+  receives something, so a component whose `balanceOf` reverts is skipped as well as one whose `transfer` does (DA-14).
 - **Invariant:** for every component `i`,
   `token_i.balanceOf(index) >= floor(totalSupply * units_i / 1e18) + totalClaims[token_i]`.
   Issue rounds up, redeem rounds down, the rule rounds a target's share up into units so the target basket is never
@@ -136,33 +141,32 @@ script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test 
 - **Only initialized clones issue, redeem or rebalance.** Keep the `onlyInitialized` guard on every function that mints,
   burns or touches a rebalance.
 - **The rule is stateless and its inputs are timelocked.** Token configs change only through the listing flow, and
-  wrapped assets use a reference supply. A pool must be the Uniswap V3 factory's own pool for the token and WETH with
-  at least `MIN_OBSERVATION_CARDINALITY` slots and a non-zero `minLiquidity` it meets; that cardinality bounds the
-  ring's capacity, which anyone can raise, not the history it holds (DA-19). A rebalance snapshot accepts a price only
-  from a pool whose newest observation is no older than `MAX_OBSERVATION_AGE` (twenty minutes, two sub-windows, the
-  largest age that still leaves the oldest part genuine history for the deviation check to compare against) and from a
-  window whose harmonic-mean liquidity reaches that minimum and whose 10-minute parts agree within
-  `MAX_TICK_DEVIATION`; views do not apply these checks, and prices never enter settlement. The age check is what keeps
-  the other two meaningful: on a pool that has not traded inside the window Uniswap extrapolates every point at the
-  current tick and the current liquidity, so the three parts agree exactly and the liquidity is whatever was minted a
-  moment ago (DA-02). Anyone can clear that condition by trading the pool; until someone does, a silent component can
-  only be kept or retried. `MAX_TICK_DEVIATION` is an outlier filter for a short spike, not a bound on manipulation: a
-  push held steady across the whole window moves all three parts equally and reads a spread of zero, and with the
-  spread at 2000 a single distorted part still moves the window mean by up to a third of its own shift, about 667 ticks
-  or 6.9%. What is left against a sustained push is the per-token `minLiquidity` floor and the cost of holding a pool
-  off-market for thirty minutes while arbitrageurs trade against you; claim no more than that anywhere (DA-03). The
-  harmonic mean is taken over the whole window and its smallest term dominates it, so twelve seconds at liquidity one
-  blocks every snapshot of that component for the next thirty minutes:
-  that sensitivity is deliberate, it is the XA-01 defence, and measuring each part separately and taking the middle one
-  was rejected because it would equally shake off a real push through an empty range confined to one part; the grief is
-  recoverable, because anyone may retry and the griefer has to pay again every thirty minutes (DA-04). Under the capped
-  methodology a kept component is priced with the snapshot price too, because its market cap sits in the denominator of
-  every other component's weight, which narrows XA-05: under capped a keep mask routes around a component that cannot be
-  transferred, not around one whose pool cannot be read, while under uncapped a kept component is not read at all
-  (DA-06). `executeListing` is permissionless and applies the config the rule validated at propose time without
-  revalidating it; re-validating there was rejected because it would let anyone block a listing by making the pool
-  momentarily thin, and the snapshot re-checks at rebalance time, so a stale config blocks rebalances rather than
-  corrupting prices (DA-11).
+  wrapped assets use a reference supply. A pool must be the Uniswap V3 factory's own pool for the token and WETH with at
+  least `MIN_OBSERVATION_CARDINALITY` slots and a non-zero `minLiquidity` it meets; that cardinality bounds the ring's
+  capacity, which anyone can raise, not the history it holds (DA-19). A rebalance snapshot accepts a price only from a
+  pool whose newest observation is no older than `MAX_OBSERVATION_AGE` (twenty minutes, two sub-windows, the largest age
+  that still leaves the oldest part genuine history for the deviation check to compare against) and from a window whose
+  harmonic-mean liquidity reaches that minimum and whose 10-minute parts agree within `MAX_TICK_DEVIATION`; views do not
+  apply these checks, and prices never enter settlement. The age check is what keeps the other two meaningful: on a pool
+  that has not traded inside the window Uniswap extrapolates every point at the current tick and the current liquidity,
+  so the three parts agree exactly and the liquidity is whatever was minted a moment ago (DA-02). Anyone can clear that
+  condition by trading the pool; until someone does, a silent component can only be kept or retried.
+  `MAX_TICK_DEVIATION` is an outlier filter for a short spike, not a bound on manipulation: a push held steady across
+  the whole window moves all three parts equally and reads a spread of zero, and with the spread at 2000 a single
+  distorted part still moves the window mean by up to a third of its own shift, about 667 ticks or 6.9%. What is left
+  against a sustained push is the per-token `minLiquidity` floor and the cost of holding a pool off-market for thirty
+  minutes while arbitrageurs trade against you; claim no more than that anywhere (DA-03). The harmonic mean is taken
+  over the whole window and its smallest term dominates it, so twelve seconds at liquidity one blocks every snapshot of
+  that component for the next thirty minutes: that sensitivity is deliberate, it is the XA-01 defence, and measuring
+  each part separately and taking the middle one was rejected because it would equally shake off a real push through an
+  empty range confined to one part; the grief is recoverable, because anyone may retry and the griefer has to pay again
+  every thirty minutes (DA-04). Under the capped methodology a kept component is priced with the snapshot price too,
+  because its market cap sits in the denominator of every other component's weight, which narrows XA-05: under capped a
+  keep mask routes around a component that cannot be transferred, not around one whose pool cannot be read, while under
+  uncapped a kept component is not read at all (DA-06). `executeListing` is permissionless and re-runs `checkConfig` on
+  the stored config before applying it, so a pool that thinned out during the notice is not whitelisted on a validation
+  up to nine days old (DA-11). That lets a griefer hold a listing off by keeping the pool thin, but only while they keep
+  paying, and the proposal stays executable for the rest of `PROPOSAL_WINDOW`.
 - **Executors are untrusted.** Tokens and the callback go only to `msg.sender`, every mutating entry point shares the
   reentrancy guard, and state is written before any rebalance transfer. `executeRebalance(bytes)` settles whatever the
   supply in the settling block requires; the `executeRebalance(bytes, uint256[] maxAmountsIn)` overload bounds that and
@@ -182,17 +186,18 @@ script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test 
 - **Standard ERC-20s only as components** (whitelist policy). `issue` rejects fee-on-transfer tokens by checking the
   received amount. Components need fixed-supply or governance-minted supply. Do not whitelist USDC/USDT as components in
   scripts or docs; they are fine as mint/burn currencies. Pausable components such as WBTC must be labelled in the app.
-  Never list a token with an excluded address that anyone can deposit into and withdraw from: `IndexRule._supply`
-  subtracts a live `balanceOf` of each excluded address inside the snapshot, so such a config makes the market cap
-  manipulable within one transaction. Every shipped entry uses a reference supply with no exclusions (DA-10).
-  `checkConfig` accepts any non-zero `referenceSupply`, so a stale or mistyped figure drives that component to its
-  floor at the next rebalance; a supply that moves by orders of magnitude deserves scrutiny before the timelock runs
-  out (DA-18). A component whose WETH pool ends with zero in-range liquidity takes no config at all: `minLiquidity` of
-  zero is rejected as `InvalidMinLiquidity` and any positive value as `ThinPriceHistory`, so delisting and the keep
-  mask are the escapes until the pool recovers by itself (DA-07). An index should start priced at roughly 10,000 raw
-  units of every component or more, which for WBTC at 110k USD is about 11 USD a token: a coarser index token makes one
-  raw unit of a component a larger share of it, and `initialUnits` reverts `StartPriceTooLow` rather than flooring a
-  component at one raw unit (DA-09).
+  A token's supply is its own `totalSupply` or a reference figure, and nothing else: the config's list of excluded
+  holders, whose balances `IndexRule._supply` subtracted with a live `balanceOf` inside the snapshot, is gone, because
+  one exclusion a third party could fund and drain would have made that component's market cap manipulable inside a
+  single transaction (DA-10). A supply that has to leave holdings out uses a reference supply. A config change moves a
+  reference supply by at most `MAX_SUPPLY_CHANGE` (an order of magnitude), which catches the decimals slip and the stale
+  figure; a genuine re-founding goes in steps, each behind its own listing delay and guardian veto (DA-18). A component
+  whose WETH pool ends with zero in-range liquidity takes no config at all: `minLiquidity` of zero is rejected as
+  `InvalidMinLiquidity` and any positive value as `ThinPriceHistory`, so delisting and the keep mask are the escapes
+  until the pool recovers by itself (DA-07). An index should start priced at roughly 10,000 raw units of every component
+  or more, which for WBTC at 110k USD is about 11 USD a token: a coarser index token makes one raw unit of a component a
+  larger share of it, and `initialUnits` reverts `StartPriceTooLow` rather than flooring a component at one raw unit
+  (DA-09).
 
 ## Conventions
 

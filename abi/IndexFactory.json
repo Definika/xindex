@@ -84,6 +84,19 @@
   },
   {
     "type": "function",
+    "name": "MAX_SUPPLY_CHANGE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "MIN_CAPPED_COMPONENTS",
     "inputs": [],
     "outputs": [
@@ -493,11 +506,6 @@
             "name": "referenceSupply",
             "type": "uint256",
             "internalType": "uint256"
-          },
-          {
-            "name": "excluded",
-            "type": "address[]",
-            "internalType": "address[]"
           }
         ]
       }
@@ -576,11 +584,6 @@
             "name": "referenceSupply",
             "type": "uint256",
             "internalType": "uint256"
-          },
-          {
-            "name": "excluded",
-            "type": "address[]",
-            "internalType": "address[]"
           }
         ]
       }
@@ -629,11 +632,6 @@
             "name": "referenceSupply",
             "type": "uint256",
             "internalType": "uint256"
-          },
-          {
-            "name": "excluded",
-            "type": "address[]",
-            "internalType": "address[]"
           }
         ]
       }
@@ -678,11 +676,6 @@
             "name": "referenceSupply",
             "type": "uint256",
             "internalType": "uint256"
-          },
-          {
-            "name": "excluded",
-            "type": "address[]",
-            "internalType": "address[]"
           }
         ]
       }
@@ -867,12 +860,6 @@
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
-      },
-      {
-        "name": "excluded",
-        "type": "address[]",
-        "indexed": false,
-        "internalType": "address[]"
       }
     ],
     "anonymous": false
@@ -942,12 +929,6 @@
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
-      },
-      {
-        "name": "excluded",
-        "type": "address[]",
-        "indexed": false,
-        "internalType": "address[]"
       }
     ],
     "anonymous": false
@@ -1234,6 +1215,27 @@
     "type": "error",
     "name": "RenounceDisabled",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SupplyChangeTooLarge",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "inForce",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "proposed",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
   },
   {
     "type": "error",

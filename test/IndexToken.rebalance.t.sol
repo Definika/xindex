@@ -7,6 +7,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {IndexFactory} from "../src/IndexFactory.sol";
 import {IndexToken} from "../src/IndexToken.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
+import {IIndexRule} from "../src/interfaces/IIndexRule.sol";
 import {IIndexToken} from "../src/interfaces/IIndexToken.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
@@ -33,6 +34,8 @@ contract IndexTokenRebalanceTest is Test {
     address stranger = makeAddr("stranger");
 
     uint256 constant WAD = 1e18;
+    /// @dev 1.0001^4055 is about 1.5, so this tick moves a component 50% against the others.
+    int24 constant FIFTY_PERCENT = 4055;
     uint256 constant SHARES = 10e18;
 
     function setUp() public {
@@ -47,7 +50,7 @@ contract IndexTokenRebalanceTest is Test {
         IIndexFactory.TokenConfig[] memory configs = new IIndexFactory.TokenConfig[](5);
         for (uint256 i = 0; i < 5; ++i) {
             tokens.push(i == 1 ? address(pausable) : address(new MockERC20("C", "C", 18)));
-            configs[i] = market.configWith(tokens[i], 0, parts[i] * 1e24, new address[](0));
+            configs[i] = market.configWith(tokens[i], 0, parts[i] * 1e24);
             startUnits.push(100e18);
         }
         vm.startPrank(owner);
@@ -597,6 +600,52 @@ contract IndexTokenRebalanceTest is Test {
         vm.warp(eta);
         vm.expectRevert(IXindexErrors.LengthMismatch.selector);
         executor.executeBounded(index, "", new uint256[](4));
+    }
+
+    /// @dev DA-05. `startRebalance` freezes the rule's targets and settlement happens up to three days later at the
+    ///      rates those targets fix. The 1.5-to-0.9 band bounds the multiplier on the bought legs only, so whatever the
+    ///      market moved in between was on top of it and unbounded: an executor filled only when the drift favoured
+    ///      them, at the index's expense. The settlement now has to clear MIN_SETTLEMENT_RATIO of what it pays out,
+    ///      priced with snapshot-quality prices read in the settling block.
+    function test_DA05_aSettlementTheMarketMovedPastIsRefused() public {
+        uint256 eta = _start(index);
+        vm.warp(eta + index.AUCTION_DURATION()); // the auction floor, where the drift is worth the most
+
+        // The four components the index sells appreciate 50% against the one it buys over the notice window.
+        for (uint256 i = 1; i < 5; ++i) {
+            market.setPriceTick(tokens[i], FIFTY_PERCENT);
+        }
+        (,, uint256[] memory amountsOut, uint256[] memory amountsIn) = index.previewRebalance();
+        (uint256 outValue, uint256 inValue) = IIndexRule(factory.RULE()).settlementValues(tokens, amountsOut, amountsIn);
+        uint256 required = outValue * index.MIN_SETTLEMENT_RATIO() / WAD;
+        assertLt(inValue, required, "the fill is worth less than the basket it takes");
+
+        vm.expectRevert(abi.encodeWithSelector(IIndexToken.SettlementValueTooLow.selector, inValue, outValue, required));
+        executor.execute(index, "");
+        assertEq(index.rebalanceNonce(), 0, "nothing settled at three-day-old rates");
+        _assertBacked(index);
+
+        // Back where the snapshot found them, the same fill settles.
+        for (uint256 i = 1; i < 5; ++i) {
+            market.setPriceTick(tokens[i], 0);
+        }
+        executor.execute(index, "");
+        assertEq(index.rebalanceNonce(), 1);
+        _assertBacked(index);
+    }
+
+    /// @dev DA-05. The guard is on the ratio between the two sides, not on either price, so a market-wide move is not
+    ///      drift: every leg reprices together and the settlement it was snapshotted for still goes through. Guarding
+    ///      each component's own price instead would block the routine case and leave the harmful one open.
+    function test_DA05_aMarketWideMoveIsNotDrift() public {
+        uint256 eta = _start(index);
+        vm.warp(eta + index.AUCTION_DURATION());
+        for (uint256 i = 0; i < 5; ++i) {
+            market.setPriceTick(tokens[i], FIFTY_PERCENT);
+        }
+        executor.execute(index, "");
+        assertEq(index.rebalanceNonce(), 1, "the whole market moving is not a reason to refuse a fill");
+        _assertBacked(index);
     }
 
     /// @dev DA-14. `executeRebalance` read `balanceOf` on every component to build its backing check, so a keep mask

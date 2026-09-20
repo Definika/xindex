@@ -53,17 +53,16 @@ contract MockMarket {
 
     /// @notice A listing config for `token` priced at `tick`, with a reference supply.
     function config(address token, int24 tick) external returns (IIndexFactory.TokenConfig memory) {
-        return configWith(token, tick, token == address(weth) ? ETH_SUPPLY : DEFAULT_SUPPLY, new address[](0));
+        return configWith(token, tick, token == address(weth) ? ETH_SUPPLY : DEFAULT_SUPPLY);
     }
 
     /// @notice A listing config with an explicit supply definition. Any token but WETH gets its 0.3% WETH pool, created
     ///         on first use and priced at `tick`.
-    function configWith(address token, int24 tick, uint256 referenceSupply, address[] memory excluded)
+    function configWith(address token, int24 tick, uint256 referenceSupply)
         public
         returns (IIndexFactory.TokenConfig memory c)
     {
         c.referenceSupply = referenceSupply;
-        c.excluded = excluded;
         if (token == address(weth)) return c;
         if (address(tokenPool(token)) == address(0)) {
             uniswapV3Factory.createPool(token, address(weth), TOKEN_POOL_FEE);

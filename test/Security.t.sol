@@ -684,7 +684,7 @@ contract SecurityRegressionTest is XindexTest {
         IIndexFactory.TokenConfig[] memory configs = new IIndexFactory.TokenConfig[](5);
         for (uint256 i = 0; i < 5; ++i) {
             t[i] = address(new MockERC20("Rule", "RULE", 18));
-            configs[i] = market.configWith(t[i], 0, parts[i] * 1e24, new address[](0));
+            configs[i] = market.configWith(t[i], 0, parts[i] * 1e24);
         }
         idx = _ruleBasketOf(t, configs, units);
     }
@@ -800,7 +800,7 @@ contract SecurityRegressionTest is XindexTest {
 
         MockERC20 wrapped = new MockERC20("Wrapped Coin", "WCOIN", 8);
         wrapped.mint(alice, 116_132e8); // the wrapped float
-        IIndexFactory.TokenConfig memory config = market.configWith(address(wrapped), 0, 20_084_784e8, new address[](0));
+        IIndexFactory.TokenConfig memory config = market.configWith(address(wrapped), 0, 20_084_784e8);
         vm.prank(owner);
         factory.proposeListing(address(wrapped), config);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
@@ -931,10 +931,10 @@ contract SecurityRegressionTest is XindexTest {
         address[] memory t = new address[](5);
         IIndexFactory.TokenConfig[] memory configs = new IIndexFactory.TokenConfig[](5);
         t[0] = address(inflating);
-        configs[0] = market.configWith(t[0], 0, 0, new address[](0)); // on-chain supply
+        configs[0] = market.configWith(t[0], 0, 0); // on-chain supply
         for (uint256 i = 1; i < 5; ++i) {
             t[i] = address(new MockERC20("Fixed", "FIX", 18));
-            configs[i] = market.configWith(t[i], 0, 1e24, new address[](0));
+            configs[i] = market.configWith(t[i], 0, 1e24);
         }
         IndexToken idx = _ruleBasketOf(t, configs, _hundreds());
 
@@ -1030,8 +1030,8 @@ contract SecurityRegressionTest is XindexTest {
         IIndexFactory.TokenConfig[] memory configs = new IIndexFactory.TokenConfig[](2);
         t[0] = address(new MockERC20("Heavy", "HEAVY", 18));
         t[1] = address(new MockERC20("Dust Cap", "DUST", 18));
-        configs[0] = market.configWith(t[0], 0, 1e30, new address[](0));
-        configs[1] = market.configWith(t[1], 0, 1, new address[](0)); // its weight rounds to zero
+        configs[0] = market.configWith(t[0], 0, 1e30);
+        configs[1] = market.configWith(t[1], 0, 1); // its weight rounds to zero
         uint256[] memory units = new uint256[](2);
         (units[0], units[1]) = (10e18, 100e18);
         IndexToken idx = _ruleBasketOf(t, configs, units);
@@ -1126,7 +1126,7 @@ contract SecurityRegressionTest is XindexTest {
     function test_XA03_aConfigRefreshOfADelistedTokenKeepsItDelisted() public {
         vm.prank(guardian);
         factory.delist(address(link));
-        IIndexFactory.TokenConfig memory refresh = market.configWith(address(link), 0, 2e30, new address[](0));
+        IIndexFactory.TokenConfig memory refresh = market.configWith(address(link), 0, 2e30);
         vm.prank(owner);
         factory.proposeConfig(address(link), refresh);
         vm.warp(factory.listingEta(address(link)));
@@ -1154,7 +1154,7 @@ contract SecurityRegressionTest is XindexTest {
         uint256[5] memory parts = [uint256(6), 1, 1, 1, 1];
         for (uint256 i = 0; i < 5; ++i) {
             t[i] = i == 1 ? address(frozen) : address(new MockERC20("Rule", "RULE", 18));
-            configs[i] = market.configWith(t[i], 0, parts[i] * 1e24, new address[](0));
+            configs[i] = market.configWith(t[i], 0, parts[i] * 1e24);
         }
         IndexToken idx = _ruleBasketOf(t, configs, _hundreds());
         frozen.setPaused(true);
@@ -1405,11 +1405,28 @@ contract SecurityRegressionTest is XindexTest {
     uint256 constant FINE_UNITS = 100e18;
 
     function _propose(address token, int24 tick, uint256 referenceSupply) private {
-        IIndexFactory.TokenConfig memory config = market.configWith(token, tick, referenceSupply, new address[](0));
+        IIndexFactory.TokenConfig memory config = market.configWith(token, tick, referenceSupply);
         vm.prank(owner);
         factory.proposeListing(token, config);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(token);
+    }
+
+    /// @dev DA-18 holds a config change to one order of magnitude, so a fixture that needs a reference supply far from
+    ///      the one in force walks there in steps, exactly as an operator would.
+    function _walkSupply(address token, int24 tick, uint256 target) private {
+        uint256 inForce = factory.tokenConfig(token).referenceSupply;
+        if (inForce == 0) return _propose(token, tick, target);
+        while (inForce != target) {
+            uint256 next;
+            if (target > inForce) {
+                next = inForce * factory.MAX_SUPPLY_CHANGE() < target ? inForce * factory.MAX_SUPPLY_CHANGE() : target;
+            } else {
+                next = inForce / factory.MAX_SUPPLY_CHANGE() > target ? inForce / factory.MAX_SUPPLY_CHANGE() : target;
+            }
+            _propose(token, tick, next);
+            inForce = next;
+        }
     }
 
     /// @dev An index whose ideal target for the coarse component sits 0.8 raw units above its holding, so the whole
@@ -1426,8 +1443,8 @@ contract SecurityRegressionTest is XindexTest {
         uint256 pf = rule.price(address(fine));
         uint256 basket = COARSE_UNITS * pc + FINE_UNITS * pf;
         uint256 capCoarse = ((COARSE_UNITS * 10 + 8) * pc) / 10;
-        _propose(address(coarse), COARSE_TICK, (capCoarse * 1e18) / pc);
-        _propose(address(fine), 0, ((basket - capCoarse) * 1e18) / pf);
+        _walkSupply(address(coarse), COARSE_TICK, (capCoarse * 1e18) / pc);
+        _walkSupply(address(fine), 0, ((basket - capCoarse) * 1e18) / pf);
 
         address[] memory t = new address[](2);
         (t[0], t[1]) = (address(coarse), address(fine));

@@ -16,13 +16,10 @@ interface IIndexFactory is IXindexErrors {
     ///        below it. Non-zero for every token with a pool; zero for WETH.
     /// @param referenceSupply Supply used instead of the on-chain one, in the token's raw units. Needed for wrapped assets
     ///        such as WBTC or WETH, whose on-chain supply counts only the wrapped coins. Zero uses on-chain supply.
-    /// @param excluded Addresses whose balances do not circulate, such as burn or lock wallets. Only allowed when
-    ///        `referenceSupply` is zero.
     struct TokenConfig {
         address pool;
         uint128 minLiquidity;
         uint256 referenceSupply;
-        address[] excluded;
     }
 
     /// @notice `creator` deployed and initialized `index` with these constituents, starting units (raw units of each
@@ -40,20 +37,12 @@ interface IIndexFactory is IXindexErrors {
     ///         until `eta + PROPOSAL_WINDOW`.
     /// @param listing True when executing the proposal whitelists `token`; false for a config change only.
     event ListingProposed(
-        address indexed token,
-        uint256 eta,
-        bool listing,
-        address pool,
-        uint128 minLiquidity,
-        uint256 referenceSupply,
-        address[] excluded
+        address indexed token, uint256 eta, bool listing, address pool, uint128 minLiquidity, uint256 referenceSupply
     );
     /// @notice The pending proposal for `token` was cancelled, or dropped because {delist} removed the token.
     event ListingCancelled(address indexed token);
     /// @notice An executed proposal put this config in force for `token`.
-    event TokenConfigured(
-        address indexed token, address pool, uint128 minLiquidity, uint256 referenceSupply, address[] excluded
-    );
+    event TokenConfigured(address indexed token, address pool, uint128 minLiquidity, uint256 referenceSupply);
     /// @notice `token` was whitelisted (`allowed`) or delisted.
     event TokenWhitelisted(address indexed token, bool allowed);
     /// @notice A change to `newGuardian` was proposed. It can be executed from `eta` until `eta + PROPOSAL_WINDOW`.
@@ -79,6 +68,9 @@ interface IIndexFactory is IXindexErrors {
     error NotAContract(address token);
     /// @notice {proposeConfig} for a token that has never been listed; use {proposeListing}.
     error NotConfigured(address token);
+
+    /// @notice A proposed reference supply for `token` sits further than MAX_SUPPLY_CHANGE from the one in force.
+    error SupplyChangeTooLarge(address token, uint256 inForce, uint256 proposed);
     /// @notice A proposal for `token` executable from `eta` is still pending or executable. Cancel it first; one that
     ///         expired can be replaced.
     error ListingPending(address token, uint256 eta);
@@ -101,6 +93,9 @@ interface IIndexFactory is IXindexErrors {
 
     /// @notice Most components an index can have.
     function MAX_COMPONENTS() external view returns (uint256);
+
+    /// @notice Largest factor by which a config change may move a token's reference supply, either way.
+    function MAX_SUPPLY_CHANGE() external view returns (uint256);
 
     /// @notice Fewest components an index with the capped methodology can have.
     function MIN_CAPPED_COMPONENTS() external view returns (uint256);
