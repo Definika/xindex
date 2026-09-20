@@ -162,7 +162,9 @@ A stateless, view-only contract the factory deploys in its constructor. It never
   the pool's fee tier, at least `MIN_OBSERVATION_CARDINALITY` (200) observation slots (a pool writes at most one
   observation per block, so 200 slots cover 30 minutes while blocks are at least 9.05 seconds apart), a pool that serves
   that average now, a non-zero `minLiquidity` that the pool's current window meets, and a non-zero supply. The mainnet
-  policy for `minLiquidity` is a tenth of the pool's harmonic-mean liquidity when it is proposed. Three things this
+  policy for `minLiquidity` is a third of the lowest harmonic-mean liquidity the pool's own oracle reports over the
+  windows it still holds when the config is proposed, because the floor is the only thing that prices a push held
+  across the whole window (DA-03). Three things this
   check does not do. Cardinality is
   the ring's capacity, which anyone can raise with `increaseObservationCardinalityNext`, not the history the ring
   holds; `observe` reverting `OLD`, and `MAX_OBSERVATION_AGE` at snapshot time, are what catch a pool that has not

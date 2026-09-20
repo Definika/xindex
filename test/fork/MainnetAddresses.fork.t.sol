@@ -19,6 +19,7 @@ interface IRouterImmutables {
 
 interface IPoolCardinality {
     function slot0() external view returns (uint160, int24, uint16, uint16, uint16, uint8, bool);
+    function observe(uint32[] calldata secondsAgos) external view returns (int56[] memory, uint160[] memory);
 }
 
 /// @notice Checks the scripts' `MainnetAddresses` against mainnet, as AGENTS.md requires before addresses are
@@ -142,6 +143,7 @@ contract MainnetAddressesForkTest is Test {
                 rule.checkConfig(list[i].token, config);
                 continue;
             }
+            _assertFloorIsNotStale(config.pool, config.minLiquidity, rule.TWAP_WINDOW());
             (,,, uint16 cardinality,,,) = IPoolCardinality(config.pool).slot0();
             if (cardinality >= rule.MIN_OBSERVATION_CARDINALITY()) {
                 rule.checkConfig(list[i].token, config);
@@ -152,6 +154,27 @@ contract MainnetAddressesForkTest is Test {
             rule.checkConfig(list[i].token, config);
             _checkBehindTheSlotCount(rule, list[i].token, config);
         }
+    }
+
+    /// @dev DA-03. Nothing inside the window can see a push held across all of it, so the floor is what prices such a
+    ///      push, and a floor left behind while its pool grew loses that protection silently. `checkConfig` above
+    ///      already refuses a floor the pool no longer meets; this is the other side, with room enough that ordinary
+    ///      growth does not fail CI. A pool too thin to serve the window says `OLD` and is checked by its own entry.
+    function _assertFloorIsNotStale(address pool, uint128 minLiquidity, uint32 window) internal view {
+        uint32[] memory agos = new uint32[](2);
+        agos[0] = window;
+        try IPoolCardinality(pool).observe(agos) returns (int56[] memory, uint160[] memory perLiquidity) {
+            uint160 delta;
+            unchecked {
+                delta = perLiquidity[1] - perLiquidity[0];
+            }
+            uint256 harmonic = uint256(window) * type(uint160).max / (uint256(delta) << 32);
+            assertGe(
+                uint256(minLiquidity) * 20,
+                harmonic,
+                "the floor has fallen far under the pool's own window: re-measure it"
+            );
+        } catch {}
     }
 
     /// @dev LR-08: the slot count is the first thing `checkConfig` rejects, so for a pool with too few slots the

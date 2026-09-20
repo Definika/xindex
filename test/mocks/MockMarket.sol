@@ -5,8 +5,9 @@ import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {MockERC20} from "./MockERC20.sol";
 import {MockUniswapV3Factory, MockUniswapV3Pool} from "./MockUniswapV3.sol";
 
-/// @dev Minimum liquidity `MockMarket.configWith` gives a pooled token: a tenth of a mock pool's default liquidity, the
-///      policy the mainnet list uses. File-level so pure test helpers can use it.
+/// @dev Minimum liquidity `MockMarket.configWith` gives a pooled token: a tenth of a mock pool's default liquidity,
+///      under the mainnet list's policy of a third so a fixture has room either way. File-level so pure test helpers
+///      can use it.
 uint128 constant DEFAULT_MIN_LIQUIDITY = 1e17;
 
 /// @notice WETH, USDC, a Uniswap V3 factory and pools for tests. Prices are set as ticks in token terms:

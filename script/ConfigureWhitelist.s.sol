@@ -35,8 +35,8 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///   WHITELIST     `default` for the mainnet list below (chain 1 only), or comma-separated entries
 ///                 `token:fee:minLiquidity[:referenceSupply]`. `fee` is the Uniswap V3 fee tier
 ///                 of the token's WETH pool, or 0 for WETH itself. `minLiquidity` is the least harmonic-mean liquidity
-///                 a rebalance snapshot accepts from that pool (0 for WETH); a tenth of the pool's current
-///                 harmonic-mean liquidity is the policy. `referenceSupply` is in the token's raw units (with its
+///                 a rebalance snapshot accepts from that pool (0 for WETH); a third of the pool's lowest recent
+///                 30-minute harmonic-mean liquidity is the policy. `referenceSupply` is in the token's raw units (with its
 ///                 decimals); an empty or missing one means on-chain supply.
 ///   RELIST        Optional. Comma-separated delisted tokens that propose and safe mode may list again; any other
 ///                 delisted token only gets config changes.
@@ -100,8 +100,8 @@ contract ConfigureWhitelist is Script {
     error OwnerIsContract(address owner);
 
     /// @notice Default mainnet components, from `MainnetAddresses`. Reference supplies are CoinGecko's circulating
-    ///         supplies (propose a config change when they drift) and minimum liquidities a tenth of each pool's
-    ///         harmonic-mean liquidity; `MainnetAddresses` dates both. WBTC and WETH count the whole bitcoin and ether
+    ///         supplies (propose a config change when they drift) and minimum liquidities a third of each pool's
+    ///         lowest recent harmonic-mean liquidity; `MainnetAddresses` dates both and says why a third. WBTC and WETH count the whole bitcoin and ether
     ///         supply, because their on-chain supply is only the wrapped float; tBTC uses its own on-chain supply. The
     ///         ten DeFi tokens are the largest by market capitalisation in CoinGecko's DeFi category on 2026-09-17 that
     ///         are governance tokens on Ethereum within the whitelist policy and whose WETH pool held at least 20 WETH.

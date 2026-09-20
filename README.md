@@ -271,9 +271,12 @@ Every listed token carries a config that the rule validates:
   ring's capacity, not the history it holds, so a rebalance snapshot also requires the pool's newest observation to be
   younger than `MAX_OBSERVATION_AGE` (20 minutes).
 - **Minimum liquidity:** the least harmonic-mean liquidity over the 30-minute window for which a rebalance snapshot
-  accepts the pool's price. The policy is a tenth of the pool's harmonic-mean liquidity when the config is proposed; the
-  listing check requires the pool to meet it at that moment. Refresh it with a config change when a pool's liquidity
-  moves for good.
+  accepts the pool's price. The policy is a third of the lowest harmonic-mean liquidity the pool's own oracle reports
+  over the windows it still holds when the config is proposed; the listing check requires the pool to meet it at that
+  moment, and so does every rebalance snapshot afterwards. It was a tenth through 2026-09-17: the floor is the only
+  thing that prices a manipulation held across the whole window, so raising it raises that cost in proportion, and a
+  third is as high as ordinary liquidity drift allows. Refresh it with a config change when a pool's liquidity moves
+  for good; a floor the pool no longer meets blocks that component's snapshots until the change goes through.
 - **Supply:** the token's own total supply, or a reference supply. Wrapped assets need a reference supply: on-chain
   WBTC is the wrapped float (116,132 BTC on 2026-09-16), not bitcoin's supply. Reference supplies drift and are
   refreshed with a config change, which may move one by at most `MAX_SUPPLY_CHANGE` (an order of magnitude) at a time.
@@ -502,8 +505,8 @@ or 0 for WETH, `minLiquidity` is 0 for WETH, and `referenceSupply` is in the tok
 (0.05%, bitcoin's supply), WETH (ether's supply), LINK and UNI (0.3%, circulating supplies), tBTC (0.3%, on-chain
 supply), and ten DeFi tokens with circulating supplies: AAVE, ONDO, ENA, MORPHO, ETHFI, CRV, PENDLE, OHM and LDO (0.3%)
 and SYRUP (1%). The reference supplies are CoinGecko's circulating figures from 2026-09-15 (the DeFi tokens' from
-2026-09-17), and the minimum liquidities are a tenth of each pool's harmonic-mean liquidity at block 25,992,129
-(2026-09-16; the DeFi tokens' at block 25,999,500, 2026-09-17). "Default list: pool depth" below says how the DeFi
+2026-09-17), and the minimum liquidities are a third of each pool's lowest 30-minute harmonic-mean
+liquidity over the windows its oracle still held at block 26,019,190 (2026-09-20). "Default list: pool depth" below says how the DeFi
 tokens were chosen and how thin most of their pools are. Propose mode skips any entry the rule would reject, such as
 tBTC while its pool has too few observation slots, and any entry outside the whitelist policy the script can check (6 to
 18 decimals, no USDC or USDT), and logs why; it also logs each reference supply in whole tokens, where a decimals slip

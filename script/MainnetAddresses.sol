@@ -48,24 +48,32 @@ library MainnetAddresses {
     uint256 internal constant LDO_SUPPLY = 834_151_322e18;
     uint256 internal constant SYRUP_SUPPLY = 1_167_271_959e18;
 
-    /// @dev A tenth of each WETH pool's 30-minute harmonic-mean liquidity at block 25,992,129 (2026-09-16), rounded
-    ///      down to two significant digits: WBTC 0.05%, LINK, UNI and tBTC 0.3%.
-    uint128 internal constant WBTC_MIN_LIQUIDITY = 1.4e16;
-    uint128 internal constant LINK_MIN_LIQUIDITY = 3.4e22;
-    uint128 internal constant UNI_MIN_LIQUIDITY = 2.9e22;
-    uint128 internal constant TBTC_MIN_LIQUIDITY = 7e18;
-    /// @dev The DeFi tokens: a tenth of each WETH pool's 30-minute harmonic-mean liquidity at block 25,999,500
-    ///      (2026-09-17), rounded down to two significant digits. Each pool is the token's WETH pool holding the most
-    ///      WETH that block: the 0.3% pool, or the 1% pool for SYRUP. Pools are compared by the WETH they hold, not by
-    ///      `liquidity()`, which an abandoned pool parked at an extreme tick can report large while holding nothing.
-    uint128 internal constant AAVE_MIN_LIQUIDITY = 2.2e21;
-    uint128 internal constant ONDO_MIN_LIQUIDITY = 4.7e21;
-    uint128 internal constant ENA_MIN_LIQUIDITY = 6.9e21;
-    uint128 internal constant MORPHO_MIN_LIQUIDITY = 2.3e20;
-    uint128 internal constant ETHFI_MIN_LIQUIDITY = 1.1e21;
-    uint128 internal constant CRV_MIN_LIQUIDITY = 3.5e21;
-    uint128 internal constant PENDLE_MIN_LIQUIDITY = 1.4e21;
-    uint128 internal constant OHM_MIN_LIQUIDITY = 3.4e16;
-    uint128 internal constant LDO_MIN_LIQUIDITY = 1.2e21;
-    uint128 internal constant SYRUP_MIN_LIQUIDITY = 9.8e21;
+    /// @dev A third of the lowest 30-minute harmonic-mean liquidity each WETH pool's own oracle reports over the
+    ///      windows it still holds (4 to 12 hours), read at block 26,019,190 (2026-09-20) and rounded down to two
+    ///      significant digits. Each pool is the token's WETH pool holding the most WETH: WBTC 0.05%, SYRUP 1%, the
+    ///      rest 0.3%. Pools are compared by the WETH they hold, not by `liquidity()`, which an abandoned pool parked
+    ///      at an extreme tick can report large while holding nothing.
+    ///
+    ///      A third, not the tenth used through 2026-09-17: the floor is the only thing that prices a manipulation
+    ///      held across the whole window, since no statistic inside the window can see one (DA-03), and raising it
+    ///      raises that cost in proportion. It is not higher because the floor also has to survive ordinary liquidity
+    ///      drift: UNI's pool lost 54% of its harmonic-mean liquidity between 2026-09-17 and 2026-09-20, while the
+    ///      spread within any one day stayed inside 13%. A third leaves room for a repeat of that and still refuses a
+    ///      window three times thinner than the pool really is. Re-measure before mainnet and when a pool's depth
+    ///      moves for good; a floor the pool no longer meets blocks that component's snapshots until a config change
+    ///      lowers it, which takes the listing delay.
+    uint128 internal constant WBTC_MIN_LIQUIDITY = 4.6e16;
+    uint128 internal constant LINK_MIN_LIQUIDITY = 1.1e23;
+    uint128 internal constant UNI_MIN_LIQUIDITY = 4.4e22;
+    uint128 internal constant TBTC_MIN_LIQUIDITY = 2.3e19;
+    uint128 internal constant AAVE_MIN_LIQUIDITY = 7.6e21;
+    uint128 internal constant ONDO_MIN_LIQUIDITY = 1.5e22;
+    uint128 internal constant ENA_MIN_LIQUIDITY = 3.2e22;
+    uint128 internal constant MORPHO_MIN_LIQUIDITY = 8e20;
+    uint128 internal constant ETHFI_MIN_LIQUIDITY = 3.6e21;
+    uint128 internal constant CRV_MIN_LIQUIDITY = 1.1e22;
+    uint128 internal constant PENDLE_MIN_LIQUIDITY = 2.8e21;
+    uint128 internal constant OHM_MIN_LIQUIDITY = 1.1e17;
+    uint128 internal constant LDO_MIN_LIQUIDITY = 4.4e21;
+    uint128 internal constant SYRUP_MIN_LIQUIDITY = 3.3e22;
 }

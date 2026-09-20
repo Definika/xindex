@@ -28,6 +28,7 @@ interface IPoolObservations {
 interface IWbtcPauser {
     function owner() external view returns (address);
     function pause() external;
+    function unpause() external;
 }
 
 /// @notice Rule-based rebalancing against real Uniswap V3 pools and tokens. Skips when MAINNET_RPC_URL is unset.
@@ -98,8 +99,8 @@ contract RebalanceForkTest is Test {
     // helpers
     // ---------------------------------------------------------------------
 
-    /// @dev A listing config whose minimum liquidity is a tenth of the pool's liquidity at the fork block, the policy
-    ///      of the mainnet list.
+    /// @dev A listing config whose minimum liquidity is a tenth of the pool's liquidity at the fork block, under the
+    ///      mainnet list's policy of a third so that a fixture never fails on the pool's own drift.
     function _config(address pool, uint256 referenceSupply) internal view returns (IIndexFactory.TokenConfig memory c) {
         c.pool = pool;
         if (pool != address(0)) c.minLiquidity = IPoolLiquidity(pool).liquidity() / 10;
@@ -270,6 +271,9 @@ contract RebalanceForkTest is Test {
 
         // Prices do not move on a fork, so an executor without competition waits for the floor.
         vm.warp(eta + index.AUCTION_DURATION());
+        // Settlement prices the two sides again (DA-05), and three days of warping leave every pool's newest
+        // observation three days old, which on chain only happens to a pool that has genuinely stopped trading.
+        _pokePools();
         uint256 wethBefore = IERC20(A.WETH).balanceOf(address(executor));
         gasBefore = gasleft();
         executor.fill(index);
@@ -314,9 +318,17 @@ contract RebalanceForkTest is Test {
         index.startRebalance(0);
         (uint256 eta,,) = index.pendingRebalance();
 
-        vm.prank(IWbtcPauser(A.WBTC).owner());
+        address pauser = IWbtcPauser(A.WBTC).owner();
+        vm.prank(pauser);
         IWbtcPauser(A.WBTC).pause();
         vm.warp(eta + index.AUCTION_DURATION());
+        // A paused WBTC cannot trade, so its pool cannot be poked and the settlement guard would stop on its stale
+        // price before reaching any transfer. This test is about the transfer, so the pause lifts for the poke.
+        vm.prank(pauser);
+        IWbtcPauser(A.WBTC).unpause();
+        _pokePools();
+        vm.prank(pauser);
+        IWbtcPauser(A.WBTC).pause();
         (,, uint256[] memory amountsOut,) = index.previewRebalance();
         assertGt(amountsOut[0], 0, "WBTC is a shrinking leg");
         vm.expectRevert(bytes("")); // WBTC's whenNotPaused reverts with no data, and the index passes it on
@@ -330,6 +342,8 @@ contract RebalanceForkTest is Test {
         vm.stopPrank();
         (eta,,) = index.pendingRebalance();
         vm.warp(eta + index.AUCTION_DURATION());
+        // WBTC is kept, so the settlement never prices it; the four legs that do trade need a fresh window.
+        _pokePools();
         executor.fill(index);
 
         assertEq(IERC20(A.WBTC).balanceOf(address(index)), wbtcHeld, "WBTC never moved");

@@ -264,7 +264,8 @@ contract SetupTestMarket is Script {
 
     /// @notice `ConfigureWhitelist` entries for the market's components, in mainnet order: tWBTC, WETH, tLINK, tUNI,
     ///         tAAVE. tUSDC is a currency and is not listed. Each pooled token's minimum liquidity is a tenth of its
-    ///         pool's current liquidity, the mainnet policy, so call it once the pools are seeded.
+    ///         pool's current liquidity, looser than the mainnet policy of a third because a test market's pools are
+    ///         seeded once and never traded, so call it once the pools are seeded.
     /// @param uniswap The Uniswap deployment.
     /// @param tokens The market's tokens, in {specs} order.
     /// @return entries A WHITELIST value for `ConfigureWhitelist`.

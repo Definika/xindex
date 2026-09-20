@@ -66,8 +66,8 @@ contract SecurityForkTest is Test {
         factory.executeListing(A.LINK);
     }
 
-    /// @dev A listing config whose minimum liquidity is a tenth of the pool's liquidity at the fork block, the policy
-    ///      of the mainnet list.
+    /// @dev A listing config whose minimum liquidity is a tenth of the pool's liquidity at the fork block, under the
+    ///      mainnet list's policy of a third so that a fixture never fails on the pool's own drift.
     function _config(address pool, uint256 referenceSupply) internal view returns (IIndexFactory.TokenConfig memory c) {
         c.pool = pool;
         if (pool != address(0)) c.minLiquidity = IPoolLiquidity(pool).liquidity() / 10;
