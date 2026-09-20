@@ -415,8 +415,9 @@ its own address.
   tokens and their issuers; Uniswap V3, including the time-weighted prices of listed pools. Executors and the account
   that starts a rebalance are untrusted. Users trust no one with custody. Two powers deserve naming on their own. The
   guardian's `cancelRebalance` has no window and no rate limit, so a hostile or compromised guardian can cancel every
-  proposal at the last second of its auction and hold an index off the rule indefinitely, with its units drifting
-  further from the rule each month; that is a trust assumption of the role rather than an oversight, because the cancel
+  proposal at the last second of its auction and hold an index off the rule, with its units drifting further each
+  month, until the owner replaces it: `GUARDIAN_DELAY` of notice that the guardian cannot cancel, because it may cancel
+  only its own removal and not its replacement; that is a trust assumption of the role rather than an oversight, because the cancel
   exists to stop a distorted snapshot in the last seconds of an auction and cannot be time-boxed without giving that
   up, and the owner's answer is to replace the guardian after `GUARDIAN_DELAY` (DA-12). And ownership of the factory
   moves in two steps that take effect as soon as the new owner accepts: it is the one admin change with no delay and no

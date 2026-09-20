@@ -63,8 +63,13 @@ market from `script/testnet/SetupTestMarket.s.sol`.
    the DA-22 value fuzz in `test/IndexRule.t.sol`; DA-13, DA-14 and the DA-22 turnover test in
    `test/IndexToken.rebalance.t.sol`; DA-17 in `test/IndexToken.t.sol`, where
    `test_uninitializedInstancesCannotIssueOrRedeem` carries the DA-22 `canStartRebalance` assertion as well; DA-15 in
-   `test/IndexZap.t.sol`; DA-16 in `test/IndexFactory.t.sol`; DA-20 in `test/Scripts.t.sol`. DA-03, DA-04, DA-05,
-   DA-07, DA-10, DA-11, DA-12, DA-18, DA-19, DA-21 and DA-23 have no test, because documentation alone fixed them.
+   `test/IndexZap.t.sol`; DA-16 and DA-11 and DA-18 in `test/IndexFactory.t.sol`; DA-20 in `test/Scripts.t.sol`;
+   DA-05 in `test/IndexToken.rebalance.t.sol`, with `test_settlementValues` in `test/IndexRule.t.sol` covering the
+   rule's half; DA-10 in `test/Repo.t.sol`, since deleting a struct field is only testable through the shipped ABI.
+   DA-03's floors are data, checked from both sides in `test/fork/MainnetAddresses.fork.t.sol`: `checkConfig` refuses a
+   floor its pool no longer meets, and `_assertFloorIsNotStale` refuses one that has fallen far under its pool's own
+   window. DA-04, DA-07, DA-12, DA-19, DA-21 and DA-23 have no test, because no code fix exists for them: the reason is
+   in `audit/2026-09-19-triage.md` and in the design rules below.
 
 CI enforces items 1 to 5: fmt, build, `forge lint -D notes`, tests (fork suites required on `main` and on pull requests
 into it from this repository), 100% coverage on every file and `wake detect all src`. Run them locally before pushing;
@@ -103,11 +108,14 @@ script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test 
   a keep mask, start one before strangers may, and cancel a guardian change that would remove the role (it cannot block
   its own replacement). No pause, no upgrade, no sweep, no renounce, no instant guardian change, and no keeper or bot
   role. Keep it that way. `cancelRebalance` has no window and no rate limit, so a hostile or compromised guardian can
-  cancel each proposal at the last second of its auction and hold rebalancing off indefinitely while the units drift
-  from the rule: a trust assumption of the role, stated among the guardian's powers and the known limitations, not an
-  oversight to close silently (DA-12). An expired proposal leaves `pendingGuardian`, `pendingGuardianEta` and
-  `listingEta` set, so `guardianChangePending()` and `listingPending(token)` are the views that say whether one is
-  still executable (DA-16).
+  cancel each proposal at the last second of its auction and hold rebalancing off while the units drift from the rule.
+  It is bounded by the owner replacing that guardian, which takes `GUARDIAN_DELAY` and which the guardian cannot cancel,
+  since it may only cancel its own removal and not its replacement; it moves no funds and holders redeem throughout. A
+  cancel budget was considered and rejected: it would trade that bounded stall for the guardian's ability to stop a
+  second distorted snapshot in a row, which is the power's whole purpose. A trust assumption of the role, stated among
+  the guardian's powers and the known limitations, not an oversight to close silently (DA-12). An expired proposal
+  leaves `pendingGuardian`, `pendingGuardianEta` and `listingEta` set, so `guardianChangePending()` and
+  `listingPending(token)` are the views that say whether one is still executable (DA-16).
 - **Fixed constituents, rule-rebalanced units.** The token list is immutable after `initialize`. Units change only in
   `executeRebalance`, from the `IndexRule.targetUnits` snapshot that a permissionless `startRebalance` took after
   `MIN_REBALANCE_INTERVAL`, after `REBALANCE_DELAY` of notice, within the auction's multiplier band: targets lie within
@@ -153,20 +161,23 @@ script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test 
   condition by trading the pool; until someone does, a silent component can only be kept or retried.
   `MAX_TICK_DEVIATION` is an outlier filter for a short spike, not a bound on manipulation: a push held steady across
   the whole window moves all three parts equally and reads a spread of zero, and with the spread at 2000 a single
-  distorted part still moves the window mean by up to a third of its own shift, about 667 ticks or 6.9%. What is left
-  against a sustained push is the per-token `minLiquidity` floor and the cost of holding a pool off-market for thirty
-  minutes while arbitrageurs trade against you; claim no more than that anywhere (DA-03). The harmonic mean is taken
-  over the whole window and its smallest term dominates it, so twelve seconds at liquidity one blocks every snapshot of
-  that component for the next thirty minutes: that sensitivity is deliberate, it is the XA-01 defence, and measuring
-  each part separately and taking the middle one was rejected because it would equally shake off a real push through an
-  empty range confined to one part; the grief is recoverable, because anyone may retry and the griefer has to pay again
-  every thirty minutes (DA-04). Under the capped methodology a kept component is priced with the snapshot price too,
-  because its market cap sits in the denominator of every other component's weight, which narrows XA-05: under capped a
-  keep mask routes around a component that cannot be transferred, not around one whose pool cannot be read, while under
-  uncapped a kept component is not read at all (DA-06). `executeListing` is permissionless and re-runs `checkConfig` on
-  the stored config before applying it, so a pool that thinned out during the notice is not whitelisted on a validation
-  up to nine days old (DA-11). That lets a griefer hold a listing off by keeping the pool thin, but only while they keep
-  paying, and the proposal stays executable for the rest of `PROPOSAL_WINDOW`.
+  distorted part still moves the window mean by up to a third of its own shift, about 667 ticks or 6.9%. Comparing each
+  part against the window mean instead is the same arithmetic, because that mean is the average of the parts. What is
+  left against a sustained push is the per-token `minLiquidity` floor and the cost of holding a pool off-market for
+  thirty minutes while arbitrageurs trade against you; claim no more than that anywhere. The floor is therefore the
+  lever: the shipped floors are a third of each pool's lowest recent window, raised from a tenth on 2026-09-20, and the
+  only other lever, a second price source, is not in v2 (DA-03). The harmonic mean is taken over the whole window and
+  its smallest term dominates it, so twelve seconds at liquidity one blocks every snapshot of that component for the
+  next thirty minutes: that sensitivity is deliberate, it is the XA-01 defence, and measuring each part separately and
+  taking the middle one was rejected because it would equally shake off a real push through an empty range confined to
+  one part; the grief is recoverable, because anyone may retry and the griefer has to pay again every thirty minutes
+  (DA-04). Under the capped methodology a kept component is priced with the snapshot price too, because its market cap
+  sits in the denominator of every other component's weight, which narrows XA-05: under capped a keep mask routes around
+  a component that cannot be transferred, not around one whose pool cannot be read, while under uncapped a kept
+  component is not read at all (DA-06). `executeListing` is permissionless and re-runs `checkConfig` on the stored
+  config before applying it, so a pool that thinned out during the notice is not whitelisted on a validation up to nine
+  days old (DA-11). That lets a griefer hold a listing off by keeping the pool thin, but only while they keep paying,
+  and the proposal stays executable for the rest of `PROPOSAL_WINDOW`.
 - **Executors are untrusted.** Tokens and the callback go only to `msg.sender`, every mutating entry point shares the
   reentrancy guard, and state is written before any rebalance transfer. `executeRebalance(bytes)` settles whatever the
   supply in the settling block requires; the `executeRebalance(bytes, uint256[] maxAmountsIn)` overload bounds that and

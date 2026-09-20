@@ -140,6 +140,9 @@ contract IndexRule is IIndexRule {
         returns (uint256 outValue, uint256 inValue)
     {
         if (amountsOut.length != tokens.length || amountsIn.length != tokens.length) revert LengthMismatch();
+        // Assigned before the loop: a settlement that moves nothing on any leg is worth nothing on both sides.
+        outValue = 0;
+        inValue = 0;
         for (uint256 i = 0; i < tokens.length; ++i) {
             // Nothing moved on this leg, so nothing about its pool matters here (DA-14).
             if (amountsOut[i] == 0 && amountsIn[i] == 0) continue;

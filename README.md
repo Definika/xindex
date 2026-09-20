@@ -46,7 +46,7 @@ coin; a third-ranked coin could then outweigh both, so the cap now applies to ev
 | Fees | None in v2. |
 | Layer-1 coins | Only tokens that exist on mainnet can be components (WBTC, WETH, LINK, ...). Coins with no credible wrapper (ADA, XRP, ...) are out of scope until one exists. |
 | Stable in / out | Mint with USDC or USDT. The burner chooses USDC, USDT or any other token at exit. Index tokens are fungible, so the protocol cannot know which stable a given holder used; economically the two are equivalent. |
-| Decentralization | No admin can move an index's funds, mint or burn its shares, pause or upgrade it, or set its units by hand. What the roles do hold: the owner proposes listings and token data configs, which take effect after a public 2-day delay, and guardian changes, which take 7 days; a proposal not executed within 7 days of becoming ready expires. Owner and guardian both cancel a pending listing, delist a token, cancel a rebalance on any index, and start one with a keep mask or before strangers may; the guardian can also cancel a change that would remove it, but not one that replaces it. Ownership is handed over in two steps that take effect at once, with no delay and no guardian veto, and it cannot be renounced. A token config reshapes the targets of every index holding that token at its next rebalance, and the power to cancel a rebalance has no window and no rate limit, so it can hold rebalancing off indefinitely (see "Known limitations"). |
+| Decentralization | No admin can move an index's funds, mint or burn its shares, pause or upgrade it, or set its units by hand. What the roles do hold: the owner proposes listings and token data configs, which take effect after a public 2-day delay, and guardian changes, which take 7 days; a proposal not executed within 7 days of becoming ready expires. Owner and guardian both cancel a pending listing, delist a token, cancel a rebalance on any index, and start one with a keep mask or before strangers may; the guardian can also cancel a change that would remove it, but not one that replaces it. Ownership is handed over in two steps that take effect at once, with no delay and no guardian veto, and it cannot be renounced. A token config reshapes the targets of every index holding that token at its next rebalance, and the power to cancel a rebalance has no window and no rate limit, so it can hold rebalancing off until the owner replaces that guardian (see "Known limitations"). |
 | Frozen components | If a component's issuer pauses or blacklists transfers, holders take every other component out with `redeemSkipping` and collect the frozen one later with `claim`; the guardian rebalances around it with a keep mask. A kept component is neither transferred nor read for its balance, but under the capped methodology its pool is still priced, because its cap enters every other component's weight. |
 
 ## Architecture
@@ -365,9 +365,13 @@ would swamp the pool: SKY 7, GNO 7, COMP 9, SNX 4, EIGEN 6, CVX 6, YFI 4, RPL 11
 - The snapshot's deviation check compares the window's three 10-minute parts only with each other, so it is an outlier
   filter for a short spike, not a bound on manipulation: a push held steady across the whole 30 minutes moves all three
   equally and reads a spread of zero. What it does bound is a single distorted part: at the 2,000-tick limit such a
-  part moves the window mean by at most a third of its own shift, about 667 ticks or 6.9%. Against a sustained push,
-  what is left is the per-token minimum liquidity and the cost of holding a pool off-market for half an hour while
-  arbitrageurs trade against it.
+  part moves the window mean by at most a third of its own shift, about 667 ticks or 6.9%. No statistic taken inside
+  the window can do better: comparing each part against the window mean instead, the obvious alternative, is the same
+  arithmetic, since the window mean is the average of the parts and a uniform push moves both together. Against a
+  sustained push, what is left is the per-token minimum liquidity and the cost of holding a pool off-market for half an
+  hour while arbitrageurs trade against it. That floor was raised from a tenth of a pool's harmonic-mean liquidity to a
+  third on 2026-09-20, which is what raising the cost of such a push looks like; the other lever, a second price
+  source, is not in v2.
 - A component whose WETH pool has written no observation for 10 minutes (no swap, and no mint or burn in range) cannot
   be snapshotted, and `startRebalance` reverts `StalePriceHistory`. Past that age Uniswap extrapolates the whole window
   from the pool's current tick and current liquidity, which would leave the other two checks reading a spread of zero
@@ -391,9 +395,11 @@ would swamp the pool: SKY 7, GNO 7, COMP 9, SNX 4, EIGEN 6, CVX 6, YFI 4, RPL 11
   owner-only, behind the 2-day listing delay and the guardian's veto, which makes it an operational hazard rather than
   an attack.
 - `cancelRebalance` has no window and no rate limit, so a hostile or compromised guardian can cancel each proposal at
-  the last second of its auction and hold rebalancing off indefinitely, with the units drifting from the rule
-  meanwhile. It moves no funds and takes nothing: this is a trust assumption of the guardian role, not something the
-  code bounds.
+  the last second of its auction and hold rebalancing off, with the units drifting from the rule meanwhile. It moves no
+  funds and takes nothing, holders redeem throughout, and the owner ends it by replacing that guardian: 7 days of
+  notice the guardian cannot cancel, since it may only cancel its own removal and not its replacement. Rate-limiting
+  the cancel would trade that bounded stall for the guardian's ability to stop a second distorted snapshot in a row,
+  which is what the power is for; this is a trust assumption of the guardian role.
 - A permanently frozen component needs the guardian's keep mask at every rebalance, and under the capped methodology
   its pool must still be readable, because its market cap scales every other component's weight; its `balanceOf` need
   not be.
