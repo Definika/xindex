@@ -33,7 +33,16 @@ import {TickMath} from "./libraries/TickMath.sol";
 ///      component clipped up to its floor is certain to end there and is pinned; otherwise the components clipped down
 ///      to their ceiling are. The rest are shared out again, until a pass clips nothing. A pinned component never
 ///      moves again, so a component the rule wants to shrink further than its floor is never handed value back. A
-///      weight that rounds to zero counts as one wei here, so no clipped value is ever left unplaced.
+///      weight that rounds to zero counts as one wei here, so no clipped value is ever left unplaced, and a share is
+///      turned back into units rounded up, so the targets buy back every wei the shrinking components release.
+///
+///      A kept component is not read at all under the uncapped methodology. The capped methodology does read it, from
+///      the plain price, and its cap then shapes the components that do move as well as the ranking: it picks rank 1
+///      through `_top` and sits in the `pool` the other weights divide by, while rank 1's weight is a constant
+///      (VR-02). That price gets none of the snapshot checks, so a keep mask is an owner-or-guardian lever over the
+///      targets as well as over which component trades. Excluding kept components from the capped weights instead
+///      would leave fewer than MIN_CAPPED_COMPONENTS ranks to place the remainder in, which is the feasibility
+///      condition the capped rule needs, so the ranking stays and the lever is documented.
 contract IndexRule is IIndexRule {
     uint32 public constant TWAP_WINDOW = 30 minutes;
     uint32 public constant TWAP_SUB_WINDOWS = 3;
@@ -349,8 +358,8 @@ contract IndexRule is IIndexRule {
 
     /// @dev Prices and caps for a rebalance snapshot. Every component that can move needs a snapshot price. A kept
     ///      component never trades: the uncapped methodology does not read it at all (its weight is renormalised away
-    ///      and a zero price and cap leave the targets unchanged), and the capped methodology only ranks it, from the
-    ///      plain TWAP price.
+    ///      and a zero price and cap leave the targets unchanged), and the capped methodology reads it from the plain
+    ///      TWAP price, which shapes the moving components' targets through `_top` and `pool` as well (VR-02).
     function _snapshotMarket(address[] calldata tokens, uint8 methodology, uint256 keepMask)
         private
         view
@@ -564,7 +573,14 @@ contract IndexRule is IIndexRule {
             targets[i] = basket.hi[i];
             removed = share - ceilingValue;
         } else {
-            targets[i] = Math.max(Math.mulDiv(share, basket.scale, p), basket.lo[i]);
+            // Rounded up, so the targets buy back at least the value the shrinking legs release. Rounding down left a
+            // residue of up to one raw unit per component that nothing reallocated, because the component it came from
+            // was pinned at its floor: the index sent it out as `amountsOut` with no matching `amountsIn`, and
+            // `IndexToken._checkBacking` verifies backing, not value (VR-03). Rounding up puts the residue on the
+            // executor's side of the trade, where every other rounding in the system already sits. The share is at most
+            // the ceiling's value, so the ceiling bounds the result; the minimum only makes that explicit.
+            uint256 unclipped = Math.mulDiv(share, basket.scale, p, Math.Rounding.Ceil);
+            targets[i] = Math.min(basket.hi[i], Math.max(unclipped, basket.lo[i]));
         }
     }
 

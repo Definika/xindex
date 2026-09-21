@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {Test} from "forge-std/Test.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
 import {IndexRule} from "../src/IndexRule.sol";
 import {IndexToken} from "../src/IndexToken.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IIndexRule} from "../src/interfaces/IIndexRule.sol";
+import {IIndexToken} from "../src/interfaces/IIndexToken.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {TickMath} from "../src/libraries/TickMath.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
@@ -967,5 +969,158 @@ contract IndexRuleTest is Test {
         address[] memory tokens = _basket(ticks, supplies);
         uint256[] memory units = rule.initialUnits(tokens, UNCAPPED, 1);
         assertEq(units[0], 1);
+    }
+
+    // ---------------------------------------------------------------------
+    // VR-01 / VR-02 / VR-06: the verification review of 2026-09-21
+    // ---------------------------------------------------------------------
+
+    /// @dev VR-01. The capped rule assigns rank 1 a flat CAPPED_TOP_WEIGHT instead of capping it there, and `_top`
+    ///      breaks a tie by position, so the weight is a step function of the caps. This pins the size of that step:
+    ///      one wei of cap moves 12.5 percentage points between two of five otherwise equal components. Kept as
+    ///      recorded behaviour -- the methodology is a fixed product decision (`Methodology.CAPPED`, ARCHITECTURE
+    ///      section 2) -- but pinned so it cannot change unnoticed, and so the consequence below stays visible.
+    function test_VR01_oneWeiOfCapMovesTheTopWeight() public view {
+        uint256[] memory caps = _arr(1e24, 1e24, 1e24, 1e24, 1e24);
+        uint256[] memory w = rule.weightsFromCaps(caps, CAPPED);
+        assertEq(w[0], 0.3e18, "a tie ranks by position, so the first takes the top weight");
+        assertEq(w[1], 0.175e18);
+
+        caps[1] += 1;
+        uint256[] memory nudged = rule.weightsFromCaps(caps, CAPPED);
+        assertEq(nudged[0], 0.175e18, "one wei of cap and the step moves");
+        assertEq(nudged[1], 0.3e18);
+        assertEq(nudged[1] - w[1], 0.125e18, "12.5 points, whatever the caps were worth");
+    }
+
+    /// @dev VR-01, the consequence: an index sitting exactly on the capped methodology cannot rebalance at all, and a
+    ///      single tick on one pool -- far inside MAX_TICK_DEVIATION and below any fee tier -- puts an eighth of it up
+    ///      for auction at the next 28-day boundary, from any address. MIN_TURNOVER is 0.5% and cannot filter it.
+    function test_VR01_aOneTickRankFlipClearsMinTurnover() public {
+        address[] memory tokens = _flatBasket(_arr(1000, 1000, 1000, 1000, 1000));
+        uint256[] memory onRule = _arr(150e18, 87.5e18, 87.5e18, 87.5e18, 87.5e18);
+        IndexToken idx = IndexToken(factory.createIndex("Capped", "CAP", tokens, onRule, CAPPED));
+        vm.warp(idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL());
+
+        (uint256[] memory t, uint256 turnover) = idx.previewTarget(0);
+        for (uint256 i = 0; i < 5; ++i) {
+            assertEq(t[i], onRule[i], "the index is exactly on its methodology");
+        }
+        assertEq(turnover, 0, "so there is nothing to trade");
+        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, 0));
+        vm.prank(alice);
+        idx.startRebalance(0);
+
+        market.setPriceTick(tokens[1], 1);
+        (, turnover) = idx.previewTarget(0);
+        assertGt(turnover, 0.124e18, "one tick puts an eighth of the index up for auction");
+        assertGt(turnover, 24 * idx.MIN_TURNOVER(), "which MIN_TURNOVER cannot filter");
+        vm.prank(alice);
+        idx.startRebalance(0);
+    }
+
+    /// @dev VR-02. A component kept out of a rebalance is priced by `_price`, which applies neither the minimum
+    ///      liquidity nor the sub-window agreement that `_snapshotPrice` applies to every component that trades. Its
+    ///      cap is not merely a ranking input: it feeds `_top` and the `pool` denominator, so it reshapes the targets
+    ///      of the components that do move. Kept as the accepted residue of XA-05 -- excluding kept components from
+    ///      the capped weights instead would leave fewer than MIN_CAPPED_COMPONENTS ranks to place the remainder in,
+    ///      which is the feasibility condition the capped rule needs -- but pinned, and now documented as more than
+    ///      ranking.
+    function test_VR02_aKeptComponentsPriceReshapesTheActiveTargets() public {
+        address[] memory tokens = _flatBasket(_arr(50, 20, 15, 10, 5));
+        uint256 keepMask = 1 << 4;
+        (uint256[] memory before, uint256 turnoverBefore) = rule.targetUnits(tokens, _hundreds(), CAPPED, keepMask);
+
+        market.setPriceTick(tokens[4], 40_000); // only the KEPT component's pool moves
+        (uint256[] memory afterwards, uint256 turnoverAfter) = rule.targetUnits(tokens, _hundreds(), CAPPED, keepMask);
+
+        assertEq(before[4], afterwards[4], "the kept component itself never moves");
+        assertEq(before[0], 133_333_333_333_333_333_334);
+        assertEq(afterwards[0], 114_285_714_285_714_285_715, "but the largest active component's target does");
+        assertEq(before[1], 88_888_888_888_888_888_889);
+        assertEq(afterwards[1], 114_285_714_285_714_285_715);
+        assertLt(turnoverAfter, turnoverBefore, "and turnover FALLS, so MIN_TURNOVER cannot see the distortion");
+    }
+
+    /// @dev VR-02, the control: the uncapped methodology never reads a kept component at all, so the same move on the
+    ///      same pool changes nothing.
+    function test_VR02_theUncappedMethodologyIsImmune() public {
+        address[] memory tokens = _flatBasket(_arr(50, 20, 15, 10, 5));
+        (uint256[] memory before,) = rule.targetUnits(tokens, _hundreds(), UNCAPPED, 1 << 4);
+        market.setPriceTick(tokens[4], 40_000);
+        (uint256[] memory afterwards,) = rule.targetUnits(tokens, _hundreds(), UNCAPPED, 1 << 4);
+        for (uint256 i = 0; i < 5; ++i) {
+            assertEq(before[i], afterwards[i], "an uncapped snapshot never reads a kept component");
+        }
+    }
+
+    /// @dev VR-06a. `_clip`'s floor is load-bearing on the WAD value scale. A component priced below WAD there --
+    ///      so its whole floor rounds to nothing -- and carrying a weight small enough that its share of a few wei of
+    ///      active value rounds to zero buys back zero units. Without the floor its target would be zero: backing the
+    ///      index no longer owes on a component it still holds, and a component the rule can never restore, since
+    ///      every later target is bounded by half to double of zero. Reached through the capped rule, whose kept
+    ///      component sets the scale from outside the active set, so the active value stays a few wei.
+    function test_VR06_theClipFloorKeepsAZeroShareAtItsFloor() public {
+        int24[] memory ticks = new int24[](6);
+        uint256[] memory supplies = new uint256[](6);
+        (ticks[0], supplies[0]) = (880_000, 1e24); // kept: an extreme price that forces Basket.scale to WAD
+        for (uint256 i = 1; i < 5; ++i) {
+            (ticks[i], supplies[i]) = (-400_000, 1e24); // four wei per 1e18 units, and a real weight
+        }
+        (ticks[5], supplies[5]) = (-400_000, 1); // the same price, but a cap of one wei
+
+        address[] memory tokens = _basket(ticks, supplies);
+        (uint256[] memory w, uint256[] memory prices,) = rule.weights(tokens, CAPPED);
+        assertGt(prices[0], 1e46, "the kept component's price sets the WAD scale");
+        assertEq(prices[5], 4, "the last component is worth four wei per 1e18 units");
+        assertLt(w[5], w[1] / 1e6, "and its weight is a millionth of its neighbours'");
+
+        uint256[] memory units = new uint256[](6);
+        units[0] = 1e18;
+        for (uint256 i = 1; i < 6; ++i) {
+            units[i] = 4e17;
+        }
+        assertEq(Math.mulDiv((units[5] + 1) / 2, prices[5], WAD), 0, "its floor is worth nothing in that scale");
+        assertLe(Math.mulDiv(units[5], prices[5], WAD), 1, "and the holding a wei, so the active value is a few wei");
+
+        (uint256[] memory t,) = rule.targetUnits(tokens, units, CAPPED, 1);
+        assertEq(t[0], units[0], "the kept component never moves");
+        assertEq(t[5], 2e17, "a zero share is lifted to its floor");
+        assertEq(t[5], (units[5] + 1) / 2, "which is half its units, rounded up");
+        assertGt(t[5], 0, "without the floor the target would be zero units");
+    }
+
+    /// @dev VR-06b. `_bound`'s value floor is load-bearing on the same scale: without it a basket whose holdings all
+    ///      round away has an activeValue of zero and the snapshot reverts DegenerateBasket instead of returning
+    ///      targets. Reached through the capped rule, which prices a kept component and so lets its extreme price set
+    ///      the scale while it sits outside the active set.
+    function test_VR06_theBoundValueFloorKeepsADustBasketAlive() public {
+        int24[] memory ticks = new int24[](5);
+        uint256[] memory supplies = new uint256[](5);
+        ticks[0] = 880_000;
+        supplies[0] = 1e24;
+        for (uint256 i = 1; i < 5; ++i) {
+            (ticks[i], supplies[i]) = (-400_000, 1e24);
+        }
+        address[] memory tokens = _basket(ticks, supplies);
+
+        (uint256[] memory w, uint256[] memory prices,) = rule.weights(tokens, CAPPED);
+        assertGt(prices[0], 1e46, "the kept component's price sets Basket.scale to WAD");
+        assertEq(w[0], 0.3e18, "and it is rank one under the capped rule");
+
+        uint256[] memory units = new uint256[](5);
+        units[0] = 1e18;
+        for (uint256 i = 1; i < 5; ++i) {
+            units[i] = 1e17;
+            assertEq(Math.mulDiv(units[i], prices[i], WAD), 0, "every active holding rounds away in that scale");
+            assertEq(Math.mulDiv(2 * units[i], prices[i], WAD), 0, "and so does every ceiling");
+        }
+
+        (uint256[] memory t, uint256 turnover) = rule.targetUnits(tokens, units, CAPPED, 1);
+        assertEq(t[0], units[0], "the kept component never moves");
+        for (uint256 i = 1; i < 5; ++i) {
+            assertEq(t[i], 2e17, "each takes its one wei of share and doubles");
+        }
+        assertEq(turnover, 0, "nothing is sold");
     }
 }

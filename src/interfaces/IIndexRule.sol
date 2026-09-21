@@ -134,7 +134,9 @@ interface IIndexRule is IXindexErrors {
     ///         component that moves needs a snapshot price: its window's harmonic-mean liquidity at least its
     ///         `minLiquidity` (else ThinPriceHistory) and sub-window mean ticks within MAX_TICK_DEVIATION (else
     ///         PriceHistoryDeviates). Kept components are not read under the uncapped methodology; the capped
-    ///         methodology ranks them from a plain TWAP price.
+    ///         methodology reads them from a plain TWAP price, which gets none of the snapshot checks: a kept cap
+    ///         picks rank 1 and sits in the denominator the other weights divide by, so it shapes the targets of the
+    ///         components that do move, not only the ranking.
     /// @param tokens Components, in index order.
     /// @param units Current raw units per 1e18 shares, one per component.
     /// @param methodology `Methodology` id.

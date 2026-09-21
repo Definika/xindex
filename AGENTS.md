@@ -48,15 +48,18 @@ market from `script/testnet/SetupTestMarket.s.sol`.
    `IndexZap.burnToTokenWithPermit`, and the executor callback in `IndexToken.executeRebalance`.
 6. Every testable finding of the security reviews keeps its regression test passing, named after its id (a test that
    covers two findings carries both): v1 findings by id, v2 rebalancing findings as `R01`..`R23`, whole-repo audit
-   findings of 2026-09-16 as `XA..`, and the logic review's findings of 2026-09-18 as `LR..`
-   (`audit/2026-09-18-logic-review.md`). The v1 and R tests live in `test/Security.t.sol` and
+   findings of 2026-09-16 as `XA..`, the logic review's findings of 2026-09-18 as `LR..`
+   (`audit/2026-09-18-logic-review.md`), and the verification review's findings of 2026-09-21 as `VR..`
+   (`audit/2026-09-21-verification-review.md`). The v1 and R tests live in `test/Security.t.sol` and
    `test/fork/Security.fork.t.sol`, except the ids a contract test cannot reach: L06 and FR06 are `test_L06_checkOwner`
    and `test_FR06_checkGuardian` and FR05 the two `test_FR05_*` tests in `test/Scripts.t.sol`, and I09, I10, I11, L08
    and FR04 are `test/Repo.t.sol` (the known-limitations section, the pinned compiler, the pinned CI toolchain and
    required fork RPC, and the dependency lock against `.gitmodules`; CI also compares the committed submodule commits,
-   which needs git). An XA test sits in the suite of what it checks, `test/Repo.t.sol` for a repository file, so find it
-   by id. XA-19 to XA-21, XA-32 to XA-37, XA-41, XA-63 and XA-65 have no test of their own, because they changed only
-   tests and mocks or refactored without changing behaviour; neither have the findings fixed by documentation alone.
+   which needs git). An XA or VR test sits in the suite of what it checks, `test/Repo.t.sol` for a repository file, so
+   find it by id: VR-01, VR-02 and VR-06 are in `test/IndexRule.t.sol`, VR-04 in `test/IndexToken.rebalance.t.sol` and
+   VR-03 in `test/Security.t.sol`. XA-19 to XA-21, XA-32 to XA-37, XA-41, XA-63 and XA-65 have no test of their own,
+   because they changed only tests and mocks or refactored without changing behaviour; neither have the findings fixed
+   by documentation alone, VR-05 among them.
    `audit/triage.md` gives the evidence for each.
 
 CI enforces items 1 to 5: fmt, build, `forge lint -D notes`, tests (fork suites required on `main` and on pull requests
@@ -185,7 +188,11 @@ Ethereum mainnet; Uniswap V3 (SwapRouter02 + QuoterV2, pool time-weighted prices
 units that follow an on-chain rule; methodologies uncapped market cap and capped 30/20 (at least 5 components; the 20%
 cap applies to every component below the largest, changed from the Numbers model's closed form on 2026-09-17);
 rebalance targets are the water-filling of value by weight within the half-to-double bounds (a component clipped to
-its floor is no longer handed value back, changed on 2026-09-18, LR-02); monthly
+its floor is no longer handed value back, changed on 2026-09-18, LR-02; a share becomes units rounded up, so the
+targets buy back every wei the shrinking legs release, changed on 2026-09-21, VR-03). The capped rule's flat 30% for
+rank 1 makes its top weight a step function of the caps, and under a keep mask the kept component's unchecked price
+shapes the moving components' targets: both were raised on 2026-09-21 (VR-01, VR-02), left as recorded behaviour, and
+documented. Changing either needs an explicit methodology decision. monthly
 cadence with 2 days of notice and a 24-hour auction from 1.5 to 0.9 on the bought legs; no protocol bots or hot keys; no fees; component whitelist only (no synthetics for L1 coins without a mainnet wrapper);
 burner chooses the exit token (mint currency is not tracked per holder); the index price is the basket's value, not a
 divisor level. The Numbers model's tokens were examples; its methodology is the requirement. Rationale in

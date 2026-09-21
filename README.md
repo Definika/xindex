@@ -297,9 +297,18 @@ would swamp the pool: SKY 7, GNO 7, COMP 9, SNX 4, EIGEN 6, CVX 6, YFI 4, RPL 11
 - An index with so little supply that a settlement moves no raw unit at all is priced at parity, so its units follow the
   rule whoever executes. One that still moves a few wei does decay with the auction, and a lone executor can then pick
   the multiplier in [0.9, 1.5] for next to nothing: it sets the level of a near-empty index within the half-to-2.5-times
-  bound but moves no holder's value.
+  bound. What it can move is bounded by the rounding of `amountsIn`, under one raw unit of each growing component;
+  before VR-03 a second truncation in the rule's own targets stacked on top of that, and an executor delivering nothing
+  at all settled and kept 1.98 raw units per growing component.
 - Without competing executors, a filler can wait for the 0.9 floor and keep up to 10% of the bought value; the notice
   period also lets traders position ahead of a public rebalance.
+- The capped methodology's top weight is a step: `IndexRule` assigns rank 1 a flat 30% rather than capping it there,
+  and ties rank by position, so when an index's two largest market caps cross, 12.5 percentage points move between
+  them. An index sitting exactly on its methodology cannot rebalance at all, and one tick on one pool then puts about
+  an eighth of it up for auction, far above `MIN_TURNOVER`, at the next 28-day boundary and from any address. The
+  crossing is honest and the trade is value-neutral at snapshot prices; the cost is churn plus the lone-filler spread
+  above. Watch it on an index whose top two caps sit close, and cancel during the notice period if the churn is not
+  wanted (VR-01).
 - A permanently frozen component needs the guardian's keep mask at every rebalance.
 - A multi-hop burn leg costs one router call per hop, and a hop that sells nothing reverts the burn instead of leaving
   the next hop to spend the zap's balance.

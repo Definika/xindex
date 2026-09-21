@@ -96,7 +96,9 @@ out exactly `floor(S * u / 1e18) - floor(S * n / 1e18)` of a shrinking component
 `n` holds if it held with the old units `u`, and the post-check enforces it for growing components. Nothing is computed
 from balances, so there is no share price to manipulate and no first-depositor attack. Donations only add surplus that no
 holder can redeem, and a rebalance executor cannot use it to cover part of a fill either: the settlement check asks for
-the whole of `amountsIn` on top of what the index held.
+the whole of `amountsIn` on top of what the index held. That check is about backing, not value: what keeps a settlement
+from costing the holders is that the rule's targets are value-neutral at snapshot prices, which is why `IndexRule`
+rounds a share back into units upwards (VR-03).
 
 ### IndexRule (`src/IndexRule.sol`)
 
@@ -121,12 +123,17 @@ A stateless, view-only contract the factory deploys in its constructor. It never
   pool's harmonic-mean liquidity over the window reaches the token's `minLiquidity` (else `ThinPriceHistory`) and the
   mean ticks of the window's three 10-minute parts lie within `MAX_TICK_DEVIATION` (2,000 ticks, about 22%) of each
   other (else `PriceHistoryDeviates`). Kept components are not read at all under the uncapped methodology, whose weights
-  renormalise them away; the capped methodology still ranks them, from the plain price; each target is clipped to
+  renormalise them away; the capped methodology still reads them, from the plain price, and a kept cap picks rank 1 and
+  sits in the denominator the other weights divide by, so it shapes the moving components' targets and not only the
+  ranking (VR-02); each target is clipped to
   `[units / 2, units * 2]` (and below `MAX_TARGET_UNITS`, so the auction's premium still fits `uint96`). Each pass
   shares the value not yet pinned among the components still free, by weight, and clips the shares: when the clips add
   more value at the floors than they remove at the ceilings, the shares can only come down, so the components at their
   floor are pinned there; otherwise those at their ceiling are. The rest are shared out again until a pass clips
-  nothing, at most one pass per component. A pinned component never moves again, so the result is the water-filling of
+  nothing, at most one pass per component. A share is turned back into units rounded up, so the targets buy back every
+  wei the shrinking components release: rounding them down left a residue of up to one raw unit per component that
+  nothing reallocated, and the index sent it out with nothing asked back, because the settlement check verifies backing
+  and not value (VR-03). A pinned component never moves again, so the result is the water-filling of
   value by weight within the bounds: no component above its floor holds more value per unit of weight than one below
   its ceiling. A weight that rounds to zero counts as one wei, so no clipped value is left unplaced. Returns the
   targets and the turnover, the sold value as a share of the rebalanced value.
@@ -301,7 +308,10 @@ its own address.
 - **Shape versus value.** Issue, redeem and claims never read a price. What can distort a basket's shape, with targets
   always within half to double per component per rebalance and settled units within half to 2.5 times: an issuer minting
   supply (policy: fixed-supply or governance-minted tokens); the owner changing a pool, a minimum liquidity, exclusions
-  or a reference supply, behind the 2-day delay and the guardian's cancel; the caller choosing the snapshot moment. A
+  or a reference supply, behind the 2-day delay and the guardian's cancel; the caller choosing the snapshot moment; under
+  the capped methodology, the price of a component the owner or guardian keeps out of the rebalance, which gets none of
+  the snapshot checks and still picks rank 1 and divides the other weights (VR-02); and, near a tie between an index's
+  two largest caps, which of them the snapshot moment puts first, worth 12.5 percentage points (VR-01). A
   distorted snapshot price can also move value: read low by a factor f on a sold component, it sets the auction's fair
   multiplier to about 1/f, and below f = 2/3 the first executor takes value (the 2026-09-16 audit measured 2.48% of an
   off-target uncapped index from one 12-second block at an extreme tick in an empty range). Rebalance snapshots

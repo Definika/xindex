@@ -281,6 +281,60 @@ contract IndexTokenRebalanceTest is Test {
         assertEq(pendingEta, 0);
     }
 
+    /// @dev VR-04. An auction that expired unfilled already holds strangers off until its deadline plus
+    ///      REBALANCE_DELAY. Cancelling it only clears the stale proposal the views still report, so it must not
+    ///      re-arm the cooldown from the moment of the cancel and push that hold-off further out. How much the old
+    ///      code added depended purely on when the cancel landed: one second just after the expiry, and a full
+    ///      REBALANCE_DELAY when timed at the moment strangers were about to be let in, which is the case below.
+    function test_VR04_cancellingAnExpiredAuctionDoesNotExtendTheHoldOff() public {
+        uint256 eta = _start(index);
+        uint256 fromExpiry = eta + index.AUCTION_DURATION() + index.REBALANCE_DELAY();
+
+        vm.warp(fromExpiry);
+        assertTrue(index.canStartRebalance(), "the expiry alone has already let strangers in");
+
+        vm.expectEmit(true, true, false, true, address(index));
+        emit IIndexToken.RebalanceCancelled(index.proposalCount(), owner, fromExpiry);
+        vm.prank(owner);
+        index.cancelRebalance();
+
+        assertEq(index.restartAllowedAt(), fromExpiry, "the expiry's own hold-off stands, not a fresh two days");
+        assertTrue(index.canStartRebalance(), "so the cancel costs a stranger nothing");
+        vm.prank(stranger);
+        index.startRebalance(0);
+    }
+
+    /// @dev VR-04, cancelled one second after the auction lapsed: still no extension, and the hold-off the expiry
+    ///      granted is reported unchanged.
+    function test_VR04_anExpiredCancelReportsTheExpirysOwnHoldOff() public {
+        uint256 eta = _start(index);
+        uint256 fromExpiry = eta + index.AUCTION_DURATION() + index.REBALANCE_DELAY();
+        vm.warp(eta + index.AUCTION_DURATION() + 1);
+        vm.prank(guardian);
+        index.cancelRebalance();
+        assertEq(index.restartAllowedAt(), fromExpiry);
+        assertLt(index.restartAllowedAt(), block.timestamp + index.REBALANCE_DELAY(), "nothing was added");
+    }
+
+    /// @dev VR-04, the live half: cancelling an auction that has NOT expired still arms a full REBALANCE_DELAY, and
+    ///      never shortens a hold-off that already ran longer.
+    function test_VR04_cancellingALiveAuctionStillArmsTheFullCooldown() public {
+        uint256 eta = _start(index);
+        vm.warp(eta + 1 hours);
+        vm.prank(guardian);
+        index.cancelRebalance();
+        assertEq(index.restartAllowedAt(), block.timestamp + index.REBALANCE_DELAY(), "a live cancel costs two days");
+
+        vm.warp(index.restartAllowedAt());
+        vm.prank(stranger);
+        index.startRebalance(0);
+        (uint256 eta2,,) = index.pendingRebalance();
+        vm.warp(eta2 - 1);
+        vm.prank(owner);
+        index.cancelRebalance();
+        assertEq(index.restartAllowedAt(), block.timestamp + index.REBALANCE_DELAY());
+    }
+
     function test_uninitializedClonesCannotRebalance() public {
         IndexToken rogue = IndexToken(Clones.clone(factory.IMPLEMENTATION()));
         vm.expectRevert(IIndexToken.NotInitialized.selector);

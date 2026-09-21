@@ -219,7 +219,8 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     function startRebalance(uint256 keepMask) external;
 
     /// @notice Factory owner or guardian. Cancels the pending rebalance. Anyone else must then wait REBALANCE_DELAY
-    ///         before starting a new one.
+    ///         before starting a new one. Cancelling an auction that already expired only clears the stale proposal
+    ///         the views still report: the hold-off that expiry granted stands, and the cancel never pushes it out.
     function cancelRebalance() external;
 
     /// @notice Settles the pending rebalance during its auction. Sends msg.sender what the index no longer needs of each
