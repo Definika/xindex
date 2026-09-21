@@ -119,7 +119,9 @@ A stateless, view-only contract the factory deploys in its constructor. It never
   and the largest of twenty equal constituents weighs 5% rather than 30% (VR-01, 2026-09-21). The Numbers model writes
   rank 1 as a constant `0.3`, but every constituent it ships sits far above it (top 1 is 64.7% of the model's basket) and
   its scale factor `0.7 / (1 - top1)` only makes sense while the largest is being cut down, so the constant is a ceiling
-  that always bound; `test_VR01_reproducesTheNumbersModel` pins the rule against the workbook's own final weights. Ties
+  that always bound there rather than a decision about a largest constituent below 30%; the workbook's tokens and
+  scenario figures are illustrative, and `test_VR01_theModelsWorkedExampleIsUnchanged` uses its caps only as a real
+  top-heavy shape that both ceilings bind on. Ties
   rank by position, which now decides only which ceiling a constituent carries. The Numbers model's closed form gave ranks 3 and below no cap, so one of
   them could outweigh the first two: with caps in the ratio of WBTC, WETH, LINK, UNI and tBTC in September 2026 LINK
   came out at about 35%, and it now pins at 20% (the audit's XA-04; the owner's call on 2026-09-17). The app should show

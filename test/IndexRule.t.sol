@@ -1033,12 +1033,15 @@ contract IndexRuleTest is Test {
         idx.startRebalance(0);
     }
 
-    /// @dev VR-01: the rule reproduces the Numbers model workbook exactly on its own seven constituents. The model
-    ///      writes rank 1 as a constant 0.3, but every constituent it ships sits far above that (top 1 is 64.7% of the
-    ///      basket by market cap) and its scale factor, 0.7 / (1 - top1), only makes sense while the largest is being
-    ///      cut down, so the constant is a ceiling that always bound. Capping rather than assigning is therefore a
-    ///      no-op on the model's own data, which this pins.
-    function test_VR01_reproducesTheNumbersModel() public view {
+    /// @dev VR-01: a seven-constituent basket whose largest holds 64.7% of the market cap, so both ceilings bind and
+    ///      capping is indistinguishable from assigning. The caps are the worked example in the Numbers model
+    ///      workbook, used because they are a real top-heavy shape rather than because the sheet is a specification --
+    ///      its tokens and scenario figures are illustrative, and only its methodology is the requirement. What the
+    ///      workbook did settle is that its constant 0.3 for rank 1 is a ceiling that always bound there: every
+    ///      constituent it ships sits far above it, rank 2 is written as an explicit MIN, and its scale factor
+    ///      0.7 / (1 - top1) only makes sense while the largest is being cut down. This test passes on the rule before
+    ///      and after VR-01, which is what shows the change is a no-op wherever the ceilings bind.
+    function test_VR01_theModelsWorkedExampleIsUnchanged() public view {
         uint256[] memory caps = new uint256[](7); // Inputs!D2:D8, price x quantity
         caps[0] = 36_935_424_000; // Doge
         caps[1] = 7_683_689_600; // Shiba Inu
@@ -1049,7 +1052,7 @@ contract IndexRuleTest is Test {
         caps[6] = 1_749_912_500; // Trump
 
         uint256[] memory w = rule.weightsFromCaps(caps, CAPPED);
-        // Inputs!G2:G8, the model's own "Final weight (Top1=30%, Top2<=20%)" column.
+        // Inputs!G2:G8, the weights the workbook's own formulas produce for those caps.
         assertApproxEqRel(w[0], 300_000_000_000_000_000, 1e10);
         assertApproxEqRel(w[1], 200_000_000_000_000_000, 1e10);
         assertApproxEqRel(w[2], 177_507_221_284_901_400, 1e10);
