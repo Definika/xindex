@@ -35,8 +35,24 @@ methodologies, plus 3,000 swept baskets; the zap's hop-by-hop accounting, cross-
 budget algebra, leftover allowances and permit front-running (11 tests); and the reentrancy guard's coverage of all
 twelve nonpayable entry points, called both from the executor callback and from a component transfer hook.
 
+Two of the four areas this review left uninspected were closed on 2026-09-21. The factory's listing and guardian
+timelocks and the swap-and-pop whitelist array now have a stateful invariant campaign,
+`test/IndexFactory.invariant.t.sol`: six invariants over 64 runs of 2,048 calls with no reverts, comparing the factory
+against a ghost account of the rules kept independently of it. The handler attempts every execution whatever the clock
+says and records which way it went, because a handler that checked the window before calling could never observe a
+timelock failure -- the first draft did exactly that, and four of five mutants survived it. It now kills all six:
+`executeListing` and `executeGuardianChange` each accepting an early or an expired proposal, `executeListing` never
+whitelisting, and `delist` losing a swapped token's position (`test_delistingAMovedTokenKeepsTheArrayConsistent`, a
+deterministic sequence, because a random campaign rarely lines four listings up against two delists in that order).
+`ConfigureWhitelist._action` now has a state matrix, `test_action_matchesEveryListingState`, asserting the branch taken
+for each of the twelve states it distinguishes -- never configured, listed with and without a change, delisted with and
+without a change and with and without RELIST, a live proposal carrying the entry's own config and carrying another, an
+expired proposal, a mint currency, decimals outside the policy, and a config the rule rejects. It kills five branch
+mutants of `_action`, each by its own assertion. The individual paths were already covered by the tests around it; what
+was missing was one place where a state that stops being distinguished shows up rather than silently taking a
+neighbour's branch.
+
 Still unverified, with the test that would settle each: `ISwapRouter02`'s struct layouts (the fork suite, before any
 deploy -- the highest residual risk on the list, because a layout slip misroutes funds and every local gate passes);
-the factory's listing and guardian timelocks and the swap-and-pop whitelist array under a stateful invariant across
-`LISTING_DELAY`, `PROPOSAL_WINDOW` and `GUARDIAN_DELAY`; `ConfigureWhitelist._action` across every listing state; and
-the `weight == CAPPED_MAX_WEIGHT` boundary of VR-06's mutant (e), which needs a hand-built cap vector, not fuzzing.
+and the `weight == CAPPED_MAX_WEIGHT` boundary of VR-06's mutant (e), which needs a hand-built cap vector, not
+fuzzing.
