@@ -562,6 +562,129 @@ contract ScriptsTest is Test {
         assertEq(configure.safeCalldata(factory, list, none).length, 0);
     }
 
+    // ---------------------------------------------------------------------
+    // ConfigureWhitelist._action: one assertion per listing state
+    // ---------------------------------------------------------------------
+
+    /// @dev What `_action` decided, read back from the calldata `safeCalldata` emits for a one-entry list: nothing
+    ///      means Skip, a `proposeListing` call means List and a `proposeConfig` call means ChangeConfig. `propose`
+    ///      and `safeCalldata` take the same branch, which `test_safeCalldata_matchesProposeAndWorksWhenTheOwnerSendsIt`
+    ///      pins, so reading the calldata reads the decision.
+    function _actionFor(IndexFactory factory, ConfigureWhitelist.Entry memory entry, address[] memory relist)
+        internal
+        view
+        returns (string memory)
+    {
+        ConfigureWhitelist.Entry[] memory one = new ConfigureWhitelist.Entry[](1);
+        one[0] = entry;
+        bytes[] memory calls = configure.safeCalldata(factory, one, relist);
+        if (calls.length == 0) return "Skip";
+        if (bytes4(calls[0]) == IIndexFactory.proposeListing.selector) return "List";
+        if (bytes4(calls[0]) == IIndexFactory.proposeConfig.selector) return "ChangeConfig";
+        return "Unknown";
+    }
+
+    function _entry(address token, uint24 fee, uint128 minLiquidity, uint256 referenceSupply)
+        internal
+        pure
+        returns (ConfigureWhitelist.Entry memory)
+    {
+        return ConfigureWhitelist.Entry({
+            token: token,
+            fee: fee,
+            minLiquidity: minLiquidity,
+            referenceSupply: referenceSupply,
+            excluded: new address[](0)
+        });
+    }
+
+    /// @dev A fresh 18-decimal token with a 0.3% WETH pool, and the entry that lists it.
+    function _freshEntry() internal returns (ConfigureWhitelist.Entry memory) {
+        MockERC20 token = new MockERC20("M", "M", 18);
+        market.config(address(token), 0);
+        return _entry(address(token), 3000, DEFAULT_MIN_LIQUIDITY, 1_000e18);
+    }
+
+    /// @dev Lists an entry's token through the full flow.
+    function _listEntry(IndexFactory factory, ConfigureWhitelist.Entry memory entry) internal {
+        ConfigureWhitelist.Entry[] memory one = new ConfigureWhitelist.Entry[](1);
+        one[0] = entry;
+        configure.propose(factory, one, none);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        configure.execute(factory, one);
+    }
+
+    /// @dev Every state `_action` distinguishes, each asserted to take the branch the state calls for. The individual
+    ///      paths are covered by the tests above; this is the matrix, so a state that stops being distinguished shows
+    ///      up here rather than silently taking a neighbour's branch. Closes the `ConfigureWhitelist._action` gap the
+    ///      2026-09-21 verification review left open.
+    function test_action_matchesEveryListingState() public {
+        IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
+        address[] memory relist = new address[](1);
+
+        // One token, three configs that differ only in their minimum liquidity. Each state builds its own Entry:
+        // `Entry memory b = a` would alias, not copy, and mutating b would silently change a.
+        address token = _freshEntry().token;
+        ConfigureWhitelist.Entry memory inForce = _entry(token, 3000, DEFAULT_MIN_LIQUIDITY, 1_000e18);
+        ConfigureWhitelist.Entry memory second = _entry(token, 3000, DEFAULT_MIN_LIQUIDITY / 2, 1_000e18);
+        ConfigureWhitelist.Entry memory third = _entry(token, 3000, DEFAULT_MIN_LIQUIDITY / 4, 1_000e18);
+
+        // 1. never configured -> List
+        assertEq(_actionFor(factory, inForce, none), "List", "never configured");
+
+        // 2. listed, config unchanged -> Skip
+        _listEntry(factory, inForce);
+        assertTrue(factory.isWhitelisted(token));
+        assertEq(_actionFor(factory, inForce, none), "Skip", "listed, nothing to change");
+
+        // 3. listed, config changed -> ChangeConfig
+        assertEq(_actionFor(factory, second, none), "ChangeConfig", "listed, config differs");
+
+        // 7. a live proposal carrying the entry's own config -> Skip
+        ConfigureWhitelist.Entry[] memory one = new ConfigureWhitelist.Entry[](1);
+        one[0] = second;
+        configure.propose(factory, one, none);
+        assertEq(_actionFor(factory, second, none), "Skip", "the entry's own config is already pending");
+
+        // 8. a live proposal carrying some other config -> Skip, and the pending one has to be cancelled first
+        assertEq(_actionFor(factory, third, none), "Skip", "a different config is pending");
+
+        // 9. once that proposal expires it no longer blocks
+        vm.warp(block.timestamp + factory.LISTING_DELAY() + factory.PROPOSAL_WINDOW() + 1);
+        assertEq(_actionFor(factory, third, none), "ChangeConfig", "an expired proposal no longer blocks");
+
+        // 4/5/6. delisted: config changes only, and a listing only when named in RELIST
+        vm.prank(guardian);
+        factory.delist(token);
+        assertEq(_actionFor(factory, inForce, none), "Skip", "delisted, config unchanged, not named");
+        assertEq(_actionFor(factory, third, none), "ChangeConfig", "delisted, config differs, not named");
+        relist[0] = token;
+        assertEq(_actionFor(factory, inForce, relist), "List", "delisted and named in RELIST");
+
+        // 10. a mint currency is never a component
+        assertEq(
+            _actionFor(factory, _entry(address(market.usdc()), 3000, DEFAULT_MIN_LIQUIDITY, 1_000e6), none),
+            "Skip",
+            "the rule's own USDC"
+        );
+
+        // 11. decimals outside the policy
+        MockERC20 twoDecimals = new MockERC20("D", "D", 2);
+        market.config(address(twoDecimals), 0);
+        assertEq(
+            _actionFor(factory, _entry(address(twoDecimals), 3000, DEFAULT_MIN_LIQUIDITY, 1_000e2), none),
+            "Skip",
+            "2 decimals is outside 6-18"
+        );
+
+        // 12. a config the rule rejects: the factory has no pool for this token at that fee tier
+        assertEq(
+            _actionFor(factory, _entry(_freshEntry().token, 10_000, DEFAULT_MIN_LIQUIDITY, 1_000e18), none),
+            "Skip",
+            "the rule rejects the config"
+        );
+    }
+
     function test_XA11_proposeSkipsADelistedTokenUnlessNamedForRelisting() public {
         IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
         ConfigureWhitelist.Entry[] memory list = _twoEntries();

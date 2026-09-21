@@ -33,7 +33,18 @@ import {TickMath} from "./libraries/TickMath.sol";
 ///      component clipped up to its floor is certain to end there and is pinned; otherwise the components clipped down
 ///      to their ceiling are. The rest are shared out again, until a pass clips nothing. A pinned component never
 ///      moves again, so a component the rule wants to shrink further than its floor is never handed value back. A
-///      weight that rounds to zero counts as one wei here, so no clipped value is ever left unplaced.
+///      weight that rounds to zero counts as one wei here, so no clipped value is ever left unplaced, and a share is
+///      turned back into units rounded up, so the targets buy back every wei the shrinking components release.
+///
+///      A kept component is not read at all under the uncapped methodology. The capped methodology does read it, from
+///      a plain price that gets none of the snapshot checks. While no ceiling binds, every weight is the component's
+///      own market-cap weight, so the kept cap divides out of the active set exactly as it does under the uncapped
+///      methodology and cannot move anything. Where a ceiling does bind, it still shapes the components that do move,
+///      because it decides which of them the excess is redistributed to and which one carries the larger ceiling
+///      (VR-02): a keep mask is then an owner-or-guardian lever over the targets as well as over which component
+///      trades. Excluding kept components from the capped weights instead would leave fewer than
+///      MIN_CAPPED_COMPONENTS ranks to place the remainder in, which is the feasibility condition the capped rule
+///      needs, so the ranking stays and the residue is documented.
 contract IndexRule is IIndexRule {
     uint32 public constant TWAP_WINDOW = 30 minutes;
     uint32 public constant TWAP_SUB_WINDOWS = 3;
@@ -66,7 +77,6 @@ contract IndexRule is IIndexRule {
     uint256 private constant MAX_EXACT_PRICE = 1e46;
     uint256 private constant CAPPED_TOP_WEIGHT = 0.3e18;
     uint256 private constant CAPPED_MAX_WEIGHT = 0.2e18;
-    uint256 private constant CAPPED_REMAINDER = WAD - CAPPED_TOP_WEIGHT;
 
     /// @dev Snapshot prices, weights and per-component bounds of one rebalance, kept in one struct for the stack.
     ///      `scale` divides every value (units times price): 1 while the exact products fit, WAD above that.
@@ -349,8 +359,8 @@ contract IndexRule is IIndexRule {
 
     /// @dev Prices and caps for a rebalance snapshot. Every component that can move needs a snapshot price. A kept
     ///      component never trades: the uncapped methodology does not read it at all (its weight is renormalised away
-    ///      and a zero price and cap leave the targets unchanged), and the capped methodology only ranks it, from the
-    ///      plain TWAP price.
+    ///      and a zero price and cap leave the targets unchanged), and the capped methodology reads it from the plain
+    ///      TWAP price, which shapes the moving components' targets through `_top` and `pool` as well (VR-02).
     function _snapshotMarket(address[] calldata tokens, uint8 methodology, uint256 keepMask)
         private
         view
@@ -393,36 +403,41 @@ contract IndexRule is IIndexRule {
         }
     }
 
-    /// @dev Rank 1 takes CAPPED_TOP_WEIGHT; every other component shares CAPPED_REMAINDER in proportion to market cap,
-    ///      capped at CAPPED_MAX_WEIGHT. Each pass pins at least one component at the cap and shares what is left among
-    ///      the rest, so at most one pass per component runs. MIN_CAPPED_COMPONENTS components always leave room: the
-    ///      remainder is below the cap times the number of ranks below the first, so a pass that pins nothing always
-    ///      comes. A basket whose unpinned ranks all have a zero cap has nowhere left to place the remainder and is
-    ///      degenerate.
+    /// @dev Market-cap weights under a per-component ceiling: CAPPED_TOP_WEIGHT for the largest, CAPPED_MAX_WEIGHT for
+    ///      every other. Each pass gives every component still under its ceiling its share of what is left in
+    ///      proportion to market cap, pins the ones that reach it, and shares the rest again, so at most one pass per
+    ///      component runs. The ceilings are a cap, not an allocation: a component whose market cap does not reach its
+    ///      ceiling keeps its own weight and nothing is redistributed to it (VR-01).
+    ///
+    ///      The ceilings sum above one for MIN_CAPPED_COMPONENTS components (0.3 + 4 * 0.2 = 1.1), and the weights in
+    ///      a pass sum to exactly what is left, so they can never all reach their ceiling at once: a pass that pins
+    ///      nothing always comes, and it comes within one pass per component. A basket whose unpinned ranks all have a
+    ///      zero cap has nowhere left to place the remainder and is degenerate.
     function _cappedWeights(uint256[] memory caps) private pure returns (uint256[] memory w) {
         uint256 n = caps.length;
         if (n < Methodology.MIN_CAPPED_COMPONENTS) revert TooFewComponentsForCapped(n);
         uint256 first = _top(caps);
         uint256 pool = 0;
         for (uint256 i = 0; i < n; ++i) {
-            if (i != first) pool += caps[i];
+            pool += caps[i];
         }
         if (pool == 0) revert DegenerateBasket();
 
         w = new uint256[](n);
-        w[first] = CAPPED_TOP_WEIGHT;
-        uint256 share = CAPPED_REMAINDER;
+        uint256 share = WAD;
         for (uint256 pass = 0; pass < n; ++pass) {
             uint256 pinnedWeight = 0;
             uint256 pinnedCap = 0;
             for (uint256 i = 0; i < n; ++i) {
-                if (i == first || w[i] == CAPPED_MAX_WEIGHT) continue;
+                // A ceiling is never zero, so a pinned component is the only one whose weight equals its ceiling.
+                uint256 ceiling = i == first ? CAPPED_TOP_WEIGHT : CAPPED_MAX_WEIGHT;
+                if (w[i] == ceiling) continue;
                 uint256 weight = Math.mulDiv(share, caps[i], pool);
-                if (weight < CAPPED_MAX_WEIGHT) {
+                if (weight < ceiling) {
                     w[i] = weight;
                 } else {
-                    w[i] = CAPPED_MAX_WEIGHT;
-                    pinnedWeight += CAPPED_MAX_WEIGHT;
+                    w[i] = ceiling;
+                    pinnedWeight += ceiling;
                     pinnedCap += caps[i];
                 }
             }
@@ -564,7 +579,14 @@ contract IndexRule is IIndexRule {
             targets[i] = basket.hi[i];
             removed = share - ceilingValue;
         } else {
-            targets[i] = Math.max(Math.mulDiv(share, basket.scale, p), basket.lo[i]);
+            // Rounded up, so the targets buy back at least the value the shrinking legs release. Rounding down left a
+            // residue of up to one raw unit per component that nothing reallocated, because the component it came from
+            // was pinned at its floor: the index sent it out as `amountsOut` with no matching `amountsIn`, and
+            // `IndexToken._checkBacking` verifies backing, not value (VR-03). Rounding up puts the residue on the
+            // executor's side of the trade, where every other rounding in the system already sits. The share is at most
+            // the ceiling's value, so the ceiling bounds the result; the minimum only makes that explicit.
+            uint256 unclipped = Math.mulDiv(share, basket.scale, p, Math.Rounding.Ceil);
+            targets[i] = Math.min(basket.hi[i], Math.max(unclipped, basket.lo[i]));
         }
     }
 

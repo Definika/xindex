@@ -21,3 +21,8 @@ docs/
 .env
 .env.*
 !.env.example
+
+# Wake's config and cache. CI regenerates the config from foundry.toml on every run (`wake init config --force`), so a
+# committed copy would be a second, silently diverging set of remappings -- see the Wake step in .github/workflows.
+wake.toml
+.wake/
