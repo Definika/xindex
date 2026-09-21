@@ -432,6 +432,32 @@ contract IndexRuleTest is Test {
         assertEq(sum, WAD);
     }
 
+    /// @dev VR-06: a component whose market-cap share lands exactly on its ceiling still pins, so its ceiling leaves
+    ///      the pool along with its cap. Treating "exactly at the ceiling" as "under it" would keep the component's
+    ///      cap in the denominator while its weight was already handed out, and the weights would stop summing to one.
+    function test_VR06_aShareExactlyOnTheCeilingStillPins() public view {
+        // Caps of 5, 2, 1, 1, 1 out of 10: the first overshoots 30% and the second lands on 20% to the wei. Both pin
+        // in the first pass, leaving 50% for the three smallest.
+        uint256[] memory w = rule.weightsFromCaps(_arr(5, 2, 1, 1, 1), CAPPED);
+        assertEq(w[0], 0.3e18, "the largest pins at its own ceiling");
+        assertEq(w[1], 0.2e18, "the exact hit pins at the cap");
+        uint256 sum = w[0] + w[1];
+        for (uint256 i = 2; i < 5; ++i) {
+            assertEq(w[i], uint256(0.5e18) / 3, "and the rest share what the two pins left");
+            sum += w[i];
+        }
+        // Counting the exact hit as unpinned would leave the three smallest on 14% each and the sum at 92%.
+        assertApproxEqAbs(sum, WAD, 2, "the whole weight is still placed");
+
+        // When every component lands on or under its ceiling nothing has to be shared again, so the first pass is
+        // already the answer and the boundary does not show: 3, 2, 2, 2, 1 out of 10 is 30%, 20%, 20%, 20%, 10%.
+        w = rule.weightsFromCaps(_arr(3, 2, 2, 2, 1), CAPPED);
+        assertEq(w[0], 0.3e18);
+        assertEq(w[1], 0.2e18);
+        assertEq(w[4], 0.1e18);
+        assertEq(w[0] + w[1] + w[2] + w[3] + w[4], WAD);
+    }
+
     function test_weights_reverts() public {
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidMethodology.selector, 2));
         rule.weightsFromCaps(_arr(1, 1, 1, 1, 1), 2);
@@ -1119,6 +1145,41 @@ contract IndexRuleTest is Test {
         for (uint256 i = 0; i < 5; ++i) {
             assertEq(before[i], afterwards[i], "an uncapped snapshot never reads a kept component");
         }
+    }
+
+    /// @dev VR-02, the reason the residue stays: the obvious fix is to exclude kept components from the capped weights
+    ///      the way the uncapped methodology already does, giving them a zero cap. That is what makes the kept price
+    ///      unreadable, but it also takes a rank out of the set the ceilings have to place the whole weight in, and
+    ///      the ceilings only sum above one from MIN_CAPPED_COMPONENTS ranks up. Excluding one of five leaves four,
+    ///      whose ceilings sum to 30% + 3 x 20% = 90%, and the last 10% has nowhere to go: the rule reverts. A
+    ///      five-component capped index -- the smallest the methodology allows -- could then never be rebalanced with
+    ///      a keep mask at all, which is the guardian's safety valve for exactly the component whose pool cannot be
+    ///      trusted. Excluding only when enough ranks remain would trade the lever for a step at the keep count, which
+    ///      is the shape of bug VR-01 was.
+    function test_VR02_excludingAKeptComponentWouldBreakTheCappedRule() public {
+        // Five equal caps weigh evenly today, kept component and all.
+        uint256[] memory w = rule.weightsFromCaps(_arr(25, 25, 25, 25, 25), CAPPED);
+        for (uint256 i = 0; i < 5; ++i) {
+            assertEq(w[i], 0.2e18, "five ranks place the whole weight");
+        }
+
+        // Zero one cap, as excluding a kept component would, and the remaining four cannot.
+        vm.expectRevert(IIndexRule.DegenerateBasket.selector);
+        rule.weightsFromCaps(_arr(0, 25, 25, 25, 25), CAPPED);
+
+        // From six components up the exclusion would be feasible, which is the step it would introduce: the same
+        // index rebalances or reverts depending on how many components the keep mask holds back.
+        uint256[] memory six = new uint256[](6);
+        for (uint256 i = 1; i < 6; ++i) {
+            six[i] = 20;
+        }
+        w = rule.weightsFromCaps(six, CAPPED);
+        assertEq(w[0], 0, "the excluded rank carries nothing");
+        uint256 sum = 0;
+        for (uint256 i = 0; i < 6; ++i) {
+            sum += w[i];
+        }
+        assertEq(sum, WAD, "and five surviving ranks still place the whole weight");
     }
 
     /// @dev VR-06a. `_clip`'s floor is load-bearing on the WAD value scale. A component priced below WAD there --
