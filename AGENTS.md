@@ -7,7 +7,7 @@ Guidance for coding agents and humans working in this repository. Codex reads th
 
 Xindex smart contracts: a Foundry project where users create crypto index tokens (ERC-20) backed in kind, mint them with
 USDC/USDT, and burn them into any token via Uniswap V3. An index's constituents are fixed at creation; its units follow
-an on-chain market-cap rule (uncapped, or capped at 30/20 for ranks 1 and 2) that anyone can trigger monthly and that
+an on-chain market-cap rule (uncapped, or capped at 30% for the largest and 20% for the rest) that anyone can trigger monthly and that
 settles through an auction. The web app lives in a separate repo. See `ARCHITECTURE.md` for the design and `README.md`
 for the product brief, frontend integration notes, and deployment.
 
@@ -186,13 +186,14 @@ script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test 
 
 Ethereum mainnet; Uniswap V3 (SwapRouter02 + QuoterV2, pool time-weighted prices for the rule); fixed constituents with
 units that follow an on-chain rule; methodologies uncapped market cap and capped 30/20 (at least 5 components; the 20%
-cap applies to every component below the largest, changed from the Numbers model's closed form on 2026-09-17);
+cap applies to every component below the largest, changed from the Numbers model's closed form on 2026-09-17; both
+figures are ceilings, so a constituent below its ceiling keeps its own market-cap weight and the largest is never
+promoted to 30%, changed on 2026-09-21 after reading the model workbook, VR-01);
 rebalance targets are the water-filling of value by weight within the half-to-double bounds (a component clipped to
 its floor is no longer handed value back, changed on 2026-09-18, LR-02; a share becomes units rounded up, so the
-targets buy back every wei the shrinking legs release, changed on 2026-09-21, VR-03). The capped rule's flat 30% for
-rank 1 makes its top weight a step function of the caps, and under a keep mask the kept component's unchecked price
-shapes the moving components' targets: both were raised on 2026-09-21 (VR-01, VR-02), left as recorded behaviour, and
-documented. Changing either needs an explicit methodology decision. monthly
+targets buy back every wei the shrinking legs release, changed on 2026-09-21, VR-03). Under a keep mask the kept component's
+unchecked price still shapes the moving components' targets wherever a ceiling binds (VR-02, raised 2026-09-21, left as
+recorded behaviour and documented; excluding kept components would break the capped rule's feasibility condition). monthly
 cadence with 2 days of notice and a 24-hour auction from 1.5 to 0.9 on the bought legs; no protocol bots or hot keys; no fees; component whitelist only (no synthetics for L1 coins without a mainnet wrapper);
 burner chooses the exit token (mint currency is not tracked per holder); the index price is the basket's value, not a
 divisor level. The Numbers model's tokens were examples; its methodology is the requirement. Rationale in

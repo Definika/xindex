@@ -302,13 +302,11 @@ would swamp the pool: SKY 7, GNO 7, COMP 9, SNX 4, EIGEN 6, CVX 6, YFI 4, RPL 11
   at all settled and kept 1.98 raw units per growing component.
 - Without competing executors, a filler can wait for the 0.9 floor and keep up to 10% of the bought value; the notice
   period also lets traders position ahead of a public rebalance.
-- The capped methodology's top weight is a step: `IndexRule` assigns rank 1 a flat 30% rather than capping it there,
-  and ties rank by position, so when an index's two largest market caps cross, 12.5 percentage points move between
-  them. An index sitting exactly on its methodology cannot rebalance at all, and one tick on one pool then puts about
-  an eighth of it up for auction, far above `MIN_TURNOVER`, at the next 28-day boundary and from any address. The
-  crossing is honest and the trade is value-neutral at snapshot prices; the cost is churn plus the lone-filler spread
-  above. Watch it on an index whose top two caps sit close, and cancel during the notice period if the churn is not
-  wanted (VR-01).
+- The capped methodology's 30% and 20% are ceilings, so a crossing between an index's two largest market caps moves
+  weight only in proportion to how far apart they were: nothing at a tie, and at most 10 percentage points where both
+  constituents are already past the 20% cap, which takes a doubling of one against the other to reach. Before VR-01 the
+  30% was assigned outright and any crossing moved 10 to 12.5 points however close the caps were, so one tick on one
+  pool could put an eighth of an on-methodology index up for auction from any address.
 - A permanently frozen component needs the guardian's keep mask at every rebalance.
 - A multi-hop burn leg costs one router call per hop, and a hop that sells nothing reverts the burn instead of leaving
   the next hop to spend the zap's balance.

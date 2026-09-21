@@ -385,11 +385,13 @@ contract IndexRuleTest is Test {
         // Rank 2 below the cap keeps 70% of its share.
         w = rule.weightsFromCaps(_arr(100, 11, 10, 10, 10), CAPPED);
         assertEq(w[1], uint256(0.7e18) * 11 / 41);
-        // Rank 1 is forced up to 30% even when its natural weight is lower, and ties rank by position.
+        // CAPPED_TOP_WEIGHT is a ceiling, not an allocation: a largest component that does not reach it keeps its own
+        // market-cap weight, and nothing is redistributed to it. Equal caps therefore weigh equally, and which of them
+        // ranks first stops mattering (VR-01).
         w = rule.weightsFromCaps(_arr(5, 5, 5, 5, 5), CAPPED);
-        assertEq(w[0], 0.3e18);
-        assertEq(w[1], 0.175e18);
-        assertEq(w[4], 0.175e18);
+        assertEq(w[0], 0.2e18);
+        assertEq(w[1], 0.2e18);
+        assertEq(w[4], 0.2e18);
         // The largest can sit anywhere; here ranks 2 to 4 would take 31.5%, 17.5% and 17.5% of the whole and pin at
         // the cap over two passes, leaving the smallest the remaining 10%.
         w = rule.weightsFromCaps(_arr(1, 9, 5, 5, 40), CAPPED);
@@ -439,7 +441,9 @@ contract IndexRuleTest is Test {
         rule.weightsFromCaps(four, CAPPED);
 
         vm.expectRevert(IIndexRule.DegenerateBasket.selector);
-        rule.weightsFromCaps(_arr(10, 0, 0, 0, 0), CAPPED); // nothing below the first to share the 70%
+        rule.weightsFromCaps(_arr(0, 0, 0, 0, 0), CAPPED); // no cap at all to weigh
+        vm.expectRevert(IIndexRule.DegenerateBasket.selector);
+        rule.weightsFromCaps(_arr(10, 0, 0, 0, 0), CAPPED); // nothing left once the first reaches its ceiling
         vm.expectRevert(IIndexRule.DegenerateBasket.selector);
         rule.weightsFromCaps(_arr(10, 5, 0, 0, 0), CAPPED); // and nothing left once the second pins at the cap
         vm.expectRevert(IIndexRule.DegenerateBasket.selector);
@@ -471,9 +475,10 @@ contract IndexRuleTest is Test {
                 if (bothBelowSecond && caps[i] <= caps[j]) assertLe(w[i], w[j], "ranks 3 and below follow caps");
             }
         }
-        assertEq(w[first], 0.3e18);
+        assertLe(w[first], 0.3e18, "the largest stays under its own ceiling");
         for (uint256 i = 0; i < n; ++i) {
             if (i != first) assertLe(w[i], 0.2e18, "every rank below the first stays under the cap");
+            assertGe(w[first], w[i], "and the largest cap keeps the largest weight");
         }
         assertLe(sum, WAD);
         assertGe(sum, WAD - n);
@@ -975,48 +980,83 @@ contract IndexRuleTest is Test {
     // VR-01 / VR-02 / VR-06: the verification review of 2026-09-21
     // ---------------------------------------------------------------------
 
-    /// @dev VR-01. The capped rule assigns rank 1 a flat CAPPED_TOP_WEIGHT instead of capping it there, and `_top`
-    ///      breaks a tie by position, so the weight is a step function of the caps. This pins the size of that step:
-    ///      one wei of cap moves 12.5 percentage points between two of five otherwise equal components. Kept as
-    ///      recorded behaviour -- the methodology is a fixed product decision (`Methodology.CAPPED`, ARCHITECTURE
-    ///      section 2) -- but pinned so it cannot change unnoticed, and so the consequence below stays visible.
-    function test_VR01_oneWeiOfCapMovesTheTopWeight() public view {
+    /// @dev VR-01. CAPPED_TOP_WEIGHT is a ceiling, not an allocation. It used to be assigned outright, which made the
+    ///      top weight a step function of the caps: one wei of cap moved 12.5 percentage points between two of five
+    ///      otherwise equal components, and the largest of twenty equal components was handed 30% against a natural 5%.
+    ///      Capping instead leaves a component that does not reach its ceiling on its own market-cap weight, so equal
+    ///      caps weigh equally and which of them ranks first stops mattering.
+    function test_VR01_aTieNoLongerMovesTheTopWeight() public view {
         uint256[] memory caps = _arr(1e24, 1e24, 1e24, 1e24, 1e24);
         uint256[] memory w = rule.weightsFromCaps(caps, CAPPED);
-        assertEq(w[0], 0.3e18, "a tie ranks by position, so the first takes the top weight");
-        assertEq(w[1], 0.175e18);
+        assertEq(w[0], 0.2e18, "the largest keeps its own weight, it is not promoted to the ceiling");
 
-        caps[1] += 1;
+        caps[1] += 1; // the runner-up edges past: the rank moves, the weights must not
         uint256[] memory nudged = rule.weightsFromCaps(caps, CAPPED);
-        assertEq(nudged[0], 0.175e18, "one wei of cap and the step moves");
-        assertEq(nudged[1], 0.3e18);
-        assertEq(nudged[1] - w[1], 0.125e18, "12.5 points, whatever the caps were worth");
+        for (uint256 i = 0; i < 5; ++i) {
+            assertApproxEqAbs(nudged[i], w[i], 1, "one wei of cap moves at most one wei of weight");
+        }
     }
 
-    /// @dev VR-01, the consequence: an index sitting exactly on the capped methodology cannot rebalance at all, and a
-    ///      single tick on one pool -- far inside MAX_TICK_DEVIATION and below any fee tier -- puts an eighth of it up
-    ///      for auction at the next 28-day boundary, from any address. MIN_TURNOVER is 0.5% and cannot filter it.
-    function test_VR01_aOneTickRankFlipClearsMinTurnover() public {
+    /// @dev VR-01: the ceiling still binds where the methodology needs it to. A basket that is genuinely top-heavy is
+    ///      capped exactly as before, and the excess is shared out under the 20% cap.
+    function test_VR01_theCeilingStillBindsOnATopHeavyBasket() public view {
+        uint256[] memory w = rule.weightsFromCaps(_arr(70, 10, 10, 5, 5), CAPPED);
+        assertEq(w[0], 0.3e18, "a component past its ceiling is still cut to it");
+        assertLe(w[1], 0.2e18);
+        uint256 sum = 0;
+        for (uint256 i = 0; i < 5; ++i) {
+            sum += w[i];
+        }
+        assertApproxEqAbs(sum, WAD, 5, "and the excess is placed, not lost");
+    }
+
+    /// @dev VR-01: the consequence at the token. An index sitting exactly on the capped methodology cannot rebalance,
+    ///      and a one-tick move on one pool no longer puts an eighth of it up for auction. Before the fix the same
+    ///      basket's on-methodology units were 150/87.5x4 and one tick produced 12.4995% turnover from any address.
+    function test_VR01_aOneTickMoveNoLongerClearsMinTurnover() public {
         address[] memory tokens = _flatBasket(_arr(1000, 1000, 1000, 1000, 1000));
-        uint256[] memory onRule = _arr(150e18, 87.5e18, 87.5e18, 87.5e18, 87.5e18);
+        uint256[] memory onRule = _arr(100e18, 100e18, 100e18, 100e18, 100e18);
         IndexToken idx = IndexToken(factory.createIndex("Capped", "CAP", tokens, onRule, CAPPED));
         vm.warp(idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL());
 
         (uint256[] memory t, uint256 turnover) = idx.previewTarget(0);
         for (uint256 i = 0; i < 5; ++i) {
-            assertEq(t[i], onRule[i], "the index is exactly on its methodology");
+            assertEq(t[i], onRule[i], "equal caps, equal weights: the index is exactly on its methodology");
         }
-        assertEq(turnover, 0, "so there is nothing to trade");
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, 0));
-        vm.prank(alice);
-        idx.startRebalance(0);
+        assertEq(turnover, 0);
 
         market.setPriceTick(tokens[1], 1);
         (, turnover) = idx.previewTarget(0);
-        assertGt(turnover, 0.124e18, "one tick puts an eighth of the index up for auction");
-        assertGt(turnover, 24 * idx.MIN_TURNOVER(), "which MIN_TURNOVER cannot filter");
+        assertLt(turnover, idx.MIN_TURNOVER(), "one tick no longer clears the dust filter");
+        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, turnover));
         vm.prank(alice);
         idx.startRebalance(0);
+    }
+
+    /// @dev VR-01: the rule reproduces the Numbers model workbook exactly on its own seven constituents. The model
+    ///      writes rank 1 as a constant 0.3, but every constituent it ships sits far above that (top 1 is 64.7% of the
+    ///      basket by market cap) and its scale factor, 0.7 / (1 - top1), only makes sense while the largest is being
+    ///      cut down, so the constant is a ceiling that always bound. Capping rather than assigning is therefore a
+    ///      no-op on the model's own data, which this pins.
+    function test_VR01_reproducesTheNumbersModel() public view {
+        uint256[] memory caps = new uint256[](7); // Inputs!D2:D8, price x quantity
+        caps[0] = 36_935_424_000; // Doge
+        caps[1] = 7_683_689_600; // Shiba Inu
+        caps[2] = 4_417_140_000; // PEPE
+        caps[3] = 2_198_214_200; // Pengu
+        caps[4] = 2_029_100_000; // Memecore
+        caps[5] = 2_047_775_000; // BONK
+        caps[6] = 1_749_912_500; // Trump
+
+        uint256[] memory w = rule.weightsFromCaps(caps, CAPPED);
+        // Inputs!G2:G8, the model's own "Final weight (Top1=30%, Top2<=20%)" column.
+        assertApproxEqRel(w[0], 300_000_000_000_000_000, 1e10);
+        assertApproxEqRel(w[1], 200_000_000_000_000_000, 1e10);
+        assertApproxEqRel(w[2], 177_507_221_284_901_400, 1e10);
+        assertApproxEqRel(w[3], 88_337_452_385_709_420, 1e10);
+        assertApproxEqRel(w[4], 81_541_427_871_698_310, 1e10);
+        assertApproxEqRel(w[5], 82_291_901_562_252_720, 1e10);
+        assertApproxEqRel(w[6], 70_321_996_895_438_010, 1e10);
     }
 
     /// @dev VR-02. A component kept out of a rebalance is priced by `_price`, which applies neither the minimum
@@ -1040,6 +1080,30 @@ contract IndexRuleTest is Test {
         assertEq(before[1], 88_888_888_888_888_888_889);
         assertEq(afterwards[1], 114_285_714_285_714_285_715);
         assertLt(turnoverAfter, turnoverBefore, "and turnover FALLS, so MIN_TURNOVER cannot see the distortion");
+    }
+
+    /// @dev VR-02, narrowed by the VR-01 fix: while no ceiling binds, every capped weight is the component's own
+    ///      market-cap weight, so a kept component's cap divides out of the active set exactly as it does under the
+    ///      uncapped methodology. Six equal caps put every natural weight at 16.67%, below both ceilings, and the kept
+    ///      component's unchecked price then cannot move anything. What remains of VR-02 is the case a ceiling binds.
+    function test_VR02_noCeilingBindingLeavesNoLever() public {
+        uint256[] memory parts = new uint256[](6);
+        uint256[] memory units = new uint256[](6);
+        for (uint256 i = 0; i < 6; ++i) {
+            (parts[i], units[i]) = (100, 100e18);
+        }
+        address[] memory tokens = _flatBasket(parts);
+        (uint256[] memory w,,) = rule.weights(tokens, CAPPED);
+        for (uint256 i = 0; i < 6; ++i) {
+            assertLt(w[i], 0.2e18, "no ceiling binds on six equal caps");
+        }
+
+        (uint256[] memory before,) = rule.targetUnits(tokens, units, CAPPED, 1 << 5);
+        market.setPriceTick(tokens[5], 40_000); // only the KEPT component's pool
+        (uint256[] memory afterwards,) = rule.targetUnits(tokens, units, CAPPED, 1 << 5);
+        for (uint256 i = 0; i < 6; ++i) {
+            assertEq(before[i], afterwards[i], "the kept cap cancels out, as under the uncapped methodology");
+        }
     }
 
     /// @dev VR-02, the control: the uncapped methodology never reads a kept component at all, so the same move on the

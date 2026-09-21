@@ -110,11 +110,17 @@ A stateless, view-only contract the factory deploys in its constructor. It never
   `src/libraries/TickMath.sol`. WETH is `1e18`; USDC is read from the USDC/WETH 0.05% pool (`USD_POOL`).
 - **Supplies:** a token's reference supply, or its total supply minus the balances of excluded addresses.
 - **Weights:** a market cap is `supply * price / 1e18`, floored at one wei; only ratios of caps matter, so the scale
-  cancels out. Uncapped: `cap_i / sum`. Capped (`src/libraries/Methodology.sol`, at least 5 components): the largest
-  weighs 30%, and every other constituent shares the remaining 70% by cap under a 20% cap of its own. Whatever a cap
-  holds back is shared again among the constituents still below it, one pass per constituent at most; with five or more
-  constituents the 70% always fits (four ranks at the cap hold 80%), and with four it could not, which is why capped
-  indexes need five. Ties rank by position. The Numbers model's closed form gave ranks 3 and below no cap, so one of
+  cancels out. Uncapped: `cap_i / sum`. Capped (`src/libraries/Methodology.sol`, at least 5 components): market-cap
+  weights under a ceiling of 30% for the largest and 20% for every other. Whatever a ceiling holds back is shared again
+  by cap among the constituents still below theirs, one pass per constituent at most; with five or more constituents the
+  ceilings sum above 100% (0.3 + 4 x 0.2 = 1.1) so a pass that pins nothing always comes, and with four they could not,
+  which is why capped indexes need five. Both figures are ceilings, not allocations: a constituent whose market cap does
+  not reach its ceiling keeps its own weight, so five equal constituents weigh 20% each rather than 30/17.5/17.5/17.5/17.5
+  and the largest of twenty equal constituents weighs 5% rather than 30% (VR-01, 2026-09-21). The Numbers model writes
+  rank 1 as a constant `0.3`, but every constituent it ships sits far above it (top 1 is 64.7% of the model's basket) and
+  its scale factor `0.7 / (1 - top1)` only makes sense while the largest is being cut down, so the constant is a ceiling
+  that always bound; `test_VR01_reproducesTheNumbersModel` pins the rule against the workbook's own final weights. Ties
+  rank by position, which now decides only which ceiling a constituent carries. The Numbers model's closed form gave ranks 3 and below no cap, so one of
   them could outweigh the first two: with caps in the ratio of WBTC, WETH, LINK, UNI and tBTC in September 2026 LINK
   came out at about 35%, and it now pins at 20% (the audit's XA-04; the owner's call on 2026-09-17). The app should show
   `weights(tokens, 1)` before a capped index is created.
