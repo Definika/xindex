@@ -9,8 +9,11 @@ regression tests carry the id.
 
 Each fix was checked the way `audit/triage.md` asks: the test fails on the old code (or on the mutant it is meant to
 catch) and passes on the new. VR-01 was first recorded as DOCUMENTED and reclassified to FIXED on 2026-09-21, after
-reading the Numbers model workbook resolved whether its 30% is an allocation or a ceiling. Two of the review's own first-pass claims were wrong and were corrected by the
-verification stage; both corrections are recorded in the rows below rather than quietly dropped.
+reading the Numbers model workbook resolved whether its 30% is an allocation or a ceiling. Four of the review's own
+claims were wrong and are corrected in place rather than quietly dropped: two first-pass claims the verification stage
+caught (the direction VR-02 moves turnover, and VR-03's one-unit bound), and two the closing pass of 2026-09-21 caught
+(that VR-06's mutant (e) was a harmless boundary, and that the fork suites had not run -- see the paragraphs below the
+table).
 
 The fork suites cannot run in the review environment: it reaches no mainnet RPC, every endpoint tried being refused at
 the network policy rather than by the node. They do run in CI, which holds the `MAINNET_RPC_URL` secret and passes it

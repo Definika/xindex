@@ -62,9 +62,12 @@ market from `script/testnet/SetupTestMarket.s.sol`.
    by documentation alone, VR-05 among them.
    `audit/triage.md` gives the evidence for each.
 
-CI enforces items 1 to 5: fmt, build, `forge lint -D notes`, tests (fork suites required on `main` and on pull requests
-into it from this repository), 100% coverage on every file and `wake detect all src`. Run them locally before pushing;
-a fork's pull request skips the fork suites, so re-run them before merging.
+CI enforces items 1 to 5: fmt, build, `forge lint -D notes`, tests, 100% coverage on every file and `wake detect all
+src`. The fork suites run on every push from this repository, because the test step passes the `MAINNET_RPC_URL` secret
+unconditionally; on `main` and on pull requests into it the secret is also required, so a missing one fails the run
+rather than letting the suites skip. Check a run's test summary rather than assuming: when they ran it lists the four
+`test/fork/` suites and 0 skipped. Run everything locally before pushing; a fork's pull request gets no secrets, so its
+fork suites skip and a maintainer re-runs them before merging.
 
 ## Layout
 
