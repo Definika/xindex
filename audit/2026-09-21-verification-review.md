@@ -12,10 +12,13 @@ catch) and passes on the new. VR-01 was first recorded as DOCUMENTED and reclass
 reading the Numbers model workbook resolved whether its 30% is an allocation or a ceiling. Two of the review's own first-pass claims were wrong and were corrected by the
 verification stage; both corrections are recorded in the rows below rather than quietly dropped.
 
-The fork suites could not be run: the environment reaches no mainnet RPC (every endpoint tried is refused at the
-network policy, not by the node). Run `MAINNET_RPC_URL=... forge test --match-path 'test/fork/*'` before deploying; CI
-runs them on `main` and on pull requests from this repository. The one finding that hung on them, `ISwapRouter02`'s
-struct layouts, was closed without a fork on 2026-09-21 -- see the paragraph below the table.
+The fork suites cannot run in the review environment: it reaches no mainnet RPC, every endpoint tried being refused at
+the network policy rather than by the node. They do run in CI, which holds the `MAINNET_RPC_URL` secret and passes it
+to `forge test` on *every* push, not only where the workflow additionally *requires* it (`main` and pull requests into
+it from this repository). They are green: run 35620787118 on `b8b734b` reports 17 suites, 355 tests, 0 failed, 0
+skipped, the extra 20 over the offline count being the four fork suites. Earlier notes in this review and in the commit
+messages that the fork suites were unrun describe the review environment only; CI had been running them all along and
+they were not checked there until 2026-09-21.
 
 | ID | Sev | Finding | Disposition | Evidence |
 |---|---|---|---|---|
@@ -64,8 +67,16 @@ ours, and `test_routerCalldataMatchesUniswaps` now pins the full `abi.encodeCall
 first version of this test made that mistake: a selector covers a tuple's field *types*, not their order, so swapping
 `amountIn` with `amountOutMinimum` -- both `uint256`, and a swap that turns a minimum received into an exact input --
 leaves `0xb858183f` untouched. Pinning the calldata catches it: the check was verified against that exact mutation, and
-against the matching swap of `amountOut` with `amountInMaximum`, and fails on each. The fork suites remain unrun here
-and still have to pass before a deploy, but they are no longer what this finding waits on.
+against the matching swap of `amountOut` with `amountInMaximum`, and fails on each.
+
+The fork suites then confirmed the same thing from the other direction. `test/fork/IndexZap.fork.t.sol` drives eight
+end-to-end mints and burns through the real SwapRouter02 at `0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45` --
+`testFork_mintWithUSDC`, `testFork_mintWithUSDT`, `testFork_burnToUSDT`, `testFork_burnToWBTC`,
+`testFork_mintAndBurnWithPerLegLimits`, `testFork_btcBasketWithTBTC_mintAndBurn` and the two limit reverts -- so a
+field-order slip in either struct would misroute or revert there rather than pass. All eight are green on `b8b734b`,
+alongside `RebalanceForkTest`, `SecurityForkTest` and `MainnetAddressesForkTest` (four each, the last checking
+`script/MainnetAddresses.sol` against the chain by symbol and by the Uniswap factory's `getPool`). The layouts are
+therefore verified twice, statically against Uniswap's source and dynamically against the deployed router.
 
 VR-06's mutant (e) needed a hand-built cap vector rather than fuzzing, as recorded. It was built, it showed the mutant
 is a real divergence rather than the harmless boundary this review first called it, and the correction is written into
