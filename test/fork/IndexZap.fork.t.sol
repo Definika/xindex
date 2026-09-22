@@ -37,8 +37,8 @@ interface IQuoterV2 {
         );
 }
 
-/// @notice End-to-end against real Uniswap V3, USDC and USDT. Skips when MAINNET_RPC_URL is unset.
-///         Run: MAINNET_RPC_URL=... forge test --match-path 'test/fork/*' -vvv
+/// @notice End-to-end against the real Universal Router, real V3 and V4 pools, USDC and USDT. Skips when
+///         MAINNET_RPC_URL is unset. Run: MAINNET_RPC_URL=... forge test --match-path 'test/fork/*' -vvv
 contract IndexZapForkTest is ForkFeeds {
     using SafeERC20 for IERC20;
 
@@ -56,6 +56,11 @@ contract IndexZapForkTest is ForkFeeds {
 
     uint24 constant F500 = 500;
     uint24 constant F3000 = 3000;
+
+    /// @dev Native ether, which is how a V4 pool names it. Every live V4 pool for these components is paired against
+    ///      it rather than WETH, so a V4 route reaches LINK through `address(0)`. It never reaches the zap, which has
+    ///      no `receive()`: the router settles the middle of the route inside the PoolManager.
+    address constant NATIVE = address(0);
 
     function setUp() public {
         string memory url = vm.envOr("MAINNET_RPC_URL", string(""));
@@ -139,6 +144,41 @@ contract IndexZapForkTest is ForkFeeds {
         p[0] = abi.encodePacked(A.WBTC, F500, A.WETH, F500, tokenOut);
         p[1] = abi.encodePacked(A.WETH, F500, tokenOut);
         p[2] = abi.encodePacked(A.LINK, F3000, A.WETH, F500, tokenOut);
+    }
+
+    /// @dev USDC -> native ether -> LINK on Uniswap V4, for an exact-output mint. The router walks an exact-output
+    ///      route backwards from the component, so the first entry names what the user pays with, and each entry
+    ///      carries the pool of the hop it closes: {USDC, 0.05%} is the ETH/USDC pool and {ether, 0.3%} the ETH/LINK
+    ///      one. Getting either the order or the pairing wrong is what `BadRoute` and a failed swap catch.
+    function _v4MintPathLink() internal pure returns (PathKey[] memory path) {
+        path = new PathKey[](2);
+        path[0] = PathKey({intermediateCurrency: A.USDC, fee: F500, tickSpacing: 10, hooks: address(0), hookData: ""});
+        path[1] = PathKey({intermediateCurrency: NATIVE, fee: F3000, tickSpacing: 60, hooks: address(0), hookData: ""});
+    }
+
+    /// @dev The same route for a burn, which the router walks forwards from the component: the same list reversed.
+    function _v4BurnPathLink() internal pure returns (PathKey[] memory path) {
+        path = new PathKey[](2);
+        path[0] = PathKey({intermediateCurrency: NATIVE, fee: F3000, tickSpacing: 60, hooks: address(0), hookData: ""});
+        path[1] = PathKey({intermediateCurrency: A.USDC, fee: F500, tickSpacing: 10, hooks: address(0), hookData: ""});
+    }
+
+    /// @dev The basket as an app would route it today: WBTC and WETH are deeper on V3, LINK on V4. Only LINK has a
+    ///      V4 pool worth using here, and it is native-ether-paired, which is why the route crosses `address(0)`.
+    function _mixedMintLegs() internal pure returns (IIndexZap.MintLeg[] memory legs) {
+        bytes[] memory p = _mintPaths(A.USDC);
+        legs = new IIndexZap.MintLeg[](3);
+        legs[0] = IIndexZap.MintLeg({v3Path: p[0], v4Path: new PathKey[](0), maxAmountIn: 0});
+        legs[1] = IIndexZap.MintLeg({v3Path: p[1], v4Path: new PathKey[](0), maxAmountIn: 0});
+        legs[2] = IIndexZap.MintLeg({v3Path: "", v4Path: _v4MintPathLink(), maxAmountIn: 0});
+    }
+
+    function _mixedBurnLegs() internal pure returns (IIndexZap.BurnLeg[] memory legs) {
+        bytes[] memory p = _burnPaths(A.USDC);
+        legs = new IIndexZap.BurnLeg[](3);
+        legs[0] = IIndexZap.BurnLeg({v3Path: p[0], v4Path: new PathKey[](0), minAmountOut: 0});
+        legs[1] = IIndexZap.BurnLeg({v3Path: p[1], v4Path: new PathKey[](0), minAmountOut: 0});
+        legs[2] = IIndexZap.BurnLeg({v3Path: "", v4Path: _v4BurnPathLink(), minAmountOut: 0});
     }
 
     function _mintLegs(bytes[] memory paths) internal pure returns (IIndexZap.MintLeg[] memory legs) {
@@ -245,7 +285,7 @@ contract IndexZapForkTest is ForkFeeds {
         assertEq(IERC20(A.WBTC).balanceOf(address(zap)), 0);
         assertEq(IERC20(A.WETH).balanceOf(address(zap)), 0);
         assertEq(IERC20(A.LINK).balanceOf(address(zap)), 0);
-        assertEq(IERC20(A.USDC).allowance(address(zap), A.SWAP_ROUTER_02), 0);
+        assertEq(IERC20(A.USDC).allowance(address(zap), A.UNIVERSAL_ROUTER), 0, "the zap approves the router nothing");
 
         assertGt(spent, 100e6);
         assertLt(spent, 10_000e6);
@@ -268,7 +308,6 @@ contract IndexZapForkTest is ForkFeeds {
         deal(A.USDC, alice, maxIn);
         vm.startPrank(alice);
         IERC20(A.USDC).approve(address(zap), maxIn);
-        // SwapRouter02 checks amountInMaximum only after the pool pulled the input, so an underfunded leg
         // The zap pre-funds the router with what the leg may spend, so a leg that needs more than its cap trips the
         // pool's own slippage check. It bubbles unchanged: the router dispatches swaps as internal calls and wraps
         // only the ones it makes with a low-level call.
@@ -277,6 +316,75 @@ contract IndexZapForkTest is ForkFeeds {
         vm.stopPrank();
         assertEq(IERC20(A.USDC).balanceOf(alice), maxIn);
         assertEq(index.balanceOf(alice), 0);
+    }
+
+    /// @dev The V4 half of the zap against the real PoolManager. Its flash accounting is what a mock cannot stand in
+    ///      for: an action that left a delta unsettled reverts inside `unlock`, so arriving here at all is the proof
+    ///      that the leg settled and took exactly what it moved.
+    function testFork_mintWithUSDC_linkLegThroughV4() public {
+        uint256 shares = 1e18;
+        uint256 v3Quote = _quoteMint(A.USDC, shares);
+        uint256 maxIn = v3Quote + v3Quote / 10; // the LINK leg fills at V4's price, not the quoted V3 one
+        deal(A.USDC, alice, maxIn);
+        uint256 routerBefore = IERC20(A.USDC).balanceOf(A.UNIVERSAL_ROUTER);
+        // Forge seeds a freshly created address with a wei, so what the call must leave untouched is the delta.
+        uint256 zapEthBefore = address(zap).balance;
+
+        vm.startPrank(alice);
+        IERC20(A.USDC).approve(address(zap), maxIn);
+        uint256 spent = _mintCall(index, A.USDC, maxIn, shares, _mixedMintLegs());
+        vm.stopPrank();
+
+        assertEq(index.balanceOf(alice), shares);
+        assertEq(IERC20(A.LINK).balanceOf(address(index)), U_LINK, "the V4 leg delivered the whole component");
+        assertEq(IERC20(A.WBTC).balanceOf(address(index)), U_WBTC);
+        assertEq(IERC20(A.WETH).balanceOf(address(index)), U_WETH);
+
+        assertEq(IERC20(A.USDC).balanceOf(address(zap)), 0, "the zap keeps no input");
+        assertEq(IERC20(A.LINK).balanceOf(address(zap)), 0, "the zap keeps no component");
+        assertEq(address(zap).balance, zapEthBefore, "native ether never reaches the zap");
+        assertEq(IERC20(A.USDC).balanceOf(A.UNIVERSAL_ROUTER), routerBefore, "the sweep left the router as it was");
+        assertEq(IERC20(A.USDC).balanceOf(alice), maxIn - spent, "refund");
+        assertApproxEqRel(spent, v3Quote, 5e16, "the V4 route prices within 5% of the V3 one");
+    }
+
+    function testFork_burnToUSDC_linkLegThroughV4() public {
+        _mint(A.USDC, 2e18, 100);
+        uint256 routerBefore = IERC20(A.LINK).balanceOf(A.UNIVERSAL_ROUTER);
+        uint256 before = IERC20(A.USDC).balanceOf(alice);
+        uint256 zapEthBefore = address(zap).balance;
+
+        vm.startPrank(alice);
+        index.approve(address(zap), 2e18);
+        uint256 out = _burnCall(index, 2e18, A.USDC, 1, _mixedBurnLegs());
+        vm.stopPrank();
+
+        assertEq(index.totalSupply(), 0);
+        assertEq(IERC20(A.USDC).balanceOf(alice), before + out, "the payout is what the call reported");
+        assertEq(IERC20(A.LINK).balanceOf(address(index)), 0, "the V4 leg sold the whole component");
+        assertEq(IERC20(A.LINK).balanceOf(address(zap)), 0, "no component stayed in the zap");
+        assertEq(IERC20(A.USDC).balanceOf(address(zap)), 0);
+        assertEq(address(zap).balance, zapEthBefore, "the middle of the route never leaves the PoolManager");
+        assertEq(IERC20(A.LINK).balanceOf(A.UNIVERSAL_ROUTER), routerBefore, "the sweep left the router as it was");
+        assertGt(out, 0);
+    }
+
+    /// @dev The V4 router enforces `amountInMaximum` itself, and the failure reaches the caller unwrapped for the same
+    ///      reason a V3 one does: the Universal Router dispatches `V4_SWAP` as an internal call.
+    function testFork_v4LegRevertsWhenItsCapIsTooLow() public {
+        uint256 v3Quote = _quoteMint(A.USDC, 1e18);
+        deal(A.USDC, alice, v3Quote * 2);
+        IIndexZap.MintLeg[] memory legs = _mixedMintLegs();
+        legs[2].maxAmountIn = 1e6; // a dollar, far under what one LINK costs
+
+        vm.startPrank(alice);
+        IERC20(A.USDC).approve(address(zap), v3Quote * 2);
+        vm.expectPartialRevert(bytes4(keccak256("V4TooMuchRequested(uint256,uint256)")));
+        _mintCall(index, A.USDC, v3Quote * 2, 1e18, legs);
+        vm.stopPrank();
+
+        assertEq(index.balanceOf(alice), 0);
+        assertEq(IERC20(A.USDC).balanceOf(alice), v3Quote * 2, "nothing was spent");
     }
 
     function testFork_mintAndBurnWithPerLegLimits() public {
