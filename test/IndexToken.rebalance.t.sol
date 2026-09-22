@@ -178,7 +178,8 @@ contract IndexTokenRebalanceTest is Test {
     }
 
     /// @dev LR-05: no test told a fresh snapshot from the expired one, because prices never moved between the two. A
-    ///      restart that kept the old targets, the stale snapshot XA-01 and XA-02 guard against, passed every test.
+    ///      restart that kept the old targets, the stale snapshot XA-02 guards against, passed every test. XA-01, the
+    ///      distorted-TWAP finding this once cited beside it, is retired with the pool oracle.
     function test_LR05_aRestartAfterAnUnfilledAuctionTakesAFreshSnapshot() public {
         uint256 eta = _start(index);
         (,, uint256[] memory first) = index.pendingRebalance();

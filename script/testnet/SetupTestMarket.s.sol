@@ -19,20 +19,19 @@ import {FaucetToken} from "./FaucetToken.sol";
 import {TestAggregator} from "./TestAggregator.sol";
 
 /// @notice Builds a Sepolia test market for Xindex: faucet stand-ins for USDC, WBTC, LINK, UNI and AAVE, each with a
-///         Uniswap V3 WETH pool at a mainnet-like price whose oracle can serve the rule's 30-minute average. Two runs,
-///         from the same account, in separate blocks:
+///         Uniswap V3 WETH pool at a mainnet-like price for the zap to swap through, and a settable Chainlink-shaped
+///         feed for the rule to price it from. Prices and execution are separate concerns now: the pools exist only
+///         so V3 routes work, and nothing reads their oracle. Two runs, from the same account, in separate blocks:
 ///
 ///   1. MARKET_MODE=create forge script script/testnet/SetupTestMarket.s.sol --rpc-url sepolia \
 ///        --account <deployer> --broadcast
 ///      Deploys the tokens and their price feeds, then creates and prices the pools the zap swaps through.
 ///   2. MARKET_MODE=seed MARKET_TOKENS=<addresses logged by create> forge script ... --broadcast
-///      Adds liquidity from the deployer's ether. Being in a later block, this writes each pool's second observation,
-///      which switches the pool to the reserved slots.
+///      Adds liquidity from the deployer's ether.
 ///
-/// Deploy the Xindex factory and propose the listings 30 minutes after `seed`. The factory only needs 30 minutes of
-/// price history, which `create` starts, but a listing also needs the window's harmonic-mean liquidity to reach the
-/// token's minimum, and every second before `seed` counts as no liquidity at all: proposed earlier, every pooled token
-/// is rejected with `ThinPriceHistory` (LR-07).
+/// Deploy the Xindex factory and propose the listings once `seed` has run. Nothing has to wait for price history any
+/// more: a listing is validated against its feed, and the test feeds answer in the current block. The pools only need
+/// liquidity before anyone mints or burns through them.
 ///
 /// Env:
 ///   MARKET_MODE      `create` or `seed`.
@@ -84,11 +83,14 @@ contract SetupTestMarket is Script {
 
     /// @notice The only chain {run} accepts.
     uint256 public constant SEPOLIA_CHAIN_ID = 11_155_111;
-    /// @dev Checked on Sepolia on 2026-09-16: the position manager's `factory()` and `WETH9()` return these, and so do
-    ///      SwapRouter02 0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E and QuoterV2 0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3.
+    /// @dev Checked on Sepolia on 2026-09-16: the position manager's `factory()` and `WETH9()` return these, and so
+    ///      does QuoterV2 0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3.
     address public constant SEPOLIA_UNISWAP_V3_FACTORY = 0x0227628f3F023bb0B980b67D528571c95c6DaC1c;
     address public constant SEPOLIA_POSITION_MANAGER = 0x1238536071E1c677A632429e3655c799b22cDA52;
     address public constant SEPOLIA_WETH = 0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14;
+    /// @notice Sepolia's Universal Router, which `Deploy` takes as UNIVERSAL_ROUTER there. The script only logs it:
+    ///         the market itself is V3 pools, which the router reaches. There are no V4 pools on this market.
+    address public constant SEPOLIA_UNIVERSAL_ROUTER = 0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b;
 
     /// @notice Decimals the test feeds answer in, as every USD feed Xindex lists does.
     uint8 public constant FEED_DECIMALS = 8;
@@ -271,9 +273,9 @@ contract SetupTestMarket is Script {
         }
         vm.stopBroadcast();
 
-        console2.log("Deploy Xindex and propose the listings 30 minutes after this `seed` run, with:");
-        console2.log("  USDC=%s WETH=%s", tokens[0], uniswap.weth);
-        console2.log("  UNISWAP_V3_FACTORY=%s", uniswap.factory);
+        console2.log("Deploy Xindex with OWNER, GUARDIAN and:");
+        console2.log("  UNIVERSAL_ROUTER=%s", SEPOLIA_UNIVERSAL_ROUTER);
+        console2.log("Mint and burn with tUSDC at %s; the pools above are the V3 routes.", tokens[0]);
         console2.log("List the components with the feeds `create` logged, as WHITELIST=<token:feed:staleness:supply>");
     }
 

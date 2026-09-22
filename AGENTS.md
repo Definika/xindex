@@ -6,10 +6,11 @@ Guidance for coding agents and humans working in this repository. Codex reads th
 ## What this is
 
 Xindex smart contracts: a Foundry project where users create crypto index tokens (ERC-20) backed in kind, mint them with
-USDC/USDT, and burn them into any token via Uniswap V3. An index's constituents are fixed at creation; its units follow
-an on-chain market-cap rule (uncapped, or capped at 30/20 for ranks 1 and 2) that anyone can trigger monthly and that
-settles through an auction. The web app lives in a separate repo. See `ARCHITECTURE.md` for the design and `README.md`
-for the product brief, frontend integration notes, and deployment.
+USDC/USDT, and burn them into any token through Uniswap's Universal Router, which reaches both V3 and V4 pools. An
+index's constituents are fixed at creation; its units follow an on-chain market-cap rule (uncapped, or capped at 30/20
+for ranks 1 and 2) that anyone can trigger monthly and that settles through an auction. Prices come from Chainlink
+feeds, in dollars. The web app lives in a separate repo. See `ARCHITECTURE.md` for the design and `README.md` for the
+product brief, frontend integration notes, and deployment.
 
 ## Commands
 
@@ -23,7 +24,7 @@ forge test                   # unit + fuzz + invariant tests, no RPC needed; for
 forge coverage               # must stay at 100% for every file (lines, statements, branches, functions)
 for c in IndexFactory IndexToken IndexRule IndexZap; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
 
-# mainnet fork tests (real Uniswap V3 / USDC / USDT / WBTC); skipped when the env var is unset
+# mainnet fork tests (real Chainlink feeds, Universal Router, V3 and V4 pools); skipped when the env var is unset
 MAINNET_RPC_URL=https://... forge test --match-path 'test/fork/*' -vvv
 # public non-archive RPCs only serve recent state: pin near the head
 MAINNET_RPC_URL=https://ethereum-rpc.publicnode.com FORK_BLOCK=$(( $(cast block-number --rpc-url https://ethereum-rpc.publicnode.com) - 8 )) forge test --match-path 'test/fork/*'
@@ -41,8 +42,8 @@ market from `script/testnet/SetupTestMarket.s.sol`.
    or `disable-next-item(<rule>)` only for verified false positives, deliberate behaviour, or vendored code, with a
    one-line reason on the line above.
 3. `forge test` green. `forge coverage` at 100% for every file, including mocks and scripts.
-4. Fork tests green if the change touches `IndexZap`, `IndexRule`, paths, token behaviour, rebalancing, or anything
-   Uniswap-related.
+4. Fork tests green if the change touches `IndexZap`, `IndexRule`, routes, token behaviour, rebalancing, or anything
+   feed-, router- or pool-related.
 5. The Wake VS Code analyzer reports no errors or warnings on `src/`. Its reentrancy detector does not model reentrancy
    guards; the three documented suppressions are on the `redeem` call in `IndexZap._burnBasket`, the `permit` call in
    `IndexZap.burnToTokenWithPermit`, and the executor callback in `IndexToken.executeRebalance`.
@@ -66,10 +67,16 @@ market from `script/testnet/SetupTestMarket.s.sol`.
    `test/IndexZap.t.sol`; DA-16 and DA-11 and DA-18 in `test/IndexFactory.t.sol`; DA-20 in `test/Scripts.t.sol`;
    DA-05 in `test/IndexToken.rebalance.t.sol`, with `test_settlementValues` in `test/IndexRule.t.sol` covering the
    rule's half; DA-10 in `test/Repo.t.sol`, since deleting a struct field is only testable through the shipped ABI.
-   DA-03's floors are data, checked from both sides in `test/fork/MainnetAddresses.fork.t.sol`: `checkConfig` refuses a
-   floor its pool no longer meets, and `_assertFloorIsNotStale` refuses one that has fallen far under its pool's own
-   window. DA-04, DA-07, DA-12, DA-19, DA-21 and DA-23 have no test, because no code fix exists for them: the reason is
-   in `audit/2026-09-19-triage.md` and in the design rules below.
+   DA-12, DA-21 and DA-23 have no test, because no code fix exists for them: the reason is in
+   `audit/2026-09-19-triage.md` and in the design rules below.
+   Six ids lost their test on 2026-09-22, when pricing moved to Chainlink and execution to the Universal Router:
+   DA-02, R01, R02, R03, XA-01 and XA-09 (which XA-45 shared). Their mechanism no longer exists, so the tests were
+   removed rather than weakened, and `audit/2026-09-22-v3-retirement.md` records each one with the test that went and
+   the property, if any, that survives elsewhere — as it does for DA-03, DA-04, DA-07, DA-19, LR-08 and XA-02's
+   extreme-block half, which were documented rather than tested and whose reasoning the design rules no longer carry.
+   XA-45's surviving assertion, the target cap against the auction's multiplier, is in `test_constants`. Do not
+   restore a retired id's test against the new design; if the property matters here, it gets a new id from the review
+   of this surface.
 
 CI enforces items 1 to 5: fmt, build, `forge lint -D notes`, tests (fork suites required on `main` and on pull requests
 into it from this repository), 100% coverage on every file and `wake detect all src`. Run them locally before pushing;
@@ -79,22 +86,24 @@ a fork's pull request skips the fork suites, so re-run them before merging.
 
 ```
 src/IndexToken.sol            index implementation (ERC20 + permit + in-kind issue, redeem, redeemSkipping, claim, rebalance), cloned
-src/IndexRule.sol             stateless rule: supplies, Uniswap V3 TWAP prices, weights, rebalance targets, index price
+src/IndexRule.sol             stateless rule: supplies, Chainlink USD prices, weights, rebalance targets, index price
+src/CompositeFeed.sol         immutable adapter multiplying two feeds into one, for WBTC (BTC/USD x WBTC/BTC)
 src/IndexFactory.sol          listing delay + token configs + guardian, registry, CREATE2 clone deployer
-src/IndexZap.sol              stateless Uniswap V3 mint/burn router with per-leg limits and a rebalance nonce check
-src/interfaces/               IIndexToken, IIndexFactory, IIndexRule, IIndexZap, IXindexErrors (shared errors), IRebalanceExecutor, ISwapRouter02, IUniswapV3Pool, IUniswapV3Factory
+src/IndexZap.sol              stateless Universal Router mint/burn router, a venue per leg, per-leg limits, nonce check
+src/interfaces/               IIndexToken, IIndexFactory, IIndexRule, IIndexZap, IXindexErrors (shared errors), IRebalanceExecutor, IAggregatorV3, IUniversalRouter
 src/libraries/PathLib.sol     V3 packed path decoding (shared with test mocks)
-src/libraries/TickMath.sol    getSqrtPriceAtTick vendored from Uniswap v4-core (MIT)
+src/libraries/UniversalRouterCommands.sol  the router command bytes the zap emits, vendored with their input layouts
+src/libraries/UniswapV4Types.sol           V4 actions, PathKey and the swap params, vendored from v4-periphery (MIT)
 src/libraries/Methodology.sol methodology ids and the capped minimum
 test/*.t.sol                  unit / fuzz / invariant / script tests
 test/Security.t.sol           regression tests for the security review findings (see gate 6 for ids tested elsewhere)
 test/Repo.t.sol               repository facts findings rest on: pinned compiler, CI gates and toolchain, dependency lock, ABIs, docs
-test/mocks/                   mock tokens, WETH, routers, Uniswap V3 pools, factory and position manager, market fixture, rebalance executor (+ Mocks.t.sol)
+test/mocks/                   mock tokens, WETH, a strict Universal Router, V3 pools for the testnet script, the feed-backed market fixture (+ Mocks.t.sol)
 test/fork/                    test-only mainnet addresses, end-to-end fork tests, fork rebalance executor, fork security regressions
 script/                       Deploy, ConfigureWhitelist, MainnetAddresses (the one copy of mainnet addresses and market data)
 abi/                          generated ABIs the web app decodes with; CI regenerates them and fails on a diff
 script/interfaces/            the Safe, WETH and Uniswap setup calls the scripts make
-script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test market (never deploy on mainnet)
+script/testnet/               SetupTestMarket, FaucetToken and TestAggregator: the Sepolia test market (never deploy on mainnet)
 ```
 
 ## Design rules that must not be broken
@@ -149,64 +158,91 @@ script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test 
 - **Only initialized clones issue, redeem or rebalance.** Keep the `onlyInitialized` guard on every function that mints,
   burns or touches a rebalance.
 - **The rule is stateless and its inputs are timelocked.** Token configs change only through the listing flow, and
-  wrapped assets use a reference supply. A pool must be the Uniswap V3 factory's own pool for the token and WETH with at
-  least `MIN_OBSERVATION_CARDINALITY` slots and a non-zero `minLiquidity` it meets; that cardinality bounds the ring's
-  capacity, which anyone can raise, not the history it holds (DA-19). A rebalance snapshot accepts a price only from a
-  pool whose newest observation is no older than `MAX_OBSERVATION_AGE` (twenty minutes, two sub-windows, the largest age
-  that still leaves the oldest part genuine history for the deviation check to compare against) and from a window whose
-  harmonic-mean liquidity reaches that minimum and whose 10-minute parts agree within `MAX_TICK_DEVIATION`; views do not
-  apply these checks, and prices never enter settlement. The age check is what keeps the other two meaningful: on a pool
-  that has not traded inside the window Uniswap extrapolates every point at the current tick and the current liquidity,
-  so the three parts agree exactly and the liquidity is whatever was minted a moment ago (DA-02). Anyone can clear that
-  condition by trading the pool; until someone does, a silent component can only be kept or retried.
-  `MAX_TICK_DEVIATION` is an outlier filter for a short spike, not a bound on manipulation: a push held steady across
-  the whole window moves all three parts equally and reads a spread of zero, and with the spread at 2000 a single
-  distorted part still moves the window mean by up to a third of its own shift, about 667 ticks or 6.9%. Comparing each
-  part against the window mean instead is the same arithmetic, because that mean is the average of the parts. What is
-  left against a sustained push is the per-token `minLiquidity` floor and the cost of holding a pool off-market for
-  thirty minutes while arbitrageurs trade against you; claim no more than that anywhere. The floor is therefore the
-  lever: the shipped floors are a third of each pool's lowest recent window, raised from a tenth on 2026-09-20, and the
-  only other lever, a second price source, is not in v2 (DA-03). The harmonic mean is taken over the whole window and
-  its smallest term dominates it, so twelve seconds at liquidity one blocks every snapshot of that component for the
-  next thirty minutes: that sensitivity is deliberate, it is the XA-01 defence, and measuring each part separately and
-  taking the middle one was rejected because it would equally shake off a real push through an empty range confined to
-  one part; the grief is recoverable, because anyone may retry and the griefer has to pay again every thirty minutes
-  (DA-04). Under the capped methodology a kept component is priced with the snapshot price too, because its market cap
-  sits in the denominator of every other component's weight, which narrows XA-05: under capped a keep mask routes around
-  a component that cannot be transferred, not around one whose pool cannot be read, while under uncapped a kept
-  component is not read at all (DA-06). `executeListing` is permissionless and re-runs `checkConfig` on the stored
-  config before applying it, so a pool that thinned out during the notice is not whitelisted on a validation up to nine
-  days old (DA-11). That lets a griefer hold a listing off by keeping the pool thin, but only while they keep paying,
-  and the proposal stays executable for the rest of `PROPOSAL_WINDOW`.
+  wrapped assets use a reference supply. A config names one Chainlink-shaped USD feed (`latestRoundData` and
+  `decimals`, the `IAggregatorV3` subset) and a `maxStaleness` of at most `MAX_FEED_STALENESS`; the policy is the
+  feed's heartbeat plus thirty minutes, which is `STALENESS_1H` or `STALENESS_24H` in `script/MainnetAddresses.sol`.
+  There is one price path and `_price` is all of it: a non-zero feed, a positive answer, an `updatedAt` that is neither
+  in the future nor older than that token's own `maxStaleness`, feed and token decimals of at most `MAX_DECIMALS` read
+  live on every call, and a result no larger than `MAX_PRICE` once scaled into USD-WAD (`answer * 10 ** (36 -
+  feedDecimals - tokenDecimals)`, so a price is dollars per 1e18 raw units and `MAX_PRICE` of 1e56 puts one raw unit at
+  1e20 dollars). Views apply the same checks as snapshots, deliberately: nothing about a feed is third-party-griefable,
+  so a looser display path would only show a stale answer as if it were current, and `price`, `navPerToken` and
+  `initialUnits` revert `StalePrice` during an outage rather than answering. Decimals are never cached, because the
+  answer and the decimals come from the same aggregator in the same call, so a live read stays correct across a benign
+  proxy repoint while a cached one would only turn it into a halt. A product of two feeds, which is how WBTC is priced
+  (BTC/USD times WBTC/BTC, no WBTC/USD feed exists), goes in an immutable `CompositeFeed` with a bound per leg, because
+  the rule sees a single `maxStaleness` and that one number has to admit the slower leg: a shared bound over
+  `min(updatedAt)` would let a three-hour-stale BTC/USD pass under WBTC/BTC's 24.5-hour allowance. The adapter reports
+  `min(updatedAt)` so the rule's own check still binds the fresher leg's staleness envelope.
+  A feed's identity cannot be verified on-chain: `description()` is a string the aggregator returns, so nothing stops a
+  proposal from naming an aggregator that reports the wrong asset. What guards it is the listing delay, the guardian's
+  veto, `ConfigureWhitelist` logging `description()` at propose time for the signers to read against docs.chain.link,
+  and `test/fork/MainnetAddresses.fork.t.sol` pinning each shipped feed's `description()`, `decimals()`, a positive and
+  fresh answer, and circuit-breaker bounds at least a hundredfold away from its current answer on both sides, which
+  catches the LUNA/Venus stuck-at-a-bound setup before listing rather than at runtime, since a clamped answer is fresh
+  and positive and no check inside `_price` can see it. Chainlink's disabled-breaker sentinels clear that margin by
+  dozens of orders of magnitude, so one rule covers both the disabled case and a mistakenly narrow one. A
+  feed owner can repoint or deprecate an aggregator; that fails closed through `StalePrice`, and a malicious aggregator
+  is full trust in Chainlink, which is the trust this design takes on in exchange for no longer trusting pool depth.
+  Under the capped methodology a kept component is priced with the snapshot price too, because its market cap sits in
+  the denominator of every other component's weight: under capped a keep mask routes around a component that cannot be
+  transferred, not around one whose feed is stale, while under uncapped a kept component is not read at all (DA-06,
+  narrowing XA-05). `executeListing` is permissionless and re-runs `checkConfig` on the stored config before applying
+  it, so a feed that went stale or was deprecated during the notice is not whitelisted on a validation up to nine days
+  old (DA-11). Nobody can grief that: unlike a pool nobody can make a live feed fail `checkConfig`, which is the half
+  of DA-11 that the move to Chainlink closes rather than re-targets.
+  A stale feed halts the money path for every index holding that token, and under capped a keep mask cannot route
+  around it. The 24-hour feeds (wstETH/USD, SOL/USD, WBTC/BTC) are the exposure: a settlement may be valued on a price
+  up to 24.5 hours old, bounded by that feed's 0.5% deviation threshold, which is what makes the lag tolerable. This is
+  a known limitation, stated in the README, not an oversight.
 - **Executors are untrusted.** Tokens and the callback go only to `msg.sender`, every mutating entry point shares the
   reentrancy guard, and state is written before any rebalance transfer. `executeRebalance(bytes)` settles whatever the
   supply in the settling block requires; the `executeRebalance(bytes, uint256[] maxAmountsIn)` overload bounds that and
   reverts `RebalanceMovedOn` when the settlement has grown past what the caller will deliver. Issue stays open through
   notice and auction, so an executor sized from an off-chain simulation can be griefed by a dust issue: the callback
   arguments are authoritative (DA-13).
-- **The zap is stateless and replaceable.** New UX features (ETH in/out, aggregators, V4) go in a new or extended zap,
-  never in the token, rule or factory. The zap must validate every swap path's endpoints, honour every leg's limit
-  including the pass-through leg, the one whose component is already `tokenOut` on a burn or `tokenIn` on a mint
-  (DA-15), check `expectedNonce`, measure what the user pays and receives as balance changes inside the call (never
-  using tokens already in the zap), swap a burn leg one hop at a time and send every hop's unsold input to the recipient
-  (unsold `tokenOut` stays in the zap and is paid out), revert on transfer shortfalls, and never call `redeemSkipping`
-  (the zap receives the basket, so the claim would be booked to the zap and could never be collected) or
-  `executeRebalance`.
+- **The zap is stateless and replaceable.** New UX features (ETH in/out, aggregators, mixed-venue legs) go in a new or
+  extended zap, never in the token, rule or factory. It swaps through Uniswap's Universal Router, pinned to the 2.0.0
+  deployment, and each leg names exactly one venue: a packed `v3Path` or a hookless `PathKey[] v4Path`, never both and
+  never neither, else `BadRoute(i)`. The zap builds every command and every action itself and forwards nothing a
+  caller supplied, because the router's command set includes `TRANSFER` and `PERMIT2_TRANSFER_FROM`, which move a
+  payer's funds: passing calldata through would hand a caller the router's permissions. It pays by pre-funding the
+  router and appending `SWEEP` back to itself in the same `execute`, so nothing it sent can be left where anyone could
+  take it, and a sweep that came up short would fail the swap and revert the whole call; there is no Permit2 approval
+  and no allowance to reset. A V4 route must be hookless (`hooks == 0` and empty `hookData`) — a hookless key cannot
+  carry the dynamic-fee flag, so that one equality subsumes the flag bits — and `address(0)` is allowed only as an
+  intermediate, because native ether must never reach the zap, which has no `receive()`.
+  The zap must validate every route's endpoints, honour every leg's limit including the pass-through leg, the one whose
+  component is already `tokenOut` on a burn or `tokenIn` on a mint (DA-15), check `expectedNonce`, measure what the
+  user pays and receives as balance changes inside the call (never using tokens already in the zap), and check each
+  mint leg's delivered component balance against what the index needs (`ShortFill`), which is load-bearing rather than
+  defensive: the pinned periphery does not itself check exact-output delivery. It sells a V3 burn leg one hop at a time
+  and sends every hop's unsold input to the recipient, while a V4 burn leg is a single multi-hop action, because inside
+  one V4 action an intermediate partial fill leaves an unsettled credit and the leg reverts atomically; only its first
+  hop can leave unsold input, which `SWEEP` returns and the zap forwards. Unsold `tokenOut` stays in the zap and is
+  paid out. It must revert on transfer shortfalls, and never call `redeemSkipping` (the zap receives the basket, so the
+  claim would be booked to the zap and could never be collected) or `executeRebalance`.
+  Swap failures reach the caller unchanged. The router wraps a command in `ExecutionFailed` only when it dispatched it
+  with a low-level call, and swaps are internal calls, so what surfaces is the pool's own revert — `V3TooMuchRequested`,
+  `V4TooLittleReceived` and their neighbours. That was verified against the pinned deployment on a fork, which is why
+  `IUniversalRouter` does not declare `ExecutionFailed` at all.
 - **Checks-effects-interactions.** Emit events and write state before external calls where the data is available; make
   the call into a user-supplied address the last interaction when possible.
 - **Standard ERC-20s only as components** (whitelist policy). `issue` rejects fee-on-transfer tokens by checking the
   received amount. Components need fixed-supply or governance-minted supply. Do not whitelist USDC/USDT as components in
-  scripts or docs; they are fine as mint/burn currencies. Pausable components such as WBTC must be labelled in the app.
+  scripts or docs; they are fine as mint/burn currencies. Pausable components such as WBTC must be labelled in the app, and so must every other issuer a component adds: WBTC's
+  custodian, Lido for wstETH, Wormhole's bridge for wSOL.
   A token's supply is its own `totalSupply` or a reference figure, and nothing else: the config's list of excluded
   holders, whose balances `IndexRule._supply` subtracted with a live `balanceOf` inside the snapshot, is gone, because
   one exclusion a third party could fund and drain would have made that component's market cap manipulable inside a
   single transaction (DA-10). A supply that has to leave holdings out uses a reference supply. A config change moves a
   reference supply by at most `MAX_SUPPLY_CHANGE` (an order of magnitude), which catches the decimals slip and the stale
   figure; a genuine re-founding goes in steps, each behind its own listing delay and guardian veto (DA-18). A component
-  whose WETH pool ends with zero in-range liquidity takes no config at all: `minLiquidity` of zero is rejected as
-  `InvalidMinLiquidity` and any positive value as `ThinPriceHistory`, so delisting and the keep mask are the escapes
-  until the pool recovers by itself (DA-07). An index should start priced at roughly 10,000 raw units of every component
-  or more, which for WBTC at 110k USD is about 11 USD a token: a coarser index token makes one raw unit of a component a
+  whose feed is deprecated or stuck takes no config at all, because `checkConfig` runs `_price`: delisting and, under
+  uncapped, the keep mask are the escapes, and unlike DA-07's dead pool nothing recovers by itself, so a deprecated
+  feed needs a replacement config through the listing flow. `initialUnits` takes `startPriceUsd` in USD-WAD, and an
+  index should start priced at roughly 10,000 raw units of every component or more, which for WBTC at 110k USD is
+  about 11 USD a token: a coarser index token makes one raw unit of a component a
   larger share of it, and `initialUnits` reverts `StartPriceTooLow` rather than flooring a component at one raw unit
   (DA-09).
 
@@ -222,8 +258,14 @@ script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test 
 - OpenZeppelin v5.7.0 and forge-std v1.16.2, pinned in `foundry.lock`; the staged submodule commits must match
   it, and CI checks that. The token uses the upgradeable ERC20 because clones skip constructors, and the
   storage-based `ReentrancyGuard` because its zeroed slot is "not entered" in a clone.
-- Vendored code keeps its license header and names its source commit (`TickMath` from Uniswap v4-core
-  `46c6834698c48bc4a463a86d8420f4eb1d7f3b75`); change it only to replace a dependency, never to restyle.
+- Vendored code keeps its license header and names its source commit: `IAggregatorV3` from Chainlink's
+  `AggregatorV3Interface` (MIT), `IUniversalRouter` and `UniversalRouterCommands` from Uniswap's universal-router
+  (GPL-3.0-or-later) at `3663f6db6e2fe121753cd2d899699c2dc75dca86`, which is tag 2.0.0 and the deployment the zap is
+  pinned to, and `UniswapV4Types` from v4-periphery (MIT) at `444c526b77d804590f0d7bc5a481af5a3277c952`, the commit
+  that router was built against. A vendored struct may retype `Currency` and `IHooks` to `address`, which is
+  abi-identical, but change vendored code only to replace a dependency, never to restyle. Both router libraries record
+  the input layout of every command and action they name, from `Dispatcher.sol` and `Actions.sol` at those commits,
+  because that layout is what the zap encodes against.
 - Custom errors, not revert strings. An error that more than one contract raises is declared once, in
   `src/interfaces/IXindexErrors.sol`, which the factory, rule, token and zap interfaces extend; tests name it
   `IXindexErrors.<Error>.selector`, because Solidity does not resolve an inherited error through
@@ -250,25 +292,38 @@ script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test 
 - Deployments never use raw private keys: `--account` keystores or `--ledger`. `OWNER` and `GUARDIAN` are
   required. On mainnet the owner must be a contract that is not an EIP-7702 delegated account, and a Safe owner
   must need at least two signatures and have no enabled module.
-- Mainnet addresses are verified on-chain before being committed: tokens by symbol, pools with the Uniswap V3 factory's
-  `getPool`; `test/fork/MainnetAddresses.fork.t.sol` checks `script/MainnetAddresses.sol` that way. Reference supplies
-  and minimum liquidities carry their source and date. The WBTC address is
-  `0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599`; an earlier draft had a wrong one.
+- Mainnet addresses are verified on-chain before being committed: tokens by symbol, feeds by `description()` and
+  `decimals()`, the router by its `poolManager()`; `test/fork/MainnetAddresses.fork.t.sol` checks
+  `script/MainnetAddresses.sol` that way. Reference supplies carry their source and date, and every feed carries its
+  heartbeat and deviation threshold in a comment beside it. The WBTC address is
+  `0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599`; an earlier draft had a wrong one. wSOL is Wormhole's
+  `0xD31a59c85aE9D8edEFeC411D448f90841571b89c`, whose symbol is `SOL` and which has 9 decimals.
 
 ## Product decisions already made (do not re-litigate silently)
 
-Ethereum mainnet; Uniswap V3 (SwapRouter02 + QuoterV2, pool time-weighted prices for the rule); fixed constituents with
-units that follow an on-chain rule; methodologies uncapped market cap and capped 30/20 (at least 5 components; the 20%
-cap applies to every component below the largest, changed from the Numbers model's closed form on 2026-09-17);
-rebalance targets are the water-filling of value by weight within the half-to-double bounds (a component clipped to
-its floor is no longer handed value back, changed on 2026-09-18, LR-02); monthly
-cadence with 2 days of notice and a 24-hour auction from 1.5 to 0.9 on the bought legs; no protocol bots or hot keys; no fees; component whitelist only (no synthetics for L1 coins without a mainnet wrapper);
-burner chooses the exit token (mint currency is not tracked per holder); the index price is the basket's value, not a
-divisor level. The Numbers model's tokens were examples; its methodology is the requirement. Rationale in
-`ARCHITECTURE.md`. If a change would alter one of these, say so explicitly.
+Ethereum mainnet; prices from Chainlink USD feeds, one per token, with `CompositeFeed` for a product such as WBTC;
+execution through Uniswap's Universal Router 2.0.0, which reaches both V3 and V4 pools, with the venue chosen per leg
+by the caller. **Both of those supersede the Uniswap V3 decision of 2026-09-15** — SwapRouter02 with QuoterV2 for
+execution and 30-minute pool time-weighted prices for the rule — which was reversed on 2026-09-22 and is recorded in
+`audit/2026-09-22-v3-retirement.md`. V4 has no oracle at all, which is why pricing left Uniswap rather than following
+the liquidity, and the Universal Router still reaches V3 depth per leg, which is why execution did follow it: of the
+seven launch components only LINK is deeper on V4.
+Fixed constituents with units that follow an on-chain rule; methodologies uncapped market cap and capped 30/20 (at
+least 5 components; the 20% cap applies to every component below the largest, changed from the Numbers model's closed
+form on 2026-09-17); rebalance targets are the water-filling of value by weight within the half-to-double bounds (a
+component clipped to its floor is no longer handed value back, changed on 2026-09-18, LR-02); monthly cadence with 2
+days of notice and a 24-hour auction from 1.5 to 0.9 on the bought legs; no protocol bots or hot keys; no fees;
+component whitelist only (no synthetics for L1 coins without a mainnet wrapper); burner chooses the exit token (mint
+currency is not tracked per holder); the index price is the basket's value in dollars, not a divisor level. The launch
+whitelist is exactly seven tokens — WETH, wstETH, WBTC, wSOL, UNI, LINK, AAVE — chosen on 2026-09-22 for one wrapper
+per asset where possible, no Coinbase-issued assets, and a Chainlink feed each. The Numbers model's tokens were
+examples; its methodology is the requirement. Rationale in `ARCHITECTURE.md`. If a change would alter one of these, say
+so explicitly.
 
-## Not in v2 (candidate backlog)
+## Not in v3 (candidate backlog)
 
 `mintWithETH` / `burnToETH`, `createAndMint`, `mintWithTokenPermit` for USDC, creator or protocol fees (attribute them
-by `creatorOf`, never by name), constituent changes, a Chainlink price adapter for thin pools, per-pair partial-fill
-auctions, a backstop executor or trigger reminder, Universal Router / V4 / aggregator zap, synthetic exposure for L1 coins.
+by `creatorOf`, never by name), constituent changes, mixed-venue legs (a single leg splitting across V3 and V4),
+per-pair partial-fill auctions, a backstop executor or trigger reminder, an aggregator or Universal Router 2.1 zap,
+V4 pools on Sepolia so the V4 legs get a testnet rehearsal rather than only fork and mock coverage, a second price
+source behind the Chainlink feeds, synthetic exposure for L1 coins.
