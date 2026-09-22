@@ -37,7 +37,11 @@ library ForkAddresses {
     uint256 internal constant SOL_SUPPLY = MainnetAddresses.SOL_SUPPLY;
     uint256 internal constant AAVE_SUPPLY = MainnetAddresses.AAVE_SUPPLY;
 
-    address internal constant SWAP_ROUTER_02 = MainnetAddresses.SWAP_ROUTER_02;
+    /// @dev Uniswap SwapRouter02. The zap swaps through the Universal Router now; this is only the fork tests' own
+    ///      rebalance executor, a fixture whose venue is independent of anything Xindex deploys.
+    address internal constant SWAP_ROUTER_02 = 0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45;
+    address internal constant UNIVERSAL_ROUTER = MainnetAddresses.UNIVERSAL_ROUTER;
+    address internal constant POOL_MANAGER = MainnetAddresses.POOL_MANAGER;
     address internal constant QUOTER_V2 = 0x61fFE014bA17989E743c5F6cB21bF9697530B21e;
     /// @dev The Uniswap V3 factory, which only the zap's V3 routes still need; the rule reads no pool.
     address internal constant UNISWAP_V3_FACTORY = 0x1F98431c8aD98523631AE4a59f267346ea31F984;
@@ -71,5 +75,5 @@ library ForkAddresses {
 
     /// @dev Block the fork tests pin to. Bump deliberately; a pinned block keeps quotes deterministic
     ///      and lets the RPC cache.
-    uint256 internal constant FORK_BLOCK = 26033671;
+    uint256 internal constant FORK_BLOCK = 26033838;
 }

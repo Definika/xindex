@@ -6,7 +6,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {IIndexToken} from "../../src/interfaces/IIndexToken.sol";
 import {IRebalanceExecutor} from "../../src/interfaces/IRebalanceExecutor.sol";
-import {ISwapRouter02} from "../../src/interfaces/ISwapRouter02.sol";
+import {ISwapRouter02} from "../mocks/ISwapRouter02.sol";
 
 /// @notice Fills rebalance auctions through Uniswap V3 on a mainnet fork, the way a searcher would: it sells what the
 ///         index sends into WETH, buys what the index needs with WETH, and settles the difference from a WETH float.

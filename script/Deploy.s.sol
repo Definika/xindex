@@ -4,7 +4,7 @@ pragma solidity 0.8.28;
 import {Script, console2} from "forge-std/Script.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
 import {IndexZap} from "../src/IndexZap.sol";
-import {ISwapRouter02} from "../src/interfaces/ISwapRouter02.sol";
+import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
 import {ISafeThreshold} from "./interfaces/ISafeThreshold.sol";
 import {IAggregatorV3} from "../src/interfaces/IAggregatorV3.sol";
 import {CompositeFeed} from "../src/CompositeFeed.sol";
@@ -21,10 +21,11 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///                       account, and a Safe must require at least two signatures and have no enabled module.
 ///   GUARDIAN            Required. Can cancel pending listings and rebalances, start a rebalance that leaves a paused
 ///                       component untouched, and delist tokens. Must differ from OWNER; replacing it later takes 7 days.
-///   SWAP_ROUTER         Uniswap SwapRouter02 the zap swaps through. Required off mainnet; defaults on chain 1.
+///   UNIVERSAL_ROUTER    Uniswap's Universal Router, through which the zap swaps. Required off mainnet; defaults on
+///                       chain 1 to the 2.0.0 deployment.
 contract Deploy is Script {
     /// @notice Mainnet default {resolveRouter} uses on chain 1, from `MainnetAddresses`.
-    address public constant MAINNET_SWAP_ROUTER_02 = MainnetAddresses.SWAP_ROUTER_02;
+    address public constant MAINNET_UNIVERSAL_ROUTER = MainnetAddresses.UNIVERSAL_ROUTER;
     /// @notice Start of a Safe's module list.
     address public constant SENTINEL_MODULES = address(0x1);
 
@@ -55,14 +56,14 @@ contract Deploy is Script {
 
     /// @notice Reads OWNER, GUARDIAN and the optional market addresses from the environment and calls {deploy}.
     function run() external returns (IndexFactory factory, IndexZap zap, CompositeFeed wbtcFeed) {
-        return deploy(vm.envAddress("OWNER"), vm.envAddress("GUARDIAN"), vm.envOr("SWAP_ROUTER", address(0)));
+        return deploy(vm.envAddress("OWNER"), vm.envAddress("GUARDIAN"), vm.envOr("UNIVERSAL_ROUTER", address(0)));
     }
 
     /// @notice Checks the owner and guardian, resolves the market, and broadcasts the factory (which deploys the rule
     ///         and the IndexToken implementation) and the zap. Logs every address.
     /// @param owner Factory owner; see {checkOwner}.
     /// @param guardian Initial guardian; see {checkGuardian}.
-    /// @param router Uniswap SwapRouter02 the zap swaps through; see {resolveRouter}.
+    /// @param router Uniswap's Universal Router, through which the zap swaps; see {resolveRouter}.
     /// @return factory The deployed factory.
     /// @return zap The deployed zap.
     /// @return wbtcFeed The composite BTC/USD times WBTC/BTC feed, deployed on chain 1 only, else zero. It takes no
@@ -78,7 +79,7 @@ contract Deploy is Script {
 
         vm.startBroadcast();
         factory = new IndexFactory(owner, guardian);
-        zap = new IndexZap(factory, ISwapRouter02(router));
+        zap = new IndexZap(factory, IUniversalRouter(router));
         if (block.chainid == 1) {
             wbtcFeed = new CompositeFeed(
                 IAggregatorV3(MainnetAddresses.BTC_USD_FEED),
@@ -95,7 +96,8 @@ contract Deploy is Script {
         console2.log("IndexZap:                ", address(zap));
         console2.log("Factory owner:           ", owner);
         console2.log("Guardian:                ", guardian);
-        console2.log("Swap router:             ", router);
+        console2.log("Universal Router:        ", router);
+        console2.log("PoolManager:             ", zap.POOL_MANAGER());
         if (address(wbtcFeed) != address(0)) console2.log("WBTC_FEED (composite):   ", address(wbtcFeed));
 
         // The release record: the addresses above plus the code they ended up with, so a later run of
@@ -174,11 +176,12 @@ contract Deploy is Script {
     }
 
     /// @notice Fills a zero router with the mainnet default on chain 1 only, and requires it to have code. On chain 1
-    ///         a given address must be the default, because the market is fixed there.
+    ///         a given address must be the default, because the router is pinned there: the zap encodes against one
+    ///         version's command inputs, and a later line changed them.
     /// @param router Address from the environment; zero takes the mainnet default on chain 1.
     /// @return The resolved router.
     function resolveRouter(address router) public view returns (address) {
-        return _resolve("SWAP_ROUTER", router, MAINNET_SWAP_ROUTER_02);
+        return _resolve("UNIVERSAL_ROUTER", router, MAINNET_UNIVERSAL_ROUTER);
     }
 
     function _resolve(string memory name, address given, address mainnetDefault) private view returns (address) {

@@ -17,7 +17,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {DEFAULT_STALENESS, MockMarket} from "./mocks/MockMarket.sol";
 import {MockPositionManager} from "./mocks/MockPositionManager.sol";
-import {MockSwapRouter} from "./mocks/MockSwapRouter.sol";
+import {MockUniversalRouter} from "./mocks/MockUniversalRouter.sol";
 import {MockUniswapV3Factory, MockUniswapV3Pool} from "./mocks/MockUniswapV3.sol";
 import {CompositeFeed} from "../src/CompositeFeed.sol";
 import {IAggregatorV3} from "../src/interfaces/IAggregatorV3.sol";
@@ -81,14 +81,14 @@ contract SilentFallback {
 /// @dev Environment variables are process-global and tests run in parallel, so each variable name is
 ///      set by exactly one test. In tests, script broadcasts come from DEFAULT_SENDER.
 contract ScriptsTest is Test {
-    address constant MAINNET_SWAP_ROUTER_02 = MainnetAddresses.SWAP_ROUTER_02;
+    address constant MAINNET_UNIVERSAL_ROUTER = MainnetAddresses.UNIVERSAL_ROUTER;
     /// @dev A dollar per whole token, in the eight decimals a feed answers in.
     int256 constant ONE_DOLLAR = 1e8;
 
     Deploy deployer;
     ConfigureWhitelist configure;
     SetupTestMarket testMarket;
-    MockSwapRouter router;
+    MockUniversalRouter router;
     MockMarket market;
     address owner = makeAddr("owner");
     address guardian = makeAddr("guardian");
@@ -97,7 +97,7 @@ contract ScriptsTest is Test {
         deployer = new Deploy();
         configure = new ConfigureWhitelist();
         testMarket = new SetupTestMarket();
-        router = new MockSwapRouter();
+        router = new MockUniversalRouter(makeAddr("poolManager"));
         market = new MockMarket();
     }
 
@@ -196,14 +196,14 @@ contract ScriptsTest is Test {
     function test_resolveRouter() public {
         assertEq(deployer.resolveRouter(address(router)), address(router));
 
-        vm.expectRevert(abi.encodeWithSelector(Deploy.AddressRequired.selector, "SWAP_ROUTER"));
+        vm.expectRevert(abi.encodeWithSelector(Deploy.AddressRequired.selector, "UNIVERSAL_ROUTER"));
         deployer.resolveRouter(address(0));
-        vm.expectRevert(abi.encodeWithSelector(Deploy.AddressHasNoCode.selector, "SWAP_ROUTER", owner));
+        vm.expectRevert(abi.encodeWithSelector(Deploy.AddressHasNoCode.selector, "UNIVERSAL_ROUTER", owner));
         deployer.resolveRouter(owner);
 
         vm.chainId(1);
-        vm.etch(MAINNET_SWAP_ROUTER_02, hex"00");
-        assertEq(deployer.resolveRouter(address(0)), MAINNET_SWAP_ROUTER_02, "the mainnet default on chain 1");
+        vm.etch(MAINNET_UNIVERSAL_ROUTER, hex"00");
+        assertEq(deployer.resolveRouter(address(0)), MAINNET_UNIVERSAL_ROUTER, "the mainnet default on chain 1");
     }
 
     function test_XA25_guardianCannotBeTheBroadcastingKey() public {
@@ -225,11 +225,13 @@ contract ScriptsTest is Test {
 
     function test_XA47_mainnetMarketCannotBeOverridden() public {
         vm.chainId(1);
-        vm.etch(MAINNET_SWAP_ROUTER_02, hex"00");
+        vm.etch(MAINNET_UNIVERSAL_ROUTER, hex"00");
         address other = address(router); // a contract, but not the mainnet router
-        vm.expectRevert(abi.encodeWithSelector(Deploy.MainnetOverride.selector, "SWAP_ROUTER", other));
+        vm.expectRevert(abi.encodeWithSelector(Deploy.MainnetOverride.selector, "UNIVERSAL_ROUTER", other));
         deployer.resolveRouter(other);
-        assertEq(deployer.resolveRouter(MAINNET_SWAP_ROUTER_02), MAINNET_SWAP_ROUTER_02, "the default itself is fine");
+        assertEq(
+            deployer.resolveRouter(MAINNET_UNIVERSAL_ROUTER), MAINNET_UNIVERSAL_ROUTER, "the default itself is fine"
+        );
     }
 
     function test_deploy() public {
@@ -248,7 +250,7 @@ contract ScriptsTest is Test {
     function test_deploy_deploysTheCompositeFeedOnMainnet() public {
         vm.warp(30 days);
         vm.chainId(1);
-        vm.etch(MAINNET_SWAP_ROUTER_02, address(router).code);
+        vm.etch(MAINNET_UNIVERSAL_ROUTER, address(router).code);
         _etchFeed(MainnetAddresses.BTC_USD_FEED, "BTC / USD", 86_000e8);
         _etchFeed(MainnetAddresses.WBTC_BTC_FEED, "WBTC / BTC", 0.9995e8);
         address safeOwner = address(new MockSafe(2)); // on chain 1 the owner must be a contract
@@ -330,7 +332,7 @@ contract ScriptsTest is Test {
     function test_deployRun_readsEnvironment() public {
         vm.setEnv("OWNER", vm.toString(owner));
         vm.setEnv("GUARDIAN", vm.toString(guardian));
-        vm.setEnv("SWAP_ROUTER", vm.toString(address(router)));
+        vm.setEnv("UNIVERSAL_ROUTER", vm.toString(address(router)));
         (IndexFactory factory, IndexZap zap,) = deployer.run();
         assertEq(factory.owner(), owner);
         assertEq(factory.guardian(), guardian);

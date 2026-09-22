@@ -14,8 +14,7 @@ import {CompositeFeed} from "../../src/CompositeFeed.sol";
 import {IAggregatorV3} from "../../src/interfaces/IAggregatorV3.sol";
 
 interface IRouterImmutables {
-    function factory() external view returns (address);
-    function WETH9() external view returns (address);
+    function poolManager() external view returns (address);
 }
 
 /// @notice Checks the scripts' `MainnetAddresses` against mainnet, as AGENTS.md requires before addresses are
@@ -100,14 +99,17 @@ contract MainnetAddressesForkTest is Test {
         assertEq(wbtcFeed.description(), "BTC / USD * WBTC / BTC");
     }
 
+    /// @dev The zap reads the pool manager off the router, so what has to agree is that the pinned router names the
+    ///      pool manager the address book does.
     function testFork_XA13_uniswapContractsAgree() public view {
-        assertEq(IRouterImmutables(M.SWAP_ROUTER_02).factory(), A.UNISWAP_V3_FACTORY);
-        assertEq(IRouterImmutables(M.SWAP_ROUTER_02).WETH9(), M.WETH);
+        assertEq(IRouterImmutables(M.UNIVERSAL_ROUTER).poolManager(), M.POOL_MANAGER);
+        assertGt(M.UNIVERSAL_ROUTER.code.length, 0, "the pinned router is deployed");
+        assertGt(M.POOL_MANAGER.code.length, 0);
     }
 
     function testFork_XA13_deployResolvesTheMainnetMarket() public {
         Deploy deployer = new Deploy();
-        assertEq(deployer.resolveRouter(address(0)), M.SWAP_ROUTER_02);
+        assertEq(deployer.resolveRouter(address(0)), M.UNIVERSAL_ROUTER);
     }
 
     /// @dev Every default entry, as the listing script builds it, put to the rule against live mainnet feeds.

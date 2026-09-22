@@ -6,10 +6,11 @@ import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.so
 import {IndexFactory} from "../src/IndexFactory.sol";
 import {IndexToken} from "../src/IndexToken.sol";
 import {IndexZap} from "../src/IndexZap.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IIndexZap} from "../src/interfaces/IIndexZap.sol";
+import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
 import {IIndexToken} from "../src/interfaces/IIndexToken.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
-import {ISwapRouter02} from "../src/interfaces/ISwapRouter02.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockUSDT} from "./mocks/MockUSDT.sol";
@@ -17,12 +18,13 @@ import {MockFeeToken} from "./mocks/MockFeeToken.sol";
 import {MockHookToken, ITokenReceiverHook} from "./mocks/MockHookToken.sol";
 import {MockRebalanceExecutor} from "./mocks/MockRebalanceExecutor.sol";
 import {MockMarket} from "./mocks/MockMarket.sol";
-import {MockSwapRouter} from "./mocks/MockSwapRouter.sol";
-import {MockPartialFillRouter} from "./mocks/MockPartialFillRouter.sol";
+import {MockUniversalRouter} from "./mocks/MockUniversalRouter.sol";
+import {PathKey, V4ExactInputParams, V4ExactOutputParams} from "../src/libraries/UniswapV4Types.sol";
 
 contract IndexZapTest is XindexTest {
     IndexZap zap;
-    MockSwapRouter router;
+    MockUniversalRouter router;
+    address poolManager;
     IndexToken index;
 
     MockERC20 wbtc; // 8
@@ -45,7 +47,10 @@ contract IndexZapTest is XindexTest {
     function setUp() public {
         market = new MockMarket();
         factory = new IndexFactory(owner, address(0));
-        router = new MockSwapRouter();
+        // A plain address stands in for the V4 singleton: the zap only ever reads it, to keep it off the recipient
+        // list, and the mock router never settles against it.
+        poolManager = makeAddr("poolManager");
+        router = new MockUniversalRouter(poolManager);
         zap = new IndexZap(factory, router);
 
         wbtc = new MockERC20("Wrapped BTC", "WBTC", 8);
@@ -54,17 +59,17 @@ contract IndexZapTest is XindexTest {
         usdc = market.usdc();
         usdt = new MockUSDT();
 
-        router.setPrice(address(wbtc), 60_000e18);
-        router.setPrice(address(weth), 3_000e18);
-        router.setPrice(address(link), 15e18);
-        router.setPrice(address(usdc), 1e18);
-        router.setPrice(address(usdt), 1e18);
+        router.setPrice(address(wbtc), 60_000e18, 8);
+        router.setPrice(address(weth), 3_000e18, 18);
+        router.setPrice(address(link), 15e18, 18);
+        router.setPrice(address(usdc), 1e18, 6);
+        router.setPrice(address(usdt), 1e18, 6);
 
-        wbtc.mint(address(router), 1_000e8);
-        weth.mint(address(router), 100_000e18);
-        link.mint(address(router), 10_000_000e18);
-        usdc.mint(address(router), 1_000_000_000e6);
-        usdt.mint(address(router), 1_000_000_000e6);
+        wbtc.mint(address(router.inventory()), 1_000e8);
+        weth.mint(address(router.inventory()), 100_000e18);
+        link.mint(address(router.inventory()), 10_000_000e18);
+        usdc.mint(address(router.inventory()), 1_000_000_000e6);
+        usdt.mint(address(router.inventory()), 1_000_000_000e6);
 
         _list(address(wbtc));
         _list(address(weth));
@@ -86,6 +91,43 @@ contract IndexZapTest is XindexTest {
     // helpers
     // ---------------------------------------------------------------------
 
+    /// @dev An empty V4 route, for a leg that names a V3 path.
+    /// @dev A swap's revert reaches the caller unchanged: the router dispatches swaps as internal calls, so the
+    ///      pool's own slippage error is what surfaces, not the router's `ExecutionFailed` wrapper.
+    function _wrapped(string memory innerSignature) internal pure returns (bytes memory) {
+        return abi.encodeWithSignature(innerSignature);
+    }
+
+    function _noV4() internal pure returns (PathKey[] memory) {
+        return new PathKey[](0);
+    }
+
+    /// @dev A hookless two-hop V4 route for a burn: the router walks it forwards from the component, so `mid` comes
+    ///      first and the payout last.
+    function _v4BurnPath(address mid, address tokenOut) internal pure returns (PathKey[] memory path) {
+        path = new PathKey[](2);
+        path[0] = _hop(mid);
+        path[1] = _hop(tokenOut);
+    }
+
+    /// @dev The same route for a mint, which the router walks backwards from the component, so what the user pays
+    ///      with comes first and `mid` last. Getting this the wrong way round is what BadRoute catches.
+    function _v4MintPath(address stable, address mid) internal pure returns (PathKey[] memory path) {
+        path = new PathKey[](2);
+        path[0] = _hop(stable);
+        path[1] = _hop(mid);
+    }
+
+    function _hop(address currency) internal pure returns (PathKey memory) {
+        return PathKey({intermediateCurrency: currency, fee: FEE, tickSpacing: 10, hooks: address(0), hookData: ""});
+    }
+
+    /// @dev A single-hop hookless V4 route. One hop reads the same either way round.
+    function _v4Path1(address other) internal pure returns (PathKey[] memory path) {
+        path = new PathKey[](1);
+        path[0] = _hop(other);
+    }
+
     function _path2(address a, address b) internal pure returns (bytes memory) {
         return abi.encodePacked(a, FEE, b);
     }
@@ -97,17 +139,23 @@ contract IndexZapTest is XindexTest {
     /// @dev mint legs: component -> ... -> stable (exact-output encoding, reversed), no per-leg limit
     function _mintLegs(address stable) internal view returns (IIndexZap.MintLeg[] memory legs) {
         legs = new IIndexZap.MintLeg[](3);
-        legs[0] = IIndexZap.MintLeg({path: _path3(address(wbtc), address(weth), stable), maxAmountIn: 0});
-        legs[1] = IIndexZap.MintLeg({path: _path2(address(weth), stable), maxAmountIn: 0});
-        legs[2] = IIndexZap.MintLeg({path: _path3(address(link), address(weth), stable), maxAmountIn: 0});
+        legs[0] =
+            IIndexZap.MintLeg({v3Path: _path3(address(wbtc), address(weth), stable), v4Path: _noV4(), maxAmountIn: 0});
+        legs[1] = IIndexZap.MintLeg({v3Path: _path2(address(weth), stable), v4Path: _noV4(), maxAmountIn: 0});
+        legs[2] =
+            IIndexZap.MintLeg({v3Path: _path3(address(link), address(weth), stable), v4Path: _noV4(), maxAmountIn: 0});
     }
 
     /// @dev burn legs: component -> ... -> tokenOut (exact-input encoding), no per-leg limit
     function _burnLegs(address tokenOut) internal view returns (IIndexZap.BurnLeg[] memory legs) {
         legs = new IIndexZap.BurnLeg[](3);
-        legs[0] = IIndexZap.BurnLeg({path: _path3(address(wbtc), address(weth), tokenOut), minAmountOut: 0});
-        legs[1] = IIndexZap.BurnLeg({path: _path2(address(weth), tokenOut), minAmountOut: 0});
-        legs[2] = IIndexZap.BurnLeg({path: _path3(address(link), address(weth), tokenOut), minAmountOut: 0});
+        legs[0] = IIndexZap.BurnLeg({
+            v3Path: _path3(address(wbtc), address(weth), tokenOut), v4Path: _noV4(), minAmountOut: 0
+        });
+        legs[1] = IIndexZap.BurnLeg({v3Path: _path2(address(weth), tokenOut), v4Path: _noV4(), minAmountOut: 0});
+        legs[2] = IIndexZap.BurnLeg({
+            v3Path: _path3(address(link), address(weth), tokenOut), v4Path: _noV4(), minAmountOut: 0
+        });
     }
 
     function _mintParams(
@@ -172,8 +220,8 @@ contract IndexZapTest is XindexTest {
 
     function _mixedLegs() internal view returns (IIndexZap.MintLeg[] memory legs) {
         legs = new IIndexZap.MintLeg[](2);
-        legs[0] = IIndexZap.MintLeg({path: _path2(address(weth), address(usdc)), maxAmountIn: 0});
-        legs[1] = IIndexZap.MintLeg({path: "", maxAmountIn: 0});
+        legs[0] = IIndexZap.MintLeg({v3Path: _path2(address(weth), address(usdc)), v4Path: _noV4(), maxAmountIn: 0});
+        legs[1] = IIndexZap.MintLeg({v3Path: "", v4Path: _noV4(), maxAmountIn: 0});
     }
 
     function _assertZapEmpty() internal view {
@@ -214,7 +262,7 @@ contract IndexZapTest is XindexTest {
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
         new IndexZap(IIndexFactory(address(0)), router);
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new IndexZap(factory, ISwapRouter02(address(0)));
+        new IndexZap(factory, IUniversalRouter(address(0)));
     }
 
     // ---------------------------------------------------------------------
@@ -302,7 +350,7 @@ contract IndexZapTest is XindexTest {
         usdc.mint(alice, 79e6);
         vm.startPrank(alice);
         usdc.approve(address(zap), 79e6);
-        vm.expectRevert("Too much requested");
+        vm.expectRevert(_wrapped("V3TooMuchRequested()"));
         zap.mintWithToken(_mintParams(address(idx), address(usdc), 79e6, 1e18, _mixedLegs(), alice));
         vm.stopPrank();
     }
@@ -320,11 +368,11 @@ contract IndexZapTest is XindexTest {
     function test_mint_revertsTokenInComponentWithNonEmptyPath() public {
         IndexToken idx = _mixedIndex();
         IIndexZap.MintLeg[] memory legs = _mixedLegs();
-        legs[1].path = _path2(address(usdc), address(usdc));
+        legs[1].v3Path = _path2(address(usdc), address(usdc));
         usdc.mint(alice, 100e6);
         vm.startPrank(alice);
         usdc.approve(address(zap), 100e6);
-        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadPath.selector, 1));
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadRoute.selector, 1));
         zap.mintWithToken(_mintParams(address(idx), address(usdc), 100e6, 1e18, legs, alice));
         vm.stopPrank();
     }
@@ -333,7 +381,7 @@ contract IndexZapTest is XindexTest {
         usdc.mint(alice, 100e6);
         vm.startPrank(alice);
         usdc.approve(address(zap), 100e6);
-        vm.expectRevert("Too much requested");
+        vm.expectRevert(_wrapped("V3TooMuchRequested()"));
         zap.mintWithToken(_mintParams(address(index), address(usdc), 100e6, 1e18, _mintLegs(address(usdc)), alice));
         vm.stopPrank();
         assertEq(usdc.balanceOf(alice), 100e6);
@@ -362,10 +410,10 @@ contract IndexZapTest is XindexTest {
         vm.prank(alice);
         usdc.approve(address(zap), maxIn);
 
-        router.setPrice(address(link), 16.05e18); // a sandwich moves only the LINK leg, by 7%
+        router.setPrice(address(link), 16.05e18, 18); // a sandwich moves only the LINK leg, by 7%
 
         vm.prank(alice);
-        vm.expectRevert("Too much requested");
+        vm.expectRevert(_wrapped("V3TooMuchRequested()"));
         zap.mintWithToken(_mintParams(address(index), address(usdc), maxIn, 1e18, legs, alice));
     }
 
@@ -377,7 +425,7 @@ contract IndexZapTest is XindexTest {
         usdc.mint(alice, 100e6);
         vm.startPrank(alice);
         usdc.approve(address(zap), 100e6);
-        vm.expectRevert("Too much requested");
+        vm.expectRevert(_wrapped("V3TooMuchRequested()"));
         zap.mintWithToken(_mintParams(address(index), address(usdc), 100e6, 1e18, legs, alice));
         vm.stopPrank();
     }
@@ -388,22 +436,22 @@ contract IndexZapTest is XindexTest {
         usdc.approve(address(zap), 200e6);
 
         IIndexZap.MintLeg[] memory legs = _mintLegs(address(usdc));
-        legs[0].path = _path3(address(link), address(weth), address(usdc)); // should start with wbtc
-        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadPath.selector, 0));
+        legs[0].v3Path = _path3(address(link), address(weth), address(usdc)); // should start with wbtc
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadRoute.selector, 0));
         zap.mintWithToken(_mintParams(address(index), address(usdc), 200e6, 1e18, legs, alice));
 
         legs = _mintLegs(address(usdc));
-        legs[2].path = _path3(address(link), address(weth), address(usdt)); // should end with usdc
-        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadPath.selector, 2));
+        legs[2].v3Path = _path3(address(link), address(weth), address(usdt)); // should end with usdc
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadRoute.selector, 2));
         zap.mintWithToken(_mintParams(address(index), address(usdc), 200e6, 1e18, legs, alice));
 
         legs = _mintLegs(address(usdc));
-        legs[1].path = abi.encodePacked(address(weth), address(usdc)); // missing fee
-        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadPath.selector, 1));
+        legs[1].v3Path = abi.encodePacked(address(weth), address(usdc)); // missing fee
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadRoute.selector, 1));
         zap.mintWithToken(_mintParams(address(index), address(usdc), 200e6, 1e18, legs, alice));
 
-        legs[1].path = "";
-        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadPath.selector, 1));
+        legs[1].v3Path = "";
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadRoute.selector, 1));
         zap.mintWithToken(_mintParams(address(index), address(usdc), 200e6, 1e18, legs, alice));
         vm.stopPrank();
     }
@@ -462,7 +510,7 @@ contract IndexZapTest is XindexTest {
 
     function test_mint_rejectsFeeOnTransferTokenIn() public {
         MockFeeToken fot = new MockFeeToken();
-        router.setPrice(address(fot), 1e18);
+        router.setPrice(address(fot), 1e18, 18);
         fot.mint(alice, 200e18);
         vm.startPrank(alice);
         fot.approve(address(zap), 200e18);
@@ -516,9 +564,11 @@ contract IndexZapTest is XindexTest {
     function test_burn_toWBTC_componentIsTokenOut() public {
         _mintFor(alice, 1e18, 200e6);
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](3);
-        legs[0] = IIndexZap.BurnLeg({path: "", minAmountOut: 0});
-        legs[1] = IIndexZap.BurnLeg({path: _path2(address(weth), address(wbtc)), minAmountOut: 0});
-        legs[2] = IIndexZap.BurnLeg({path: _path3(address(link), address(weth), address(wbtc)), minAmountOut: 0});
+        legs[0] = IIndexZap.BurnLeg({v3Path: "", v4Path: _noV4(), minAmountOut: 0});
+        legs[1] = IIndexZap.BurnLeg({v3Path: _path2(address(weth), address(wbtc)), v4Path: _noV4(), minAmountOut: 0});
+        legs[2] = IIndexZap.BurnLeg({
+            v3Path: _path3(address(link), address(weth), address(wbtc)), v4Path: _noV4(), minAmountOut: 0
+        });
 
         // $105 of WBTC at $60k = 0.00175 BTC = 175_000 sats
         vm.startPrank(alice);
@@ -538,9 +588,11 @@ contract IndexZapTest is XindexTest {
         _mintFor(alice, 1e18, 200e6);
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](3);
         // The pass-through leg can only hand over the WBTC the index held, 100,000 sats a share: ask for one more.
-        legs[0] = IIndexZap.BurnLeg({path: "", minAmountOut: 100_001});
-        legs[1] = IIndexZap.BurnLeg({path: _path2(address(weth), address(wbtc)), minAmountOut: 0});
-        legs[2] = IIndexZap.BurnLeg({path: _path3(address(link), address(weth), address(wbtc)), minAmountOut: 0});
+        legs[0] = IIndexZap.BurnLeg({v3Path: "", v4Path: _noV4(), minAmountOut: 100_001});
+        legs[1] = IIndexZap.BurnLeg({v3Path: _path2(address(weth), address(wbtc)), v4Path: _noV4(), minAmountOut: 0});
+        legs[2] = IIndexZap.BurnLeg({
+            v3Path: _path3(address(link), address(weth), address(wbtc)), v4Path: _noV4(), minAmountOut: 0
+        });
 
         vm.startPrank(alice);
         index.approve(address(zap), 1e18);
@@ -558,9 +610,9 @@ contract IndexZapTest is XindexTest {
         // WETH is a component and also the token paid in, so its leg carries no swap.
         uint256[] memory need = index.previewIssue(1e18);
         IIndexZap.MintLeg[] memory legs = new IIndexZap.MintLeg[](3);
-        legs[0] = IIndexZap.MintLeg({path: _path2(address(wbtc), address(weth)), maxAmountIn: 0});
-        legs[1] = IIndexZap.MintLeg({path: "", maxAmountIn: need[1] - 1});
-        legs[2] = IIndexZap.MintLeg({path: _path2(address(link), address(weth)), maxAmountIn: 0});
+        legs[0] = IIndexZap.MintLeg({v3Path: _path2(address(wbtc), address(weth)), v4Path: _noV4(), maxAmountIn: 0});
+        legs[1] = IIndexZap.MintLeg({v3Path: "", v4Path: _noV4(), maxAmountIn: need[1] - 1});
+        legs[2] = IIndexZap.MintLeg({v3Path: _path2(address(link), address(weth)), v4Path: _noV4(), maxAmountIn: 0});
 
         weth.mint(alice, 1e18);
         vm.startPrank(alice);
@@ -578,12 +630,14 @@ contract IndexZapTest is XindexTest {
     function test_burn_revertsComponentIsTokenOutWithNonEmptyPath() public {
         _mintFor(alice, 1e18, 200e6);
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](3);
-        legs[0] = IIndexZap.BurnLeg({path: _path2(address(wbtc), address(wbtc)), minAmountOut: 0});
-        legs[1] = IIndexZap.BurnLeg({path: _path2(address(weth), address(wbtc)), minAmountOut: 0});
-        legs[2] = IIndexZap.BurnLeg({path: _path3(address(link), address(weth), address(wbtc)), minAmountOut: 0});
+        legs[0] = IIndexZap.BurnLeg({v3Path: _path2(address(wbtc), address(wbtc)), v4Path: _noV4(), minAmountOut: 0});
+        legs[1] = IIndexZap.BurnLeg({v3Path: _path2(address(weth), address(wbtc)), v4Path: _noV4(), minAmountOut: 0});
+        legs[2] = IIndexZap.BurnLeg({
+            v3Path: _path3(address(link), address(weth), address(wbtc)), v4Path: _noV4(), minAmountOut: 0
+        });
         vm.startPrank(alice);
         index.approve(address(zap), 1e18);
-        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadPath.selector, 0));
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadRoute.selector, 0));
         zap.burnToToken(_burnParams(address(index), 1e18, address(wbtc), 1, legs, alice));
         vm.stopPrank();
     }
@@ -604,7 +658,7 @@ contract IndexZapTest is XindexTest {
         legs[2].minAmountOut = 15_000_001; // the LINK leg returns exactly 15 USDC
         vm.startPrank(alice);
         index.approve(address(zap), 1e18);
-        vm.expectRevert("Too little received");
+        vm.expectRevert(_wrapped("V3TooLittleReceived()"));
         zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, legs, alice));
         vm.stopPrank();
     }
@@ -612,10 +666,10 @@ contract IndexZapTest is XindexTest {
     function test_burn_revertsBadPath() public {
         _mintFor(alice, 1e18, 200e6);
         IIndexZap.BurnLeg[] memory legs = _burnLegs(address(usdc));
-        legs[1].path = _path2(address(weth), address(usdt));
+        legs[1].v3Path = _path2(address(weth), address(usdt));
         vm.startPrank(alice);
         index.approve(address(zap), 1e18);
-        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadPath.selector, 1));
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadRoute.selector, 1));
         zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, legs, alice));
         vm.stopPrank();
     }
@@ -638,13 +692,15 @@ contract IndexZapTest is XindexTest {
     function test_LR05_aLegMinimumAppliesToTheLastHopOnly() public {
         _mintFor(alice, 2e18, 400e6);
         IIndexZap.BurnLeg[] memory legs = _burnLegs(address(usdc));
-        legs[2] = IIndexZap.BurnLeg({path: _path3(address(link), address(wbtc), address(usdc)), minAmountOut: 15e6});
+        legs[2] = IIndexZap.BurnLeg({
+            v3Path: _path3(address(link), address(wbtc), address(usdc)), v4Path: _noV4(), minAmountOut: 15e6
+        });
         vm.startPrank(alice);
         index.approve(address(zap), 2e18);
         assertEq(zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, legs, alice)), NAV_USD6);
 
         legs[2].minAmountOut = 15e6 + 1; // and on the last hop it binds
-        vm.expectRevert(bytes("Too little received"));
+        vm.expectRevert(_wrapped("V3TooLittleReceived()"));
         zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, legs, alice));
         vm.stopPrank();
     }
@@ -654,8 +710,8 @@ contract IndexZapTest is XindexTest {
         vm.startPrank(alice);
         index.approve(address(zap), 1e12);
         IIndexZap.BurnLeg[] memory legs = _burnLegs(address(usdc));
-        legs[0].path = ""; // the WBTC leg sells nothing for 1e12 shares, yet a malformed path is rejected
-        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadPath.selector, 0));
+        legs[0].v3Path = ""; // the WBTC leg sells nothing for 1e12 shares, yet a malformed path is rejected
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadRoute.selector, 0));
         zap.burnToToken(_burnParams(address(index), 1e12, address(usdc), 1, legs, alice));
 
         legs = _burnLegs(address(usdc));
@@ -708,7 +764,7 @@ contract IndexZapTest is XindexTest {
         vm.warp(eta);
 
         MockHookToken hook = new MockHookToken();
-        router.setPrice(address(hook), 1e18);
+        router.setPrice(address(hook), 1e18, 18);
         RebalancingMinter minter = new RebalancingMinter(zap, index, new MockRebalanceExecutor());
         hook.mint(address(minter), 200e18);
 
@@ -785,8 +841,8 @@ contract IndexZapTest is XindexTest {
 
     function test_burn_rejectsFeeOnTransferPayout() public {
         MockFeeToken fot = new MockFeeToken();
-        router.setPrice(address(fot), 1e18);
-        fot.mint(address(router), 1_000_000e18);
+        router.setPrice(address(fot), 1e18, 18);
+        fot.mint(address(router.inventory()), 1_000_000e18);
         _mintFor(alice, 1e18, 200e6);
 
         vm.startPrank(alice);
@@ -797,10 +853,6 @@ contract IndexZapTest is XindexTest {
     }
 
     function test_burn_partialFillReturnsUnsoldComponent() public {
-        MockPartialFillRouter half = new MockPartialFillRouter(3_000e6);
-        usdc.mint(address(half), 1_000_000e6);
-        IndexZap halfZap = new IndexZap(factory, half);
-
         address[] memory t = new address[](1);
         uint256[] memory u = new uint256[](1);
         t[0] = address(weth);
@@ -811,24 +863,27 @@ contract IndexZapTest is XindexTest {
         vm.startPrank(alice);
         weth.approve(address(idx), 1e18);
         idx.issue(1e18, alice);
-        idx.approve(address(halfZap), 1e18);
+        idx.approve(address(zap), 1e18);
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](1);
-        legs[0] = IIndexZap.BurnLeg({path: _path2(address(weth), address(usdc)), minAmountOut: 0});
+        legs[0] = IIndexZap.BurnLeg({v3Path: _path2(address(weth), address(usdc)), v4Path: _noV4(), minAmountOut: 0});
+
+        // The pool stops at its price limit and takes half the input.
+        router.setMode(MockUniversalRouter.Mode.PartialFirstHop);
 
         // An overall minimum above what half the basket sells for still reverts.
         vm.expectRevert(abi.encodeWithSelector(IIndexZap.InsufficientOutput.selector, 1_500e6, 2_970e6));
-        halfZap.burnToToken(_burnParams(address(idx), 1e18, address(usdc), 2_970e6, legs, alice));
+        zap.burnToToken(_burnParams(address(idx), 1e18, address(usdc), 2_970e6, legs, alice));
 
-        vm.expectEmit(true, true, true, true, address(halfZap));
+        vm.expectEmit(true, true, true, true, address(zap));
         emit IIndexZap.ComponentReturned(address(idx), bob, address(weth), 5e17);
-        uint256 out = halfZap.burnToToken(_burnParams(address(idx), 1e18, address(usdc), 1_000e6, legs, bob));
+        uint256 out = zap.burnToToken(_burnParams(address(idx), 1e18, address(usdc), 1_000e6, legs, bob));
         vm.stopPrank();
 
         assertEq(out, 1_500e6);
         assertEq(usdc.balanceOf(bob), 1_500e6);
         assertEq(weth.balanceOf(bob), 5e17, "the unsold half goes to the recipient");
-        assertEq(weth.balanceOf(address(halfZap)), 0);
-        assertEq(weth.allowance(address(halfZap), address(half)), 0);
+        assertEq(weth.balanceOf(address(zap)), 0);
+        assertEq(weth.balanceOf(address(router)), 0, "and nothing is left in the router to be swept by anyone");
     }
 
     function test_burn_leavesStrayTokenOutUntouched() public {
@@ -841,6 +896,254 @@ contract IndexZapTest is XindexTest {
         vm.stopPrank();
         assertEq(out, NAV_USD6);
         assertEq(usdc.balanceOf(address(zap)), 1_000e6);
+    }
+
+    // ---------------------------------------------------------------------
+    // V4 legs and route validation
+    // ---------------------------------------------------------------------
+
+    /// @dev The bytes the zap hands the router, checked against the layouts the pinned Dispatcher decodes. A field in
+    ///      the wrong position would still swap correctly against a mock that shared the mistake; this is what makes
+    ///      the mock's agreement worth something.
+    function test_route_v4MintEncodesTheActionsTheRouterDecodes() public {
+        IIndexZap.MintLeg[] memory legs = _mintLegs(address(usdc));
+        legs[2] = IIndexZap.MintLeg({v3Path: "", v4Path: _v4MintPath(address(usdc), address(weth)), maxAmountIn: 0});
+        usdc.mint(alice, 200e6);
+        vm.startPrank(alice);
+        usdc.approve(address(zap), 200e6);
+        zap.mintWithToken(_mintParams(address(index), address(usdc), 200e6, 1e18, legs, alice));
+        vm.stopPrank();
+
+        // The LINK leg is the last swap, so the recorded call is its own: a V4 swap then a sweep.
+        assertEq(zap.ROUTER().poolManager(), poolManager);
+        assertEq(router.lastCommands(), abi.encodePacked(uint8(0x10), uint8(0x04)), "V4_SWAP then SWEEP");
+
+        (bytes memory actions, bytes[] memory params) = abi.decode(router.lastInput(0), (bytes, bytes[]));
+        assertEq(actions, abi.encodePacked(uint8(0x09), uint8(0x0b), uint8(0x0e)), "swap exact out, settle, take");
+
+        V4ExactOutputParams memory swap = abi.decode(params[0], (V4ExactOutputParams));
+        assertEq(swap.currencyOut, address(link), "the zap names the component, never the caller");
+        assertEq(
+            swap.path[0].intermediateCurrency,
+            address(usdc),
+            "walked backwards, so entry zero is what the user pays with"
+        );
+        assertEq(swap.path[1].intermediateCurrency, address(weth));
+
+        (address settleCurrency, uint256 settleAmount, bool payerIsUser) =
+            abi.decode(params[1], (address, uint256, bool));
+        assertEq(settleCurrency, address(usdc));
+        assertEq(settleAmount, 0, "OPEN_DELTA: settle the whole debt");
+        assertFalse(payerIsUser, "the router pays from what the zap pre-funded, never from the caller");
+
+        (address takeCurrency, address takeRecipient, uint256 takeAmount) =
+            abi.decode(params[2], (address, address, uint256));
+        assertEq(takeCurrency, address(link));
+        assertEq(takeRecipient, address(zap));
+        assertEq(takeAmount, 0, "OPEN_DELTA: take the whole credit");
+
+        (address sweepToken, address sweepTo, uint256 sweepMin) =
+            abi.decode(router.lastInput(1), (address, address, uint256));
+        assertEq(sweepToken, address(usdc));
+        assertEq(sweepTo, address(zap), "nothing is left in the router for anyone to sweep");
+        assertEq(sweepMin, 0);
+    }
+
+    function test_mint_v4LegBuysTheSameBasketAsV3() public {
+        IIndexZap.MintLeg[] memory v4 = _mintLegs(address(usdc));
+        v4[0] = IIndexZap.MintLeg({v3Path: "", v4Path: _v4MintPath(address(usdc), address(weth)), maxAmountIn: 0});
+        v4[1] = IIndexZap.MintLeg({v3Path: "", v4Path: _v4Path1(address(usdc)), maxAmountIn: 0});
+        v4[2] = IIndexZap.MintLeg({v3Path: "", v4Path: _v4MintPath(address(usdc), address(weth)), maxAmountIn: 0});
+
+        usdc.mint(alice, 300e6);
+        vm.startPrank(alice);
+        usdc.approve(address(zap), 300e6);
+        uint256 spent = zap.mintWithToken(_mintParams(address(index), address(usdc), 300e6, 1e18, v4, alice));
+        vm.stopPrank();
+
+        assertEq(spent, NAV_USD6, "a V4 leg buys the same basket for the same money");
+        assertEq(index.balanceOf(alice), 1e18);
+        _assertZapEmpty();
+    }
+
+    function test_mixedBasket_v3AndV4Legs() public {
+        IIndexZap.MintLeg[] memory legs = _mintLegs(address(usdc));
+        legs[1] = IIndexZap.MintLeg({v3Path: "", v4Path: _v4Path1(address(usdc)), maxAmountIn: 0});
+
+        usdc.mint(alice, 300e6);
+        vm.startPrank(alice);
+        usdc.approve(address(zap), 300e6);
+        uint256 spent = zap.mintWithToken(_mintParams(address(index), address(usdc), 300e6, 1e18, legs, alice));
+
+        IIndexZap.BurnLeg[] memory out = _burnLegs(address(usdc));
+        out[2] = IIndexZap.BurnLeg({v3Path: "", v4Path: _v4BurnPath(address(weth), address(usdc)), minAmountOut: 0});
+        index.approve(address(zap), 1e18);
+        uint256 back = zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, out, alice));
+        vm.stopPrank();
+
+        assertEq(spent, NAV_USD6);
+        assertEq(back, NAV_USD6, "one basket, two venues, the same round trip");
+        _assertZapEmpty();
+    }
+
+    function test_burn_v4LegSellsThroughOneAction() public {
+        _mintFor(alice, 1e18, 200e6);
+        IIndexZap.BurnLeg[] memory legs = _burnLegs(address(usdc));
+        // The last leg, so the call the router recorded is this one's.
+        legs[2] = IIndexZap.BurnLeg({v3Path: "", v4Path: _v4BurnPath(address(weth), address(usdc)), minAmountOut: 0});
+
+        vm.startPrank(alice);
+        index.approve(address(zap), 1e18);
+        uint256 out = zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, legs, alice));
+        vm.stopPrank();
+        assertEq(out, NAV_USD6);
+
+        (bytes memory actions, bytes[] memory params) = abi.decode(router.lastInput(0), (bytes, bytes[]));
+        assertEq(actions, abi.encodePacked(uint8(0x07), uint8(0x0b), uint8(0x0e)), "swap exact in, settle, take");
+        V4ExactInputParams memory swap = abi.decode(params[0], (V4ExactInputParams));
+        assertEq(swap.path[swap.path.length - 1].intermediateCurrency, address(usdc), "the route ends at the payout");
+    }
+
+    /// @dev A leg names one venue. Both would be ambiguous; neither is only ever right for the pass-through leg,
+    ///      which is handled before a route is read at all.
+    function test_route_rejectsBothVenuesOrNeither() public {
+        IIndexZap.MintLeg[] memory legs = _mintLegs(address(usdc));
+        legs[2].v4Path = _v4MintPath(address(usdc), address(weth)); // now carries a V3 path as well
+        usdc.mint(alice, 300e6);
+        vm.startPrank(alice);
+        usdc.approve(address(zap), 300e6);
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadRoute.selector, 2));
+        zap.mintWithToken(_mintParams(address(index), address(usdc), 300e6, 1e18, legs, alice));
+
+        legs[2] = IIndexZap.MintLeg({v3Path: "", v4Path: _noV4(), maxAmountIn: 0}); // neither
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadRoute.selector, 2));
+        zap.mintWithToken(_mintParams(address(index), address(usdc), 300e6, 1e18, legs, alice));
+        vm.stopPrank();
+    }
+
+    /// @dev A hook is arbitrary code running inside the swap, able to move the very deltas the zap measures. Rejecting
+    ///      any hook is one equality, and it also rules out a dynamic fee, which only a hooked pool can carry.
+    function test_route_rejectsHookedHopsAndHookData() public {
+        usdc.mint(alice, 600e6);
+        vm.startPrank(alice);
+        usdc.approve(address(zap), 600e6);
+
+        IIndexZap.MintLeg[] memory hooked = _mintLegs(address(usdc));
+        PathKey[] memory path = _v4MintPath(address(usdc), address(weth));
+        path[0].hooks = makeAddr("hook");
+        hooked[2] = IIndexZap.MintLeg({v3Path: "", v4Path: path, maxAmountIn: 0});
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadRoute.selector, 2));
+        zap.mintWithToken(_mintParams(address(index), address(usdc), 300e6, 1e18, hooked, alice));
+
+        IIndexZap.MintLeg[] memory withData = _mintLegs(address(usdc));
+        PathKey[] memory dataPath = _v4MintPath(address(usdc), address(weth));
+        dataPath[1].hookData = hex"01";
+        withData[2] = IIndexZap.MintLeg({v3Path: "", v4Path: dataPath, maxAmountIn: 0});
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadRoute.selector, 2));
+        zap.mintWithToken(_mintParams(address(index), address(usdc), 300e6, 1e18, withData, alice));
+        vm.stopPrank();
+    }
+
+    /// @dev The component end of a V4 route is the zap's own argument, so only the far end can be wrong. Which entry
+    ///      that is depends on the direction the router walks the route.
+    function test_route_v4FarEndpointIsChecked() public {
+        usdc.mint(alice, 600e6);
+        vm.startPrank(alice);
+        usdc.approve(address(zap), 600e6);
+
+        IIndexZap.MintLeg[] memory legs = _mintLegs(address(usdc));
+        // An exact-output route is walked backwards, so entry zero has to name what the user pays with.
+        legs[2] = IIndexZap.MintLeg({
+            v3Path: "",
+            v4Path: _v4BurnPath(address(weth), address(usdc)), // the burn ordering, which a mint route may not use
+            maxAmountIn: 0
+        });
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadRoute.selector, 2));
+        zap.mintWithToken(_mintParams(address(index), address(usdc), 300e6, 1e18, legs, alice));
+
+        zap.mintWithToken(_mintParams(address(index), address(usdc), 300e6, 1e18, _mintLegs(address(usdc)), alice));
+
+        IIndexZap.BurnLeg[] memory out = _burnLegs(address(usdc));
+        // An exact-input route is walked forwards, so the last entry has to name the payout.
+        out[2] = IIndexZap.BurnLeg({v3Path: "", v4Path: _v4MintPath(address(usdc), address(weth)), minAmountOut: 0});
+        index.approve(address(zap), 1e18);
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadRoute.selector, 2));
+        zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, out, alice));
+        vm.stopPrank();
+    }
+
+    /// @dev The V4 router at the pinned version does not check that an exact-output swap delivered what it promised.
+    ///      Without the zap's own check a short fill would surface as an opaque balance failure inside `issue`.
+    function test_ShortFill_anExactOutputThatUnderDeliversReverts() public {
+        router.setMode(MockUniversalRouter.Mode.UnderDeliverExactOut);
+        usdc.mint(alice, 300e6);
+        vm.startPrank(alice);
+        usdc.approve(address(zap), 300e6);
+        uint256[] memory need = index.previewIssue(1e18);
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.ShortFill.selector, 0, need[0] - 1, need[0]));
+        zap.mintWithToken(_mintParams(address(index), address(usdc), 300e6, 1e18, _mintLegs(address(usdc)), alice));
+        vm.stopPrank();
+    }
+
+    /// @dev A V4 leg is one swap, so an intermediate hop that fills short leaves the pool manager with a delta it
+    ///      refuses to close and the whole leg reverts, rather than stranding a middle token in the zap.
+    function test_burn_v4IntermediateShortfallRevertsTheLeg() public {
+        _mintFor(alice, 1e18, 200e6);
+        router.setMode(MockUniversalRouter.Mode.CurrencyNotSettled);
+        IIndexZap.BurnLeg[] memory legs = _burnLegs(address(usdc));
+        legs[0] = IIndexZap.BurnLeg({v3Path: "", v4Path: _v4BurnPath(address(weth), address(usdc)), minAmountOut: 0});
+
+        vm.startPrank(alice);
+        index.approve(address(zap), 1e18);
+        vm.expectRevert(abi.encodeWithSelector(MockUniversalRouter.CurrencyNotSettledError.selector));
+        zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, legs, alice));
+        vm.stopPrank();
+    }
+
+    /// @dev The zap never leaves the router holding anything and never gives it an allowance, so nothing it touched
+    ///      can be swept by the next caller.
+    function test_router_neverPullsAndNeverKeeps() public {
+        _mintFor(alice, 1e18, 200e6);
+        IIndexZap.BurnLeg[] memory legs = _burnLegs(address(usdc));
+        legs[1] = IIndexZap.BurnLeg({v3Path: "", v4Path: _v4Path1(address(usdc)), minAmountOut: 0});
+        vm.startPrank(alice);
+        index.approve(address(zap), 1e18);
+        zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, legs, alice));
+        vm.stopPrank();
+
+        address[4] memory touched = [address(wbtc), address(weth), address(link), address(usdc)];
+        for (uint256 i = 0; i < touched.length; ++i) {
+            assertEq(IERC20(touched[i]).balanceOf(address(router)), 0, "the router keeps nothing");
+            assertEq(IERC20(touched[i]).allowance(address(zap), address(router)), 0, "and is never approved");
+        }
+    }
+
+    /// @dev The analogue of I03 for the Universal Router: a balance it happened to be holding comes back with the
+    ///      sweep and enlarges the refund. It is never a shortfall, which is why the spend arithmetic saturates.
+    function test_strayRouterBalanceIsRefundedNotStranded() public {
+        usdc.mint(address(router), 500e6); // a donation anyone could have swept
+        usdc.mint(alice, 200e6);
+        uint256 before = usdc.balanceOf(alice);
+
+        vm.startPrank(alice);
+        usdc.approve(address(zap), 200e6);
+        uint256 spent =
+            zap.mintWithToken(_mintParams(address(index), address(usdc), 200e6, 1e18, _mintLegs(address(usdc)), alice));
+        vm.stopPrank();
+
+        assertEq(spent, 0, "the stray covered the basket, so this mint spent nothing of its own");
+        assertEq(usdc.balanceOf(alice), before + 500e6 - NAV_USD6, "and the rest reached the caller");
+        assertEq(usdc.balanceOf(address(router)), 0);
+        _assertZapEmpty();
+    }
+
+    function test_zeroTokenInOrOutReverts() public {
+        vm.startPrank(alice);
+        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
+        zap.mintWithToken(_mintParams(address(index), address(0), 1, 1, _mintLegs(address(usdc)), alice));
+        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
+        zap.burnToToken(_burnParams(address(index), 1, address(0), 1, _burnLegs(address(usdc)), alice));
+        vm.stopPrank();
     }
 
     // ---------------------------------------------------------------------

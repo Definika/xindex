@@ -2,14 +2,23 @@
 pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
-import {ISwapRouter02} from "../../src/interfaces/ISwapRouter02.sol";
+import {ISwapRouter02} from "./ISwapRouter02.sol";
 import {MockERC20} from "./MockERC20.sol";
 import {MockUSDT} from "./MockUSDT.sol";
 import {MockSwapRouter} from "./MockSwapRouter.sol";
 import {MockPausableToken} from "./MockPausableToken.sol";
-import {MockPartialFillRouter} from "./MockPartialFillRouter.sol";
 import {MockMarket, usdWad} from "./MockMarket.sol";
 import {TestAggregator} from "../../script/testnet/TestAggregator.sol";
+import {MockRouterInventory, MockUniversalRouter} from "./MockUniversalRouter.sol";
+import {UniversalRouterCommands as Cmd} from "../../src/libraries/UniversalRouterCommands.sol";
+import {
+    PathKey,
+    UniswapV4Types as V4,
+    V4ExactInputParams,
+    V4ExactOutputParams
+} from "../../src/libraries/UniswapV4Types.sol";
+import {ForkFeeds} from "../fork/ForkFeeds.sol";
+import {ForkAddresses as A} from "../fork/ForkAddresses.sol";
 import {CompositeFeed} from "../../src/CompositeFeed.sol";
 import {IAggregatorV3} from "../../src/interfaces/IAggregatorV3.sol";
 import {IXindexErrors} from "../../src/interfaces/IXindexErrors.sol";
@@ -194,30 +203,6 @@ contract MocksTest is Test {
     // MockPartialFillRouter
     // ---------------------------------------------------------------------
 
-    function test_partialFillRouter_sellsHalf() public {
-        MockPartialFillRouter half = new MockPartialFillRouter(3_000e6);
-        usdc.mint(address(half), 10_000e6);
-        weth.mint(alice, 1e18);
-
-        vm.startPrank(alice);
-        weth.approve(address(half), 1e18);
-        ISwapRouter02.ExactInputParams memory p = ISwapRouter02.ExactInputParams({
-            path: _path(address(weth), address(usdc)), recipient: alice, amountIn: 1e18, amountOutMinimum: 1_500e6 + 1
-        });
-        vm.expectRevert("Too little received");
-        half.exactInput(p);
-
-        p.amountOutMinimum = 1_500e6;
-        assertEq(half.exactInput(p), 1_500e6);
-        vm.stopPrank();
-        assertEq(weth.balanceOf(alice), 5e17, "half of the input was never taken");
-
-        vm.expectRevert("MockPartialFillRouter: exactOutput unsupported");
-        half.exactOutput(
-            ISwapRouter02.ExactOutputParams({path: "", recipient: alice, amountOut: 1, amountInMaximum: 1})
-        );
-    }
-
     // ---------------------------------------------------------------------
     // MockUniswapV3Pool and MockUniswapV3Factory
     // ---------------------------------------------------------------------
@@ -298,6 +283,214 @@ contract MocksTest is Test {
         assertEq(recorded.tickUpper, 60);
         assertEq(recorded.recipient, bob);
         assertEq(recorded.deadline, 7);
+    }
+
+    // ---------------------------------------------------------------------
+    // MockUniversalRouter
+    // ---------------------------------------------------------------------
+
+    /// @dev The router mock is strict on purpose: it refuses everything the zap is not supposed to emit, so a change
+    ///      that started emitting one would fail here rather than on mainnet. These are those refusals.
+    function test_universalRouter_refusesWhatTheZapNeverEmits() public {
+        MockUniversalRouter r = new MockUniversalRouter(makeAddr("pm"));
+        MockERC20 a = new MockERC20("A", "A", 18);
+        MockERC20 b = new MockERC20("B", "B", 18);
+        r.setPrice(address(a), 1e18, 18);
+        r.setPrice(address(b), 1e18, 18);
+        b.mint(address(r.inventory()), 100e18);
+
+        bytes[] memory one = new bytes[](1);
+        bytes[] memory two = new bytes[](2);
+
+        vm.expectRevert("MockUR: length");
+        r.execute(abi.encodePacked(Cmd.SWEEP, Cmd.SWEEP), one);
+
+        one[0] = "";
+        vm.expectRevert("MockUR: the zap emitted a command it should not");
+        r.execute(abi.encodePacked(uint8(0x02)), one); // PERMIT2_TRANSFER_FROM
+
+        // A swap that makes the caller the payer, which is what pre-funding exists to avoid.
+        one[0] = abi.encode(
+            address(this), uint256(1), uint256(0), abi.encodePacked(address(a), uint24(500), address(b)), true
+        );
+        vm.expectRevert("MockUR: the zap pays from the router's balance, never the caller's");
+        r.execute(abi.encodePacked(Cmd.V3_SWAP_EXACT_IN), one);
+
+        // A sweep to anyone but the caller.
+        one[0] = abi.encode(address(a), makeAddr("elsewhere"), uint256(0));
+        vm.expectRevert("MockUR: the zap names itself as the recipient");
+        r.execute(abi.encodePacked(Cmd.SWEEP), one);
+
+        // A sweep that finds less than it was promised.
+        one[0] = abi.encode(address(a), address(this), uint256(1));
+        vm.expectRevert("MockUR: sweep below minimum");
+        r.execute(abi.encodePacked(Cmd.SWEEP), one);
+
+        // A swap the zap did not pre-fund.
+        two[0] = abi.encode(
+            address(this), uint256(1e18), uint256(0), abi.encodePacked(address(a), uint24(500), address(b)), false
+        );
+        two[1] = abi.encode(address(a), address(this), uint256(0));
+        vm.expectRevert("MockUR: not pre-funded");
+        r.execute(abi.encodePacked(Cmd.V3_SWAP_EXACT_IN, Cmd.SWEEP), two);
+    }
+
+    function test_universalRouter_refusesMalformedV4Actions() public {
+        MockUniversalRouter r = new MockUniversalRouter(makeAddr("pm"));
+        MockERC20 a = new MockERC20("A", "A", 18);
+        MockERC20 b = new MockERC20("B", "B", 18);
+        r.setPrice(address(a), 1e18, 18);
+        r.setPrice(address(b), 1e18, 18);
+
+        bytes[] memory one = new bytes[](1);
+        bytes[] memory params = new bytes[](3);
+        PathKey[] memory path = new PathKey[](1);
+        path[0] =
+            PathKey({intermediateCurrency: address(b), fee: 500, tickSpacing: 10, hooks: address(0), hookData: ""});
+
+        params[0] =
+            abi.encode(V4ExactInputParams({currencyIn: address(a), path: path, amountIn: 1e18, amountOutMinimum: 0}));
+        params[1] = abi.encode(address(a), V4.OPEN_DELTA, false);
+        params[2] = abi.encode(address(b), address(this), V4.OPEN_DELTA);
+
+        bytes[] memory shortParams = new bytes[](2);
+        shortParams[0] = params[0];
+        shortParams[1] = params[1];
+        one[0] = abi.encode(abi.encodePacked(V4.SWAP_EXACT_IN, V4.SETTLE), shortParams);
+        vm.expectRevert("MockUR: the zap emits swap, settle, take");
+        r.execute(abi.encodePacked(Cmd.V4_SWAP), one);
+
+        one[0] = abi.encode(abi.encodePacked(V4.SWAP_EXACT_IN, V4.TAKE, V4.TAKE), params);
+        vm.expectRevert("MockUR: second action is settle");
+        r.execute(abi.encodePacked(Cmd.V4_SWAP), one);
+
+        one[0] = abi.encode(abi.encodePacked(V4.SWAP_EXACT_IN, V4.SETTLE, V4.SETTLE), params);
+        vm.expectRevert("MockUR: third action is take");
+        r.execute(abi.encodePacked(Cmd.V4_SWAP), one);
+
+        // Anything but "the whole of it" on either side would leave the unlock with a delta to argue about.
+        bytes[] memory partialDelta = new bytes[](3);
+        partialDelta[0] = params[0];
+        partialDelta[1] = abi.encode(address(a), uint256(1), false);
+        partialDelta[2] = params[2];
+        one[0] = abi.encode(abi.encodePacked(V4.SWAP_EXACT_IN, V4.SETTLE, V4.TAKE), partialDelta);
+        vm.expectRevert("MockUR: settle the whole debt");
+        r.execute(abi.encodePacked(Cmd.V4_SWAP), one);
+
+        partialDelta[1] = params[1];
+        partialDelta[2] = abi.encode(address(b), address(this), uint256(1));
+        one[0] = abi.encode(abi.encodePacked(V4.SWAP_EXACT_IN, V4.SETTLE, V4.TAKE), partialDelta);
+        vm.expectRevert("MockUR: take the whole credit");
+        r.execute(abi.encodePacked(Cmd.V4_SWAP), one);
+
+        // A route with a hook, which the zap rejects before the router ever sees it.
+        PathKey[] memory hooked = new PathKey[](1);
+        hooked[0] = PathKey({
+            intermediateCurrency: address(b), fee: 500, tickSpacing: 10, hooks: makeAddr("hook"), hookData: ""
+        });
+        bytes[] memory hookedParams = new bytes[](3);
+        hookedParams[0] =
+            abi.encode(V4ExactInputParams({currencyIn: address(a), path: hooked, amountIn: 1e18, amountOutMinimum: 0}));
+        hookedParams[1] = params[1];
+        hookedParams[2] = params[2];
+        one[0] = abi.encode(abi.encodePacked(V4.SWAP_EXACT_IN, V4.SETTLE, V4.TAKE), hookedParams);
+        vm.expectRevert("MockUR: the zap rejects hooks");
+        r.execute(abi.encodePacked(Cmd.V4_SWAP), one);
+
+        // And a first action that is not a swap at all.
+        one[0] = abi.encode(abi.encodePacked(V4.TAKE, V4.SETTLE, V4.TAKE), params);
+        vm.expectRevert("MockUR: first action is a swap");
+        r.execute(abi.encodePacked(Cmd.V4_SWAP), one);
+    }
+
+    function test_universalRouter_quotesAndV4Slippage() public {
+        MockUniversalRouter r = new MockUniversalRouter(makeAddr("pm"));
+        MockERC20 a = new MockERC20("A", "A", 18);
+        MockERC20 b = new MockERC20("B", "B", 8);
+        r.setPrice(address(a), 2e18, 18);
+        r.setPrice(address(b), 1e18, 8);
+        a.mint(address(r), 10e18);
+        b.mint(address(r.inventory()), 100e8);
+
+        // Two dollars a whole A against a dollar a whole B, across different decimals.
+        assertEq(r.quoteOut(address(a), address(b), 1e18), 2e8);
+        assertEq(r.quoteIn(address(a), address(b), 2e8), 1e18);
+
+        bytes[] memory one = new bytes[](1);
+        PathKey[] memory path = new PathKey[](1);
+        path[0] =
+            PathKey({intermediateCurrency: address(b), fee: 500, tickSpacing: 10, hooks: address(0), hookData: ""});
+        bytes[] memory params = new bytes[](3);
+        params[1] = abi.encode(address(a), V4.OPEN_DELTA, false);
+        params[2] = abi.encode(address(b), address(this), V4.OPEN_DELTA);
+
+        // A settle that names a currency the swap does not owe.
+        params[0] =
+            abi.encode(V4ExactInputParams({currencyIn: address(a), path: path, amountIn: 1e18, amountOutMinimum: 0}));
+        bytes[] memory wrongSettle = new bytes[](3);
+        wrongSettle[0] = params[0];
+        wrongSettle[1] = abi.encode(address(b), V4.OPEN_DELTA, false);
+        wrongSettle[2] = params[2];
+        one[0] = abi.encode(abi.encodePacked(V4.SWAP_EXACT_IN, V4.SETTLE, V4.TAKE), wrongSettle);
+        vm.expectRevert("MockUR: settle the input");
+        r.execute(abi.encodePacked(Cmd.V4_SWAP), one);
+
+        // A V4 exact input that misses its minimum.
+        params[0] =
+            abi.encode(V4ExactInputParams({currencyIn: address(a), path: path, amountIn: 1e18, amountOutMinimum: 3e8}));
+        one[0] = abi.encode(abi.encodePacked(V4.SWAP_EXACT_IN, V4.SETTLE, V4.TAKE), params);
+        vm.expectRevert(abi.encodeWithSignature("V4TooLittleReceived(uint256,uint256)", uint256(3e8), uint256(2e8)));
+        r.execute(abi.encodePacked(Cmd.V4_SWAP), one);
+
+        // And a V4 exact output that would cost more than its cap.
+        bytes[] memory outParams = new bytes[](3);
+        outParams[0] =
+            abi.encode(V4ExactOutputParams({currencyOut: address(b), path: path, amountOut: 2e8, amountInMaximum: 1}));
+        outParams[1] = abi.encode(address(b), V4.OPEN_DELTA, false); // path[0] names B, so B is what is settled
+        outParams[2] = abi.encode(address(b), address(this), V4.OPEN_DELTA);
+        one[0] = abi.encode(abi.encodePacked(V4.SWAP_EXACT_OUT, V4.SETTLE, V4.TAKE), outParams);
+        vm.expectRevert(abi.encodeWithSignature("V4TooMuchRequested(uint256,uint256)", uint256(1), uint256(2e8)));
+        r.execute(abi.encodePacked(Cmd.V4_SWAP), one);
+
+        // A take that names a currency the swap did not produce, on both directions.
+        bytes[] memory wrongTakeIn = new bytes[](3);
+        wrongTakeIn[0] =
+            abi.encode(V4ExactInputParams({currencyIn: address(a), path: path, amountIn: 1e18, amountOutMinimum: 0}));
+        wrongTakeIn[1] = params[1];
+        wrongTakeIn[2] = abi.encode(address(a), address(this), V4.OPEN_DELTA);
+        one[0] = abi.encode(abi.encodePacked(V4.SWAP_EXACT_IN, V4.SETTLE, V4.TAKE), wrongTakeIn);
+        vm.expectRevert("MockUR: take the output");
+        r.execute(abi.encodePacked(Cmd.V4_SWAP), one);
+
+        bytes[] memory wrongOut = new bytes[](3);
+        wrongOut[0] = abi.encode(
+            V4ExactOutputParams({currencyOut: address(b), path: path, amountOut: 1, amountInMaximum: type(uint128).max})
+        );
+        wrongOut[1] = abi.encode(address(a), V4.OPEN_DELTA, false); // path[0] names B, not A
+        wrongOut[2] = outParams[2];
+        one[0] = abi.encode(abi.encodePacked(V4.SWAP_EXACT_OUT, V4.SETTLE, V4.TAKE), wrongOut);
+        vm.expectRevert("MockUR: settle the input");
+        r.execute(abi.encodePacked(Cmd.V4_SWAP), one);
+
+        wrongOut[1] = abi.encode(address(b), V4.OPEN_DELTA, false);
+        wrongOut[2] = abi.encode(address(a), address(this), V4.OPEN_DELTA);
+        one[0] = abi.encode(abi.encodePacked(V4.SWAP_EXACT_OUT, V4.SETTLE, V4.TAKE), wrongOut);
+        vm.expectRevert("MockUR: take the output");
+        r.execute(abi.encodePacked(Cmd.V4_SWAP), one);
+
+        // The inventory pays out only for the router. Read first: expectRevert applies to the next call, and the
+        // getter is one.
+        MockRouterInventory inventory = r.inventory();
+        vm.expectRevert("MockURInv: only the router pays out");
+        inventory.pay(address(b), address(this), 1);
+
+        // Actions and parameters come in pairs.
+        bytes[] memory mismatched = new bytes[](2);
+        mismatched[0] = params[0];
+        mismatched[1] = params[1];
+        one[0] = abi.encode(abi.encodePacked(V4.SWAP_EXACT_IN, V4.SETTLE, V4.TAKE), mismatched);
+        vm.expectRevert("MockUR: v4 length");
+        r.execute(abi.encodePacked(Cmd.V4_SWAP), one);
     }
 
     // ---------------------------------------------------------------------
@@ -561,5 +754,35 @@ contract FakeIndex {
         uint256[] memory everything = new uint256[](1);
         everything[0] = MockERC20(WETH).balanceOf(EXECUTOR);
         RebalanceExecutorV3(EXECUTOR).onXindexRebalance(nothing, everything, data);
+    }
+}
+
+/// @notice Covers the fork suites' feed helper offline, the way `RebalanceExecutorV3` is covered here: CI measures
+///         coverage with the fork suites excluded, so a helper only they call would otherwise read as untested.
+contract ForkFeedsTest is ForkFeeds {
+    function test_forkFeeds_putsRealAnswersOnTheBlockClock() public {
+        vm.warp(30 days);
+        address[8] memory feeds = _shippedFeeds();
+        for (uint256 i = 0; i < feeds.length; ++i) {
+            // Stand in for the mainnet aggregators, which have no code on a local chain.
+            TestAggregator stub = new TestAggregator("X / USD", 8, int256(1_000e8 + int256(i)));
+            vm.etch(feeds[i], address(stub).code);
+            TestAggregator(feeds[i]).setAnswer(int256(1_000e8 + int256(i)));
+            TestAggregator(feeds[i]).setDecimals(8);
+            TestAggregator(feeds[i]).setUpdatedAt(block.timestamp - 10 days); // long stale, as at a fork block
+        }
+
+        _pinFeedsToTheBlockClock();
+        vm.warp(block.timestamp + 90 days);
+        for (uint256 i = 0; i < feeds.length; ++i) {
+            (, int256 answer,, uint256 updatedAt,) = TestAggregator(feeds[i]).latestRoundData();
+            assertEq(answer, int256(1_000e8 + int256(i)), "the real answer is kept");
+            assertEq(updatedAt, block.timestamp, "and follows the clock however far a test warps");
+        }
+
+        _movePinnedFeed(feeds[0], 3, 2);
+        (, int256 moved,,,) = TestAggregator(feeds[0]).latestRoundData();
+        assertEq(moved, int256(1_000e8) * 3 / 2, "a test that wants drift asks for it");
+        assertEq(A.ETH_USD_FEED, feeds[0]);
     }
 }

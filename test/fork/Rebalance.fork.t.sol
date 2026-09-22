@@ -10,7 +10,9 @@ import {IndexZap} from "../../src/IndexZap.sol";
 import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {IIndexRule} from "../../src/interfaces/IIndexRule.sol";
-import {ISwapRouter02} from "../../src/interfaces/ISwapRouter02.sol";
+import {ISwapRouter02} from "../mocks/ISwapRouter02.sol";
+import {IUniversalRouter} from "../../src/interfaces/IUniversalRouter.sol";
+import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
 import {ForkFeeds} from "./ForkFeeds.sol";
 import {CompositeFeed} from "../../src/CompositeFeed.sol";
@@ -21,11 +23,6 @@ interface IQuoterV2ExactInput {
     function quoteExactInput(bytes memory path, uint256 amountIn)
         external
         returns (uint256 amountOut, uint160[] memory, uint32[] memory, uint256);
-}
-
-interface IPoolObservations {
-    function slot0() external view returns (uint160, int24, uint16 observationIndex, uint16, uint16, uint8, bool);
-    function observations(uint256) external view returns (uint32 blockTimestamp, int56, uint160, bool);
 }
 
 interface IWbtcPauser {
@@ -73,7 +70,7 @@ contract RebalanceForkTest is ForkFeeds {
 
         factory = new IndexFactory(address(this), guardian);
         rule = IIndexRule(factory.RULE());
-        zap = new IndexZap(factory, ISwapRouter02(A.SWAP_ROUTER_02));
+        zap = new IndexZap(factory, IUniversalRouter(A.UNIVERSAL_ROUTER));
 
         tokens.push(A.WBTC);
         tokens.push(A.WETH);
@@ -132,77 +129,6 @@ contract RebalanceForkTest is ForkFeeds {
     function _toUsdc(address token) internal pure returns (bytes memory) {
         if (token == A.WETH) return abi.encodePacked(A.WETH, F500, A.USDC);
         return abi.encodePacked(token, _feeOf(token), A.WETH, F500, A.USDC);
-    }
-
-    function _poolOf(address token) internal pure returns (address) {
-        if (token == A.WBTC) return A.WBTC_WETH_500;
-        if (token == A.LINK) return A.LINK_WETH_3000;
-        if (token == A.UNI) return A.UNI_WETH_3000;
-        if (token == A.AAVE) return A.AAVE_WETH_3000;
-        return address(0);
-    }
-
-    /// @dev Whether `pool` has already written an observation in this block.
-    function _isFresh(address pool) internal view returns (bool) {
-        // forge-lint: disable-next-line(unused-return)
-        (,, uint16 idx,,,,) = IPoolObservations(pool).slot0();
-        // forge-lint: disable-next-line(unused-return)
-        (uint32 ts,,,) = IPoolObservations(pool).observations(idx);
-        return ts == uint32(block.timestamp);
-    }
-
-    /// @dev Time passing on a fork does not make the pools trade: after a warp their newest observation is as old as
-    ///      the warp, so `MAX_OBSERVATION_AGE` refuses the snapshot. On chain, twenty-eight days of elapsed time are
-    ///      twenty-eight days of trading, so the test writes the observation that real trading would have written.
-    ///      A pool writes one only when a swap moves its tick, so the amount escalates until it does, and each swap is
-    ///      reversed so the poke leaves the price where it found it. The observation records the accumulators from
-    ///      before the swap, so the history the rule reads stays honest. A pool whose token refuses transfers, as a
-    ///      paused WBTC does, is left alone: a kept component is not read under the uncapped methodology anyway.
-    function _pokePools() internal {
-        deal(A.WETH, address(this), 100_000 ether);
-        IERC20(A.WETH).forceApprove(A.SWAP_ROUTER_02, type(uint256).max);
-        for (uint256 i = 0; i < tokens.length; ++i) {
-            address pool = _poolOf(tokens[i]);
-            if (pool == address(0)) continue;
-            uint256 amount = 1 ether;
-            for (uint256 tries = 0; tries < 10 && !_isFresh(pool); ++tries) {
-                if (!_swap(A.WETH, tokens[i], amount)) break;
-                amount *= 4;
-            }
-        }
-    }
-
-    /// @dev Swaps `amountIn` of `from` into `to` and straight back. Returns false when the pool refuses the trade.
-    function _swap(address from, address to, uint256 amountIn) internal returns (bool) {
-        uint24 fee = _feeOf(from == A.WETH ? to : from);
-        try ISwapRouter02(A.SWAP_ROUTER_02)
-            .exactInput(
-                ISwapRouter02.ExactInputParams({
-                    path: abi.encodePacked(from, fee, to),
-                    recipient: address(this),
-                    amountIn: amountIn,
-                    amountOutMinimum: 0
-                })
-            ) returns (
-            uint256 got
-        ) {
-            IERC20(to).forceApprove(A.SWAP_ROUTER_02, got);
-            try ISwapRouter02(A.SWAP_ROUTER_02)
-                .exactInput(
-                    ISwapRouter02.ExactInputParams({
-                        path: abi.encodePacked(to, fee, from),
-                        recipient: address(this),
-                        amountIn: got,
-                        amountOutMinimum: 0
-                    })
-                ) returns (
-                uint256
-            ) {}
-                catch {}
-            return true;
-        } catch {
-            return false;
-        }
     }
 
     function _issue(IndexToken index, address who, uint256 shares) internal {
@@ -279,7 +205,6 @@ contract RebalanceForkTest is ForkFeeds {
     function _rebalanceThroughUniswap(IndexToken index) internal {
         (, uint256[] memory units) = index.components();
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
-        _pokePools();
         uint256 gasBefore = gasleft();
         index.startRebalance(0);
         console2.log("startRebalance gas, 5 components:", gasBefore - gasleft());
@@ -291,7 +216,6 @@ contract RebalanceForkTest is ForkFeeds {
         vm.warp(eta + index.AUCTION_DURATION());
         // Settlement prices the two sides again (DA-05), and three days of warping leave every pool's newest
         // observation three days old, which on chain only happens to a pool that has genuinely stopped trading.
-        _pokePools();
         uint256 wethBefore = IERC20(A.WETH).balanceOf(address(executor));
         gasBefore = gasleft();
         executor.fill(index);
@@ -310,7 +234,7 @@ contract RebalanceForkTest is ForkFeeds {
 
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](tokens.length);
         for (uint256 i = 0; i < tokens.length; ++i) {
-            legs[i] = IIndexZap.BurnLeg({path: _toUsdc(tokens[i]), minAmountOut: 0});
+            legs[i] = IIndexZap.BurnLeg({v3Path: _toUsdc(tokens[i]), v4Path: new PathKey[](0), minAmountOut: 0});
         }
         IIndexZap.BurnParams memory p = IIndexZap.BurnParams({
             index: address(index),
@@ -335,7 +259,6 @@ contract RebalanceForkTest is ForkFeeds {
     function testFork_guardianRebalancesAroundAPausedWbtc() public {
         IndexToken index = _offTargetIndex(0, "PAUSE");
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
-        _pokePools();
         index.startRebalance(0);
         (uint256 eta,,) = index.pendingRebalance();
 
@@ -347,7 +270,6 @@ contract RebalanceForkTest is ForkFeeds {
         // price before reaching any transfer. This test is about the transfer, so the pause lifts for the poke.
         vm.prank(pauser);
         IWbtcPauser(A.WBTC).unpause();
-        _pokePools();
         vm.prank(pauser);
         IWbtcPauser(A.WBTC).pause();
         (,, uint256[] memory amountsOut,) = index.previewRebalance();
@@ -356,7 +278,6 @@ contract RebalanceForkTest is ForkFeeds {
         executor.fill(index); // WBTC must shrink, and its transfer fails
 
         uint256 wbtcHeld = IERC20(A.WBTC).balanceOf(address(index));
-        _pokePools(); // three days have passed since the first snapshot; WBTC is paused, so its pool is skipped
         vm.startPrank(guardian);
         index.cancelRebalance();
         index.startRebalance(1 << 0);
@@ -364,7 +285,6 @@ contract RebalanceForkTest is ForkFeeds {
         (eta,,) = index.pendingRebalance();
         vm.warp(eta + index.AUCTION_DURATION());
         // WBTC is kept, so the settlement never prices it; the four legs that do trade need a fresh window.
-        _pokePools();
         executor.fill(index);
 
         assertEq(IERC20(A.WBTC).balanceOf(address(index)), wbtcHeld, "WBTC never moved");

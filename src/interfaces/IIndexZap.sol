@@ -2,31 +2,47 @@
 pragma solidity 0.8.28;
 
 import {IIndexFactory} from "./IIndexFactory.sol";
-import {ISwapRouter02} from "./ISwapRouter02.sol";
+import {IUniversalRouter} from "./IUniversalRouter.sol";
 import {IXindexErrors} from "./IXindexErrors.sol";
+import {PathKey} from "../libraries/UniswapV4Types.sol";
 
 /// @title IIndexZap
 /// @notice Stateless convenience router: mint any index with a single token (USDC, USDT, ...) and burn any index
-///         straight into a single token, using Uniswap V3 for the swaps. Apps encode calls against this interface.
-/// @dev Of the shared errors, the zap raises NotIndex for an index the factory did not deploy, ZeroAddress for a zero
-///      factory, router or recipient, and InvalidRecipient for a recipient that is the zap, the index or the router.
+///         straight into a single token, swapping through Uniswap's Universal Router. Apps encode calls against this
+///         interface.
+/// @dev Each leg names its own venue. Depth still favours V3 for some components and V4 for others, so the app picks
+///      per leg and the zap builds the router commands for whichever it finds. A leg carries a V3 path or a V4 route,
+///      never both and never neither, except the pass-through leg whose component is already the token being paid or
+///      received.
+///
+///      Of the shared errors, the zap raises NotIndex for an index the factory did not deploy, ZeroAddress for a zero
+///      factory, router, recipient, `tokenIn` or `tokenOut`, and InvalidRecipient for a recipient that is the zap, the
+///      index, the router or the PoolManager.
 interface IIndexZap is IXindexErrors {
-    /// @param path Exact-output Uniswap V3 path from the component back to `tokenIn`; empty when the component is
-    ///        `tokenIn` itself.
+    /// @param v3Path Exact-output Uniswap V3 path from the component back to `tokenIn`. Empty for a V4 leg and for
+    ///        the pass-through leg whose component is `tokenIn` itself.
+    /// @param v4Path Uniswap V4 route, whose first entry names `tokenIn` because an exact-output route is walked from
+    ///        the component backwards. Empty for a V3 leg and for the pass-through leg. Native ether may appear as an
+    ///        intermediate currency but never as an endpoint, and every hop must be hookless.
     /// @param maxAmountIn Most `tokenIn` this leg may spend, or 0 for the overall limit only.
     struct MintLeg {
-        bytes path;
+        bytes v3Path;
+        PathKey[] v4Path;
         uint256 maxAmountIn;
     }
 
-    /// @param path Exact-input Uniswap V3 path from the component to `tokenOut`; empty when the component is
-    ///        `tokenOut` itself. Checked even when the component redeems to zero. Each hop is swapped on its own, so
-    ///        the unsold input of any hop, not only the first, comes back to `to`; an intermediate hop that sells
-    ///        nothing reverts with InsufficientOutput.
+    /// @param v3Path Exact-input Uniswap V3 path from the component to `tokenOut`. Empty for a V4 leg and for the
+    ///        pass-through leg whose component is `tokenOut` itself. Checked even when the component redeems to zero.
+    ///        Each hop is swapped on its own, so the unsold input of any hop, not only the first, comes back to `to`;
+    ///        an intermediate hop that sells nothing reverts with InsufficientOutput.
+    /// @param v4Path Uniswap V4 route, whose last entry names `tokenOut`. Empty for a V3 leg and for the pass-through
+    ///        leg. The whole route is one swap, so an intermediate hop that fills short leaves the pool manager
+    ///        unsettled and reverts the leg; only the first hop can leave unsold input, which comes back to `to`.
     /// @param minAmountOut Least `tokenOut` this leg must return, or 0 for the overall limit only. It applies to the
-    ///        last hop's output. A non-zero minimum on a leg that sells nothing reverts.
+    ///        leg's final output. A non-zero minimum on a leg that sells nothing reverts.
     struct BurnLeg {
-        bytes path;
+        bytes v3Path;
+        PathKey[] v4Path;
         uint256 minAmountOut;
     }
 
@@ -105,7 +121,10 @@ interface IIndexZap is IXindexErrors {
     /// @notice `legs` does not have one entry per component.
     error LegCountMismatch();
     /// @notice Leg `i` has a malformed path, one with the wrong endpoints, or a path where none belongs.
-    error BadPath(uint256 i);
+    error BadRoute(uint256 i);
+    /// @notice A leg's swap delivered less of the component than the basket needs. The V4 router at the version this
+    ///         zap is pinned to does not check an exact-output swap's delivery itself, so the zap measures it.
+    error ShortFill(uint256 i, uint256 received, uint256 required);
     /// @notice The basket's own `tokenIn` component alone needs more than `maxAmountIn`.
     error InsufficientBudget(uint256 needed, uint256 available);
     /// @notice The burn, or a leg that sells nothing, returns less than its minimum.
@@ -116,8 +135,12 @@ interface IIndexZap is IXindexErrors {
     /// @notice Factory whose registry proves an address is an index.
     function FACTORY() external view returns (IIndexFactory);
 
-    /// @notice Uniswap SwapRouter02 used for every swap.
-    function ROUTER() external view returns (ISwapRouter02);
+    /// @notice Uniswap's Universal Router, through which every swap runs.
+    function ROUTER() external view returns (IUniversalRouter);
+
+    /// @notice The Uniswap V4 singleton the router settles V4 legs against, read from the router at construction. It
+    ///         is never a valid recipient: anything sent there is a donation to the protocol.
+    function POOL_MANAGER() external view returns (address);
 
     /// @notice Buys exactly `p.shares` of `p.index` for `p.to`, spending at most `p.maxAmountIn` of `p.tokenIn`. The
     ///         whole `p.maxAmountIn` is pulled from msg.sender first, and the unspent part is refunded to it.

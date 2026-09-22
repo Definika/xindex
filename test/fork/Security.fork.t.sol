@@ -9,7 +9,8 @@ import {IndexToken} from "../../src/IndexToken.sol";
 import {IndexZap} from "../../src/IndexZap.sol";
 import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
-import {ISwapRouter02} from "../../src/interfaces/ISwapRouter02.sol";
+import {IUniversalRouter} from "../../src/interfaces/IUniversalRouter.sol";
+import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
 import {ForkFeeds} from "./ForkFeeds.sol";
 import {CompositeFeed} from "../../src/CompositeFeed.sol";
@@ -58,7 +59,7 @@ contract SecurityForkTest is ForkFeeds {
             );
         }
         factory = new IndexFactory(address(this), address(0));
-        zap = new IndexZap(factory, ISwapRouter02(A.SWAP_ROUTER_02));
+        zap = new IndexZap(factory, IUniversalRouter(A.UNIVERSAL_ROUTER));
 
         _pinFeedsToTheBlockClock();
         factory.proposeListing(A.WBTC, _config(address(_wbtcFeed()), A.STALENESS_24H, A.BTC_SUPPLY));
@@ -150,8 +151,12 @@ contract SecurityForkTest is ForkFeeds {
         IUsdtAdmin(A.USDT).setParams(10, 5); // Tether switches on a 0.10% transfer fee
 
         IIndexZap.BurnLeg[] memory burnLegs = new IIndexZap.BurnLeg[](2);
-        burnLegs[0] = IIndexZap.BurnLeg({path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDT), minAmountOut: 0});
-        burnLegs[1] = IIndexZap.BurnLeg({path: abi.encodePacked(A.WETH, F500, A.USDT), minAmountOut: 0});
+        burnLegs[0] = IIndexZap.BurnLeg({
+            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDT), v4Path: new PathKey[](0), minAmountOut: 0
+        });
+        burnLegs[1] = IIndexZap.BurnLeg({
+            v3Path: abi.encodePacked(A.WETH, F500, A.USDT), v4Path: new PathKey[](0), minAmountOut: 0
+        });
         vm.startPrank(user);
         idx.approve(address(zap), 1e18);
         vm.expectRevert(abi.encodeWithSelector(IIndexZap.TransferShortfall.selector, A.USDT));
@@ -174,8 +179,12 @@ contract SecurityForkTest is ForkFeeds {
         // Minting with fee-charging USDT stops before any swap.
         deal(A.USDT, user, 100e6);
         IIndexZap.MintLeg[] memory mintLegs = new IIndexZap.MintLeg[](2);
-        mintLegs[0] = IIndexZap.MintLeg({path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDT), maxAmountIn: 0});
-        mintLegs[1] = IIndexZap.MintLeg({path: abi.encodePacked(A.WETH, F500, A.USDT), maxAmountIn: 0});
+        mintLegs[0] = IIndexZap.MintLeg({
+            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDT), v4Path: new PathKey[](0), maxAmountIn: 0
+        });
+        mintLegs[1] = IIndexZap.MintLeg({
+            v3Path: abi.encodePacked(A.WETH, F500, A.USDT), v4Path: new PathKey[](0), maxAmountIn: 0
+        });
         vm.startPrank(user);
         IERC20(A.USDT).forceApprove(address(zap), 100e6);
         vm.expectRevert(abi.encodeWithSelector(IIndexZap.TransferShortfall.selector, A.USDT));
@@ -197,10 +206,14 @@ contract SecurityForkTest is ForkFeeds {
     function test_I03_strayRouterEthIsRefundedNotLocked() public {
         IndexToken idx = _create(A.WBTC, 10_000, A.LINK, 1e18);
         IIndexZap.MintLeg[] memory legs = new IIndexZap.MintLeg[](2);
-        legs[0] = IIndexZap.MintLeg({path: abi.encodePacked(A.WBTC, F500, A.WETH), maxAmountIn: 0});
-        legs[1] = IIndexZap.MintLeg({path: abi.encodePacked(A.LINK, F3000, A.WETH), maxAmountIn: 0});
+        legs[0] = IIndexZap.MintLeg({
+            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH), v4Path: new PathKey[](0), maxAmountIn: 0
+        });
+        legs[1] = IIndexZap.MintLeg({
+            v3Path: abi.encodePacked(A.LINK, F3000, A.WETH), v4Path: new PathKey[](0), maxAmountIn: 0
+        });
 
-        vm.deal(A.SWAP_ROUTER_02, 10 ether); // stray ETH sitting in SwapRouter02
+        vm.deal(A.UNIVERSAL_ROUTER, 10 ether); // stray ether sitting in the router
         uint256 maxIn = 1 ether;
         deal(A.WETH, user, maxIn);
         vm.startPrank(user);
@@ -220,10 +233,11 @@ contract SecurityForkTest is ForkFeeds {
         vm.stopPrank();
 
         assertEq(idx.balanceOf(user), 1e18);
-        assertEq(spent, 0, "the router paid both pools with its own ETH");
-        assertEq(IERC20(A.WETH).balanceOf(user), maxIn, "so the user's WETH comes back in full");
-        assertEq(IERC20(A.WETH).balanceOf(address(zap)), 0, "and nothing is left in the zap");
-        assertLt(A.SWAP_ROUTER_02.balance, 10 ether);
+        assertGt(spent, 0, "the mint is paid for out of the user's own WETH");
+        assertEq(IERC20(A.WETH).balanceOf(user), maxIn - spent, "and the rest comes back");
+        assertEq(IERC20(A.WETH).balanceOf(address(zap)), 0, "nothing is left in the zap");
+        assertEq(IERC20(A.WETH).balanceOf(A.UNIVERSAL_ROUTER), 0, "or in the router");
+        assertEq(A.UNIVERSAL_ROUTER.balance, 10 ether, "and the stray ether is untouched: nothing here wraps it");
     }
 
     function test_FR01_strayRouterEthNoLongerBlocksBurns() public {
@@ -231,10 +245,14 @@ contract SecurityForkTest is ForkFeeds {
         _issue(idx, 1e18);
 
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](2);
-        legs[0] = IIndexZap.BurnLeg({path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDC), minAmountOut: 0});
-        legs[1] = IIndexZap.BurnLeg({path: abi.encodePacked(A.WETH, F500, A.USDC), minAmountOut: 0});
+        legs[0] = IIndexZap.BurnLeg({
+            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDC), v4Path: new PathKey[](0), minAmountOut: 0
+        });
+        legs[1] = IIndexZap.BurnLeg({
+            v3Path: abi.encodePacked(A.WETH, F500, A.USDC), v4Path: new PathKey[](0), minAmountOut: 0
+        });
 
-        vm.deal(A.SWAP_ROUTER_02, 10 ether); // a griefer, or a careless user, leaves ETH in the router
+        vm.deal(A.UNIVERSAL_ROUTER, 10 ether); // a griefer, or a careless user, leaves ether in the router
         vm.startPrank(user);
         idx.approve(address(zap), 1e18);
         uint256 out = zap.burnToToken(
@@ -253,11 +271,10 @@ contract SecurityForkTest is ForkFeeds {
 
         assertGt(out, 0);
         assertEq(IERC20(A.USDC).balanceOf(user), out);
-        // The WETH leg's whole input comes back, and so does the WETH the WBTC leg's first hop bought: its second hop
-        // is swapped on its own, and the router paid that one from its stray ETH too instead of pulling the WETH.
-        // Before the per-hop fix (XA-08) that intermediate WETH stayed in the router for anyone to sweep.
-        assertGt(IERC20(A.WETH).balanceOf(user), 1e15, "the WETH the router never pulled comes back to the user");
-        assertEq(IERC20(A.WETH).balanceOf(address(zap)), 0);
-        assertLt(A.SWAP_ROUTER_02.balance, 10 ether, "the router's ETH paid for the swap");
+        // Every hop is swapped on its own and the router is swept clean after each, so no intermediate WETH is left
+        // there for anyone to take. Before the per-hop fix (XA-08) it stayed in the router.
+        assertEq(IERC20(A.WETH).balanceOf(A.UNIVERSAL_ROUTER), 0, "no intermediate is left in the router");
+        assertEq(IERC20(A.WETH).balanceOf(address(zap)), 0, "or in the zap");
+        assertEq(A.UNIVERSAL_ROUTER.balance, 10 ether, "and the stray ether is untouched: nothing here wraps it");
     }
 }

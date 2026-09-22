@@ -10,7 +10,8 @@ import {IndexZap} from "../../src/IndexZap.sol";
 import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {IIndexRule} from "../../src/interfaces/IIndexRule.sol";
-import {ISwapRouter02} from "../../src/interfaces/ISwapRouter02.sol";
+import {IUniversalRouter} from "../../src/interfaces/IUniversalRouter.sol";
+import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
 import {ForkFeeds} from "./ForkFeeds.sol";
 import {CompositeFeed} from "../../src/CompositeFeed.sol";
@@ -34,11 +35,6 @@ interface IQuoterV2 {
             uint32[] memory initializedTicksCrossedList,
             uint256 gasEstimate
         );
-}
-
-interface IUniswapV3PoolOracle {
-    function slot0() external view returns (uint160, int24, uint16, uint16, uint16, uint8, bool);
-    function increaseObservationCardinalityNext(uint16 observationCardinalityNext) external;
 }
 
 /// @notice End-to-end against real Uniswap V3, USDC and USDT. Skips when MAINNET_RPC_URL is unset.
@@ -82,7 +78,7 @@ contract IndexZapForkTest is ForkFeeds {
         }
 
         factory = new IndexFactory(address(this), address(0));
-        zap = new IndexZap(factory, ISwapRouter02(A.SWAP_ROUTER_02));
+        zap = new IndexZap(factory, IUniversalRouter(A.UNIVERSAL_ROUTER));
 
         _pinFeedsToTheBlockClock();
         factory.proposeListing(A.WBTC, _config(address(_wbtcFeed()), A.STALENESS_24H, A.BTC_SUPPLY));
@@ -125,31 +121,6 @@ contract IndexZapForkTest is ForkFeeds {
         c.referenceSupply = referenceSupply;
     }
 
-    /// @dev Grows a pool's observation ring the way anyone can on mainnet: raise the target, then trade in new blocks,
-    ///      alternating direction so the tick moves each time, until the pool writes past its old ring.
-    function _growObservations(address pool, address token) internal {
-        IUniswapV3PoolOracle(pool).increaseObservationCardinalityNext(200);
-        deal(A.WETH, address(this), 10 ether);
-        IERC20(A.WETH).forceApprove(A.SWAP_ROUTER_02, type(uint256).max);
-        IERC20(token).forceApprove(A.SWAP_ROUTER_02, type(uint256).max);
-        for (uint256 i = 0; i < 300; ++i) {
-            (,,, uint16 cardinality,,,) = IUniswapV3PoolOracle(pool).slot0();
-            if (cardinality >= 200) return;
-            vm.roll(block.number + 1);
-            vm.warp(block.timestamp + 12);
-            bytes memory path =
-                i % 2 == 0 ? abi.encodePacked(A.WETH, F3000, token) : abi.encodePacked(token, F3000, A.WETH);
-            uint256 amountIn = i % 2 == 0 ? 0.05 ether : IERC20(token).balanceOf(address(this));
-            ISwapRouter02(A.SWAP_ROUTER_02)
-                .exactInput(
-                    ISwapRouter02.ExactInputParams({
-                        path: path, recipient: address(this), amountIn: amountIn, amountOutMinimum: 0
-                    })
-                );
-        }
-        revert("observation ring did not grow");
-    }
-
     // ---------------------------------------------------------------------
     // paths and params (stable <-> component via WETH)
     // ---------------------------------------------------------------------
@@ -173,14 +144,14 @@ contract IndexZapForkTest is ForkFeeds {
     function _mintLegs(bytes[] memory paths) internal pure returns (IIndexZap.MintLeg[] memory legs) {
         legs = new IIndexZap.MintLeg[](paths.length);
         for (uint256 i = 0; i < paths.length; ++i) {
-            legs[i] = IIndexZap.MintLeg({path: paths[i], maxAmountIn: 0});
+            legs[i] = IIndexZap.MintLeg({v3Path: paths[i], v4Path: new PathKey[](0), maxAmountIn: 0});
         }
     }
 
     function _burnLegs(bytes[] memory paths) internal pure returns (IIndexZap.BurnLeg[] memory legs) {
         legs = new IIndexZap.BurnLeg[](paths.length);
         for (uint256 i = 0; i < paths.length; ++i) {
-            legs[i] = IIndexZap.BurnLeg({path: paths[i], minAmountOut: 0});
+            legs[i] = IIndexZap.BurnLeg({v3Path: paths[i], v4Path: new PathKey[](0), minAmountOut: 0});
         }
     }
 
@@ -298,8 +269,10 @@ contract IndexZapForkTest is ForkFeeds {
         vm.startPrank(alice);
         IERC20(A.USDC).approve(address(zap), maxIn);
         // SwapRouter02 checks amountInMaximum only after the pool pulled the input, so an underfunded leg
-        // surfaces as "STF" rather than "Too much requested". Either way the whole mint reverts.
-        vm.expectRevert(bytes("STF"));
+        // The zap pre-funds the router with what the leg may spend, so a leg that needs more than its cap trips the
+        // pool's own slippage check. It bubbles unchanged: the router dispatches swaps as internal calls and wraps
+        // only the ones it makes with a low-level call.
+        vm.expectRevert(abi.encodeWithSignature("V3TooMuchRequested()"));
         _mintCall(index, A.USDC, maxIn, 1e18, _mintLegs(_mintPaths(A.USDC)));
         vm.stopPrank();
         assertEq(IERC20(A.USDC).balanceOf(alice), maxIn);
@@ -313,7 +286,9 @@ contract IndexZapForkTest is ForkFeeds {
         uint256 total;
         for (uint256 i = 0; i < 3; ++i) {
             (uint256 legQuote,,,) = quoter.quoteExactOutput(mintPaths[i], need[i]);
-            mintLegs[i] = IIndexZap.MintLeg({path: mintPaths[i], maxAmountIn: legQuote + legQuote / 200});
+            mintLegs[i] = IIndexZap.MintLeg({
+                v3Path: mintPaths[i], v4Path: new PathKey[](0), maxAmountIn: legQuote + legQuote / 200
+            });
             total += legQuote;
         }
         uint256 maxIn = total + total / 100;
@@ -330,7 +305,9 @@ contract IndexZapForkTest is ForkFeeds {
         uint256 quoteOut;
         for (uint256 i = 0; i < 3; ++i) {
             (uint256 legOut,,,) = quoter.quoteExactInput(burnPaths[i], got[i]);
-            burnLegs[i] = IIndexZap.BurnLeg({path: burnPaths[i], minAmountOut: legOut - legOut / 200});
+            burnLegs[i] = IIndexZap.BurnLeg({
+                v3Path: burnPaths[i], v4Path: new PathKey[](0), minAmountOut: legOut - legOut / 200
+            });
             quoteOut += legOut;
         }
         vm.startPrank(alice);
@@ -361,12 +338,16 @@ contract IndexZapForkTest is ForkFeeds {
         _mint(A.USDC, 1e18, 100);
 
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](3);
-        legs[0] = IIndexZap.BurnLeg({path: "", minAmountOut: 0}); // WBTC is the payout token
-        legs[1] = IIndexZap.BurnLeg({path: abi.encodePacked(A.WETH, F500, A.WBTC), minAmountOut: 0});
-        legs[2] = IIndexZap.BurnLeg({path: abi.encodePacked(A.LINK, F3000, A.WETH, F500, A.WBTC), minAmountOut: 0});
+        legs[0] = IIndexZap.BurnLeg({v3Path: "", v4Path: new PathKey[](0), minAmountOut: 0}); // WBTC is the payout token
+        legs[1] = IIndexZap.BurnLeg({
+            v3Path: abi.encodePacked(A.WETH, F500, A.WBTC), v4Path: new PathKey[](0), minAmountOut: 0
+        });
+        legs[2] = IIndexZap.BurnLeg({
+            v3Path: abi.encodePacked(A.LINK, F3000, A.WETH, F500, A.WBTC), v4Path: new PathKey[](0), minAmountOut: 0
+        });
 
-        (uint256 wethOut,,,) = quoter.quoteExactInput(legs[1].path, U_WETH);
-        (uint256 linkOut,,,) = quoter.quoteExactInput(legs[2].path, U_LINK);
+        (uint256 wethOut,,,) = quoter.quoteExactInput(legs[1].v3Path, U_WETH);
+        (uint256 linkOut,,,) = quoter.quoteExactInput(legs[2].v3Path, U_LINK);
         uint256 quote = U_WBTC + wethOut + linkOut;
 
         vm.startPrank(alice);

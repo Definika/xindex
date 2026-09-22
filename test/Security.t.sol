@@ -21,10 +21,10 @@ import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockFeeToken} from "./mocks/MockFeeToken.sol";
 import {MockMarket} from "./mocks/MockMarket.sol";
 import {MockHookToken, ITokenReceiverHook} from "./mocks/MockHookToken.sol";
-import {MockPartialFillRouter} from "./mocks/MockPartialFillRouter.sol";
 import {MockPausableToken} from "./mocks/MockPausableToken.sol";
 import {MockRebalanceExecutor} from "./mocks/MockRebalanceExecutor.sol";
-import {MockSwapRouter} from "./mocks/MockSwapRouter.sol";
+import {MockUniversalRouter} from "./mocks/MockUniversalRouter.sol";
+import {PathKey} from "../src/libraries/UniswapV4Types.sol";
 
 /// @notice Watches an index from inside a token callback, the way a third-party protocol could.
 contract NavProbe is ITokenReceiverHook {
@@ -105,7 +105,8 @@ interface IXindexCore is IIndexFactory, IIndexRule, IIndexToken {
 /// @notice One regression test per finding of the Xindex v1 security review and of the v2 rebalancing design review,
 ///         each asserting the fixed behaviour, plus the attacks that already failed before the fixes.
 contract SecurityRegressionTest is XindexTest {
-    MockSwapRouter router;
+    MockUniversalRouter router;
+    address poolManager;
     IndexZap zap;
     IndexToken index;
 
@@ -124,7 +125,8 @@ contract SecurityRegressionTest is XindexTest {
     function setUp() public {
         market = new MockMarket();
         factory = new IndexFactory(owner, guardian);
-        router = new MockSwapRouter();
+        poolManager = makeAddr("poolManager");
+        router = new MockUniversalRouter(poolManager);
         zap = new IndexZap(factory, router);
 
         wbtc = new MockERC20("Wrapped BTC", "WBTC", 8);
@@ -132,14 +134,14 @@ contract SecurityRegressionTest is XindexTest {
         link = new MockERC20("Chainlink", "LINK", 18);
         usdc = market.usdc();
 
-        router.setPrice(address(wbtc), 60_000e18);
-        router.setPrice(address(weth), 3_000e18);
-        router.setPrice(address(link), 15e18);
-        router.setPrice(address(usdc), 1e18);
-        wbtc.mint(address(router), 1_000e8);
-        weth.mint(address(router), 100_000e18);
-        link.mint(address(router), 10_000_000e18);
-        usdc.mint(address(router), 1_000_000_000e6);
+        router.setPrice(address(wbtc), 60_000e18, 8);
+        router.setPrice(address(weth), 3_000e18, 18);
+        router.setPrice(address(link), 15e18, 18);
+        router.setPrice(address(usdc), 1e18, 6);
+        wbtc.mint(address(router.inventory()), 1_000e8);
+        weth.mint(address(router.inventory()), 100_000e18);
+        link.mint(address(router.inventory()), 10_000_000e18);
+        usdc.mint(address(router.inventory()), 1_000_000_000e6);
 
         _list(address(wbtc));
         _list(address(weth));
@@ -169,21 +171,35 @@ contract SecurityRegressionTest is XindexTest {
 
     function _mintLegs(address stable) internal view returns (IIndexZap.MintLeg[] memory legs) {
         legs = new IIndexZap.MintLeg[](3);
-        legs[0] =
-            IIndexZap.MintLeg({path: abi.encodePacked(address(wbtc), FEE, address(weth), FEE, stable), maxAmountIn: 0});
-        legs[1] = IIndexZap.MintLeg({path: abi.encodePacked(address(weth), FEE, stable), maxAmountIn: 0});
-        legs[2] =
-            IIndexZap.MintLeg({path: abi.encodePacked(address(link), FEE, address(weth), FEE, stable), maxAmountIn: 0});
+        legs[0] = IIndexZap.MintLeg({
+            v3Path: abi.encodePacked(address(wbtc), FEE, address(weth), FEE, stable),
+            v4Path: new PathKey[](0),
+            maxAmountIn: 0
+        });
+        legs[1] = IIndexZap.MintLeg({
+            v3Path: abi.encodePacked(address(weth), FEE, stable), v4Path: new PathKey[](0), maxAmountIn: 0
+        });
+        legs[2] = IIndexZap.MintLeg({
+            v3Path: abi.encodePacked(address(link), FEE, address(weth), FEE, stable),
+            v4Path: new PathKey[](0),
+            maxAmountIn: 0
+        });
     }
 
     function _burnLegs(address tokenOut) internal view returns (IIndexZap.BurnLeg[] memory legs) {
         legs = new IIndexZap.BurnLeg[](3);
         legs[0] = IIndexZap.BurnLeg({
-            path: abi.encodePacked(address(wbtc), FEE, address(weth), FEE, tokenOut), minAmountOut: 0
+            v3Path: abi.encodePacked(address(wbtc), FEE, address(weth), FEE, tokenOut),
+            v4Path: new PathKey[](0),
+            minAmountOut: 0
         });
-        legs[1] = IIndexZap.BurnLeg({path: abi.encodePacked(address(weth), FEE, tokenOut), minAmountOut: 0});
+        legs[1] = IIndexZap.BurnLeg({
+            v3Path: abi.encodePacked(address(weth), FEE, tokenOut), v4Path: new PathKey[](0), minAmountOut: 0
+        });
         legs[2] = IIndexZap.BurnLeg({
-            path: abi.encodePacked(address(link), FEE, address(weth), FEE, tokenOut), minAmountOut: 0
+            v3Path: abi.encodePacked(address(link), FEE, address(weth), FEE, tokenOut),
+            v4Path: new PathKey[](0),
+            minAmountOut: 0
         });
     }
 
@@ -338,10 +354,10 @@ contract SecurityRegressionTest is XindexTest {
         vm.prank(alice);
         usdc.approve(address(zap), maxIn);
 
-        router.setPrice(address(link), 16.05e18); // +7% on the thin LINK leg only
+        router.setPrice(address(link), 16.05e18, 18); // +7% on the thin LINK leg only
 
         vm.prank(alice);
-        vm.expectRevert("Too much requested");
+        vm.expectRevert(abi.encodeWithSignature("V3TooMuchRequested()"));
         zap.mintWithToken(_mintParams(address(index), address(usdc), maxIn, 1e18, legs, alice));
     }
 
@@ -455,8 +471,8 @@ contract SecurityRegressionTest is XindexTest {
 
     function test_I02_feeChargingCurrenciesRevertEarlyWithAClearError() public {
         MockFeeToken fot = new MockFeeToken();
-        router.setPrice(address(fot), 1e18);
-        fot.mint(address(router), 1_000_000e18);
+        router.setPrice(address(fot), 1e18, 18);
+        fot.mint(address(router.inventory()), 1_000_000e18);
         fot.mint(alice, 200e18);
 
         vm.startPrank(alice);
@@ -499,8 +515,10 @@ contract SecurityRegressionTest is XindexTest {
         IndexToken idx = IndexToken(factory.createIndex("Mixed", "MIX", t, u, 0));
 
         IIndexZap.MintLeg[] memory legs = new IIndexZap.MintLeg[](2);
-        legs[0] = IIndexZap.MintLeg({path: abi.encodePacked(address(weth), FEE, address(usdc)), maxAmountIn: 0});
-        legs[1] = IIndexZap.MintLeg({path: "", maxAmountIn: 0});
+        legs[0] = IIndexZap.MintLeg({
+            v3Path: abi.encodePacked(address(weth), FEE, address(usdc)), v4Path: new PathKey[](0), maxAmountIn: 0
+        });
+        legs[1] = IIndexZap.MintLeg({v3Path: "", v4Path: new PathKey[](0), maxAmountIn: 0});
 
         usdc.mint(alice, 10e6);
         vm.startPrank(alice);
@@ -558,9 +576,8 @@ contract SecurityRegressionTest is XindexTest {
     }
 
     function test_I12_partialFillReturnsTheUnsoldPartToTheRecipient() public {
-        MockPartialFillRouter half = new MockPartialFillRouter(3_000e6);
-        usdc.mint(address(half), 1_000_000e6);
-        IndexZap halfZap = new IndexZap(factory, half);
+        router.setMode(MockUniversalRouter.Mode.PartialFirstHop);
+        IndexZap halfZap = zap;
 
         address[] memory t = new address[](1);
         uint256[] memory u = new uint256[](1);
@@ -574,7 +591,9 @@ contract SecurityRegressionTest is XindexTest {
         idx.issue(1e18, alice);
         idx.approve(address(halfZap), 1e18);
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](1);
-        legs[0] = IIndexZap.BurnLeg({path: abi.encodePacked(address(weth), FEE, address(usdc)), minAmountOut: 0});
+        legs[0] = IIndexZap.BurnLeg({
+            v3Path: abi.encodePacked(address(weth), FEE, address(usdc)), v4Path: new PathKey[](0), minAmountOut: 0
+        });
         uint256 out = halfZap.burnToToken(_burnParams(address(idx), 1e18, address(usdc), 1_000e6, legs, alice));
         vm.stopPrank();
 
@@ -1112,10 +1131,17 @@ contract SecurityRegressionTest is XindexTest {
 
     /// @dev A one-component index of LINK and a router that fills every hop halfway, so each hop of a multi-hop burn
     ///      leg leaves something unsold.
+    /// @dev A zap on its own router, which takes half the input of every hop and prices every hop one raw unit for
+    ///      one. USDC is declared to the router as 18-decimal so the raw one-for-one holds across it; only this
+    ///      fixture's arithmetic depends on that, and it keeps the amounts below readable.
     function _halfFilled() internal returns (IndexToken idx, IndexZap halfZap) {
-        MockPartialFillRouter half = new MockPartialFillRouter(1e18); // one output unit per input unit, per hop
-        weth.mint(address(half), 100e18);
-        usdc.mint(address(half), 100e18); // raw units: the mock prices every hop one for one
+        MockUniversalRouter half = new MockUniversalRouter(poolManager);
+        half.setMode(MockUniversalRouter.Mode.PartialFirstHop);
+        half.setPrice(address(link), 1e18, 18);
+        half.setPrice(address(weth), 1e18, 18);
+        half.setPrice(address(usdc), 1e18, 18);
+        weth.mint(address(half.inventory()), 100e18);
+        usdc.mint(address(half.inventory()), 100e18);
         halfZap = new IndexZap(factory, half);
 
         address[] memory t = new address[](1);
@@ -1136,7 +1162,9 @@ contract SecurityRegressionTest is XindexTest {
         (IndexToken idx, IndexZap halfZap) = _halfFilled();
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](1);
         legs[0] = IIndexZap.BurnLeg({
-            path: abi.encodePacked(address(link), FEE, address(weth), FEE, address(usdc)), minAmountOut: 0
+            v3Path: abi.encodePacked(address(link), FEE, address(weth), FEE, address(usdc)),
+            v4Path: new PathKey[](0),
+            minAmountOut: 0
         });
 
         uint256 wethBefore = weth.balanceOf(alice);
@@ -1157,7 +1185,8 @@ contract SecurityRegressionTest is XindexTest {
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](1);
         // A path whose intermediate token is the payout token itself.
         legs[0] = IIndexZap.BurnLeg({
-            path: abi.encodePacked(address(link), FEE, address(usdc), FEE, address(weth), FEE, address(usdc)),
+            v3Path: abi.encodePacked(address(link), FEE, address(usdc), FEE, address(weth), FEE, address(usdc)),
+            v4Path: new PathKey[](0),
             minAmountOut: 0
         });
 
@@ -1171,9 +1200,11 @@ contract SecurityRegressionTest is XindexTest {
         assertEq(usdc.balanceOf(address(halfZap)), 0);
         assertEq(weth.balanceOf(address(halfZap)), 0);
 
-        // A hop that sells nothing would leave the next hop with SwapRouter02's "spend my whole balance" sentinel.
+        // A hop that sells nothing has nothing to hand the next one, so the leg cannot complete.
         legs[0] = IIndexZap.BurnLeg({
-            path: abi.encodePacked(address(link), FEE, address(weth), FEE, address(usdc)), minAmountOut: 0
+            v3Path: abi.encodePacked(address(link), FEE, address(weth), FEE, address(usdc)),
+            v4Path: new PathKey[](0),
+            minAmountOut: 0
         });
         link.mint(alice, 1);
         vm.startPrank(alice);

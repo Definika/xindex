@@ -28,12 +28,11 @@ library MainnetAddresses {
     // ---------------------------------------------------------------------
     // Execution.
     // ---------------------------------------------------------------------
-    /// @dev Uniswap SwapRouter02, which the zap swaps through until it moves to the Universal Router.
-    address internal constant SWAP_ROUTER_02 = 0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45;
     /// @dev Uniswap Universal Router 2.0.0, which routes both V3 and V4 pools. Pinned to this deployment rather than
     ///      the 2.1.x line: 2.1.x carries the reverted #491/#497 change and a different input encoding.
     address internal constant UNIVERSAL_ROUTER = 0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af;
-    /// @dev Uniswap V4 singleton the Universal Router settles V4 legs against. The zap reads it from the router.
+    /// @dev Uniswap V4 singleton the Universal Router settles V4 legs against. The zap reads it from the router
+    ///      rather than taking it as an argument, so the two can never be wired to different deployments.
     address internal constant POOL_MANAGER = 0x000000000004444c5dc75cB358380D2e3dE08A90;
 
     // ---------------------------------------------------------------------

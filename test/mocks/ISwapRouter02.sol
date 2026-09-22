@@ -3,6 +3,8 @@ pragma solidity 0.8.28;
 
 /// @title ISwapRouter02
 /// @notice Minimal subset of Uniswap's SwapRouter02 (swap-router-contracts IV3SwapRouter).
+/// @dev Test-only. The zap swaps through the Universal Router; this is what the fork tests' own rebalance executor
+///      fills with, a fixture whose venue is independent of anything Xindex deploys.
 /// @dev Unlike SwapRouter (v1), the params carry no deadline; callers enforce their own.
 ///      Mainnet: 0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45
 interface ISwapRouter02 {
