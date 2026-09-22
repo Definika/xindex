@@ -4,9 +4,10 @@ pragma solidity 0.8.28;
 import {Script, console2} from "forge-std/Script.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
 import {IndexZap} from "../src/IndexZap.sol";
-import {IIndexRule} from "../src/interfaces/IIndexRule.sol";
-import {ISwapRouter02} from "../src/interfaces/ISwapRouter02.sol";
+import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
 import {ISafeThreshold} from "./interfaces/ISafeThreshold.sol";
+import {IAggregatorV3} from "../src/interfaces/IAggregatorV3.sol";
+import {CompositeFeed} from "../src/CompositeFeed.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
 
@@ -20,31 +21,13 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///                       account, and a Safe must require at least two signatures and have no enabled module.
 ///   GUARDIAN            Required. Can cancel pending listings and rebalances, start a rebalance that leaves a paused
 ///                       component untouched, and delist tokens. Must differ from OWNER; replacing it later takes 7 days.
-///   SWAP_ROUTER         Uniswap SwapRouter02. Required off mainnet; defaults to the mainnet router on chain 1.
-///   WETH                Wrapped ether, the rule's pricing currency. Required off mainnet; defaults on chain 1.
-///   UNISWAP_V3_FACTORY  Registry that proves each token pool is genuine. Required off mainnet; defaults on chain 1.
-///   USDC                Dollar currency; its 0.05% WETH pool prices indexes in dollars. Required off mainnet; defaults
-///                       on chain 1.
+///   UNIVERSAL_ROUTER    Uniswap's Universal Router, through which the zap swaps. Required off mainnet; defaults on
+///                       chain 1 to the 2.0.0 deployment.
 contract Deploy is Script {
-    /// @notice Mainnet defaults {resolveMarket} uses on chain 1, from `MainnetAddresses`.
-    address public constant MAINNET_SWAP_ROUTER_02 = MainnetAddresses.SWAP_ROUTER_02;
-    address public constant MAINNET_WETH = MainnetAddresses.WETH;
-    address public constant MAINNET_UNISWAP_V3_FACTORY = MainnetAddresses.UNISWAP_V3_FACTORY;
-    address public constant MAINNET_USDC = MainnetAddresses.USDC;
+    /// @notice Mainnet default {resolveRouter} uses on chain 1, from `MainnetAddresses`.
+    address public constant MAINNET_UNIVERSAL_ROUTER = MainnetAddresses.UNIVERSAL_ROUTER;
     /// @notice Start of a Safe's module list.
     address public constant SENTINEL_MODULES = address(0x1);
-
-    /// @notice External contracts the deployment depends on. A zero field means the mainnet default on chain 1.
-    /// @param router Uniswap SwapRouter02 the zap swaps through.
-    /// @param weth Wrapped ether, the rule's pricing currency.
-    /// @param uniswapV3Factory Uniswap V3 factory that must have deployed every configured pool.
-    /// @param usdc Dollar currency; its 0.05% WETH pool prices indexes in dollars.
-    struct Market {
-        address router;
-        address weth;
-        address uniswapV3Factory;
-        address usdc;
-    }
 
     /// @notice OWNER is zero or Foundry's default sender.
     error OwnerRequired();
@@ -72,35 +55,39 @@ contract Deploy is Script {
     error WrongWiring(string name, address expected, address actual);
 
     /// @notice Reads OWNER, GUARDIAN and the optional market addresses from the environment and calls {deploy}.
-    function run() external returns (IndexFactory factory, IndexZap zap) {
-        Market memory market = Market({
-            router: vm.envOr("SWAP_ROUTER", address(0)),
-            weth: vm.envOr("WETH", address(0)),
-            uniswapV3Factory: vm.envOr("UNISWAP_V3_FACTORY", address(0)),
-            usdc: vm.envOr("USDC", address(0))
-        });
-        return deploy(vm.envAddress("OWNER"), vm.envAddress("GUARDIAN"), market);
+    function run() external returns (IndexFactory factory, IndexZap zap, CompositeFeed wbtcFeed) {
+        return deploy(vm.envAddress("OWNER"), vm.envAddress("GUARDIAN"), vm.envOr("UNIVERSAL_ROUTER", address(0)));
     }
 
     /// @notice Checks the owner and guardian, resolves the market, and broadcasts the factory (which deploys the rule
     ///         and the IndexToken implementation) and the zap. Logs every address.
     /// @param owner Factory owner; see {checkOwner}.
     /// @param guardian Initial guardian; see {checkGuardian}.
-    /// @param market External contracts; see {resolveMarket}.
+    /// @param router Uniswap's Universal Router, through which the zap swaps; see {resolveRouter}.
     /// @return factory The deployed factory.
     /// @return zap The deployed zap.
-    function deploy(address owner, address guardian, Market memory market)
+    /// @return wbtcFeed The composite BTC/USD times WBTC/BTC feed, deployed on chain 1 only, else zero. It takes no
+    ///         owner and no arguments beyond its two legs, so a later run deploys an identical one.
+    function deploy(address owner, address guardian, address router)
         public
-        returns (IndexFactory factory, IndexZap zap)
+        returns (IndexFactory factory, IndexZap zap, CompositeFeed wbtcFeed)
     {
         checkOwner(owner);
         checkGuardian(owner, guardian);
-        market = resolveMarket(market);
-        checkRolesAreNotMarket(owner, guardian, market);
+        router = resolveRouter(router);
+        checkRolesAreNotMarket(owner, guardian, router);
 
         vm.startBroadcast();
-        factory = new IndexFactory(owner, guardian, market.weth, market.uniswapV3Factory, market.usdc);
-        zap = new IndexZap(factory, ISwapRouter02(market.router));
+        factory = new IndexFactory(owner, guardian);
+        zap = new IndexZap(factory, IUniversalRouter(router));
+        if (block.chainid == 1) {
+            wbtcFeed = new CompositeFeed(
+                IAggregatorV3(MainnetAddresses.BTC_USD_FEED),
+                IAggregatorV3(MainnetAddresses.WBTC_BTC_FEED),
+                MainnetAddresses.STALENESS_1H,
+                MainnetAddresses.STALENESS_24H
+            );
+        }
         vm.stopBroadcast();
 
         console2.log("IndexFactory:            ", address(factory));
@@ -109,8 +96,9 @@ contract Deploy is Script {
         console2.log("IndexZap:                ", address(zap));
         console2.log("Factory owner:           ", owner);
         console2.log("Guardian:                ", guardian);
-        console2.log("Swap router:             ", market.router);
-        console2.log("USDC/WETH pool:          ", IIndexRule(factory.RULE()).USD_POOL());
+        console2.log("Universal Router:        ", router);
+        console2.log("PoolManager:             ", zap.POOL_MANAGER());
+        if (address(wbtcFeed) != address(0)) console2.log("WBTC_FEED (composite):   ", address(wbtcFeed));
 
         // The release record: the addresses above plus the code they ended up with, so a later run of
         // {checkDeployment} against the recorded addresses proves a deployment is this build.
@@ -179,32 +167,21 @@ contract Deploy is Script {
         if (guardian == msg.sender) revert GuardianIsBroadcaster(guardian);
     }
 
-    /// @notice Rejects an owner or guardian that is one of the market contracts, such as WETH pasted as OWNER.
+    /// @notice Rejects an owner or guardian that is the router, such as it pasted as OWNER.
     /// @param owner The intended factory owner.
     /// @param guardian The intended guardian.
-    /// @param market The resolved market.
-    function checkRolesAreNotMarket(address owner, address guardian, Market memory market) public pure {
-        _checkNotMarket(owner, market);
-        _checkNotMarket(guardian, market);
+    /// @param router The resolved router.
+    function checkRolesAreNotMarket(address owner, address guardian, address router) public pure {
+        if (owner == router || guardian == router) revert RoleIsMarketContract(router);
     }
 
-    function _checkNotMarket(address account, Market memory market) private pure {
-        if (
-            account == market.router || account == market.weth || account == market.uniswapV3Factory
-                || account == market.usdc
-        ) revert RoleIsMarketContract(account);
-    }
-
-    /// @notice Fills zero addresses with the mainnet defaults on chain 1 only, and requires every address to have code.
-    ///         On chain 1 a given address must be the default, because the market is fixed there.
-    /// @param market Addresses from the environment; zero fields take the mainnet defaults on chain 1.
-    /// @return The market with every field set.
-    function resolveMarket(Market memory market) public view returns (Market memory) {
-        market.router = _resolve("SWAP_ROUTER", market.router, MAINNET_SWAP_ROUTER_02);
-        market.weth = _resolve("WETH", market.weth, MAINNET_WETH);
-        market.uniswapV3Factory = _resolve("UNISWAP_V3_FACTORY", market.uniswapV3Factory, MAINNET_UNISWAP_V3_FACTORY);
-        market.usdc = _resolve("USDC", market.usdc, MAINNET_USDC);
-        return market;
+    /// @notice Fills a zero router with the mainnet default on chain 1 only, and requires it to have code. On chain 1
+    ///         a given address must be the default, because the router is pinned there: the zap encodes against one
+    ///         version's command inputs, and a later line changed them.
+    /// @param router Address from the environment; zero takes the mainnet default on chain 1.
+    /// @return The resolved router.
+    function resolveRouter(address router) public view returns (address) {
+        return _resolve("UNIVERSAL_ROUTER", router, MAINNET_UNIVERSAL_ROUTER);
     }
 
     function _resolve(string memory name, address given, address mainnetDefault) private view returns (address) {

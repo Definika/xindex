@@ -2,30 +2,30 @@
 pragma solidity 0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {IAggregatorV3} from "./interfaces/IAggregatorV3.sol";
 import {IIndexFactory} from "./interfaces/IIndexFactory.sol";
 import {IIndexRule} from "./interfaces/IIndexRule.sol";
 import {IIndexToken} from "./interfaces/IIndexToken.sol";
-import {IUniswapV3Factory} from "./interfaces/IUniswapV3Factory.sol";
-import {IUniswapV3Pool} from "./interfaces/IUniswapV3Pool.sol";
 import {Methodology} from "./libraries/Methodology.sol";
-import {TickMath} from "./libraries/TickMath.sol";
 
 /// @title IndexRule
-/// @notice Reads on-chain supplies and Uniswap V3 time-weighted prices and applies an index's weighting rule. See
-///         {IIndexRule}.
+/// @notice Reads on-chain supplies and Chainlink USD prices and applies an index's weighting rule. See {IIndexRule}.
 /// @dev Deployed by the factory constructor, so `FACTORY` is the factory whose token configs it reads. It keeps no
-///      state, holds no funds, and every function is a view.
+///      state, holds no funds, and every function is a view. It reads no Uniswap pool: depth, observation rings and
+///      sub-window agreement are no longer inputs to anything.
 ///
-///      A WAD price is WETH wei per 1e18 raw units of a token, from the token's WETH pool averaged over TWAP_WINDOW with
-///      the mean tick rounded toward negative infinity, as Uniswap's OracleLibrary does. Units, supplies and prices are
-///      all raw, so token decimals cancel out.
+///      A WAD price is USD with 18 decimals per 1e18 raw units of a token: for a feed of `fd` decimals quoting a token
+///      of `td` decimals, `answer * 10 ** (36 - fd - td)`. Both decimals are capped at 18, so the exponent never
+///      underflows, and both are read live on every call rather than stored, so a proxy repointed to an aggregator with
+///      other decimals cannot misprice. Units, supplies and prices are all raw, so token decimals cancel out.
 ///
-///      A WAD price reaches about 3.4e56 at MAX_TICK, so the rule's products have to be kept inside 256 bits. A market
-///      cap is supply times price over WAD, floored at one wei; weights use only ratios of caps, so that scale cancels
-///      out. A holding's value is units times price, exact while every price is at most MAX_EXACT_PRICE and divided by
-///      WAD above it (`Basket.scale`). Ordinary baskets are therefore unchanged to the wei, and a mean tick manipulated
-///      toward MAX_TICK yields a snapshot instead of an arithmetic panic.
+///      A WAD price is bounded by MAX_PRICE, so the rule's products stay inside 256 bits. A market cap is supply times
+///      price over WAD, floored at one wei; weights use only ratios of caps, so that scale cancels out. A holding's
+///      value is units times price, exact while every price is at most MAX_EXACT_PRICE and divided by WAD above it
+///      (`Basket.scale`). Ordinary baskets are therefore unchanged to the wei, and a feed reporting an absurd answer
+///      yields a revert rather than an arithmetic panic.
 ///
 ///      Rebalance targets keep the value of the rebalanced components at snapshot prices. Each pass shares the value
 ///      not yet pinned among the components still free, `value * weight / price` each, and clips every share to
@@ -46,35 +46,33 @@ import {TickMath} from "./libraries/TickMath.sol";
 ///      MIN_CAPPED_COMPONENTS ranks to place the remainder in, which is the feasibility condition the capped rule
 ///      needs, so the ranking stays and the residue is documented.
 contract IndexRule is IIndexRule {
-    uint32 public constant TWAP_WINDOW = 30 minutes;
-    uint32 public constant TWAP_SUB_WINDOWS = 3;
     /// @inheritdoc IIndexRule
-    /// @dev 1.0001^2000 is about 1.22. One 12-second block at an extreme tick moves the mean tick of its 10-minute part
-    ///      by up to 887,272 * 12 / 600, about 17,700 ticks.
-    uint256 public constant MAX_TICK_DEVIATION = 2_000;
+    /// @dev A price this high makes one raw unit of a token worth 1e20 dollars, which no market reaches; only a broken
+    ///      or malicious feed gets there. Above MAX_EXACT_PRICE every value is divided by WAD (`Basket.scale`), so
+    ///      MAX_COMPONENTS holdings of up to 2^96 - 1 units at this price come to about 1.6e68, well below
+    ///      type(uint256).max. `Math.mulDiv` carries the undivided product, so only the divided value has to fit.
+    uint256 public constant MAX_PRICE = 1e56;
     /// @inheritdoc IIndexRule
-    /// @dev A pool writes at most one observation per block, so 200 slots cover TWAP_WINDOW while blocks are at least
-    ///      1800 / 199 = 9.05 seconds apart (12-second slots give 2,388 seconds). If slots ever get shorter, anyone can
-    ///      grow a pool's ring with `increaseObservationCardinalityNext`.
-    uint16 public constant MIN_OBSERVATION_CARDINALITY = 200;
-    uint256 public constant MAX_EXCLUDED = 8;
+    /// @dev Twice the longest heartbeat among the feeds this ships with, so a token's own bound is always the binding
+    ///      one and this is only a ceiling on what the owner can propose.
+    uint32 public constant MAX_FEED_STALENESS = 2 days;
     /// @inheritdoc IIndexRule
     /// @dev An auction can deliver 1.5 times a growing component's extra units, so a raised target stays at most 2/3 of
     ///      uint96 and 1.5 times it is exactly type(uint96).max.
     uint256 public constant MAX_TARGET_UNITS = uint256(type(uint96).max) * 2 / 3;
-    uint24 public constant USD_POOL_FEE = 500;
 
+    /// @inheritdoc IIndexRule
     address public immutable FACTORY;
-    address public immutable WETH;
-    address public immutable UNISWAP_V3_FACTORY;
-    address public immutable USDC;
-    address public immutable USD_POOL;
 
     uint256 private constant WAD = 1e18;
-    /// @dev Highest WAD price whose value products stay inside 256 bits: MAX_COMPONENTS holdings of up to 2^96 - 1
-    ///      units come to about 1.6e76, below type(uint256).max. One raw unit of a token priced this high is worth 1e28
-    ///      ETH, which no market reaches; only a mean tick manipulated toward MAX_TICK gets there.
+    /// @dev Highest WAD price whose value products stay exact, with a scale of 1: MAX_COMPONENTS holdings of up to
+    ///      2^96 - 1 units come to about 1.6e76, below type(uint256).max. A price this high makes one raw unit worth
+    ///      1e10 dollars, which no market reaches; above it the rule divides every value by WAD (`Basket.scale`).
     uint256 private constant MAX_EXACT_PRICE = 1e46;
+    /// @dev Decimals a WAD price is expressed in, so the conversion exponent is DECIMAL_BUDGET - fd - td.
+    uint256 private constant DECIMAL_BUDGET = 36;
+    /// @dev Most decimals either a feed or a token may report, so the exponent above never underflows.
+    uint8 private constant MAX_DECIMALS = 18;
     uint256 private constant CAPPED_TOP_WEIGHT = 0.3e18;
     uint256 private constant CAPPED_MAX_WEIGHT = 0.2e18;
 
@@ -88,15 +86,8 @@ contract IndexRule is IIndexRule {
         uint256 scale;
     }
 
-    constructor(address weth, address uniswapV3Factory, address usdc) {
-        if (weth == address(0) || uniswapV3Factory == address(0) || usdc == address(0)) revert ZeroAddress();
+    constructor() {
         FACTORY = msg.sender;
-        WETH = weth;
-        UNISWAP_V3_FACTORY = uniswapV3Factory;
-        USDC = usdc;
-        address usdPool = IUniswapV3Factory(uniswapV3Factory).getPool(usdc, weth, USD_POOL_FEE);
-        _checkPool(usdc, usdPool);
-        USD_POOL = usdPool;
     }
 
     // ---------------------------------------------------------------------
@@ -105,31 +96,53 @@ contract IndexRule is IIndexRule {
 
     /// @inheritdoc IIndexRule
     function checkConfig(address token, IIndexFactory.TokenConfig calldata config) external view {
-        _checkExclusions(token, config);
-        if (token == WETH) {
-            if (config.pool != address(0)) revert InvalidPool(token, config.pool);
-            if (config.minLiquidity != 0) revert InvalidMinLiquidity(token);
-            if (config.referenceSupply == 0) revert InvalidSupplyConfig(token);
-            return;
+        if (config.feed == address(0) || config.feed.code.length == 0) revert InvalidFeed(token, config.feed);
+        if (config.maxStaleness == 0 || config.maxStaleness > MAX_FEED_STALENESS) {
+            revert InvalidStaleness(token, config.maxStaleness);
         }
-        if (config.minLiquidity == 0) revert InvalidMinLiquidity(token);
-        _checkPool(token, config.pool);
-        (,, uint256 harmonicLiquidity) = _observe(config.pool);
-        if (harmonicLiquidity < config.minLiquidity) {
-            revert ThinPriceHistory(config.pool, harmonicLiquidity, config.minLiquidity);
+        // Every check the rule applies when it prices the token, applied once here, so a config that cannot be priced
+        // is refused at the proposal and again at execution rather than discovered at the next rebalance. The price
+        // itself is not wanted, only the reverts: at listing time there is nothing to compare it against.
+        // forge-lint: disable-next-line(unused-return)
+        // wake-disable-next-line unchecked-return-value
+        _price(token, config.feed, config.maxStaleness);
+        if (_supply(token, config.referenceSupply) == 0) revert ZeroSupply(token);
+    }
+
+    /// @inheritdoc IIndexRule
+    /// @dev The two sides of a settlement, valued in the settling block. `IndexToken` holds them against its own floor:
+    ///      the auction band fixes the multiplier on the bought legs at snapshot prices, and says nothing about how far
+    ///      the market moved in the up to three days before the fill (DA-05). They gate the settlement and never size
+    ///      it, so the amounts that move stay derived from supply and units alone.
+    function settlementValues(address[] calldata tokens, uint256[] calldata amountsOut, uint256[] calldata amountsIn)
+        external
+        view
+        returns (uint256 outValue, uint256 inValue)
+    {
+        if (amountsOut.length != tokens.length || amountsIn.length != tokens.length) revert LengthMismatch();
+        // Assigned before the loop: a settlement that moves nothing on any leg is worth nothing on both sides.
+        outValue = 0;
+        inValue = 0;
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            // Nothing moved on this leg, so nothing about its feed matters here (DA-14).
+            if (amountsOut[i] == 0 && amountsIn[i] == 0) continue;
+            IIndexFactory.TokenConfig memory config = IIndexFactory(FACTORY).tokenConfig(tokens[i]);
+            uint256 p = _price(tokens[i], config.feed, config.maxStaleness);
+            outValue += Math.mulDiv(amountsOut[i], p, WAD);
+            inValue += Math.mulDiv(amountsIn[i], p, WAD);
         }
-        if (_supply(token, config.referenceSupply, config.excluded) == 0) revert ZeroSupply(token);
     }
 
     /// @inheritdoc IIndexRule
     function price(address token) external view returns (uint256) {
-        return _price(token, token == USDC ? USD_POOL : IIndexFactory(FACTORY).tokenConfig(token).pool);
+        IIndexFactory.TokenConfig memory config = IIndexFactory(FACTORY).tokenConfig(token);
+        return _price(token, config.feed, config.maxStaleness);
     }
 
     /// @inheritdoc IIndexRule
     function supply(address token) external view returns (uint256) {
         IIndexFactory.TokenConfig memory config = IIndexFactory(FACTORY).tokenConfig(token);
-        return _supply(token, config.referenceSupply, config.excluded);
+        return _supply(token, config.referenceSupply);
     }
 
     // ---------------------------------------------------------------------
@@ -172,31 +185,33 @@ contract IndexRule is IIndexRule {
     }
 
     /// @inheritdoc IIndexRule
-    function navPerToken(address index) external view returns (uint256 wethValue, uint256 usdcValue) {
+    function navPerToken(address index) external view returns (uint256 usdValue) {
         if (!IIndexFactory(FACTORY).isIndex(index)) revert NotIndex(index);
         (address[] memory tokens, uint256[] memory units) = IIndexToken(index).components();
-        wethValue = 0;
+        usdValue = 0;
         uint256 n = tokens.length;
         for (uint256 i = 0; i < n; ++i) {
-            uint256 p = _price(tokens[i], IIndexFactory(FACTORY).tokenConfig(tokens[i]).pool);
-            wethValue += Math.mulDiv(units[i], p, WAD);
+            IIndexFactory.TokenConfig memory config = IIndexFactory(FACTORY).tokenConfig(tokens[i]);
+            usdValue += Math.mulDiv(units[i], _price(tokens[i], config.feed, config.maxStaleness), WAD);
         }
-        usdcValue = Math.mulDiv(wethValue, WAD, _price(USDC, USD_POOL));
     }
 
     /// @inheritdoc IIndexRule
-    function initialUnits(address[] calldata tokens, uint8 methodology, uint256 startPriceUsdc)
+    function initialUnits(address[] calldata tokens, uint8 methodology, uint256 startPriceUsd)
         external
         view
         returns (uint256[] memory units)
     {
         (uint256[] memory prices,, uint256[] memory caps) = _market(tokens);
         uint256[] memory w = _weights(caps, methodology);
-        uint256 value = startPriceUsdc * _price(USDC, USD_POOL);
         uint256 n = tokens.length;
         units = new uint256[](n);
         for (uint256 i = 0; i < n; ++i) {
-            units[i] = Math.max(Math.mulDiv(value, w[i], prices[i] * WAD), 1);
+            // A start price so low that a component's units round away entirely cannot describe the basket at all,
+            // and the index that came out of it would be coarse enough for a rebalance to move less than one raw unit
+            // of a component (DA-09). Floor it at one unit and the caller never learns; refuse it instead.
+            units[i] = Math.mulDiv(startPriceUsd, w[i], prices[i]);
+            if (units[i] == 0) revert StartPriceTooLow(tokens[i], startPriceUsd);
         }
     }
 
@@ -204,123 +219,41 @@ contract IndexRule is IIndexRule {
     // Market data internals
     // ---------------------------------------------------------------------
 
-    /// @dev At most MAX_EXCLUDED distinct exclusions, and none next to a reference supply.
-    function _checkExclusions(address token, IIndexFactory.TokenConfig calldata config) private pure {
-        uint256 n = config.excluded.length;
-        if (n > MAX_EXCLUDED || (config.referenceSupply != 0 && n != 0)) revert InvalidSupplyConfig(token);
-        for (uint256 i = 1; i < n; ++i) {
-            for (uint256 j = 0; j < i; ++j) {
-                if (config.excluded[i] == config.excluded[j]) revert InvalidSupplyConfig(token);
-            }
-        }
-    }
-
-    /// @dev A pool must be the Uniswap V3 factory's pool for the token and WETH at its own fee tier, keep enough
-    ///      observations that a TWAP_WINDOW average does not run out of history, and serve one now.
-    function _checkPool(address token, address pool) private view {
-        if (pool.code.length == 0) revert InvalidPool(token, pool);
-        if (IUniswapV3Factory(UNISWAP_V3_FACTORY).getPool(token, WETH, IUniswapV3Pool(pool).fee()) != pool) {
-            revert InvalidPool(token, pool);
-        }
-        // Only the observation cardinality matters here; the pool has no narrower getter for it.
+    /// @dev The one price path. A feed answer becomes USD-WAD per 1e18 raw units, after four checks that every caller
+    ///      gets: the answer is positive, it is no older than this token's bound, the feed and the token each report at
+    ///      most MAX_DECIMALS, and the converted price is at most MAX_PRICE. Decimals are read live, never cached, so
+    ///      the answer and its scale always come from the same aggregator in the same block.
+    function _price(address token, address feed, uint32 maxStaleness) private view returns (uint256) {
+        if (feed == address(0)) revert InvalidFeed(token, feed);
+        // Only the answer and its timestamp are read: `roundId` and `answeredInRound` are pre-OCR vestiges.
         // forge-lint: disable-next-line(unused-return)
-        (,,, uint16 cardinality,,,) = IUniswapV3Pool(pool).slot0();
-        if (cardinality < MIN_OBSERVATION_CARDINALITY) revert PoolHistoryTooShort(pool, cardinality);
-        (int24 tick,,) = _observe(pool);
-        if (_quoteAtTick(tick, token < WETH) == 0) revert ZeroPrice(token);
-    }
-
-    /// @dev The window's mean tick quoted as a WAD price, for display, ranking kept components and starting units.
-    function _price(address token, address pool) private view returns (uint256 p) {
-        if (token == WETH) return WAD;
-        (int24 tick,,) = _observe(pool);
-        p = _quoteAtTick(tick, token < WETH);
-        if (p == 0) revert ZeroPrice(token);
-    }
-
-    /// @dev The price of a component a rebalance moves. It is the same mean-tick price, accepted only from a window
-    ///      whose harmonic-mean liquidity reached the token's minimum and whose sub-window mean ticks agree, so the
-    ///      price was neither pushed through thin or empty ranges nor dominated by a few outlier blocks.
-    function _snapshotPrice(address token, IIndexFactory.TokenConfig memory config) private view returns (uint256 p) {
-        if (token == WETH) return WAD;
-        (int24 tick, uint256 spread, uint256 harmonicLiquidity) = _observe(config.pool);
-        if (harmonicLiquidity < config.minLiquidity) {
-            revert ThinPriceHistory(config.pool, harmonicLiquidity, config.minLiquidity);
+        (, int256 answer,, uint256 updatedAt,) = IAggregatorV3(feed).latestRoundData();
+        if (answer <= 0) revert InvalidPrice(token, answer);
+        // A timestamp in the future is not a fresh answer, it is a broken one; fail closed rather than underflow.
+        if (updatedAt > block.timestamp || block.timestamp - updatedAt > maxStaleness) {
+            revert StalePrice(token, updatedAt);
         }
-        if (spread > MAX_TICK_DEVIATION) revert PriceHistoryDeviates(config.pool, spread);
-        p = _quoteAtTick(tick, token < WETH);
-        if (p == 0) revert ZeroPrice(token);
-    }
-
-    /// @dev One read of `pool` over TWAP_WINDOW split into TWAP_SUB_WINDOWS equal parts: the window's mean tick, the
-    ///      spread between the highest and lowest part's mean tick, and the window's harmonic-mean liquidity. Mean
-    ///      ticks round toward negative infinity and the liquidity is computed as Uniswap's OracleLibrary.consult does.
-    function _observe(address pool) private view returns (int24 tick, uint256 spread, uint256 harmonicLiquidity) {
-        uint256 parts = TWAP_SUB_WINDOWS;
-        uint32 part = TWAP_WINDOW / TWAP_SUB_WINDOWS;
-        uint32[] memory secondsAgos = new uint32[](parts + 1);
-        uint32 ago = TWAP_WINDOW;
-        for (uint256 i = 0; i < parts; ++i) {
-            secondsAgos[i] = ago;
-            ago -= part;
+        uint8 feedDecimals = IAggregatorV3(feed).decimals();
+        uint8 tokenDecimals = IERC20Metadata(token).decimals();
+        if (feedDecimals > MAX_DECIMALS || tokenDecimals > MAX_DECIMALS) {
+            revert InvalidDecimals(token, tokenDecimals, feedDecimals);
         }
-        (int56[] memory tickCumulatives, uint160[] memory secondsPerLiquidity) =
-            IUniswapV3Pool(pool).observe(secondsAgos);
-
-        tick = _meanTick(tickCumulatives[parts] - tickCumulatives[0], TWAP_WINDOW);
-        int24 low = type(int24).max;
-        int24 high = type(int24).min;
-        for (uint256 i = 0; i < parts; ++i) {
-            int24 partTick = _meanTick(tickCumulatives[i + 1] - tickCumulatives[i], part);
-            if (partTick < low) low = partTick;
-            if (partTick > high) high = partTick;
-        }
-        // Every part updates both bounds, so high >= low and the difference is never negative.
+        uint256 scale = 10 ** (DECIMAL_BUDGET - feedDecimals - tokenDecimals);
+        // Both casts are safe because `answer` was checked positive above, so the sign bit is clear.
+        // Divided rather than multiplied, so an absurd answer raises this error instead of a panic.
         // forge-lint: disable-next-line(unsafe-typecast)
-        spread = uint256(int256(high) - int256(low));
-
-        uint160 liquidityDelta;
-        // Uniswap V3 accumulators wrap on overflow, so the difference is taken modulo 2^160 as in OracleLibrary.
-        unchecked {
-            liquidityDelta = secondsPerLiquidity[parts] - secondsPerLiquidity[0];
-        }
-        harmonicLiquidity = uint256(TWAP_WINDOW) * type(uint160).max / (uint256(liquidityDelta) << 32);
-    }
-
-    /// @dev Mean tick of a tick-accumulator change over `period` seconds, rounded toward negative infinity.
-    function _meanTick(int56 delta, uint32 period) private pure returns (int24 tick) {
-        int56 signedPeriod = int56(uint56(period));
-        // The mean of ticks that Uniswap keeps within [MIN_TICK, MAX_TICK] fits in int24; TickMath rejects anything else.
+        if (uint256(answer) > MAX_PRICE / scale) revert PriceTooHigh(token, answer);
         // forge-lint: disable-next-line(unsafe-typecast)
-        tick = int24(delta / signedPeriod);
-        if (delta < 0 && delta % signedPeriod != 0) --tick;
+        return uint256(answer) * scale;
     }
 
-    /// @dev WETH wei per 1e18 raw units of the token, as Uniswap's OracleLibrary.getQuoteAtTick computes it. The pool
-    ///      price is token1 per token0, so it is inverted when the token is token1.
-    function _quoteAtTick(int24 tick, bool tokenIsToken0) private pure returns (uint256) {
-        uint256 sqrtPriceX96 = TickMath.getSqrtPriceAtTick(tick);
-        if (sqrtPriceX96 <= type(uint128).max) {
-            uint256 ratioX192 = sqrtPriceX96 * sqrtPriceX96;
-            return tokenIsToken0 ? Math.mulDiv(ratioX192, WAD, 1 << 192) : Math.mulDiv(1 << 192, WAD, ratioX192);
-        }
-        uint256 ratioX128 = Math.mulDiv(sqrtPriceX96, sqrtPriceX96, 1 << 64);
-        return tokenIsToken0 ? Math.mulDiv(ratioX128, WAD, 1 << 128) : Math.mulDiv(1 << 128, WAD, ratioX128);
-    }
-
-    /// @dev The reference supply, or the total supply minus excluded balances, floored at zero. Callers reject zero.
-    function _supply(address token, uint256 referenceSupply, address[] memory excluded)
-        private
-        view
-        returns (uint256 circulating)
-    {
-        if (referenceSupply != 0) return referenceSupply;
-        circulating = IERC20(token).totalSupply();
-        uint256 n = excluded.length;
-        for (uint256 i = 0; i < n; ++i) {
-            uint256 held = IERC20(token).balanceOf(excluded[i]);
-            circulating = circulating > held ? circulating - held : 0;
-        }
+    /// @dev The reference supply, or the token's own total supply. Callers reject zero. A config once carried a list
+    ///      of excluded holders whose balances this subtracted with a live `balanceOf` inside the snapshot, which made
+    ///      a market cap manipulable within one transaction whenever an exclusion was an address a third party could
+    ///      fund and drain; the list is gone, and a supply that has to leave holdings out uses a reference figure
+    ///      behind the listing timelock instead (DA-10).
+    function _supply(address token, uint256 referenceSupply) private view returns (uint256) {
+        return referenceSupply != 0 ? referenceSupply : IERC20(token).totalSupply();
     }
 
     /// @dev WAD as soon as one price is too high for exact value products, 1 otherwise. One scale for the whole
@@ -333,7 +266,7 @@ contract IndexRule is IIndexRule {
         return 1;
     }
 
-    /// @dev Market cap in WAD-scaled WETH: supply times price over WAD, floored at one wei so a component with a
+    /// @dev Market cap in WAD-scaled dollars: supply times price over WAD, floored at one wei so a component with a
     ///      supply and a price never ranks as worthless. Weights only use ratios of caps, so the scale cancels out.
     function _cap(uint256 circulating, uint256 p) private pure returns (uint256) {
         return Math.max(Math.mulDiv(circulating, p, WAD), 1);
@@ -350,17 +283,22 @@ contract IndexRule is IIndexRule {
         caps = new uint256[](n);
         for (uint256 i = 0; i < n; ++i) {
             IIndexFactory.TokenConfig memory config = IIndexFactory(FACTORY).tokenConfig(tokens[i]);
-            prices[i] = _price(tokens[i], config.pool);
-            supplies[i] = _supply(tokens[i], config.referenceSupply, config.excluded);
+            prices[i] = _price(tokens[i], config.feed, config.maxStaleness);
+            supplies[i] = _supply(tokens[i], config.referenceSupply);
             if (supplies[i] == 0) revert ZeroSupply(tokens[i]);
             caps[i] = _cap(supplies[i], prices[i]);
         }
     }
 
-    /// @dev Prices and caps for a rebalance snapshot. Every component that can move needs a snapshot price. A kept
-    ///      component never trades: the uncapped methodology does not read it at all (its weight is renormalised away
-    ///      and a zero price and cap leave the targets unchanged), and the capped methodology reads it from the plain
-    ///      TWAP price, which shapes the moving components' targets through `_top` and `pool` as well (VR-02).
+    /// @dev Prices and caps for a rebalance snapshot. A kept component never trades, and the uncapped methodology does
+    ///      not read it (its weight is renormalised away and a zero price and cap leave the targets unchanged). The
+    ///      capped methodology does read it: its cap sits in the denominator of every other component's weight, so a
+    ///      stale feed there would otherwise reshape the targets and the turnover of the components that do trade
+    ///      (DA-06). It is therefore priced like every other component, which narrows XA-05: under the capped
+    ///      methodology a keep mask routes around a component that cannot be transferred, not around one whose feed
+    ///      cannot be read. Since the ceilings became caps rather than allocations, a kept cap moves nothing while no
+    ///      ceiling binds, because every weight is then the component's own; where one does bind, it still decides
+    ///      which components the excess is shared with and which carries the larger ceiling (VR-02).
     function _snapshotMarket(address[] calldata tokens, uint8 methodology, uint256 keepMask)
         private
         view
@@ -370,11 +308,10 @@ contract IndexRule is IIndexRule {
         prices = new uint256[](n);
         caps = new uint256[](n);
         for (uint256 i = 0; i < n; ++i) {
-            bool kept = _kept(keepMask, i);
-            if (kept && methodology == Methodology.UNCAPPED) continue;
+            if (_kept(keepMask, i) && methodology == Methodology.UNCAPPED) continue;
             IIndexFactory.TokenConfig memory config = IIndexFactory(FACTORY).tokenConfig(tokens[i]);
-            prices[i] = kept ? _price(tokens[i], config.pool) : _snapshotPrice(tokens[i], config);
-            uint256 circulating = _supply(tokens[i], config.referenceSupply, config.excluded);
+            prices[i] = _price(tokens[i], config.feed, config.maxStaleness);
+            uint256 circulating = _supply(tokens[i], config.referenceSupply);
             if (circulating == 0) revert ZeroSupply(tokens[i]);
             caps[i] = _cap(circulating, prices[i]);
         }
@@ -467,11 +404,18 @@ contract IndexRule is IIndexRule {
         (uint256 activeValue, uint256 activeWeight) = _bound(units, targets, basket, keepMask);
         _fill(targets, basket, activeValue, activeWeight);
 
+        // Turnover is what the rebalance actually trades, so it is the smaller of the two sides. Gross outflow alone
+        // would certify value that leaves the basket without anything being bought back (DA-08).
         uint256 sold = 0;
+        uint256 bought = 0;
         for (uint256 i = 0; i < n; ++i) {
-            if (targets[i] < units[i]) sold += Math.mulDiv(units[i] - targets[i], basket.prices[i], basket.scale);
+            if (targets[i] < units[i]) {
+                sold += Math.mulDiv(units[i] - targets[i], basket.prices[i], basket.scale);
+            } else if (targets[i] > units[i]) {
+                bought += Math.mulDiv(targets[i] - units[i], basket.prices[i], basket.scale);
+            }
         }
-        turnover = Math.mulDiv(sold, WAD, activeValue);
+        turnover = Math.mulDiv(Math.min(sold, bought), WAD, activeValue);
     }
 
     /// @dev Fills each rebalanced component's bounds and returns their value and weight at snapshot prices. A kept
@@ -561,8 +505,11 @@ contract IndexRule is IIndexRule {
     /// @dev Sets component `i`'s target to the units of its share of value, clipped to its bounds, and returns the value
     ///      the clip added or removed. The share is compared with the bounds as a value and only turned into units once
     ///      it lies between them: next to a price above MAX_EXACT_PRICE, the unclipped units of a component priced near
-    ///      zero would not fit in 256 bits. Units from a share are at most the ceiling, because the share is at most
-    ///      the ceiling's value; a WAD scale can round them under the floor, hence the maximum.
+    ///      zero would not fit in 256 bits. The share rounds UP into units, so the target basket is never worth less
+    ///      than the current one: a floor here dropped everything below one whole raw unit, and the settlement paid that
+    ///      value to the executor for nothing (DA-01). Units from a share are still at most the ceiling, because the
+    ///      share is at most the ceiling's value and the ceiling is a whole number; a WAD scale can round them under the
+    ///      floor, hence the maximum.
     function _clip(uint256[] memory targets, Basket memory basket, uint256 i, uint256 share)
         private
         pure

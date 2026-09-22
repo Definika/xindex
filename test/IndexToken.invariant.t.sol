@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
+import {IIndexRule} from "../src/interfaces/IIndexRule.sol";
 import {IndexToken} from "../src/IndexToken.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
@@ -15,9 +16,8 @@ contract IndexHandler is Test {
     MockMarket public market;
     MockRebalanceExecutor public executor;
     address public guardian;
-    address public oddExcluded;
     MockERC20[] public comps;
-    int24[] public baseTicks;
+    int256[] public basePrices;
     address[] public actors;
 
     uint256 public ghostIssued;
@@ -30,19 +30,17 @@ contract IndexHandler is Test {
     constructor(
         IndexToken index_,
         MockERC20[] memory comps_,
-        int24[] memory baseTicks_,
+        int256[] memory basePrices_,
         address[] memory actors_,
         MockMarket market_,
-        address guardian_,
-        address oddExcluded_
+        address guardian_
     ) {
         index = index_;
         comps = comps_;
-        baseTicks = baseTicks_;
+        basePrices = basePrices_;
         actors = actors_;
         market = market_;
         guardian = guardian_;
-        oddExcluded = oddExcluded_;
         executor = new MockRebalanceExecutor();
     }
 
@@ -131,17 +129,20 @@ contract IndexHandler is Test {
     // market and time
     // ---------------------------------------------------------------------
 
-    /// @dev Moves a component's time-weighted price up to about 7x either way from where it started. WETH has no pool.
-    function movePrice(uint256 compSeed, int256 delta) external {
+    /// @dev Moves a component's price up to 7x either way from where it started. Every component has a feed, WETH
+    ///      included, so none is skipped.
+    function movePrice(uint256 compSeed, uint256 delta) external {
         uint256 i = compSeed % comps.length;
-        if (address(comps[i]) == address(market.weth())) return;
-        market.setPriceTick(address(comps[i]), baseTicks[i] + int24(bound(delta, -20_000, 20_000)));
+        market.setPrice(address(comps[i]), basePrices[i] * int256(bound(delta, 1, 49)) / 7);
     }
 
-    /// @dev ODD counts on-chain supply with one excluded holder: minting there leaves its cap unchanged, minting to
-    ///      anyone else raises it.
-    function mintOddSupply(uint256 amount, bool toExcluded) external {
-        comps[3].mint(toExcluded ? oddExcluded : actors[0], bound(amount, 0, 1e30));
+    /// @dev ODD counts its own total supply, so a mint raises its market cap and moves the rule's targets, while a
+    ///      burn lowers it. Nothing a holder does to its balances can move it (DA-10).
+    function mintOddSupply(uint256 amount, bool burning) external {
+        uint256 delta = bound(amount, 0, 1e30);
+        if (!burning) return comps[3].mint(actors[0], delta);
+        uint256 held = comps[3].balanceOf(actors[0]);
+        comps[3].burn(actors[0], delta > held ? held : delta);
     }
 
     function warp(uint256 seconds_) external {
@@ -186,7 +187,22 @@ contract IndexHandler is Test {
         (uint256 eta,,) = index.pendingRebalance();
         if (eta == 0 || block.timestamp > eta + index.AUCTION_DURATION()) return false;
         if (block.timestamp < eta) vm.warp(eta + bound(offset, 0, index.AUCTION_DURATION()));
-        return true;
+        return _settlementClears();
+    }
+
+    /// @dev Whether the fill would clear MIN_SETTLEMENT_RATIO (DA-05). With less than one whole index token
+    ///      outstanding, every growing leg can round to zero while a shrinking one does not, which is a settlement
+    ///      that pays out and receives nothing: legitimately refused, so the handler must not call into it under
+    ///      `fail_on_revert`.
+    function _settlementClears() internal view returns (bool) {
+        (,, uint256[] memory amountsOut, uint256[] memory amountsIn) = index.previewRebalance();
+        address[] memory tokens = new address[](comps.length);
+        for (uint256 i = 0; i < comps.length; ++i) {
+            tokens[i] = address(comps[i]);
+        }
+        (uint256 outValue, uint256 inValue) =
+            IIndexRule(IndexFactory(index.FACTORY()).RULE()).settlementValues(tokens, amountsOut, amountsIn);
+        return inValue >= outValue * index.MIN_SETTLEMENT_RATIO() / 1e18;
     }
 
     function executeRebalance(uint256 offset) external {
@@ -234,11 +250,8 @@ contract IndexTokenInvariantTest is Test {
     function setUp() public {
         address owner = makeAddr("owner");
         address guardian = makeAddr("guardian");
-        address oddExcluded = makeAddr("oddExcluded");
         market = new MockMarket();
-        factory = new IndexFactory(
-            owner, guardian, address(market.weth()), address(market.uniswapV3Factory()), address(market.usdc())
-        );
+        factory = new IndexFactory(owner, guardian);
 
         comps.push(new MockERC20("WBTC", "WBTC", 8));
         comps.push(market.weth());
@@ -247,21 +260,20 @@ contract IndexTokenInvariantTest is Test {
         uint256[] memory units = new uint256[](4);
         (units[0], units[1], units[2], units[3]) = (100_000, 1e16, 10e6, 7); // the last is tiny so rounding bites
 
-        // Prices that make every component worth about 0.01 WETH per index token, and supplies proportional to the
-        // units, so the basket starts on its rule and supply changes create real turnover. ODD counts on-chain supply.
-        int24[] memory ticks = new int24[](4);
-        (ticks[0], ticks[1], ticks[2], ticks[3]) = (253_297, 0, 207_243, 348_972);
+        // Prices, in dollars per whole token, that make every component worth 30 dollars per index token, and
+        // supplies that give all four the same market cap, so the basket starts on its rule and supply changes create
+        // real turnover. ODD counts on-chain supply. WBTC at 30,000 and WETH at 3,000 are the realistic pair; USDC and
+        // ODD are priced to match them rather than to look like themselves.
+        int256[] memory prices = new int256[](4);
+        (prices[0], prices[1], prices[2], prices[3]) = (30_000e8, 3_000e8, 3e8, 42_857_142_857_142e8);
         uint256[] memory supplies = new uint256[](4);
         (supplies[0], supplies[1], supplies[2], supplies[3]) = (1e34, 1e45, 1e36, 0);
         comps[3].mint(makeAddr("oddHolder"), 7e29);
 
         address[] memory t = new address[](comps.length);
-        address[] memory excluded = new address[](1);
-        excluded[0] = oddExcluded;
         for (uint256 i = 0; i < comps.length; ++i) {
             t[i] = address(comps[i]);
-            IIndexFactory.TokenConfig memory config =
-                market.configWith(t[i], ticks[i], supplies[i], i == 3 ? excluded : new address[](0));
+            IIndexFactory.TokenConfig memory config = market.configWith(t[i], prices[i], supplies[i]);
             vm.prank(owner);
             factory.proposeListing(t[i], config);
         }
@@ -274,7 +286,7 @@ contract IndexTokenInvariantTest is Test {
         for (uint256 i = 0; i < 5; ++i) {
             actors.push(makeAddr(string(abi.encodePacked("actor", i))));
         }
-        handler = new IndexHandler(index, comps, ticks, actors, market, guardian, oddExcluded);
+        handler = new IndexHandler(index, comps, prices, actors, market, guardian);
         targetContract(address(handler));
     }
 

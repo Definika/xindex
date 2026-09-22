@@ -5,7 +5,11 @@ import {Test} from "forge-std/Test.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
-import {MockMarket} from "./mocks/MockMarket.sol";
+import {DEFAULT_STALENESS, MockMarket} from "./mocks/MockMarket.sol";
+
+// The dollar every handler token is priced at. The rule only needs a positive, fresh answer here; what these
+// invariants are about is the listing flow, not the price.
+int256 constant ONE_DOLLAR = 1e8;
 
 /// @notice Drives the factory's listing and guardian flows in any order, at any point in their windows.
 /// @dev `fail_on_revert = true`, so every action checks its own precondition first. The handler mirrors what the
@@ -41,7 +45,7 @@ contract FactoryHandler is Test {
     constructor(IndexFactory factory_, MockMarket market_, address owner_, address guardian_, MockERC20[] memory t) {
         (factory, market, owner, guardian, ghostGuardian) = (factory_, market_, owner_, guardian_, guardian_);
         // An unconfigured token still hashes to something, so the ghost starts at the empty config's own hash.
-        emptyConfig = hashConfig(IIndexFactory.TokenConfig(address(0), 0, 0, new address[](0)));
+        emptyConfig = hashConfig(IIndexFactory.TokenConfig(address(0), 0, 0));
         for (uint256 i = 0; i < t.length; ++i) {
             tokens.push(t[i]);
             ghostConfig[address(t[i])] = emptyConfig;
@@ -53,14 +57,14 @@ contract FactoryHandler is Test {
     }
 
     /// @dev A config the rule accepts. The two differ in their reference supply, which is part of the config; the
-    ///      pool's tick is not, so varying that would leave `proposeConfig` proposing the config already in force.
+    ///      feed's answer is not, so varying that would leave `proposeConfig` proposing the config already in force.
     function _config(address token, bool alternate) internal returns (IIndexFactory.TokenConfig memory) {
-        return market.configWith(token, 0, alternate ? 2e24 : 1e24, new address[](0));
+        return market.configWith(token, ONE_DOLLAR, alternate ? 2e24 : 1e24);
     }
 
     /// @notice The identity of a config, as both the handler and the invariants compare them.
     function hashConfig(IIndexFactory.TokenConfig memory c) public pure returns (bytes32) {
-        return keccak256(abi.encode(c.pool, c.minLiquidity, c.referenceSupply, c.excluded));
+        return keccak256(abi.encode(c.feed, c.maxStaleness, c.referenceSupply));
     }
 
     /// @dev Whoever currently holds the role. After a guardian change the original address is no longer authorised,
@@ -190,9 +194,7 @@ contract IndexFactoryInvariantTest is Test {
 
     function setUp() public {
         market = new MockMarket();
-        factory = new IndexFactory(
-            owner, guardian, address(market.weth()), address(market.uniswapV3Factory()), address(market.usdc())
-        );
+        factory = new IndexFactory(owner, guardian);
         for (uint256 i = 0; i < 6; ++i) {
             tokens.push(new MockERC20("Comp", "C", 18));
         }
@@ -266,7 +268,7 @@ contract IndexFactoryInvariantTest is Test {
             address t = address(tokens[i]);
             if (handler.ghostConfig(t) == handler.emptyConfig()) continue;
             IIndexFactory.TokenConfig memory current = factory.tokenConfig(t);
-            assertTrue(current.pool != address(0) || current.referenceSupply != 0, "a config was cleared by a delist");
+            assertTrue(current.feed != address(0) || current.referenceSupply != 0, "a config was cleared by a delist");
         }
     }
 

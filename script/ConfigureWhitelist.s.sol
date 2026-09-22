@@ -6,8 +6,9 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
+import {IAggregatorV3} from "../src/interfaces/IAggregatorV3.sol";
 import {IIndexRule} from "../src/interfaces/IIndexRule.sol";
-import {IUniswapV3Factory} from "../src/interfaces/IUniswapV3Factory.sol";
+import {CompositeFeed} from "../src/CompositeFeed.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
 
@@ -33,26 +34,25 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///   LISTING_MODE  `propose`, `execute`, `safe`, or `status` (read-only: what is listed, pending and due, per entry).
 ///   FACTORY       Deployed IndexFactory.
 ///   WHITELIST     `default` for the mainnet list below (chain 1 only), or comma-separated entries
-///                 `token:fee:minLiquidity[:referenceSupply[:excluded|excluded...]]`. `fee` is the Uniswap V3 fee tier
-///                 of the token's WETH pool, or 0 for WETH itself. `minLiquidity` is the least harmonic-mean liquidity
-///                 a rebalance snapshot accepts from that pool (0 for WETH); a tenth of the pool's current
-///                 harmonic-mean liquidity is the policy. `referenceSupply` is in the token's raw units (with its
-///                 decimals); an empty or missing one means on-chain supply.
+///                 `token:feed:maxStaleness[:referenceSupply]`. `feed` is the token's Chainlink-shaped USD aggregator,
+///                 or a `CompositeFeed` over two of them. `maxStaleness` is the oldest answer the rule will price the
+///                 token from, in seconds; the policy is the feed's heartbeat plus half an hour. `referenceSupply` is
+///                 in the token's raw units (with its decimals); an empty or missing one means on-chain supply.
+///   WBTC_FEED     Required with WHITELIST=default: the deployed `CompositeFeed` over BTC/USD and WBTC/BTC that
+///                 `Deploy` logs. It is checked against both legs before it is proposed.
 ///   RELIST        Optional. Comma-separated delisted tokens that propose and safe mode may list again; any other
 ///                 delisted token only gets config changes.
 contract ConfigureWhitelist is Script {
-    /// @notice A token and the config to list it with. The pool is looked up from `fee` at proposal time.
+    /// @notice A token and the config to list it with.
     /// @param token Token to list or configure.
-    /// @param fee Fee tier of the token's Uniswap V3 WETH pool, or 0 for WETH.
-    /// @param minLiquidity Least harmonic-mean liquidity a rebalance snapshot accepts from the pool; 0 for WETH.
+    /// @param feed The token's USD price feed, read as an {IAggregatorV3}.
+    /// @param maxStaleness Oldest answer the rule will price the token from, in seconds.
     /// @param referenceSupply Supply in the token's raw units, or 0 for on-chain supply.
-    /// @param excluded Holders whose balances on-chain supply leaves out; only without a reference supply.
     struct Entry {
         address token;
-        uint24 fee;
-        uint128 minLiquidity;
+        address feed;
+        uint32 maxStaleness;
         uint256 referenceSupply;
-        address[] excluded;
     }
 
     /// @notice What `status` found for one entry.
@@ -72,18 +72,13 @@ contract ConfigureWhitelist is Script {
         bool pendingMatches;
     }
 
-    /// @notice Uniswap V3 fee tiers of the default list's pools: 0.05% and 0.3%.
-    uint24 public constant POOL_FEE_LOW = ScriptUtils.POOL_FEE_LOW;
-    uint24 public constant POOL_FEE_MEDIUM = ScriptUtils.POOL_FEE_MEDIUM;
-    uint24 public constant POOL_FEE_HIGH = ScriptUtils.POOL_FEE_HIGH;
     /// @notice Fewest and most decimals the whitelist policy accepts for a component.
     uint8 public constant MIN_DECIMALS = 6;
     uint8 public constant MAX_DECIMALS = 18;
 
-    /// @dev Positions of the optional-length fields in a WHITELIST entry; token and fee come first.
-    uint256 private constant MIN_LIQUIDITY_FIELD = 2;
+    /// @dev Positions of the optional-length fields in a WHITELIST entry; token and feed come first.
+    uint256 private constant MAX_STALENESS_FIELD = 2;
     uint256 private constant REFERENCE_SUPPLY_FIELD = 3;
-    uint256 private constant EXCLUDED_FIELD = 4;
 
     /// @notice What `propose` does for an entry: nothing, `proposeListing`, or `proposeConfig`.
     enum Action {
@@ -96,138 +91,91 @@ contract ConfigureWhitelist is Script {
     error UnknownMode(string mode);
     /// @notice WHITELIST=default off chain 1.
     error DefaultListOnlyOnMainnet();
-    /// @notice A WHITELIST entry has fewer than three or more than five fields.
+    /// @notice A WHITELIST entry has fewer than three or more than four fields.
     error MalformedEntry(string entry);
+    /// @notice WBTC_FEED is not a CompositeFeed over BTC/USD and WBTC/BTC with their policy staleness bounds.
+    error WrongCompositeFeed(address feed);
     /// @notice Propose mode needs an owner that can sign transactions, and this factory's owner is a contract (a Safe
     ///         on mainnet). Use `LISTING_MODE=safe` and submit the calldata it logs from the owner.
     error OwnerIsContract(address owner);
 
     /// @notice Default mainnet components, from `MainnetAddresses`. Reference supplies are CoinGecko's circulating
-    ///         supplies (propose a config change when they drift) and minimum liquidities a tenth of each pool's
-    ///         harmonic-mean liquidity; `MainnetAddresses` dates both. WBTC and WETH count the whole bitcoin and ether
-    ///         supply, because their on-chain supply is only the wrapped float; tBTC uses its own on-chain supply. The
-    ///         ten DeFi tokens are the largest by market capitalisation in CoinGecko's DeFi category on 2026-09-17 that
-    ///         are governance tokens on Ethereum within the whitelist policy and whose WETH pool held at least 20 WETH.
-    ///         Most of their pools are thin and keep fewer than the 200 observation slots the rule asks for, so
-    ///         propose mode skips them until someone grows the ring; the README lists each pool's depth. WBTC can be
-    ///         paused by its custodian and LDO's transfers can be disabled by its controller, so the app must label
-    ///         both.
-    /// @return list WBTC, WETH, LINK, UNI and tBTC, then AAVE, ONDO, ENA, MORPHO, ETHFI, CRV, PENDLE, OHM, LDO and
-    ///         SYRUP, in that order.
-    function defaultMainnetList() public pure returns (Entry[] memory list) {
-        address[] memory none = new address[](0);
-        list = new Entry[](15);
+    ///         supplies (propose a config change when they drift) and staleness bounds each feed's heartbeat plus half
+    ///         an hour; `MainnetAddresses` dates both and names every feed's heartbeat. WETH, WBTC and wrapped SOL
+    ///         count the whole ether, bitcoin and solana supply, because their on-chain supply is only the wrapped or
+    ///         bridged float; wstETH counts its own, because each one is a claim on staked ether rather than a copy of
+    ///         a supply held elsewhere. WBTC has no USD feed of its own and is priced through `wbtcFeed`, a
+    ///         `CompositeFeed` over BTC/USD and WBTC/BTC. WBTC can be paused by its custodian, wrapped SOL depends on
+    ///         the Wormhole bridge and wstETH on Lido, so the app must label all three; an index holding both WETH and
+    ///         wstETH holds two claims on ether, which it must label too.
+    /// @param wbtcFeed The deployed composite feed for WBTC; {checkWbtcFeed} validates it.
+    /// @return list WETH, wstETH, WBTC, wrapped SOL, LINK, UNI and AAVE, in that order.
+    function defaultMainnetList(address wbtcFeed) public pure returns (Entry[] memory list) {
+        list = new Entry[](7);
         list[0] = Entry({
-            token: MainnetAddresses.WBTC,
-            fee: POOL_FEE_LOW,
-            minLiquidity: MainnetAddresses.WBTC_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.BTC_SUPPLY,
-            excluded: none
+            token: MainnetAddresses.WETH,
+            feed: MainnetAddresses.ETH_USD_FEED,
+            maxStaleness: MainnetAddresses.STALENESS_1H,
+            referenceSupply: MainnetAddresses.ETH_SUPPLY
         });
         list[1] = Entry({
-            token: MainnetAddresses.WETH,
-            fee: 0,
-            minLiquidity: 0,
-            referenceSupply: MainnetAddresses.ETH_SUPPLY,
-            excluded: none
+            token: MainnetAddresses.WSTETH,
+            feed: MainnetAddresses.WSTETH_USD_FEED,
+            maxStaleness: MainnetAddresses.STALENESS_24H,
+            referenceSupply: MainnetAddresses.WSTETH_SUPPLY
         });
         list[2] = Entry({
-            token: MainnetAddresses.LINK,
-            fee: POOL_FEE_MEDIUM,
-            minLiquidity: MainnetAddresses.LINK_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.LINK_SUPPLY,
-            excluded: none
+            token: MainnetAddresses.WBTC,
+            feed: wbtcFeed,
+            maxStaleness: MainnetAddresses.STALENESS_24H,
+            referenceSupply: MainnetAddresses.BTC_SUPPLY
         });
         list[3] = Entry({
-            token: MainnetAddresses.UNI,
-            fee: POOL_FEE_MEDIUM,
-            minLiquidity: MainnetAddresses.UNI_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.UNI_SUPPLY,
-            excluded: none
+            token: MainnetAddresses.WSOL,
+            feed: MainnetAddresses.SOL_USD_FEED,
+            maxStaleness: MainnetAddresses.STALENESS_24H,
+            referenceSupply: MainnetAddresses.SOL_SUPPLY
         });
         list[4] = Entry({
-            token: MainnetAddresses.TBTC,
-            fee: POOL_FEE_MEDIUM,
-            minLiquidity: MainnetAddresses.TBTC_MIN_LIQUIDITY,
-            referenceSupply: 0,
-            excluded: none
+            token: MainnetAddresses.LINK,
+            feed: MainnetAddresses.LINK_USD_FEED,
+            maxStaleness: MainnetAddresses.STALENESS_1H,
+            referenceSupply: MainnetAddresses.LINK_SUPPLY
         });
         list[5] = Entry({
-            token: MainnetAddresses.AAVE,
-            fee: POOL_FEE_MEDIUM,
-            minLiquidity: MainnetAddresses.AAVE_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.AAVE_SUPPLY,
-            excluded: none
+            token: MainnetAddresses.UNI,
+            feed: MainnetAddresses.UNI_USD_FEED,
+            maxStaleness: MainnetAddresses.STALENESS_1H,
+            referenceSupply: MainnetAddresses.UNI_SUPPLY
         });
         list[6] = Entry({
-            token: MainnetAddresses.ONDO,
-            fee: POOL_FEE_MEDIUM,
-            minLiquidity: MainnetAddresses.ONDO_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.ONDO_SUPPLY,
-            excluded: none
+            token: MainnetAddresses.AAVE,
+            feed: MainnetAddresses.AAVE_USD_FEED,
+            maxStaleness: MainnetAddresses.STALENESS_1H,
+            referenceSupply: MainnetAddresses.AAVE_SUPPLY
         });
-        list[7] = Entry({
-            token: MainnetAddresses.ENA,
-            fee: POOL_FEE_MEDIUM,
-            minLiquidity: MainnetAddresses.ENA_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.ENA_SUPPLY,
-            excluded: none
-        });
-        list[8] = Entry({
-            token: MainnetAddresses.MORPHO,
-            fee: POOL_FEE_MEDIUM,
-            minLiquidity: MainnetAddresses.MORPHO_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.MORPHO_SUPPLY,
-            excluded: none
-        });
-        list[9] = Entry({
-            token: MainnetAddresses.ETHFI,
-            fee: POOL_FEE_MEDIUM,
-            minLiquidity: MainnetAddresses.ETHFI_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.ETHFI_SUPPLY,
-            excluded: none
-        });
-        list[10] = Entry({
-            token: MainnetAddresses.CRV,
-            fee: POOL_FEE_MEDIUM,
-            minLiquidity: MainnetAddresses.CRV_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.CRV_SUPPLY,
-            excluded: none
-        });
-        list[11] = Entry({
-            token: MainnetAddresses.PENDLE,
-            fee: POOL_FEE_MEDIUM,
-            minLiquidity: MainnetAddresses.PENDLE_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.PENDLE_SUPPLY,
-            excluded: none
-        });
-        list[12] = Entry({
-            token: MainnetAddresses.OHM,
-            fee: POOL_FEE_MEDIUM,
-            minLiquidity: MainnetAddresses.OHM_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.OHM_SUPPLY,
-            excluded: none
-        });
-        list[13] = Entry({
-            token: MainnetAddresses.LDO,
-            fee: POOL_FEE_MEDIUM,
-            minLiquidity: MainnetAddresses.LDO_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.LDO_SUPPLY,
-            excluded: none
-        });
-        list[14] = Entry({
-            token: MainnetAddresses.SYRUP,
-            fee: POOL_FEE_HIGH,
-            minLiquidity: MainnetAddresses.SYRUP_MIN_LIQUIDITY,
-            referenceSupply: MainnetAddresses.SYRUP_SUPPLY,
-            excluded: none
-        });
+    }
+
+    /// @notice Reverts unless `feed` is a `CompositeFeed` over exactly BTC/USD and WBTC/BTC with the policy bounds on
+    ///         each leg. The composite is deployed rather than constant, so this is what ties the address an operator
+    ///         passes to the two feeds it is supposed to multiply.
+    /// @param feed The WBTC_FEED value.
+    function checkWbtcFeed(address feed) public view {
+        if (feed.code.length == 0) revert WrongCompositeFeed(feed);
+        try CompositeFeed(feed).FEED_A() returns (IAggregatorV3 a) {
+            if (address(a) != MainnetAddresses.BTC_USD_FEED) revert WrongCompositeFeed(feed);
+        } catch {
+            revert WrongCompositeFeed(feed);
+        }
+        if (address(CompositeFeed(feed).FEED_B()) != MainnetAddresses.WBTC_BTC_FEED) revert WrongCompositeFeed(feed);
+        if (CompositeFeed(feed).MAX_AGE_A() != MainnetAddresses.STALENESS_1H) revert WrongCompositeFeed(feed);
+        if (CompositeFeed(feed).MAX_AGE_B() != MainnetAddresses.STALENESS_24H) revert WrongCompositeFeed(feed);
     }
 
     /// @notice Reads FACTORY, WHITELIST, RELIST and LISTING_MODE from the environment and runs that mode.
     function run() external {
         IIndexFactory factory = IIndexFactory(vm.envAddress("FACTORY"));
-        Entry[] memory list = resolveList(vm.envString("WHITELIST"));
+        Entry[] memory list = resolveList(vm.envString("WHITELIST"), vm.envOr("WBTC_FEED", address(0)));
         address[] memory relist = parseAddresses(vm.envOr("RELIST", string("")));
         string memory mode = vm.envString("LISTING_MODE");
         if (ScriptUtils.same(mode, "propose")) {
@@ -260,13 +208,15 @@ contract ConfigureWhitelist is Script {
     }
 
     /// @notice `default` means the mainnet list and is only accepted on chain 1; anything else is parsed as
-    ///         comma-separated entries.
+    ///         comma-separated entries. The default list needs `wbtcFeed`, which is checked before it is used.
     /// @param raw The WHITELIST value.
+    /// @param wbtcFeed The WBTC_FEED value; only read for the default list.
     /// @return list The entries, in order.
-    function resolveList(string memory raw) public view returns (Entry[] memory list) {
+    function resolveList(string memory raw, address wbtcFeed) public view returns (Entry[] memory list) {
         if (ScriptUtils.same(raw, "default")) {
             if (block.chainid != 1) revert DefaultListOnlyOnMainnet();
-            return defaultMainnetList();
+            checkWbtcFeed(wbtcFeed);
+            return defaultMainnetList(wbtcFeed);
         }
         string[] memory parts = vm.split(raw, ",");
         list = new Entry[](parts.length);
@@ -275,42 +225,30 @@ contract ConfigureWhitelist is Script {
         }
     }
 
-    /// @notice Parses `token:fee:minLiquidity[:referenceSupply[:excluded|excluded...]]`.
+    /// @notice Parses `token:feed:maxStaleness[:referenceSupply]`.
     /// @param raw One entry, without surrounding spaces.
     /// @return entry The parsed entry; an empty or missing reference supply is 0.
     function parseEntry(string memory raw) public pure returns (Entry memory entry) {
         string[] memory fields = vm.split(raw, ":");
-        if (fields.length <= MIN_LIQUIDITY_FIELD || fields.length > EXCLUDED_FIELD + 1) revert MalformedEntry(raw);
+        if (fields.length <= MAX_STALENESS_FIELD || fields.length > REFERENCE_SUPPLY_FIELD + 1) {
+            revert MalformedEntry(raw);
+        }
         entry.token = vm.parseAddress(fields[0]);
-        entry.fee = SafeCast.toUint24(vm.parseUint(fields[1]));
-        entry.minLiquidity = SafeCast.toUint128(vm.parseUint(fields[MIN_LIQUIDITY_FIELD]));
+        entry.feed = vm.parseAddress(fields[1]);
+        entry.maxStaleness = SafeCast.toUint32(vm.parseUint(fields[MAX_STALENESS_FIELD]));
         if (fields.length > REFERENCE_SUPPLY_FIELD && bytes(fields[REFERENCE_SUPPLY_FIELD]).length != 0) {
             entry.referenceSupply = vm.parseUint(fields[REFERENCE_SUPPLY_FIELD]);
         }
-        if (fields.length > EXCLUDED_FIELD && bytes(fields[EXCLUDED_FIELD]).length != 0) {
-            string[] memory excluded = vm.split(fields[EXCLUDED_FIELD], "|");
-            entry.excluded = new address[](excluded.length);
-            for (uint256 i = 0; i < excluded.length; ++i) {
-                entry.excluded[i] = vm.parseAddress(excluded[i]);
-            }
-        }
     }
 
-    /// @notice The config `entry` proposes: its pool is the Uniswap V3 factory's WETH pool at `entry.fee`, or none for
-    ///         a zero fee.
+    /// @notice The config `entry` proposes. Every field is the entry's: nothing is looked up, so what an operator
+    ///         reads in WHITELIST is exactly what the factory is asked to store.
     /// @param entry The entry.
-    /// @param weth The rule's WETH.
-    /// @param uniswapV3Factory The rule's Uniswap V3 factory.
-    /// @return config The token config, with a zero pool if the factory has no pool at that fee.
-    function configFor(Entry memory entry, address weth, address uniswapV3Factory)
-        public
-        view
-        returns (IIndexFactory.TokenConfig memory config)
-    {
-        config.minLiquidity = entry.minLiquidity;
+    /// @return config The token config.
+    function configFor(Entry memory entry) public pure returns (IIndexFactory.TokenConfig memory config) {
+        config.feed = entry.feed;
+        config.maxStaleness = entry.maxStaleness;
         config.referenceSupply = entry.referenceSupply;
-        config.excluded = entry.excluded;
-        if (entry.fee != 0) config.pool = IUniswapV3Factory(uniswapV3Factory).getPool(entry.token, weth, entry.fee);
     }
 
     /// @notice Owner only. For every entry with nothing pending, proposes a listing for a token that was never listed
@@ -328,12 +266,10 @@ contract ConfigureWhitelist is Script {
         bytes memory ownerCode = factoryOwner.code;
         if (ownerCode.length != 0 && !ScriptUtils.isDelegatedAccount(ownerCode)) revert OwnerIsContract(factoryOwner);
         IIndexRule rule = IIndexRule(factory.RULE());
-        address weth = rule.WETH();
-        address uniswapV3Factory = rule.UNISWAP_V3_FACTORY();
         vm.startBroadcast();
         for (uint256 i = 0; i < list.length; ++i) {
             address token = list[i].token;
-            IIndexFactory.TokenConfig memory config = configFor(list[i], weth, uniswapV3Factory);
+            IIndexFactory.TokenConfig memory config = configFor(list[i]);
             Action action = _action(factory, rule, token, config, relist);
             if (action == Action.List) {
                 factory.proposeListing(token, config);
@@ -358,13 +294,11 @@ contract ConfigureWhitelist is Script {
         returns (bytes[] memory calls)
     {
         IIndexRule rule = IIndexRule(factory.RULE());
-        address weth = rule.WETH();
-        address uniswapV3Factory = rule.UNISWAP_V3_FACTORY();
         bytes[] memory all = new bytes[](list.length);
         uint256 count = 0;
         for (uint256 i = 0; i < list.length; ++i) {
             address token = list[i].token;
-            IIndexFactory.TokenConfig memory config = configFor(list[i], weth, uniswapV3Factory);
+            IIndexFactory.TokenConfig memory config = configFor(list[i]);
             Action action = _action(factory, rule, token, config, relist);
             if (action == Action.List) {
                 all[count++] = abi.encodeCall(IIndexFactory.proposeListing, (token, config));
@@ -384,23 +318,27 @@ contract ConfigureWhitelist is Script {
     /// @param factory The deployed factory.
     /// @param list Entries whose proposals to execute.
     function execute(IIndexFactory factory, Entry[] memory list) public {
-        IIndexRule rule = IIndexRule(factory.RULE());
-        address weth = rule.WETH();
-        address uniswapV3Factory = rule.UNISWAP_V3_FACTORY();
         vm.startBroadcast();
         for (uint256 i = 0; i < list.length; ++i) {
             address token = list[i].token;
             uint256 eta = factory.listingEta(token);
             if (eta == 0) continue; // nothing is pending for this token
-            if (!_sameConfig(factory.pendingTokenConfig(token), configFor(list[i], weth, uniswapV3Factory))) {
+            if (!_sameConfig(factory.pendingTokenConfig(token), configFor(list[i]))) {
                 console2.log("not executed, the pending config differs from the entry", token);
             } else if (block.timestamp < eta) {
                 console2.log("not ready yet", token);
             } else if (block.timestamp > eta + factory.PROPOSAL_WINDOW()) {
                 console2.log("expired, propose again", token);
             } else {
+                bool relisting = factory.pendingIsListing(token);
                 factory.executeListing(token);
-                console2.log("executed", token);
+                // A config change executes cleanly but leaves a delisted token delisted; say so rather than let
+                // "executed" read as a relisting (DA-20).
+                if (!relisting && !factory.isWhitelisted(token)) {
+                    console2.log("executed the config change; the token is still delisted", token);
+                } else {
+                    console2.log("executed", token);
+                }
             }
         }
         vm.stopBroadcast();
@@ -418,7 +356,11 @@ contract ConfigureWhitelist is Script {
     ) private view returns (Action) {
         uint256 eta = factory.listingEta(token);
         if (eta != 0 && block.timestamp <= eta + factory.PROPOSAL_WINDOW()) {
-            if (_sameConfig(factory.pendingTokenConfig(token), config)) {
+            // A config-only proposal never whitelists, so it cannot carry out a relisting however long it waits.
+            // Reporting it as "already pending" left the operator believing RELIST had been acted on (DA-20).
+            if (!factory.isWhitelisted(token) && _contains(relist, token) && !factory.pendingIsListing(token)) {
+                console2.log("skipped, RELIST needs a listing but a config change is pending; cancel it first", token);
+            } else if (_sameConfig(factory.pendingTokenConfig(token), config)) {
                 console2.log("already pending", token);
             } else {
                 console2.log("skipped, a different config is pending; cancel it first", token);
@@ -427,8 +369,8 @@ contract ConfigureWhitelist is Script {
         }
         IIndexFactory.TokenConfig memory current = factory.tokenConfig(token);
         bool listed = factory.isWhitelisted(token);
-        // Every config in force has a pool or a reference supply, so an empty one means the token was never listed.
-        bool configured = current.pool != address(0) || current.referenceSupply != 0;
+        // Every config in force names a feed, so an empty one means the token was never listed.
+        bool configured = current.feed != address(0);
         Action action = Action.List;
         if (configured && (listed || !_contains(relist, token))) {
             if (_sameConfig(current, config)) {
@@ -437,7 +379,7 @@ contract ConfigureWhitelist is Script {
             }
             action = Action.ChangeConfig;
         }
-        if (!_followsPolicy(token, rule.USDC(), config.referenceSupply)) return Action.Skip;
+        if (!_followsPolicy(token, config.feed, config.referenceSupply)) return Action.Skip;
         try rule.checkConfig(token, config) {
             return action;
         } catch (bytes memory reason) {
@@ -447,12 +389,23 @@ contract ConfigureWhitelist is Script {
         }
     }
 
-    /// @dev The parts of the whitelist policy a script can check: 6 to 18 decimals, and no mint currency as a component:
-    ///      mainnet's USDC and USDT, and the rule's own USDC, which is the mint currency on any other chain. Logs a
-    ///      reference supply in whole tokens, where a decimals slip shows.
-    function _followsPolicy(address token, address ruleUsdc, uint256 referenceSupply) private view returns (bool) {
-        if (token == MainnetAddresses.USDC || token == MainnetAddresses.USDT || token == ruleUsdc) {
+    /// @dev The parts of the whitelist policy a script can check: 6 to 18 decimals, no mint currency as a component,
+    ///      and a feed that answers. Logs the feed's own description, so an operator reading the run sees which pair
+    ///      each address really is rather than trusting the entry, and a reference supply in whole tokens, where a
+    ///      decimals slip shows.
+    function _followsPolicy(address token, address feed, uint256 referenceSupply) private view returns (bool) {
+        if (token == MainnetAddresses.USDC || token == MainnetAddresses.USDT) {
             console2.log("skipped, a mint currency is not a component", token);
+            return false;
+        }
+        if (feed.code.length == 0) {
+            console2.log("skipped, the entry names no feed with code", token, feed);
+            return false;
+        }
+        try IAggregatorV3(feed).description() returns (string memory pair) {
+            console2.log("feed", feed, pair);
+        } catch {
+            console2.log("skipped, the feed does not answer as an aggregator", token, feed);
             return false;
         }
         uint8 decimals = 0;
@@ -478,14 +431,11 @@ contract ConfigureWhitelist is Script {
     /// @param list Entries to report on.
     /// @return reports One report per entry, in entry order; the log lines say the same.
     function status(IIndexFactory factory, Entry[] memory list) public view returns (Report[] memory reports) {
-        IIndexRule rule = IIndexRule(factory.RULE());
-        address weth = rule.WETH();
-        address uniswapV3Factory = rule.UNISWAP_V3_FACTORY();
         uint256 window = factory.PROPOSAL_WINDOW();
         reports = new Report[](list.length);
         for (uint256 i = 0; i < list.length; ++i) {
             address token = list[i].token;
-            IIndexFactory.TokenConfig memory config = configFor(list[i], weth, uniswapV3Factory);
+            IIndexFactory.TokenConfig memory config = configFor(list[i]);
             Report memory report = reports[i];
             report.token = token;
             report.listed = factory.isWhitelisted(token);
@@ -514,7 +464,6 @@ contract ConfigureWhitelist is Script {
         pure
         returns (bool)
     {
-        return a.pool == b.pool && a.minLiquidity == b.minLiquidity && a.referenceSupply == b.referenceSupply
-            && keccak256(abi.encode(a.excluded)) == keccak256(abi.encode(b.excluded));
+        return a.feed == b.feed && a.maxStaleness == b.maxStaleness && a.referenceSupply == b.referenceSupply;
     }
 }

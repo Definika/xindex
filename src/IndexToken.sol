@@ -55,6 +55,9 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
     uint256 public constant AUCTION_START_MULTIPLIER = 1.5e18;
     uint256 public constant AUCTION_END_MULTIPLIER = 0.9e18;
     uint256 public constant MIN_TURNOVER = 0.005e18;
+    /// @dev AUCTION_END_MULTIPLIER, less 5% for the gap between the rule's feed price, which moves only when the
+    ///      feed publishes, and the spot an executor trades at. See _checkSettlementValue.
+    uint256 public constant MIN_SETTLEMENT_RATIO = 0.85e18;
     address public immutable FACTORY;
     address public immutable RULE;
 
@@ -204,10 +207,13 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
                 uint256 amount = amounts[i];
                 if (amount == 0 || (skipMask & (1 << i)) == 0) continue;
                 address token = _components[i].token;
-                claimOf[msg.sender][token] += amount;
+                // Booked to `to`, which receives every other component of this redemption. Booking it to msg.sender
+                // stranded the skipped components whenever a router redeemed on a holder's behalf, because only the
+                // router could ever collect them (DA-17).
+                claimOf[to][token] += amount;
                 totalClaims[token] += amount;
                 // forge-lint: disable-next-line(reentrancy-events)
-                emit ClaimRecorded(msg.sender, token, amount);
+                emit ClaimRecorded(to, token, amount);
             }
         }
 
@@ -281,14 +287,47 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
 
     /// @inheritdoc IIndexToken
     function executeRebalance(bytes calldata data) external nonReentrant onlyInitialized {
+        _settle(data, new uint256[](0));
+    }
+
+    /// @inheritdoc IIndexToken
+    function executeRebalance(bytes calldata data, uint256[] calldata maxAmountsIn)
+        external
+        nonReentrant
+        onlyInitialized
+    {
+        _settle(data, maxAmountsIn);
+    }
+
+    function _settle(bytes calldata data, uint256[] memory maxAmountsIn) private {
         (uint256 multiplier, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn) =
             _previewRebalance(totalSupply());
 
+        // Settlement amounts scale with the supply at execution time, and issue stays open through the auction, so a
+        // stranger can enlarge them between an executor's quote and its transaction. An executor that funded itself
+        // from a simulation binds the fill to what it quoted (DA-13); passing nothing keeps the open settlement.
+        uint256 bounds = maxAmountsIn.length;
+        if (bounds != 0) {
+            if (bounds != amountsIn.length) revert LengthMismatch();
+            for (uint256 i = 0; i < bounds; ++i) {
+                if (amountsIn[i] > maxAmountsIn[i]) {
+                    revert RebalanceMovedOn(_components[i].token, amountsIn[i], maxAmountsIn[i]);
+                }
+            }
+        }
+
+        _checkSettlementValue(amountsOut, amountsIn);
+
         // What the index holds before it pays out, so the check afterwards can require the whole of `amountsIn` back:
         // surplus from rounding or a donation belongs to the holders, not to the executor.
+        // A component that neither sends nor receives anything is not read at all: `amountsOut` and `amountsIn` are
+        // exactly the change in its required backing, so both being zero means the requirement and the balance are
+        // both unchanged and the invariant still holds from before. Skipping it keeps a keep mask working around a
+        // component whose `balanceOf` reverts, not only one whose `transfer` does (DA-14).
         uint256 n = units.length;
         uint256[] memory held = new uint256[](n);
         for (uint256 i = 0; i < n; ++i) {
+            if (amountsOut[i] == 0 && amountsIn[i] == 0) continue;
             held[i] = IERC20(_components[i].token).balanceOf(address(this));
         }
 
@@ -334,6 +373,8 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
         uint256 supply = totalSupply();
         uint256 n = units.length;
         for (uint256 i = 0; i < n; ++i) {
+            // Nothing moved and nothing was required to: see the note in executeRebalance (DA-14).
+            if (amountsOut[i] == 0 && amountsIn[i] == 0) continue;
             address token = _components[i].token;
             uint256 required = Math.mulDiv(supply, units[i], SHARE_UNIT) + totalClaims[token];
             uint256 delivered = held[i] - amountsOut[i] + amountsIn[i];
@@ -382,6 +423,27 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
             units[i] = next;
             amountsIn[i] = Math.mulDiv(supply, next, SHARE_UNIT) - Math.mulDiv(supply, current, SHARE_UNIT);
         }
+    }
+
+    /// @dev The auction band fixes the multiplier on the bought legs at the snapshot's prices. Settlement happens up
+    ///      to REBALANCE_DELAY + AUCTION_DURATION later, and nothing bounded how far the market moved in between, so a
+    ///      fill was worth whatever three-day-old relative prices said it was and an executor filled only when the
+    ///      drift favoured them (DA-05). The two sides are therefore valued again in the settling block and the fill
+    ///      has to clear MIN_SETTLEMENT_RATIO of what it takes. The test is a ratio, not a price, so a market-wide
+    ///      move reprices both sides together and changes nothing; only the drift between the legs sold and the legs
+    ///      bought can fail it. It can only refuse a settlement, never enlarge one: the amounts still come from supply
+    ///      and units, and the band still bounds them. The cost is liveness. A feed that has stopped publishing, or a
+    ///      market that really has moved, makes the auction expire unfilled, and the restart hold-off then gives the
+    ///      owner and the guardian the first move on a fresh snapshot.
+    function _checkSettlementValue(uint256[] memory amountsOut, uint256[] memory amountsIn) private view {
+        uint256 n = amountsOut.length;
+        address[] memory tokens = new address[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            tokens[i] = _components[i].token;
+        }
+        (uint256 outValue, uint256 inValue) = IIndexRule(RULE).settlementValues(tokens, amountsOut, amountsIn);
+        uint256 required = Math.mulDiv(outValue, MIN_SETTLEMENT_RATIO, WAD);
+        if (inValue < required) revert SettlementValueTooLow(inValue, outValue, required);
     }
 
     /// @dev Linear decay from the start to the end multiplier; the decrement rounds down, so the multiplier rounds up.
@@ -467,6 +529,9 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
 
     /// @inheritdoc IIndexToken
     function canStartRebalance() external view returns (bool) {
+        // The implementation and any clone deployed outside the factory hold no components and cannot rebalance at
+        // all; without this they answered true, because their `lastRebalance` is zero (DA-22).
+        if (_getInitializedVersion() != 1) return false;
         if (block.timestamp < lastRebalance + MIN_REBALANCE_INTERVAL) return false;
         uint256 pendingEta = _pending.eta;
         if (pendingEta != 0 && block.timestamp <= pendingEta + AUCTION_DURATION) return false;

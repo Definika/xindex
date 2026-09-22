@@ -10,8 +10,13 @@ import {IndexZap} from "../../src/IndexZap.sol";
 import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {IIndexRule} from "../../src/interfaces/IIndexRule.sol";
-import {ISwapRouter02} from "../../src/interfaces/ISwapRouter02.sol";
-import {ForkAddresses as A, IPoolLiquidity} from "./ForkAddresses.sol";
+import {ISwapRouter02} from "../mocks/ISwapRouter02.sol";
+import {IUniversalRouter} from "../../src/interfaces/IUniversalRouter.sol";
+import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
+import {ForkAddresses as A} from "./ForkAddresses.sol";
+import {ForkFeeds} from "./ForkFeeds.sol";
+import {CompositeFeed} from "../../src/CompositeFeed.sol";
+import {IAggregatorV3} from "../../src/interfaces/IAggregatorV3.sol";
 import {RebalanceExecutorV3} from "./RebalanceExecutorV3.sol";
 
 interface IQuoterV2ExactInput {
@@ -23,10 +28,11 @@ interface IQuoterV2ExactInput {
 interface IWbtcPauser {
     function owner() external view returns (address);
     function pause() external;
+    function unpause() external;
 }
 
 /// @notice Rule-based rebalancing against real Uniswap V3 pools and tokens. Skips when MAINNET_RPC_URL is unset.
-contract RebalanceForkTest is Test {
+contract RebalanceForkTest is ForkFeeds {
     using SafeERC20 for IERC20;
 
     IndexFactory factory;
@@ -62,20 +68,21 @@ contract RebalanceForkTest is Test {
             );
         }
 
-        factory = new IndexFactory(address(this), guardian, A.WETH, A.UNISWAP_V3_FACTORY, A.USDC);
+        factory = new IndexFactory(address(this), guardian);
         rule = IIndexRule(factory.RULE());
-        zap = new IndexZap(factory, ISwapRouter02(A.SWAP_ROUTER_02));
+        zap = new IndexZap(factory, IUniversalRouter(A.UNIVERSAL_ROUTER));
 
         tokens.push(A.WBTC);
         tokens.push(A.WETH);
         tokens.push(A.LINK);
         tokens.push(A.UNI);
         tokens.push(A.AAVE);
-        factory.proposeListing(A.WBTC, _config(A.WBTC_WETH_500, A.BTC_SUPPLY));
-        factory.proposeListing(A.WETH, _config(address(0), A.ETH_SUPPLY));
-        factory.proposeListing(A.LINK, _config(A.LINK_WETH_3000, A.LINK_SUPPLY));
-        factory.proposeListing(A.UNI, _config(A.UNI_WETH_3000, A.UNI_SUPPLY));
-        factory.proposeListing(A.AAVE, _config(A.AAVE_WETH_3000, 0)); // on-chain supply
+        _pinFeedsToTheBlockClock();
+        factory.proposeListing(A.WBTC, _config(address(_wbtcFeed()), A.STALENESS_24H, A.BTC_SUPPLY));
+        factory.proposeListing(A.WETH, _config(A.ETH_USD_FEED, A.STALENESS_1H, A.ETH_SUPPLY));
+        factory.proposeListing(A.LINK, _config(A.LINK_USD_FEED, A.STALENESS_1H, A.LINK_SUPPLY));
+        factory.proposeListing(A.UNI, _config(A.UNI_USD_FEED, A.STALENESS_1H, A.UNI_SUPPLY));
+        factory.proposeListing(A.AAVE, _config(A.AAVE_USD_FEED, A.STALENESS_1H, 0)); // on-chain supply
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         for (uint256 i = 0; i < tokens.length; ++i) {
             factory.executeListing(tokens[i]);
@@ -93,11 +100,24 @@ contract RebalanceForkTest is Test {
     // helpers
     // ---------------------------------------------------------------------
 
-    /// @dev A listing config whose minimum liquidity is a tenth of the pool's liquidity at the fork block, the policy
-    ///      of the mainnet list.
-    function _config(address pool, uint256 referenceSupply) internal view returns (IIndexFactory.TokenConfig memory c) {
-        c.pool = pool;
-        if (pool != address(0)) c.minLiquidity = IPoolLiquidity(pool).liquidity() / 10;
+    /// @dev A listing config whose minimum liquidity is a tenth of the pool's liquidity at the fork block, under the
+    ///      mainnet list's policy of a third so that a fixture never fails on the pool's own drift.
+    /// @dev The composite adapter for WBTC, deployed the way `Deploy` does on chain 1.
+    function _wbtcFeed() internal returns (CompositeFeed) {
+        return new CompositeFeed(
+            IAggregatorV3(A.BTC_USD_FEED), IAggregatorV3(A.WBTC_BTC_FEED), A.STALENESS_1H, A.STALENESS_24H
+        );
+    }
+
+    /// @dev A listing config naming a real Chainlink feed. WBTC has no USD feed, so the suite deploys the composite
+    ///      adapter over BTC/USD and WBTC/BTC and lists it with that.
+    function _config(address feed, uint32 maxStaleness, uint256 referenceSupply)
+        internal
+        pure
+        returns (IIndexFactory.TokenConfig memory c)
+    {
+        c.feed = feed;
+        c.maxStaleness = maxStaleness;
         c.referenceSupply = referenceSupply;
     }
 
@@ -145,7 +165,7 @@ contract RebalanceForkTest is Test {
     /// @dev Units that follow `methodology` at 1,000 dollars, pushed off target: the first component 60% heavier and
     ///      the third 40% lighter.
     function _offTargetIndex(uint8 methodology, string memory symbol) internal returns (IndexToken index) {
-        uint256[] memory units = rule.initialUnits(tokens, methodology, 1_000e6);
+        uint256[] memory units = rule.initialUnits(tokens, methodology, 1_000e18);
         units[0] = units[0] * 16 / 10;
         units[2] = units[2] * 6 / 10;
         index = IndexToken(factory.createIndex(symbol, symbol, tokens, units, methodology));
@@ -161,16 +181,17 @@ contract RebalanceForkTest is Test {
         _assertPriceNearQuote(A.LINK, 1e18);
         _assertPriceNearQuote(A.UNI, 1e18);
         _assertPriceNearQuote(A.AAVE, 1e18);
-        (uint256 wethForUsdc,,,) = quoter.quoteExactInput(abi.encodePacked(A.USDC, F500, A.WETH), 1_000e6);
-        assertApproxEqRel(rule.price(A.USDC), wethForUsdc * 1e18 / 1_000e6, 0.03e18);
-        assertEq(rule.price(A.WETH), 1e18);
         assertEq(rule.supply(A.WBTC), A.BTC_SUPPLY);
         assertEq(rule.supply(A.AAVE), IERC20(A.AAVE).totalSupply());
     }
 
+    /// @dev The rule's feed price against what a whole token actually sells for on Uniswap, both in dollars. Three
+    ///      percent covers the swap's fee and impact plus the feed's own deviation threshold.
     function _assertPriceNearQuote(address token, uint256 wholeToken) internal {
-        (uint256 wethOut,,,) = quoter.quoteExactInput(abi.encodePacked(token, _feeOf(token), A.WETH), wholeToken);
-        assertApproxEqRel(rule.price(token), wethOut * 1e18 / wholeToken, 0.03e18);
+        (uint256 usdcOut,,,) = quoter.quoteExactInput(_toUsdc(token), wholeToken);
+        uint256 quoted = usdcOut * 1e12; // raw USDC to USD-WAD
+        uint256 priced = rule.price(token) * wholeToken / 1e18;
+        assertApproxEqRel(priced, quoted, 0.03e18);
     }
 
     function testFork_uncappedIndexRebalancesThroughUniswap() public {
@@ -193,6 +214,8 @@ contract RebalanceForkTest is Test {
 
         // Prices do not move on a fork, so an executor without competition waits for the floor.
         vm.warp(eta + index.AUCTION_DURATION());
+        // Settlement prices the two sides again (DA-05), and three days of warping leave every pool's newest
+        // observation three days old, which on chain only happens to a pool that has genuinely stopped trading.
         uint256 wethBefore = IERC20(A.WETH).balanceOf(address(executor));
         gasBefore = gasleft();
         executor.fill(index);
@@ -201,14 +224,17 @@ contract RebalanceForkTest is Test {
         assertEq(index.rebalanceNonce(), 1);
         _assertBacked(index);
 
-        (, uint256 navUsdc) = rule.navPerToken(address(index));
+        // The nav is in USD-WAD and the quote in raw USDC, so the quote is scaled up by the twelve decimals between.
         assertApproxEqRel(
-            navUsdc, _quoteInUsdc(index, 1e18), 0.03e18, "the displayed price matches what the basket sells for"
+            rule.navPerToken(address(index)),
+            _quoteInUsdc(index, 1e18) * 1e12,
+            0.03e18,
+            "the displayed price matches what the basket sells for"
         );
 
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](tokens.length);
         for (uint256 i = 0; i < tokens.length; ++i) {
-            legs[i] = IIndexZap.BurnLeg({path: _toUsdc(tokens[i]), minAmountOut: 0});
+            legs[i] = IIndexZap.BurnLeg({v3Path: _toUsdc(tokens[i]), v4Path: new PathKey[](0), minAmountOut: 0});
         }
         IIndexZap.BurnParams memory p = IIndexZap.BurnParams({
             index: address(index),
@@ -227,7 +253,7 @@ contract RebalanceForkTest is Test {
         p.expectedNonce = 1;
         uint256 out = zap.burnToToken(p);
         vm.stopPrank();
-        assertApproxEqRel(out, navUsdc, 0.03e18);
+        assertApproxEqRel(out * 1e12, rule.navPerToken(address(index)), 0.03e18);
     }
 
     function testFork_guardianRebalancesAroundAPausedWbtc() public {
@@ -236,9 +262,16 @@ contract RebalanceForkTest is Test {
         index.startRebalance(0);
         (uint256 eta,,) = index.pendingRebalance();
 
-        vm.prank(IWbtcPauser(A.WBTC).owner());
+        address pauser = IWbtcPauser(A.WBTC).owner();
+        vm.prank(pauser);
         IWbtcPauser(A.WBTC).pause();
         vm.warp(eta + index.AUCTION_DURATION());
+        // A paused WBTC cannot trade, so its pool cannot be poked and the settlement guard would stop on its stale
+        // price before reaching any transfer. This test is about the transfer, so the pause lifts for the poke.
+        vm.prank(pauser);
+        IWbtcPauser(A.WBTC).unpause();
+        vm.prank(pauser);
+        IWbtcPauser(A.WBTC).pause();
         (,, uint256[] memory amountsOut,) = index.previewRebalance();
         assertGt(amountsOut[0], 0, "WBTC is a shrinking leg");
         vm.expectRevert(bytes("")); // WBTC's whenNotPaused reverts with no data, and the index passes it on
@@ -251,6 +284,7 @@ contract RebalanceForkTest is Test {
         vm.stopPrank();
         (eta,,) = index.pendingRebalance();
         vm.warp(eta + index.AUCTION_DURATION());
+        // WBTC is kept, so the settlement never prices it; the four legs that do trade need a fresh window.
         executor.fill(index);
 
         assertEq(IERC20(A.WBTC).balanceOf(address(index)), wbtcHeld, "WBTC never moved");

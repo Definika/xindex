@@ -28,7 +28,7 @@ contract MockRebalanceExecutor is IRebalanceExecutor {
     uint256[] internal _lastAmountsIn;
 
     /// @notice Revert data of each reentrant attempt, in the order issue, redeem, redeemSkipping, claim,
-    ///         startRebalance, cancelRebalance, executeRebalance.
+    ///         startRebalance, cancelRebalance and both executeRebalance entry points.
     bytes[] internal _reentryErrors;
     bool public indexTransferSucceeded;
 
@@ -42,6 +42,11 @@ contract MockRebalanceExecutor is IRebalanceExecutor {
 
     function execute(IIndexToken index, bytes calldata data) external {
         index.executeRebalance(data);
+    }
+
+    /// @notice Fills through the bounded entry point, saying what it is prepared to deliver.
+    function executeBounded(IIndexToken index, bytes calldata data, uint256[] calldata maxAmountsIn) external {
+        index.executeRebalance(data, maxAmountsIn);
     }
 
     function lastAmountsOut() external view returns (uint256[] memory) {
@@ -78,14 +83,16 @@ contract MockRebalanceExecutor is IRebalanceExecutor {
 
     function _reenter(IIndexToken index) internal {
         delete _reentryErrors;
-        bytes[7] memory attempts = [
+        // Both settlement entry points are listed: each is mutating, so each has to carry the guard.
+        bytes[8] memory attempts = [
             abi.encodeCall(IIndexToken.issue, (1, address(this))),
             abi.encodeCall(IIndexToken.redeem, (1, address(this))),
             abi.encodeCall(IIndexToken.redeemSkipping, (1, address(this), 1)),
             abi.encodeCall(IIndexToken.claim, (address(0), address(this))),
             abi.encodeCall(IIndexToken.startRebalance, (0)),
             abi.encodeCall(IIndexToken.cancelRebalance, ()),
-            abi.encodeCall(IIndexToken.executeRebalance, (""))
+            abi.encodeWithSignature("executeRebalance(bytes)", ""),
+            abi.encodeWithSignature("executeRebalance(bytes,uint256[])", "", new uint256[](0))
         ];
         for (uint256 i = 0; i < attempts.length; ++i) {
             (, bytes memory result) = address(index).call(attempts[i]);

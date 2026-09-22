@@ -2,78 +2,90 @@
 pragma solidity ^0.8.24;
 
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
+import {TestAggregator} from "../../script/testnet/TestAggregator.sol";
 import {MockERC20} from "./MockERC20.sol";
-import {MockUniswapV3Factory, MockUniswapV3Pool} from "./MockUniswapV3.sol";
 
-/// @dev Minimum liquidity `MockMarket.configWith` gives a pooled token: a tenth of a mock pool's default liquidity, the
-///      policy the mainnet list uses. File-level so pure test helpers can use it.
-uint128 constant DEFAULT_MIN_LIQUIDITY = 1e17;
+/// @dev Decimals every mock feed reports, as every USD feed Xindex lists does. File-level so pure test helpers can use
+///      it.
+uint8 constant FEED_DECIMALS = 8;
+/// @dev Staleness bound `MockMarket.configWith` gives a token, matching a one-hour heartbeat plus the policy grace.
+uint32 constant DEFAULT_STALENESS = 1 hours + 30 minutes;
 
-/// @notice WETH, USDC, a Uniswap V3 factory and pools for tests. Prices are set as ticks in token terms:
-///         `tick` means 1.0001^tick raw WETH units per raw unit of the token, whichever side of its pool it sits on.
+/// @notice WETH, USDC and a price feed per token for tests. Prices are given the way a real feed reports them: dollars
+///         per whole token with FEED_DECIMALS decimals, so `3000e8` is three thousand dollars whatever the token's own
+///         decimals are.
 contract MockMarket {
-    uint24 public constant TOKEN_POOL_FEE = 3000;
-    uint24 public constant USD_POOL_FEE = 500;
     /// @notice Reference supply `config` gives WETH, which needs one.
     uint256 public constant ETH_SUPPLY = 120_000_000e18;
     /// @notice Reference supply `config` gives every other token, so tests can list tokens nobody has minted yet.
     uint256 public constant DEFAULT_SUPPLY = 1e30;
-    /// @notice About 3,000 USDC per ETH: 1.0001^196_257 is close to 1e18 / 3000e6 raw WETH per raw USDC.
-    int24 public constant USDC_TICK = 196_257;
-    /// @notice Minimum liquidity `configWith` gives a pooled token.
-    uint128 public constant MIN_LIQUIDITY = DEFAULT_MIN_LIQUIDITY;
+    /// @notice Staleness `configWith` puts in a config.
+    uint32 public constant STALENESS = DEFAULT_STALENESS;
 
     MockERC20 public immutable weth;
     MockERC20 public immutable usdc;
-    MockUniswapV3Factory public immutable uniswapV3Factory;
-    MockUniswapV3Pool public immutable usdPool;
+
+    /// @notice `token`'s feed, or zero before `config` created it.
+    mapping(address token => TestAggregator) public feedOf;
 
     constructor() {
         weth = new MockERC20("Wrapped Ether", "WETH", 18);
         usdc = new MockERC20("USD Coin", "USDC", 6);
-        uniswapV3Factory = new MockUniswapV3Factory();
-        usdPool = MockUniswapV3Pool(uniswapV3Factory.createPool(address(usdc), address(weth), USD_POOL_FEE));
-        _setTick(usdPool, address(usdc), USDC_TICK);
     }
 
-    /// @notice `token`'s 0.3% WETH pool, or zero before `config` created it.
-    function tokenPool(address token) public view returns (MockUniswapV3Pool) {
-        return MockUniswapV3Pool(uniswapV3Factory.getPool(token, address(weth), TOKEN_POOL_FEE));
+    /// @notice A listing config for `token` priced at `priceUsd8` dollars per whole token, with a reference supply.
+    function config(address token, int256 priceUsd8) external returns (IIndexFactory.TokenConfig memory) {
+        return configWith(token, priceUsd8, token == address(weth) ? ETH_SUPPLY : DEFAULT_SUPPLY);
     }
 
-    /// @notice Sets `token`'s price in its 0.3% WETH pool, in token terms.
-    function setPriceTick(address token, int24 tick) public {
-        _setTick(tokenPool(token), token, tick);
-    }
-
-    /// @notice Sets USDC's price in the USD pool, in token terms.
-    function setUsdcTick(int24 tick) external {
-        _setTick(usdPool, address(usdc), tick);
-    }
-
-    /// @notice A listing config for `token` priced at `tick`, with a reference supply.
-    function config(address token, int24 tick) external returns (IIndexFactory.TokenConfig memory) {
-        return configWith(token, tick, token == address(weth) ? ETH_SUPPLY : DEFAULT_SUPPLY, new address[](0));
-    }
-
-    /// @notice A listing config with an explicit supply definition. Any token but WETH gets its 0.3% WETH pool, created
-    ///         on first use and priced at `tick`.
-    function configWith(address token, int24 tick, uint256 referenceSupply, address[] memory excluded)
+    /// @notice A listing config with an explicit supply definition. The token's feed is created on first use.
+    function configWith(address token, int256 priceUsd8, uint256 referenceSupply)
         public
         returns (IIndexFactory.TokenConfig memory c)
     {
+        setPrice(token, priceUsd8);
+        c.feed = address(feedOf[token]);
+        c.maxStaleness = DEFAULT_STALENESS;
         c.referenceSupply = referenceSupply;
-        c.excluded = excluded;
-        if (token == address(weth)) return c;
-        if (address(tokenPool(token)) == address(0)) {
-            uniswapV3Factory.createPool(token, address(weth), TOKEN_POOL_FEE);
-        }
-        setPriceTick(token, tick);
-        c.pool = address(tokenPool(token));
-        c.minLiquidity = MIN_LIQUIDITY;
     }
 
-    function _setTick(MockUniswapV3Pool pool, address token, int24 tick) private {
-        pool.setTick(token < address(weth) ? tick : -tick);
+    /// @notice Sets `token`'s price in dollars per whole token, creating its feed if it has none.
+    function setPrice(address token, int256 priceUsd8) public {
+        TestAggregator feed = feedOf[token];
+        if (address(feed) == address(0)) {
+            feedOf[token] = new TestAggregator("MOCK / USD", FEED_DECIMALS, priceUsd8);
+        } else {
+            feed.setAnswer(priceUsd8);
+        }
     }
+
+    /// @notice A listing config whose feed answers in `feedDecimals` decimals rather than the usual eight. An 18-decimal
+    ///         feed on an 18-decimal token makes the rule's exponent zero, so the answer is the WAD price itself: the
+    ///         only way to reach a price of a few wei, or one near MAX_PRICE, that a token's own decimals cannot.
+    function configWithFeed(address token, int256 answer, uint8 feedDecimals, uint256 referenceSupply)
+        public
+        returns (IIndexFactory.TokenConfig memory c)
+    {
+        feedOf[token] = new TestAggregator("MOCK / USD", feedDecimals, answer);
+        c.feed = address(feedOf[token]);
+        c.maxStaleness = DEFAULT_STALENESS;
+        c.referenceSupply = referenceSupply;
+    }
+
+    /// @notice Multiplies `token`'s price by `numerator / denominator`, for tests that move a market rather than name
+    ///         a level.
+    function movePrice(address token, uint256 numerator, uint256 denominator) external {
+        TestAggregator feed = feedOf[token];
+        feed.setAnswer(feed.answer() * int256(numerator) / int256(denominator));
+    }
+
+    /// @notice Ages `token`'s feed, as one that has stopped publishing is.
+    function setAge(address token, uint256 seconds_) external {
+        feedOf[token].setAge(seconds_);
+    }
+}
+
+/// @notice The USD-WAD price the rule reads for a token of `tokenDecimals` decimals whose feed answers `priceUsd8`.
+function usdWad(int256 priceUsd8, uint8 tokenDecimals) pure returns (uint256) {
+    return uint256(priceUsd8) * 10 ** (36 - FEED_DECIMALS - tokenDecimals);
 }

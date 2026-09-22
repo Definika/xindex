@@ -7,6 +7,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {IndexFactory} from "../src/IndexFactory.sol";
 import {IndexToken} from "../src/IndexToken.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
+import {IIndexRule} from "../src/interfaces/IIndexRule.sol";
 import {IIndexToken} from "../src/interfaces/IIndexToken.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
@@ -33,13 +34,14 @@ contract IndexTokenRebalanceTest is Test {
     address stranger = makeAddr("stranger");
 
     uint256 constant WAD = 1e18;
+    /// @dev A dollar per whole token, in the eight decimals a feed answers in. Every component starts here, so the
+    ///      basket's shape comes from its supplies alone.
+    int256 constant ONE_DOLLAR = 1e8;
     uint256 constant SHARES = 10e18;
 
     function setUp() public {
         market = new MockMarket();
-        factory = new IndexFactory(
-            owner, guardian, address(market.weth()), address(market.uniswapV3Factory()), address(market.usdc())
-        );
+        factory = new IndexFactory(owner, guardian);
         executor = new MockRebalanceExecutor();
 
         pausable = new MockPausableToken("Pausable", "PAUSE", 18);
@@ -47,7 +49,7 @@ contract IndexTokenRebalanceTest is Test {
         IIndexFactory.TokenConfig[] memory configs = new IIndexFactory.TokenConfig[](5);
         for (uint256 i = 0; i < 5; ++i) {
             tokens.push(i == 1 ? address(pausable) : address(new MockERC20("C", "C", 18)));
-            configs[i] = market.configWith(tokens[i], 0, parts[i] * 1e24, new address[](0));
+            configs[i] = market.configWith(tokens[i], ONE_DOLLAR, parts[i] * 1e24);
             startUnits.push(100e18);
         }
         vm.startPrank(owner);
@@ -176,15 +178,16 @@ contract IndexTokenRebalanceTest is Test {
     }
 
     /// @dev LR-05: no test told a fresh snapshot from the expired one, because prices never moved between the two. A
-    ///      restart that kept the old targets, the stale snapshot XA-01 and XA-02 guard against, passed every test.
+    ///      restart that kept the old targets, the stale snapshot XA-02 guards against, passed every test. XA-01, the
+    ///      distorted-TWAP finding this once cited beside it, is retired with the pool oracle.
     function test_LR05_aRestartAfterAnUnfilledAuctionTakesAFreshSnapshot() public {
         uint256 eta = _start(index);
         (,, uint256[] memory first) = index.pendingRebalance();
         assertEq(keccak256(abi.encode(first)), keccak256(abi.encode(_expectedTargets())));
 
-        // Nobody fills, and the first component's price falls by about a third before anyone restarts.
+        // Nobody fills, and the first component's price falls by a third before anyone restarts.
         vm.warp(eta + index.AUCTION_DURATION() + index.REBALANCE_DELAY());
-        market.setPriceTick(tokens[0], -4_000);
+        market.movePrice(tokens[0], 2, 3);
         (uint256[] memory fresh,) = index.previewTarget(0);
         assertTrue(keccak256(abi.encode(fresh)) != keccak256(abi.encode(first)), "the rule now wants other targets");
 
@@ -231,6 +234,31 @@ contract IndexTokenRebalanceTest is Test {
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, 0));
         balanced.startRebalance(0);
+    }
+
+    /// @dev DA-22. The test above only ever produced a turnover of zero, so replacing the MIN_TURNOVER comparison
+    ///      with a plain non-zero check left the whole suite green. This pins the boundary itself: a real but
+    ///      too-small move is refused, and the first move at the threshold is not.
+    function test_DA22_theTurnoverGateIsTheThresholdNotMerelyNonZero() public {
+        uint256[] memory nearTarget = new uint256[](5);
+        (nearTarget[0], nearTarget[1], nearTarget[2], nearTarget[3], nearTarget[4]) =
+        (604e18, 99e18, 99e18, 99e18, 99e18);
+        vm.prank(alice);
+        IndexToken drifted = IndexToken(factory.createIndex("Drifted", "DRIFT", tokens, nearTarget, 0));
+
+        (, uint256 turnover) = drifted.previewTarget(0);
+        assertGt(turnover, 0, "the basket really is off target");
+        assertLt(turnover, drifted.MIN_TURNOVER(), "but by less than the gate allows");
+
+        vm.warp(drifted.lastRebalance() + drifted.MIN_REBALANCE_INTERVAL());
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, turnover));
+        drifted.startRebalance(0);
+
+        // The index in setUp is far enough off target to clear the same gate, so the check is a threshold.
+        (, uint256 enough) = index.previewTarget(0);
+        assertGe(enough, index.MIN_TURNOVER());
+        _start(index);
     }
 
     // ---------------------------------------------------------------------
@@ -493,7 +521,7 @@ contract IndexTokenRebalanceTest is Test {
         executor.execute(index, "");
 
         bytes[] memory errors = executor.reentryErrors();
-        assertEq(errors.length, 7);
+        assertEq(errors.length, 8, "both executeRebalance entry points are guarded too");
         for (uint256 i = 0; i < errors.length; ++i) {
             assertEq(bytes4(errors[i]), ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
         }
@@ -590,5 +618,112 @@ contract IndexTokenRebalanceTest is Test {
         assertGe(units[0], 190e18);
         assertLe(units[0], 250e18);
         _assertBacked(index);
+    }
+
+    // ---------------------------------------------------------------------
+    // 2026-09-19 deep audit
+    // ---------------------------------------------------------------------
+
+    /// @dev DA-13. Settlement amounts are recomputed from the supply in the settling block, and issue stays open
+    ///      through the auction, so anyone could enlarge a fill an executor had already funded from a simulation and
+    ///      make it revert for the price of gas. The bounded entry point lets an executor say what it will deliver.
+    function test_DA13_aBoundedFillRefusesAnEnlargedSettlement() public {
+        uint256 eta = _start(index);
+        vm.warp(eta);
+        (,,, uint256[] memory quoted) = index.previewRebalance();
+
+        // A stranger issues dust into the same block, which scales every leg up.
+        _issue(index, stranger, 1e14);
+        (,,, uint256[] memory enlarged) = index.previewRebalance();
+        assertGt(enlarged[0], quoted[0], "the settlement grew under the executor");
+
+        vm.expectRevert(
+            abi.encodeWithSelector(IIndexToken.RebalanceMovedOn.selector, tokens[0], enlarged[0], quoted[0])
+        );
+        executor.executeBounded(index, "", quoted);
+        assertEq(index.rebalanceNonce(), 0, "the bounded fill did not settle");
+
+        // The same executor settles once it is told the larger figure, and the open entry point never bound anything.
+        executor.executeBounded(index, "", enlarged);
+        assertEq(index.rebalanceNonce(), 1);
+        _assertBacked(index);
+    }
+
+    function test_DA13_aBoundedFillRejectsAMalformedBound() public {
+        uint256 eta = _start(index);
+        vm.warp(eta);
+        vm.expectRevert(IXindexErrors.LengthMismatch.selector);
+        executor.executeBounded(index, "", new uint256[](4));
+    }
+
+    /// @dev DA-05. `startRebalance` freezes the rule's targets and settlement happens up to three days later at the
+    ///      rates those targets fix. The 1.5-to-0.9 band bounds the multiplier on the bought legs only, so whatever the
+    ///      market moved in between was on top of it and unbounded: an executor filled only when the drift favoured
+    ///      them, at the index's expense. The settlement now has to clear MIN_SETTLEMENT_RATIO of what it pays out,
+    ///      priced with snapshot-quality prices read in the settling block.
+    function test_DA05_aSettlementTheMarketMovedPastIsRefused() public {
+        uint256 eta = _start(index);
+        vm.warp(eta + index.AUCTION_DURATION()); // the auction floor, where the drift is worth the most
+
+        // The four components the index sells appreciate 50% against the one it buys over the notice window.
+        for (uint256 i = 1; i < 5; ++i) {
+            market.movePrice(tokens[i], 3, 2);
+        }
+        (,, uint256[] memory amountsOut, uint256[] memory amountsIn) = index.previewRebalance();
+        (uint256 outValue, uint256 inValue) = IIndexRule(factory.RULE()).settlementValues(tokens, amountsOut, amountsIn);
+        uint256 required = outValue * index.MIN_SETTLEMENT_RATIO() / WAD;
+        assertLt(inValue, required, "the fill is worth less than the basket it takes");
+
+        vm.expectRevert(abi.encodeWithSelector(IIndexToken.SettlementValueTooLow.selector, inValue, outValue, required));
+        executor.execute(index, "");
+        assertEq(index.rebalanceNonce(), 0, "nothing settled at three-day-old rates");
+        _assertBacked(index);
+
+        // Back where the snapshot found them, the same fill settles.
+        for (uint256 i = 1; i < 5; ++i) {
+            market.setPrice(tokens[i], ONE_DOLLAR);
+        }
+        executor.execute(index, "");
+        assertEq(index.rebalanceNonce(), 1);
+        _assertBacked(index);
+    }
+
+    /// @dev DA-05. The guard is on the ratio between the two sides, not on either price, so a market-wide move is not
+    ///      drift: every leg reprices together and the settlement it was snapshotted for still goes through. Guarding
+    ///      each component's own price instead would block the routine case and leave the harmful one open.
+    function test_DA05_aMarketWideMoveIsNotDrift() public {
+        uint256 eta = _start(index);
+        vm.warp(eta + index.AUCTION_DURATION());
+        for (uint256 i = 0; i < 5; ++i) {
+            market.movePrice(tokens[i], 3, 2);
+        }
+        executor.execute(index, "");
+        assertEq(index.rebalanceNonce(), 1, "the whole market moving is not a reason to refuse a fill");
+        _assertBacked(index);
+    }
+
+    /// @dev DA-14. `executeRebalance` read `balanceOf` on every component to build its backing check, so a keep mask
+    ///      routed around a component that could not be transferred but not around one whose reads revert. A component
+    ///      that neither sends nor receives anything is now not read at all.
+    function test_DA14_aKeptComponentWithBrokenReadsDoesNotBlockSettlement() public {
+        pausable.setPaused(true);
+        pausable.setReadsBroken(true);
+        // The component really is unreadable, so the settlement below cannot be passing for some other reason.
+        vm.expectRevert(bytes("reads broken"));
+        pausable.balanceOf(address(index));
+
+        vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
+        vm.prank(owner);
+        index.startRebalance(1 << 1); // keep the broken component
+        (uint256 eta,,) = index.pendingRebalance();
+        vm.warp(eta);
+
+        (,, uint256[] memory amountsOut, uint256[] memory amountsIn) = index.previewRebalance();
+        assertEq(amountsOut[1], 0, "the kept component neither sends");
+        assertEq(amountsIn[1], 0, "nor receives");
+
+        executor.execute(index, "");
+        assertEq(index.rebalanceNonce(), 1, "the settlement no longer touches the kept component at all");
+        assertEq(_units(index)[1], 100e18, "and its units are unchanged");
     }
 }

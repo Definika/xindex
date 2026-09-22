@@ -1,23 +1,7 @@
 [
   {
     "type": "constructor",
-    "inputs": [
-      {
-        "name": "weth",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "uniswapV3Factory",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "usdc",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
+    "inputs": [],
     "stateMutability": "nonpayable"
   },
   {
@@ -35,7 +19,20 @@
   },
   {
     "type": "function",
-    "name": "MAX_EXCLUDED",
+    "name": "MAX_FEED_STALENESS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_PRICE",
     "inputs": [],
     "outputs": [
       {
@@ -61,123 +58,6 @@
   },
   {
     "type": "function",
-    "name": "MAX_TICK_DEVIATION",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "MIN_OBSERVATION_CARDINALITY",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint16",
-        "internalType": "uint16"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "TWAP_SUB_WINDOWS",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint32",
-        "internalType": "uint32"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "TWAP_WINDOW",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint32",
-        "internalType": "uint32"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "UNISWAP_V3_FACTORY",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "USDC",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "USD_POOL",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "USD_POOL_FEE",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint24",
-        "internalType": "uint24"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "WETH",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "checkConfig",
     "inputs": [
       {
@@ -191,24 +71,19 @@
         "internalType": "struct IIndexFactory.TokenConfig",
         "components": [
           {
-            "name": "pool",
+            "name": "feed",
             "type": "address",
             "internalType": "address"
           },
           {
-            "name": "minLiquidity",
-            "type": "uint128",
-            "internalType": "uint128"
+            "name": "maxStaleness",
+            "type": "uint32",
+            "internalType": "uint32"
           },
           {
             "name": "referenceSupply",
             "type": "uint256",
             "internalType": "uint256"
-          },
-          {
-            "name": "excluded",
-            "type": "address[]",
-            "internalType": "address[]"
           }
         ]
       }
@@ -231,7 +106,7 @@
         "internalType": "uint8"
       },
       {
-        "name": "startPriceUsdc",
+        "name": "startPriceUsd",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -257,12 +132,7 @@
     ],
     "outputs": [
       {
-        "name": "wethValue",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "usdcValue",
+        "name": "usdValue",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -282,6 +152,40 @@
     "outputs": [
       {
         "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "settlementValues",
+    "inputs": [
+      {
+        "name": "tokens",
+        "type": "address[]",
+        "internalType": "address[]"
+      },
+      {
+        "name": "amountsOut",
+        "type": "uint256[]",
+        "internalType": "uint256[]"
+      },
+      {
+        "name": "amountsIn",
+        "type": "uint256[]",
+        "internalType": "uint256[]"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "outValue",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "inValue",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -411,6 +315,43 @@
   },
   {
     "type": "error",
+    "name": "InvalidDecimals",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "tokenDecimals",
+        "type": "uint8",
+        "internalType": "uint8"
+      },
+      {
+        "name": "feedDecimals",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "InvalidFeed",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "feed",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "InvalidMethodology",
     "inputs": [
       {
@@ -422,18 +363,7 @@
   },
   {
     "type": "error",
-    "name": "InvalidMinLiquidity",
-    "inputs": [
-      {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "InvalidPool",
+    "name": "InvalidPrice",
     "inputs": [
       {
         "name": "token",
@@ -441,9 +371,9 @@
         "internalType": "address"
       },
       {
-        "name": "pool",
-        "type": "address",
-        "internalType": "address"
+        "name": "answer",
+        "type": "int256",
+        "internalType": "int256"
       }
     ]
   },
@@ -460,23 +390,17 @@
   },
   {
     "type": "error",
-    "name": "InvalidSupplyConfig",
+    "name": "InvalidStaleness",
     "inputs": [
       {
         "name": "token",
         "type": "address",
         "internalType": "address"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "InvalidTick",
-    "inputs": [
+      },
       {
-        "name": "tick",
-        "type": "int24",
-        "internalType": "int24"
+        "name": "maxStaleness",
+        "type": "uint32",
+        "internalType": "uint32"
       }
     ]
   },
@@ -498,31 +422,31 @@
   },
   {
     "type": "error",
-    "name": "PoolHistoryTooShort",
+    "name": "PriceTooHigh",
     "inputs": [
       {
-        "name": "pool",
+        "name": "token",
         "type": "address",
         "internalType": "address"
       },
       {
-        "name": "cardinality",
-        "type": "uint16",
-        "internalType": "uint16"
+        "name": "answer",
+        "type": "int256",
+        "internalType": "int256"
       }
     ]
   },
   {
     "type": "error",
-    "name": "PriceHistoryDeviates",
+    "name": "StalePrice",
     "inputs": [
       {
-        "name": "pool",
+        "name": "token",
         "type": "address",
         "internalType": "address"
       },
       {
-        "name": "spread",
+        "name": "updatedAt",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -530,20 +454,15 @@
   },
   {
     "type": "error",
-    "name": "ThinPriceHistory",
+    "name": "StartPriceTooLow",
     "inputs": [
       {
-        "name": "pool",
+        "name": "token",
         "type": "address",
         "internalType": "address"
       },
       {
-        "name": "harmonicMeanLiquidity",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "minLiquidity",
+        "name": "startPriceUsd",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -575,17 +494,6 @@
     "type": "error",
     "name": "ZeroAddress",
     "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "ZeroPrice",
-    "inputs": [
-      {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
-      }
-    ]
   },
   {
     "type": "error",

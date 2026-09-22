@@ -10,8 +10,12 @@ import {IndexZap} from "../../src/IndexZap.sol";
 import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {IIndexRule} from "../../src/interfaces/IIndexRule.sol";
-import {ISwapRouter02} from "../../src/interfaces/ISwapRouter02.sol";
-import {ForkAddresses as A, IPoolLiquidity} from "./ForkAddresses.sol";
+import {IUniversalRouter} from "../../src/interfaces/IUniversalRouter.sol";
+import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
+import {ForkAddresses as A} from "./ForkAddresses.sol";
+import {ForkFeeds} from "./ForkFeeds.sol";
+import {CompositeFeed} from "../../src/CompositeFeed.sol";
+import {IAggregatorV3} from "../../src/interfaces/IAggregatorV3.sol";
 
 interface IQuoterV2 {
     function quoteExactInput(bytes memory path, uint256 amountIn)
@@ -33,14 +37,9 @@ interface IQuoterV2 {
         );
 }
 
-interface IUniswapV3PoolOracle {
-    function slot0() external view returns (uint160, int24, uint16, uint16, uint16, uint8, bool);
-    function increaseObservationCardinalityNext(uint16 observationCardinalityNext) external;
-}
-
-/// @notice End-to-end against real Uniswap V3, USDC and USDT. Skips when MAINNET_RPC_URL is unset.
-///         Run: MAINNET_RPC_URL=... forge test --match-path 'test/fork/*' -vvv
-contract IndexZapForkTest is Test {
+/// @notice End-to-end against the real Universal Router, real V3 and V4 pools, USDC and USDT. Skips when
+///         MAINNET_RPC_URL is unset. Run: MAINNET_RPC_URL=... forge test --match-path 'test/fork/*' -vvv
+contract IndexZapForkTest is ForkFeeds {
     using SafeERC20 for IERC20;
 
     IndexFactory factory;
@@ -57,6 +56,11 @@ contract IndexZapForkTest is Test {
 
     uint24 constant F500 = 500;
     uint24 constant F3000 = 3000;
+
+    /// @dev Native ether, which is how a V4 pool names it. Every live V4 pool for these components is paired against
+    ///      it rather than WETH, so a V4 route reaches LINK through `address(0)`. It never reaches the zap, which has
+    ///      no `receive()`: the router settles the middle of the route inside the PoolManager.
+    address constant NATIVE = address(0);
 
     function setUp() public {
         string memory url = vm.envOr("MAINNET_RPC_URL", string(""));
@@ -78,12 +82,13 @@ contract IndexZapForkTest is Test {
             );
         }
 
-        factory = new IndexFactory(address(this), address(0), A.WETH, A.UNISWAP_V3_FACTORY, A.USDC);
-        zap = new IndexZap(factory, ISwapRouter02(A.SWAP_ROUTER_02));
+        factory = new IndexFactory(address(this), address(0));
+        zap = new IndexZap(factory, IUniversalRouter(A.UNIVERSAL_ROUTER));
 
-        factory.proposeListing(A.WBTC, _config(A.WBTC_WETH_500, A.BTC_SUPPLY));
-        factory.proposeListing(A.WETH, _config(address(0), A.ETH_SUPPLY));
-        factory.proposeListing(A.LINK, _config(A.LINK_WETH_3000, A.LINK_SUPPLY));
+        _pinFeedsToTheBlockClock();
+        factory.proposeListing(A.WBTC, _config(address(_wbtcFeed()), A.STALENESS_24H, A.BTC_SUPPLY));
+        factory.proposeListing(A.WETH, _config(A.ETH_USD_FEED, A.STALENESS_1H, A.ETH_SUPPLY));
+        factory.proposeListing(A.LINK, _config(A.LINK_USD_FEED, A.STALENESS_1H, A.LINK_SUPPLY));
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(A.WBTC);
         factory.executeListing(A.WETH);
@@ -100,37 +105,25 @@ contract IndexZapForkTest is Test {
         index = IndexToken(factory.createIndex("Blue Chip", "BLUE", t, u, 0));
     }
 
-    /// @dev A listing config whose minimum liquidity is a tenth of the pool's liquidity at the fork block, the policy
-    ///      of the mainnet list.
-    function _config(address pool, uint256 referenceSupply) internal view returns (IIndexFactory.TokenConfig memory c) {
-        c.pool = pool;
-        if (pool != address(0)) c.minLiquidity = IPoolLiquidity(pool).liquidity() / 10;
-        c.referenceSupply = referenceSupply;
+    /// @dev A listing config whose minimum liquidity is a tenth of the pool's liquidity at the fork block, under the
+    ///      mainnet list's policy of a third so that a fixture never fails on the pool's own drift.
+    /// @dev The composite adapter for WBTC, deployed the way `Deploy` does on chain 1.
+    function _wbtcFeed() internal returns (CompositeFeed) {
+        return new CompositeFeed(
+            IAggregatorV3(A.BTC_USD_FEED), IAggregatorV3(A.WBTC_BTC_FEED), A.STALENESS_1H, A.STALENESS_24H
+        );
     }
 
-    /// @dev Grows a pool's observation ring the way anyone can on mainnet: raise the target, then trade in new blocks,
-    ///      alternating direction so the tick moves each time, until the pool writes past its old ring.
-    function _growObservations(address pool, address token) internal {
-        IUniswapV3PoolOracle(pool).increaseObservationCardinalityNext(200);
-        deal(A.WETH, address(this), 10 ether);
-        IERC20(A.WETH).forceApprove(A.SWAP_ROUTER_02, type(uint256).max);
-        IERC20(token).forceApprove(A.SWAP_ROUTER_02, type(uint256).max);
-        for (uint256 i = 0; i < 300; ++i) {
-            (,,, uint16 cardinality,,,) = IUniswapV3PoolOracle(pool).slot0();
-            if (cardinality >= 200) return;
-            vm.roll(block.number + 1);
-            vm.warp(block.timestamp + 12);
-            bytes memory path =
-                i % 2 == 0 ? abi.encodePacked(A.WETH, F3000, token) : abi.encodePacked(token, F3000, A.WETH);
-            uint256 amountIn = i % 2 == 0 ? 0.05 ether : IERC20(token).balanceOf(address(this));
-            ISwapRouter02(A.SWAP_ROUTER_02)
-                .exactInput(
-                    ISwapRouter02.ExactInputParams({
-                        path: path, recipient: address(this), amountIn: amountIn, amountOutMinimum: 0
-                    })
-                );
-        }
-        revert("observation ring did not grow");
+    /// @dev A listing config naming a real Chainlink feed. WBTC has no USD feed, so the suite deploys the composite
+    ///      adapter over BTC/USD and WBTC/BTC and lists it with that.
+    function _config(address feed, uint32 maxStaleness, uint256 referenceSupply)
+        internal
+        pure
+        returns (IIndexFactory.TokenConfig memory c)
+    {
+        c.feed = feed;
+        c.maxStaleness = maxStaleness;
+        c.referenceSupply = referenceSupply;
     }
 
     // ---------------------------------------------------------------------
@@ -153,17 +146,52 @@ contract IndexZapForkTest is Test {
         p[2] = abi.encodePacked(A.LINK, F3000, A.WETH, F500, tokenOut);
     }
 
+    /// @dev USDC -> native ether -> LINK on Uniswap V4, for an exact-output mint. The router walks an exact-output
+    ///      route backwards from the component, so the first entry names what the user pays with, and each entry
+    ///      carries the pool of the hop it closes: {USDC, 0.05%} is the ETH/USDC pool and {ether, 0.3%} the ETH/LINK
+    ///      one. Getting either the order or the pairing wrong is what `BadRoute` and a failed swap catch.
+    function _v4MintPathLink() internal pure returns (PathKey[] memory path) {
+        path = new PathKey[](2);
+        path[0] = PathKey({intermediateCurrency: A.USDC, fee: F500, tickSpacing: 10, hooks: address(0), hookData: ""});
+        path[1] = PathKey({intermediateCurrency: NATIVE, fee: F3000, tickSpacing: 60, hooks: address(0), hookData: ""});
+    }
+
+    /// @dev The same route for a burn, which the router walks forwards from the component: the same list reversed.
+    function _v4BurnPathLink() internal pure returns (PathKey[] memory path) {
+        path = new PathKey[](2);
+        path[0] = PathKey({intermediateCurrency: NATIVE, fee: F3000, tickSpacing: 60, hooks: address(0), hookData: ""});
+        path[1] = PathKey({intermediateCurrency: A.USDC, fee: F500, tickSpacing: 10, hooks: address(0), hookData: ""});
+    }
+
+    /// @dev The basket as an app would route it today: WBTC and WETH are deeper on V3, LINK on V4. Only LINK has a
+    ///      V4 pool worth using here, and it is native-ether-paired, which is why the route crosses `address(0)`.
+    function _mixedMintLegs() internal pure returns (IIndexZap.MintLeg[] memory legs) {
+        bytes[] memory p = _mintPaths(A.USDC);
+        legs = new IIndexZap.MintLeg[](3);
+        legs[0] = IIndexZap.MintLeg({v3Path: p[0], v4Path: new PathKey[](0), maxAmountIn: 0});
+        legs[1] = IIndexZap.MintLeg({v3Path: p[1], v4Path: new PathKey[](0), maxAmountIn: 0});
+        legs[2] = IIndexZap.MintLeg({v3Path: "", v4Path: _v4MintPathLink(), maxAmountIn: 0});
+    }
+
+    function _mixedBurnLegs() internal pure returns (IIndexZap.BurnLeg[] memory legs) {
+        bytes[] memory p = _burnPaths(A.USDC);
+        legs = new IIndexZap.BurnLeg[](3);
+        legs[0] = IIndexZap.BurnLeg({v3Path: p[0], v4Path: new PathKey[](0), minAmountOut: 0});
+        legs[1] = IIndexZap.BurnLeg({v3Path: p[1], v4Path: new PathKey[](0), minAmountOut: 0});
+        legs[2] = IIndexZap.BurnLeg({v3Path: "", v4Path: _v4BurnPathLink(), minAmountOut: 0});
+    }
+
     function _mintLegs(bytes[] memory paths) internal pure returns (IIndexZap.MintLeg[] memory legs) {
         legs = new IIndexZap.MintLeg[](paths.length);
         for (uint256 i = 0; i < paths.length; ++i) {
-            legs[i] = IIndexZap.MintLeg({path: paths[i], maxAmountIn: 0});
+            legs[i] = IIndexZap.MintLeg({v3Path: paths[i], v4Path: new PathKey[](0), maxAmountIn: 0});
         }
     }
 
     function _burnLegs(bytes[] memory paths) internal pure returns (IIndexZap.BurnLeg[] memory legs) {
         legs = new IIndexZap.BurnLeg[](paths.length);
         for (uint256 i = 0; i < paths.length; ++i) {
-            legs[i] = IIndexZap.BurnLeg({path: paths[i], minAmountOut: 0});
+            legs[i] = IIndexZap.BurnLeg({v3Path: paths[i], v4Path: new PathKey[](0), minAmountOut: 0});
         }
     }
 
@@ -257,7 +285,7 @@ contract IndexZapForkTest is Test {
         assertEq(IERC20(A.WBTC).balanceOf(address(zap)), 0);
         assertEq(IERC20(A.WETH).balanceOf(address(zap)), 0);
         assertEq(IERC20(A.LINK).balanceOf(address(zap)), 0);
-        assertEq(IERC20(A.USDC).allowance(address(zap), A.SWAP_ROUTER_02), 0);
+        assertEq(IERC20(A.USDC).allowance(address(zap), A.UNIVERSAL_ROUTER), 0, "the zap approves the router nothing");
 
         assertGt(spent, 100e6);
         assertLt(spent, 10_000e6);
@@ -280,13 +308,83 @@ contract IndexZapForkTest is Test {
         deal(A.USDC, alice, maxIn);
         vm.startPrank(alice);
         IERC20(A.USDC).approve(address(zap), maxIn);
-        // SwapRouter02 checks amountInMaximum only after the pool pulled the input, so an underfunded leg
-        // surfaces as "STF" rather than "Too much requested". Either way the whole mint reverts.
-        vm.expectRevert(bytes("STF"));
+        // The zap pre-funds the router with what the leg may spend, so a leg that needs more than its cap trips the
+        // pool's own slippage check. It bubbles unchanged: the router dispatches swaps as internal calls and wraps
+        // only the ones it makes with a low-level call.
+        vm.expectRevert(abi.encodeWithSignature("V3TooMuchRequested()"));
         _mintCall(index, A.USDC, maxIn, 1e18, _mintLegs(_mintPaths(A.USDC)));
         vm.stopPrank();
         assertEq(IERC20(A.USDC).balanceOf(alice), maxIn);
         assertEq(index.balanceOf(alice), 0);
+    }
+
+    /// @dev The V4 half of the zap against the real PoolManager. Its flash accounting is what a mock cannot stand in
+    ///      for: an action that left a delta unsettled reverts inside `unlock`, so arriving here at all is the proof
+    ///      that the leg settled and took exactly what it moved.
+    function testFork_mintWithUSDC_linkLegThroughV4() public {
+        uint256 shares = 1e18;
+        uint256 v3Quote = _quoteMint(A.USDC, shares);
+        uint256 maxIn = v3Quote + v3Quote / 10; // the LINK leg fills at V4's price, not the quoted V3 one
+        deal(A.USDC, alice, maxIn);
+        uint256 routerBefore = IERC20(A.USDC).balanceOf(A.UNIVERSAL_ROUTER);
+        // Forge seeds a freshly created address with a wei, so what the call must leave untouched is the delta.
+        uint256 zapEthBefore = address(zap).balance;
+
+        vm.startPrank(alice);
+        IERC20(A.USDC).approve(address(zap), maxIn);
+        uint256 spent = _mintCall(index, A.USDC, maxIn, shares, _mixedMintLegs());
+        vm.stopPrank();
+
+        assertEq(index.balanceOf(alice), shares);
+        assertEq(IERC20(A.LINK).balanceOf(address(index)), U_LINK, "the V4 leg delivered the whole component");
+        assertEq(IERC20(A.WBTC).balanceOf(address(index)), U_WBTC);
+        assertEq(IERC20(A.WETH).balanceOf(address(index)), U_WETH);
+
+        assertEq(IERC20(A.USDC).balanceOf(address(zap)), 0, "the zap keeps no input");
+        assertEq(IERC20(A.LINK).balanceOf(address(zap)), 0, "the zap keeps no component");
+        assertEq(address(zap).balance, zapEthBefore, "native ether never reaches the zap");
+        assertEq(IERC20(A.USDC).balanceOf(A.UNIVERSAL_ROUTER), routerBefore, "the sweep left the router as it was");
+        assertEq(IERC20(A.USDC).balanceOf(alice), maxIn - spent, "refund");
+        assertApproxEqRel(spent, v3Quote, 5e16, "the V4 route prices within 5% of the V3 one");
+    }
+
+    function testFork_burnToUSDC_linkLegThroughV4() public {
+        _mint(A.USDC, 2e18, 100);
+        uint256 routerBefore = IERC20(A.LINK).balanceOf(A.UNIVERSAL_ROUTER);
+        uint256 before = IERC20(A.USDC).balanceOf(alice);
+        uint256 zapEthBefore = address(zap).balance;
+
+        vm.startPrank(alice);
+        index.approve(address(zap), 2e18);
+        uint256 out = _burnCall(index, 2e18, A.USDC, 1, _mixedBurnLegs());
+        vm.stopPrank();
+
+        assertEq(index.totalSupply(), 0);
+        assertEq(IERC20(A.USDC).balanceOf(alice), before + out, "the payout is what the call reported");
+        assertEq(IERC20(A.LINK).balanceOf(address(index)), 0, "the V4 leg sold the whole component");
+        assertEq(IERC20(A.LINK).balanceOf(address(zap)), 0, "no component stayed in the zap");
+        assertEq(IERC20(A.USDC).balanceOf(address(zap)), 0);
+        assertEq(address(zap).balance, zapEthBefore, "the middle of the route never leaves the PoolManager");
+        assertEq(IERC20(A.LINK).balanceOf(A.UNIVERSAL_ROUTER), routerBefore, "the sweep left the router as it was");
+        assertGt(out, 0);
+    }
+
+    /// @dev The V4 router enforces `amountInMaximum` itself, and the failure reaches the caller unwrapped for the same
+    ///      reason a V3 one does: the Universal Router dispatches `V4_SWAP` as an internal call.
+    function testFork_v4LegRevertsWhenItsCapIsTooLow() public {
+        uint256 v3Quote = _quoteMint(A.USDC, 1e18);
+        deal(A.USDC, alice, v3Quote * 2);
+        IIndexZap.MintLeg[] memory legs = _mixedMintLegs();
+        legs[2].maxAmountIn = 1e6; // a dollar, far under what one LINK costs
+
+        vm.startPrank(alice);
+        IERC20(A.USDC).approve(address(zap), v3Quote * 2);
+        vm.expectPartialRevert(bytes4(keccak256("V4TooMuchRequested(uint256,uint256)")));
+        _mintCall(index, A.USDC, v3Quote * 2, 1e18, legs);
+        vm.stopPrank();
+
+        assertEq(index.balanceOf(alice), 0);
+        assertEq(IERC20(A.USDC).balanceOf(alice), v3Quote * 2, "nothing was spent");
     }
 
     function testFork_mintAndBurnWithPerLegLimits() public {
@@ -296,7 +394,9 @@ contract IndexZapForkTest is Test {
         uint256 total;
         for (uint256 i = 0; i < 3; ++i) {
             (uint256 legQuote,,,) = quoter.quoteExactOutput(mintPaths[i], need[i]);
-            mintLegs[i] = IIndexZap.MintLeg({path: mintPaths[i], maxAmountIn: legQuote + legQuote / 200});
+            mintLegs[i] = IIndexZap.MintLeg({
+                v3Path: mintPaths[i], v4Path: new PathKey[](0), maxAmountIn: legQuote + legQuote / 200
+            });
             total += legQuote;
         }
         uint256 maxIn = total + total / 100;
@@ -313,7 +413,9 @@ contract IndexZapForkTest is Test {
         uint256 quoteOut;
         for (uint256 i = 0; i < 3; ++i) {
             (uint256 legOut,,,) = quoter.quoteExactInput(burnPaths[i], got[i]);
-            burnLegs[i] = IIndexZap.BurnLeg({path: burnPaths[i], minAmountOut: legOut - legOut / 200});
+            burnLegs[i] = IIndexZap.BurnLeg({
+                v3Path: burnPaths[i], v4Path: new PathKey[](0), minAmountOut: legOut - legOut / 200
+            });
             quoteOut += legOut;
         }
         vm.startPrank(alice);
@@ -344,12 +446,16 @@ contract IndexZapForkTest is Test {
         _mint(A.USDC, 1e18, 100);
 
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](3);
-        legs[0] = IIndexZap.BurnLeg({path: "", minAmountOut: 0}); // WBTC is the payout token
-        legs[1] = IIndexZap.BurnLeg({path: abi.encodePacked(A.WETH, F500, A.WBTC), minAmountOut: 0});
-        legs[2] = IIndexZap.BurnLeg({path: abi.encodePacked(A.LINK, F3000, A.WETH, F500, A.WBTC), minAmountOut: 0});
+        legs[0] = IIndexZap.BurnLeg({v3Path: "", v4Path: new PathKey[](0), minAmountOut: 0}); // WBTC is the payout token
+        legs[1] = IIndexZap.BurnLeg({
+            v3Path: abi.encodePacked(A.WETH, F500, A.WBTC), v4Path: new PathKey[](0), minAmountOut: 0
+        });
+        legs[2] = IIndexZap.BurnLeg({
+            v3Path: abi.encodePacked(A.LINK, F3000, A.WETH, F500, A.WBTC), v4Path: new PathKey[](0), minAmountOut: 0
+        });
 
-        (uint256 wethOut,,,) = quoter.quoteExactInput(legs[1].path, U_WETH);
-        (uint256 linkOut,,,) = quoter.quoteExactInput(legs[2].path, U_LINK);
+        (uint256 wethOut,,,) = quoter.quoteExactInput(legs[1].v3Path, U_WETH);
+        (uint256 linkOut,,,) = quoter.quoteExactInput(legs[2].v3Path, U_LINK);
         uint256 quote = U_WBTC + wethOut + linkOut;
 
         vm.startPrank(alice);
@@ -383,18 +489,10 @@ contract IndexZapForkTest is Test {
         u[0] = 50_000; // 0.0005 WBTC (8 decimals)
         u[1] = 5e14; // 0.0005 tBTC (18 decimals)
 
-        // tBTC's 0.3% WETH pool keeps too little price history for the rule, so listing it fails until someone grows
-        // the pool's observation ring, which anyone can do.
-        IIndexFactory.TokenConfig memory tbtc = _config(A.TBTC_WETH_3000, 0);
-        (,,, uint16 cardinality,,,) = IUniswapV3PoolOracle(A.TBTC_WETH_3000).slot0();
-        if (cardinality < 200) {
-            vm.expectRevert(
-                abi.encodeWithSelector(IIndexRule.PoolHistoryTooShort.selector, A.TBTC_WETH_3000, cardinality)
-            );
-            factory.proposeListing(A.TBTC, tbtc);
-            _growObservations(A.TBTC_WETH_3000, A.TBTC);
-        }
-        vm.warp(block.timestamp + 1 hours);
+        // tBTC is not on the launch whitelist; it is listed here from its own USD feed to exercise a two-hop route,
+        // and how thin its pool is no longer bears on whether the rule can price it.
+        _pinFeed(A.TBTC_USD_FEED); // not on the launch whitelist, so the setup did not pin it
+        IIndexFactory.TokenConfig memory tbtc = _config(A.TBTC_USD_FEED, A.STALENESS_24H, 0);
         factory.proposeListing(A.TBTC, tbtc);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(A.TBTC);

@@ -12,9 +12,12 @@ abstract contract XindexTest is Test {
     IndexFactory factory;
     address owner = makeAddr("owner");
 
-    /// @dev Lists `token` priced at tick 0 with the market's default config, through the full listing delay.
+    /// @dev A dollar per whole token, in the eight decimals a feed answers in.
+    int256 constant ONE_DOLLAR = 1e8;
+
+    /// @dev Lists `token` at a dollar with the market's default config, through the full listing delay.
     function _list(address token) internal {
-        IIndexFactory.TokenConfig memory config = market.config(token, 0);
+        IIndexFactory.TokenConfig memory config = market.config(token, ONE_DOLLAR);
         vm.prank(owner);
         factory.proposeListing(token, config);
         vm.warp(block.timestamp + factory.LISTING_DELAY());

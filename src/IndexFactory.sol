@@ -22,17 +22,19 @@ import {IndexToken} from "./IndexToken.sol";
 ///      leaves chosen components untouched. Neither role can pause, upgrade, set units or prices, or touch funds held by
 ///      any index, and ownership cannot be renounced.
 ///
-///      Token configs. Each listed token carries the Uniswap V3 WETH pool and the supply definition the rebalance rule
-///      reads. A config shapes future rebalances of every index holding the token, so it changes only through the same
-///      delayed, cancellable proposal as a listing. Delisting keeps it, because existing indexes still rebalance with it.
+///      Token configs. Each listed token carries the price feed, its staleness bound and the supply definition the
+///      rebalance rule reads. A config shapes future rebalances of every index holding the token, so it changes only
+///      through the same delayed, cancellable proposal as a listing. Delisting keeps it, because existing indexes still
+///      rebalance with it.
 ///
 ///      Addresses. Each index is deployed with CREATE2 from a salt over the creator, the name, the symbol, the
 ///      constituents, the starting units and the methodology, so an address can never hold a different basket or follow
 ///      a different rule, even after a re-org, and an app can show the address before the transaction confirms.
 ///
 ///      Whitelist policy (enforced socially, not on-chain): standard ERC-20s only. No fee-on-transfer, rebasing or
-///      callback (ERC-777 style) tokens; 6-18 decimals; fixed-supply or governance-minted supply; a WETH pool with at least
-///      200 observation slots. Components that an issuer can pause or blacklist, such as WBTC, must be labelled in the
+///      callback (ERC-777 style) tokens; 6-18 decimals; fixed-supply or governance-minted supply; a Chainlink USD feed
+///      whose heartbeat the config's staleness bound follows. Components that an issuer can pause or blacklist, such as
+///      WBTC, or whose issuer or bridge is a trust assumption, such as wstETH and wrapped SOL, must be labelled in the
 ///      app; while one is frozen, holders can still take the other components out with `IndexToken.redeemSkipping`.
 contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
     uint256 public constant MAX_COMPONENTS = 20;
@@ -40,6 +42,7 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
     uint256 public constant LISTING_DELAY = 2 days;
     uint256 public constant GUARDIAN_DELAY = 7 days;
     uint256 public constant PROPOSAL_WINDOW = 7 days;
+    uint256 public constant MAX_SUPPLY_CHANGE = 10;
     address public immutable RULE;
     address public immutable IMPLEMENTATION;
 
@@ -66,15 +69,12 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         _;
     }
 
-    // A zero guardian is allowed on purpose: it means the factory starts without one. The rule rejects zero market
-    // addresses.
+    // A zero guardian is allowed on purpose: it means the factory starts without one.
     // forge-lint: disable-next-item(missing-zero-check)
-    constructor(address initialOwner, address initialGuardian, address weth, address uniswapV3Factory, address usdc)
-        Ownable(initialOwner)
-    {
+    constructor(address initialOwner, address initialGuardian) Ownable(initialOwner) {
         guardian = initialGuardian;
         emit GuardianSet(address(0), initialGuardian);
-        address rule = address(new IndexRule(weth, uniswapV3Factory, usdc));
+        address rule = address(new IndexRule());
         RULE = rule;
         IMPLEMENTATION = address(new IndexToken(rule));
     }
@@ -186,30 +186,42 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
     /// @inheritdoc IIndexFactory
     function proposeConfig(address token, TokenConfig calldata config) external onlyOwner {
         TokenConfig storage current = _tokenConfig[token];
-        // Every config in force has a pool or a reference supply: the rule accepts no other.
-        if (current.pool == address(0) && current.referenceSupply == 0) revert NotConfigured(token);
+        // Every config in force names a feed: the rule accepts no other.
+        if (current.feed == address(0)) revert NotConfigured(token);
         _propose(token, config, false);
+    }
+
+    /// @dev The rule takes any non-zero reference supply, so a stale or mistyped figure drives its component straight
+    ///      to its floor at the next rebalance and hands the difference to the auction (DA-18). A revision is a
+    ///      correction, so it stays within an order of magnitude of the supply in force; a genuine re-founding goes in
+    ///      steps, each behind its own listing delay and guardian veto. A first listing has nothing to compare against,
+    ///      and a switch between a reference supply and the token's own total supply is a change of kind, not of size.
+    function _checkSupplyChange(address token, uint256 proposed) private view {
+        uint256 inForce = _tokenConfig[token].referenceSupply;
+        if (inForce == 0 || proposed == 0) return;
+        // Divided rather than multiplied, so a supply near the top of the range raises this error instead of a panic.
+        uint256 low = proposed < inForce ? proposed : inForce;
+        uint256 high = proposed < inForce ? inForce : proposed;
+        if (high / MAX_SUPPLY_CHANGE > low) revert SupplyChangeTooLarge(token, inForce, proposed);
     }
 
     function _propose(address token, TokenConfig calldata config, bool listing) private {
         if (token.code.length == 0) revert NotAContract(token);
         uint256 pending = listingEta[token];
         if (pending != 0 && block.timestamp <= pending + PROPOSAL_WINDOW) revert ListingPending(token, pending);
+        _checkSupplyChange(token, config.referenceSupply);
         IIndexRule(RULE).checkConfig(token, config);
 
         uint256 eta = block.timestamp + LISTING_DELAY;
         listingEta[token] = eta;
         pendingIsListing[token] = listing;
         TokenConfig storage next = _pendingConfig[token];
-        next.pool = config.pool;
-        next.minLiquidity = config.minLiquidity;
+        next.feed = config.feed;
+        next.maxStaleness = config.maxStaleness;
         next.referenceSupply = config.referenceSupply;
-        next.excluded = config.excluded;
         // The rule call above is a view on a contract this factory deployed; nothing external can run in between.
         // forge-lint: disable-next-line(reentrancy-events)
-        emit ListingProposed(
-            token, eta, listing, config.pool, config.minLiquidity, config.referenceSupply, config.excluded
-        );
+        emit ListingProposed(token, eta, listing, config.feed, config.maxStaleness, config.referenceSupply);
     }
 
     /// @inheritdoc IIndexFactory
@@ -232,17 +244,22 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         if (block.timestamp < eta) revert ListingNotReady(token, eta);
         if (block.timestamp > eta + PROPOSAL_WINDOW) revert ListingExpired(token, eta + PROPOSAL_WINDOW);
 
+        TokenConfig memory proposed = _pendingConfig[token];
+        // The rule validated this config when it was proposed, up to nine days ago, and execution is permissionless:
+        // without a second look a feed that has since gone stale or dead is whitelisted anyway and stays
+        // index-creatable until someone notices (DA-11).
+        IIndexRule(RULE).checkConfig(token, proposed);
+
         bool listing = pendingIsListing[token];
         delete listingEta[token];
         delete pendingIsListing[token];
         TokenConfig storage next = _pendingConfig[token];
         TokenConfig storage current = _tokenConfig[token];
-        current.pool = next.pool;
-        current.minLiquidity = next.minLiquidity;
+        current.feed = next.feed;
+        current.maxStaleness = next.maxStaleness;
         current.referenceSupply = next.referenceSupply;
-        current.excluded = next.excluded;
         delete _pendingConfig[token];
-        emit TokenConfigured(token, current.pool, current.minLiquidity, current.referenceSupply, current.excluded);
+        emit TokenConfigured(token, current.feed, current.maxStaleness, current.referenceSupply);
 
         if (listing && !isWhitelisted[token]) {
             isWhitelisted[token] = true;
@@ -327,6 +344,18 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
 
     function whitelistedTokens() external view returns (address[] memory) {
         return _whitelist;
+    }
+
+    /// @inheritdoc IIndexFactory
+    function guardianChangePending() external view returns (bool) {
+        uint256 eta = pendingGuardianEta;
+        return eta != 0 && block.timestamp <= eta + PROPOSAL_WINDOW;
+    }
+
+    /// @inheritdoc IIndexFactory
+    function listingPending(address token) external view returns (bool) {
+        uint256 eta = listingEta[token];
+        return eta != 0 && block.timestamp <= eta + PROPOSAL_WINDOW;
     }
 
     /// @inheritdoc IIndexFactory

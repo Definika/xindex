@@ -5,7 +5,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {ISwapRouter02} from "../../src/interfaces/ISwapRouter02.sol";
+import {ISwapRouter02} from "./ISwapRouter02.sol";
 import {PathLib} from "../../src/libraries/PathLib.sol";
 
 /// @notice Fixed-price stand-in for SwapRouter02. Every token has a USD price (1e18 scaled);

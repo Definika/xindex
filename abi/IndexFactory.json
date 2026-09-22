@@ -11,21 +11,6 @@
         "name": "initialGuardian",
         "type": "address",
         "internalType": "address"
-      },
-      {
-        "name": "weth",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "uniswapV3Factory",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "usdc",
-        "type": "address",
-        "internalType": "address"
       }
     ],
     "stateMutability": "nonpayable"
@@ -72,6 +57,19 @@
   {
     "type": "function",
     "name": "MAX_COMPONENTS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_SUPPLY_CHANGE",
     "inputs": [],
     "outputs": [
       {
@@ -286,6 +284,19 @@
   },
   {
     "type": "function",
+    "name": "guardianChangePending",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "isIndex",
     "inputs": [
       {
@@ -356,6 +367,25 @@
         "name": "",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "listingPending",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
       }
     ],
     "stateMutability": "view"
@@ -448,24 +478,19 @@
         "internalType": "struct IIndexFactory.TokenConfig",
         "components": [
           {
-            "name": "pool",
+            "name": "feed",
             "type": "address",
             "internalType": "address"
           },
           {
-            "name": "minLiquidity",
-            "type": "uint128",
-            "internalType": "uint128"
+            "name": "maxStaleness",
+            "type": "uint32",
+            "internalType": "uint32"
           },
           {
             "name": "referenceSupply",
             "type": "uint256",
             "internalType": "uint256"
-          },
-          {
-            "name": "excluded",
-            "type": "address[]",
-            "internalType": "address[]"
           }
         ]
       }
@@ -531,24 +556,19 @@
         "internalType": "struct IIndexFactory.TokenConfig",
         "components": [
           {
-            "name": "pool",
+            "name": "feed",
             "type": "address",
             "internalType": "address"
           },
           {
-            "name": "minLiquidity",
-            "type": "uint128",
-            "internalType": "uint128"
+            "name": "maxStaleness",
+            "type": "uint32",
+            "internalType": "uint32"
           },
           {
             "name": "referenceSupply",
             "type": "uint256",
             "internalType": "uint256"
-          },
-          {
-            "name": "excluded",
-            "type": "address[]",
-            "internalType": "address[]"
           }
         ]
       }
@@ -584,24 +604,19 @@
         "internalType": "struct IIndexFactory.TokenConfig",
         "components": [
           {
-            "name": "pool",
+            "name": "feed",
             "type": "address",
             "internalType": "address"
           },
           {
-            "name": "minLiquidity",
-            "type": "uint128",
-            "internalType": "uint128"
+            "name": "maxStaleness",
+            "type": "uint32",
+            "internalType": "uint32"
           },
           {
             "name": "referenceSupply",
             "type": "uint256",
             "internalType": "uint256"
-          },
-          {
-            "name": "excluded",
-            "type": "address[]",
-            "internalType": "address[]"
           }
         ]
       }
@@ -633,24 +648,19 @@
         "internalType": "struct IIndexFactory.TokenConfig",
         "components": [
           {
-            "name": "pool",
+            "name": "feed",
             "type": "address",
             "internalType": "address"
           },
           {
-            "name": "minLiquidity",
-            "type": "uint128",
-            "internalType": "uint128"
+            "name": "maxStaleness",
+            "type": "uint32",
+            "internalType": "uint32"
           },
           {
             "name": "referenceSupply",
             "type": "uint256",
             "internalType": "uint256"
-          },
-          {
-            "name": "excluded",
-            "type": "address[]",
-            "internalType": "address[]"
           }
         ]
       }
@@ -819,28 +829,22 @@
         "internalType": "bool"
       },
       {
-        "name": "pool",
+        "name": "feed",
         "type": "address",
         "indexed": false,
         "internalType": "address"
       },
       {
-        "name": "minLiquidity",
-        "type": "uint128",
+        "name": "maxStaleness",
+        "type": "uint32",
         "indexed": false,
-        "internalType": "uint128"
+        "internalType": "uint32"
       },
       {
         "name": "referenceSupply",
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
-      },
-      {
-        "name": "excluded",
-        "type": "address[]",
-        "indexed": false,
-        "internalType": "address[]"
       }
     ],
     "anonymous": false
@@ -894,28 +898,22 @@
         "internalType": "address"
       },
       {
-        "name": "pool",
+        "name": "feed",
         "type": "address",
         "indexed": false,
         "internalType": "address"
       },
       {
-        "name": "minLiquidity",
-        "type": "uint128",
+        "name": "maxStaleness",
+        "type": "uint32",
         "indexed": false,
-        "internalType": "uint128"
+        "internalType": "uint32"
       },
       {
         "name": "referenceSupply",
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
-      },
-      {
-        "name": "excluded",
-        "type": "address[]",
-        "indexed": false,
-        "internalType": "address[]"
       }
     ],
     "anonymous": false
@@ -1202,6 +1200,27 @@
     "type": "error",
     "name": "RenounceDisabled",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SupplyChangeTooLarge",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "inForce",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "proposed",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
   },
   {
     "type": "error",
