@@ -396,11 +396,14 @@ Addresses are in `script/MainnetAddresses.sol`, each with its heartbeat and devi
   mainnet rarely rebalance. An unfilled auction expires, and for `REBALANCE_DELAY` afterwards only the owner and
   guardian can restart it, so a griefer who distorts every snapshot so that even 0.9 does not pay an executor cannot
   take every restart. The cost is that an honest restart after an expiry also waits those two days unless the owner or
-  guardian starts it; the snapshot price checks make the distortion expensive in the first place.
+  guardian starts it. Under Chainlink pricing a stranger cannot distort a snapshot at all, so what this now guards
+  against is a stranger restarting at whichever published round suits it.
 - An index with so little supply that a settlement moves no raw unit at all is priced at parity, so its units follow the
   rule whoever executes. One that still moves a few wei does decay with the auction, and a lone executor can then pick
   the multiplier in [0.9, 1.5] for next to nothing: it sets the level of a near-empty index within the half-to-2.5-times
-  bound but moves no holder's value.
+  bound but moves no holder's value. What it can move is bounded by the rounding of `amountsIn`, under one raw unit of
+  each growing component; before VR-03 a second truncation in the rule's own targets stacked on top of that, and an
+  executor delivering nothing at all settled and kept 1.98 raw units per growing component.
 - Without competing executors, a filler can wait for the 0.9 floor and settle 10% under the snapshot's rate; the notice
   period also lets traders position ahead of a public rebalance. The band bounds that multiplier on the bought legs at
   the snapshot's prices and nothing else, and settlement is a fixed-rate trade against targets up to three days old. The
@@ -468,6 +471,11 @@ Addresses are in `script/MainnetAddresses.sol`, each with its heartbeat and devi
 - The zap is pinned to **Universal Router 2.0.0** rather than the 2.1.x line, whose command inputs carry an extra
   per-hop price array and which shipped a change its own authors later reverted. Moving to a newer router means a new
   zap, which is what "the zap is stateless and replaceable" is for; the token, rule and factory do not depend on it.
+- The capped methodology's 30% and 20% are ceilings, so a crossing between an index's two largest market caps moves
+  weight only in proportion to how far apart they were: nothing at a tie, and at most 10 percentage points where both
+  constituents are already past the 20% cap, which takes a doubling of one against the other to reach. Before VR-01 the
+  30% was assigned outright and any crossing moved 10 to 12.5 points however close the caps were, so a one-basis-point
+  move on one price could put an eighth of an on-methodology index up for auction from any address.
 - Bytecode targets the Cancun EVM (`evm_version = "cancun"`). The factory's deployment code is close to the EIP-3860
   initcode limit. Re-check both before deploying to any other chain.
 

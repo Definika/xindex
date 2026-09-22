@@ -7,10 +7,10 @@ Guidance for coding agents and humans working in this repository. Codex reads th
 
 Xindex smart contracts: a Foundry project where users create crypto index tokens (ERC-20) backed in kind, mint them with
 USDC/USDT, and burn them into any token through Uniswap's Universal Router, which reaches both V3 and V4 pools. An
-index's constituents are fixed at creation; its units follow an on-chain market-cap rule (uncapped, or capped at 30/20
-for ranks 1 and 2) that anyone can trigger monthly and that settles through an auction. Prices come from Chainlink
-feeds, in dollars. The web app lives in a separate repo. See `ARCHITECTURE.md` for the design and `README.md` for the
-product brief, frontend integration notes, and deployment.
+index's constituents are fixed at creation; its units follow an on-chain market-cap rule (uncapped, or capped at 30%
+for the largest and 20% for the rest) that anyone can trigger monthly and that settles through an auction. Prices come
+from Chainlink feeds, in dollars. The web app lives in a separate repo. See `ARCHITECTURE.md` for the design and
+`README.md` for the product brief, frontend integration notes, and deployment.
 
 ## Commands
 
@@ -50,25 +50,28 @@ market from `script/testnet/SetupTestMarket.s.sol`.
 6. Every testable finding of the security reviews keeps its regression test passing, named after its id (a test that
    covers two findings carries both): v1 findings by id, v2 rebalancing findings as `R01`..`R23`, whole-repo audit
    findings of 2026-09-16 as `XA..`, the logic review's findings of 2026-09-18 as `LR..`
-   (`audit/2026-09-18-logic-review.md`), and the deep audit's findings of 2026-09-19 as `DA..`
-   (`audit/2026-09-19-deep-audit.md`). The v1 and R tests live in `test/Security.t.sol` and
+   (`audit/2026-09-18-logic-review.md`), the deep audit's findings of 2026-09-19 as `DA..`
+   (`audit/2026-09-19-deep-audit.md`), and the verification review's findings of 2026-09-21 as `VR..`
+   (`audit/2026-09-21-verification-review.md`). The v1 and R tests live in `test/Security.t.sol` and
    `test/fork/Security.fork.t.sol`, except the ids a contract test cannot reach: L06 and FR06 are `test_L06_checkOwner`
    and `test_FR06_checkGuardian` and FR05 the two `test_FR05_*` tests in `test/Scripts.t.sol`, and I09, I10, I11, L08
    and FR04 are `test/Repo.t.sol` (the known-limitations section, the pinned compiler, the pinned CI toolchain and
    required fork RPC, and the dependency lock against `.gitmodules`; CI also compares the committed submodule commits,
-   which needs git). An XA test sits in the suite of what it checks, `test/Repo.t.sol` for a repository file, so find it
-   by id. XA-19 to XA-21, XA-32 to XA-37, XA-41, XA-63 and XA-65 have no test of their own, because they changed only
-   tests and mocks or refactored without changing behaviour; neither have the findings fixed by documentation alone.
-   `audit/triage.md` gives the evidence for each. A DA test sits in the suite of what it checks too, and
-   `audit/2026-09-19-triage.md` gives the evidence: DA-01 and DA-08 in `test/Security.t.sol`; DA-02, DA-06, DA-09 and
+   which needs git). An XA, DA or VR test sits in the suite of what it checks, `test/Repo.t.sol` for a repository
+   file, so find it by id. XA-19 to XA-21, XA-32 to XA-37, XA-41, XA-63 and XA-65 have no test of their own, because
+   they changed only tests and mocks or refactored without changing behaviour; neither have the findings fixed by
+   documentation alone, VR-05 among them. `audit/triage.md` gives the evidence for each.
+   `audit/2026-09-19-triage.md` gives the DA evidence: DA-01 and DA-08 in `test/Security.t.sol`; DA-06, DA-09 and
    the DA-22 value fuzz in `test/IndexRule.t.sol`; DA-13, DA-14 and the DA-22 turnover test in
    `test/IndexToken.rebalance.t.sol`; DA-17 in `test/IndexToken.t.sol`, where
    `test_uninitializedInstancesCannotIssueOrRedeem` carries the DA-22 `canStartRebalance` assertion as well; DA-15 in
    `test/IndexZap.t.sol`; DA-16 and DA-11 and DA-18 in `test/IndexFactory.t.sol`; DA-20 in `test/Scripts.t.sol`;
    DA-05 in `test/IndexToken.rebalance.t.sol`, with `test_settlementValues` in `test/IndexRule.t.sol` covering the
    rule's half; DA-10 in `test/Repo.t.sol`, since deleting a struct field is only testable through the shipped ABI.
-   DA-12, DA-21 and DA-23 have no test, because no code fix exists for them: the reason is in
-   `audit/2026-09-19-triage.md` and in the design rules below.
+   DA-12, DA-21 and DA-23 have no test, because no code fix exists for them.
+   The VR tests: VR-01 and VR-02 in `test/IndexRule.t.sol`, VR-03 in `test/Security.t.sol`, VR-04 in
+   `test/IndexToken.rebalance.t.sol`, and VR-06 in both `test/IndexRule.t.sol` (the two value-floor tests) and
+   `test/mocks/Mocks.t.sol`, where the `ISwapRouter02` calldata pin moved when the zap stopped using that interface.
    Six ids lost their test on 2026-09-22, when pricing moved to Chainlink and execution to the Universal Router:
    DA-02, R01, R02, R03, XA-01 and XA-09 (which XA-45 shared). Their mechanism no longer exists, so the tests were
    removed rather than weakened, and `audit/2026-09-22-v3-retirement.md` records each one with the test that went and
@@ -78,9 +81,12 @@ market from `script/testnet/SetupTestMarket.s.sol`.
    restore a retired id's test against the new design; if the property matters here, it gets a new id from the review
    of this surface.
 
-CI enforces items 1 to 5: fmt, build, `forge lint -D notes`, tests (fork suites required on `main` and on pull requests
-into it from this repository), 100% coverage on every file and `wake detect all src`. Run them locally before pushing;
-a fork's pull request skips the fork suites, so re-run them before merging.
+CI enforces items 1 to 5: fmt, build, `forge lint -D notes`, tests, 100% coverage on every file and `wake detect all
+src`. The fork suites run on every push from this repository, because the test step passes the `MAINNET_RPC_URL` secret
+unconditionally; on `main` and on pull requests into it the secret is also required, so a missing one fails the run
+rather than letting the suites skip. Check a run's test summary rather than assuming: when they ran it lists the four
+`test/fork/` suites and 0 skipped. Run everything locally before pushing; a fork's pull request gets no secrets, so its
+fork suites skip and a maintainer re-runs them before merging.
 
 ## Layout
 
@@ -310,15 +316,20 @@ the liquidity, and the Universal Router still reaches V3 depth per leg, which is
 seven launch components only LINK is deeper on V4.
 Fixed constituents with units that follow an on-chain rule; methodologies uncapped market cap and capped 30/20 (at
 least 5 components; the 20% cap applies to every component below the largest, changed from the Numbers model's closed
-form on 2026-09-17); rebalance targets are the water-filling of value by weight within the half-to-double bounds (a
-component clipped to its floor is no longer handed value back, changed on 2026-09-18, LR-02); monthly cadence with 2
-days of notice and a 24-hour auction from 1.5 to 0.9 on the bought legs; no protocol bots or hot keys; no fees;
-component whitelist only (no synthetics for L1 coins without a mainnet wrapper); burner chooses the exit token (mint
-currency is not tracked per holder); the index price is the basket's value in dollars, not a divisor level. The launch
-whitelist is exactly seven tokens — WETH, wstETH, WBTC, wSOL, UNI, LINK, AAVE — chosen on 2026-09-22 for one wrapper
-per asset where possible, no Coinbase-issued assets, and a Chainlink feed each. The Numbers model's tokens were
-examples; its methodology is the requirement. Rationale in `ARCHITECTURE.md`. If a change would alter one of these, say
-so explicitly.
+form on 2026-09-17; both figures are ceilings, so a constituent below its ceiling keeps its own market-cap weight and
+the largest is never promoted to 30%, changed on 2026-09-21 after reading the model workbook, VR-01); rebalance
+targets are the water-filling of value by weight within the half-to-double bounds (a component clipped to its floor is
+no longer handed value back, changed on 2026-09-18, LR-02; a share becomes units rounded up and clamped to its
+ceiling, so the targets buy back every wei the shrinking legs release, changed on 2026-09-21, VR-03). Under a keep
+mask the kept component's unchecked price still shapes the moving components' targets wherever a ceiling binds (VR-02,
+raised 2026-09-21, left as recorded behaviour and documented; excluding kept components would break the capped rule's
+feasibility condition). Monthly cadence with 2 days of notice and a 24-hour auction from 1.5 to 0.9 on the bought
+legs; no protocol bots or hot keys; no fees; component whitelist only (no synthetics for L1 coins without a mainnet
+wrapper); burner chooses the exit token (mint currency is not tracked per holder); the index price is the basket's
+value in dollars, not a divisor level. The launch whitelist is exactly seven tokens — WETH, wstETH, WBTC, wSOL, UNI,
+LINK, AAVE — chosen on 2026-09-22 for one wrapper per asset where possible, no Coinbase-issued assets, and a Chainlink
+feed each. The Numbers model's tokens were examples; its methodology is the requirement. Rationale in
+`ARCHITECTURE.md`. If a change would alter one of these, say so explicitly.
 
 ## Not in v3 (candidate backlog)
 

@@ -119,8 +119,10 @@ out exactly `floor(S * u / 1e18) - floor(S * n / 1e18)` of a shrinking component
 `n` holds if it held with the old units `u`, and the post-check enforces it for growing components. Nothing is computed
 from balances, so there is no share price to manipulate and no first-depositor attack. Donations only add surplus that no
 holder can redeem, and a rebalance executor cannot use it to cover part of a fill either: the settlement check asks for
-the whole of `amountsIn` on top of what the index held. The rule rounds the same direction: a target's share of value
-rounds up into whole raw units, so the basket a rebalance aims at is never worth less than the basket it replaces.
+the whole of `amountsIn` on top of what the index held. That check is about backing, not value: what keeps a settlement
+from costing the holders is that the rule's targets are value-neutral at snapshot prices, which is why `IndexRule`
+rounds a share of value up into whole raw units and clamps it to that component's ceiling, so the basket a rebalance
+aims at is never worth less than the basket it replaces (DA-01, VR-03).
 
 ### IndexRule (`src/IndexRule.sol`)
 
@@ -140,11 +142,19 @@ A stateless, view-only contract the factory deploys in its constructor. It never
   leave holdings out uses a reference figure behind the listing timelock instead (DA-10). A config change may move a
   reference supply by at most `MAX_SUPPLY_CHANGE` (an order of magnitude) at a time (DA-18).
 - **Weights:** a market cap is `supply * price / 1e18`, floored at one wei; only ratios of caps matter, so the scale
-  cancels out. Uncapped: `cap_i / sum`. Capped (`src/libraries/Methodology.sol`, at least 5 components): the largest
-  weighs 30%, and every other constituent shares the remaining 70% by cap under a 20% cap of its own. Whatever a cap
-  holds back is shared again among the constituents still below it, one pass per constituent at most; with five or more
-  constituents the 70% always fits (four ranks at the cap hold 80%), and with four it could not, which is why capped
-  indexes need five. Ties rank by position. The Numbers model's closed form gave ranks 3 and below no cap, so one of
+  cancels out. Uncapped: `cap_i / sum`. Capped (`src/libraries/Methodology.sol`, at least 5 components): market-cap
+  weights under a ceiling of 30% for the largest and 20% for every other. Whatever a ceiling holds back is shared again
+  by cap among the constituents still below theirs, one pass per constituent at most; with five or more constituents the
+  ceilings sum above 100% (0.3 + 4 x 0.2 = 1.1) so a pass that pins nothing always comes, and with four they could not,
+  which is why capped indexes need five. Both figures are ceilings, not allocations: a constituent whose market cap does
+  not reach its ceiling keeps its own weight, so five equal constituents weigh 20% each rather than 30/17.5/17.5/17.5/17.5
+  and the largest of twenty equal constituents weighs 5% rather than 30% (VR-01, 2026-09-21). The Numbers model writes
+  rank 1 as a constant `0.3`, but every constituent it ships sits far above it (top 1 is 64.7% of the model's basket) and
+  its scale factor `0.7 / (1 - top1)` only makes sense while the largest is being cut down, so the constant is a ceiling
+  that always bound there rather than a decision about a largest constituent below 30%; the workbook's tokens and
+  scenario figures are illustrative, and `test_VR01_theModelsWorkedExampleIsUnchanged` uses its caps only as a real
+  top-heavy shape that both ceilings bind on. Ties
+  rank by position, which now decides only which ceiling a constituent carries. The Numbers model's closed form gave ranks 3 and below no cap, so one of
   them could outweigh the first two: with caps in the ratio of WBTC, WETH, LINK, UNI and tBTC in September 2026 LINK
   came out at about 35%, and it now pins at 20% (the audit's XA-04; the owner's call on 2026-09-17). The app should show
   `weights(tokens, 1)` before a capped index is created.
@@ -156,15 +166,20 @@ A stateless, view-only contract the factory deploys in its constructor. It never
   Kept components are not read at all under the uncapped methodology, whose weights renormalise them away; the capped
   methodology reads them exactly like a component that trades, because a kept component's cap sits in the denominator
   of every other component's weight, so an unread price there would reshape the targets and the turnover of the
-  components that do move (DA-06). Each target is clipped to
+  components that do move (DA-06). A kept cap moves nothing while no ceiling binds, since every weight is then the
+  component's own; where one binds, it still decides which components the excess is shared with and which carries the
+  30% ceiling (VR-02). Each target is clipped to
   `[units / 2, units * 2]` (and below `MAX_TARGET_UNITS`, so the auction's premium still fits `uint96`). Each pass
   shares the value not yet pinned among the components still free, by weight, and clips the shares: when the clips add
   more value at the floors than they remove at the ceilings, the shares can only come down, so the components at their
   floor are pinned there; otherwise those at their ceiling are. The rest are shared out again until a pass clips
   nothing, at most one pass per component. A pinned component never moves again, so the result is the water-filling of
   value by weight within the bounds: no component above its floor holds more value per unit of weight than one below its
-  ceiling. A weight that rounds to zero counts as one wei, so no clipped value is left unplaced. Every share rounds up
-  into units, so the target basket is never worth less than the basket it replaces. Returns the targets and the
+  ceiling. A weight that rounds to zero counts as one wei, so no clipped value is left unplaced. Every share is turned
+  back into units rounded up and clamped to that component's ceiling, so the targets buy back every wei the shrinking
+  components release and the target basket is never worth less than the basket it replaces: rounding them down left a
+  residue of up to one raw unit per component that nothing reallocated, and the index sent it out with nothing asked
+  back, because the settlement check verifies backing and not value (DA-01, VR-03). Returns the targets and the
   turnover, the smaller of the value sold and the value bought as a share of the rebalanced value.
 - **checkConfig(token, config):** used by the factory before a listing or config change, and again by
   `executeListing`. It requires a feed with code that answers `latestRoundData()` and `decimals()`, a `maxStaleness`
@@ -513,16 +528,22 @@ its own address.
 - **Shape versus value.** Issue, redeem and claims never read a price. What can distort a basket's shape, with targets
   always within half to double per component per rebalance and settled units within half to 2.5 times: an issuer
   minting supply (policy: fixed-supply or governance-minted tokens); the owner changing a feed or a reference supply,
-  behind the 2-day delay and the guardian's cancel; the caller choosing the snapshot moment. A wrong snapshot price can
-  also move value: read low by a factor f on a sold component, it sets the auction's fair multiplier to about 1/f, and
-  below f = 2/3 the first executor takes value. Under Chainlink pricing a stranger has no way to produce that, which is
-  what the move off pool oracles bought; what remains is a feed reporting a wrong answer, a feed stuck at a
-  circuit-breaker bound, or a listing that named the wrong aggregator in the first place — none of which the contracts
-  can detect, and all of which the guardian's duty is the answer to. That duty is unchanged: compare
-  `pendingRebalance()` targets with targets from independent prices during every notice period, and cancel a snapshot
-  that disagrees. What also remains is the **choice of moment**: a feed publishes in steps, so a caller may start a
-  rebalance at whichever published round suits it, within that feed's deviation threshold. The owner and guardian can
-  stall rebalancing or keep chosen components unchanged.
+  behind the 2-day delay and the guardian's cancel; the caller choosing the snapshot moment; under the capped
+  methodology, the price of a component the owner or guardian keeps out of the rebalance, which still decides which
+  components a bound ceiling's excess is shared with and which carries the 30% one (VR-02); and, near a tie between an
+  index's two largest caps, which of them the snapshot moment puts first. That last one is now worth what the gap is
+  worth rather than a flat step: nothing at a tie, and at most 10 percentage points where both constituents are
+  already past the 20% cap, which takes a doubling of one against the other to reach. Before VR-01 the 30% was
+  assigned outright and any crossing moved 10 to 12.5 points however close the caps were.
+  A wrong snapshot price can also move value: read low by a factor f on a sold component, it sets the auction's fair
+  multiplier to about 1/f, and below f = 2/3 the first executor takes value. Under Chainlink pricing a stranger has no
+  way to produce that, which is what the move off pool oracles bought; what remains is a feed reporting a wrong answer,
+  a feed stuck at a circuit-breaker bound, or a listing that named the wrong aggregator in the first place — none of
+  which the contracts can detect, and all of which the guardian's duty is the answer to. That duty is unchanged:
+  compare `pendingRebalance()` targets with targets from independent prices during every notice period, and cancel a
+  snapshot that disagrees. What also remains is the **choice of moment**: a feed publishes in steps, so a caller may
+  start a rebalance at whichever published round suits it, within that feed's deviation threshold. The owner and
+  guardian can stall rebalancing or keep chosen components unchanged.
 - **Level:** set by the auction. A price error of δ on a traded component moves the fair multiplier by about δ. A lone
   executor on an honest snapshot keeps `(1 - 0.9)` of the bought value at the snapshot's own prices, plus however far
   the market moved in the up to three days between the snapshot and the fill; the band does not bound that second part,

@@ -785,4 +785,61 @@ contract ForkFeedsTest is ForkFeeds {
         assertEq(moved, int256(1_000e8) * 3 / 2, "a test that wants drift asks for it");
         assertEq(A.ETH_USD_FEED, feeds[0]);
     }
+
+    // ---------------------------------------------------------------------
+    // the router interface against Uniswap's own
+    // ---------------------------------------------------------------------
+
+    /// @dev `ISwapRouter02` is a hand-written subset of Uniswap's `IV3SwapRouter`. The zap no longer uses it -- it
+    ///      swaps through the Universal Router -- so what encodes against it now is `test/fork/RebalanceExecutorV3`,
+    ///      the fixture that fills auctions through the real SwapRouter02 at
+    ///      0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45. A field reordered or retyped here would still compile and
+    ///      still pass every other local test, because `MockSwapRouter` is written against the same declaration, and
+    ///      the fork suite that would catch it needs an RPC. The pin is cheap and keeps the fixture honest offline
+    ///      (VR-06).
+    ///
+    ///      A selector is not enough on its own: it covers the tuple's types, so swapping `amountIn` with
+    ///      `amountOutMinimum` -- both `uint256` -- leaves it unchanged while inverting what the router is told. The
+    ///      whole calldata is pinned instead, built from values that distinguish every field, against the bytes
+    ///      `cast calldata` produces for Uniswap's own signature. Canonical source: Uniswap/swap-router-contracts,
+    ///      contracts/interfaces/IV3SwapRouter.sol.
+    function test_routerCalldataMatchesUniswaps() public pure {
+        bytes memory input = abi.encodeCall(
+            ISwapRouter02.exactInput,
+            ISwapRouter02.ExactInputParams({
+                path: hex"aabb", recipient: address(0xaA), amountIn: 111, amountOutMinimum: 222
+            })
+        );
+        // cast calldata "exactInput((bytes,address,uint256,uint256))" "(0xaabb,0x...aa,111,222)"
+        assertEq(
+            input,
+            hex"b858183f" hex"0000000000000000000000000000000000000000000000000000000000000020"
+            hex"0000000000000000000000000000000000000000000000000000000000000080"
+            hex"00000000000000000000000000000000000000000000000000000000000000aa"
+            hex"000000000000000000000000000000000000000000000000000000000000006f"
+            hex"00000000000000000000000000000000000000000000000000000000000000de"
+            hex"0000000000000000000000000000000000000000000000000000000000000002"
+            hex"aabb000000000000000000000000000000000000000000000000000000000000",
+            "exactInput encodes differently from Uniswap's IV3SwapRouter"
+        );
+
+        bytes memory output = abi.encodeCall(
+            ISwapRouter02.exactOutput,
+            ISwapRouter02.ExactOutputParams({
+                path: hex"ccdd", recipient: address(0xbB), amountOut: 333, amountInMaximum: 444
+            })
+        );
+        // cast calldata "exactOutput((bytes,address,uint256,uint256))" "(0xccdd,0x...bb,333,444)"
+        assertEq(
+            output,
+            hex"09b81346" hex"0000000000000000000000000000000000000000000000000000000000000020"
+            hex"0000000000000000000000000000000000000000000000000000000000000080"
+            hex"00000000000000000000000000000000000000000000000000000000000000bb"
+            hex"000000000000000000000000000000000000000000000000000000000000014d"
+            hex"00000000000000000000000000000000000000000000000000000000000001bc"
+            hex"0000000000000000000000000000000000000000000000000000000000000002"
+            hex"ccdd000000000000000000000000000000000000000000000000000000000000",
+            "exactOutput encodes differently from Uniswap's IV3SwapRouter"
+        );
+    }
 }

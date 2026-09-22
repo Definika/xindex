@@ -268,11 +268,17 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
 
     /// @inheritdoc IIndexToken
     function cancelRebalance() external nonReentrant onlyInitialized {
-        if (_pending.eta == 0) revert NoPendingRebalance();
+        uint256 eta = _pending.eta;
+        if (eta == 0) revert NoPendingRebalance();
         if (!IIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender)) revert Unauthorized(msg.sender);
+        // Cancelling an auction that already expired only clears the stale proposal the views still report: that
+        // expiry holds strangers off until its own deadline plus REBALANCE_DELAY anyway, so re-arming the cooldown
+        // from here would push the hold-off further out for nothing. `_permissionlessAt` keeps whichever of the two
+        // runs longer. A live auction still costs a full REBALANCE_DELAY from now (VR-04).
+        uint256 restartAt =
+            block.timestamp <= eta + AUCTION_DURATION ? block.timestamp + REBALANCE_DELAY : _permissionlessAt(eta);
         delete _pending;
         delete _targetUnits;
-        uint256 restartAt = block.timestamp + REBALANCE_DELAY;
         restartAllowedAt = restartAt;
         // The factory call above is a view; nothing external can run in between.
         // forge-lint: disable-next-line(reentrancy-events)

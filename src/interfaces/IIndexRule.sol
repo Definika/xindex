@@ -121,7 +121,10 @@ interface IIndexRule is IXindexErrors {
     ///         Every component the snapshot reads needs a price its feed can serve: positive, no older than the
     ///         token's `maxStaleness` (else StalePrice), and within the decimal and MAX_PRICE bounds. Kept components
     ///         are not read at all under the uncapped methodology; under the capped methodology they are read, and
-    ///         checked the same way, because their market cap scales every other component's weight.
+    ///         checked the same way, because their market cap scales every other component's weight. A kept cap moves
+    ///         nothing while no ceiling binds, since every weight is then the component's own; where one binds, the
+    ///         kept cap still decides which components the excess is shared with and which carries the 30% ceiling,
+    ///         so a keep mask is a lever over the targets and not only over which component trades (VR-02).
     /// @param tokens Components, in index order.
     /// @param units Current raw units per 1e18 shares, one per component.
     /// @param methodology `Methodology` id.

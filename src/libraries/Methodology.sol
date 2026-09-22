@@ -8,15 +8,16 @@ library Methodology {
     /// @notice Weights proportional to market cap.
     uint8 internal constant UNCAPPED = 0;
 
-    /// @notice The largest constituent weighs 30% and every other constituent weighs at most 20%: the rest share the
-    ///         remaining 70% in proportion to market cap, and whatever a cap holds back is shared again among the
-    ///         constituents still under it.
+    /// @notice Market-cap weights under a ceiling: the largest constituent weighs at most 30% and every other at most
+    ///         20%. Whatever a ceiling holds back is shared again, in proportion to market cap, among the constituents
+    ///         still under theirs. A constituent that does not reach its ceiling keeps its own market-cap weight --
+    ///         30% is a cap, not an allocation, so the largest is never promoted to it (VR-01).
     uint8 internal constant CAPPED = 1;
 
     /// @notice Number of defined methodologies; valid ids are below it.
     uint8 internal constant COUNT = 2;
 
-    /// @notice Below five constituents the 20% cap cannot hold: the four ranks below the largest can take 80% of the
-    ///         index, but three can take only 60%, less than the 70% left over from the largest's 30%.
+    /// @notice Below five constituents the ceilings cannot hold the whole index: five sum to 30% + 4 x 20% = 110% and
+    ///         leave room, but four sum to 30% + 3 x 20% = 90% and the last 10% would have nowhere to go.
     uint256 internal constant MIN_CAPPED_COMPONENTS = 5;
 }

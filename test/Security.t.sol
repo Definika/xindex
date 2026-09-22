@@ -1456,4 +1456,125 @@ contract SecurityRegressionTest is XindexTest {
         assertApproxEqRel(turnover, (Math.min(sold, bought) * 1e18) / basket, 1e12, "turnover is the traded side");
         assertLt(turnover, (sold * 1e18) / basket + 1, "and never more than the gross outflow");
     }
+
+    // ---------------------------------------------------------------------
+    // VR-03: the rule's targets must buy back every wei the shrinking legs release
+    // ---------------------------------------------------------------------
+
+    /// @dev Units of the bulk component the rule sells down to its floor, and of each coarse component it buys.
+    uint256 private constant VR03_BULK_UNITS = 7.9e28;
+    uint256 private constant VR03_COARSE_UNITS = 99;
+    /// @dev 99*S and 100*S lie between the same two multiples of 1e18, so a one-unit buy leg floors to zero. The
+    ///      largest supply for which that holds with 99 units: S <= 1e18 * 99/100.
+    uint256 private constant VR03_DUST_SUPPLY = 989_999_999_999_999_999;
+    /// @dev 20/24 of the way into the auction the multiplier is exactly 1.0, so nothing is owed to the auction.
+    uint256 private constant VR03_AT_PARITY = 20 hours;
+
+    /// @dev The basket's WAD prices, dollars per 1e18 raw units. These are the prices the ticks -276,310 and 364,267
+    ///      produced when the rule read Uniswap pools, multiplied by 1e10 so the cheapest of them is expressible
+    ///      through an eight-decimal feed. A uniform scaling leaves every target identical, because weights and the
+    ///      shares `_pin` divides are ratios and all four prices stay far below MAX_EXACT_PRICE, so the regime the
+    ///      finding lives in is preserved exactly rather than approximated.
+    uint256 private constant VR03_BULK_PRICE = 10_014_030_000_000_000;
+    uint256 private constant VR03_GROWER_HIGH = 65_936_191_867_453_883_476_446_441_392_076_950_000_000_000;
+    /// @dev One tick below, a thousandth of a percent cheaper. That gap is twenty orders of magnitude wider than the
+    ///      quantisation an eight-decimal feed imposes, so which side of the rounding boundary a leg falls on is
+    ///      decided by the price difference and not by the port.
+    uint256 private constant VR03_GROWER_LOW = 65_929_598_907_563_127_163_672_367_071_558_570_000_000_000;
+
+    /// @dev A basket whose growing components hold so few raw units that one of them is a material share of the value
+    ///      the shrinking leg releases: one cheap 18-decimal bulk holding the rule sells down to its floor, and three
+    ///      coarse holdings at 8, 6 and 18 decimals that it buys up by a single raw unit.
+    function _vr03Basket(uint256 growerPrice) internal returns (IndexToken idx, address[] memory t) {
+        uint8[4] memory decs = [18, 8, 6, 18];
+        uint256[4] memory prices = [VR03_BULK_PRICE, growerPrice, growerPrice, growerPrice];
+        uint256[4] memory units = [VR03_BULK_UNITS, VR03_COARSE_UNITS, VR03_COARSE_UNITS, VR03_COARSE_UNITS];
+
+        t = new address[](4);
+        uint256[] memory u = new uint256[](4);
+        IIndexFactory.TokenConfig[] memory configs = new IIndexFactory.TokenConfig[](4);
+        for (uint256 i = 0; i < 4; ++i) {
+            t[i] = address(new MockERC20("Coarse", "CRS", decs[i]));
+            configs[i] = market.configWith(t[i], _vr03Answer(prices[i], decs[i]), 1e18);
+            u[i] = units[i];
+        }
+        vm.startPrank(owner);
+        for (uint256 i = 0; i < 4; ++i) {
+            factory.proposeListing(t[i], configs[i]);
+        }
+        vm.stopPrank();
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        for (uint256 i = 0; i < 4; ++i) {
+            factory.executeListing(t[i]);
+        }
+        idx = IndexToken(factory.createIndex("Coarse", "CRS", t, u, 0));
+    }
+
+    /// @dev The eight-decimal answer a feed must report for the rule to read `wadPrice` off a token with `decimals_`
+    ///      decimals, which is the rule's own scaling read backwards.
+    function _vr03Answer(uint256 wadPrice, uint8 decimals_) internal pure returns (int256) {
+        return int256(wadPrice / (10 ** (36 - 8 - uint256(decimals_))));
+    }
+
+    function _vr03Value(address token, uint256 amount) internal view returns (uint256) {
+        return amount * IIndexRule(factory.RULE()).price(token) / 1e18;
+    }
+
+    /// @dev Opens the auction at the multiplier's parity point.
+    function _vr03OpenAtParity(IndexToken idx) internal {
+        vm.warp(idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL());
+        vm.prank(attacker);
+        idx.startRebalance(0);
+        (uint256 eta,,) = idx.pendingRebalance();
+        vm.warp(eta + VR03_AT_PARITY);
+        assertEq(idx.currentMultiplier(), 1e18, "the auction owes nothing at this point");
+    }
+
+    /// @dev VR-03. `_clip` used to floor a component's share of value into units. The component the value came from
+    ///      was already pinned at its floor, so nothing reallocated the remainder: the index sent it out as
+    ///      `amountsOut` with no matching `amountsIn`, and `_checkBacking` verifies backing, not value. With the
+    ///      targets rounded up the settlement can no longer cost the holders anything at parity. Before the fix this
+    ///      asserted the other way round: a 49.99% gift to an honest executor with no auction discount at all.
+    function test_VR03_anHonestFillAtParityNeverPaysTheExecutor() public {
+        (IndexToken idx, address[] memory t) = _vr03Basket(VR03_GROWER_HIGH);
+        _issueRule(idx, alice, 1e24);
+        _vr03OpenAtParity(idx);
+
+        (,, uint256[] memory amountsOut, uint256[] memory amountsIn) = idx.previewRebalance();
+        uint256 valueOut = 0;
+        uint256 valueIn = 0;
+        for (uint256 i = 0; i < t.length; ++i) {
+            valueOut += _vr03Value(t[i], amountsOut[i]);
+            valueIn += _vr03Value(t[i], amountsIn[i]);
+        }
+        assertGe(valueIn, valueOut, "the targets buy back at least what the shrinking legs release");
+
+        new MockRebalanceExecutor().execute(idx, "");
+        assertEq(idx.rebalanceNonce(), 1, "an honest fill still settles");
+    }
+
+    /// @dev VR-03, the same defect seen from the other side: with every growing leg's `amountsIn` floored to zero by a
+    ///      dust supply, an executor whose callback body is empty used to settle and keep the whole of `amountsOut` --
+    ///      1.9799 raw units per growing component, 1.98x the one-raw-unit bound the rounding of `amountsIn` alone
+    ///      implies. Rounding the targets up removes the second truncation, so there is nothing left to take.
+    ///
+    ///      Two guards now refuse this settlement and the outer one fires first: DA-05's settlement-ratio check values
+    ///      both sides in the settling block and sees an executor delivering nothing at all, so `SettlementValueTooLow`
+    ///      arrives before `_checkBacking` is ever reached. The property the finding is about is unchanged and the
+    ///      assertions below still carry it -- nothing settled, and the executor kept nothing.
+    function test_VR03_anEmptyExecutorCannotSettleADustRebalance() public {
+        (IndexToken idx, address[] memory t) = _vr03Basket(VR03_GROWER_LOW);
+        _issueRule(idx, alice, VR03_DUST_SUPPLY);
+        _vr03OpenAtParity(idx);
+
+        (,, uint256[] memory amountsOut,) = idx.previewRebalance();
+        assertGt(amountsOut[0], 0, "the shrinking leg still moves raw units");
+
+        MockRebalanceExecutor noop = new MockRebalanceExecutor();
+        noop.setMode(MockRebalanceExecutor.Mode.Noop);
+        vm.expectPartialRevert(IIndexToken.SettlementValueTooLow.selector);
+        noop.execute(idx, "");
+        assertEq(idx.rebalanceNonce(), 0, "nothing settled");
+        assertEq(MockERC20(t[0]).balanceOf(address(noop)), 0, "and the executor took nothing");
+    }
 }
