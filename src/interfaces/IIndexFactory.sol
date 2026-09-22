@@ -10,15 +10,15 @@ import {IXindexErrors} from "./IXindexErrors.sol";
 ///      "owner or guardian" functions with `Unauthorized`.
 interface IIndexFactory is IXindexErrors {
     /// @notice Where the rebalance rule reads a token's price and supply.
-    /// @param pool Uniswap V3 pool of the token against WETH. Zero only for WETH itself.
-    /// @param minLiquidity Least harmonic-mean in-range liquidity of `pool` over the rule's TWAP window for which a
-    ///        rebalance snapshot accepts its price. A window whose price was pushed through thin or empty ranges falls
-    ///        below it. Non-zero for every token with a pool; zero for WETH.
+    /// @param feed Chainlink-shaped USD price feed for the token, read through {IAggregatorV3}. A token whose USD price
+    ///        exists only as a product of two feeds, as WBTC does, is listed with a `CompositeFeed` over both.
+    /// @param maxStaleness Oldest `updatedAt` the rule will price the token from, in seconds. The policy is the feed's
+    ///        heartbeat plus half an hour, and the rule caps it at its own MAX_FEED_STALENESS. Non-zero for every token.
     /// @param referenceSupply Supply used instead of the on-chain one, in the token's raw units. Needed for wrapped assets
     ///        such as WBTC or WETH, whose on-chain supply counts only the wrapped coins. Zero uses on-chain supply.
     struct TokenConfig {
-        address pool;
-        uint128 minLiquidity;
+        address feed;
+        uint32 maxStaleness;
         uint256 referenceSupply;
     }
 
@@ -37,12 +37,12 @@ interface IIndexFactory is IXindexErrors {
     ///         until `eta + PROPOSAL_WINDOW`.
     /// @param listing True when executing the proposal whitelists `token`; false for a config change only.
     event ListingProposed(
-        address indexed token, uint256 eta, bool listing, address pool, uint128 minLiquidity, uint256 referenceSupply
+        address indexed token, uint256 eta, bool listing, address feed, uint32 maxStaleness, uint256 referenceSupply
     );
     /// @notice The pending proposal for `token` was cancelled, or dropped because {delist} removed the token.
     event ListingCancelled(address indexed token);
     /// @notice An executed proposal put this config in force for `token`.
-    event TokenConfigured(address indexed token, address pool, uint128 minLiquidity, uint256 referenceSupply);
+    event TokenConfigured(address indexed token, address feed, uint32 maxStaleness, uint256 referenceSupply);
     /// @notice `token` was whitelisted (`allowed`) or delisted.
     event TokenWhitelisted(address indexed token, bool allowed);
     /// @notice A change to `newGuardian` was proposed. It can be executed from `eta` until `eta + PROPOSAL_WINDOW`.

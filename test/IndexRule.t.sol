@@ -8,10 +8,8 @@ import {IndexToken} from "../src/IndexToken.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IIndexRule} from "../src/interfaces/IIndexRule.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
-import {TickMath} from "../src/libraries/TickMath.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
-import {DEFAULT_MIN_LIQUIDITY, MockMarket} from "./mocks/MockMarket.sol";
-import {harmonicOf, MockUniswapV3Pool} from "./mocks/MockUniswapV3.sol";
+import {DEFAULT_STALENESS, FEED_DECIMALS, MockMarket, usdWad} from "./mocks/MockMarket.sol";
 
 contract IndexRuleTest is Test {
     MockMarket market;
@@ -30,20 +28,24 @@ contract IndexRuleTest is Test {
     address constant LOW = address(0x1000); // below any WETH mock: token0 of its pool
     address constant HIGH = address(type(uint160).max); // above any WETH mock: token1 of its pool
 
-    /// @dev Five tokens listed at tick 0 with equal reference supplies, for fuzzing prices without relisting.
+    /// @dev A dollar per whole token, in the eight decimals a feed answers in. An 18-decimal token priced here has a
+    ///      WAD price of exactly 1e18, which is what every basket below is built from.
+    int256 constant ONE_DOLLAR = 1e8;
+
+    /// @dev Five tokens listed at a dollar with equal reference supplies, for fuzzing prices without relisting.
     address[] fuzzTokens;
 
     function setUp() public {
         market = new MockMarket();
         weth = address(market.weth());
         usdc = address(market.usdc());
-        factory = new IndexFactory(owner, guardian, weth, address(market.uniswapV3Factory()), usdc);
+        factory = new IndexFactory(owner, guardian);
         rule = IndexRule(factory.RULE());
         deployCodeTo("MockERC20.sol:MockERC20", abi.encode("Low", "LOW", uint8(18)), LOW);
         deployCodeTo("MockERC20.sol:MockERC20", abi.encode("High", "HIGH", uint8(18)), HIGH);
         for (uint256 i = 0; i < 5; ++i) {
             fuzzTokens.push(address(new MockERC20("F", "F", 18)));
-            _listAt(fuzzTokens[i], 0, 1e24);
+            _listAt(fuzzTokens[i], ONE_DOLLAR, 1e24);
         }
     }
 
@@ -58,27 +60,36 @@ contract IndexRuleTest is Test {
         factory.executeListing(token);
     }
 
-    function _listAt(address token, int24 tick, uint256 referenceSupply) internal {
-        _list(token, market.configWith(token, tick, referenceSupply));
+    function _listAt(address token, int256 priceUsd8, uint256 referenceSupply) internal {
+        _list(token, market.configWith(token, priceUsd8, referenceSupply));
     }
 
-    /// @dev Lists fresh 18-decimal tokens with the given ticks and reference supplies.
-    function _basket(int24[] memory ticks, uint256[] memory supplies) internal returns (address[] memory tokens) {
-        tokens = new address[](ticks.length);
-        for (uint256 i = 0; i < ticks.length; ++i) {
+    /// @dev Lists fresh 18-decimal tokens at the given dollar prices and reference supplies.
+    function _basket(int256[] memory prices, uint256[] memory supplies) internal returns (address[] memory tokens) {
+        tokens = new address[](prices.length);
+        for (uint256 i = 0; i < prices.length; ++i) {
             tokens[i] = address(new MockERC20("B", "B", 18));
-            _listAt(tokens[i], ticks[i], supplies[i]);
+            _listAt(tokens[i], prices[i], supplies[i]);
         }
     }
 
-    /// @dev Tokens at tick 0 (one WETH each) whose reference supplies are `parts` whole tokens.
+    /// @dev Lists a fresh 18-decimal token whose feed answers in 18 decimals too, so the rule's exponent is zero and
+    ///      the answer is the WAD price itself. It is the only way to reach a price of a few wei, or one near
+    ///      MAX_PRICE, which eight decimals against an 18-decimal token cannot express.
+    function _listWad(uint256 wadPrice, uint256 referenceSupply) internal returns (address token) {
+        token = address(new MockERC20("B", "B", 18));
+        _list(token, market.configWithFeed(token, int256(wadPrice), 18, referenceSupply));
+    }
+
+    /// @dev Tokens at a dollar each (a WAD price of 1e18) whose reference supplies are `parts` whole tokens.
     function _flatBasket(uint256[] memory parts) internal returns (address[] memory tokens) {
-        int24[] memory ticks = new int24[](parts.length);
+        int256[] memory prices = new int256[](parts.length);
         uint256[] memory supplies = new uint256[](parts.length);
         for (uint256 i = 0; i < parts.length; ++i) {
+            prices[i] = ONE_DOLLAR;
             supplies[i] = parts[i] * WAD;
         }
-        return _basket(ticks, supplies);
+        return _basket(prices, supplies);
     }
 
     function _arr(uint256 a, uint256 b, uint256 c, uint256 d, uint256 e) internal pure returns (uint256[] memory r) {
@@ -86,202 +97,229 @@ contract IndexRuleTest is Test {
         (r[0], r[1], r[2], r[3], r[4]) = (a, b, c, d, e);
     }
 
-    /// @dev A config with the market's default minimum liquidity; WETH's valid config sets it back to zero.
-    function _config(address pool, uint256 referenceSupply) internal pure returns (IIndexFactory.TokenConfig memory c) {
-        c.pool = pool;
-        c.minLiquidity = DEFAULT_MIN_LIQUIDITY;
+    /// @dev A config naming `feed` with the market's default staleness bound.
+    function _config(address feed, uint256 referenceSupply) internal pure returns (IIndexFactory.TokenConfig memory c) {
+        c.feed = feed;
+        c.maxStaleness = DEFAULT_STALENESS;
         c.referenceSupply = referenceSupply;
     }
 
     // ---------------------------------------------------------------------
-    // constructor
+    // constants
     // ---------------------------------------------------------------------
 
-    function test_constructor() public view {
+    function test_constants() public view {
         assertEq(rule.FACTORY(), address(factory));
-        assertEq(rule.WETH(), weth);
-        assertEq(rule.USDC(), usdc);
-        assertEq(rule.UNISWAP_V3_FACTORY(), address(market.uniswapV3Factory()));
-        assertEq(rule.USD_POOL(), address(market.usdPool()));
-        assertEq(rule.TWAP_WINDOW(), 30 minutes);
-        assertEq(rule.TWAP_SUB_WINDOWS(), 3);
-        assertEq(rule.MAX_TICK_DEVIATION(), 2_000);
-        assertEq(rule.MIN_OBSERVATION_CARDINALITY(), 200);
-        assertEq(rule.MAX_OBSERVATION_AGE(), 20 minutes, "two sub-windows, so the oldest part is always real history");
-        assertEq(rule.USD_POOL_FEE(), 500);
-        assertEq(rule.MAX_TARGET_UNITS(), uint256(type(uint96).max) * 2 / 3);
-    }
-
-    function test_constructor_rejectsABadMarket() public {
-        address v3 = address(market.uniswapV3Factory());
-        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new IndexRule(address(0), v3, usdc);
-        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new IndexRule(weth, address(0), usdc);
-        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new IndexRule(weth, v3, address(0));
-
-        address noPool = address(new MockERC20("No Pool", "NOPE", 6));
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidPool.selector, noPool, address(0)));
-        new IndexRule(weth, v3, noPool);
-
-        MockUniswapV3Pool usdPool = market.usdPool();
-        usdPool.setObservationCardinality(199);
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.PoolHistoryTooShort.selector, address(usdPool), 199));
-        new IndexRule(weth, v3, usdc);
-        usdPool.setObservationCardinality(200);
-        new IndexRule(weth, v3, usdc);
-
-        usdPool.setHistoryTooShort(true);
-        vm.expectRevert(bytes("OLD"));
-        new IndexRule(weth, v3, usdc);
+        assertEq(rule.MAX_PRICE(), 1e56, "far past any real asset, and inside the rule's 256-bit proof");
+        assertEq(rule.MAX_FEED_STALENESS(), 2 days, "twice the longest heartbeat the default list carries");
+        assertEq(
+            rule.MAX_TARGET_UNITS() * 3 / 2, uint256(type(uint96).max), "an auction's premium still fits uint96 units"
+        );
     }
 
     // ---------------------------------------------------------------------
     // checkConfig
     // ---------------------------------------------------------------------
 
-    function test_checkConfig_weth() public {
-        IIndexFactory.TokenConfig memory valid = _config(address(0), 120_000_000e18);
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidMinLiquidity.selector, weth));
-        rule.checkConfig(weth, valid); // WETH has no pool, so no minimum liquidity either
-        valid.minLiquidity = 0;
-        rule.checkConfig(weth, valid);
-
-        address somePool = address(market.usdPool());
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidPool.selector, weth, somePool));
-        rule.checkConfig(weth, _config(somePool, 120_000_000e18));
-        valid.referenceSupply = 0;
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidSupplyConfig.selector, weth));
-        rule.checkConfig(weth, valid);
+    /// @dev WETH used to be the one token the rule priced without reading anything, at a fixed 1e18. With every price
+    ///      coming from a feed there is nothing left to special-case: WETH carries an ETH/USD feed and ether's supply
+    ///      exactly as any other component carries its own.
+    function test_checkConfig_wethIsAnOrdinaryToken() public {
+        IIndexFactory.TokenConfig memory config = market.configWith(weth, 3_000e8, 120_000_000e18);
+        rule.checkConfig(weth, config);
+        _list(weth, config);
+        assertEq(rule.price(weth), 3_000e18, "priced from its feed, not from being the numeraire");
+        assertEq(rule.supply(weth), 120_000_000e18);
     }
 
-    function test_checkConfig_pools() public {
-        address pool = market.configWith(LOW, 0, 1).pool;
-        rule.checkConfig(LOW, _config(pool, 1));
+    function test_checkConfig_feeds() public {
+        MockERC20(LOW).mint(alice, 100e18);
+        address feed = market.configWith(LOW, ONE_DOLLAR, 1).feed;
 
-        IIndexFactory.TokenConfig memory unguarded = _config(pool, 1);
-        unguarded.minLiquidity = 0;
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidMinLiquidity.selector, LOW));
-        rule.checkConfig(LOW, unguarded);
-
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidPool.selector, LOW, address(0)));
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidFeed.selector, LOW, address(0)));
         rule.checkConfig(LOW, _config(address(0), 1));
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidPool.selector, LOW, alice));
-        rule.checkConfig(LOW, _config(alice, 1));
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidFeed.selector, LOW, alice));
+        rule.checkConfig(LOW, _config(alice, 1)); // an address with no code
 
-        // Another token's genuine pool, and a look-alike pool the Uniswap factory never deployed.
-        address usdPool = address(market.usdPool());
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidPool.selector, LOW, usdPool));
-        rule.checkConfig(LOW, _config(usdPool, 1));
-        address fake = address(new MockUniswapV3Pool(LOW, weth, 3000));
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidPool.selector, LOW, fake));
-        rule.checkConfig(LOW, _config(fake, 1));
+        IIndexFactory.TokenConfig memory config = _config(feed, 1);
+        config.maxStaleness = 0;
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidStaleness.selector, LOW, uint32(0)));
+        rule.checkConfig(LOW, config);
+        uint32 tooLong = rule.MAX_FEED_STALENESS() + 1;
+        config.maxStaleness = tooLong;
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidStaleness.selector, LOW, tooLong));
+        rule.checkConfig(LOW, config);
+        config.maxStaleness = rule.MAX_FEED_STALENESS();
+        rule.checkConfig(LOW, config); // the ceiling itself is accepted
 
-        MockUniswapV3Pool(pool).setObservationCardinality(199);
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.PoolHistoryTooShort.selector, pool, 199));
-        rule.checkConfig(LOW, _config(pool, 1));
-        MockUniswapV3Pool(pool).setObservationCardinality(1_000);
-        MockUniswapV3Pool(pool).setHistoryTooShort(true);
-        vm.expectRevert(bytes("OLD"));
-        rule.checkConfig(LOW, _config(pool, 1));
-
-        MockUniswapV3Pool(pool).setHistoryTooShort(false);
-        market.setPriceTick(LOW, TickMath.MIN_TICK);
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.ZeroPrice.selector, LOW));
-        rule.checkConfig(LOW, _config(pool, 1));
+        // A feed that answers but is not usable: refused at the proposal, not discovered at the next rebalance.
+        market.setPrice(LOW, 0);
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidPrice.selector, LOW, int256(0)));
+        rule.checkConfig(LOW, _config(feed, 1));
     }
 
     function test_checkConfig_supplies() public {
-        address pool = market.configWith(LOW, 0, 1).pool;
+        address feed = market.configWith(LOW, ONE_DOLLAR, 1).feed;
 
         vm.expectRevert(abi.encodeWithSelector(IIndexRule.ZeroSupply.selector, LOW));
-        rule.checkConfig(LOW, _config(pool, 0)); // nobody has minted LOW yet
+        rule.checkConfig(LOW, _config(feed, 0)); // nobody has minted LOW yet
 
         // Its own total supply, once someone has, or a reference figure instead. DA-10 left no third way to define
         // it: the list of excluded holders that `_supply` subtracted with a live `balanceOf` is gone.
         MockERC20(LOW).mint(alice, 100e18);
-        rule.checkConfig(LOW, _config(pool, 0));
-        rule.checkConfig(LOW, _config(pool, 1));
+        rule.checkConfig(LOW, _config(feed, 0));
+        rule.checkConfig(LOW, _config(feed, 1));
 
         MockERC20(LOW).burn(alice, 100e18);
         vm.expectRevert(abi.encodeWithSelector(IIndexRule.ZeroSupply.selector, LOW));
-        rule.checkConfig(LOW, _config(pool, 0));
+        rule.checkConfig(LOW, _config(feed, 0));
     }
 
     // ---------------------------------------------------------------------
     // prices and supplies
     // ---------------------------------------------------------------------
 
-    function test_price_bothSidesOfThePool() public {
-        _listAt(LOW, 0, 1);
-        _listAt(HIGH, 0, 1);
-        assertEq(rule.price(LOW), WAD);
-        assertEq(rule.price(HIGH), WAD);
-        assertEq(rule.price(weth), WAD);
+    /// @dev A WAD price is the answer scaled by 10 ** (36 - feedDecimals - tokenDecimals), so the same dollar figure
+    ///      lands on the same value whatever decimals the token and its feed use.
+    function test_price_convertsAnswerToUsdWad() public {
+        _listAt(LOW, ONE_DOLLAR, 1);
+        assertEq(rule.price(LOW), WAD, "a dollar on an 18-decimal token is 1e18");
 
-        // Exact values of 1.0001^6932 * 1e18 and its inverse; both sides of the pool agree with them.
-        market.setPriceTick(LOW, 6932);
-        market.setPriceTick(HIGH, 6932);
-        assertApproxEqRel(rule.price(LOW), 2000036323830947322, 1e6);
-        assertApproxEqRel(rule.price(HIGH), 2000036323830947322, 1e6);
-        market.setPriceTick(LOW, -100_000);
-        market.setPriceTick(HIGH, 100_000);
-        assertApproxEqRel(rule.price(LOW), 45422633889328, 1e8);
-        assertApproxEqRel(rule.price(HIGH), 22015456048552198645701, 1e6);
+        // The same dollar price on 8-, 9- and 6-decimal tokens: the shapes WBTC, wrapped SOL and USDC have.
+        uint8[3] memory decimals = [8, 9, 6];
+        for (uint256 i = 0; i < 3; ++i) {
+            MockERC20 token = new MockERC20("D", "D", decimals[i]);
+            token.mint(alice, 1);
+            _listAt(address(token), 30_000e8, 0);
+            assertEq(rule.price(address(token)), usdWad(30_000e8, decimals[i]), "30,000 dollars a whole token");
+            assertEq(
+                rule.price(address(token)) * 10 ** decimals[i] / WAD,
+                30_000e18,
+                "one whole token is worth 30,000 dollars whatever its decimals"
+            );
+        }
 
-        // Past a pool tick of about 443,636 the square root no longer fits 128 bits and the other formula applies.
-        market.setPriceTick(LOW, TickMath.MAX_TICK);
-        assertApproxEqRel(rule.price(LOW), 340256786836388094050805785052946541066751507546701582068, 1e6);
-        market.setPriceTick(HIGH, TickMath.MIN_TICK);
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.ZeroPrice.selector, HIGH));
-        rule.price(HIGH);
+        // An 18-decimal feed on an 18-decimal token makes the exponent zero, so the answer is the price itself.
+        assertEq(rule.price(_listWad(12_345, 1)), 12_345);
     }
 
     function test_price_andSupplyOfATokenWithNoConfig() public {
         MockERC20 unlisted = new MockERC20("Unlisted", "NONE", 18);
         unlisted.mint(alice, 5e18);
-        // No pool is configured, so the rule reads a codeless address and the decoder reverts without a reason.
-        vm.expectRevert(bytes(""));
+        // No config, so no feed: the rule names what is missing instead of reverting on a codeless address.
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidFeed.selector, address(unlisted), address(0)));
         rule.price(address(unlisted));
         assertEq(rule.supply(address(unlisted)), 5e18, "the plain total supply");
     }
 
-    function test_price_usdcUsesTheUsdPool() public view {
-        // About 3,000 USDC per ETH: WETH wei per 1e18 raw USDC units is about 1e18 * 1e12 / 3000.
-        assertApproxEqRel(rule.price(usdc), uint256(1e30) / 3000, 1e15);
+    /// @dev The staleness bound is the token's own, not a constant, because the default list's feeds run on one-hour
+    ///      and 24-hour heartbeats and a single bound would have to admit the slower one.
+    function test_price_stalenessIsPerFeed() public {
+        _listAt(LOW, ONE_DOLLAR, 1);
+        MockERC20 slow = new MockERC20("Slow", "SLOW", 18);
+        slow.mint(alice, 1e18);
+        IIndexFactory.TokenConfig memory config = market.configWith(address(slow), ONE_DOLLAR, 0);
+        config.maxStaleness = 1 days;
+        _list(address(slow), config);
+
+        market.setAge(LOW, DEFAULT_STALENESS);
+        market.setAge(address(slow), DEFAULT_STALENESS);
+        assertEq(rule.price(LOW), WAD, "the bound itself is still fresh");
+        assertEq(rule.price(address(slow)), WAD);
+
+        market.setAge(LOW, uint256(DEFAULT_STALENESS) + 1);
+        market.setAge(address(slow), uint256(DEFAULT_STALENESS) + 1);
+        vm.expectRevert(
+            abi.encodeWithSelector(IIndexRule.StalePrice.selector, LOW, block.timestamp - DEFAULT_STALENESS - 1)
+        );
+        rule.price(LOW);
+        assertEq(rule.price(address(slow)), WAD, "the slower feed's own bound has not run out");
+
+        market.setAge(address(slow), 1 days + 1);
+        vm.expectRevert(
+            abi.encodeWithSelector(IIndexRule.StalePrice.selector, address(slow), block.timestamp - 1 days - 1)
+        );
+        rule.price(address(slow));
     }
 
-    function test_price_meanTickRoundsTowardNegativeInfinity() public {
-        _listAt(LOW, 0, 1);
-        MockUniswapV3Pool pool = market.tokenPool(LOW);
-
-        market.setPriceTick(LOW, -2);
-        uint256 atMinusTwo = rule.price(LOW);
-        market.setPriceTick(LOW, -1);
-        uint256 atMinusOne = rule.price(LOW);
-        market.setPriceTick(LOW, 1);
-        uint256 atOne = rule.price(LOW);
-
-        pool.setCumulatives(0, -1801); // mean -1.0006: rounds down to -2, like Uniswap's OracleLibrary
-        assertEq(rule.price(LOW), atMinusTwo);
-        pool.setCumulatives(0, -1800); // exactly -1
-        assertEq(rule.price(LOW), atMinusOne);
-        pool.setCumulatives(0, 1801); // positive means truncate
-        assertEq(rule.price(LOW), atOne);
-
-        pool.setCumulatives(0, int56(int256(TickMath.MAX_TICK) + 1) * 1800);
-        vm.expectRevert(abi.encodeWithSelector(TickMath.InvalidTick.selector, TickMath.MAX_TICK + 1));
+    /// @dev A timestamp ahead of the block is a broken feed, not a fresh one. Subtracting it would underflow, so the
+    ///      check is written to fail closed instead.
+    function test_price_futureTimestampFailsClosed() public {
+        _listAt(LOW, ONE_DOLLAR, 1);
+        market.feedOf(LOW).setUpdatedAt(block.timestamp + 1);
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.StalePrice.selector, LOW, block.timestamp + 1));
         rule.price(LOW);
     }
 
+    function test_price_rejectsZeroAndNegativeAnswers() public {
+        _listAt(LOW, ONE_DOLLAR, 1);
+        market.setPrice(LOW, 0);
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidPrice.selector, LOW, int256(0)));
+        rule.price(LOW);
+        market.setPrice(LOW, -1);
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidPrice.selector, LOW, int256(-1)));
+        rule.price(LOW);
+    }
+
+    /// @dev MAX_PRICE is what keeps every value product inside 256 bits, so an answer past it is refused rather than
+    ///      carried into arithmetic the rule is not proved for.
+    function test_price_rejectsAPriceAboveMaxPrice() public {
+        uint256 max = rule.MAX_PRICE();
+        address token = _listWad(max, 1);
+        assertEq(rule.price(token), max, "the ceiling itself is accepted");
+
+        market.setPrice(token, int256(max + 1));
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.PriceTooHigh.selector, token, int256(max + 1)));
+        rule.price(token);
+    }
+
+    /// @dev Decimals are read on every call rather than stored at listing, so an answer and the scale it is read with
+    ///      always come from the same aggregator in the same block. A proxy repointed to one with other decimals
+    ///      therefore reprices correctly instead of being read at the old scale.
+    function test_price_readsDecimalsLive() public {
+        MockERC20 token = new MockERC20("Six", "SIX", 6);
+        token.mint(alice, 1);
+        _listAt(address(token), ONE_DOLLAR, 0);
+        assertEq(rule.price(address(token)), usdWad(ONE_DOLLAR, 6));
+
+        token.setDecimals(18);
+        assertEq(rule.price(address(token)), usdWad(ONE_DOLLAR, 18), "the same answer, repriced at the new scale");
+
+        token.setDecimals(19);
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidDecimals.selector, address(token), 19, FEED_DECIMALS));
+        rule.price(address(token));
+    }
+
+    /// @dev There is no looser view path. Nothing about a feed can be griefed by a third party, so a display price
+    ///      that skipped the checks would only ever show a dead number as if it were current.
+    function test_price_hasNoDisplayPath() public {
+        address[] memory tokens = _flatBasket(_arr(1, 1, 1, 1, 1));
+        uint256[] memory units = _arr(1e18, 1e18, 1e18, 1e18, 1e18);
+        IndexToken index = IndexToken(factory.createIndex("Display", "DISP", tokens, units, UNCAPPED));
+
+        market.setAge(tokens[0], uint256(DEFAULT_STALENESS) + 1);
+        bytes memory err =
+            abi.encodeWithSelector(IIndexRule.StalePrice.selector, tokens[0], block.timestamp - DEFAULT_STALENESS - 1);
+
+        vm.expectRevert(err);
+        rule.price(tokens[0]);
+        vm.expectRevert(err);
+        rule.weights(tokens, UNCAPPED);
+        vm.expectRevert(err);
+        rule.navPerToken(address(index));
+        vm.expectRevert(err);
+        rule.initialUnits(tokens, UNCAPPED, 1_000e18);
+        vm.expectRevert(err);
+        rule.targetUnits(tokens, units, UNCAPPED, 0);
+    }
+
     function test_supply() public {
-        _listAt(LOW, 0, 7e18);
+        _listAt(LOW, ONE_DOLLAR, 7e18);
         assertEq(rule.supply(LOW), 7e18);
 
         MockERC20 token = new MockERC20("Onchain", "ON", 18);
         token.mint(alice, 1_400e18);
-        _list(address(token), market.configWith(address(token), 0, 0));
+        _list(address(token), market.configWith(address(token), ONE_DOLLAR, 0));
         assertEq(rule.supply(address(token)), 1_400e18, "a token with no reference supply is its own total supply");
 
         token.burn(alice, 1_400e18); // everything burned
@@ -293,8 +331,7 @@ contract IndexRuleTest is Test {
     }
 
     /// @dev DA-05. The values `IndexToken` holds a fill against. Only a leg that moves is priced, so a keep mask still
-    ///      routes around a component whose pool cannot be read, and the prices are snapshot-quality, since a guard
-    ///      read off a manipulable price is no guard.
+    ///      routes around a component whose feed cannot be read.
     function test_settlementValues() public {
         address[] memory tokens = _flatBasket(_arr(1, 1, 1, 1, 1));
         uint256[] memory out = new uint256[](5);
@@ -302,20 +339,18 @@ contract IndexRuleTest is Test {
         (out[0], into[1]) = (10e18, 4e18);
 
         (uint256 outValue, uint256 inValue) = rule.settlementValues(tokens, out, into);
-        assertEq(outValue, 10e18, "one WETH per raw unit at tick zero");
+        assertEq(outValue, 10e18, "a dollar per raw unit");
         assertEq(inValue, 4e18);
 
-        // The three legs that move nothing are never read: a pool too thin to snapshot does not stop the call.
-        market.tokenPool(tokens[3]).setLiquidity(1);
+        // The three legs that move nothing are never read: a feed too stale to price does not stop the call.
+        market.setAge(tokens[3], uint256(DEFAULT_STALENESS) + 1);
         (outValue, inValue) = rule.settlementValues(tokens, out, into);
         assertEq(outValue, 10e18, "an untouched leg needs no price");
 
-        // A leg that does move is priced, and the same thin pool then stops it.
+        // A leg that does move is priced, and the same stale feed then stops it.
         out[3] = 1;
         vm.expectRevert(
-            abi.encodeWithSelector(
-                IIndexRule.ThinPriceHistory.selector, address(market.tokenPool(tokens[3])), 0, DEFAULT_MIN_LIQUIDITY
-            )
+            abi.encodeWithSelector(IIndexRule.StalePrice.selector, tokens[3], block.timestamp - DEFAULT_STALENESS - 1)
         );
         rule.settlementValues(tokens, out, into);
 
@@ -490,17 +525,17 @@ contract IndexRuleTest is Test {
     }
 
     function test_weights_readPricesAndSupplies() public {
-        int24[] memory ticks = new int24[](2);
+        int256[] memory prices_ = new int256[](2);
         uint256[] memory supplies = new uint256[](2);
-        (ticks[0], ticks[1]) = (6932, 0);
+        (prices_[0], prices_[1]) = (2 * ONE_DOLLAR, ONE_DOLLAR);
         (supplies[0], supplies[1]) = (1e18, 2e18);
-        address[] memory tokens = _basket(ticks, supplies);
+        address[] memory tokens = _basket(prices_, supplies);
         (uint256[] memory w, uint256[] memory prices, uint256[] memory got) = rule.weights(tokens, UNCAPPED);
         assertEq(got[0], 1e18);
         assertEq(got[1], 2e18);
         assertEq(prices[1], WAD);
-        assertApproxEqRel(prices[0], 2000036323830947322, 1e6);
-        assertApproxEqAbs(w[0], 0.5e18, 1e13, "two ETH-worth of caps each: 2 tokens at 1 ETH and 1 token at 2 ETH");
+        assertEq(prices[0], 2 * WAD);
+        assertEq(w[0], 0.5e18, "two dollars of cap each: 2 tokens at a dollar and 1 token at two");
     }
 
     // ---------------------------------------------------------------------
@@ -511,17 +546,19 @@ contract IndexRuleTest is Test {
         return _arr(100e18, 100e18, 100e18, 100e18, 100e18);
     }
 
-    /// @dev XA-23: a mean tick near the extreme, with a supply large enough that supply * price would not fit in 256
-    ///      bits, must still produce a snapshot instead of an arithmetic panic.
-    function test_XA23_extremeTicksDoNotOverflowTheRule() public {
-        int24[] memory ticks = new int24[](5);
+    /// @dev XA-23: a price near MAX_PRICE, with a supply large enough that supply * price would not fit in 256 bits,
+    ///      must still produce a snapshot instead of an arithmetic panic.
+    function test_XA23_extremePricesDoNotOverflowTheRule() public {
+        int256[] memory prices_ = new int256[](5);
         uint256[] memory supplies = new uint256[](5);
-        ticks[0] = 880_000; // 1.0001^880000 is about 1.6e38, so a WAD price near 1.6e56
-        supplies[0] = 1e33; // a SHIB-sized supply: the plain product is about 1.6e89
+        (prices_[0], supplies[0]) = (ONE_DOLLAR, 1e24); // replaced below by the extreme component
         for (uint256 i = 1; i < 5; ++i) {
+            prices_[i] = ONE_DOLLAR;
             supplies[i] = 1e24;
         }
-        address[] memory tokens = _basket(ticks, supplies);
+        address[] memory tokens = _basket(prices_, supplies);
+        // A WAD price of 5e55, just under MAX_PRICE, against a SHIB-sized supply: the plain product is about 5e88.
+        tokens[0] = _listWad(5e55, 1e33);
 
         (uint256[] memory w,,) = rule.weights(tokens, UNCAPPED);
         assertGt(w[0], 0.99e18, "the extreme component takes almost the whole basket");
@@ -533,11 +570,11 @@ contract IndexRuleTest is Test {
         assertEq(turnover, 0, "what it gives up is nothing next to the basket's value");
 
         // The same extreme price on a component the rule wants to shrink: the clips and the later passes still work.
-        supplies[0] = 1e33;
         for (uint256 i = 1; i < 5; ++i) {
             supplies[i] = 1e72; // caps far above the extreme component's
         }
-        tokens = _basket(ticks, supplies);
+        tokens = _basket(prices_, supplies);
+        tokens[0] = _listWad(5e55, 1e33);
         (t,) = rule.targetUnits(tokens, _hundreds(), UNCAPPED, 0);
         assertApproxEqAbs(t[0], 100e18, 1, "the others can only double, so it keeps the value they cannot take");
         assertEq(t[1], 200e18, "the others are clipped at double");
@@ -547,11 +584,9 @@ contract IndexRuleTest is Test {
     ///      component priced near zero, value over price, did not fit in 256 bits, and the snapshot panicked instead of
     ///      clipping that component at double. A share is now compared with the bounds as a value.
     function test_LR09_aNearZeroPriceNextToAnExtremeOneDoesNotOverflow() public {
-        int24[] memory ticks = new int24[](2);
-        uint256[] memory supplies = new uint256[](2);
-        (ticks[0], ticks[1]) = (880_000, -400_000); // WAD prices of about 1.6e56 and 4
-        (supplies[0], supplies[1]) = (1e18, 1e76); // so that the second carries real weight
-        address[] memory tokens = _basket(ticks, supplies);
+        address[] memory tokens = new address[](2);
+        tokens[0] = _listWad(5e55, 1e18); // just under MAX_PRICE
+        tokens[1] = _listWad(1, 1e76); // one wei, with a supply that gives it real weight
         (uint256[] memory w, uint256[] memory prices,) = rule.weights(tokens, UNCAPPED);
         assertGt(prices[0], 1e46, "the first price is past the exact range");
         assertLt(prices[1], 10, "the second is a few wei");
@@ -645,15 +680,17 @@ contract IndexRuleTest is Test {
     /// @dev LR-02: targets are a water-filling of value by weight. A component strictly above its floor never holds
     ///      more value per unit of weight than a component strictly below its ceiling: otherwise the rule stopped
     ///      short of moving value from the first to the second.
-    function testFuzz_LR02_targetsAreAWaterFilling(uint256[5] memory unitSeeds, int24[5] memory tickSeeds, bool capped)
-        public
-    {
+    function testFuzz_LR02_targetsAreAWaterFilling(
+        uint256[5] memory unitSeeds,
+        uint256[5] memory priceSeeds,
+        bool capped
+    ) public {
         address[] memory tokens = fuzzTokens;
         uint256[] memory units = new uint256[](5);
         for (uint256 i = 0; i < 5; ++i) {
             // Whole-token magnitudes, so that rounding is far below the tolerance.
             units[i] = bound(unitSeeds[i], 1e18, 1e24);
-            market.setPriceTick(tokens[i], int24(bound(tickSeeds[i], -20_000, 20_000)));
+            market.setPrice(tokens[i], int256(bound(priceSeeds[i], 1e4, 1e12)));
         }
         uint8 methodology = capped ? CAPPED : UNCAPPED;
         (uint256[] memory t,) = rule.targetUnits(tokens, units, methodology, 0);
@@ -674,14 +711,14 @@ contract IndexRuleTest is Test {
     ///      rounding is far below the tolerance", which excludes by construction the coarse regime where a floor can
     ///      discard a component's whole move. This one starts at a single raw unit and checks the property the shape
     ///      test cannot see: the target basket is never worth less than the holding it replaces.
-    function testFuzz_DA22_targetsNeverLoseValue(uint256[5] memory unitSeeds, int24[5] memory tickSeeds, bool capped)
+    function testFuzz_DA22_targetsNeverLoseValue(uint256[5] memory unitSeeds, uint256[5] memory priceSeeds, bool capped)
         public
     {
         address[] memory tokens = fuzzTokens;
         uint256[] memory units = new uint256[](5);
         for (uint256 i = 0; i < 5; ++i) {
             units[i] = bound(unitSeeds[i], 1, 1e24);
-            market.setPriceTick(tokens[i], int24(bound(tickSeeds[i], -100_000, 100_000)));
+            market.setPrice(tokens[i], int256(bound(priceSeeds[i], 1, 1e16)));
         }
         uint8 methodology = capped ? CAPPED : UNCAPPED;
         (uint256[] memory t,) = rule.targetUnits(tokens, units, methodology, 0);
@@ -699,10 +736,11 @@ contract IndexRuleTest is Test {
     }
 
     function test_targetUnits_zeroWeightComponentsStillAbsorbValue() public {
-        int24[] memory ticks = new int24[](2);
+        int256[] memory prices = new int256[](2);
         uint256[] memory supplies = new uint256[](2);
+        (prices[0], prices[1]) = (ONE_DOLLAR, ONE_DOLLAR);
         (supplies[0], supplies[1]) = (1e30, 1);
-        address[] memory tokens = _basket(ticks, supplies);
+        address[] memory tokens = _basket(prices, supplies);
         (uint256[] memory w,,) = rule.weights(tokens, UNCAPPED);
         assertEq(w[1], 0, "the second component's weight rounds to zero");
 
@@ -732,73 +770,16 @@ contract IndexRuleTest is Test {
         rule.targetUnits(tokens, four, UNCAPPED, 0);
     }
 
-    /// @dev Harmonic-mean liquidity of `pool` over the rule's window, read the way the rule reads it.
-    /// @dev Makes `pool` report the tick-accumulator changes `a`, `b` and `c` over the window's three 10-minute parts,
-    ///      at its current liquidity.
-    function _parts(MockUniswapV3Pool pool, int56 a, int56 b, int56 c) internal {
-        uint256 perSecond = (uint256(1) << 128) / pool.liquidity();
-        pool.setObservation(1800, 0, 0);
-        pool.setObservation(1200, a, uint160(600 * perSecond));
-        pool.setObservation(600, a + b, uint160(1200 * perSecond));
-        pool.setObservation(0, a + b + c, uint160(1800 * perSecond));
-    }
-
-    function test_targetUnits_snapshotNeedsTheConfiguredLiquidity() public {
-        address[] memory tokens = _flatBasket(_arr(6, 1, 1, 1, 1));
-        MockUniswapV3Pool pool = market.tokenPool(tokens[0]);
-        uint256 harmonic = harmonicOf(pool);
-        assertApproxEqRel(harmonic, 1e18, 1e9, "a constant liquidity is its own harmonic mean");
-
-        // Listing and snapshot share one bound, and a window exactly at the minimum passes both.
-        IIndexFactory.TokenConfig memory config = market.configWith(tokens[0], 0, 6 * WAD);
-        config.minLiquidity = uint128(harmonic);
-        _list(tokens[0], config);
-        rule.targetUnits(tokens, _hundreds(), UNCAPPED, 0);
-
-        pool.setLiquidity(0.9e18);
-        uint256 thin = harmonicOf(pool);
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.ThinPriceHistory.selector, address(pool), thin, harmonic));
-        rule.targetUnits(tokens, _hundreds(), UNCAPPED, 0);
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.ThinPriceHistory.selector, address(pool), thin, harmonic));
-        rule.checkConfig(tokens[0], config);
-
-        // Display prices and weights do not apply the snapshot checks.
-        assertEq(rule.price(tokens[0]), WAD);
-        (uint256[] memory w,,) = rule.weights(tokens, UNCAPPED);
-        assertGt(w[0], 0);
-    }
-
-    function test_targetUnits_snapshotNeedsAgreeingSubWindows() public {
-        address[] memory tokens = _flatBasket(_arr(6, 1, 1, 1, 1));
-        MockUniswapV3Pool pool = market.tokenPool(tokens[0]);
-
-        _parts(pool, 0, 0, 2_000 * 600); // the last part's mean tick is exactly MAX_TICK_DEVIATION above the others
-        rule.targetUnits(tokens, _hundreds(), UNCAPPED, 0);
-
-        _parts(pool, 0, 0, 2_001 * 600);
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.PriceHistoryDeviates.selector, address(pool), 2_001));
-        rule.targetUnits(tokens, _hundreds(), UNCAPPED, 0);
-
-        _parts(pool, 0, -2_001 * 600, 0); // an outlier below counts the same
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.PriceHistoryDeviates.selector, address(pool), 2_001));
-        rule.targetUnits(tokens, _hundreds(), UNCAPPED, 0);
-
-        // LR-05: and so does one in the oldest part, which no test placed there: a spread that skipped it passed.
-        _parts(pool, 2_001 * 600, 0, 0);
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.PriceHistoryDeviates.selector, address(pool), 2_001));
-        rule.targetUnits(tokens, _hundreds(), UNCAPPED, 0);
-        assertGt(rule.price(tokens[0]), 0, "display prices still read the window");
-    }
-
     function test_XA05_keptComponentsNeedNoSnapshotPriceUnderUncapped() public {
         address[] memory tokens = _flatBasket(_arr(6, 1, 1, 1, 1));
         (uint256[] memory readable,) = rule.targetUnits(tokens, _hundreds(), UNCAPPED, 1 << 4);
-        MockUniswapV3Pool broken = market.tokenPool(tokens[4]);
-        broken.setHistoryTooShort(true);
-        vm.expectRevert(bytes("OLD"));
+        market.setAge(tokens[4], uint256(DEFAULT_STALENESS) + 1);
+        vm.expectRevert(
+            abi.encodeWithSelector(IIndexRule.StalePrice.selector, tokens[4], block.timestamp - DEFAULT_STALENESS - 1)
+        );
         rule.targetUnits(tokens, _hundreds(), UNCAPPED, 0);
 
-        // Uncapped: a kept component is renormalised away, so its pool is never read.
+        // Uncapped: a kept component is renormalised away, so its feed is never read.
         (uint256[] memory t, uint256 turnover) = rule.targetUnits(tokens, _hundreds(), UNCAPPED, 1 << 4);
         for (uint256 i = 0; i < 5; ++i) {
             assertEq(t[i], readable[i]);
@@ -806,97 +787,49 @@ contract IndexRuleTest is Test {
         assertGt(turnover, 0);
     }
 
-    /// @dev DA-02. When a pool's newest observation predates the window, Uniswap extrapolates every requested point at
-    ///      the pool's current tick and current liquidity. The three sub-window means then agree exactly, so the
-    ///      deviation check reads zero, and the harmonic-mean liquidity is whatever was minted a moment ago: both
-    ///      snapshot defences degenerate together, and a 30-minute average becomes a spot read. A snapshot now refuses
-    ///      a window with no recent trade in it. Views are unchanged.
-    function test_DA02_aSnapshotRefusesAPoolThatHasNotTraded() public {
-        address[] memory tokens = _flatBasket(_arr(6, 1, 1, 1, 1));
-        MockUniswapV3Pool quiet = market.tokenPool(tokens[1]);
-        uint256 limit = rule.MAX_OBSERVATION_AGE();
-
-        // The last acceptable age still reads, so the bound is not off by one.
-        quiet.setNewestObservationAge(uint32(limit));
-        (uint256[] memory t,) = rule.targetUnits(tokens, _hundreds(), UNCAPPED, 0);
-        assertGt(t[0], 0);
-
-        quiet.setNewestObservationAge(uint32(limit) + 1);
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.StalePriceHistory.selector, address(quiet), limit + 1));
-        rule.targetUnits(tokens, _hundreds(), UNCAPPED, 0);
-
-        // A pool silent for a month is the degenerate case the check exists for.
-        quiet.setNewestObservationAge(30 days);
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.StalePriceHistory.selector, address(quiet), uint256(30 days)));
-        rule.targetUnits(tokens, _hundreds(), UNCAPPED, 0);
-
-        // Display prices never applied the snapshot checks and still do not.
-        assertGt(rule.price(tokens[1]), 0, "views still read a quiet pool");
-    }
-
     /// @dev DA-06. Under the capped methodology a kept component's cap sits in the denominator of every other
     ///      component's weight, so its price reshapes the targets and the turnover of the components that do trade.
-    ///      It used to be read with the plain `price()`, which applies neither snapshot check, so anyone who could
-    ///      move that pool could steer a rebalance they do not otherwise take part in. It is now snapshot-checked like
+    ///      It used to be read with the plain `price()`, which applied neither snapshot check, so a component whose
+    ///      price nobody had checked could steer a rebalance it does not otherwise take part in. It is now priced like
     ///      any other component, which narrows XA-05: under the capped methodology the keep mask routes around a
-    ///      component that cannot be transferred, not around one whose pool cannot be read.
+    ///      component that cannot be transferred, not around one whose feed cannot be read.
     function test_DA06_aKeptComponentIsSnapshotCheckedUnderCapped() public {
         address[] memory tokens = _flatBasket(_arr(6, 1, 1, 1, 1));
-        MockUniswapV3Pool kept = market.tokenPool(tokens[4]);
 
-        kept.setLiquidity(1);
-        uint256 thin = harmonicOf(kept);
+        market.setAge(tokens[4], uint256(DEFAULT_STALENESS) + 1);
+        bytes memory stale =
+            abi.encodeWithSelector(IIndexRule.StalePrice.selector, tokens[4], block.timestamp - DEFAULT_STALENESS - 1);
         for (uint256 i = 0; i < 2; ++i) {
             uint256 keepMask = i == 0 ? 0 : 1 << 4;
-            vm.expectRevert(
-                abi.encodeWithSelector(IIndexRule.ThinPriceHistory.selector, address(kept), thin, DEFAULT_MIN_LIQUIDITY)
-            );
+            vm.expectRevert(stale);
             rule.targetUnits(tokens, _hundreds(), CAPPED, keepMask);
         }
-        kept.setLiquidity(1e18);
 
-        // The sub-window agreement check reaches a kept component too.
-        _parts(kept, 0, 0, 2_001 * 600);
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.PriceHistoryDeviates.selector, address(kept), 2_001));
-        rule.targetUnits(tokens, _hundreds(), CAPPED, 1 << 4);
-
-        // A kept component whose pool reads cleanly is unaffected.
-        market.setPriceTick(tokens[4], 0);
+        // A kept component whose feed reads cleanly is unaffected.
+        market.setAge(tokens[4], 0);
         (uint256[] memory t,) = rule.targetUnits(tokens, _hundreds(), CAPPED, 1 << 4);
         assertEq(t[4], 100e18, "the kept component still keeps its units");
     }
 
-    function test_targetUnits_snapshotPricesWethAndRejectsZeroPriceOrSupply() public {
+    function test_targetUnits_rejectsAnUnusablePriceOrSupply() public {
         address[] memory tokens = _flatBasket(_arr(6, 1, 1, 1, 1));
-        _listAt(weth, 0, 6 * WAD);
-        tokens[0] = weth; // worth one WETH per unit without a pool, like the token it replaces
+        _listAt(weth, ONE_DOLLAR, 6 * WAD);
+        tokens[0] = weth; // priced from its own feed, like the token it replaces
         (uint256[] memory t,) = rule.targetUnits(tokens, _hundreds(), UNCAPPED, 0);
         assertEq(t[0], 200e18);
 
-        market.setPriceTick(tokens[1], TickMath.MIN_TICK);
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.ZeroPrice.selector, tokens[1]));
+        market.setPrice(tokens[1], 0);
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidPrice.selector, tokens[1], int256(0)));
         rule.targetUnits(tokens, _hundreds(), UNCAPPED, 0);
-        market.setPriceTick(tokens[1], 0);
+        market.setPrice(tokens[1], ONE_DOLLAR);
 
         MockERC20 onChain = new MockERC20("Onchain", "ON", 18);
         onChain.mint(alice, 1_000e18);
-        _list(address(onChain), market.configWith(address(onChain), 0, 0));
+        _list(address(onChain), market.configWith(address(onChain), ONE_DOLLAR, 0));
         tokens[2] = address(onChain);
         onChain.burn(alice, 1_000e18); // everything burned after listing
         vm.expectRevert(abi.encodeWithSelector(IIndexRule.ZeroSupply.selector, address(onChain)));
         rule.targetUnits(tokens, _hundreds(), UNCAPPED, 0);
-    }
-
-    function test_XA09_XA45_constantsStayInTheirRelationships() public view {
-        assertEq(rule.TWAP_WINDOW() % rule.TWAP_SUB_WINDOWS(), 0, "the parts split the window exactly");
-        // One observation per block at most: the ring covers the window at 12-second slots, and down to 9.05 seconds.
-        assertGe(uint256(rule.MIN_OBSERVATION_CARDINALITY() - 1) * 12, rule.TWAP_WINDOW());
-        assertGe(uint256(rule.MIN_OBSERVATION_CARDINALITY() - 1) * 905, uint256(rule.TWAP_WINDOW()) * 100);
-        // One extreme 12-second block moves its part's mean tick far past the deviation bound.
-        assertGt(uint256(uint24(TickMath.MAX_TICK)) * 12 / (rule.TWAP_WINDOW() / rule.TWAP_SUB_WINDOWS()), 8 * 2_000);
-        assertEq(rule.MAX_TICK_DEVIATION(), 2_000);
-        // The auction's 1.5 opening multiplier on a target at MAX_TARGET_UNITS still fits uint96 units.
-        assertLe(rule.MAX_TARGET_UNITS() * 3 / 2, type(uint96).max);
     }
 
     function test_targetUnits_respectTheUint96Headroom() public {
@@ -913,7 +846,7 @@ contract IndexRuleTest is Test {
 
     function testFuzz_targetUnits_stayInBoundsAndKeepValue(
         uint256[5] memory unitSeeds,
-        int24[5] memory tickSeeds,
+        uint256[5] memory priceSeeds,
         uint256 keepSeed,
         bool capped
     ) public {
@@ -921,7 +854,7 @@ contract IndexRuleTest is Test {
         uint256[] memory units = new uint256[](5);
         for (uint256 i = 0; i < 5; ++i) {
             units[i] = bound(unitSeeds[i], 1, 1e30);
-            market.setPriceTick(tokens[i], int24(bound(tickSeeds[i], -20_000, 20_000)));
+            market.setPrice(tokens[i], int256(bound(priceSeeds[i], 1e4, 1e12)));
         }
         uint256 keepMask = bound(keepSeed, 0, 30);
         (uint256[] memory t, uint256 turnover) = rule.targetUnits(tokens, units, capped ? CAPPED : UNCAPPED, keepMask);
@@ -949,14 +882,16 @@ contract IndexRuleTest is Test {
     // index prices
     // ---------------------------------------------------------------------
 
-    function _sheetTicks(bool scenario) internal pure returns (int24[] memory ticks) {
-        ticks = new int24[](7);
+    /// @dev The model's seven prices, in dollars per whole token with eight decimals. The sheet quotes them against
+    ///      ether, so these are those quotes at the 3,000 dollars an ether the sheet assumes.
+    function _sheetPrices(bool scenario) internal pure returns (int256[] memory prices) {
+        prices = new int256[](7);
         if (scenario) {
-            (ticks[0], ticks[1], ticks[2], ticks[3]) = (-93558, -194173, -192891, -114655);
-            (ticks[4], ticks[5], ticks[6]) = (-73799, -184116, -56552);
+            (prices[0], prices[1], prices[2], prices[3]) = (25950880, 1108, 1260, 3147508);
+            (prices[4], prices[5], prices[6]) = (187168021, 3030, 1050078807);
         } else {
-            (ticks[0], ticks[1], ticks[2], ticks[3]) = (-94141, -192548, -194714, -113602);
-            (ticks[4], ticks[5], ticks[6]) = (-73287, -185939, -58376);
+            (prices[0], prices[1], prices[2], prices[3]) = (24481272, 1304, 1050, 3497001);
+            (prices[4], prices[5], prices[6]) = (197000086, 2525, 875005012);
         }
     }
 
@@ -966,12 +901,12 @@ contract IndexRuleTest is Test {
         (supplies[0], supplies[1], supplies[2]) = (150_880_000_000e18, 589_240_000_000_000e18, 420_680_000_000_000e18);
         (supplies[3], supplies[4], supplies[5], supplies[6]) =
         (62_860_000_000e18, 1_030_000_000e18, 81_100_000_000_000e18, 199_990_000e18);
-        return _basket(_sheetTicks(false), supplies);
+        return _basket(_sheetPrices(false), supplies);
     }
 
-    function _setTicks(address[] memory tokens, int24[] memory ticks) internal {
+    function _setPrices(address[] memory tokens, int256[] memory prices) internal {
         for (uint256 i = 0; i < tokens.length; ++i) {
-            market.setPriceTick(tokens[i], ticks[i]);
+            market.setPrice(tokens[i], prices[i]);
         }
     }
 
@@ -985,32 +920,26 @@ contract IndexRuleTest is Test {
     /// @dev An uncapped index sized at 1,000 dollars follows the model's divisor price, and a capped one does not.
     function test_navPerToken_matchesTheModelsIndexPrice() public {
         address[] memory tokens = _sheetTokens();
-        uint256[] memory uncappedUnits = rule.initialUnits(tokens, UNCAPPED, 1_000e6);
-        uint256[] memory cappedUnits = rule.initialUnits(tokens, CAPPED, 1_000e6);
+        uint256[] memory uncappedUnits = rule.initialUnits(tokens, UNCAPPED, 1_000e18);
+        uint256[] memory cappedUnits = rule.initialUnits(tokens, CAPPED, 1_000e18);
         IndexToken uncapped = IndexToken(factory.createIndex("Memes", "MEME", tokens, uncappedUnits, UNCAPPED));
         IndexToken capped = IndexToken(factory.createIndex("Capped Memes", "CMEME", tokens, cappedUnits, CAPPED));
 
-        (uint256 wethValue, uint256 usdcValue) = rule.navPerToken(address(uncapped));
-        assertApproxEqRel(usdcValue, 1_000e6, 1e12, "starts at the chosen price");
-        assertApproxEqRel(wethValue, 1_000e6 * rule.price(usdc) / WAD, 1e12);
-        (, uint256 cappedStart) = rule.navPerToken(address(capped));
-        assertApproxEqRel(cappedStart, 1_000e6, 1e12);
+        assertApproxEqRel(rule.navPerToken(address(uncapped)), 1_000e18, 1e12, "starts at the chosen price");
+        assertApproxEqRel(rule.navPerToken(address(capped)), 1_000e18, 1e12);
 
         uint256 capsBefore = _caps(tokens);
-        _setTicks(tokens, _sheetTicks(true));
-        (, uint256 uncappedAfter) = rule.navPerToken(address(uncapped));
-        assertApproxEqRel(uncappedAfter, 1_000e6 * _caps(tokens) / capsBefore, 1e12, "equals the divisor price");
-        assertApproxEqRel(uncappedAfter, 1_041.8e6, 1e14, "the model's 1041.80, up to tick rounding");
-        (, uint256 cappedAfter) = rule.navPerToken(address(capped));
-        assertApproxEqRel(cappedAfter, 1_041.11e6, 2e14, "the capped basket's own value");
+        _setPrices(tokens, _sheetPrices(true));
+        uint256 uncappedAfter = rule.navPerToken(address(uncapped));
+        assertApproxEqRel(uncappedAfter, 1_000e18 * _caps(tokens) / capsBefore, 1e12, "equals the divisor price");
+        assertApproxEqRel(uncappedAfter, 1_041.8e18, 1e15, "the model's 1041.80, up to rounding");
+        assertApproxEqRel(rule.navPerToken(address(capped)), 1_041.11e18, 2e15, "the capped basket's own value");
 
         // The top coin doubles: the model's formula would show about 1,647, while the capped basket is worth 1,300.
-        _setTicks(tokens, _sheetTicks(false));
-        market.setPriceTick(tokens[0], _sheetTicks(false)[0] + 6932);
-        (, uint256 uncappedDouble) = rule.navPerToken(address(uncapped));
-        (, uint256 cappedDouble) = rule.navPerToken(address(capped));
-        assertApproxEqRel(uncappedDouble, 1_647.29e6, 1e14);
-        assertApproxEqRel(cappedDouble, 1_300e6, 1e14);
+        _setPrices(tokens, _sheetPrices(false));
+        market.movePrice(tokens[0], 2, 1);
+        assertApproxEqRel(rule.navPerToken(address(uncapped)), 1_647.29e18, 1e15);
+        assertApproxEqRel(rule.navPerToken(address(capped)), 1_300e18, 1e15);
     }
 
     function test_navPerToken_onlyForIndexes() public {
@@ -1023,17 +952,17 @@ contract IndexRuleTest is Test {
     ///      and a whole rebalance can then be worth less than the granularity of the component it buys. A start price
     ///      that rounds a component away entirely cannot describe the basket, so it is refused rather than floored.
     function test_DA09_initialUnitsRefuseAStartPriceThatRoundsAComponentAway() public {
-        int24[] memory ticks = new int24[](1);
+        int256[] memory prices = new int256[](1);
         uint256[] memory supplies = new uint256[](1);
-        ticks[0] = 200_000;
+        prices[0] = 485_000_000e8; // a coarse component: one raw unit is worth far more than a wei of the index
         supplies[0] = 1e18;
-        address[] memory tokens = _basket(ticks, supplies);
+        address[] memory tokens = _basket(prices, supplies);
 
         vm.expectRevert(abi.encodeWithSelector(IIndexRule.StartPriceTooLow.selector, tokens[0], uint256(1)));
         rule.initialUnits(tokens, UNCAPPED, 1);
 
         // An ordinary start price describes the basket in whole raw units.
-        uint256[] memory units = rule.initialUnits(tokens, UNCAPPED, 100e6);
+        uint256[] memory units = rule.initialUnits(tokens, UNCAPPED, 100e18);
         assertGt(units[0], 1, "a hundred dollars a token is plenty of resolution");
     }
 }

@@ -34,15 +34,14 @@ contract IndexTokenRebalanceTest is Test {
     address stranger = makeAddr("stranger");
 
     uint256 constant WAD = 1e18;
-    /// @dev 1.0001^4055 is about 1.5, so this tick moves a component 50% against the others.
-    int24 constant FIFTY_PERCENT = 4055;
+    /// @dev A dollar per whole token, in the eight decimals a feed answers in. Every component starts here, so the
+    ///      basket's shape comes from its supplies alone.
+    int256 constant ONE_DOLLAR = 1e8;
     uint256 constant SHARES = 10e18;
 
     function setUp() public {
         market = new MockMarket();
-        factory = new IndexFactory(
-            owner, guardian, address(market.weth()), address(market.uniswapV3Factory()), address(market.usdc())
-        );
+        factory = new IndexFactory(owner, guardian);
         executor = new MockRebalanceExecutor();
 
         pausable = new MockPausableToken("Pausable", "PAUSE", 18);
@@ -50,7 +49,7 @@ contract IndexTokenRebalanceTest is Test {
         IIndexFactory.TokenConfig[] memory configs = new IIndexFactory.TokenConfig[](5);
         for (uint256 i = 0; i < 5; ++i) {
             tokens.push(i == 1 ? address(pausable) : address(new MockERC20("C", "C", 18)));
-            configs[i] = market.configWith(tokens[i], 0, parts[i] * 1e24);
+            configs[i] = market.configWith(tokens[i], ONE_DOLLAR, parts[i] * 1e24);
             startUnits.push(100e18);
         }
         vm.startPrank(owner);
@@ -185,9 +184,9 @@ contract IndexTokenRebalanceTest is Test {
         (,, uint256[] memory first) = index.pendingRebalance();
         assertEq(keccak256(abi.encode(first)), keccak256(abi.encode(_expectedTargets())));
 
-        // Nobody fills, and the first component's price falls by about a third before anyone restarts.
+        // Nobody fills, and the first component's price falls by a third before anyone restarts.
         vm.warp(eta + index.AUCTION_DURATION() + index.REBALANCE_DELAY());
-        market.setPriceTick(tokens[0], -4_000);
+        market.movePrice(tokens[0], 2, 3);
         (uint256[] memory fresh,) = index.previewTarget(0);
         assertTrue(keccak256(abi.encode(fresh)) != keccak256(abi.encode(first)), "the rule now wants other targets");
 
@@ -613,7 +612,7 @@ contract IndexTokenRebalanceTest is Test {
 
         // The four components the index sells appreciate 50% against the one it buys over the notice window.
         for (uint256 i = 1; i < 5; ++i) {
-            market.setPriceTick(tokens[i], FIFTY_PERCENT);
+            market.movePrice(tokens[i], 3, 2);
         }
         (,, uint256[] memory amountsOut, uint256[] memory amountsIn) = index.previewRebalance();
         (uint256 outValue, uint256 inValue) = IIndexRule(factory.RULE()).settlementValues(tokens, amountsOut, amountsIn);
@@ -627,7 +626,7 @@ contract IndexTokenRebalanceTest is Test {
 
         // Back where the snapshot found them, the same fill settles.
         for (uint256 i = 1; i < 5; ++i) {
-            market.setPriceTick(tokens[i], 0);
+            market.setPrice(tokens[i], ONE_DOLLAR);
         }
         executor.execute(index, "");
         assertEq(index.rebalanceNonce(), 1);
@@ -641,7 +640,7 @@ contract IndexTokenRebalanceTest is Test {
         uint256 eta = _start(index);
         vm.warp(eta + index.AUCTION_DURATION());
         for (uint256 i = 0; i < 5; ++i) {
-            market.setPriceTick(tokens[i], FIFTY_PERCENT);
+            market.movePrice(tokens[i], 3, 2);
         }
         executor.execute(index, "");
         assertEq(index.rebalanceNonce(), 1, "the whole market moving is not a reason to refuse a fill");

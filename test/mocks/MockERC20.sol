@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 contract MockERC20 is ERC20 {
-    uint8 private immutable _decimals;
+    uint8 private _decimals;
 
     constructor(string memory name_, string memory symbol_, uint8 decimals_) ERC20(name_, symbol_) {
         _decimals = decimals_;
@@ -12,6 +12,13 @@ contract MockERC20 is ERC20 {
 
     function decimals() public view override returns (uint8) {
         return _decimals;
+    }
+
+    /// @notice Changes the reported decimals, so a test can prove the rule reads them on every call rather than
+    ///         storing them at listing. A real ERC-20 does not do this; a proxy repointed to another aggregator is the
+    ///         case it stands in for.
+    function setDecimals(uint8 decimals_) external {
+        _decimals = decimals_;
     }
 
     function burn(address from, uint256 amount) external {

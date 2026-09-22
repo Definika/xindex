@@ -15,10 +15,13 @@ import {FaucetToken} from "../script/testnet/FaucetToken.sol";
 import {INonfungiblePositionManager} from "../script/interfaces/INonfungiblePositionManager.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
-import {DEFAULT_MIN_LIQUIDITY, MockMarket} from "./mocks/MockMarket.sol";
+import {DEFAULT_STALENESS, MockMarket} from "./mocks/MockMarket.sol";
 import {MockPositionManager} from "./mocks/MockPositionManager.sol";
 import {MockSwapRouter} from "./mocks/MockSwapRouter.sol";
 import {MockUniswapV3Factory, MockUniswapV3Pool} from "./mocks/MockUniswapV3.sol";
+import {CompositeFeed} from "../src/CompositeFeed.sol";
+import {IAggregatorV3} from "../src/interfaces/IAggregatorV3.sol";
+import {TestAggregator} from "../script/testnet/TestAggregator.sol";
 import {MockWETH} from "./mocks/MockWETH.sol";
 
 /// @notice Stand-in for a Safe: the deploy script only reads its signature threshold.
@@ -79,9 +82,8 @@ contract SilentFallback {
 ///      set by exactly one test. In tests, script broadcasts come from DEFAULT_SENDER.
 contract ScriptsTest is Test {
     address constant MAINNET_SWAP_ROUTER_02 = MainnetAddresses.SWAP_ROUTER_02;
-    address constant MAINNET_WETH = MainnetAddresses.WETH;
-    address constant MAINNET_UNISWAP_V3_FACTORY = MainnetAddresses.UNISWAP_V3_FACTORY;
-    address constant MAINNET_USDC = MainnetAddresses.USDC;
+    /// @dev A dollar per whole token, in the eight decimals a feed answers in.
+    int256 constant ONE_DOLLAR = 1e8;
 
     Deploy deployer;
     ConfigureWhitelist configure;
@@ -99,19 +101,8 @@ contract ScriptsTest is Test {
         market = new MockMarket();
     }
 
-    function _market() internal view returns (Deploy.Market memory) {
-        return Deploy.Market({
-            router: address(router),
-            weth: address(market.weth()),
-            uniswapV3Factory: address(market.uniswapV3Factory()),
-            usdc: address(market.usdc())
-        });
-    }
-
     function _factory(address owner_, address guardian_) internal returns (IndexFactory) {
-        return new IndexFactory(
-            owner_, guardian_, address(market.weth()), address(market.uniswapV3Factory()), address(market.usdc())
-        );
+        return new IndexFactory(owner_, guardian_);
     }
 
     /// @dev Two tokens with 0.3% WETH pools: A on its own total supply, B on a reference supply.
@@ -119,14 +110,20 @@ contract ScriptsTest is Test {
         MockERC20 tokenA = new MockERC20("A", "A", 18);
         MockERC20 tokenB = new MockERC20("B", "B", 8);
         tokenA.mint(address(this), 1_000e18);
-        market.config(address(tokenA), 0);
-        market.config(address(tokenB), 0);
+        market.config(address(tokenA), ONE_DOLLAR);
+        market.config(address(tokenB), ONE_DOLLAR);
         list = new ConfigureWhitelist.Entry[](2);
         list[0] = ConfigureWhitelist.Entry({
-            token: address(tokenA), fee: 3000, minLiquidity: DEFAULT_MIN_LIQUIDITY, referenceSupply: 0
+            token: address(tokenA),
+            feed: address(market.feedOf(address(tokenA))),
+            maxStaleness: DEFAULT_STALENESS,
+            referenceSupply: 0
         });
         list[1] = ConfigureWhitelist.Entry({
-            token: address(tokenB), fee: 3000, minLiquidity: DEFAULT_MIN_LIQUIDITY, referenceSupply: 21_000_000e8
+            token: address(tokenB),
+            feed: address(market.feedOf(address(tokenB))),
+            maxStaleness: DEFAULT_STALENESS,
+            referenceSupply: 21_000_000e8
         });
     }
 
@@ -135,7 +132,7 @@ contract ScriptsTest is Test {
         view
         returns (IIndexFactory.TokenConfig memory)
     {
-        return configure.configFor(entry, address(market.weth()), address(market.uniswapV3Factory()));
+        return configure.configFor(entry);
     }
 
     // ---------------------------------------------------------------------
@@ -196,40 +193,17 @@ contract ScriptsTest is Test {
         deployer.checkGuardian(owner, guardian);
     }
 
-    function test_resolveMarket() public {
-        Deploy.Market memory resolved = deployer.resolveMarket(_market());
-        assertEq(resolved.router, address(router));
-        assertEq(resolved.weth, address(market.weth()));
-        assertEq(resolved.uniswapV3Factory, address(market.uniswapV3Factory()));
-        assertEq(resolved.usdc, address(market.usdc()));
+    function test_resolveRouter() public {
+        assertEq(deployer.resolveRouter(address(router)), address(router));
 
-        Deploy.Market memory incomplete;
         vm.expectRevert(abi.encodeWithSelector(Deploy.AddressRequired.selector, "SWAP_ROUTER"));
-        deployer.resolveMarket(incomplete);
-        incomplete.router = address(router);
-        vm.expectRevert(abi.encodeWithSelector(Deploy.AddressRequired.selector, "WETH"));
-        deployer.resolveMarket(incomplete);
-        incomplete.weth = owner;
-        vm.expectRevert(abi.encodeWithSelector(Deploy.AddressHasNoCode.selector, "WETH", owner));
-        deployer.resolveMarket(incomplete);
-        incomplete.weth = address(market.weth());
-        vm.expectRevert(abi.encodeWithSelector(Deploy.AddressRequired.selector, "UNISWAP_V3_FACTORY"));
-        deployer.resolveMarket(incomplete);
-        incomplete.uniswapV3Factory = address(market.uniswapV3Factory());
-        vm.expectRevert(abi.encodeWithSelector(Deploy.AddressRequired.selector, "USDC"));
-        deployer.resolveMarket(incomplete);
+        deployer.resolveRouter(address(0));
+        vm.expectRevert(abi.encodeWithSelector(Deploy.AddressHasNoCode.selector, "SWAP_ROUTER", owner));
+        deployer.resolveRouter(owner);
 
         vm.chainId(1);
         vm.etch(MAINNET_SWAP_ROUTER_02, hex"00");
-        vm.etch(MAINNET_WETH, hex"00");
-        vm.etch(MAINNET_UNISWAP_V3_FACTORY, hex"00");
-        vm.etch(MAINNET_USDC, hex"00");
-        Deploy.Market memory empty;
-        Deploy.Market memory defaults = deployer.resolveMarket(empty);
-        assertEq(defaults.router, MAINNET_SWAP_ROUTER_02);
-        assertEq(defaults.weth, MAINNET_WETH);
-        assertEq(defaults.uniswapV3Factory, MAINNET_UNISWAP_V3_FACTORY);
-        assertEq(defaults.usdc, MAINNET_USDC);
+        assertEq(deployer.resolveRouter(address(0)), MAINNET_SWAP_ROUTER_02, "the mainnet default on chain 1");
     }
 
     function test_XA25_guardianCannotBeTheBroadcastingKey() public {
@@ -240,58 +214,128 @@ contract ScriptsTest is Test {
     }
 
     function test_XA39_rolesCannotBeMarketContracts() public {
-        Deploy.Market memory given = _market(); // built before each expectRevert: it reads the market
-        Deploy.Market memory resolved = deployer.resolveMarket(given);
-        deployer.checkRolesAreNotMarket(owner, guardian, resolved);
-        vm.expectRevert(abi.encodeWithSelector(Deploy.RoleIsMarketContract.selector, resolved.router));
-        deployer.checkRolesAreNotMarket(owner, resolved.router, resolved);
-        vm.expectRevert(abi.encodeWithSelector(Deploy.RoleIsMarketContract.selector, resolved.weth));
-        deployer.deploy(resolved.weth, guardian, given); // a market address pasted as OWNER
-        vm.expectRevert(abi.encodeWithSelector(Deploy.RoleIsMarketContract.selector, resolved.usdc));
-        deployer.deploy(owner, resolved.usdc, given);
-        vm.expectRevert(abi.encodeWithSelector(Deploy.RoleIsMarketContract.selector, resolved.uniswapV3Factory));
-        deployer.deploy(owner, resolved.uniswapV3Factory, given);
-        vm.expectRevert(abi.encodeWithSelector(Deploy.RoleIsMarketContract.selector, resolved.router));
-        deployer.deploy(resolved.router, guardian, given);
+        deployer.checkRolesAreNotMarket(owner, guardian, address(router));
+        vm.expectRevert(abi.encodeWithSelector(Deploy.RoleIsMarketContract.selector, address(router)));
+        deployer.checkRolesAreNotMarket(owner, address(router), address(router));
+        vm.expectRevert(abi.encodeWithSelector(Deploy.RoleIsMarketContract.selector, address(router)));
+        deployer.deploy(address(router), guardian, address(router)); // the router pasted as OWNER
+        vm.expectRevert(abi.encodeWithSelector(Deploy.RoleIsMarketContract.selector, address(router)));
+        deployer.deploy(owner, address(router), address(router));
     }
 
     function test_XA47_mainnetMarketCannotBeOverridden() public {
         vm.chainId(1);
         vm.etch(MAINNET_SWAP_ROUTER_02, hex"00");
-        vm.etch(MAINNET_WETH, hex"00");
-        vm.etch(MAINNET_UNISWAP_V3_FACTORY, hex"00");
-        vm.etch(MAINNET_USDC, hex"00");
-        Deploy.Market memory overridden;
-        address otherUsdc = address(market.usdc()); // a contract, but not mainnet USDC
-        overridden.usdc = otherUsdc;
-        vm.expectRevert(abi.encodeWithSelector(Deploy.MainnetOverride.selector, "USDC", otherUsdc));
-        deployer.resolveMarket(overridden);
-        overridden.usdc = MAINNET_USDC; // naming the default itself is fine
-        assertEq(deployer.resolveMarket(overridden).usdc, MAINNET_USDC);
+        address other = address(router); // a contract, but not the mainnet router
+        vm.expectRevert(abi.encodeWithSelector(Deploy.MainnetOverride.selector, "SWAP_ROUTER", other));
+        deployer.resolveRouter(other);
+        assertEq(deployer.resolveRouter(MAINNET_SWAP_ROUTER_02), MAINNET_SWAP_ROUTER_02, "the default itself is fine");
     }
 
     function test_deploy() public {
-        (IndexFactory factory, IndexZap zap) = deployer.deploy(owner, guardian, _market());
+        (IndexFactory factory, IndexZap zap, CompositeFeed wbtcFeed) = deployer.deploy(owner, guardian, address(router));
         assertEq(factory.owner(), owner);
         assertEq(factory.guardian(), guardian);
         assertEq(address(zap.FACTORY()), address(factory));
         assertEq(address(zap.ROUTER()), address(router));
         assertEq(IndexToken(factory.IMPLEMENTATION()).FACTORY(), address(factory));
-        assertEq(IIndexRule(factory.RULE()).USD_POOL(), address(market.usdPool()));
+        assertEq(IIndexRule(factory.RULE()).FACTORY(), address(factory));
+        assertEq(address(wbtcFeed), address(0), "the composite feed is a chain-1 deployment");
+    }
+
+    /// @dev WBTC has no USD feed of its own, so `Deploy` puts the adapter that multiplies BTC/USD by WBTC/BTC on
+    ///      chain, and `ConfigureWhitelist` refuses any other address in its place.
+    function test_deploy_deploysTheCompositeFeedOnMainnet() public {
+        vm.warp(30 days);
+        vm.chainId(1);
+        vm.etch(MAINNET_SWAP_ROUTER_02, address(router).code);
+        _etchFeed(MainnetAddresses.BTC_USD_FEED, "BTC / USD", 86_000e8);
+        _etchFeed(MainnetAddresses.WBTC_BTC_FEED, "WBTC / BTC", 0.9995e8);
+        address safeOwner = address(new MockSafe(2)); // on chain 1 the owner must be a contract
+
+        (,, CompositeFeed wbtcFeed) = deployer.deploy(safeOwner, guardian, address(0));
+        assertEq(address(wbtcFeed.FEED_A()), MainnetAddresses.BTC_USD_FEED);
+        assertEq(address(wbtcFeed.FEED_B()), MainnetAddresses.WBTC_BTC_FEED);
+        assertEq(wbtcFeed.MAX_AGE_A(), MainnetAddresses.STALENESS_1H);
+        assertEq(wbtcFeed.MAX_AGE_B(), MainnetAddresses.STALENESS_24H);
+        (, int256 answer,,,) = wbtcFeed.latestRoundData();
+        assertEq(answer, int256(86_000e8) * 0.9995e8 / 1e8, "the product of the two legs");
+
+        configure.checkWbtcFeed(address(wbtcFeed));
+    }
+
+    /// @dev The adapter is deployed rather than constant, so the address an operator passes is checked against the
+    ///      two feeds it is supposed to multiply before the default list is built from it.
+    function test_checkWbtcFeed_rejectsAnAdapterOverTheWrongLegs() public {
+        _etchFeed(MainnetAddresses.BTC_USD_FEED, "BTC / USD", 86_000e8);
+        _etchFeed(MainnetAddresses.WBTC_BTC_FEED, "WBTC / BTC", 0.9995e8);
+        TestAggregator wrong = new TestAggregator("ETH / USD", 8, 3_000e8);
+
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.WrongCompositeFeed.selector, owner));
+        configure.checkWbtcFeed(owner); // no code
+
+        // A contract that has code but is not a composite feed at all.
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.WrongCompositeFeed.selector, address(wrong)));
+        configure.checkWbtcFeed(address(wrong));
+
+        CompositeFeed badA = new CompositeFeed(
+            wrong,
+            IAggregatorV3(MainnetAddresses.WBTC_BTC_FEED),
+            MainnetAddresses.STALENESS_1H,
+            MainnetAddresses.STALENESS_24H
+        );
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.WrongCompositeFeed.selector, address(badA)));
+        configure.checkWbtcFeed(address(badA));
+
+        CompositeFeed badB = new CompositeFeed(
+            IAggregatorV3(MainnetAddresses.BTC_USD_FEED),
+            wrong,
+            MainnetAddresses.STALENESS_1H,
+            MainnetAddresses.STALENESS_24H
+        );
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.WrongCompositeFeed.selector, address(badB)));
+        configure.checkWbtcFeed(address(badB));
+
+        CompositeFeed badAge = new CompositeFeed(
+            IAggregatorV3(MainnetAddresses.BTC_USD_FEED),
+            IAggregatorV3(MainnetAddresses.WBTC_BTC_FEED),
+            MainnetAddresses.STALENESS_24H,
+            MainnetAddresses.STALENESS_24H
+        );
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.WrongCompositeFeed.selector, address(badAge)));
+        configure.checkWbtcFeed(address(badAge));
+
+        CompositeFeed badAgeB = new CompositeFeed(
+            IAggregatorV3(MainnetAddresses.BTC_USD_FEED),
+            IAggregatorV3(MainnetAddresses.WBTC_BTC_FEED),
+            MainnetAddresses.STALENESS_1H,
+            MainnetAddresses.STALENESS_1H
+        );
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.WrongCompositeFeed.selector, address(badAgeB)));
+        configure.checkWbtcFeed(address(badAgeB));
+    }
+
+    /// @dev Puts a settable aggregator at a mainnet feed's address, so a chain-1 test reads a live answer without a
+    ///      fork.
+    function _etchFeed(address at, string memory pair, int256 answer) private {
+        TestAggregator feed = new TestAggregator(pair, 8, answer);
+        // `vm.etch` copies code, not storage, so the etched feed starts with everything zeroed: the answer and the
+        // freshness both have to be set through it.
+        vm.etch(at, address(feed).code);
+        TestAggregator(at).setAnswer(answer);
+        TestAggregator(at).setDecimals(8);
+        TestAggregator(at).setAge(0);
     }
 
     function test_deployRun_readsEnvironment() public {
         vm.setEnv("OWNER", vm.toString(owner));
         vm.setEnv("GUARDIAN", vm.toString(guardian));
         vm.setEnv("SWAP_ROUTER", vm.toString(address(router)));
-        vm.setEnv("WETH", vm.toString(address(market.weth())));
-        vm.setEnv("UNISWAP_V3_FACTORY", vm.toString(address(market.uniswapV3Factory())));
-        vm.setEnv("USDC", vm.toString(address(market.usdc())));
-        (IndexFactory factory, IndexZap zap) = deployer.run();
+        (IndexFactory factory, IndexZap zap,) = deployer.run();
         assertEq(factory.owner(), owner);
         assertEq(factory.guardian(), guardian);
         assertEq(address(zap.ROUTER()), address(router));
-        assertEq(IIndexRule(factory.RULE()).WETH(), address(market.weth()));
+        assertEq(IIndexRule(factory.RULE()).FACTORY(), address(factory));
     }
 
     // ---------------------------------------------------------------------
@@ -303,77 +347,102 @@ contract ScriptsTest is Test {
 
     function test_parseEntry() public {
         string memory token = vm.toString(address(router));
+        string memory feed = vm.toString(owner);
 
-        ConfigureWhitelist.Entry memory e = configure.parseEntry(string.concat(token, ":3000:5"));
+        ConfigureWhitelist.Entry memory e = configure.parseEntry(string.concat(token, ":", feed, ":5400"));
         assertEq(e.token, address(router));
-        assertEq(e.fee, 3000);
-        assertEq(e.minLiquidity, 5);
+        assertEq(e.feed, owner);
+        assertEq(e.maxStaleness, 5_400);
         assertEq(e.referenceSupply, 0);
 
-        e = configure.parseEntry(string.concat(token, ":0:0:120000000000000000000000000"));
-        assertEq(e.fee, 0);
-        assertEq(e.minLiquidity, 0);
+        e = configure.parseEntry(string.concat(token, ":", feed, ":88200:120000000000000000000000000"));
+        assertEq(e.maxStaleness, 88_200);
         assertEq(e.referenceSupply, 120_000_000e18);
 
-        e = configure.parseEntry(string.concat(token, ":500:9:"));
-        assertEq(e.minLiquidity, 9);
+        e = configure.parseEntry(string.concat(token, ":", feed, ":9:"));
+        assertEq(e.maxStaleness, 9);
         assertEq(e.referenceSupply, 0, "an empty reference supply field means on-chain supply");
 
-        e = configure.parseEntry(string.concat(token, ":500:9:7"));
+        e = configure.parseEntry(string.concat(token, ":", feed, ":9:7"));
         assertEq(e.referenceSupply, 7);
 
         // DA-10 removed the exclusion field, so an entry that still carries one is malformed.
-        string memory withExclusions = string.concat(token, ":500:9:7:", vm.toString(makeAddr("burn")));
+        string memory withExclusions = string.concat(token, ":", feed, ":9:7:", vm.toString(makeAddr("burn")));
         vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.MalformedEntry.selector, withExclusions));
         configure.parseEntry(withExclusions);
 
         vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.MalformedEntry.selector, token));
         configure.parseEntry(token);
-        string memory noMinimum = string.concat(token, ":3000");
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.MalformedEntry.selector, noMinimum));
-        configure.parseEntry(noMinimum);
-        string memory tooMany = string.concat(token, ":1:2:3:4:5");
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.MalformedEntry.selector, tooMany));
-        configure.parseEntry(tooMany);
+        string memory noStaleness = string.concat(token, ":", feed);
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.MalformedEntry.selector, noStaleness));
+        configure.parseEntry(noStaleness);
     }
 
     function test_resolveList() public {
-        string memory raw = string.concat(vm.toString(address(router)), ":3000:1, ", vm.toString(owner), ":0:0:5");
-        ConfigureWhitelist.Entry[] memory parsed = configure.resolveList(raw);
+        string memory raw = string.concat(
+            vm.toString(address(router)),
+            ":",
+            vm.toString(owner),
+            ":5400, ",
+            vm.toString(owner),
+            ":",
+            vm.toString(guardian),
+            ":88200:5"
+        );
+        ConfigureWhitelist.Entry[] memory parsed = configure.resolveList(raw, address(0));
         assertEq(parsed.length, 2);
         assertEq(parsed[0].token, address(router));
         assertEq(parsed[1].token, owner);
         assertEq(parsed[1].referenceSupply, 5);
 
         vm.expectRevert(ConfigureWhitelist.DefaultListOnlyOnMainnet.selector);
-        configure.resolveList("default");
+        configure.resolveList("default", address(0));
 
         vm.chainId(1);
-        ConfigureWhitelist.Entry[] memory defaults = configure.resolveList("default");
-        ConfigureWhitelist.Entry[] memory expected = configure.defaultMainnetList();
-        assertEq(defaults.length, 15);
+        _etchFeed(MainnetAddresses.BTC_USD_FEED, "BTC / USD", 86_000e8);
+        _etchFeed(MainnetAddresses.WBTC_BTC_FEED, "WBTC / BTC", 0.9995e8);
+        CompositeFeed wbtcFeed = new CompositeFeed(
+            IAggregatorV3(MainnetAddresses.BTC_USD_FEED),
+            IAggregatorV3(MainnetAddresses.WBTC_BTC_FEED),
+            MainnetAddresses.STALENESS_1H,
+            MainnetAddresses.STALENESS_24H
+        );
+        ConfigureWhitelist.Entry[] memory defaults = configure.resolveList("default", address(wbtcFeed));
+        ConfigureWhitelist.Entry[] memory expected = configure.defaultMainnetList(address(wbtcFeed));
+        assertEq(defaults.length, 7, "the launch list is seven components");
         for (uint256 i = 0; i < defaults.length; ++i) {
             assertEq(defaults[i].token, expected[i].token);
-            assertEq(defaults[i].fee, expected[i].fee);
-            assertEq(defaults[i].minLiquidity, expected[i].minLiquidity);
+            assertEq(defaults[i].feed, expected[i].feed);
+            assertEq(defaults[i].maxStaleness, expected[i].maxStaleness);
             assertEq(defaults[i].referenceSupply, expected[i].referenceSupply);
         }
-        assertEq(defaults[1].token, MAINNET_WETH);
-        assertEq(defaults[1].fee, 0, "WETH has no pool");
+        assertEq(defaults[0].token, MainnetAddresses.WETH);
+        assertEq(defaults[2].feed, address(wbtcFeed), "WBTC is priced through the composite adapter");
+        assertEq(defaults[1].referenceSupply, 0, "wstETH counts its own total supply");
     }
 
+    /// @dev Every wrapper on the launch list carries the supply of what it wraps, because its own is only the wrapped
+    ///      or bridged float. A missing one would silently shrink that component's market cap to the float.
+    function test_default_listCarriesReferenceSuppliesForWrappers() public {
+        vm.chainId(1);
+        ConfigureWhitelist.Entry[] memory list = configure.defaultMainnetList(owner);
+        for (uint256 i = 0; i < list.length; ++i) {
+            if (list[i].token == MainnetAddresses.WSTETH) continue;
+            assertGt(list[i].referenceSupply, 0, "every component but wstETH carries a reference supply");
+        }
+    }
+
+    /// @dev Nothing is looked up: what an operator reads in WHITELIST is exactly what the factory is asked to store.
     function test_configFor() public {
         ConfigureWhitelist.Entry[] memory list = _twoEntries();
         IIndexFactory.TokenConfig memory config = _configFor(list[0]);
-        assertEq(config.pool, address(market.tokenPool(list[0].token)));
-        assertEq(config.minLiquidity, DEFAULT_MIN_LIQUIDITY);
+        assertEq(config.feed, list[0].feed);
+        assertEq(config.maxStaleness, DEFAULT_STALENESS);
         assertEq(config.referenceSupply, 0);
 
-        ConfigureWhitelist.Entry memory wethEntry =
-            ConfigureWhitelist.Entry({token: address(market.weth()), fee: 0, minLiquidity: 0, referenceSupply: 1e27});
-        config = _configFor(wethEntry);
-        assertEq(config.pool, address(0));
-        assertEq(config.referenceSupply, 1e27);
+        config = _configFor(list[1]);
+        assertEq(config.feed, list[1].feed);
+        assertEq(config.referenceSupply, 21_000_000e8);
     }
 
     /// @dev XA-18: propose mode broadcasts as the owner, so it cannot work for a contract owner such as the mainnet
@@ -404,26 +473,10 @@ contract ScriptsTest is Test {
         assertGt(factory.listingEta(list[1].token), 0);
     }
 
-    /// @dev LR-07: the mint-currency check named mainnet's USDC and USDT only, so off mainnet the rule's own USDC, the
-    ///      currency indexes are minted with there, passed as a component.
-    function test_LR07_theRulesOwnUsdcIsNotProposedAsAComponent() public {
-        IndexFactory factory = _factory(DEFAULT_SENDER, address(0));
-        ConfigureWhitelist.Entry[] memory list = new ConfigureWhitelist.Entry[](1);
-        list[0] = ConfigureWhitelist.Entry({
-            token: address(market.usdc()), fee: 500, minLiquidity: DEFAULT_MIN_LIQUIDITY, referenceSupply: 1_000_000e6
-        });
-        // The rule itself accepts the config, so the policy is what stops it.
-        IIndexRule(factory.RULE()).checkConfig(list[0].token, _configFor(list[0]));
-
-        configure.propose(factory, list, none);
-        assertEq(factory.listingEta(list[0].token), 0);
-        assertEq(configure.safeCalldata(factory, list, none).length, 0);
-    }
-
     /// @dev XA-38: the release record freezes what was deployed, and the check proves a deployment is one build.
     function test_XA38_checkDeploymentFreezesTheCodeHashes() public {
         address safeOwner = address(new MockSafe(2));
-        (IndexFactory factory, IndexZap zap) = deployer.deploy(safeOwner, guardian, _market());
+        (IndexFactory factory, IndexZap zap,) = deployer.deploy(safeOwner, guardian, address(router));
 
         bytes32[4] memory codehashes = deployer.checkDeployment(factory, zap);
         assertEq(codehashes[0], keccak256(address(factory).code));
@@ -432,7 +485,7 @@ contract ScriptsTest is Test {
         assertEq(codehashes[3], keccak256(address(zap).code));
 
         // A zap from another deployment is not part of this one.
-        (IndexFactory other,) = deployer.deploy(safeOwner, guardian, _market());
+        (IndexFactory other,,) = deployer.deploy(safeOwner, guardian, address(router));
         vm.expectRevert(
             abi.encodeWithSelector(Deploy.WrongWiring.selector, "IndexZap.FACTORY", address(other), address(factory))
         );
@@ -479,8 +532,8 @@ contract ScriptsTest is Test {
     function test_propose_skipsConfigsTheRuleRejects() public {
         IndexFactory factory = _factory(DEFAULT_SENDER, address(0));
         ConfigureWhitelist.Entry[] memory list = _twoEntries();
-        market.tokenPool(list[0].token).setObservationCardinality(60); // a pool nobody has prepared
-        list[1].fee = 500; // no 0.05% pool exists for B
+        market.setPrice(list[0].token, 0); // a feed the rule will not price from
+        list[1].feed = address(0); // and an entry that names no feed at all
 
         configure.propose(factory, list, none);
         assertEq(factory.listingEta(list[0].token), 0);
@@ -540,7 +593,7 @@ contract ScriptsTest is Test {
         assertEq(calls.length, 1);
         assertEq(calls[0], abi.encodeCall(IIndexFactory.proposeListing, (list[1].token, _configFor(list[1]))));
 
-        market.tokenPool(list[1].token).setObservationCardinality(60); // the rule rejects the second
+        market.setPrice(list[1].token, 0); // the rule rejects the second
         assertEq(configure.safeCalldata(factory, list, none).length, 0);
     }
 
@@ -557,7 +610,7 @@ contract ScriptsTest is Test {
         factory.delist(list[0].token);
 
         // A config change is proposed for the delisted token, and only then is it named for relisting.
-        list[0].minLiquidity = DEFAULT_MIN_LIQUIDITY / 2;
+        list[0].maxStaleness = DEFAULT_STALENESS / 2;
         configure.propose(factory, list, none);
         assertFalse(factory.pendingIsListing(list[0].token), "a config change is pending");
 
@@ -598,7 +651,7 @@ contract ScriptsTest is Test {
         assertEq(configure.safeCalldata(factory, list, none).length, 0);
 
         // A changed config for the delisted token is proposed as a config change, which leaves it delisted.
-        list[0].minLiquidity = DEFAULT_MIN_LIQUIDITY / 2;
+        list[0].maxStaleness = DEFAULT_STALENESS / 2;
         bytes[] memory calls = configure.safeCalldata(factory, list, none);
         assertEq(calls.length, 1);
         assertEq(calls[0], abi.encodeCall(IIndexFactory.proposeConfig, (list[0].token, _configFor(list[0]))));
@@ -607,7 +660,7 @@ contract ScriptsTest is Test {
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         configure.execute(factory, list);
         assertFalse(factory.isWhitelisted(list[0].token));
-        assertEq(factory.tokenConfig(list[0].token).minLiquidity, DEFAULT_MIN_LIQUIDITY / 2);
+        assertEq(factory.tokenConfig(list[0].token).maxStaleness, DEFAULT_STALENESS / 2);
 
         // Named in the relist argument, it is proposed as a listing again.
         address[] memory relist = new address[](2);
@@ -649,14 +702,26 @@ contract ScriptsTest is Test {
     function test_XA40_proposeSkipsTokensOutsideTheWhitelistPolicy() public {
         IndexFactory factory = _factory(DEFAULT_SENDER, address(0));
         MockERC20 twoDecimals = new MockERC20("Two", "TWO", 2);
-        market.config(address(twoDecimals), 0);
-        ConfigureWhitelist.Entry[] memory list = new ConfigureWhitelist.Entry[](3);
+        MockERC20 ordinary = new MockERC20("Ordinary", "ORD", 18);
+        ordinary.mint(address(this), 1e18);
+        market.config(address(twoDecimals), ONE_DOLLAR);
+        address feed = address(market.feedOf(address(twoDecimals)));
+        ConfigureWhitelist.Entry[] memory list = new ConfigureWhitelist.Entry[](5);
         list[0] = ConfigureWhitelist.Entry({
-            token: address(twoDecimals), fee: 3000, minLiquidity: DEFAULT_MIN_LIQUIDITY, referenceSupply: 1_000_000e2
-        });
-        list[1] =
-            ConfigureWhitelist.Entry({token: MainnetAddresses.USDC, fee: 500, minLiquidity: 1, referenceSupply: 0}); // a mint currency, never a component
-        list[2] = ConfigureWhitelist.Entry({token: address(router), fee: 3000, minLiquidity: 1, referenceSupply: 0}); // a contract without decimals()
+            token: address(twoDecimals), feed: feed, maxStaleness: DEFAULT_STALENESS, referenceSupply: 1_000_000e2
+        }); // fewer than MIN_DECIMALS decimals
+        list[1] = ConfigureWhitelist.Entry({
+            token: MainnetAddresses.USDC, feed: feed, maxStaleness: DEFAULT_STALENESS, referenceSupply: 0
+        }); // a mint currency, never a component
+        list[2] = ConfigureWhitelist.Entry({
+            token: address(router), feed: feed, maxStaleness: DEFAULT_STALENESS, referenceSupply: 0
+        }); // a contract without decimals()
+        list[3] = ConfigureWhitelist.Entry({
+            token: address(ordinary), feed: address(router), maxStaleness: DEFAULT_STALENESS, referenceSupply: 1
+        }); // a feed that has code but does not answer as an aggregator
+        list[4] = ConfigureWhitelist.Entry({
+            token: address(ordinary), feed: makeAddr("nothing"), maxStaleness: DEFAULT_STALENESS, referenceSupply: 1
+        }); // and one that names an address with no code at all
 
         configure.propose(factory, list, none);
         for (uint256 i = 0; i < list.length; ++i) {
@@ -711,7 +776,12 @@ contract ScriptsTest is Test {
         IndexFactory factory = _factory(DEFAULT_SENDER, address(0));
         ConfigureWhitelist.Entry[] memory list = _twoEntries();
         vm.setEnv("FACTORY", vm.toString(address(factory)));
-        vm.setEnv("WHITELIST", string.concat(vm.toString(list[0].token), ":3000:", vm.toString(DEFAULT_MIN_LIQUIDITY)));
+        vm.setEnv(
+            "WHITELIST",
+            string.concat(
+                vm.toString(list[0].token), ":", vm.toString(list[0].feed), ":", vm.toString(DEFAULT_STALENESS)
+            )
+        );
 
         vm.setEnv("RELIST", vm.toString(list[0].token)); // parsed by run; nothing here is delisted
         vm.setEnv("LISTING_MODE", "safe"); // logs the calldata only
@@ -806,7 +876,7 @@ contract ScriptsTest is Test {
 
     function test_createTestMarket() public {
         SetupTestMarket.Uniswap memory uniswap = _uniswap();
-        address[] memory tokens = testMarket.create(uniswap);
+        (address[] memory tokens, address[] memory feeds) = testMarket.create(uniswap);
         SetupTestMarket.Spec[] memory list = testMarket.specs();
         assertEq(tokens.length, list.length);
         for (uint256 i = 0; i < list.length; ++i) {
@@ -822,13 +892,19 @@ contract ScriptsTest is Test {
                 pool.sqrtPriceX96(),
                 testMarket.sqrtPriceX96(tokens[i], uniswap.weth, list[i].decimals, list[i].wethPerToken)
             );
-            assertEq(pool.observationCardinalityNext(), testMarket.OBSERVATION_CARDINALITY());
+            assertEq(
+                TestAggregator(feeds[i]).description(),
+                string.concat(list[i].symbol, " / USD"),
+                "each token gets its own test feed"
+            );
+            assertEq(TestAggregator(feeds[i]).answer(), list[i].priceUsd8);
+            assertEq(TestAggregator(feeds[i]).decimals(), testMarket.FEED_DECIMALS());
         }
     }
 
     function test_seedTestMarket() public {
         SetupTestMarket.Uniswap memory uniswap = _uniswap();
-        address[] memory tokens = testMarket.create(uniswap);
+        (address[] memory tokens, address[] memory feeds) = testMarket.create(uniswap);
         SetupTestMarket.Spec[] memory list = testMarket.specs();
         _pool(uniswap, tokens[0], list[0].fee).setTick(-198_481);
         _pool(uniswap, tokens[2], list[2].fee).setTick(54_045);
@@ -861,7 +937,7 @@ contract ScriptsTest is Test {
 
     function test_XA26_seedRefusesAPoolWhosePriceMoved() public {
         SetupTestMarket.Uniswap memory uniswap = _uniswap();
-        address[] memory tokens = testMarket.create(uniswap);
+        (address[] memory tokens, address[] memory feeds) = testMarket.create(uniswap);
         SetupTestMarket.Spec[] memory list = testMarket.specs();
         MockUniswapV3Pool pool = _pool(uniswap, tokens[1], list[1].fee);
         uint160 expected = testMarket.sqrtPriceX96(tokens[1], uniswap.weth, list[1].decimals, list[1].wethPerToken);
@@ -879,7 +955,7 @@ contract ScriptsTest is Test {
 
     function test_seedTestMarket_rejectsTokensThatDoNotMatch() public {
         SetupTestMarket.Uniswap memory uniswap = _uniswap();
-        address[] memory tokens = testMarket.create(uniswap);
+        (address[] memory tokens, address[] memory feeds) = testMarket.create(uniswap);
 
         address[] memory short = new address[](4);
         vm.expectRevert(abi.encodeWithSelector(SetupTestMarket.TokenCountMismatch.selector, 5, 4));
@@ -897,23 +973,22 @@ contract ScriptsTest is Test {
 
     function test_testMarketWhitelist_parsesAsConfigureWhitelistEntries() public {
         SetupTestMarket.Uniswap memory uniswap = _uniswap();
-        address[] memory tokens = testMarket.create(uniswap);
+        (address[] memory tokens, address[] memory feeds) = testMarket.create(uniswap);
         SetupTestMarket.Spec[] memory list = testMarket.specs();
 
-        ConfigureWhitelist.Entry[] memory entries = configure.resolveList(testMarket.whitelist(uniswap, tokens));
+        string memory raw = testMarket.whitelist(uniswap.weth, tokens, feeds);
+        ConfigureWhitelist.Entry[] memory entries = configure.resolveList(raw, address(0));
         assertEq(entries.length, 5);
         assertEq(entries[0].token, tokens[1]);
-        assertEq(entries[0].fee, list[1].fee);
-        assertEq(entries[0].minLiquidity, 1e17, "a tenth of the pool's liquidity");
+        assertEq(entries[0].feed, feeds[1]);
+        assertEq(entries[0].maxStaleness, testMarket.TEST_STALENESS());
         assertEq(entries[0].referenceSupply, list[1].referenceSupply);
         assertEq(entries[1].token, uniswap.weth);
-        assertEq(entries[1].fee, 0);
-        assertEq(entries[1].minLiquidity, 0);
+        assertEq(entries[1].feed, testMarket.SEPOLIA_ETH_USD_FEED(), "WETH takes Sepolia's real ETH/USD feed");
         assertEq(entries[1].referenceSupply, testMarket.ETH_SUPPLY());
         for (uint256 i = 2; i < 5; ++i) {
             assertEq(entries[i].token, tokens[i]);
-            assertEq(entries[i].fee, list[i].fee);
-            assertEq(entries[i].minLiquidity, 1e17);
+            assertEq(entries[i].feed, feeds[i]);
             assertEq(entries[i].referenceSupply, list[i].referenceSupply);
         }
     }
@@ -928,7 +1003,7 @@ contract ScriptsTest is Test {
         vm.chainId(testMarket.SEPOLIA_CHAIN_ID());
 
         vm.setEnv("MARKET_MODE", "create");
-        address[] memory tokens = testMarket.run();
+        (address[] memory tokens,) = testMarket.run();
         assertEq(tokens.length, 5);
 
         string memory joined = vm.toString(tokens[0]);
@@ -940,7 +1015,8 @@ contract ScriptsTest is Test {
         vm.setEnv("USD_POOL_WETH", "200000000000000000");
         vm.setEnv("TOKEN_POOL_WETH", "50000000000000000");
         vm.deal(DEFAULT_SENDER, 1 ether);
-        assertEq(testMarket.run(), tokens);
+        (address[] memory seeded,) = testMarket.run();
+        assertEq(seeded, tokens);
         assertEq(MockPositionManager(testMarket.SEPOLIA_POSITION_MANAGER()).mints(), 5);
         assertEq(DEFAULT_SENDER.balance, 0.6 ether, "0.2 + 4 * 0.05 ether wrapped");
 

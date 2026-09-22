@@ -10,8 +10,7 @@ import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IIndexRule} from "../src/interfaces/IIndexRule.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
-import {MockMarket} from "./mocks/MockMarket.sol";
-import {harmonicOf, MockUniswapV3Pool} from "./mocks/MockUniswapV3.sol";
+import {DEFAULT_STALENESS, MockMarket} from "./mocks/MockMarket.sol";
 
 contract IndexFactoryTest is XindexTest {
     MockERC20 a;
@@ -33,9 +32,7 @@ contract IndexFactoryTest is XindexTest {
     }
 
     function _newFactory(address owner_, address guardian_) internal returns (IndexFactory) {
-        return new IndexFactory(
-            owner_, guardian_, address(market.weth()), address(market.uniswapV3Factory()), address(market.usdc())
-        );
+        return new IndexFactory(owner_, guardian_);
     }
 
     function _two() internal view returns (address[] memory t, uint256[] memory u) {
@@ -55,7 +52,7 @@ contract IndexFactoryTest is XindexTest {
         for (uint256 i = 0; i < n; ++i) {
             t[i] = address(new MockERC20("M", "M", 18));
             u[i] = 1;
-            configs[i] = market.config(t[i], 0);
+            configs[i] = market.config(t[i], ONE_DOLLAR);
         }
         vm.startPrank(owner);
         for (uint256 i = 0; i < n; ++i) {
@@ -69,8 +66,8 @@ contract IndexFactoryTest is XindexTest {
     }
 
     function _assertConfig(IIndexFactory.TokenConfig memory got, IIndexFactory.TokenConfig memory want) internal pure {
-        assertEq(got.pool, want.pool, "pool");
-        assertEq(got.minLiquidity, want.minLiquidity, "min liquidity");
+        assertEq(got.feed, want.feed, "feed");
+        assertEq(got.maxStaleness, want.maxStaleness, "max staleness");
         assertEq(got.referenceSupply, want.referenceSupply, "reference supply");
     }
 
@@ -99,10 +96,6 @@ contract IndexFactoryTest is XindexTest {
 
         IndexRule rule = IndexRule(fresh.RULE());
         assertEq(rule.FACTORY(), address(fresh));
-        assertEq(rule.WETH(), address(market.weth()));
-        assertEq(rule.UNISWAP_V3_FACTORY(), address(market.uniswapV3Factory()));
-        assertEq(rule.USDC(), address(market.usdc()));
-        assertEq(rule.USD_POOL(), address(market.usdPool()));
         assertEq(IndexToken(fresh.IMPLEMENTATION()).FACTORY(), address(fresh));
         assertEq(IndexToken(fresh.IMPLEMENTATION()).RULE(), address(rule));
 
@@ -254,7 +247,7 @@ contract IndexFactoryTest is XindexTest {
         // Listings carry the same trap and the same answer.
         MockERC20 token = new MockERC20("Late", "LATE", 18);
         assertFalse(factory.listingPending(address(token)));
-        IIndexFactory.TokenConfig memory config = market.config(address(token), 0);
+        IIndexFactory.TokenConfig memory config = market.config(address(token), ONE_DOLLAR);
         vm.prank(owner);
         factory.proposeListing(address(token), config);
         assertTrue(factory.listingPending(address(token)));
@@ -338,11 +331,11 @@ contract IndexFactoryTest is XindexTest {
     // ---------------------------------------------------------------------
 
     function test_proposeListing_startsDelayWithTheConfig() public {
-        IIndexFactory.TokenConfig memory config = market.config(address(c), 0);
+        IIndexFactory.TokenConfig memory config = market.config(address(c), ONE_DOLLAR);
         uint256 eta = block.timestamp + factory.LISTING_DELAY();
         vm.expectEmit(true, true, true, true, address(factory));
         emit IIndexFactory.ListingProposed(
-            address(c), eta, true, config.pool, config.minLiquidity, config.referenceSupply
+            address(c), eta, true, config.feed, config.maxStaleness, config.referenceSupply
         );
         vm.prank(owner);
         factory.proposeListing(address(c), config);
@@ -350,11 +343,11 @@ contract IndexFactoryTest is XindexTest {
         assertEq(factory.listingEta(address(c)), eta);
         assertFalse(factory.isWhitelisted(address(c)));
         _assertConfig(factory.pendingTokenConfig(address(c)), config);
-        assertEq(factory.tokenConfig(address(c)).pool, address(0), "nothing is in force before execution");
+        assertEq(factory.tokenConfig(address(c)).feed, address(0), "nothing is in force before execution");
     }
 
     function test_proposeListing_reverts() public {
-        IIndexFactory.TokenConfig memory config = market.config(address(c), 0);
+        IIndexFactory.TokenConfig memory config = market.config(address(c), ONE_DOLLAR);
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
         factory.proposeListing(address(c), config);
@@ -373,16 +366,16 @@ contract IndexFactoryTest is XindexTest {
     }
 
     function test_proposeListing_rejectsAConfigTheRuleRejects() public {
-        IIndexFactory.TokenConfig memory noPool =
-            IIndexFactory.TokenConfig({pool: address(0), minLiquidity: 1, referenceSupply: 1});
+        IIndexFactory.TokenConfig memory noFeed =
+            IIndexFactory.TokenConfig({feed: address(0), maxStaleness: 1, referenceSupply: 1});
         vm.prank(owner);
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidPool.selector, address(c), address(0)));
-        factory.proposeListing(address(c), noPool);
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidFeed.selector, address(c), address(0)));
+        factory.proposeListing(address(c), noFeed);
         assertEq(factory.listingEta(address(c)), 0);
     }
 
     function test_proposeListing_againAfterExpiry() public {
-        IIndexFactory.TokenConfig memory config = market.config(address(c), 0);
+        IIndexFactory.TokenConfig memory config = market.config(address(c), ONE_DOLLAR);
         vm.prank(owner);
         factory.proposeListing(address(c), config);
         uint256 eta = factory.listingEta(address(c));
@@ -401,7 +394,7 @@ contract IndexFactoryTest is XindexTest {
     function test_configChange_forAListedTokenWaitsForTheDelay() public {
         IIndexFactory.TokenConfig memory current = factory.tokenConfig(address(a));
         a.mint(stranger, 1e18);
-        IIndexFactory.TokenConfig memory next = market.configWith(address(a), 5, 0);
+        IIndexFactory.TokenConfig memory next = market.configWith(address(a), 5 * ONE_DOLLAR, 0);
 
         vm.prank(owner);
         factory.proposeListing(address(a), next);
@@ -410,7 +403,7 @@ contract IndexFactoryTest is XindexTest {
 
         vm.warp(factory.listingEta(address(a)));
         vm.expectEmit(true, true, true, true, address(factory));
-        emit IIndexFactory.TokenConfigured(address(a), next.pool, next.minLiquidity, 0);
+        emit IIndexFactory.TokenConfigured(address(a), next.feed, next.maxStaleness, 0);
         factory.executeListing(address(a));
 
         _assertConfig(factory.tokenConfig(address(a)), next);
@@ -418,7 +411,7 @@ contract IndexFactoryTest is XindexTest {
     }
 
     function test_executeListing_onlyAfterDelay_byAnyone() public {
-        IIndexFactory.TokenConfig memory config = market.config(address(c), 0);
+        IIndexFactory.TokenConfig memory config = market.config(address(c), ONE_DOLLAR);
         vm.prank(owner);
         factory.proposeListing(address(c), config);
         uint256 eta = factory.listingEta(address(c));
@@ -429,7 +422,7 @@ contract IndexFactoryTest is XindexTest {
 
         vm.warp(eta);
         vm.expectEmit(true, true, true, true, address(factory));
-        emit IIndexFactory.TokenConfigured(address(c), config.pool, config.minLiquidity, config.referenceSupply);
+        emit IIndexFactory.TokenConfigured(address(c), config.feed, config.maxStaleness, config.referenceSupply);
         vm.expectEmit(true, true, true, true, address(factory));
         emit IIndexFactory.TokenWhitelisted(address(c), true);
         vm.prank(stranger);
@@ -438,7 +431,7 @@ contract IndexFactoryTest is XindexTest {
         assertTrue(factory.isWhitelisted(address(c)));
         assertEq(factory.listingEta(address(c)), 0);
         _assertConfig(factory.tokenConfig(address(c)), config);
-        assertEq(factory.pendingTokenConfig(address(c)).pool, address(0));
+        assertEq(factory.pendingTokenConfig(address(c)).feed, address(0));
         address[] memory list = factory.whitelistedTokens();
         assertEq(list.length, 3);
         assertEq(list[2], address(c));
@@ -448,7 +441,7 @@ contract IndexFactoryTest is XindexTest {
     }
 
     function test_executeListing_lastMomentOfWindowSucceeds() public {
-        IIndexFactory.TokenConfig memory config = market.config(address(c), 0);
+        IIndexFactory.TokenConfig memory config = market.config(address(c), ONE_DOLLAR);
         vm.prank(owner);
         factory.proposeListing(address(c), config);
         vm.warp(factory.listingEta(address(c)) + factory.PROPOSAL_WINDOW());
@@ -457,7 +450,7 @@ contract IndexFactoryTest is XindexTest {
     }
 
     function test_executeListing_expires() public {
-        IIndexFactory.TokenConfig memory config = market.config(address(c), 0);
+        IIndexFactory.TokenConfig memory config = market.config(address(c), ONE_DOLLAR);
         vm.prank(owner);
         factory.proposeListing(address(c), config);
         uint256 deadline = factory.listingEta(address(c)) + factory.PROPOSAL_WINDOW();
@@ -470,7 +463,7 @@ contract IndexFactoryTest is XindexTest {
         vm.prank(guardian); // an expired proposal can still be cleaned up
         factory.cancelListing(address(c));
         assertEq(factory.listingEta(address(c)), 0);
-        assertEq(factory.pendingTokenConfig(address(c)).pool, address(0));
+        assertEq(factory.pendingTokenConfig(address(c)).feed, address(0));
     }
 
     /// @dev DA-11. `checkConfig` ran at propose time only, and `executeListing` is permissionless, so a pool that
@@ -478,30 +471,28 @@ contract IndexFactoryTest is XindexTest {
     ///      index-creatable against a window the rule would refuse. Execution re-runs the same validation, and the
     ///      proposal survives for the rest of its window, so the listing lands as soon as the pool recovers.
     function test_DA11_executeListingRevalidatesTheConfig() public {
-        IIndexFactory.TokenConfig memory config = market.config(address(c), 0);
+        IIndexFactory.TokenConfig memory config = market.config(address(c), ONE_DOLLAR);
         vm.prank(owner);
         factory.proposeListing(address(c), config);
         uint256 eta = factory.listingEta(address(c));
         vm.warp(eta);
 
-        MockUniswapV3Pool pool = market.tokenPool(address(c));
-        pool.setLiquidity(1e16);
-        uint256 thin = harmonicOf(pool);
-        assertLt(thin, config.minLiquidity, "the pool no longer meets the config it was proposed with");
+        // The feed stops publishing between the proposal and the execution.
+        market.setAge(address(c), uint256(DEFAULT_STALENESS) + 1);
         vm.expectRevert(
-            abi.encodeWithSelector(IIndexRule.ThinPriceHistory.selector, config.pool, thin, config.minLiquidity)
+            abi.encodeWithSelector(IIndexRule.StalePrice.selector, address(c), block.timestamp - DEFAULT_STALENESS - 1)
         );
         factory.executeListing(address(c));
-        assertFalse(factory.isWhitelisted(address(c)), "not listed against a window the rule refuses");
+        assertFalse(factory.isWhitelisted(address(c)), "not listed against a price the rule refuses");
         assertEq(factory.listingEta(address(c)), eta, "the proposal is untouched and can still be executed");
 
-        pool.setLiquidity(1e18);
+        market.setAge(address(c), 0);
         factory.executeListing(address(c));
-        assertTrue(factory.isWhitelisted(address(c)), "and it lists once the pool recovers");
+        assertTrue(factory.isWhitelisted(address(c)), "and it lists once the feed publishes again");
     }
 
     function test_cancelListing() public {
-        IIndexFactory.TokenConfig memory config = market.config(address(c), 0);
+        IIndexFactory.TokenConfig memory config = market.config(address(c), ONE_DOLLAR);
         vm.prank(owner);
         factory.proposeListing(address(c), config);
 
@@ -514,7 +505,7 @@ contract IndexFactoryTest is XindexTest {
         vm.prank(guardian);
         factory.cancelListing(address(c));
         assertEq(factory.listingEta(address(c)), 0);
-        assertEq(factory.pendingTokenConfig(address(c)).pool, address(0));
+        assertEq(factory.pendingTokenConfig(address(c)).feed, address(0));
 
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         vm.expectRevert(abi.encodeWithSelector(IIndexFactory.NoPendingListing.selector, address(c)));
@@ -535,7 +526,7 @@ contract IndexFactoryTest is XindexTest {
         _list(address(c));
         address[] memory list = factory.whitelistedTokens();
         assertEq(list.length, 3);
-        address poolOfA = factory.tokenConfig(address(a)).pool;
+        address poolOfA = factory.tokenConfig(address(a)).feed;
 
         vm.expectEmit(true, true, true, true, address(factory));
         emit IIndexFactory.TokenWhitelisted(address(a), false);
@@ -546,7 +537,7 @@ contract IndexFactoryTest is XindexTest {
         assertEq(list[0], address(c));
         assertEq(list[1], address(b));
         assertFalse(factory.isWhitelisted(address(a)));
-        assertEq(factory.tokenConfig(address(a)).pool, poolOfA, "existing indexes still rebalance with the config");
+        assertEq(factory.tokenConfig(address(a)).feed, poolOfA, "existing indexes still rebalance with the config");
 
         vm.prank(owner);
         factory.delist(address(b));
@@ -586,7 +577,7 @@ contract IndexFactoryTest is XindexTest {
         uint256 inForce = factory.tokenConfig(address(a)).referenceSupply;
         assertEq(inForce, market.DEFAULT_SUPPLY(), "a is listed with the market's default supply");
 
-        IIndexFactory.TokenConfig memory typo = market.configWith(address(a), 0, 1);
+        IIndexFactory.TokenConfig memory typo = market.configWith(address(a), ONE_DOLLAR, 1);
         vm.prank(owner);
         vm.expectRevert(
             abi.encodeWithSelector(IIndexFactory.SupplyChangeTooLarge.selector, address(a), inForce, uint256(1))
@@ -594,7 +585,7 @@ contract IndexFactoryTest is XindexTest {
         factory.proposeConfig(address(a), typo);
 
         // The decimals slip the finding names, an 18-decimal figure typed for an 8-decimal token, is caught too.
-        IIndexFactory.TokenConfig memory slipped = market.configWith(address(a), 0, inForce * 1e10);
+        IIndexFactory.TokenConfig memory slipped = market.configWith(address(a), ONE_DOLLAR, inForce * 1e10);
         vm.prank(owner);
         vm.expectRevert(
             abi.encodeWithSelector(IIndexFactory.SupplyChangeTooLarge.selector, address(a), inForce, inForce * 1e10)
@@ -602,7 +593,7 @@ contract IndexFactoryTest is XindexTest {
         factory.proposeConfig(address(a), slipped);
 
         // A revision within the bound is the normal case and goes through.
-        IIndexFactory.TokenConfig memory revised = market.configWith(address(a), 0, inForce * 3);
+        IIndexFactory.TokenConfig memory revised = market.configWith(address(a), ONE_DOLLAR, inForce * 3);
         vm.prank(owner);
         factory.proposeConfig(address(a), revised);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
@@ -610,7 +601,7 @@ contract IndexFactoryTest is XindexTest {
         assertEq(factory.tokenConfig(address(a)).referenceSupply, inForce * 3);
 
         // A first listing has nothing to compare against, so any supply the rule accepts still lists.
-        IIndexFactory.TokenConfig memory fresh = market.configWith(address(c), 0, 1);
+        IIndexFactory.TokenConfig memory fresh = market.configWith(address(c), ONE_DOLLAR, 1);
         vm.prank(owner);
         factory.proposeListing(address(c), fresh);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
@@ -619,7 +610,7 @@ contract IndexFactoryTest is XindexTest {
     }
 
     function test_proposeConfig_replacesTheConfigWithoutListing() public {
-        IIndexFactory.TokenConfig memory config = market.config(address(c), 0);
+        IIndexFactory.TokenConfig memory config = market.config(address(c), ONE_DOLLAR);
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
         factory.proposeConfig(address(c), config);
@@ -628,10 +619,10 @@ contract IndexFactoryTest is XindexTest {
         factory.proposeConfig(address(c), config); // c was never listed
 
         // A listed token: the change applies and the whitelist is untouched.
-        IIndexFactory.TokenConfig memory next = market.configWith(address(a), 0, 5e29);
+        IIndexFactory.TokenConfig memory next = market.configWith(address(a), ONE_DOLLAR, 5e29);
         uint256 eta = block.timestamp + factory.LISTING_DELAY();
         vm.expectEmit(true, true, true, true, address(factory));
-        emit IIndexFactory.ListingProposed(address(a), eta, false, next.pool, next.minLiquidity, next.referenceSupply);
+        emit IIndexFactory.ListingProposed(address(a), eta, false, next.feed, next.maxStaleness, next.referenceSupply);
         vm.prank(owner);
         factory.proposeConfig(address(a), next);
         assertFalse(factory.pendingIsListing(address(a)));
@@ -649,7 +640,7 @@ contract IndexFactoryTest is XindexTest {
         // WETH's config has no pool, only a reference supply, and can be refreshed too.
         address weth = address(market.weth());
         _list(weth);
-        IIndexFactory.TokenConfig memory etherConfig = market.configWith(weth, 0, 121_000_000e18);
+        IIndexFactory.TokenConfig memory etherConfig = market.configWith(weth, ONE_DOLLAR, 121_000_000e18);
         vm.prank(owner);
         factory.proposeConfig(weth, etherConfig);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
@@ -659,7 +650,7 @@ contract IndexFactoryTest is XindexTest {
     }
 
     function test_delist_cancelsAPendingListingProposal() public {
-        IIndexFactory.TokenConfig memory next = market.config(address(a), 0);
+        IIndexFactory.TokenConfig memory next = market.config(address(a), ONE_DOLLAR);
         vm.prank(owner);
         factory.proposeListing(address(a), next);
         assertTrue(factory.pendingIsListing(address(a)));
@@ -672,7 +663,7 @@ contract IndexFactoryTest is XindexTest {
         factory.delist(address(a));
         assertEq(factory.listingEta(address(a)), 0);
         assertFalse(factory.pendingIsListing(address(a)));
-        assertEq(factory.pendingTokenConfig(address(a)).pool, address(0));
+        assertEq(factory.pendingTokenConfig(address(a)).feed, address(0));
 
         // Relisting needs a fresh proposal and a full delay.
         vm.prank(owner);
@@ -863,7 +854,7 @@ contract IndexFactoryTest is XindexTest {
         vm.expectRevert(abi.encodeWithSelector(IIndexFactory.TokenNotWhitelisted.selector, address(c)));
         factory.createIndex("X", "X", t, u, 0);
 
-        IIndexFactory.TokenConfig memory config = market.config(address(c), 0);
+        IIndexFactory.TokenConfig memory config = market.config(address(c), ONE_DOLLAR);
         vm.prank(owner);
         factory.proposeListing(address(c), config);
         vm.expectRevert(abi.encodeWithSelector(IIndexFactory.TokenNotWhitelisted.selector, address(c)));

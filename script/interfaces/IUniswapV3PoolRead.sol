@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.28;
 
-/// @title IUniswapV3Pool
-/// @notice Minimal subset of a Uniswap V3 pool: the oracle reads the rebalance rule uses.
-interface IUniswapV3Pool {
+/// @title IUniswapV3PoolRead
+/// @notice Minimal subset of a Uniswap V3 pool: the reads the Sepolia test-market script makes.
+interface IUniswapV3PoolRead {
     /// @notice The pool's fee tier in hundredths of a basis point, for example 3000 for 0.3%.
     function fee() external view returns (uint24);
 

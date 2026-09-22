@@ -25,7 +25,6 @@ import {MockPartialFillRouter} from "./mocks/MockPartialFillRouter.sol";
 import {MockPausableToken} from "./mocks/MockPausableToken.sol";
 import {MockRebalanceExecutor} from "./mocks/MockRebalanceExecutor.sol";
 import {MockSwapRouter} from "./mocks/MockSwapRouter.sol";
-import {MockUniswapV3Pool} from "./mocks/MockUniswapV3.sol";
 
 /// @notice Watches an index from inside a token callback, the way a third-party protocol could.
 contract NavProbe is ITokenReceiverHook {
@@ -124,9 +123,7 @@ contract SecurityRegressionTest is XindexTest {
 
     function setUp() public {
         market = new MockMarket();
-        factory = new IndexFactory(
-            owner, guardian, address(market.weth()), address(market.uniswapV3Factory()), address(market.usdc())
-        );
+        factory = new IndexFactory(owner, guardian);
         router = new MockSwapRouter();
         zap = new IndexZap(factory, router);
 
@@ -367,7 +364,7 @@ contract SecurityRegressionTest is XindexTest {
 
     function test_L07_hostileListingWaitsAndGuardianCanCancel() public {
         MockERC20 hostile = new MockERC20("Blue Chip Plus", "BLUE+", 18);
-        IIndexFactory.TokenConfig memory config = market.config(address(hostile), 0);
+        IIndexFactory.TokenConfig memory config = market.config(address(hostile), ONE_DOLLAR);
         vm.prank(owner);
         factory.proposeListing(address(hostile), config);
         uint256 eta = factory.listingEta(address(hostile));
@@ -388,7 +385,7 @@ contract SecurityRegressionTest is XindexTest {
         MockERC20 hostile = new MockERC20("Blue Chip Plus", "BLUE+", 18);
         vm.startPrank(owner); // a compromised owner tries to remove the guardian and list at the same time
         factory.proposeGuardian(address(0));
-        factory.proposeListing(address(hostile), market.config(address(hostile), 0));
+        factory.proposeListing(address(hostile), market.config(address(hostile), ONE_DOLLAR));
         vm.stopPrank();
         assertEq(factory.guardian(), guardian, "the guardian keeps its powers while its removal is pending");
 
@@ -405,7 +402,7 @@ contract SecurityRegressionTest is XindexTest {
 
     function test_FR03_staleListingProposalsExpire() public {
         MockERC20 token = new MockERC20("Stale", "STALE", 18);
-        IIndexFactory.TokenConfig memory config = market.config(address(token), 0);
+        IIndexFactory.TokenConfig memory config = market.config(address(token), ONE_DOLLAR);
         vm.prank(owner);
         factory.proposeListing(address(token), config);
         uint256 deadline = factory.listingEta(address(token)) + factory.PROPOSAL_WINDOW();
@@ -684,7 +681,7 @@ contract SecurityRegressionTest is XindexTest {
         IIndexFactory.TokenConfig[] memory configs = new IIndexFactory.TokenConfig[](5);
         for (uint256 i = 0; i < 5; ++i) {
             t[i] = address(new MockERC20("Rule", "RULE", 18));
-            configs[i] = market.configWith(t[i], 0, parts[i] * 1e24);
+            configs[i] = market.configWith(t[i], ONE_DOLLAR, parts[i] * 1e24);
         }
         idx = _ruleBasketOf(t, configs, units);
     }
@@ -715,44 +712,6 @@ contract SecurityRegressionTest is XindexTest {
         idx.startRebalance(keepMask);
         (eta,,) = idx.pendingRebalance();
         vm.warp(eta);
-    }
-
-    function test_R01_meanTickRoundsTowardNegativeInfinity() public {
-        MockERC20 token = new MockERC20("Tick", "TICK", 18);
-        _list(address(token));
-        IIndexRule rule = IIndexRule(factory.RULE());
-        bool token0 = address(token) < address(weth);
-
-        market.setPriceTick(address(token), token0 ? int24(-2) : int24(2));
-        uint256 floored = rule.price(address(token));
-        market.setPriceTick(address(token), token0 ? int24(-1) : int24(1));
-        uint256 truncated = rule.price(address(token));
-
-        market.tokenPool(address(token)).setCumulatives(0, -1801); // a mean pool tick of -1.0006
-        assertEq(rule.price(address(token)), floored);
-        assertTrue(floored != truncated);
-    }
-
-    function test_R02_lookAlikePoolIsRejected() public {
-        MockERC20 token = new MockERC20("Look", "LOOK", 18);
-        market.config(address(token), 0); // the genuine pool exists
-        address lookAlike = address(new MockUniswapV3Pool(address(token), address(weth), 3000));
-        IIndexFactory.TokenConfig memory config;
-        config.pool = lookAlike;
-        config.minLiquidity = market.MIN_LIQUIDITY();
-        config.referenceSupply = 1e24;
-        vm.prank(owner);
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidPool.selector, address(token), lookAlike));
-        factory.proposeListing(address(token), config);
-    }
-
-    function test_R03_poolWithShortPriceHistoryIsRejected() public {
-        MockERC20 token = new MockERC20("Short", "SHORT", 18);
-        IIndexFactory.TokenConfig memory config = market.config(address(token), 0);
-        MockUniswapV3Pool(config.pool).setObservationCardinality(60);
-        vm.prank(owner);
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.PoolHistoryTooShort.selector, config.pool, 60));
-        factory.proposeListing(address(token), config);
     }
 
     function test_R04_aLoneExecutorKeepsAtMostTheFloorOfTheBoughtValue() public {
@@ -794,13 +753,14 @@ contract SecurityRegressionTest is XindexTest {
 
     function test_R07_wrappedAssetsCarryAReferenceSupply() public {
         IIndexRule rule = IIndexRule(factory.RULE());
-        IIndexFactory.TokenConfig memory onChain;
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidSupplyConfig.selector, address(weth)));
-        rule.checkConfig(address(weth), onChain);
+        // A config with no feed is not a config at all, whatever supply it names.
+        IIndexFactory.TokenConfig memory empty;
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidFeed.selector, address(weth), address(0)));
+        rule.checkConfig(address(weth), empty);
 
         MockERC20 wrapped = new MockERC20("Wrapped Coin", "WCOIN", 8);
         wrapped.mint(alice, 116_132e8); // the wrapped float
-        IIndexFactory.TokenConfig memory config = market.configWith(address(wrapped), 0, 20_084_784e8);
+        IIndexFactory.TokenConfig memory config = market.configWith(address(wrapped), ONE_DOLLAR, 20_084_784e8);
         vm.prank(owner);
         factory.proposeListing(address(wrapped), config);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
@@ -931,10 +891,10 @@ contract SecurityRegressionTest is XindexTest {
         address[] memory t = new address[](5);
         IIndexFactory.TokenConfig[] memory configs = new IIndexFactory.TokenConfig[](5);
         t[0] = address(inflating);
-        configs[0] = market.configWith(t[0], 0, 0); // on-chain supply
+        configs[0] = market.configWith(t[0], ONE_DOLLAR, 0); // on-chain supply
         for (uint256 i = 1; i < 5; ++i) {
             t[i] = address(new MockERC20("Fixed", "FIX", 18));
-            configs[i] = market.configWith(t[i], 0, 1e24);
+            configs[i] = market.configWith(t[i], ONE_DOLLAR, 1e24);
         }
         IndexToken idx = _ruleBasketOf(t, configs, _hundreds());
 
@@ -952,7 +912,7 @@ contract SecurityRegressionTest is XindexTest {
 
     function test_R18_priceReadingsOnlyShapeTargetsWithinBounds() public {
         (IndexToken idx, address[] memory t) = _ruleBasket(_five(1, 1, 1, 1, 1), _hundreds());
-        market.setPriceTick(t[0], 46_000); // a hundredfold spike in one component's time-weighted price
+        market.movePrice(t[0], 100, 1); // a hundredfold spike in one component's published price
 
         (uint256[] memory targets, uint256 turnover) = idx.previewTarget(0);
         for (uint256 i = 0; i < 5; ++i) {
@@ -1012,9 +972,8 @@ contract SecurityRegressionTest is XindexTest {
         bytes32 settlement = keccak256(abi.encode(_preview(idx)));
 
         for (uint256 i = 0; i < 5; ++i) {
-            market.setPriceTick(t[i], int24(int256(i) * 10_000 - 20_000));
+            market.movePrice(t[i], i + 1, 3);
         }
-        market.setUsdcTick(150_000);
 
         assertEq(keccak256(abi.encode(idx.previewIssue(3e18), idx.previewRedeem(3e18))), holders);
         assertEq(keccak256(abi.encode(_preview(idx))), settlement);
@@ -1030,8 +989,8 @@ contract SecurityRegressionTest is XindexTest {
         IIndexFactory.TokenConfig[] memory configs = new IIndexFactory.TokenConfig[](2);
         t[0] = address(new MockERC20("Heavy", "HEAVY", 18));
         t[1] = address(new MockERC20("Dust Cap", "DUST", 18));
-        configs[0] = market.configWith(t[0], 0, 1e30);
-        configs[1] = market.configWith(t[1], 0, 1); // its weight rounds to zero
+        configs[0] = market.configWith(t[0], ONE_DOLLAR, 1e30);
+        configs[1] = market.configWith(t[1], ONE_DOLLAR, 1); // its weight rounds to zero
         uint256[] memory units = new uint256[](2);
         (units[0], units[1]) = (10e18, 100e18);
         IndexToken idx = _ruleBasketOf(t, configs, units);
@@ -1048,68 +1007,15 @@ contract SecurityRegressionTest is XindexTest {
     // Whole-repo audit of 2026-09-16 (XA ids, audit/2026-09-16-whole-repo-audit.md)
     // ---------------------------------------------------------------------
 
-    /// @dev One 12-second block at the extreme tick that makes `token` look cheapest, in the last third of the
-    ///      30-minute window, with the true tick 0 everywhere else. With `emptyRange` the block sat past every
-    ///      position, where Uniswap counts liquidity as one.
-    function _extremeBlock(address token, bool emptyRange) internal returns (MockUniswapV3Pool pool, uint256 delta) {
-        pool = market.tokenPool(token);
-        int56 outlier = (token < address(weth) ? int56(-887_272) : int56(887_272)) * 12;
-        uint256 perSecond = (uint256(1) << 128) / pool.liquidity();
-        delta = 1788 * perSecond + (emptyRange ? uint256(12) << 128 : 12 * perSecond);
-        pool.setObservation(1800, 0, 0);
-        pool.setObservation(1200, 0, uint160(600 * perSecond));
-        pool.setObservation(600, 0, uint160(1200 * perSecond));
-        pool.setObservation(0, outlier, uint160(delta));
-    }
-
     /// @dev The distorted snapshot of the finding: this basket lost 248 bps to the first executor at the opening.
     function _offTargetBasket() internal returns (IndexToken idx, address[] memory t) {
         (idx, t) = _ruleBasket(_five(1, 1, 1, 1, 1), _five(200e18, 100e18, 100e18, 100e18, 100e18));
         vm.warp(idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL());
     }
 
-    function test_XA01_aSnapshotThroughAnEmptyRangeCannotStart() public {
-        (IndexToken idx, address[] memory t) = _offTargetBasket();
-        (MockUniswapV3Pool pool, uint256 delta) = _extremeBlock(t[0], true);
-        uint256 harmonic = uint256(1800) * type(uint160).max / (delta << 32);
-        assertLt(harmonic, 200, "twelve seconds at liquidity one dominate the harmonic mean");
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IIndexRule.ThinPriceHistory.selector, address(pool), harmonic, market.MIN_LIQUIDITY()
-            )
-        );
-        vm.prank(attacker);
-        idx.startRebalance(0);
-    }
-
-    function test_XA01_aOneBlockOutlierThroughLiquidityCannotStart() public {
-        (IndexToken idx, address[] memory t) = _offTargetBasket();
-        (MockUniswapV3Pool pool,) = _extremeBlock(t[0], false);
-        // The last third's mean tick is 887,272 * 12 / 600, rounded toward negative infinity.
-        uint256 spread = t[0] < address(weth) ? 17_746 : 17_745;
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.PriceHistoryDeviates.selector, address(pool), spread));
-        vm.prank(attacker);
-        idx.startRebalance(0);
-    }
-
-    function test_XA02_anUnfillableSnapshotThroughAnEmptyRangeCannotStart() public {
-        // On the original rule this snapshot started, and even at the 0.9 floor an executor had to deliver more than it
-        // received, so nobody filled and a griefer could restart it at every expiry.
-        (IndexToken idx, address[] memory t) = _offTargetBasket();
-        (MockUniswapV3Pool pool, uint256 delta) = _extremeBlock(t[1], true); // a component the rebalance buys
-        uint256 harmonic = uint256(1800) * type(uint160).max / (delta << 32);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IIndexRule.ThinPriceHistory.selector, address(pool), harmonic, market.MIN_LIQUIDITY()
-            )
-        );
-        vm.prank(attacker);
-        idx.startRebalance(0);
-    }
-
     function test_XA03_delistCancelsAPendingListingProposal() public {
         // A config change proposed while LINK was listed must not relist it once the guardian delists it.
-        IIndexFactory.TokenConfig memory next = market.config(address(link), 0);
+        IIndexFactory.TokenConfig memory next = market.config(address(link), ONE_DOLLAR);
         vm.prank(owner);
         factory.proposeListing(address(link), next);
         uint256 eta = factory.listingEta(address(link));
@@ -1126,7 +1032,7 @@ contract SecurityRegressionTest is XindexTest {
     function test_XA03_aConfigRefreshOfADelistedTokenKeepsItDelisted() public {
         vm.prank(guardian);
         factory.delist(address(link));
-        IIndexFactory.TokenConfig memory refresh = market.configWith(address(link), 0, 2e30);
+        IIndexFactory.TokenConfig memory refresh = market.configWith(address(link), ONE_DOLLAR, 2e30);
         vm.prank(owner);
         factory.proposeConfig(address(link), refresh);
         vm.warp(factory.listingEta(address(link)));
@@ -1154,7 +1060,7 @@ contract SecurityRegressionTest is XindexTest {
         uint256[5] memory parts = [uint256(6), 1, 1, 1, 1];
         for (uint256 i = 0; i < 5; ++i) {
             t[i] = i == 1 ? address(frozen) : address(new MockERC20("Rule", "RULE", 18));
-            configs[i] = market.configWith(t[i], 0, parts[i] * 1e24);
+            configs[i] = market.configWith(t[i], ONE_DOLLAR, parts[i] * 1e24);
         }
         IndexToken idx = _ruleBasketOf(t, configs, _hundreds());
         frozen.setPaused(true);
@@ -1400,12 +1306,14 @@ contract SecurityRegressionTest is XindexTest {
 
     /// @dev 1.0001^421_417 * 1e18 is about 2e36 WETH wei per 1e18 raw units, so one raw unit of the coarse component
     ///      is worth about 1% of the basket below: the regime where a sub-unit residue is worth more than MIN_TURNOVER.
-    int24 constant COARSE_TICK = 421_417;
+    /// @dev A coarse component: an 8-decimal token at this answer has a WAD price of 2e36, so one raw unit of it is
+    ///      worth 2e18 of an 18-decimal component's, the ratio the rounding these tests exercise needs.
+    int256 constant COARSE_PRICE = 2e16;
     uint256 constant COARSE_UNITS = 50;
     uint256 constant FINE_UNITS = 100e18;
 
-    function _propose(address token, int24 tick, uint256 referenceSupply) private {
-        IIndexFactory.TokenConfig memory config = market.configWith(token, tick, referenceSupply);
+    function _propose(address token, int256 priceUsd8, uint256 referenceSupply) private {
+        IIndexFactory.TokenConfig memory config = market.configWith(token, priceUsd8, referenceSupply);
         vm.prank(owner);
         factory.proposeListing(token, config);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
@@ -1414,9 +1322,9 @@ contract SecurityRegressionTest is XindexTest {
 
     /// @dev DA-18 holds a config change to one order of magnitude, so a fixture that needs a reference supply far from
     ///      the one in force walks there in steps, exactly as an operator would.
-    function _walkSupply(address token, int24 tick, uint256 target) private {
+    function _walkSupply(address token, int256 priceUsd8, uint256 target) private {
         uint256 inForce = factory.tokenConfig(token).referenceSupply;
-        if (inForce == 0) return _propose(token, tick, target);
+        if (inForce == 0) return _propose(token, priceUsd8, target);
         while (inForce != target) {
             uint256 next;
             if (target > inForce) {
@@ -1424,7 +1332,7 @@ contract SecurityRegressionTest is XindexTest {
             } else {
                 next = inForce / factory.MAX_SUPPLY_CHANGE() > target ? inForce / factory.MAX_SUPPLY_CHANGE() : target;
             }
-            _propose(token, tick, next);
+            _propose(token, priceUsd8, next);
             inForce = next;
         }
     }
@@ -1437,14 +1345,14 @@ contract SecurityRegressionTest is XindexTest {
         IIndexRule rule = IIndexRule(factory.RULE());
 
         // List once so the prices can be read, then set the supplies that place the ideal target.
-        _propose(address(coarse), COARSE_TICK, 1e18);
-        _propose(address(fine), 0, 1e18);
+        _propose(address(coarse), COARSE_PRICE, 1e18);
+        _propose(address(fine), ONE_DOLLAR, 1e18);
         uint256 pc = rule.price(address(coarse));
         uint256 pf = rule.price(address(fine));
         uint256 basket = COARSE_UNITS * pc + FINE_UNITS * pf;
         uint256 capCoarse = ((COARSE_UNITS * 10 + 8) * pc) / 10;
-        _walkSupply(address(coarse), COARSE_TICK, (capCoarse * 1e18) / pc);
-        _walkSupply(address(fine), 0, ((basket - capCoarse) * 1e18) / pf);
+        _walkSupply(address(coarse), COARSE_PRICE, (capCoarse * 1e18) / pc);
+        _walkSupply(address(fine), ONE_DOLLAR, ((basket - capCoarse) * 1e18) / pf);
 
         address[] memory t = new address[](2);
         (t[0], t[1]) = (address(coarse), address(fine));

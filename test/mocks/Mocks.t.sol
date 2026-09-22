@@ -8,7 +8,11 @@ import {MockUSDT} from "./MockUSDT.sol";
 import {MockSwapRouter} from "./MockSwapRouter.sol";
 import {MockPausableToken} from "./MockPausableToken.sol";
 import {MockPartialFillRouter} from "./MockPartialFillRouter.sol";
-import {MockMarket} from "./MockMarket.sol";
+import {MockMarket, usdWad} from "./MockMarket.sol";
+import {TestAggregator} from "../../script/testnet/TestAggregator.sol";
+import {CompositeFeed} from "../../src/CompositeFeed.sol";
+import {IAggregatorV3} from "../../src/interfaces/IAggregatorV3.sol";
+import {IXindexErrors} from "../../src/interfaces/IXindexErrors.sol";
 import {MockUniswapV3Factory, MockUniswapV3Pool} from "./MockUniswapV3.sol";
 import {MockWETH} from "./MockWETH.sol";
 import {MockPositionManager} from "./MockPositionManager.sol";
@@ -218,6 +222,16 @@ contract MocksTest is Test {
     // MockUniswapV3Pool and MockUniswapV3Factory
     // ---------------------------------------------------------------------
 
+    /// @dev The mock pool records its starting price once, as the real one does.
+    function test_uniswapPool_initializesOnlyOnce() public {
+        MockUniswapV3Factory f = new MockUniswapV3Factory();
+        MockUniswapV3Pool p = MockUniswapV3Pool(f.createPool(address(1), address(2), 500));
+        p.initialize(1 << 96);
+        assertEq(p.sqrtPriceX96(), 1 << 96);
+        vm.expectRevert(bytes("AI"));
+        p.initialize(2 << 96);
+    }
+
     function test_uniswapFactory_registersBothOrdersAndSortsTokens() public {
         MockUniswapV3Factory f = new MockUniswapV3Factory();
         address pool = f.createPool(address(weth), address(usdc), 500);
@@ -234,103 +248,6 @@ contract MocksTest is Test {
         assertEq(descending.token0(), low);
         assertEq(descending.token1(), high);
         assertEq(descending.fee(), 3000);
-    }
-
-    function test_uniswapPool_observeSlot0AndSwitches() public {
-        MockUniswapV3Pool p = new MockUniswapV3Pool(address(weth), address(usdc), 500);
-        uint32[] memory ago = new uint32[](2);
-        ago[0] = 1800;
-
-        p.setTick(-120);
-        (int56[] memory cumulatives, uint160[] memory perLiquidity) = p.observe(ago);
-        assertEq(cumulatives[1] - cumulatives[0], -120 * 1800);
-        assertEq(perLiquidity.length, 2);
-        (, int24 tick,, uint16 cardinality, uint16 next,, bool unlocked) = p.slot0();
-        assertEq(tick, -120);
-        assertEq(cardinality, 1_000);
-        assertEq(next, 1_000);
-        assertTrue(unlocked);
-
-        p.setCumulatives(-1801, 0);
-        assertTrue(p.rawCumulatives());
-        (cumulatives,) = p.observe(ago);
-        assertEq(cumulatives[0], -1801);
-        assertEq(cumulatives[1], 0);
-
-        p.setTick(5);
-        assertFalse(p.rawCumulatives());
-        (cumulatives,) = p.observe(ago);
-        assertEq(cumulatives[1] - cumulatives[0], 5 * 1800);
-
-        p.setObservationCardinality(60);
-        (,,, cardinality,,,) = p.slot0();
-        assertEq(cardinality, 60);
-
-        p.setHistoryTooShort(true);
-        vm.expectRevert(bytes("OLD"));
-        p.observe(ago);
-    }
-
-    function test_uniswapPool_liquidityInterpolationAndInjectedObservations() public {
-        MockUniswapV3Pool p = new MockUniswapV3Pool(address(weth), address(usdc), 500);
-        uint32[] memory ago = new uint32[](3);
-        (ago[0], ago[1]) = (1800, 600);
-
-        (, uint160[] memory perLiquidity) = p.observe(ago);
-        assertEq(p.liquidity(), 1e18);
-        assertEq(perLiquidity[0], (uint256(1_000_000_000 - 1800) << 128) / 1e18);
-        assertEq(perLiquidity[2], (uint256(1_000_000_000) << 128) / 1e18);
-        p.setLiquidity(0); // counted as one, like Uniswap
-        (, perLiquidity) = p.observe(ago);
-        assertEq(perLiquidity[1], uint256(1_000_000_000 - 600) << 128);
-
-        p.setCumulatives(0, -1800);
-        (int56[] memory cumulatives,) = p.observe(ago);
-        assertEq(cumulatives[0], 0);
-        assertEq(cumulatives[1], -1200, "points in between lie on the straight line");
-        assertEq(cumulatives[2], -1800);
-
-        p.setObservation(1800, 7, 11);
-        p.setObservation(600, 8, 12);
-        vm.expectRevert(bytes("NO OBSERVATION"));
-        p.observe(ago);
-        p.setObservation(0, 9, 13);
-        assertTrue(p.rawObservations());
-        assertFalse(p.rawCumulatives());
-        (cumulatives, perLiquidity) = p.observe(ago);
-        assertEq(cumulatives[1], 8);
-        assertEq(perLiquidity[2], 13);
-
-        p.setCumulatives(0, 1);
-        assertFalse(p.rawObservations());
-        p.setObservation(0, 9, 13);
-        p.setTick(3);
-        assertFalse(p.rawObservations());
-        (cumulatives,) = p.observe(ago);
-        assertEq(cumulatives[2] - cumulatives[0], 3 * 1800);
-    }
-
-    function test_uniswapPool_initializeOnceAndReserveObservations() public {
-        MockUniswapV3Pool p = new MockUniswapV3Pool(address(weth), address(usdc), 500);
-        p.initialize(1 << 96);
-        (uint160 sqrtPriceX96,,,,,,) = p.slot0();
-        assertEq(sqrtPriceX96, 1 << 96);
-        vm.expectRevert(bytes("AI"));
-        p.initialize(1);
-
-        p.setSqrtPriceX96(2 << 96); // a swap moved the price
-        (sqrtPriceX96,,,,,,) = p.slot0();
-        assertEq(sqrtPriceX96, 2 << 96);
-
-        p.increaseObservationCardinalityNext(200);
-        assertEq(p.observationCardinalityNext(), 200);
-        (,,,, uint16 next,,) = p.slot0();
-        assertEq(next, 1_000, "the larger of the active and reserved slots");
-        p.increaseObservationCardinalityNext(100); // never shrinks
-        assertEq(p.observationCardinalityNext(), 200);
-        p.setObservationCardinality(1);
-        (,,,, next,,) = p.slot0();
-        assertEq(next, 200);
     }
 
     // ---------------------------------------------------------------------
@@ -384,49 +301,137 @@ contract MocksTest is Test {
     }
 
     // ---------------------------------------------------------------------
-    // MockMarket
+    // MockMarket, TestAggregator and CompositeFeed
     // ---------------------------------------------------------------------
 
-    function _tickOf(MockUniswapV3Pool pool) internal view returns (int24 tick) {
-        (, tick,,,,,) = pool.slot0();
-    }
-
     function test_market_pricesAndConfigs() public {
+        vm.warp(30 days);
         MockMarket m = new MockMarket();
         address mWeth = address(m.weth());
-        MockUniswapV3Pool usdPool = m.usdPool();
-        assertEq(m.uniswapV3Factory().getPool(address(m.usdc()), mWeth, 500), address(usdPool));
-        int24 usdTick = address(m.usdc()) < mWeth ? m.USDC_TICK() : -m.USDC_TICK();
-        assertEq(_tickOf(usdPool), usdTick);
 
-        IIndexFactory.TokenConfig memory c = m.config(mWeth, 7);
-        assertEq(c.pool, address(0));
+        IIndexFactory.TokenConfig memory c = m.config(mWeth, 3_000e8);
+        assertEq(c.feed, address(m.feedOf(mWeth)), "the feed is created on first use");
+        assertEq(c.maxStaleness, m.STALENESS());
         assertEq(c.referenceSupply, m.ETH_SUPPLY());
+        assertEq(m.feedOf(mWeth).answer(), 3_000e8);
 
-        // A token below WETH is token0, one above is token1; the market flips the tick for the latter.
-        deployCodeTo("MockERC20.sol:MockERC20", abi.encode("Low", "LOW", uint8(18)), address(0x1000));
-        deployCodeTo("MockERC20.sol:MockERC20", abi.encode("High", "HIGH", uint8(18)), address(type(uint160).max));
-        address lowToken = address(0x1000);
-        address highToken = address(type(uint160).max);
+        MockERC20 token = new MockERC20("T", "T", 18);
+        c = m.config(address(token), 42e8);
+        assertEq(c.referenceSupply, m.DEFAULT_SUPPLY(), "anything but WETH gets the default supply");
+        address feed = c.feed;
 
-        assertEq(address(m.tokenPool(lowToken)), address(0));
-        c = m.config(lowToken, 42);
-        assertEq(c.pool, address(m.tokenPool(lowToken)));
-        assertEq(c.referenceSupply, m.DEFAULT_SUPPLY());
-        assertEq(_tickOf(MockUniswapV3Pool(c.pool)), 42);
-
-        c = m.config(highToken, 42);
-        assertEq(_tickOf(MockUniswapV3Pool(c.pool)), -42);
-
-        IIndexFactory.TokenConfig memory again = m.configWith(lowToken, -3, 0);
-        assertEq(again.pool, address(m.tokenPool(lowToken)), "the pool is created once");
+        IIndexFactory.TokenConfig memory again = m.configWith(address(token), 7e8, 0);
+        assertEq(again.feed, feed, "the feed is created once");
         assertEq(again.referenceSupply, 0);
-        assertEq(_tickOf(MockUniswapV3Pool(again.pool)), -3);
+        assertEq(m.feedOf(address(token)).answer(), 7e8);
 
-        m.setPriceTick(highToken, 9);
-        assertEq(_tickOf(m.tokenPool(highToken)), -9);
-        m.setUsdcTick(1);
-        assertEq(_tickOf(usdPool), address(m.usdc()) < mWeth ? int24(1) : int24(-1));
+        m.movePrice(address(token), 3, 2);
+        assertEq(m.feedOf(address(token)).answer(), 10.5e8);
+
+        m.setAge(address(token), 900);
+        (,,, uint256 updatedAt,) = m.feedOf(address(token)).latestRoundData();
+        assertEq(updatedAt, block.timestamp - 900);
+
+        assertEq(usdWad(1e8, 18), 1e18, "a dollar on an 18-decimal token");
+        assertEq(usdWad(30_000e8, 8), 3e32);
+    }
+
+    /// @dev The two freshness modes: one that follows the block clock, so a test can warp weeks ahead and still read a
+    ///      live feed, and one that pins a timestamp, as a real feed does between rounds.
+    function test_testAggregator_bothFreshnessModes() public {
+        vm.warp(30 days);
+        TestAggregator feed = new TestAggregator("T / USD", 8, 5e8);
+        assertEq(feed.description(), "T / USD");
+        assertEq(feed.decimals(), 8);
+        assertTrue(feed.fresh());
+
+        (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredIn) =
+            feed.latestRoundData();
+        assertEq(roundId, 1);
+        assertEq(answer, 5e8);
+        assertEq(startedAt, block.timestamp);
+        assertEq(updatedAt, block.timestamp);
+        assertEq(answeredIn, 1);
+
+        feed.setAnswer(6e8);
+        feed.setAge(60);
+        vm.warp(block.timestamp + 30 days);
+        (, answer,, updatedAt,) = feed.latestRoundData();
+        assertEq(answer, 6e8);
+        assertEq(updatedAt, block.timestamp - 60, "still on the block clock after a long warp");
+
+        feed.setUpdatedAt(1_000);
+        assertFalse(feed.fresh());
+        (,,, updatedAt,) = feed.latestRoundData();
+        assertEq(updatedAt, 1_000, "and pinned once a test says so");
+    }
+
+    function test_compositeFeed_multipliesAndBoundsEachLeg() public {
+        vm.warp(30 days);
+        TestAggregator a = new TestAggregator("BTC / USD", 8, 86_000e8);
+        TestAggregator b = new TestAggregator("WBTC / BTC", 8, 0.9995e8);
+        CompositeFeed composite = new CompositeFeed(a, b, 1 hours, 24 hours);
+
+        assertEq(composite.decimals(), 8, "the first leg's decimals");
+        assertEq(composite.description(), "BTC / USD * WBTC / BTC");
+        (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredIn) =
+            composite.latestRoundData();
+        assertEq(answer, int256(86_000e8) * 0.9995e8 / 1e8);
+        assertEq(roundId, 0, "two legs have no common round");
+        assertEq(answeredIn, 0);
+        assertEq(startedAt, updatedAt);
+
+        // The older of the two timestamps is reported, so the rule's own bound still reaches the staler leg.
+        b.setAge(600);
+        (,,, updatedAt,) = composite.latestRoundData();
+        assertEq(updatedAt, block.timestamp - 600);
+
+        // Each leg is bounded where it is read: the fast leg's hour does not stretch to the slow leg's day.
+        a.setAge(1 hours + 1);
+        vm.expectRevert(
+            abi.encodeWithSelector(CompositeFeed.StaleLeg.selector, address(a), block.timestamp - 1 hours - 1)
+        );
+        composite.latestRoundData();
+        a.setAge(0);
+        b.setAge(24 hours + 1);
+        vm.expectRevert(
+            abi.encodeWithSelector(CompositeFeed.StaleLeg.selector, address(b), block.timestamp - 24 hours - 1)
+        );
+        composite.latestRoundData();
+        b.setAge(0);
+
+        // A future timestamp is a broken feed, not a fresh one.
+        a.setUpdatedAt(block.timestamp + 1);
+        vm.expectRevert(abi.encodeWithSelector(CompositeFeed.StaleLeg.selector, address(a), block.timestamp + 1));
+        composite.latestRoundData();
+        a.setAge(0);
+
+        a.setAnswer(0);
+        vm.expectRevert(abi.encodeWithSelector(CompositeFeed.NonPositiveAnswer.selector, address(a), int256(0)));
+        composite.latestRoundData();
+        a.setAnswer(86_000e8);
+        b.setAnswer(-1);
+        vm.expectRevert(abi.encodeWithSelector(CompositeFeed.NonPositiveAnswer.selector, address(b), int256(-1)));
+        composite.latestRoundData();
+    }
+
+    function test_compositeFeed_constructorChecks() public {
+        TestAggregator a = new TestAggregator("BTC / USD", 8, 1e8);
+        TestAggregator b = new TestAggregator("WBTC / BTC", 8, 1e8);
+        uint32 tooLong = 2 days + 1;
+
+        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
+        new CompositeFeed(IAggregatorV3(address(0)), b, 1 hours, 1 hours);
+        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
+        new CompositeFeed(a, IAggregatorV3(address(0)), 1 hours, 1 hours);
+        vm.expectRevert(abi.encodeWithSelector(CompositeFeed.InvalidLegStaleness.selector, uint32(0)));
+        new CompositeFeed(a, b, 0, 1 hours);
+        vm.expectRevert(abi.encodeWithSelector(CompositeFeed.InvalidLegStaleness.selector, tooLong));
+        new CompositeFeed(a, b, tooLong, 1 hours);
+        vm.expectRevert(abi.encodeWithSelector(CompositeFeed.InvalidLegStaleness.selector, uint32(0)));
+        new CompositeFeed(a, b, 1 hours, 0);
+        vm.expectRevert(abi.encodeWithSelector(CompositeFeed.InvalidLegStaleness.selector, tooLong));
+        new CompositeFeed(a, b, 1 hours, tooLong);
     }
 
     // ---------------------------------------------------------------------
@@ -435,9 +440,7 @@ contract MocksTest is Test {
 
     function test_rebalanceExecutorV3_sellsBuysAndSettlesThroughARouter() public {
         MockMarket m = new MockMarket();
-        IndexFactory f = new IndexFactory(
-            address(this), address(0), address(m.weth()), address(m.uniswapV3Factory()), address(m.usdc())
-        );
+        IndexFactory f = new IndexFactory(address(this), address(0));
         MockERC20 shrinking = new MockERC20("Shrinking", "SHR", 18);
         MockERC20 growing = new MockERC20("Growing", "GRO", 18);
         MockERC20 mWeth = m.weth();
@@ -445,9 +448,9 @@ contract MocksTest is Test {
         (t[0], t[1], t[2]) = (address(shrinking), address(mWeth), address(growing));
 
         // WETH and the growing token weigh ten times the shrinking one: it halves, and the other two gain 25% each.
-        f.proposeListing(t[0], m.configWith(t[0], 0, 12e24));
-        f.proposeListing(t[1], m.config(t[1], 0));
-        f.proposeListing(t[2], m.configWith(t[2], 0, 120e24));
+        f.proposeListing(t[0], m.configWith(t[0], 1e8, 12e24));
+        f.proposeListing(t[1], m.config(t[1], 1e8));
+        f.proposeListing(t[2], m.configWith(t[2], 1e8, 120e24));
         vm.warp(block.timestamp + f.LISTING_DELAY());
         for (uint256 i = 0; i < 3; ++i) {
             f.executeListing(t[i]);
@@ -521,9 +524,7 @@ contract MocksTest is Test {
     ///      indexes.
     function test_LR04_rebalanceExecutorV3_fillCannotBePointedAtAFakeIndex() public {
         MockMarket m = new MockMarket();
-        IndexFactory f = new IndexFactory(
-            address(this), address(0), address(m.weth()), address(m.uniswapV3Factory()), address(m.usdc())
-        );
+        IndexFactory f = new IndexFactory(address(this), address(0));
         MockERC20 mWeth = m.weth();
         RebalanceExecutorV3 executor = new RebalanceExecutorV3(f, new MockSwapRouter(), address(mWeth));
         mWeth.mint(address(executor), 10e18); // the operator's float

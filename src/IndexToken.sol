@@ -55,8 +55,8 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
     uint256 public constant AUCTION_START_MULTIPLIER = 1.5e18;
     uint256 public constant AUCTION_END_MULTIPLIER = 0.9e18;
     uint256 public constant MIN_TURNOVER = 0.005e18;
-    /// @dev AUCTION_END_MULTIPLIER, less 5% for the gap between the rule's 30-minute mean and the spot an executor
-    ///      trades at. See _checkSettlementValue.
+    /// @dev AUCTION_END_MULTIPLIER, less 5% for the gap between the rule's feed price, which moves only when the
+    ///      feed publishes, and the spot an executor trades at. See _checkSettlementValue.
     uint256 public constant MIN_SETTLEMENT_RATIO = 0.85e18;
     address public immutable FACTORY;
     address public immutable RULE;
@@ -426,9 +426,9 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
     ///      has to clear MIN_SETTLEMENT_RATIO of what it takes. The test is a ratio, not a price, so a market-wide
     ///      move reprices both sides together and changes nothing; only the drift between the legs sold and the legs
     ///      bought can fail it. It can only refuse a settlement, never enlarge one: the amounts still come from supply
-    ///      and units, and the band still bounds them. The cost is liveness. A pool that has gone quiet, or a market
-    ///      that really has moved, makes the auction expire unfilled, and the restart hold-off then gives the owner and
-    ///      the guardian the first move on a fresh snapshot.
+    ///      and units, and the band still bounds them. The cost is liveness. A feed that has stopped publishing, or a
+    ///      market that really has moved, makes the auction expire unfilled, and the restart hold-off then gives the
+    ///      owner and the guardian the first move on a fresh snapshot.
     function _checkSettlementValue(uint256[] memory amountsOut, uint256[] memory amountsIn) private view {
         uint256 n = amountsOut.length;
         address[] memory tokens = new address[](n);

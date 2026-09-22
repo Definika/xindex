@@ -11,21 +11,6 @@
         "name": "initialGuardian",
         "type": "address",
         "internalType": "address"
-      },
-      {
-        "name": "weth",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "uniswapV3Factory",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "usdc",
-        "type": "address",
-        "internalType": "address"
       }
     ],
     "stateMutability": "nonpayable"
@@ -493,14 +478,14 @@
         "internalType": "struct IIndexFactory.TokenConfig",
         "components": [
           {
-            "name": "pool",
+            "name": "feed",
             "type": "address",
             "internalType": "address"
           },
           {
-            "name": "minLiquidity",
-            "type": "uint128",
-            "internalType": "uint128"
+            "name": "maxStaleness",
+            "type": "uint32",
+            "internalType": "uint32"
           },
           {
             "name": "referenceSupply",
@@ -571,14 +556,14 @@
         "internalType": "struct IIndexFactory.TokenConfig",
         "components": [
           {
-            "name": "pool",
+            "name": "feed",
             "type": "address",
             "internalType": "address"
           },
           {
-            "name": "minLiquidity",
-            "type": "uint128",
-            "internalType": "uint128"
+            "name": "maxStaleness",
+            "type": "uint32",
+            "internalType": "uint32"
           },
           {
             "name": "referenceSupply",
@@ -619,14 +604,14 @@
         "internalType": "struct IIndexFactory.TokenConfig",
         "components": [
           {
-            "name": "pool",
+            "name": "feed",
             "type": "address",
             "internalType": "address"
           },
           {
-            "name": "minLiquidity",
-            "type": "uint128",
-            "internalType": "uint128"
+            "name": "maxStaleness",
+            "type": "uint32",
+            "internalType": "uint32"
           },
           {
             "name": "referenceSupply",
@@ -663,14 +648,14 @@
         "internalType": "struct IIndexFactory.TokenConfig",
         "components": [
           {
-            "name": "pool",
+            "name": "feed",
             "type": "address",
             "internalType": "address"
           },
           {
-            "name": "minLiquidity",
-            "type": "uint128",
-            "internalType": "uint128"
+            "name": "maxStaleness",
+            "type": "uint32",
+            "internalType": "uint32"
           },
           {
             "name": "referenceSupply",
@@ -844,16 +829,16 @@
         "internalType": "bool"
       },
       {
-        "name": "pool",
+        "name": "feed",
         "type": "address",
         "indexed": false,
         "internalType": "address"
       },
       {
-        "name": "minLiquidity",
-        "type": "uint128",
+        "name": "maxStaleness",
+        "type": "uint32",
         "indexed": false,
-        "internalType": "uint128"
+        "internalType": "uint32"
       },
       {
         "name": "referenceSupply",
@@ -913,16 +898,16 @@
         "internalType": "address"
       },
       {
-        "name": "pool",
+        "name": "feed",
         "type": "address",
         "indexed": false,
         "internalType": "address"
       },
       {
-        "name": "minLiquidity",
-        "type": "uint128",
+        "name": "maxStaleness",
+        "type": "uint32",
         "indexed": false,
-        "internalType": "uint128"
+        "internalType": "uint32"
       },
       {
         "name": "referenceSupply",

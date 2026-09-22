@@ -10,7 +10,10 @@ import {IndexZap} from "../../src/IndexZap.sol";
 import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {ISwapRouter02} from "../../src/interfaces/ISwapRouter02.sol";
-import {ForkAddresses as A, IPoolLiquidity} from "./ForkAddresses.sol";
+import {ForkAddresses as A} from "./ForkAddresses.sol";
+import {ForkFeeds} from "./ForkFeeds.sol";
+import {CompositeFeed} from "../../src/CompositeFeed.sol";
+import {IAggregatorV3} from "../../src/interfaces/IAggregatorV3.sol";
 
 interface IWbtcAdmin {
     function owner() external view returns (address);
@@ -25,7 +28,7 @@ interface IUsdtAdmin {
 
 /// @notice Security-review regression tests against the real mainnet tokens and router.
 ///         Skips when MAINNET_RPC_URL is unset.
-contract SecurityForkTest is Test {
+contract SecurityForkTest is ForkFeeds {
     using SafeERC20 for IERC20;
 
     IndexFactory factory;
@@ -54,12 +57,13 @@ contract SecurityForkTest is Test {
                 )
             );
         }
-        factory = new IndexFactory(address(this), address(0), A.WETH, A.UNISWAP_V3_FACTORY, A.USDC);
+        factory = new IndexFactory(address(this), address(0));
         zap = new IndexZap(factory, ISwapRouter02(A.SWAP_ROUTER_02));
 
-        factory.proposeListing(A.WBTC, _config(A.WBTC_WETH_500, A.BTC_SUPPLY));
-        factory.proposeListing(A.WETH, _config(address(0), A.ETH_SUPPLY));
-        factory.proposeListing(A.LINK, _config(A.LINK_WETH_3000, A.LINK_SUPPLY));
+        _pinFeedsToTheBlockClock();
+        factory.proposeListing(A.WBTC, _config(address(_wbtcFeed()), A.STALENESS_24H, A.BTC_SUPPLY));
+        factory.proposeListing(A.WETH, _config(A.ETH_USD_FEED, A.STALENESS_1H, A.ETH_SUPPLY));
+        factory.proposeListing(A.LINK, _config(A.LINK_USD_FEED, A.STALENESS_1H, A.LINK_SUPPLY));
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(A.WBTC);
         factory.executeListing(A.WETH);
@@ -68,9 +72,22 @@ contract SecurityForkTest is Test {
 
     /// @dev A listing config whose minimum liquidity is a tenth of the pool's liquidity at the fork block, under the
     ///      mainnet list's policy of a third so that a fixture never fails on the pool's own drift.
-    function _config(address pool, uint256 referenceSupply) internal view returns (IIndexFactory.TokenConfig memory c) {
-        c.pool = pool;
-        if (pool != address(0)) c.minLiquidity = IPoolLiquidity(pool).liquidity() / 10;
+    /// @dev The composite adapter for WBTC, deployed the way `Deploy` does on chain 1.
+    function _wbtcFeed() internal returns (CompositeFeed) {
+        return new CompositeFeed(
+            IAggregatorV3(A.BTC_USD_FEED), IAggregatorV3(A.WBTC_BTC_FEED), A.STALENESS_1H, A.STALENESS_24H
+        );
+    }
+
+    /// @dev A listing config naming a real Chainlink feed. WBTC has no USD feed, so the suite deploys the composite
+    ///      adapter over BTC/USD and WBTC/BTC and lists it with that.
+    function _config(address feed, uint32 maxStaleness, uint256 referenceSupply)
+        internal
+        pure
+        returns (IIndexFactory.TokenConfig memory c)
+    {
+        c.feed = feed;
+        c.maxStaleness = maxStaleness;
         c.referenceSupply = referenceSupply;
     }
 

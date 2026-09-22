@@ -11,7 +11,10 @@ import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {IIndexRule} from "../../src/interfaces/IIndexRule.sol";
 import {ISwapRouter02} from "../../src/interfaces/ISwapRouter02.sol";
-import {ForkAddresses as A, IPoolLiquidity} from "./ForkAddresses.sol";
+import {ForkAddresses as A} from "./ForkAddresses.sol";
+import {ForkFeeds} from "./ForkFeeds.sol";
+import {CompositeFeed} from "../../src/CompositeFeed.sol";
+import {IAggregatorV3} from "../../src/interfaces/IAggregatorV3.sol";
 
 interface IQuoterV2 {
     function quoteExactInput(bytes memory path, uint256 amountIn)
@@ -40,7 +43,7 @@ interface IUniswapV3PoolOracle {
 
 /// @notice End-to-end against real Uniswap V3, USDC and USDT. Skips when MAINNET_RPC_URL is unset.
 ///         Run: MAINNET_RPC_URL=... forge test --match-path 'test/fork/*' -vvv
-contract IndexZapForkTest is Test {
+contract IndexZapForkTest is ForkFeeds {
     using SafeERC20 for IERC20;
 
     IndexFactory factory;
@@ -78,12 +81,13 @@ contract IndexZapForkTest is Test {
             );
         }
 
-        factory = new IndexFactory(address(this), address(0), A.WETH, A.UNISWAP_V3_FACTORY, A.USDC);
+        factory = new IndexFactory(address(this), address(0));
         zap = new IndexZap(factory, ISwapRouter02(A.SWAP_ROUTER_02));
 
-        factory.proposeListing(A.WBTC, _config(A.WBTC_WETH_500, A.BTC_SUPPLY));
-        factory.proposeListing(A.WETH, _config(address(0), A.ETH_SUPPLY));
-        factory.proposeListing(A.LINK, _config(A.LINK_WETH_3000, A.LINK_SUPPLY));
+        _pinFeedsToTheBlockClock();
+        factory.proposeListing(A.WBTC, _config(address(_wbtcFeed()), A.STALENESS_24H, A.BTC_SUPPLY));
+        factory.proposeListing(A.WETH, _config(A.ETH_USD_FEED, A.STALENESS_1H, A.ETH_SUPPLY));
+        factory.proposeListing(A.LINK, _config(A.LINK_USD_FEED, A.STALENESS_1H, A.LINK_SUPPLY));
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(A.WBTC);
         factory.executeListing(A.WETH);
@@ -102,9 +106,22 @@ contract IndexZapForkTest is Test {
 
     /// @dev A listing config whose minimum liquidity is a tenth of the pool's liquidity at the fork block, under the
     ///      mainnet list's policy of a third so that a fixture never fails on the pool's own drift.
-    function _config(address pool, uint256 referenceSupply) internal view returns (IIndexFactory.TokenConfig memory c) {
-        c.pool = pool;
-        if (pool != address(0)) c.minLiquidity = IPoolLiquidity(pool).liquidity() / 10;
+    /// @dev The composite adapter for WBTC, deployed the way `Deploy` does on chain 1.
+    function _wbtcFeed() internal returns (CompositeFeed) {
+        return new CompositeFeed(
+            IAggregatorV3(A.BTC_USD_FEED), IAggregatorV3(A.WBTC_BTC_FEED), A.STALENESS_1H, A.STALENESS_24H
+        );
+    }
+
+    /// @dev A listing config naming a real Chainlink feed. WBTC has no USD feed, so the suite deploys the composite
+    ///      adapter over BTC/USD and WBTC/BTC and lists it with that.
+    function _config(address feed, uint32 maxStaleness, uint256 referenceSupply)
+        internal
+        pure
+        returns (IIndexFactory.TokenConfig memory c)
+    {
+        c.feed = feed;
+        c.maxStaleness = maxStaleness;
         c.referenceSupply = referenceSupply;
     }
 
@@ -383,18 +400,10 @@ contract IndexZapForkTest is Test {
         u[0] = 50_000; // 0.0005 WBTC (8 decimals)
         u[1] = 5e14; // 0.0005 tBTC (18 decimals)
 
-        // tBTC's 0.3% WETH pool keeps too little price history for the rule, so listing it fails until someone grows
-        // the pool's observation ring, which anyone can do.
-        IIndexFactory.TokenConfig memory tbtc = _config(A.TBTC_WETH_3000, 0);
-        (,,, uint16 cardinality,,,) = IUniswapV3PoolOracle(A.TBTC_WETH_3000).slot0();
-        if (cardinality < 200) {
-            vm.expectRevert(
-                abi.encodeWithSelector(IIndexRule.PoolHistoryTooShort.selector, A.TBTC_WETH_3000, cardinality)
-            );
-            factory.proposeListing(A.TBTC, tbtc);
-            _growObservations(A.TBTC_WETH_3000, A.TBTC);
-        }
-        vm.warp(block.timestamp + 1 hours);
+        // tBTC is not on the launch whitelist; it is listed here from its own USD feed to exercise a two-hop route,
+        // and how thin its pool is no longer bears on whether the rule can price it.
+        _pinFeed(A.TBTC_USD_FEED); // not on the launch whitelist, so the setup did not pin it
+        IIndexFactory.TokenConfig memory tbtc = _config(A.TBTC_USD_FEED, A.STALENESS_24H, 0);
         factory.proposeListing(A.TBTC, tbtc);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(A.TBTC);

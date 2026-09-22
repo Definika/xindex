@@ -44,9 +44,7 @@ contract IndexZapTest is XindexTest {
 
     function setUp() public {
         market = new MockMarket();
-        factory = new IndexFactory(
-            owner, address(0), address(market.weth()), address(market.uniswapV3Factory()), address(market.usdc())
-        );
+        factory = new IndexFactory(owner, address(0));
         router = new MockSwapRouter();
         zap = new IndexZap(factory, router);
 
@@ -703,7 +701,7 @@ contract IndexZapTest is XindexTest {
     ///      approvals sized for the old one and fail with an allowance error instead.
     function test_LR05_aRebalanceSettledDuringTheRefundStopsTheMint() public {
         _mintFor(alice, 1e18, 200e6);
-        market.setPriceTick(address(link), -7_000); // LINK halves, so the rule has a rebalance to start
+        market.movePrice(address(link), 1, 2); // LINK halves, so the rule has a rebalance to start
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
         index.startRebalance(0);
         (uint256 eta,,) = index.pendingRebalance();

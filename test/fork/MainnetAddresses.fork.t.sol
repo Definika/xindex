@@ -6,26 +6,23 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {IndexFactory} from "../../src/IndexFactory.sol";
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {IIndexRule} from "../../src/interfaces/IIndexRule.sol";
-import {IUniswapV3Factory} from "../../src/interfaces/IUniswapV3Factory.sol";
 import {ConfigureWhitelist} from "../../script/ConfigureWhitelist.s.sol";
 import {Deploy} from "../../script/Deploy.s.sol";
 import {MainnetAddresses as M} from "../../script/MainnetAddresses.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
+import {CompositeFeed} from "../../src/CompositeFeed.sol";
+import {IAggregatorV3} from "../../src/interfaces/IAggregatorV3.sol";
 
 interface IRouterImmutables {
     function factory() external view returns (address);
     function WETH9() external view returns (address);
 }
 
-interface IPoolCardinality {
-    function slot0() external view returns (uint160, int24, uint16, uint16, uint16, uint8, bool);
-    function observe(uint32[] calldata secondsAgos) external view returns (int56[] memory, uint160[] memory);
-}
-
 /// @notice Checks the scripts' `MainnetAddresses` against mainnet, as AGENTS.md requires before addresses are
-///         committed: tokens by symbol and decimals, the router's own factory and WETH, pools with the Uniswap V3
-///         factory's `getPool`, and every default whitelist entry against the rule. Skips when MAINNET_RPC_URL is
-///         unset.
+///         committed: tokens by symbol and decimals, every feed by the pair its own `description` names and by its
+///         decimals, the router's own factory and WETH, and every default whitelist entry against the rule. Feed
+///         identity cannot be proved on-chain, so pinning `description` here is what ties each shipped address to the
+///         pair it is supposed to be. Skips when MAINNET_RPC_URL is unset.
 contract MainnetAddressesForkTest is Test {
     function setUp() public {
         string memory url = vm.envOr("MAINNET_RPC_URL", string(""));
@@ -56,146 +53,115 @@ contract MainnetAddressesForkTest is Test {
     function testFork_XA13_tokensAreWhatTheirNamesSay() public view {
         _assertToken(M.WETH, "WETH", 18);
         _assertToken(M.USDC, "USDC", 6);
+        _assertToken(M.USDT, "USDT", 6);
+        _assertToken(M.WSTETH, "wstETH", 18);
         _assertToken(M.WBTC, "WBTC", 8);
+        _assertToken(M.WSOL, "SOL", 9); // Wormhole wrapped SOL reports the plain symbol
         _assertToken(M.LINK, "LINK", 18);
         _assertToken(M.UNI, "UNI", 18);
         _assertToken(M.AAVE, "AAVE", 18);
-        _assertToken(M.ONDO, "ONDO", 18);
-        _assertToken(M.ENA, "ENA", 18);
-        _assertToken(M.MORPHO, "MORPHO", 18);
-        _assertToken(M.ETHFI, "ETHFI", 18);
-        _assertToken(M.CRV, "CRV", 18);
-        _assertToken(M.PENDLE, "PENDLE", 18);
-        _assertToken(M.OHM, "OHM", 9);
-        _assertToken(M.LDO, "LDO", 18);
-        _assertToken(M.SYRUP, "SYRUP", 18);
-        _assertToken(M.TBTC, "tBTC", 18);
+    }
+
+    /// @dev The rule cannot tell one aggregator from another on-chain, so every shipped address is pinned here to the
+    ///      pair its own `description` names, at the decimals the conversion assumes, with an answer that is positive
+    ///      and no older than the bound the default list gives it.
+    function testFork_feedsAreWhatTheirNamesSay() public view {
+        _assertFeed(M.ETH_USD_FEED, "ETH / USD", M.STALENESS_1H);
+        _assertFeed(M.WSTETH_USD_FEED, "wstETH / USD Calculated", M.STALENESS_24H);
+        _assertFeed(M.BTC_USD_FEED, "BTC / USD", M.STALENESS_1H);
+        _assertFeed(M.WBTC_BTC_FEED, "WBTC / BTC", M.STALENESS_24H);
+        _assertFeed(M.SOL_USD_FEED, "SOL / USD", M.STALENESS_24H);
+        _assertFeed(M.UNI_USD_FEED, "UNI / USD", M.STALENESS_1H);
+        _assertFeed(M.LINK_USD_FEED, "LINK / USD", M.STALENESS_1H);
+        _assertFeed(M.AAVE_USD_FEED, "AAVE / USD", M.STALENESS_1H);
+    }
+
+    function _assertFeed(address feed, string memory pair, uint32 maxStaleness) private view {
+        assertEq(IAggregatorV3(feed).description(), pair, "the feed is not the pair the list names");
+        assertEq(IAggregatorV3(feed).decimals(), 8, "every USD feed the list carries answers in eight decimals");
+        (, int256 answer,, uint256 updatedAt,) = IAggregatorV3(feed).latestRoundData();
+        assertGt(answer, 0, "a live answer");
+        assertLe(block.timestamp - updatedAt, maxStaleness, "and one the list's bound still accepts");
+    }
+
+    /// @dev WBTC has no USD feed, so the adapter multiplies BTC/USD by WBTC/BTC. The product is checked exactly, not
+    ///      approximately: a rounding difference here would mean the adapter is not doing what its name says.
+    function testFork_theCompositeFeedMultipliesItsTwoLegs() public {
+        CompositeFeed wbtcFeed = new CompositeFeed(
+            IAggregatorV3(M.BTC_USD_FEED), IAggregatorV3(M.WBTC_BTC_FEED), M.STALENESS_1H, M.STALENESS_24H
+        );
+        (, int256 btc,, uint256 btcAt,) = IAggregatorV3(M.BTC_USD_FEED).latestRoundData();
+        (, int256 peg,, uint256 pegAt,) = IAggregatorV3(M.WBTC_BTC_FEED).latestRoundData();
+
+        (, int256 answer,, uint256 updatedAt,) = wbtcFeed.latestRoundData();
+        assertEq(answer, btc * peg / 1e8, "the product of the two legs, at the first leg's decimals");
+        assertEq(updatedAt, btcAt < pegAt ? btcAt : pegAt, "and the older of the two timestamps");
+        assertEq(wbtcFeed.decimals(), 8);
+        assertEq(wbtcFeed.description(), "BTC / USD * WBTC / BTC");
     }
 
     function testFork_XA13_uniswapContractsAgree() public view {
-        assertEq(IRouterImmutables(M.SWAP_ROUTER_02).factory(), M.UNISWAP_V3_FACTORY);
+        assertEq(IRouterImmutables(M.SWAP_ROUTER_02).factory(), A.UNISWAP_V3_FACTORY);
         assertEq(IRouterImmutables(M.SWAP_ROUTER_02).WETH9(), M.WETH);
-        IUniswapV3Factory v3 = IUniswapV3Factory(M.UNISWAP_V3_FACTORY);
-        assertEq(v3.getPool(M.USDC, M.WETH, 500), A.USDC_WETH_500);
-        assertEq(v3.getPool(M.WBTC, M.WETH, 500), A.WBTC_WETH_500);
-        assertEq(v3.getPool(M.LINK, M.WETH, 3000), A.LINK_WETH_3000);
-        assertEq(v3.getPool(M.UNI, M.WETH, 3000), A.UNI_WETH_3000);
-        assertEq(v3.getPool(M.AAVE, M.WETH, 3000), A.AAVE_WETH_3000);
-        assertEq(v3.getPool(M.ONDO, M.WETH, 3000), A.ONDO_WETH_3000);
-        assertEq(v3.getPool(M.ENA, M.WETH, 3000), A.ENA_WETH_3000);
-        assertEq(v3.getPool(M.MORPHO, M.WETH, 3000), A.MORPHO_WETH_3000);
-        assertEq(v3.getPool(M.ETHFI, M.WETH, 3000), A.ETHFI_WETH_3000);
-        assertEq(v3.getPool(M.CRV, M.WETH, 3000), A.CRV_WETH_3000);
-        assertEq(v3.getPool(M.PENDLE, M.WETH, 3000), A.PENDLE_WETH_3000);
-        assertEq(v3.getPool(M.OHM, M.WETH, 3000), A.OHM_WETH_3000);
-        assertEq(v3.getPool(M.LDO, M.WETH, 3000), A.LDO_WETH_3000);
-        assertEq(v3.getPool(M.SYRUP, M.WETH, 10000), A.SYRUP_WETH_10000);
-        assertEq(v3.getPool(M.TBTC, M.WETH, 3000), A.TBTC_WETH_3000);
     }
 
     function testFork_XA13_deployResolvesTheMainnetMarket() public {
         Deploy deployer = new Deploy();
-        Deploy.Market memory market =
-            deployer.resolveMarket(Deploy.Market(address(0), address(0), address(0), address(0)));
-        assertEq(market.router, M.SWAP_ROUTER_02);
-        assertEq(market.weth, M.WETH);
-        assertEq(market.uniswapV3Factory, M.UNISWAP_V3_FACTORY);
-        assertEq(market.usdc, M.USDC);
+        assertEq(deployer.resolveRouter(address(0)), M.SWAP_ROUTER_02);
     }
 
+    /// @dev Every default entry, as the listing script builds it, put to the rule against live mainnet feeds.
     function testFork_XA13_XA24_defaultWhitelistMatchesMainnet() public {
-        IndexFactory factory = new IndexFactory(address(this), address(0), M.WETH, M.UNISWAP_V3_FACTORY, M.USDC);
+        IndexFactory factory = new IndexFactory(address(this), address(0));
         IIndexRule rule = IIndexRule(factory.RULE());
-        assertEq(rule.USD_POOL(), A.USDC_WETH_500);
         ConfigureWhitelist configure = new ConfigureWhitelist();
-        ConfigureWhitelist.Entry[] memory list = configure.defaultMainnetList();
-        address[15] memory pools = [
-            A.WBTC_WETH_500,
-            address(0),
-            A.LINK_WETH_3000,
-            A.UNI_WETH_3000,
-            A.TBTC_WETH_3000,
-            A.AAVE_WETH_3000,
-            A.ONDO_WETH_3000,
-            A.ENA_WETH_3000,
-            A.MORPHO_WETH_3000,
-            A.ETHFI_WETH_3000,
-            A.CRV_WETH_3000,
-            A.PENDLE_WETH_3000,
-            A.OHM_WETH_3000,
-            A.LDO_WETH_3000,
-            A.SYRUP_WETH_10000
-        ];
+        CompositeFeed wbtcFeed = new CompositeFeed(
+            IAggregatorV3(M.BTC_USD_FEED), IAggregatorV3(M.WBTC_BTC_FEED), M.STALENESS_1H, M.STALENESS_24H
+        );
+        configure.checkWbtcFeed(address(wbtcFeed));
+
+        ConfigureWhitelist.Entry[] memory list = configure.defaultMainnetList(address(wbtcFeed));
+        assertEq(list.length, 7, "the launch list is seven components");
+        for (uint256 i = 0; i < list.length; ++i) {
+            IIndexFactory.TokenConfig memory config = configure.configFor(list[i]);
+            rule.checkConfig(list[i].token, config);
+
+            vm.prank(address(this));
+            factory.proposeListing(list[i].token, config);
+        }
+        // The listing delay is two days, and a feed read at the fork block is two days stale on the other side of it.
+        // Only `updatedAt` is moved forward, never the answer: the prices stay the ones mainnet really published, so
+        // this stands in for time passing rather than for a market that moved.
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        _refreshFeeds();
 
         for (uint256 i = 0; i < list.length; ++i) {
-            IIndexFactory.TokenConfig memory config = configure.configFor(list[i], M.WETH, M.UNISWAP_V3_FACTORY);
-            assertEq(config.pool, pools[i], "the fee tier names the verified pool");
-            assertEq(
-                config.minLiquidity == 0, config.pool == address(0), "a minimum liquidity exactly for pooled tokens"
-            );
-            if (config.referenceSupply != 0) {
-                // A decimals slip would put a supply off by 1e8 to 1e18; every listed asset has 1e6 to 1e12 whole tokens.
-                uint256 wholeTokens = config.referenceSupply / 10 ** IERC20Metadata(list[i].token).decimals();
-                assertGe(wholeTokens, 1e6);
-                assertLe(wholeTokens, 1e12);
-            }
-            if (config.pool == address(0)) {
-                rule.checkConfig(list[i].token, config);
-                continue;
-            }
-            _assertFloorIsNotStale(config.pool, config.minLiquidity, rule.TWAP_WINDOW());
-            (,,, uint16 cardinality,,,) = IPoolCardinality(config.pool).slot0();
-            if (cardinality >= rule.MIN_OBSERVATION_CARDINALITY()) {
-                rule.checkConfig(list[i].token, config);
-                continue;
-            }
-            // tBTC/WETH 0.3% kept 60 slots on 2026-09-16 and cannot be listed until someone grows its ring.
-            vm.expectRevert(abi.encodeWithSelector(IIndexRule.PoolHistoryTooShort.selector, config.pool, cardinality));
-            rule.checkConfig(list[i].token, config);
-            _checkBehindTheSlotCount(rule, list[i].token, config);
+            factory.executeListing(list[i].token);
+            assertTrue(factory.isWhitelisted(list[i].token));
+            assertGt(rule.price(list[i].token), 0, "and the rule prices it from the feed the entry names");
         }
     }
 
-    /// @dev DA-03. Nothing inside the window can see a push held across all of it, so the floor is what prices such a
-    ///      push, and a floor left behind while its pool grew loses that protection silently. `checkConfig` above
-    ///      already refuses a floor the pool no longer meets; this is the other side, with room enough that ordinary
-    ///      growth does not fail CI. A pool too thin to serve the window says `OLD` and is checked by its own entry.
-    function _assertFloorIsNotStale(address pool, uint128 minLiquidity, uint32 window) internal view {
-        uint32[] memory agos = new uint32[](2);
-        agos[0] = window;
-        try IPoolCardinality(pool).observe(agos) returns (int56[] memory, uint160[] memory perLiquidity) {
-            uint160 delta;
-            unchecked {
-                delta = perLiquidity[1] - perLiquidity[0];
-            }
-            uint256 harmonic = uint256(window) * type(uint160).max / (uint256(delta) << 32);
-            assertGe(
-                uint256(minLiquidity) * 20,
-                harmonic,
-                "the floor has fallen far under the pool's own window: re-measure it"
+    /// @dev Re-dates every shipped feed to the current block, keeping its real answer. The composite adapter is not
+    ///      mocked: it reads its two legs, so re-dating them is enough and the product stays the real one.
+    function _refreshFeeds() private {
+        address[8] memory feeds = [
+            M.ETH_USD_FEED,
+            M.WSTETH_USD_FEED,
+            M.BTC_USD_FEED,
+            M.WBTC_BTC_FEED,
+            M.SOL_USD_FEED,
+            M.UNI_USD_FEED,
+            M.LINK_USD_FEED,
+            M.AAVE_USD_FEED
+        ];
+        for (uint256 i = 0; i < feeds.length; ++i) {
+            (uint80 roundId, int256 answer,,, uint80 answeredIn) = IAggregatorV3(feeds[i]).latestRoundData();
+            vm.mockCall(
+                feeds[i],
+                abi.encodeCall(IAggregatorV3.latestRoundData, ()),
+                abi.encode(roundId, answer, block.timestamp, block.timestamp, answeredIn)
             );
-        } catch {}
-    }
-
-    /// @dev LR-08: the slot count is the first thing `checkConfig` rejects, so for a pool with too few slots the
-    ///      entry's minimum liquidity and supply were never checked against the chain, and most default pools have too
-    ///      few. With the slot count answered as the minimum, the rest of the check runs on the pool's real window. A
-    ///      thin pool that traded within the last 30 minutes cannot serve that window yet and answers `OLD`, which
-    ///      says nothing about the entry; any other rejection fails the test.
-    function _checkBehindTheSlotCount(IIndexRule rule, address token, IIndexFactory.TokenConfig memory config)
-        internal
-    {
-        (uint160 sqrtPriceX96, int24 tick, uint16 index,, uint16 next, uint8 feeProtocol, bool unlocked) =
-            IPoolCardinality(config.pool).slot0();
-        vm.mockCall(
-            config.pool,
-            abi.encodeWithSelector(IPoolCardinality.slot0.selector),
-            abi.encode(sqrtPriceX96, tick, index, rule.MIN_OBSERVATION_CARDINALITY(), next, feeProtocol, unlocked)
-        );
-        try rule.checkConfig(token, config) {}
-        catch Error(string memory reason) {
-            assertEq(reason, "OLD", "the pool rejected the window for another reason than its age");
         }
-        vm.clearMockedCalls();
     }
 }

@@ -3,11 +3,6 @@ pragma solidity ^0.8.24;
 
 import {MainnetAddresses} from "../../script/MainnetAddresses.sol";
 
-/// @notice The pool read the fork tests use to size a listing's minimum liquidity.
-interface IPoolLiquidity {
-    function liquidity() external view returns (uint128);
-}
-
 /// @notice Ethereum mainnet addresses the fork tests use: the scripts' `MainnetAddresses` re-exported, plus contracts
 ///         and pools only the tests need.
 library ForkAddresses {
@@ -17,12 +12,35 @@ library ForkAddresses {
     address internal constant WBTC = MainnetAddresses.WBTC;
     address internal constant LINK = MainnetAddresses.LINK;
     address internal constant UNI = MainnetAddresses.UNI;
-    address internal constant TBTC = MainnetAddresses.TBTC;
     address internal constant AAVE = MainnetAddresses.AAVE;
+    address internal constant WSTETH = MainnetAddresses.WSTETH;
+    address internal constant WSOL = MainnetAddresses.WSOL;
+    /// @dev tBTC is not on the launch whitelist; the zap fork tests still route through its pool.
+    address internal constant TBTC = 0x18084fbA666a33d37592fA2633fD49a74DD93a88;
+
+    /// @dev Chainlink aggregator proxies, re-exported from the scripts' one copy.
+    address internal constant ETH_USD_FEED = MainnetAddresses.ETH_USD_FEED;
+    address internal constant WSTETH_USD_FEED = MainnetAddresses.WSTETH_USD_FEED;
+    address internal constant BTC_USD_FEED = MainnetAddresses.BTC_USD_FEED;
+    address internal constant WBTC_BTC_FEED = MainnetAddresses.WBTC_BTC_FEED;
+    address internal constant SOL_USD_FEED = MainnetAddresses.SOL_USD_FEED;
+    address internal constant UNI_USD_FEED = MainnetAddresses.UNI_USD_FEED;
+    address internal constant LINK_USD_FEED = MainnetAddresses.LINK_USD_FEED;
+    address internal constant AAVE_USD_FEED = MainnetAddresses.AAVE_USD_FEED;
+    /// @dev "TBTC / USD", 24-hour heartbeat. tBTC is not on the launch whitelist; the zap fork tests list it to
+    ///      exercise a two-hop route, so its feed lives here rather than in the scripts' address book.
+    address internal constant TBTC_USD_FEED = 0x8350b7De6a6a2C1368E7D4Bd968190e13E354297;
+    uint32 internal constant STALENESS_1H = MainnetAddresses.STALENESS_1H;
+    uint32 internal constant STALENESS_24H = MainnetAddresses.STALENESS_24H;
+
+    /// @dev Reference supplies the fork tests list with.
+    uint256 internal constant SOL_SUPPLY = MainnetAddresses.SOL_SUPPLY;
+    uint256 internal constant AAVE_SUPPLY = MainnetAddresses.AAVE_SUPPLY;
 
     address internal constant SWAP_ROUTER_02 = MainnetAddresses.SWAP_ROUTER_02;
     address internal constant QUOTER_V2 = 0x61fFE014bA17989E743c5F6cB21bF9697530B21e;
-    address internal constant UNISWAP_V3_FACTORY = MainnetAddresses.UNISWAP_V3_FACTORY;
+    /// @dev The Uniswap V3 factory, which only the zap's V3 routes still need; the rule reads no pool.
+    address internal constant UNISWAP_V3_FACTORY = 0x1F98431c8aD98523631AE4a59f267346ea31F984;
 
     /// @dev Uniswap V3 WETH pools, each checked on 2026-09-16 with UNISWAP_V3_FACTORY.getPool and its token0/token1.
     ///      Observation slots on that day: USDC 723, WBTC 300, LINK 360, UNI 300, AAVE 1000, tBTC 60 (too few for the rule).
@@ -53,5 +71,5 @@ library ForkAddresses {
 
     /// @dev Block the fork tests pin to. Bump deliberately; a pinned block keeps quotes deterministic
     ///      and lets the RPC cache.
-    uint256 internal constant FORK_BLOCK = 25_978_000;
+    uint256 internal constant FORK_BLOCK = 26033671;
 }

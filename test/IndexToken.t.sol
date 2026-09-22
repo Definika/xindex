@@ -43,9 +43,7 @@ contract IndexTokenTest is XindexTest {
 
     function setUp() public {
         market = new MockMarket();
-        factory = new IndexFactory(
-            owner, address(0), address(market.weth()), address(market.uniswapV3Factory()), address(market.usdc())
-        );
+        factory = new IndexFactory(owner, address(0));
         wbtc = new MockERC20("Wrapped BTC", "WBTC", 8);
         weth = market.weth();
         usdc = market.usdc();

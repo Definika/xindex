@@ -17,7 +17,7 @@ contract IndexHandler is Test {
     MockRebalanceExecutor public executor;
     address public guardian;
     MockERC20[] public comps;
-    int24[] public baseTicks;
+    int256[] public basePrices;
     address[] public actors;
 
     uint256 public ghostIssued;
@@ -30,14 +30,14 @@ contract IndexHandler is Test {
     constructor(
         IndexToken index_,
         MockERC20[] memory comps_,
-        int24[] memory baseTicks_,
+        int256[] memory basePrices_,
         address[] memory actors_,
         MockMarket market_,
         address guardian_
     ) {
         index = index_;
         comps = comps_;
-        baseTicks = baseTicks_;
+        basePrices = basePrices_;
         actors = actors_;
         market = market_;
         guardian = guardian_;
@@ -129,11 +129,11 @@ contract IndexHandler is Test {
     // market and time
     // ---------------------------------------------------------------------
 
-    /// @dev Moves a component's time-weighted price up to about 7x either way from where it started. WETH has no pool.
-    function movePrice(uint256 compSeed, int256 delta) external {
+    /// @dev Moves a component's price up to 7x either way from where it started. Every component has a feed, WETH
+    ///      included, so none is skipped.
+    function movePrice(uint256 compSeed, uint256 delta) external {
         uint256 i = compSeed % comps.length;
-        if (address(comps[i]) == address(market.weth())) return;
-        market.setPriceTick(address(comps[i]), baseTicks[i] + int24(bound(delta, -20_000, 20_000)));
+        market.setPrice(address(comps[i]), basePrices[i] * int256(bound(delta, 1, 49)) / 7);
     }
 
     /// @dev ODD counts its own total supply, so a mint raises its market cap and moves the rule's targets, while a
@@ -251,9 +251,7 @@ contract IndexTokenInvariantTest is Test {
         address owner = makeAddr("owner");
         address guardian = makeAddr("guardian");
         market = new MockMarket();
-        factory = new IndexFactory(
-            owner, guardian, address(market.weth()), address(market.uniswapV3Factory()), address(market.usdc())
-        );
+        factory = new IndexFactory(owner, guardian);
 
         comps.push(new MockERC20("WBTC", "WBTC", 8));
         comps.push(market.weth());
@@ -262,10 +260,12 @@ contract IndexTokenInvariantTest is Test {
         uint256[] memory units = new uint256[](4);
         (units[0], units[1], units[2], units[3]) = (100_000, 1e16, 10e6, 7); // the last is tiny so rounding bites
 
-        // Prices that make every component worth about 0.01 WETH per index token, and supplies proportional to the
-        // units, so the basket starts on its rule and supply changes create real turnover. ODD counts on-chain supply.
-        int24[] memory ticks = new int24[](4);
-        (ticks[0], ticks[1], ticks[2], ticks[3]) = (253_297, 0, 207_243, 348_972);
+        // Prices, in dollars per whole token, that make every component worth 30 dollars per index token, and
+        // supplies that give all four the same market cap, so the basket starts on its rule and supply changes create
+        // real turnover. ODD counts on-chain supply. WBTC at 30,000 and WETH at 3,000 are the realistic pair; USDC and
+        // ODD are priced to match them rather than to look like themselves.
+        int256[] memory prices = new int256[](4);
+        (prices[0], prices[1], prices[2], prices[3]) = (30_000e8, 3_000e8, 3e8, 42_857_142_857_142e8);
         uint256[] memory supplies = new uint256[](4);
         (supplies[0], supplies[1], supplies[2], supplies[3]) = (1e34, 1e45, 1e36, 0);
         comps[3].mint(makeAddr("oddHolder"), 7e29);
@@ -273,7 +273,7 @@ contract IndexTokenInvariantTest is Test {
         address[] memory t = new address[](comps.length);
         for (uint256 i = 0; i < comps.length; ++i) {
             t[i] = address(comps[i]);
-            IIndexFactory.TokenConfig memory config = market.configWith(t[i], ticks[i], supplies[i]);
+            IIndexFactory.TokenConfig memory config = market.configWith(t[i], prices[i], supplies[i]);
             vm.prank(owner);
             factory.proposeListing(t[i], config);
         }
@@ -286,7 +286,7 @@ contract IndexTokenInvariantTest is Test {
         for (uint256 i = 0; i < 5; ++i) {
             actors.push(makeAddr(string(abi.encodePacked("actor", i))));
         }
-        handler = new IndexHandler(index, comps, ticks, actors, market, guardian);
+        handler = new IndexHandler(index, comps, prices, actors, market, guardian);
         targetContract(address(handler));
     }
 

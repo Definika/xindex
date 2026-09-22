@@ -130,8 +130,8 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     function AUCTION_END_MULTIPLIER() external view returns (uint256);
 
     /// @notice Least the index may receive as a fraction of what it pays out, valued in the settling block (1e18 =
-    ///         parity). The auction's own floor with room for the difference between a 30-minute mean and the spot an
-    ///         executor trades at.
+    ///         parity). The auction's own floor with room for the difference between a published feed price and the
+    ///         spot an executor trades at.
     function MIN_SETTLEMENT_RATIO() external view returns (uint256);
 
     /// @notice Least turnover, as a share of the rebalanced value (1e18 = 100%), for which a rebalance can start.
@@ -227,8 +227,8 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     ///         once {restartAllowedAt} and, after an auction nobody filled, REBALANCE_DELAY past that auction's end
     ///         have passed ({canStartRebalance} answers all of this); before those the factory owner or guardian can
     ///         start it and nobody else. Reverts with
-    ///         TurnoverTooLow when the targets would sell less than MIN_TURNOVER, and with the rule's ThinPriceHistory
-    ///         or PriceHistoryDeviates when a moving component's price window fails the snapshot checks.
+    ///         TurnoverTooLow when the targets would sell less than MIN_TURNOVER, and with the rule's StalePrice or
+    ///         InvalidPrice when a component the snapshot reads has no usable price.
     /// @param keepMask Bit i set leaves component i untouched, for example while it is paused. Only the factory owner or
     ///        guardian can pass a non-zero mask, and it must leave at least one component to rebalance.
     function startRebalance(uint256 keepMask) external;
