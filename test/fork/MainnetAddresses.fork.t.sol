@@ -17,6 +17,16 @@ interface IRouterImmutables {
     function poolManager() external view returns (address);
 }
 
+/// @notice The circuit-breaker bounds of a Chainlink aggregator, which live on the aggregator the proxy points at
+///         rather than on the proxy itself. An answer that would fall outside them is reported clamped to the bound,
+///         with a fresh timestamp and no other signal, which is what made the LUNA collapse readable as a valid price
+///         long after it was not one.
+interface IAggregatorBounds {
+    function aggregator() external view returns (address);
+    function minAnswer() external view returns (int192);
+    function maxAnswer() external view returns (int192);
+}
+
 /// @notice Checks the scripts' `MainnetAddresses` against mainnet, as AGENTS.md requires before addresses are
 ///         committed: tokens by symbol and decimals, every feed by the pair its own `description` names and by its
 ///         decimals, the router's own factory and WETH, and every default whitelist entry against the rule. Feed
@@ -81,6 +91,25 @@ contract MainnetAddressesForkTest is Test {
         (, int256 answer,, uint256 updatedAt,) = IAggregatorV3(feed).latestRoundData();
         assertGt(answer, 0, "a live answer");
         assertLe(block.timestamp - updatedAt, maxStaleness, "and one the list's bound still accepts");
+        _assertBoundsAreFarFromTheAnswer(feed, answer);
+    }
+
+    /// @dev A feed pinned at a circuit-breaker bound reports a clamped answer with a fresh timestamp, so the rule
+    ///      cannot tell it from a real price and neither can any check inside `_price`: freshness and positivity are
+    ///      both satisfied. That is the LUNA/Venus failure, and the only place it can be caught is here, before a
+    ///      feed is listed at all. The margin is deliberately coarse. It is not a claim that a hundredfold move is
+    ///      impossible; it is a claim that a feed whose bound sits within one of its current answer was configured
+    ///      with a live breaker, and such a feed has no place on the list. Chainlink's own convention for a disabled
+    ///      breaker, `minAnswer` of 1 against a `maxAnswer` of 2^176 - 1, clears this by dozens of orders of
+    ///      magnitude, so one rule covers both the disabled case and a mistakenly narrow one.
+    function _assertBoundsAreFarFromTheAnswer(address feed, int256 answer) private view {
+        address aggregator = IAggregatorBounds(feed).aggregator();
+        int256 low = IAggregatorBounds(aggregator).minAnswer();
+        int256 high = IAggregatorBounds(aggregator).maxAnswer();
+        // A bound that cannot be read is not a bound that is known to be safe: fail, so someone looks at the feed.
+        assertLt(low, high, "the aggregator reports usable circuit-breaker bounds");
+        assertGe(answer, low * 100, "the answer sits a hundredfold above the aggregator's floor");
+        assertLe(answer * 100, high, "and a hundredfold below its ceiling");
     }
 
     /// @dev WBTC has no USD feed, so the adapter multiplies BTC/USD by WBTC/BTC. The product is checked exactly, not
