@@ -89,3 +89,50 @@ Gate 5 was also run rather than assumed: `wake detect all src` under eth-wake 4.
 CI generates it (`wake init config --force`, then `audit/` added to `exclude_paths`), reports no detections. The
 generated `wake.toml` and `.wake/` are now in `.gitignore`: CI rebuilds the config from `foundry.toml` on every run, so
 a committed copy would be the second, silently diverging set of remappings the Wake step exists to avoid.
+
+## Corrections of 2026-09-23
+
+The security audit of 2026-09-23 (`audit/2026-09-23-security-audit.md`, ids `CR-..`) checked this review's claims
+against the code as merged into v3 at `855e41b`. Five were wrong or had gone stale; they are corrected here rather than
+in the table, so the table still says what this review found at the time.
+
+- **VR-01 was incomplete (CR-L01).** Making both figures ceilings left the top ceiling itself a step: 30% went to
+  whichever cap ranked first. Wherever both leaders sit above 20% — any five-component basket whose two leaders each
+  hold more than a third of the rest, not only a top-heavy one — two near-tied leaders swapped the full ten points on a
+  one-wei move, so "0 at a tie" and "10pp only at a 2x gap" were false in that regime, and a one-basis-point price move
+  still took an on-methodology index from under `MIN_TURNOVER` to 10% turnover. The top ceiling now follows the lead:
+  20% at a tie, rising linearly to 30% once the largest cap is twice the second's. At a tie the five ceilings sum to
+  exactly 100%, so `MIN_CAPPED_COMPONENTS` still holds; the row's "sum to 1.1" is true only at a lead of 2x or more.
+  Every capped subset of the launch list has leaders at least 4.9x apart and is unchanged. Tests:
+  `test_CRL01_aTieBetweenLeadersPastTheirCeilingsMovesNothing`, `test_CRL01_theTopCeilingRisesWithTheLead`,
+  `test_CRL01_aBasisPointMoveOnATopHeavyTieCannotStartARebalance` and `testFuzz_CRL01_theCappedWeightsAreContinuous`
+  in `test/IndexRule.t.sol`. The row's `test_VR01_aOneTickMoveNoLongerClearsMinTurnover` has been
+  `test_VR01_aBasisPointMoveNoLongerClearsMinTurnover` since the move to Chainlink, and still kills the VR-01 mutant.
+- **VR-03's second test stopped pinning VR-03 (CR-I36).** The merge that carried this review into v3 (`8fab3ba`)
+  pointed `test_VR03_anEmptyExecutorCannotSettleADustRebalance` at DA-05's `SettlementValueTooLow`, which an executor
+  delivering nothing trips however `_clip` rounds, so the test passed with VR-03's rounding reverted. It now also
+  asserts that every growing leg of the dust rebalance asks for at least one raw unit, which the flooring rule did not.
+- **VR-05's count is thirteen (CR-I20).** DA-13 added `executeRebalance(bytes, uint256[])`, so the probe's "twelve
+  nonpayable ABI functions", here and in the paragraph below the table, are thirteen. The guard covers both
+  settlement entry points: `MockRebalanceExecutor` re-enters through each.
+- **VR-06's three survivors were not what it said (CR-I04, CR-I30).** `_fill`'s `Math.saturatingSub` is not
+  unreachable defensive code: since VR-03 rounds a share up onto its ceiling, a ceilings pass can pin up to one raw
+  unit's value more than the share, and at value scale 1 that can exceed everything still to place, where a checked
+  subtraction would make the snapshot, and `startRebalance` with it, panic. `_share`'s `below >= above` tie is reachable
+  too, and it decides which side is pinned. Random baskets never landed on either.
+  `test_CRI04_theFillsSaturatingSubtractionIsLoadBearingAtScaleOne` and
+  `test_CRI04_aClippingTieIsReachableAndPinsTheFloors` in `test/IndexRule.t.sol` pin both through the real listing
+  flow. And `+ totalClaims[token]` in `_checkBacking` is equivalent only under the backing invariant's own premise; a
+  component that can seize balances breaks that premise, which is why the term is kept, and
+  `test_VR06_CRI30_theBackingTermCountsOpenClaims` in `test/IndexToken.rebalance.t.sol` now kills the mutant with a
+  clawback during the callback while a claim is open.
+- **The router layouts were no longer verified twice (CR-I36).** `test_routerCalldataMatchesUniswaps` moved to
+  `test/mocks/Mocks.t.sol` with the merge, where it pins `ISwapRouter02`, which no contract in `src/` uses any more. Its
+  v3 replacement decoded the zap's V4 parameters with the zap's own structs, which is the circular check this section
+  warned about: swapping `amountOut` with `amountInMaximum`, or `amountIn` with `amountOutMinimum`, passed every offline
+  test, and only the fork suites caught it. `test_CRI36_*` in `test/IndexZap.t.sol` restore the static layer: they
+  decode the zap's V3 command inputs and V4 parameters with layouts written from universal-router `3663f6db` and
+  v4-periphery `444c526b` rather than from `UniswapV4Types`.
+
+VR-02's row describes the price path as it was: a kept component then skipped the pool checks a traded one got. Since
+the move to Chainlink there is one price path, so a kept component's price is checked like every other (CR-I13).

@@ -151,3 +151,26 @@ Gates after the follow-up:
 - CI's Wake step, run verbatim without its `pipx install` (eth-wake 4.22.1): no detections.
 - `abi/*.json`: identical to a fresh `forge inspect`.
 - Fork tests: 20 of 20 pass against publicnode at block 25,998,099.
+
+## Corrections of 2026-09-23
+
+The security audit of 2026-09-23 (`audit/2026-09-23-security-audit.md`, ids `CR-..`, triaged in
+`audit/2026-09-23-triage.md`) found six rows here that no longer described the repository after the move to Chainlink
+and the Universal Router on 2026-09-22. The rows above keep what was true on 2026-09-16; this says what changed.
+
+- **XA-13 and XA-47.** The fork check stopped reading SwapRouter02's `factory()`, `WETH9()` and every default pool with
+  the move, and checked the Universal Router's `poolManager()` instead, which every Universal Router build on mainnet
+  answers alike, so it could not tell the pinned 2.0.0 build from a 2.1.x one (CR-I35).
+  `testFork_XA13_CRI35_uniswapContractsAgree` now pins the router's and the PoolManager's runtime code hashes.
+- **XA-24.** The whole-token range assertion this row cites was removed on 2026-09-22 from the test that kept its id
+  (CR-I22). It is back, in the renamed `testFork_XA13_XA24_CRI22_defaultWhitelistMatchesMainnet`, and offline in
+  `test_XA24_CRI22_everyDefaultSupplyIsAPlausibleCountOfWholeTokens`. Every default entry now carries a reference
+  supply (CR-M01), so every one is bounded.
+- **XA-39.** The move narrowed `checkRolesAreNotMarket` to the Universal Router alone (CR-I37). It refuses the router
+  and its PoolManager everywhere again, and on chain 1 every token, mint currency and feed in
+  `script/MainnetAddresses.sol`; `test_XA39_CRI37_noMarketContractCanHoldARole`.
+- **XA-43.** Sepolia-fork rehearsals keep chain id 11155111, and `.gitignore` covered only chain 1's; it ignores
+  `/broadcast/*/11155111/` too, and `test_CRI40_sepoliaForkBroadcastsAreIgnored` pins it (CR-I40).
+- **XA-44.** The dated error summary in the README had fallen behind the ABIs: it missed `SettlementValueTooLow` and
+  `SupplyChangeTooLarge` (CR-I15). The committed ABIs were never wrong, since CI regenerates them; the summary is
+  brought up to date.

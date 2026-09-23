@@ -492,7 +492,8 @@ contract IndexZapForkTest is ForkFeeds {
         // tBTC is not on the launch whitelist; it is listed here from its own USD feed to exercise a two-hop route,
         // and how thin its pool is no longer bears on whether the rule can price it.
         _pinFeed(A.TBTC_USD_FEED); // not on the launch whitelist, so the setup did not pin it
-        IIndexFactory.TokenConfig memory tbtc = _config(A.TBTC_USD_FEED, A.STALENESS_24H, 0);
+        // Every config carries a reference supply (CR-M01); tBTC's own at the fork block serves for this fixture.
+        IIndexFactory.TokenConfig memory tbtc = _config(A.TBTC_USD_FEED, A.STALENESS_24H, IERC20(A.TBTC).totalSupply());
         factory.proposeListing(A.TBTC, tbtc);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(A.TBTC);

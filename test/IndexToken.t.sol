@@ -612,4 +612,92 @@ contract IndexTokenTest is XindexTest {
         assertEq(index.totalClaims(address(usdc)), 0);
         _assertBacked();
     }
+
+    // ---------------------------------------------------------------------
+    // Security audit of 2026-09-23
+    // ---------------------------------------------------------------------
+
+    /// @dev CR-I01. The recipient rule covered only issue, redeem, redeemSkipping and claim: a plain `transfer` of
+    ///      shares to the index itself, a common wallet slip, went through, and the shares could never leave again,
+    ///      since the index never moves, approves or redeems its own shares and cannot sign a permit. Their backing
+    ///      stayed stranded beside them. Every transfer to the index is refused now, `transferFrom` included.
+    function test_CRI01_sharesCannotBeSentToTheIndexItself() public {
+        _fund(alice, 2e18);
+        vm.prank(alice);
+        index.issue(2e18, alice);
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(index)));
+        index.transfer(address(index), 1e18);
+
+        vm.prank(alice);
+        index.approve(bob, 1e18);
+        vm.prank(bob);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(index)));
+        index.transferFrom(alice, address(index), 1e18);
+        assertEq(index.balanceOf(address(index)), 0, "nothing was locked in the index");
+
+        // Every other move still works: a transfer, a transferFrom and the in-kind exit.
+        vm.prank(alice);
+        index.transfer(bob, 5e17);
+        vm.prank(bob);
+        index.transferFrom(alice, bob, 5e17);
+        vm.prank(bob);
+        index.redeem(1e18, bob);
+        assertEq(wbtc.balanceOf(bob), U_WBTC, "the backing of a share sent anywhere else is still redeemable");
+        _assertBacked();
+    }
+
+    /// @dev CR-I25. DA-22 made `canStartRebalance` answer false for an instance that was never initialized, but its
+    ///      test ran at a timestamp below MIN_REBALANCE_INTERVAL, where `lastRebalance` of zero plus 28 days is still
+    ///      in the future and the view answers false without the fix. At a mainnet timestamp only the initialization
+    ///      check stands between the implementation, or a clone deployed outside the factory, and an answer of true.
+    function test_CRI25_anUninitializedInstanceIsNeverDueAtAMainnetTimestamp() public {
+        IndexToken impl = IndexToken(factory.IMPLEMENTATION());
+        IndexToken rogue = IndexToken(Clones.clone(address(impl)));
+        vm.warp(1_790_000_000); // September 2026
+        assertGe(block.timestamp, impl.lastRebalance() + impl.MIN_REBALANCE_INTERVAL(), "the interval is long past");
+        assertFalse(impl.canStartRebalance(), "the implementation is not waiting to be rebalanced");
+        assertFalse(rogue.canStartRebalance(), "nor is a clone deployed outside the factory");
+        vm.expectRevert(IIndexToken.NotInitialized.selector);
+        rogue.startRebalance(0);
+    }
+
+    /// @dev CR-I33. Every permit test signed against `DOMAIN_SEPARATOR()` read back from the index, so each agreed with
+    ///      whatever domain the index held, the empty one a clone would keep without `__ERC20Permit_init` included. A
+    ///      wallet builds the domain itself, from the token's name and version "1", and that is what has to verify.
+    function test_CRI33_aWalletsPermitVerifiesAgainstTheIndexsOwnName() public {
+        (, string memory name, string memory version, uint256 chainId, address verifying,,) = index.eip712Domain();
+        assertEq(name, "Blue Chip", "the domain carries the index's name");
+        assertEq(version, "1");
+        assertEq(chainId, block.chainid);
+        assertEq(verifying, address(index));
+
+        bytes32 domain = keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256(bytes(index.name())),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(index)
+            )
+        );
+        assertEq(index.DOMAIN_SEPARATOR(), domain);
+
+        (address signer, uint256 pk) = makeAddrAndKey("wallet");
+        uint256 deadline = block.timestamp + 1 hours;
+        bytes32 structHash = keccak256(
+            abi.encode(
+                keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"),
+                signer,
+                bob,
+                1e18,
+                0,
+                deadline
+            )
+        );
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, keccak256(abi.encodePacked("\x19\x01", domain, structHash)));
+        index.permit(signer, bob, 1e18, deadline, v, r, s);
+        assertEq(index.allowance(signer, bob), 1e18, "a permit signed the way a wallet signs it verifies");
+    }
 }

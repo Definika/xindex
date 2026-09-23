@@ -94,6 +94,11 @@ contract SetupTestMarket is Script {
 
     /// @notice Decimals the test feeds answer in, as every USD feed Xindex lists does.
     uint8 public constant FEED_DECIMALS = 8;
+    /// @notice Dollars per ether, in FEED_DECIMALS decimals, that every test feed is converted at: mainnet ETH/USD on
+    ///         2026-09-16 (2,397.95 at 07:33 UTC), rounded, the same day and the same ether price the pools are sized
+    ///         at, so a feed and its pool agree. The feeds used to be converted at 3,000 dollars an ether against pools
+    ///         at 2,400, which put the rule's index price about a quarter above what the basket cost (CR-I41).
+    uint256 public constant ETH_USD8 = 2_400e8;
     /// @notice Staleness bound the market's entries carry. The test feeds report an answer written in the current
     ///         block, so this only has to be non-zero and within the rule's ceiling.
     uint32 public constant TEST_STALENESS = 1 hours + 30 minutes;
@@ -125,8 +130,10 @@ contract SetupTestMarket is Script {
     /// @notice `pool`'s square-root price moved more than 1% from the spec's before liquidity was added.
     error PoolPriceMoved(address pool, uint160 current, uint160 expected);
 
-    /// @notice The market, tUSDC first. Prices are mainnet Uniswap time-weighted prices on 2026-09-16, rounded; the
-    ///         reference supplies are the mainnet default whitelist's, and for AAVE its mainnet total supply that day.
+    /// @notice The market, tUSDC first. Prices are mainnet Uniswap time-weighted prices on 2026-09-16, rounded, in
+    ///         WETH; each feed answers that price at ETH_USD8, so tUSDC is a dollar. The reference supplies are the
+    ///         mainnet default whitelist's, and for AAVE its mainnet total supply that day. WETH itself is priced by
+    ///         Sepolia's real ETH/USD feed, which moves while the pools do not, so WETH drifts from the others.
     function specs() public pure returns (Spec[] memory list) {
         list = new Spec[](5);
         list[0] = Spec({
@@ -135,7 +142,7 @@ contract SetupTestMarket is Script {
             decimals: 6,
             fee: POOL_FEE_LOW,
             wethPerToken: 0.0004167e18,
-            priceUsd8: 1.2501e8, // 0.0004167 ETH at 3,000 dollars an ether
+            priceUsd8: 0, // set below from wethPerToken
             supply: 1_000_000e6,
             dripAmount: 100e6,
             referenceSupply: 0
@@ -146,7 +153,7 @@ contract SetupTestMarket is Script {
             decimals: 8,
             fee: POOL_FEE_LOW,
             wethPerToken: 31.6e18,
-            priceUsd8: 94_800e8,
+            priceUsd8: 0,
             supply: 10e8,
             dripAmount: 0.001e8,
             referenceSupply: MainnetAddresses.BTC_SUPPLY
@@ -157,7 +164,7 @@ contract SetupTestMarket is Script {
             decimals: STANDARD_DECIMALS,
             fee: POOL_FEE_MEDIUM,
             wethPerToken: 0.0045e18,
-            priceUsd8: 13.5e8,
+            priceUsd8: 0,
             supply: 100_000e18,
             dripAmount: 10e18,
             referenceSupply: MainnetAddresses.LINK_SUPPLY
@@ -168,7 +175,7 @@ contract SetupTestMarket is Script {
             decimals: STANDARD_DECIMALS,
             fee: POOL_FEE_MEDIUM,
             wethPerToken: 0.00264e18,
-            priceUsd8: 7.92e8,
+            priceUsd8: 0,
             supply: 200_000e18,
             dripAmount: 20e18,
             referenceSupply: MainnetAddresses.UNI_SUPPLY
@@ -179,11 +186,24 @@ contract SetupTestMarket is Script {
             decimals: STANDARD_DECIMALS,
             fee: POOL_FEE_MEDIUM,
             wethPerToken: 0.05e18,
-            priceUsd8: 150e8,
+            priceUsd8: 0,
             supply: 10_000e18,
             dripAmount: 1e18,
             referenceSupply: 16_000_000e18
         });
+        // Every feed answers its pool's price at the one ether price, so tUSDC comes out at a dollar, to the pool
+        // price's own rounding.
+        for (uint256 i = 0; i < list.length; ++i) {
+            list[i].priceUsd8 = usd8(list[i].wethPerToken);
+        }
+    }
+
+    /// @notice The feed answer for a token worth `wethPerToken` WETH wei per whole token, at ETH_USD8.
+    /// @param wethPerToken WETH wei per whole token.
+    /// @return Dollars per whole token, in FEED_DECIMALS decimals.
+    function usd8(uint256 wethPerToken) public pure returns (int256) {
+        // WETH has eighteen decimals, like the standard test tokens.
+        return SafeCast.toInt256(Math.mulDiv(wethPerToken, ETH_USD8, _wholeToken(STANDARD_DECIMALS)));
     }
 
     /// @notice The Sepolia Uniswap V3 deployment and WETH.

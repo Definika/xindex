@@ -28,6 +28,7 @@ import {MockPositionManager} from "./MockPositionManager.sol";
 import {INonfungiblePositionManager} from "../../script/interfaces/INonfungiblePositionManager.sol";
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {IndexFactory} from "../../src/IndexFactory.sol";
+import {IndexRule} from "../../src/IndexRule.sol";
 import {IndexToken} from "../../src/IndexToken.sol";
 import {RebalanceExecutorV3} from "../fork/RebalanceExecutorV3.sol";
 import {IIndexToken} from "../../src/interfaces/IIndexToken.sol";
@@ -625,6 +626,59 @@ contract MocksTest is Test {
         new CompositeFeed(a, b, 1 hours, 0);
         vm.expectRevert(abi.encodeWithSelector(CompositeFeed.InvalidLegStaleness.selector, tooLong));
         new CompositeFeed(a, b, 1 hours, tooLong);
+    }
+
+    /// @dev CR-I34. The adapter reports the older of its two timestamps, so the rule's own bound still reaches the
+    ///      staler leg. The test above only ever ages leg B, so reporting leg B's timestamp unconditionally passed it;
+    ///      here leg A is the staler one.
+    function test_CRI34_compositeFeed_reportsTheOlderLegEvenWhenThatIsLegA() public {
+        vm.warp(30 days);
+        TestAggregator a = new TestAggregator("BTC / USD", 8, 86_000e8);
+        TestAggregator b = new TestAggregator("WBTC / BTC", 8, 0.9995e8);
+        CompositeFeed composite = new CompositeFeed(a, b, 2 hours, 24 hours);
+        a.setAge(3_000);
+        b.setAge(600);
+        (,,, uint256 updatedAt,) = composite.latestRoundData();
+        assertEq(updatedAt, block.timestamp - 3_000, "leg A is the staler one, and its timestamp is the one reported");
+    }
+
+    /// @dev CR-I34. A leg exactly `maxAge` old is still served, as the rule's `_price` serves a feed exactly its
+    ///      `maxStaleness` old; the test above probes only `maxAge + 1`.
+    function test_CRI34_compositeFeed_servesALegExactlyAtItsBound() public {
+        vm.warp(30 days);
+        TestAggregator a = new TestAggregator("BTC / USD", 8, 86_000e8);
+        TestAggregator b = new TestAggregator("WBTC / BTC", 8, 0.9995e8);
+        CompositeFeed composite = new CompositeFeed(a, b, 1 hours, 24 hours);
+        a.setAge(1 hours);
+        b.setAge(24 hours);
+        (, int256 answer,, uint256 updatedAt,) = composite.latestRoundData();
+        assertEq(answer, int256(86_000e8) * 0.9995e8 / 1e8, "both legs are served at their bounds");
+        assertEq(updatedAt, block.timestamp - 24 hours);
+    }
+
+    /// @dev CR-I34. A leg bound of exactly MAX_LEG_STALENESS is accepted: the constructor refuses only what is past it,
+    ///      and the test above refuses `2 days + 1` without ever accepting `2 days`. The ceiling matches the rule's own
+    ///      MAX_FEED_STALENESS, as the adapter's NatSpec says, so no leg can be allowed more than a token could be.
+    function test_CRI34_compositeFeed_acceptsABoundOfExactlyTheCeiling() public {
+        TestAggregator a = new TestAggregator("BTC / USD", 8, 1e8);
+        TestAggregator b = new TestAggregator("WBTC / BTC", 8, 1e8);
+        CompositeFeed composite = new CompositeFeed(a, b, 1 hours, 1 hours);
+        assertEq(composite.MAX_LEG_STALENESS(), 2 days);
+        assertEq(composite.MAX_LEG_STALENESS(), new IndexRule().MAX_FEED_STALENESS(), "the rule's own ceiling");
+        assertEq(new CompositeFeed(a, b, 2 days, 1 hours).MAX_AGE_A(), 2 days);
+        assertEq(new CompositeFeed(a, b, 1 hours, 2 days).MAX_AGE_B(), 2 days);
+    }
+
+    /// @dev CR-I34. The product drops its remainder, as a Chainlink-style fixed-point product does. The test above
+    ///      multiplies answers whose product is a whole multiple of 1e8, so rounding it up passed as well.
+    function test_CRI34_compositeFeed_roundsTheProductDown() public {
+        vm.warp(30 days);
+        TestAggregator a = new TestAggregator("BTC / USD", 8, 86_123.45678901e8);
+        TestAggregator b = new TestAggregator("WBTC / BTC", 8, 0.99951234e8);
+        (, int256 answer,,,) = new CompositeFeed(a, b, 1 hours, 24 hours).latestRoundData();
+        uint256 product = uint256(86_123.45678901e8) * 0.99951234e8;
+        assertGt(product % 1e8, 0, "the product really has a remainder");
+        assertEq(answer, 8_608_145_782_407, "and it is dropped");
     }
 
     // ---------------------------------------------------------------------

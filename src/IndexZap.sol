@@ -27,7 +27,12 @@ import {PathKey, UniswapV4Types as V4, V4ExactInputParams, V4ExactOutputParams} 
 ///        includes sweeps and Permit2 transfers, so passing calldata through would hand a caller its permissions.
 ///      - Nothing is approved to the router and Permit2 is never used. A leg pre-funds the router with exactly what it
 ///        may spend, swaps with the router paying from its own balance, and sweeps the remainder back in the same
-///        call. Every part of that is one atomic `execute`: a sweep that came up short would fail the swap with it.
+///        `execute`. The sweep's minimum is zero, so it checks nothing and can never come up short (CR-I14). What bounds
+///        a leg is the pre-fund, since the router can pay out only what it holds, and what checks it is the zap's own
+///        balance measurement plus `ShortFill` on a mint. The pre-fund is the operative bound, not a backstop: the
+///        pinned V4 router checks `amountInMaximum` against the last hop it executed only, so an exact-output route
+///        that passes back through `tokenIn` could otherwise spend past it (upstream v4-periphery #564, CR-I06). Never
+///        approve the router or pre-fund more than a leg's cap.
 ///      - Minting uses exact-output swaps so the zap buys precisely the basket for `shares` and the only leftover is
 ///        `tokenIn`, refunded in one transfer. The V4 router at the pinned version does not check that an exact-output
 ///        swap delivered, so the zap measures each leg's component balance and raises `ShortFill` if it did not.
@@ -41,12 +46,17 @@ import {PathKey, UniswapV4Types as V4, V4ExactInputParams, V4ExactOutputParams} 
 ///      - What the user pays and receives is measured as balance changes inside the call, so tokens already sitting in
 ///        the zap are never used, and the router's own reports are never the accounting. A fee-on-transfer currency
 ///        reverts with `TransferShortfall`. Anything the router did not spend comes back through the sweep and reaches
-///        the recipient rather than being stranded; a balance the router happened to be holding comes back with it,
-///        which is a refund to the caller and never a shortfall, hence the saturating arithmetic.
+///        the recipient rather than being stranded. A balance the router happened to be holding comes back with it:
+///        on a mint it enlarges the refund, and on a burn it is returned with the unsold input. Neither side may treat
+///        it as a shortfall. A burn hop therefore measures what the sweep brought back, not what the swap sold, which a
+///        stray larger than the sale used to underflow: anyone could revert a public burn by donating to the router and
+///        sweeping the donation back (CR-L02).
 ///      - A V3 burn leg is swapped one hop at a time, because a V3 pool can stop at its price limit and a multi-hop
 ///        call would leave the unsold middle in the router. A V4 burn leg is one swap: an intermediate hop that fills
-///        short leaves the pool manager unsettled and reverts the whole leg, so only its first hop can leave unsold
-///        input. Native ether therefore never reaches this contract, which has no way to receive it.
+///        short leaves the pool manager unsettled and reverts the whole leg, unless its input is the component or
+///        `tokenOut` again, whose leftover nets into the settle or the take and is returned or paid out (CR-I07). So
+///        on a route that never revisits them only the first hop can leave unsold input. Native ether never reaches
+///        this contract, which has no way to receive it: the take only ever takes `tokenOut`.
 ///      - The zap never calls `redeemSkipping`: a claim recorded for the zap could never be collected. While a
 ///        component is frozen, holders exit directly through the index.
 ///      - Every call names the index's `rebalanceNonce` its quote was taken at. A rebalance changes the units, so a
@@ -145,7 +155,10 @@ contract IndexZap is ReentrancyGuard, IIndexZap {
 
     /// @dev Buys exactly `amountOut` of `component`, paying at most the leg's cap out of `budget`, and returns what it
     ///      cost. The router is pre-funded with the cap and swept clean in the same call, so it is never left holding
-    ///      anything and never has an allowance here to spend later.
+    ///      anything and never has an allowance here to spend later. `amountOut` is never zero, which matters because
+    ///      zero is the V4 router's open-delta sentinel in the swap-amount position too, meaning "the full debt": it
+    ///      is `ceil(shares * units / 1e18)` with non-zero shares, and every component's units are at least one raw
+    ///      unit, since they start non-zero and a rebalance targets no less than half of them, rounded up (CR-I05).
     function _buy(MintParams calldata p, address component, uint256 amountOut, uint256 budget, uint256 i)
         private
         returns (uint256 amountIn)
@@ -293,7 +306,9 @@ contract IndexZap is ReentrancyGuard, IIndexZap {
     }
 
     /// @dev One V3 hop: pre-fund the router, swap, sweep it clean, and return what arrived. The unsold input goes back
-    ///      to the recipient rather than staying where anyone could sweep it.
+    ///      to the recipient rather than staying where anyone could sweep it. What the sweep brought back is measured
+    ///      directly, as the balance above what was left once the router had been pre-funded: the sweep only ever adds
+    ///      to it, so this cannot underflow whatever the router held beforehand (CR-L02).
     function _v3Hop(
         BurnParams calldata p,
         bytes calldata hopPath,
@@ -313,13 +328,14 @@ contract IndexZap is ReentrancyGuard, IIndexZap {
         ROUTER.execute(abi.encodePacked(Cmd.V3_SWAP_EXACT_IN, Cmd.SWEEP), inputs);
 
         produced = IERC20(hopOut).balanceOf(address(this)) - outBefore;
-        _returnUnsold(p, hopIn, Math.saturatingSub(given, inBefore - token.balanceOf(address(this))));
+        _returnUnsold(p, hopIn, token.balanceOf(address(this)) + given - inBefore);
     }
 
     /// @dev Sells `amountIn` of `component` along the leg's V4 route as one swap. Every intermediate currency, native
     ///      ether included, nets inside the pool manager: an intermediate hop that filled short would leave a credit
-    ///      the unlock refuses to close, so the leg reverts whole rather than stranding a middle token here. Only the
-    ///      first hop can leave unsold input, which the sweep returns.
+    ///      the unlock refuses to close, so the leg reverts whole rather than stranding a middle token here. The first
+    ///      hop can leave unsold input, and so can a later hop whose input is the component again, whose leftover nets
+    ///      against the leg's own debt (CR-I07); the sweep returns both, measured as in `_v3Hop` (CR-L02).
     function _sellV4(BurnParams calldata p, address component, uint256 amountIn, uint256 i) private {
         BurnLeg calldata leg = p.legs[i];
         IERC20 token = IERC20(component);
@@ -343,12 +359,12 @@ contract IndexZap is ReentrancyGuard, IIndexZap {
         inputs[1] = abi.encode(component, address(this), SWEEP_NO_MINIMUM);
         ROUTER.execute(abi.encodePacked(Cmd.V4_SWAP, Cmd.SWEEP), inputs);
 
-        _returnUnsold(p, component, Math.saturatingSub(amountIn, inBefore - token.balanceOf(address(this))));
+        _returnUnsold(p, component, token.balanceOf(address(this)) + amountIn - inBefore);
     }
 
-    /// @dev Sends back what a hop did not sell. Unsold `tokenOut` stays here: the payout is measured as this
-    ///      contract's `tokenOut` balance change, so it reaches the recipient with the rest of the proceeds instead of
-    ///      being paid out twice.
+    /// @dev Sends back what a hop did not sell, together with any balance of it the router already held. Unsold
+    ///      `tokenOut` stays here: the payout is measured as this contract's `tokenOut` balance change, so it reaches
+    ///      the recipient with the rest of the proceeds instead of being paid out twice.
     function _returnUnsold(BurnParams calldata p, address token, uint256 unsold) private {
         if (unsold == 0 || token == p.tokenOut) return;
         // forge-lint: disable-next-line(reentrancy-events)

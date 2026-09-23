@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {XindexTest} from "./XindexTest.sol";
+import {Vm} from "forge-std/Vm.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
 import {IndexRule} from "../src/IndexRule.sol";
@@ -256,6 +257,53 @@ contract IndexFactoryTest is XindexTest {
         assertGt(factory.listingEta(address(token)), 0);
     }
 
+    /// @dev CR-I33. DA-16's test pins the last moment of the window for `guardianChangePending` only, and probes a
+    ///      listing just past its deadline. At exactly `listingEta + PROPOSAL_WINDOW` a listing still executes, so the
+    ///      view has to call it pending there, and stop a second later: `<` in place of `<=` passed every test.
+    function test_CRI33_aListingIsPendingAtTheLastMomentItCanExecute() public {
+        MockERC20 late = new MockERC20("Late", "LATE", 18);
+        IIndexFactory.TokenConfig memory config = market.config(address(late), ONE_DOLLAR);
+        vm.prank(owner);
+        factory.proposeListing(address(late), config);
+        uint256 deadline = factory.listingEta(address(late)) + factory.PROPOSAL_WINDOW();
+
+        uint256 snapshot = vm.snapshotState();
+        vm.warp(deadline + 1);
+        assertFalse(factory.listingPending(address(late)), "a second later it is dead");
+        vm.revertToState(snapshot);
+
+        vm.warp(deadline);
+        assertTrue(factory.listingPending(address(late)), "the last executable moment is still pending");
+        factory.executeListing(address(late));
+        assertTrue(factory.isWhitelisted(address(late)), "and it does execute");
+    }
+
+    /// @dev CR-I33. Executing a proposal clears the flag that described it, so `pendingIsListing` cannot keep reading as
+    ///      a listing waiting to happen once it has happened.
+    function test_CRI33_anExecutedListingLeavesNoPendingFlag() public {
+        IIndexFactory.TokenConfig memory config = market.config(address(c), ONE_DOLLAR);
+        vm.prank(owner);
+        factory.proposeListing(address(c), config);
+        assertTrue(factory.pendingIsListing(address(c)));
+        vm.warp(factory.listingEta(address(c)));
+        factory.executeListing(address(c));
+        assertEq(factory.listingEta(address(c)), 0);
+        assertFalse(factory.pendingIsListing(address(c)), "nothing is pending once the listing has executed");
+    }
+
+    /// @dev CR-I33. With no change pending, a guardian proposal cancels nothing, so it announces nothing but itself. A
+    ///      GuardianChangeCancelled(0) here would be the very event a monitor reads as the guardian calling off its
+    ///      own removal.
+    function test_CRI33_aFirstGuardianProposalCancelsNothing() public {
+        assertEq(factory.pendingGuardianEta(), 0);
+        vm.recordLogs();
+        vm.prank(owner);
+        factory.proposeGuardian(makeAddr("next"));
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        assertEq(logs.length, 1, "only GuardianProposed");
+        assertEq(logs[0].topics[0], IIndexFactory.GuardianProposed.selector);
+    }
+
     /// @dev LR-05: the last moment of the window still executes, as the listing window's last moment is tested to.
     function test_LR05_aGuardianChangeExecutesAtTheLastMomentOfItsWindow() public {
         address next = makeAddr("next guardian");
@@ -393,8 +441,8 @@ contract IndexFactoryTest is XindexTest {
 
     function test_configChange_forAListedTokenWaitsForTheDelay() public {
         IIndexFactory.TokenConfig memory current = factory.tokenConfig(address(a));
-        a.mint(stranger, 1e18);
-        IIndexFactory.TokenConfig memory next = market.configWith(address(a), 5 * ONE_DOLLAR, 0);
+        IIndexFactory.TokenConfig memory next =
+            market.configWith(address(a), 5 * ONE_DOLLAR, 2 * market.DEFAULT_SUPPLY());
 
         vm.prank(owner);
         factory.proposeListing(address(a), next);
@@ -403,7 +451,7 @@ contract IndexFactoryTest is XindexTest {
 
         vm.warp(factory.listingEta(address(a)));
         vm.expectEmit(true, true, true, true, address(factory));
-        emit IIndexFactory.TokenConfigured(address(a), next.feed, next.maxStaleness, 0);
+        emit IIndexFactory.TokenConfigured(address(a), next.feed, next.maxStaleness, next.referenceSupply);
         factory.executeListing(address(a));
 
         _assertConfig(factory.tokenConfig(address(a)), next);
@@ -466,10 +514,12 @@ contract IndexFactoryTest is XindexTest {
         assertEq(factory.pendingTokenConfig(address(c)).feed, address(0));
     }
 
-    /// @dev DA-11. `checkConfig` ran at propose time only, and `executeListing` is permissionless, so a pool that
-    ///      stopped meeting its minimum liquidity during the two-day notice was whitelisted anyway and the token stayed
-    ///      index-creatable against a window the rule would refuse. Execution re-runs the same validation, and the
-    ///      proposal survives for the rest of its window, so the listing lands as soon as the pool recovers.
+    /// @dev DA-11. `checkConfig` ran at propose time only, and `executeListing` is permissionless, so a config that
+    ///      stopped passing it during the two-day notice was whitelisted anyway and the token stayed index-creatable
+    ///      against a price the rule would refuse. The finding was about a pool that fell below its minimum liquidity;
+    ///      with Chainlink pricing the same shape is a feed that stops publishing (CR-I21). Execution re-runs the same
+    ///      validation, and the proposal survives for the rest of its window, so the listing lands once the feed
+    ///      publishes again.
     function test_DA11_executeListingRevalidatesTheConfig() public {
         IIndexFactory.TokenConfig memory config = market.config(address(c), ONE_DOLLAR);
         vm.prank(owner);
@@ -607,6 +657,54 @@ contract IndexFactoryTest is XindexTest {
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(address(c));
         assertTrue(factory.isWhitelisted(address(c)));
+    }
+
+    /// @dev CR-L03. DA-18's bound compared the stored figures and skipped any change into or out of zero, as "a change
+    ///      of kind, not of size". But zero meant the token's own total supply, so the supply the rule read could move
+    ///      by any factor in one step -- 173 times for WBTC, from bitcoin's supply to its wrapped float -- and to any
+    ///      figure in two, and a WHITELIST entry that left out its fourth field produced exactly that change. Zero is no
+    ///      longer a config at all (CR-M01), so every revision is between two reference figures and the bound applies.
+    function test_CRL03_noConfigChangeCanStepAroundTheSupplyBound() public {
+        uint256 inForce = factory.tokenConfig(address(a)).referenceSupply;
+        uint256 float = inForce / 173;
+        a.mint(stranger, float); // what a wrapper's own supply looks like next to the supply of what it wraps
+
+        IIndexFactory.TokenConfig memory toOwnSupply = market.configWith(address(a), ONE_DOLLAR, 0);
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.ZeroSupply.selector, address(a)));
+        factory.proposeConfig(address(a), toOwnSupply);
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.ZeroSupply.selector, address(a)));
+        factory.proposeListing(address(a), toOwnSupply);
+
+        // The same float typed in as a figure is a revision of size, and the bound catches it.
+        IIndexFactory.TokenConfig memory toFloat = market.configWith(address(a), ONE_DOLLAR, float);
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.SupplyChangeTooLarge.selector, address(a), inForce, float));
+        factory.proposeConfig(address(a), toFloat);
+    }
+
+    /// @dev CR-I29. The DA-18 test probes 1, 3x and 1e10x, so any bound from 3 to 9,999,999,999 passed it. The bound
+    ///      is an order of magnitude, exactly: tenfold either way is a revision, one step past it is refused.
+    function test_CRI29_theSupplyBoundIsExactlyAnOrderOfMagnitude() public {
+        assertEq(factory.MAX_SUPPLY_CHANGE(), 10);
+        uint256 inForce = factory.tokenConfig(address(a)).referenceSupply;
+        uint256[2] memory edges = [inForce * 10, inForce / 10];
+        uint256[2] memory past = [inForce * 10 + 10, inForce / 10 - 1];
+        for (uint256 i = 0; i < 2; ++i) {
+            IIndexFactory.TokenConfig memory atTheEdge = market.configWith(address(a), ONE_DOLLAR, edges[i]);
+            vm.prank(owner);
+            factory.proposeConfig(address(a), atTheEdge);
+            vm.prank(owner);
+            factory.cancelListing(address(a));
+
+            IIndexFactory.TokenConfig memory pastTheEdge = market.configWith(address(a), ONE_DOLLAR, past[i]);
+            vm.prank(owner);
+            vm.expectRevert(
+                abi.encodeWithSelector(IIndexFactory.SupplyChangeTooLarge.selector, address(a), inForce, past[i])
+            );
+            factory.proposeConfig(address(a), pastTheEdge);
+        }
     }
 
     function test_proposeConfig_replacesTheConfigWithoutListing() public {

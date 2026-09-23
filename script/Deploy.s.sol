@@ -107,6 +107,11 @@ contract Deploy is Script {
         console2.log("IndexRule codehash:      ", vm.toString(codehashes[1]));
         console2.log("IndexToken impl codehash:", vm.toString(codehashes[2]));
         console2.log("IndexZap codehash:       ", vm.toString(codehashes[3]));
+        // `ConfigureWhitelist` refuses a WBTC_FEED whose executable code is not this build's adapter; the record keeps
+        // the deployed one's hash beside the others (CR-L04).
+        if (address(wbtcFeed) != address(0)) {
+            console2.log("WBTC_FEED codehash:      ", vm.toString(address(wbtcFeed).codehash));
+        }
     }
 
     /// @notice Checks that a factory and a zap are one deployment and returns the runtime code hashes to freeze in the
@@ -167,12 +172,62 @@ contract Deploy is Script {
         if (guardian == msg.sender) revert GuardianIsBroadcaster(guardian);
     }
 
-    /// @notice Rejects an owner or guardian that is the router, such as it pasted as OWNER.
+    /// @notice Rejects an owner or guardian that is one of the market contracts, such as one pasted as OWNER. None of
+    ///         them answers `getThreshold`, so {checkOwner} would accept any as a contract owner, and a factory owned
+    ///         by one could never be administered: no listing, no config change, and a redeploy. v3 had narrowed this
+    ///         to the router alone (XA-39, CR-I37).
     /// @param owner The intended factory owner.
     /// @param guardian The intended guardian.
     /// @param router The resolved router.
-    function checkRolesAreNotMarket(address owner, address guardian, address router) public pure {
-        if (owner == router || guardian == router) revert RoleIsMarketContract(router);
+    function checkRolesAreNotMarket(address owner, address guardian, address router) public view {
+        address[] memory market = marketContracts(router);
+        for (uint256 i = 0; i < market.length; ++i) {
+            if (owner == market[i] || guardian == market[i]) revert RoleIsMarketContract(market[i]);
+        }
+    }
+
+    /// @notice The contracts a deployment on this chain trades or prices through, none of which may hold a role.
+    /// @param router The resolved Universal Router.
+    /// @return list The router and the PoolManager it settles against, then, on chain 1, every token and feed in
+    ///         `MainnetAddresses`.
+    function marketContracts(address router) public view returns (address[] memory list) {
+        address[] memory mainnet = block.chainid == 1 ? _mainnetMarket() : new address[](0);
+        list = new address[](mainnet.length + 2);
+        list[0] = router;
+        list[1] = IUniversalRouter(router).poolManager();
+        for (uint256 i = 0; i < mainnet.length; ++i) {
+            list[i + 2] = mainnet[i];
+        }
+    }
+
+    /// @dev Every token and feed the mainnet address book names.
+    function _mainnetMarket() private pure returns (address[] memory list) {
+        list = new address[](17);
+        (list[0], list[1], list[2], list[3], list[4], list[5], list[6]) =
+        (
+            MainnetAddresses.WETH,
+            MainnetAddresses.WSTETH,
+            MainnetAddresses.WBTC,
+            MainnetAddresses.WSOL,
+            MainnetAddresses.UNI,
+            MainnetAddresses.LINK,
+            MainnetAddresses.AAVE
+        );
+        (list[7], list[8]) = (MainnetAddresses.USDC, MainnetAddresses.USDT);
+        (list[9], list[10], list[11], list[12]) =
+        (
+            MainnetAddresses.ETH_USD_FEED,
+            MainnetAddresses.WSTETH_USD_FEED,
+            MainnetAddresses.BTC_USD_FEED,
+            MainnetAddresses.WBTC_BTC_FEED
+        );
+        (list[13], list[14], list[15], list[16]) =
+        (
+            MainnetAddresses.SOL_USD_FEED,
+            MainnetAddresses.UNI_USD_FEED,
+            MainnetAddresses.LINK_USD_FEED,
+            MainnetAddresses.AAVE_USD_FEED
+        );
     }
 
     /// @notice Fills a zero router with the mainnet default on chain 1 only, and requires it to have code. On chain 1

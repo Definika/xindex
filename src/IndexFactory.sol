@@ -32,10 +32,12 @@ import {IndexToken} from "./IndexToken.sol";
 ///      a different rule, even after a re-org, and an app can show the address before the transaction confirms.
 ///
 ///      Whitelist policy (enforced socially, not on-chain): standard ERC-20s only. No fee-on-transfer, rebasing or
-///      callback (ERC-777 style) tokens; 6-18 decimals; fixed-supply or governance-minted supply; a Chainlink USD feed
-///      whose heartbeat the config's staleness bound follows. Components that an issuer can pause or blacklist, such as
-///      WBTC, or whose issuer or bridge is a trust assumption, such as wstETH and wrapped SOL, must be labelled in the
-///      app; while one is frozen, holders can still take the other components out with `IndexToken.redeemSkipping`.
+///      callback (ERC-777 style) tokens; 6-18 decimals; a Chainlink USD feed whose heartbeat the config's staleness
+///      bound follows; and a reference supply, which the rule enforces: no supply is read live, so a wrapper anyone can
+///      mint or burn is listed on the same terms as a fixed-supply token (CR-M01). Components that an issuer can pause
+///      or blacklist, such as WBTC, or whose issuer or bridge is a trust assumption, such as wstETH and wrapped SOL,
+///      must be labelled in the app; while one is frozen, holders can still take the other components out with
+///      `IndexToken.redeemSkipping`.
 contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
     uint256 public constant MAX_COMPONENTS = 20;
     uint256 public constant MIN_CAPPED_COMPONENTS = Methodology.MIN_CAPPED_COMPONENTS;
@@ -194,11 +196,13 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
     /// @dev The rule takes any non-zero reference supply, so a stale or mistyped figure drives its component straight
     ///      to its floor at the next rebalance and hands the difference to the auction (DA-18). A revision is a
     ///      correction, so it stays within an order of magnitude of the supply in force; a genuine re-founding goes in
-    ///      steps, each behind its own listing delay and guardian veto. A first listing has nothing to compare against,
-    ///      and a switch between a reference supply and the token's own total supply is a change of kind, not of size.
+    ///      steps, each behind its own listing delay and guardian veto. A first listing has nothing to compare against.
+    ///      The rule refuses a zero reference supply, and runs first, so both figures here are always reference
+    ///      supplies: there is no longer a switch to the token's own total supply, which moved the supply the rule read
+    ///      by any factor in one step and past this bound entirely (CR-L03).
     function _checkSupplyChange(address token, uint256 proposed) private view {
         uint256 inForce = _tokenConfig[token].referenceSupply;
-        if (inForce == 0 || proposed == 0) return;
+        if (inForce == 0) return;
         // Divided rather than multiplied, so a supply near the top of the range raises this error instead of a panic.
         uint256 low = proposed < inForce ? proposed : inForce;
         uint256 high = proposed < inForce ? inForce : proposed;
@@ -209,8 +213,8 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         if (token.code.length == 0) revert NotAContract(token);
         uint256 pending = listingEta[token];
         if (pending != 0 && block.timestamp <= pending + PROPOSAL_WINDOW) revert ListingPending(token, pending);
-        _checkSupplyChange(token, config.referenceSupply);
         IIndexRule(RULE).checkConfig(token, config);
+        _checkSupplyChange(token, config.referenceSupply);
 
         uint256 eta = block.timestamp + LISTING_DELAY;
         listingEta[token] = eta;

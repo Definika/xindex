@@ -15,6 +15,10 @@ import {ForkAddresses as A} from "./ForkAddresses.sol";
 import {ForkFeeds} from "./ForkFeeds.sol";
 import {CompositeFeed} from "../../src/CompositeFeed.sol";
 import {IAggregatorV3} from "../../src/interfaces/IAggregatorV3.sol";
+import {IIndexRule} from "../../src/interfaces/IIndexRule.sol";
+import {IIndexToken} from "../../src/interfaces/IIndexToken.sol";
+import {ConfigureWhitelist} from "../../script/ConfigureWhitelist.s.sol";
+import {Deploy} from "../../script/Deploy.s.sol";
 
 interface IWbtcAdmin {
     function owner() external view returns (address);
@@ -25,6 +29,60 @@ interface IWbtcAdmin {
 interface IUsdtAdmin {
     function owner() external view returns (address);
     function setParams(uint256 newBasisPoints, uint256 newMaxFee) external;
+}
+
+interface IWstETH {
+    function unwrap(uint256 wstETHAmount) external returns (uint256);
+}
+
+interface ISafeProxyFactory {
+    function createProxyWithNonce(address singleton, bytes memory initializer, uint256 saltNonce)
+        external
+        returns (address proxy);
+}
+
+/// @notice The Safe calls the module test makes, identical in 1.3.0 and 1.4.1.
+interface ISafe {
+    function setup(
+        address[] calldata owners,
+        uint256 threshold,
+        address to,
+        bytes calldata data,
+        address fallbackHandler,
+        address paymentToken,
+        uint256 payment,
+        address payable paymentReceiver
+    ) external;
+    function execTransaction(
+        address to,
+        uint256 value,
+        bytes calldata data,
+        uint8 operation,
+        uint256 safeTxGas,
+        uint256 baseGas,
+        uint256 gasPrice,
+        address gasToken,
+        address payable refundReceiver,
+        bytes memory signatures
+    ) external payable returns (bool);
+    function getTransactionHash(
+        address to,
+        uint256 value,
+        bytes calldata data,
+        uint8 operation,
+        uint256 safeTxGas,
+        uint256 baseGas,
+        uint256 gasPrice,
+        address gasToken,
+        address refundReceiver,
+        uint256 nonce
+    ) external view returns (bytes32);
+    function nonce() external view returns (uint256);
+    function enableModule(address module) external;
+    function getModulesPaginated(address start, uint256 pageSize)
+        external
+        view
+        returns (address[] memory array, address next);
 }
 
 /// @notice Security-review regression tests against the real mainnet tokens and router.
@@ -38,6 +96,14 @@ contract SecurityForkTest is ForkFeeds {
 
     uint24 constant F500 = 500;
     uint24 constant F3000 = 3000;
+
+    /// @dev Safe's own proxy factories and singletons, 1.3.0 and 1.4.1, as every Safe on mainnet is built from them.
+    address constant SAFE_FACTORY_130 = 0xa6B71E26C5e0845f74c812102Ca7114b6a896AB2;
+    address constant SAFE_130 = 0xd9Db270c1B5E3Bd161E8c8503c55cEABeE709552;
+    address constant SAFE_FACTORY_141 = 0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67;
+    address constant SAFE_141 = 0x41675C099F32341bf84BFc5382aF534df5C7461a;
+    uint256 constant SIGNER_A = 0xA11CE;
+    uint256 constant SIGNER_B = 0xB0B;
 
     function setUp() public {
         string memory url = vm.envOr("MAINNET_RPC_URL", string(""));
@@ -276,5 +342,161 @@ contract SecurityForkTest is ForkFeeds {
         assertEq(IERC20(A.WETH).balanceOf(A.UNIVERSAL_ROUTER), 0, "no intermediate is left in the router");
         assertEq(IERC20(A.WETH).balanceOf(address(zap)), 0, "or in the zap");
         assertEq(A.UNIVERSAL_ROUTER.balance, 10 ether, "and the stray ether is untouched: nothing here wraps it");
+    }
+
+    function _burnToUsdc(IndexToken idx, IIndexZap.BurnLeg[] memory legs) internal returns (uint256 out) {
+        vm.startPrank(user);
+        idx.approve(address(zap), 1e18);
+        out = zap.burnToToken(
+            IIndexZap.BurnParams({
+                index: address(idx),
+                expectedNonce: 0,
+                shares: 1e18,
+                tokenOut: A.USDC,
+                minAmountOut: 1,
+                legs: legs,
+                to: user,
+                deadline: block.timestamp
+            })
+        );
+        vm.stopPrank();
+    }
+
+    /// @dev FR-01, CR-L02. The sweep after a hop returns the router's whole balance of the hop's input, a stray balance
+    ///      included, and the zap measured what came back as the shortfall of what it had sent: a stray larger than the
+    ///      hop's spend underflowed that and reverted the burn, so one transfer to the router blocked every burn
+    ///      through that token. What came back is now measured as the balance above what was left, and handed on with
+    ///      the hop's unsold input.
+    function test_FR01_CRL02_aStrayTokenInTheRouterNoLongerBlocksABurn() public {
+        IndexToken idx = _create(A.WBTC, 10_000, A.WETH, 1e15);
+        _issue(idx, 1e18);
+        IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](2);
+        legs[0] = IIndexZap.BurnLeg({
+            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDC), v4Path: new PathKey[](0), minAmountOut: 0
+        });
+        legs[1] = IIndexZap.BurnLeg({
+            v3Path: abi.encodePacked(A.WETH, F500, A.USDC), v4Path: new PathKey[](0), minAmountOut: 0
+        });
+
+        // A griefer, or a user's slip, leaves a whole WETH in the router: far more than the WBTC leg's WETH hop sells.
+        deal(A.WETH, A.UNIVERSAL_ROUTER, 1 ether);
+        uint256 out = _burnToUsdc(idx, legs);
+
+        assertGt(out, 0);
+        assertEq(IERC20(A.USDC).balanceOf(user), out, "the burn pays out");
+        assertEq(IERC20(A.WETH).balanceOf(user), 1 ether, "and the stray reaches the recipient with the unsold input");
+        assertEq(IERC20(A.WETH).balanceOf(A.UNIVERSAL_ROUTER), 0, "the router is swept clean");
+        assertEq(IERC20(A.WETH).balanceOf(address(zap)), 0, "and nothing stays in the zap");
+    }
+
+    /// @dev FR-01, CR-L02: the same for a V4 leg, whose sweep returns the component itself. The stray is more LINK than
+    ///      the leg sells.
+    function test_FR01_CRL02_aStrayComponentInTheRouterNoLongerBlocksAV4Burn() public {
+        IndexToken idx = _create(A.LINK, 2e18, A.WETH, 1e15);
+        _issue(idx, 1e18);
+        PathKey[] memory route = new PathKey[](2);
+        route[0] =
+            PathKey({intermediateCurrency: address(0), fee: F3000, tickSpacing: 60, hooks: address(0), hookData: ""});
+        route[1] = PathKey({intermediateCurrency: A.USDC, fee: F500, tickSpacing: 10, hooks: address(0), hookData: ""});
+        IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](2);
+        legs[0] = IIndexZap.BurnLeg({v3Path: "", v4Path: route, minAmountOut: 0});
+        legs[1] = IIndexZap.BurnLeg({
+            v3Path: abi.encodePacked(A.WETH, F500, A.USDC), v4Path: new PathKey[](0), minAmountOut: 0
+        });
+
+        deal(A.LINK, A.UNIVERSAL_ROUTER, 3e18);
+        uint256 out = _burnToUsdc(idx, legs);
+
+        assertGt(out, 0);
+        assertEq(IERC20(A.USDC).balanceOf(user), out, "the burn pays out");
+        assertEq(IERC20(A.LINK).balanceOf(user), 3e18, "and the stray reaches the recipient");
+        assertEq(IERC20(A.LINK).balanceOf(A.UNIVERSAL_ROUTER), 0, "the router is swept clean");
+        assertEq(IERC20(A.LINK).balanceOf(address(zap)), 0, "and nothing stays in the zap");
+    }
+
+    /// @dev CR-M01. The rule read a token's own live supply whenever its config carried no reference supply, and
+    ///      wstETH's supply moves one for one with wrapping and unwrapping, which any holder can do inside a single
+    ///      transaction, so the targets of an index holding it, and whether a stranger could start its rebalance,
+    ///      were for sale. Every config carries a reference supply now and the rule reads nothing else: with wstETH
+    ///      listed as the script ships it, unwrapping a third of all wstETH moves neither the rule's supply nor the
+    ///      targets, and an index on its rule still cannot be made to rebalance.
+    function test_CRM01_unwrappingWstethAroundAStartMovesNothing() public {
+        ConfigureWhitelist configure = new ConfigureWhitelist();
+        ConfigureWhitelist.Entry memory entry = configure.defaultMainnetList(address(_wbtcFeed()))[1];
+        assertEq(entry.token, A.WSTETH);
+        factory.proposeListing(A.WSTETH, configure.configFor(entry));
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        factory.executeListing(A.WSTETH);
+
+        IIndexRule rule = IIndexRule(factory.RULE());
+        address[] memory t = new address[](3);
+        (t[0], t[1], t[2]) = (A.WSTETH, A.WETH, A.LINK);
+        IndexToken idx = IndexToken(factory.createIndex("Staked", "STK", t, rule.initialUnits(t, 0, 1_000e18), 0));
+        _issue(idx, 10e18);
+        vm.warp(block.timestamp + idx.MIN_REBALANCE_INTERVAL());
+        (uint256[] memory targets, uint256 turnover) = idx.previewTarget(0);
+        address stranger = makeAddr("stranger");
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, turnover));
+        idx.startRebalance(0);
+
+        uint256 live = IERC20(A.WSTETH).totalSupply();
+        address unwrapper = makeAddr("unwrapper");
+        deal(A.WSTETH, unwrapper, live / 3);
+        vm.prank(unwrapper);
+        IWstETH(A.WSTETH).unwrap(live / 3);
+        assertEq(IERC20(A.WSTETH).totalSupply(), live - live / 3, "a third of all wstETH is unwrapped");
+        assertEq(rule.supply(A.WSTETH), entry.referenceSupply, "the rule still reads the reference supply");
+
+        (uint256[] memory targetsAfter, uint256 turnoverAfter) = idx.previewTarget(0);
+        assertEq(targetsAfter, targets, "the targets do not move");
+        assertEq(turnoverAfter, turnover);
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, turnover));
+        idx.startRebalance(0);
+    }
+
+    /// @dev XA-07, CR-I36. The module check reads the page of modules that starts at the sentinel, and the offline mock
+    ///      only learned to honour `start` in this review, so the real Safe is the proof: a 2-of-2 Safe without modules
+    ///      is accepted as an owner, and the same Safe with one module enabled is refused, on 1.3.0, which answers any
+    ///      other start with an empty page, and on 1.4.1, which refuses one.
+    function test_XA07_CRI36_aRealSafeWithAModuleIsRefused() public {
+        Deploy deployer = new Deploy();
+        address module = makeAddr("module");
+        address[2] memory factories = [SAFE_FACTORY_130, SAFE_FACTORY_141];
+        address[2] memory singletons = [SAFE_130, SAFE_141];
+        for (uint256 i = 0; i < factories.length; ++i) {
+            ISafe safe = _twoOfTwoSafe(factories[i], singletons[i]);
+            deployer.checkOwner(address(safe));
+            _enableModule(safe, module);
+            vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerHasModules.selector, address(safe), module));
+            deployer.checkOwner(address(safe));
+        }
+    }
+
+    function _twoOfTwoSafe(address safeFactory, address singleton) internal returns (ISafe) {
+        address[] memory owners = new address[](2);
+        (owners[0], owners[1]) = (vm.addr(SIGNER_A), vm.addr(SIGNER_B));
+        bytes memory init =
+            abi.encodeCall(ISafe.setup, (owners, 2, address(0), "", address(0), address(0), 0, payable(address(0))));
+        return ISafe(ISafeProxyFactory(safeFactory).createProxyWithNonce(singleton, init, 0));
+    }
+
+    /// @dev Enables `module` the way a real one is: a Safe transaction to itself, signed by both owners in the
+    ///      ascending order the Safe requires.
+    function _enableModule(ISafe safe, address module) internal {
+        bytes memory data = abi.encodeCall(ISafe.enableModule, (module));
+        bytes32 hash = safe.getTransactionHash(address(safe), 0, data, 0, 0, 0, 0, address(0), address(0), safe.nonce());
+        (uint256 first, uint256 second) =
+            vm.addr(SIGNER_A) < vm.addr(SIGNER_B) ? (SIGNER_A, SIGNER_B) : (SIGNER_B, SIGNER_A);
+        bytes memory signatures = abi.encodePacked(_signature(first, hash), _signature(second, hash));
+        assertTrue(
+            safe.execTransaction(address(safe), 0, data, 0, 0, 0, 0, address(0), payable(address(0)), signatures)
+        );
+    }
+
+    function _signature(uint256 key, bytes32 hash) internal pure returns (bytes memory) {
+        (uint8 v, bytes32 r, bytes32 sig) = vm.sign(key, hash);
+        return abi.encodePacked(r, sig, v);
     }
 }

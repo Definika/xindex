@@ -15,8 +15,10 @@ import {IXindexErrors} from "./IXindexErrors.sol";
 ///      `totalSupply()`: inside `issue`, `redeem` and `executeRebalance` they change at different moments, and a
 ///      component with transfer callbacks could expose that intermediate state to a reading contract. Only
 ///      `IndexFactory.isIndex` proves an address is an index.
-///      Recipients: `to` can be neither zero (ZeroAddress) nor the index itself (InvalidRecipient). Callers other than
-///      the factory owner or guardian get Unauthorized where those roles are required.
+///      Recipients: `to` can be neither zero (ZeroAddress) nor the index itself (InvalidRecipient). A plain ERC-20
+///      `transfer` or `transferFrom` to the index reverts InvalidRecipient too, since shares it held could never leave
+///      (CR-I01); one to zero reverts with OpenZeppelin's ERC20InvalidReceiver. Callers other than the factory owner or
+///      guardian get Unauthorized where those roles are required.
 interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     /// @notice `sender` paid `amounts` (per component, in component order, rounded up) and `to` received `shares`.
     event Issued(address indexed sender, address indexed to, uint256 shares, uint256[] amounts);
@@ -48,8 +50,8 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
         uint256 eta
     );
     /// @notice Cancels the proposal with this `proposalId`, which is the most recent one: usually the live proposal,
-    ///         but `cancelRebalance` also cancels an auction that expired unfilled, which is what clears the hold-off
-    ///         such an auction otherwise leaves behind.
+    ///         but `cancelRebalance` also cancels an auction that expired unfilled. That only clears the stale proposal
+    ///         the views still report: the hold-off the expiry granted stands, neither shortened nor extended (VR-04).
     /// @param proposalId The cancelled proposal's id, as its `RebalanceStarted` carried it.
     /// @param caller The factory owner or guardian who cancelled it.
     /// @param restartAllowedAt Before this time only the factory owner or guardian can start a rebalance.
@@ -129,9 +131,10 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     /// @notice Multiplier on the growing components' extra units when the auction closes.
     function AUCTION_END_MULTIPLIER() external view returns (uint256);
 
-    /// @notice Least the index may receive as a fraction of what it pays out, valued in the settling block (1e18 =
-    ///         parity). The auction's own floor with room for the difference between a published feed price and the
-    ///         spot an executor trades at.
+    /// @notice Least the index may receive as a fraction of what it pays out, valued at feed prices in the settling
+    ///         block (1e18 = parity). The auction's own floor with room for the difference between a published feed
+    ///         price and the spot an executor trades at. It bounds an executor's take at feed prices; at market prices
+    ///         the take can exceed it by however far the answers trail the market on the traded legs (CR-L06).
     function MIN_SETTLEMENT_RATIO() external view returns (uint256);
 
     /// @notice Least turnover, as a share of the rebalanced value (1e18 = 100%), for which a rebalance can start.
@@ -226,7 +229,9 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     ///         MIN_REBALANCE_INTERVAL has passed since the last rebalance, while no unexpired rebalance is pending, and
     ///         once {restartAllowedAt} and, after an auction nobody filled, REBALANCE_DELAY past that auction's end
     ///         have passed ({canStartRebalance} answers all of this); before those the factory owner or guardian can
-    ///         start it and nobody else. Reverts with
+    ///         start it and nobody else. The auction's end is its last fillable second, `eta + AUCTION_DURATION`, so
+    ///         after an expiry the owner and guardian have the start to themselves for REBALANCE_DELAY less one second,
+    ///         against a full REBALANCE_DELAY after a cancel (CR-I02). Reverts with
     ///         TurnoverTooLow when the targets would sell less than MIN_TURNOVER, and with the rule's StalePrice or
     ///         InvalidPrice when a component the snapshot reads has no usable price.
     /// @param keepMask Bit i set leaves component i untouched, for example while it is paused. Only the factory owner or
@@ -241,7 +246,9 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     /// @notice Settles the pending rebalance during its auction. Sends msg.sender what the index no longer needs of each
     ///         shrinking component, calls `IRebalanceExecutor.onXindexRebalance` on it, and reverts unless the index
     ///         then holds every component's new backing and the whole of `amountsIn` on top of what it held before.
-    ///         Only a contract can execute.
+    ///         Only a contract can execute. Before any token moves, both sides are valued at feed prices and the fill
+    ///         must reach MIN_SETTLEMENT_RATIO of what it takes (SettlementValueTooLow); every leg that moves is priced,
+    ///         so the rule's StalePrice or InvalidPrice on such a leg stops the settlement too.
     /// @dev `amountsOut` and `amountsIn` are recomputed from `totalSupply()` in the block that settles, and issue and
     ///      redeem stay open throughout the notice and the auction, so they can differ from any earlier simulation.
     ///      The callback's arguments are authoritative; an executor that sizes itself off chain should either source
@@ -281,6 +288,8 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     function canStartRebalance() external view returns (bool);
 
     /// @notice Exact settlement an execution in this block would use. Reverts like {executeRebalance} outside an auction.
+    ///         It prices nothing, so it answers even when {executeRebalance} would revert SettlementValueTooLow or on a
+    ///         stale feed; `IIndexRule.settlementValues` values the two sides it returns.
     /// @return multiplier Multiplier on the growing components' extra units (1e18 = parity).
     /// @return units New units per component, in component order.
     /// @return amountsOut What the index would send the executor per component.

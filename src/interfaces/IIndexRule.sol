@@ -5,9 +5,10 @@ import {IIndexFactory} from "./IIndexFactory.sol";
 import {IXindexErrors} from "./IXindexErrors.sol";
 
 /// @title IIndexRule
-/// @notice Reads on-chain supplies and Chainlink USD prices and applies an index's weighting rule. It is stateless and
-///         view-only: it computes rebalance targets for `IIndexToken.startRebalance` and index prices for display, and
-///         never moves funds.
+/// @notice Reads each token's reference supply and Chainlink USD price and applies an index's weighting rule. It is
+///         stateless and view-only: it computes rebalance targets for `IIndexToken.startRebalance` and index prices for
+///         display, and never moves funds. No supply is read live: a token's market cap is the reference supply its
+///         timelocked config names, so nothing done inside a snapshot's own transaction can move it (CR-M01).
 /// @dev Prices are USD with 18 decimals ("USD-WAD", 1e18 = one dollar) per 1e18 raw units of a token, from the token's
 ///      configured feed. They shape rebalance targets, and the auction that settles a rebalance sets the level. A
 ///      snapshot price read low by a factor f on a component the rebalance sells, or high on one it buys, moves the
@@ -22,7 +23,9 @@ import {IXindexErrors} from "./IXindexErrors.sol";
 ///
 ///      A token that was never listed has no feed, and every function that prices it reverts InvalidFeed.
 interface IIndexRule is IXindexErrors {
-    /// @notice `feed` is unusable for `token`: it is zero, has no code, or does not answer as an aggregator.
+    /// @notice `feed` is unusable for `token`: it is zero or has no code. A contract that has code but does not answer
+    ///         as an aggregator is refused too, with its own revert or with none, since the rule cannot tell why a call
+    ///         it makes to an arbitrary contract failed (CR-I10).
     error InvalidFeed(address token, address feed);
     /// @notice `maxStaleness` is zero or above MAX_FEED_STALENESS.
     error InvalidStaleness(address token, uint32 maxStaleness);
@@ -36,7 +39,9 @@ interface IIndexRule is IXindexErrors {
     /// @notice The feed's answer converts to more than MAX_PRICE, which no real asset reaches and which the rule's
     ///         value arithmetic is not proved for.
     error PriceTooHigh(address token, int256 answer);
-    /// @notice The supply the rule uses for `token` is zero.
+    /// @notice The config names no reference supply for `token`. Every token needs one: zero used to mean the token's
+    ///         own total supply, read live, which anyone able to mint or burn it could move inside the transaction that
+    ///         snapshots it (CR-M01).
     error ZeroSupply(address token);
     /// @notice At `startPriceUsd` an index token would hold less than one raw unit of `token`, so the basket cannot
     ///         be described at that price. Pick a higher one; see the starting-price guidance in the README.
@@ -63,7 +68,7 @@ interface IIndexRule is IXindexErrors {
 
     /// @notice Reverts unless `config` is usable for `token`: a feed with code that answers as an aggregator, a
     ///         `maxStaleness` between one second and MAX_FEED_STALENESS, a price that passes every check the rule
-    ///         applies when it prices the token, and a non-zero supply.
+    ///         applies when it prices the token, and a non-zero reference supply.
     /// @param token Token the config is for.
     /// @param config Config to check, as it would be proposed to the factory.
     function checkConfig(address token, IIndexFactory.TokenConfig calldata config) external view;
@@ -86,8 +91,8 @@ interface IIndexRule is IXindexErrors {
     /// @return The USD-WAD price.
     function price(address token) external view returns (uint256);
 
-    /// @notice Supply the rule uses for `token`: its reference supply, or its own total supply. For a token with no
-    ///         config this is its plain total supply.
+    /// @notice Supply the rule uses for `token`: the reference supply its config names, and nothing else. Zero for a
+    ///         token with no config; the token's own `totalSupply` is never read.
     /// @param token Token whose config is read.
     /// @return Supply in the token's raw units.
     function supply(address token) external view returns (uint256);
@@ -123,7 +128,7 @@ interface IIndexRule is IXindexErrors {
     ///         are not read at all under the uncapped methodology; under the capped methodology they are read, and
     ///         checked the same way, because their market cap scales every other component's weight. A kept cap moves
     ///         nothing while no ceiling binds, since every weight is then the component's own; where one binds, the
-    ///         kept cap still decides which components the excess is shared with and which carries the 30% ceiling,
+    ///         kept cap still decides which components the excess is shared with and how large the top ceiling is,
     ///         so a keep mask is a lever over the targets and not only over which component trades (VR-02).
     /// @param tokens Components, in index order.
     /// @param units Current raw units per 1e18 shares, one per component.

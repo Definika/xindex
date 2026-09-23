@@ -51,14 +51,18 @@ market from `script/testnet/SetupTestMarket.s.sol`.
    covers two findings carries both): v1 findings by id, v2 rebalancing findings as `R01`..`R23`, whole-repo audit
    findings of 2026-09-16 as `XA..`, the logic review's findings of 2026-09-18 as `LR..`
    (`audit/2026-09-18-logic-review.md`), the deep audit's findings of 2026-09-19 as `DA..`
-   (`audit/2026-09-19-deep-audit.md`), and the verification review's findings of 2026-09-21 as `VR..`
-   (`audit/2026-09-21-verification-review.md`). The v1 and R tests live in `test/Security.t.sol` and
+   (`audit/2026-09-19-deep-audit.md`), the verification review's findings of 2026-09-21 as `VR..`
+   (`audit/2026-09-21-verification-review.md`), and the security audit's findings of 2026-09-23 as `CR-M01`,
+   `CR-L01`..`CR-L08` and `CR-I01`..`CR-I41` (`audit/2026-09-23-security-audit.md`), its own ids with the review's
+   prefix because M01, L03, L06, L08, I02, I03 and I09 to I12 are already v1 ids; a CR test is named
+   `test_CRM01_...`, `test_CRL03_...` or `test_CRI25_...`. The v1 and R tests live in `test/Security.t.sol` and
    `test/fork/Security.fork.t.sol`, except the ids a contract test cannot reach: L06 and FR06 are `test_L06_checkOwner`
    and `test_FR06_checkGuardian` and FR05 the two `test_FR05_*` tests in `test/Scripts.t.sol`, and I09, I10, I11, L08
    and FR04 are `test/Repo.t.sol` (the known-limitations section, the pinned compiler, the pinned CI toolchain and
    required fork RPC, and the dependency lock against `.gitmodules`; CI also compares the committed submodule commits,
-   which needs git). An XA, DA or VR test sits in the suite of what it checks, `test/Repo.t.sol` for a repository
-   file, so find it by id. XA-19 to XA-21, XA-32 to XA-37, XA-41, XA-63 and XA-65 have no test of their own, because
+   which needs git). An XA, DA, VR or CR test sits in the suite of what it checks, `test/Repo.t.sol` for a repository
+   file, so find it by id; `audit/2026-09-23-triage.md` gives the CR evidence, including the ids fixed by documentation
+   alone. XA-19 to XA-21, XA-32 to XA-37, XA-41, XA-63 and XA-65 have no test of their own, because
    they changed only tests and mocks or refactored without changing behaviour; neither have the findings fixed by
    documentation alone, VR-05 among them. `audit/triage.md` gives the evidence for each.
    `audit/2026-09-19-triage.md` gives the DA evidence: DA-01 and DA-08 in `test/Security.t.sol`; DA-06, DA-09 and
@@ -73,10 +77,15 @@ market from `script/testnet/SetupTestMarket.s.sol`.
    `test/IndexToken.rebalance.t.sol`, and VR-06 in both `test/IndexRule.t.sol` (the two value-floor tests) and
    `test/mocks/Mocks.t.sol`, where the `ISwapRouter02` calldata pin moved when the zap stopped using that interface.
    Six ids lost their test on 2026-09-22, when pricing moved to Chainlink and execution to the Universal Router:
-   DA-02, R01, R02, R03, XA-01 and XA-09 (which XA-45 shared). Their mechanism no longer exists, so the tests were
-   removed rather than weakened, and `audit/2026-09-22-v3-retirement.md` records each one with the test that went and
-   the property, if any, that survives elsewhere — as it does for DA-03, DA-04, DA-07, DA-19, LR-08 and XA-02's
-   extreme-block half, which were documented rather than tested and whose reasoning the design rules no longer carry.
+   DA-02, R01, R02, R03, XA-01 and XA-09 (which XA-45 shared), and LR-07 lost its test of the rule's own USDC. Their
+   mechanism no longer exists, so the tests were removed rather than weakened, and `audit/2026-09-22-v3-retirement.md`
+   records each one with the test that went and the property, if any, that survives elsewhere — as it does for DA-03,
+   DA-04, DA-07, DA-19, LR-08 and XA-02's extreme-block half, which were documented rather than tested and whose
+   reasoning the design rules no longer carry. Four more were weakened on 2026-09-22 under their own ids with no
+   record: R07's guard and XA-24's range assertion went, and XA-13's and XA-39's checks narrowed. The audit of
+   2026-09-23 found them (CR-I21), their tests are whole again, and the ledger now lists them. `test_R07_CRL07_*`
+   asserts the rule's `ZeroSupply` rather than the old WETH-only error, and `test_R17_*` inflates a supply through a
+   config change, since the rule reads no supply live.
    XA-45's surviving assertion, the target cap against the auction's multiplier, is in `test_constants`. Do not
    restore a retired id's test against the new design; if the property matters here, it gets a new id from the review
    of this surface.
@@ -92,7 +101,7 @@ fork suites skip and a maintainer re-runs them before merging.
 
 ```
 src/IndexToken.sol            index implementation (ERC20 + permit + in-kind issue, redeem, redeemSkipping, claim, rebalance), cloned
-src/IndexRule.sol             stateless rule: supplies, Chainlink USD prices, weights, rebalance targets, index price
+src/IndexRule.sol             stateless rule: reference supplies, Chainlink USD prices, weights, rebalance targets, index price
 src/CompositeFeed.sol         immutable adapter multiplying two feeds into one, for WBTC (BTC/USD x WBTC/BTC)
 src/IndexFactory.sol          listing delay + token configs + guardian, registry, CREATE2 clone deployer
 src/IndexZap.sol              stateless Universal Router mint/burn router, a venue per leg, per-leg limits, nonce check
@@ -114,9 +123,12 @@ script/testnet/               SetupTestMarket, FaucetToken and TestAggregator: t
 
 ## Design rules that must not be broken
 
-- **Value-bearing steps are in-kind and oracle-free.** `IndexToken` only ever moves amounts derived from supply and
+- **Value-bearing amounts are in-kind and oracle-free.** `IndexToken` only ever moves amounts derived from supply and
   units: issue, redeem, claims and rebalance settlements. Never compute an amount from balances (balances only verify),
-  never add a share price to the token. Prices from `IndexRule` only shape rebalance targets and display prices.
+  never add a share price to the token. Prices from `IndexRule` shape rebalance targets, gate a settlement (DA-05) and
+  display prices; they never size an amount. A settlement reads every moving leg's feed, so it is not oracle-free, and a
+  stale feed blocks it (CR-I11). No share can be sent to the index itself: `_update` refuses it, because shares the
+  index held could never leave (CR-I01).
 - **No admin power over funds, no rebalancing key.** The factory owner proposes listings and token configs
   (`LISTING_DELAY`) and guardian changes (`GUARDIAN_DELAY`), each executable only within `PROPOSAL_WINDOW` afterwards,
   delists, and transfers ownership. The guardian can cancel pending listings, delist, cancel a rebalance, start one with
@@ -134,16 +146,20 @@ script/testnet/               SetupTestMarket, FaucetToken and TestAggregator: t
 - **Fixed constituents, rule-rebalanced units.** The token list is immutable after `initialize`. Units change only in
   `executeRebalance`, from the `IndexRule.targetUnits` snapshot that a permissionless `startRebalance` took after
   `MIN_REBALANCE_INTERVAL`, after `REBALANCE_DELAY` of notice, within the auction's multiplier band: targets lie within
-  half to double each component's units, and settled units within half to 2.5 times (the growth scaled by the band). The
-  band bounds the multiplier on the bought legs at the snapshot's prices, and says nothing about how far the market
-  moves in the up to three days before the fill, so settlement values both sides again in the settling block and
-  requires what the index receives to reach `MIN_SETTLEMENT_RATIO` of what it pays out (DA-05). That test is a ratio, so
+  half to double each component's units, and settled units within half to 2.5 times (the growth scaled by the band),
+  plus one raw unit of rounding: a component held at a single raw unit can settle at three (CR-I03). The band bounds the
+  multiplier on the bought legs at the snapshot's prices, and says nothing about how far the market moves in the up to
+  three days before the fill, so settlement values both sides again in the settling block and requires what the index
+  receives to reach `MIN_SETTLEMENT_RATIO` (0.875) of what it pays out (DA-05). That bound holds at the feeds' answers;
+  at market prices add how far the answers sit from the market on the traded legs, which during a fast move can exceed
+  a feed's deviation threshold, and which is why the ratio went from 0.85 to 0.875 (CR-L06). That test is a ratio, so
   a market-wide move reprices both sides together and changes nothing; only drift between the legs sold and the legs
-  bought can fail it, and it can only refuse a settlement, never enlarge one. Its cost is liveness: a quiet pool or a
+  bought can fail it, and it can only refuse a settlement, never enlarge one. Its cost is liveness: a stale feed or a
   market that really moved makes the auction expire unfilled. An index with less than one whole token outstanding cannot
   settle at all, because every growing leg rounds to zero while a shrinking one does not. A cancel, and an auction that
-  expired unfilled, hold strangers off for `REBALANCE_DELAY` (`canStartRebalance` answers it), so the owner and guardian
-  get the first restart; the trigger stays permissionless after that. `canStartRebalance` also answers false for a clone
+  expired unfilled, hold strangers off for `REBALANCE_DELAY` (`canStartRebalance` answers it; after an expiry it runs
+  from the auction's last fillable second, so it is a second shorter, CR-I02), so the owner and guardian get the first
+  restart; the trigger stays permissionless after that. `canStartRebalance` also answers false for a clone
   that was never initialized and can never rebalance at all (DA-22). `MIN_TURNOVER` is measured as `min(sold, bought) /
   activeValue`, so it certifies value actually traded rather than value merely leaving (DA-08). A keep mask routes
   around a component that cannot be moved: `executeRebalance` reads `balanceOf` only on a component that sends or
@@ -164,7 +180,10 @@ script/testnet/               SetupTestMarket, FaucetToken and TestAggregator: t
 - **Only initialized clones issue, redeem or rebalance.** Keep the `onlyInitialized` guard on every function that mints,
   burns or touches a rebalance.
 - **The rule is stateless and its inputs are timelocked.** Token configs change only through the listing flow, and
-  wrapped assets use a reference supply. A config names one Chainlink-shaped USD feed (`latestRoundData` and
+  every token uses a reference supply: `checkConfig` reverts `ZeroSupply` without one, and the rule never reads a
+  token's own `totalSupply`, because anything read live inside the snapshot's transaction can be moved there, as
+  wstETH's supply could with a free flash loan and an unwrap (CR-M01). A config names one Chainlink-shaped USD feed
+  (`latestRoundData` and
   `decimals`, the `IAggregatorV3` subset) and a `maxStaleness` of at most `MAX_FEED_STALENESS`; the policy is the
   feed's heartbeat plus thirty minutes, which is `STALENESS_1H` or `STALENESS_24H` in `script/MainnetAddresses.sol`.
   There is one price path and `_price` is all of it: a non-zero feed, a positive answer, an `updatedAt` that is neither
@@ -214,20 +233,26 @@ script/testnet/               SetupTestMarket, FaucetToken and TestAggregator: t
   caller supplied, because the router's command set includes `TRANSFER` and `PERMIT2_TRANSFER_FROM`, which move a
   payer's funds: passing calldata through would hand a caller the router's permissions. It pays by pre-funding the
   router and appending `SWEEP` back to itself in the same `execute`, so nothing it sent can be left where anyone could
-  take it, and a sweep that came up short would fail the swap and revert the whole call; there is no Permit2 approval
-  and no allowance to reset. A V4 route must be hookless (`hooks == 0` and empty `hookData`) — a hookless key cannot
-  carry the dynamic-fee flag, so that one equality subsumes the flag bits — and `address(0)` is allowed only as an
-  intermediate, because native ether must never reach the zap, which has no `receive()`.
+  take it; there is no Permit2 approval and no allowance to reset. The sweep's minimum is zero, so it never fails a
+  call: what bounds a leg's spend is the amount pre-funded, which is also the only bound on a V4 exact-output route that
+  revisits `tokenIn`, since the pinned periphery does not hold such a route to its `amountInMaximum` (upstream #564;
+  CR-I06, CR-I14). The sweep returns the router's whole balance of the token, a stray one included, so a hop's unsold
+  input is measured as what came back, `balance + given - before`, never as what was spent: measured the other way, a
+  stray larger than the spend underflowed and anyone could revert a public burn for gas (CR-L02). A V4 route must be
+  hookless (`hooks == 0` and empty `hookData`) — a hookless key cannot carry the dynamic-fee flag, so that one equality
+  subsumes the flag bits — and `address(0)` is allowed only as an intermediate, because native ether must never reach
+  the zap, which has no `receive()`.
   The zap must validate every route's endpoints, honour every leg's limit including the pass-through leg, the one whose
   component is already `tokenOut` on a burn or `tokenIn` on a mint (DA-15), check `expectedNonce`, measure what the
   user pays and receives as balance changes inside the call (never using tokens already in the zap), and check each
   mint leg's delivered component balance against what the index needs (`ShortFill`), which is load-bearing rather than
   defensive: the pinned periphery does not itself check exact-output delivery. It sells a V3 burn leg one hop at a time
   and sends every hop's unsold input to the recipient, while a V4 burn leg is a single multi-hop action, because inside
-  one V4 action an intermediate partial fill leaves an unsettled credit and the leg reverts atomically; only its first
-  hop can leave unsold input, which `SWEEP` returns and the zap forwards. Unsold `tokenOut` stays in the zap and is
-  paid out. It must revert on transfer shortfalls, and never call `redeemSkipping` (the zap receives the basket, so the
-  claim would be booked to the zap and could never be collected) or `executeRebalance`.
+  one V4 action an intermediate partial fill leaves an unsettled credit and the leg reverts atomically; as a rule only
+  its first hop can leave unsold input, which `SWEEP` returns and the zap forwards, and a route that comes back to the
+  component can leave some from a later hop too, returned the same way (CR-I07). Unsold `tokenOut` stays in the zap and
+  is paid out. It must revert on transfer shortfalls, and never call `redeemSkipping` (the zap receives the basket, so
+  the claim would be booked to the zap and could never be collected) or `executeRebalance`.
   Swap failures reach the caller unchanged. The router wraps a command in `ExecutionFailed` only when it dispatched it
   with a low-level call, and swaps are internal calls, so what surfaces is the pool's own revert — `V3TooMuchRequested`,
   `V4TooLittleReceived` and their neighbours. That was verified against the pinned deployment on a fork, which is why
@@ -235,15 +260,19 @@ script/testnet/               SetupTestMarket, FaucetToken and TestAggregator: t
 - **Checks-effects-interactions.** Emit events and write state before external calls where the data is available; make
   the call into a user-supplied address the last interaction when possible.
 - **Standard ERC-20s only as components** (whitelist policy). `issue` rejects fee-on-transfer tokens by checking the
-  received amount. Components need fixed-supply or governance-minted supply. Do not whitelist USDC/USDT as components in
-  scripts or docs; they are fine as mint/burn currencies. Pausable components such as WBTC must be labelled in the app, and so must every other issuer a component adds: WBTC's
+  received amount. How a component's supply is minted does not matter, since the rule reads only its reference supply
+  (CR-M01). Do not whitelist USDC/USDT as components in scripts or docs; they are fine as mint/burn currencies.
+  Pausable components such as WBTC must be labelled in the app, and so must every other issuer a component adds: WBTC's
   custodian, Lido for wstETH, Wormhole's bridge for wSOL.
-  A token's supply is its own `totalSupply` or a reference figure, and nothing else: the config's list of excluded
-  holders, whose balances `IndexRule._supply` subtracted with a live `balanceOf` inside the snapshot, is gone, because
-  one exclusion a third party could fund and drain would have made that component's market cap manipulable inside a
-  single transaction (DA-10). A supply that has to leave holdings out uses a reference supply. A config change moves a
-  reference supply by at most `MAX_SUPPLY_CHANGE` (an order of magnitude), which catches the decimals slip and the stale
-  figure; a genuine re-founding goes in steps, each behind its own listing delay and guardian veto (DA-18). A component
+  A token's supply is the reference figure in its config, and nothing else: the config's list of excluded holders, whose
+  balances `IndexRule._supply` subtracted with a live `balanceOf` inside the snapshot, is gone, because one exclusion a
+  third party could fund and drain would have made that component's market cap manipulable inside a single transaction
+  (DA-10), and so is the fallback to the token's own `totalSupply`, for the same reason (CR-M01). A config change moves
+  a reference supply by at most `MAX_SUPPLY_CHANGE` (an order of magnitude), which catches the decimals slip and the
+  stale figure; a genuine re-founding goes in steps, each behind its own listing delay and guardian veto (DA-18). With a
+  reference supply always required, only a token's first config is unbounded; the bound once skipped any change into or
+  out of zero, which meant the token's own supply, and so moved the supply the rule read by any factor (CR-L03). A
+  component
   whose feed is deprecated or stuck takes no config at all, because `checkConfig` runs `_price`: delisting and, under
   uncapped, the keep mask are the escapes, and unlike DA-07's dead pool nothing recovers by itself, so a deprecated
   feed needs a replacement config through the listing flow. `initialUnits` takes `startPriceUsd` in USD-WAD, and an
@@ -297,11 +326,15 @@ script/testnet/               SetupTestMarket, FaucetToken and TestAggregator: t
   `test/Scripts.t.sol`). In tests, script broadcasts come from `DEFAULT_SENDER`.
 - Deployments never use raw private keys: `--account` keystores or `--ledger`. `OWNER` and `GUARDIAN` are
   required. On mainnet the owner must be a contract that is not an EIP-7702 delegated account, and a Safe owner
-  must need at least two signatures and have no enabled module.
+  must need at least two signatures and have no enabled module. Neither role may be a market contract: the router and
+  its PoolManager, and on chain 1 every token, mint currency and feed in `script/MainnetAddresses.sol` (CR-I37).
 - Mainnet addresses are verified on-chain before being committed: tokens by symbol, feeds by `description()` and
-  `decimals()`, the router by its `poolManager()`; `test/fork/MainnetAddresses.fork.t.sol` checks
-  `script/MainnetAddresses.sol` that way. Reference supplies carry their source and date, and every feed carries its
-  heartbeat and deviation threshold in a comment beside it. The WBTC address is
+  `decimals()`, the router and the PoolManager by their runtime code hashes, since every Universal Router build answers
+  `poolManager()` alike (CR-I35); `test/fork/MainnetAddresses.fork.t.sol` checks `script/MainnetAddresses.sol` that way,
+  and pins which feed and staleness bound each default whitelist entry names against a table written independently of
+  the list (CR-L08). Reference supplies carry their source and date, and every feed carries its heartbeat, deviation
+  threshold and Chainlink category in a comment beside it. WBTC's `CompositeFeed` is checked by its code, less the
+  metadata tail, against an adapter the listing script builds, never by its getters (CR-L04). The WBTC address is
   `0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599`; an earlier draft had a wrong one. wSOL is Wormhole's
   `0xD31a59c85aE9D8edEFeC411D448f90841571b89c`, whose symbol is `SOL` and which has 9 decimals.
 
@@ -314,22 +347,32 @@ execution and 30-minute pool time-weighted prices for the rule — which was rev
 `audit/2026-09-22-v3-retirement.md`. V4 has no oracle at all, which is why pricing left Uniswap rather than following
 the liquidity, and the Universal Router still reaches V3 depth per leg, which is why execution did follow it: of the
 seven launch components only LINK is deeper on V4.
-Fixed constituents with units that follow an on-chain rule; methodologies uncapped market cap and capped 30/20 (at
-least 5 components; the 20% cap applies to every component below the largest, changed from the Numbers model's closed
-form on 2026-09-17; both figures are ceilings, so a constituent below its ceiling keeps its own market-cap weight and
-the largest is never promoted to 30%, changed on 2026-09-21 after reading the model workbook, VR-01); rebalance
-targets are the water-filling of value by weight within the half-to-double bounds (a component clipped to its floor is
-no longer handed value back, changed on 2026-09-18, LR-02; a share becomes units rounded up and clamped to its
-ceiling, so the targets buy back every wei the shrinking legs release, changed on 2026-09-21, VR-03). Under a keep
-mask the kept component's unchecked price still shapes the moving components' targets wherever a ceiling binds (VR-02,
-raised 2026-09-21, left as recorded behaviour and documented; excluding kept components would break the capped rule's
-feasibility condition). Monthly cadence with 2 days of notice and a 24-hour auction from 1.5 to 0.9 on the bought
-legs; no protocol bots or hot keys; no fees; component whitelist only (no synthetics for L1 coins without a mainnet
-wrapper); burner chooses the exit token (mint currency is not tracked per holder); the index price is the basket's
-value in dollars, not a divisor level. The launch whitelist is exactly seven tokens — WETH, wstETH, WBTC, wSOL, UNI,
-LINK, AAVE — chosen on 2026-09-22 for one wrapper per asset where possible, no Coinbase-issued assets, and a Chainlink
-feed each. The Numbers model's tokens were examples; its methodology is the requirement. Rationale in
-`ARCHITECTURE.md`. If a change would alter one of these, say so explicitly.
+Fixed constituents with units that follow an on-chain rule; methodologies uncapped market cap and capped 30/20 (at least
+5 components; the 20% cap applies to every component below the largest, changed from the Numbers model's closed form on
+2026-09-17; both figures are ceilings, so a constituent below its ceiling keeps its own market-cap weight and the
+largest is never promoted to 30%, changed on 2026-09-21 after reading the model workbook, VR-01; and the largest earns
+its 30% by its lead, its ceiling rising linearly from 20% at a tie with the runner-up to 30% once its market cap is
+twice the runner-up's, the owner's call on 2026-09-23, because a flat 30% for whichever ranked first still swapped ten
+points between two near-tied leaders on a one-wei move, CR-L01; a basket led twice over or more, the model's and every
+capped subset of the launch list, is unchanged); rebalance targets are the water-filling of value by weight within the
+half-to-double bounds (a component clipped to its floor is no longer handed value back, changed on 2026-09-18, LR-02; a
+share becomes units rounded up and clamped to its ceiling, so the targets buy back every wei the shrinking legs release,
+changed on 2026-09-21, VR-03). Under a keep mask the kept component's price, checked like every other since there is one
+price path (CR-I13), still shapes the moving components' targets wherever a ceiling binds, and how large the top ceiling
+is (VR-02, raised 2026-09-21, left as recorded behaviour and documented; excluding kept components would break the
+capped rule's feasibility condition). Monthly cadence with 2 days of notice and a 24-hour auction from 1.5 to 0.9 on the
+bought legs, where a fill must return at least 87.5% of what it takes at feed prices (`MIN_SETTLEMENT_RATIO`, 0.85 until
+the owner's call on 2026-09-23, CR-L06); no protocol bots or hot keys; no fees; component whitelist only (no synthetics
+for L1 coins without a mainnet wrapper); burner chooses the exit token (mint currency is not tracked per holder); the
+index price is the basket's value in dollars, not a divisor level. The launch whitelist is exactly seven tokens — WETH,
+wstETH, WBTC, wSOL, UNI, LINK, AAVE — chosen on 2026-09-22 for one wrapper per asset where possible, no Coinbase-issued
+assets, and a Chainlink feed each. Every token, wstETH included, carries a dated reference supply, which the rule
+requires, and no supply is read live (CR-M01, the owner's call on 2026-09-23, over giving wstETH alone a reference
+figure). wSOL is priced at par with SOL, because no feed prices Wormhole's peg, and it has the thinnest execution depth
+of the seven; it stays on the list, labelled, with the guardian's keep mask, cancel and delist as the recourse in a
+bridge failure (CR-L05, CR-I39; the owner's call on 2026-09-23, after the audit suggested reconsidering it). The Numbers
+model's tokens were examples; its methodology is the requirement. Rationale in `ARCHITECTURE.md`. If a change would
+alter one of these, say so explicitly.
 
 ## Not in v3 (candidate backlog)
 

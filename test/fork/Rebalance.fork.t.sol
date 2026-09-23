@@ -82,7 +82,7 @@ contract RebalanceForkTest is ForkFeeds {
         factory.proposeListing(A.WETH, _config(A.ETH_USD_FEED, A.STALENESS_1H, A.ETH_SUPPLY));
         factory.proposeListing(A.LINK, _config(A.LINK_USD_FEED, A.STALENESS_1H, A.LINK_SUPPLY));
         factory.proposeListing(A.UNI, _config(A.UNI_USD_FEED, A.STALENESS_1H, A.UNI_SUPPLY));
-        factory.proposeListing(A.AAVE, _config(A.AAVE_USD_FEED, A.STALENESS_1H, 0)); // on-chain supply
+        factory.proposeListing(A.AAVE, _config(A.AAVE_USD_FEED, A.STALENESS_1H, A.AAVE_SUPPLY));
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         for (uint256 i = 0; i < tokens.length; ++i) {
             factory.executeListing(tokens[i]);
@@ -182,7 +182,7 @@ contract RebalanceForkTest is ForkFeeds {
         _assertPriceNearQuote(A.UNI, 1e18);
         _assertPriceNearQuote(A.AAVE, 1e18);
         assertEq(rule.supply(A.WBTC), A.BTC_SUPPLY);
-        assertEq(rule.supply(A.AAVE), IERC20(A.AAVE).totalSupply());
+        assertEq(rule.supply(A.AAVE), A.AAVE_SUPPLY, "a reference figure, never the token's live supply (CR-M01)");
     }
 
     /// @dev The rule's feed price against what a whole token actually sells for on Uniswap, both in dollars. Three
