@@ -200,6 +200,30 @@ contract MocksTest is Test {
         assertEq(p.balanceOf(bob), 1);
     }
 
+    /// @dev A withdrawn implementation fails every read, not only the balance a settlement checks (RT-01).
+    function test_pausableToken_brokenReadsFailEveryRead() public {
+        MockPausableToken p = new MockPausableToken("Pausable BTC", "pBTC", 8);
+        p.mint(alice, 10);
+        assertEq(p.name(), "Pausable BTC");
+        assertEq(p.symbol(), "pBTC");
+        assertEq(p.totalSupply(), 10);
+        assertEq(p.allowance(alice, bob), 0);
+
+        p.setReadsBroken(true);
+        vm.expectRevert(bytes("reads broken"));
+        p.name();
+        vm.expectRevert(bytes("reads broken"));
+        p.symbol();
+        vm.expectRevert(bytes("reads broken"));
+        p.decimals();
+        vm.expectRevert(bytes("reads broken"));
+        p.totalSupply();
+        vm.expectRevert(bytes("reads broken"));
+        p.balanceOf(alice);
+        vm.expectRevert(bytes("reads broken"));
+        p.allowance(alice, bob);
+    }
+
     // ---------------------------------------------------------------------
     // MockPartialFillRouter
     // ---------------------------------------------------------------------
@@ -789,6 +813,32 @@ contract MocksTest is Test {
         // The fake does what the finding describes: without the two checks above, this callback emptied the float.
         vm.expectRevert(abi.encodeWithSelector(RebalanceExecutorV3.UnexpectedCaller.selector, address(fake)));
         fake.executeRebalance("");
+    }
+
+    // ---------------------------------------------------------------------
+    // Red team of 2026-09-24, mutation gaps
+    // ---------------------------------------------------------------------
+
+    /// @dev RT-14. The product keeps the first leg's decimals by dividing out the second leg's. Every other test builds
+    ///      both legs with eight decimals, where the two are the same, so dividing by the first leg's decimals, or
+    ///      reporting the second leg's, passed. Either misprices a composite whose legs differ by ten to the power of
+    ///      the difference, and the rule's `_price` would accept the result. The common shape is a TOKEN/ETH feed at 18
+    ///      decimals and ETH/USD at 8, taken here in both orders: a token worth 0.005 ETH at 4,000 dollars is 20
+    ///      dollars, in whichever leg's decimals comes first.
+    function test_RT14_compositeFeed_keepsTheFirstLegsDecimalsWhenTheLegsDiffer() public {
+        vm.warp(30 days);
+        TestAggregator ethUsd = new TestAggregator("ETH / USD", 8, 4_000e8);
+        TestAggregator tokEth = new TestAggregator("TOK / ETH", 18, 0.005e18);
+
+        CompositeFeed composite = new CompositeFeed(ethUsd, tokEth, 1 hours, 24 hours);
+        assertEq(composite.decimals(), 8, "quoted in the first leg's eight decimals");
+        (, int256 answer,,,) = composite.latestRoundData();
+        assertEq(answer, 20e8, "twenty dollars: the second leg's eighteen decimals are divided back out");
+
+        composite = new CompositeFeed(tokEth, ethUsd, 24 hours, 1 hours);
+        assertEq(composite.decimals(), 18, "quoted in the first leg's eighteen decimals");
+        (, answer,,,) = composite.latestRoundData();
+        assertEq(answer, 20e18, "twenty dollars: the second leg's eight decimals are divided back out");
     }
 }
 

@@ -14,8 +14,29 @@ contract MockPausableToken is ERC20 {
         _decimals = decimals_;
     }
 
+    function name() public view override returns (string memory) {
+        _checkReads();
+        return super.name();
+    }
+
+    function symbol() public view override returns (string memory) {
+        _checkReads();
+        return super.symbol();
+    }
+
     function decimals() public view override returns (uint8) {
+        _checkReads();
         return _decimals;
+    }
+
+    function totalSupply() public view override returns (uint256) {
+        _checkReads();
+        return super.totalSupply();
+    }
+
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        _checkReads();
+        return super.allowance(owner, spender);
     }
 
     function mint(address to, uint256 amount) external {
@@ -26,14 +47,19 @@ contract MockPausableToken is ERC20 {
         paused = p;
     }
 
-    /// @notice Makes `balanceOf` revert, which a paused token does not: pausing stops transfers, not reads.
+    /// @notice Makes every ERC-20 read revert, as a proxy's reads do once its implementation is withdrawn, which a
+    ///         paused token does not: pausing stops transfers, not reads (DA-14, RT-01).
     function setReadsBroken(bool broken) external {
         readsBroken = broken;
     }
 
     function balanceOf(address account) public view override returns (uint256) {
-        require(!readsBroken, "reads broken");
+        _checkReads();
         return super.balanceOf(account);
+    }
+
+    function _checkReads() private view {
+        require(!readsBroken, "reads broken");
     }
 
     function _update(address from, address to, uint256 value) internal override {

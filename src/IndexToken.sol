@@ -248,7 +248,13 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
         ) revert Unauthorized(msg.sender);
 
         (uint256[] memory targets, uint256 turnover) = _previewTarget(keepMask);
-        if (turnover < MIN_TURNOVER) revert TurnoverTooLow(turnover);
+        // A step that trades too little still starts when the basket sits at least MIN_TURNOVER from its rule: the band
+        // lets a growing component at most double, so a step measured alone buys at most that component's own holding,
+        // and an index the rule wants holding 4% of a component it holds at 0.4% could never start the rebalances that
+        // walk it back (RT-04). A step that trades nothing certifies nothing, however far the basket sits (DA-08).
+        if (turnover < MIN_TURNOVER && (turnover == 0 || _shortfall(keepMask) < MIN_TURNOVER)) {
+            revert TurnoverTooLow(turnover);
+        }
 
         delete _targetUnits;
         for (uint256 i = 0; i < n; ++i) {
@@ -475,13 +481,18 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
         return IIndexRule(RULE).targetUnits(tokens, units, methodology, keepMask);
     }
 
+    function _shortfall(uint256 keepMask) private view returns (uint256) {
+        (address[] memory tokens, uint256[] memory units) = _componentArrays();
+        return IIndexRule(RULE).shortfall(tokens, units, methodology, keepMask);
+    }
+
     function _checkInitialized() private view {
         if (_getInitializedVersion() != 1) revert NotInitialized();
     }
 
     function _checkRecipient(address to) private view {
         if (to == address(0)) revert ZeroAddress();
-        if (to == address(this)) revert InvalidRecipient(to);
+        if (_isTrap(to)) revert InvalidRecipient(to);
     }
 
     /// @dev Shares sent to the index itself could never leave again: it never approves, transfers or redeems its own
@@ -490,8 +501,16 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
     ///      issue, redeem and claim already did (CR-I01). Mints go to a recipient `_checkRecipient` has already
     ///      accepted, and burns go to address(0), so neither is affected.
     function _update(address from, address to, uint256 value) internal override {
-        if (to == address(this)) revert InvalidRecipient(to);
+        if (_isTrap(to)) revert InvalidRecipient(to);
         super._update(from, to, value);
+    }
+
+    /// @dev The addresses this index knows can never move a share or a component on: itself, the factory, which has no
+    ///      transfer or arbitrary-call function, and the stateless rule. The factory is the contract a user deals with
+    ///      to create indexes, so it is the likeliest wrong paste after the index (RT-21, extending CR-I01). Both are
+    ///      immutables, so the check costs no storage read.
+    function _isTrap(address to) private view returns (bool) {
+        return to == address(this) || to == FACTORY || to == RULE;
     }
 
     // ---------------------------------------------------------------------
@@ -556,6 +575,8 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
         if (_getInitializedVersion() != 1) return false;
         if (block.timestamp < lastRebalance + MIN_REBALANCE_INTERVAL) return false;
         uint256 pendingEta = _pending.eta;
+        // Defensive: the line after it already answers false during a live auction, since a pending eta puts
+        // `_permissionlessAt` past its end. Kept so the view states each condition `startRebalance` checks (RT-18).
         if (pendingEta != 0 && block.timestamp <= pendingEta + AUCTION_DURATION) return false;
         return block.timestamp >= _permissionlessAt(pendingEta);
     }

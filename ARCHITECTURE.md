@@ -66,13 +66,15 @@ The index itself. An EIP-1167 clone of one implementation, using OpenZeppelin's 
 - **claim(token, to):** pays `msg.sender`'s claim on `token` and clears it.
 - **startRebalance(keepMask):** anyone, once `MIN_REBALANCE_INTERVAL` (28 days) has passed since the last executed
   rebalance or creation and no unexpired rebalance is pending. Asks `IndexRule.targetUnits` for the snapshot, requires
-  at least `MIN_TURNOVER` (0.5%) of traded value, stores the targets and opens `REBALANCE_DELAY` (2 days) of notice. A
-  non-zero `keepMask`, and any start during the `REBALANCE_DELAY` cooldown that follows a cancel or an auction that
-  expired unfilled, needs the factory owner or guardian. After an expiry that cooldown runs from the auction's last
-  fillable second, `eta + AUCTION_DURATION`, so the owner and guardian have the start to themselves for
-  `REBALANCE_DELAY` less one second, against a full `REBALANCE_DELAY` after a cancel (CR-I02). `canStartRebalance()` is
-  that whole condition as one view, for apps and for anyone checking whether an index is due; it answers false on an
-  uninitialized clone, which holds no components and could never rebalance.
+  at least `MIN_TURNOVER` (0.5%) of traded value, or, for a step that trades something but less, a basket at least
+  `MIN_TURNOVER` from its rule (`IndexRule.shortfall`, RT-04), stores the targets and opens `REBALANCE_DELAY` (2 days)
+  of notice. A non-zero `keepMask`, and any start during the `REBALANCE_DELAY` cooldown that follows a cancel or an
+  auction that expired unfilled, needs the factory owner or guardian. After an expiry that cooldown runs from the
+  auction's last fillable second, `eta + AUCTION_DURATION`, so the owner and guardian have the start to themselves for
+  `REBALANCE_DELAY` less one second, against a full `REBALANCE_DELAY` after a cancel (CR-I02). `canStartRebalance()`
+  is that whole condition as one view, for apps and for anyone checking whether an index is due; it answers false on
+  an uninitialized clone, which holds no components and could never rebalance. `restartAllowedAt()` records cancels
+  only, so it is not the whole wait after an expiry (RT-08).
 - **cancelRebalance():** factory owner or guardian. Clears the proposal. Cancelling a live auction starts a
   `REBALANCE_DELAY` cooldown from the cancel, during which only they can start a new one; cancelling an auction that
   already expired only clears the stale proposal the views still report, and the hold-off the expiry granted stands,
@@ -106,9 +108,9 @@ The index itself. An EIP-1167 clone of one implementation, using OpenZeppelin's 
   has no price function.
 - **Access:** `initialize` is callable only by `FACTORY` and only once; the implementation has initializers disabled.
   `issue`, `redeem`, `redeemSkipping`, `startRebalance`, `cancelRebalance` and `executeRebalance` revert with
-  `NotInitialized` on anything but an initialized clone. A recipient can never be the zero address or the index itself,
-  and that includes a plain ERC-20 `transfer` or `transferFrom` of shares: shares sent to the index could never leave
-  it, so the token refuses them with `InvalidRecipient` (CR-I01).
+  `NotInitialized` on anything but an initialized clone. A recipient can never be the zero address, the index itself,
+  its factory or its rule, and that includes a plain ERC-20 `transfer` or `transferFrom` of shares: shares sent to any
+  of those three could never leave, so the token refuses them with `InvalidRecipient` (CR-I01, RT-21).
 - **Reentrancy:** storage-based `ReentrancyGuard` on every function that mints, burns, pays a claim or changes a
   rebalance: `issue`, `redeem`, `redeemSkipping`, `claim`, `startRebalance`, `cancelRebalance` and both
   `executeRebalance` overloads. The ERC-20 entry points, `transfer`, `approve` and `permit`, are deliberately
@@ -140,7 +142,13 @@ A stateless, view-only contract the factory deploys in its constructor. It never
 - **Prices:** dollars per 1e18 raw units of a token ("WAD prices", 1e18 = $1), from the Chainlink-shaped USD feed the
   token's config names. One private `_price` is the whole path, and every caller takes it: the feed must be non-zero,
   its answer positive, its `updatedAt` neither in the future nor older than that token's `maxStaleness`, and the feed's
-  and token's decimals at most 18 and read live on every call. The answer is scaled to WAD by
+  and token's decimals at most 18. The feed's are read live on every call, so a repointed aggregator proxy is read at
+  its new scale. The token's are read live only by `checkConfig`, and `executeListing` reads them once more and records
+  them beside the config (`IIndexFactory.tokenDecimals`), bounded again on every use, so every later price uses the
+  record and the rule never calls a listed token to price it: a component whose contract stops answering is still
+  priced from its feed (RT-01). The decimals are pinned when the config is proposed, and `executeListing` refuses one
+  whose token's decimals moved since (`DecimalsChanged`), so the record changes only to what was on show during the
+  delay and the guardian's veto; `TokenDecimalsRecorded` announces each change (RT-23). The answer is scaled to WAD by
   `answer * 10 ** (36 - feedDecimals - tokenDecimals)` and refused above `MAX_PRICE` (1e56, which puts one raw unit at
   1e20 dollars — far past any real asset, and inside the 256-bit proof under "Overflow"). Nothing is special-cased:
   WETH is an ordinary token with ETH/USD and ether's reference supply, and the rule reads no Uniswap contract at all.
@@ -219,7 +227,8 @@ A stateless, view-only contract the factory deploys in its constructor. It never
   in force, so a figure stale or mistyped by less than that passes and drives its component toward its floor at the
   next rebalance: a revised supply is worth reading again before the two days run out (DA-18). A token whose feed is
   deprecated or stuck takes no config at all, and unlike a thin pool nothing recovers by itself — a replacement config
-  through the listing flow is the only way back.
+  through the listing flow is the only way back. Nor does a token whose contract stops answering, since the check
+  reads its decimals; it needs none while its feed answers, because a keep mask routes around it (RT-01).
 - **navPerToken(index):** the value of one whole index token, `sum(units_i * price_i)`, as a single USD WAD. For an
   uncapped index whose units follow the rule this equals the Numbers model's divisor price at every price; for a capped
   index it is the basket's own value, which the divisor formula would misstate. Display only.
@@ -280,7 +289,10 @@ protocol's ABI set: a config points at it, nothing calls it.
   `proposeListing` proposal, so relisting always takes a fresh proposal and delay. `executeListing` runs the rule's
   `checkConfig` again on the stored config before applying it, so a feed that went stale or was deprecated during the
   notice is not whitelisted on a check up to nine days old (DA-11). The griefing half of that finding is gone rather
-  than re-targeted: a pool could be held thin by a third party, and a live feed cannot be.
+  than re-targeted: a pool could be held thin by a third party, and a live feed cannot be. A proposal also pins the
+  token's decimals (`pendingTokenDecimals`), and `executeListing` records them as `tokenDecimals`, which the rule prices
+  the token with, or reverts `DecimalsChanged` if the token reports others by then, so the record changes only to what
+  was on show during the delay; `TokenDecimalsRecorded` marks each change (RT-23).
 - A proposal that passes its `PROPOSAL_WINDOW` is dead but leaves `listingEta`, `pendingGuardian` and
   `pendingGuardianEta` set, so those storage reads alone say "pending" forever; `listingPending(token)` and
   `guardianChangePending()` are the views that answer whether a proposal can still be executed, and operators should
@@ -370,10 +382,10 @@ are typed `PathKey[]` and need no decoding.
 the chosen price, shows `predictIndexAddress`, and calls `createIndex`. The start price should leave one index token
 worth at least roughly 10,000 raw units of every component, about 11 dollars for an index holding WBTC at 110k; below
 that a rebalance moves only a few raw units of the coarsest component, and the rounding that protects holders starts to
-cost the auction its margin. Creator-chosen units also work; the first rebalances then move them toward the rule, at
-most halving or doubling the target each time (a fill at the 1.5 opening multiplier settles a growing component at up
-to 2.5 times its units, plus one raw unit, because the growth rounds up: a component held at one raw unit can settle
-at three, CR-I03).
+cost the auction its margin. Creator-chosen units also work; the first rebalances then move them toward the rule, even
+when each step trades less than `MIN_TURNOVER` (RT-04), at most halving or doubling the target each time (a fill at
+the 1.5 opening multiplier settles a growing component at up to 2.5 times its units, plus one raw unit, because the
+growth rounds up: a component held at one raw unit can settle at three, CR-I03).
 
 **Mint with a stablecoin.** Pick a venue per leg, quote it (`QuoterV2.quoteExactOutput` for V3, the V4 Quoter for V4),
 set per-leg and overall limits, read `rebalanceNonce()`, and call `mintWithToken`. Exact shares are minted; unspent
@@ -385,7 +397,9 @@ overall minimum, pass `rebalanceNonce()`, and call `burnToToken` or `burnToToken
 
 **Rebalance.**
 1. After 28 days anyone calls `startRebalance(0)`; the app offers a "rebalance due" button. The index snapshots the rule's
-   targets. Nothing changes for 2 days, and holders who disagree can leave in kind.
+   targets. Nothing changes for 2 days, and holders who disagree can leave in kind. The notice is the window for it:
+   during the auction an executor can order its fill ahead of a public redeem (RT-02, under "Start above par, end
+   below").
 2. The auction runs for 24 hours. An executor contract calls `executeRebalance`, receives the shrinking components,
    swaps them wherever it likes, and must return the growing components before its callback returns. Executors are
    untrusted; the post-check is the only thing that matters. The callback's `amountsOut` and `amountsIn` are the
@@ -415,7 +429,9 @@ own value by the rule's weights, and the fill never touches the frozen token. Th
 not even for its balance, so the mask also routes around a component whose `balanceOf` reverts (DA-14). The rule is the
 narrower part: under the uncapped methodology a kept component's feed is not read at all, but under the capped
 methodology it is read like any other, because its cap scales every other component's weight. A keep mask on a capped
-index therefore routes around a token that cannot be transferred, not around one whose feed is stale (DA-06).
+index therefore routes around a token that cannot be transferred, not around one whose feed is stale (DA-06). The
+token itself is never called, since its decimals come from the listing record, so a capped keep mask also routes
+around a component whose contract stops answering altogether, as one behind a withdrawn proxy implementation (RT-01).
 
 **Exit while a component is frozen.** `redeemSkipping` with that component's bit set pays everything else now and records
 the frozen amount as a claim for the recipient; `claim` pays it to that same account once transfers resume. A router
@@ -482,7 +498,14 @@ feed's 0.5–2% threshold bounds its distance from the market. The audit replaye
 0.85 a lone executor kept more than 15% of the traded value at market prices in about 4% of auctions, up to about 21%,
 while no ratio up to 0.9 refused a competitive fill; at 0.875 more than 15% is taken in about 0.04% (CR-L06). The
 notice period is what makes this a choice rather than a surprise, since holders who dislike the snapshot can leave in
-kind before it settles, and the guardian can cancel a snapshot the market has overtaken.
+kind during it, and the guardian can cancel a snapshot the market has overtaken. Once the auction is live, neither is
+reliable when sent in the open: the fill can land in any block of the auction, whoever holds shares in that block pays
+its haircut, and an executor watching the mempool can order its fill ahead of a redeem or a cancel. The exiting holder
+then pays the same per-share take as every other holder, so no bound above moves, but the escape is lost; a nonce
+check cannot restore it, because it can only revert after the haircut has landed. Exits and cancels during the
+auction go through a private relay. A mint is not an escape to protect: shares issued while a rebalance is pending
+share the haircut of any fill that lands after them, however the two are ordered, and nothing but its timing avoids
+that (RT-02).
 
 **Clip, then redistribute.** Each rebalance targets between half and double a component's units (a fill at the opening
 multiplier settles a growing one at up to 2.5 times, plus one raw unit of rounding, with the executor delivering the
@@ -508,10 +531,15 @@ points in one settlement for which the executor paid 2.05% of what it took (DA-0
 units, the same direction issue and redeem already round, so the basket a rebalance aims at is never worth less than the
 one it replaces. The `MIN_TURNOVER` gate counts `min(sold, bought)` over the rebalanced value for the same reason: gross
 outflow certifies that value leaves the basket, not that anything is bought back, and on that reproduction the two
-differed by the whole figure (DA-08). The remaining half of the problem is the index's own granularity, which is why
-`initialUnits` refuses a start price at which a component's units round away entirely: with the shares rounding up, a
-growing component can ask for up to one raw unit per index token more than the rule wants, and on a coarse index that
-overshoot eats the auction's 10% margin and the rebalance stops clearing (DA-09).
+differed by the whole figure (DA-08). A step that trades something but less than the gate still starts when the basket
+sits at least `MIN_TURNOVER` from its rule, measured before the band (`IndexRule.shortfall`): the band lets a growing
+component at most double, so the traded step alone buys at most that component's own holding, and an index holding a
+tenth of what its rule wants of a small component could otherwise never start the rebalances that walk it back
+(RT-04). A step that trades nothing is refused however far the basket sits. The remaining half of the problem is the
+index's own granularity, which is why `initialUnits` refuses a start price at which a component's units round away
+entirely: with the shares rounding up, a growing component can ask for up to one raw unit per index token more than
+the rule wants, and on a coarse index that overshoot eats the auction's 10% margin and the rebalance stops clearing
+(DA-09).
 
 **What the feed checks bound, and what they do not.** The rule asks four things of a price: a positive answer, an
 `updatedAt` that is neither in the future nor older than that token's `maxStaleness`, decimals within 18, and a result
@@ -599,7 +627,11 @@ its own address.
   month, until the owner replaces it: `GUARDIAN_DELAY` of notice that the guardian cannot cancel, because it may cancel
   only its own removal and not its replacement; that is a trust assumption of the role rather than an oversight, because the cancel
   exists to stop a distorted snapshot in the last seconds of an auction and cannot be time-boxed without giving that
-  up, and the owner's answer is to replace the guardian after `GUARDIAN_DELAY` (DA-12). And ownership of the factory
+  up, and the owner's answer is to replace the guardian after `GUARDIAN_DELAY` (DA-12). The guardian can stall without
+  a cancel too: a keep-mask rebalance that leaves a pair of components active can clear `MIN_TURNOVER` on a sliver of
+  the index, and its fill restarts `MIN_REBALANCE_INTERVAL` for everyone, so the stall can outlast the replacement by
+  up to a month. While a replacement is pending the owner cancels the outgoing guardian's keep-mask proposals, and
+  monitors watch `RebalanceStarted` with a non-zero `keepMask` (RT-07). And ownership of the factory
   moves in two steps that take effect as soon as the new owner accepts: it is the one admin change with no delay and no
   guardian veto, so `OwnershipTransferStarted` deserves the same watch as `GuardianProposed`.
 - **Shape versus value.** Issue, redeem and claims never read a price. What can distort a basket's shape, with targets
@@ -676,8 +708,8 @@ its own address.
   every hop's unsold input goes to the recipient, while a V4 burn leg is one atomic action whose intermediate partial
   fill reverts the leg unless that hop's input is the component or `tokenOut` again (unsold `tokenOut` is paid out
   instead); what a hop returns is what its sweep brought back, a balance the router already held included, so a stray
-  in the router is returned rather than reverting the burn (CR-L02); the zap, the index, the Universal Router and the
-  PoolManager are rejected as recipients; every router command is built here and nothing a caller supplied is
+  in the router is returned rather than reverting the burn (CR-L02); the zap, the index, the Universal Router, the
+  PoolManager, the factory and the rule are rejected as recipients (RT-21); every router command is built here and nothing a caller supplied is
   forwarded; the router is pre-funded with exactly a leg's cap and swept clean within the same `execute`, so no
   allowance and no balance survives a call, and the pre-fund is what bounds a leg's spend on the pinned router
   (CR-I06); the permit is tried and a front-run permit is accepted; `expectedNonce` is checked on entry and again right
@@ -758,15 +790,15 @@ its own address.
   checked only the shape, which is why it did not see DA-01.
 - Security regression tests, named after their ids: one per testable finding of the 2026-09-15 security review, the
   2026-09-16 rebalancing design review (R01–R23), the 2026-09-16 whole-repo audit (XA ids), the 2026-09-18 logic review
-  (LR ids), the 2026-09-19 deep audit (DA ids), the 2026-09-21 verification review (VR ids) and the 2026-09-23 security
-  audit (CR ids), plus controls. Six ids, and part of LR-07, lost their test on 2026-09-22 because the mechanism they
-  lived in no longer exists; `audit/2026-09-22-v3-retirement.md` names each one, the test that went and what survives
-  elsewhere, and a retired id's test must not be restored against the new design. Four more — R07, XA-13, XA-24 and
-  XA-39 — were weakened that day under their own ids with no record, until the 2026-09-23 audit found them (CR-I21);
-  their tests are whole again and the ledger lists them. The v1 and R tests are in `test/Security.t.sol` and its fork
-  counterpart, except L06 and FR05–FR06 (script tests) and I09–I11, L08 and FR04 (`test/Repo.t.sol`); an XA, DA, VR or
-  CR test sits in the suite of what it checks. AGENTS.md gate 6 maps each one, and `audit/2026-09-23-triage.md` gives
-  the CR evidence.
+  (LR ids), the 2026-09-19 deep audit (DA ids), the 2026-09-21 verification review (VR ids), the 2026-09-23 security
+  audit (CR ids) and the 2026-09-24 red team (RT ids), plus controls. Six ids, and part of LR-07, lost their test on
+  2026-09-22 because the mechanism they lived in no longer exists; `audit/2026-09-22-v3-retirement.md` names each one,
+  the test that went and what survives elsewhere, and a retired id's test must not be restored against the new design.
+  Four more — R07, XA-13, XA-24 and XA-39 — were weakened that day under their own ids with no record, until the
+  2026-09-23 audit found them (CR-I21); their tests are whole again and the ledger lists them. The v1 and R tests are
+  in `test/Security.t.sol` and its fork counterpart, except L06 and FR05–FR06 (script tests) and I09–I11, L08 and FR04
+  (`test/Repo.t.sol`); an XA, DA, VR, CR or RT test sits in the suite of what it checks. AGENTS.md gate 6 maps each
+  one, `audit/2026-09-23-triage.md` gives the CR evidence and `audit/2026-09-24-red-team.md` the RT evidence.
 - Mainnet fork tests, against the real Universal Router 2.0.0, the real V4 PoolManager and real Chainlink feeds: the zap
   and security cases end to end; every shipped feed checked by `description()`, `decimals()`, a positive and fresh
   answer and its circuit-breaker bounds, with the WBTC adapter's answer required to equal BTC/USD times WBTC/BTC

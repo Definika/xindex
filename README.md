@@ -67,7 +67,7 @@ share transfers to an index itself; and stopped a stray router balance from reve
 | Layer-1 coins | Only tokens that exist on mainnet can be components (WBTC, WETH, LINK, ...). Coins with no credible wrapper (ADA, XRP, ...) are out of scope until one exists. |
 | Stable in / out | Mint with USDC or USDT. The burner chooses USDC, USDT or any other token at exit. Index tokens are fungible, so the protocol cannot know which stable a given holder used; economically the two are equivalent. |
 | Decentralization | No admin can move an index's funds, mint or burn its shares, pause or upgrade it, or set its units by hand. What the roles do hold: the owner proposes listings and token data configs, which take effect after a public 2-day delay, and guardian changes, which take 7 days; a proposal not executed within 7 days of becoming ready expires. Owner and guardian both cancel a pending listing, delist a token, cancel a rebalance on any index, and start one with a keep mask or before strangers may; the guardian can also cancel a change that would remove it, but not one that replaces it. Ownership is handed over in two steps that take effect at once, with no delay and no guardian veto, and it cannot be renounced. A token config reshapes the targets of every index holding that token at its next rebalance, and the power to cancel a rebalance has no window and no rate limit, so it can hold rebalancing off until the owner replaces that guardian (see "Known limitations"). |
-| Frozen components | If a component's issuer pauses or blacklists transfers, holders take every other component out with `redeemSkipping` and collect the frozen one later with `claim`; the guardian rebalances around it with a keep mask. A kept component is neither transferred nor read for its balance, but under the capped methodology its feed is still read, because its market cap enters every other component's weight. |
+| Frozen components | If a component's issuer pauses or blacklists transfers, holders take every other component out with `redeemSkipping` and collect the frozen one later with `claim`; the guardian rebalances around it with a keep mask. A kept component is neither transferred nor read for its balance, but under the capped methodology its feed is still read, because its market cap enters every other component's weight. Its token contract is never called, so the keep mask also routes around a component whose contract stops answering altogether, as one behind a withdrawn proxy implementation would (RT-01). |
 
 ## Architecture
 
@@ -95,8 +95,9 @@ share transfers to an index itself; and stopped a stray router balance from reve
   comes from a price, there is no share price, and nothing is computed from balances, so there is no first-depositor /
   inflation attack and nothing for an admin to touch. Prices reach only the rebalance: the snapshot's targets, and a
   value check on the fill at feed prices, which can refuse a settlement but never sizes one (earlier text said no oracle
-  entered these steps at all, CR-I11). Share transfers to the index itself are refused, since shares it held could never
-  leave (CR-I01). Only initialized clones can issue, redeem or rebalance. Supports EIP-2612 `permit`.
+  entered these steps at all, CR-I11). Share transfers to the index itself, its factory or its rule are refused, since
+  none of them could ever move a share on (CR-I01, RT-21). Only initialized clones can issue, redeem or rebalance.
+  Supports EIP-2612 `permit`.
 - `IndexRule` (`src/IndexRule.sol`) is a stateless, view-only contract: token supplies, Chainlink USD prices, the
   uncapped and capped weights, rebalance targets, starting units and the index price. It has one price path, used by
   snapshots and display alike, and it depends on no Uniswap contract at all. `CompositeFeed` (`src/CompositeFeed.sol`)
@@ -146,7 +147,8 @@ minimums and a non-zero overall `minAmountOut`, passes `rebalanceNonce()`, and c
 
 **Rebalance.**
 1. 28 days after an index's creation or last rebalance, anyone calls `startRebalance(0)`. The index stores the rule's
-   targets. For 2 days nothing changes; holders who disagree can leave.
+   targets. For 2 days nothing changes; holders who disagree can leave, and this notice is the window to do it in:
+   once the auction opens, a public redeem can be overtaken by a fill (see step 2).
 2. A 24-hour auction follows. An executor contract calls `executeRebalance(data)`: it receives what the index no longer
    needs of each shrinking component and, inside its `onXindexRebalance` callback, must send back what the growing
    components need. The growing components' extra units are multiplied by a factor that falls from 1.5 to 0.9, so
@@ -156,7 +158,13 @@ minimums and a non-zero overall `minAmountOut`, passes `rebalanceNonce()`, and c
    simulation: a stranger's dust `issue` is enough to make a fill funded from `previewRebalance()` fall short.
    `executeRebalance(data, maxAmountsIn)` is the same settlement with a bound on that, reverting
    `RebalanceMovedOn(token, required, maxAmountIn)` when the index has come to need more of a component than the caller
-   said it would deliver.
+   said it would deliver. The fill can land in any block of the auction, and whoever holds shares in that block pays
+   its haircut, so an executor watching the mempool can put its fill ahead of a public redeem or guardian cancel. An
+   exit sent during the auction then pays that holder's share of the executor's take, the same as every holder at
+   settlement; the zap's `expectedNonce` makes such a burn revert, but only after the fill already landed. Leave
+   during the notice, or send the transaction through a private relay (RT-02). A mint is the other way round: shares
+   issued while a rebalance is pending, in the notice or the auction, share the haircut of any fill that lands after
+   them, however it is ordered, and a relay does not change that.
 3. If nobody fills, the auction expires. The owner or guardian can start a fresh snapshot at once; anyone else can
    2 days after the auction's last second.
 4. The owner or guardian can cancel a rebalance. Cancelling a live one makes others wait 2 days from the cancel to
@@ -205,17 +213,25 @@ already holds the components or shares.
   20%, and the largest reaches its full 30% only once its market cap is twice the runner-up's (CR-L01). The supplies
   are the reference figures the configs name, not the tokens' own total supplies.
 - **Rebalance status.** Show `lastRebalance + MIN_REBALANCE_INTERVAL`, and a "rebalance due" button when
-  `canStartRebalance()` is true. That one view answers the whole predicate: the interval has passed, no auction is live
-  (an auction nobody filled keeps its `eta` after `eta + AUCTION_DURATION`, so `pendingRebalance().eta == 0` on its own
-  is the wrong test), and the waits after a cancel and after an unfilled auction are over. Those waits are
-  `REBALANCE_DELAY` from a cancel, and `REBALANCE_DELAY` less one second from an auction's last fillable second,
-  `eta + AUCTION_DURATION` (CR-I02), and hold off everyone but the owner and guardian, who can start straight away.
-  Before starting,
-  `previewTarget(0)` shows the targets and turnover; a turnover below `MIN_TURNOVER` reverts, and so does a snapshot
-  any of whose feeds has not published within that token's `maxStaleness` (`StalePrice(token, updatedAt)`, or WBTC's
-  adapter's own `StaleLeg(feed, updatedAt)` when one of its legs is the late one). Nobody can cause that and nobody can
-  clear it: wait for the feed, or, under the uncapped methodology only, keep that component. During the notice, show
-  `pendingRebalance()` and the auction start; during the auction, `currentMultiplier()` and `previewRebalance()`.
+  `canStartRebalance()` is true. That one view answers the whole predicate: the interval has passed, no auction is
+  live (an auction nobody filled keeps its `eta` after `eta + AUCTION_DURATION`, so `pendingRebalance().eta == 0` on
+  its own is the wrong test), and the waits after a cancel and after an unfilled auction are over. Those waits hold
+  off everyone but the owner and guardian: `REBALANCE_DELAY` from the cancel of a live auction, and `REBALANCE_DELAY`
+  from an unfilled auction's last fillable second, `eta + AUCTION_DURATION`, so after an expiry the owner and guardian
+  have the start to themselves for `REBALANCE_DELAY` less one second (CR-I02). Cancelling an auction that already
+  expired keeps that hold-off rather than restarting it (VR-04). Read `canStartRebalance()` or the `restartAllowedAt`
+  that `RebalanceCancelled` carries rather than computing either wait, and note that `restartAllowedAt()` alone
+  reflects cancels only (RT-08, RT-09). Before starting, `previewTarget(0)` shows the targets and turnover, the value
+  the step trades. A turnover below `MIN_TURNOVER` reverts unless it is non-zero and the basket sits at least
+  `MIN_TURNOVER` from its rule, which `IndexRule.shortfall(tokens, units, methodology, keepMask)` reports: the band
+  lets a component at most double per rebalance, so an index far from its rule can move only in small steps (RT-04). A
+  snapshot also reverts any of whose feeds has not published within that token's `maxStaleness` (`StalePrice(token,
+  updatedAt)`, or WBTC's adapter's own `StaleLeg(feed, updatedAt)` when one of its legs is the late one). Nobody can
+  cause that and nobody can clear it: wait for the feed, or, under the uncapped methodology only, keep that component.
+  During the notice, show `pendingRebalance()` and the auction start; during the auction, `currentMultiplier()` and
+  `previewRebalance()`. While a rebalance is pending, warn before a mint that the new shares share the coming
+  settlement's haircut, whatever the ordering; during the auction, also warn before a burn that the fill can be
+  ordered ahead of it, so the user shares the haircut, and that a private relay is the protection (RT-02).
   `previewRebalance()` prices nothing, so it answers even when `executeRebalance` would revert `SettlementValueTooLow`
   or on a stale feed; `IndexRule.settlementValues` values the two sides it returns.
 - **Rebalance events.** `RebalanceStarted`, `RebalanceCancelled` and `Rebalanced` carry `proposalId` (`proposalCount`,
@@ -277,7 +293,8 @@ already holds the components or shares.
   `claimOf(msg.sender, token)`, and have a contract that redeems for a holder pass the holder as `to`, or the claim is
   the contract's and the holder never collects it.
 - **Show pending proposals.** A token or config change becomes effective only between `ListingProposed` plus
-  `LISTING_DELAY` and 7 days after that (`pendingTokenConfig` shows it; `pendingIsListing` and the event's `listing`
+  `LISTING_DELAY` and 7 days after that (`pendingTokenConfig` shows it, and `pendingTokenDecimals` the decimals it
+  pinned, RT-23; `pendingIsListing` and the event's `listing`
   flag say whether it whitelists the token), and a new guardian only after `GuardianProposed` plus `GUARDIAN_DELAY`.
   Ask `listingPending(token)` and `guardianChangePending()` whether a proposal can still be executed: one that passed
   its window is dead but leaves `listingEta`, `pendingGuardian` and `pendingGuardianEta` set, so those fields on their
@@ -300,38 +317,38 @@ already holds the components or shares.
   them (`forge inspect <contract> abi --json` reproduces them, and the interfaces in `src/interfaces/` carry the
   NatSpec). Read the timing constants (`LISTING_DELAY`, `PROPOSAL_WINDOW`, `MIN_REBALANCE_INTERVAL`, `REBALANCE_DELAY`,
   `AUCTION_DURATION`, the auction multipliers, `MIN_TURNOVER`, `MAX_COMPONENTS`, `MAX_FEED_STALENESS`) on chain rather
-  than hard-coding them. The lists below are a summary as of 2026-09-22. `CompositeFeed` is not in the set: it is an
+  than hard-coding them. The lists below are a summary as of 2026-09-24. `CompositeFeed` is not in the set: it is an
   adapter a config points at, not a contract the app calls. Errors that several contracts raise
   (`ZeroAddress`, `LengthMismatch`, `InvalidMethodology`, `TooFewComponentsForCapped`, `Unauthorized`, `NotIndex`,
   `InvalidRecipient`) are declared once, in `IXindexErrors`, which the factory, rule, token and zap interfaces extend.
 - **Events.** `IndexFactory`: `IndexCreated`, `ListingProposed`, `ListingCancelled`, `TokenConfigured`,
-  `TokenWhitelisted`, `GuardianProposed`, `GuardianChangeCancelled`, `GuardianSet`, `OwnershipTransferStarted`,
-  `OwnershipTransferred`. `IndexToken`: `Issued`, `Redeemed`, `ClaimRecorded`, `Claimed`, `RebalanceStarted`,
-  `RebalanceCancelled`, `Rebalanced`. `IndexZap`: `ZapMint`, `ZapBurn`, `ComponentReturned`.
+  `TokenDecimalsRecorded` (RT-23), `TokenWhitelisted`, `GuardianProposed`, `GuardianChangeCancelled`, `GuardianSet`,
+  `OwnershipTransferStarted`, `OwnershipTransferred`. `IndexToken`: `Issued`, `Redeemed`, `ClaimRecorded`, `Claimed`,
+  `RebalanceStarted`, `RebalanceCancelled`, `Rebalanced`. `IndexZap`: `ZapMint`, `ZapBurn`, `ComponentReturned`.
 - **Watch the ownership handover.** `transferOwnership(new owner)` emits `OwnershipTransferStarted` and
   `acceptOwnership()` emits `OwnershipTransferred`. It is the one admin change with no delay and no guardian veto: the
   second call takes effect in the block it lands in, and the new owner holds every proposal power from that moment.
   Surface both events as they happen, alongside `owner()` and `pendingOwner()`.
 - **Errors.** `IndexZap`: `NotIndex`, `StaleRebalanceNonce`, `Expired`, `ZeroAddress`, `ZeroAmount`,
-  `InvalidRecipient` (the zap, the index, the Universal Router or the PoolManager), `LegCountMismatch`,
-  `BadRoute(i)`, `ShortFill(i, received, required)`, `InsufficientBudget` (over `maxAmountIn`, or over the
-  pass-through leg's own `maxAmountIn` when it sets one), `InsufficientOutput`, `TransferShortfall`. `IndexToken`:
-  `NotFactory`, `NotInitialized`, `InvalidComponents`, `ZeroShares`, `ZeroAddress`, `InvalidRecipient` (also for a
-  share transfer to the index itself, CR-I01), `InvalidSkipMask`, `NothingToClaim`, `TransferAmountMismatch`,
-  `Unauthorized`, `RebalanceTooSoon`, `RebalancePending`, `InvalidKeepMask`, `TurnoverTooLow`, `NoPendingRebalance`,
-  `RebalanceNotReady`, `RebalanceExpired`, `RebalanceUnderfunded`, `RebalanceMovedOn`,
-  `SettlementValueTooLow(inValue, outValue, required)`, the rule's price errors (`startRebalance` and
-  `executeRebalance` both price the moving legs), and OpenZeppelin's ERC-20 and ERC-2612 errors. `IndexFactory`:
-  `EmptyString`, `InvalidComponentCount`, `LengthMismatch`, `TokenNotWhitelisted`, `DuplicateToken`, `InvalidUnits`,
-  `InvalidMethodology`, `TooFewComponentsForCapped`, `IndexAlreadyExists`, `NotAContract`, `NotConfigured`,
-  `SupplyChangeTooLarge(token, inForce, proposed)`, `ListingPending`, `NoPendingListing`, `ListingNotReady`,
-  `ListingExpired`, `NotWhitelisted`, `NoPendingGuardianChange`, `GuardianChangeNotReady`, `GuardianChangeExpired`,
-  `Unauthorized`, `RenounceDisabled`, and the rule's config errors, since proposing and executing a config both run
-  `checkConfig`. `IndexRule`: `ZeroAddress`, `InvalidFeed(token, feed)` (a feed that is zero or has no code; one that
-  has code but does not answer as an aggregator reverts with its own error or none, CR-I10),
-  `InvalidStaleness(token, maxStaleness)`, `InvalidDecimals(token, tokenDecimals, feedDecimals)`,
-  `InvalidPrice(token, answer)`, `StalePrice(token, updatedAt)`, `PriceTooHigh(token, answer)`, `ZeroSupply` (a config
-  with no reference supply),
+  `InvalidRecipient` (the zap, the index, the Universal Router, the PoolManager, the factory or the rule, RT-21),
+  `LegCountMismatch`, `BadRoute(i)`, `ShortFill(i, received, required)`, `InsufficientBudget` (over `maxAmountIn`, or
+  over the pass-through leg's own `maxAmountIn` when it sets one), `InsufficientOutput`, `TransferShortfall`.
+  `IndexToken`: `NotFactory`, `NotInitialized`, `InvalidComponents`, `ZeroShares`, `ZeroAddress`, `InvalidRecipient`
+  (also for a share transfer to the index itself, its factory or its rule, CR-I01 and RT-21), `InvalidSkipMask`,
+  `NothingToClaim`, `TransferAmountMismatch`, `Unauthorized`, `RebalanceTooSoon`, `RebalancePending`,
+  `InvalidKeepMask`, `TurnoverTooLow`, `NoPendingRebalance`, `RebalanceNotReady`, `RebalanceExpired`,
+  `RebalanceUnderfunded`, `RebalanceMovedOn`, `SettlementValueTooLow(inValue, outValue, required)`, the rule's price
+  errors (`startRebalance` and `executeRebalance` both price the moving legs), and OpenZeppelin's ERC-20 and ERC-2612
+  errors. `IndexFactory`: `EmptyString`, `InvalidComponentCount`, `LengthMismatch`, `TokenNotWhitelisted`,
+  `DuplicateToken`, `InvalidUnits`, `InvalidMethodology`, `TooFewComponentsForCapped`, `IndexAlreadyExists`,
+  `NotAContract`, `NotConfigured`, `SupplyChangeTooLarge(token, inForce, proposed)`, `ListingPending`,
+  `NoPendingListing`, `ListingNotReady`, `ListingExpired`, `NotWhitelisted`, `DecimalsChanged(token, proposed,
+  current)` (RT-23), `NoPendingGuardianChange`, `GuardianChangeNotReady`, `GuardianChangeExpired`, `Unauthorized`,
+  `RenounceDisabled`, and the rule's config errors, since proposing and executing a config both run `checkConfig`.
+  `IndexRule`: `ZeroAddress`, `InvalidFeed(token, feed)` (a feed that is zero or has no code; one that has code but
+  does not answer as an aggregator reverts with its own error or none, CR-I10), `InvalidStaleness(token,
+  maxStaleness)`, `InvalidDecimals(token, tokenDecimals, feedDecimals)`, `InvalidPrice(token, answer)`,
+  `StalePrice(token, updatedAt)`, `PriceTooHigh(token, answer)`, `ZeroSupply` (a config with no reference supply),
   `StartPriceTooLow`, `InvalidMethodology`, `TooFewComponentsForCapped`, `DegenerateBasket`, `LengthMismatch`,
   `NotIndex`. `CompositeFeed`, which a config may point at: `ZeroAddress`, `NonPositiveAnswer(feed, answer)`,
   `StaleLeg(feed, updatedAt)`, `InvalidLegStaleness(maxAge)`.
@@ -355,8 +372,10 @@ Every listed token carries a config that the rule validates:
 - **Feed:** a Chainlink-shaped USD aggregator — a contract answering `latestRoundData()` and `decimals()` — whose
   answer, scaled by the token's own decimals, is the token's price in dollars. WBTC has no USD feed, so it is listed
   with a `CompositeFeed` over BTC/USD and WBTC/BTC; that product is also what prices a depeg of the wrapper against
-  the coin it wraps. Both the feed's and the token's decimals must be at most 18, and both are read live on every
-  call, never cached, so a benign proxy repoint is absorbed rather than turned into a halt.
+  the coin it wraps. Both the feed's and the token's decimals must be at most 18. The feed's are read live on every
+  call, never cached, so a benign proxy repoint is absorbed rather than turned into a halt. The token's are read live
+  only by the listing check and recorded when the config comes into force (`tokenDecimals`), so pricing a listed token
+  never calls it, and a component whose contract stops answering is still priced from its feed (RT-01).
 - **Maximum staleness:** the oldest answer the rule will price the token from, in seconds, at most
   `MAX_FEED_STALENESS` (2 days). The policy is the feed's heartbeat plus half an hour: 5,400 for a 1-hour feed and
   88,200 for a 24-hour one. What bounds how far a 24-hour feed's answer can be from the market is its deviation
@@ -524,15 +543,35 @@ figure, including wstETH's, whose own `totalSupply` anyone can move inside a tra
   reconsidering it.
 - A component whose feed is deprecated or stuck takes no config at all, because the listing check prices it. Delisting
   and, under the uncapped methodology, the keep mask are the escapes. Unlike a thin pool, nothing recovers by itself:
-  a deprecated feed needs a replacement config through the listing flow.
+  a deprecated feed needs a replacement config through the listing flow. A component whose token contract stops
+  answering takes no config either, since the check reads its decimals, but needs none: while its feed answers, the
+  keep mask routes around it under both methodologies (RT-01).
+- **A token's decimals are recorded at listing.** A component whose `decimals()` changes afterwards, which only an
+  upgradeable token such as wSOL or AAVE could do, is priced at the recorded decimals, wrong by a power of ten, until
+  a config refresh records the new ones: propose the same config again, which the supply bound allows and which the
+  listing script proposes when the token is named in `LIST` and the recorded and live decimals disagree, and cancel
+  any snapshot in between. If
+  the token rescaled its raw balances as well, its reference supply has to move too, in steps within
+  `MAX_SUPPLY_CHANGE` (RT-01, RT-22). The decimals are pinned when a config is proposed, and `executeListing` refuses
+  one whose token's decimals moved since (`DecimalsChanged`), so the record only ever changes to what was on show
+  during the delay and the guardian's veto, and `TokenDecimalsRecorded` announces every change (RT-23). That also
+  stops a token's admin from repricing it through `decimals()` just before a snapshot, which a live read allowed.
+- **An exit sent during the auction can be overtaken by the fill.** Whoever holds shares in the block that settles
+  pays the auction's haircut, and the executor picks that block, so it can order its fill ahead of a redeem or a
+  guardian cancel it sees in the public mempool. No bound moves: the exiting holder pays the same per-share take as
+  every other holder, within the settlement bound above, though the executor's total grows by that holder's share. But
+  the notice is the only reliable window to leave before a snapshot settles; during the auction, use a private relay
+  (RT-02). Shares minted while a rebalance is pending share the haircut of any fill that lands after them, whatever
+  the ordering, and a relay does not avoid that.
 - **A hooked V4 pool cannot be routed through.** The zap rejects any V4 route whose hops carry hooks or hook data, so
   a component whose only V4 depth sits behind a hook is reachable on V3 only. Every live pool for the seven is
   hookless. Relaxing this means deciding which hooks are safe to call inside a swap, which is a larger question than
   the zap should answer.
 - **A `tokenIn` that calls back into the zap is unsupported**, alongside fee-on-transfer currencies. The zap pre-funds
-  the Universal Router and sweeps it clean within the same `execute`, which is atomic — a short sweep fails the swap
-  and reverts everything — but a currency that hands control to the user mid-transfer is outside what was reasoned
-  about. Mint and burn currencies are the user's choice, so the app should offer only the ones on the list.
+  the Universal Router with exactly a leg's cap and sweeps it back within the same `execute`. The sweep's minimum is
+  zero, so it bounds nothing: the pre-fund is the bound (CR-I14, RT-11). A currency that hands control to the user
+  mid-transfer is outside what was reasoned about. Mint and burn currencies are the user's choice, so the app should
+  offer only the ones on the list.
 - `executeListing` is permissionless and runs the rule's config check again on the stored config before applying it,
   so a feed that went stale or was deprecated during the notice is not whitelisted on a check up to nine days old.
   Nobody can grief that: unlike a pool, a live feed cannot be made to fail the check by a third party. The flip side
@@ -549,7 +588,12 @@ figure, including wstETH's, whose own `totalSupply` anyone can move inside a tra
   funds and takes nothing, holders redeem throughout, and the owner ends it by replacing that guardian: 7 days of
   notice the guardian cannot cancel, since it may only cancel its own removal and not its replacement. Rate-limiting
   the cancel would trade that bounded stall for the guardian's ability to stop a second distorted snapshot in a row,
-  which is what the power is for; this is a trust assumption of the guardian role.
+  which is what the power is for; this is a trust assumption of the guardian role. A guardian can also stall without
+  cancelling: a keep-mask rebalance that leaves only a pair of components active can clear `MIN_TURNOVER` on a sliver
+  of the index, and once filled it restarts `MIN_REBALANCE_INTERVAL` for everyone, so the stall can outlast the
+  guardian's replacement by up to a month and never shows as a cancel. While a guardian replacement is pending, the
+  owner cancels every keep-mask proposal the outgoing guardian starts during its notice, and monitors alert on
+  `RebalanceStarted` with a non-zero `keepMask`, not only on `RebalanceCancelled` (RT-07).
 - A permanently frozen component needs the guardian's keep mask at every rebalance, and under the capped methodology
   its feed must still be fresh, because its market cap scales every other component's weight; its `balanceOf` need
   not be readable.
@@ -678,10 +722,12 @@ Listing components takes two runs of `script/ConfigureWhitelist.s.sol`, or the e
 ```bash
 # owner is a key you hold (testnets and local forks only; a contract owner such as the mainnet Safe cannot sign, and
 # propose mode then reverts with OwnerIsContract: use safe mode below):
-# propose every entry that is not pending and not already listed with exactly its config
-LISTING_MODE=propose FACTORY=0x... WHITELIST=<entries> forge script script/ConfigureWhitelist.s.sol --rpc-url <rpc> --account <owner key> --sender <owner> --broadcast
-# owner is a Safe: print the same proposals as calldata to sign in the Safe app (any account, nothing is broadcast)
-LISTING_MODE=safe FACTORY=0x... WBTC_FEED=0x... WHITELIST=default forge script script/ConfigureWhitelist.s.sol --rpc-url mainnet
+# propose every entry that is not pending and not already listed with exactly its config; a token never listed only
+# when LIST names it
+LISTING_MODE=propose FACTORY=0x... WHITELIST=<entries> LIST=<tokens to list> forge script script/ConfigureWhitelist.s.sol --rpc-url <rpc> --account <owner key> --sender <owner> --broadcast
+# owner is a Safe: print the same proposals as calldata to sign in the Safe app (any account, nothing is broadcast);
+# LIST=all on the launch run only, and unset on every later run
+LISTING_MODE=safe FACTORY=0x... WBTC_FEED=0x... WHITELIST=default LIST=all forge script script/ConfigureWhitelist.s.sol --rpc-url mainnet
 # 2 to 9 days later, from any account: execute every proposal that is due
 LISTING_MODE=execute FACTORY=0x... WBTC_FEED=0x... WHITELIST=default forge script script/ConfigureWhitelist.s.sol --rpc-url mainnet --account deployer --sender <any account> --broadcast
 ```
@@ -701,25 +747,42 @@ Propose mode skips any entry the rule would reject, any entry outside the whitel
 with code, 6 to 18 decimals, no USDC or USDT, a feed with code, a reference supply), and any entry that moves a
 reference supply in force by more than `MAX_SUPPLY_CHANGE`, which the factory would refuse; it logs why. Safe mode
 applies the same checks, because a Safe batch sends every proposal in one transaction and one the factory refuses takes
-the rest down with it (CR-I38). It logs each token's symbol beside its feed's `description()`, and each reference supply
+the rest down with it (CR-I38). It logs each token's symbol beside its feed's `description()` (a token whose `symbol()`
+is not an ABI string, such as a bytes32, shows as `?` rather than stopping the run, RT-25), and each reference supply
 in whole tokens, where a decimals slip shows — read both before signing, because the `description()` is the only
-human-readable evidence of what a feed address actually reports, and the contracts cannot check it. A token the guardian
-delisted gets only `proposeConfig` changes; set `RELIST=<token>[,<token>...]` to propose listing it again, and if a
-config-only proposal for that token is already pending, propose mode says so and the relisting waits until it is
-cancelled. Execute mode never proposes anything, so a listing the guardian cancelled stays cancelled until the owner
-proposes it again on purpose, it executes only a proposal whose pending config is exactly the entry's, and it reports a
-config change that leaves the token delisted as what it is rather than as a listing. It asks the rule first and skips,
-with the reason, a due config the rule now rejects, such as one whose feed went stale during the notice, so one such
-entry no longer aborts the run and leaves every other due proposal unexecuted (CR-I38). `LISTING_MODE=status` is
-read-only: for every entry it logs whether the token is listed with the entry's config and any pending proposal with its
-window. For a local stack: `anvil --fork-url $MAINNET_RPC_URL` and run the same scripts against `http://127.0.0.1:8545`;
-the fork keeps chain id 1, and `.gitignore` keeps those rehearsal records out of git. A rehearsal on a Sepolia fork
-keeps chain id 11155111 in the same way, and `.gitignore` keeps those out too, so a real Sepolia record is added with
-`git add -f` (CR-I40). An ignore rule does not cover a file git already tracks: a rehearsal still overwrites the
-committed `run-latest.json` files, so check `git status` after one and restore them with `git checkout -- broadcast/`.
+human-readable evidence of what a feed address actually reports, and the contracts cannot check it. A token never listed
+gets a first-listing proposal only when it is named in `LIST=<token>[,<token>...]`, or `LIST=all` for every entry of the
+run's `WHITELIST`; any other never-listed entry is skipped with its reason. Nothing on chain records that the guardian
+cancelled a first listing, so a routine refresh with the same list used to propose the vetoed listing again, unlabelled
+among the refreshes, and one missed veto window let anyone's execute run list it (RT-06). Set `LIST` only on the run
+that lists a token, and leave it unset on a routine refresh, so a cancelled first listing stays cancelled until the
+operator names it again. `LIST` never relists a token: one the guardian delisted gets only `proposeConfig` changes;
+set `RELIST=<token>[,<token>...]` to propose listing it again, and if a config-only proposal for that token is already
+pending, propose mode says so and the relisting waits until it is cancelled. A `WHITELIST` that names a token twice
+reverts `DuplicateEntry` in every mode, because safe mode decides every entry against the same state and the second
+proposal would revert the whole Safe batch (RT-24). Propose and safe mode also propose the config in force again for a
+token whose `decimals()` no longer matches the factory's record, which the rule prices it with until a config for it
+is executed, when `LIST` names the token: like a first listing, no entry field asks for it and nothing on chain
+records a veto of the last one, so a routine run skips it, and its label reads `proposeConfig (records decimals 18 ->
+17)` (RT-22). Execute mode never proposes anything. It executes only a proposal whose pending config is exactly
+the entry's, and reports a config change that leaves the token delisted as what it is rather than as a listing. It asks
+the rule first and skips, with the reason, a due config the rule now rejects, such as one whose feed went stale during
+the notice, and a due proposal whose token changed its decimals since it was proposed, which the factory refuses with
+`DecimalsChanged` (`pendingTokenDecimals` shows what was pinned) and which has to be cancelled and proposed again, so
+one such entry no longer aborts the run and leaves every other due proposal unexecuted (CR-I38, RT-22, RT-23).
+`LISTING_MODE=status` is read-only: for every entry it logs whether the token is listed with the entry's config and
+any pending proposal with its window, and flags an entry whose recorded, live or pinned decimals disagree; `status()`
+returns all three in its report. For a local stack: `anvil --fork-url $MAINNET_RPC_URL` and run the same scripts against
+`http://127.0.0.1:8545`; the fork keeps chain id 1, and `.gitignore` keeps those rehearsal records out of git. A
+rehearsal on a Sepolia fork keeps chain id 11155111 in the same way, and `.gitignore` keeps those out too, so a real
+Sepolia record is added with `git add -f` (CR-I40). An ignore rule does not cover a file git already tracks: a
+rehearsal still overwrites the committed `run-latest.json` files, so check `git status` after one and restore them
+with `git checkout -- broadcast/`.
 
-In the Safe app, safe mode's output becomes one Transaction Builder batch: one transaction per logged line, each to the
-factory with value 0 and the line as custom data. Two signers sign it, and one executes it.
+In the Safe app, safe mode's output becomes one Transaction Builder batch. Safe mode prints each proposal as a label
+line, `proposeListing` or `proposeConfig` with the token's symbol and address, followed by its calldata line; each
+calldata line is one transaction to the factory with value 0 and that line as custom data. Read the labels before
+signing: a `proposeListing` line in a routine refresh is a listing (RT-06). Two signers sign it, and one executes it.
 
 ### Operations runbook
 
@@ -727,13 +790,15 @@ No bot runs Xindex, so these duties have owners and deadlines. Watch the events 
 
 | Duty | Starts with | Deadline | Who | How |
 |---|---|---|---|---|
-| Execute a listing or config change | `ListingProposed` | `eta + PROPOSAL_WINDOW` (2 to 9 days after proposing), or it expires silently | anyone, owner signers first | `LISTING_MODE=execute` at the eta, not days later: until it runs, whoever executes first picks the moment the new config takes over, and with it whether a snapshot or a settlement in between reads the old config or the new one (CR-I09). Check with `LISTING_MODE=status`, and `listingPending(token)` for whether a proposal can still be executed |
+| Execute a listing or config change | `ListingProposed` | `eta + PROPOSAL_WINDOW` (2 to 9 days after proposing), or it expires silently | anyone, owner signers first | `LISTING_MODE=execute` at the eta, not days later: until it runs, whoever executes first picks the moment the new config takes over, and with it whether a snapshot or a settlement in between reads the old config or the new one (CR-I09). Check with `LISTING_MODE=status`, and `listingPending(token)` for whether a proposal can still be executed. A proposal whose token changed its decimals since it was proposed is skipped (`DecimalsChanged`): cancel it and propose it again |
 | Veto a hostile listing or config change | `ListingProposed` | before `eta` | guardian or owner | `cancelListing(token)` |
+| Watch a component's decimals | `TokenDecimalsRecorded` after a first listing | before the next snapshot of an index holding the token | owner signers, guardian | a changed record means the token itself changed its `decimals()`; check the token, then cancel any snapshot priced across the change (RT-23) |
+| Watch keep-mask rebalances | `RebalanceStarted` with a non-zero `keepMask` | before `eta` (2 days) | owner signers | a keep mask is a guardian lever; while a guardian replacement is pending, cancel the outgoing guardian's keep-mask proposals, which would otherwise restart `MIN_REBALANCE_INTERVAL` (RT-07) |
 | Check each rebalance snapshot | `RebalanceStarted` | before `eta` (2 days) | guardian | compare `pendingRebalance()` targets with targets from independent prices and the reference supplies in force; `cancelRebalance()` on a mismatch, and on a snapshot the market has since left behind, because the settlement trades at those targets up to three days later |
 | Trigger the monthly rebalance | `lastRebalance + MIN_REBALANCE_INTERVAL` | none, but indexes drift from their rule | anyone | `startRebalance(0)`; on `StalePrice(token, updatedAt)` that token's feed has not published inside its `maxStaleness`, and on WBTC's adapter's `StaleLeg(feed, updatedAt)` or `NonPositiveAnswer(feed, answer)` one of its two legs is the problem. Nobody can clear either and nobody caused it: wait for the feed, or keep the component under the uncapped methodology |
 | Respond to a Wormhole incident | Wormhole pauses or reports an exploit, or wSOL trades below SOL | before any auction that buys wSOL fills | guardian | the rule keeps pricing wSOL at SOL's price, and the settlement check values both sides with the same feed, so nothing on chain notices (CR-L05). `cancelRebalance()` on every index whose pending rebalance buys wSOL, restart with a keep mask on wSOL, and delist wSOL so no new index takes it; holders keep `redeem` and `redeemSkipping` throughout |
 | Rebalance around a frozen component | a paused or blacklisting component, at every rebalance | each auction | guardian | `cancelRebalance()`, then `startRebalance(keepMask)` |
-| Refresh drifting reference supplies | monthly review | when a supply has moved for good | owner Safe | new `MainnetAddresses` values, dated, `LISTING_MODE=safe`; a single change may move a reference supply by at most an order of magnitude, and the script skips one that would not. Every token has one now, wstETH's included, whose own supply moves with every wrap and unwrap |
+| Refresh drifting reference supplies | monthly review | when a supply has moved for good | owner Safe | new `MainnetAddresses` values, dated, `LISTING_MODE=safe` with `LIST` unset, so every label in the batch reads `proposeConfig`; a single change may move a reference supply by at most an order of magnitude, and the script skips one that would not. Every token has one now, wstETH's included, whose own supply moves with every wrap and unwrap |
 | Re-read feed categories | before renewing a config, and monthly | none | owner signers | Chainlink's category for each feed (`script/MainnetAddresses.sol` records them as of 2026-09-23) lives off chain, so no test can pin it; a feed moving to a riskier category is worth reading before its next config |
 | Watch the feeds | continuously | before a feed's `maxStaleness` runs out | app and owner signers | Chainlink deprecates and repoints aggregators. A deprecation announcement is the warning; a replacement config goes through the same 2-day listing flow, so start it before the old feed stops. |
 | Re-check venue depth per leg | monthly review, and before a large mint or burn | none | app | V3 and V4 depth for the same pair move independently; the route is the app's choice, not the contracts' |
@@ -787,7 +852,7 @@ OWNER=<Safe> GUARDIAN=<guardian> UNIVERSAL_ROUTER=0x3A9D48AB9751398BbFa63ad67599
   forge script script/Deploy.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast
 
 # 3. print the listing proposals and sign them as one batch in the Safe app
-LISTING_MODE=safe FACTORY=<factory> WHITELIST=<logged by create> forge script script/ConfigureWhitelist.s.sol --rpc-url sepolia
+LISTING_MODE=safe FACTORY=<factory> WHITELIST=<logged by create> LIST=all forge script script/ConfigureWhitelist.s.sol --rpc-url sepolia
 
 # 4. 2 to 9 days later, from any account
 LISTING_MODE=execute FACTORY=<factory> WHITELIST=<same> forge script script/ConfigureWhitelist.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast

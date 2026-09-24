@@ -387,10 +387,12 @@ contract IndexZap is ReentrancyGuard, IIndexZap {
         if (!FACTORY.isIndex(index)) revert NotIndex(index);
         _checkNonce(index, expectedNonce);
         if (to == address(0)) revert ZeroAddress();
-        // Tokens left in the router can be swept by anyone, and anything sent to the pool manager is a donation.
-        if (to == address(this) || to == index || to == address(ROUTER) || to == POOL_MANAGER) {
-            revert InvalidRecipient(to);
-        }
+        // Tokens left in the router can be swept by anyone, and anything sent to the pool manager is a donation. The
+        // factory and the rule can never move a token on either, so a burn paid to one of them is lost (RT-21).
+        if (
+            to == address(this) || to == index || to == address(ROUTER) || to == POOL_MANAGER || to == address(FACTORY)
+                || to == FACTORY.RULE()
+        ) revert InvalidRecipient(to);
     }
 
     function _checkNonce(address index, uint256 expectedNonce) private view {

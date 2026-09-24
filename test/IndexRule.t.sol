@@ -336,20 +336,64 @@ contract IndexRuleTest is Test {
         rule.price(token);
     }
 
-    /// @dev Decimals are read on every call rather than stored at listing, so an answer and the scale it is read with
-    ///      always come from the same aggregator in the same block. A proxy repointed to one with other decimals
-    ///      therefore reprices correctly instead of being read at the old scale.
-    function test_price_readsDecimalsLive() public {
+    /// @dev A feed's decimals are read on every call rather than stored at listing, so an answer and the scale it is
+    ///      read with always come from the same aggregator in the same block, and a proxy repointed to one with other
+    ///      decimals reprices at once instead of being read at the old scale.
+    function test_price_readsFeedDecimalsLive() public {
         MockERC20 token = new MockERC20("Six", "SIX", 6);
         _listAt(address(token), ONE_DOLLAR, 1);
         assertEq(rule.price(address(token)), usdWad(ONE_DOLLAR, 6));
 
+        market.feedOf(address(token)).setDecimals(FEED_DECIMALS + 2);
+        assertEq(
+            rule.price(address(token)), usdWad(ONE_DOLLAR, 6) / 100, "the same answer, read at the feed's new scale"
+        );
+    }
+
+    /// @dev RT-01 and RT-19. A listed token's decimals are the ones the factory recorded when its config came into
+    ///      force, so pricing it never calls the token: a component whose contract stops answering is still priced from
+    ///      its feed. Only `checkConfig` reads them live. The token changes its decimals before anything is proposed, so
+    ///      a factory that recorded them at the proposal, or as well as at the execution, fails here: neither a proposal
+    ///      nor its cancel moves the record (RT-19, which found the first version of this test changed them only after
+    ///      proposing). A refresh records them when it is executed, a delist keeps the record for the indexes that still
+    ///      hold the token, and a refresh the rule refuses leaves it in force.
+    function test_RT01_RT19_aListedTokenIsPricedWithTheDecimalsRecordedAtListing() public {
+        MockERC20 token = new MockERC20("Six", "SIX", 6);
+        assertEq(factory.tokenDecimals(address(token)), 0, "nothing is recorded before a listing");
+        _listAt(address(token), ONE_DOLLAR, 1);
+        assertEq(factory.tokenDecimals(address(token)), 6, "recorded when the listing came into force");
+
         token.setDecimals(18);
-        assertEq(rule.price(address(token)), usdWad(ONE_DOLLAR, 18), "the same answer, repriced at the new scale");
+        assertEq(rule.price(address(token)), usdWad(ONE_DOLLAR, 6), "the token itself is not read again");
+        IIndexFactory.TokenConfig memory refresh = market.configWith(address(token), ONE_DOLLAR, 1);
+        vm.prank(owner);
+        factory.proposeConfig(address(token), refresh);
+        assertEq(factory.tokenDecimals(address(token)), 6, "a proposal records nothing");
+        assertEq(rule.price(address(token)), usdWad(ONE_DOLLAR, 6), "nor moves the price");
+        vm.prank(guardian);
+        factory.cancelListing(address(token));
+        assertEq(factory.tokenDecimals(address(token)), 6, "nor does its cancel");
+
+        vm.prank(owner);
+        factory.proposeConfig(address(token), refresh);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        vm.expectEmit(true, false, false, true, address(factory));
+        emit IIndexFactory.TokenDecimalsRecorded(address(token), 6, 18);
+        factory.executeListing(address(token));
+        assertEq(factory.tokenDecimals(address(token)), 18, "a config refresh records them again, at execution");
+        assertEq(rule.price(address(token)), usdWad(ONE_DOLLAR, 18));
+
+        vm.prank(guardian);
+        factory.delist(address(token));
+        assertEq(factory.tokenDecimals(address(token)), 18, "delisting keeps the record");
+        assertEq(rule.price(address(token)), usdWad(ONE_DOLLAR, 18), "so indexes holding it still price it");
 
         token.setDecimals(19);
+        refresh = market.configWith(address(token), ONE_DOLLAR, 1);
+        vm.prank(owner);
         vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidDecimals.selector, address(token), 19, FEED_DECIMALS));
-        rule.price(address(token));
+        factory.proposeConfig(address(token), refresh);
+        assertEq(rule.price(address(token)), usdWad(ONE_DOLLAR, 18), "a refused refresh leaves the record in force");
     }
 
     /// @dev There is no looser view path. Nothing about a feed can be griefed by a third party, so a display price
@@ -1705,5 +1749,70 @@ contract IndexRuleTest is Test {
         vm.expectRevert(bytes(""));
         factory.proposeListing(LOW, _config(address(notAFeed), 1));
         assertEq(factory.listingEta(LOW), 0, "nothing is proposed");
+    }
+
+    // ---------------------------------------------------------------------
+    // Red team of 2026-09-24, mutation gaps
+    // ---------------------------------------------------------------------
+
+    /// @dev RT-13. `_price` refuses an answer above MAX_PRICE divided by the token's scale, the bound every overflow
+    ///      argument in the rule rests on. Its only test used an 18-decimal feed on an 18-decimal token, whose scale is
+    ///      one, so a check that forgot the scale passed. Every launch token has an eight-decimal feed and a scale of
+    ///      1e10 or more, where that check lets a price up to MAX_PRICE times the scale through. Each scale below
+    ///      reaches MAX_PRICE exactly at its ceiling and is refused one answer above it.
+    function test_RT13_thePriceCeilingIsAppliedAfterScaling() public {
+        uint256 max = rule.MAX_PRICE();
+        // Scales under an 8-decimal feed: 1e10, 1e19 and 1e20 for WETH, wSOL and WBTC; 1e22 for a 6-decimal token.
+        uint8[4] memory decimals = [18, 9, 8, 6];
+        for (uint256 i = 0; i < decimals.length; ++i) {
+            MockERC20 token = new MockERC20("D", "D", decimals[i]);
+            _listAt(address(token), ONE_DOLLAR, 1);
+            uint256 ceiling = max / 10 ** (36 - FEED_DECIMALS - decimals[i]);
+            market.setPrice(address(token), int256(ceiling));
+            assertEq(rule.price(address(token)), max, "the ceiling itself, reached through the scale");
+
+            market.setPrice(address(token), int256(ceiling + 1));
+            vm.expectRevert(
+                abi.encodeWithSelector(IIndexRule.PriceTooHigh.selector, address(token), int256(ceiling + 1))
+            );
+            rule.price(address(token));
+        }
+    }
+
+    /// @dev RT-17. `_cap` floors a market cap at one wei, so a component with a supply and a price never ranks as
+    ///      worthless. CR-I32's test put the floored cap beside a cap of exactly one wei, where a floor of two weighs
+    ///      the two alike as well, so only removing the floor was pinned, not its value. Beside a cap of three wei the
+    ///      value shows: one against three is 25% and 75%, where two against three would be 40% and 60%.
+    function test_RT17_theCapFloorIsExactlyOneWei() public {
+        address[] memory tokens = new address[](2);
+        tokens[0] = _listWad(0.5e18, 1); // half a wei of market cap: floored
+        tokens[1] = _listWad(3e18, 1); // exactly three wei
+        (uint256[] memory w,,) = rule.weights(tokens, UNCAPPED);
+        assertEq(w[0], 0.25e18, "a sub-wei cap weighs one wei against three");
+        assertEq(w[1], 0.75e18);
+    }
+
+    /// @dev RT-17. `_bound` counts a weight that rounds to zero as one wei, so that component can still take the value
+    ///      the clips move (R23). Every test of it left that component the only one free once the clips were pinned,
+    ///      where any positive weight takes all that is left, so a floor of two passed too. Here a second free
+    ///      component weighs exactly three wei. The first pass pins the heavy component at its ceiling of 2; the second
+    ///      shares the 199 left three to one, 149.25 and 49.75, which puts the zero-weight component under its floor of
+    ///      50 and pins it there; the third gives the other the remaining 149. With a floor of two the second pass
+    ///      shares it three to two, 119.4 and 79.6, inside both bounds, and the rule stops there.
+    function test_RT17_aZeroWeightCountsAsExactlyOneWei() public {
+        address[] memory tokens = new address[](3);
+        // At a WAD price of one dollar a market cap is the raw supply, and these three add up to exactly 1e36.
+        tokens[0] = _listWad(WAD, 1e36 - 3e18 - 1);
+        tokens[1] = _listWad(WAD, 3e18);
+        tokens[2] = _listWad(WAD, 1);
+        (uint256[] memory w,,) = rule.weights(tokens, UNCAPPED);
+        assertEq(w[0], WAD - 4);
+        assertEq(w[1], 3, "a weight of exactly three wei");
+        assertEq(w[2], 0, "and one that rounds to zero");
+
+        (uint256[] memory t,) = rule.targetUnits(tokens, _threeUnits(1e18, 100e18, 100e18), UNCAPPED, 0);
+        assertEq(t[0], 2e18, "the heavy component doubles, the most one rebalance allows");
+        assertEq(t[1], 149e18, "the three-wei component takes the rest");
+        assertEq(t[2], 50e18, "the zero-weight component is pinned at its floor");
     }
 }

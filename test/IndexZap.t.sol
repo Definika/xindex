@@ -22,6 +22,7 @@ import {MockHookToken, ITokenReceiverHook} from "./mocks/MockHookToken.sol";
 import {MockRebalanceExecutor} from "./mocks/MockRebalanceExecutor.sol";
 import {MockMarket} from "./mocks/MockMarket.sol";
 import {MockUniversalRouter} from "./mocks/MockUniversalRouter.sol";
+import {PathLib} from "../src/libraries/PathLib.sol";
 import {PathKey, V4ExactInputParams, V4ExactOutputParams} from "../src/libraries/UniswapV4Types.sol";
 
 contract IndexZapTest is XindexTest {
@@ -736,6 +737,20 @@ contract IndexZapTest is XindexTest {
             zap.mintWithToken(_mintParams(address(index), address(usdc), 1, 1e18, _mintLegs(address(usdc)), sinks[i]));
             vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, sinks[i]));
             zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, _burnLegs(address(usdc)), sinks[i]));
+        }
+        vm.stopPrank();
+    }
+
+    /// @dev RT-21, the zap's half. The factory and the rule can never move a token on, so a burn's payout sent to either
+    ///      was lost; a mint to either already reverted in the index, and now reverts here first.
+    function test_RT21_neitherTheFactoryNorTheRuleIsAValidZapRecipient() public {
+        address[2] memory traps = [address(factory), factory.RULE()];
+        vm.startPrank(alice);
+        for (uint256 i = 0; i < traps.length; ++i) {
+            vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, traps[i]));
+            zap.mintWithToken(_mintParams(address(index), address(usdc), 1, 1e18, _mintLegs(address(usdc)), traps[i]));
+            vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, traps[i]));
+            zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, _burnLegs(address(usdc)), traps[i]));
         }
         vm.stopPrank();
     }
@@ -1603,6 +1618,115 @@ contract IndexZapTest is XindexTest {
         shares = bound(shares, 1e12, 1_000e18);
         (uint256 spent, uint256 out) = _roundTrip(shares);
         assertLe(spent - out, 600 + 1 + 1 + 3);
+    }
+
+    // ---------------------------------------------------------------------
+    // Red team of 2026-09-24, mutation gaps
+    // ---------------------------------------------------------------------
+
+    /// @dev RT-10. A V3 path is a first token followed by whole hops of a fee and a token: 20 + 23k bytes, k at least
+    ///      one. The zap checks only the two ends, so the whole-hops term is what makes those ends the tokens the
+    ///      router swaps: the Universal Router walks a path in 23-byte strides and reads a lone pool from its first 43
+    ///      bytes. The suite tried only a 40-byte path, which the length term refuses anyway, so dropping the stride
+    ///      term, or joining the two terms with `||`, passed every test. Each length either side of a whole number of
+    ///      hops is refused here, and so is a lone token, which is a whole number of hops only by counting none.
+    function test_RT10_aPathIsAFirstTokenAndWholeHops() public {
+        PathShapeProbe probe = new PathShapeProbe();
+        uint256[8] memory lengths = [uint256(20), 42, 43, 44, 64, 65, 66, 89];
+        bool[8] memory valid = [false, false, true, false, false, false, true, true];
+        for (uint256 i = 0; i < lengths.length; ++i) {
+            assertEq(probe.isValidShape(new bytes(lengths[i])), valid[i], vm.toString(lengths[i]));
+        }
+    }
+
+    /// @dev RT-10, through a mint. Each path has the right two ends and a body that is not whole hops: a middle token
+    ///      with a stray byte after it (64 bytes), and a stray byte after the fee (44 bytes). The router would read the
+    ///      first as one pool paid in WETH, not the USDC the zap checked and pre-funded, and the mock router, which
+    ///      reads only the ends, would fill both; only the shape check names them as bad routes.
+    function test_RT10_aMintLegWhoseBodyIsNotWholeHopsIsABadRoute() public {
+        usdc.mint(alice, 200e6);
+        vm.startPrank(alice);
+        usdc.approve(address(zap), 200e6);
+
+        IIndexZap.MintLeg[] memory legs = _mintLegs(address(usdc));
+        legs[0].v3Path = abi.encodePacked(address(wbtc), FEE, address(weth), bytes1(0xff), address(usdc));
+        assertEq(legs[0].v3Path.length, 64);
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadRoute.selector, 0));
+        zap.mintWithToken(_mintParams(address(index), address(usdc), 200e6, 1e18, legs, alice));
+
+        legs = _mintLegs(address(usdc));
+        legs[1].v3Path = abi.encodePacked(address(weth), FEE, bytes1(0x42), address(usdc));
+        assertEq(legs[1].v3Path.length, 44);
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadRoute.selector, 1));
+        zap.mintWithToken(_mintParams(address(index), address(usdc), 200e6, 1e18, legs, alice));
+        vm.stopPrank();
+        assertEq(index.totalSupply(), 0, "nothing was minted");
+    }
+
+    /// @dev RT-10, through a burn. The same shapes on a burn leg are bad routes too, where without the stride term the
+    ///      first passed the check and then failed in `_sellV3` on an out-of-range slice, with no reason given.
+    function test_RT10_aBurnLegWhoseBodyIsNotWholeHopsIsABadRoute() public {
+        _mintFor(alice, 1e18, 200e6);
+        vm.startPrank(alice);
+        index.approve(address(zap), 1e18);
+
+        IIndexZap.BurnLeg[] memory legs = _burnLegs(address(usdc));
+        legs[0].v3Path = abi.encodePacked(address(wbtc), FEE, address(weth), bytes1(0xff), address(usdc));
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadRoute.selector, 0));
+        zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, legs, alice));
+
+        legs = _burnLegs(address(usdc));
+        legs[2].v3Path = abi.encodePacked(address(link), FEE, bytes1(0x42), address(usdc));
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadRoute.selector, 2));
+        zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, legs, alice));
+        vm.stopPrank();
+        assertEq(index.balanceOf(alice), 1e18, "the shares are still alice's");
+    }
+
+    /// @dev RT-15. `ZapMint` and `ZapBurn` name the caller, who paid or whose shares burned, apart from the recipient.
+    ///      Every test of them had the two the same, so an event that swapped them passed. Here alice mints for bob and
+    ///      bob burns for alice.
+    function test_RT15_zapEventsNameTheCallerAndTheRecipientApart() public {
+        usdc.mint(alice, 200e6);
+        vm.startPrank(alice);
+        usdc.approve(address(zap), 200e6);
+        vm.expectEmit(true, true, true, true, address(zap));
+        emit IIndexZap.ZapMint(address(index), alice, bob, address(usdc), NAV_USD6, 1e18);
+        zap.mintWithToken(_mintParams(address(index), address(usdc), 200e6, 1e18, _mintLegs(address(usdc)), bob));
+        vm.stopPrank();
+
+        vm.startPrank(bob);
+        index.approve(address(zap), 1e18);
+        vm.expectEmit(true, true, true, true, address(zap));
+        emit IIndexZap.ZapBurn(address(index), bob, alice, address(usdc), 1e18, NAV_USD6);
+        zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, _burnLegs(address(usdc)), alice));
+        vm.stopPrank();
+        assertEq(usdc.balanceOf(alice), 200e6, "alice paid the basket's price and was paid it back");
+    }
+
+    /// @dev RT-16. A mint leg's delivery is the change in the zap's balance of the component, and ShortFill is
+    ///      load-bearing because the pinned V4 router does not check exact-output delivery. Its test ran with the zap
+    ///      holding none of the component, where the balance afterwards is the change itself, so adding the balance
+    ///      before the swap, or reading the balance alone, passed. Either lets a stray of the component, which anyone
+    ///      can send the zap, hide a short fill that `issue` then covers out of the stray. Here one raw WBTC sits in
+    ///      the zap and the router delivers one short.
+    function test_RT16_aStrayOfTheComponentDoesNotHideAShortFill() public {
+        wbtc.mint(address(zap), 1);
+        router.setMode(MockUniversalRouter.Mode.UnderDeliverExactOut);
+        uint256[] memory need = index.previewIssue(1e18);
+        usdc.mint(alice, 300e6);
+        vm.startPrank(alice);
+        usdc.approve(address(zap), 300e6);
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.ShortFill.selector, 0, need[0] - 1, need[0]));
+        zap.mintWithToken(_mintParams(address(index), address(usdc), 300e6, 1e18, _mintLegs(address(usdc)), alice));
+        vm.stopPrank();
+    }
+}
+
+/// @dev `PathLib` reads calldata, so its shape check is reached through an external call.
+contract PathShapeProbe {
+    function isValidShape(bytes calldata path) external pure returns (bool) {
+        return PathLib.isValidShape(path);
     }
 }
 

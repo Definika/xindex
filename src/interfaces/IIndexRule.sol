@@ -21,6 +21,10 @@ import {IXindexErrors} from "./IXindexErrors.sol";
 ///      below MAX_PRICE once converted. There is no looser view path. Nothing about a feed can be griefed by a third
 ///      party, so a view that skipped the checks would only ever show a dead price as if it were current.
 ///
+///      A listed token's decimals are the ones `IIndexFactory.tokenDecimals` recorded when its config came into force,
+///      so only `checkConfig` ever calls a token itself: a component whose contract stops answering is still priced
+///      from its feed, and a keep mask routes around it under both methodologies (RT-01).
+///
 ///      A token that was never listed has no feed, and every function that prices it reverts InvalidFeed.
 interface IIndexRule is IXindexErrors {
     /// @notice `feed` is unusable for `token`: it is zero or has no code. A contract that has code but does not answer
@@ -135,11 +139,29 @@ interface IIndexRule is IXindexErrors {
     /// @param methodology `Methodology` id.
     /// @param keepMask Bit i set keeps component i's units; bits at or above `tokens.length` are ignored.
     /// @return targets Target units per component.
-    /// @return turnover Value the rebalance sells, as a share of the rebalanced components' value (1e18 = 100%).
+    /// @return turnover Value the rebalance trades, the smaller of what it sells and what it buys, as a share of the
+    ///         rebalanced components' value (1e18 = 100%) (DA-08).
     function targetUnits(address[] calldata tokens, uint256[] calldata units, uint8 methodology, uint256 keepMask)
         external
         view
         returns (uint256[] memory targets, uint256 turnover);
+
+    /// @notice How far a basket holding `units` of `tokens` sits from `methodology`'s weights, before the
+    ///         half-to-double band: the value the rule wants moved out of the rebalanced components that hold more than
+    ///         their weight's share and can still shrink, as a share of the rebalanced components' value (1e18 = 100%).
+    ///         A component held at one raw unit cannot shrink, so an excess it holds is not counted. The band lets a
+    ///         growing component at most double per rebalance, so a basket far from its rule can move only in small
+    ///         steps; `IIndexToken.startRebalance` accepts such a step when this distance clears MIN_TURNOVER (RT-04).
+    ///         Same inputs, snapshot and price checks as {targetUnits}.
+    /// @param tokens Components, in index order.
+    /// @param units Current raw units per 1e18 shares, one per component.
+    /// @param methodology `Methodology` id.
+    /// @param keepMask Bit i set keeps component i out of the measure; bits at or above `tokens.length` are ignored.
+    /// @return distance The value the rule wants moved, as a share of the rebalanced value.
+    function shortfall(address[] calldata tokens, uint256[] calldata units, uint8 methodology, uint256 keepMask)
+        external
+        view
+        returns (uint256 distance);
 
     /// @notice Value of one whole index token at current prices, in USD-WAD. For display and integrations only;
     ///         nothing in Xindex reads it. It reverts while any component's feed is stale, so an app must handle

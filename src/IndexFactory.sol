@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {Ownable, Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IIndexFactory} from "./interfaces/IIndexFactory.sol";
 import {IIndexRule} from "./interfaces/IIndexRule.sol";
@@ -25,7 +26,8 @@ import {IndexToken} from "./IndexToken.sol";
 ///      Token configs. Each listed token carries the price feed, its staleness bound and the supply definition the
 ///      rebalance rule reads. A config shapes future rebalances of every index holding the token, so it changes only
 ///      through the same delayed, cancellable proposal as a listing. Delisting keeps it, because existing indexes still
-///      rebalance with it.
+///      rebalance with it. The token's decimals are recorded beside it when it comes into force, so the rule never has
+///      to call a listed token to price it (RT-01).
 ///
 ///      Addresses. Each index is deployed with CREATE2 from a salt over the creator, the name, the symbol, the
 ///      constituents, the starting units and the methodology, so an address can never hold a different basket or follow
@@ -61,6 +63,10 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
     mapping(address token => TokenConfig config) private _pendingConfig;
     /// @inheritdoc IIndexFactory
     mapping(address token => bool listing) public pendingIsListing;
+    /// @inheritdoc IIndexFactory
+    mapping(address token => uint8 decimals) public tokenDecimals;
+    /// @inheritdoc IIndexFactory
+    mapping(address token => uint8 decimals) public pendingTokenDecimals;
 
     mapping(address => bool) public isIndex;
     mapping(address => address) public creatorOf;
@@ -93,6 +99,8 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         uint256[] calldata units,
         uint8 methodology
     ) external nonReentrant returns (address index) {
+        // The guard is defensive: nothing here runs untrusted code, since validation reads storage and `initialize` of
+        // an EIP-1167 clone of our own implementation makes no external call (RT-18).
         if (bytes(name).length == 0 || bytes(symbol).length == 0) revert EmptyString();
         _validateComponents(tokens, units);
         _validateMethodology(tokens.length, methodology);
@@ -215,10 +223,14 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         if (pending != 0 && block.timestamp <= pending + PROPOSAL_WINDOW) revert ListingPending(token, pending);
         IIndexRule(RULE).checkConfig(token, config);
         _checkSupplyChange(token, config.referenceSupply);
+        // The check above bounded the token's decimals. They are pinned with the proposal, so the record that prices
+        // the token changes only to what was on show during the delay and the guardian's veto (RT-23).
+        uint8 decimals = IERC20Metadata(token).decimals();
 
         uint256 eta = block.timestamp + LISTING_DELAY;
         listingEta[token] = eta;
         pendingIsListing[token] = listing;
+        pendingTokenDecimals[token] = decimals;
         TokenConfig storage next = _pendingConfig[token];
         next.feed = config.feed;
         next.maxStaleness = config.maxStaleness;
@@ -237,6 +249,7 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
     function _dropProposal(address token) private {
         delete listingEta[token];
         delete pendingIsListing[token];
+        delete pendingTokenDecimals[token];
         delete _pendingConfig[token];
         emit ListingCancelled(token);
     }
@@ -253,17 +266,29 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         // without a second look a feed that has since gone stale or dead is whitelisted anyway and stays
         // index-creatable until someone notices (DA-11).
         IIndexRule(RULE).checkConfig(token, proposed);
+        // The check above read the token's decimals live and bounded them; this reads them once more for the record,
+        // which `_price` bounds again on every use. The rule prices with the record from here on, so no read of the
+        // token itself can block a snapshot that keeps the token out of the trade (RT-01). They must still be the
+        // decimals pinned at the proposal: a record that moved during the delay was never on show to the guardian,
+        // and it reprices the token by a power of ten (RT-23).
+        uint8 decimals = IERC20Metadata(token).decimals();
+        uint8 proposedDecimals = pendingTokenDecimals[token];
+        if (decimals != proposedDecimals) revert DecimalsChanged(token, proposedDecimals, decimals);
+        uint8 previousDecimals = tokenDecimals[token];
 
         bool listing = pendingIsListing[token];
         delete listingEta[token];
         delete pendingIsListing[token];
+        delete pendingTokenDecimals[token];
         TokenConfig storage next = _pendingConfig[token];
         TokenConfig storage current = _tokenConfig[token];
         current.feed = next.feed;
         current.maxStaleness = next.maxStaleness;
         current.referenceSupply = next.referenceSupply;
+        tokenDecimals[token] = decimals;
         delete _pendingConfig[token];
         emit TokenConfigured(token, current.feed, current.maxStaleness, current.referenceSupply);
+        if (decimals != previousDecimals) emit TokenDecimalsRecorded(token, previousDecimals, decimals);
 
         if (listing && !isWhitelisted[token]) {
             isWhitelisted[token] = true;
@@ -288,7 +313,8 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         _whitelist.pop();
         delete _whitelistPos[token];
         emit TokenWhitelisted(token, false);
-        // A listing proposal would undo the delist once executed; a config-only change would not.
+        // A listing proposal would undo the delist once executed; a config-only change would not. The eta test is
+        // defensive: `pendingIsListing` is only ever set together with an eta and cleared with it (RT-18).
         if (listingEta[token] != 0 && pendingIsListing[token]) _dropProposal(token);
     }
 

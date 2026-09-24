@@ -24,8 +24,11 @@ import {Methodology} from "./libraries/Methodology.sol";
 ///
 ///      A WAD price is USD with 18 decimals per 1e18 raw units of a token: for a feed of `fd` decimals quoting a token
 ///      of `td` decimals, `answer * 10 ** (36 - fd - td)`. Both decimals are capped at 18, so the exponent never
-///      underflows, and both are read live on every call rather than stored, so a proxy repointed to an aggregator with
-///      other decimals cannot misprice. Units, supplies and prices are all raw, so token decimals cancel out.
+///      underflows. The feed's are read live on every call rather than stored, so a proxy repointed to an aggregator
+///      with other decimals cannot misprice. The token's are read live only by `checkConfig`; a listed token is priced
+///      with the decimals the factory recorded when its config came into force, so the rule never calls a listed token
+///      to price it, and a component whose contract stops answering cannot block a snapshot that keeps it (RT-01).
+///      Units, supplies and prices are all raw, so token decimals cancel out.
 ///
 ///      A WAD price is bounded by MAX_PRICE, so the rule's products stay inside 256 bits. A market cap is supply times
 ///      price over WAD, floored at one wei; weights use only ratios of caps, so that scale cancels out. A holding's
@@ -42,15 +45,15 @@ import {Methodology} from "./libraries/Methodology.sol";
 ///      weight that rounds to zero counts as one wei here, so no clipped value is ever left unplaced, and a share is
 ///      turned back into units rounded up, so the targets buy back every wei the shrinking components release.
 ///
-///      A kept component is not read at all under the uncapped methodology. The capped methodology does read it,
-///      through the same checked `_price` as every other component (DA-06). While no ceiling binds, every weight is the
-///      component's own market-cap weight, so the kept cap divides out of the active set exactly as it does under the
-///      uncapped methodology and cannot move anything. Where a ceiling does bind, it still shapes the components that
-///      do move, because it decides which of them the excess is redistributed to and how large the top ceiling is
-///      (VR-02): a keep mask is then an owner-or-guardian lever over the targets as well as over which component
-///      trades. Excluding kept components from the capped weights instead would leave fewer than
-///      MIN_CAPPED_COMPONENTS ranks to place the remainder in, which is the feasibility condition the capped rule
-///      needs, so the ranking stays and the residue is documented.
+///      A kept component is not read at all under the uncapped methodology. The capped methodology does read its feed,
+///      through the same checked `_price` as every other component (DA-06), but never the token itself (RT-01). While
+///      no ceiling binds, every weight is the component's own market-cap weight, so the kept cap divides out of the
+///      active set exactly as it does under the uncapped methodology and cannot move anything. Where a ceiling does
+///      bind, it still shapes the components that do move, because it decides which of them the excess is
+///      redistributed to and how large the top ceiling is (VR-02): a keep mask is then an owner-or-guardian lever over
+///      the targets as well as over which component trades. Excluding kept components from the capped weights instead
+///      would leave fewer than MIN_CAPPED_COMPONENTS ranks to place the remainder in, which is the feasibility
+///      condition the capped rule needs, so the ranking stays and the residue is documented.
 contract IndexRule is IIndexRule {
     /// @inheritdoc IIndexRule
     /// @dev A price this high makes one raw unit of a token worth 1e20 dollars, which no market reaches; only a broken
@@ -102,6 +105,7 @@ contract IndexRule is IIndexRule {
 
     /// @inheritdoc IIndexRule
     function checkConfig(address token, IIndexFactory.TokenConfig calldata config) external view {
+        // The zero test is defensive, since address(0) has no code; it names the commonest mistake first (RT-18).
         if (config.feed == address(0) || config.feed.code.length == 0) revert InvalidFeed(token, config.feed);
         if (config.maxStaleness == 0 || config.maxStaleness > MAX_FEED_STALENESS) {
             revert InvalidStaleness(token, config.maxStaleness);
@@ -109,9 +113,11 @@ contract IndexRule is IIndexRule {
         // Every check the rule applies when it prices the token, applied once here, so a config that cannot be priced
         // is refused at the proposal and again at execution rather than discovered at the next rebalance. The price
         // itself is not wanted, only the reverts: at listing time there is nothing to compare it against.
+        // The token's decimals are read live here, the one place the rule calls the token, because the factory records
+        // what they were when this config comes into force and every later price uses that record (RT-01).
         // forge-lint: disable-next-line(unused-return)
         // wake-disable-next-line unchecked-return-value
-        _price(token, config.feed, config.maxStaleness);
+        _price(token, config.feed, config.maxStaleness, false);
         // Every token carries a reference supply. Zero once meant "read the token's own total supply", which anyone
         // who can mint or burn the token -- by wrapping, unwrapping, depositing or withdrawing -- could move inside the
         // transaction that snapshots it (CR-M01). Refusing it here also leaves the DA-18 bound with no switch of kind to
@@ -137,7 +143,7 @@ contract IndexRule is IIndexRule {
             // Nothing moved on this leg, so nothing about its feed matters here (DA-14).
             if (amountsOut[i] == 0 && amountsIn[i] == 0) continue;
             IIndexFactory.TokenConfig memory config = IIndexFactory(FACTORY).tokenConfig(tokens[i]);
-            uint256 p = _price(tokens[i], config.feed, config.maxStaleness);
+            uint256 p = _price(tokens[i], config.feed, config.maxStaleness, true);
             outValue += Math.mulDiv(amountsOut[i], p, WAD);
             inValue += Math.mulDiv(amountsIn[i], p, WAD);
         }
@@ -146,7 +152,7 @@ contract IndexRule is IIndexRule {
     /// @inheritdoc IIndexRule
     function price(address token) external view returns (uint256) {
         IIndexFactory.TokenConfig memory config = IIndexFactory(FACTORY).tokenConfig(token);
-        return _price(token, config.feed, config.maxStaleness);
+        return _price(token, config.feed, config.maxStaleness, true);
     }
 
     /// @inheritdoc IIndexRule
@@ -194,6 +200,27 @@ contract IndexRule is IIndexRule {
     }
 
     /// @inheritdoc IIndexRule
+    /// @dev The same snapshot as `targetUnits` up to the band, read before the water-filling consumes the weights.
+    function shortfall(address[] calldata tokens, uint256[] calldata units, uint8 methodology, uint256 keepMask)
+        external
+        view
+        returns (uint256 distance)
+    {
+        uint256 n = tokens.length;
+        if (n != units.length) revert LengthMismatch();
+        (uint256[] memory prices, uint256[] memory caps) = _snapshotMarket(tokens, methodology, keepMask);
+        Basket memory basket = Basket({
+            prices: prices,
+            weights: _weights(caps, methodology),
+            lo: new uint256[](n),
+            hi: new uint256[](n),
+            scale: _valueScale(prices)
+        });
+        (uint256 activeValue, uint256 activeWeight) = _bound(units, new uint256[](n), basket, keepMask);
+        distance = Math.mulDiv(_shortfall(units, basket, activeValue, activeWeight), WAD, activeValue);
+    }
+
+    /// @inheritdoc IIndexRule
     function navPerToken(address index) external view returns (uint256 usdValue) {
         if (!IIndexFactory(FACTORY).isIndex(index)) revert NotIndex(index);
         (address[] memory tokens, uint256[] memory units) = IIndexToken(index).components();
@@ -201,7 +228,7 @@ contract IndexRule is IIndexRule {
         uint256 n = tokens.length;
         for (uint256 i = 0; i < n; ++i) {
             IIndexFactory.TokenConfig memory config = IIndexFactory(FACTORY).tokenConfig(tokens[i]);
-            usdValue += Math.mulDiv(units[i], _price(tokens[i], config.feed, config.maxStaleness), WAD);
+            usdValue += Math.mulDiv(units[i], _price(tokens[i], config.feed, config.maxStaleness, true), WAD);
         }
     }
 
@@ -230,9 +257,13 @@ contract IndexRule is IIndexRule {
 
     /// @dev The one price path. A feed answer becomes USD-WAD per 1e18 raw units, after four checks that every caller
     ///      gets: the answer is positive, it is no older than this token's bound, the feed and the token each report at
-    ///      most MAX_DECIMALS, and the converted price is at most MAX_PRICE. Decimals are read live, never cached, so
-    ///      the answer and its scale always come from the same aggregator in the same block.
-    function _price(address token, address feed, uint32 maxStaleness) private view returns (uint256) {
+    ///      most MAX_DECIMALS, and the converted price is at most MAX_PRICE. The feed's decimals are read live, never
+    ///      cached, so the answer and its scale always come from the same aggregator in the same block. The token's
+    ///      come from the factory's record for a `listed` token and from the token only for `checkConfig`, which
+    ///      validates what the factory then records: a token whose contract stops answering, as one behind a proxy
+    ///      whose implementation is withdrawn does, can then still be priced as a kept component of a capped snapshot,
+    ///      and a keep mask routes around it under both methodologies (RT-01).
+    function _price(address token, address feed, uint32 maxStaleness, bool listed) private view returns (uint256) {
         if (feed == address(0)) revert InvalidFeed(token, feed);
         // Only the answer and its timestamp are read: `roundId` and `answeredInRound` are pre-OCR vestiges.
         // forge-lint: disable-next-line(unused-return)
@@ -243,7 +274,7 @@ contract IndexRule is IIndexRule {
             revert StalePrice(token, updatedAt);
         }
         uint8 feedDecimals = IAggregatorV3(feed).decimals();
-        uint8 tokenDecimals = IERC20Metadata(token).decimals();
+        uint8 tokenDecimals = listed ? IIndexFactory(FACTORY).tokenDecimals(token) : IERC20Metadata(token).decimals();
         if (feedDecimals > MAX_DECIMALS || tokenDecimals > MAX_DECIMALS) {
             revert InvalidDecimals(token, tokenDecimals, feedDecimals);
         }
@@ -285,7 +316,7 @@ contract IndexRule is IIndexRule {
         caps = new uint256[](n);
         for (uint256 i = 0; i < n; ++i) {
             IIndexFactory.TokenConfig memory config = IIndexFactory(FACTORY).tokenConfig(tokens[i]);
-            prices[i] = _price(tokens[i], config.feed, config.maxStaleness);
+            prices[i] = _price(tokens[i], config.feed, config.maxStaleness, true);
             supplies[i] = config.referenceSupply;
             caps[i] = _cap(supplies[i], prices[i]);
         }
@@ -296,12 +327,13 @@ contract IndexRule is IIndexRule {
     ///      capped methodology does read it: its cap sits in the denominator of every other component's weight, so a
     ///      stale feed there would otherwise reshape the targets and the turnover of the components that do trade
     ///      (DA-06). It is therefore priced like every other component, which narrows XA-05: under the capped
-    ///      methodology a keep mask routes around a component that cannot be transferred, not around one whose feed
-    ///      cannot be read. Since the ceilings became caps rather than allocations, a kept cap moves nothing while no
-    ///      ceiling binds, because every weight is then the component's own; where one does bind, it still decides
-    ///      which components the excess is shared with and how large the top ceiling is (VR-02). The supply is the
-    ///      config's reference figure, never a live read, so nothing done inside the snapshot's transaction can move a
-    ///      market cap (CR-M01).
+    ///      methodology a keep mask routes around a component that cannot be transferred, or whose contract no longer
+    ///      answers at all, since pricing it calls only its feed (RT-01), but not around one whose feed cannot be read.
+    ///      Since the ceilings became caps rather than allocations, a kept cap moves nothing while no ceiling binds,
+    ///      because every weight is then the component's own; where one does bind, it still decides which components
+    ///      the excess is shared with and how large the top ceiling is (VR-02). The supply is the config's reference
+    ///      figure, never a live read, so nothing done inside the snapshot's transaction can move a market cap
+    ///      (CR-M01).
     function _snapshotMarket(address[] calldata tokens, uint8 methodology, uint256 keepMask)
         private
         view
@@ -313,7 +345,7 @@ contract IndexRule is IIndexRule {
         for (uint256 i = 0; i < n; ++i) {
             if (_kept(keepMask, i) && methodology == Methodology.UNCAPPED) continue;
             IIndexFactory.TokenConfig memory config = IIndexFactory(FACTORY).tokenConfig(tokens[i]);
-            prices[i] = _price(tokens[i], config.feed, config.maxStaleness);
+            prices[i] = _price(tokens[i], config.feed, config.maxStaleness, true);
             caps[i] = _cap(config.referenceSupply, prices[i]);
         }
     }
@@ -453,6 +485,30 @@ contract IndexRule is IIndexRule {
             }
         }
         turnover = Math.mulDiv(Math.min(sold, bought), WAD, activeValue);
+    }
+
+    /// @dev How far the rebalanced components sit from their rule, before the band: the value the rule wants moved out
+    ///      of the components holding more than their weight's share of `activeValue`. Counted on that side because
+    ///      only it can be stuck: a component held at one raw unit has a floor of one raw unit and can never shrink, so
+    ///      an excess it holds would count forever and hold the RT-04 gate open on every drift, while a growing
+    ///      component can always grow. Components the band cannot shrink are left out, and so are kept components,
+    ///      which carry no weight here. `basket` must have been through `_bound` and not yet through `_fill`, which
+    ///      consumes the weights.
+    function _shortfall(uint256[] calldata units, Basket memory basket, uint256 activeValue, uint256 activeWeight)
+        private
+        pure
+        returns (uint256 total)
+    {
+        total = 0;
+        uint256 n = units.length;
+        for (uint256 i = 0; i < n; ++i) {
+            uint256 w = basket.weights[i];
+            if (w == 0) continue;
+            if (basket.lo[i] == units[i]) continue;
+            uint256 want = Math.mulDiv(activeValue, w, activeWeight);
+            uint256 held = Math.mulDiv(units[i], basket.prices[i], basket.scale);
+            if (held > want) total += held - want;
+        }
     }
 
     /// @dev Fills each rebalanced component's bounds and returns their value and weight at snapshot prices. A kept

@@ -52,19 +52,21 @@ market from `script/testnet/SetupTestMarket.s.sol`.
    findings of 2026-09-16 as `XA..`, the logic review's findings of 2026-09-18 as `LR..`
    (`audit/2026-09-18-logic-review.md`), the deep audit's findings of 2026-09-19 as `DA..`
    (`audit/2026-09-19-deep-audit.md`), the verification review's findings of 2026-09-21 as `VR..`
-   (`audit/2026-09-21-verification-review.md`), and the security audit's findings of 2026-09-23 as `CR-M01`,
+   (`audit/2026-09-21-verification-review.md`), the security audit's findings of 2026-09-23 as `CR-M01`,
    `CR-L01`..`CR-L08` and `CR-I01`..`CR-I41` (`audit/2026-09-23-security-audit.md`), its own ids with the review's
    prefix because M01, L03, L06, L08, I02, I03 and I09 to I12 are already v1 ids; a CR test is named
-   `test_CRM01_...`, `test_CRL03_...` or `test_CRI25_...`. The v1 and R tests live in `test/Security.t.sol` and
-   `test/fork/Security.fork.t.sol`, except the ids a contract test cannot reach: L06 and FR06 are `test_L06_checkOwner`
-   and `test_FR06_checkGuardian` and FR05 the two `test_FR05_*` tests in `test/Scripts.t.sol`, and I09, I10, I11, L08
-   and FR04 are `test/Repo.t.sol` (the known-limitations section, the pinned compiler, the pinned CI toolchain and
-   required fork RPC, and the dependency lock against `.gitmodules`; CI also compares the committed submodule commits,
-   which needs git). An XA, DA, VR or CR test sits in the suite of what it checks, `test/Repo.t.sol` for a repository
-   file, so find it by id; `audit/2026-09-23-triage.md` gives the CR evidence, including the ids fixed by documentation
-   alone. XA-19 to XA-21, XA-32 to XA-37, XA-41, XA-63 and XA-65 have no test of their own, because
-   they changed only tests and mocks or refactored without changing behaviour; neither have the findings fixed by
-   documentation alone, VR-05 among them. `audit/triage.md` gives the evidence for each.
+   `test_CRM01_...`, `test_CRL03_...` or `test_CRI25_...`, and the red team's findings of 2026-09-24 as
+   `RT-01`..`RT-25` (`audit/2026-09-24-red-team.md`), an RT test named `test_RT01_...`. The v1 and R tests live in
+   `test/Security.t.sol` and `test/fork/Security.fork.t.sol`, except the ids a contract test cannot reach: L06 and
+   FR06 are `test_L06_checkOwner` and `test_FR06_checkGuardian` and FR05 the two `test_FR05_*` tests in
+   `test/Scripts.t.sol`, and I09, I10, I11, L08 and FR04 are `test/Repo.t.sol` (the known-limitations section, the
+   pinned compiler, the pinned CI toolchain and required fork RPC, and the dependency lock against `.gitmodules`; CI
+   also compares the committed submodule commits, which needs git). An XA, DA, VR, CR or RT test sits in the suite of
+   what it checks, `test/Repo.t.sol` for a repository file, so find it by id; `audit/2026-09-23-triage.md` gives the
+   CR evidence, including the ids fixed by documentation alone, and `audit/2026-09-24-red-team.md` the RT evidence.
+   XA-19 to XA-21, XA-32 to XA-37, XA-41, XA-63 and XA-65 have no test of their own, because they changed only tests
+   and mocks or refactored without changing behaviour; neither have the findings fixed by documentation alone, VR-05
+   among them. `audit/triage.md` gives the evidence for each.
    `audit/2026-09-19-triage.md` gives the DA evidence: DA-01 and DA-08 in `test/Security.t.sol`; DA-06, DA-09 and
    the DA-22 value fuzz in `test/IndexRule.t.sol`; DA-13, DA-14 and the DA-22 turnover test in
    `test/IndexToken.rebalance.t.sol`; DA-17 in `test/IndexToken.t.sol`, where
@@ -76,6 +78,9 @@ market from `script/testnet/SetupTestMarket.s.sol`.
    The VR tests: VR-01 and VR-02 in `test/IndexRule.t.sol`, VR-03 in `test/Security.t.sol`, VR-04 in
    `test/IndexToken.rebalance.t.sol`, and VR-06 in both `test/IndexRule.t.sol` (the two value-floor tests) and
    `test/mocks/Mocks.t.sol`, where the `ISwapRouter02` calldata pin moved when the zap stopped using that interface.
+   The RT tests sit in the suite of what they check, and `audit/2026-09-24-red-team.md` names each one. RT-02, RT-03,
+   RT-07, RT-08, RT-09, RT-11 and RT-18 were fixed by documentation or comments alone, and RT-20 was already a known
+   limitation; none of them has a test.
    Six ids lost their test on 2026-09-22, when pricing moved to Chainlink and execution to the Universal Router:
    DA-02, R01, R02, R03, XA-01 and XA-09 (which XA-45 shared), and LR-07 lost its test of the rule's own USDC. Their
    mechanism no longer exists, so the tests were removed rather than weakened, and `audit/2026-09-22-v3-retirement.md`
@@ -127,8 +132,8 @@ script/testnet/               SetupTestMarket, FaucetToken and TestAggregator: t
   units: issue, redeem, claims and rebalance settlements. Never compute an amount from balances (balances only verify),
   never add a share price to the token. Prices from `IndexRule` shape rebalance targets, gate a settlement (DA-05) and
   display prices; they never size an amount. A settlement reads every moving leg's feed, so it is not oracle-free, and a
-  stale feed blocks it (CR-I11). No share can be sent to the index itself: `_update` refuses it, because shares the
-  index held could never leave (CR-I01).
+  stale feed blocks it (CR-I11). No share can be sent to the index itself, its factory or its rule: `_update` refuses
+  all three, because none of them can ever move a share on (CR-I01, RT-21).
 - **No admin power over funds, no rebalancing key.** The factory owner proposes listings and token configs
   (`LISTING_DELAY`) and guardian changes (`GUARDIAN_DELAY`), each executable only within `PROPOSAL_WINDOW` afterwards,
   delists, and transfers ownership. The guardian can cancel pending listings, delist, cancel a rebalance, start one with
@@ -140,7 +145,11 @@ script/testnet/               SetupTestMarket, FaucetToken and TestAggregator: t
   since it may only cancel its own removal and not its replacement; it moves no funds and holders redeem throughout. A
   cancel budget was considered and rejected: it would trade that bounded stall for the guardian's ability to stop a
   second distorted snapshot in a row, which is the power's whole purpose. A trust assumption of the role, stated among
-  the guardian's powers and the known limitations, not an oversight to close silently (DA-12). An expired proposal
+  the guardian's powers and the known limitations, not an oversight to close silently (DA-12). The guardian can also
+  stall without a cancel: a keep-mask rebalance that leaves a pair of components active can clear `MIN_TURNOVER` on a
+  sliver of the index, and its fill restarts `MIN_REBALANCE_INTERVAL` for everyone, so the stall can outlast the
+  guardian's replacement by up to a month; while a replacement is pending the owner cancels the outgoing guardian's
+  keep-mask proposals, and monitors watch `RebalanceStarted` with a non-zero `keepMask` (RT-07). An expired proposal
   leaves `pendingGuardian`, `pendingGuardianEta` and `listingEta` set, so `guardianChangePending()` and
   `listingPending(token)` are the views that say whether one is still executable (DA-16).
 - **Fixed constituents, rule-rebalanced units.** The token list is immutable after `initialize`. Units change only in
@@ -155,15 +164,31 @@ script/testnet/               SetupTestMarket, FaucetToken and TestAggregator: t
   a feed's deviation threshold, and which is why the ratio went from 0.85 to 0.875 (CR-L06). That test is a ratio, so
   a market-wide move reprices both sides together and changes nothing; only drift between the legs sold and the legs
   bought can fail it, and it can only refuse a settlement, never enlarge one. Its cost is liveness: a stale feed or a
-  market that really moved makes the auction expire unfilled. An index with less than one whole token outstanding cannot
-  settle at all, because every growing leg rounds to zero while a shrinking one does not. A cancel, and an auction that
-  expired unfilled, hold strangers off for `REBALANCE_DELAY` (`canStartRebalance` answers it; after an expiry it runs
-  from the auction's last fillable second, so it is a second shorter, CR-I02), so the owner and guardian get the first
-  restart; the trigger stays permissionless after that. `canStartRebalance` also answers false for a clone
-  that was never initialized and can never rebalance at all (DA-22). `MIN_TURNOVER` is measured as `min(sold, bought) /
-  activeValue`, so it certifies value actually traded rather than value merely leaving (DA-08). A keep mask routes
-  around a component that cannot be moved: `executeRebalance` reads `balanceOf` only on a component that sends or
-  receives something, so a component whose `balanceOf` reverts is skipped as well as one whose `transfer` does (DA-14).
+  market that really moved makes the auction expire unfilled. Rounding costs liveness too: a growing leg is delivered
+  in whole raw units, rounded down, so on an index whose growing legs come to a few dozen raw units or fewer the
+  rounding alone can fail the ratio, most of all near the auction's 0.9 floor, only 2.5 points above the 0.875 ratio.
+  At the recommended 10,000 raw units of a component per token, a hundredth of a token can be refused in the auction's
+  last hours and a thousandth from about the 1.0 multiplier on, while a tenth settles throughout. An index whose
+  growing legs all round to zero while a shrinking one releases something cannot settle at all, and one so small that
+  no leg moves settles with nothing moved (RT-03). Holders who dislike a snapshot leave during the notice: once the
+  auction is live, an executor watching the mempool can order its fill ahead of a public redeem or guardian cancel, so
+  an exit sent then pays that holder's share of the executor's take like every other holder's, and no nonce can undo a
+  haircut that landed first. Shares issued while a rebalance is pending share the haircut of any fill that lands after
+  them, however the two are ordered (RT-02). A cancel, and an auction that expired unfilled, hold strangers off for
+  `REBALANCE_DELAY` (`canStartRebalance` answers it; after an expiry it runs from the auction's last fillable second,
+  so it is a second shorter, CR-I02), so the owner and guardian get the first restart; the trigger stays
+  permissionless after that. `canStartRebalance` also answers false for a clone that was never initialized and can
+  never rebalance at all (DA-22). `MIN_TURNOVER` is measured as `min(sold, bought) / activeValue`, so it certifies
+  value actually traded rather than value merely leaving (DA-08). A step that trades something but less than that
+  still starts when the basket sits at least `MIN_TURNOVER` from its rule before the band (`IndexRule.shortfall`),
+  because the band lets a growing component at most double: a step alone buys at most that component's own holding,
+  and an index holding a small component far below its weight could otherwise never start the rebalances that walk it
+  back (RT-04). A step that trades nothing is refused however far the basket sits. A keep mask routes around a
+  component that cannot be moved: `executeRebalance` reads `balanceOf` only on a component that sends or receives
+  something, so a component whose `balanceOf` reverts is skipped as well as one whose `transfer` does (DA-14). The
+  rule prices a listed token with the decimals the factory recorded when its config came into force and calls nothing
+  on the token itself to price it, so a capped snapshot, which still reads a kept component's feed, also routes around
+  a component whose contract no longer answers at all, as one behind a withdrawn proxy implementation (RT-01).
 - **Invariant:** for every component `i`,
   `token_i.balanceOf(index) >= floor(totalSupply * units_i / 1e18) + totalClaims[token_i]`.
   Issue rounds up, redeem rounds down, the rule rounds a target's share up into units so the target basket is never
@@ -187,39 +212,46 @@ script/testnet/               SetupTestMarket, FaucetToken and TestAggregator: t
   `decimals`, the `IAggregatorV3` subset) and a `maxStaleness` of at most `MAX_FEED_STALENESS`; the policy is the
   feed's heartbeat plus thirty minutes, which is `STALENESS_1H` or `STALENESS_24H` in `script/MainnetAddresses.sol`.
   There is one price path and `_price` is all of it: a non-zero feed, a positive answer, an `updatedAt` that is neither
-  in the future nor older than that token's own `maxStaleness`, feed and token decimals of at most `MAX_DECIMALS` read
-  live on every call, and a result no larger than `MAX_PRICE` once scaled into USD-WAD (`answer * 10 ** (36 -
+  in the future nor older than that token's own `maxStaleness`, feed and token decimals of at most `MAX_DECIMALS` (the
+  feed's read live on every call, the token's as `IIndexFactory.tokenDecimals` recorded them, which only `checkConfig`
+  reads live), and a result no larger than `MAX_PRICE` once scaled into USD-WAD (`answer * 10 ** (36 -
   feedDecimals - tokenDecimals)`, so a price is dollars per 1e18 raw units and `MAX_PRICE` of 1e56 puts one raw unit at
   1e20 dollars). Views apply the same checks as snapshots, deliberately: nothing about a feed is third-party-griefable,
   so a looser display path would only show a stale answer as if it were current, and `price`, `navPerToken` and
-  `initialUnits` revert `StalePrice` during an outage rather than answering. Decimals are never cached, because the
-  answer and the decimals come from the same aggregator in the same call, so a live read stays correct across a benign
-  proxy repoint while a cached one would only turn it into a halt. A product of two feeds, which is how WBTC is priced
-  (BTC/USD times WBTC/BTC, no WBTC/USD feed exists), goes in an immutable `CompositeFeed` with a bound per leg, because
-  the rule sees a single `maxStaleness` and that one number has to admit the slower leg: a shared bound over
-  `min(updatedAt)` would let a three-hour-stale BTC/USD pass under WBTC/BTC's 24.5-hour allowance. The adapter reports
-  `min(updatedAt)` so the rule's own check still binds the fresher leg's staleness envelope.
-  A feed's identity cannot be verified on-chain: `description()` is a string the aggregator returns, so nothing stops a
-  proposal from naming an aggregator that reports the wrong asset. What guards it is the listing delay, the guardian's
-  veto, `ConfigureWhitelist` logging `description()` at propose time for the signers to read against docs.chain.link,
-  and `test/fork/MainnetAddresses.fork.t.sol` pinning each shipped feed's `description()`, `decimals()`, a positive and
-  fresh answer, and circuit-breaker bounds at least a hundredfold away from its current answer on both sides, which
-  catches the LUNA/Venus stuck-at-a-bound setup before listing rather than at runtime, since a clamped answer is fresh
-  and positive and no check inside `_price` can see it. Chainlink's disabled-breaker sentinels clear that margin by
-  dozens of orders of magnitude, so one rule covers both the disabled case and a mistakenly narrow one. A
-  feed owner can repoint or deprecate an aggregator; that fails closed through `StalePrice`, and a malicious aggregator
-  is full trust in Chainlink, which is the trust this design takes on in exchange for no longer trusting pool depth.
-  Under the capped methodology a kept component is priced with the snapshot price too, because its market cap sits in
-  the denominator of every other component's weight: under capped a keep mask routes around a component that cannot be
-  transferred, not around one whose feed is stale, while under uncapped a kept component is not read at all (DA-06,
-  narrowing XA-05). `executeListing` is permissionless and re-runs `checkConfig` on the stored config before applying
-  it, so a feed that went stale or was deprecated during the notice is not whitelisted on a validation up to nine days
-  old (DA-11). Nobody can grief that: unlike a pool nobody can make a live feed fail `checkConfig`, which is the half
-  of DA-11 that the move to Chainlink closes rather than re-targets.
-  A stale feed halts the money path for every index holding that token, and under capped a keep mask cannot route
-  around it. The 24-hour feeds (wstETH/USD, SOL/USD, WBTC/BTC) are the exposure: a settlement may be valued on a price
-  up to 24.5 hours old, bounded by that feed's 0.5% deviation threshold, which is what makes the lag tolerable. This is
-  a known limitation, stated in the README, not an oversight.
+  `initialUnits` revert `StalePrice` during an outage rather than answering. A feed's decimals are never cached, because
+  the answer and the decimals come from the same aggregator in the same call, so a live read stays correct across a
+  benign proxy repoint while a cached one would only turn it into a halt. A token's are recorded, by `executeListing`
+  right after `checkConfig` bounded them and again at every config refresh, because a live read of the token is the one
+  call a component whose contract stops answering can fail, and under capped it failed every snapshot that kept that
+  component (RT-01); a standard ERC-20's decimals never change. They are pinned when the config is proposed, and
+  `executeListing` reverts `DecimalsChanged` if the token's decimals moved since, so the record changes only to what
+  was on show during the delay and the guardian's veto; `TokenDecimalsRecorded` announces each change (RT-23). A
+  product of two feeds, which is how WBTC is priced (BTC/USD times WBTC/BTC, no WBTC/USD feed exists), goes in an
+  immutable `CompositeFeed` with a bound per leg, because the rule sees a single `maxStaleness` and that one number
+  has to admit the slower leg: a shared bound over `min(updatedAt)` would let a three-hour-stale BTC/USD pass under
+  WBTC/BTC's 24.5-hour allowance. The adapter reports `min(updatedAt)` so the rule's own check still binds the fresher
+  leg's staleness envelope. A feed's identity cannot be verified on-chain: `description()` is a string the aggregator
+  returns, so nothing stops a proposal from naming an aggregator that reports the wrong asset. What guards it is the
+  listing delay, the guardian's veto, `ConfigureWhitelist` logging `description()` at propose time for the signers to
+  read against docs.chain.link, and `test/fork/MainnetAddresses.fork.t.sol` pinning each shipped feed's
+  `description()`, `decimals()`, a positive and fresh answer, and circuit-breaker bounds at least a hundredfold away
+  from its current answer on both sides, which catches the LUNA/Venus stuck-at-a-bound setup before listing rather
+  than at runtime, since a clamped answer is fresh and positive and no check inside `_price` can see it. Chainlink's
+  disabled-breaker sentinels clear that margin by dozens of orders of magnitude, so one rule covers both the disabled
+  case and a mistakenly narrow one. A feed owner can repoint or deprecate an aggregator; that fails closed through
+  `StalePrice`, and a malicious aggregator is full trust in Chainlink, which is the trust this design takes on in
+  exchange for no longer trusting pool depth. Under the capped methodology a kept component is priced with the
+  snapshot price too, because its market cap sits in the denominator of every other component's weight: under capped a
+  keep mask routes around a component that cannot be transferred or no longer answers at all (RT-01), not around one
+  whose feed is stale, while under uncapped a kept component is not read at all (DA-06, narrowing XA-05).
+  `executeListing` is permissionless and re-runs `checkConfig` on the stored config before applying it, so a feed that
+  went stale or was deprecated during the notice is not whitelisted on a validation up to nine days old (DA-11).
+  Nobody can grief that: unlike a pool nobody can make a live feed fail `checkConfig`, which is the half of DA-11 that
+  the move to Chainlink closes rather than re-targets. A stale feed halts the money path for every index holding that
+  token, and under capped a keep mask cannot route around it. The 24-hour feeds (wstETH/USD, SOL/USD, WBTC/BTC) are
+  the exposure: a settlement may be valued on a price up to 24.5 hours old, bounded by that feed's 0.5% deviation
+  threshold, which is what makes the lag tolerable. This is a known limitation, stated in the README, not an
+  oversight.
 - **Executors are untrusted.** Tokens and the callback go only to `msg.sender`, every mutating entry point shares the
   reentrancy guard, and state is written before any rebalance transfer. `executeRebalance(bytes)` settles whatever the
   supply in the settling block requires; the `executeRebalance(bytes, uint256[] maxAmountsIn)` overload bounds that and
@@ -275,7 +307,9 @@ script/testnet/               SetupTestMarket, FaucetToken and TestAggregator: t
   component
   whose feed is deprecated or stuck takes no config at all, because `checkConfig` runs `_price`: delisting and, under
   uncapped, the keep mask are the escapes, and unlike DA-07's dead pool nothing recovers by itself, so a deprecated
-  feed needs a replacement config through the listing flow. `initialUnits` takes `startPriceUsd` in USD-WAD, and an
+  feed needs a replacement config through the listing flow. Nor does a component whose contract stops answering,
+  because `checkConfig` reads its decimals live; it needs none, since the keep mask routes around it under both
+  methodologies while its feed still answers (RT-01). `initialUnits` takes `startPriceUsd` in USD-WAD, and an
   index should start priced at roughly 10,000 raw units of every component or more, which for WBTC at 110k USD is
   about 11 USD a token: a coarser index token makes one raw unit of a component a
   larger share of it, and `initialUnits` reverts `StartPriceTooLow` rather than flooring a component at one raw unit

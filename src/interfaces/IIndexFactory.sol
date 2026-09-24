@@ -46,6 +46,11 @@ interface IIndexFactory is IXindexErrors {
     event ListingCancelled(address indexed token);
     /// @notice An executed proposal put this config in force for `token`.
     event TokenConfigured(address indexed token, address feed, uint32 maxStaleness, uint256 referenceSupply);
+    /// @notice An executed proposal changed the decimals the rule prices `token` with ({tokenDecimals}), from
+    ///         `previousDecimals` (zero before a first listing) to `decimals`. Emitted only when the record changes,
+    ///         so after a first listing it marks a token whose own `decimals()` moved, which reprices it by a power of
+    ///         ten (RT-23).
+    event TokenDecimalsRecorded(address indexed token, uint8 previousDecimals, uint8 decimals);
     /// @notice `token` was whitelisted (`allowed`) or delisted.
     event TokenWhitelisted(address indexed token, bool allowed);
     /// @notice A change to `newGuardian` was proposed. It can be executed from `eta` until `eta + PROPOSAL_WINDOW`.
@@ -86,6 +91,10 @@ interface IIndexFactory is IXindexErrors {
     error ListingExpired(address token, uint256 deadline);
     /// @notice {delist} for a token that is not whitelisted.
     error NotWhitelisted(address token);
+    /// @notice `token` reported `proposed` decimals when its pending proposal was made and reports `current` now. The
+    ///         proposal cannot be executed: cancel it, or let it expire, and propose it again, so the new decimals go
+    ///         through the delay (RT-23).
+    error DecimalsChanged(address token, uint8 proposed, uint8 current);
     /// @notice No guardian change is pending.
     error NoPendingGuardianChange();
     /// @notice The pending guardian change can be executed from `eta`.
@@ -121,8 +130,8 @@ interface IIndexFactory is IXindexErrors {
     function RULE() external view returns (address);
 
     /// @notice Address that, alongside the owner, can cancel pending listings and rebalances, delist tokens, start a
-    ///         rebalance with a keep mask on any index, and start one before an index's `restartAllowedAt`. May be
-    ///         zero.
+    ///         rebalance with a keep mask on any index, and start one while strangers are held off after a cancel or
+    ///         an unfilled auction (RT-08). May be zero.
     function guardian() external view returns (address);
 
     /// @notice Guardian the last proposed change names. It stays set after that proposal expires, so on its own it does
@@ -152,9 +161,20 @@ interface IIndexFactory is IXindexErrors {
     ///         do from its eta, so until then the previous config is what a snapshot or a settlement reads.
     function tokenConfig(address token) external view returns (TokenConfig memory);
 
+    /// @notice Decimals `token` reported when its config last came into force, read by {executeListing} once the rule
+    ///         had checked them, and equal to what the token reported when that config was proposed (RT-23). The rule
+    ///         prices a listed token with this record instead of calling the token, so a component whose contract
+    ///         stops answering can still be kept out of a capped rebalance (RT-01). Zero for a token never listed.
+    function tokenDecimals(address token) external view returns (uint8);
+
     /// @notice Configuration the last proposal for `token` carries, pending or expired; empty once it is executed or
     ///         cancelled. {listingPending} says whether {executeListing} can still apply it.
     function pendingTokenConfig(address token) external view returns (TokenConfig memory);
+
+    /// @notice Decimals `token` reported when its last proposal, pending or expired, was made, pinned with it:
+    ///         {executeListing} reverts DecimalsChanged if the token reports others by then, so a guardian reviewing
+    ///         the proposal sees the decimals it would record (RT-23). Zero once the proposal is executed or cancelled.
+    function pendingTokenDecimals(address token) external view returns (uint8);
 
     /// @notice Whether a proposed guardian change can still be executed. A proposal that passed its PROPOSAL_WINDOW is
     ///         dead but leaves `pendingGuardian` and `pendingGuardianEta` set, so those alone read as pending forever
@@ -215,16 +235,17 @@ interface IIndexFactory is IXindexErrors {
     ) external returns (address index);
 
     /// @notice Owner only. Starts the delay after which `token` is whitelisted with `config`, or, for a token that is
-    ///         already listed, after which its config is replaced. The rule validates the config first. An expired
-    ///         proposal can be proposed again.
+    ///         already listed, after which its config is replaced. The rule validates the config first, and the token's
+    ///         decimals are pinned with the proposal (RT-23). An expired proposal can be proposed again.
     /// @param token Token to list; must have code.
     /// @param config Market-data config, checked with `IIndexRule.checkConfig`.
     function proposeListing(address token, TokenConfig calldata config) external;
 
     /// @notice Owner only. Starts the delay after which `config` replaces the config in force for `token`, which must
     ///         have been listed, without whitelisting it: a delisted token keeps receiving config refreshes for the
-    ///         indexes that still hold it. The rule validates the config first. Reverts NotConfigured for a token never
-    ///         listed.
+    ///         indexes that still hold it. The rule validates the config first, and the token's decimals are pinned
+    ///         with the proposal (RT-23); proposing the config in force again is how a record whose token changed its
+    ///         decimals catches up. Reverts NotConfigured for a token never listed.
     /// @param token Listed or delisted token whose config changes.
     /// @param config Replacement config, checked with `IIndexRule.checkConfig`.
     function proposeConfig(address token, TokenConfig calldata config) external;
@@ -233,9 +254,11 @@ interface IIndexFactory is IXindexErrors {
     /// @param token Token whose proposal is dropped.
     function cancelListing(address token) external;
 
-    /// @notice Permissionless between the proposal's eta and eta + PROPOSAL_WINDOW. Applies the proposed config and,
-    ///         for a {proposeListing} proposal, whitelists the token if it is not listed. The rule checks the stored
-    ///         config again first, so one whose feed has since gone stale is not applied (DA-11).
+    /// @notice Permissionless between the proposal's eta and eta + PROPOSAL_WINDOW. Applies the proposed config,
+    ///         records the token's decimals ({tokenDecimals}) and, for a {proposeListing} proposal, whitelists the
+    ///         token if it is not listed. The rule checks the stored config again first, so one whose feed has since
+    ///         gone stale is not applied (DA-11), and the token must still report the decimals it reported when the
+    ///         proposal was made, or this reverts DecimalsChanged (RT-23).
     /// @dev A config comes into force when this runs, not at its eta, and anyone can run it. Between the eta and the
     ///      first call, both the config in force and the one due have passed the delay and the guardian's veto, and the
     ///      first caller decides which of them prices a snapshot or a settlement: a stranger can execute a due config

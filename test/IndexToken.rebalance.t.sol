@@ -12,6 +12,8 @@ import {IIndexRule} from "../src/interfaces/IIndexRule.sol";
 import {IIndexToken} from "../src/interfaces/IIndexToken.sol";
 import {IRebalanceExecutor} from "../src/interfaces/IRebalanceExecutor.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {Methodology} from "../src/libraries/Methodology.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockMarket} from "./mocks/MockMarket.sol";
 import {MockPausableToken} from "./mocks/MockPausableToken.sol";
@@ -753,6 +755,253 @@ contract IndexTokenRebalanceTest is Test {
         assertEq(_units(index)[1], 100e18, "and its units are unchanged");
     }
 
+    /// @dev RT-01, DA-14's capped twin. A capped snapshot prices a kept component, because its market cap sits under
+    ///      every other component's weight (DA-06), and the rule read the component's decimals from the token to do
+    ///      it. A component whose contract stops answering altogether, as one behind a proxy whose implementation is
+    ///      withdrawn does, made every capped start revert, the keep mask's included, and no config change could
+    ///      help, since `checkConfig` reads the token too. The rule now prices a listed token with the decimals the
+    ///      factory recorded at listing and calls only its feed.
+    function test_RT01_aCappedKeepMaskRoutesAroundAComponentThatNoLongerAnswers() public {
+        IndexToken capped = IndexToken(factory.createIndex("Capped", "CAP", tokens, startUnits, Methodology.CAPPED));
+        _issue(capped, alice, SHARES);
+        pausable.setPaused(true);
+        pausable.setReadsBroken(true);
+        // No ERC-20 read of the component answers, its decimals included, so nothing below can be reading it.
+        vm.expectRevert(bytes("reads broken"));
+        pausable.decimals();
+
+        vm.warp(capped.lastRebalance() + capped.MIN_REBALANCE_INTERVAL());
+        vm.prank(guardian);
+        capped.startRebalance(1 << 1); // keep the dead component
+        (uint256 eta,,) = capped.pendingRebalance();
+        vm.warp(eta);
+
+        (,, uint256[] memory amountsOut, uint256[] memory amountsIn) = capped.previewRebalance();
+        assertEq(amountsOut[1], 0, "the kept component neither sends");
+        assertEq(amountsIn[1], 0, "nor receives");
+        assertGt(amountsOut[0] + amountsIn[0], 0, "while the others trade");
+
+        executor.execute(capped, "");
+        assertEq(capped.rebalanceNonce(), 1, "a capped index rebalances around a component that no longer answers");
+        assertEq(_units(capped)[1], 100e18, "and leaves its units alone");
+    }
+
+    /// @dev RT-01, the rule's other pricing paths. The capped start above reaches only the snapshot, and a settlement
+    ///      skips a kept leg before pricing it (DA-14), so each remaining path that prices a listed token is held to
+    ///      the same answer once the token stops answering: the settlement's valuation of a leg that does move, the
+    ///      index price, the weights and the starting units.
+    function test_RT01_everyPricingPathIgnoresTheTokenItself() public {
+        IIndexRule rule = IIndexRule(factory.RULE());
+        uint256 nav = rule.navPerToken(address(index));
+        (uint256[] memory w,,) = rule.weights(tokens, Methodology.CAPPED);
+        uint256[] memory start = rule.initialUnits(tokens, Methodology.CAPPED, 100e18);
+        uint256[] memory out = new uint256[](tokens.length);
+        uint256[] memory none = new uint256[](tokens.length);
+        out[1] = 1e18;
+        (uint256 outValue,) = rule.settlementValues(tokens, out, none);
+
+        pausable.setReadsBroken(true);
+        assertEq(rule.navPerToken(address(index)), nav, "the index price");
+        (uint256[] memory w2,,) = rule.weights(tokens, Methodology.CAPPED);
+        assertEq(w2, w, "the weights");
+        assertEq(rule.initialUnits(tokens, Methodology.CAPPED, 100e18), start, "the starting units");
+        (uint256 outValue2,) = rule.settlementValues(tokens, out, none);
+        assertEq(outValue2, outValue, "and the settlement's valuation of the dead component's leg");
+    }
+
+    /// @dev RT-04, the rule's half. The fixture's rule wants the first component at 60% of the basket and holds it at
+    ///      20%, so the basket sits 40% from its rule while the band lets this step trade only 20%. Keeping the first
+    ///      component leaves four equal holdings the rule weighs equally, so nothing is short.
+    function test_RT04_shortfallIsTheDistanceToTheRuleBeforeTheBand() public view {
+        IIndexRule rule = IIndexRule(factory.RULE());
+        uint256[] memory units = _units(index);
+        (, uint256 turnover) = rule.targetUnits(tokens, units, 0, 0);
+        assertEq(turnover, 0.2e18, "the step the band allows");
+        assertEq(rule.shortfall(tokens, units, 0, 0), 0.4e18, "the distance the rule wants closed");
+        assertEq(rule.shortfall(tokens, units, 0, 1 << 0), 0, "the kept component is not counted");
+    }
+
+    function test_RT04_shortfallRefusesMismatchedLengths() public {
+        IIndexRule rule = IIndexRule(factory.RULE());
+        vm.expectRevert(IXindexErrors.LengthMismatch.selector);
+        rule.shortfall(tokens, new uint256[](1), 0, 0);
+    }
+
+    /// @dev RT-04. MIN_TURNOVER measured the band-clipped step alone, and the band lets a growing component at most
+    ///      double, so a step buys at most that component's own holding. An index holding 0.05% of the component its
+    ///      rule wants at 60% could therefore never start a rebalance, for a stranger, the owner or the guardian, and
+    ///      stayed off its rule for good. The gate now also accepts a step that trades something when the basket sits at
+    ///      least MIN_TURNOVER from its rule, and each settlement doubles the component again.
+    function test_RT04_aBasketFarFromItsRuleStartsThoughEachStepIsSmall() public {
+        uint256[] memory units = new uint256[](5);
+        (units[0], units[1], units[2], units[3], units[4]) = (0.2e18, 100e18, 100e18, 100e18, 100e18);
+        IndexToken stuck = IndexToken(factory.createIndex("Stuck", "STK", tokens, units, 0));
+        _issue(stuck, alice, SHARES);
+
+        vm.warp(stuck.lastRebalance() + stuck.MIN_REBALANCE_INTERVAL());
+        (, uint256 turnover) = stuck.previewTarget(0);
+        assertLt(turnover, stuck.MIN_TURNOVER(), "the step alone is below the gate");
+        assertGt(turnover, 0, "but it trades something");
+        uint256 distance = IIndexRule(factory.RULE()).shortfall(tokens, units, 0, 0);
+        assertGt(distance, 0.59e18, "while the basket sits almost 60% from its rule");
+
+        uint256 eta = _start(stuck);
+        (,, uint256[] memory targets) = stuck.pendingRebalance();
+        assertEq(targets[0], 0.4e18, "the snapshot doubles the component the rule wants");
+        vm.warp(eta);
+        executor.execute(stuck, "");
+        // Filled at the opening multiplier, the growth settles at 1.5 times: 0.2 + 1.5 * 0.2.
+        assertEq(_units(stuck)[0], 0.5e18, "and the fill delivers it");
+        _assertBacked(stuck);
+
+        _start(stuck);
+        (,, targets) = stuck.pendingRebalance();
+        assertEq(targets[0], 1e18, "the next rebalance doubles it again");
+    }
+
+    /// @dev RT-04, reviewed. A component held at one raw unit has a floor of one raw unit and can never shrink, so an
+    ///      excess it holds is a distance no rebalance closes. Measured on the growing side it kept the gate open on
+    ///      every later drift: here one raw unit worth 1% of the index against a 0.2% weight, then a routine 0.4% supply
+    ///      refresh, let a stranger start a 0.1% step the gate exists to refuse. The distance is measured on the side
+    ///      that sells, over components the band can still shrink, which leaves the stuck unit out.
+    function test_RT04_aComponentStuckAtOneRawUnitDoesNotHoldTheGateOpen() public {
+        address[] memory coarse = new address[](3);
+        coarse[0] = _listNew(6, 10_000e8, 400_800); // one raw unit is a cent; 0.2% of the rule
+        coarse[1] = _listNew(18, 1e8, 1e24);
+        coarse[2] = _listNew(18, 1e8, 1e24);
+        uint256[] memory units = new uint256[](3);
+        (units[0], units[1], units[2]) = (1, 0.495e18, 0.495e18);
+        IndexToken idx = IndexToken(factory.createIndex("Coarse", "CRS", coarse, units, Methodology.UNCAPPED));
+        IIndexRule rule = IIndexRule(factory.RULE());
+
+        vm.warp(idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL());
+        market.setPrice(coarse[0], 10_000e8);
+        market.setPrice(coarse[1], 1e8);
+        market.setPrice(coarse[2], 1e8);
+        (, uint256 turnover) = idx.previewTarget(0);
+        assertEq(turnover, 0, "the only excess sits in a unit that cannot shrink");
+        assertEq(rule.shortfall(coarse, units, Methodology.UNCAPPED, 0), 0, "and the distance leaves it out");
+
+        // A routine refresh moves one weight by 0.4%: a small step between the two free components, which the gate
+        // refuses, as it did before RT-04, since nothing the band can close sits 0.5% from the rule.
+        IIndexFactory.TokenConfig memory refresh = market.configWith(coarse[1], 1e8, 1.004e24);
+        vm.prank(owner);
+        factory.proposeConfig(coarse[1], refresh);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        factory.executeListing(coarse[1]);
+        market.setPrice(coarse[0], 10_000e8);
+        market.setPrice(coarse[2], 1e8);
+        (, turnover) = idx.previewTarget(0);
+        assertGt(turnover, 0, "the step trades something");
+        assertLt(turnover, idx.MIN_TURNOVER(), "but less than the gate");
+        assertLt(rule.shortfall(coarse, units, Methodology.UNCAPPED, 0), idx.MIN_TURNOVER(), "as does the distance");
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, turnover));
+        idx.startRebalance(0);
+    }
+
+    /// @dev RT-04, reviewed. The distance a keep-mask start is measured by leaves the kept component out, as its targets
+    ///      do. Measured over the whole basket instead, a far-off kept component would let a guardian start any sliver:
+    ///      here the kept component sits 40% from its rule while the rebalanced four sit 0.075% from theirs.
+    function test_RT04_aKeepMaskStartIsMeasuredOverTheRebalancedComponentsOnly() public {
+        uint256[] memory units = new uint256[](5);
+        (units[0], units[1], units[2], units[3], units[4]) = (100e18, 100e18, 100e18, 100e18, 100.4e18);
+        IndexToken idx = IndexToken(factory.createIndex("Kept", "KPT", tokens, units, Methodology.UNCAPPED));
+        _issue(idx, alice, SHARES);
+        vm.warp(idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL());
+        (, uint256 turnover) = idx.previewTarget(1 << 0);
+        assertGt(turnover, 0, "the rebalanced four trade a little");
+        assertLt(IIndexRule(factory.RULE()).shortfall(tokens, units, 0, 1 << 0), idx.MIN_TURNOVER());
+        assertGt(
+            IIndexRule(factory.RULE()).shortfall(tokens, units, 0, 0), idx.MIN_TURNOVER(), "the whole basket does not"
+        );
+        vm.prank(guardian);
+        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, turnover));
+        idx.startRebalance(1 << 0);
+    }
+
+    /// @dev RT-04, reviewed. Under the capped methodology a kept component still weighs in the snapshot, so the distance
+    ///      is the rebalanced components' distance from their weights renormalised over those components, which the
+    ///      uncapped case, whose kept caps are zeroed before weighting, could not tell apart from weights over the whole.
+    ///      The fixture's capped weights are 30% and 17.5% four times; keeping the second leaves 30% against 52.5%.
+    function test_RT04_aCappedKeepMaskRenormalisesTheWeights() public view {
+        IIndexRule rule = IIndexRule(factory.RULE());
+        uint256[] memory units = _units(index);
+        (uint256[] memory w,,) = rule.weights(tokens, Methodology.CAPPED);
+        uint256 activeWeight = 0;
+        uint256 activeValue = 0;
+        for (uint256 i = 0; i < 5; ++i) {
+            if (i == 1) continue;
+            activeWeight += w[i];
+            activeValue += units[i] * rule.price(tokens[i]);
+        }
+        uint256 over = 0;
+        for (uint256 i = 0; i < 5; ++i) {
+            if (i == 1) continue;
+            uint256 want = Math.mulDiv(activeValue, w[i], activeWeight);
+            uint256 held = units[i] * rule.price(tokens[i]);
+            if (held > want) over += held - want;
+        }
+        uint256 expected = Math.mulDiv(over, WAD, activeValue);
+        assertApproxEqAbs(rule.shortfall(tokens, units, Methodology.CAPPED, 1 << 1), expected, 1e3);
+        assertApproxEqAbs(expected, 0.113636363636363636e18, 1e3, "three of 100 against 84.85 each, over 400");
+    }
+
+    /// @dev RT-04, reviewed. Under the uncapped methodology a kept component is not read at all, so a kept component
+    ///      whose feed went stale blocks neither the targets nor the distance.
+    function test_RT04_anUncappedKeptComponentWithAStaleFeedIsNotRead() public {
+        IIndexRule rule = IIndexRule(factory.RULE());
+        uint256[] memory units = _units(index);
+        market.setAge(tokens[1], uint256(market.STALENESS()) + 1);
+        vm.expectRevert();
+        rule.price(tokens[1]);
+        rule.targetUnits(tokens, units, 0, 1 << 1);
+        // The kept cap is zeroed, so the rule wants 6/9 of the 400 in the first and 1/9 in each other: the three hold 100
+        // each against 44.4, 166.7 over 400.
+        assertEq(rule.shortfall(tokens, units, 0, 1 << 1), uint256(5e18) / 12, "three of 100 held against 44.4");
+    }
+
+    function _listNew(uint8 decimals, int256 price8, uint256 referenceSupply) internal returns (address token) {
+        token = address(new MockERC20("N", "N", decimals));
+        IIndexFactory.TokenConfig memory config = market.configWith(token, price8, referenceSupply);
+        vm.prank(owner);
+        factory.proposeListing(token, config);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        factory.executeListing(token);
+    }
+
+    /// @dev RT-04's gate at its edges, with the rule's answers fixed by mocked calls. A step under MIN_TURNOVER starts
+    ///      when the basket's distance from its rule is exactly MIN_TURNOVER and not a wei under it, and a step that
+    ///      trades nothing is refused however far the basket sits, since it would certify value that is not traded
+    ///      (DA-08).
+    function test_RT04_DA08_theDistanceGateAtItsEdges() public {
+        vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
+        (uint256[] memory targets,) = index.previewTarget(0);
+        address rule = factory.RULE();
+        uint256 threshold = index.MIN_TURNOVER();
+        bytes memory snapshot = abi.encodeWithSelector(IIndexRule.targetUnits.selector);
+        bytes memory distance = abi.encodeWithSelector(IIndexRule.shortfall.selector);
+
+        vm.mockCall(rule, snapshot, abi.encode(targets, 0));
+        vm.mockCall(rule, distance, abi.encode(1e18));
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, 0));
+        index.startRebalance(0);
+
+        vm.mockCall(rule, snapshot, abi.encode(targets, 1));
+        vm.mockCall(rule, distance, abi.encode(threshold - 1));
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, 1));
+        index.startRebalance(0);
+
+        vm.mockCall(rule, distance, abi.encode(threshold));
+        vm.prank(stranger);
+        index.startRebalance(0);
+        (uint256 eta,,) = index.pendingRebalance();
+        assertGt(eta, 0, "a one-wei step on a basket exactly MIN_TURNOVER from its rule starts");
+        vm.clearMockedCalls();
+    }
+
     // ---------------------------------------------------------------------
     // Security audit of 2026-09-23
     // ---------------------------------------------------------------------
@@ -933,13 +1182,16 @@ contract IndexTokenRebalanceTest is Test {
 
     /// @dev CR-I33, at the MIN_TURNOVER threshold itself. DA-22's test moved below the threshold and well above it,
     ///      never onto it, so a gate that refused a turnover exactly equal to MIN_TURNOVER passed. The rule's answer is
-    ///      fixed with a mocked call so the turnover lands one wei under the threshold and then on it.
+    ///      fixed with a mocked call so the turnover lands one wei under the threshold and then on it. Since RT-04 a
+    ///      step under the threshold still starts when the basket's distance from its rule clears it, so that distance
+    ///      is fixed under the threshold too, which leaves this test on the traded turnover's own boundary.
     function test_DA22_CRI33_aTurnoverExactlyAtTheThresholdStarts() public {
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
         (uint256[] memory targets,) = index.previewTarget(0);
         address rule = factory.RULE();
         bytes memory snapshot = abi.encodeWithSelector(IIndexRule.targetUnits.selector);
         uint256 threshold = index.MIN_TURNOVER();
+        vm.mockCall(rule, abi.encodeWithSelector(IIndexRule.shortfall.selector), abi.encode(threshold - 1));
 
         vm.mockCall(rule, snapshot, abi.encode(targets, threshold - 1));
         vm.prank(stranger);
@@ -1010,5 +1262,86 @@ contract IndexTokenRebalanceTest is Test {
         executor.execute(idx, "");
         assertEq(_units(idx)[0], 3, "one raw unit plus the growth of one times 1.5, rounded up: three times itself");
         _assertBacked(idx);
+    }
+
+    // ---------------------------------------------------------------------
+    // Red team of 2026-09-24, mutation gaps
+    // ---------------------------------------------------------------------
+
+    /// @dev What `idx` holds of each component above its backing: the holders' rounding surplus.
+    function _surpluses(IndexToken idx) internal view returns (uint256[] memory surplus) {
+        (address[] memory t, uint256[] memory u) = idx.components();
+        uint256 supply = idx.totalSupply();
+        surplus = new uint256[](t.length);
+        for (uint256 i = 0; i < t.length; ++i) {
+            surplus[i] = MockERC20(t[i]).balanceOf(address(idx)) - supply * u[i] / WAD - idx.totalClaims(t[i]);
+        }
+    }
+
+    /// @dev Holds one leg of a settlement to the change in its required backing, the floor of the new backing less the
+    ///      floor of the old, and says whether the floor of the change in units comes out differently, which is when
+    ///      holding it there shows anything.
+    function _assertLegIsTheChangeInBacking(uint256 supply, uint256 current, uint256 next, uint256 out, uint256 into)
+        internal
+        pure
+        returns (bool roundingShows)
+    {
+        if (next < current) {
+            assertEq(out, supply * current / WAD - supply * next / WAD, "a shrinking leg sends the change in backing");
+            assertEq(into, 0);
+            return supply * (current - next) / WAD != out;
+        }
+        assertEq(into, supply * next / WAD - supply * current / WAD, "a growing leg asks for the change in backing");
+        assertEq(out, 0);
+        return supply * (next - current) / WAD != into;
+    }
+
+    /// @dev RT-12. A settlement moves exactly the change in required backing on every leg: the floor of the new backing
+    ///      less the floor of the old, not the floor of the change in units, which can be a raw unit lower. Every other
+    ///      rebalance test uses supplies and units whose products have no remainder, where the two agree, so either
+    ///      side could have been rounded the other way unnoticed. A growing leg asking a unit less is paid out of the
+    ///      holders' rounding surplus, or reverts an honest fill on an index backed exactly; a shrinking leg sending a
+    ///      unit less leaves it behind. Here the units, the supply and the multiplier all leave remainders, the amounts
+    ///      are held to the floors of the backing, and each leg's surplus is compared across an honest fill.
+    function test_RT12_aFillMovesExactlyTheChangeInBackingWhenTheProductsHaveRemainders() public {
+        uint256[] memory odd = new uint256[](5);
+        for (uint256 i = 0; i < 5; ++i) {
+            odd[i] = 100e18 + 1_234_567_891 * (i + 1);
+        }
+        vm.prank(stranger);
+        IndexToken idx = IndexToken(factory.createIndex("Odd", "ODD", tokens, odd, 0));
+        _issue(idx, alice, 3_333_333_333_333_333_350);
+        uint256 supply = idx.totalSupply();
+        uint256[] memory surplus = _surpluses(idx);
+
+        vm.warp(_start(idx) + 7 hours + 13 minutes); // a multiplier with a remainder
+        (, uint256[] memory next, uint256[] memory amountsOut, uint256[] memory amountsIn) = idx.previewRebalance();
+        bool[2] memory shows; // whether the rounding shows on a shrinking leg, and on a growing one
+        for (uint256 i = 0; i < 5; ++i) {
+            if (_assertLegIsTheChangeInBacking(supply, odd[i], next[i], amountsOut[i], amountsIn[i])) {
+                shows[next[i] < odd[i] ? 0 : 1] = true;
+            }
+        }
+        assertTrue(shows[0] && shows[1], "the rounding shows on a shrinking leg and on a growing one");
+
+        executor.execute(idx, "");
+        assertEq(idx.rebalanceNonce(), 1, "the fill settled");
+        uint256[] memory settled = _surpluses(idx);
+        for (uint256 i = 0; i < 5; ++i) {
+            assertEq(settled[i], surplus[i], "the holders' rounding surplus did not move");
+        }
+    }
+
+    /// @dev RT-15. `RebalanceStarted` carries the keep mask, the one on-chain record of which components a start routes
+    ///      around until `pendingRebalance` is read. Its only full check was a stranger's start with a mask of zero, so
+    ///      an event that always reported zero passed. Here the guardian keeps the second component.
+    function test_RT15_aGuardianStartReportsItsKeepMask() public {
+        vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
+        (uint256[] memory targets,) = index.previewTarget(1 << 1);
+        assertEq(targets[1], 100e18, "the kept component keeps its units");
+        vm.expectEmit(true, true, true, true, address(index));
+        emit IIndexToken.RebalanceStarted(1, 1, guardian, targets, 1 << 1, block.timestamp + index.REBALANCE_DELAY());
+        vm.prank(guardian);
+        index.startRebalance(1 << 1);
     }
 }

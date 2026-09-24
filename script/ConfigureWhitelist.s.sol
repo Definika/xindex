@@ -12,22 +12,26 @@ import {CompositeFeed} from "../src/CompositeFeed.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
 
-/// @notice Drives the two-step flow that lists tokens and sets their market-data configs. It never re-proposes a token
-///         on its own: proposing is a separate, explicit run by the owner, so a listing the guardian cancelled stays
-///         cancelled. A token the guardian delisted gets config changes only; it is listed again only when named in
-///         RELIST. Execute mode runs only proposals whose pending config is exactly the entry's.
+/// @notice Drives the two-step flow that lists tokens and sets their market-data configs. It never lists a token on its
+///         own: a token never listed gets a first-listing proposal only when named in LIST, and one the guardian
+///         delisted is listed again only when named in RELIST; any other token listed before gets config changes only.
+///         Nothing on chain records that the guardian cancelled a first listing, so without LIST a routine run proposed
+///         the vetoed listing again, unlabelled among the refreshes, and one missed veto window listed it (RT-06): a
+///         routine run leaves LIST unset. Execute mode never proposes, and runs only proposals whose pending config is
+///         exactly the entry's.
 ///
 ///   Propose, as a factory owner that is a key you hold, delegated under EIP-7702 or not (testnets and local forks; a
 ///   contract owner, such as the mainnet Safe, cannot sign, and propose mode then reverts with OwnerIsContract: use
 ///   safe mode below):
-///     LISTING_MODE=propose FACTORY=0x... WHITELIST=<entries> forge script script/ConfigureWhitelist.s.sol \
-///       --rpc-url <rpc> --account <owner key> --sender <owner> --broadcast
+///     LISTING_MODE=propose FACTORY=0x... WHITELIST=<entries> LIST=<tokens to list> \
+///       forge script script/ConfigureWhitelist.s.sol --rpc-url <rpc> --account <owner key> --sender <owner> --broadcast
 ///   Execute, from any account, between LISTING_DELAY and LISTING_DELAY + PROPOSAL_WINDOW later:
 ///     LISTING_MODE=execute FACTORY=0x... WHITELIST=default forge script script/ConfigureWhitelist.s.sol \
 ///       --rpc-url mainnet --account deployer --sender <any account> --broadcast
 ///
 ///   Propose for an owner that is a Safe: log the `proposeListing` / `proposeConfig` calldata to sign in the Safe app,
-///   one transaction per line, each to the factory with no value. Any account can run it, and nothing is broadcast:
+///   one transaction per calldata line, each to the factory with no value, under a line naming the call, the token's
+///   symbol and its address. Any account can run it, and nothing is broadcast (add LIST to propose first listings):
 ///     LISTING_MODE=safe FACTORY=0x... WHITELIST=default forge script script/ConfigureWhitelist.s.sol --rpc-url mainnet
 ///
 /// Env:
@@ -43,6 +47,12 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///                 the DA-18 bound (CR-L03).
 ///   WBTC_FEED     Required with WHITELIST=default: the deployed `CompositeFeed` over BTC/USD and WBTC/BTC that
 ///                 `Deploy` logs. Its code is checked against an adapter this run builds before it is proposed.
+///   LIST          Optional. Tokens propose and safe mode may propose something for that no entry field asks
+///                 for: a first listing for a token never listed, or the config in force again for a token whose
+///                 decimals moved, to record them (RT-22). Comma-separated addresses, or `all` for every entry of
+///                 WHITELIST. A token it does not name is skipped with its reason, which is what keeps a first listing
+///                 or a decimals refresh the guardian cancelled cancelled (RT-06). Set it on the run that means to,
+///                 and leave it unset on a routine refresh. It never lists a delisted token again; that takes RELIST.
 ///   RELIST        Optional. Comma-separated delisted tokens that propose and safe mode may list again; any other
 ///                 delisted token only gets config changes.
 contract ConfigureWhitelist is Script {
@@ -66,6 +76,13 @@ contract ConfigureWhitelist is Script {
     ///        `PROPOSAL_WINDOW` later.
     /// @param pendingIsListing Whether the pending proposal lists the token rather than only changing its config.
     /// @param pendingMatches Whether the pending config is the entry's.
+    /// @param recordedDecimals Decimals the factory recorded when the token's config came into force, which the rule
+    ///        prices it with; 0 for a token never listed.
+    /// @param liveDecimals What the token's `decimals()` answers now; 0 when it answers nothing that decodes as a
+    ///        uint8. A token listed before whose two differ is priced a power of ten off until a config for it is
+    ///        executed again, which records the new ones (RT-22).
+    /// @param pendingDecimals Decimals the pending proposal pinned; a proposal whose token answers others now cannot be
+    ///        executed and has to be cancelled and proposed again (RT-23). 0 with nothing pending.
     struct Report {
         address token;
         bool listed;
@@ -73,6 +90,9 @@ contract ConfigureWhitelist is Script {
         uint256 eta;
         bool pendingIsListing;
         bool pendingMatches;
+        uint8 recordedDecimals;
+        uint8 liveDecimals;
+        uint8 pendingDecimals;
     }
 
     /// @notice Fewest and most decimals the whitelist policy accepts for a component.
@@ -83,6 +103,9 @@ contract ConfigureWhitelist is Script {
     uint256 private constant MAX_STALENESS_FIELD = 2;
     uint256 private constant REFERENCE_SUPPLY_FIELD = 3;
     uint256 private constant ENTRY_FIELDS = 4;
+
+    /// @dev Bytes in an ABI word.
+    uint256 private constant WORD = 32;
 
     /// @notice What `propose` does for an entry: nothing, `proposeListing`, or `proposeConfig`.
     enum Action {
@@ -97,23 +120,27 @@ contract ConfigureWhitelist is Script {
     error DefaultListOnlyOnMainnet();
     /// @notice A WHITELIST entry does not have exactly four fields, or leaves its reference supply empty.
     error MalformedEntry(string entry);
-    /// @notice WBTC_FEED is not this build's CompositeFeed over BTC/USD and WBTC/BTC with their policy staleness bounds.
+    /// @notice WBTC_FEED is not this build's CompositeFeed over BTC/USD and WBTC/BTC with their policy staleness
+    ///         bounds.
     error WrongCompositeFeed(address feed);
     /// @notice Propose mode needs an owner that can sign transactions, and this factory's owner is a contract (a Safe
     ///         on mainnet). Use `LISTING_MODE=safe` and submit the calldata it logs from the owner.
     error OwnerIsContract(address owner);
+    /// @notice The entries name `token` twice. Safe mode decides every entry against the same state, so it emitted a
+    ///         proposal for each copy, and the second reverted the whole Safe batch with ListingPending (RT-24).
+    error DuplicateEntry(address token);
 
-    /// @notice Default mainnet components, from `MainnetAddresses`. Every entry carries a reference supply, because
-    ///         the rule reads none live (CR-M01): CoinGecko's circulating supplies, and wstETH's own total supply read
+    /// @notice Default mainnet components, from `MainnetAddresses`. Every entry carries a reference supply, because the
+    ///         rule reads none live (CR-M01): CoinGecko's circulating supplies, and wstETH's own total supply read
     ///         on-chain on a stated day (propose a config change when they drift). Staleness bounds are each feed's
     ///         heartbeat plus half an hour; `MainnetAddresses` dates both and names every feed's heartbeat and
     ///         category. WETH, WBTC and wrapped SOL count the whole ether, bitcoin and solana supply, because their
     ///         on-chain supply is only the wrapped or bridged float; wstETH counts its own, because each one is a claim
     ///         on staked ether rather than a copy of a supply held elsewhere. WBTC has no USD feed of its own and is
     ///         priced through `wbtcFeed`, a `CompositeFeed` over BTC/USD and WBTC/BTC. WBTC can be paused by its
-    ///         custodian, wrapped SOL depends on the Wormhole bridge and is priced at par with SOL, and wstETH depends on
-    ///         Lido, so the app must label all three; an index holding both WETH and wstETH holds two claims on ether,
-    ///         which it must label too.
+    ///         custodian, wrapped SOL depends on the Wormhole bridge and is priced at par with SOL, and wstETH depends
+    ///         on Lido, so the app must label all three; an index holding both WETH and wstETH holds two claims on
+    ///         ether, which it must label too.
     /// @param wbtcFeed The deployed composite feed for WBTC; {checkWbtcFeed} validates it.
     /// @return list WETH, wstETH, WBTC, wrapped SOL, LINK, UNI and AAVE, in that order.
     function defaultMainnetList(address wbtcFeed) public pure returns (Entry[] memory list) {
@@ -199,20 +226,23 @@ contract ConfigureWhitelist is Script {
         hash = keccak256(executable);
     }
 
-    /// @notice Reads FACTORY, WHITELIST, RELIST and LISTING_MODE from the environment and runs that mode.
+    /// @notice Reads FACTORY, WHITELIST, LIST, RELIST and LISTING_MODE from the environment and runs that mode.
     function run() external {
         IIndexFactory factory = IIndexFactory(vm.envAddress("FACTORY"));
         Entry[] memory list = resolveList(vm.envString("WHITELIST"), vm.envOr("WBTC_FEED", address(0)));
+        address[] memory firstListings = resolveFirstListings(vm.envOr("LIST", string("")), list);
         address[] memory relist = parseAddresses(vm.envOr("RELIST", string("")));
         string memory mode = vm.envString("LISTING_MODE");
         if (ScriptUtils.same(mode, "propose")) {
-            propose(factory, list, relist);
+            propose(factory, list, firstListings, relist);
         } else if (ScriptUtils.same(mode, "execute")) {
             execute(factory, list);
         } else if (ScriptUtils.same(mode, "safe")) {
-            bytes[] memory calls = safeCalldata(factory, list, relist);
+            (bytes[] memory calls, string[] memory labels) = safeCalldata(factory, list, firstListings, relist);
             console2.log("Safe transactions to the factory, value 0:", address(factory));
             for (uint256 i = 0; i < calls.length; ++i) {
+                // Which call, for which token: among lines of hex a listing read as one more routine refresh (RT-06).
+                console2.log(labels[i]);
                 console2.logBytes(calls[i]);
             }
         } else if (ScriptUtils.same(mode, "status")) {
@@ -234,8 +264,27 @@ contract ConfigureWhitelist is Script {
         }
     }
 
+    /// @notice The LIST value: `all` names the token of every entry in `list`, and anything else is parsed as
+    ///         comma-separated addresses, so an empty value names none and no first listing is proposed unless the
+    ///         operator asks for it (RT-06).
+    /// @param raw The LIST value.
+    /// @param list This run's entries.
+    /// @return tokens Tokens never listed that may be proposed for a first listing.
+    function resolveFirstListings(string memory raw, Entry[] memory list)
+        public
+        pure
+        returns (address[] memory tokens)
+    {
+        if (!ScriptUtils.same(raw, "all")) return parseAddresses(raw);
+        tokens = new address[](list.length);
+        for (uint256 i = 0; i < list.length; ++i) {
+            tokens[i] = list[i].token;
+        }
+    }
+
     /// @notice `default` means the mainnet list and is only accepted on chain 1; anything else is parsed as
-    ///         comma-separated entries. The default list needs `wbtcFeed`, which is checked before it is used.
+    ///         comma-separated entries. The default list needs `wbtcFeed`, which is checked before it is used. Reverts
+    ///         DuplicateEntry for a list that names a token twice, whatever mode would run on it (RT-24).
     /// @param raw The WHITELIST value.
     /// @param wbtcFeed The WBTC_FEED value; only read for the default list.
     /// @return list The entries, in order.
@@ -243,13 +292,15 @@ contract ConfigureWhitelist is Script {
         if (ScriptUtils.same(raw, "default")) {
             if (block.chainid != 1) revert DefaultListOnlyOnMainnet();
             checkWbtcFeed(wbtcFeed);
-            return defaultMainnetList(wbtcFeed);
+            list = defaultMainnetList(wbtcFeed);
+        } else {
+            string[] memory parts = vm.split(raw, ",");
+            list = new Entry[](parts.length);
+            for (uint256 i = 0; i < parts.length; ++i) {
+                list[i] = parseEntry(vm.trim(parts[i]));
+            }
         }
-        string[] memory parts = vm.split(raw, ",");
-        list = new Entry[](parts.length);
-        for (uint256 i = 0; i < parts.length; ++i) {
-            list[i] = parseEntry(vm.trim(parts[i]));
-        }
+        _requireUnique(list);
     }
 
     /// @notice Parses `token:feed:maxStaleness:referenceSupply`. Every field is required: a reference supply left out
@@ -277,16 +328,26 @@ contract ConfigureWhitelist is Script {
         config.referenceSupply = entry.referenceSupply;
     }
 
-    /// @notice Owner only. For every entry with nothing pending, proposes a listing for a token that was never listed
-    ///         or is named in `relist`, and a config change for any other token whose config differs from the entry. A
-    ///         token the guardian delisted is therefore never listed again by a routine run. An expired proposal is
-    ///         proposed again. An entry the rule rejects is skipped and the reason logged.
-    ///         Reverts with OwnerIsContract when the owner cannot sign, which is always the case on mainnet: safe mode
-    ///         logs the same calls as calldata instead.
+    /// @notice Owner only. For every entry with nothing pending, proposes a listing for a token never listed that is
+    ///         named in `firstListings`, or a delisted one named in `relist`, and a config change for any other token
+    ///         listed before whose config differs from the entry, or whose decimals moved since its config came into
+    ///         force when `firstListings` names it. A token the guardian delisted, or whose first listing or decimals
+    ///         refresh it cancelled, is therefore never proposed again by a routine run. An expired proposal is
+    ///         proposed again, a first listing only when named. An entry the rule rejects is skipped and the reason
+    ///         logged. Reverts DuplicateEntry for a list that names a token twice. Reverts with OwnerIsContract when
+    ///         the owner cannot sign, which is always the case on mainnet: safe mode logs the same calls as calldata
+    ///         instead.
     /// @param factory The deployed factory; the broadcasting key must be its owner.
     /// @param list Entries to propose.
-    /// @param relist Delisted tokens that may be listed again.
-    function propose(IIndexFactory factory, Entry[] memory list, address[] memory relist) public {
+    /// @param firstListings Tokens that may get a first listing, or their config again to record moved decimals (LIST).
+    /// @param relist Delisted tokens that may be listed again (RELIST).
+    function propose(
+        IIndexFactory factory,
+        Entry[] memory list,
+        address[] memory firstListings,
+        address[] memory relist
+    ) public {
+        _requireUnique(list);
         address factoryOwner = Ownable(address(factory)).owner();
         // A key that delegated its account under EIP-7702 has code and still signs, so it is not a contract owner.
         bytes memory ownerCode = factoryOwner.code;
@@ -296,7 +357,7 @@ contract ConfigureWhitelist is Script {
         for (uint256 i = 0; i < list.length; ++i) {
             address token = list[i].token;
             IIndexFactory.TokenConfig memory config = configFor(list[i]);
-            Action action = _action(factory, rule, token, config, relist);
+            Action action = _action(factory, rule, token, config, firstListings, relist);
             if (action == Action.List) {
                 factory.proposeListing(token, config);
                 console2.log("proposed a listing", token);
@@ -309,40 +370,79 @@ contract ConfigureWhitelist is Script {
     }
 
     /// @notice Any account, nothing is broadcast. For an owner that is a Safe: the `proposeListing` or `proposeConfig`
-    ///         calldata of every entry `propose` would submit, each to be sent to the factory with no value.
+    ///         calldata of every entry `propose` would submit, each to be sent to the factory with no value, and the
+    ///         line safe mode prints above each. Reverts DuplicateEntry for a list that names a token twice: every
+    ///         entry is decided against the same state, so each copy got a proposal, and the Safe batch, one
+    ///         transaction, reverted at the second (RT-24).
     /// @param factory The deployed factory, owned by the Safe.
     /// @param list Entries to propose.
-    /// @param relist Delisted tokens that may be listed again.
+    /// @param firstListings Tokens that may get a first listing, or their config again to record moved decimals (LIST).
+    /// @param relist Delisted tokens that may be listed again (RELIST).
     /// @return calls One call per proposal, in entry order.
-    function safeCalldata(IIndexFactory factory, Entry[] memory list, address[] memory relist)
-        public
-        view
-        returns (bytes[] memory calls)
-    {
+    /// @return labels For each call, `proposeListing` or `proposeConfig`, the token's symbol and its address (RT-06).
+    function safeCalldata(
+        IIndexFactory factory,
+        Entry[] memory list,
+        address[] memory firstListings,
+        address[] memory relist
+    ) public view returns (bytes[] memory calls, string[] memory labels) {
+        _requireUnique(list);
         IIndexRule rule = IIndexRule(factory.RULE());
-        bytes[] memory all = new bytes[](list.length);
+        Action[] memory actions = new Action[](list.length);
         uint256 count = 0;
         for (uint256 i = 0; i < list.length; ++i) {
-            address token = list[i].token;
-            IIndexFactory.TokenConfig memory config = configFor(list[i]);
-            Action action = _action(factory, rule, token, config, relist);
-            if (action == Action.List) {
-                all[count++] = abi.encodeCall(IIndexFactory.proposeListing, (token, config));
-            } else if (action == Action.ChangeConfig) {
-                all[count++] = abi.encodeCall(IIndexFactory.proposeConfig, (token, config));
-            }
+            actions[i] = _action(factory, rule, list[i].token, configFor(list[i]), firstListings, relist);
+            if (actions[i] != Action.Skip) ++count;
         }
         calls = new bytes[](count);
-        for (uint256 i = 0; i < count; ++i) {
-            calls[i] = all[i];
+        labels = new string[](count);
+        count = 0;
+        for (uint256 i = 0; i < list.length; ++i) {
+            if (actions[i] == Action.Skip) continue;
+            (calls[count], labels[count]) = _proposal(factory, actions[i], list[i]);
+            ++count;
+        }
+    }
+
+    /// @dev The call that carries out `action` for `entry`, a listing or a config change, and its label. A config
+    ///      change that also records decimals the token moved to says so, since it reprices the token by a power of ten
+    ///      (RT-22).
+    function _proposal(IIndexFactory factory, Action action, Entry memory entry)
+        private
+        view
+        returns (bytes memory call, string memory label)
+    {
+        IIndexFactory.TokenConfig memory config = configFor(entry);
+        bool listing = action == Action.List;
+        call = listing
+            ? abi.encodeCall(IIndexFactory.proposeListing, (entry.token, config))
+            : abi.encodeCall(IIndexFactory.proposeConfig, (entry.token, config));
+        string memory kind = listing ? "proposeListing " : "proposeConfig ";
+        uint8 recorded = factory.tokenDecimals(entry.token);
+        (bool answered, uint8 decimals) = _decimalsOf(entry.token);
+        if (!listing && answered && decimals != recorded) {
+            kind = string.concat(
+                "proposeConfig (records decimals ", vm.toString(recorded), " -> ", vm.toString(decimals), ") "
+            );
+        }
+        label = string.concat(kind, _symbolOf(entry.token), " ", vm.toString(entry.token));
+    }
+
+    /// @dev Reverts DuplicateEntry at the first token `list` names twice (RT-24).
+    function _requireUnique(Entry[] memory list) private pure {
+        for (uint256 i = 1; i < list.length; ++i) {
+            for (uint256 j = 0; j < i; ++j) {
+                if (list[j].token == list[i].token) revert DuplicateEntry(list[i].token);
+            }
         }
     }
 
     /// @notice Any account. Executes every due proposal whose pending config is exactly the entry's config, and skips
     ///         everything else with the reason logged: nothing pending, not ready, expired, a pending config the entry
-    ///         does not name, or one the rule now rejects, as it does a feed that has gone stale since the proposal.
-    ///         `executeListing` checks the config again too (DA-11), so asking the rule first keeps one such entry from
-    ///         aborting the whole run and leaving every other due proposal unexecuted (CR-I38).
+    ///         does not name, one the rule now rejects, as it does a feed that has gone stale since the proposal, or
+    ///         one whose token changed its decimals since the proposal, which the factory refuses (RT-23) and which has
+    ///         to be cancelled and proposed again. `executeListing` checks both, so asking first keeps one such entry
+    ///         from aborting the whole run and leaving every other due proposal unexecuted (CR-I38, RT-22).
     /// @param factory The deployed factory.
     /// @param list Entries whose proposals to execute.
     function execute(IIndexFactory factory, Entry[] memory list) public {
@@ -365,8 +465,9 @@ contract ConfigureWhitelist is Script {
         vm.stopBroadcast();
     }
 
-    /// @dev Executes a due proposal carrying `config`, unless the rule now rejects it; the reason is logged either way.
-    ///      The rule's check is a view, so asking it first broadcasts nothing.
+    /// @dev Executes a due proposal carrying `config`, unless the rule now rejects it or the token's decimals moved
+    ///      since it was proposed; the reason is logged either way. Both checks are static calls, so asking first
+    ///      broadcasts nothing.
     function _executeDue(IIndexFactory factory, IIndexRule rule, address token, IIndexFactory.TokenConfig memory config)
         private
     {
@@ -374,6 +475,13 @@ contract ConfigureWhitelist is Script {
         catch (bytes memory reason) {
             console2.log("not executed, the rule now rejects the pending config", token);
             console2.logBytes(reason);
+            return;
+        }
+        // The factory pinned the token's decimals with the proposal and refuses to execute it once they moved (RT-23).
+        if (_pinnedDecimalsMoved(factory, token)) {
+            console2.log(
+                "not executed, the token's decimals changed since the proposal; cancel it, propose again", token
+            );
             return;
         }
         bool relisting = factory.pendingIsListing(token);
@@ -387,15 +495,15 @@ contract ConfigureWhitelist is Script {
         }
     }
 
-    /// @dev Skip, with the reason logged, for an entry that is pending, already in force, delisted with an unchanged
-    ///      config and not named in `relist`, outside the policy, moving a reference supply past the factory's bound,
-    ///      or rejected by the rule. Otherwise a listing for a token never listed or named in `relist`, and a config
-    ///      change for any other token.
+    /// @dev Skip, with the reason logged, for an entry that is pending, whose token's listing state leaves nothing to
+    ///      propose ({_intent}), outside the policy, moving a reference supply past the factory's bound, or rejected by
+    ///      the rule. Otherwise what the listing state calls for: a listing or a config change.
     function _action(
         IIndexFactory factory,
         IIndexRule rule,
         address token,
         IIndexFactory.TokenConfig memory config,
+        address[] memory firstListings,
         address[] memory relist
     ) private view returns (Action) {
         uint256 eta = factory.listingEta(token);
@@ -404,6 +512,9 @@ contract ConfigureWhitelist is Script {
             // Reporting it as "already pending" left the operator believing RELIST had been acted on (DA-20).
             if (!factory.isWhitelisted(token) && _contains(relist, token) && !factory.pendingIsListing(token)) {
                 console2.log("skipped, RELIST needs a listing but a config change is pending; cancel it first", token);
+            } else if (_pinnedDecimalsMoved(factory, token)) {
+                // Reporting it as "already pending" would leave a proposal the factory can never execute (RT-23).
+                console2.log("skipped, pending but its token's decimals changed since; cancel it first", token);
             } else if (_sameConfig(factory.pendingTokenConfig(token), config)) {
                 console2.log("already pending", token);
             } else {
@@ -412,17 +523,8 @@ contract ConfigureWhitelist is Script {
             return Action.Skip;
         }
         IIndexFactory.TokenConfig memory current = factory.tokenConfig(token);
-        bool listed = factory.isWhitelisted(token);
-        // Every config in force names a feed, so an empty one means the token was never listed.
-        bool configured = current.feed != address(0);
-        Action action = Action.List;
-        if (configured && (listed || !_contains(relist, token))) {
-            if (_sameConfig(current, config)) {
-                if (!listed) console2.log("skipped, delisted; name it in RELIST to list it again", token);
-                return Action.Skip;
-            }
-            action = Action.ChangeConfig;
-        }
+        Action action = _intent(factory, token, current, config, firstListings, relist);
+        if (action == Action.Skip) return Action.Skip;
         if (!_followsPolicy(token, config.feed, config.referenceSupply)) return Action.Skip;
         if (!_withinSupplyBound(factory, token, current.referenceSupply, config.referenceSupply)) return Action.Skip;
         try rule.checkConfig(token, config) {
@@ -432,6 +534,45 @@ contract ConfigureWhitelist is Script {
             console2.logBytes(reason);
             return Action.Skip;
         }
+    }
+
+    /// @dev What `token`'s listing state calls for, before the policy, the supply bound and the rule have their say: a
+    ///      listing for a token never listed that `firstListings` names or a delisted one that `relist` names, and a
+    ///      config change for any other token listed before whose config in force is not `config`, or whose decimals
+    ///      moved when `firstListings` names it. Skip, with the reason logged, for a token never listed or with moved
+    ///      decimals that is not named, and for one listed before with nothing to change.
+    function _intent(
+        IIndexFactory factory,
+        address token,
+        IIndexFactory.TokenConfig memory current,
+        IIndexFactory.TokenConfig memory config,
+        address[] memory firstListings,
+        address[] memory relist
+    ) private view returns (Action) {
+        // Every config in force names a feed, so an empty one means the token was never listed.
+        if (current.feed == address(0)) {
+            // Nothing on chain records that the guardian cancelled a first listing, so only the operator naming the
+            // token tells a new listing from a vetoed one proposed again (RT-06).
+            if (_contains(firstListings, token)) return Action.List;
+            console2.log("skipped, never listed; name it in LIST to propose its first listing", token);
+            return Action.Skip;
+        }
+        // Checked, and logged, whatever the entry proposes: any proposal executed for the token records the decimals it
+        // answers, and new ones reprice it by a power of ten.
+        bool decimalsMoved = _decimalsMoved(factory, token);
+        bool listed = factory.isWhitelisted(token);
+        if (!listed && _contains(relist, token)) return Action.List;
+        if (!_sameConfig(current, config)) return Action.ChangeConfig;
+        // The config in force proposed again is how the record catches up with the token (RT-22). No entry field asks
+        // for it, and nothing on chain records that the guardian vetoed the last one, so, like a first listing, it is
+        // proposed only when the operator names the token; otherwise a vetoed refresh came back on every run (RT-06).
+        if (decimalsMoved) {
+            if (_contains(firstListings, token)) return Action.ChangeConfig;
+            console2.log("skipped, name it in LIST to propose its config again and record its new decimals", token);
+            return Action.Skip;
+        }
+        if (!listed) console2.log("skipped, delisted; name it in RELIST to list it again", token);
+        return Action.Skip;
     }
 
     /// @dev The factory's DA-18 bound, applied here so an entry that moves a reference supply further than
@@ -478,10 +619,8 @@ contract ConfigureWhitelist is Script {
             console2.log("skipped, the feed does not answer as an aggregator", token, feed);
             return false;
         }
-        uint8 decimals = 0;
-        try IERC20Metadata(token).decimals() returns (uint8 value) {
-            decimals = value;
-        } catch {
+        (bool answered, uint8 decimals) = _decimalsOf(token);
+        if (!answered) {
             console2.log("skipped, the token reports no decimals", token);
             return false;
         }
@@ -498,19 +637,68 @@ contract ConfigureWhitelist is Script {
         return true;
     }
 
-    /// @dev `token`'s ERC-20 symbol for the log, or "?" when it has none that decodes as a string: the symbol is
-    ///      optional in ERC-20, and some tokens return it as bytes32.
+    /// @dev `token`'s ERC-20 symbol for the log and safe mode's labels, or "?" when it has none that decodes as a
+    ///      string: the symbol is optional in ERC-20, and some tokens return it as bytes32.
     function _symbolOf(address token) private view returns (string memory) {
         // A static call, so a token without the function, or one answering in another shape, cannot stop the run.
         // forge-lint: disable-next-line(low-level-calls)
         (bool ok, bytes memory data) = token.staticcall(abi.encodeCall(IERC20Metadata.symbol, ()));
-        // A string answer holds at least its offset and its length; anything shorter is not one.
-        if (!ok || data.length < 64) return "?";
+        // A string answer holds at least its offset and its length; anything shorter, a bytes32 among them, is not one.
+        if (!ok || data.length < 2 * WORD) return "?";
+        // Nor is an answer whose offset or length points past its end, which `abi.decode` refuses by reverting, and
+        // that reverted the whole run (RT-25). The offset is checked first, so the length is read inside the answer.
+        uint256 offset = _wordAt(data, 0);
+        if (offset > data.length - WORD || _wordAt(data, offset) > data.length - WORD - offset) return "?";
         return abi.decode(data, (string));
     }
 
+    /// @dev What `token.decimals()` answers, when it answers a uint8 at all. A static call whose answer is checked
+    ///      before it is read, so a token without the function, or one answering in another shape, cannot stop the
+    ///      run: decoding a `try` call's answer happens in the caller, where no `catch` reaches a failure.
+    function _decimalsOf(address token) private view returns (bool answered, uint8 decimals) {
+        // forge-lint: disable-next-line(low-level-calls)
+        (bool ok, bytes memory data) = token.staticcall(abi.encodeCall(IERC20Metadata.decimals, ()));
+        // A failed call, or an answer shorter than a word, reads as a word no uint8 fits.
+        uint256 word = ok && data.length >= WORD ? _wordAt(data, 0) : type(uint256).max;
+        answered = word <= type(uint8).max;
+        if (answered) decimals = SafeCast.toUint8(word);
+    }
+
+    /// @dev Whether `token` now answers other decimals than the ones its pending proposal pinned, with the two logged
+    ///      when it does. The factory refuses to execute such a proposal (RT-23); a token that answers none is left to
+    ///      the rule's own check, which refuses it too.
+    function _pinnedDecimalsMoved(IIndexFactory factory, address token) private view returns (bool) {
+        uint8 pinned = factory.pendingTokenDecimals(token);
+        (bool answered, uint8 decimals) = _decimalsOf(token);
+        if (!answered || decimals == pinned) return false;
+        console2.log("  pinned %s, now %s", uint256(pinned), uint256(decimals));
+        return true;
+    }
+
+    /// @dev Whether `token` now answers other decimals than the factory recorded when its config came into force, with
+    ///      the two logged when it does. The rule prices it with the record, a power of ten off, until a config for it
+    ///      is executed again; the script skipped the config in force as already there, so the recourse had to be
+    ///      built by hand (RT-22). A token that answers no decimals has nothing to record, and the rule refuses any
+    ///      config for it, so it has not moved in this sense.
+    function _decimalsMoved(IIndexFactory factory, address token) private view returns (bool) {
+        uint8 recorded = factory.tokenDecimals(token);
+        (bool answered, uint8 decimals) = _decimalsOf(token);
+        if (!answered || decimals == recorded) return false;
+        console2.log("the token's decimals moved; a config executed now records them and reprices it", token);
+        console2.log("  recorded %s, now %s", uint256(recorded), uint256(decimals));
+        return true;
+    }
+
+    /// @dev The word of `data` that starts at byte `at`, read big-endian; the caller keeps it inside `data`.
+    function _wordAt(bytes memory data, uint256 at) private pure returns (uint256 word) {
+        for (uint256 i = 0; i < WORD; ++i) {
+            word = word << 8 | uint8(data[at + i]);
+        }
+    }
+
     /// @notice Any account, read-only. Reports and logs for every entry whether the token is listed, whether the config
-    ///         in force is the entry's, and any pending proposal with its window, so nothing due expires unnoticed.
+    ///         in force is the entry's, the decimals the rule prices it with beside those it answers now, and any
+    ///         pending proposal with its window, so nothing due expires unnoticed.
     /// @param factory The deployed factory.
     /// @param list Entries to report on.
     /// @return reports One report per entry, in entry order; the log lines say the same.
@@ -520,19 +708,35 @@ contract ConfigureWhitelist is Script {
         for (uint256 i = 0; i < list.length; ++i) {
             address token = list[i].token;
             IIndexFactory.TokenConfig memory config = configFor(list[i]);
+            IIndexFactory.TokenConfig memory current = factory.tokenConfig(token);
             Report memory report = reports[i];
             report.token = token;
             report.listed = factory.isWhitelisted(token);
-            report.inForce = _sameConfig(factory.tokenConfig(token), config);
+            report.inForce = _sameConfig(current, config);
             report.eta = factory.listingEta(token);
+            report.recordedDecimals = factory.tokenDecimals(token);
+            (, report.liveDecimals) = _decimalsOf(token);
             console2.log(token, report.listed ? "listed" : "not listed");
             if (!report.inForce) console2.log("  the config in force is not the entry's");
+            // The config fields can all match while the rule prices the token a power of ten off; propose and safe mode
+            // then propose the config in force again, which records the new decimals (RT-22).
+            if (current.feed != address(0) && report.liveDecimals != report.recordedDecimals) {
+                console2.log(
+                    "  decimals moved: the rule prices it at %s, the token answers %s (0 for no answer)",
+                    uint256(report.recordedDecimals),
+                    uint256(report.liveDecimals)
+                );
+            }
             if (report.eta == 0) continue;
             report.pendingIsListing = factory.pendingIsListing(token);
             report.pendingMatches = _sameConfig(factory.pendingTokenConfig(token), config);
+            report.pendingDecimals = factory.pendingTokenDecimals(token);
             console2.log("  pending from %s until %s", report.eta, report.eta + window);
             console2.log(report.pendingIsListing ? "  a listing" : "  a config change");
             if (!report.pendingMatches) console2.log("  it differs from the entry");
+            if (report.pendingDecimals != report.liveDecimals) {
+                console2.log("  its token's decimals changed since it was proposed: it cannot be executed (RT-23)");
+            }
         }
     }
 

@@ -222,7 +222,7 @@ contract SetupTestMarket is Script {
         string memory mode = vm.envString("MARKET_MODE");
         if (ScriptUtils.same(mode, "create")) {
             (tokens, feeds) = create(sepoliaUniswap());
-            console2.log("Then list them with WHITELIST=%s", whitelist(sepoliaUniswap().weth, tokens, feeds));
+            console2.log("Then list them with LIST=all WHITELIST=%s", whitelist(sepoliaUniswap().weth, tokens, feeds));
         } else if (ScriptUtils.same(mode, "seed")) {
             tokens = vm.envAddress("MARKET_TOKENS", ",");
             seed(

@@ -541,6 +541,57 @@ contract IndexFactoryTest is XindexTest {
         assertTrue(factory.isWhitelisted(address(c)), "and it lists once the feed publishes again");
     }
 
+    /// @dev RT-23. The decimals the rule prices a token with are recorded at execution, which is permissionless and
+    ///      comes up to nine days after the proposal the guardian reviewed. A token whose decimals moved in between got
+    ///      a record nobody had seen, repricing it by a power of ten with no event. They are now pinned at the proposal,
+    ///      an execution against moved decimals reverts, and a record that changes says so.
+    function test_RT23_decimalsArePinnedAtTheProposalAndAnnouncedWhenTheyChange() public {
+        MockERC20 token = new MockERC20("Six", "SIX", 6);
+        IIndexFactory.TokenConfig memory config = market.config(address(token), ONE_DOLLAR);
+        vm.prank(owner);
+        factory.proposeListing(address(token), config);
+        assertEq(factory.pendingTokenDecimals(address(token)), 6, "pinned with the proposal, on show to the guardian");
+        vm.warp(factory.listingEta(address(token)));
+        vm.expectEmit(true, false, false, true, address(factory));
+        emit IIndexFactory.TokenDecimalsRecorded(address(token), 0, 6);
+        factory.executeListing(address(token));
+        assertEq(factory.pendingTokenDecimals(address(token)), 0, "and cleared once executed");
+
+        // A refresh that leaves the decimals alone records nothing new and announces nothing.
+        vm.prank(owner);
+        factory.proposeConfig(address(token), config);
+        vm.warp(factory.listingEta(address(token)));
+        vm.recordLogs();
+        factory.executeListing(address(token));
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i = 0; i < logs.length; ++i) {
+            assertTrue(logs[i].topics[0] != IIndexFactory.TokenDecimalsRecorded.selector, "nothing changed");
+        }
+
+        // The decimals move while a refresh waits out its delay: the reviewed proposal no longer describes the token.
+        vm.prank(owner);
+        factory.proposeConfig(address(token), config);
+        uint256 eta = factory.listingEta(address(token));
+        token.setDecimals(18);
+        vm.warp(eta);
+        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.DecimalsChanged.selector, address(token), 6, 18));
+        factory.executeListing(address(token));
+        assertEq(factory.tokenDecimals(address(token)), 6, "the record stays what was reviewed");
+        assertEq(factory.listingEta(address(token)), eta, "and the proposal is untouched");
+
+        // Proposed again, the new decimals go through the delay and the veto, then into the record.
+        vm.prank(guardian);
+        factory.cancelListing(address(token));
+        assertEq(factory.pendingTokenDecimals(address(token)), 0, "a cancel clears the pin");
+        vm.prank(owner);
+        factory.proposeConfig(address(token), config);
+        vm.warp(factory.listingEta(address(token)));
+        vm.expectEmit(true, false, false, true, address(factory));
+        emit IIndexFactory.TokenDecimalsRecorded(address(token), 6, 18);
+        factory.executeListing(address(token));
+        assertEq(factory.tokenDecimals(address(token)), 18);
+    }
+
     function test_cancelListing() public {
         IIndexFactory.TokenConfig memory config = market.config(address(c), ONE_DOLLAR);
         vm.prank(owner);

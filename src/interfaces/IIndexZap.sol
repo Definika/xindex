@@ -17,7 +17,7 @@ import {PathKey} from "../libraries/UniswapV4Types.sol";
 ///
 ///      Of the shared errors, the zap raises NotIndex for an index the factory did not deploy, ZeroAddress for a zero
 ///      factory, router, recipient, `tokenIn` or `tokenOut`, and InvalidRecipient for a recipient that is the zap, the
-///      index, the router or the PoolManager.
+///      index, the router, the PoolManager, the factory or the rule (RT-21).
 interface IIndexZap is IXindexErrors {
     /// @param v3Path Exact-output Uniswap V3 path from the component back to `tokenIn`. Empty for a V4 leg and for
     ///        the pass-through leg whose component is `tokenIn` itself.
@@ -42,7 +42,8 @@ interface IIndexZap is IXindexErrors {
     ///        leftover `tokenOut` is paid out. On a route that revisits neither, only the first hop can leave unsold
     ///        input, which comes back to `to`.
     /// @param minAmountOut Least `tokenOut` this leg must return, or 0 for the overall limit only. It applies to the
-    ///        leg's final output. A non-zero minimum on a leg that sells nothing reverts.
+    ///        leg's final output. A non-zero minimum on a leg whose redeemed amount rounds to zero reverts, and so does
+    ///        an intermediate V3 hop that produces nothing, whatever the minimum (RT-11).
     struct BurnLeg {
         bytes v3Path;
         PathKey[] v4Path;
@@ -55,7 +56,8 @@ interface IIndexZap is IXindexErrors {
     /// @param maxAmountIn Most `tokenIn` the whole mint may spend; non-zero.
     /// @param shares Exact index shares to mint (1e18 is one index token); non-zero.
     /// @param legs One entry per component, in component order.
-    /// @param to Receives the shares; not zero, the zap, the index, the router or the PoolManager.
+    /// @param to Receives the shares; not zero, the zap, the index, the router, the PoolManager, the factory or the
+    ///        rule (RT-21).
     /// @param deadline Last timestamp at which the call is valid.
     struct MintParams {
         address index;
@@ -74,8 +76,8 @@ interface IIndexZap is IXindexErrors {
     /// @param tokenOut Token the caller receives.
     /// @param minAmountOut Least `tokenOut` the whole burn must return; non-zero.
     /// @param legs One entry per component, in component order.
-    /// @param to Receives `tokenOut` and any unsold component; not zero, the zap, the index, the router or the
-    ///        PoolManager.
+    /// @param to Receives `tokenOut` and any unsold component; not zero, the zap, the index, the router, the
+    ///        PoolManager, the factory or the rule (RT-21).
     /// @param deadline Last timestamp at which the call is valid; also the permit's deadline.
     struct BurnParams {
         address index;

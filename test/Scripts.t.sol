@@ -15,6 +15,8 @@ import {FaucetToken} from "../script/testnet/FaucetToken.sol";
 import {INonfungiblePositionManager} from "../script/interfaces/INonfungiblePositionManager.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {DEFAULT_STALENESS, MockMarket} from "./mocks/MockMarket.sol";
 import {MockPositionManager} from "./mocks/MockPositionManager.sol";
@@ -169,6 +171,33 @@ contract LookalikeWbtcFeed {
     }
 }
 
+/// @notice An ERC-20 whose `symbol()` and `decimals()` answer the raw bytes it was built with, in place of an ABI string
+///         and a uint8: a bytes32 symbol, a string whose offset or length points past the answer, a decimals word that
+///         no uint8 fits.
+contract RawAnswersToken is ERC20 {
+    bytes internal _symbolAnswer;
+    bytes internal _decimalsAnswer;
+
+    constructor(bytes memory symbolAnswer, bytes memory decimalsAnswer) ERC20("Raw", "RAW") {
+        _symbolAnswer = symbolAnswer;
+        _decimalsAnswer = decimalsAnswer;
+    }
+
+    function symbol() public view override returns (string memory) {
+        _answer(_symbolAnswer);
+    }
+
+    function decimals() public view override returns (uint8) {
+        _answer(_decimalsAnswer);
+    }
+
+    function _answer(bytes memory raw) private pure {
+        assembly ("memory-safe") {
+            return(add(raw, 32), mload(raw))
+        }
+    }
+}
+
 /// @notice A multisig that reports a threshold but no Safe module list.
 contract ThresholdOnly {
     uint256 public getThreshold;
@@ -238,6 +267,36 @@ contract ScriptsTest is Test {
         returns (IIndexFactory.TokenConfig memory)
     {
         return configure.configFor(entry);
+    }
+
+    /// @dev Every token `list` names, as a LIST that lets each of them be proposed for a first listing. A test that is
+    ///      not about LIST passes it, so it keeps the meaning it had before a first listing needed naming (RT-06).
+    function _tokens(ConfigureWhitelist.Entry[] memory list) internal pure returns (address[] memory tokens) {
+        tokens = new address[](list.length);
+        for (uint256 i = 0; i < list.length; ++i) {
+            tokens[i] = list[i].token;
+        }
+    }
+
+    /// @dev What the Safe does with safe mode's output: every call, from the owner, in order. Each must succeed, because
+    ///      the batch is one transaction.
+    function _sendAsOwner(IndexFactory factory, bytes[] memory calls) internal {
+        address factoryOwner = factory.owner();
+        for (uint256 i = 0; i < calls.length; ++i) {
+            vm.prank(factoryOwner);
+            (bool ok,) = address(factory).call(calls[i]);
+            assertTrue(ok, "the Safe batch executes");
+        }
+    }
+
+    /// @dev The calls safe mode would print, without the labels above them.
+    function _safeCalls(
+        IndexFactory factory,
+        ConfigureWhitelist.Entry[] memory list,
+        address[] memory firstListings,
+        address[] memory relist
+    ) internal view returns (bytes[] memory calls) {
+        (calls,) = configure.safeCalldata(factory, list, firstListings, relist);
     }
 
     // ---------------------------------------------------------------------
@@ -566,10 +625,10 @@ contract ScriptsTest is Test {
         ConfigureWhitelist.Entry[] memory list = _twoEntries();
 
         vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.OwnerIsContract.selector, address(safe)));
-        configure.propose(factory, list, none);
+        configure.propose(factory, list, _tokens(list), none);
 
         // The same list in safe mode produces the calls for the Safe to sign, and nothing is proposed on chain.
-        bytes[] memory calls = configure.safeCalldata(factory, list, none);
+        bytes[] memory calls = _safeCalls(factory, list, _tokens(list), none);
         assertEq(calls.length, 2);
         assertEq(factory.listingEta(list[0].token), 0);
     }
@@ -581,7 +640,7 @@ contract ScriptsTest is Test {
         ConfigureWhitelist.Entry[] memory list = _twoEntries();
         vm.etch(DEFAULT_SENDER, abi.encodePacked(hex"ef0100", address(this)));
 
-        configure.propose(factory, list, none);
+        configure.propose(factory, list, _tokens(list), none);
         assertGt(factory.listingEta(list[0].token), 0, "the delegated key proposed");
         assertGt(factory.listingEta(list[1].token), 0);
     }
@@ -612,14 +671,14 @@ contract ScriptsTest is Test {
         configure.execute(factory, list); // nothing proposed yet: nothing happens
         assertEq(factory.listingEta(list[0].token), 0);
 
-        configure.propose(factory, list, none);
+        configure.propose(factory, list, _tokens(list), none);
         uint256 eta = block.timestamp + factory.LISTING_DELAY();
         assertEq(factory.listingEta(list[0].token), eta);
         assertEq(factory.listingEta(list[1].token), eta);
         assertEq(factory.pendingTokenConfig(list[1].token).referenceSupply, 21_000_000e8);
 
         vm.warp(block.timestamp + 1 hours);
-        configure.propose(factory, list, none); // already pending: skipped, eta unchanged
+        configure.propose(factory, list, _tokens(list), none); // already pending: skipped, eta unchanged
         assertEq(factory.listingEta(list[0].token), eta);
 
         configure.execute(factory, list); // not ready yet: skipped
@@ -631,13 +690,13 @@ contract ScriptsTest is Test {
         assertTrue(factory.isWhitelisted(list[1].token));
         assertEq(factory.tokenConfig(list[0].token).referenceSupply, list[0].referenceSupply);
 
-        configure.propose(factory, list, none); // listed with exactly this config: skipped
+        configure.propose(factory, list, _tokens(list), none); // listed with exactly this config: skipped
         assertEq(factory.listingEta(list[0].token), 0);
         configure.execute(factory, list); // nothing pending: skipped
         assertEq(factory.whitelistedTokens().length, 2);
 
         list[1].referenceSupply = 21_000_001e8; // a different config is proposed as a config change
-        configure.propose(factory, list, none);
+        configure.propose(factory, list, _tokens(list), none);
         assertEq(factory.listingEta(list[0].token), 0);
         assertEq(factory.listingEta(list[1].token), block.timestamp + factory.LISTING_DELAY());
     }
@@ -648,7 +707,7 @@ contract ScriptsTest is Test {
         market.setPrice(list[0].token, 0); // a feed the rule will not price from
         list[1].feed = address(0); // and an entry that names no feed at all
 
-        configure.propose(factory, list, none);
+        configure.propose(factory, list, _tokens(list), none);
         assertEq(factory.listingEta(list[0].token), 0);
         assertEq(factory.listingEta(list[1].token), 0);
     }
@@ -676,14 +735,14 @@ contract ScriptsTest is Test {
     function test_expiredProposalsAreSkippedThenProposedAgain() public {
         IndexFactory factory = _factory(DEFAULT_SENDER, address(0));
         ConfigureWhitelist.Entry[] memory list = _twoEntries();
-        configure.propose(factory, list, none);
+        configure.propose(factory, list, _tokens(list), none);
         uint256 eta = factory.listingEta(list[0].token);
 
         vm.warp(eta + factory.PROPOSAL_WINDOW() + 1);
         configure.execute(factory, list); // expired: skipped
         assertFalse(factory.isWhitelisted(list[0].token));
 
-        configure.propose(factory, list, none); // proposed again with a fresh delay
+        configure.propose(factory, list, _tokens(list), none); // proposed again with a fresh delay
         assertEq(factory.listingEta(list[0].token), block.timestamp + factory.LISTING_DELAY());
     }
 
@@ -691,7 +750,7 @@ contract ScriptsTest is Test {
         IndexFactory factory = _factory(owner, guardian);
         ConfigureWhitelist.Entry[] memory list = _twoEntries();
 
-        bytes[] memory calls = configure.safeCalldata(factory, list, none);
+        bytes[] memory calls = _safeCalls(factory, list, _tokens(list), none);
         assertEq(calls.length, 2);
         for (uint256 i = 0; i < list.length; ++i) {
             assertEq(calls[i], abi.encodeCall(IIndexFactory.proposeListing, (list[i].token, _configFor(list[i]))));
@@ -702,12 +761,12 @@ contract ScriptsTest is Test {
         assertTrue(ok);
         assertEq(factory.listingEta(list[0].token), block.timestamp + factory.LISTING_DELAY());
 
-        calls = configure.safeCalldata(factory, list, none); // the first is pending now
+        calls = _safeCalls(factory, list, _tokens(list), none); // the first is pending now
         assertEq(calls.length, 1);
         assertEq(calls[0], abi.encodeCall(IIndexFactory.proposeListing, (list[1].token, _configFor(list[1]))));
 
         market.setPrice(list[1].token, 0); // the rule rejects the second
-        assertEq(configure.safeCalldata(factory, list, none).length, 0);
+        assertEq(_safeCalls(factory, list, _tokens(list), none).length, 0);
     }
 
     /// @dev DA-20. With a config-only proposal already pending for a delisted token, RELIST was silently dropped:
@@ -716,7 +775,7 @@ contract ScriptsTest is Test {
     function test_DA20_relistIsNotSwallowedByAPendingConfigChange() public {
         IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
         ConfigureWhitelist.Entry[] memory list = _twoEntries();
-        configure.propose(factory, list, none);
+        configure.propose(factory, list, _tokens(list), none);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         configure.execute(factory, list);
         vm.prank(guardian);
@@ -724,14 +783,14 @@ contract ScriptsTest is Test {
 
         // A config change is proposed for the delisted token, and only then is it named for relisting.
         list[0].maxStaleness = DEFAULT_STALENESS / 2;
-        configure.propose(factory, list, none);
+        configure.propose(factory, list, none, none);
         assertFalse(factory.pendingIsListing(list[0].token), "a config change is pending");
 
         address[] memory relist = new address[](1);
         relist[0] = list[0].token;
         // The pending config change cannot relist, so nothing is proposed and the run says why.
-        assertEq(configure.safeCalldata(factory, list, relist).length, 0, "no listing can be proposed yet");
-        configure.propose(factory, list, relist);
+        assertEq(_safeCalls(factory, list, none, relist).length, 0, "no listing can be proposed yet");
+        configure.propose(factory, list, none, relist);
         assertFalse(factory.pendingIsListing(list[0].token), "still only a config change");
 
         // Executing it leaves the token delisted, as the log now states.
@@ -740,10 +799,10 @@ contract ScriptsTest is Test {
         assertFalse(factory.isWhitelisted(list[0].token));
 
         // Once the proposal is out of the way, RELIST proposes the listing it always meant to.
-        bytes[] memory calls = configure.safeCalldata(factory, list, relist);
+        bytes[] memory calls = _safeCalls(factory, list, none, relist);
         assertEq(calls.length, 1);
         assertEq(calls[0], abi.encodeCall(IIndexFactory.proposeListing, (list[0].token, _configFor(list[0]))));
-        configure.propose(factory, list, relist);
+        configure.propose(factory, list, none, relist);
         assertTrue(factory.pendingIsListing(list[0].token), "now it is a listing");
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         configure.execute(factory, list);
@@ -757,15 +816,27 @@ contract ScriptsTest is Test {
     /// @dev What `_action` decided, read back from the calldata `safeCalldata` emits for a one-entry list: nothing
     ///      means Skip, a `proposeListing` call means List and a `proposeConfig` call means ChangeConfig. `propose`
     ///      and `safeCalldata` take the same branch, which `test_safeCalldata_matchesProposeAndWorksWhenTheOwnerSendsIt`
-    ///      pins, so reading the calldata reads the decision.
+    ///      pins, so reading the calldata reads the decision. The entry's token is named in LIST.
     function _actionFor(IndexFactory factory, ConfigureWhitelist.Entry memory entry, address[] memory relist)
         internal
         view
         returns (string memory)
     {
+        address[] memory named = new address[](1);
+        named[0] = entry.token;
+        return _actionFor(factory, entry, named, relist);
+    }
+
+    /// @dev `_actionFor` with the LIST given.
+    function _actionFor(
+        IndexFactory factory,
+        ConfigureWhitelist.Entry memory entry,
+        address[] memory firstListings,
+        address[] memory relist
+    ) internal view returns (string memory) {
         ConfigureWhitelist.Entry[] memory one = new ConfigureWhitelist.Entry[](1);
         one[0] = entry;
-        bytes[] memory calls = configure.safeCalldata(factory, one, relist);
+        bytes[] memory calls = _safeCalls(factory, one, firstListings, relist);
         if (calls.length == 0) return "Skip";
         if (bytes4(calls[0]) == IIndexFactory.proposeListing.selector) return "List";
         if (bytes4(calls[0]) == IIndexFactory.proposeConfig.selector) return "ChangeConfig";
@@ -793,7 +864,7 @@ contract ScriptsTest is Test {
     function _listEntry(IndexFactory factory, ConfigureWhitelist.Entry memory entry) internal {
         ConfigureWhitelist.Entry[] memory one = new ConfigureWhitelist.Entry[](1);
         one[0] = entry;
-        configure.propose(factory, one, none);
+        configure.propose(factory, one, _tokens(one), none);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         configure.execute(factory, one);
     }
@@ -815,8 +886,9 @@ contract ScriptsTest is Test {
         ConfigureWhitelist.Entry memory second = _entry(token, feed, DEFAULT_STALENESS / 2, 1_000e18);
         ConfigureWhitelist.Entry memory third = _entry(token, feed, DEFAULT_STALENESS / 4, 1_000e18);
 
-        // 1. never configured -> List
+        // 1. never configured -> List when named in LIST, and Skip otherwise (RT-06)
         assertEq(_actionFor(factory, inForce, none), "List", "never configured");
+        assertEq(_actionFor(factory, inForce, none, none), "Skip", "never configured, not named in LIST");
 
         // 2. listed, config unchanged -> Skip
         _listEntry(factory, inForce);
@@ -829,7 +901,7 @@ contract ScriptsTest is Test {
         // 7. a live proposal carrying the entry's own config -> Skip
         ConfigureWhitelist.Entry[] memory one = new ConfigureWhitelist.Entry[](1);
         one[0] = second;
-        configure.propose(factory, one, none);
+        configure.propose(factory, one, _tokens(one), none);
         assertEq(_actionFor(factory, second, none), "Skip", "the entry's own config is already pending");
 
         // 8. a live proposal carrying some other config -> Skip, and the pending one has to be cancelled first
@@ -880,22 +952,22 @@ contract ScriptsTest is Test {
     function test_XA11_proposeSkipsADelistedTokenUnlessNamedForRelisting() public {
         IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
         ConfigureWhitelist.Entry[] memory list = _twoEntries();
-        configure.propose(factory, list, none);
+        configure.propose(factory, list, _tokens(list), none);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         configure.execute(factory, list);
         vm.prank(guardian);
         factory.delist(list[0].token);
 
-        configure.propose(factory, list, none); // a routine run with the same list must not undo the guardian
+        configure.propose(factory, list, none, none); // a routine run with the same list must not undo the guardian
         assertEq(factory.listingEta(list[0].token), 0);
-        assertEq(configure.safeCalldata(factory, list, none).length, 0);
+        assertEq(_safeCalls(factory, list, none, none).length, 0);
 
         // A changed config for the delisted token is proposed as a config change, which leaves it delisted.
         list[0].maxStaleness = DEFAULT_STALENESS / 2;
-        bytes[] memory calls = configure.safeCalldata(factory, list, none);
+        bytes[] memory calls = _safeCalls(factory, list, none, none);
         assertEq(calls.length, 1);
         assertEq(calls[0], abi.encodeCall(IIndexFactory.proposeConfig, (list[0].token, _configFor(list[0]))));
-        configure.propose(factory, list, none);
+        configure.propose(factory, list, none, none);
         assertFalse(factory.pendingIsListing(list[0].token));
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         configure.execute(factory, list);
@@ -905,13 +977,102 @@ contract ScriptsTest is Test {
         // Named in the relist argument, it is proposed as a listing again.
         address[] memory relist = new address[](2);
         (relist[0], relist[1]) = (list[1].token, list[0].token); // naming a listed token too changes nothing for it
-        calls = configure.safeCalldata(factory, list, relist);
+        calls = _safeCalls(factory, list, none, relist);
         assertEq(calls.length, 1);
         assertEq(calls[0], abi.encodeCall(IIndexFactory.proposeListing, (list[0].token, _configFor(list[0]))));
-        configure.propose(factory, list, relist);
+        configure.propose(factory, list, none, relist);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         configure.execute(factory, list);
         assertTrue(factory.isWhitelisted(list[0].token));
+    }
+
+    /// @dev RT-06. XA-11 kept a token the guardian delisted out of a routine run, but a first listing the guardian
+    ///      cancelled leaves nothing on chain, so the next routine run with the same list proposed it again, among the
+    ///      refreshes and unlabelled in safe mode, and one missed veto window let anyone's execute run list it. A token
+    ///      never listed is now proposed only when LIST names it, and a routine run leaves LIST unset.
+    function test_RT06_aVetoedFirstListingIsNotProposedAgainByARoutineRun() public {
+        IndexFactory factory = _factory(owner, guardian);
+        ConfigureWhitelist.Entry[] memory list = _twoEntries();
+        // Launch: the Safe's batch lists both, and the guardian vetoes the second during the notice.
+        _sendAsOwner(factory, _safeCalls(factory, list, _tokens(list), none));
+        vm.prank(guardian);
+        factory.cancelListing(list[1].token);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        configure.execute(factory, list);
+        assertTrue(factory.isWhitelisted(list[0].token));
+        assertFalse(factory.isWhitelisted(list[1].token), "the veto holds at launch");
+
+        // A month later, the routine supply refresh: the same list, one supply revised, LIST unset.
+        vm.warp(block.timestamp + 30 days);
+        list[0].referenceSupply = 1_020e18;
+        bytes[] memory calls = _safeCalls(factory, list, none, none);
+        assertEq(calls.length, 1, "the refresh alone");
+        assertEq(calls[0], abi.encodeCall(IIndexFactory.proposeConfig, (list[0].token, _configFor(list[0]))));
+        _sendAsOwner(factory, calls);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        configure.execute(factory, list);
+        assertEq(factory.tokenConfig(list[0].token).referenceSupply, 1_020e18);
+        assertFalse(factory.isWhitelisted(list[1].token), "so no missed veto window can list it");
+
+        // RELIST names delisted tokens; it does not stand in for LIST.
+        address[] memory named = new address[](1);
+        named[0] = list[1].token;
+        assertEq(_safeCalls(factory, list, none, named).length, 0, "RELIST is not LIST");
+    }
+
+    /// @dev RT-06: propose mode proposes a first listing only for a token LIST names, `all` names every entry of the run
+    ///      and no other token, and a vetoed first listing is proposed again only when the operator names it again.
+    function test_RT06_aFirstListingIsProposedOnlyWhenNamedInList() public {
+        IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
+        ConfigureWhitelist.Entry[] memory list = _twoEntries();
+        address[] memory second = new address[](1);
+        second[0] = list[1].token;
+
+        configure.propose(factory, list, none, none); // nothing named, so nothing proposed
+        assertEq(factory.listingEta(list[0].token), 0, "fail closed");
+        assertEq(factory.listingEta(list[1].token), 0);
+
+        configure.propose(factory, list, second, none);
+        assertEq(factory.listingEta(list[0].token), 0, "the token LIST leaves out is left alone");
+        assertGt(factory.listingEta(list[1].token), 0);
+        assertTrue(factory.pendingIsListing(list[1].token), "the named one is proposed as a listing");
+
+        vm.prank(guardian);
+        factory.cancelListing(list[1].token);
+        configure.propose(factory, list, none, none);
+        assertEq(factory.listingEta(list[1].token), 0, "a vetoed first listing stays vetoed");
+        configure.propose(factory, list, second, none);
+        assertGt(factory.listingEta(list[1].token), 0, "until the operator names it again");
+
+        // The LIST value: `all` is exactly this run's tokens, anything else is addresses, and unset is none.
+        assertEq(configure.resolveFirstListings("all", list), _tokens(list));
+        assertEq(configure.resolveFirstListings("", list).length, 0);
+        address[] memory parsed =
+            configure.resolveFirstListings(string.concat(vm.toString(list[0].token), ", ", vm.toString(owner)), list);
+        assertEq(parsed.length, 2);
+        assertEq(parsed[0], list[0].token);
+        assertEq(parsed[1], owner, "an address outside the list is kept, and names nothing the run proposes");
+    }
+
+    /// @dev RT-06: safe mode printed bare calldata, so a signer could not tell a listing from a routine config change.
+    ///      Each call now comes with the line printed above it: the call, the token's symbol and its address.
+    function test_RT06_safeModeLabelsEveryProposal() public {
+        IndexFactory factory = _factory(owner, guardian);
+        ConfigureWhitelist.Entry[] memory list = _twoEntries();
+        IIndexFactory.TokenConfig memory configA = _configFor(list[0]);
+        vm.prank(owner);
+        factory.proposeListing(list[0].token, configA);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        factory.executeListing(list[0].token);
+
+        list[0].referenceSupply = 1_020e18; // a refresh for A beside B's first listing
+        (bytes[] memory calls, string[] memory labels) = configure.safeCalldata(factory, list, _tokens(list), none);
+        assertEq(calls.length, 2);
+        assertEq(labels.length, 2, "one label per call");
+        assertEq(labels[0], string.concat("proposeConfig A ", vm.toString(list[0].token)));
+        assertEq(bytes4(calls[0]), IIndexFactory.proposeConfig.selector, "and each label names its own call");
+        assertEq(labels[1], string.concat("proposeListing B ", vm.toString(list[1].token)));
+        assertEq(calls[1], abi.encodeCall(IIndexFactory.proposeListing, (list[1].token, _configFor(list[1]))));
     }
 
     function test_parseAddresses() public view {
@@ -936,7 +1097,7 @@ contract ScriptsTest is Test {
         assertFalse(factory.isWhitelisted(list[1].token), "a config the entry did not ask for is not executed");
         assertGt(factory.listingEta(list[1].token), 0);
         // The Safe calldata for the other entry is still produced; this one waits for a cancel.
-        assertEq(configure.safeCalldata(factory, list, none).length, 1);
+        assertEq(_safeCalls(factory, list, _tokens(list), none).length, 1);
     }
 
     function test_XA40_proposeSkipsTokensOutsideTheWhitelistPolicy() public {
@@ -944,6 +1105,7 @@ contract ScriptsTest is Test {
         MockERC20 twoDecimals = new MockERC20("Two", "TWO", 2);
         MockERC20 ordinary = new MockERC20("Ordinary", "ORD", 18);
         ordinary.mint(address(this), 1e18);
+        MockERC20 another = new MockERC20("Another", "ANO", 18); // a list may not name a token twice (RT-24)
         market.config(address(twoDecimals), ONE_DOLLAR);
         address feed = address(market.feedOf(address(twoDecimals)));
         ConfigureWhitelist.Entry[] memory list = new ConfigureWhitelist.Entry[](5);
@@ -960,14 +1122,14 @@ contract ScriptsTest is Test {
             token: address(ordinary), feed: address(router), maxStaleness: DEFAULT_STALENESS, referenceSupply: 1
         }); // a feed that has code but does not answer as an aggregator
         list[4] = ConfigureWhitelist.Entry({
-            token: address(ordinary), feed: makeAddr("nothing"), maxStaleness: DEFAULT_STALENESS, referenceSupply: 1
+            token: address(another), feed: makeAddr("nothing"), maxStaleness: DEFAULT_STALENESS, referenceSupply: 1
         }); // and one that names an address with no code at all
 
-        configure.propose(factory, list, none);
+        configure.propose(factory, list, _tokens(list), none);
         for (uint256 i = 0; i < list.length; ++i) {
             assertEq(factory.listingEta(list[i].token), 0);
         }
-        assertEq(configure.safeCalldata(factory, list, none).length, 0);
+        assertEq(_safeCalls(factory, list, _tokens(list), none).length, 0);
     }
 
     /// @dev LR-05: `status` only logged, so this test could assert nothing about what it said; swapped messages passed.
@@ -984,7 +1146,7 @@ contract ScriptsTest is Test {
             assertEq(reports[i].eta, 0, "and nothing is pending");
         }
 
-        configure.propose(factory, list, none);
+        configure.propose(factory, list, _tokens(list), none);
         reports = configure.status(factory, list);
         for (uint256 i = 0; i < 2; ++i) {
             assertFalse(reports[i].listed);
@@ -1030,7 +1192,17 @@ contract ScriptsTest is Test {
         );
 
         vm.setEnv("RELIST", vm.toString(list[0].token)); // parsed by run; nothing here is delisted
-        vm.setEnv("LISTING_MODE", "safe"); // logs the calldata only
+        // RT-06: LIST names no entry of this WHITELIST, so neither mode proposes its first listing, and RELIST naming
+        // the token does not stand in for LIST.
+        vm.setEnv("LIST", vm.toString(list[1].token));
+        vm.setEnv("LISTING_MODE", "safe"); // logs each call under its label, broadcasts nothing
+        configure.run();
+        vm.setEnv("LISTING_MODE", "propose");
+        configure.run();
+        assertEq(factory.listingEta(list[0].token), 0, "a first listing LIST does not name is not proposed");
+
+        vm.setEnv("LIST", "all"); // every entry of this WHITELIST
+        vm.setEnv("LISTING_MODE", "safe"); // logs each call under its label, and still proposes nothing itself
         configure.run();
         assertEq(factory.listingEta(list[0].token), 0);
 
@@ -1556,7 +1728,7 @@ contract ScriptsTest is Test {
         IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
         ConfigureWhitelist.Entry[] memory one = new ConfigureWhitelist.Entry[](1);
         one[0] = _tokenAt(makeAddr("edge"), 18);
-        configure.propose(factory, one, none);
+        configure.propose(factory, one, _tokens(one), none);
         vm.warp(factory.listingEta(one[0].token) + factory.PROPOSAL_WINDOW());
         assertTrue(factory.listingPending(one[0].token), "the factory still counts it");
         assertEq(_actionFor(factory, one[0], none), "Skip", "so the script does not propose it again");
@@ -1594,7 +1766,7 @@ contract ScriptsTest is Test {
         ConfigureWhitelist.Entry[] memory two = new ConfigureWhitelist.Entry[](2);
         two[0] = _tokenAt(makeAddr("named"), 18);
         two[1] = _tokenAt(makeAddr("not named"), 18);
-        configure.propose(factory, two, none);
+        configure.propose(factory, two, _tokens(two), none);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         configure.execute(factory, two);
         vm.startPrank(guardian);
@@ -1604,7 +1776,7 @@ contract ScriptsTest is Test {
 
         address[] memory relist = new address[](1);
         relist[0] = two[0].token;
-        bytes[] memory calls = configure.safeCalldata(factory, two, relist);
+        bytes[] memory calls = _safeCalls(factory, two, _tokens(two), relist);
         assertEq(calls.length, 1, "only the named token is proposed");
         assertEq(calls[0], abi.encodeCall(IIndexFactory.proposeListing, (two[0].token, _configFor(two[0]))));
     }
@@ -1694,24 +1866,24 @@ contract ScriptsTest is Test {
     function test_CRI38_anEntryPastTheSupplyBoundIsSkippedNotBatched() public {
         IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
         ConfigureWhitelist.Entry[] memory list = _twoEntries();
-        configure.propose(factory, list, none);
+        configure.propose(factory, list, _tokens(list), none);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         configure.execute(factory, list);
 
         list[0].referenceSupply *= 100; // a decimals slip, past the factory's order-of-magnitude bound
         list[1].referenceSupply *= 2; // a routine refresh beside it
-        bytes[] memory calls = configure.safeCalldata(factory, list, none);
+        bytes[] memory calls = _safeCalls(factory, list, _tokens(list), none);
         assertEq(calls.length, 1, "only the refresh goes into the batch");
         assertEq(calls[0], abi.encodeCall(IIndexFactory.proposeConfig, (list[1].token, _configFor(list[1]))));
 
         IndexFactory fresh = _factory(DEFAULT_SENDER, guardian);
         ConfigureWhitelist.Entry[] memory again = _twoEntries();
-        configure.propose(fresh, again, none);
+        configure.propose(fresh, again, _tokens(again), none);
         vm.warp(block.timestamp + fresh.LISTING_DELAY());
         configure.execute(fresh, again);
         again[0].referenceSupply /= 100;
         again[1].referenceSupply /= 2;
-        configure.propose(fresh, again, none); // propose mode no longer stops at the slip
+        configure.propose(fresh, again, _tokens(again), none); // propose mode no longer stops at the slip
         assertEq(fresh.listingEta(again[0].token), 0, "the slip is skipped");
         assertGt(fresh.listingEta(again[1].token), 0, "and the refresh after it is proposed");
     }
@@ -1721,7 +1893,7 @@ contract ScriptsTest is Test {
     function test_CRI38_executeRunsEveryDueEntryTheRuleStillAccepts() public {
         IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
         ConfigureWhitelist.Entry[] memory list = _twoEntries();
-        configure.propose(factory, list, none);
+        configure.propose(factory, list, _tokens(list), none);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         market.setAge(list[0].token, uint256(DEFAULT_STALENESS) + 1); // the first entry's feed stops publishing
 
@@ -1767,5 +1939,237 @@ contract ScriptsTest is Test {
             assertEq(list[i].priceUsd8, testMarket.usd8(list[i].wethPerToken));
         }
         assertApproxEqRel(list[0].priceUsd8, 1e8, 1e14, "tUSDC is a dollar, to its pool price's rounding");
+    }
+
+    // ---------------------------------------------------------------------
+    // RT: the red team of 2026-09-24 (RT-06 sits beside XA-11)
+    // ---------------------------------------------------------------------
+
+    /// @dev RT-22, and the review of its fix. The documented recourse for a token whose decimals changed is its config
+    ///      in force proposed again, which the script skipped as already in force. It proposes it now, but only when the
+    ///      operator names the token in LIST: no entry field asks for it, and nothing on chain records that the guardian
+    ///      vetoed the last one, so, as with a first listing (RT-06), a vetoed refresh otherwise came back on every run
+    ///      labelled like a routine supply refresh. Its label says which decimals it records.
+    function test_RT22_aTokenWhoseDecimalsMovedGetsItsConfigProposedAgainWhenNamed() public {
+        IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
+        IIndexRule rule = IIndexRule(factory.RULE());
+        ConfigureWhitelist.Entry[] memory list = _twoEntries();
+        configure.propose(factory, list, _tokens(list), none);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        configure.execute(factory, list);
+        MockERC20 upgraded = MockERC20(list[0].token);
+        assertEq(factory.tokenDecimals(address(upgraded)), 18);
+        uint256 recordedPrice = rule.price(address(upgraded));
+        address[] memory named = new address[](1);
+        named[0] = address(upgraded);
+
+        upgraded.setDecimals(17); // its admin changes what it answers; the rule keeps pricing it with the record
+        assertEq(rule.price(address(upgraded)), recordedPrice, "a power of ten off the token's own decimals");
+        assertEq(_actionFor(factory, list[0], none, none), "Skip", "a routine run does not propose it");
+        assertEq(_actionFor(factory, list[0], named, none), "ChangeConfig", "named, the config in force again");
+        (bytes[] memory calls, string[] memory labels) = configure.safeCalldata(factory, list, named, none);
+        assertEq(calls.length, 1, "for the moved token alone");
+        assertEq(calls[0], abi.encodeCall(IIndexFactory.proposeConfig, (list[0].token, _configFor(list[0]))));
+        assertEq(
+            labels[0],
+            string.concat("proposeConfig (records decimals 18 -> 17) A ", vm.toString(address(upgraded))),
+            "labelled for what it records"
+        );
+
+        // The guardian vetoes it; the next routine run leaves it vetoed.
+        configure.propose(factory, list, named, none);
+        vm.prank(guardian);
+        factory.cancelListing(address(upgraded));
+        vm.warp(block.timestamp + 30 days);
+        assertEq(_safeCalls(factory, list, none, none).length, 0, "a vetoed refresh does not come back on its own");
+
+        configure.propose(factory, list, named, none);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        configure.execute(factory, list);
+        assertEq(factory.tokenDecimals(address(upgraded)), 17, "the record caught up");
+        assertEq(rule.price(address(upgraded)), recordedPrice * 10, "and the price with it");
+        assertEq(_actionFor(factory, list[0], named, none), "Skip", "after which nothing is left to do");
+
+        // A delisted token still prices the indexes that hold it, so it gets the same refresh, as a config change.
+        vm.prank(guardian);
+        factory.delist(address(upgraded));
+        upgraded.setDecimals(18);
+        assertEq(_actionFor(factory, list[0], named, none), "ChangeConfig", "delisted, its decimals moved");
+        assertEq(_actionFor(factory, list[0], none, none), "Skip", "and not unless named");
+        upgraded.setDecimals(17);
+        assertEq(_actionFor(factory, list[0], named, none), "Skip", "delisted, nothing moved");
+    }
+
+    /// @dev RT-22: `status` compared the config fields only, so it reported a token priced a power of ten off as
+    ///      listed with the entry's config in force. It reports the decimals the rule prices with beside the token's.
+    function test_RT22_statusReportsTheRecordedAndTheLiveDecimals() public {
+        IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
+        ConfigureWhitelist.Entry[] memory list = _twoEntries();
+        ConfigureWhitelist.Report[] memory reports = configure.status(factory, list);
+        assertEq(reports[0].recordedDecimals, 0, "nothing is recorded before a listing");
+        assertEq(reports[0].liveDecimals, 18);
+        assertEq(reports[1].liveDecimals, 8);
+
+        configure.propose(factory, list, _tokens(list), none);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        configure.execute(factory, list);
+        MockERC20(list[1].token).setDecimals(6);
+        reports = configure.status(factory, list);
+        assertTrue(reports[1].listed && reports[1].inForce && reports[1].eta == 0, "every config field matches");
+        assertEq(reports[1].recordedDecimals, 8, "while the rule prices it at 8 decimals");
+        assertEq(reports[1].liveDecimals, 6, "and the token answers 6");
+        assertEq(reports[0].recordedDecimals, 18);
+        assertEq(reports[0].liveDecimals, 18, "the other one is in order");
+
+        // A token that stops answering is reported as 0 rather than stopping the run.
+        vm.mockCallRevert(list[0].token, abi.encodeCall(IERC20Metadata.decimals, ()), "");
+        reports = configure.status(factory, list);
+        assertEq(reports[0].recordedDecimals, 18);
+        assertEq(reports[0].liveDecimals, 0);
+    }
+
+    /// @dev RT-22, RT-23. The factory refuses to execute a proposal whose token changed its decimals since it was made,
+    ///      so execute mode reverted at that entry and left every due proposal after it unexecuted, which CR-I38 had
+    ///      stopped a rule rejection from doing. It is skipped with its reason now, and the rest execute.
+    function test_RT22_executeSkipsADueProposalWhoseDecimalsChanged() public {
+        IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
+        ConfigureWhitelist.Entry[] memory list = _twoEntries();
+        configure.propose(factory, list, _tokens(list), none);
+        MockERC20(list[0].token).setDecimals(17); // during the notice
+        // Propose and safe mode no longer call it "already pending", and status shows the pinned decimals beside the
+        // token's own, since the factory can never execute that proposal.
+        assertEq(_actionFor(factory, list[0], _tokens(list), none), "Skip", "pending, though it can never execute");
+        ConfigureWhitelist.Report[] memory reports = configure.status(factory, list);
+        assertEq(reports[0].pendingDecimals, 18, "the proposal pinned 18");
+        assertEq(reports[0].liveDecimals, 17, "the token answers 17");
+        assertEq(reports[1].pendingDecimals, reports[1].liveDecimals, "the other proposal is in order");
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.DecimalsChanged.selector, list[0].token, 18, 17));
+        factory.executeListing(list[0].token);
+
+        configure.execute(factory, list);
+        assertFalse(factory.isWhitelisted(list[0].token), "the moved token is skipped");
+        assertGt(factory.listingEta(list[0].token), 0, "and its proposal waits to be cancelled");
+        assertTrue(factory.isWhitelisted(list[1].token), "while the entry after it executes");
+
+        // The recourse the log names: cancel it and propose it again, with the new decimals on show.
+        vm.prank(DEFAULT_SENDER);
+        factory.cancelListing(list[0].token);
+        configure.propose(factory, list, _tokens(list), none);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        configure.execute(factory, list);
+        assertTrue(factory.isWhitelisted(list[0].token));
+        assertEq(factory.tokenDecimals(list[0].token), 17);
+    }
+
+    /// @dev RT-24. Safe mode decides every entry against the same state, so a token named twice got a proposal for each
+    ///      copy, and the Safe batch, one transaction, always reverted at the second with ListingPending. A list that
+    ///      names a token twice is refused before anything is printed or proposed.
+    function test_RT24_aListNamingATokenTwiceIsRefused() public {
+        IndexFactory factory = _factory(owner, guardian);
+        ConfigureWhitelist.Entry[] memory two = _twoEntries();
+        ConfigureWhitelist.Entry[] memory list = new ConfigureWhitelist.Entry[](3);
+        (list[0], list[1]) = (two[0], two[1]);
+        list[2] = _entry(two[0].token, two[0].feed, DEFAULT_STALENESS, 1_100e18); // an edited copy, appended
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.DuplicateEntry.selector, two[0].token));
+        configure.safeCalldata(factory, list, _tokens(list), none);
+
+        IndexFactory keyOwned = _factory(DEFAULT_SENDER, guardian);
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.DuplicateEntry.selector, two[0].token));
+        configure.propose(keyOwned, list, _tokens(list), none);
+        assertEq(keyOwned.listingEta(two[1].token), 0, "nothing is proposed");
+
+        string memory entry = string.concat(vm.toString(address(router)), ":", vm.toString(owner), ":5400:");
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.DuplicateEntry.selector, address(router)));
+        configure.resolveList(string.concat(entry, "3, ", entry, "5"), address(0));
+
+        // Without the copy, the batch is the two proposals and executes.
+        bytes[] memory calls = _safeCalls(factory, two, _tokens(two), none);
+        assertEq(calls.length, 2);
+        _sendAsOwner(factory, calls);
+    }
+
+    /// @dev The line of a one-entry run's only proposal, a first listing of a token with a dollar feed.
+    function _labelOf(IndexFactory factory, address token) internal returns (string memory) {
+        market.config(token, ONE_DOLLAR);
+        ConfigureWhitelist.Entry[] memory one = new ConfigureWhitelist.Entry[](1);
+        one[0] = _entry(token, address(market.feedOf(token)), DEFAULT_STALENESS, 1_000e18);
+        (bytes[] memory calls, string[] memory labels) = configure.safeCalldata(factory, one, _tokens(one), none);
+        assertEq(calls.length, 1, "the entry is proposed whatever its symbol");
+        return labels[0];
+    }
+
+    /// @dev RT-25. `_symbolOf` promised that a token answering `symbol()` in another shape could not stop the run, but
+    ///      it only turned away answers under 64 bytes: a longer one whose offset or length pointed past its end
+    ///      reached `abi.decode` and reverted the whole safe, propose or execute run. Every shape is "?" now, and the
+    ///      boundaries of both checks are pinned with the shortest answers that are and are not strings.
+    function test_RT25_aSymbolInAnotherShapeIsAQuestionMarkNotARevert() public {
+        IndexFactory factory = _factory(owner, guardian);
+        bytes memory eighteen = abi.encode(uint256(18));
+        bytes[7] memory answers = [
+            abi.encode(bytes32("MKR")), // a bytes32 symbol, as MKR's
+            abi.encode(bytes32(0)), // an unset one, which would decode as an empty string if read as a string
+            abi.encode(uint256(0x40), uint256(3)), // an offset past the end
+            abi.encode(uint256(0x20), type(uint256).max), // a length past the end, the red team's shape
+            abi.encode(uint256(0x20), uint256(1)), // a length one byte past the end
+            abi.encode(""), // the shortest string: offset 0x20, length 0
+            abi.encode(uint256(0x40), uint256(0), uint256(0)) // the last word as the length, the furthest offset allowed
+        ];
+        string[7] memory symbols = ["?", "?", "?", "?", "?", "", ""];
+        for (uint256 i = 0; i < answers.length; ++i) {
+            address token = address(new RawAnswersToken(answers[i], eighteen));
+            assertEq(_labelOf(factory, token), string.concat("proposeListing ", symbols[i], " ", vm.toString(token)));
+        }
+        address genuine = address(new RawAnswersToken(abi.encode("RAW"), eighteen));
+        assertEq(_labelOf(factory, genuine), string.concat("proposeListing RAW ", vm.toString(genuine)));
+    }
+
+    /// @dev RT-25, for the decimals the script now reads once for the policy, the RT-22 check and `status`: an answer
+    ///      that is not a uint8 is no answer. A `try` call reverted the whole run on one, since its answer is decoded
+    ///      in the caller, where no `catch` reaches, and a plain cast would have read 274 as 18.
+    function test_RT25_aDecimalsAnswerInAnotherShapeIsSkippedNotFatal() public {
+        IndexFactory factory = _factory(owner, guardian);
+        bytes[3] memory answers = [abi.encode(uint256(256 + 18)), bytes(hex"12"), abi.encode(uint256(18))];
+        string[3] memory actions = ["Skip", "Skip", "List"];
+        uint8[3] memory reported = [0, 0, 18];
+        ConfigureWhitelist.Entry[] memory list = new ConfigureWhitelist.Entry[](3);
+        for (uint256 i = 0; i < answers.length; ++i) {
+            address token = address(new RawAnswersToken(abi.encode("RAW"), answers[i]));
+            market.config(token, ONE_DOLLAR);
+            list[i] = _entry(token, address(market.feedOf(token)), DEFAULT_STALENESS, 1e30);
+            assertEq(_actionFor(factory, list[i], none), actions[i]);
+        }
+        ConfigureWhitelist.Report[] memory reports = configure.status(factory, list);
+        for (uint256 i = 0; i < answers.length; ++i) {
+            assertEq(reports[i].liveDecimals, reported[i], "status reads the same answer the same way");
+        }
+    }
+
+    /// @dev RT-25 (mutant N16). The factory takes a reference supply revision of exactly MAX_SUPPLY_CHANGE either way
+    ///      (CR-I29), and the script's mirror of that bound must too: with `<` for `<=` it skipped every exactly tenfold
+    ///      revision from the Safe batch, and every test still passed. The first step past it either way is skipped.
+    function test_RT25_aRevisionOfExactlyMaxSupplyChangeIsProposed() public {
+        IndexFactory factory = _factory(owner, guardian);
+        ConfigureWhitelist.Entry[] memory list = _twoEntries();
+        _sendAsOwner(factory, _safeCalls(factory, list, _tokens(list), none));
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        configure.execute(factory, list);
+        uint256 bound = factory.MAX_SUPPLY_CHANGE();
+        assertEq(bound, 10);
+        (address a, address b) = (list[0].token, list[1].token);
+        uint256 supplyA = list[0].referenceSupply;
+        uint256 supplyB = list[1].referenceSupply;
+        assertEq(supplyB % bound, 0, "B's supply divides exactly");
+
+        assertEq(_actionFor(factory, _entry(a, list[0].feed, DEFAULT_STALENESS, supplyA * bound + bound), none), "Skip");
+        assertEq(_actionFor(factory, _entry(b, list[1].feed, DEFAULT_STALENESS, supplyB / bound - 1), none), "Skip");
+
+        list[0].referenceSupply = supplyA * bound; // exactly tenfold up
+        list[1].referenceSupply = supplyB / bound; // and exactly tenfold down
+        bytes[] memory calls = _safeCalls(factory, list, none, none);
+        assertEq(calls.length, 2, "both are inside the bound");
+        _sendAsOwner(factory, calls); // and the factory takes both
+        assertEq(factory.pendingTokenConfig(a).referenceSupply, supplyA * bound);
+        assertEq(factory.pendingTokenConfig(b).referenceSupply, supplyB / bound);
     }
 }
