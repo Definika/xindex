@@ -3,9 +3,12 @@ pragma solidity 0.8.28;
 
 /// @notice One hop of a Uniswap V4 route.
 /// @dev Vendored from Uniswap's v4-periphery (MIT), `src/libraries/PathKey.sol` at commit
-///      444c526b77d804590f0d7bc5a481af5a3277c952, which is what Universal Router 2.0.0 was built against. The
-///      upstream fields are typed `Currency` and `IHooks`, both of which are `address` underneath, so this is
-///      abi-identical while needing none of their libraries.
+///      444c526b77d804590f0d7bc5a481af5a3277c952, the commit Universal Router's 2.0.0 tag pins. The mainnet deployment
+///      0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af predates that tag and was compiled from v4-periphery 3796e9c; the
+///      files vendored here are identical at both commits, the four that differ are non-behavioural, and the pinned
+///      sources rebuild the deployed runtime byte for byte (CR-I19). The upstream fields are typed `Currency` and
+///      `IHooks`, both of which are `address` underneath, so this is abi-identical while needing none of their
+///      libraries.
 ///
 ///      `intermediateCurrency` is the currency on the far side of this hop. Its meaning depends on the direction the
 ///      router walks the path: an exact-input route reads it as where that hop arrives, so the last entry names the
@@ -60,7 +63,10 @@ library UniswapV4Types {
 
     /// @notice As an amount, "the whole of it": the full debt on a settle, the full credit on a take. The zap uses it
     ///         on both sides so a leg settles and collects exactly what the swap moved, with nothing left over for the
-    ///         unlock to revert on.
+    ///         unlock to revert on. It is a sentinel in the swap-amount position as well: an exact-input swap of zero
+    ///         sells the full credit and an exact-output swap of zero buys the full debt. The zap never encodes a zero
+    ///         swap amount, because a burn leg that redeems nothing is skipped and a mint leg always needs at least one
+    ///         raw unit (CR-I05).
     uint256 internal constant OPEN_DELTA = 0;
 
     /// @notice As an amount, "the router's whole balance of this currency". The zap never emits it: every amount it

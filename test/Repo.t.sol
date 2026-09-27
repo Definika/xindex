@@ -11,8 +11,9 @@ import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 ///         `.gitmodules` (L08 and FR04) and the documented known limitations (I09); from the whole-repo audit, the CI
 ///         gates (XA-10, XA-64), the ignored chain-1 broadcasts (XA-43), the committed ABIs (XA-44), the single copy
 ///         of the agent instructions (XA-46) and the verification key (XA-58); from the logic review of 2026-09-18,
-///         the test linking mode that lets checks after an expected constructor revert run (LR-01). CI checks the
-///         submodule commits themselves, which needs git; these tests check everything a local run can.
+///         the test linking mode that lets checks after an expected constructor revert run (LR-01); from the security
+///         audit of 2026-09-23, the ignored Sepolia-fork broadcasts (CR-I40). CI checks the submodule commits
+///         themselves, which needs git; these tests check everything a local run can.
 contract RepoTest is Test {
     function _read(string memory path) internal view returns (string memory) {
         return vm.readFile(string.concat(vm.projectRoot(), "/", path));
@@ -100,6 +101,14 @@ contract RepoTest is Test {
     ///      deployment's record is added on purpose.
     function test_XA43_chainOneBroadcastsAreIgnored() public view {
         assertTrue(_contains(_read(".gitignore"), "\n/broadcast/*/1/\n"), "chain-1 broadcast records are ignored");
+    }
+
+    /// @dev CR-I40: a Sepolia-fork rehearsal keeps chain id 11155111, since SetupTestMarket refuses any other, so its
+    ///      records landed beside the real Sepolia history and were committed with it, an aborted run among them.
+    function test_CRI40_sepoliaForkBroadcastsAreIgnored() public view {
+        assertTrue(
+            _contains(_read(".gitignore"), "\n/broadcast/*/11155111/\n"), "Sepolia broadcast records are ignored"
+        );
     }
 
     /// @dev XA-44: the ABIs the web app decodes with are committed, and CI regenerates them and fails on a diff.

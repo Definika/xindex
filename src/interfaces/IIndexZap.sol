@@ -17,7 +17,7 @@ import {PathKey} from "../libraries/UniswapV4Types.sol";
 ///
 ///      Of the shared errors, the zap raises NotIndex for an index the factory did not deploy, ZeroAddress for a zero
 ///      factory, router, recipient, `tokenIn` or `tokenOut`, and InvalidRecipient for a recipient that is the zap, the
-///      index, the router or the PoolManager.
+///      index, the router, the PoolManager, the factory or the rule (RT-21).
 interface IIndexZap is IXindexErrors {
     /// @param v3Path Exact-output Uniswap V3 path from the component back to `tokenIn`. Empty for a V4 leg and for
     ///        the pass-through leg whose component is `tokenIn` itself.
@@ -37,9 +37,13 @@ interface IIndexZap is IXindexErrors {
     ///        an intermediate hop that sells nothing reverts with InsufficientOutput.
     /// @param v4Path Uniswap V4 route, whose last entry names `tokenOut`. Empty for a V3 leg and for the pass-through
     ///        leg. The whole route is one swap, so an intermediate hop that fills short leaves the pool manager
-    ///        unsettled and reverts the leg; only the first hop can leave unsold input, which comes back to `to`.
+    ///        unsettled and reverts the leg, unless that hop's input is the component or `tokenOut` again: a route that
+    ///        revisits the component nets the leftover against the leg's debt, and it comes back to `to`, while a
+    ///        leftover `tokenOut` is paid out. On a route that revisits neither, only the first hop can leave unsold
+    ///        input, which comes back to `to`.
     /// @param minAmountOut Least `tokenOut` this leg must return, or 0 for the overall limit only. It applies to the
-    ///        leg's final output. A non-zero minimum on a leg that sells nothing reverts.
+    ///        leg's final output. A non-zero minimum on a leg whose redeemed amount rounds to zero reverts, and so does
+    ///        an intermediate V3 hop that produces nothing, whatever the minimum (RT-11).
     struct BurnLeg {
         bytes v3Path;
         PathKey[] v4Path;
@@ -52,7 +56,8 @@ interface IIndexZap is IXindexErrors {
     /// @param maxAmountIn Most `tokenIn` the whole mint may spend; non-zero.
     /// @param shares Exact index shares to mint (1e18 is one index token); non-zero.
     /// @param legs One entry per component, in component order.
-    /// @param to Receives the shares; not zero, the zap, the index or the router.
+    /// @param to Receives the shares; not zero, the zap, the index, the router, the PoolManager, the factory or the
+    ///        rule (RT-21).
     /// @param deadline Last timestamp at which the call is valid.
     struct MintParams {
         address index;
@@ -71,7 +76,8 @@ interface IIndexZap is IXindexErrors {
     /// @param tokenOut Token the caller receives.
     /// @param minAmountOut Least `tokenOut` the whole burn must return; non-zero.
     /// @param legs One entry per component, in component order.
-    /// @param to Receives `tokenOut` and any unsold component; not zero, the zap, the index or the router.
+    /// @param to Receives `tokenOut` and any unsold component; not zero, the zap, the index, the router, the
+    ///        PoolManager, the factory or the rule (RT-21).
     /// @param deadline Last timestamp at which the call is valid; also the permit's deadline.
     struct BurnParams {
         address index;
@@ -98,7 +104,9 @@ interface IIndexZap is IXindexErrors {
     );
     /// @notice The router sold less of `component` than the zap gave it; `amount` went to `to` instead. `component`
     ///         is the input of the hop that was not filled, so on a multi-hop leg it can be an intermediate token.
-    ///         Unsold `tokenOut` raises the payout instead and is not reported here.
+    ///         `amount` is everything the hop's sweep brought back, so it also includes any balance of that token the
+    ///         router was already holding, which anyone could have swept. Unsold `tokenOut` raises the payout instead
+    ///         and is not reported here.
     event ComponentReturned(address indexed index, address indexed to, address indexed component, uint256 amount);
     /// @notice `user` burned `shares` of `index` and `to` received `amountOut` of `tokenOut`.
     /// @param user The caller whose shares were burned.
@@ -125,7 +133,8 @@ interface IIndexZap is IXindexErrors {
     /// @notice A leg's swap delivered less of the component than the basket needs. The V4 router at the version this
     ///         zap is pinned to does not check an exact-output swap's delivery itself, so the zap measures it.
     error ShortFill(uint256 i, uint256 received, uint256 required);
-    /// @notice The basket's own `tokenIn` component alone needs more than `maxAmountIn`.
+    /// @notice The basket's own `tokenIn` component needs more than is available for it: more than `maxAmountIn`, or
+    ///         more than that leg's own `maxAmountIn` when it sets one (DA-15). `available` is whichever limit binds.
     error InsufficientBudget(uint256 needed, uint256 available);
     /// @notice The burn, or a leg that sells nothing, returns less than its minimum.
     error InsufficientOutput(uint256 amountOut, uint256 minAmountOut);

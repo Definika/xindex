@@ -33,11 +33,13 @@ contract MockRouterInventory {
 }
 
 /// @notice Universal Router stand-in that decodes exactly what the real 2.0.0 router decodes.
-/// @dev It is deliberately strict rather than permissive. Every command's input is decoded with the layout the pinned
-///      `Dispatcher` uses, so a field in the wrong position fails here instead of on mainnet, and the router refuses
-///      anything the zap is not supposed to emit: a `payerIsUser` of true, a sweep to anyone but the caller, the
-///      "whole balance" and "message sender" sentinels. It pays from its own balance, as the zap's pre-funding
-///      expects, and wraps a failure the way the real router does.
+/// @dev It is deliberately strict rather than permissive: the router refuses anything the zap is not supposed to emit,
+///      such as a `payerIsUser` of true, a sweep to anyone but the caller, or the "whole balance" and "message sender"
+///      sentinels. It pays from its own balance, as the zap's pre-funding expects, and wraps a failure the way the real
+///      router does. What it cannot do is catch a layout slip the zap shares with it: it dispatches on the zap's own
+///      command constants and decodes with the zap's own V4 structs, so a swapped command byte or struct field moves
+///      both together. The CR-I36 tests in `test/IndexZap.t.sol` pin those against upstream's values, written out
+///      independently of src, and the fork suites check them against the real router.
 ///
 ///      Prices are fixed per token in dollars, so a swap settles by value across the route's endpoints. The route's
 ///      middle is not simulated: what the middle is for is checked by the endpoint and hook rules in the zap, and on a

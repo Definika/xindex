@@ -612,4 +612,190 @@ contract IndexTokenTest is XindexTest {
         assertEq(index.totalClaims(address(usdc)), 0);
         _assertBacked();
     }
+
+    // ---------------------------------------------------------------------
+    // Security audit of 2026-09-23
+    // ---------------------------------------------------------------------
+
+    /// @dev CR-I01. The recipient rule covered only issue, redeem, redeemSkipping and claim: a plain `transfer` of
+    ///      shares to the index itself, a common wallet slip, went through, and the shares could never leave again,
+    ///      since the index never moves, approves or redeems its own shares and cannot sign a permit. Their backing
+    ///      stayed stranded beside them. Every transfer to the index is refused now, `transferFrom` included.
+    function test_CRI01_sharesCannotBeSentToTheIndexItself() public {
+        _fund(alice, 2e18);
+        vm.prank(alice);
+        index.issue(2e18, alice);
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(index)));
+        index.transfer(address(index), 1e18);
+
+        vm.prank(alice);
+        index.approve(bob, 1e18);
+        vm.prank(bob);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(index)));
+        index.transferFrom(alice, address(index), 1e18);
+        assertEq(index.balanceOf(address(index)), 0, "nothing was locked in the index");
+
+        // Every other move still works: a transfer, a transferFrom and the in-kind exit.
+        vm.prank(alice);
+        index.transfer(bob, 5e17);
+        vm.prank(bob);
+        index.transferFrom(alice, bob, 5e17);
+        vm.prank(bob);
+        index.redeem(1e18, bob);
+        assertEq(wbtc.balanceOf(bob), U_WBTC, "the backing of a share sent anywhere else is still redeemable");
+        _assertBacked();
+    }
+
+    /// @dev RT-21, CR-I01's class. The factory and the rule can never move a share or a component on either: the factory
+    ///      has no transfer or arbitrary-call function and the rule is a stateless view contract. Shares sent to either,
+    ///      or shares issued, redeemed, skipped or claimed to either, were locked for good, and the factory is the
+    ///      contract a user deals with to create indexes, so it is the likeliest wrong paste after the index.
+    function test_RT21_sharesAndComponentsCannotBeSentToTheFactoryOrRule() public {
+        _fund(alice, 4e18);
+        vm.prank(alice);
+        index.issue(2e18, alice);
+        address[2] memory traps = [index.FACTORY(), index.RULE()];
+        for (uint256 i = 0; i < 2; ++i) {
+            bytes memory refused = abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, traps[i]);
+            vm.prank(alice);
+            vm.expectRevert(refused);
+            index.transfer(traps[i], 1e18);
+
+            vm.prank(alice);
+            index.approve(bob, 1e18);
+            vm.prank(bob);
+            vm.expectRevert(refused);
+            index.transferFrom(alice, traps[i], 1e18);
+
+            vm.prank(alice);
+            vm.expectRevert(refused);
+            index.issue(1e18, traps[i]);
+
+            vm.prank(alice);
+            vm.expectRevert(refused);
+            index.redeem(1e18, traps[i]);
+
+            vm.prank(alice);
+            vm.expectRevert(refused);
+            index.redeemSkipping(1e18, traps[i], 1 << 0);
+            assertEq(index.balanceOf(traps[i]), 0, "nothing was locked there");
+        }
+
+        // A claim cannot be paid to either: book one to alice, then try to collect it at the factory.
+        vm.prank(alice);
+        index.redeemSkipping(1e18, alice, 1 << 0);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, traps[0]));
+        index.claim(address(wbtc), traps[0]);
+        _assertBacked();
+    }
+
+    /// @dev CR-I25. DA-22 made `canStartRebalance` answer false for an instance that was never initialized, but its
+    ///      test ran at a timestamp below MIN_REBALANCE_INTERVAL, where `lastRebalance` of zero plus 28 days is still
+    ///      in the future and the view answers false without the fix. At a mainnet timestamp only the initialization
+    ///      check stands between the implementation, or a clone deployed outside the factory, and an answer of true.
+    function test_CRI25_anUninitializedInstanceIsNeverDueAtAMainnetTimestamp() public {
+        IndexToken impl = IndexToken(factory.IMPLEMENTATION());
+        IndexToken rogue = IndexToken(Clones.clone(address(impl)));
+        vm.warp(1_790_000_000); // September 2026
+        assertGe(block.timestamp, impl.lastRebalance() + impl.MIN_REBALANCE_INTERVAL(), "the interval is long past");
+        assertFalse(impl.canStartRebalance(), "the implementation is not waiting to be rebalanced");
+        assertFalse(rogue.canStartRebalance(), "nor is a clone deployed outside the factory");
+        vm.expectRevert(IIndexToken.NotInitialized.selector);
+        rogue.startRebalance(0);
+    }
+
+    /// @dev CR-I33. Every permit test signed against `DOMAIN_SEPARATOR()` read back from the index, so each agreed with
+    ///      whatever domain the index held, the empty one a clone would keep without `__ERC20Permit_init` included. A
+    ///      wallet builds the domain itself, from the token's name and version "1", and that is what has to verify.
+    function test_CRI33_aWalletsPermitVerifiesAgainstTheIndexsOwnName() public {
+        (, string memory name, string memory version, uint256 chainId, address verifying,,) = index.eip712Domain();
+        assertEq(name, "Blue Chip", "the domain carries the index's name");
+        assertEq(version, "1");
+        assertEq(chainId, block.chainid);
+        assertEq(verifying, address(index));
+
+        bytes32 domain = keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256(bytes(index.name())),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(index)
+            )
+        );
+        assertEq(index.DOMAIN_SEPARATOR(), domain);
+
+        (address signer, uint256 pk) = makeAddrAndKey("wallet");
+        uint256 deadline = block.timestamp + 1 hours;
+        bytes32 structHash = keccak256(
+            abi.encode(
+                keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"),
+                signer,
+                bob,
+                1e18,
+                0,
+                deadline
+            )
+        );
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, keccak256(abi.encodePacked("\x19\x01", domain, structHash)));
+        index.permit(signer, bob, 1e18, deadline, v, r, s);
+        assertEq(index.allowance(signer, bob), 1e18, "a permit signed the way a wallet signs it verifies");
+    }
+
+    // ---------------------------------------------------------------------
+    // Red team of 2026-09-24, mutation gaps
+    // ---------------------------------------------------------------------
+
+    /// @dev RT-05. `issue` refuses a component that arrives short, measured as the change in the index's balance across
+    ///      the pull. Its only test issued into an index holding none of the token, where the balance afterwards is the
+    ///      change itself, so a check that added the balance before the pull, or read the balance alone, passed the
+    ///      suite. Either one mints shares short by the fee on every issue once the index holds some of a component
+    ///      that starts charging one. Here the index already holds the fee token, from a donation, and only the change
+    ///      still shows the fee.
+    function test_RT05_theFeeCheckMeasuresTheChangeWhenTheIndexAlreadyHoldsTheToken() public {
+        MockFeeToken fee = new MockFeeToken();
+        _list(address(fee));
+        address[] memory t = new address[](1);
+        uint256[] memory u = new uint256[](1);
+        (t[0], u[0]) = (address(fee), 1e18);
+        IndexToken feeIndex = IndexToken(factory.createIndex("Fee", "FEE", t, u, 0));
+
+        fee.mint(bob, 10e18);
+        vm.prank(bob);
+        fee.transfer(address(feeIndex), 10e18); // 1% burns on the way, so 9.9 arrive
+        assertEq(fee.balanceOf(address(feeIndex)), 9.9e18, "the index already holds some of the token");
+
+        fee.mint(alice, 1e18);
+        vm.startPrank(alice);
+        fee.approve(address(feeIndex), 1e18);
+        // A share needs 1e18 and 0.99e18 arrives. The balance afterwards, 10.89e18, would clear the check on its own.
+        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TransferAmountMismatch.selector, address(fee)));
+        feeIndex.issue(1e18, alice);
+        vm.stopPrank();
+        assertEq(feeIndex.totalSupply(), 0, "no share was minted against 0.99 of its basket");
+        assertEq(fee.balanceOf(address(feeIndex)), 9.9e18, "and the index holds only the donation");
+    }
+
+    /// @dev RT-15. `Issued` and `Redeemed` name the caller and the recipient apart, which is how an indexer tells a
+    ///      zap's issue for a user from the user's own. Every test of them had the caller as the recipient, so an event
+    ///      that swapped the two passed. Here alice issues to bob and bob redeems to alice.
+    function test_RT15_issueAndRedeemNameTheCallerAndTheRecipientApart() public {
+        _fund(alice, 1e18);
+        uint256[] memory basket = new uint256[](3);
+        (basket[0], basket[1], basket[2]) = (U_WBTC, U_WETH, U_USDC);
+
+        vm.expectEmit(true, true, true, true, address(index));
+        emit IIndexToken.Issued(alice, bob, 1e18, basket);
+        vm.prank(alice);
+        index.issue(1e18, bob);
+
+        vm.expectEmit(true, true, true, true, address(index));
+        emit IIndexToken.Redeemed(bob, alice, 1e18, basket);
+        vm.prank(bob);
+        index.redeem(1e18, alice);
+        assertEq(wbtc.balanceOf(alice), U_WBTC, "the basket came back to alice");
+    }
 }

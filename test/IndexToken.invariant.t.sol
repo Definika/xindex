@@ -136,13 +136,19 @@ contract IndexHandler is Test {
         market.setPrice(address(comps[i]), basePrices[i] * int256(bound(delta, 1, 49)) / 7);
     }
 
-    /// @dev ODD counts its own total supply, so a mint raises its market cap and moves the rule's targets, while a
-    ///      burn lowers it. Nothing a holder does to its balances can move it (DA-10).
-    function mintOddSupply(uint256 amount, bool burning) external {
-        uint256 delta = bound(amount, 0, 1e30);
-        if (!burning) return comps[3].mint(actors[0], delta);
-        uint256 held = comps[3].balanceOf(actors[0]);
-        comps[3].burn(actors[0], delta > held ? held : delta);
+    /// @dev Revises ODD's reference supply through the listing flow, the only way any supply the rule reads can change
+    ///      (CR-M01): the owner proposes, the delay passes, anyone executes. Nothing a holder does to its own balances
+    ///      or to ODD's total supply can move it (DA-10). The new figure stays within the factory's order-of-magnitude
+    ///      bound of the one in force (DA-18), and within a range whose market caps fit the rule's arithmetic.
+    function reviseOddSupply(uint256 seed) external {
+        IndexFactory factory = IndexFactory(index.FACTORY());
+        IIndexFactory.TokenConfig memory config = factory.tokenConfig(address(comps[3]));
+        uint256 inForce = config.referenceSupply;
+        config.referenceSupply = bound(seed, Math.max(inForce / 10, 7e28), Math.min(inForce * 10, 7e30));
+        vm.prank(factory.owner());
+        factory.proposeConfig(address(comps[3]), config);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        factory.executeListing(address(comps[3]));
     }
 
     function warp(uint256 seconds_) external {
@@ -262,13 +268,12 @@ contract IndexTokenInvariantTest is Test {
 
         // Prices, in dollars per whole token, that make every component worth 30 dollars per index token, and
         // supplies that give all four the same market cap, so the basket starts on its rule and supply changes create
-        // real turnover. ODD counts on-chain supply. WBTC at 30,000 and WETH at 3,000 are the realistic pair; USDC and
-        // ODD are priced to match them rather than to look like themselves.
+        // real turnover. ODD's reference supply is the one the handler revises. WBTC at 30,000 and WETH at 3,000 are
+        // the realistic pair; USDC and ODD are priced to match them rather than to look like themselves.
         int256[] memory prices = new int256[](4);
         (prices[0], prices[1], prices[2], prices[3]) = (30_000e8, 3_000e8, 3e8, 42_857_142_857_142e8);
         uint256[] memory supplies = new uint256[](4);
-        (supplies[0], supplies[1], supplies[2], supplies[3]) = (1e34, 1e45, 1e36, 0);
-        comps[3].mint(makeAddr("oddHolder"), 7e29);
+        (supplies[0], supplies[1], supplies[2], supplies[3]) = (1e34, 1e45, 1e36, 7e29);
 
         address[] memory t = new address[](comps.length);
         for (uint256 i = 0; i < comps.length; ++i) {
@@ -308,8 +313,7 @@ contract IndexTokenInvariantTest is Test {
         assertEq(eta, 0);
 
         // An empty index: a short fill has nothing to shortchange, and an honest fill settles at parity.
-        handler.mintOddSupply(1, true);
-        handler.mintOddSupply(7e29, false);
+        handler.reviseOddSupply(1.4e30); // ODD's supply doubles, through the listing flow
         handler.startRebalance(0, 0, false);
         handler.startRebalance(0, 0, false); // already pending
         handler.executeRebalanceShort(0); // warps into the auction
@@ -317,7 +321,7 @@ contract IndexTokenInvariantTest is Test {
         assertEq(index.rebalanceNonce(), 1);
 
         // After a cancel, strangers wait out the cooldown, which the handler warps past.
-        handler.mintOddSupply(7e29, false);
+        handler.reviseOddSupply(2.1e30);
         handler.startRebalance(0, 0, false);
         handler.cancelRebalance();
         handler.startRebalance(0, 0, false);
@@ -344,7 +348,7 @@ contract IndexTokenInvariantTest is Test {
         assertFalse(handler.shortFillSucceeded());
 
         // The guardian can start with a keep mask.
-        handler.mintOddSupply(1e30, false);
+        handler.reviseOddSupply(3.1e30);
         handler.startRebalance(0, 1, true);
         (, uint256 keepMask,) = index.pendingRebalance();
         assertEq(keepMask, 1);

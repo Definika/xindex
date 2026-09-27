@@ -43,8 +43,9 @@ import {IRebalanceExecutor} from "./interfaces/IRebalanceExecutor.sol";
 ///      needs of every shrinking component, and must send back what the growing components need. The multiplier
 ///      scales only the growing components' extra units: it opens at AUCTION_START_MULTIPLIER, so an executor first has
 ///      to deliver more value than it takes, and falls linearly to AUCTION_END_MULTIPLIER. Transfer amounts come from
-///      supply and units alone, and the settlement stands only if the invariant holds with the new units. Prices
-///      never enter this step.
+///      supply and units alone, and the settlement stands only if the invariant holds with the new units. Prices never
+///      size a settlement, but they do gate it: what arrives has to be worth MIN_SETTLEMENT_RATIO of what leaves at
+///      feed prices read in the settling block (DA-05), so a leg that moves needs a feed that can be read (CR-I11).
 contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, ReentrancyGuard, IIndexToken {
     using SafeERC20 for IERC20;
 
@@ -55,9 +56,13 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
     uint256 public constant AUCTION_START_MULTIPLIER = 1.5e18;
     uint256 public constant AUCTION_END_MULTIPLIER = 0.9e18;
     uint256 public constant MIN_TURNOVER = 0.005e18;
-    /// @dev AUCTION_END_MULTIPLIER, less 5% for the gap between the rule's feed price, which moves only when the
-    ///      feed publishes, and the spot an executor trades at. See _checkSettlementValue.
-    uint256 public constant MIN_SETTLEMENT_RATIO = 0.85e18;
+    /// @dev AUCTION_END_MULTIPLIER, less 2.5% for the gap between the rule's feed price, which moves only when the
+    ///      feed publishes, and the spot an executor trades at. It was 5% until the 2026-09-23 audit replayed 26 months
+    ///      of feed answers against market prices on the default basket: the 5% bought no liveness, since no ratio up
+    ///      to 0.9 refused a competitive fill, while it let a lone executor keep more than 15% of the traded value at
+    ///      market prices in about 4% of auctions, which this ratio cuts to about 0.04% (CR-L06). See
+    ///      _checkSettlementValue.
+    uint256 public constant MIN_SETTLEMENT_RATIO = 0.875e18;
     address public immutable FACTORY;
     address public immutable RULE;
 
@@ -243,7 +248,13 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
         ) revert Unauthorized(msg.sender);
 
         (uint256[] memory targets, uint256 turnover) = _previewTarget(keepMask);
-        if (turnover < MIN_TURNOVER) revert TurnoverTooLow(turnover);
+        // A step that trades too little still starts when the basket sits at least MIN_TURNOVER from its rule: the band
+        // lets a growing component at most double, so a step measured alone buys at most that component's own holding,
+        // and an index the rule wants holding 4% of a component it holds at 0.4% could never start the rebalances that
+        // walk it back (RT-04). A step that trades nothing certifies nothing, however far the basket sits (DA-08).
+        if (turnover < MIN_TURNOVER && (turnover == 0 || _shortfall(keepMask) < MIN_TURNOVER)) {
+            revert TurnoverTooLow(turnover);
+        }
 
         delete _targetUnits;
         for (uint256 i = 0; i < n; ++i) {
@@ -432,9 +443,16 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
     ///      has to clear MIN_SETTLEMENT_RATIO of what it takes. The test is a ratio, not a price, so a market-wide
     ///      move reprices both sides together and changes nothing; only the drift between the legs sold and the legs
     ///      bought can fail it. It can only refuse a settlement, never enlarge one: the amounts still come from supply
-    ///      and units, and the band still bounds them. The cost is liveness. A feed that has stopped publishing, or a
-    ///      market that really has moved, makes the auction expire unfilled, and the restart hold-off then gives the
-    ///      owner and the guardian the first move on a fresh snapshot.
+    ///      and units, and the band still bounds them. Against drift it mostly moves a lone executor's fill earlier in
+    ///      the auction, to a multiplier the drift has not eaten. The cost is liveness: a feed on a moving leg that has
+    ///      stopped publishing, or a market that moved so far that no multiplier the auction offers clears the ratio,
+    ///      makes the auction expire unfilled, and the restart hold-off then gives the owner and the guardian the first
+    ///      move on a fresh snapshot.
+    ///
+    ///      The bound holds at feed prices: a fill that passes keeps at most 1 - MIN_SETTLEMENT_RATIO of what it takes,
+    ///      valued at the answers in force. At market prices it moves by however far those answers sit from the market
+    ///      on the traded legs, and a deviation threshold does not bound that during a fast move, when an answer can
+    ///      trail the market by minutes and by more than its threshold (CR-L06).
     function _checkSettlementValue(uint256[] memory amountsOut, uint256[] memory amountsIn) private view {
         uint256 n = amountsOut.length;
         address[] memory tokens = new address[](n);
@@ -463,13 +481,36 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
         return IIndexRule(RULE).targetUnits(tokens, units, methodology, keepMask);
     }
 
+    function _shortfall(uint256 keepMask) private view returns (uint256) {
+        (address[] memory tokens, uint256[] memory units) = _componentArrays();
+        return IIndexRule(RULE).shortfall(tokens, units, methodology, keepMask);
+    }
+
     function _checkInitialized() private view {
         if (_getInitializedVersion() != 1) revert NotInitialized();
     }
 
     function _checkRecipient(address to) private view {
         if (to == address(0)) revert ZeroAddress();
-        if (to == address(this)) revert InvalidRecipient(to);
+        if (_isTrap(to)) revert InvalidRecipient(to);
+    }
+
+    /// @dev Shares sent to the index itself could never leave again: it never approves, transfers or redeems its own
+    ///      shares and cannot sign a permit, so a `transfer(index, x)`, a common wallet slip, burned them for good and
+    ///      left their backing stranded beside them. Every transfer and `transferFrom` refuses that recipient, as
+    ///      issue, redeem and claim already did (CR-I01). Mints go to a recipient `_checkRecipient` has already
+    ///      accepted, and burns go to address(0), so neither is affected.
+    function _update(address from, address to, uint256 value) internal override {
+        if (_isTrap(to)) revert InvalidRecipient(to);
+        super._update(from, to, value);
+    }
+
+    /// @dev The addresses this index knows can never move a share or a component on: itself, the factory, which has no
+    ///      transfer or arbitrary-call function, and the stateless rule. The factory is the contract a user deals with
+    ///      to create indexes, so it is the likeliest wrong paste after the index (RT-21, extending CR-I01). Both are
+    ///      immutables, so the check costs no storage read.
+    function _isTrap(address to) private view returns (bool) {
+        return to == address(this) || to == FACTORY || to == RULE;
     }
 
     // ---------------------------------------------------------------------
@@ -534,6 +575,8 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
         if (_getInitializedVersion() != 1) return false;
         if (block.timestamp < lastRebalance + MIN_REBALANCE_INTERVAL) return false;
         uint256 pendingEta = _pending.eta;
+        // Defensive: the line after it already answers false during a live auction, since a pending eta puts
+        // `_permissionlessAt` past its end. Kept so the view states each condition `startRebalance` checks (RT-18).
         if (pendingEta != 0 && block.timestamp <= pendingEta + AUCTION_DURATION) return false;
         return block.timestamp >= _permissionlessAt(pendingEta);
     }

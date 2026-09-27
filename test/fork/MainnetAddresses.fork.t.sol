@@ -29,10 +29,17 @@ interface IAggregatorBounds {
 
 /// @notice Checks the scripts' `MainnetAddresses` against mainnet, as AGENTS.md requires before addresses are
 ///         committed: tokens by symbol and decimals, every feed by the pair its own `description` names and by its
-///         decimals, the router's own factory and WETH, and every default whitelist entry against the rule. Feed
-///         identity cannot be proved on-chain, so pinning `description` here is what ties each shipped address to the
-///         pair it is supposed to be. Skips when MAINNET_RPC_URL is unset.
+///         decimals, the router by the PoolManager it names and both by their runtime code hashes, and every default
+///         whitelist entry against the rule, against its own token's feed and bound, and for a supply of plausibly many
+///         whole tokens. Feed identity cannot be proved on-chain, so pinning `description` here is what ties each
+///         shipped address to the pair it is supposed to be. Skips when MAINNET_RPC_URL is unset.
 contract MainnetAddressesForkTest is Test {
+    /// @dev Runtime code hash of Universal Router 2.0.0 at `MainnetAddresses.UNIVERSAL_ROUTER`, read on 2026-09-23. The
+    ///      router has no proxy, and its immutables are part of its code, so the hash is the build and its wiring.
+    bytes32 constant UNIVERSAL_ROUTER_CODEHASH = 0x6a5f46971b50c6e1b7eef97902311444e479d734e4f80ad88367783cf373fe7f;
+    /// @dev Runtime code hash of the V4 PoolManager at `MainnetAddresses.POOL_MANAGER`, read on 2026-09-23.
+    bytes32 constant POOL_MANAGER_CODEHASH = 0x785f1014552b7ce7d5fb7d0c970ca60edee94fd00425d7ca21609acac7ce1293;
+
     function setUp() public {
         string memory url = vm.envOr("MAINNET_RPC_URL", string(""));
         if (bytes(url).length == 0) {
@@ -128,12 +135,14 @@ contract MainnetAddressesForkTest is Test {
         assertEq(wbtcFeed.description(), "BTC / USD * WBTC / BTC");
     }
 
-    /// @dev The zap reads the pool manager off the router, so what has to agree is that the pinned router names the
-    ///      pool manager the address book does.
-    function testFork_XA13_uniswapContractsAgree() public view {
+    /// @dev XA-13, CR-I35. The zap reads the pool manager off the router, so the pinned router has to name the pool
+    ///      manager the address book does. Every Universal Router build on mainnet answers that the same way, the 2.1
+    ///      line included, whose V3 inputs the zap does not encode, so the router is pinned by its code hash as well,
+    ///      to the 2.0.0 build the zap was verified against, and so is the PoolManager.
+    function testFork_XA13_CRI35_uniswapContractsAgree() public view {
         assertEq(IRouterImmutables(M.UNIVERSAL_ROUTER).poolManager(), M.POOL_MANAGER);
-        assertGt(M.UNIVERSAL_ROUTER.code.length, 0, "the pinned router is deployed");
-        assertGt(M.POOL_MANAGER.code.length, 0);
+        assertEq(M.UNIVERSAL_ROUTER.codehash, UNIVERSAL_ROUTER_CODEHASH, "the pinned router is the 2.0.0 build");
+        assertEq(M.POOL_MANAGER.codehash, POOL_MANAGER_CODEHASH, "and the PoolManager is the one it settles with");
     }
 
     function testFork_XA13_deployResolvesTheMainnetMarket() public {
@@ -141,8 +150,11 @@ contract MainnetAddressesForkTest is Test {
         assertEq(deployer.resolveRouter(address(0)), M.UNIVERSAL_ROUTER);
     }
 
-    /// @dev Every default entry, as the listing script builds it, put to the rule against live mainnet feeds.
-    function testFork_XA13_XA24_defaultWhitelistMatchesMainnet() public {
+    /// @dev Every default entry, as the listing script builds it, put to the rule against live mainnet feeds. Each
+    ///      reference supply is a whole number of tokens between a million and a trillion at the token's own on-chain
+    ///      decimals, where a decimals slip shows: DA-18 bounds a change against the supply in force, and a first
+    ///      listing has none (XA-24, CR-I22).
+    function testFork_XA13_XA24_CRI22_defaultWhitelistMatchesMainnet() public {
         IndexFactory factory = new IndexFactory(address(this), address(0));
         IIndexRule rule = IIndexRule(factory.RULE());
         ConfigureWhitelist configure = new ConfigureWhitelist();
@@ -154,6 +166,11 @@ contract MainnetAddressesForkTest is Test {
         ConfigureWhitelist.Entry[] memory list = configure.defaultMainnetList(address(wbtcFeed));
         assertEq(list.length, 7, "the launch list is seven components");
         for (uint256 i = 0; i < list.length; ++i) {
+            uint256 one = 10 ** uint256(IERC20Metadata(list[i].token).decimals());
+            assertEq(list[i].referenceSupply % one, 0, "a whole number of tokens");
+            assertGe(list[i].referenceSupply / one, 1e6, "at least a million of them");
+            assertLe(list[i].referenceSupply / one, 1e12, "and at most a trillion");
+
             IIndexFactory.TokenConfig memory config = configure.configFor(list[i]);
             rule.checkConfig(list[i].token, config);
 
@@ -171,6 +188,53 @@ contract MainnetAddressesForkTest is Test {
             assertTrue(factory.isWhitelisted(list[i].token));
             assertGt(rule.price(list[i].token), 0, "and the rule prices it from the feed the entry names");
         }
+    }
+
+    /// @dev CR-L08. Each feed constant is pinned to its pair above, and nothing checked which one each default entry
+    ///      names: a UNI/AAVE feed swap, or a 24-hour bound on ETH/USD, passed every test. Here each entry is read as an
+    ///      operator reads the run, the token's own symbol beside its feed's own description, and matched against a
+    ///      table written apart from `MainnetAddresses`, bound included: the feed's heartbeat plus half an hour.
+    function testFork_CRL08_eachDefaultEntryPricesItsOwnToken() public {
+        ConfigureWhitelist configure = new ConfigureWhitelist();
+        CompositeFeed wbtcFeed = new CompositeFeed(
+            IAggregatorV3(M.BTC_USD_FEED), IAggregatorV3(M.WBTC_BTC_FEED), M.STALENESS_1H, M.STALENESS_24H
+        );
+        ConfigureWhitelist.Entry[] memory list = configure.defaultMainnetList(address(wbtcFeed));
+        uint256 seen = 0;
+        for (uint256 i = 0; i < list.length; ++i) {
+            string memory symbol = IERC20Metadata(list[i].token).symbol();
+            (uint256 row, string memory pair, uint256 heartbeat) = _expectedFeed(symbol);
+            assertEq(seen & (1 << row), 0, string.concat(symbol, " is on the list once"));
+            seen |= 1 << row;
+            assertEq(
+                IAggregatorV3(list[i].feed).description(), pair, string.concat(symbol, " is priced by its own feed")
+            );
+            assertEq(uint256(list[i].maxStaleness), heartbeat + 30 minutes, "at its heartbeat plus half an hour");
+        }
+        assertEq(seen, (1 << 7) - 1, "and every token in the table is on it");
+    }
+
+    /// @dev The launch whitelist as Chainlink's directory describes it, keyed by each token's own symbol.
+    function _expectedFeed(string memory symbol)
+        private
+        pure
+        returns (uint256 row, string memory pair, uint256 heartbeat)
+    {
+        string[7] memory symbols = ["WETH", "wstETH", "WBTC", "SOL", "LINK", "UNI", "AAVE"];
+        string[7] memory pairs = [
+            "ETH / USD",
+            "wstETH / USD Calculated",
+            "BTC / USD * WBTC / BTC", // WBTC/BTC's heartbeat, the slower leg's, bounds the product
+            "SOL / USD",
+            "LINK / USD",
+            "UNI / USD",
+            "AAVE / USD"
+        ];
+        uint256[7] memory heartbeats = [uint256(1 hours), 24 hours, 24 hours, 24 hours, 1 hours, 1 hours, 1 hours];
+        for (row = 0; row < symbols.length; ++row) {
+            if (keccak256(bytes(symbols[row])) == keccak256(bytes(symbol))) return (row, pairs[row], heartbeats[row]);
+        }
+        revert(string.concat("no expectation for ", symbol));
     }
 
     /// @dev Re-dates every shipped feed to the current block, keeping its real answer. The composite adapter is not

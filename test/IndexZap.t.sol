@@ -2,7 +2,10 @@
 pragma solidity ^0.8.24;
 
 import {XindexTest} from "./XindexTest.sol";
+import {Vm} from "forge-std/Vm.sol";
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
 import {IndexToken} from "../src/IndexToken.sol";
 import {IndexZap} from "../src/IndexZap.sol";
@@ -19,6 +22,7 @@ import {MockHookToken, ITokenReceiverHook} from "./mocks/MockHookToken.sol";
 import {MockRebalanceExecutor} from "./mocks/MockRebalanceExecutor.sol";
 import {MockMarket} from "./mocks/MockMarket.sol";
 import {MockUniversalRouter} from "./mocks/MockUniversalRouter.sol";
+import {PathLib} from "../src/libraries/PathLib.sol";
 import {PathKey, V4ExactInputParams, V4ExactOutputParams} from "../src/libraries/UniswapV4Types.sol";
 
 contract IndexZapTest is XindexTest {
@@ -721,15 +725,33 @@ contract IndexZapTest is XindexTest {
         vm.stopPrank();
     }
 
-    function test_XA30_theRouterIsNotAValidRecipient() public {
-        // Tokens delivered to SwapRouter02 can be swept by anyone.
+    /// @dev XA-30, and CR-I23, which found the PoolManager half of it untested: the v3 retirement ledger said this
+    ///      test covered both, but it only ever named the router, and dropping `to == POOL_MANAGER` passed every test.
+    ///      Tokens delivered to the Universal Router can be swept by anyone, and anything sent to the PoolManager is a
+    ///      donation to it, so neither may receive a mint's shares or a burn's payout.
+    function test_XA30_CRI23_neitherTheRouterNorThePoolManagerIsAValidRecipient() public {
+        address[2] memory sinks = [address(router), poolManager];
         vm.startPrank(alice);
-        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(router)));
-        zap.mintWithToken(
-            _mintParams(address(index), address(usdc), 1, 1e18, _mintLegs(address(usdc)), address(router))
-        );
-        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(router)));
-        zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, _burnLegs(address(usdc)), address(router)));
+        for (uint256 i = 0; i < sinks.length; ++i) {
+            vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, sinks[i]));
+            zap.mintWithToken(_mintParams(address(index), address(usdc), 1, 1e18, _mintLegs(address(usdc)), sinks[i]));
+            vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, sinks[i]));
+            zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, _burnLegs(address(usdc)), sinks[i]));
+        }
+        vm.stopPrank();
+    }
+
+    /// @dev RT-21, the zap's half. The factory and the rule can never move a token on, so a burn's payout sent to either
+    ///      was lost; a mint to either already reverted in the index, and now reverts here first.
+    function test_RT21_neitherTheFactoryNorTheRuleIsAValidZapRecipient() public {
+        address[2] memory traps = [address(factory), factory.RULE()];
+        vm.startPrank(alice);
+        for (uint256 i = 0; i < traps.length; ++i) {
+            vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, traps[i]));
+            zap.mintWithToken(_mintParams(address(index), address(usdc), 1, 1e18, _mintLegs(address(usdc)), traps[i]));
+            vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, traps[i]));
+            zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, _burnLegs(address(usdc)), traps[i]));
+        }
         vm.stopPrank();
     }
 
@@ -902,9 +924,11 @@ contract IndexZapTest is XindexTest {
     // V4 legs and route validation
     // ---------------------------------------------------------------------
 
-    /// @dev The bytes the zap hands the router, checked against the layouts the pinned Dispatcher decodes. A field in
-    ///      the wrong position would still swap correctly against a mock that shared the mistake; this is what makes
-    ///      the mock's agreement worth something.
+    /// @dev The bytes the zap hands the router for a V4 mint leg: the command and action bytes as literals, the
+    ///      settle, take and sweep inputs, and the direction of the route. It decodes the swap parameters with the
+    ///      zap's own `V4ExactOutputParams`, so it cannot see a field of that struct out of place -- a mock written
+    ///      against the same declaration agrees with the mistake. The field order is pinned against upstream's layout,
+    ///      declared independently of src, by the CR-I36 tests below (CR-I36).
     function test_route_v4MintEncodesTheActionsTheRouterDecodes() public {
         IIndexZap.MintLeg[] memory legs = _mintLegs(address(usdc));
         legs[2] = IIndexZap.MintLeg({v3Path: "", v4Path: _v4MintPath(address(usdc), address(weth)), maxAmountIn: 0});
@@ -1119,7 +1143,8 @@ contract IndexZapTest is XindexTest {
     }
 
     /// @dev The analogue of I03 for the Universal Router: a balance it happened to be holding comes back with the
-    ///      sweep and enlarges the refund. It is never a shortfall, which is why the spend arithmetic saturates.
+    ///      sweep and enlarges the refund. On a mint it is never a shortfall, which is why the spend arithmetic
+    ///      saturates; the burn side measures what the sweep brought back instead, and the CR-L02 tests below cover it.
     function test_strayRouterBalanceIsRefundedNotStranded() public {
         usdc.mint(address(router), 500e6); // a donation anyone could have swept
         usdc.mint(alice, 200e6);
@@ -1203,6 +1228,365 @@ contract IndexZapTest is XindexTest {
     }
 
     // ---------------------------------------------------------------------
+    // CR: the security audit of 2026-09-23
+    // ---------------------------------------------------------------------
+
+    /// @dev CR-L02. A burn hop measured what the router sold as `inBefore - balanceAfter`, a checked subtraction inside
+    ///      the saturating one, but the sweep returns the router's whole balance of the hop's input, including anything
+    ///      it held beforehand. A stray above what the hop sold made that subtraction underflow and the whole burn
+    ///      revert with Panic(0x11): anyone could donate to the router ahead of a public burn, watch it fail, and sweep
+    ///      the donation back, for gas. The hop now measures what the sweep brought back, which only ever adds to the
+    ///      balance, and forwards all of it, stray included, to the recipient.
+    function test_CRL02_aStrayAboveAComponentHopsSaleIsReturnedNotABlockedBurn() public {
+        _mintFor(alice, 1e18, 200e6);
+        link.mint(address(router), 2e18); // twice the one LINK the burn sells
+        vm.startPrank(alice);
+        index.approve(address(zap), 1e18);
+        vm.expectEmit(true, true, true, true, address(zap));
+        emit IIndexZap.ComponentReturned(address(index), bob, address(link), 2e18);
+        uint256 out =
+            zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, _burnLegs(address(usdc)), bob));
+        vm.stopPrank();
+
+        assertEq(out, NAV_USD6, "the burn sold its whole basket");
+        assertEq(link.balanceOf(bob), 2e18, "and the stray reached the recipient beside the payout");
+        assertEq(link.balanceOf(address(router)), 0, "nothing is left in the router");
+        _assertZapEmpty();
+    }
+
+    /// @dev CR-L02 on an intermediate hop, which is where a griefer would aim: WETH sits in the middle of nearly every
+    ///      route, and the WBTC leg's second hop sells only the 0.02 WETH its first hop bought. A stray below that was
+    ///      already returned; one above it reverted the burn. Both reach the recipient now.
+    function test_CRL02_aStrayOnAnIntermediateHopIsReturnedWhateverItsSize() public {
+        _mintFor(alice, 2e18, 400e6);
+        vm.startPrank(alice);
+        index.approve(address(zap), 2e18);
+
+        weth.mint(address(router), 1e15); // below the 2e16 WETH the WBTC leg's second hop sells
+        vm.expectEmit(true, true, true, true, address(zap));
+        emit IIndexZap.ComponentReturned(address(index), bob, address(weth), 1e15);
+        assertEq(
+            zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, _burnLegs(address(usdc)), bob)),
+            NAV_USD6
+        );
+
+        weth.mint(address(router), 1e18); // fifty times that sale, where the old arithmetic underflowed
+        vm.expectEmit(true, true, true, true, address(zap));
+        emit IIndexZap.ComponentReturned(address(index), bob, address(weth), 1e18);
+        assertEq(
+            zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, _burnLegs(address(usdc)), bob)),
+            NAV_USD6
+        );
+        vm.stopPrank();
+
+        assertEq(weth.balanceOf(bob), 1e18 + 1e15, "both strays reached the recipient");
+        assertEq(weth.balanceOf(address(router)), 0);
+        _assertZapEmpty();
+    }
+
+    /// @dev CR-L02 on a V4 leg: the same measurement had the same underflow, and has the same fix.
+    function test_CRL02_aStrayAboveAV4LegsSaleIsReturnedNotABlockedBurn() public {
+        _mintFor(alice, 1e18, 200e6);
+        IIndexZap.BurnLeg[] memory legs = _burnLegs(address(usdc));
+        legs[2] = IIndexZap.BurnLeg({v3Path: "", v4Path: _v4BurnPath(address(weth), address(usdc)), minAmountOut: 0});
+        link.mint(address(router), 3e18); // three times the one LINK the V4 leg sells
+        vm.startPrank(alice);
+        index.approve(address(zap), 1e18);
+        vm.expectEmit(true, true, true, true, address(zap));
+        emit IIndexZap.ComponentReturned(address(index), bob, address(link), 3e18);
+        uint256 out = zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, legs, bob));
+        vm.stopPrank();
+
+        assertEq(out, NAV_USD6);
+        assertEq(link.balanceOf(bob), 3e18, "the stray reached the recipient");
+        assertEq(link.balanceOf(address(router)), 0);
+        _assertZapEmpty();
+    }
+
+    /// @dev A reenterer holding `shares` of the index and `usdcAmount` of USDC, both approved to the zap.
+    function _reenterer(uint256 shares, uint256 usdcAmount) internal returns (ZapReenterer probe) {
+        probe = new ZapReenterer(zap);
+        if (shares != 0) _mintFor(address(probe), shares, shares * 200e6 / 1e18);
+        usdc.mint(address(probe), usdcAmount);
+        probe.approve(IERC20(address(index)), type(uint256).max);
+        probe.approve(IERC20(address(usdc)), type(uint256).max);
+    }
+
+    function _assertTheGuardStoppedTheNestedCall(ZapReenterer probe) internal view {
+        assertTrue(probe.armedAndFired(), "the callback reached the probe inside the outer call");
+        assertFalse(probe.nestedSucceeded(), "the nested zap call did not run");
+        assertEq(
+            bytes4(probe.nestedError()),
+            ReentrancyGuard.ReentrancyGuardReentrantCall.selector,
+            "it was stopped by the outer call's guard"
+        );
+    }
+
+    /// @dev CR-I26. ARCHITECTURE lists all three zap entry points as guarded, and the reentrancy suppressions in the zap
+    ///      rest on it, but no test re-entered the zap, so any `nonReentrant` could be deleted with the suite green. A
+    ///      mint paid in a callback token hands the payer control at the refund; from there a fully valid burn of a
+    ///      share the payer already holds now fails on the outer call's guard, and ran to completion without it.
+    function test_CRI26_aMintHoldsTheGuardThroughItsRefund() public {
+        MockHookToken hook = new MockHookToken();
+        router.setPrice(address(hook), 1e18, 18);
+        ZapReenterer probe = _reenterer(1e18, 0);
+        hook.mint(address(probe), 200e18);
+        probe.approve(IERC20(address(hook)), type(uint256).max);
+
+        IIndexZap.MintParams memory outer =
+            _mintParams(address(index), address(hook), 200e18, 1e18, _mintLegs(address(hook)), address(probe));
+        IIndexZap.BurnParams memory nested =
+            _burnParams(address(index), 1e18, address(usdc), 1, _burnLegs(address(usdc)), address(probe));
+        probe.run(abi.encodeCall(IIndexZap.mintWithToken, (outer)), abi.encodeCall(IIndexZap.burnToToken, (nested)));
+
+        assertEq(index.balanceOf(address(probe)), 2e18, "the outer mint completed and the held share was not burnt");
+        _assertTheGuardStoppedTheNestedCall(probe);
+    }
+
+    /// @dev CR-I26, burnToToken: the payout in a callback token hands the recipient control, and a fully valid mint made
+    ///      from there fails on the outer burn's guard.
+    function test_CRI26_aBurnHoldsTheGuardThroughItsPayout() public {
+        MockHookToken hook = new MockHookToken();
+        router.setPrice(address(hook), 1e18, 18);
+        hook.mint(address(router.inventory()), 1_000e18);
+        ZapReenterer probe = _reenterer(1e18, 200e6);
+
+        IIndexZap.BurnParams memory outer =
+            _burnParams(address(index), 1e18, address(hook), 1, _burnLegs(address(hook)), address(probe));
+        IIndexZap.MintParams memory nested =
+            _mintParams(address(index), address(usdc), 200e6, 1e18, _mintLegs(address(usdc)), address(probe));
+        probe.run(abi.encodeCall(IIndexZap.burnToToken, (outer)), abi.encodeCall(IIndexZap.mintWithToken, (nested)));
+
+        assertEq(index.balanceOf(address(probe)), 0, "the outer burn completed and nothing was minted inside it");
+        assertEq(hook.balanceOf(address(probe)), 105e18, "the payout arrived");
+        _assertTheGuardStoppedTheNestedCall(probe);
+    }
+
+    /// @dev CR-I26, burnToTokenWithPermit: the same payout, and a second permit burn from inside it, which fails on the
+    ///      outer call's guard. The probe approved the zap beforehand, so the garbage permits are tolerated, by design.
+    function test_CRI26_aPermitBurnHoldsTheGuardThroughItsPayout() public {
+        MockHookToken hook = new MockHookToken();
+        router.setPrice(address(hook), 1e18, 18);
+        hook.mint(address(router.inventory()), 1_000e18);
+        ZapReenterer probe = _reenterer(2e18, 0);
+
+        IIndexZap.BurnParams memory outer =
+            _burnParams(address(index), 1e18, address(hook), 1, _burnLegs(address(hook)), address(probe));
+        IIndexZap.BurnParams memory nested =
+            _burnParams(address(index), 1e18, address(usdc), 1, _burnLegs(address(usdc)), address(probe));
+        probe.run(
+            abi.encodeCall(IIndexZap.burnToTokenWithPermit, (outer, 27, bytes32(0), bytes32(0))),
+            abi.encodeCall(IIndexZap.burnToTokenWithPermit, (nested, 27, bytes32(0), bytes32(0)))
+        );
+
+        assertEq(index.balanceOf(address(probe)), 1e18, "the outer burn completed and the second share is untouched");
+        _assertTheGuardStoppedTheNestedCall(probe);
+    }
+
+    /// @dev CR-I27. Only the V3 partial fill was tested, so deleting `_sellV4`'s `_returnUnsold` passed every test,
+    ///      although a V4 leg that stops short would then leave the user's unsold component in the zap, which counts
+    ///      only balance changes and would never pay it to anyone. The mock's partial mode halves a V4 exact input too.
+    function test_CRI27_aV4BurnLegReturnsItsUnsoldInputToTheRecipient() public {
+        address[] memory t = new address[](1);
+        uint256[] memory u = new uint256[](1);
+        (t[0], u[0]) = (address(weth), 1e18);
+        IndexToken idx = IndexToken(factory.createIndex("Ether", "ETH1", t, u, 0));
+        weth.mint(alice, 1e18);
+        vm.startPrank(alice);
+        weth.approve(address(idx), 1e18);
+        idx.issue(1e18, alice);
+        idx.approve(address(zap), 1e18);
+        IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](1);
+        legs[0] = IIndexZap.BurnLeg({v3Path: "", v4Path: _v4Path1(address(usdc)), minAmountOut: 0});
+        router.setMode(MockUniversalRouter.Mode.PartialFirstHop);
+
+        vm.expectEmit(true, true, true, true, address(zap));
+        emit IIndexZap.ComponentReturned(address(idx), bob, address(weth), 5e17);
+        uint256 out = zap.burnToToken(_burnParams(address(idx), 1e18, address(usdc), 1, legs, bob));
+        vm.stopPrank();
+
+        assertEq(out, 1_500e6, "half the WETH sold");
+        assertEq(weth.balanceOf(bob), 5e17, "the unsold half reached the recipient");
+        assertEq(weth.balanceOf(address(zap)), 0, "none of it is stranded in the zap");
+        assertEq(weth.balanceOf(address(router)), 0, "or in the router");
+    }
+
+    /// @dev CR-I27, the other side: a burn whose every hop fills returns nothing, so it announces nothing. Without the
+    ///      `unsold == 0` check every hop emitted a zero ComponentReturned and called `transfer(to, 0)`, which a paused
+    ///      or zero-refusing component would turn into a failed burn.
+    function test_CRI27_aCompletelyFilledBurnReturnsNothing() public {
+        _mintFor(alice, 1e18, 200e6);
+        IIndexZap.BurnLeg[] memory legs = _burnLegs(address(usdc));
+        legs[2] = IIndexZap.BurnLeg({v3Path: "", v4Path: _v4BurnPath(address(weth), address(usdc)), minAmountOut: 0});
+        vm.startPrank(alice);
+        index.approve(address(zap), 1e18);
+        vm.recordLogs();
+        zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, legs, alice));
+        vm.stopPrank();
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        uint256 burns = 0;
+        for (uint256 i = 0; i < logs.length; ++i) {
+            if (logs[i].emitter != address(zap)) continue;
+            assertTrue(logs[i].topics[0] != IIndexZap.ComponentReturned.selector, "nothing was left unsold");
+            if (logs[i].topics[0] == IIndexZap.ZapBurn.selector) ++burns;
+        }
+        assertEq(burns, 1, "the burn itself is still announced, across V3 and V4 legs alike");
+    }
+
+    /// @dev CR-I31. A leg names exactly one venue, and the pass-through leg names none. The committed tests only ever
+    ///      put a V3 path on it, so dropping the V4 half of the check passed them and a V4 route was silently ignored.
+    function test_CRI31_aPassThroughLegCarryingAV4RouteIsABadRoute() public {
+        IndexToken idx = _mixedIndex();
+        IIndexZap.MintLeg[] memory mintLegs = _mixedLegs();
+        mintLegs[1].v4Path = _v4Path1(address(weth)); // USDC is the component and the currency: no swap belongs here
+        usdc.mint(alice, 100e6);
+        vm.startPrank(alice);
+        usdc.approve(address(zap), 100e6);
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadRoute.selector, 1));
+        zap.mintWithToken(_mintParams(address(idx), address(usdc), 100e6, 1e18, mintLegs, alice));
+
+        zap.mintWithToken(_mintParams(address(idx), address(usdc), 100e6, 1e18, _mixedLegs(), alice));
+        IIndexZap.BurnLeg[] memory burnLegs = new IIndexZap.BurnLeg[](2);
+        burnLegs[0] =
+            IIndexZap.BurnLeg({v3Path: _path2(address(weth), address(usdc)), v4Path: _noV4(), minAmountOut: 0});
+        burnLegs[1] = IIndexZap.BurnLeg({v3Path: "", v4Path: _v4Path1(address(weth)), minAmountOut: 0});
+        idx.approve(address(zap), 1e18);
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadRoute.selector, 1));
+        zap.burnToToken(_burnParams(address(idx), 1e18, address(usdc), 1, burnLegs, alice));
+        vm.stopPrank();
+    }
+
+    /// @dev CR-I31: a budget that exactly covers the part of the basket that already is `tokenIn` is enough, as
+    ///      InsufficientBudget's "needs more than" says; a `>=` there refused it and passed every committed test.
+    function test_CRI31_aBudgetExactlyCoveringThePassThroughLegIsEnough() public {
+        address[] memory t = new address[](1);
+        uint256[] memory u = new uint256[](1);
+        (t[0], u[0]) = (address(usdc), 50e6);
+        IndexToken idx = IndexToken(factory.createIndex("Dollar", "USD1", t, u, 0));
+        IIndexZap.MintLeg[] memory legs = new IIndexZap.MintLeg[](1);
+        legs[0] = IIndexZap.MintLeg({v3Path: "", v4Path: _noV4(), maxAmountIn: 0});
+        usdc.mint(alice, 50e6);
+        vm.startPrank(alice);
+        usdc.approve(address(zap), 50e6);
+        uint256 spent = zap.mintWithToken(_mintParams(address(idx), address(usdc), 50e6, 1e18, legs, alice));
+        vm.stopPrank();
+        assertEq(spent, 50e6, "every unit of the budget went into the basket");
+        assertEq(idx.balanceOf(alice), 1e18);
+    }
+
+    /// @dev CR-I31: a mint that spends its whole budget owes no refund and sends none. Refunding unconditionally sent
+    ///      `transfer(msg.sender, 0)`, which a currency that refuses zero transfers turns into a failed mint.
+    function test_CRI31_anExactSpendMintSendsNoZeroRefund() public {
+        IndexToken idx = _mixedIndex(); // 0.01 WETH, bought for 30 USDC, and 50 USDC held as it is
+        usdc.mint(alice, 80e6);
+        vm.startPrank(alice);
+        usdc.approve(address(zap), 80e6);
+        vm.expectCall(address(usdc), abi.encodeCall(IERC20.transfer, (alice, 0)), 0);
+        uint256 spent = zap.mintWithToken(_mintParams(address(idx), address(usdc), 80e6, 1e18, _mixedLegs(), alice));
+        vm.stopPrank();
+        assertEq(spent, 80e6, "the whole budget was spent");
+        assertEq(usdc.balanceOf(alice), 0);
+        assertEq(idx.balanceOf(alice), 1e18);
+    }
+
+    /// @dev Command and action bytes of Universal Router 2.0.0 (`Commands.sol` at 3663f6db) and v4-periphery
+    ///      (`Actions.sol` and `ActionConstants.sol` at 444c526b), written out here rather than read from src, so a
+    ///      constant that moved in src would stop matching instead of moving the mock along with it.
+    bytes1 internal constant UPSTREAM_V3_SWAP_EXACT_IN = 0x00;
+    bytes1 internal constant UPSTREAM_V3_SWAP_EXACT_OUT = 0x01;
+    bytes1 internal constant UPSTREAM_SWEEP = 0x04;
+    bytes1 internal constant UPSTREAM_V4_SWAP = 0x10;
+    bytes1 internal constant UPSTREAM_SWAP_EXACT_IN = 0x07;
+    bytes1 internal constant UPSTREAM_SWAP_EXACT_OUT = 0x09;
+    bytes1 internal constant UPSTREAM_SETTLE = 0x0b;
+    bytes1 internal constant UPSTREAM_TAKE = 0x0e;
+
+    /// @dev CR-I36. The mock router dispatches on the zap's own command constants, so swapping V3_SWAP_EXACT_IN with
+    ///      V3_SWAP_EXACT_OUT in src moved the zap and the mock together and every offline test stayed green; only the
+    ///      fork suites, which skip without an RPC, would notice. A V3 mint leg is command 0x01 then 0x04, with the
+    ///      pinned Dispatcher's input layout: recipient, amountOut, amountInMax, path, payerIsUser.
+    function test_CRI36_aV3MintLegIsUpstreamCommand01ThenSweep() public {
+        _mintFor(alice, 1e18, 200e6);
+        assertEq(router.lastCommands(), abi.encodePacked(UPSTREAM_V3_SWAP_EXACT_OUT, UPSTREAM_SWEEP));
+        (address recipient, uint256 amountOut, uint256 amountInMax, bytes memory path, bool payerIsUser) =
+            abi.decode(router.lastInput(0), (address, uint256, uint256, bytes, bool));
+        assertEq(recipient, address(zap));
+        assertEq(amountOut, U_LINK, "amountOut: the LINK the basket needs, the last leg's");
+        assertEq(amountInMax, 200e6 - 60e6 - 30e6, "amountInMax: the budget the first two legs left");
+        assertEq(path, _path3(address(link), address(weth), address(usdc)));
+        assertFalse(payerIsUser);
+    }
+
+    /// @dev CR-I36: a V3 burn hop is command 0x00 then 0x04, and its input carries the hop's own sale and, on the
+    ///      leg's last hop, the leg's minimum.
+    function test_CRI36_aV3BurnHopIsUpstreamCommand00ThenSweep() public {
+        _mintFor(alice, 1e18, 200e6);
+        IIndexZap.BurnLeg[] memory legs = _burnLegs(address(usdc));
+        legs[2].minAmountOut = 7e6;
+        vm.startPrank(alice);
+        index.approve(address(zap), 1e18);
+        zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, legs, alice));
+        vm.stopPrank();
+
+        assertEq(router.lastCommands(), abi.encodePacked(UPSTREAM_V3_SWAP_EXACT_IN, UPSTREAM_SWEEP));
+        (address recipient, uint256 amountIn, uint256 amountOutMin, bytes memory path, bool payerIsUser) =
+            abi.decode(router.lastInput(0), (address, uint256, uint256, bytes, bool));
+        assertEq(recipient, address(zap));
+        assertEq(amountIn, 5e15, "amountIn: the WETH the LINK leg's first hop bought");
+        assertEq(amountOutMin, 7e6, "amountOutMin: the leg's minimum, on its last hop");
+        assertEq(path, _path2(address(weth), address(usdc)), "the last hop of the last leg");
+        assertFalse(payerIsUser);
+    }
+
+    /// @dev CR-I36. `test_route_v4MintEncodesTheActionsTheRouterDecodes` decodes the swap parameters with the zap's own
+    ///      struct, so swapping `amountOut` with `amountInMaximum` in src -- both uint128 -- passed every offline test,
+    ///      and the real router would have read the cap as the amount to buy. Decoded here with upstream's
+    ///      `IV4Router.ExactOutputParams`, the leg's need and its cap sit in the fields upstream reads them from.
+    function test_CRI36_aV4MintLegMatchesTheUpstreamLayout() public {
+        IIndexZap.MintLeg[] memory legs = _mintLegs(address(usdc));
+        legs[2] = IIndexZap.MintLeg({v3Path: "", v4Path: _v4MintPath(address(usdc), address(weth)), maxAmountIn: 20e6});
+        usdc.mint(alice, 200e6);
+        vm.startPrank(alice);
+        usdc.approve(address(zap), 200e6);
+        zap.mintWithToken(_mintParams(address(index), address(usdc), 200e6, 1e18, legs, alice));
+        vm.stopPrank();
+
+        assertEq(router.lastCommands(), abi.encodePacked(UPSTREAM_V4_SWAP, UPSTREAM_SWEEP));
+        (bytes memory actions, bytes[] memory params) = abi.decode(router.lastInput(0), (bytes, bytes[]));
+        assertEq(actions, abi.encodePacked(UPSTREAM_SWAP_EXACT_OUT, UPSTREAM_SETTLE, UPSTREAM_TAKE));
+        UpstreamExactOutputParams memory swap = abi.decode(params[0], (UpstreamExactOutputParams));
+        assertEq(swap.currencyOut, address(link));
+        assertEq(uint256(swap.amountOut), U_LINK, "the third field is the exact output, the LINK the basket needs");
+        assertEq(uint256(swap.amountInMaximum), 20e6, "the fourth is the input cap, the leg's own");
+        assertEq(swap.path.length, 2);
+        assertEq(swap.path[0].intermediateCurrency, address(usdc));
+        assertEq(uint256(swap.path[0].fee), FEE);
+        assertEq(int256(swap.path[0].tickSpacing), 10);
+    }
+
+    /// @dev CR-I36, the burn side: decoded with upstream's `IV4Router.ExactInputParams`, the component the redemption
+    ///      released and the leg's minimum sit in the fields upstream reads them from.
+    function test_CRI36_aV4BurnLegMatchesTheUpstreamLayout() public {
+        _mintFor(alice, 1e18, 200e6);
+        IIndexZap.BurnLeg[] memory legs = _burnLegs(address(usdc));
+        legs[2] = IIndexZap.BurnLeg({v3Path: "", v4Path: _v4BurnPath(address(weth), address(usdc)), minAmountOut: 14e6});
+        vm.startPrank(alice);
+        index.approve(address(zap), 1e18);
+        zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, legs, alice));
+        vm.stopPrank();
+
+        assertEq(router.lastCommands(), abi.encodePacked(UPSTREAM_V4_SWAP, UPSTREAM_SWEEP));
+        (bytes memory actions, bytes[] memory params) = abi.decode(router.lastInput(0), (bytes, bytes[]));
+        assertEq(actions, abi.encodePacked(UPSTREAM_SWAP_EXACT_IN, UPSTREAM_SETTLE, UPSTREAM_TAKE));
+        UpstreamExactInputParams memory swap = abi.decode(params[0], (UpstreamExactInputParams));
+        assertEq(swap.currencyIn, address(link));
+        assertEq(uint256(swap.amountIn), U_LINK, "the third field is the exact input, the LINK the redemption released");
+        assertEq(uint256(swap.amountOutMinimum), 14e6, "the fourth is the leg's minimum");
+        assertEq(swap.path[1].intermediateCurrency, address(usdc), "the route ends at the payout");
+    }
+
+    // ---------------------------------------------------------------------
     // fuzz
     // ---------------------------------------------------------------------
 
@@ -1235,6 +1619,115 @@ contract IndexZapTest is XindexTest {
         (uint256 spent, uint256 out) = _roundTrip(shares);
         assertLe(spent - out, 600 + 1 + 1 + 3);
     }
+
+    // ---------------------------------------------------------------------
+    // Red team of 2026-09-24, mutation gaps
+    // ---------------------------------------------------------------------
+
+    /// @dev RT-10. A V3 path is a first token followed by whole hops of a fee and a token: 20 + 23k bytes, k at least
+    ///      one. The zap checks only the two ends, so the whole-hops term is what makes those ends the tokens the
+    ///      router swaps: the Universal Router walks a path in 23-byte strides and reads a lone pool from its first 43
+    ///      bytes. The suite tried only a 40-byte path, which the length term refuses anyway, so dropping the stride
+    ///      term, or joining the two terms with `||`, passed every test. Each length either side of a whole number of
+    ///      hops is refused here, and so is a lone token, which is a whole number of hops only by counting none.
+    function test_RT10_aPathIsAFirstTokenAndWholeHops() public {
+        PathShapeProbe probe = new PathShapeProbe();
+        uint256[8] memory lengths = [uint256(20), 42, 43, 44, 64, 65, 66, 89];
+        bool[8] memory valid = [false, false, true, false, false, false, true, true];
+        for (uint256 i = 0; i < lengths.length; ++i) {
+            assertEq(probe.isValidShape(new bytes(lengths[i])), valid[i], vm.toString(lengths[i]));
+        }
+    }
+
+    /// @dev RT-10, through a mint. Each path has the right two ends and a body that is not whole hops: a middle token
+    ///      with a stray byte after it (64 bytes), and a stray byte after the fee (44 bytes). The router would read the
+    ///      first as one pool paid in WETH, not the USDC the zap checked and pre-funded, and the mock router, which
+    ///      reads only the ends, would fill both; only the shape check names them as bad routes.
+    function test_RT10_aMintLegWhoseBodyIsNotWholeHopsIsABadRoute() public {
+        usdc.mint(alice, 200e6);
+        vm.startPrank(alice);
+        usdc.approve(address(zap), 200e6);
+
+        IIndexZap.MintLeg[] memory legs = _mintLegs(address(usdc));
+        legs[0].v3Path = abi.encodePacked(address(wbtc), FEE, address(weth), bytes1(0xff), address(usdc));
+        assertEq(legs[0].v3Path.length, 64);
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadRoute.selector, 0));
+        zap.mintWithToken(_mintParams(address(index), address(usdc), 200e6, 1e18, legs, alice));
+
+        legs = _mintLegs(address(usdc));
+        legs[1].v3Path = abi.encodePacked(address(weth), FEE, bytes1(0x42), address(usdc));
+        assertEq(legs[1].v3Path.length, 44);
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadRoute.selector, 1));
+        zap.mintWithToken(_mintParams(address(index), address(usdc), 200e6, 1e18, legs, alice));
+        vm.stopPrank();
+        assertEq(index.totalSupply(), 0, "nothing was minted");
+    }
+
+    /// @dev RT-10, through a burn. The same shapes on a burn leg are bad routes too, where without the stride term the
+    ///      first passed the check and then failed in `_sellV3` on an out-of-range slice, with no reason given.
+    function test_RT10_aBurnLegWhoseBodyIsNotWholeHopsIsABadRoute() public {
+        _mintFor(alice, 1e18, 200e6);
+        vm.startPrank(alice);
+        index.approve(address(zap), 1e18);
+
+        IIndexZap.BurnLeg[] memory legs = _burnLegs(address(usdc));
+        legs[0].v3Path = abi.encodePacked(address(wbtc), FEE, address(weth), bytes1(0xff), address(usdc));
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadRoute.selector, 0));
+        zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, legs, alice));
+
+        legs = _burnLegs(address(usdc));
+        legs[2].v3Path = abi.encodePacked(address(link), FEE, bytes1(0x42), address(usdc));
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.BadRoute.selector, 2));
+        zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, legs, alice));
+        vm.stopPrank();
+        assertEq(index.balanceOf(alice), 1e18, "the shares are still alice's");
+    }
+
+    /// @dev RT-15. `ZapMint` and `ZapBurn` name the caller, who paid or whose shares burned, apart from the recipient.
+    ///      Every test of them had the two the same, so an event that swapped them passed. Here alice mints for bob and
+    ///      bob burns for alice.
+    function test_RT15_zapEventsNameTheCallerAndTheRecipientApart() public {
+        usdc.mint(alice, 200e6);
+        vm.startPrank(alice);
+        usdc.approve(address(zap), 200e6);
+        vm.expectEmit(true, true, true, true, address(zap));
+        emit IIndexZap.ZapMint(address(index), alice, bob, address(usdc), NAV_USD6, 1e18);
+        zap.mintWithToken(_mintParams(address(index), address(usdc), 200e6, 1e18, _mintLegs(address(usdc)), bob));
+        vm.stopPrank();
+
+        vm.startPrank(bob);
+        index.approve(address(zap), 1e18);
+        vm.expectEmit(true, true, true, true, address(zap));
+        emit IIndexZap.ZapBurn(address(index), bob, alice, address(usdc), 1e18, NAV_USD6);
+        zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, _burnLegs(address(usdc)), alice));
+        vm.stopPrank();
+        assertEq(usdc.balanceOf(alice), 200e6, "alice paid the basket's price and was paid it back");
+    }
+
+    /// @dev RT-16. A mint leg's delivery is the change in the zap's balance of the component, and ShortFill is
+    ///      load-bearing because the pinned V4 router does not check exact-output delivery. Its test ran with the zap
+    ///      holding none of the component, where the balance afterwards is the change itself, so adding the balance
+    ///      before the swap, or reading the balance alone, passed. Either lets a stray of the component, which anyone
+    ///      can send the zap, hide a short fill that `issue` then covers out of the stray. Here one raw WBTC sits in
+    ///      the zap and the router delivers one short.
+    function test_RT16_aStrayOfTheComponentDoesNotHideAShortFill() public {
+        wbtc.mint(address(zap), 1);
+        router.setMode(MockUniversalRouter.Mode.UnderDeliverExactOut);
+        uint256[] memory need = index.previewIssue(1e18);
+        usdc.mint(alice, 300e6);
+        vm.startPrank(alice);
+        usdc.approve(address(zap), 300e6);
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.ShortFill.selector, 0, need[0] - 1, need[0]));
+        zap.mintWithToken(_mintParams(address(index), address(usdc), 300e6, 1e18, _mintLegs(address(usdc)), alice));
+        vm.stopPrank();
+    }
+}
+
+/// @dev `PathLib` reads calldata, so its shape check is reached through an external call.
+contract PathShapeProbe {
+    function isValidShape(bytes calldata path) external pure returns (bool) {
+        return PathLib.isValidShape(path);
+    }
 }
 
 /// @dev Mints through the zap with a callback token and, when the zap refunds it, fills the index's auction.
@@ -1257,4 +1750,66 @@ contract RebalancingMinter is ITokenReceiverHook {
     function onTokenReceived(address from, uint256) external {
         if (from == address(ZAP)) EXECUTOR.execute(INDEX, "");
     }
+}
+
+/// @dev Makes one call to the zap, and when a callback token the zap sends reaches it inside that call, makes a second,
+///      fully valid zap call and records how it ended. Holds whatever it pays with or burns, so it is the caller the
+///      outer call pulls from and, on a burn, the recipient the payout reaches.
+contract ZapReenterer is ITokenReceiverHook {
+    IndexZap internal immutable ZAP;
+    bytes internal _nested;
+    bool internal _armed;
+    bool public armedAndFired;
+    bool public nestedSucceeded;
+    bytes public nestedError;
+
+    constructor(IndexZap zap) {
+        ZAP = zap;
+    }
+
+    function approve(IERC20 token, uint256 amount) external {
+        token.approve(address(ZAP), amount);
+    }
+
+    /// @notice Makes `outer` on the zap, armed to make `nested` from the first callback the zap's transfer triggers.
+    ///         A failure of `outer` reverts with the zap's own error.
+    function run(bytes calldata outer, bytes calldata nested) external {
+        _nested = nested;
+        _armed = true;
+        Address.functionCall(address(ZAP), outer);
+    }
+
+    function onTokenReceived(address from, uint256) external {
+        if (!_armed || from != address(ZAP)) return;
+        _armed = false;
+        armedAndFired = true;
+        (nestedSucceeded, nestedError) = address(ZAP).call(_nested);
+    }
+}
+
+/// @dev One hop of a V4 route as upstream declares it: v4-periphery `PathKey` at 444c526b, with `Currency` and `IHooks`
+///      written as the addresses they are. Declared here rather than imported from src, so a test decoding with it
+///      checks the zap's encoding against upstream's layout instead of against itself (CR-I36).
+struct UpstreamPathKey {
+    address intermediateCurrency;
+    uint24 fee;
+    int24 tickSpacing;
+    address hooks;
+    bytes hookData;
+}
+
+/// @dev v4-periphery `IV4Router.ExactInputParams` at 444c526b.
+struct UpstreamExactInputParams {
+    address currencyIn;
+    UpstreamPathKey[] path;
+    uint128 amountIn;
+    uint128 amountOutMinimum;
+}
+
+/// @dev v4-periphery `IV4Router.ExactOutputParams` at 444c526b.
+struct UpstreamExactOutputParams {
+    address currencyOut;
+    UpstreamPathKey[] path;
+    uint128 amountOut;
+    uint128 amountInMaximum;
 }

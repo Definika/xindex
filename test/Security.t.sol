@@ -770,12 +770,19 @@ contract SecurityRegressionTest is XindexTest {
         factory.createIndex("Capped", "CAP", _blueTokens(), _units(100_000, 1e16, 1e18), 1);
     }
 
-    function test_R07_wrappedAssetsCarryAReferenceSupply() public {
+    /// @dev R07, and CR-L07, which found its on-chain half gone: until v3 the rule refused a WETH config with no
+    ///      reference supply, and the move to Chainlink (640e57a) dropped that check while this test kept the id with
+    ///      its first assertion pointed at an unrelated empty config. CR-M01 restores the refusal for every token rather
+    ///      than for WETH alone, so no wrapper can be listed on its float, whether by a first listing or a config change.
+    function test_R07_CRL07_wrappedAssetsCarryAReferenceSupply() public {
         IIndexRule rule = IIndexRule(factory.RULE());
-        // A config with no feed is not a config at all, whatever supply it names.
-        IIndexFactory.TokenConfig memory empty;
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidFeed.selector, address(weth), address(0)));
-        rule.checkConfig(address(weth), empty);
+        weth.mint(alice, 2_077_005e18); // the wrapped float, a sixtieth of ether's supply
+        IIndexFactory.TokenConfig memory onItsFloat = market.configWith(address(weth), ONE_DOLLAR, 0);
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.ZeroSupply.selector, address(weth)));
+        rule.checkConfig(address(weth), onItsFloat);
+        vm.prank(owner); // WETH is listed here already, so this would be the config change that moved it to its float
+        vm.expectRevert(abi.encodeWithSelector(IIndexRule.ZeroSupply.selector, address(weth)));
+        factory.proposeConfig(address(weth), onItsFloat);
 
         MockERC20 wrapped = new MockERC20("Wrapped Coin", "WCOIN", 8);
         wrapped.mint(alice, 116_132e8); // the wrapped float
@@ -904,20 +911,26 @@ contract SecurityRegressionTest is XindexTest {
         idx.startRebalance(1 << 0);
     }
 
+    /// @dev R17, re-targeted by CR-M01. An issuer minting supply used to reach the rule directly, through the token's
+    ///      own total supply read live. No supply is read live any more: a mint moves nothing, and what moves a market
+    ///      cap is a reference-supply revision behind the listing delay, which DA-18 bounds to an order of magnitude a
+    ///      step. The property is unchanged: however far a supply moves, one rebalance targets at most double a
+    ///      component's units, and a fill at the opening multiplier settles at most 2.5 times.
     function test_R17_supplyInflationClipsTheTargetAtDouble() public {
         MockERC20 inflating = new MockERC20("Inflating", "INF", 18);
-        inflating.mint(attacker, 1e24);
         address[] memory t = new address[](5);
         IIndexFactory.TokenConfig[] memory configs = new IIndexFactory.TokenConfig[](5);
-        t[0] = address(inflating);
-        configs[0] = market.configWith(t[0], ONE_DOLLAR, 0); // on-chain supply
-        for (uint256 i = 1; i < 5; ++i) {
-            t[i] = address(new MockERC20("Fixed", "FIX", 18));
+        for (uint256 i = 0; i < 5; ++i) {
+            t[i] = i == 0 ? address(inflating) : address(new MockERC20("Fixed", "FIX", 18));
             configs[i] = market.configWith(t[i], ONE_DOLLAR, 1e24);
         }
         IndexToken idx = _ruleBasketOf(t, configs, _hundreds());
 
         inflating.mint(attacker, 9e24); // the issuer mints ten times the supply
+        (, uint256 turnover) = idx.previewTarget(0);
+        assertEq(turnover, 0, "the rule reads no supply live, so the mint moves nothing");
+
+        _propose(t[0], ONE_DOLLAR, 1e25); // the owner records it: tenfold, the most one revision may move a supply
         (uint256[] memory targets,) = idx.previewTarget(0);
         assertEq(targets[0], 200e18, "the rule would want 3.6x; one rebalance targets at most 2x");
 
@@ -1560,15 +1573,20 @@ contract SecurityRegressionTest is XindexTest {
     ///
     ///      Two guards now refuse this settlement and the outer one fires first: DA-05's settlement-ratio check values
     ///      both sides in the settling block and sees an executor delivering nothing at all, so `SettlementValueTooLow`
-    ///      arrives before `_checkBacking` is ever reached. The property the finding is about is unchanged and the
-    ///      assertions below still carry it -- nothing settled, and the executor kept nothing.
+    ///      arrives before `_checkBacking` is ever reached. That made the revert below blind to VR-03, since DA-05
+    ///      refuses an empty fill however the targets round, and with the rounding reverted the test still passed
+    ///      (CR-I36). What VR-03 changed is pinned on its own again: every growing leg of the dust rebalance asks the
+    ///      executor for at least a raw unit, where rounded down each asked for nothing.
     function test_VR03_anEmptyExecutorCannotSettleADustRebalance() public {
         (IndexToken idx, address[] memory t) = _vr03Basket(VR03_GROWER_LOW);
         _issueRule(idx, alice, VR03_DUST_SUPPLY);
         _vr03OpenAtParity(idx);
 
-        (,, uint256[] memory amountsOut,) = idx.previewRebalance();
+        (,, uint256[] memory amountsOut, uint256[] memory amountsIn) = idx.previewRebalance();
         assertGt(amountsOut[0], 0, "the shrinking leg still moves raw units");
+        for (uint256 i = 1; i < t.length; ++i) {
+            assertGt(amountsIn[i], 0, "so every growing leg is paid for, not floored to nothing");
+        }
 
         MockRebalanceExecutor noop = new MockRebalanceExecutor();
         noop.setMode(MockRebalanceExecutor.Mode.Noop);

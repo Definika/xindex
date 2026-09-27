@@ -15,8 +15,11 @@ import {IXindexErrors} from "./IXindexErrors.sol";
 ///      `totalSupply()`: inside `issue`, `redeem` and `executeRebalance` they change at different moments, and a
 ///      component with transfer callbacks could expose that intermediate state to a reading contract. Only
 ///      `IndexFactory.isIndex` proves an address is an index.
-///      Recipients: `to` can be neither zero (ZeroAddress) nor the index itself (InvalidRecipient). Callers other than
-///      the factory owner or guardian get Unauthorized where those roles are required.
+///      Recipients: `to` can be neither zero (ZeroAddress) nor the index itself, its FACTORY or its RULE
+///      (InvalidRecipient). A plain ERC-20 `transfer` or `transferFrom` to any of those three reverts InvalidRecipient
+///      too, since none of them can ever move a share on (CR-I01, RT-21); one to zero reverts with OpenZeppelin's
+///      ERC20InvalidReceiver. Callers other than the factory owner or guardian get Unauthorized where those roles are
+///      required.
 interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     /// @notice `sender` paid `amounts` (per component, in component order, rounded up) and `to` received `shares`.
     event Issued(address indexed sender, address indexed to, uint256 shares, uint256[] amounts);
@@ -48,8 +51,8 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
         uint256 eta
     );
     /// @notice Cancels the proposal with this `proposalId`, which is the most recent one: usually the live proposal,
-    ///         but `cancelRebalance` also cancels an auction that expired unfilled, which is what clears the hold-off
-    ///         such an auction otherwise leaves behind.
+    ///         but `cancelRebalance` also cancels an auction that expired unfilled. That only clears the stale proposal
+    ///         the views still report: the hold-off the expiry granted stands, neither shortened nor extended (VR-04).
     /// @param proposalId The cancelled proposal's id, as its `RebalanceStarted` carried it.
     /// @param caller The factory owner or guardian who cancelled it.
     /// @param restartAllowedAt Before this time only the factory owner or guardian can start a rebalance.
@@ -92,7 +95,8 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     error RebalancePending(uint256 deadline);
     /// @notice `keepMask` sets a bit at or above {componentCount}, or keeps every component.
     error InvalidKeepMask(uint256 keepMask);
-    /// @notice The snapshot would sell `turnover` of the rebalanced value, less than MIN_TURNOVER.
+    /// @notice The snapshot would trade `turnover` of the rebalanced value, less than MIN_TURNOVER, and either trades
+    ///         nothing or is taken while the basket sits less than MIN_TURNOVER from its rule (RT-04).
     error TurnoverTooLow(uint256 turnover);
     /// @notice No rebalance is pending.
     error NoPendingRebalance();
@@ -120,7 +124,9 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     /// @notice Time that must pass after the last executed rebalance, or after creation, before {startRebalance}.
     function MIN_REBALANCE_INTERVAL() external view returns (uint256);
 
-    /// @notice Length of the auction. Afterwards the pending rebalance has expired and a new one can be started.
+    /// @notice Length of the auction. Afterwards the pending rebalance has expired: the factory owner and guardian can
+    ///         start a new one at once, and anyone else from `eta + AUCTION_DURATION + REBALANCE_DELAY`; see
+    ///         {canStartRebalance} (RT-08).
     function AUCTION_DURATION() external view returns (uint256);
 
     /// @notice Multiplier on the growing components' extra units when the auction opens (1e18 = parity).
@@ -129,12 +135,16 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     /// @notice Multiplier on the growing components' extra units when the auction closes.
     function AUCTION_END_MULTIPLIER() external view returns (uint256);
 
-    /// @notice Least the index may receive as a fraction of what it pays out, valued in the settling block (1e18 =
-    ///         parity). The auction's own floor with room for the difference between a published feed price and the
-    ///         spot an executor trades at.
+    /// @notice Least the index may receive as a fraction of what it pays out, valued at feed prices in the settling
+    ///         block (1e18 = parity). The auction's own floor with room for the difference between a published feed
+    ///         price and the spot an executor trades at. It bounds an executor's take at feed prices; at market prices
+    ///         the take can exceed it by however far the answers trail the market on the traded legs (CR-L06).
     function MIN_SETTLEMENT_RATIO() external view returns (uint256);
 
-    /// @notice Least turnover, as a share of the rebalanced value (1e18 = 100%), for which a rebalance can start.
+    /// @notice Least turnover, as a share of the rebalanced value (1e18 = 100%), for which a rebalance can start. A
+    ///         smaller step that trades something also starts when the basket sits at least this far from its rule
+    ///         (`IIndexRule.shortfall`): the band lets a growing component at most double, so a step alone could never
+    ///         reach a component held far below its weight (RT-04).
     function MIN_TURNOVER() external view returns (uint256);
 
     /// @notice Factory that deployed this index; the only address allowed to initialize it.
@@ -219,16 +229,21 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     /// @notice Time of the last executed rebalance, or of creation.
     function lastRebalance() external view returns (uint256);
 
-    /// @notice After {cancelRebalance}, only the factory owner or guardian can start a rebalance before this time.
+    /// @notice After {cancelRebalance}, only the factory owner or guardian can start a rebalance before this time. Only
+    ///         a cancel sets it: an auction that expires unfilled holds strangers off until `eta + AUCTION_DURATION +
+    ///         REBALANCE_DELAY` without moving it, so read {canStartRebalance} rather than this alone (RT-08).
     function restartAllowedAt() external view returns (uint256);
 
     /// @notice Snapshots the rule's target units and starts the notice period. Anyone can call it once
     ///         MIN_REBALANCE_INTERVAL has passed since the last rebalance, while no unexpired rebalance is pending, and
     ///         once {restartAllowedAt} and, after an auction nobody filled, REBALANCE_DELAY past that auction's end
     ///         have passed ({canStartRebalance} answers all of this); before those the factory owner or guardian can
-    ///         start it and nobody else. Reverts with
-    ///         TurnoverTooLow when the targets would sell less than MIN_TURNOVER, and with the rule's StalePrice or
-    ///         InvalidPrice when a component the snapshot reads has no usable price.
+    ///         start it and nobody else. The auction's end is its last fillable second, `eta + AUCTION_DURATION`, so
+    ///         after an expiry the owner and guardian have the start to themselves for REBALANCE_DELAY less one second,
+    ///         against a full REBALANCE_DELAY after a cancel (CR-I02). Reverts with TurnoverTooLow when the targets
+    ///         would trade less than MIN_TURNOVER and either trade nothing or the basket sits less than MIN_TURNOVER
+    ///         from its rule before the step (RT-04), and with the rule's StalePrice or InvalidPrice when a component
+    ///         the snapshot reads has no usable price.
     /// @param keepMask Bit i set leaves component i untouched, for example while it is paused. Only the factory owner or
     ///        guardian can pass a non-zero mask, and it must leave at least one component to rebalance.
     function startRebalance(uint256 keepMask) external;
@@ -241,7 +256,9 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     /// @notice Settles the pending rebalance during its auction. Sends msg.sender what the index no longer needs of each
     ///         shrinking component, calls `IRebalanceExecutor.onXindexRebalance` on it, and reverts unless the index
     ///         then holds every component's new backing and the whole of `amountsIn` on top of what it held before.
-    ///         Only a contract can execute.
+    ///         Only a contract can execute. Before any token moves, both sides are valued at feed prices and the fill
+    ///         must reach MIN_SETTLEMENT_RATIO of what it takes (SettlementValueTooLow); every leg that moves is priced,
+    ///         so the rule's StalePrice or InvalidPrice on such a leg stops the settlement too.
     /// @dev `amountsOut` and `amountsIn` are recomputed from `totalSupply()` in the block that settles, and issue and
     ///      redeem stay open throughout the notice and the auction, so they can differ from any earlier simulation.
     ///      The callback's arguments are authoritative; an executor that sizes itself off chain should either source
@@ -257,16 +274,20 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     function executeRebalance(bytes calldata data, uint256[] calldata maxAmountsIn) external;
 
     /// @notice Targets and turnover {startRebalance} would snapshot now with `keepMask`, with the same price checks. It
-    ///         checks neither the caller nor the mask: bits at or above {componentCount} and a turnover below
-    ///         MIN_TURNOVER are accepted here but make {startRebalance} revert. A mask that keeps every component
-    ///         reverts with the rule's DegenerateBasket.
+    ///         checks neither the caller nor the mask: bits at or above {componentCount}, and a turnover below
+    ///         MIN_TURNOVER that is zero or on a basket sitting less than MIN_TURNOVER from its rule
+    ///         (`IIndexRule.shortfall`), are accepted here but make {startRebalance} revert. A mask that keeps every
+    ///         component reverts with the rule's DegenerateBasket.
     /// @return targetUnits Target raw units per 1e18 shares, per component in component order.
-    /// @return turnover Value the rebalance would sell, as a share of the rebalanced components' value (1e18 = 100%).
+    /// @return turnover Value the rebalance would trade, the smaller of what it sells and what it buys, as a share of
+    ///         the rebalanced components' value (1e18 = 100%). One below MIN_TURNOVER still starts when it is non-zero
+    ///         and the basket sits at least MIN_TURNOVER from its rule (`IIndexRule.shortfall`, RT-04).
     function previewTarget(uint256 keepMask) external view returns (uint256[] memory targetUnits, uint256 turnover);
 
     /// @notice The last started rebalance: auction start, keep mask and target units. `eta` is 0 when none was started
     ///         or the last one was executed or cancelled; an auction nobody filled keeps its `eta` after `eta +
-    ///         AUCTION_DURATION`, and a new rebalance can then be started.
+    ///         AUCTION_DURATION`, and a new rebalance can then be started by the factory owner or guardian at once and
+    ///         by anyone else from `eta + AUCTION_DURATION + REBALANCE_DELAY` (RT-08).
     function pendingRebalance() external view returns (uint256 eta, uint256 keepMask, uint256[] memory targetUnits);
 
     /// @notice Multiplier an execution in this block would use, or 0 outside an auction. It is parity when the
@@ -276,11 +297,14 @@ interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
     /// @notice Whether anyone can start a rebalance now: MIN_REBALANCE_INTERVAL has passed, no auction is live (an
     ///         unfilled one keeps its `eta` but stops counting after `eta + AUCTION_DURATION`), and the waits after a
     ///         cancel and after an unfilled auction are over. It does not read the rule, so a start can still revert
-    ///         with TurnoverTooLow or a snapshot price error, and the factory owner and guardian can start when it is
-    ///         false.
+    ///         with TurnoverTooLow or a snapshot price error. While it is false the factory owner and guardian can
+    ///         still start during those two waits, but not before MIN_REBALANCE_INTERVAL or while an auction is live
+    ///         (RT-09).
     function canStartRebalance() external view returns (bool);
 
     /// @notice Exact settlement an execution in this block would use. Reverts like {executeRebalance} outside an auction.
+    ///         It prices nothing, so it answers even when {executeRebalance} would revert SettlementValueTooLow or on a
+    ///         stale feed; `IIndexRule.settlementValues` values the two sides it returns.
     /// @return multiplier Multiplier on the growing components' extra units (1e18 = parity).
     /// @return units New units per component, in component order.
     /// @return amountsOut What the index would send the executor per component.
