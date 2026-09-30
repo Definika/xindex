@@ -4,12 +4,15 @@ Stage B adds the native coins of BNB Chain, HyperEVM, Tron and Solana, held in v
 whose shares live on Ethereum. The design is `design/2026-09-29-v4-hybrid-architecture.md`, sections 3 to 8. This spec
 fixes what the design leaves open, and marks each deviation from it as a proposal for the owner.
 
-**Status: draft, 2026-09-30.** The build starts with the parts every outcome of the proving prototype shares: the
+**Status: draft, 2026-09-30; section 1 decided the same day.** The build starts with the parts every outcome of the proving prototype shares: the
 message format, the EVM vault, and the vault-to-Ethereum path for BNB Chain. Everything that depends on which
 Ethereum-finality proof is used (full finality, or the sync-committee fallback) sits behind one interface, and waits
 for the owner's decision after the GPU run.
 
 ## 1. Proposals for the owner (deviations from the design)
+
+**Decided by the owner on 2026-09-30: all five adopted.** Proposals 1, 2, 4 and 5 were chosen explicitly. Proposal 3 was
+put forward as going ahead unless the owner objected, and the owner did not. Each is now a recorded decision of Stage B.
 
 1. **A separate hub template, `HybridHub`, for indexes with vault tokens.** The design (4.2) extends one `IndexHub`.
    Proposed instead:
