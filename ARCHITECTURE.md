@@ -109,12 +109,14 @@ constructors, so name and symbol are set in `initialize`).
   several at once from storage; no call reaches a token, so no transaction can move a supply the hub reads (CR-M01).
 - **Listing.** `proposeListing(token, supply)`, owner only: the token must have code (`NotAContract`), must not be
   listed (`AlreadyListed`), must have no live listing (`ListingPending`) and must not be in the live supply batch
-  (`TokenInBatch`). A token that carried a supply before, as a delisted one does, is relisted only within one step of
-  it (DA-18, CR-L03); a first listing is bounded only by `MAX_SUPPLY`. `executeListing` is permissionless from `eta =
+  (`TokenInBatch`). A token that carried a supply before, as a delisted one does, is relisted only at that supply
+  (`RelistChangesSupply`); a first listing is bounded only by `MAX_SUPPLY`. Relistings execute one token at a time, so
+  one that moved a supply would let a stranger split a uniform revision into halves that each open a band; a batch,
+  which delisted tokens join like any other, is the only way to revise a supply (SA-02, extending DA-18 and CR-L03). `executeListing` is permissionless from `eta =
   now + LISTING_DELAY` (2 days) for `PROPOSAL_WINDOW` (7 days); it sets the supply and whitelists the token.
   `cancelListing` and `delist` are owner or guardian; delisting is immediate and affects only indexes created
   afterwards.
-- **Supply batches.** `proposeSupplies(tokens, supplies)`, owner only: 1 to `MAX_BATCH` (256) tokens in strictly
+- **Supply batches.** `proposeSupplies(tokens, supplies)`, owner only: 1 to `MAX_BATCH` (200) tokens in strictly
   ascending address order (`InvalidBatch`), each already carrying a supply (`NotConfigured`) and none with a live
   listing, each new supply from 1 to `MAX_SUPPLY` and within `MAX_SUPPLY_STEP` (0.5%) of the one in force:
   `|new − old| ≤ ⌊old × MAX_SUPPLY_STEP / 1e18⌋` (`SupplyStepTooLarge`). One batch is live at a time
@@ -240,8 +242,8 @@ Anchoring on `a` cancels `a`'s own figures exactly, and keeps the products in ra
 `u · f < 2^224`, and `mulDiv` works in 512 bits. The start reverts `BandTooNarrow(λmin, λmax)` when
 `λmax · WAD < λmin · (WAD + MIN_BAND)`, with `MIN_BAND = 0.001e18`: every moving component's units already follow its
 supply to within rounding. That covers no supply changing, every supply changing alike, and a single moving component.
-`MIN_BAND` is twice the widest rounding gap between two freshly anchored components held at 10,000 raw units, and a
-tenth of the widest band.
+`MIN_BAND` is ten times the widest rounding gap between two freshly anchored components held at 10,000 raw units (one
+raw unit in 10,000), and a tenth of the widest band.
 
 ### 3.2 The auction: λ(t)
 
@@ -259,12 +261,16 @@ For every moving component, at `λ = λ(t)` and `S = totalSupply()` in the settl
 
 ```
 u'_i  = ⌈λ · u_i / r_i⌉                                      kept components keep u_i
-out_i = ⌊S·u_i/1e18⌋ − ⌊S·u'_i/1e18⌋     when u'_i < u_i    (the index pays the executor)
-in_i  = ⌊S·u'_i/1e18⌋ − ⌊S·u_i/1e18⌋     otherwise          (the executor pays the index)
+out_i = ⌊S·(u_i − u'_i)/1e18⌋             when u'_i < u_i    (the index pays the executor)
+in_i  = ⌈S·(u'_i − u_i)/1e18⌉             otherwise          (the executor pays the index)
 ```
 
-A component whose ratio is above λ shrinks; one below λ grows. The amounts are the change in floored backing, so they
-come from supply and units alone, and the index never pays out rounding dust or a donation. If no `out_i` is non-zero
+A component whose ratio is above λ shrinks; one below λ grows. Each leg's change in backing is rounded the holders' way
+on its own, down when it leaves and up when it comes back, so the amounts come from supply and units alone, and the
+index never pays out rounding dust or a donation. As a difference of floored backings, a shrinking leg of a sub-token
+index could release a whole raw unit for a fraction of one while no growing leg asked for any, paying an executor that
+delivered nothing (SA-07). The invariant survives the rounding, since `⌊a − b⌋ ≤ ⌊a⌋ − ⌊b⌋` and
+`⌊a + b⌋ ≤ ⌊a⌋ + ⌈b⌉`. If no `out_i` is non-zero
 at `λ(t)`, as on an empty index or one so small that every shrinking leg rounds to zero, the settlement is taken at
 `λmax` instead, where nothing shrinks, so the units never depend on timing when nothing is paid for (R14, XA-27).
 
@@ -293,8 +299,8 @@ used to approximate with feeds.
 | Quantity | Bound |
 |---|---|
 | Loss per rebalance to a lone executor at the floor | `1 − λmin/λmax ≤ 1 − (1 − STEP)/(1 + STEP)` = **0.995%** of the moving value |
-| Per day, weekly cadence | about **0.14%** |
-| Per year, if every week's supplies moved the full step apart and no executor ever competed | about **41%** |
+| Per day, weekly cadence (a cycle takes at least 9 days: 7 between fills, then 2 of notice) | about **0.11%** |
+| Per year, if every cycle's supplies moved the full step apart and no executor ever competed | about **33%** |
 | Units per rebalance | `u'/u ∈ [λmin/λmax, λmax/λmin] ⊂ [0.990, 1.0101]`, plus one raw unit of rounding |
 
 The band covers the whole moving value, however small the trade: a 0.5% revision of a component weighing 1% trades
@@ -317,6 +323,12 @@ residue and any rounding drift is corrected at the next rebalance instead of com
 supplies ran ahead of the units, a wide band narrows to exactly `[1 − STEP, 1 + STEP]` and never collapses: a start
 cannot stall because the factory's figures moved more than one step since the last fill
 (`test_R04_R17_theBandIsTheClampsHoweverManyBatchesLanded`).
+
+The clamp heals the extremes first. While one component's ratio sits more than the band away from the rest, every other
+moving component is clamped to the opposite bound and settles alike, so its own revision waits until the far one has
+converged; nothing is taken beyond the band while it does. With supplies moving at most half a percent a week (SA-04)
+and a band of up to 1% per cycle, a component stays ahead only when something else held it back, such as a keep mask
+over several cycles (SA-08).
 
 The design's first draft set `u' = λ·k·s'` with the band taken from old and new supplies. After any keep-mask fill,
 units no longer equal `k·s`, so λ* could fall outside that band and a fill at the open would overpay the executor. The
@@ -349,8 +361,8 @@ token_i.balanceOf(index) >= floor(totalSupply × units_i / 1e18) + totalClaims[t
 Ceil-on-issue and floor-on-redeem mean rounding drift is at most one raw unit per call, always in favour of the
 remaining holders. A claim is recorded only for an amount that stayed in the index, and because `floor(a) + floor(b)
 ≤ floor(a + b)`, burning shares always frees at least that much required backing, so claims never dilute anyone. A
-rebalance moves exactly the change in required backing, and its post-check is the invariant with the new units plus the
-whole of `amountsIn` on top of what the index held. Nothing is computed from balances, so there is no share price to
+rebalance moves each leg's change in required backing rounded the holders' way (SA-07), and its post-check is the
+invariant with the new units plus the whole of `amountsIn` on top of what the index held. Nothing is computed from balances, so there is no share price to
 manipulate and no first-depositor attack; donations only add surplus that no holder can redeem and no executor can use.
 
 **The fee seam.** Every conversion of shares into an amount of a component goes through one private helper,
@@ -369,7 +381,8 @@ The README's "How the flows work" walks through each flow for an app. In short:
 - **Mint and burn** through the zap (up to about 35 components), in kind (up to 100), or at a limit through
   `MintRequests`, filled by anyone who holds or can issue the shares.
 - **Weekly supply update.** One batch a week from the owner Safe, 2 days of notice with the guardian's veto, then
-  executed by anyone. At 0.5% a week an index follows a token whose supply grows up to about 30% a year faster than the
+  executed by anyone. The week is enforced: a batch comes due no sooner than `MIN_SUPPLY_INTERVAL` (7 days) after the
+  last one executed (SA-04). At 0.5% a week an index follows a token whose supply grows up to about 30% a year faster than the
   rest (1.005^52 − 1); monthly updates would follow only about 6.7%.
 - **Rebalance.** After the batch and the 7-day interval, anyone starts; 2 days of notice, in which holders who disagree
   can leave and a batch executed meanwhile does not move the pending settlement (R22); a 24-hour auction. During the

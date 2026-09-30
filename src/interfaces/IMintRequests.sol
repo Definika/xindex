@@ -5,7 +5,8 @@ import {IXindexErrors} from "./IXindexErrors.sol";
 
 /// @notice Escrowed requests to mint or redeem an index's shares for USDC or USDT, filled by anyone who holds the other
 ///         side. A requester names their own limit; nothing reads a price. The contract has no owner and nothing to
-///         configure: it only ever holds open escrows, and every escrow leaves with its request.
+///         configure. Every escrow leaves with its request, unless the stablecoin's issuer freezes or destroys it;
+///         tokens sent here outside a request stay here.
 interface IMintRequests is IXindexErrors {
     /// @notice A request: `escrow` is what the contract holds for it, measured as the balance increase when it was
     ///         made, in `stable` for a mint and in `index` shares for a redemption; `limit` is the least the requester

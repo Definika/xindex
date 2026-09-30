@@ -36,15 +36,17 @@ existing indexes still rebalance with it. `referenceSupplies(tokens)` returns se
 call reaches a token.
 
 **Listing.** `proposeListing(token, supply)`, owner only: the token must have code; `supply` must be non-zero and at most
-`MAX_SUPPLY`; a token already carrying a supply (a relist) must propose a supply within one step of it; no listing may
+`MAX_SUPPLY`; a token already carrying a supply (a relist) must propose exactly that supply, which a batch then revises
+(SA-02); no listing may
 be live for the token, and the token may not be in the live supply batch. Executable by anyone from `eta` for
 `PROPOSAL_WINDOW` (`executeListing`), which sets the supply and whitelists the token. `cancelListing` by owner or
 guardian. `delist` by owner or guardian, immediate. A listed token cannot have a pending listing (`AlreadyListed`), so there is
 none to drop.
 
 **Supply batches.** `proposeSupplies(tokens, supplies)`, owner only:
-- `tokens` strictly ascending (so no duplicate), 1 to `MAX_BATCH` = 256 entries, each already carrying a supply, none
-  with a live listing proposal;
+- `tokens` strictly ascending (so no duplicate), 1 to `MAX_BATCH` = 200 entries, each already carrying a supply, none
+  with a live listing proposal; 200 is about the most a first batch fits in one transaction with every slot cold, about
+  14.8M gas, leaving room for the Safe (SA-03);
 - each new supply non-zero, at most `MAX_SUPPLY`, and within `MAX_SUPPLY_STEP` of the supply in force:
   `|new − old| ≤ ⌊old × MAX_SUPPLY_STEP / 1e18⌋`;
 - no other batch live (an expired one is replaced);
@@ -155,8 +157,11 @@ No owner, no upgrade, `nonReentrant` on every entry point, immutable `FACTORY`, 
 - Escrow is the measured balance increase, so a USDT fee cannot make the last refund revert; every payout uses
   `SafeERC20` (USDT returns nothing); the contract never calls `approve`.
 - A request is closed before any token moves.
-- Known: a fill pays exactly the requester's limit, so any surplus goes to the fastest filler, which is why the app
-  suggests limits; if USDC or USDT freezes a requester, their refund waits on the issuer.
+- Known: the requester receives what the filler sends, at least the limit, and the filler takes the whole escrow, so a
+  generous limit is surplus for the fastest filler, which is why the app suggests limits. Circle freezes a
+  blacklisted requester's payouts and refunds; Tether freezes neither, only the requester's own balance afterwards
+  (README, known limitations). A mint request first sends the contract nothing, so a stablecoin that blacklisted it or
+  is paused takes no new escrow (SA-01).
 
 ## 6. Scripts
 

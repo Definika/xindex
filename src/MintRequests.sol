@@ -54,6 +54,10 @@ contract MintRequests is IMintRequests, ReentrancyGuard {
         returns (uint256 id)
     {
         _checkRequest(index, stable, amount, minShares, deadline);
+        // Tether checks only the sender of a `transferFrom`, so it would hand a contract it has blacklisted an escrow
+        // that `cancel`, `refund` and every fill could then never pay out. Sending itself nothing fails exactly when
+        // the way out is shut, blacklisted or paused, so the deposit is refused instead of trapped (SA-01).
+        IERC20(stable).safeTransfer(address(this), 0);
         uint256 escrow = _pull(stable, amount);
         id = _record(true, index, stable, escrow, minShares, deadline);
         emit MintRequested(id, msg.sender, index, stable, escrow, minShares, deadline);

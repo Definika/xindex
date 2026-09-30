@@ -35,6 +35,9 @@ contract FactoryHandler is Test {
     /// @dev Set if an executed change ever moved a supply that was in force by more than one step, or if a batch ever
     ///      came into force in part.
     bool public stepBroken;
+    /// @notice Set if two batches ever executed less than MIN_SUPPLY_INTERVAL apart (SA-04).
+    bool public cadenceBroken;
+    uint256 public ghostLastBatch;
     bool public batchApplication;
     uint256 public ghostOutOfWindowAttempts;
 
@@ -89,8 +92,8 @@ contract FactoryHandler is Test {
         address token = _token(seed);
         if (ghostListed[token] || _listingLive(token) || _inLiveBatch(token)) return;
         uint256 inForce = ghostSupply[token];
-        // A first listing takes any supply; a relisting stays within a step of the supply the token carried.
-        uint256 supply = inForce == 0 ? (alternate ? 2e24 : 1e24) : _revised(inForce, seed);
+        // A first listing takes any supply; a relisting takes the supply the token carries (SA-02).
+        uint256 supply = inForce == 0 ? (alternate ? 2e24 : 1e24) : inForce;
         vm.prank(owner);
         factory.proposeListing(token, supply);
     }
@@ -111,7 +114,7 @@ contract FactoryHandler is Test {
             // by a broken contract.
             executedOutsideItsWindow = executedOutsideItsWindow || !inWindow;
             uint256 before = ghostSupply[token];
-            stepBroken = stepBroken || (before != 0 && !_withinStep(before, pending));
+            stepBroken = stepBroken || (before != 0 && pending != before);
             ghostSupply[token] = pending;
             if (!ghostListed[token]) ghostListings++;
             ghostListed[token] = true;
@@ -179,6 +182,9 @@ contract FactoryHandler is Test {
         if (!inWindow) ghostOutOfWindowAttempts++;
         try factory.executeSupplies() {
             executedOutsideItsWindow = executedOutsideItsWindow || !inWindow;
+            cadenceBroken = cadenceBroken
+                || (ghostLastBatch != 0 && block.timestamp < ghostLastBatch + factory.MIN_SUPPLY_INTERVAL());
+            ghostLastBatch = block.timestamp;
             for (uint256 i = 0; i < batch.length; ++i) {
                 stepBroken = stepBroken || !_withinStep(ghostSupply[batch[i]], supplies[i]);
                 ghostSupply[batch[i]] = supplies[i];
@@ -287,10 +293,11 @@ contract IndexFactoryInvariantTest is Test {
         }
     }
 
-    /// @dev No executed change ever moved a supply in force by more than MAX_SUPPLY_STEP, and a batch always came into
-    ///      force whole.
+    /// @dev No executed batch ever moved a supply in force by more than MAX_SUPPLY_STEP, no two executed less than a
+    ///      week apart (SA-04), no relisting moved one at all (SA-02), and a batch always came into force whole.
     function invariant_everyRevisionIsWithinAStepAndBatchesAreAtomic() public view {
         assertFalse(handler.stepBroken(), "a supply moved more than a step");
+        assertFalse(handler.cadenceBroken(), "two batches executed less than a week apart");
         assertFalse(handler.batchApplication(), "a batch came into force in part");
     }
 

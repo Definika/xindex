@@ -1076,7 +1076,8 @@ contract SecurityRegressionTest is XindexTest {
     }
 
     /// @dev XA-27, re-targeted: a settlement that sends nothing out is taken at λmax, so its units are the same
-    ///      whoever executes and whenever.
+    ///      whoever executes and whenever. Each growing leg still asks for its change in backing rounded up, one raw
+    ///      unit on a supply of one wei, so the executor pays that dust to the holders rather than the reverse (SA-07).
     function test_XA27_aSettlementThatSendsNothingOutIsTakenAtTheTopOfTheBand() public {
         (, address[] memory t) = _bandBasket();
         // Every unit at MIN_RAW_UNITS and one wei of shares: no leg's backing reaches a raw unit.
@@ -1085,6 +1086,7 @@ contract SecurityRegressionTest is XindexTest {
         _issueBand(idx, alice, 1);
         _raiseFirst(t);
 
+        (, uint256[] memory unitsBefore) = idx.components();
         uint256 eta = _openAuction(idx, 0, attacker);
         (uint256 lambda, uint256[] memory atOpen,,) = idx.previewRebalance();
         vm.warp(eta + idx.AUCTION_DURATION()); // where a lone executor would otherwise pick the floor
@@ -1096,8 +1098,8 @@ contract SecurityRegressionTest is XindexTest {
 
         (, uint256[] memory units) = idx.components();
         for (uint256 i = 0; i < 5; ++i) {
-            assertEq(amountsOut[i], 0);
-            assertEq(amountsIn[i], 0);
+            assertEq(amountsOut[i], 0, "nothing leaves");
+            assertEq(amountsIn[i], atOpen[i] > unitsBefore[i] ? 1 : 0, "a growing leg asks one raw unit");
             assertEq(units[i], atOpen[i], "the open's units, whoever executes and whenever");
         }
     }

@@ -39,6 +39,16 @@ contract MockSafe {
         _modules.push(module);
     }
 
+    address[] internal _owners;
+
+    function addOwner(address signer) external {
+        _owners.push(signer);
+    }
+
+    function getOwners() external view returns (address[] memory) {
+        return _owners;
+    }
+
     function setMalformedModules(bool malformed) external {
         _malformedModules = malformed;
     }
@@ -306,6 +316,29 @@ contract ScriptsTest is Test {
         vm.prank(guardian);
         vm.expectRevert(abi.encodeWithSelector(Deploy.GuardianIsBroadcaster.selector, guardian));
         deployer.checkGuardian(owner, guardian);
+    }
+
+    /// @dev SA-06. The guardian is the owner's veto, so a guardian that also signs for the owner Safe leaves one key
+    ///      acting on both sides, and the broadcasting key, which holds no role, must not hold a share of the owner's
+    ///      either. An owner that answers no signer list, a key or a timelock, is accepted as before.
+    function test_SA06_neitherTheGuardianNorTheBroadcasterSignsForTheOwner() public {
+        MockSafe safe = new MockSafe(2);
+        safe.addOwner(makeAddr("signer"));
+        deployer.checkGuardian(address(safe), guardian);
+
+        safe.addOwner(guardian);
+        vm.expectRevert(abi.encodeWithSelector(Deploy.GuardianSignsForOwner.selector, guardian));
+        deployer.checkGuardian(address(safe), guardian);
+        vm.expectRevert(abi.encodeWithSelector(Deploy.GuardianSignsForOwner.selector, guardian));
+        deployer.deploy(address(safe), guardian, address(router), usdc, usdt);
+
+        MockSafe other = new MockSafe(2);
+        other.addOwner(address(this)); // the account calling the script, as the broadcasting key does
+        vm.expectRevert(abi.encodeWithSelector(Deploy.BroadcasterSignsForOwner.selector, address(this)));
+        deployer.checkGuardian(address(other), guardian);
+
+        deployer.checkGuardian(owner, guardian); // a key answers no signer list
+        deployer.checkGuardian(address(new SilentFallback()), guardian); // nor does a contract that is not a Safe
     }
 
     function test_XA39_rolesCannotBeMarketContracts() public {
@@ -734,17 +767,17 @@ contract ScriptsTest is Test {
 
         address[] memory relist = new address[](2);
         (relist[0], relist[1]) = (list[1].token, list[0].token); // naming a listed token too changes nothing for it
-        list[0].referenceSupply = 1_010e18; // a relisting past a step from the supply it carried is skipped
-        assertEq(_safeCalls(factory, list, none, relist).length, 0);
-        list[0].referenceSupply = 1_005e18; // one step exactly
+        // A relisting takes the supply the token carries, whatever the entry says; a batch revises it (SA-02).
+        list[0].referenceSupply = 1_010e18;
         bytes[] memory calls = _safeCalls(factory, list, none, relist);
         assertEq(calls.length, 1);
-        assertEq(calls[0], abi.encodeCall(IIndexFactory.proposeListing, (list[0].token, 1_005e18)));
+        assertEq(calls[0], abi.encodeCall(IIndexFactory.proposeListing, (list[0].token, 1_000e18)));
+        assertEq(configure.listingSupply(factory, list[0]), 1_000e18);
         configure.propose(factory, list, none, relist);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         configure.execute(factory, list);
         assertTrue(factory.isWhitelisted(list[0].token));
-        assertEq(factory.referenceSupply(list[0].token), 1_005e18);
+        assertEq(factory.referenceSupply(list[0].token), 1_000e18, "relisted at the supply in force");
     }
 
     /// @dev RT-06. A first listing the guardian cancelled leaves nothing on chain, so it is proposed again only when
@@ -1078,6 +1111,31 @@ contract ScriptsTest is Test {
         configure.executeSupplies(factory, list);
         assertEq(factory.referenceSupply(list[0].token), list[0].referenceSupply);
         assertEq(factory.referenceSupply(list[1].token), list[1].referenceSupply);
+    }
+
+    /// @dev SA-05. With last week's batch still live, the batch modes built this week's against the supplies it was
+    ///      about to replace and handed the Safe a `proposeSupplies` the factory refuses. They now stop with the live
+    ///      batch's deadline, and build again once it has executed.
+    function test_SA05_theBatchModesRefuseWhileABatchIsLive() public {
+        IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
+        ConfigureWhitelist.Entry[] memory list = _twoEntries();
+        _listed(factory, list);
+        list[0].referenceSupply += list[0].referenceSupply / 400;
+        configure.proposeSupplies(factory, list);
+        (, uint256 eta,,) = factory.pendingSupplies();
+        uint256 deadline = eta + factory.PROPOSAL_WINDOW();
+
+        list[1].referenceSupply += list[1].referenceSupply / 400;
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.BatchStillLive.selector, deadline));
+        configure.supplyBatch(factory, list);
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.BatchStillLive.selector, deadline));
+        configure.supplyCalldata(factory, list);
+
+        vm.warp(eta);
+        configure.executeSupplies(factory, list);
+        (address[] memory tokens,) = configure.supplyBatch(factory, list);
+        assertEq(tokens.length, 1, "next week's batch names only what still moves");
+        assertEq(tokens[0], list[1].token);
     }
 
     function test_supplyBatch_revertsWhenNothingMoves() public {

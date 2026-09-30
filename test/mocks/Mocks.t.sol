@@ -158,6 +158,67 @@ contract MocksTest is Test {
         assertEq(usdt.basisPointsRate(), 10);
     }
 
+    /// @dev Mainnet Tether's freezes: `transfer` checks the sender only and `transferFrom` checks `from` only, so a
+    ///      blacklisted address can still receive and a blacklisted caller can still move someone else's approved
+    ///      tokens; a pause stops both; the owner can zero a blacklisted balance.
+    function test_usdt_blacklistAndPause() public {
+        address carol = makeAddr("carol");
+        usdt.mint(alice, 10e6);
+        usdt.mint(bob, 10e6);
+        vm.prank(alice);
+        usdt.approve(bob, 10e6);
+        vm.startPrank(bob);
+        vm.expectRevert("USDT: owner");
+        usdt.addBlackList(alice);
+        vm.expectRevert("USDT: owner");
+        usdt.removeBlackList(alice);
+        vm.expectRevert("USDT: owner");
+        usdt.pause();
+        vm.expectRevert("USDT: owner");
+        usdt.unpause();
+        vm.expectRevert("USDT: owner");
+        usdt.destroyBlackFunds(alice);
+        vm.stopPrank();
+
+        usdt.addBlackList(bob);
+        assertTrue(usdt.isBlackListed(bob));
+        vm.prank(alice);
+        usdt.transfer(bob, 1e6); // the recipient is never checked
+        vm.prank(bob);
+        vm.expectRevert("USDT: blacklisted");
+        usdt.transfer(alice, 1);
+        vm.prank(bob);
+        usdt.transferFrom(alice, carol, 1e6); // nor is the caller
+        vm.prank(alice);
+        usdt.approve(address(this), 0);
+        vm.prank(bob);
+        usdt.approve(alice, 5e6);
+        vm.prank(alice);
+        vm.expectRevert("USDT: blacklisted");
+        usdt.transferFrom(bob, alice, 1);
+
+        vm.expectRevert("USDT: not blacklisted");
+        usdt.destroyBlackFunds(alice);
+        usdt.destroyBlackFunds(bob);
+        assertEq(usdt.balanceOf(bob), 0, "the owner zeroed the blacklisted balance");
+        assertEq(usdt.totalSupply(), 9e6, "and burned it from the supply");
+        usdt.removeBlackList(bob);
+        assertFalse(usdt.isBlackListed(bob));
+
+        usdt.pause();
+        assertTrue(usdt.paused());
+        vm.prank(alice);
+        vm.expectRevert("USDT: paused");
+        usdt.transfer(bob, 1);
+        vm.prank(bob);
+        vm.expectRevert("USDT: paused");
+        usdt.transferFrom(alice, bob, 1);
+        usdt.unpause();
+        vm.prank(alice);
+        usdt.transfer(bob, 1);
+        assertEq(usdt.balanceOf(bob), 1);
+    }
+
     function test_usdt_approveFromNonZeroReverts() public {
         vm.startPrank(alice);
         usdt.approve(bob, 1);

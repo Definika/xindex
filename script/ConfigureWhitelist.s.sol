@@ -94,6 +94,8 @@ contract ConfigureWhitelist is Script {
     error DuplicateEntry(address token);
     /// @notice No entry's supply differs from the one in force within one step, so there is no batch to propose.
     error NothingToBatch();
+    /// @notice A supply batch is still live until `deadline`; execute or cancel it before proposing the next (SA-05).
+    error BatchStillLive(uint256 deadline);
 
     /// @notice Default mainnet components, from `MainnetAddresses`: the Stage A list, the floor list's Ethereum tokens
     ///         that pass the liquidity screen. Each carries a dated reference supply. WETH and WBTC count the whole
@@ -222,7 +224,7 @@ contract ConfigureWhitelist is Script {
         vm.startBroadcast();
         for (uint256 i = 0; i < list.length; ++i) {
             if (!_shouldList(factory, list[i], firstListings, relist)) continue;
-            factory.proposeListing(list[i].token, list[i].referenceSupply);
+            factory.proposeListing(list[i].token, listingSupply(factory, list[i]));
             console2.log("proposed a listing", list[i].token);
         }
         vm.stopBroadcast();
@@ -255,7 +257,8 @@ contract ConfigureWhitelist is Script {
         count = 0;
         for (uint256 i = 0; i < list.length; ++i) {
             if (!chosen[i]) continue;
-            calls[count] = abi.encodeCall(IIndexFactory.proposeListing, (list[i].token, list[i].referenceSupply));
+            calls[count] =
+                abi.encodeCall(IIndexFactory.proposeListing, (list[i].token, listingSupply(factory, list[i])));
             labels[count] = string.concat("proposeListing ", _symbolOf(list[i].token), " ", vm.toString(list[i].token));
             ++count;
         }
@@ -272,7 +275,7 @@ contract ConfigureWhitelist is Script {
             address token = list[i].token;
             uint256 eta = factory.listingEta(token);
             if (eta == 0) continue; // nothing is pending for this token
-            if (factory.pendingReferenceSupply(token) != list[i].referenceSupply) {
+            if (factory.pendingReferenceSupply(token) != listingSupply(factory, list[i])) {
                 console2.log("not executed, the pending supply differs from the entry", token);
             } else if (block.timestamp < eta) {
                 console2.log("not ready yet", token);
@@ -287,8 +290,8 @@ contract ConfigureWhitelist is Script {
     }
 
     /// @dev Whether `entry` gets a listing proposal: nothing pending for it, never listed and named in LIST or delisted
-    ///      and named in RELIST, inside the whitelist policy, and, for a relisting, within one step of the supply it
-    ///      carried. The reason is logged for everything skipped, and the factory would refuse each of those, which in
+    ///      and named in RELIST, not in the live batch, and inside the whitelist policy. A relisting proposes the supply
+    ///      in force, whatever the entry says (SA-02). The reason is logged for everything skipped, and the factory would refuse each of those, which in
     ///      a Safe batch takes every other proposal down with it (CR-I38).
     function _shouldList(
         IIndexFactory factory,
@@ -304,7 +307,7 @@ contract ConfigureWhitelist is Script {
         uint256 eta = factory.listingEta(token);
         if (eta != 0 && block.timestamp <= eta + factory.PROPOSAL_WINDOW()) {
             console2.log(
-                factory.pendingReferenceSupply(token) == entry.referenceSupply
+                factory.pendingReferenceSupply(token) == listingSupply(factory, entry)
                     ? "already pending"
                     : "skipped, a different listing is pending; cancel it first",
                 token
@@ -324,9 +327,21 @@ contract ConfigureWhitelist is Script {
             console2.log("skipped, the pending supply batch names it; relist it once the batch is gone", token);
             return false;
         }
-        if (!_followsPolicy(factory, token, entry.referenceSupply)) return false;
-        if (inForce != 0 && !_withinStep(factory, token, inForce, entry.referenceSupply)) return false;
+        if (!_followsPolicy(factory, token, listingSupply(factory, entry))) return false;
+        if (inForce != 0 && inForce != entry.referenceSupply) {
+            console2.log("relisted at the supply in force; supplies mode revises it once it is listed (SA-02)", token);
+        }
         return true;
+    }
+
+    /// @notice The supply a listing of `entry` proposes: the entry's for a first listing, and the one in force for a
+    ///         relisting, which the factory requires; a batch then revises it (SA-02).
+    /// @param factory The deployed factory.
+    /// @param entry The entry to list.
+    /// @return The supply to propose.
+    function listingSupply(IIndexFactory factory, Entry memory entry) public view returns (uint256) {
+        uint256 inForce = factory.referenceSupply(entry.token);
+        return inForce != 0 ? inForce : entry.referenceSupply;
     }
 
     /// @dev Whether the live supply batch names `token`, whose listing the factory refuses (TokenInBatch) until the batch
@@ -345,7 +360,8 @@ contract ConfigureWhitelist is Script {
     /// @notice The weekly batch: every entry whose token carries a supply that differs from the entry's, within one step
     ///         of it and inside the policy, sorted by address as the factory requires. Entries beyond one step are
     ///         skipped with the reason logged: a revision larger than the step goes in several weekly steps (CR-I38).
-    ///         Reverts NothingToBatch when no entry qualifies.
+    ///         Reverts NothingToBatch when no entry qualifies, and BatchStillLive while another batch is live, which the
+    ///         factory would refuse and whose supplies are about to replace the ones this batch is measured from.
     /// @param factory The deployed factory.
     /// @param list This week's entries.
     /// @return tokens The batch's tokens, ascending.
@@ -356,6 +372,11 @@ contract ConfigureWhitelist is Script {
         returns (address[] memory tokens, uint256[] memory supplies)
     {
         _requireUnique(list);
+        if (factory.suppliesPending()) {
+            // forge-lint: disable-next-line(unused-return) only the live batch's eta matters here
+            (, uint256 eta,,) = factory.pendingSupplies();
+            revert BatchStillLive(eta + factory.PROPOSAL_WINDOW());
+        }
         Entry[] memory sorted = _sorted(list);
         bool[] memory chosen = new bool[](sorted.length);
         uint256 count = 0;
@@ -588,7 +609,7 @@ contract ConfigureWhitelist is Script {
             if (report.inBatch) console2.log("  in the pending supply batch");
             report.eta = factory.listingEta(token);
             if (report.eta == 0) continue;
-            report.pendingMatches = factory.pendingReferenceSupply(token) == list[i].referenceSupply;
+            report.pendingMatches = factory.pendingReferenceSupply(token) == listingSupply(factory, list[i]);
             console2.log("  listing pending from %s until %s", report.eta, report.eta + window);
             if (!report.pendingMatches) console2.log("  its supply differs from the entry");
         }

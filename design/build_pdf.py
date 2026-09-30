@@ -678,9 +678,9 @@ S += numbered([
     "more and burned if a delivery proves forged; a missed window burns it and refunds the deliveries."])
 S += table([["Worst case, stated plainly", "Bound"],
             ["Per rebalance, to a lone executor who waits for the floor", "1 − λmin/λmax ≤ <b>0.995%</b>"],
-            ["Per day, weekly cadence", "≈ <b>0.14%</b>"],
+            ["Per day, weekly cadence (a cycle takes 9 days or more)", "≈ <b>0.11%</b>"],
             ["Per year, if every week's supplies moved the full step apart and no executor ever competed",
-             "≈ <b>41%</b> (monthly: ≈ 12%)"],
+             "≈ <b>33%</b> (monthly: ≈ 11%)"],
             ["Units per rebalance", "within 0.990× to 1.010×, plus one raw unit"]], [0.7, 0.3])
 S += callout("The band applies to the whole moving value, however small the trade.", "A 0.5% revision of a token "
              "weighing 1% trades about 0.005% of the index, yet a lone executor at the floor can take up to about 0.5%. "
@@ -756,7 +756,7 @@ S += table([["Failure", "Defense", "Worst case"],
             ["A chain's deposit proof broken: forged rebalance delivery", "Band-bounded legs; bond held 24h",
              "≤ 0.11% per rebalance, mostly covered by the 0.1% bond"],
             ["Lone executor at the auction's floor", "Competition; guardian cancel", "0.995% per rebalance; "
-                                                                                    "≈ 0.14%/day weekly"],
+                                                                                    "≈ 0.11%/day weekly"],
             ["A vault chain's validators corrupted", "Caps below the lower of the economic and the concentration cap",
              "Unprofitable by construction"],
             ["A vault-chain upgrade breaks the vault program", "Chains that keep programs working; tests against "

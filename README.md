@@ -276,7 +276,8 @@ at any time) or `refund` (anyone, after the deadline).
   gas, so disable the zap above about 35 components, keep routes to two or three hops, and refuse or reroute any zap
   call whose simulated gas exceeds about 14M. The in-kind path fits at 100 components (about 3.7M for `redeem`).
 - **Approvals.** USDC supports `permit`; USDT does not, and its `approve` reverts when it changes a non-zero allowance
-  to another non-zero value: if `allowance(user, zap)` is not 0, send `approve(zap, 0)` first. Index tokens support
+  to another non-zero value: if `allowance(user, zap)` is not 0, send `approve(zap, 0)` first. The same holds for
+  `MintRequests`: a filler who lost a race, or a requester whose request reverted, keeps a non-zero USDT allowance. Index tokens support
   `permit`. Approve exact amounts.
 - **Fee-charging currencies are unsupported.** Zap calls revert with `TransferShortfall`. Simulate every transaction
   first and offer the direct `redeem` or `redeemSkipping` exit.
@@ -355,15 +356,17 @@ supply is only the wrapped float. Each figure in `script/MainnetAddresses.sol` c
 the proposal expires. Until it executes, the owner or guardian can `cancelListing` it. A listed token cannot be proposed
 again (`AlreadyListed`): its supply changes only in a batch. Either role can `delist` a token at any time. Delisting
 affects only indexes created afterwards and keeps the reference supply, because existing indexes still rebalance with
-it; a batch can still revise it. Relisting takes a fresh proposal and delay, within one step of the supply the token
-carries (DA-18, CR-L03), and is refused while the live batch names the token (`TokenInBatch`). A first listing is
+it; a batch can still revise it. Relisting takes a fresh proposal and delay at exactly the supply the token carries
+(`RelistChangesSupply`, SA-02), and is refused while the live batch names the token (`TokenInBatch`). A first listing is
 bounded only by `MAX_SUPPLY` and by review.
 
-**Supply batches.** `proposeSupplies(tokens, supplies)`, owner only: 1 to `MAX_BATCH` (256) tokens in strictly
+**Supply batches.** `proposeSupplies(tokens, supplies)`, owner only: 1 to `MAX_BATCH` (200) tokens in strictly
 ascending address order, each already carrying a supply and none with a live listing, each new supply within
 `MAX_SUPPLY_STEP` of the one in force (`|new − old| ≤ ⌊old × 0.005⌋`). One batch is live at a time. It executes all or
 nothing, because a stranger who could execute half of a batch and start a rebalance on the half would turn a uniform
-revision, which trades nothing, into a trade.
+revision, which trades nothing, into a trade. A batch comes due `LISTING_DELAY` after its proposal and never sooner than
+`MIN_SUPPLY_INTERVAL` (7 days) after the last batch executed, so a supply moves at most half a percent a week, on chain
+and not only by policy (SA-04). `lastSupplyUpdate()` says when the last one executed.
 
 ## Stage A list: supplies and execution depth
 
@@ -397,9 +400,14 @@ least 0.1% of market cap). `ConfigureWhitelist.defaultMainnetList()` ships them 
   LINK's 0.5% and raising UNI's 0.3% gave a band of [0.995, 1.005] and a break-even of 0.99585 at real Uniswap quotes,
   and a fill at the floor cost the basket 0.085% (103,868.93 to 103,780.31 USDC for 1,000 index tokens). By the same
   formula, the opposite revision would put the break-even near the top, with most of the band within reach. Weekly, the
-  worst case is about 0.14% a day; if every week's batch moved supplies the full step apart and no executor ever
-  competed, about 41% a year (design section 6.6). The notice lets holders leave, the guardian can cancel a rebalance
+  worst case is about 0.11% a day, since a rebalance cycle takes at least 9 days; if every cycle's supplies moved the
+  full step apart and no executor ever competed, about 33% a year (design section 6.6). The notice lets holders leave, the guardian can cancel a rebalance
   nobody competes for, and competition settles near the break-even.
+- **A far-off component holds the others at the band's edge.** The clamp heals the extremes first: while one
+  component's units sit more than the band away from its supply, every other moving component settles at the opposite
+  bound, and their own revisions wait until the far one has converged. Nothing is taken beyond the band. Weekly steps
+  of half a percent against up to 1% of correction a cycle keep that rare; a keep mask held over several cycles is the
+  usual cause (SA-08).
 - **The band covers the whole moving value, however small the trade.** A 0.5% revision of a component weighing 1% of
   an index trades about 0.005% of the index, yet opens a 0.5% band over everything that moves, so a lone executor can
   take up to about 0.5%. A price-free scalar auction cannot tell a small trade from a large one. Whether a price-free
@@ -436,10 +444,26 @@ least 0.1% of market cap). `ConfigureWhitelist.defaultMainnetList()` ships them 
   permanently frozen component needs the keep mask at every rebalance.
 - **A request's surplus goes to the fastest filler.** A fill delivers what the filler sends and at least the
   requester's limit, so a generous limit is value left for fillers. The app suggests limits from its own valuation.
-- **An issuer can freeze a request.** If Circle or Tether blacklists a requester, a fill that pays them and a refund of
-  their stablecoin escrow both revert until the issuer lifts it; if one blacklists `MintRequests` itself, every open
-  escrow in that stablecoin waits with it. Tokens sent to `MintRequests` outside a request stay there, since it has no
-  owner to sweep them.
+- **Circle and Tether freeze differently, and `MintRequests` cannot tell.**
+  - Circle checks the sender, the recipient and the caller of every USDC transfer. A fill that pays a blacklisted
+    requester reverts, and so does a refund of their USDC escrow, until Circle lifts the blacklist.
+  - Tether checks only the sender of a `transfer` and only `from` of a `transferFrom`. A requester Tether has
+    blacklisted can still be filled and refunded, into a balance they cannot move and Tether can destroy. The app
+    should check `USDT.isBlackListed(requester)` before showing a USDT request to fillers, and warn the requester.
+  - If an issuer blacklists `MintRequests` itself, every open escrow in that stablecoin waits with it. A Circle
+    blacklist also stops fills of USDC redemptions, whose escrow is shares, although `cancel` still returns those.
+    Tether can go further and destroy the contract's USDT, leaving those requests open but unbacked for good. A new USDT
+    mint request first sends the contract nothing, which fails while it is blacklisted or USDT is paused, so no
+    deposit is taken into a contract that could not pay it out (SA-01).
+  - All escrows share one contract, so an issuer's only lever over funds parked there by someone it has since
+    sanctioned is to freeze everyone's. A sanctioned requester's USDC escrow can still leave through a fill by an
+    accomplice at a limit set before the sanction.
+  - A pause of USDC or USDT stops every fill, cancel and refund in that coin until it ends.
+  - Tokens sent to `MintRequests` outside a request stay there, since it has no owner to sweep them.
+- **A request is an option held by every filler until it closes.** If something changes what a share is worth to the
+  requester after they sign, for instance every component pausing, a filler can still deliver at the old limit, and a
+  cancel sent to the public mempool can be overtaken by a fill. The loss is bounded by the requester's own limit. The
+  app should default to short deadlines and send cancels through a private relay.
 - **No fees.** Audits, a bug bounty and watchers are paid from outside until the owner chooses a fee model.
 - **Airdrops, rewards and governance votes** that accrue to tokens held by an index cannot be claimed or used; by design
   there is no admin who could sweep them.
@@ -510,11 +534,12 @@ source .env
 forge script script/Deploy.s.sol --rpc-url mainnet --account deployer --sender <deployer address> --broadcast --verify
 ```
 
-`Deploy` deploys the factory, which deploys the `IndexHub` implementation, the zap and `MintRequests`. `OWNER` and `GUARDIAN` are
-required and must differ. On mainnet the owner must be a contract that is not an EIP-7702 delegated account, and a Safe
+`Deploy` deploys the factory, which deploys the `IndexHub` implementation, the zap and `MintRequests`. `OWNER` and
+`GUARDIAN` are required and must differ. On mainnet the owner must be a contract that is not an EIP-7702 delegated account, and a Safe
 must need at least two signatures and have no enabled module, because a module acts as the Safe without signatures
 (keep it that way after deployment; the script cannot see later changes). The guardian must not be the broadcasting
-key, which must hold no role, and neither role may be a market contract: the router and its PoolManager everywhere, and
+key, which must hold no role; when the owner is a Safe, neither the guardian nor the broadcasting key may be one of
+its signers, since the guardian is the owner's veto (SA-06); and neither role may be a market contract: the router and its PoolManager everywhere, and
 on chain 1 also every token and mint currency in `script/MainnetAddresses.sol` (CR-I37). `UNIVERSAL_ROUTER`, `USDC`
 and `USDT` default to mainnet's on chain 1, where any other value is rejected, and are required anywhere else; they are
 the script's only market addresses, because the hub and factory depend on no Uniswap contract.
@@ -551,18 +576,20 @@ names a token twice reverts `DuplicateEntry` in every mode (RT-24).
 
 - **Propose and safe** propose a listing for each entry that is not listed and has no live proposal, skipping with the
   reason logged: a token never listed unless `LIST` names it (`LIST=all` for every entry), a delisted token unless
-  `RELIST` names it, a relisting further than one step from the supply the token carries, a token the live supply
+  `RELIST` names it, a token the live supply
   batch names (the factory would refuse it with `TokenInBatch`, DA-20), and any entry outside the policy the script can
   check (a token with code and 6 to 18 decimals, no USDC or USDT, a supply from 1 to `MAX_SUPPLY`). Safe mode applies
   the same checks, because a Safe batch sends every proposal in one transaction and one the factory refuses takes the
   rest down with it (CR-I38). Nothing on chain records that the guardian cancelled a first listing, so leave `LIST`
   unset on a routine run and a cancelled listing stays cancelled until the operator names it again (RT-06). Each
   proposal is logged with the token's symbol (a symbol that is not an ABI string shows as `?`, RT-25) and its supply
-  in whole tokens, where a decimals slip shows: read both before signing.
+  in whole tokens, where a decimals slip shows: read both before signing. A relisting proposes the supply the token
+  carries, whatever the entry says, and the entry's figure goes in the next batch (SA-02).
 - **Supplies and supplies-safe** build the week's batch: every entry whose token carries a supply other than the
   entry's, sorted by address, skipping with the reason a token never listed, one with a live listing, one outside the
   policy, and one whose new supply is more than one step away (a larger revision goes in weekly steps). With nothing
-  to batch they revert `NothingToBatch`.
+  to batch they revert `NothingToBatch`, and while a batch is still live `BatchStillLive`, since the factory would
+  refuse a second one and this week's would be measured against supplies about to change (SA-05).
 - **Execute and execute-supplies** never propose. They run only a due proposal whose supply is exactly the entry's,
   and log why a pending one was left: not ready, expired, or a supply the entries do not name.
 - **Status** is read-only: for every entry, whether the token is listed, whether the supply in force is the entry's,
@@ -580,7 +607,7 @@ No bot runs Xindex, so these duties have owners and deadlines. Watch the events 
 
 | Duty | Starts with | Deadline | Who | How |
 |---|---|---|---|---|
-| Propose the weekly supply batch | the weekly review | none, but an index drifts from real supplies meanwhile | owner Safe | new dated figures in the entries, `LISTING_MODE=supplies-safe`; each supply within 0.5% of the one in force, larger moves in weekly steps |
+| Propose the weekly supply batch | the weekly review | none, but an index drifts from real supplies meanwhile | owner Safe | new dated figures in the entries, `LISTING_MODE=supplies-safe`; each supply within 0.5% of the one in force, larger moves in weekly steps; it comes due a week after the last batch executed at the earliest |
 | Veto a wrong batch or listing | `SuppliesProposed`, `ListingProposed` | before `eta` (2 days) | guardian or owner | check every figure against its source; `cancelSupplies()` or `cancelListing(token)` |
 | Execute a batch or listing | its `eta` | `eta + PROPOSAL_WINDOW`, or it expires silently | anyone, owner signers first | `LISTING_MODE=execute-supplies` or `execute` at the eta; `suppliesPending()` and `listingPending(token)` say whether it can still run |
 | Trigger the weekly rebalance | `lastRebalance + MIN_REBALANCE_INTERVAL`, after a batch changed a supply | none, but units drift from the supplies | anyone | `canStartRebalance()` and `previewBand(0)`, then `startRebalance(0)`; `BandTooNarrow` means there is nothing to rebalance |

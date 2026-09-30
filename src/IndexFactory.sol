@@ -38,7 +38,7 @@ import {IndexHub} from "./IndexHub.sol";
 ///      components out with `IndexHub.redeemSkipping`.
 contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
     uint256 public constant MAX_COMPONENTS = 100;
-    uint256 public constant MAX_BATCH = 256;
+    uint256 public constant MAX_BATCH = 200;
     uint256 public constant MAX_SUPPLY_STEP = 0.005e18;
     uint256 public constant MAX_SUPPLY = type(uint128).max;
     uint256 public constant MIN_RAW_UNITS = 10_000;
@@ -47,6 +47,7 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
     uint256 public constant LISTING_DELAY = 2 days;
     uint256 public constant GUARDIAN_DELAY = 7 days;
     uint256 public constant PROPOSAL_WINDOW = 7 days;
+    uint256 public constant MIN_SUPPLY_INTERVAL = 7 days;
     address public immutable IMPLEMENTATION;
 
     uint256 private constant WAD = 1e18;
@@ -67,6 +68,8 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
 
     /// @inheritdoc IIndexFactory
     uint256 public supplyBatchCount;
+    /// @inheritdoc IIndexFactory
+    uint256 public lastSupplyUpdate;
     uint256 private _batchEta;
     address[] private _batchTokens;
     uint256[] private _batchSupplies;
@@ -203,10 +206,13 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         if (pending != 0 && block.timestamp <= pending + PROPOSAL_WINDOW) revert ListingPending(token, pending);
         if (_batchOf[token] == supplyBatchCount && _batchLive()) revert TokenInBatch(token);
         _checkSupply(token, supply);
-        // A first listing has nothing to compare against. A relisting does: the indexes still holding the token
-        // follow its supply, so it moves no further than a batch could move it (DA-18, CR-L03).
+        // A first listing has nothing to compare against. A relisting keeps the supply in force: the indexes still
+        // holding the token follow it, and a relisting that moved it would be a second way to revise supplies, one
+        // token at a time and executable by anyone in any order, so a stranger could split a revision that moves every
+        // supply alike, and so trades nothing, into halves that each open a band (SA-02, extending DA-18 and CR-L03).
+        // A delisted token's supply is revised in a batch, like any other.
         uint256 inForce = referenceSupply[token];
-        if (inForce != 0) _checkStep(token, inForce, supply);
+        if (inForce != 0 && supply != inForce) revert RelistChangesSupply(token, inForce, supply);
 
         uint256 eta = block.timestamp + LISTING_DELAY;
         listingEta[token] = eta;
@@ -236,7 +242,9 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         uint256 supply = pendingReferenceSupply[token];
         delete listingEta[token];
         delete pendingReferenceSupply[token];
-        _setSupply(token, supply);
+        // Only a first listing sets a supply: a relisting carries the one in force, which nothing can change while it
+        // is pending, since a batch refuses a token with a live listing.
+        if (referenceSupply[token] == 0) _setSupply(token, supply);
 
         // A proposal is refused for a whitelisted token (AlreadyListed), and nothing whitelists a token but this
         // function, which clears the proposal, so the token is never already whitelisted here.
@@ -290,7 +298,11 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
             _batchOf[token] = id;
         }
 
+        // Weekly on chain, not only by policy: a batch comes due no sooner than MIN_SUPPLY_INTERVAL after the last one
+        // executed, so a supply moves at most MAX_SUPPLY_STEP a week, whoever holds the owner key (SA-04).
+        uint256 last = lastSupplyUpdate;
         uint256 eta = block.timestamp + LISTING_DELAY;
+        if (last != 0) eta = Math.max(eta, last + MIN_SUPPLY_INTERVAL);
         _batchEta = eta;
         _batchTokens = tokens;
         _batchSupplies = supplies;
@@ -313,6 +325,7 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
 
         // The batch was checked against the supplies in force when it was proposed, and nothing else can change those
         // while it is live: a listing is refused for a token in it, and it is refused for a token with a live listing.
+        lastSupplyUpdate = block.timestamp;
         uint256 n = _batchTokens.length;
         for (uint256 i = 0; i < n; ++i) {
             _setSupply(_batchTokens[i], _batchSupplies[i]);

@@ -25,6 +25,8 @@ interface IWbtcAdmin {
 interface IUsdtAdmin {
     function owner() external view returns (address);
     function setParams(uint256 newBasisPoints, uint256 newMaxFee) external;
+    function addBlackList(address user) external;
+    function removeBlackList(address user) external;
 }
 
 interface IWETH9 {
@@ -494,6 +496,50 @@ contract SecurityForkTest is Test {
         vm.stopPrank();
         assertGe(IERC20(A.USDT).balanceOf(requester), 999e6 + 400e6, "the limit arrived after the fee");
         assertEq(idx.balanceOf(user), 2e18, "the filler holds the shares it sold and got back");
+    }
+
+    /// @dev SA-01 against mainnet Tether. Tether checks only the sender of a transfer and `from` of a transferFrom,
+    ///      which is what the mock copies: a requester it has blacklisted is still paid by a fill, and a MintRequests it
+    ///      has blacklisted would still take a USDT deposit it could never pay out, so a mint request refuses one.
+    function test_SA01_realTetherFreezesAsTheMockDoes() public {
+        MintRequests requests = new MintRequests(address(factory), A.USDC, A.USDT);
+        IndexHub idx = _create(A.WBTC, A.WETH);
+        _issue(idx, 1e18);
+        address requester = makeAddr("requester");
+        address tether = IUsdtAdmin(A.USDT).owner();
+
+        vm.prank(user);
+        idx.transfer(requester, 1e18);
+        vm.startPrank(requester);
+        idx.approve(address(requests), 1e18);
+        uint256 id = requests.requestRedeem(address(idx), 1e18, A.USDT, 100e6, block.timestamp + 1 days);
+        vm.stopPrank();
+        vm.prank(tether);
+        IUsdtAdmin(A.USDT).addBlackList(requester);
+        deal(A.USDT, user, 100e6);
+        vm.startPrank(user);
+        IERC20(A.USDT).forceApprove(address(requests), 100e6);
+        requests.fill(id, 100e6);
+        vm.stopPrank();
+        assertEq(IERC20(A.USDT).balanceOf(requester), 100e6, "a blacklisted recipient is still paid");
+
+        vm.prank(tether);
+        IUsdtAdmin(A.USDT).addBlackList(address(requests));
+        deal(A.USDT, requester, 0);
+        address clean = makeAddr("clean");
+        deal(A.USDT, clean, 100e6);
+        vm.startPrank(clean);
+        IERC20(A.USDT).forceApprove(address(requests), 100e6);
+        vm.expectRevert(bytes("")); // Tether's `require` carries no message
+        requests.requestMint(address(idx), A.USDT, 100e6, 1e17, block.timestamp + 1 days);
+        vm.stopPrank();
+        assertEq(IERC20(A.USDT).balanceOf(clean), 100e6, "the deposit was refused, not trapped");
+
+        vm.prank(tether);
+        IUsdtAdmin(A.USDT).removeBlackList(address(requests));
+        vm.prank(clean);
+        requests.requestMint(address(idx), A.USDT, 100e6, 1e17, block.timestamp + 1 days);
+        assertEq(IERC20(A.USDT).balanceOf(address(requests)), 100e6);
     }
 
     /// @dev XA-07, CR-I36. The module check reads the page of modules that starts at the sentinel, and the offline mock

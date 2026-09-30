@@ -71,6 +71,9 @@ interface IIndexFactory is IXindexErrors {
     /// @notice {proposeListing} for a token that is whitelisted: its reference supply changes only through a supply
     ///         batch, so no revision can land outside one.
     error AlreadyListed(address token);
+    /// @notice A relisting proposed `proposed` for a token whose supply in force is `inForce`; a relisting keeps the
+    ///         supply in force, and a batch revises it (SA-02).
+    error RelistChangesSupply(address token, uint256 inForce, uint256 proposed);
     /// @notice A supply batch executable from `eta` is still pending or executable. Cancel it first; one that expired
     ///         can be replaced.
     error SuppliesPending(uint256 eta);
@@ -98,7 +101,8 @@ interface IIndexFactory is IXindexErrors {
     /// @notice Most components an index can have.
     function MAX_COMPONENTS() external view returns (uint256);
 
-    /// @notice Most tokens one supply batch can name.
+    /// @notice Most tokens one supply batch can name: 200, whose first proposal costs about 14.8M gas with every slot
+    ///         cold, so it fits EIP-7825's 2^24 cap with room for the Safe that sends it (SA-03).
     function MAX_BATCH() external view returns (uint256);
 
     /// @notice Largest move of a token's reference supply one relisting or batch can make, either way (1e18 = 100%),
@@ -174,6 +178,13 @@ interface IIndexFactory is IXindexErrors {
     ///         closes (DA-16).
     function listingPending(address token) external view returns (bool);
 
+    /// @notice Least time between two executed supply batches: 7 days. A batch proposed sooner comes due that long after
+    ///         the last one executed rather than LISTING_DELAY after its proposal (SA-04).
+    function MIN_SUPPLY_INTERVAL() external view returns (uint256);
+
+    /// @notice When the last supply batch was executed; 0 before the first.
+    function lastSupplyUpdate() external view returns (uint256);
+
     /// @notice Number of supply batches ever proposed, which is the last one's id.
     function supplyBatchCount() external view returns (uint256);
 
@@ -232,8 +243,8 @@ interface IIndexFactory is IXindexErrors {
         returns (address index);
 
     /// @notice Owner only. Starts the delay after which `token` is whitelisted with `referenceSupply`. A token that has
-    ///         carried a supply before, as a delisted one does, is relisted only within MAX_SUPPLY_STEP of it; a first
-    ///         listing is bounded only by MAX_SUPPLY. Reverts AlreadyListed for a whitelisted token, whose supply changes
+    ///         carried a supply before, as a delisted one does, is relisted only at that supply (RelistChangesSupply),
+    ///         which a batch then revises; a first listing is bounded only by MAX_SUPPLY. Reverts AlreadyListed for a whitelisted token, whose supply changes
     ///         only in a batch, and TokenInBatch while `token` is in the live supply batch. An expired proposal can be
     ///         proposed again.
     /// @param token Token to list; must have code.
@@ -251,7 +262,8 @@ interface IIndexFactory is IXindexErrors {
     ///         stays, and existing indexes are not affected.
     function delist(address token) external;
 
-    /// @notice Owner only. Proposes one batch of reference supplies, which executes all or nothing after LISTING_DELAY.
+    /// @notice Owner only. Proposes one batch of reference supplies, which executes all or nothing after LISTING_DELAY,
+    ///         and no sooner than MIN_SUPPLY_INTERVAL after the last batch executed.
     ///         `tokens` must be 1 to MAX_BATCH tokens in strictly ascending address order (InvalidBatch), each already
     ///         carrying a supply (NotConfigured) and none with a live listing proposal (ListingPending); each supply
     ///         from 1 to MAX_SUPPLY and within MAX_SUPPLY_STEP of the one in force. Only one batch can be live: an

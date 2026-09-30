@@ -70,6 +70,8 @@ market from `script/testnet/SetupTestMarket.s.sol`.
      prefix because M01, L03, L06, L08, I02, I03 and I09 to I12 are already v1 ids, so a CR test is named
      `test_CRM01_...`, `test_CRL03_...` or `test_CRI25_...`.
    - The red team of 2026-09-24: `RT-01`..`RT-25` (`audit/2026-09-24-red-team.md`), a test named `test_RT01_...`.
+   - The internal red team of Stage A on 2026-09-30: `SA-01`..`SA-15` (`audit/2026-09-30-stage-a-red-team.md`), a test
+     named `test_SA01_...`. SA-08 to SA-15 were fixed or recorded by documentation alone and have no test.
 
    Find a test by its id. Most v1 and R tests are in `test/Security.t.sol` and `test/fork/Security.fork.t.sol`. The R
    tests that drive the λ auction directly (R04, R08, R14, R17, R19, R22) are in `test/IndexHub.rebalance.t.sol`,
@@ -80,7 +82,7 @@ market from `script/testnet/SetupTestMarket.s.sol`.
      pinned CI toolchain and required fork RPC, and the dependency lock against `.gitmodules`. CI also compares the
      committed submodule commits, which needs git.
 
-   Every XA, LR, DA, VR, CR and RT test sits in the suite of what it checks, and in `test/Repo.t.sol` when what it
+   Every XA, LR, DA, VR, CR, RT and SA test sits in the suite of what it checks, and in `test/Repo.t.sol` when what it
    checks is a repository file.
 
    Some ids have no test of their own; each report's triage gives the evidence:
@@ -154,8 +156,10 @@ audit/                        review reports, their triages, and the two retirem
     it that way.
   - The owner's power over supplies is data, not custody. A batch moves each supply at most `MAX_SUPPLY_STEP` (0.5%),
     visibly, behind the delay and the guardian's `cancelSupplies`. Every change then passes through the λ band. A
-    hostile owner with a colluding lone executor therefore takes at most the band per rebalance: 0.995% of the moving
-    value a week, about 41% a year, and only if nobody ever competes and the guardian never cancels.
+    hostile owner with a colluding lone executor therefore takes at most the band per rebalance, 0.995% of the moving
+    value, and a rebalance comes at most every 9 days: about 33% a year, and only if nobody ever competes and the
+    guardian never cancels. The owner can also cancel rebalances as the guardian can, which adds nothing a hostile
+    owner could not do by no longer revising supplies.
   - `cancelRebalance` has no window and no rate limit. A hostile or compromised guardian can cancel each auction at its
     last second and hold rebalancing off while the units drift from the supplies. That stall is bounded by the owner
     replacing the guardian, which takes `GUARDIAN_DELAY` and which the guardian cannot cancel. It moves no funds, and
@@ -187,8 +191,9 @@ audit/                        review reports, their triages, and the two retirem
   - **Refusal.** A start reverts `BandTooNarrow` when `λmax < λmin · (1 + MIN_BAND)`, with `MIN_BAND` 0.1%. This
     covers nothing changed, every supply changed alike, and a single moving component (R19).
   - **Settlement.** λ falls linearly from `λmax` to `λmin` over the auction. The decrement rounds down, so λ rounds up,
-    towards the holders. New units are `⌈λ · units / r⌉`, and amounts are differences of floored backing. A settlement
-    that would send nothing out settles at `λmax`, so nobody is paid for an empty or dust index (R14, XA-27).
+    towards the holders. New units are `⌈λ · units / r⌉`, and each leg's change in backing is rounded the holders' way,
+    down when it leaves and up when it comes back (SA-07). A settlement that would send nothing out settles at `λmax`,
+    so nobody is paid for an empty or dust index (R14, XA-27).
   - **The bound.** At any prices, a fill leaves holders at least `λmin / λmax` of the moving value, at most 0.995%
     below it. The break-even `λ* = Σ u·p / Σ (u/r)·p` is a weighted average of the ratios, so it stays inside the
     band whatever prices do between start and fill (DA-05's successor). The factory's step per batch and the hub's
@@ -197,6 +202,10 @@ audit/                        review reports, their triages, and the two retirem
   - **Whole-moving-value exposure.** The bound applies to the whole moving value, not the traded value. A 0.5% revision
     of a 1% component trades 0.005% of the index but opens a 0.5% band. That is inherent to a price-free scalar
     auction, and the README states it among the known limitations.
+  - **Extremes first.** The clamp heals the extremes first: while one component's ratio sits more than the band away
+    from the rest, every other moving component is pinned at the opposite bound, and its own revision waits until the
+    far one has converged. It takes nothing beyond the band. With weekly steps of half a percent and a band of up to
+    1% per cycle, a component can stay ahead only if something else moved it, such as a keep mask (SA-08).
   - **Re-anchoring.** Every fill re-anchors the units to the supplies, so keep-mask skew and rounding drift heal rather
     than compound (`testFuzz_repeatedFillsConvergeToTheSupplies`).
   - **Leaving.** Holders who dislike a pending rebalance leave during the notice. Once the auction is live, an executor
@@ -216,12 +225,16 @@ audit/                        review reports, their triages, and the two retirem
     RT-01).
 - **Supplies are timelocked data, moved in steps.**
   - **Listing.** A listing sets a token's first reference supply, non-zero and at most `MAX_SUPPLY`
-    (`SupplyOutOfRange`). A relisting must stay within one step of the supply the token still carries (DA-18, CR-L03).
-    Delisting keeps the supply in force.
+    (`SupplyOutOfRange`). A relisting takes exactly the supply the token still carries (`RelistChangesSupply`), since
+    delisting keeps the supply in force: relistings execute one token at a time, so one that moved a supply would let a
+    stranger split a revision that moves every supply alike, and trades nothing, into halves that each open a band
+    (SA-02, extending DA-18 and CR-L03).
   - **Batches.** After listing, a supply changes only through a batch:
     - `proposeSupplies(tokens, supplies)`: owner only, one batch live at a time, tokens strictly ascending, at most
-      `MAX_BATCH` of them. Each token must carry a supply and have no live listing, and each new supply must stay
-      within `MAX_SUPPLY_STEP` of the one in force.
+      `MAX_BATCH` (200) of them, the most a first batch fits in a transaction with every slot cold (SA-03). Each token,
+      listed or delisted, must carry a supply and have no live listing, and each new supply must stay within
+      `MAX_SUPPLY_STEP` of the one in force. The batch comes due `LISTING_DELAY` later, and never sooner than
+      `MIN_SUPPLY_INTERVAL` (7 days) after the last batch executed (SA-04).
     - `executeSupplies`: anyone, within the window. It applies the whole batch or nothing.
     - `cancelSupplies`: the owner or the guardian.
   - **Exclusion.** A live listing and a live batch exclude each other (`ListingPending`, `TokenInBatch`), so nothing a
@@ -229,14 +242,16 @@ audit/                        review reports, their triages, and the two retirem
   - **Nothing live.** Nothing reads a token's own `totalSupply` or any balance to find its supply. Anything read live
     inside a start's transaction could be moved there, as wstETH's supply could with a free flash loan, or as an
     exclusion list's balances could (CR-M01, DA-10).
-  - **Pace.** Weekly batches of half a percent follow supply growth of up to about 30% a year.
+  - **Pace.** At most one executed batch a week, enforced on chain, so a supply moves at most half a percent a week
+    whoever holds the owner key; that follows supply growth of up to about 30% a year.
 - **Invariant:** for every component `i`,
   `token_i.balanceOf(index) >= floor(totalSupply * units_i / 1e18) + totalClaims[token_i]`. Rounding always goes the
   holders' way:
   - issue rounds up and redeem rounds down;
   - new units round up, so a settled basket is never worth less than the band allows (DA-01);
   - a claim is recorded only for an amount that stayed in the index;
-  - a rebalance moves exactly the change in required backing.
+  - a rebalance moves each leg's change in required backing, rounded down when it leaves and up when it comes back,
+    so an executor never collects rounding dust, even on a supply under one index token (SA-07).
 
   The rebalance post-check is the invariant with the new units, plus the whole of `amountsIn` on top of what the index
   held. So surplus from rounding or a donation stays with the holders instead of paying for part of a fill. The
@@ -377,6 +392,7 @@ audit/                        review reports, their triages, and the two retirem
   - `OWNER` and `GUARDIAN` are required.
   - On mainnet the owner must be a contract that is not an EIP-7702 delegated account. A Safe owner must need at least
     two signatures and have no enabled module.
+  - When the owner is a Safe, neither the guardian nor the broadcasting key may be one of its signers (SA-06).
   - Neither role may be a market contract: the router and its PoolManager, and on chain 1 every token and mint
     currency in `script/MainnetAddresses.sol` (CR-I37).
 - **Mainnet addresses** are verified on-chain before being committed: tokens by symbol and decimals, and the router and

@@ -9,6 +9,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
 import {IndexHub} from "../src/IndexHub.sol";
 import {IIndexHub} from "../src/interfaces/IIndexHub.sol";
+import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IRebalanceExecutor} from "../src/interfaces/IRebalanceExecutor.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {XindexTest} from "./XindexTest.sol";
@@ -1083,27 +1084,32 @@ contract IndexHubRebalanceTest is XindexTest {
         }
     }
 
-    /// @dev Holds one leg of a settlement to the change in its required backing, and says whether the floor of the
-    ///      change in units comes out differently, which is when holding it there shows anything.
-    function _assertLegIsTheChangeInBacking(uint256 supply, uint256 current, uint256 next, uint256 out, uint256 into)
+    /// @dev Holds one leg of a settlement to its change in backing rounded the holders' way, down when it leaves and up
+    ///      when it comes back, and says whether that rounding differs from the difference of the floored backings,
+    ///      which is when holding it there shows anything.
+    function _assertLegIsTheRoundedChange(uint256 supply, uint256 current, uint256 next, uint256 out, uint256 into)
         internal
         pure
         returns (bool roundingShows)
     {
         if (next < current) {
-            assertEq(out, supply * current / WAD - supply * next / WAD, "a shrinking leg sends the change in backing");
+            assertEq(out, Math.mulDiv(supply, current - next, WAD), "a shrinking leg sends its change, rounded down");
             assertEq(into, 0);
-            return supply * (current - next) / WAD != out;
+            return supply * current / WAD - supply * next / WAD != out;
         }
-        assertEq(into, supply * next / WAD - supply * current / WAD, "a growing leg asks for the change in backing");
+        assertEq(
+            into, Math.mulDiv(supply, next - current, WAD, Math.Rounding.Ceil), "a growing leg asks it, rounded up"
+        );
         assertEq(out, 0);
-        return supply * (next - current) / WAD != into;
+        return supply * next / WAD - supply * current / WAD != into;
     }
 
-    /// @dev RT-12. A settlement moves exactly the change in required backing on every leg: the floor of the new backing
-    ///      less the floor of the old, not the floor of the change in units. Here the units, the supply and λ all leave
-    ///      remainders, and each leg's surplus is compared across an honest fill.
-    function test_RT12_aFillMovesExactlyTheChangeInBackingWhenTheProductsHaveRemainders() public {
+    /// @dev RT-12 and SA-07. A settlement never takes the holders' rounding surplus: every leg moves its own change in
+    ///      backing rounded the holders' way, not the floor of the change in units nor the difference of the floored
+    ///      backings, which on a dust supply let a shrinking leg release a whole raw unit while no growing leg asked
+    ///      for one. Here the units, the supply and λ all leave remainders, and each leg's surplus is compared across
+    ///      an honest fill: it never falls, and grows by at most the one raw unit the rounding gives the holders.
+    function test_RT12_SA07_eachLegMovesItsChangeInBackingRoundedTheHoldersWay() public {
         address[] memory odd = new address[](5);
         for (uint256 i = 0; i < 5; ++i) {
             odd[i] = address(new MockERC20("O", "O", 18));
@@ -1117,11 +1123,12 @@ contract IndexHubRebalanceTest is XindexTest {
         uint256[] memory before = _units(idx);
 
         _revise(odd[0], factory.referenceSupply(odd[0]) + factory.referenceSupply(odd[0]) * STEP / WAD);
-        vm.warp(_start(idx) + 7 hours + 13 minutes); // a λ with a remainder
+        // A λ with a remainder, at which the rounding differs from the floored backings on both kinds of leg.
+        vm.warp(_start(idx) + 7 hours + 7 minutes);
         (, uint256[] memory next, uint256[] memory amountsOut, uint256[] memory amountsIn) = idx.previewRebalance();
         bool[2] memory shows; // whether the rounding shows on a shrinking leg, and on a growing one
         for (uint256 i = 0; i < 5; ++i) {
-            if (_assertLegIsTheChangeInBacking(supply, before[i], next[i], amountsOut[i], amountsIn[i])) {
+            if (_assertLegIsTheRoundedChange(supply, before[i], next[i], amountsOut[i], amountsIn[i])) {
                 shows[next[i] < before[i] ? 0 : 1] = true;
             }
         }
@@ -1131,7 +1138,8 @@ contract IndexHubRebalanceTest is XindexTest {
         assertEq(idx.rebalanceNonce(), 1, "the fill settled");
         uint256[] memory settled = _surpluses(idx);
         for (uint256 i = 0; i < 5; ++i) {
-            assertEq(settled[i], surplus[i], "the holders' rounding surplus did not move");
+            assertGe(settled[i], surplus[i], "the holders' rounding surplus never falls");
+            assertLe(settled[i], surplus[i] + 1, "and grows by at most the raw unit rounding gives them");
         }
     }
 
@@ -1205,6 +1213,80 @@ contract IndexHubRebalanceTest is XindexTest {
             assertLe(unitsAfter[i], type(uint96).max, "units still fit their slot");
             assertLe(unitsAfter[i] * WAD, unitsBefore[i] * (WAD + 2 * STEP) + WAD, "and moved within the band");
         }
+    }
+
+    /// @dev SA-07. On a supply under one index token a leg's change in backing is a fraction of a raw unit, and as a
+    ///      difference of floored backings a shrinking leg released its whole raw unit while the growing leg asked for
+    ///      nothing, so an executor that delivered nothing was paid four raw units. Each leg now rounds its own change
+    ///      the holders' way: nothing leaves, the settlement falls back to λmax, and the growing leg asks for its raw
+    ///      unit, which an empty executor cannot deliver.
+    function test_SA07_anEmptyExecutorIsPaidNothingOnASubTokenSupply() public {
+        IndexHub dust = IndexHub(factory.createIndex("Dust", "DUST", tokens, factory.MIN_RAW_UNITS() * K / SUPPLY));
+        _issue(dust, alice, 1e14); // one raw unit of each component
+        _bandFixture();
+        uint256 eta = _start(dust);
+        (,, uint256 lambdaMin, uint256 lambdaMax,) = dust.pendingRebalance();
+        assertLt(lambdaMin, lambdaMax);
+
+        vm.warp(eta + 2 hours);
+        (uint256 lambda, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn) =
+            dust.previewRebalance();
+        assertEq(lambda, lambdaMax, "nothing leaves, so the settlement is taken at the top");
+        for (uint256 i = 0; i < 5; ++i) {
+            assertEq(amountsOut[i], 0, "no leg releases a raw unit for a fraction of one");
+        }
+        assertGt(units[0], factory.MIN_RAW_UNITS(), "the first component grows");
+        assertEq(amountsIn[0], 1, "and asks for its raw unit, rounded up");
+
+        MockRebalanceExecutor empty = new MockRebalanceExecutor();
+        empty.setMode(MockRebalanceExecutor.Mode.Noop);
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.RebalanceUnderfunded.selector, tokens[0], 1, 2));
+        empty.execute(dust, "");
+        executor.execute(dust, "");
+        for (uint256 i = 0; i < 5; ++i) {
+            assertEq(MockERC20(tokens[i]).balanceOf(address(executor)), 0, "an honest executor is paid nothing either");
+        }
+        _assertBacked(dust);
+    }
+
+    /// @dev SA-02. A relisting once moved a supply by up to a step and executed one token at a time, so a stranger
+    ///      could split a revision that moves every supply alike, which trades nothing, into halves: execute one
+    ///      relisting, start a rebalance on the half, execute the other, and hand a lone executor the band twice. A
+    ///      relisting now takes the supply in force, and the revision goes in one batch, which delisted tokens join
+    ///      like any other and which comes into force whole: however the relistings are ordered around a start, there
+    ///      is nothing to trade.
+    function test_SA02_aUniformRevisionOfDelistedComponentsCannotBeSplit() public {
+        vm.startPrank(guardian);
+        factory.delist(tokens[0]);
+        factory.delist(tokens[1]);
+        vm.stopPrank();
+        uint256 raised = SUPPLY + SUPPLY * STEP / WAD;
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.RelistChangesSupply.selector, tokens[0], SUPPLY, raised));
+        factory.proposeListing(tokens[0], raised);
+
+        address[] memory sorted = _sortedTokens();
+        uint256[] memory supplies = new uint256[](sorted.length);
+        for (uint256 i = 0; i < sorted.length; ++i) {
+            supplies[i] = raised;
+        }
+        _revise(sorted, supplies);
+        assertEq(factory.referenceSupply(tokens[0]), raised, "the batch revised the delisted components too");
+        vm.startPrank(owner);
+        factory.proposeListing(tokens[0], raised);
+        factory.proposeListing(tokens[1], raised);
+        vm.stopPrank();
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
+
+        vm.startPrank(stranger);
+        factory.executeListing(tokens[0]);
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.BandTooNarrow.selector, WAD, WAD));
+        index.startRebalance(0);
+        factory.executeListing(tokens[1]);
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.BandTooNarrow.selector, WAD, WAD));
+        index.startRebalance(0);
+        vm.stopPrank();
     }
 
     // ---------------------------------------------------------------------

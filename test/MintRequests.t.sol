@@ -236,6 +236,24 @@ contract MintRequestsTest is XindexTest {
         requests.requestMint(address(index), address(usdt), 100e6, 1e18, block.timestamp + DAY);
     }
 
+    /// @dev Tether checks only the sender of a `transferFrom`, so a MintRequests it has blacklisted would still take a
+    ///      new USDT escrow that could then never leave: `cancel`, `refund` and every fill pay out with `transfer`,
+    ///      which Tether refuses from a blacklisted sender. A mint request first sends itself nothing, which fails
+    ///      exactly when the way out is shut, so the deposit is refused instead of trapped.
+    function test_SA01_aBlacklistedContractTakesNoNewUsdtEscrow() public {
+        usdt.addBlackList(address(requests));
+        _fund(alice, address(usdt), 100e6);
+        vm.prank(alice);
+        vm.expectRevert("USDT: blacklisted");
+        requests.requestMint(address(index), address(usdt), 100e6, 1e18, block.timestamp + DAY);
+        assertEq(usdt.balanceOf(address(requests)), 0, "nothing was taken");
+
+        usdt.removeBlackList(address(requests));
+        vm.prank(alice);
+        requests.requestMint(address(index), address(usdt), 100e6, 1e18, block.timestamp + DAY);
+        assertEq(usdt.balanceOf(address(requests)), 100e6, "and deposits resume once the way out is open");
+    }
+
     // ---------------------------------------------------------------------
     // fill
     // ---------------------------------------------------------------------

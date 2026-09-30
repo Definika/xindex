@@ -93,7 +93,7 @@ contract IndexFactoryTest is XindexTest {
         assertEq(fresh.MAX_COMPONENTS(), 100);
         // IndexHub stores keep and skip masks in 256 bits, one per component.
         assertLe(fresh.MAX_COMPONENTS(), 256);
-        assertEq(fresh.MAX_BATCH(), 256);
+        assertEq(fresh.MAX_BATCH(), 200);
         assertEq(fresh.MAX_SUPPLY_STEP(), 0.005e18);
         assertEq(fresh.MAX_SUPPLY(), type(uint128).max);
         assertEq(fresh.MIN_RAW_UNITS(), 10_000);
@@ -564,25 +564,38 @@ contract IndexFactoryTest is XindexTest {
     /// @dev DA-18 and CR-L03, re-targeted: a relisting is bounded by the step from the supply the token carried, since
     ///      the indexes still holding it follow that supply; a first listing has nothing to compare against. A
     ///      whitelisted token cannot take a listing at all, so no path around a batch moves a supply.
-    function test_DA18_CRL03_aRelistingMovesTheSupplyAtMostOneStep() public {
+    /// @dev DA-18, CR-L03 and SA-02: a relisting cannot move a supply at all, not even by the step a batch may take,
+    ///      since relistings execute one token at a time and a stranger could order two of them around a start. The
+    ///      supply in force is the only one a relisting takes, and it comes back unchanged and unannounced.
+    function test_DA18_CRL03_SA02_aRelistingKeepsTheSupplyInForce() public {
         vm.prank(owner);
         factory.delist(address(a));
         uint256 step = _step(A_SUPPLY);
 
         vm.startPrank(owner);
         vm.expectRevert(
-            abi.encodeWithSelector(IIndexFactory.SupplyStepTooLarge.selector, address(a), A_SUPPLY, A_SUPPLY * 10)
+            abi.encodeWithSelector(IIndexFactory.RelistChangesSupply.selector, address(a), A_SUPPLY, A_SUPPLY * 10)
         );
         factory.proposeListing(address(a), A_SUPPLY * 10); // the decimals slip an order of magnitude would be
         vm.expectRevert(
-            abi.encodeWithSelector(IIndexFactory.SupplyStepTooLarge.selector, address(a), A_SUPPLY, A_SUPPLY + step + 1)
+            abi.encodeWithSelector(IIndexFactory.RelistChangesSupply.selector, address(a), A_SUPPLY, A_SUPPLY + step)
         );
-        factory.proposeListing(address(a), A_SUPPLY + step + 1);
         factory.proposeListing(address(a), A_SUPPLY + step);
+        vm.expectRevert(
+            abi.encodeWithSelector(IIndexFactory.RelistChangesSupply.selector, address(a), A_SUPPLY, A_SUPPLY - 1)
+        );
+        factory.proposeListing(address(a), A_SUPPLY - 1);
+        factory.proposeListing(address(a), A_SUPPLY);
         vm.stopPrank();
         vm.warp(block.timestamp + factory.LISTING_DELAY());
+        vm.recordLogs();
         factory.executeListing(address(a));
-        assertEq(factory.referenceSupply(address(a)), A_SUPPLY + step);
+        assertEq(factory.referenceSupply(address(a)), A_SUPPLY);
+        assertTrue(factory.isWhitelisted(address(a)));
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i = 0; i < logs.length; ++i) {
+            assertTrue(logs[i].topics[0] != IIndexFactory.ReferenceSupplySet.selector, "nothing changed to announce");
+        }
 
         // A first listing takes any supply in range.
         vm.prank(owner);
@@ -927,6 +940,76 @@ contract IndexFactoryTest is XindexTest {
     /// @dev An index of MAX_COMPONENTS is created inside one transaction under EIP-7825's 2^24 cap, with the factory
     ///      and every token cooled so the call pays the cold reads a transaction of its own would, and 100,000 gas left
     ///      for the transaction's base cost and calldata.
+    /// @dev SA-04. Weekly supply updates were policy only: a new batch could be proposed the moment the last one
+    ///      executed and come due two days later, so a supply could move a step every two days. A batch now comes due no
+    ///      sooner than MIN_SUPPLY_INTERVAL after the last one executed, so a supply moves at most a step a week.
+    function test_SA04_batchesComeDueAtMostWeekly() public {
+        assertEq(factory.MIN_SUPPLY_INTERVAL(), 7 days);
+        assertEq(factory.lastSupplyUpdate(), 0);
+        (address[] memory t, uint256[] memory s) = _batch(A_SUPPLY + _step(A_SUPPLY), B_SUPPLY);
+        vm.prank(owner);
+        factory.proposeSupplies(t, s);
+        (, uint256 eta,,) = factory.pendingSupplies();
+        assertEq(eta, block.timestamp + factory.LISTING_DELAY(), "the first batch waits only the delay");
+        vm.warp(eta);
+        factory.executeSupplies();
+        uint256 last = block.timestamp;
+        assertEq(factory.lastSupplyUpdate(), last);
+
+        uint256 inForce = factory.referenceSupply(address(a));
+        (t, s) = _batch(inForce + _step(inForce), B_SUPPLY);
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit IIndexFactory.SuppliesProposed(2, last + 7 days, t, s);
+        vm.prank(owner);
+        factory.proposeSupplies(t, s);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.SuppliesNotReady.selector, last + 7 days));
+        factory.executeSupplies();
+        vm.warp(last + 7 days);
+        factory.executeSupplies();
+        assertEq(factory.referenceSupply(address(a)), inForce + _step(inForce), "a step a week");
+
+        // Once the interval has passed, a batch again waits only the delay.
+        vm.warp(block.timestamp + 10 days);
+        inForce = factory.referenceSupply(address(a));
+        (t, s) = _batch(inForce - _step(inForce), B_SUPPLY);
+        vm.prank(owner);
+        factory.proposeSupplies(t, s);
+        (, eta,,) = factory.pendingSupplies();
+        assertEq(eta, block.timestamp + factory.LISTING_DELAY());
+    }
+
+    /// @dev SA-03. A batch of MAX_BATCH tokens none of which was ever batched, which writes every slot from zero, is
+    ///      proposed and executed each inside one transaction under EIP-7825's 2^24 cap, with the factory cooled so the
+    ///      call pays the cold reads a transaction of its own would, and 1.5M gas left for the Safe and the calldata. At
+    ///      256 the proposal alone took about 18.9M.
+    function test_SA03_aFullBatchFitsOneTransactionCold() public {
+        uint256 n = factory.MAX_BATCH();
+        address[] memory t = _listed(n);
+        for (uint256 i = 1; i < n; ++i) {
+            for (uint256 j = i; j > 0 && t[j - 1] > t[j]; --j) {
+                (t[j - 1], t[j]) = (t[j], t[j - 1]);
+            }
+        }
+        uint256[] memory s = new uint256[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            s[i] = factory.referenceSupply(t[i]) + _step(factory.referenceSupply(t[i]));
+        }
+        vm.cool(address(factory));
+        uint256 before = gasleft();
+        vm.prank(owner);
+        factory.proposeSupplies(t, s);
+        uint256 used = before - gasleft();
+        assertLe(used + 1_500_000, 2 ** 24, "a full first batch is proposed in one transaction");
+
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        vm.cool(address(factory));
+        before = gasleft();
+        factory.executeSupplies();
+        assertLe(before - gasleft() + 1_500_000, 2 ** 24, "and executed in one");
+        assertEq(factory.referenceSupply(t[n - 1]), s[n - 1]);
+    }
+
     function test_createIndex_maxComponentsOk() public {
         address[] memory t = _listed(factory.MAX_COMPONENTS());
         vm.cool(address(factory));

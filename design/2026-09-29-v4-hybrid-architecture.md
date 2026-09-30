@@ -419,8 +419,8 @@ moving value. Rounding units up only adds to that.
 | Quantity | Bound |
 |---|---|
 | Loss per rebalance to a lone executor who waits for the floor | `1 − λmin/λmax ≤ 1 − (1 − STEP)/(1 + STEP)` = **0.995%** |
-| Per day, weekly cadence | ≈ **0.14%** |
-| Per year, if every week's supplies moved the full step apart and no executor ever competed | ≈ **41%** (monthly: ≈ 12%) |
+| Per day, weekly cadence (a cycle takes at least 9 days: 7 between fills, 2 of notice) | ≈ **0.11%** |
+| Per year, if every cycle's supplies moved the full step apart and no executor ever competed | ≈ **33%** (monthly: ≈ 11%) |
 | Units per rebalance | `u'/u` within [0.990, 1.010], plus one raw unit of rounding |
 
 Competition between executors settles near λ*; the last two rows describe an auction nobody but one executor
@@ -599,7 +599,7 @@ that is why the daily limits are 4% and not 5% and 10%, which would give 0.56% a
 | A chain's deposit proof broken: forged deposit | A mint needs every token and Tier 1 is checked in real balances, so the forger pays for the rest of the basket and gains only the forged chains' weight; any honest proof of the same vault and height contradicts it; 24h lock; mint cap | Caught in the lock: **0**. Undetected (double failure: the proof and every watcher for 24 hours): one chain 4.4% × 4% ≈ **0.18% per day**; every chain on one proving stack 11.2% × 4% ≈ **0.45% per day** |
 | A chain's deposit proof broken: forged rebalance delivery | Bought legs are bounded by the band; bond held 24h and burned on proven shortfall | ≤ 1.0% × 11.2% ≈ **0.11% per rebalance**, most of it covered by the 0.1% bond |
 | Sync-committee fallback (only if adopted, 4.4): the committee signs a false header | Challenge delay, lower caps | Challenged in the delay: **0**. Unchallenged: **0.45% per day** (a single failure) |
-| Lone executor at the auction's floor | Competition; guardian cancel | **0.995% per rebalance**, ≈ 0.14% per day at the weekly cadence (6.6) |
+| Lone executor at the auction's floor | Competition; guardian cancel | **0.995% per rebalance**, ≈ 0.11% per day at the weekly cadence (6.6) |
 | A vault chain's validators corrupted | Quantity caps below the lower of the economic and the concentration cap (8.2) | Unprofitable by construction; concentration capped separately |
 | A vault-chain upgrade breaks its state verifier | Fork-aware verifiers rotated ahead through the listing timelock; fail closed (6.10) | Delay of mints on that chain |
 | A vault-chain upgrade breaks the vault program | Chains that keep deployed programs working; long-stable features; tests against release candidates (6.10) | That chain's weight frozen until the chain restores compatibility: at most **4.4%** (BNB) |

@@ -45,6 +45,10 @@ contract Deploy is Script {
     error GuardianRequired();
     /// @notice The guardian is the key broadcasting the deployment.
     error GuardianIsBroadcaster(address guardian);
+    /// @notice The guardian signs for the owner Safe, so one key would both act as the owner and hold its veto (SA-06).
+    error GuardianSignsForOwner(address guardian);
+    /// @notice The key broadcasting the deployment signs for the owner Safe (SA-06).
+    error BroadcasterSignsForOwner(address broadcaster);
     /// @notice The owner or guardian is one of the market contracts.
     error RoleIsMarketContract(address account);
     /// @notice On mainnet, the market address `name` was set to `given` instead of the default.
@@ -173,12 +177,24 @@ contract Deploy is Script {
     }
 
     /// @notice Requires a guardian that is set, is not Foundry's default sender, is not the owner, and is not the key
-    ///         broadcasting the deployment (the script's msg.sender), which must hold no role in the factory.
+    ///         broadcasting the deployment (the script's msg.sender), which must hold no role in the factory. When the
+    ///         owner is a Safe, neither the guardian nor the broadcasting key may be one of its signers: the guardian is
+    ///         the owner's veto, and a key that signs for both weakens both (SA-06).
     /// @param owner The intended factory owner.
     /// @param guardian The intended guardian.
     function checkGuardian(address owner, address guardian) public view {
         if (guardian == address(0) || guardian == DEFAULT_SENDER || guardian == owner) revert GuardianRequired();
         if (guardian == msg.sender) revert GuardianIsBroadcaster(guardian);
+        // A static call, as for the threshold: an owner that is a key or a contract other than a Safe answers nothing.
+        // forge-lint: disable-next-line(low-level-calls)
+        (bool ok, bytes memory data) = owner.staticcall(abi.encodeCall(ISafeThreshold.getOwners, ()));
+        // A well-formed answer holds at least the array offset and its length.
+        if (!ok || data.length < 64) return;
+        address[] memory signers = abi.decode(data, (address[]));
+        for (uint256 i = 0; i < signers.length; ++i) {
+            if (signers[i] == guardian) revert GuardianSignsForOwner(guardian);
+            if (signers[i] == msg.sender) revert BroadcasterSignsForOwner(msg.sender);
+        }
     }
 
     /// @notice Rejects an owner or guardian that is one of the market contracts, such as one pasted as OWNER. None of

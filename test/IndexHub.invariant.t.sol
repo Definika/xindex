@@ -151,7 +151,9 @@ contract IndexHandler is Test {
         }
         vm.prank(factory.owner());
         factory.proposeSupplies(sorted, supplies);
-        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        // The batch comes due LISTING_DELAY away, or a week after the last one when that is later (SA-04).
+        (, uint256 eta,,) = factory.pendingSupplies();
+        vm.warp(eta);
         factory.executeSupplies();
         ++ghostBatches;
     }

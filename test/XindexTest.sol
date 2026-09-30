@@ -19,11 +19,13 @@ abstract contract XindexTest is Test {
         factory.executeListing(token);
     }
 
-    /// @dev Puts `supplies` in force for `tokens` (ascending) through a supply batch and its delay.
+    /// @dev Puts `supplies` in force for `tokens` (ascending) through a supply batch, warping to its eta: LISTING_DELAY
+    ///      away, or MIN_SUPPLY_INTERVAL after the last batch when that is later.
     function _revise(address[] memory tokens, uint256[] memory supplies) internal {
         vm.prank(owner);
         factory.proposeSupplies(tokens, supplies);
-        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        (, uint256 eta,,) = factory.pendingSupplies();
+        vm.warp(eta);
         factory.executeSupplies();
     }
 

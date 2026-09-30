@@ -55,8 +55,9 @@ contract IndexHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, Re
     uint256 public constant MIN_REBALANCE_INTERVAL = 7 days;
     uint256 public constant AUCTION_DURATION = 24 hours;
     uint256 public constant MAX_SUPPLY_STEP = 0.005e18;
-    /// @dev Twice the widest rounding gap between two freshly anchored components held at 10,000 raw units, and a tenth
-    ///      of the widest band, so a band this narrow means units already follow supplies to within rounding.
+    /// @dev A tenth of the widest band, and ten times the widest rounding gap between two freshly anchored components
+    ///      held at 10,000 raw units (one raw unit in 10,000), so a band this narrow means units already follow supplies
+    ///      to within rounding.
     uint256 public constant MIN_BAND = 0.001e18;
     address public immutable FACTORY;
 
@@ -389,9 +390,9 @@ contract IndexHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, Re
     }
 
     /// @dev Settlement for the current block at the current λ. Every moving component's units become
-    ///      ceil(λ · u / r); a kept one keeps its units. Amounts are the change in required backing, so they depend only
-    ///      on supply and units: the index never sends out rounding dust or donations, and the executor has to deliver
-    ///      every amount in full. A settlement that would send nothing out, as on an empty index or one so small that
+    ///      ceil(λ · u / r); a kept one keeps its units. Amounts are each leg's change in required backing, rounded
+    ///      down when it leaves and up when it must come back, so they depend only on supply and units: the index never
+    ///      sends out rounding dust or donations, and the executor has to deliver every amount in full (SA-07). A settlement that would send nothing out, as on an empty index or one so small that
     ///      every shrinking leg rounds to zero, is taken at λmax instead, so the units never depend on timing when
     ///      nothing is paid for: at λmax nothing shrinks, since no ratio exceeds it.
     function _previewRebalance(uint256 supply)
@@ -433,13 +434,18 @@ contract IndexHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, Re
             }
             uint256 next = Math.mulDiv(lambda, current, _ratios[i], Math.Rounding.Ceil);
             units[i] = next;
-            uint256 before = _backing(supply, current, Math.Rounding.Floor);
-            uint256 later = _backing(supply, next, Math.Rounding.Floor);
-            if (later < before) {
-                amountsOut[i] = before - later;
-                sells = true;
+            // Each leg's change is rounded the holders' way on its own: what leaves rounds down, what must come back
+            // rounds up. As a difference of floored backings, a shrinking leg could release a whole raw unit for a
+            // sub-unit change while every growing leg's floor stayed put, which paid an executor that delivered nothing
+            // on a supply under one index token (SA-07). The invariant still holds after the fill, since
+            // floor(a + b) <= floor(a) + ceil(b) for a growing leg and floor(a - b) <= floor(a) - floor(b) for a
+            // shrinking one.
+            if (next < current) {
+                uint256 out = _backing(supply, current - next, Math.Rounding.Floor);
+                amountsOut[i] = out;
+                if (out != 0) sells = true;
             } else {
-                amountsIn[i] = later - before;
+                amountsIn[i] = _backing(supply, next - current, Math.Rounding.Ceil);
             }
         }
     }
