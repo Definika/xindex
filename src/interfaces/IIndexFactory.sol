@@ -17,7 +17,7 @@ interface IIndexFactory is IXindexErrors {
     /// @notice Listing `token` with `referenceSupply` was proposed. It can be executed from `eta` until
     ///         `eta + PROPOSAL_WINDOW`.
     event ListingProposed(address indexed token, uint256 eta, uint256 referenceSupply);
-    /// @notice The pending listing of `token` was cancelled, or dropped because {delist} removed the token.
+    /// @notice The pending listing of `token` was cancelled.
     event ListingCancelled(address indexed token);
     /// @notice `token`'s reference supply changed from `previous` (zero before a first listing) to `referenceSupply`.
     event ReferenceSupplySet(address indexed token, uint256 previous, uint256 referenceSupply);

@@ -135,6 +135,29 @@ contract MocksTest is Test {
         assertEq(usdt.balanceOf(alice), 5e6);
     }
 
+    /// @dev The fee switch as on mainnet: the sender pays the value, the recipient gets it less the fee, the owner
+    ///      gets the fee, and the fee is capped at `maximumFee` whole tokens. Only the deployer can switch it.
+    function test_usdt_feeSwitch() public {
+        usdt.mint(alice, 100_000e6);
+        vm.prank(alice);
+        vm.expectRevert("USDT: owner");
+        usdt.setParams(10, 5);
+
+        usdt.setParams(10, 5); // 0.10%, at most 5 USDT
+        assertEq(usdt.owner(), address(this));
+        vm.prank(alice);
+        usdt.transfer(bob, 1_000e6);
+        assertEq(usdt.balanceOf(alice), 99_000e6, "the sender pays the value");
+        assertEq(usdt.balanceOf(bob), 999e6, "the recipient gets it less 0.10%");
+        assertEq(usdt.balanceOf(address(this)), 1e6, "and the owner the fee");
+
+        vm.prank(alice);
+        usdt.transfer(bob, 10_000e6);
+        assertEq(usdt.balanceOf(bob), 999e6 + 9_995e6, "a fee above the cap is capped at 5 USDT");
+        assertEq(usdt.maximumFee(), 5e6);
+        assertEq(usdt.basisPointsRate(), 10);
+    }
+
     function test_usdt_approveFromNonZeroReverts() public {
         vm.startPrank(alice);
         usdt.approve(bob, 1);

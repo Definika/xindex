@@ -8,6 +8,7 @@ import {ConfigureWhitelist} from "../script/ConfigureWhitelist.s.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
 import {IndexHub} from "../src/IndexHub.sol";
 import {IndexZap} from "../src/IndexZap.sol";
+import {MintRequests} from "../src/MintRequests.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {SetupTestMarket} from "../script/testnet/SetupTestMarket.s.sol";
 import {FaucetToken} from "../script/testnet/FaucetToken.sol";
@@ -19,6 +20,7 @@ import {MockPositionManager} from "./mocks/MockPositionManager.sol";
 import {MockUniversalRouter} from "./mocks/MockUniversalRouter.sol";
 import {MockUniswapV3Factory, MockUniswapV3Pool} from "./mocks/MockUniswapV3.sol";
 import {MockWETH} from "./mocks/MockWETH.sol";
+import {MockUSDT} from "./mocks/MockUSDT.sol";
 
 /// @notice Stand-in for a Safe: the deploy script only reads its signature threshold and its module list.
 contract MockSafe {
@@ -150,6 +152,8 @@ contract ScriptsTest is Test {
     ConfigureWhitelist configure;
     SetupTestMarket testMarket;
     MockUniversalRouter router;
+    address usdc;
+    address usdt;
     address owner = makeAddr("owner");
     address guardian = makeAddr("guardian");
 
@@ -161,6 +165,8 @@ contract ScriptsTest is Test {
         configure = new ConfigureWhitelist();
         testMarket = new SetupTestMarket();
         router = new MockUniversalRouter(makeAddr("poolManager"));
+        usdc = address(new MockERC20("USD Coin", "USDC", 6));
+        usdt = address(new MockUSDT());
     }
 
     function _factory(address owner_, address guardian_) internal returns (IndexFactory) {
@@ -307,9 +313,9 @@ contract ScriptsTest is Test {
         vm.expectRevert(abi.encodeWithSelector(Deploy.RoleIsMarketContract.selector, address(router)));
         deployer.checkRolesAreNotMarket(owner, address(router), address(router));
         vm.expectRevert(abi.encodeWithSelector(Deploy.RoleIsMarketContract.selector, address(router)));
-        deployer.deploy(address(router), guardian, address(router)); // the router pasted as OWNER
+        deployer.deploy(address(router), guardian, address(router), usdc, usdt); // the router pasted as OWNER
         vm.expectRevert(abi.encodeWithSelector(Deploy.RoleIsMarketContract.selector, address(router)));
-        deployer.deploy(owner, address(router), address(router));
+        deployer.deploy(owner, address(router), address(router), usdc, usdt);
     }
 
     function test_XA47_mainnetMarketCannotBeOverridden() public {
@@ -324,61 +330,93 @@ contract ScriptsTest is Test {
     }
 
     function test_deploy() public {
-        (IndexFactory factory, IndexZap zap) = deployer.deploy(owner, guardian, address(router));
+        (IndexFactory factory, IndexZap zap, MintRequests requests) =
+            deployer.deploy(owner, guardian, address(router), usdc, usdt);
         assertEq(factory.owner(), owner);
         assertEq(factory.guardian(), guardian);
         assertEq(address(zap.FACTORY()), address(factory));
         assertEq(address(zap.ROUTER()), address(router));
         assertEq(IndexHub(factory.IMPLEMENTATION()).FACTORY(), address(factory));
+        assertEq(requests.FACTORY(), address(factory));
+        assertEq(requests.USDC(), usdc);
+        assertEq(requests.USDT(), usdt);
     }
 
     function test_deployRun_readsEnvironment() public {
         vm.setEnv("OWNER", vm.toString(owner));
         vm.setEnv("GUARDIAN", vm.toString(guardian));
         vm.setEnv("UNIVERSAL_ROUTER", vm.toString(address(router)));
-        (IndexFactory factory, IndexZap zap) = deployer.run();
+        vm.setEnv("USDC", vm.toString(usdc));
+        vm.setEnv("USDT", vm.toString(usdt));
+        (IndexFactory factory, IndexZap zap, MintRequests requests) = deployer.run();
         assertEq(factory.owner(), owner);
         assertEq(factory.guardian(), guardian);
         assertEq(address(zap.ROUTER()), address(router));
+        assertEq(requests.USDC(), usdc);
+        assertEq(requests.USDT(), usdt);
+    }
+
+    /// @dev The stablecoins MintRequests escrows resolve like the router: required off mainnet, mainnet's own on chain
+    ///      1 and nothing else there, and never an address without code.
+    function test_resolveStable() public {
+        assertEq(deployer.resolveStable("USDC", usdc, MainnetAddresses.USDC), usdc);
+        vm.expectRevert(abi.encodeWithSelector(Deploy.AddressRequired.selector, "USDT"));
+        deployer.resolveStable("USDT", address(0), MainnetAddresses.USDT);
+        vm.expectRevert(abi.encodeWithSelector(Deploy.AddressHasNoCode.selector, "USDC", owner));
+        deployer.resolveStable("USDC", owner, MainnetAddresses.USDC);
+
+        vm.chainId(1);
+        vm.etch(MainnetAddresses.USDT, hex"00");
+        assertEq(deployer.resolveStable("USDT", address(0), MainnetAddresses.USDT), MainnetAddresses.USDT);
+        vm.expectRevert(abi.encodeWithSelector(Deploy.MainnetOverride.selector, "USDT", usdt));
+        deployer.resolveStable("USDT", usdt, MainnetAddresses.USDT);
     }
 
     /// @dev XA-38: the release record freezes what was deployed, and the check proves a deployment is one build.
     function test_XA38_checkDeploymentFreezesTheCodeHashes() public {
         address safeOwner = address(new MockSafe(2));
-        (IndexFactory factory, IndexZap zap) = deployer.deploy(safeOwner, guardian, address(router));
+        (IndexFactory factory, IndexZap zap, MintRequests requests) =
+            deployer.deploy(safeOwner, guardian, address(router), usdc, usdt);
 
-        bytes32[3] memory codehashes = deployer.checkDeployment(factory, zap);
+        bytes32[4] memory codehashes = deployer.checkDeployment(factory, zap, requests);
         assertEq(codehashes[0], keccak256(address(factory).code));
         assertEq(codehashes[1], keccak256(factory.IMPLEMENTATION().code));
         assertEq(codehashes[2], keccak256(address(zap).code));
+        assertEq(codehashes[3], keccak256(address(requests).code));
 
-        (IndexFactory other,) = deployer.deploy(safeOwner, guardian, address(router));
+        (IndexFactory other, IndexZap otherZap,) = deployer.deploy(safeOwner, guardian, address(router), usdc, usdt);
         vm.expectRevert(
             abi.encodeWithSelector(Deploy.WrongWiring.selector, "IndexZap.FACTORY", address(other), address(factory))
         );
-        deployer.checkDeployment(other, zap);
+        deployer.checkDeployment(other, zap, requests);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Deploy.WrongWiring.selector, "MintRequests.FACTORY", address(other), address(factory)
+            )
+        );
+        deployer.checkDeployment(other, otherZap, requests);
     }
 
     /// @dev CR-I36. `deploy` itself runs every owner and guardian gate.
     function test_CRI36_deployItselfRefusesABadOwnerOrGuardian() public {
         vm.expectRevert(Deploy.OwnerRequired.selector);
-        deployer.deploy(address(0), guardian, address(router));
+        deployer.deploy(address(0), guardian, address(router), usdc, usdt);
         vm.expectRevert(Deploy.OwnerRequired.selector);
-        deployer.deploy(DEFAULT_SENDER, guardian, address(router));
+        deployer.deploy(DEFAULT_SENDER, guardian, address(router), usdc, usdt);
         vm.expectRevert(Deploy.GuardianRequired.selector);
-        deployer.deploy(owner, owner, address(router));
+        deployer.deploy(owner, owner, address(router), usdc, usdt);
         vm.expectRevert(Deploy.GuardianRequired.selector);
-        deployer.deploy(owner, address(0), address(router));
+        deployer.deploy(owner, address(0), address(router), usdc, usdt);
         vm.prank(guardian);
         vm.expectRevert(abi.encodeWithSelector(Deploy.GuardianIsBroadcaster.selector, guardian));
-        deployer.deploy(owner, guardian, address(router));
+        deployer.deploy(owner, guardian, address(router), usdc, usdt);
 
         vm.chainId(1);
         vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerMustBeContract.selector, owner));
-        deployer.deploy(owner, guardian, address(0));
+        deployer.deploy(owner, guardian, address(0), address(0), address(0));
         MockSafe singleSigner = new MockSafe(1);
         vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerThresholdTooLow.selector, address(singleSigner), 1));
-        deployer.deploy(address(singleSigner), guardian, address(0));
+        deployer.deploy(address(singleSigner), guardian, address(0), address(0), address(0));
     }
 
     /// @dev CR-I36: a call that failed is not an answer.
@@ -454,8 +492,10 @@ contract ScriptsTest is Test {
 
         // Through `deploy` itself: WETH pasted as OWNER, a contract that answers no getThreshold.
         vm.etch(MainnetAddresses.WETH, address(new SilentFallback()).code);
+        vm.etch(MainnetAddresses.USDC, hex"00");
+        vm.etch(MainnetAddresses.USDT, hex"00");
         vm.expectRevert(abi.encodeWithSelector(Deploy.RoleIsMarketContract.selector, MainnetAddresses.WETH));
-        deployer.deploy(MainnetAddresses.WETH, guardian, address(0));
+        deployer.deploy(MainnetAddresses.WETH, guardian, address(0), address(0), address(0));
     }
 
     // ---------------------------------------------------------------------

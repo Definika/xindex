@@ -39,7 +39,8 @@ call reaches a token.
 `MAX_SUPPLY`; a token already carrying a supply (a relist) must propose a supply within one step of it; no listing may
 be live for the token, and the token may not be in the live supply batch. Executable by anyone from `eta` for
 `PROPOSAL_WINDOW` (`executeListing`), which sets the supply and whitelists the token. `cancelListing` by owner or
-guardian. `delist` by owner or guardian, immediate, dropping a pending listing.
+guardian. `delist` by owner or guardian, immediate. A listed token cannot have a pending listing (`AlreadyListed`), so there is
+none to drop.
 
 **Supply batches.** `proposeSupplies(tokens, supplies)`, owner only:
 - `tokens` strictly ascending (so no duplicate), 1 to `MAX_BATCH` = 256 entries, each already carrying a supply, none
@@ -73,7 +74,7 @@ bounds each rebalance however many batches landed in between.
 `issue` rounds up and rejects fee-on-transfer; `redeem` and `redeemSkipping` round down, claims booked to `to`
 (DA-17); `claim` pays a claim; `_update` refuses the index itself and the factory as recipients (CR-I01, RT-21);
 `onlyInitialized` on everything that mints, burns or rebalances; one reentrancy guard. Every `supply × units` product
-goes through one private helper, `_backing(supply, units, rounding)`, so a fee model lands in one place.
+goes through one private helper, `_backing(shares, units, rounding)`, so a fee model lands in one place.
 
 Invariant, for every component `i`: `balanceOf(hub, token_i) ≥ ⌊S × u_i / 1e18⌋ + totalClaims[token_i]`.
 

@@ -71,6 +71,8 @@ contract MainnetAddressesForkTest is Test {
     function testFork_XA13_deployResolvesTheMainnetMarket() public {
         Deploy deployer = new Deploy();
         assertEq(deployer.resolveRouter(address(0)), M.UNIVERSAL_ROUTER);
+        assertEq(deployer.resolveStable("USDC", address(0), M.USDC), M.USDC);
+        assertEq(deployer.resolveStable("USDT", address(0), M.USDT), M.USDT);
     }
 
     /// @dev Every default entry, as the listing script builds it, listed on a fresh factory. Each reference supply is a

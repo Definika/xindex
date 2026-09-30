@@ -7,6 +7,8 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IndexFactory} from "../../src/IndexFactory.sol";
 import {IndexHub} from "../../src/IndexHub.sol";
 import {IndexZap} from "../../src/IndexZap.sol";
+import {MintRequests} from "../../src/MintRequests.sol";
+import {IMintRequests} from "../../src/interfaces/IMintRequests.sol";
 import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
 import {IUniversalRouter} from "../../src/interfaces/IUniversalRouter.sol";
 import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
@@ -443,6 +445,55 @@ contract SecurityForkTest is Test {
         vm.prank(wrapper);
         IWETH9(A.WETH).deposit{value: amount}();
         assertEq(IERC20(A.WETH).totalSupply(), before + amount, "WETH's live supply moves with the wrap");
+    }
+
+    /// @dev MintRequests against the real stablecoins. With Tether's fee switched on after a USDT request was made,
+    ///      the escrow still leaves in full to its requester, less the fee on the way out, and a redemption filled in
+    ///      USDT must deliver the requester's limit after the fee: a filler sending exactly the limit is refused. USDC's
+    ///      request fills as it would on any day.
+    function test_mintRequestsWithTheRealStablecoins() public {
+        MintRequests requests = new MintRequests(address(factory), A.USDC, A.USDT);
+        IndexHub idx = _create(A.WBTC, A.WETH);
+        _issue(idx, 2e18);
+        address requester = makeAddr("requester");
+
+        deal(A.USDC, requester, 500e6);
+        deal(A.USDT, requester, 1_000e6);
+        vm.startPrank(requester);
+        IERC20(A.USDC).forceApprove(address(requests), 500e6);
+        IERC20(A.USDT).forceApprove(address(requests), 1_000e6);
+        uint256 usdcId = requests.requestMint(address(idx), A.USDC, 500e6, 1e18, block.timestamp + 1 days);
+        uint256 usdtId = requests.requestMint(address(idx), A.USDT, 1_000e6, 1e18, block.timestamp + 1 days);
+        vm.stopPrank();
+        assertEq(requests.getRequest(usdtId).escrow, 1_000e6, "no fee yet, so the escrow is the whole amount");
+
+        vm.startPrank(user);
+        idx.approve(address(requests), 1e18);
+        requests.fill(usdcId, 1e18);
+        vm.stopPrank();
+        assertEq(idx.balanceOf(requester), 1e18);
+        assertEq(IERC20(A.USDC).balanceOf(user), 500e6, "the filler takes the USDC escrow");
+
+        vm.prank(IUsdtAdmin(A.USDT).owner());
+        IUsdtAdmin(A.USDT).setParams(10, 5); // Tether switches on a 0.10% transfer fee
+        vm.prank(requester);
+        requests.cancel(usdtId);
+        assertEq(IERC20(A.USDT).balanceOf(requester), 999e6, "the whole escrow left, less the fee on the way out");
+        assertEq(IERC20(A.USDT).balanceOf(address(requests)), 0, "and nothing is left short or behind");
+
+        vm.startPrank(requester);
+        idx.approve(address(requests), 1e18);
+        uint256 redeemId = requests.requestRedeem(address(idx), 1e18, A.USDT, 400e6, block.timestamp + 1 days);
+        vm.stopPrank();
+        deal(A.USDT, user, 1_000e6);
+        vm.startPrank(user);
+        IERC20(A.USDT).forceApprove(address(requests), 1_000e6);
+        vm.expectRevert(abi.encodeWithSelector(IMintRequests.BelowLimit.selector, 399.6e6, 400e6));
+        requests.fill(redeemId, 400e6);
+        requests.fill(redeemId, 400.400401e6);
+        vm.stopPrank();
+        assertGe(IERC20(A.USDT).balanceOf(requester), 999e6 + 400e6, "the limit arrived after the fee");
+        assertEq(idx.balanceOf(user), 2e18, "the filler holds the shares it sold and got back");
     }
 
     /// @dev XA-07, CR-I36. The module check reads the page of modules that starts at the sentinel, and the offline mock

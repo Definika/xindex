@@ -4,12 +4,13 @@ pragma solidity 0.8.28;
 import {Script, console2} from "forge-std/Script.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
 import {IndexZap} from "../src/IndexZap.sol";
+import {MintRequests} from "../src/MintRequests.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
 import {ISafeThreshold} from "./interfaces/ISafeThreshold.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
 
-/// @notice Deploys the factory (which deploys the IndexHub implementation) and the zap.
+/// @notice Deploys the factory (which deploys the IndexHub implementation), the zap and MintRequests.
 ///
 ///   OWNER=<safe address> GUARDIAN=<guardian address> forge script script/Deploy.s.sol --rpc-url mainnet \
 ///     --account deployer --sender <deployer address> --broadcast --verify
@@ -22,6 +23,8 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///                       it later takes 7 days.
 ///   UNIVERSAL_ROUTER    Uniswap's Universal Router, through which the zap swaps. Required off mainnet; defaults on
 ///                       chain 1 to the 2.0.0 deployment.
+///   USDC, USDT          The two stablecoins MintRequests escrows. Required off mainnet; default on chain 1 to
+///                       mainnet's.
 contract Deploy is Script {
     /// @notice Mainnet default {resolveRouter} uses on chain 1, from `MainnetAddresses`.
     address public constant MAINNET_UNIVERSAL_ROUTER = MainnetAddresses.UNIVERSAL_ROUTER;
@@ -54,29 +57,41 @@ contract Deploy is Script {
     error WrongWiring(string name, address expected, address actual);
 
     /// @notice Reads OWNER, GUARDIAN and the optional market addresses from the environment and calls {deploy}.
-    function run() external returns (IndexFactory factory, IndexZap zap) {
-        return deploy(vm.envAddress("OWNER"), vm.envAddress("GUARDIAN"), vm.envOr("UNIVERSAL_ROUTER", address(0)));
+    function run() external returns (IndexFactory factory, IndexZap zap, MintRequests requests) {
+        return deploy(
+            vm.envAddress("OWNER"),
+            vm.envAddress("GUARDIAN"),
+            vm.envOr("UNIVERSAL_ROUTER", address(0)),
+            vm.envOr("USDC", address(0)),
+            vm.envOr("USDT", address(0))
+        );
     }
 
     /// @notice Checks the owner and guardian, resolves the market, and broadcasts the factory (which deploys the
-    ///         IndexHub implementation) and the zap. Logs every address.
+    ///         IndexHub implementation), the zap and MintRequests. Logs every address.
     /// @param owner Factory owner; see {checkOwner}.
     /// @param guardian Initial guardian; see {checkGuardian}.
     /// @param router Uniswap's Universal Router, through which the zap swaps; see {resolveRouter}.
+    /// @param usdc USDC for MintRequests; see {resolveStable}.
+    /// @param usdt USDT for MintRequests; see {resolveStable}.
     /// @return factory The deployed factory.
     /// @return zap The deployed zap.
-    function deploy(address owner, address guardian, address router)
+    /// @return requests The deployed MintRequests.
+    function deploy(address owner, address guardian, address router, address usdc, address usdt)
         public
-        returns (IndexFactory factory, IndexZap zap)
+        returns (IndexFactory factory, IndexZap zap, MintRequests requests)
     {
         checkOwner(owner);
         checkGuardian(owner, guardian);
         router = resolveRouter(router);
+        usdc = resolveStable("USDC", usdc, MainnetAddresses.USDC);
+        usdt = resolveStable("USDT", usdt, MainnetAddresses.USDT);
         checkRolesAreNotMarket(owner, guardian, router);
 
         vm.startBroadcast();
         factory = new IndexFactory(owner, guardian);
         zap = new IndexZap(factory, IUniversalRouter(router));
+        requests = new MintRequests(address(factory), usdc, usdt);
         vm.stopBroadcast();
 
         console2.log("IndexFactory:            ", address(factory));
@@ -86,26 +101,40 @@ contract Deploy is Script {
         console2.log("Guardian:                ", guardian);
         console2.log("Universal Router:        ", router);
         console2.log("PoolManager:             ", zap.POOL_MANAGER());
+        console2.log("MintRequests:            ", address(requests));
+        console2.log("USDC:                    ", usdc);
+        console2.log("USDT:                    ", usdt);
 
         // The release record: the addresses above plus the code they ended up with, so a later run of
         // {checkDeployment} against the recorded addresses proves a deployment is this build.
-        bytes32[3] memory codehashes = checkDeployment(factory, zap);
+        bytes32[4] memory codehashes = checkDeployment(factory, zap, requests);
         console2.log("IndexFactory codehash:   ", vm.toString(codehashes[0]));
         console2.log("IndexHub impl codehash:  ", vm.toString(codehashes[1]));
         console2.log("IndexZap codehash:       ", vm.toString(codehashes[2]));
+        console2.log("MintRequests codehash:   ", vm.toString(codehashes[3]));
     }
 
-    /// @notice Checks that a factory and a zap are one deployment and returns the runtime code hashes to freeze in the
-    ///         release record (README, "Deployment record"). Run it again later against the recorded addresses: equal
-    ///         hashes prove the deployed code is unchanged and still the build the record names.
+    /// @notice Checks that a factory, a zap and MintRequests are one deployment and returns the runtime code hashes to
+    ///         freeze in the release record (README, "Deployment record"). Run it again later against the recorded
+    ///         addresses: equal hashes prove the deployed code is unchanged and still the build the record names.
     /// @param factory The deployed factory, which names the IndexHub implementation.
     /// @param zap The deployed zap, which must point back at `factory`.
-    /// @return codehashes keccak256 of the runtime code of the factory, the implementation and the zap.
-    function checkDeployment(IndexFactory factory, IndexZap zap) public view returns (bytes32[3] memory codehashes) {
+    /// @param requests The deployed MintRequests, which must point back at `factory`.
+    /// @return codehashes keccak256 of the runtime code of the factory, the implementation, the zap and MintRequests.
+    function checkDeployment(IndexFactory factory, IndexZap zap, MintRequests requests)
+        public
+        view
+        returns (bytes32[4] memory codehashes)
+    {
         address implementation = factory.IMPLEMENTATION();
         address zapFactory = address(zap.FACTORY());
         if (zapFactory != address(factory)) revert WrongWiring("IndexZap.FACTORY", address(factory), zapFactory);
-        codehashes = [address(factory).codehash, implementation.codehash, address(zap).codehash];
+        address requestsFactory = requests.FACTORY();
+        if (requestsFactory != address(factory)) {
+            revert WrongWiring("MintRequests.FACTORY", address(factory), requestsFactory);
+        }
+        codehashes =
+            [address(factory).codehash, implementation.codehash, address(zap).codehash, address(requests).codehash];
     }
 
     /// @notice Rejects a missing owner and Foundry's default sender. On mainnet the owner must be a contract, not
@@ -195,6 +224,16 @@ contract Deploy is Script {
     /// @return The resolved router.
     function resolveRouter(address router) public view returns (address) {
         return _resolve("UNIVERSAL_ROUTER", router, MAINNET_UNIVERSAL_ROUTER);
+    }
+
+    /// @notice Fills a zero stablecoin with mainnet's on chain 1 only, refuses any other there, and requires code, as
+    ///         {resolveRouter} does for the router.
+    /// @param name "USDC" or "USDT", for the error.
+    /// @param given Address from the environment; zero takes the mainnet default on chain 1.
+    /// @param mainnetDefault Mainnet's address of that stablecoin.
+    /// @return The resolved stablecoin.
+    function resolveStable(string memory name, address given, address mainnetDefault) public view returns (address) {
+        return _resolve(name, given, mainnetDefault);
     }
 
     function _resolve(string memory name, address given, address mainnetDefault) private view returns (address) {

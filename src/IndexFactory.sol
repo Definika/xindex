@@ -238,8 +238,8 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         delete pendingReferenceSupply[token];
         _setSupply(token, supply);
 
-        // A proposal is refused for a whitelisted token, and delist drops a pending one, so the token is never already
-        // whitelisted here.
+        // A proposal is refused for a whitelisted token (AlreadyListed), and nothing whitelists a token but this
+        // function, which clears the proposal, so the token is never already whitelisted here.
         isWhitelisted[token] = true;
         _whitelist.push(token);
         _whitelistPos[token] = _whitelist.length;

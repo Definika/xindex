@@ -115,7 +115,7 @@ contract RepoTest is Test {
 
     /// @dev XA-44: the ABIs the web app decodes with are committed, and CI regenerates them and fails on a diff.
     function test_XA44_theAbisAreCommittedAndChecked() public view {
-        string[3] memory contracts = ["IndexFactory", "IndexHub", "IndexZap"];
+        string[4] memory contracts = ["IndexFactory", "IndexHub", "IndexZap", "MintRequests"];
         for (uint256 i = 0; i < contracts.length; ++i) {
             assertTrue(
                 _contains(_read(string.concat("abi/", contracts[i], ".json")), '"type": "function"'),
@@ -124,7 +124,8 @@ contract RepoTest is Test {
         }
         string memory workflow = _read(".github/workflows/test.yml");
         assertTrue(
-            _contains(workflow, "for contract in IndexFactory IndexHub IndexZap; do"), "CI regenerates every ABI"
+            _contains(workflow, "for contract in IndexFactory IndexHub IndexZap MintRequests; do"),
+            "CI regenerates every ABI"
         );
         assertTrue(_contains(workflow, "git diff --exit-code abi/"), "a stale ABI fails CI");
     }
@@ -184,19 +185,22 @@ contract RepoTest is Test {
     ///      or its oracle, and the v3 price contracts are gone. A change that brought one back would have to delete
     ///      this test to do it.
     function test_noContractReadsAPrice() public view {
-        string[12] memory files = [
+        string[15] memory files = [
             "src/IndexHub.sol",
             "src/IndexFactory.sol",
             "src/IndexZap.sol",
+            "src/MintRequests.sol",
             "src/interfaces/IIndexHub.sol",
             "src/interfaces/IIndexFactory.sol",
             "src/interfaces/IIndexZap.sol",
+            "src/interfaces/IMintRequests.sol",
             "src/interfaces/IXindexErrors.sol",
             "src/interfaces/IRebalanceExecutor.sol",
             "src/interfaces/IUniversalRouter.sol",
             "abi/IndexHub.json",
             "abi/IndexFactory.json",
-            "abi/IndexZap.json"
+            "abi/IndexZap.json",
+            "abi/MintRequests.json"
         ];
         string[5] memory priceWords = ["latestRoundData", "AggregatorV3", "slot0", "observe(", "navPerToken"];
         for (uint256 i = 0; i < files.length; ++i) {

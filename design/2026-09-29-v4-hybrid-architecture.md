@@ -671,7 +671,7 @@ No custody provider is needed.
 |---|---|
 | `settleOrder` | One proof verification per vault chain in the order (about 0.3–0.5M gas each) + about 50k per Tier 1 token |
 | `redeem` | About 50k per Tier 1 token + about 30k per chain's `Burn` |
-| `createIndex` | One clone; about 25k per component stored |
+| `createIndex` | One clone; about 49k per component with every account cold (4.9M at 100, measured) |
 | `executeRebalance` (Ethereum-only) | Inside EIP-7825's 16.78M cap at 100 components only for an executor that already holds the bought tokens; swapping inside the call (about 150k per leg) fits about 100 legs at most |
 | Zap (Ethereum-only) | 265k–430k per token, which is why the app stops it near 35 tokens |
 

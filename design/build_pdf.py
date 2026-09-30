@@ -856,7 +856,7 @@ S += table([["Operation", "Main costs", "Time"],
                                 "token", "Inside a 2-hour deadline; claimable 24h later"],
             ["In-kind redemption", "~50k gas per Ethereum token + ~30k per chain's Burn",
              "~15–30 min per chain"],
-            ["Create an index", "One clone; ~25k gas per component stored", "One transaction"],
+            ["Create an index", "One clone; ~49k gas per component, cold (4.9M at 100)", "One transaction"],
             ["Rebalance", "Deliveries, one combined proof, releases; at 100 tokens an atomic fill fits the 16.8M cap "
                           "only for an executor holding inventory", "2-day notice + ≤ 24h auction + 6h delivery"]],
            [0.2, 0.5, 0.3], first_bold=True)

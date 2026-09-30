@@ -2,13 +2,19 @@
 pragma solidity ^0.8.24;
 
 /// @notice Mimics mainnet USDT: 6 decimals, transfer/transferFrom/approve return nothing,
-///         and approve reverts when changing a non-zero allowance to another non-zero value.
+///         and approve reverts when changing a non-zero allowance to another non-zero value. Its fee switch works like
+///         mainnet's `setParams`: the recipient gets `value` less `min(value * basisPoints / 10_000, maxFee)` and the
+///         deployer the fee, while the sender pays `value`. Mainnet caps the rate below 20 basis points; the mock does
+///         not, so a test can charge a whole transfer.
 contract MockUSDT {
     string public constant name = "Tether USD";
     string public constant symbol = "USDT";
     uint8 public constant decimals = 6;
 
     uint256 public totalSupply;
+    address public immutable owner = msg.sender;
+    uint256 public basisPointsRate;
+    uint256 public maximumFee;
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
 
@@ -19,6 +25,13 @@ contract MockUSDT {
         totalSupply += amount;
         balanceOf[to] += amount;
         emit Transfer(address(0), to, amount);
+    }
+
+    /// @notice The fee switch; `newMaxFee` is in whole tokens, as on mainnet.
+    function setParams(uint256 newBasisPoints, uint256 newMaxFee) external {
+        require(msg.sender == owner, "USDT: owner");
+        basisPointsRate = newBasisPoints;
+        maximumFee = newMaxFee * 10 ** decimals;
     }
 
     function approve(address spender, uint256 value) external {
@@ -40,8 +53,14 @@ contract MockUSDT {
 
     function _transfer(address from, address to, uint256 value) internal {
         require(balanceOf[from] >= value, "USDT: balance");
+        uint256 fee = value * basisPointsRate / 10_000;
+        if (fee > maximumFee) fee = maximumFee;
         balanceOf[from] -= value;
-        balanceOf[to] += value;
-        emit Transfer(from, to, value);
+        balanceOf[to] += value - fee;
+        emit Transfer(from, to, value - fee);
+        if (fee > 0) {
+            balanceOf[owner] += fee;
+            emit Transfer(from, owner, fee);
+        }
     }
 }
