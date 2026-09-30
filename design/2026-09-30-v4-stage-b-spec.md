@@ -573,3 +573,49 @@ Review and adoption:
 5. The Solana vault program, then HyperEVM and Tron.
 6. The stall recovery and snapshot exit (built, section 5.6, but for the pool look-through), then watchers, then the
    testnet rehearsals of the design's Phase 3.
+
+## 7. The Solana vault (hackathon build, from 30 September 2026)
+
+The EVM vault's rules (section 4), ported to a Solana program in `solana/programs/xindex-vault`, for the testnet
+demonstration of `design/2026-09-30-hackathon-plan.md`. It keeps the same messages, the same digests, the same speed
+limit and the same freeze. What Solana changes:
+
+- **Identity.** The vault is the program's `config` account. Its 32-byte key is what Ethereum registers as the chain's
+  vault and names in every message.
+  - The hub builds digests with a vault's low 20 bytes (`_vaultAddress`), as for an EVM chain, so the program hashes
+    those same 20 bytes, the last 20 of its key. That is enough for the demonstration. For production, the digest
+    should carry all 32 bytes, a change to the hub and to both vaults.
+- **Chain id.** Solana has no EVM chain id. The program takes the id the factory's registry assigns it at
+  initialization, and every message must name it.
+- **Coins.** Native SOL, in lamports, held by a system-owned `treasury` account the program signs for. Amounts from
+  Ethereum are 256-bit and must fit 64 bits, or the message is refused.
+- **Recipients.** A burn's recipient, 32 bytes on Ethereum, is a Solana public key exactly.
+- **One instruction per message kind.** `deliver_burn`, `deliver_intake` (settled or failed), `deliver_migrate` and
+  `deliver_governance` each take the message and its proofs and name only the accounts that kind touches.
+- **Verifiers are programs.** P1 and P2 are two different program ids. The vault calls each one's
+  `verify_event(block, emitter, topic0, topic1, data_hash, proof)`, which must succeed, with the verifier's state
+  account at a fixed address of its own.
+  - The vault passes the log's data by its hash, so the message travels once, not three times. A transaction is at most
+    1,232 bytes.
+  - The message id, the index, the intake and every account address are read from the payload itself, and the emitter
+    the verifiers must attest is the index the message names, or the factory. A burn with both stub proofs takes
+    1,143 bytes. Real proofs need an address lookup table for the static accounts, and possibly a buffer account.
+  - A real P1 is an SP1 Groth16 verifier whose public values commit to the log (about 94,000 compute units, bounded
+    in `design/2026-09-30-proving-prototype.md`).
+- **Used messages.** Each delivered message creates an account at an address derived from its id, so a second
+  delivery fails by construction.
+- **Initialization** only by the program's upgrade authority, so nobody can take the configuration in front of the
+  deployer. In production the upgrade authority is then removed. On the devnet it stays.
+
+**As built (30 September):**
+- 6 unit tests pin the encodings against Solidity's.
+- 20 LiteSVM tests cover initialization, registration, deposits, the route, the used mark, burns under the speed limit,
+  refunds, migration, governance, the freeze and rotation.
+- `anchor build --no-idl`: Anchor's IDL generator cannot follow addresses derived from the payload.
+
+**Not in the hackathon build:** stall recovery and the snapshot exit (section 5.6), which follow once Solana's own state
+proof exists; the vault's state proven to Ethereum, which a relayer stub stands in for; tokens other than SOL.
+
+**The stubs.** `solana/programs/stub-verifier` accepts any log its relayer key signed. It is deployed twice, as P1 and
+as P2, under two keys. Its name, its first line and the submission all say it is a stub. The Ethereum side's stub is
+in `demo/`.

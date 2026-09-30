@@ -151,6 +151,7 @@ script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test 
 abi/                          generated ABIs the web app decodes with; CI regenerates them and fails on a diff
 design/                       the v4 design and its PDF, the Stage A and Stage B specs, the prototype record, the PDF builder, and the analysis scripts (their data is not committed)
 audit/                        review reports, their triages, and the two retirement records
+solana/                       Stage B on Solana: the vault program (Anchor 1.2) and a STUB verifier for testnets, with LiteSVM tests (see solana/README.md)
 prototype/                    the proving prototype: an SP1 workspace and its own Foundry project (via-IR); the gates skip it and Wake excludes it
 ```
 
@@ -405,6 +406,11 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   and `VERIFIER_ROTATION` only after `ROTATION_DELAY` (30 days). P1 and P2 must always be two different verifiers.
 - **Size.** The hub and the module are both near the 24KB limit; new code goes in the extension. Check
   `forge build --sizes` after any change to any of the three.
+- **The Solana vault is the EVM vault's twin.** `solana/programs/xindex-vault` keeps the same messages, digests, speed
+  limit and freeze, and its `abi` tests pin every encoding against Solidity's. A change to either vault's rules or to a
+  message goes into both. `solana/programs/stub-verifier` trusts a relayer key and exists for testnets only; nothing in
+  `src/` or `script/` may name it. Its gates: `anchor build --no-idl`, `cargo build-sbf` for the stub, `cargo test -p
+  xindex-vault`, `cargo fmt --check` and `cargo clippy`, at low priority.
 
 ## Conventions
 

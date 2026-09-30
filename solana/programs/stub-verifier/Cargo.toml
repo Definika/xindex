@@ -1,0 +1,23 @@
+[package]
+name = "stub-verifier"
+version = "0.1.0"
+description = "STUB, NOT A PROOF SYSTEM: an Ethereum-event verifier for testnets that trusts its relayer key"
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "stub_verifier"
+
+[features]
+default = []
+no-entrypoint = []
+custom-heap = []
+custom-panic = []
+
+[dependencies]
+anchor-lang = "1.2.0"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
