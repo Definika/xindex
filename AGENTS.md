@@ -54,7 +54,9 @@ market from `script/testnet/SetupTestMarket.s.sol`.
    router- or pool-related. Their summary must list the four `test/fork/` suites and 0 skipped.
 5. The Wake VS Code analyzer reports no errors or warnings on `src/`. Its reentrancy detector does not model reentrancy
    guards; the three documented suppressions are on the `redeem` call in `IndexZap._burnBasket`, the `permit` call in
-   `IndexZap.burnToTokenWithPermit`, and the executor callback in `IndexHub._settle`.
+   `IndexZap.burnToTokenWithPermit`, and the executor callback in `IndexHub._settle`. Two more, on
+   `VaultMessages.VaultMessage` and `VaultMessages.encode`, cover the half of the Stage B message format that only the
+   Ethereum side uses; they go when that side is built.
 6. Every testable finding of the security reviews keeps its regression test passing, named after its id. A test that
    covers two findings carries both ids. The id families:
    - v1 findings: by their v1 id.
@@ -115,10 +117,13 @@ src/IndexHub.sol              index implementation (ERC20 + permit + in-kind iss
 src/IndexFactory.sol          listings, reference supplies and weekly supply batches, guardian, registry, CREATE2 clone deployer with units from k
 src/IndexZap.sol              stateless Universal Router mint/burn router, a venue per leg, per-leg limits, nonce check
 src/MintRequests.sol          ownerless escrow of USDC/USDT-for-shares requests at the requester's own limit, filled by anyone
-src/interfaces/               IIndexHub, IIndexFactory, IIndexZap, IMintRequests, IXindexErrors (shared errors), IRebalanceExecutor, IUniversalRouter
+src/interfaces/               IIndexHub, IIndexFactory, IIndexZap, IMintRequests, IXindexErrors (shared errors), IRebalanceExecutor, IUniversalRouter,
+                              and for Stage B IXindexVault and IEthereumEventVerifier
 src/libraries/PathLib.sol     V3 packed path decoding (shared with test mocks)
 src/libraries/UniversalRouterCommands.sol  the router command bytes the zap emits, vendored with their input layouts
 src/libraries/UniswapV4Types.sol           V4 actions, PathKey and the swap params, vendored from v4-periphery (MIT)
+src/libraries/VaultMessages.sol            Stage B: the one encoding of the messages Ethereum sends a vault
+src/vault/XindexVault.sol     Stage B: the ownerless vault on an EVM chain, native coin per index, speed limit, freeze (not deployed)
 test/*.t.sol                  unit / fuzz / invariant / script tests
 test/XindexTest.sol           state and listing helpers the factory, hub, zap and security suites share
 test/Security.t.sol           regression tests for the security review findings (see gate 6 for ids tested elsewhere)
@@ -129,8 +134,9 @@ script/                       Deploy, ConfigureWhitelist, MainnetAddresses (the 
 script/interfaces/            the Safe, WETH and Uniswap setup calls the scripts make
 script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test market (never deploy on mainnet)
 abi/                          generated ABIs the web app decodes with; CI regenerates them and fails on a diff
-design/                       the v4 design and its PDF, the Stage A spec, the PDF builder, and the analysis scripts (their data is not committed)
+design/                       the v4 design and its PDF, the Stage A and Stage B specs, the prototype record, the PDF builder, and the analysis scripts (their data is not committed)
 audit/                        review reports, their triages, and the two retirement records
+prototype/                    the proving prototype: an SP1 workspace and its own Foundry project (via-IR); the gates skip it and Wake excludes it
 ```
 
 ## Design rules that must not be broken
