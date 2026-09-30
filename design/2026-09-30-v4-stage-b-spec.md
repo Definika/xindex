@@ -169,8 +169,58 @@ failing, so nothing expires. While frozen, nothing is paid and no deposit is tak
   - the rebalance with deliveries, bond and settlement (6.6);
   - `MINT_CAP`, per-chain freeze flags, migration, recovery addresses.
 - **A state verifier per chain.** For BNB Chain, the prototype's vote check and storage proof, plus validator-set
-  tracking: a new set is accepted only as an epoch header that the previous set finalized. The prototype found that a
-  set takes effect some blocks after its epoch block, and the verifier must model that switch.
+  tracking, set out in section 5.1.
+
+### 5.1 The BNB Chain state verifier
+
+BNB Chain rotates 4 to 5 of its 21 active validators at every epoch block (every 1,000 blocks, 7.5 minutes), from the
+45 elected each day. The prototype record first assumed daily changes; that was wrong, and the owner chose on
+2026-09-30 to **follow every rotation** (over a zk proof of the rotation chain, an optimistic scheme with a challenge
+hour, and trusting the pool of 45). The rules, from bnb-chain/bsc v1.7.8 and checked against mainnet:
+
+- **Epochs and turns.** An epoch block is a multiple of 1,000 (Maxwell; Fermi kept it). Its extra data lists the next
+  set, `count` entries of a 20-byte address and a 48-byte compressed BLS key in ascending address order, then a
+  turn-length byte, which governance sets (8 today, 16 a year ago), so it is read from each header, never assumed.
+- **The switch.** Epoch block `E`'s set signs the votes whose target is at least
+  `E + (n/2 + 1) * t`, where `n` and `t` are the previous set's size and turn length: the snapshot takes the new set
+  while applying block `E + (n/2 + 1) * t - 1`, and a vote on target `T` is checked with the snapshot at `T - 1`. On
+  mainnet, 21 validators and turn length 8 put the first block the new set signs at `E + 88`.
+- **Finality.** A block `B` is final once a vote whose source is `B` and whose target is `B + 1` carries at least
+  `ceil(2n/3)` of the active set: 14 of 21. A vote signs `keccak256(rlp([source number, source hash, target number,
+  target hash]))` under the proof-of-possession ciphersuite; its bitset indexes the set in ascending address order.
+- **Following the chain.** The verifier starts from one epoch block its deployer names, and then takes each next epoch
+  block, exactly 1,000 later, with the vote that finalized it by the set it replaces. Nothing can be skipped: each set
+  is known only through the previous one. Anyone can submit, several epochs to a transaction. If nobody does, BNB
+  deposits wait; nothing unsafe follows.
+- **Keys.** A header carries compressed keys; the submitter adds the uncompressed ones, and each must have the same x,
+  the y the sign flag names, and lie on the curve (G1ADD checks that). That makes it the key the header names, which
+  BNB Chain checked for the subgroup when the validator registered it, so no subgroup check is repeated here.
+- **State.** A storage proof of block `B` names the epoch whose set signs `B + 1`; the verifier checks that the target
+  lies in that set's window and that `B`'s timestamp is after that epoch block's and at most `MAX_SPAN` (1 hour)
+  after it. Old sets stay valid for their own windows forever, so without that bound a coalition of validators from
+  long ago could forge a header in an old window with a timestamp of today. The hub must also refuse a state older
+  than one it has already accepted from the same vault.
+- **Carried-over keys.** About 16 of each set's 21 keys were in the set before. A step names, for each entry, either
+  the index of the same key in the previous set or a new key; a carried-over key is only matched against the header's
+  compressed key, since it was checked on the curve when its own set was recorded.
+
+**Measured cost** (`src/verifiers/BnbStateVerifier.sol` on mainnet data, `test_gas_followingTheChain`; each figure is
+a whole transaction, calldata included):
+
+| What | Gas |
+|---|---|
+| One epoch in a transaction | 510k |
+| Two epochs in a transaction | 462k each |
+| Following the chain, 192 epochs a day, two to a transaction | 89M a day |
+| A state proof of two storage slots | 820k |
+
+At 0.23 gwei and ETH at $2,700 (2026-09-30), following the chain costs about **$20k a year**; at 1 gwei, about
+$87k. The estimate put to the owner before the choice was $14k a year at the same prices (330k gas an epoch); the
+measured figure replaces it. Of an epoch's 462k, the vote check is about 210k (the pairing 103k, hashing to the curve
+74k), the header about 70k with its calldata, the new keys about 40k, and the record 50k. A cheaper form, one pairing
+for several epochs' votes (BLS aggregate verification over distinct messages), would save about 60k an epoch at eight
+to a transaction, but it mixes two signature checks whose combination needs its own security argument, so it waits
+for review.
 
 ## 6. Build order
 

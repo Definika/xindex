@@ -200,9 +200,16 @@ Deposits proved against the same voted block share one vote check. The first ver
 memory array of structs for every trie node and cost 418k gas; locating items in place halved it.
 
 So the vault → Ethereum direction for BNB Chain needs **no zkVM and no trusted setup**, only the chain's own
-signatures checked by Ethereum's precompiles, at about 650k gas against the 1M threshold. The validator set needs an
-update transaction only when its membership changes, at most about daily, because a finality vote by an unchanged set
-proves an epoch block's list as well as any other block. Still to measure in M6: the set update itself.
+signatures checked by Ethereum's precompiles, at about 650k gas against the 1M threshold.
+
+**Correction, 2026-09-30.** This record first said the validator set needs an update "only when its membership changes,
+at most about daily". That was wrong. BNB Chain rotates 4 to 5 of its 21 active validators at every epoch block, every
+1,000 blocks or 7.5 minutes, drawing on the 45 validators elected each day: over one day of sampled epochs all 45 took
+turns and none sat in every epoch. A verifier has to follow every rotation, because a vote can be checked only against
+the exact set that was active, and nothing short of the previous set's vote on the next epoch block ties one set to the
+next. The owner chose that on 2026-09-30 over a zk proof of the rotation chain, an optimistic scheme and trusting the
+pool of 45. The cost is the set update, about 330k gas an epoch by this estimate and 192 epochs a day; the Stage B spec
+carries the measured figure.
 
 ### M5: verifying the wrapped proof
 

@@ -118,17 +118,23 @@ src/IndexFactory.sol          listings, reference supplies and weekly supply bat
 src/IndexZap.sol              stateless Universal Router mint/burn router, a venue per leg, per-leg limits, nonce check
 src/MintRequests.sol          ownerless escrow of USDC/USDT-for-shares requests at the requester's own limit, filled by anyone
 src/interfaces/               IIndexHub, IIndexFactory, IIndexZap, IMintRequests, IXindexErrors (shared errors), IRebalanceExecutor, IUniversalRouter,
-                              and for Stage B IXindexVault and IEthereumEventVerifier
+                              and for Stage B IXindexVault, IEthereumEventVerifier, IVaultStateVerifier and IBnbStateVerifier
 src/libraries/PathLib.sol     V3 packed path decoding (shared with test mocks)
 src/libraries/UniversalRouterCommands.sol  the router command bytes the zap emits, vendored with their input layouts
 src/libraries/UniswapV4Types.sol           V4 actions, PathKey and the swap params, vendored from v4-periphery (MIT)
 src/libraries/VaultMessages.sol            Stage B: the one encoding of the messages Ethereum sends a vault
+src/libraries/RlpReader.sol                Stage B: RLP read in place, the one library in src/ with assembly (bounds-checked)
+src/libraries/MerklePatricia.sol           Stage B: storage proofs from a state root (`eth_getProof` node lists)
+src/libraries/Bls12381.sol                 Stage B: BLS on the EIP-2537 precompiles, BNB Chain's vote ciphersuite
 src/vault/XindexVault.sol     Stage B: the ownerless vault on an EVM chain, native coin per index, speed limit, freeze (not deployed)
+src/verifiers/BnbStateVerifier.sol  Stage B: BNB Chain's state on Ethereum from its own finality votes, following every epoch (not deployed)
 test/*.t.sol                  unit / fuzz / invariant / script tests
 test/XindexTest.sol           state and listing helpers the factory, hub, zap and security suites share
 test/Security.t.sol           regression tests for the security review findings (see gate 6 for ids tested elsewhere)
 test/Repo.t.sol               repository facts findings rest on: pinned compiler, CI gates and toolchain, dependency lock, ABIs, no price, docs
 test/mocks/                   mock tokens, WETH, a strict Universal Router, V3 pools for the testnet script, the market fixture (+ Mocks.t.sol)
+test/fixtures/bnb/            real BNB Chain data for the Stage B verifier, and generate.py, which rebuilds it from a public RPC (py_ecc, pycryptodome)
+test/utils/                   test-only helpers (an RLP writer)
 test/fork/                    test-only mainnet addresses, end-to-end fork tests, a V3 rebalance executor, fork security regressions
 script/                       Deploy, ConfigureWhitelist, MainnetAddresses (the one copy of mainnet addresses and dated reference supplies)
 script/interfaces/            the Safe, WETH and Uniswap setup calls the scripts make
@@ -350,6 +356,13 @@ prototype/                    the proving prototype: an SP1 workspace and its ow
   - its copy of `forge remappings` (paste the new output there whenever a dependency or remapping changes);
   - the optimizer settings of `foundry.toml` (without them the factory's initcode looks too large to deploy);
   - Wake's default excluded folders plus `audit/` and `prototype/`.
+- **Prague in tests.** `src/` compiles for Cancun, but the BLS12-381 precompiles (EIP-2537) exist from Prague on,
+  which Ethereum mainnet runs. A suite that calls them sets `/// forge-config: default.evm_version = "prague"` on its
+  contract; `vm.setEvmVersion` inside a test does not enable them for calls already running.
+- **Gas in tests.** Foundry 1.8 runs every call a test makes as its own transaction (`isolate = true`), so a measured
+  call already carries the 21,000 and its calldata, EIP-7623's floor included. Build the calldata before measuring,
+  and send it without Solidity's `call`, which first copies it to the top of the test's memory and pays for that
+  expansion (`test_gas_followingTheChain`).
 - OpenZeppelin v5.7.0 and forge-std v1.16.2, pinned in `foundry.lock`; the staged submodule commits must match
   it, and CI checks that. The hub uses the upgradeable ERC20 because clones skip constructors, and the
   storage-based `ReentrancyGuard` because its zeroed slot is "not entered" in a clone.
