@@ -338,12 +338,12 @@ audit/                        review reports, their triages, and the two retirem
 
 - `pragma solidity 0.8.28;` in `src/` and `script/`; tests use `^0.8.24`. The compiler is pinned to 0.8.28 in
   `foundry.toml`, and CI pins Foundry v1.8.1 and eth-wake 4.22.1 in `.github/workflows/test.yml`.
-- **Wake config.** CI generates its Wake config from `foundry.toml` and adds `audit/` to its excluded folders, because
-  the PoC tests there only compile inside `test/poc/` of the audited commit and would stop Wake before any detector
-  runs. The Wake VS Code extension reads `.vscode/settings.json` instead, which holds three things:
+- **Wake config.** CI generates its Wake config from `foundry.toml` and adds `audit/` and `prototype/` to its excluded
+  folders: the PoC tests in `audit/` only compile inside `test/poc/` of the audited commit, and `prototype/evm` is a
+  separate Foundry project that needs via-IR, so either would stop Wake before any detector runs. The Wake VS Code extension reads `.vscode/settings.json` instead, which holds three things:
   - its copy of `forge remappings` (paste the new output there whenever a dependency or remapping changes);
   - the optimizer settings of `foundry.toml` (without them the factory's initcode looks too large to deploy);
-  - Wake's default excluded folders plus `audit/`.
+  - Wake's default excluded folders plus `audit/` and `prototype/`.
 - OpenZeppelin v5.7.0 and forge-std v1.16.2, pinned in `foundry.lock`; the staged submodule commits must match
   it, and CI checks that. The hub uses the upgradeable ERC20 because clones skip constructors, and the
   storage-based `ReentrancyGuard` because its zeroed slot is "not entered" in a clone.

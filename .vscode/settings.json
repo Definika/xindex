@@ -22,7 +22,8 @@
         "lib",
         "script",
         "test",
-        "audit"
+        "audit",
+        "prototype"
     ],
     "wake.compiler.solc.optimizer.enabled": true,
     "wake.compiler.solc.optimizer.runs": 1000
