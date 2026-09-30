@@ -79,11 +79,7 @@ pub fn handle_deposit(
     record.bump = ctx.bumps.deposit_record;
     intake.total += amount;
     intake.has_native = true;
-    vault::refresh_intake(
-        intake,
-        config.chain_id,
-        &vault::vault_address(&config.key()),
-    );
+    vault::refresh_intake(intake, config.chain_id, &vault::vault_id(&config.key()));
     emit!(Deposited {
         index,
         intake_id,
@@ -137,11 +133,7 @@ pub fn handle_refund(ctx: Context<Refund>, index: [u8; 20], intake_id: [u8; 32])
     config.held -= amount;
     let intake = &mut ctx.accounts.intake;
     intake.total -= amount;
-    vault::refresh_intake(
-        intake,
-        config.chain_id,
-        &vault::vault_address(&config.key()),
-    );
+    vault::refresh_intake(intake, config.chain_id, &vault::vault_id(&config.key()));
     emit!(Refunded {
         index,
         intake_id,

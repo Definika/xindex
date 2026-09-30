@@ -140,11 +140,12 @@ pub fn log_data_hash(payload: &[u8]) -> [u8; 32] {
     ])
 }
 
-/// `keccak256(abi.encode(INDEX_DIGEST_DOMAIN, chainId, vault, index, tokens, balances, paid))`, with SOL as
+/// `keccak256(abi.encode(INDEX_DIGEST_DOMAIN, chainId, vault, index, tokens, balances, paid))`, `vault` the whole
+/// 32-byte id the factory registers (for an EVM vault, its address as a word), with SOL as
 /// `address(0)` the only token, listed once the index has been credited.
 pub fn index_digest(
     chain_id: u64,
-    vault: &[u8; 20],
+    vault: &[u8; 32],
     index: &[u8; 20],
     has: bool,
     balance: u64,
@@ -157,7 +158,7 @@ pub fn index_digest(
     let mut parts: Vec<[u8; 32]> = vec![
         INDEX_DIGEST_DOMAIN,
         u256(chain_id),
-        address_word(vault),
+        *vault,
         address_word(index),
         u256(tokens),
         u256(balances),
@@ -183,7 +184,7 @@ pub fn index_digest(
 /// `_intakeDigest`.
 pub fn intake_digest(
     chain_id: u64,
-    vault: &[u8; 20],
+    vault: &[u8; 32],
     index: &[u8; 20],
     intake_id: &[u8; 32],
     state: u8,
@@ -196,7 +197,7 @@ pub fn intake_digest(
     let mut parts: Vec<[u8; 32]> = vec![
         INTAKE_DIGEST_DOMAIN,
         u256(chain_id),
-        address_word(vault),
+        *vault,
         address_word(index),
         *intake_id,
         u256(state as u64),
@@ -268,7 +269,8 @@ mod tests {
     /// Against `cast abi-encode` of the same arguments, then `cast keccak`.
     #[test]
     fn digests_match_solidity() {
-        let (v, i) = (h20(VAULT), h20(INDEX));
+        // An EVM vault's id is its address as a word, which encodes exactly as the address did.
+        let (v, i) = (address_word(&h20(VAULT)), h20(INDEX));
         assert_eq!(
             index_digest(900, &v, &i, true, 5000, 70),
             h32("28f9869e4f8936341babb928cb7b6888fba387b81c11825a1781134c8ee69a4a")
@@ -285,6 +287,23 @@ mod tests {
         assert_eq!(
             intake_digest(900, &v, &i, &id, 2, false, 0),
             h32("6a4afe70fb1fde2003ca24af9451d14d8657374390fae92bad4e6a8ae513653d")
+        );
+    }
+
+    /// A Solana vault's id is its whole 32-byte key: against `cast abi-encode` and `cast keccak` of the Solidity
+    /// preimage with a `bytes32` vault.
+    #[test]
+    fn digests_carry_the_whole_vault_id() {
+        let v = h32("9f1cb2a7e3c34a8d1e6f0b5a2c7d9e1f3a5b7c9d0e2f4a6b8c0d1e3f5a7b9c1d");
+        let i = h20(INDEX);
+        assert_eq!(
+            index_digest(900, &v, &i, true, 5000, 70),
+            h32("c0727678a1e5c7216f562387517c5901ba76884e63cd6a4d93cdf8b4b7a06d84")
+        );
+        let id = h32("0000000066000000000000000000000000000000000000000000000000000007");
+        assert_eq!(
+            intake_digest(900, &v, &i, &id, 1, true, 1_400_000_000),
+            h32("f22a0990b2764e04aa005e7e4e73010f37e17fbe990e3552aaa4e143c7457f75")
         );
     }
 

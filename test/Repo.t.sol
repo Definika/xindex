@@ -280,6 +280,7 @@ contract RepoTest is Test {
         assertEq(_slotOf(hub, "_claimOf"), 11);
         assertEq(_slotOf(hub, "_recovery"), 59);
         assertEq(_slotOf(hub, "_settledIntakes"), 60);
+        assertEq(_slotOf(hub, "_sentMessages"), 62);
         string memory vault = _read("out/XindexVault.sol/XindexVault.json");
         assertEq(_slotOf(vault, "indexDigest"), 14);
         assertEq(_slotOf(vault, "intakeDigest"), 15);

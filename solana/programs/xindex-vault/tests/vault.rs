@@ -69,10 +69,10 @@ fn only_the_factorys_clones_register() {
     let (mut h, index) = Harness::ready();
     let s = h.index(&index);
     assert_eq!(s.index, index);
-    let vault_address = vault::vault_address(&h.config);
+    let vault_id = vault::vault_id(&h.config);
     assert_eq!(
         s.digest,
-        abi::index_digest(CHAIN_ID, &vault_address, &index, false, 0, 0)
+        abi::index_digest(CHAIN_ID, &vault_id, &index, false, 0, 0)
     );
     h.register(index, [1u8; 32]).expect_ok(); // again: nothing changes
     let (other, _) = index_of(2);
@@ -99,12 +99,12 @@ fn a_deposit_opens_an_intake_within_its_rules() {
         (i.state, i.total, i.has_native),
         (INTAKE_OPEN, 5 * SOL, true)
     );
-    let vault_address = vault::vault_address(&h.config);
+    let vault_id = vault::vault_id(&h.config);
     assert_eq!(
         i.digest,
         abi::intake_digest(
             CHAIN_ID,
-            &vault_address,
+            &vault_id,
             &index,
             &intake,
             INTAKE_OPEN,
@@ -152,16 +152,16 @@ fn a_settled_intake_joins_the_index_once() {
     let intake = h.fund(index, 10 * SOL);
     let s = h.index(&index);
     assert_eq!((s.balance, s.has_native), (10 * SOL, true));
-    let vault_address = vault::vault_address(&h.config);
+    let vault_id = vault::vault_id(&h.config);
     assert_eq!(
         s.digest,
-        abi::index_digest(CHAIN_ID, &vault_address, &index, true, 10 * SOL, 0)
+        abi::index_digest(CHAIN_ID, &vault_id, &index, true, 10 * SOL, 0)
     );
     let i = h.intake(&index, &intake);
     assert_eq!(i.state, INTAKE_SETTLED_STATE);
     assert_eq!(
         i.digest,
-        abi::intake_digest(CHAIN_ID, &vault_address, &index, &intake, 2, true, 10 * SOL)
+        abi::intake_digest(CHAIN_ID, &vault_id, &index, &intake, 2, true, 10 * SOL)
     );
     // Settled for good: another settle or a fail of it is refused.
     h.deliver_intake(index, intake, INTAKE_FAILED, By::Both)
@@ -322,18 +322,11 @@ fn a_burn_pays_within_the_speed_limit_and_owes_the_rest() {
         SOL + 4 * SOL + 3_840_000_000,
         "4% of the 96 left"
     );
-    let vault_address = vault::vault_address(&h.config);
+    let vault_id = vault::vault_id(&h.config);
     let s = h.index(&index);
     assert_eq!(
         s.digest,
-        abi::index_digest(
-            CHAIN_ID,
-            &vault_address,
-            &index,
-            true,
-            s.balance,
-            s.paid_total
-        )
+        abi::index_digest(CHAIN_ID, &vault_id, &index, true, s.balance, s.paid_total)
     );
     assert_eq!(h.config().held, s.balance);
     assert_eq!(
@@ -492,11 +485,11 @@ fn a_migration_moves_within_the_speed_limit() {
     h.warp(25 * 3600);
     h.release_migration(index, id, next).expect_ok();
     assert_eq!(h.index(&next).balance, 4 * SOL + 3_840_000_000);
-    let vault_address = vault::vault_address(&h.config);
+    let vault_id = vault::vault_id(&h.config);
     let n = h.index(&next);
     assert_eq!(
         n.digest,
-        abi::index_digest(CHAIN_ID, &vault_address, &next, true, n.balance, 0)
+        abi::index_digest(CHAIN_ID, &vault_id, &next, true, n.balance, 0)
     );
 
     // To itself: the new index's account is the old one's, which the instruction may not take mutably twice

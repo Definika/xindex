@@ -3,12 +3,11 @@ pragma solidity 0.8.28;
 
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import {IXindexVault} from "../interfaces/IXindexVault.sol";
 import {IEthereumEventVerifier} from "../interfaces/IEthereumEventVerifier.sol";
 import {IStateReader} from "../interfaces/IStateReader.sol";
 import {VaultMessages} from "../libraries/VaultMessages.sol";
+import {VaultSnapshot} from "./VaultSnapshot.sol";
 
 /// @title XindexVault
 /// @notice The vault an EVM chain (BNB Chain, HyperEVM, Tron) runs for every index whose shares live on Ethereum. It
@@ -46,21 +45,13 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
     bytes32 private constant INDEX_DIGEST_DOMAIN = keccak256("xindex.v4.vault.index-digest");
     bytes32 private constant INTAKE_DIGEST_DOMAIN = keccak256("xindex.v4.vault.intake-digest");
 
-    /// @dev The hub's storage a snapshot exit reads (`HybridHubStorage`, and OpenZeppelin's ERC-20 namespace), pinned by
-    ///      `test_theHubLayoutIsPinned` against the compiler's layout: the shares' balances, `_components` (slot 0,
-    ///      each `(units << 160) | token`), `_claimOf` (11), `_recovery` (59) and `_settledIntakes` (60).
-    bytes32 private constant HUB_SHARES = 0x52c63247e1f47db19d5ce0460030c497f067ca4cebf71ba98eeadabe20bace00;
-    uint256 private constant HUB_COMPONENTS_SLOT = 0;
-    uint256 private constant HUB_CLAIMS_SLOT = 11;
-    uint256 private constant HUB_RECOVERY_SLOT = 59;
+    /// @dev The hub's storage the vault itself reads at its snapshot (`HybridHubStorage`), pinned by
+    ///      `test_theHubLayoutIsPinned` against the compiler's layout: `_settledIntakes` (60) and `_sentMessages` (62).
+    ///      A holder's claim reads more, in `VaultSnapshot`.
     uint256 private constant HUB_SETTLED_INTAKES_SLOT = 60;
-    /// @dev The factory's id of a vault token on Ethereum: `vaultTokenId(chainId, tokenId)`.
-    bytes32 private constant VAULT_TOKEN_DOMAIN = keccak256("xindex.v4.vault-token");
-    uint256 private constant UNITS_SHIFT = 160;
+    uint256 private constant HUB_SENT_MESSAGES_SLOT = 62;
     /// @dev The key of a waiting freezer change, which the freezer may not cancel and a freeze does not hold.
     bytes32 private constant FREEZER_KEY = bytes32(uint256(VaultMessages.FREEZER_CHANGE) << 160);
-    bytes32 private constant EIP712_DOMAIN_TYPEHASH =
-        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
     bytes32 private constant SNAPSHOT_CLAIM_TYPEHASH =
         keccak256("SnapshotClaim(address index,address holder,address recipient)");
 
@@ -224,10 +215,7 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         VaultMessages.Message memory m = VaultMessages.decode(payload);
         // Checked before anything reads the kind: dispatch below treats every kind it does not name as the last one.
         if (m.kind == 0 || m.kind > VaultMessages.VERIFIER_ROTATION) revert UnknownKind(m.kind);
-        if (
-            m.sourceChainId != SOURCE_CHAIN_ID || m.destChainId != block.chainid
-                || m.vault != bytes32(uint256(uint160(address(this))))
-        ) revert WrongRoute();
+        _checkRoute(m);
         bool governance = m.kind >= VaultMessages.CAP_UPDATE;
         if (governance ? (emitter != FACTORY || m.index != FACTORY) : emitter != m.index) revert WrongEmitter(emitter);
         // Any Ethereum contract can emit a VaultMessage naming itself; only the factory's clones of the hub are indexes.
@@ -246,6 +234,34 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
 
         if (m.kind < VaultMessages.CAP_UPDATE) _indexMessage(m, id);
         else _governanceMessage(m, loosening, both);
+    }
+
+    /// @inheritdoc IXindexVault
+    function deliverRecorded(bytes calldata payload, bytes calldata proof) external nonReentrant {
+        bytes32 id = keccak256(payload);
+        VaultMessages.Message memory m = VaultMessages.decode(payload);
+        // Every other kind in flight at the snapshot resolves without one: an intake's through `resolveIntake`, and
+        // governance not at all.
+        if (m.kind != VaultMessages.BURN && m.kind != VaultMessages.MIGRATE) revert UnknownKind(m.kind);
+        _checkRoute(m);
+        if (!isIndex[m.index]) revert NotAnIndex(m.index);
+        // The index marks each burn and migration in the transaction that sends it, and only it writes its storage, so
+        // its mark at the snapshot shows the index sent this message by then.
+        if (_readHub(m.index, keccak256(abi.encode(id, HUB_SENT_MESSAGES_SLOT)), proof) == bytes32(0)) {
+            revert NotRecorded(id);
+        }
+        if (used[id]) revert AlreadyDelivered(id);
+        used[id] = true;
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit MessageDelivered(id, m.kind, m.index);
+        _indexMessage(m, id);
+    }
+
+    function _checkRoute(VaultMessages.Message memory m) private view {
+        if (
+            m.sourceChainId != SOURCE_CHAIN_ID || m.destChainId != block.chainid
+                || m.vault != bytes32(uint256(uint160(address(this))))
+        ) revert WrongRoute();
     }
 
     function _indexMessage(VaultMessages.Message memory m, bytes32 id) private {
@@ -397,6 +413,8 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         if (amount == 0) revert ZeroAmount();
         if (to == address(0)) revert ZeroAddress();
         _owed[index][id] = Owed({token: t, toIndex: false, recipient: to, remaining: amount});
+        // Any call before this is a view: a verifier's, or the fixed state reader's in `deliverRecorded`.
+        // forge-lint: disable-next-line(reentrancy-events)
         emit BurnAccepted(index, id, t, amount, to);
         _release(index, id, false);
     }
@@ -529,6 +547,8 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         address t = _toAddress(token);
         if (amount == 0) revert ZeroAmount();
         _owed[index][id] = Owed({token: t, toIndex: true, recipient: newIndex, remaining: amount});
+        // Any call before this is a view: a verifier's, or the fixed state reader's in `deliverRecorded`.
+        // forge-lint: disable-next-line(reentrancy-events)
         emit MigrationAccepted(index, id, t, amount, newIndex);
         _release(index, id, false);
     }
@@ -664,12 +684,13 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         if (!isIndex[index]) revert NotAnIndex(index);
         if (recipient == address(0)) revert ZeroAddress();
         if (snapshotClaimed[index][holder]) revert AlreadyClaimed(index, holder);
-        (uint256 amount, address registered) = _snapshotShare(index, holder, component, proof);
+        (uint256 amount, address registered) =
+            VaultSnapshot.share(STATE_READER, _snapshotRoot(), index, holder, component, proof);
         if (registered != address(0)) {
             // A holder that registered a recovery address, such as a contract, is paid there and nowhere else.
             if (recipient != registered) revert WrongRecipient(registered);
         } else {
-            _checkClaimSignature(index, holder, recipient, signature);
+            VaultSnapshot.checkSignature(address(this), index, holder, recipient, signature);
         }
         snapshotClaimed[index][holder] = true;
         bytes32 id = keccak256(abi.encode(SNAPSHOT_CLAIM_TYPEHASH, index, holder));
@@ -681,40 +702,12 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         _release(index, id, false);
     }
 
-    /// @dev `holder`'s share of this chain's coin in `index` at the snapshot, read from the hub's storage there: its
-    ///      shares at the units then in force, rounded down, plus its claim of the coin; and its recovery address here.
-    function _snapshotShare(address index, address holder, uint256 component, bytes calldata proof)
-        private
-        view
-        returns (uint256 amount, address registered)
-    {
-        bytes32 root = _snapshotRoot();
-        address token = _ethereumId(NATIVE);
-        bytes32[] memory slots = new bytes32[](5);
-        slots[0] = keccak256(abi.encode(holder, HUB_SHARES));
-        slots[1] = bytes32(uint256(keccak256(abi.encode(HUB_COMPONENTS_SLOT))) + component);
-        slots[2] = keccak256(abi.encode(token, keccak256(abi.encode(holder, HUB_CLAIMS_SLOT))));
-        slots[3] = keccak256(abi.encode(block.chainid, keccak256(abi.encode(holder, HUB_RECOVERY_SLOT))));
-        slots[4] = bytes32(HUB_COMPONENTS_SLOT);
-        bytes32[] memory v = STATE_READER.readSlots(root, index, slots, proof);
-        // Inside the components array, whose length the slot itself holds: past it lies any other storage a holder
-        // could fill, an allowance included, with whatever "units" it likes (VLT-1).
-        if (component >= uint256(v[4]) || address(uint160(uint256(v[1]))) != token) revert WrongComponent(component);
-        amount = uint256(v[0]) * (uint256(v[1]) >> UNITS_SHIFT) / WAD + uint256(v[2]);
-        if (amount == 0) revert ZeroAmount();
-        // A value that is no address here counts as none, so a holder that mistyped one can still sign (VLT-I3).
-        registered = uint256(v[3]) >> 160 == 0 ? address(uint160(uint256(v[3]))) : address(0);
-    }
-
     /// @inheritdoc IXindexVault
     function resolveIntake(address index, uint256 intakeId, bytes calldata proof) external nonReentrant {
-        bytes32 root = _snapshotRoot();
         if (intakeState[index][intakeId] != IntakeState.Open) revert IntakeNotOpen(index, intakeId);
-        bytes32[] memory slots = new bytes32[](1);
-        slots[0] = keccak256(abi.encode(intakeId, HUB_SETTLED_INTAKES_SLOT));
         // The hub marks an intake settled in the transaction that sends its settle message, so its mark at the
         // checkpoint says whether that message was sent by then: nothing sent later will ever run here.
-        bool settled = STATE_READER.readSlots(root, index, slots, proof)[0] != bytes32(0);
+        bool settled = _readHub(index, keccak256(abi.encode(intakeId, HUB_SETTLED_INTAKES_SLOT)), proof) != bytes32(0);
         // forge-lint: disable-next-line(reentrancy-events)
         emit IntakeResolved(index, intakeId, settled);
         if (settled) _settleIntake(index, intakeId);
@@ -771,30 +764,16 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         if (_snapshot.stateRoot != bytes32(0)) revert SnapshotTaken();
     }
 
+    /// @dev One slot of `index`'s storage in Ethereum's state at the snapshot.
+    function _readHub(address index, bytes32 slot, bytes calldata proof) private view returns (bytes32) {
+        bytes32[] memory slots = new bytes32[](1);
+        slots[0] = slot;
+        return STATE_READER.readSlots(_snapshotRoot(), index, slots, proof)[0];
+    }
+
     function _snapshotRoot() private view returns (bytes32 root) {
         root = _snapshot.stateRoot;
         if (root == bytes32(0)) revert NoSnapshot();
-    }
-
-    /// @dev The factory's Ethereum-side id of this chain's `token`, as `vaultTokenId` computes it.
-    function _ethereumId(address token) private view returns (address) {
-        bytes32 tokenId = bytes32(uint256(uint160(token)));
-        return address(uint160(uint256(keccak256(abi.encode(VAULT_TOKEN_DOMAIN, block.chainid, tokenId)))));
-    }
-
-    /// @dev EIP-712: the holder signs, with its Ethereum key, that this vault may pay its snapshot share to `recipient`.
-    function _checkClaimSignature(address index, address holder, address recipient, bytes calldata signature)
-        private
-        view
-    {
-        bytes32 domain = keccak256(
-            abi.encode(EIP712_DOMAIN_TYPEHASH, keccak256("Xindex vault"), keccak256("1"), block.chainid, address(this))
-        );
-        bytes32 digest = MessageHashUtils.toTypedDataHash(
-            domain, keccak256(abi.encode(SNAPSHOT_CLAIM_TYPEHASH, index, holder, recipient))
-        );
-        (address signer, ECDSA.RecoverError err,) = ECDSA.tryRecover(digest, signature);
-        if (err != ECDSA.RecoverError.NoError || signer != holder) revert BadSignature();
     }
 
     // ---------------------------------------------------------------------

@@ -44,7 +44,7 @@ pub fn handle_release(ctx: Context<Release>, _index: [u8; 20], _id: [u8; 32]) ->
     vault::refresh_index(
         &mut accounts.index_state,
         config.chain_id,
-        &vault::vault_address(&config.key()),
+        &vault::vault_id(&config.key()),
     );
     vault::send(
         &accounts.treasury.to_account_info(),

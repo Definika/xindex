@@ -571,6 +571,14 @@ Review and adoption:
    module share, both near 24KB. Built instead: the index is mint-dead on that chain and redeemable as before, and its
    holders move to a version without the chain by migration, which carries only the components the new version holds.
 5. **Gas.** The settled mark is one more storage write, about 22,000 gas, on each order claim and each fill settlement.
+6. **Burns in flight are paid from the hub's record (built 30 September, the owner's call).** The hub marks every
+   `BURN` and `MIGRATE` it sends in `_sentMessages`, in the transaction that sends it: one more storage write, about
+   22,000 gas, per vault leg of every redemption, migration and sold fill leg. After the snapshot, anyone calls the
+   vault's `deliverRecorded(payload, proof)`, which reads that mark under the snapshot's state root and runs the message
+   as a delivered one would: owed, within the speed limit, once. So a burn issued before the break and never delivered
+   is paid, not lost, and the holder's snapshot share no longer counts the burned shares, so nothing is paid twice. The
+   claim's reading and signature check live in the linked library `VaultSnapshot`, which keeps the vault under
+   EIP-170's size limit.
 
 **Not built, stated plainly:**
 - **Look-through for the official pool's LPs.** The hub records no official pool yet, and a concentrated-liquidity
@@ -578,10 +586,6 @@ Review and adoption:
   the pool's storage. The choices are the owner's: which pool, V3 or V4, and whether to read positions by owner or by
   NFT. Until then, the pool's shares at the snapshot are unclaimable, and so are the shares of anyone who could neither
   sign nor register a recovery address.
-- **Burns in flight at the snapshot.** A burn issued at or before the snapshot but not yet delivered needs the old
-  verifiers to prove an event from before it. If they cannot, those coins stay in the vault. That is a redeemer's part
-  of a few minutes before the break. The fix is a per-burn record in the hub's storage, about 22,000 gas per vault burn
-  on every redemption, for the vault to pay from the snapshot's state; it is the owner's call.
 - **A forged exit record**, possible only with a broken state verifier, freezes one index's mints on that chain for
   good. That is a delay: holders migrate once the verifier is rotated.
 - **The real P1 and P2**, and a successor's proof of descent, belong to the proof system the owner picks after the GPU
@@ -609,9 +613,9 @@ limit and the same freeze. What Solana changes:
 
 - **Identity.** The vault is the program's `config` account. Its 32-byte key is what Ethereum registers as the chain's
   vault and names in every message.
-  - The hub builds digests with a vault's low 20 bytes (`_vaultAddress`), as for an EVM chain, so the program hashes
-    those same 20 bytes, the last 20 of its key. That is enough for the demonstration. For production, the digest
-    should carry all 32 bytes, a change to the hub and to both vaults.
+  - The digests carry the vault's whole 32-byte id, as the factory registers it: the program hashes its full key. An EVM
+    vault's id is its address as a word, which encodes exactly as the address did, so EVM digests are unchanged. Only
+    the state verifier is still asked about a 20-byte account, which each chain's verifier defines for itself.
 - **Chain id.** Solana has no EVM chain id. The program takes the id the factory's registry assigns it at
   initialization, and every message must name it.
 - **Coins.** Native SOL, in lamports, held by a system-owned `treasury` account the program signs for. Amounts from

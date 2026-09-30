@@ -261,7 +261,8 @@ export async function solanaIntake(index: Address, intakeId: Uint8Array) {
   };
 }
 
-/** The vault's address in the digests Ethereum proves: the last 20 bytes of its `config` key. */
+/** The account the Sepolia stub state verifier is asked about: the last 20 bytes of the vault's `config` key, as the
+ *  hub's `_vaultAddress` passes it. The digests themselves carry the whole key. */
 export const solanaVaultAddress = () => `0x${Buffer.from(configPda().toBytes().slice(12)).toString("hex")}` as Address;
 
 /** A message id, for logs. */

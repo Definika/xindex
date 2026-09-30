@@ -303,7 +303,7 @@ async function status() {
   console.log({
     sepolia: s,
     solanaConfig: sol.configPda().toBase58(),
-    solanaVaultAddressInDigests: sol.solanaVaultAddress(),
+    solanaVaultAccountForStateProofs: sol.solanaVaultAddress(),
     solanaTreasury: sol.treasuryPda().toBase58(),
   });
 }

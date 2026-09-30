@@ -1183,6 +1183,55 @@ contract XindexVaultTest is VaultTestBase {
         vault.freeze();
     }
 
+    /// @dev Marks `payload` as sent in the index's storage, where the hub's `_sentMessages` (slot 62) keeps it.
+    function _record(bytes memory payload) internal {
+        vm.store(index, keccak256(abi.encode(keccak256(payload), uint256(62))), bytes32(uint256(1)));
+    }
+
+    /// @dev A burn or migration in flight when P1 and P2 stopped, never delivered, runs after the snapshot on the index's
+    ///      own record of it, once, within the speed limit. Nothing else runs that way.
+    function test_deliverRecorded_paysWhatWasInFlight() public {
+        _fund(index, 10 ether);
+        bytes memory burn = _burnPayload(index, 1 ether, bob);
+        bytes32 id = keccak256(burn);
+        _record(burn);
+        vm.expectRevert(IXindexVault.NoSnapshot.selector);
+        vault.deliverRecorded(burn, "");
+        _snapshot();
+
+        vm.expectEmit(address(vault));
+        emit IXindexVault.MessageDelivered(id, VaultMessages.BURN, index);
+        vault.deliverRecorded(burn, "");
+        assertEq(bob.balance, 1 ether);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.AlreadyDelivered.selector, id));
+        vault.deliverRecorded(burn, "");
+
+        bytes memory unrecorded = _burnPayload(index, 1 ether, bob);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NotRecorded.selector, keccak256(unrecorded)));
+        vault.deliverRecorded(unrecorded, "");
+        bytes memory settle = _payload(VaultMessages.INTAKE_SETTLED, index, abi.encode(uint256(1)));
+        _record(settle);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.UnknownKind.selector, VaultMessages.INTAKE_SETTLED));
+        vault.deliverRecorded(settle, "");
+        VaultMessages.Message memory m = VaultMessages.decode(_burnPayload(index, 1 ether, bob));
+        m.destChainId = block.chainid + 1;
+        vm.expectRevert(IXindexVault.WrongRoute.selector);
+        vault.deliverRecorded(VaultMessages.encode(m), "");
+        address unregistered = _index(keccak256("unregistered"));
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NotAnIndex.selector, unregistered));
+        vault.deliverRecorded(_burnPayload(unregistered, 1 ether, bob), "");
+
+        // A migration in flight is owed to the new index, as a delivered one would be, and moves within the limit.
+        address next = _registered(keccak256("index-2"));
+        bytes memory migration = _payload(VaultMessages.MIGRATE, index, abi.encode(next, bytes32(0), 2 ether));
+        _record(migration);
+        vault.deliverRecorded(migration, "");
+        assertEq(vault.owed(index, keccak256(migration)).remaining, 2 ether, "the burn used the day's floor");
+        vm.warp(block.timestamp + 25 hours);
+        vault.release(index, keccak256(migration));
+        assertEq(vault.balance(next, address(0)), 1 ether, "the floor's worth a day");
+    }
+
     /// @dev After the snapshot, a message from a later Ethereum block never runs; one from its block or before does.
     function test_snapshot_refusesLaterMessages() public {
         _fund(index, 10 ether);

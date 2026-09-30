@@ -134,6 +134,7 @@ src/libraries/RlpReader.sol                Stage B: RLP read in place, the one l
 src/libraries/MerklePatricia.sol           Stage B: storage proofs from a state root (`eth_getProof` node lists)
 src/libraries/Bls12381.sol                 Stage B: BLS on the EIP-2537 precompiles, BNB Chain's vote ciphersuite
 src/vault/XindexVault.sol     Stage B: the ownerless vault on an EVM chain, native coin per index, speed limit, freeze (not deployed)
+src/vault/VaultSnapshot.sol   Stage B: the vault's linked library for a holder's snapshot claim: the hub's storage it reads, and the signature
 src/verifiers/BnbStateVerifier.sol  Stage B: BNB Chain's state on Ethereum from its own finality votes, following every epoch (not deployed)
 src/verifiers/EthereumStateReader.sol Stage B: reads Ethereum storage under a trusted root, for a vault's snapshot exit (not deployed)
 src/HybridIndexFactory.sol    Stage B: IndexFactory plus the chain registry, vault-token listings, the chain freeze and the template choice (not deployed)
@@ -414,8 +415,10 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
 - **The snapshot exit is final and speed-limited.** 180 days into a stall, the last checkpoint becomes the snapshot:
   no message from a later block runs, the freezer can no longer freeze, holders at it claim their share by signature
   or recovery address within the speed limit, and open intakes are settled or refunded from the hub's
-  `_settledIntakes`. The hub marks that in the transaction that sends each settle message; keep it that way. A hub that
-  records the exit never mints on that chain again. `test_theHubLayoutIsPinned` pins the slots each side reads.
+  `_settledIntakes`. The hub marks that in the transaction that sends each settle message; keep it that way. It also
+  marks every `BURN` and `MIGRATE` it sends in `_sentMessages`, in the same transaction, and the vault's
+  `deliverRecorded` pays one still in flight at the snapshot from that mark. A hub that records the exit never mints on
+  that chain again. `test_theHubLayoutIsPinned` pins the slots each side reads.
 - **Vault governance is delayed and public, twice.** The factory sends `CAP_UPDATE` only after `LISTING_DELAY`,
   `FREEZER_CHANGE` only after `GUARDIAN_DELAY` (the guardian cannot cancel it, as it cannot block its own replacement),
   and `VERIFIER_ROTATION` only after `ROTATION_DELAY` (30 days). P1 and P2 must always be two different verifiers.

@@ -103,6 +103,11 @@ contract HybridHubMigrationTest is HybridTest {
         assertEq(next.vaultBacking(native), 1.05e18);
         assertEq(old.sentOut(native), 1.4e18, "migrated and burned alike");
         assertEq(next.sentOut(native), 0);
+        // Both messages are marked sent, so a vault can pay them at its snapshot if they are still in flight then.
+        for (uint256 i = 0; i < logs.length; ++i) {
+            if (logs[i].topics.length == 0 || logs[i].topics[0] != VaultMessages.EVENT_TOPIC) continue;
+            assertTrue(old.messageSent(logs[i].topics[1]));
+        }
 
         // The vault moves 1.05 BNB to the new index's balance and pays 0.35 BNB to the holder's recipient.
         assertEq(_deliverAll(logs), 2);

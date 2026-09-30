@@ -148,7 +148,7 @@ pub fn handle_register_index(
     }
     state.index = index;
     state.bump = ctx.bumps.index_state;
-    vault::refresh_index(state, config.chain_id, &vault::vault_address(&config.key()));
+    vault::refresh_index(state, config.chain_id, &vault::vault_id(&config.key()));
     emit!(IndexRegistered { index, salt });
     Ok(())
 }

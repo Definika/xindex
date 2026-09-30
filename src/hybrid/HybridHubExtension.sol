@@ -128,6 +128,7 @@ contract HybridHubExtension is HybridHubStorage, HubShares, ReentrancyGuard, IHy
         _sentOut[token] += amount;
         bytes memory payload = _payload(j, VaultMessages.MIGRATE, abi.encode(newIndex, _vaultTokenOf[i], amount));
         bytes32 id = keccak256(payload);
+        _sentMessages[id] = true;
         // `_payload` only encodes; the lint reads its internal library call as an external one.
         // forge-lint: disable-next-line(reentrancy-events)
         emit VaultMessages.VaultMessage(id, payload);
@@ -223,7 +224,7 @@ contract HybridHubExtension is HybridHubStorage, HubShares, ReentrancyGuard, IHy
             abi.encode(
                 INDEX_DIGEST_DOMAIN,
                 chainId,
-                _vaultAddress(_chains[j].vault),
+                _chains[j].vault,
                 address(this),
                 record.tokens,
                 record.balances,
@@ -336,6 +337,11 @@ contract HybridHubExtension is HybridHubStorage, HubShares, ReentrancyGuard, IHy
     /// @inheritdoc IHybridHubExtension
     function exitedAt(uint256 chainId) external view returns (uint256) {
         return _exitedAt[chainId];
+    }
+
+    /// @inheritdoc IHybridHubExtension
+    function messageSent(bytes32 id) external view returns (bool) {
+        return _sentMessages[id];
     }
 
     /// @inheritdoc IHybridHubExtension

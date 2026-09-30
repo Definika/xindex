@@ -90,6 +90,36 @@ contract HybridHubExitTest is HybridTest {
         assertFalse(hub.intakeSettled(hub.intakeIdOf(orderId)), "locked, not claimed");
     }
 
+    /// @dev A burn in flight when the vault's verifiers stop, never delivered, is paid at the snapshot on the hub's own
+    ///      record of it. The holder's snapshot share no longer counts the burned shares, so nothing is paid twice.
+    function test_aBurnInFlightIsPaidAtTheSnapshot() public {
+        _mint(hub, minter, 1e18);
+        address bob = makeAddr("bob on the vault chain");
+        bytes32[] memory recipients = new bytes32[](1);
+        recipients[0] = _b32(bob);
+        vm.recordLogs();
+        vm.prank(minter);
+        hub.redeem(0.1e18, minter, recipients, 0);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes memory payload;
+        for (uint256 i = 0; i < logs.length; ++i) {
+            if (logs[i].topics.length != 0 && logs[i].topics[0] == VaultMessages.EVENT_TOPIC) {
+                payload = abi.decode(logs[i].data, (bytes));
+            }
+        }
+        assertTrue(hub.messageSent(keccak256(payload)));
+        assertFalse(hub.messageSent(keccak256("anything else")));
+        _checkpointAt(SNAPSHOT_BLOCK);
+        _snapshot();
+
+        vault.deliverRecorded(payload, "");
+        assertEq(bob.balance, 0.14e18, "0.1 shares at 1.4 a share");
+        (, uint256 minterKey) = makeAddrAndKey("minter");
+        address minterTo = makeAddr("minter's recipient");
+        vault.claimSnapshot(address(hub), minter, minterTo, 1, "", _sign(minterKey, minter, minterTo));
+        assertEq(minterTo.balance, 1.26e18, "the 0.9 shares left");
+    }
+
     /// @dev VLT-I6 and MOD-I1: after the exit, the vault's paid totals include the holders' claims and it resolves every intake
     ///      itself, so neither is evidence against it.
     function test_VLTI6_MODI1_noEvidenceAfterTheExit() public {

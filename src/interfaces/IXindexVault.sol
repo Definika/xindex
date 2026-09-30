@@ -158,6 +158,8 @@ interface IXindexVault {
     error StaleGovernance(uint256 nonce, uint256 last);
     /// @notice A message that moves coins or loosens a rule, from a block after the vault's checkpoint: advance it first.
     error NotCheckpointed(uint256 blockNumber, uint256 checkpoint);
+    /// @notice The index had not marked message `id` as sent at the snapshot.
+    error NotRecorded(bytes32 id);
     error NoPendingChange(bytes32 key);
     error ChangeNotReady(bytes32 key, uint256 readyAt);
 
@@ -285,6 +287,11 @@ interface IXindexVault {
 
     /// @notice Anyone. Runs one message proven final on Ethereum by P1 (`proof1`), P2 (`proof2`) or both.
     function deliver(bytes calldata proof1, bytes calldata proof2) external;
+
+    /// @notice Anyone, after the snapshot. Runs a BURN or MIGRATE that `payload` encodes, which its index sent by the
+    ///         snapshot and marked in its storage there, as `proof` shows under the snapshot's state root. A message in
+    ///         flight when P1 and P2 stopped is paid this way instead of being lost.
+    function deliverRecorded(bytes calldata payload, bytes calldata proof) external;
 
     /// @notice Anyone, while not frozen. Pays what the speed limit now allows of an owed burn or migration.
     function release(address index, bytes32 id) external;

@@ -170,7 +170,7 @@ pub fn handle_deliver_burn<'info>(
     vault::refresh_index(
         &mut accounts.index_state,
         config.chain_id,
-        &vault::vault_address(&config.key()),
+        &vault::vault_id(&config.key()),
     );
     vault::send(
         &accounts.treasury.to_account_info(),
@@ -236,7 +236,7 @@ pub fn handle_deliver_intake<'info>(
         INTAKE_OPEN => {}
         _ => return err!(VaultError::IntakeNotOpen),
     }
-    let vault_address = vault::vault_address(&accounts.config.key());
+    let vault_id = vault::vault_id(&accounts.config.key());
     let chain_id = accounts.config.chain_id;
     if m.kind == INTAKE_SETTLED {
         intake.state = INTAKE_SETTLED_STATE;
@@ -244,13 +244,13 @@ pub fn handle_deliver_intake<'info>(
             let state = &mut accounts.index_state;
             state.balance += intake.total;
             state.has_native = true;
-            vault::refresh_index(state, chain_id, &vault_address);
+            vault::refresh_index(state, chain_id, &vault_id);
         }
-        vault::refresh_intake(intake, chain_id, &vault_address);
+        vault::refresh_intake(intake, chain_id, &vault_id);
         emit!(IntakeSettled { index, intake_id });
     } else {
         intake.state = INTAKE_FAILED_STATE;
-        vault::refresh_intake(intake, chain_id, &vault_address);
+        vault::refresh_intake(intake, chain_id, &vault_id);
         emit!(IntakeFailed { index, intake_id });
     }
     Ok(())
@@ -349,11 +349,11 @@ pub fn credit_migration(
     new: &mut IndexState,
     pay: u64,
 ) {
-    let vault_address = vault::vault_address(&config.key());
+    let vault_id = vault::vault_id(&config.key());
     new.balance += pay;
     new.has_native = true;
-    vault::refresh_index(old, config.chain_id, &vault_address);
-    vault::refresh_index(new, config.chain_id, &vault_address);
+    vault::refresh_index(old, config.chain_id, &vault_id);
+    vault::refresh_index(new, config.chain_id, &vault_id);
 }
 
 // ---------------------------------------------------------------------

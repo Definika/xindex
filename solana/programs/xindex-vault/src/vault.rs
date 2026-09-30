@@ -9,13 +9,12 @@ use crate::error::VaultError;
 use crate::events::Paid;
 use crate::state::{Config, IndexState, Intake, Owed};
 
-/// The vault's address in the digests Ethereum proves: the last 20 bytes of its 32-byte key, the part the hub's
-/// `_vaultAddress` keeps (Stage B spec, section 7).
-pub fn vault_address(config: &Pubkey) -> [u8; 20] {
-    config.to_bytes()[12..].try_into().unwrap()
+/// The vault's id in the digests Ethereum proves: its whole 32-byte key, as the factory's registry holds it.
+pub fn vault_id(config: &Pubkey) -> [u8; 32] {
+    config.to_bytes()
 }
 
-pub fn refresh_index(index: &mut IndexState, chain_id: u64, vault: &[u8; 20]) {
+pub fn refresh_index(index: &mut IndexState, chain_id: u64, vault: &[u8; 32]) {
     index.digest = abi::index_digest(
         chain_id,
         vault,
@@ -26,7 +25,7 @@ pub fn refresh_index(index: &mut IndexState, chain_id: u64, vault: &[u8; 20]) {
     );
 }
 
-pub fn refresh_intake(intake: &mut Intake, chain_id: u64, vault: &[u8; 20]) {
+pub fn refresh_intake(intake: &mut Intake, chain_id: u64, vault: &[u8; 32]) {
     intake.digest = abi::intake_digest(
         chain_id,
         vault,

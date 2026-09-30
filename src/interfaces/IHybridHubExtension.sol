@@ -65,6 +65,10 @@ interface IHybridHubExtension is IHybridHubTypes {
     /// @notice When `chainId`'s snapshot exit was recorded here; zero if it was not.
     function exitedAt(uint256 chainId) external view returns (uint256);
 
+    /// @notice Whether this index sent the BURN or MIGRATE with id `id`. A vault reads it at its snapshot to pay a
+    ///         message still in flight then.
+    function messageSent(bytes32 id) external view returns (bool);
+
     /// @notice Anyone. Proves that claimed order `orderId`'s intake on `chainId` is, after its deadline, neither the
     ///         deposits the order was claimed on (`proof.tokens`, `proof.totals`) still open nor the same deposits
     ///         settled. Freezes the chain, for every index and on the vault.

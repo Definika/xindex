@@ -165,6 +165,9 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
     mapping(uint256 intakeId => bool) internal _settledIntakes;
     /// @dev When a chain's snapshot exit was recorded here: from then on nothing mints on it again.
     mapping(uint256 chainId => uint256) internal _exitedAt;
+    /// @dev Every BURN and MIGRATE this index sent, by message id, marked in the transaction that sends it: the vault
+    ///      reads it at slot 62 to pay a message still in flight at its snapshot, which could never be delivered.
+    mapping(bytes32 id => bool) internal _sentMessages;
 
     modifier onlyInitialized() {
         _checkInitialized();
@@ -306,11 +309,10 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
     ) internal view returns (bytes32) {
         if (tokens.length != totals.length) revert LengthMismatch();
         VaultChain memory c = _chains[j];
-        return keccak256(
-            abi.encode(
-                INTAKE_DIGEST_DOMAIN, c.chainId, _vaultAddress(c.vault), address(this), intakeId, state, tokens, totals
-            )
-        );
+        return
+            keccak256(
+                abi.encode(INTAKE_DIGEST_DOMAIN, c.chainId, c.vault, address(this), intakeId, state, tokens, totals)
+            );
     }
 
     /// @dev The `i`-th component's total in an intake's preimage; zero if it has none.
@@ -371,6 +373,7 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
         _sentOut[token] += amount;
         bytes memory payload = _payload(j, VaultMessages.BURN, abi.encode(_vaultTokenOf[i], amount, recipient));
         bytes32 id = keccak256(payload);
+        _sentMessages[id] = true;
         // `_payload` only encodes; the lint reads its internal library call as an external one.
         // forge-lint: disable-next-line(reentrancy-events)
         emit VaultMessages.VaultMessage(id, payload);

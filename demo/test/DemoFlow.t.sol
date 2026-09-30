@@ -144,8 +144,7 @@ contract DemoFlowTest is Test {
         return abi.encode(block.number, l.emitter, l.topics[0], l.topics[1], l.data, _sign(w, digest));
     }
 
-    /// @dev The Solana program's intake digest (its `abi::intake_digest`): the vault's address is its key's low 20
-    ///      bytes, as the hub's `_vaultAddress` keeps them.
+    /// @dev The Solana program's intake digest (its `abi::intake_digest`), over the vault's whole 32-byte key.
     function _solanaIntakeDigest(uint256 intakeId, uint8 state, uint256 total) internal view returns (bytes32) {
         address[] memory tokens = new address[](1);
         uint256[] memory totals = new uint256[](1);
@@ -154,7 +153,7 @@ contract DemoFlowTest is Test {
             abi.encode(
                 keccak256("xindex.v4.vault.intake-digest"),
                 SOLANA,
-                address(uint160(uint256(solanaVault))),
+                solanaVault,
                 address(index),
                 intakeId,
                 state,
