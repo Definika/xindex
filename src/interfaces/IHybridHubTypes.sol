@@ -186,8 +186,17 @@ interface IHybridHubTypes is IXindexErrors {
     ///         claimed on nor the same deposits settled: the proof it was claimed on was false.
     event DepositDisproved(uint256 indexed orderId, uint256 indexed chainId, bytes32 proven);
 
+    /// @notice `holder` will be paid at `recipient` on `chainId`'s snapshot exit.
+    event RecoveryAddressSet(address indexed holder, uint256 indexed chainId, bytes32 recipient);
+    /// @notice `chainId`'s vault began its snapshot exit, at the Ethereum state `root`.
+    event ChainExitRecorded(uint256 indexed chainId, bytes32 root);
+
     /// @notice `index` is not another HybridHub index of this factory.
     error NotAVersion(address index);
+    /// @notice `chainId`'s snapshot exit is already recorded.
+    error ChainExited(uint256 chainId);
+    /// @notice `chainId` has not exited.
+    error ChainNotExited(uint256 chainId);
     /// @notice `required` of `token` is needed for the new shares and only `available` comes from the old ones.
     error MigrationShort(address token, uint256 available, uint256 required);
 }

@@ -3,8 +3,11 @@ pragma solidity 0.8.28;
 
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import {IXindexVault} from "../interfaces/IXindexVault.sol";
 import {IEthereumEventVerifier} from "../interfaces/IEthereumEventVerifier.sol";
+import {IStateReader} from "../interfaces/IStateReader.sol";
 import {VaultMessages} from "../libraries/VaultMessages.sol";
 
 /// @title XindexVault
@@ -14,7 +17,9 @@ import {VaultMessages} from "../libraries/VaultMessages.sol";
 ///         sent by that index or by the factory. Payouts stay within a speed limit, exact over any 24 hours.
 /// @dev No owner, no upgrade. Every coin the vault accounts for is in `held`: settled balances plus the deposits of
 ///      open and failed intakes not yet refunded. State is written before any coin moves, and every entry point that
-///      can move a coin shares one reentrancy guard.
+///      can move a coin shares one reentrancy guard. If Ethereum's formats change unannounced and P1 and P2 stop
+///      working, the vault stalls, may adopt a successor pair after a continuity test and 30 days of review, and after
+///      180 days pays each index's holders at its last checkpoint directly (design 6.9).
 contract XindexVault is IXindexVault, ReentrancyGuard {
     /// @inheritdoc IXindexVault
     uint256 public constant SPEED_LIMIT = 0.04e18;
@@ -22,6 +27,14 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
     uint256 public constant FREEZE_DURATION = 14 days;
     /// @inheritdoc IXindexVault
     uint256 public constant MAX_INTAKE_LIFE = 7 days;
+    /// @inheritdoc IXindexVault
+    uint256 public constant STALL_PERIOD = 7 days;
+    /// @inheritdoc IXindexVault
+    uint256 public constant RECOVERY_DELAY = 30 days;
+    /// @inheritdoc IXindexVault
+    uint256 public constant MAX_RECOVERY_VETOES = 2;
+    /// @inheritdoc IXindexVault
+    uint256 public constant SNAPSHOT_EXIT_DELAY = 180 days;
 
     uint256 private constant WAD = 1e18;
     /// @dev The current hour and the 24 before it: every real 24-hour span lies inside them.
@@ -31,12 +44,32 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
     bytes32 private constant INDEX_DIGEST_DOMAIN = keccak256("xindex.v4.vault.index-digest");
     bytes32 private constant INTAKE_DIGEST_DOMAIN = keccak256("xindex.v4.vault.intake-digest");
 
+    /// @dev The hub's storage a snapshot exit reads (`HybridHubStorage`, and OpenZeppelin's ERC-20 namespace), pinned by
+    ///      `test_theHubLayoutIsPinned` against the compiler's layout: the shares' balances, `_components` (slot 0,
+    ///      each `(units << 160) | token`), `_claimOf` (11), `_recovery` (59) and `_settledIntakes` (60).
+    bytes32 private constant HUB_SHARES = 0x52c63247e1f47db19d5ce0460030c497f067ca4cebf71ba98eeadabe20bace00;
+    uint256 private constant HUB_COMPONENTS_SLOT = 0;
+    uint256 private constant HUB_CLAIMS_SLOT = 11;
+    uint256 private constant HUB_RECOVERY_SLOT = 59;
+    uint256 private constant HUB_SETTLED_INTAKES_SLOT = 60;
+    /// @dev The factory's id of a vault token on Ethereum: `vaultTokenId(chainId, tokenId)`.
+    bytes32 private constant VAULT_TOKEN_DOMAIN = keccak256("xindex.v4.vault-token");
+    uint256 private constant UNITS_SHIFT = 160;
+    bytes32 private constant EIP712_DOMAIN_TYPEHASH =
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+    bytes32 private constant SNAPSHOT_CLAIM_TYPEHASH =
+        keccak256("SnapshotClaim(address index,address holder,address recipient)");
+
     /// @inheritdoc IXindexVault
     uint256 public immutable SOURCE_CHAIN_ID;
     /// @inheritdoc IXindexVault
     address public immutable FACTORY;
     /// @inheritdoc IXindexVault
     address public immutable HUB_IMPLEMENTATION;
+    /// @inheritdoc IXindexVault
+    address public immutable RECOVERY_PROPOSER;
+    /// @inheritdoc IXindexVault
+    IStateReader public immutable STATE_READER;
 
     /// @inheritdoc IXindexVault
     IEthereumEventVerifier public p1;
@@ -88,40 +121,42 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
 
     mapping(address index => mapping(address token => Bucket[BUCKETS])) private _outflow;
 
-    /// @param sourceChainId Ethereum's chain id, which every message must name.
-    /// @param factory The factory on Ethereum.
-    /// @param hubImplementation The hub template on Ethereum that every index is a clone of.
-    /// @param verifier1 P1, the first Ethereum-event verifier on this chain.
-    /// @param verifier2 P2, the second, independent one.
-    /// @param freezer_ The guardian's freeze address on this chain.
-    /// @param nativeCap The quantity cap on the native coin across all indexes.
-    /// @param nativeFloor The native coin's outflow floor (section 1, proposal 5 of the Stage B spec).
-    constructor(
-        uint256 sourceChainId,
-        address factory,
-        address hubImplementation,
-        IEthereumEventVerifier verifier1,
-        IEthereumEventVerifier verifier2,
-        address freezer_,
-        uint256 nativeCap,
-        uint256 nativeFloor
-    ) {
+    IEthereumEventVerifier.Checkpoint private _checkpoint;
+    IEthereumEventVerifier.Checkpoint private _snapshot;
+    Successor private _successor;
+    /// @inheritdoc IXindexVault
+    bytes32 public lastMessage;
+    /// @inheritdoc IXindexVault
+    uint256 public vetoes;
+    /// @dev The checkpoint whose stall `vetoes` counts, by its block: a new checkpoint begins a new count.
+    uint256 private _vetoStall;
+    /// @inheritdoc IXindexVault
+    mapping(address index => mapping(address holder => bool)) public snapshotClaimed;
+
+    /// @param config The vault's settings: see {Config}.
+    constructor(Config memory config) {
         if (
-            factory == address(0) || hubImplementation == address(0) || address(verifier1) == address(0)
-                || address(verifier2) == address(0) || freezer_ == address(0)
+            config.factory == address(0) || config.hubImplementation == address(0)
+                || address(config.verifier1) == address(0) || address(config.verifier2) == address(0)
+                || config.freezer == address(0) || config.recoveryProposer == address(0)
         ) revert ZeroAddress();
-        if (address(verifier1).code.length == 0) revert NotAContract(address(verifier1));
-        if (address(verifier2).code.length == 0) revert NotAContract(address(verifier2));
-        if (verifier1 == verifier2) revert VerifiersNotDistinct();
-        SOURCE_CHAIN_ID = sourceChainId;
-        FACTORY = factory;
-        HUB_IMPLEMENTATION = hubImplementation;
-        p1 = verifier1;
-        p2 = verifier2;
-        freezer = freezer_;
-        cap[NATIVE] = nativeCap;
-        outflowFloor[NATIVE] = nativeFloor;
-        emit CapSet(NATIVE, nativeCap, nativeFloor);
+        _checkPair(address(config.verifier1), address(config.verifier2));
+        if (address(config.stateReader).code.length == 0) revert NotAContract(address(config.stateReader));
+        SOURCE_CHAIN_ID = config.sourceChainId;
+        FACTORY = config.factory;
+        HUB_IMPLEMENTATION = config.hubImplementation;
+        RECOVERY_PROPOSER = config.recoveryProposer;
+        STATE_READER = config.stateReader;
+        p1 = config.verifier1;
+        p2 = config.verifier2;
+        freezer = config.freezer;
+        cap[NATIVE] = config.nativeCap;
+        outflowFloor[NATIVE] = config.nativeFloor;
+        // Its first week's grace: a stall is a week without a new checkpoint, counted from deployment until the first.
+        // A block timestamp fits 64 bits for billions of years.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        _checkpoint.timestamp = uint64(block.timestamp);
+        emit CapSet(NATIVE, config.nativeCap, config.nativeFloor);
     }
 
     // ---------------------------------------------------------------------
@@ -141,6 +176,8 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
     function deposit(address index, uint256 intakeId) external payable nonReentrant {
         if (!isIndex[index]) revert NotAnIndex(index);
         _checkNotFrozen();
+        // A stalled vault may never again see the message that would settle or fail an intake.
+        if (stalled()) revert VaultStalled(stallStart());
         uint256 amount = msg.value;
         if (amount == 0) revert ZeroAmount();
         uint256 deadline = intakeId >> 192; // an intake id is `(deadline << 192) | nonce` (VaultMessages)
@@ -171,7 +208,10 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
 
     /// @inheritdoc IXindexVault
     function deliver(bytes calldata proof1, bytes calldata proof2) external nonReentrant {
-        (address emitter, bytes memory payload, bool both) = _prove(proof1, proof2);
+        (uint256 blockNumber, address emitter, bytes memory payload, bool both) = _prove(proof1, proof2);
+        // After a snapshot exit, only what Ethereum sent by its checkpoint may run: the holders at it are paid directly.
+        uint256 snapshotBlock = _snapshot.blockNumber;
+        if (snapshotBlock != 0 && blockNumber > snapshotBlock) revert IssuedAfterSnapshot(blockNumber);
         bytes32 id = keccak256(payload);
         VaultMessages.Message memory m = VaultMessages.decode(payload);
         // Checked before anything reads the kind: dispatch below treats every kind it does not name as the last one.
@@ -187,6 +227,7 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         if (!both && _needsBoth(m)) revert BothProofsRequired(m.kind);
         if (used[id]) revert AlreadyDelivered(id);
         used[id] = true;
+        lastMessage = id;
         emit MessageDelivered(id, m.kind, m.index);
 
         if (m.kind < VaultMessages.CAP_UPDATE) _indexMessage(m, id);
@@ -222,31 +263,31 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         } else {
             (bytes32 a, bytes32 b) = abi.decode(m.body, (bytes32, bytes32));
             (address newP1, address newP2) = (_toAddress(a), _toAddress(b));
-            if (newP1.code.length == 0) revert NotAContract(newP1);
-            if (newP2.code.length == 0) revert NotAContract(newP2);
-            if (newP1 == newP2) revert VerifiersNotDistinct();
+            _checkPair(newP1, newP2);
             p1 = IEthereumEventVerifier(newP1);
             p2 = IEthereumEventVerifier(newP2);
             emit VerifiersRotated(newP1, newP2);
         }
     }
 
-    /// @dev Verifies one or both proofs and returns the log's emitter and the message payload. With both, P1 and P2 must
-    ///      prove the same log.
+    /// @dev Verifies one or both proofs and returns the log's block, its emitter and the message payload. With both,
+    ///      P1 and P2 must prove the same log in the same block.
     function _prove(bytes calldata proof1, bytes calldata proof2)
         private
         view
-        returns (address emitter, bytes memory payload, bool both)
+        returns (uint256 blockNumber, address emitter, bytes memory payload, bool both)
     {
         both = proof1.length != 0 && proof2.length != 0;
         if (proof1.length != 0) {
-            (emitter, payload) = _verify(p1, proof1);
+            (blockNumber, emitter, payload) = _verify(p1, proof1);
             if (both) {
-                (address emitter2, bytes memory payload2) = _verify(p2, proof2);
-                if (emitter2 != emitter || keccak256(payload2) != keccak256(payload)) revert ProofsDisagree();
+                (uint256 block2, address emitter2, bytes memory payload2) = _verify(p2, proof2);
+                if (block2 != blockNumber || emitter2 != emitter || keccak256(payload2) != keccak256(payload)) {
+                    revert ProofsDisagree();
+                }
             }
         } else if (proof2.length != 0) {
-            (emitter, payload) = _verify(p2, proof2);
+            (blockNumber, emitter, payload) = _verify(p2, proof2);
         } else {
             revert NoProof();
         }
@@ -255,13 +296,15 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
     function _verify(IEthereumEventVerifier verifier, bytes calldata proof)
         private
         view
-        returns (address emitter, bytes memory payload)
+        returns (uint256 blockNumber, address emitter, bytes memory payload)
     {
-        (address e, bytes32 topic0, bytes32 topic1, bytes memory data) = verifier.verifyEvent(proof);
+        bytes32 topic0;
+        bytes32 topic1;
+        bytes memory data;
+        (blockNumber, emitter, topic0, topic1, data) = verifier.verifyEvent(proof);
         if (topic0 != VaultMessages.EVENT_TOPIC) revert NotAVaultMessage(topic0);
         payload = abi.decode(data, (bytes));
         if (keccak256(payload) != topic1) revert IdMismatch(topic1);
-        emitter = e;
     }
 
     /// @dev Whether a message needs both proofs: everything that moves coins or changes governance does. Only a freeze,
@@ -316,6 +359,8 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         balance[index][token] -= pay;
         paidTotal[index][token] += pay;
         _recordOutflow(index, token, pay);
+        // Only views precede a payout: the verifiers, or the fixed state reader of a snapshot claim, by staticcall.
+        // forge-lint: disable-next-line(reentrancy-events)
         emit Paid(index, id, recipient, pay, remaining - pay);
         _refreshIndexDigest(index);
         if (toIndex) {
@@ -374,6 +419,8 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
             address t = tokens[i];
             _credit(index, t, intakeTotal[index][intakeId][t]);
         }
+        // Only views precede this: the verifiers, or the fixed state reader of a snapshot, by staticcall.
+        // forge-lint: disable-next-line(reentrancy-events)
         emit IntakeSettled(index, intakeId);
         _refreshIntakeDigest(index, intakeId);
         _refreshIndexDigest(index);
@@ -383,6 +430,8 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         IntakeState state = intakeState[index][intakeId];
         if (state == IntakeState.Settled || state == IntakeState.Failed) revert IntakeNotOpen(index, intakeId);
         intakeState[index][intakeId] = IntakeState.Failed;
+        // Only views precede this: the verifiers, or the fixed state reader of a snapshot, by staticcall.
+        // forge-lint: disable-next-line(reentrancy-events)
         emit IntakeFailed(index, intakeId);
         _refreshIntakeDigest(index, intakeId);
     }
@@ -420,6 +469,8 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
     /// @inheritdoc IXindexVault
     function freeze() external {
         if (msg.sender != freezer) revert NotFreezer(msg.sender);
+        // Nothing could replace the freezer after a snapshot, so it must not be able to hold the exit off for good.
+        _checkNoSnapshot();
         _freeze(msg.sender);
     }
 
@@ -431,6 +482,248 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
 
     function _checkNotFrozen() private view {
         if (block.timestamp < frozenUntil) revert VaultFrozen(frozenUntil);
+    }
+
+    // ---------------------------------------------------------------------
+    // Checkpoints, stall recovery and the snapshot exit (design 6.9)
+    // ---------------------------------------------------------------------
+
+    /// @inheritdoc IXindexVault
+    function advanceCheckpoint(bytes calldata proof1, bytes calldata proof2) external {
+        _checkNoSnapshot();
+        IEthereumEventVerifier.Checkpoint memory c = _agreed(p1, p2, proof1, proof2);
+        _checkNewer(c);
+        _checkpoint = c;
+        emit CheckpointAdvanced(c.blockNumber, c.timestamp, c.stateRoot);
+        // The pair in force works again: whatever stall a successor was proposed for is over.
+        if (_successor.reviewEnds != 0) {
+            delete _successor;
+            emit SuccessorLapsed();
+        }
+    }
+
+    /// @inheritdoc IXindexVault
+    function stalled() public view returns (bool) {
+        return block.timestamp > stallStart();
+    }
+
+    /// @inheritdoc IXindexVault
+    function stallStart() public view returns (uint256) {
+        return uint256(_checkpoint.timestamp) + STALL_PERIOD;
+    }
+
+    /// @inheritdoc IXindexVault
+    function proposeSuccessor(IEthereumEventVerifier newP1, IEthereumEventVerifier newP2, Continuity calldata proofs)
+        external
+    {
+        if (msg.sender != RECOVERY_PROPOSER) revert NotRecoveryProposer(msg.sender);
+        _checkNoSnapshot();
+        if (!stalled()) revert NotStalled(stallStart());
+        if (_successor.reviewEnds != 0) revert SuccessorPending(_successor.reviewEnds);
+        _checkPair(address(newP1), address(newP2));
+        // (a) The last checkpoint the pair in force accepted.
+        IEthereumEventVerifier.Checkpoint memory last = _agreed(newP1, newP2, proofs.last1, proofs.last2);
+        if (keccak256(abi.encode(last)) != keccak256(abi.encode(_checkpoint))) revert Discontinuous();
+        // (b) A recent one, which the successor's proof shows descends from it.
+        _checkRecent(_agreed(newP1, newP2, proofs.recent1, proofs.recent2));
+        // (c) The last message the pair in force delivered, if there was one.
+        bytes32 last_ = lastMessage;
+        if (last_ != bytes32(0)) {
+            (,, bytes memory payload1) = _verify(newP1, proofs.message1);
+            (,, bytes memory payload2) = _verify(newP2, proofs.message2);
+            if (keccak256(payload1) != last_ || keccak256(payload2) != last_) revert Discontinuous();
+        }
+        uint256 reviewEnds = block.timestamp + RECOVERY_DELAY;
+        // A timestamp 30 days ahead fits 64 bits for billions of years.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        _successor = Successor({p1: address(newP1), p2: address(newP2), reviewEnds: uint64(reviewEnds)});
+        emit SuccessorProposed(address(newP1), address(newP2), reviewEnds);
+    }
+
+    /// @inheritdoc IXindexVault
+    function vetoSuccessor() external {
+        if (msg.sender != freezer) revert NotFreezer(msg.sender);
+        if (_successor.reviewEnds == 0) revert NoSuccessor();
+        uint256 stall = _checkpoint.blockNumber;
+        uint256 count = _vetoStall == stall ? vetoes : 0;
+        if (count >= MAX_RECOVERY_VETOES) revert VetoesExhausted();
+        (vetoes, _vetoStall) = (count + 1, stall);
+        delete _successor;
+        emit SuccessorVetoed(count + 1);
+    }
+
+    /// @inheritdoc IXindexVault
+    function adoptSuccessor(bytes calldata proof1, bytes calldata proof2) external {
+        Successor memory s = _successor;
+        // A snapshot clears any successor, and a new checkpoint lapses it, so a pending one is still in its stall.
+        if (s.reviewEnds == 0) revert NoSuccessor();
+        if (block.timestamp < s.reviewEnds) revert ReviewNotOver(s.reviewEnds);
+        IEthereumEventVerifier.Checkpoint memory c =
+            _agreed(IEthereumEventVerifier(s.p1), IEthereumEventVerifier(s.p2), proof1, proof2);
+        _checkRecent(c);
+        delete _successor;
+        p1 = IEthereumEventVerifier(s.p1);
+        p2 = IEthereumEventVerifier(s.p2);
+        _checkpoint = c;
+        emit SuccessorAdopted(s.p1, s.p2);
+        emit CheckpointAdvanced(c.blockNumber, c.timestamp, c.stateRoot);
+    }
+
+    /// @inheritdoc IXindexVault
+    function beginSnapshot() external {
+        _checkNoSnapshot();
+        IEthereumEventVerifier.Checkpoint memory last = _checkpoint;
+        uint256 due = stallStart() + SNAPSHOT_EXIT_DELAY;
+        if (block.timestamp < due) revert SnapshotNotDue(due);
+        // Without a checkpoint there is no state to pay from, and no index could have been minted into here.
+        if (last.stateRoot == bytes32(0)) revert NoCheckpoint();
+        _snapshot = last;
+        emit SnapshotBegun(last.blockNumber, last.timestamp, last.stateRoot);
+        if (_successor.reviewEnds != 0) {
+            delete _successor;
+            emit SuccessorLapsed();
+        }
+    }
+
+    /// @inheritdoc IXindexVault
+    function claimSnapshot(
+        address index,
+        address holder,
+        address recipient,
+        uint256 component,
+        bytes calldata proof,
+        bytes calldata signature
+    ) external nonReentrant {
+        if (!isIndex[index]) revert NotAnIndex(index);
+        if (recipient == address(0)) revert ZeroAddress();
+        if (snapshotClaimed[index][holder]) revert AlreadyClaimed(index, holder);
+        (uint256 amount, address registered) = _snapshotShare(index, holder, component, proof);
+        if (registered != address(0)) {
+            // A holder that registered a recovery address, such as a contract, is paid there and nowhere else.
+            if (recipient != registered) revert WrongRecipient(registered);
+        } else {
+            _checkClaimSignature(index, holder, recipient, signature);
+        }
+        snapshotClaimed[index][holder] = true;
+        bytes32 id = keccak256(abi.encode(SNAPSHOT_CLAIM_TYPEHASH, index, holder));
+        _owed[index][id] = Owed({token: NATIVE, toIndex: false, recipient: recipient, remaining: amount});
+        // The only call before this is a view of the fixed state reader, by staticcall.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit SnapshotClaimed(index, holder, recipient, amount, id);
+        // Paid within the speed limit, as any payout: a snapshot of a forged checkpoint takes no more than a forged burn.
+        _release(index, id, false);
+    }
+
+    /// @dev `holder`'s share of this chain's coin in `index` at the snapshot, read from the hub's storage there: its
+    ///      shares at the units then in force, rounded down, plus its claim of the coin; and its recovery address here.
+    function _snapshotShare(address index, address holder, uint256 component, bytes calldata proof)
+        private
+        view
+        returns (uint256 amount, address registered)
+    {
+        bytes32 root = _snapshotRoot();
+        address token = _ethereumId(NATIVE);
+        bytes32[] memory slots = new bytes32[](4);
+        slots[0] = keccak256(abi.encode(holder, HUB_SHARES));
+        slots[1] = bytes32(uint256(keccak256(abi.encode(HUB_COMPONENTS_SLOT))) + component);
+        slots[2] = keccak256(abi.encode(token, keccak256(abi.encode(holder, HUB_CLAIMS_SLOT))));
+        slots[3] = keccak256(abi.encode(block.chainid, keccak256(abi.encode(holder, HUB_RECOVERY_SLOT))));
+        bytes32[] memory v = STATE_READER.readSlots(root, index, slots, proof);
+        if (address(uint160(uint256(v[1]))) != token) revert WrongComponent(component);
+        amount = uint256(v[0]) * (uint256(v[1]) >> UNITS_SHIFT) / WAD + uint256(v[2]);
+        if (amount == 0) revert ZeroAmount();
+        registered = _toAddress(v[3]);
+    }
+
+    /// @inheritdoc IXindexVault
+    function resolveIntake(address index, uint256 intakeId, bytes calldata proof) external nonReentrant {
+        bytes32 root = _snapshotRoot();
+        if (intakeState[index][intakeId] != IntakeState.Open) revert IntakeNotOpen(index, intakeId);
+        bytes32[] memory slots = new bytes32[](1);
+        slots[0] = keccak256(abi.encode(intakeId, HUB_SETTLED_INTAKES_SLOT));
+        // The hub marks an intake settled in the transaction that sends its settle message, so its mark at the
+        // checkpoint says whether that message was sent by then: nothing sent later will ever run here.
+        bool settled = STATE_READER.readSlots(root, index, slots, proof)[0] != bytes32(0);
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit IntakeResolved(index, intakeId, settled);
+        if (settled) _settleIntake(index, intakeId);
+        else _failIntake(index, intakeId);
+    }
+
+    /// @inheritdoc IXindexVault
+    function checkpoint() external view returns (IEthereumEventVerifier.Checkpoint memory) {
+        return _checkpoint;
+    }
+
+    /// @inheritdoc IXindexVault
+    function snapshot() external view returns (IEthereumEventVerifier.Checkpoint memory) {
+        return _snapshot;
+    }
+
+    /// @inheritdoc IXindexVault
+    function successor() external view returns (Successor memory) {
+        return _successor;
+    }
+
+    /// @dev The checkpoint `a` and `b` both prove.
+    function _agreed(IEthereumEventVerifier a, IEthereumEventVerifier b, bytes calldata proofA, bytes calldata proofB)
+        private
+        view
+        returns (IEthereumEventVerifier.Checkpoint memory c)
+    {
+        c = a.verifyCheckpoint(proofA);
+        if (keccak256(abi.encode(c)) != keccak256(abi.encode(b.verifyCheckpoint(proofB)))) revert ProofsDisagree();
+    }
+
+    /// @dev A checkpoint after the last, in blocks and in time, not in the future, and with a state to read.
+    function _checkNewer(IEthereumEventVerifier.Checkpoint memory c) private view {
+        IEthereumEventVerifier.Checkpoint memory last = _checkpoint;
+        if (
+            c.blockNumber <= last.blockNumber || c.timestamp <= last.timestamp || c.timestamp > block.timestamp
+                || c.stateRoot == bytes32(0)
+        ) revert NotNewer(c.blockNumber, c.timestamp);
+    }
+
+    /// @dev A newer checkpoint within STALL_PERIOD of now: one that would not leave the vault stalled.
+    function _checkRecent(IEthereumEventVerifier.Checkpoint memory c) private view {
+        _checkNewer(c);
+        if (uint256(c.timestamp) + STALL_PERIOD < block.timestamp) revert NotRecent(c.timestamp);
+    }
+
+    function _checkPair(address a, address b) private view {
+        if (a.code.length == 0) revert NotAContract(a);
+        if (b.code.length == 0) revert NotAContract(b);
+        if (a == b) revert VerifiersNotDistinct();
+    }
+
+    function _checkNoSnapshot() private view {
+        if (_snapshot.stateRoot != bytes32(0)) revert SnapshotTaken();
+    }
+
+    function _snapshotRoot() private view returns (bytes32 root) {
+        root = _snapshot.stateRoot;
+        if (root == bytes32(0)) revert NoSnapshot();
+    }
+
+    /// @dev The factory's Ethereum-side id of this chain's `token`, as `vaultTokenId` computes it.
+    function _ethereumId(address token) private view returns (address) {
+        bytes32 tokenId = bytes32(uint256(uint160(token)));
+        return address(uint160(uint256(keccak256(abi.encode(VAULT_TOKEN_DOMAIN, block.chainid, tokenId)))));
+    }
+
+    /// @dev EIP-712: the holder signs, with its Ethereum key, that this vault may pay its snapshot share to `recipient`.
+    function _checkClaimSignature(address index, address holder, address recipient, bytes calldata signature)
+        private
+        view
+    {
+        bytes32 domain = keccak256(
+            abi.encode(EIP712_DOMAIN_TYPEHASH, keccak256("Xindex vault"), keccak256("1"), block.chainid, address(this))
+        );
+        bytes32 digest = MessageHashUtils.toTypedDataHash(
+            domain, keccak256(abi.encode(SNAPSHOT_CLAIM_TYPEHASH, index, holder, recipient))
+        );
+        (address signer, ECDSA.RecoverError err,) = ECDSA.tryRecover(digest, signature);
+        if (err != ECDSA.RecoverError.NoError || signer != holder) revert BadSignature();
     }
 
     // ---------------------------------------------------------------------

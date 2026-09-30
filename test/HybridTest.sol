@@ -12,6 +12,9 @@ import {XindexVault} from "../src/vault/XindexVault.sol";
 import {VaultMessages} from "../src/libraries/VaultMessages.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockEventVerifier} from "./mocks/MockEventVerifier.sol";
+import {MockStateReader} from "./mocks/MockStateReader.sol";
+import {IEthereumEventVerifier} from "../src/interfaces/IEthereumEventVerifier.sol";
+import {IXindexVault} from "../src/interfaces/IXindexVault.sol";
 import {MockStateVerifier} from "./mocks/MockStateVerifier.sol";
 
 /// @notice Stage B on one EVM: a factory with a HybridHub template, a real vault standing for another chain (the test
@@ -24,6 +27,8 @@ abstract contract HybridTest is Test {
     HybridHubModule module;
     XindexVault vault;
     MockStateVerifier stateVerifier;
+    MockStateReader stateReader;
+    address recoveryProposer = makeAddr("recovery proposer");
     MockEventVerifier p1;
     MockEventVerifier p2;
     MockERC20 weth;
@@ -51,7 +56,8 @@ abstract contract HybridTest is Test {
         factory = new HybridIndexFactory(owner, guardian, address(template));
         p1 = new MockEventVerifier();
         p2 = new MockEventVerifier();
-        vault = new XindexVault(chainId, address(factory), address(template), p1, p2, freezer, 1e30, 1e30);
+        stateReader = new MockStateReader();
+        vault = _newVault();
         stateVerifier = new MockStateVerifier();
         weth = new MockERC20("Wrapped Ether", "WETH", 18);
 
@@ -67,6 +73,42 @@ abstract contract HybridTest is Test {
         native = factory.vaultTokenId(chainId, bytes32(0));
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(native);
+    }
+
+    /// @dev A vault for this chain, with the test's verifiers, freezer and a state reader of live storage.
+    function _newVault() internal returns (XindexVault) {
+        return new XindexVault(
+            IXindexVault.Config({
+                sourceChainId: chainId,
+                factory: address(factory),
+                hubImplementation: address(template),
+                verifier1: p1,
+                verifier2: p2,
+                freezer: freezer,
+                recoveryProposer: recoveryProposer,
+                stateReader: stateReader,
+                nativeCap: 1e30,
+                nativeFloor: 1e30
+            })
+        );
+    }
+
+    /// @dev Keeps `v` out of a stall, as keepers do: a checkpoint at the current time that both verifiers prove.
+    function _fresh(XindexVault v) internal {
+        IEthereumEventVerifier.Checkpoint memory c = v.checkpoint();
+        if (c.timestamp >= block.timestamp) return;
+        bytes memory proof = abi.encode(
+            IEthereumEventVerifier.Checkpoint({
+                blockNumber: c.blockNumber + 1,
+                timestamp: uint64(block.timestamp),
+                stateRoot: keccak256(abi.encode("state root", block.timestamp))
+            })
+        );
+        v.advanceCheckpoint(proof, proof);
+    }
+
+    function _fresh() internal {
+        _fresh(vault);
     }
 
     function _createHybrid() internal returns (IHybridIndex hub) {
@@ -111,6 +153,7 @@ abstract contract HybridTest is Test {
         uint256 intakeId;
         (orderId, intakeId) = hub.openOrder(shares, block.timestamp + 1 hours);
         vm.deal(who, amounts[1]);
+        _fresh();
         vault.deposit{value: amounts[1]}(address(hub), intakeId);
         vm.stopPrank();
         vm.warp(block.timestamp + 1 hours + 1);

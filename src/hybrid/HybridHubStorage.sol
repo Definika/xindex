@@ -39,6 +39,8 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
     ///      the index, and its tokens, balances and paid totals.
     uint256 internal constant VAULT_INDEX_DIGEST_SLOT = 14;
     bytes32 internal constant INDEX_DIGEST_DOMAIN = keccak256("xindex.v4.vault.index-digest");
+    /// @dev Likewise the state root of the vault's snapshot, zero until a snapshot exit begins.
+    uint256 internal constant VAULT_SNAPSHOT_ROOT_SLOT = 25;
     uint8 internal constant INTAKE_OPEN = 1;
     uint8 internal constant INTAKE_SETTLED = 2;
 
@@ -148,6 +150,19 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
     ///      A vault can never have paid out more (section 5.5 of the Stage B spec).
     mapping(address token => uint256) internal _sentOut;
 
+    // ---------------------------------------------------------------------
+    // Layer 4: the snapshot exit
+    // ---------------------------------------------------------------------
+
+    /// @dev Where a holder is paid on a chain's snapshot exit, for a holder that cannot sign there, such as a contract.
+    ///      The vault reads it at slot 59 from Ethereum's state at its snapshot.
+    mapping(address holder => mapping(uint256 chainId => bytes32)) internal _recovery;
+    /// @dev Every intake whose settle message this index sent, marked in the same transaction: the vault reads it at
+    ///      slot 60 to settle or refund an intake left open at its snapshot.
+    mapping(uint256 intakeId => bool) internal _settledIntakes;
+    /// @dev When a chain's snapshot exit was recorded here: from then on nothing mints on it again.
+    mapping(uint256 chainId => uint256) internal _exitedAt;
+
     modifier onlyInitialized() {
         _checkInitialized();
         _;
@@ -203,8 +218,13 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
     // Freezes and proofs
     // ---------------------------------------------------------------------
 
-    /// @dev The factory's freeze of `chainId`, by the owner, the guardian, or an index's evidence.
+    /// @dev The factory's freeze of `chainId`, by the owner, the guardian, or an index's evidence; or, once the chain's
+    ///      vault has begun its snapshot exit, a freeze from then that never ends.
     function _freeze(uint256 chainId) internal view returns (IHybridIndexFactory.Freeze memory) {
+        uint256 exited = _exitedAt[chainId];
+        // A block timestamp, recorded by `recordExit`, fits 64 bits for billions of years.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        if (exited != 0) return IHybridIndexFactory.Freeze({start: uint64(exited), until: type(uint64).max});
         return IHybridIndexFactory(_factory()).chainFreeze(chainId);
     }
 

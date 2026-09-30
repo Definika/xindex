@@ -256,7 +256,9 @@ contract HybridHub is HybridHubStorage, ERC20Upgradeable, ERC20PermitUpgradeable
         // The calls before this are views on the factory's freeze record; `_mint` is internal.
         // forge-lint: disable-next-line(reentrancy-events)
         emit OrderClaimed(orderId, minter, shares);
-        _sendAll(VaultMessages.INTAKE_SETTLED, abi.encode(_intakeIdOf(orderId, o.deadline)));
+        uint256 intakeId = _intakeIdOf(orderId, o.deadline);
+        _settledIntakes[intakeId] = true;
+        _sendAll(VaultMessages.INTAKE_SETTLED, abi.encode(intakeId));
     }
 
     /// @dev Whether an order's escrow and deposits cover its shares at the units in force.

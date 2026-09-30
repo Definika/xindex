@@ -117,7 +117,7 @@ src/IndexFactory.sol          listings, reference supplies and weekly supply bat
 src/IndexZap.sol              stateless Universal Router mint/burn router, a venue per leg, per-leg limits, nonce check
 src/MintRequests.sol          ownerless escrow of USDC/USDT-for-shares requests at the requester's own limit, filled by anyone
 src/interfaces/               IIndexHub, IIndexFactory, IIndexZap, IMintRequests, IXindexErrors (shared errors), IRebalanceExecutor, IUniversalRouter,
-                              and for Stage B IXindexVault, IEthereumEventVerifier, IVaultStateVerifier, IBnbStateVerifier,
+                              and for Stage B IXindexVault, IEthereumEventVerifier, IVaultStateVerifier, IBnbStateVerifier, IStateReader,
                               IHybridIndexFactory, IHybridHubTypes, IHybridHub, IHybridHubModule, IHybridHubExtension and
                               IHybridIndex (all three parts)
 src/libraries/PathLib.sol     V3 packed path decoding (shared with test mocks)
@@ -129,6 +129,7 @@ src/libraries/MerklePatricia.sol           Stage B: storage proofs from a state 
 src/libraries/Bls12381.sol                 Stage B: BLS on the EIP-2537 precompiles, BNB Chain's vote ciphersuite
 src/vault/XindexVault.sol     Stage B: the ownerless vault on an EVM chain, native coin per index, speed limit, freeze (not deployed)
 src/verifiers/BnbStateVerifier.sol  Stage B: BNB Chain's state on Ethereum from its own finality votes, following every epoch (not deployed)
+src/verifiers/EthereumStateReader.sol Stage B: reads Ethereum storage under a trusted root, for a vault's snapshot exit (not deployed)
 src/HybridIndexFactory.sol    Stage B: IndexFactory plus the chain registry, vault-token listings, the chain freeze and the template choice (not deployed)
 src/HybridHub.sol             Stage B: the index of tokens on Ethereum and in vaults: orders, burns, claims; delegates the rest to its module (not deployed)
 src/hybrid/HybridHubModule.sol  Stage B: the hub's second part, by DELEGATECALL: voids, re-confirmations, stray intakes, the rebalance with deliveries
@@ -390,6 +391,15 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
 - **Evidence freezes the chain for every index.** A void, a slash, or a claimed order's deposit proven false freezes
   mints on the chain at the factory, and leaves the vault paying. A vault record paying more than was sent freezes the
   vault too.
+- **A stall is only ever Ethereum's formats breaking.** Anyone can advance a vault's checkpoint while P1 and P2 work, so
+  a stall (7 days without one) cannot be manufactured. Only then may the owner's emergency multisig propose a
+  successor, which must prove the last checkpoint, a recent one and the last message, and wait 30 days of review with
+  at most 2 vetoes. A stalled vault takes no deposit.
+- **The snapshot exit is final and speed-limited.** 180 days into a stall, the last checkpoint becomes the snapshot:
+  no message from a later block runs, the freezer can no longer freeze, holders at it claim their share by signature
+  or recovery address within the speed limit, and open intakes are settled or refunded from the hub's
+  `_settledIntakes`. The hub marks that in the transaction that sends each settle message; keep it that way. A hub that
+  records the exit never mints on that chain again. `test_theHubLayoutIsPinned` pins the slots each side reads.
 - **Vault governance is delayed and public.** The factory sends `CAP_UPDATE` only after `LISTING_DELAY`,
   `FREEZER_CHANGE` only after `GUARDIAN_DELAY` (the guardian cannot cancel it, as it cannot block its own replacement),
   and `VERIFIER_ROTATION` only after `ROTATION_DELAY` (30 days). P1 and P2 must always be two different verifiers.
@@ -454,6 +464,8 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   - Compute every argument before `vm.prank`: an external call in the arguments consumes the prank.
   - Measure gas with every touched account cooled first (`vm.cool`), so a call pays the cold reads a transaction of its
     own would.
+  - A Stage B test that moves the clock past a vault's `STALL_PERIOD` brings a fresh checkpoint before any deposit
+    (`HybridTest._fresh`), as keepers keep a live vault out of a stall.
 - **Scripts.** They keep their logic in public functions that take explicit arguments, so tests can call them without
   environment variables: `Deploy.deploy`, which deploys the factory, the zap and `MintRequests`, and
   `ConfigureWhitelist.propose`, `execute`, `proposeSupplies` and `executeSupplies`. Environment variables are process-global and tests run in parallel, so each variable name is

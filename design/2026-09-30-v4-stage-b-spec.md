@@ -155,7 +155,7 @@ failing, so nothing expires. While frozen, nothing is paid and no deposit is tak
 - **V5:** each digest is always the hash of the state it covers.
 
 **Not in this first step:**
-- the stall-gated recovery and the snapshot exit (design 6.9), which come next;
+- the stall-gated recovery and the snapshot exit (design 6.9), built since (section 5.6);
 - Tron's TVM differences, audited when Tron's vault is built.
 
 ## 5. Ethereum side
@@ -304,7 +304,7 @@ The choice matters only when Stage A is deployed. The factory is immutable, and 
 The first waits for the Stage B hub to be finished, audited and rehearsed on testnets, which is where the months come
 from, and a hub bug found after that factory is live would need a new factory anyway.
 
-**Not in layer 1** (all but the last item built since, in sections 5.3 to 5.5):
+**Not in layer 1** (all built since, in sections 5.3 to 5.6):
 - the rebalance with deliveries and bond, and migration between versions;
 - shortfall evidence from index digests;
 - the governance messages `CAP_UPDATE`, `FREEZER_CHANGE` and `VERIFIER_ROTATION`, with its 30-day delay;
@@ -469,6 +469,97 @@ now do the same, where layer 1 froze only the index that found the contradiction
   failed. The index is not harmed. That intake's depositors are, and their refund failing is the signal. Only P1 and
   P2 both broken allow it.
 
+### 5.6 Stall recovery and the snapshot exit (design 6.9, layers 3 and 4; built 2026-09-30)
+
+**What the verifiers now prove.** `IEthereumEventVerifier` gains two things every Ethereum-finality proof can give,
+whether full finality or the sync-committee fallback:
+- `verifyEvent` returns the log's block number;
+- `verifyCheckpoint(proof)` returns a final execution block: its number, timestamp and state root.
+
+**Checkpoints and the stall.**
+- Anyone calls `advanceCheckpoint` with a block both P1 and P2 prove.
+- The block must be later than the last in number and time, not in the future, and carry a state root.
+- A vault that has accepted no checkpoint for `STALL_PERIOD` (7 days, counted from the checkpoint's own Ethereum
+  timestamp) is stalled. Old checkpoints cannot keep it out of a stall.
+- While Ethereum's formats are unchanged, anyone can end a stall, so nobody, the owner included, can manufacture one.
+- A stalled vault takes no deposit, since it may never see the message that would settle or refund it. It keeps paying
+  what it already owes.
+
+**Recovery (layer 3).** Only while stalled, `RECOVERY_PROPOSER` may propose a successor pair. That is the owner's
+emergency multisig on the vault's chain, fixed at deployment; the Safe rotates its own signers. The pair must pass a
+continuity test:
+- **(a)** both prove exactly the last checkpoint the vault accepted;
+- **(b)** both prove a recent checkpoint, newer and within `STALL_PERIOD` of now, which their proof shows descends from
+  (a) by validator signatures;
+- **(c)** both prove again the last message the vault delivered, its id recorded at each delivery. This is a fixed
+  sample the proposer cannot choose.
+
+Review and adoption:
+- **Review** lasts `RECOVERY_DELAY` (30 days). The freezer may veto `MAX_RECOVERY_VETOES` (2) successors per stall; a
+  stall is identified by the checkpoint it began after.
+- **Adoption** by anyone after the review needs a checkpoint the successor proves, recent at that moment. The vault
+  leaves its stall.
+- **Lapse.** A checkpoint from the pair in force at any time lapses the successor: the old pair works, so there is
+  nothing to recover.
+- **Worst case, as the design states:** 37 days of delay without vetoes, 97 with two.
+
+**The snapshot exit (layer 4).** From `SNAPSHOT_EXIT_DELAY` (180 days) after the stall began, anyone calls
+`beginSnapshot`. The last checkpoint becomes the snapshot, for good. From then on:
+- **No later message.** A message from an Ethereum block after the snapshot never runs. Messages from its block or
+  earlier still do, if the old verifiers can prove them.
+- **Holders claim directly.** `claimSnapshot(index, holder, recipient, component, proof, signature)` reads the hub's
+  storage at the snapshot's state root. The holder's shares at the units then in force, rounded down, plus its claim on
+  the coin (`_claimOf`) are paid to:
+  - the recovery address it registered in the hub for this chain, if any, which a contract holder must register;
+  - otherwise the recipient it signed for with its Ethereum key (EIP-712 `SnapshotClaim(index, holder, recipient)`).
+  - One claim per holder and index.
+- **Open intakes are resolved.** The hub marks an intake settled in the transaction that sends its settle message
+  (`_settledIntakes`). `resolveIntake` reads that mark at the snapshot and settles the intake if it was sent, and
+  otherwise fails it so its depositors take their coins back. Nothing sent later can ever run here.
+- **Reading the state.** The vault reads Ethereum's state through `STATE_READER`, a stateless contract fixed at
+  deployment: the Merkle-Patricia walker already tested on BNB Chain's trie, which is Ethereum's format. It checks no
+  consensus and is used only under the root the verifiers accepted.
+
+**The hub side.**
+- `setRecoveryAddress(chainId, recipient)` for any holder, which the app prompts every contract holder to call.
+- `recordExit(chainId, proof)` proves, through the chain's state verifier, that its vault began a snapshot. That
+  direction of proof still works when Ethereum's does not. From then on the index treats the chain as frozen for good:
+  nothing mints on it, no order on it is claimed, no migration brings backing onto it.
+- `failHeldOrder` fails a locked order the exit keeps from its claim. Its vault refunds that order's deposits, since it
+  was never settled at the snapshot.
+- `test_theHubLayoutIsPinned` holds the slots each side reads of the other against the compiler's layouts.
+
+**Proposals for the owner (deviations from the design):**
+1. **Snapshot claims are paid within the speed limit.** The design has the vault "pay each index's balance". Paid at
+   once, a forged snapshot root (both P1 and P2 broken before the stall) would take everything; paid within 4% a day,
+   it takes what a forged burn would. The floor lets small balances out whole. Holders wait longer: a mass exit takes
+   months, as a mass redemption does.
+2. **No freeze after a snapshot.** Nothing could replace the freezer then, since `FREEZER_CHANGE` would be a later
+   message, so a hostile freezer could otherwise hold the exit off for good. A freeze in force when the snapshot
+   begins still runs out.
+3. **A stalled vault takes no deposit.** The design does not say. Without this rule, deposits during a stall could
+   never be settled or refunded if the stall ended in a snapshot.
+4. **The hub stops minting on an exited chain, rather than detaching it.** The design has the hub "detach that chain's
+   tokens so later buyers are not charged". Removing a component from an index would touch every path the hub and
+   module share, both near 24KB. Built instead: the index is mint-dead on that chain and redeemable as before, and its
+   holders move to a version without the chain by migration, which carries only the components the new version holds.
+5. **Gas.** The settled mark is one more storage write, about 22,000 gas, on each order claim and each fill settlement.
+
+**Not built, stated plainly:**
+- **Look-through for the official pool's LPs.** The hub records no official pool yet, and a concentrated-liquidity
+  position's share of the index tokens depends on its ticks, the pool's price and uncollected fees, read from proofs of
+  the pool's storage. The choices are the owner's: which pool, V3 or V4, and whether to read positions by owner or by
+  NFT. Until then, the pool's shares at the snapshot are unclaimable, and so are the shares of anyone who could neither
+  sign nor register a recovery address.
+- **Burns in flight at the snapshot.** A burn issued at or before the snapshot but not yet delivered needs the old
+  verifiers to prove an event from before it. If they cannot, those coins stay in the vault. That is a redeemer's part
+  of a few minutes before the break. The fix is a per-burn record in the hub's storage, about 22,000 gas per vault burn
+  on every redemption, for the vault to pay from the snapshot's state; it is the owner's call.
+- **A forged exit record**, possible only with a broken state verifier, freezes one index's mints on that chain for
+  good. That is a delay: holders migrate once the verifier is rotated.
+- **The real P1 and P2**, and a successor's proof of descent, belong to the proof system the owner picks after the GPU
+  run. The vault's side is fixed by the interface above.
+
 ## 6. Build order
 
 1. The message library and the verifier interface. Then the EVM vault, with unit tests, an invariant suite, mock
@@ -480,4 +571,5 @@ now do the same, where layer 1 froze only the index that found the contradiction
    migration with the evidence against a chain (section 5.5), are built.
 4. The Ethereum-event verifiers (P1, P2), once the owner decides the proof system after the GPU run.
 5. The Solana vault program, then HyperEVM and Tron.
-6. The stall recovery and snapshot exit, then watchers, then the testnet rehearsals of the design's Phase 3.
+6. The stall recovery and snapshot exit (built, section 5.6, but for the pool look-through), then watchers, then the
+   testnet rehearsals of the design's Phase 3.

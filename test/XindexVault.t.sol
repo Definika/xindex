@@ -7,7 +7,9 @@ import {XindexVault} from "../src/vault/XindexVault.sol";
 import {IXindexVault} from "../src/interfaces/IXindexVault.sol";
 import {IEthereumEventVerifier} from "../src/interfaces/IEthereumEventVerifier.sol";
 import {VaultMessages} from "../src/libraries/VaultMessages.sol";
+import {IStateReader} from "../src/interfaces/IStateReader.sol";
 import {MockEventVerifier} from "./mocks/MockEventVerifier.sol";
+import {MockStateReader} from "./mocks/MockStateReader.sol";
 
 /// @notice Refuses every payment, as a contract recipient without a receive function does.
 contract RefusingRecipient {}
@@ -28,10 +30,44 @@ abstract contract VaultTestBase is Test {
     uint256 constant FLOOR = 1 ether;
     uint256 nonce;
 
+    MockStateReader reader;
+    address recoveryProposer = makeAddr("recovery proposer");
+
     function _deployVault() internal {
         v1 = new MockEventVerifier();
         v2 = new MockEventVerifier();
-        vault = new XindexVault(1, factory, hubImplementation, v1, v2, freezerKey, CAP, FLOOR);
+        reader = new MockStateReader();
+        vault = new XindexVault(_config());
+    }
+
+    function _config() internal view returns (IXindexVault.Config memory) {
+        return IXindexVault.Config({
+            sourceChainId: 1,
+            factory: factory,
+            hubImplementation: hubImplementation,
+            verifier1: v1,
+            verifier2: v2,
+            freezer: freezerKey,
+            recoveryProposer: recoveryProposer,
+            stateReader: reader,
+            nativeCap: CAP,
+            nativeFloor: FLOOR
+        });
+    }
+
+    function _checkpointProof(uint256 blockNumber, uint256 time, bytes32 root) internal pure returns (bytes memory) {
+        return abi.encode(
+            IEthereumEventVerifier.Checkpoint({
+                blockNumber: uint64(blockNumber), timestamp: uint64(time), stateRoot: root
+            })
+        );
+    }
+
+    /// @dev Keeps the vault out of a stall, as keepers do: a checkpoint at the current time that both verifiers prove.
+    function _fresh() internal {
+        IEthereumEventVerifier.Checkpoint memory c = vault.checkpoint();
+        bytes memory proof = _checkpointProof(c.blockNumber + 1, block.timestamp, keccak256("state root"));
+        vault.advanceCheckpoint(proof, proof);
     }
 
     function _index(bytes32 salt) internal view returns (address) {
@@ -65,8 +101,12 @@ abstract contract VaultTestBase is Test {
         return abi.encode(emitter, VaultMessages.EVENT_TOPIC, keccak256(payload), abi.encode(payload));
     }
 
+    /// @dev The proof of the last message `_deliver` delivered, which a successor must prove again.
+    bytes lastDelivered;
+
     function _deliver(address emitter, bytes memory payload) internal {
         vault.deliver(_proof(emitter, payload), _proof(emitter, payload));
+        lastDelivered = _proof(emitter, payload);
     }
 
     function _deposit(address from, address index, uint256 intakeId, uint256 amount) internal {
@@ -119,24 +159,46 @@ contract XindexVaultTest is VaultTestBase {
         assertEq(vault.FREEZE_DURATION(), 14 days);
         assertEq(vault.MAX_INTAKE_LIFE(), 7 days);
 
-        IEthereumEventVerifier none = IEthereumEventVerifier(address(0));
-        vm.expectRevert(IXindexVault.ZeroAddress.selector);
-        new XindexVault(1, address(0), hubImplementation, v1, v2, freezerKey, CAP, FLOOR);
-        vm.expectRevert(IXindexVault.ZeroAddress.selector);
-        new XindexVault(1, factory, address(0), v1, v2, freezerKey, CAP, FLOOR);
-        vm.expectRevert(IXindexVault.ZeroAddress.selector);
-        new XindexVault(1, factory, hubImplementation, none, v2, freezerKey, CAP, FLOOR);
-        vm.expectRevert(IXindexVault.ZeroAddress.selector);
-        new XindexVault(1, factory, hubImplementation, v1, none, freezerKey, CAP, FLOOR);
-        vm.expectRevert(IXindexVault.ZeroAddress.selector);
-        new XindexVault(1, factory, hubImplementation, v1, v2, address(0), CAP, FLOOR);
-        IEthereumEventVerifier noCode = IEthereumEventVerifier(makeAddr("no code"));
-        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NotAContract.selector, address(noCode)));
-        new XindexVault(1, factory, hubImplementation, noCode, v2, freezerKey, CAP, FLOOR);
-        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NotAContract.selector, address(noCode)));
-        new XindexVault(1, factory, hubImplementation, v1, noCode, freezerKey, CAP, FLOOR);
-        vm.expectRevert(IXindexVault.VerifiersNotDistinct.selector);
-        new XindexVault(1, factory, hubImplementation, v1, v1, freezerKey, CAP, FLOOR);
+        assertEq(vault.RECOVERY_PROPOSER(), recoveryProposer);
+        assertEq(address(vault.STATE_READER()), address(reader));
+        assertEq(vault.checkpoint().timestamp, block.timestamp, "a week's grace from deployment");
+
+        IXindexVault.Config memory c = _config();
+        c.factory = address(0);
+        _refuse(c, abi.encodeWithSelector(IXindexVault.ZeroAddress.selector));
+        c = _config();
+        c.hubImplementation = address(0);
+        _refuse(c, abi.encodeWithSelector(IXindexVault.ZeroAddress.selector));
+        c = _config();
+        c.verifier1 = IEthereumEventVerifier(address(0));
+        _refuse(c, abi.encodeWithSelector(IXindexVault.ZeroAddress.selector));
+        c = _config();
+        c.verifier2 = IEthereumEventVerifier(address(0));
+        _refuse(c, abi.encodeWithSelector(IXindexVault.ZeroAddress.selector));
+        c = _config();
+        c.freezer = address(0);
+        _refuse(c, abi.encodeWithSelector(IXindexVault.ZeroAddress.selector));
+        c = _config();
+        c.recoveryProposer = address(0);
+        _refuse(c, abi.encodeWithSelector(IXindexVault.ZeroAddress.selector));
+        address noCode = makeAddr("no code");
+        c = _config();
+        c.verifier1 = IEthereumEventVerifier(noCode);
+        _refuse(c, abi.encodeWithSelector(IXindexVault.NotAContract.selector, noCode));
+        c = _config();
+        c.verifier2 = IEthereumEventVerifier(noCode);
+        _refuse(c, abi.encodeWithSelector(IXindexVault.NotAContract.selector, noCode));
+        c = _config();
+        c.verifier2 = v1;
+        _refuse(c, abi.encodeWithSelector(IXindexVault.VerifiersNotDistinct.selector));
+        c = _config();
+        c.stateReader = IStateReader(noCode);
+        _refuse(c, abi.encodeWithSelector(IXindexVault.NotAContract.selector, noCode));
+    }
+
+    function _refuse(IXindexVault.Config memory c, bytes memory reason) internal {
+        vm.expectRevert(reason);
+        new XindexVault(c);
     }
 
     /// @dev An index is legitimate when its address is the factory's clone of the hub template under some salt: anyone
@@ -713,5 +775,425 @@ contract XindexVaultTest is VaultTestBase {
             )
         );
         assertEq(vault.intakeDigest(index, intakeId), expectedIntake);
+    }
+
+    // ---------------------------------------------------------------------
+    // checkpoints and the stall
+    // ---------------------------------------------------------------------
+
+    function test_advanceCheckpoint_bothProofsAndAlwaysNewer() public {
+        vm.warp(block.timestamp + 1 hours);
+        bytes memory a = _checkpointProof(10, block.timestamp - 20 minutes, keccak256("a"));
+        bytes memory b = _checkpointProof(10, block.timestamp - 20 minutes, keccak256("b"));
+        vm.expectRevert(IXindexVault.ProofsDisagree.selector);
+        vault.advanceCheckpoint(a, b);
+        vm.expectEmit(address(vault));
+        emit IXindexVault.CheckpointAdvanced(10, block.timestamp - 20 minutes, keccak256("a"));
+        vault.advanceCheckpoint(a, a);
+        assertEq(vault.checkpoint().blockNumber, 10);
+        assertEq(vault.checkpoint().stateRoot, keccak256("a"));
+
+        uint256 t = block.timestamp - 20 minutes;
+        _notNewer(10, t + 1, keccak256("a")); // no later block
+        _notNewer(11, t, keccak256("a")); // no later time
+        _notNewer(11, block.timestamp + 1, keccak256("a")); // in the future
+        _notNewer(11, t + 1, bytes32(0)); // no state
+        bytes memory c = _checkpointProof(11, block.timestamp, keccak256("c"));
+        vault.advanceCheckpoint(c, c);
+
+        v1.setRefuse(true);
+        vm.expectRevert(MockEventVerifier.Refused.selector);
+        vault.advanceCheckpoint(c, c);
+    }
+
+    function _notNewer(uint256 blockNumber, uint256 time, bytes32 root) internal {
+        bytes memory p = _checkpointProof(blockNumber, time, root);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NotNewer.selector, blockNumber, time));
+        vault.advanceCheckpoint(p, p);
+    }
+
+    /// @dev A week without a checkpoint stalls the vault: it takes no deposit, which it might never be able to settle
+    ///      or refund, until anyone brings a new checkpoint.
+    function test_stall_aWeekWithoutACheckpoint() public {
+        uint256 deployed = vault.checkpoint().timestamp;
+        assertEq(vault.stallStart(), deployed + 7 days);
+        vm.warp(deployed + 7 days);
+        assertFalse(vault.stalled());
+        vm.warp(deployed + 7 days + 1);
+        assertTrue(vault.stalled());
+        uint256 intakeId = _intake(block.timestamp + 1 hours, 1);
+        vm.deal(alice, 1 ether);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.VaultStalled.selector, deployed + 7 days));
+        vault.deposit{value: 1 ether}(index, intakeId);
+        _fresh();
+        assertFalse(vault.stalled());
+        _deposit(alice, index, intakeId, 1 ether);
+    }
+
+    // ---------------------------------------------------------------------
+    // stall recovery
+    // ---------------------------------------------------------------------
+
+    /// @dev A checkpoint at `blockNumber`, now, that the current verifiers prove; the vault's last one after it.
+    function _advance(uint256 blockNumber) internal returns (bytes memory proof) {
+        if (vault.checkpoint().timestamp >= block.timestamp) vm.warp(block.timestamp + 1);
+        proof = _checkpointProof(blockNumber, block.timestamp, keccak256(abi.encode(blockNumber)));
+        vault.advanceCheckpoint(proof, proof);
+    }
+
+    /// @dev The continuity test a successor passes: the last checkpoint, a recent one at `recentBlock`, and the last
+    ///      message delivered.
+    function _continuity(uint256 recentBlock, bytes memory message)
+        internal
+        view
+        returns (IXindexVault.Continuity memory c)
+    {
+        IEthereumEventVerifier.Checkpoint memory last = vault.checkpoint();
+        bytes memory lastProof = abi.encode(last);
+        bytes memory recent = _checkpointProof(recentBlock, block.timestamp, keccak256(abi.encode(recentBlock)));
+        c = IXindexVault.Continuity({
+            last1: lastProof, last2: lastProof, recent1: recent, recent2: recent, message1: message, message2: message
+        });
+    }
+
+    /// @dev A stall, a successor proposed by the emergency multisig, 30 days of review, adoption on a fresh
+    ///      checkpoint: the vault runs on the new pair and no longer stalls.
+    function test_recovery_proposeReviewAdopt() public {
+        _advance(100);
+        _fund(index, 10 ether); // a delivery: the last message a successor must prove again
+        vm.warp(block.timestamp + 7 days + 1);
+        assertTrue(vault.stalled());
+        MockEventVerifier n1 = new MockEventVerifier();
+        MockEventVerifier n2 = new MockEventVerifier();
+        (,, bytes32 topic1,) = abi.decode(lastDelivered, (address, bytes32, bytes32, bytes));
+        assertEq(vault.lastMessage(), topic1);
+        IXindexVault.Continuity memory c = _continuity(200, lastDelivered);
+
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NotRecoveryProposer.selector, alice));
+        vm.prank(alice);
+        vault.proposeSuccessor(n1, n2, c);
+        vm.startPrank(recoveryProposer);
+        vm.expectRevert(IXindexVault.VerifiersNotDistinct.selector);
+        vault.proposeSuccessor(n1, n1, c);
+        vm.expectEmit(address(vault));
+        emit IXindexVault.SuccessorProposed(address(n1), address(n2), block.timestamp + 30 days);
+        vault.proposeSuccessor(n1, n2, c);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.SuccessorPending.selector, block.timestamp + 30 days));
+        vault.proposeSuccessor(n1, n2, c);
+        vm.stopPrank();
+        assertEq(vault.successor().p1, address(n1));
+
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.ReviewNotOver.selector, block.timestamp + 30 days));
+        vault.adoptSuccessor(c.recent1, c.recent2);
+        vm.warp(block.timestamp + 30 days);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NotRecent.selector, block.timestamp - 30 days));
+        vault.adoptSuccessor(c.recent1, c.recent2);
+        bytes memory fresh = _checkpointProof(300, block.timestamp, keccak256("fresh"));
+        vm.expectEmit(address(vault));
+        emit IXindexVault.SuccessorAdopted(address(n1), address(n2));
+        vault.adoptSuccessor(fresh, fresh);
+        assertEq(address(vault.p1()), address(n1));
+        assertEq(address(vault.p2()), address(n2));
+        assertEq(vault.checkpoint().blockNumber, 300);
+        assertFalse(vault.stalled());
+        assertEq(vault.successor().reviewEnds, 0);
+        vm.expectRevert(IXindexVault.NoSuccessor.selector);
+        vault.adoptSuccessor(fresh, fresh);
+    }
+
+    /// @dev What a successor must prove: the checkpoint the pair in force last accepted, a recent one, and the last
+    ///      message delivered. Only in a stall, and never after a snapshot.
+    function test_recovery_theContinuityTest() public {
+        _advance(100);
+        _fund(index, 10 ether);
+        MockEventVerifier n1 = new MockEventVerifier();
+        MockEventVerifier n2 = new MockEventVerifier();
+        bytes memory message = lastDelivered;
+        IXindexVault.Continuity memory c = _continuity(200, message);
+        vm.startPrank(recoveryProposer);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NotStalled.selector, block.timestamp + 7 days));
+        vault.proposeSuccessor(n1, n2, c);
+        vm.warp(block.timestamp + 8 days);
+
+        // (a) a different last checkpoint
+        c = _continuity(200, message);
+        c.last1 = _checkpointProof(99, block.timestamp - 8 days, keccak256("other"));
+        c.last2 = c.last1;
+        vm.expectRevert(IXindexVault.Discontinuous.selector);
+        vault.proposeSuccessor(n1, n2, c);
+        c = _continuity(200, message);
+        c.last2 = _checkpointProof(99, block.timestamp - 8 days, keccak256("other"));
+        vm.expectRevert(IXindexVault.ProofsDisagree.selector);
+        vault.proposeSuccessor(n1, n2, c);
+        // (b) a checkpoint no newer than the last, or not recent
+        c = _continuity(100, message);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NotNewer.selector, 100, block.timestamp));
+        vault.proposeSuccessor(n1, n2, c);
+        c = _continuity(200, message);
+        uint256 stale = vault.checkpoint().timestamp + 1; // newer than the last, but more than a week old
+        c.recent1 = _checkpointProof(200, stale, keccak256("stale"));
+        c.recent2 = c.recent1;
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NotRecent.selector, stale));
+        vault.proposeSuccessor(n1, n2, c);
+        // (c) another message than the last one delivered, from either
+        c = _continuity(200, message);
+        c.message2 = _proof(index, _burnPayload(index, 1, bob));
+        vm.expectRevert(IXindexVault.Discontinuous.selector);
+        vault.proposeSuccessor(n1, n2, c);
+        c = _continuity(200, message);
+        c.message1 = c.message2 = _proof(index, _burnPayload(index, 1, bob));
+        vm.expectRevert(IXindexVault.Discontinuous.selector);
+        vault.proposeSuccessor(n1, n2, c);
+        vault.proposeSuccessor(n1, n2, _continuity(200, message));
+        vm.stopPrank();
+    }
+
+    /// @dev A vault that never delivered a message needs no message proven again.
+    function test_recovery_noMessageYet() public {
+        _advance(100);
+        vm.warp(block.timestamp + 7 days + 1);
+        MockEventVerifier n1 = new MockEventVerifier();
+        MockEventVerifier n2 = new MockEventVerifier();
+        IXindexVault.Continuity memory c = _continuity(200, "");
+        vm.prank(recoveryProposer);
+        vault.proposeSuccessor(n1, n2, c);
+    }
+
+    /// @dev The freezer vetoes at most twice a stall; a checkpoint from the pair in force lapses a successor and
+    ///      begins a new stall's count.
+    function test_recovery_vetoesAndLapse() public {
+        _advance(100);
+        vm.warp(block.timestamp + 7 days + 1);
+        MockEventVerifier n1 = new MockEventVerifier();
+        MockEventVerifier n2 = new MockEventVerifier();
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NotFreezer.selector, alice));
+        vm.prank(alice);
+        vault.vetoSuccessor();
+        vm.prank(freezerKey);
+        vm.expectRevert(IXindexVault.NoSuccessor.selector);
+        vault.vetoSuccessor();
+        for (uint256 i = 0; i < 2; ++i) {
+            IXindexVault.Continuity memory c = _continuity(200 + i, "");
+            vm.prank(recoveryProposer);
+            vault.proposeSuccessor(n1, n2, c);
+            vm.expectEmit(address(vault));
+            emit IXindexVault.SuccessorVetoed(i + 1);
+            vm.prank(freezerKey);
+            vault.vetoSuccessor();
+        }
+        IXindexVault.Continuity memory third = _continuity(210, "");
+        vm.prank(recoveryProposer);
+        vault.proposeSuccessor(n1, n2, third);
+        vm.prank(freezerKey);
+        vm.expectRevert(IXindexVault.VetoesExhausted.selector);
+        vault.vetoSuccessor();
+        assertEq(vault.vetoes(), 2);
+
+        // The pair in force proves a new checkpoint: the stall is over, and so is the successor.
+        vm.expectEmit(address(vault));
+        emit IXindexVault.SuccessorLapsed();
+        _advance(220);
+        assertEq(vault.successor().reviewEnds, 0);
+        // A new stall, a new count.
+        vm.warp(block.timestamp + 7 days + 1);
+        IXindexVault.Continuity memory next = _continuity(230, "");
+        vm.prank(recoveryProposer);
+        vault.proposeSuccessor(n1, n2, next);
+        vm.prank(freezerKey);
+        vault.vetoSuccessor();
+        assertEq(vault.vetoes(), 1);
+    }
+
+    // ---------------------------------------------------------------------
+    // the snapshot exit
+    // ---------------------------------------------------------------------
+
+    /// @dev A stall 180 days old with no successor: the last checkpoint becomes the snapshot for good.
+    function _snapshot() internal returns (IEthereumEventVerifier.Checkpoint memory snap) {
+        vm.roll(1000);
+        _advance(1000);
+        snap = vault.checkpoint();
+        vm.warp(vault.stallStart() + 180 days);
+        vault.beginSnapshot();
+    }
+
+    function test_beginSnapshot_onlyAfter180DaysOfStall() public {
+        vm.warp(vault.stallStart() + 180 days);
+        vm.expectRevert(IXindexVault.NoCheckpoint.selector);
+        vault.beginSnapshot();
+        _advance(1000);
+        IEthereumEventVerifier.Checkpoint memory last = vault.checkpoint();
+        uint256 due = vault.stallStart() + 180 days;
+        vm.warp(due - 1);
+        MockEventVerifier n1 = new MockEventVerifier();
+        MockEventVerifier n2 = new MockEventVerifier();
+        IXindexVault.Continuity memory c = _continuity(1001, "");
+        vm.prank(recoveryProposer);
+        vault.proposeSuccessor(n1, n2, c);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.SnapshotNotDue.selector, due));
+        vault.beginSnapshot();
+        vm.warp(due);
+        vm.expectEmit(address(vault));
+        emit IXindexVault.SnapshotBegun(last.blockNumber, last.timestamp, last.stateRoot);
+        vault.beginSnapshot();
+        assertEq(vault.snapshot().stateRoot, last.stateRoot);
+        assertEq(vault.successor().reviewEnds, 0, "a successor under review lapses");
+
+        vm.expectRevert(IXindexVault.SnapshotTaken.selector);
+        vault.beginSnapshot();
+        bytes memory later = _checkpointProof(2000, block.timestamp, keccak256("later"));
+        vm.expectRevert(IXindexVault.SnapshotTaken.selector);
+        vault.advanceCheckpoint(later, later);
+        vm.prank(recoveryProposer);
+        vm.expectRevert(IXindexVault.SnapshotTaken.selector);
+        vault.proposeSuccessor(n1, n2, c);
+        vm.prank(freezerKey);
+        vm.expectRevert(IXindexVault.SnapshotTaken.selector);
+        vault.freeze();
+    }
+
+    /// @dev After the snapshot, a message from a later Ethereum block never runs; one from its block or before does.
+    function test_snapshot_refusesLaterMessages() public {
+        _fund(index, 10 ether);
+        IEthereumEventVerifier.Checkpoint memory snap = _snapshot();
+        bytes memory payload = _burnPayload(index, 1 ether, bob);
+        v1.setEventBlock(snap.blockNumber + 1);
+        v2.setEventBlock(snap.blockNumber + 1);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.IssuedAfterSnapshot.selector, snap.blockNumber + 1));
+        _deliver(index, payload);
+        v2.setEventBlock(snap.blockNumber);
+        vm.expectRevert(IXindexVault.ProofsDisagree.selector);
+        _deliver(index, payload);
+        v1.setEventBlock(snap.blockNumber);
+        _deliver(index, payload);
+        assertEq(bob.balance, 1 ether);
+    }
+
+    /// @dev Writes the hub's storage the snapshot reads, at the index's address: shares, the component, the claim, the
+    ///      recovery address.
+    function _hubState(address idx, address holder, uint256 shares, uint256 units, uint256 claim, address recovery)
+        internal
+    {
+        bytes32 hubShares = 0x52c63247e1f47db19d5ce0460030c497f067ca4cebf71ba98eeadabe20bace00;
+        address token = _nativeId();
+        vm.store(idx, keccak256(abi.encode(holder, hubShares)), bytes32(shares));
+        vm.store(idx, bytes32(uint256(keccak256(abi.encode(uint256(0)))) + 1), bytes32(units << 160 | uint160(token)));
+        vm.store(idx, keccak256(abi.encode(token, keccak256(abi.encode(holder, uint256(11))))), bytes32(claim));
+        vm.store(
+            idx,
+            keccak256(abi.encode(block.chainid, keccak256(abi.encode(holder, uint256(59))))),
+            bytes32(uint256(uint160(recovery)))
+        );
+    }
+
+    function _nativeId() internal view returns (address) {
+        return
+            address(
+                uint160(uint256(keccak256(abi.encode(keccak256("xindex.v4.vault-token"), block.chainid, bytes32(0)))))
+            );
+    }
+
+    function _sign(uint256 key, address idx, address holder, address recipient) internal view returns (bytes memory) {
+        bytes32 domain = keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256("Xindex vault"),
+                keccak256("1"),
+                block.chainid,
+                address(vault)
+            )
+        );
+        bytes32 structHash = keccak256(
+            abi.encode(
+                keccak256("SnapshotClaim(address index,address holder,address recipient)"), idx, holder, recipient
+            )
+        );
+        (uint8 v, bytes32 r, bytes32 s_) = vm.sign(key, keccak256(abi.encodePacked("\x19\x01", domain, structHash)));
+        return abi.encodePacked(r, s_, v);
+    }
+
+    /// @dev An EOA holder signs for its recipient: paid its shares' backing at the snapshot's units plus its claim,
+    ///      within the speed limit.
+    function test_claimSnapshot_bySignature() public {
+        _fund(index, 100 ether);
+        (address holder, uint256 key) = makeAddrAndKey("holder");
+        _hubState(index, holder, 2e18, 1.4e18, 0.2 ether, address(0));
+        vm.expectRevert(IXindexVault.NoSnapshot.selector);
+        vault.claimSnapshot(index, holder, bob, 1, "", _sign(key, index, holder, bob));
+        _snapshot();
+
+        vm.expectRevert(IXindexVault.BadSignature.selector);
+        vault.claimSnapshot(index, holder, bob, 1, "", _sign(key, index, holder, alice));
+        vm.expectRevert(IXindexVault.BadSignature.selector);
+        vault.claimSnapshot(index, holder, bob, 1, "", hex"00");
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.WrongComponent.selector, 0));
+        vault.claimSnapshot(index, holder, bob, 0, "", _sign(key, index, holder, bob));
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NotAnIndex.selector, alice));
+        vault.claimSnapshot(alice, holder, bob, 1, "", _sign(key, index, holder, bob));
+        vm.expectRevert(IXindexVault.ZeroAddress.selector);
+        vault.claimSnapshot(index, holder, address(0), 1, "", _sign(key, index, holder, address(0)));
+
+        bytes32 id = keccak256(
+            abi.encode(keccak256("SnapshotClaim(address index,address holder,address recipient)"), index, holder)
+        );
+        vm.expectEmit(address(vault));
+        emit IXindexVault.SnapshotClaimed(index, holder, bob, 3 ether, id);
+        vault.claimSnapshot(index, holder, bob, 1, "", _sign(key, index, holder, bob));
+        assertEq(bob.balance, 3 ether, "2 shares at 1.4, plus a claim of 0.2");
+        assertTrue(vault.snapshotClaimed(index, holder));
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.AlreadyClaimed.selector, index, holder));
+        vault.claimSnapshot(index, holder, bob, 1, "", _sign(key, index, holder, bob));
+    }
+
+    /// @dev A holder with a recovery address, such as a contract, is paid there and only there; one with no share is
+    ///      paid nothing; a large claim waits for the speed limit.
+    function test_claimSnapshot_toTheRecoveryAddress() public {
+        _fund(index, 100 ether);
+        address safe = makeAddr("a safe");
+        address safeOnBnb = makeAddr("the safe's recovery address");
+        _hubState(index, safe, 50e18, 1e18, 0, safeOnBnb);
+        address nobody = makeAddr("nobody");
+        _snapshot();
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.WrongRecipient.selector, safeOnBnb));
+        vault.claimSnapshot(index, safe, bob, 1, "", "");
+        vault.claimSnapshot(index, safe, safeOnBnb, 1, "", "");
+        assertEq(safeOnBnb.balance, 4 ether, "4% of the 100 today");
+        bytes32 id = keccak256(
+            abi.encode(keccak256("SnapshotClaim(address index,address holder,address recipient)"), index, safe)
+        );
+        assertEq(vault.owed(index, id).remaining, 46 ether);
+        vm.warp(block.timestamp + 25 hours);
+        vault.release(index, id);
+        assertEq(safeOnBnb.balance, 4 ether + 3.84 ether);
+
+        _hubState(index, nobody, 0, 1e18, 0, address(0));
+        vm.expectRevert(IXindexVault.ZeroAmount.selector);
+        vault.claimSnapshot(index, nobody, bob, 1, "", "");
+    }
+
+    /// @dev After the snapshot, an intake still open is settled if the hub had sent its settle message by then, and
+    ///      otherwise failed, so its depositors take their coins back.
+    function test_resolveIntake_fromTheHubAtTheSnapshot() public {
+        uint256 settled = _intake(block.timestamp + 1 hours, 71);
+        uint256 unsettled = _intake(block.timestamp + 1 hours, 72);
+        _deposit(alice, index, settled, 2 ether);
+        _deposit(bob, index, unsettled, 3 ether);
+        vm.store(index, keccak256(abi.encode(settled, uint256(60))), bytes32(uint256(1)));
+        vm.expectRevert(IXindexVault.NoSnapshot.selector);
+        vault.resolveIntake(index, settled, "");
+        _snapshot();
+
+        vm.expectEmit(address(vault));
+        emit IXindexVault.IntakeResolved(index, settled, true);
+        vault.resolveIntake(index, settled, "");
+        assertEq(vault.balance(index, address(0)), 2 ether);
+        vault.resolveIntake(index, unsettled, "");
+        assertEq(uint256(vault.intakeState(index, unsettled)), uint256(IXindexVault.IntakeState.Failed));
+        vm.prank(bob);
+        vault.refund(index, unsettled);
+        assertEq(bob.balance, 3 ether);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.IntakeNotOpen.selector, index, settled));
+        vault.resolveIntake(index, settled, "");
     }
 }

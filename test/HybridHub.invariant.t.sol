@@ -9,6 +9,7 @@ import {IHybridIndex} from "../src/interfaces/IHybridIndex.sol";
 import {XindexVault} from "../src/vault/XindexVault.sol";
 import {VaultMessages} from "../src/libraries/VaultMessages.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
+import {IEthereumEventVerifier} from "../src/interfaces/IEthereumEventVerifier.sol";
 import {HybridTest} from "./HybridTest.sol";
 
 /// @notice Drives orders from every state, deposits short or whole, settlements, claims, failures, voids on forged
@@ -82,6 +83,18 @@ contract HybridHandler is Test {
         return block.timestamp < until;
     }
 
+    /// @dev A checkpoint at the current time, as keepers keep the vault out of a stall.
+    function _fresh() internal {
+        IEthereumEventVerifier.Checkpoint memory c = VAULT.checkpoint();
+        if (c.timestamp >= block.timestamp) return;
+        bytes memory proof = abi.encode(
+            IEthereumEventVerifier.Checkpoint({
+                blockNumber: c.blockNumber + 1, timestamp: uint64(block.timestamp), stateRoot: keccak256("state root")
+            })
+        );
+        VAULT.advanceCheckpoint(proof, proof);
+    }
+
     function _order(uint256 pick) internal view returns (uint256 id, IHybridHubTypes.Order memory o) {
         id = orders[pick % orders.length];
         o = HUB.order(id);
@@ -107,6 +120,7 @@ contract HybridHandler is Test {
         (uint256 id, uint256 intakeId) = HUB.openOrder(shares, block.timestamp + 1 hours);
         uint256 deposit = short ? amounts[1] - 1 : amounts[1];
         vm.deal(minter, deposit);
+        _fresh();
         VAULT.deposit{value: deposit}(address(HUB), intakeId);
         vm.stopPrank();
         orders.push(id);
@@ -298,6 +312,7 @@ contract HybridHandler is Test {
                 || VAULT.intakeTotal(address(HUB), intakeId, address(0)) != 0
         ) return;
         vm.deal(f.executor, amount);
+        _fresh();
         vm.prank(f.executor);
         VAULT.deposit{value: amount}(address(HUB), intakeId);
     }
@@ -453,6 +468,15 @@ contract HybridHubInvariantTest is HybridTest {
         assertLe(vault.paidTotal(address(next), address(0)), next.sentOut(native));
     }
 
+    /// @dev An order's intake is marked settled, for a snapshot exit to read, exactly when the order was claimed.
+    function invariant_settledMarksFollowTheOrders() public view {
+        for (uint256 i = 0; i < handler.orderCount(); ++i) {
+            uint256 id = handler.orders(i);
+            bool claimed = hub.order(id).status == IHybridHubTypes.OrderStatus.Claimed;
+            assertEq(hub.intakeSettled(hub.intakeIdOf(id)), claimed);
+        }
+    }
+
     /// @dev The index holds of its own shares exactly a live fill's bond, accepted or held after settlement.
     function invariant_theIndexHoldsOnlyTheBond() public view {
         IHybridHubTypes.Fill memory f = hub.fill();
@@ -579,5 +603,6 @@ contract HybridHubInvariantTest is HybridTest {
         invariant_theNextVersionAgreesWithTheBook();
         invariant_theNextVersionIsBacked();
         invariant_noVaultPaysMoreThanWasSent();
+        invariant_settledMarksFollowTheOrders();
     }
 }

@@ -68,6 +68,7 @@ contract HybridHubRebalanceTest is HybridTest {
     function _deliver(uint256 amount) internal {
         uint256 intakeId = hub.fillIntakeId();
         vm.deal(executor, executor.balance + amount);
+        _fresh();
         vm.prank(executor);
         vault.deposit{value: amount}(address(hub), intakeId);
     }
@@ -107,10 +108,13 @@ contract HybridHubRebalanceTest is HybridTest {
         assertEq(hub.totalSupply(), supplyBefore, "holding a bond mints nothing");
 
         _deliver(deliveries[1]);
+        uint256 intakeId = hub.fillIntakeId();
+        assertFalse(hub.intakeSettled(intakeId));
         vm.recordLogs();
         hub.settleRebalance(_proofOf(deliveries[1]));
         Vm.Log[] memory logs = vm.getRecordedLogs();
         _deliverAll(logs);
+        assertTrue(hub.intakeSettled(intakeId), "marked with its settle message, for a snapshot exit");
 
         (, uint256[] memory unitsAfter,,) = hub.components();
         assertLt(unitsAfter[0], unitsBefore[0]);
@@ -458,6 +462,7 @@ contract HybridHubRebalanceTest is HybridTest {
         weth.approve(address(hub), amounts[0]);
         (uint256 roomy, uint256 roomyIntake) = hub.openOrder(1e18, block.timestamp + 1 hours);
         vm.deal(holder, 2e18);
+        _fresh();
         vault.deposit{value: 2e18}(address(hub), roomyIntake);
         vm.stopPrank();
         vm.warp(block.timestamp + 2 hours);
@@ -621,6 +626,7 @@ contract HybridHubRebalanceTest is HybridTest {
         vm.startPrank(executor);
         three.acceptRebalance(r, new uint256[](0));
         vm.deal(executor, amountsIn[1]);
+        _fresh();
         vault.deposit{value: amountsIn[1]}(address(three), three.fillIntakeId());
         vm.stopPrank();
         three.settleRebalance(_proofOf(amountsIn[1]));
@@ -686,6 +692,7 @@ contract HybridHubRebalanceTest is HybridTest {
         usdt.approve(address(idx), amounts[0]);
         (uint256 orderId, uint256 intakeId) = idx.openOrder(10e18, block.timestamp + 1 hours);
         vm.deal(minter, amounts[1]);
+        _fresh();
         vault.deposit{value: amounts[1]}(address(idx), intakeId);
         vm.stopPrank();
         vm.warp(block.timestamp + 2 hours);

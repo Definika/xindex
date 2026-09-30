@@ -5,8 +5,17 @@ pragma solidity 0.8.28;
 ///         implements. Each of the two independent proof systems, P1 and P2, implements it over its own proofs of the
 ///         same log; the vault needs one or both depending on what the message does.
 interface IEthereumEventVerifier {
+    /// @notice An Ethereum execution block that has reached the verifier's finality: its number, its timestamp and its
+    ///         state root.
+    struct Checkpoint {
+        uint64 blockNumber;
+        uint64 timestamp;
+        bytes32 stateRoot;
+    }
+
     /// @notice Verifies `proof` and returns the log it proves. Reverts for a proof it cannot verify, including one in a
     ///         format it does not know, so an unknown fork fails closed.
+    /// @return blockNumber The number of the Ethereum block the log is in.
     /// @return emitter The contract on Ethereum that emitted the log.
     /// @return topic0 The log's first topic, its event signature.
     /// @return topic1 The log's second topic.
@@ -14,5 +23,11 @@ interface IEthereumEventVerifier {
     function verifyEvent(bytes calldata proof)
         external
         view
-        returns (address emitter, bytes32 topic0, bytes32 topic1, bytes memory data);
+        returns (uint256 blockNumber, address emitter, bytes32 topic0, bytes32 topic1, bytes memory data);
+
+    /// @notice Verifies `proof` of a final Ethereum block and returns it. Reverts as {verifyEvent} does. For a successor
+    ///         pair under stall recovery, a proof of a recent checkpoint is also its proof that the chain of final
+    ///         checkpoints from the vault's last one to it was signed by at least two thirds of the stake known at each
+    ///         (design 6.9); that is what its review checks.
+    function verifyCheckpoint(bytes calldata proof) external view returns (Checkpoint memory);
 }

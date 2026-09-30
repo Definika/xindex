@@ -268,6 +268,31 @@ contract RepoTest is Test {
         assertGt(i, 30, "every variable of the storage base");
     }
 
+    /// @dev The slots the vault and the hub read of each other's storage from proofs, against the compiler's layouts:
+    ///      the vault reads the hub's `_components`, `_claimOf`, `_recovery` and `_settledIntakes` for a snapshot exit,
+    ///      and the hub reads the vault's `_snapshot` to record it. A reordered variable would read the wrong slot.
+    function test_theHubLayoutIsPinned() public view {
+        string memory hub = _read("out/HybridHub.sol/HybridHub.json");
+        assertEq(_slotOf(hub, "_components"), 0);
+        assertEq(_slotOf(hub, "_claimOf"), 11);
+        assertEq(_slotOf(hub, "_recovery"), 59);
+        assertEq(_slotOf(hub, "_settledIntakes"), 60);
+        string memory vault = _read("out/XindexVault.sol/XindexVault.json");
+        assertEq(_slotOf(vault, "indexDigest"), 14);
+        assertEq(_slotOf(vault, "intakeDigest"), 15);
+        // The snapshot is (blockNumber, timestamp) in one slot and its state root in the next.
+        assertEq(_slotOf(vault, "_snapshot") + 1, 25);
+    }
+
+    function _slotOf(string memory artifact, string memory label) internal view returns (uint256) {
+        for (uint256 i = 0; vm.keyExistsJson(artifact, _entry(i, "")); ++i) {
+            if (keccak256(bytes(vm.parseJsonString(artifact, _entry(i, ".label")))) == keccak256(bytes(label))) {
+                return vm.parseUint(vm.parseJsonString(artifact, _entry(i, ".slot")));
+            }
+        }
+        revert(string.concat("no variable ", label));
+    }
+
     function _withoutDigits(string memory text) internal pure returns (string memory) {
         bytes memory b = bytes(text);
         bytes memory out = new bytes(b.length);

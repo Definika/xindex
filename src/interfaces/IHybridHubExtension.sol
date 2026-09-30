@@ -39,6 +39,26 @@ interface IHybridHubExtension is IHybridHubTypes {
     ///         token than this index ever sent out. Freezes the chain, for every index and on the vault.
     function reportOutflow(uint256 chainId, IndexRecord calldata record, bytes calldata proof) external;
 
+    /// @notice The holder, for itself. Where `chainId`'s vault pays it on a snapshot exit, if it cannot sign there, as a
+    ///         contract cannot; zero clears it. The vault reads it from Ethereum's state at its snapshot.
+    function setRecoveryAddress(uint256 chainId, bytes32 recipient) external;
+
+    /// @notice Anyone. Proves that `chainId`'s vault began its snapshot exit. From then on the chain counts as frozen
+    ///         for good here: nothing mints on it, and its holders were paid there.
+    function recordExit(uint256 chainId, bytes calldata proof) external;
+
+    /// @notice Anyone. Fails a locked order that `chainId`'s snapshot exit keeps from its claim for good.
+    function failHeldOrder(uint256 orderId, uint256 chainId) external;
+
+    /// @notice `holder`'s recovery address on `chainId`.
+    function recoveryAddress(address holder, uint256 chainId) external view returns (bytes32);
+
+    /// @notice Whether this index sent the settle message of `intakeId`.
+    function intakeSettled(uint256 intakeId) external view returns (bool);
+
+    /// @notice When `chainId`'s snapshot exit was recorded here; zero if it was not.
+    function exitedAt(uint256 chainId) external view returns (uint256);
+
     /// @notice Anyone. Proves that claimed order `orderId`'s intake on `chainId` is, after its deadline, neither the
     ///         deposits the order was claimed on (`proof.tokens`, `proof.totals`) still open nor the same deposits
     ///         settled. Freezes the chain, for every index and on the vault.

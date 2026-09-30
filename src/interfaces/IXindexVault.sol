@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {IEthereumEventVerifier} from "./IEthereumEventVerifier.sol";
+import {IStateReader} from "./IStateReader.sol";
 
 /// @notice A vault on another chain holding that chain's native coin for every index whose shares live on Ethereum.
 ///         No owner, no upgrade. Coins come in only as deposits to an intake (a mint order or a rebalance delivery)
@@ -13,6 +14,49 @@ interface IXindexVault {
         Open,
         Settled,
         Failed
+    }
+
+    /// @notice A vault's settings, fixed at deployment but for what governance messages change.
+    /// @param sourceChainId Ethereum's chain id, which every message must name.
+    /// @param factory The factory on Ethereum.
+    /// @param hubImplementation The hub template on Ethereum that every index is a clone of.
+    /// @param verifier1 P1, the first Ethereum-event verifier on this chain.
+    /// @param verifier2 P2, the second, independent one.
+    /// @param freezer The guardian's freeze address on this chain.
+    /// @param recoveryProposer The owner's emergency multisig on this chain, which can propose a successor pair of
+    ///        verifiers only while the vault is stalled.
+    /// @param stateReader Reads Ethereum's state under a checkpoint's root, for a snapshot exit.
+    /// @param nativeCap The quantity cap on the native coin across all indexes.
+    /// @param nativeFloor The native coin's outflow floor (section 1, proposal 5 of the Stage B spec).
+    struct Config {
+        uint256 sourceChainId;
+        address factory;
+        address hubImplementation;
+        IEthereumEventVerifier verifier1;
+        IEthereumEventVerifier verifier2;
+        address freezer;
+        address recoveryProposer;
+        IStateReader stateReader;
+        uint256 nativeCap;
+        uint256 nativeFloor;
+    }
+
+    /// @notice A successor pair of verifiers under review, adoptable from `reviewEnds`.
+    struct Successor {
+        address p1;
+        address p2;
+        uint64 reviewEnds;
+    }
+
+    /// @notice A successor pair's continuity test: each of the two proves the vault's last checkpoint, a recent one, and
+    ///         the last message the vault delivered.
+    struct Continuity {
+        bytes last1;
+        bytes last2;
+        bytes recent1;
+        bytes recent2;
+        bytes message1;
+        bytes message2;
     }
 
     /// @notice A burn or a migration accepted from Ethereum and not yet paid in full. A migration's recipient is the
@@ -43,6 +87,14 @@ interface IXindexVault {
     event Frozen(uint256 until, address indexed by);
     event FreezerChanged(address indexed freezer);
     event VerifiersRotated(address indexed p1, address indexed p2);
+    event CheckpointAdvanced(uint256 blockNumber, uint256 timestamp, bytes32 stateRoot);
+    event SuccessorProposed(address indexed p1, address indexed p2, uint256 reviewEnds);
+    event SuccessorVetoed(uint256 vetoes);
+    event SuccessorLapsed();
+    event SuccessorAdopted(address indexed p1, address indexed p2);
+    event SnapshotBegun(uint256 blockNumber, uint256 timestamp, bytes32 stateRoot);
+    event SnapshotClaimed(address indexed index, address indexed holder, address recipient, uint256 amount, bytes32 id);
+    event IntakeResolved(address indexed index, uint256 indexed intakeId, bool settled);
 
     error ZeroAddress();
     error ZeroAmount();
@@ -71,6 +123,34 @@ interface IXindexVault {
     error OutflowOverflow();
     /// @notice P1 and P2 must be two different verifiers, or "P1 and P2" would be one proof.
     error VerifiersNotDistinct();
+    /// @notice The vault has seen no new checkpoint since `since`, less STALL_PERIOD: it takes no deposit.
+    error VaultStalled(uint256 since);
+    /// @notice A checkpoint must be newer than the last in blocks and time, not in the future, and carry a state.
+    error NotNewer(uint256 blockNumber, uint256 timestamp);
+    /// @notice A successor must prove a checkpoint within STALL_PERIOD of now.
+    error NotRecent(uint256 timestamp);
+    /// @notice Only the owner's emergency multisig proposes a successor.
+    error NotRecoveryProposer(address caller);
+    /// @notice A successor can be proposed only once the vault has stalled, from `since`.
+    error NotStalled(uint256 since);
+    error SuccessorPending(uint256 reviewEnds);
+    error NoSuccessor();
+    /// @notice The successor does not prove what the pair in force last accepted.
+    error Discontinuous();
+    error VetoesExhausted();
+    error ReviewNotOver(uint256 reviewEnds);
+    error SnapshotTaken();
+    error NoSnapshot();
+    error SnapshotNotDue(uint256 due);
+    error NoCheckpoint();
+    /// @notice After a snapshot exit, a message from a block after its checkpoint never runs.
+    error IssuedAfterSnapshot(uint256 blockNumber);
+    error AlreadyClaimed(address index, address holder);
+    /// @notice The component at that position of the index is not this chain's coin.
+    error WrongComponent(uint256 component);
+    /// @notice The holder registered `registered` as its recovery address on this chain, and is paid only there.
+    error WrongRecipient(address registered);
+    error BadSignature();
 
     /// @notice Largest share of an index's balance of a token that may leave in any 24 hours: 4%.
     function SPEED_LIMIT() external view returns (uint256);
@@ -80,6 +160,48 @@ interface IXindexVault {
 
     /// @notice How far ahead a first deposit may set an intake's deadline: 7 days.
     function MAX_INTAKE_LIFE() external view returns (uint256);
+
+    /// @notice A week without a new checkpoint stalls the vault (design 6.9).
+    function STALL_PERIOD() external view returns (uint256);
+
+    /// @notice How long a successor pair is reviewed before it can be adopted: 30 days.
+    function RECOVERY_DELAY() external view returns (uint256);
+
+    /// @notice How many successors the freezer can veto in one stall: 2.
+    function MAX_RECOVERY_VETOES() external view returns (uint256);
+
+    /// @notice How long after a stall began the snapshot exit may begin, if no successor was adopted: 180 days.
+    function SNAPSHOT_EXIT_DELAY() external view returns (uint256);
+
+    /// @notice The owner's emergency multisig on this chain: it can do nothing but propose a successor in a stall.
+    function RECOVERY_PROPOSER() external view returns (address);
+
+    /// @notice The reader of Ethereum's state a snapshot exit pays from.
+    function STATE_READER() external view returns (IStateReader);
+
+    /// @notice The last final Ethereum block P1 and P2 both proved.
+    function checkpoint() external view returns (IEthereumEventVerifier.Checkpoint memory);
+
+    /// @notice The checkpoint of the snapshot exit; zero until it begins.
+    function snapshot() external view returns (IEthereumEventVerifier.Checkpoint memory);
+
+    /// @notice The successor pair under review, if any.
+    function successor() external view returns (Successor memory);
+
+    /// @notice The id of the last message delivered, which a successor must prove again.
+    function lastMessage() external view returns (bytes32);
+
+    /// @notice The freezer's vetoes in the current stall, while the checkpoint it began after is unchanged.
+    function vetoes() external view returns (uint256);
+
+    /// @notice Whether `holder` has claimed its snapshot share of `index`.
+    function snapshotClaimed(address index, address holder) external view returns (bool);
+
+    /// @notice Whether a week has passed since the last checkpoint.
+    function stalled() external view returns (bool);
+
+    /// @notice When the vault stalls, or stalled: STALL_PERIOD after the last checkpoint.
+    function stallStart() external view returns (uint256);
 
     /// @notice The chain id messages must come from: Ethereum's.
     function SOURCE_CHAIN_ID() external view returns (uint256);
@@ -143,6 +265,44 @@ interface IXindexVault {
     /// @notice A depositor of a failed intake, while not frozen. Takes their deposit back.
     function refund(address index, uint256 intakeId) external;
 
-    /// @notice The guardian's freeze address only. Freezes the vault for FREEZE_DURATION from now.
+    /// @notice The guardian's freeze address only, before any snapshot exit. Freezes the vault for FREEZE_DURATION.
     function freeze() external;
+
+    /// @notice Anyone, before a snapshot exit. Records a final Ethereum block both P1 and P2 prove, newer than the last:
+    ///         what keeps the vault out of a stall. Lapses any successor under review.
+    function advanceCheckpoint(bytes calldata proof1, bytes calldata proof2) external;
+
+    /// @notice RECOVERY_PROPOSER only, while stalled, before a snapshot exit, with none under review. Proposes a
+    ///         successor pair, which must prove the last checkpoint, a recent one, and the last message delivered.
+    function proposeSuccessor(IEthereumEventVerifier newP1, IEthereumEventVerifier newP2, Continuity calldata proofs)
+        external;
+
+    /// @notice The freezer only, at most MAX_RECOVERY_VETOES times a stall. Drops the successor under review.
+    function vetoSuccessor() external;
+
+    /// @notice Anyone, once the review is over, with a recent checkpoint the successor proves. Makes it P1 and P2.
+    function adoptSuccessor(bytes calldata proof1, bytes calldata proof2) external;
+
+    /// @notice Anyone, SNAPSHOT_EXIT_DELAY after the stall began. Takes the last checkpoint as the snapshot for good:
+    ///         from then on no message from a later Ethereum block runs, and holders at it claim directly.
+    function beginSnapshot() external;
+
+    /// @notice Anyone, after the snapshot. Pays `holder`'s share of this chain's coin in `index` at the snapshot, its
+    ///         shares at the units then in force plus its claim, to `recipient`: the recovery address it registered in
+    ///         the hub for this chain, or else the one it signed for. Within the speed limit, as every payout.
+    /// @param component The coin's position among the index's components.
+    /// @param proof The state reader's proof of the holder's balance, the component, the claim and the recovery address.
+    /// @param signature The holder's EIP-712 `SnapshotClaim(index, holder, recipient)`, if it registered none.
+    function claimSnapshot(
+        address index,
+        address holder,
+        address recipient,
+        uint256 component,
+        bytes calldata proof,
+        bytes calldata signature
+    ) external;
+
+    /// @notice Anyone, after the snapshot. Settles an open intake if the hub had sent its settle message by the snapshot,
+    ///         and otherwise fails it so its depositors can take their coins back.
+    function resolveIntake(address index, uint256 intakeId, bytes calldata proof) external;
 }

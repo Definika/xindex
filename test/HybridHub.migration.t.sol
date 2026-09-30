@@ -61,6 +61,7 @@ contract HybridHubMigrationTest is HybridTest {
         link.approve(address(next), amounts[2]);
         (uint256 orderId, uint256 intakeId) = next.openOrder(shares, block.timestamp + 1 hours);
         vm.deal(who, amounts[1]);
+        _fresh();
         vault.deposit{value: amounts[1]}(address(next), intakeId);
         vm.stopPrank();
         vm.warp(block.timestamp + 1 hours + 1);

@@ -110,6 +110,7 @@ contract HybridHubTest is HybridTest {
         weth.approve(address(hub), amounts[0]);
         (, uint256 intakeId) = hub.openOrder(1e18, block.timestamp + 1 hours);
         vm.deal(minter, 3e18);
+        _fresh();
         vault.deposit{value: 3e18}(address(hub), intakeId);
         vm.stopPrank();
         bytes32 slot = keccak256(abi.encode(intakeId, keccak256(abi.encode(address(hub), uint256(15)))));
@@ -183,6 +184,7 @@ contract HybridHubTest is HybridTest {
         weth.approve(address(hub), amounts[0]);
         (uint256 orderId, uint256 intakeId) = hub.openOrder(1e18, block.timestamp + 1 hours);
         vm.deal(minter, amounts[1]);
+        _fresh();
         vault.deposit{value: amounts[1] - 1}(address(hub), intakeId); // one wei short
         vm.stopPrank();
         uint256 deadline = block.timestamp + 1 hours;
@@ -219,6 +221,7 @@ contract HybridHubTest is HybridTest {
         weth.approve(address(hub), amounts[0]);
         (uint256 orderId, uint256 intakeId) = hub.openOrder(1e18, block.timestamp + 1 hours);
         vm.deal(minter, amounts[1]);
+        _fresh();
         vault.deposit{value: amounts[1]}(address(hub), intakeId);
         vm.stopPrank();
         vm.warp(block.timestamp + 2 hours);
@@ -251,6 +254,7 @@ contract HybridHubTest is HybridTest {
         weth.approve(address(hub), amounts[0]);
         (uint256 orderId, uint256 intakeId) = hub.openOrder(1e18, block.timestamp + 1 hours);
         vm.deal(minter, 2e18);
+        _fresh();
         vault.deposit{value: 2e18}(address(hub), intakeId);
         vm.stopPrank();
         vm.warp(block.timestamp + 2 hours);
@@ -283,6 +287,7 @@ contract HybridHubTest is HybridTest {
         weth.approve(address(hub), amounts[0]);
         (uint256 orderId, uint256 intakeId) = hub.openOrder(5e18, block.timestamp + 1 hours);
         vm.deal(minter, amounts[1]);
+        _fresh();
         vault.deposit{value: amounts[1]}(address(hub), intakeId);
         vm.stopPrank();
         vm.warp(block.timestamp + 2 hours);
@@ -321,6 +326,7 @@ contract HybridHubTest is HybridTest {
         weth.approve(address(hub), amounts[0]);
         (uint256 orderId, uint256 intakeId) = hub.openOrder(1e18, block.timestamp + 1 hours);
         vm.deal(minter, amounts[1]);
+        _fresh();
         vault.deposit{value: amounts[1]}(address(hub), intakeId);
         vm.stopPrank();
 
@@ -463,6 +469,7 @@ contract HybridHubTest is HybridTest {
     function test_failIntake() public {
         uint256 stray = ((block.timestamp + 1 hours) << 192) | 99;
         vm.deal(holder, 1e18);
+        _fresh();
         vm.prank(holder);
         vault.deposit{value: 1e18}(address(hub), stray);
         vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.IntakeStillOpen.selector, block.timestamp + 1 hours));
@@ -559,7 +566,7 @@ contract HybridHubTest is HybridTest {
     ///      around its calls.
     function test_twoChains_oneOrderSpansBoth() public {
         uint256 bsc = 56;
-        XindexVault second = new XindexVault(chainId, address(factory), address(template), p1, p2, freezer, 1e30, 1e30);
+        XindexVault second = _newVault();
         vm.prank(owner);
         factory.proposeChain(bsc, _b32(address(second)), address(stateVerifier));
         vm.warp(block.timestamp + 2 days);
@@ -585,8 +592,10 @@ contract HybridHubTest is HybridTest {
         vm.startPrank(minter);
         weth.approve(address(two), amounts[0]);
         (uint256 orderId, uint256 intakeId) = two.openOrder(1e18, block.timestamp + 1 hours);
+        _fresh();
         vault.deposit{value: amounts[1]}(address(two), intakeId);
         vm.chainId(bsc);
+        _fresh(second);
         second.deposit{value: amounts[2]}(address(two), intakeId);
         vm.chainId(chainId);
         vm.stopPrank();

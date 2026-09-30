@@ -322,6 +322,7 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
             if (out[i] == 0 || slot == 0) continue;
             _sendBurn(i, out[i], _fillRecipients[slot - 1]);
         }
+        _settledIntakes[intakeId] = true;
         _sendAll(VaultMessages.INTAKE_SETTLED, abi.encode(intakeId));
         for (uint256 i = 0; i < n; ++i) {
             if (out[i] != 0 && _slotOf[i] == 0) IERC20(_components[i].token).safeTransfer(f.executor, out[i]);

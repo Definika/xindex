@@ -179,6 +179,15 @@ contract HybridHubExtension is HybridHubStorage, HubShares, ReentrancyGuard, IHy
         _checkBacking(_shareSupply());
     }
 
+    /// @dev `chainId` is one of this index's vault chains.
+    function _checkChain(uint256 chainId) private view {
+        uint256 m = _chains.length;
+        for (uint256 j = 0; j < m; ++j) {
+            if (_chains[j].chainId == chainId) return;
+        }
+        revert NotAVaultChain(chainId);
+    }
+
     /// @dev Only another HybridHub index of this factory: the factory records a salt for its clones of the template, and
     ///      for nothing else.
     function _checkVersion(address index) private view {
@@ -260,8 +269,59 @@ contract HybridHubExtension is HybridHubStorage, HubShares, ReentrancyGuard, IHy
     }
 
     // ---------------------------------------------------------------------
+    // The snapshot exit (design 6.9, layer 4)
+    // ---------------------------------------------------------------------
+
+    /// @inheritdoc IHybridHubExtension
+    function setRecoveryAddress(uint256 chainId, bytes32 recipient) external onlyInitialized {
+        _checkChain(chainId);
+        _recovery[msg.sender][chainId] = recipient;
+        // No external call precedes this; the lint reads the initializer's internal read as one.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit RecoveryAddressSet(msg.sender, chainId, recipient);
+    }
+
+    /// @inheritdoc IHybridHubExtension
+    function recordExit(uint256 chainId, bytes calldata proof) external nonReentrant onlyInitialized {
+        uint256 j = _slotIndex(chainId);
+        if (_exitedAt[chainId] != 0) revert ChainExited(chainId);
+        // The vault's own state shows its snapshot: this direction of proof still works when Ethereum's does not.
+        bytes32 root = _provenSlot(j, bytes32(VAULT_SNAPSHOT_ROOT_SLOT), 0, proof);
+        if (root == bytes32(0)) revert NotAContradiction(chainId);
+        _exitedAt[chainId] = block.timestamp;
+        // The call before this is a view of a state verifier.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit ChainExitRecorded(chainId, root);
+    }
+
+    /// @inheritdoc IHybridHubExtension
+    function failHeldOrder(uint256 orderId, uint256 chainId) external nonReentrant onlyInitialized {
+        StoredOrder storage o = _openOrder(orderId, OrderStatus.Locked);
+        _checkChain(chainId);
+        if (_exitedAt[chainId] == 0) revert ChainNotExited(chainId);
+        _lockedShares -= o.shares;
+        // Its chain's vault settles or refunds the order's intake from its snapshot, where it was never settled.
+        _fail(orderId, o);
+    }
+
+    // ---------------------------------------------------------------------
     // Views
     // ---------------------------------------------------------------------
+
+    /// @inheritdoc IHybridHubExtension
+    function recoveryAddress(address holder, uint256 chainId) external view returns (bytes32) {
+        return _recovery[holder][chainId];
+    }
+
+    /// @inheritdoc IHybridHubExtension
+    function intakeSettled(uint256 intakeId) external view returns (bool) {
+        return _settledIntakes[intakeId];
+    }
+
+    /// @inheritdoc IHybridHubExtension
+    function exitedAt(uint256 chainId) external view returns (uint256) {
+        return _exitedAt[chainId];
+    }
 
     /// @inheritdoc IHybridHubExtension
     function sentOut(address token) external view returns (uint256) {

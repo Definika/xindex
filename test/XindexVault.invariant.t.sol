@@ -7,6 +7,8 @@ import {XindexVault} from "../src/vault/XindexVault.sol";
 import {IXindexVault} from "../src/interfaces/IXindexVault.sol";
 import {VaultMessages} from "../src/libraries/VaultMessages.sol";
 import {MockEventVerifier} from "./mocks/MockEventVerifier.sol";
+import {MockStateReader} from "./mocks/MockStateReader.sol";
+import {IEthereumEventVerifier} from "../src/interfaces/IEthereumEventVerifier.sol";
 
 /// @notice Drives deposits, settled and failed intakes, refunds, burns, releases, migrations, cap changes, freezes,
 ///         replays, stray coins and the clock in any order, making only calls that must succeed, and records every
@@ -77,6 +79,18 @@ contract VaultHandler is Test {
         return block.timestamp < VAULT.frozenUntil();
     }
 
+    /// @dev A checkpoint at the current time, as keepers keep the vault out of a stall.
+    function _fresh() internal {
+        IEthereumEventVerifier.Checkpoint memory c = VAULT.checkpoint();
+        if (c.timestamp >= block.timestamp) return;
+        bytes memory proof = abi.encode(
+            IEthereumEventVerifier.Checkpoint({
+                blockNumber: c.blockNumber + 1, timestamp: uint64(block.timestamp), stateRoot: keccak256("state root")
+            })
+        );
+        VAULT.advanceCheckpoint(proof, proof);
+    }
+
     function _deliver(uint8 kind, address emitter, bytes memory body) internal returns (bytes32) {
         bytes memory payload = VaultMessages.encode(
             VaultMessages.Message({
@@ -127,6 +141,7 @@ contract VaultHandler is Test {
         }
         address depositor = _actors[who % 3];
         vm.deal(depositor, amount);
+        _fresh();
         vm.prank(depositor);
         VAULT.deposit{value: amount}(index, id);
     }
@@ -286,14 +301,18 @@ contract XindexVaultInvariantTest is Test {
     function setUp() public {
         vm.warp(1_700_000_000);
         vault = new XindexVault(
-            1,
-            factory,
-            hubImplementation,
-            new MockEventVerifier(),
-            new MockEventVerifier(),
-            makeAddr("freezer"),
-            500 ether,
-            1 ether
+            IXindexVault.Config({
+                sourceChainId: 1,
+                factory: factory,
+                hubImplementation: hubImplementation,
+                verifier1: new MockEventVerifier(),
+                verifier2: new MockEventVerifier(),
+                freezer: makeAddr("freezer"),
+                recoveryProposer: makeAddr("recovery proposer"),
+                stateReader: new MockStateReader(),
+                nativeCap: 500 ether,
+                nativeFloor: 1 ether
+            })
         );
         for (uint256 i = 0; i < 2; ++i) {
             bytes32 salt = keccak256(abi.encode("index", i));
