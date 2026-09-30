@@ -188,17 +188,21 @@ after its epoch block, and the verifier has to follow that switch.
 - it hashes the vote to G2 as RFC 9380 prescribes, with SHA-256, the modexp precompile and `MAP_FP2_TO_G2`;
 - it makes one pairing check.
 
-| Measure | Gas |
+| Measure (Prague EVM, optimizer with via-IR) | Gas |
 |---|---|
-| `verifyVote`, 20 voters (the recorded vote verifies; a different vote or a missing voter does not) | **267,251** |
-| The same called from a test, calldata copied | 280,360 |
-| Estimated whole proof: 21,000 base, about 45k of calldata, the vote, the target header's hash check, and a storage proof of about 100k to 150k | about **0.5M** |
+| `verifyVote`, 20 voters: the recorded vote verifies; a different vote or a missing voter does not | **264,879** |
+| `StorageProof.prove`: header hashed against the voted block hash, then the account proof (9 nodes) and the storage proof (7 nodes) of a real `eth_getProof` of WBNB's slot 0; a tampered node, a wrong header or another slot is refused | **212,780** |
+| Calldata of the whole proof, about 10.6 KB (keys, signature, header of 896 bytes, proof nodes of 6,828 bytes) | about 150,000 |
+| Transaction base | 21,000 |
+| **Whole BNB Chain → Ethereum proof** | **about 650,000** |
+
+Deposits proved against the same voted block share one vote check. The first version of the storage verifier built a
+memory array of structs for every trie node and cost 418k gas; locating items in place halved it.
 
 So the vault → Ethereum direction for BNB Chain needs **no zkVM and no trusted setup**, only the chain's own signatures
-checked by Ethereum's precompiles, within the 1M threshold. The validator set needs an update transaction only when
+checked by Ethereum's precompiles, at about 650k gas against the 1M threshold. The validator set needs an update transaction only when
 its membership changes, at most about daily, because a finality vote by an unchanged set proves an epoch block's list
-as well as any other block. Still to measure in M6: the storage proof, with a Merkle-Patricia verifier against a
-recorded `eth_getProof`, and the set update.
+as well as any other block. Still to measure in M6: the set update itself.
 
 ### M5: verifying the wrapped proof
 
