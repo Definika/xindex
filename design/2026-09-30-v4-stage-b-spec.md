@@ -657,32 +657,78 @@ proof exists; the vault's state proven to Ethereum, which a relayer stub stands 
 as P2, under two keys. Its name, its first line and the submission all say it is a stub. The Ethereum side's stub is
 in `demo/`.
 
-## 8. Open design problem: proving a vault's state on Ethereum, chain by chain (found 30 September 2026)
+## 8. Proving a vault's state on Ethereum, chain by chain (found and researched 30 September 2026)
 
 Proposal 3 (section 1) has Ethereum prove one storage slot of the vault per index or intake, against a state root the
-chain's finality signs. That holds where a block commits to contract storage, and not everywhere:
+chain's finality signs. That holds where a block commits to contract storage, and not everywhere. The owner chose
+"research, then build" for the chains where it does not. Three read-only research passes found:
 
-| Chain | Does a block commit to the vault's storage? | Consequence |
-|---|---|---|
-| BNB Chain | Yes: an Ethereum-style state root | Built and tested (section 5.1) |
-| HyperEVM | Its blocks carry an Ethereum-style state root; how HyperBFT finalizes them has no public light-client specification | Waits on that specification |
-| Tron | No: a header's `accountStateRoot` covers balances only, not contract storage | Slot proofs are impossible |
-| Solana | No: the accounts lattice hash (SIMD-0215) has no inclusion proofs | Slot proofs are impossible |
+| Chain | Commitment to the vault's state | Path | Ethereum gas per proof | Status |
+|---|---|---|---|---|
+| BNB Chain | an Ethereum-style state root | its finality vote plus a storage proof (5.1) | about 820k for two slots, measured | built |
+| Tron | none: `accountStateRoot` covers balances only, and is off on mainnet | a transaction's result, which the transaction root commits to | about 230k, estimated | to build |
+| Solana | none: the accounts lattice hash has no inclusion proofs | a zkVM proof of the slot's account writes, under Alpenglow | about 260k, estimated | waits on Alpenglow's mainnet launch |
+| HyperEVM | none: every header's `stateRoot` is zero | nothing public to prove against | none | waits on Hyperliquid |
 
-For Tron and Solana the vault's state has to reach Ethereum another way. The options, for the owner:
-1. **Prove transactions, not storage.** Ethereum proves each deposit transaction in a final block, through
-   `txTrieRoot` on Tron and Solana's transaction inclusion. The hub rebuilds the intake from them. Deadlines and
-   refunds need the same care as today's digests.
-2. **Prove execution** in a zkVM: the vault's state at a height, from the chain's blocks. That is general but heavy,
-   another proof system per chain.
-3. **Defer those chains.** Stage B launches with BNB Chain, whose path is built, and adds each chain once its proof
-   exists.
+### Tron: prove a call's success
+
+Tron's transaction root is a SHA-256 tree whose leaves hash each whole transaction, its result included. Every node
+re-executes a contract call and rejects a block that misstates the result. So a call that succeeds only when the vault
+holds a value proves that value.
+- **The vault** gains `attest(slot, value)`, which reverts unless its storage holds `value` at `slot`.
+- **A proof** carries three things:
+  - the successful `attest` transaction, parsed strictly;
+  - its Merkle path;
+  - the headers of its block and the 18 after it, signed by 19 distinct block producers of the verifier's list, as Tron
+    solidifies a block. Each producer signs with secp256k1, which Ethereum's `ecrecover` checks.
+- **The list of 27 producers** is recomputed from votes every 6 hours, and no header records it. The verifier follows it
+  as the BNB verifier follows BNB's sets: each period's first round is accepted once 19 keys of the previous list have
+  built on it. No period can be skipped, and a list older than `MAX_LAG` names no successor.
+- **The hub does not change:** a `TronStateVerifier` returns the slot through `IVaultStateVerifier`. Tron's chain id is
+  728126428, which TVM's `block.chainid` returns.
+- **Trust.** Weaker than BNB's. Tron has no slashing, so 19 colluding producers could forge at no cost to their stake,
+  and its finality is a longest-chain rule. Tron's own nodes and exchanges rely on the same guarantee.
+- **For the owner:**
+  - infer the list from signatures, as proposed, or have the owner keep it behind a timelock with the guardian's veto;
+  - 19 signers, as Tron uses, or more for margin, at about 9k gas each;
+  - Tron's `MAX_LAG`.
+- **The other direction:** TVM has BN254 precompiles but no BLS12-381 ones, so P1's Groth16 verifier works there.
+
+### Solana: prove the slot's account writes, once Alpenglow is live
+
+Alpenglow's finalization certificates are BLS12-381 aggregates over a block id, with Ethereum's own ciphersuite. Each
+block's footer carries its bank hash, which folds in the lattice hash of all accounts, and validators vote only after
+replaying a block.
+- **The vault** gains an `attest` that seals an intake after its deadline and always changes its account.
+- **A zkVM proof** shows four linked facts:
+  - a finalized block's footer gives a bank hash;
+  - its lattice hash differs from its parent's by exactly a listed set of distinct account changes, each changing;
+  - the intake account is among them;
+  - it now holds digest D.
+
+  A failed deposit changes no account, so it cannot count.
+- **The validator set** is committed nowhere, since SIMD-0400 was closed. A small registry program records each epoch's
+  stakes and BLS keys, and Ethereum accepts the next set only from a block the current set certifies.
+- **Cost.** About 0.5B to 3B prover gas, against P1's 11B, estimated. Alpenglow is on testnet and devnet since 24–25
+  September 2026, so it can be measured there now. Mainnet has no date.
+- **Its soundness argument is new and unpublished,** like the one-epoch finality argument, and must be reviewed before
+  anyone relies on it.
+
+### HyperEVM: nothing to prove against yet
+
+- **What is missing.** Every HyperEVM header's `stateRoot` is zero, and `eth_getProof` does not exist. Nothing public
+  that validators sign commits to an EVM block, and the node is closed source.
+- **Trust today.** HyperBFT's quorum is two thirds of stake, the Hyper Foundation's five validators hold 47.5%, and
+  there is no slashing.
+- **What would be needed:** a state root with proofs, a quorum-signed commitment to each EVM block, and a light-client
+  specification. Until Hyperliquid publishes those, HyperEVM cannot hold a vault that Ethereum can check.
+- **For whenever it can:**
+  - HyperEVM has no BLS12-381 precompiles;
+  - a payout to `0x2222…2222` would move coins into the vault's own HyperCore account, so such system addresses must
+    never be recipients;
+  - the vault deploys only in a big block.
 
 The hackathon demonstration is unaffected: its state verifiers are stubs on every chain.
-
-Sources: the TRON VM storage note (blog.phor.net/tron-vm-storage-vulnerability) and java-tron's archive-node
-discussion; SIMD-0215 (accounts lattice hash) and the Solana light-client discussion #278 in
-solana-improvement-documents.
 
 ## 9. The internal red team of Stage B (30 September 2026)
 
