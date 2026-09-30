@@ -13,10 +13,12 @@ import {HybridTest} from "./HybridTest.sol";
 
 /// @notice Drives orders from every state, deposits short or whole, settlements, claims, failures, voids on forged
 ///         proofs, factory freezes and re-confirmations, redemptions with and without recipients, claims on both chains,
-///         and the clock, making only calls that must succeed. Every message the hub or factory emits is delivered to the
+///         migrations to a next version, and the clock, making only calls that must succeed. Every message the hub or factory emits is delivered to the
 ///         vault at once, as P1 and P2 would, so the vault's books can be read against the hub's.
 contract HybridHandler is Test {
     IHybridIndex public immutable HUB;
+    /// @notice A next version of the same tokens at half the units, which holders migrate to.
+    IHybridIndex public immutable NEXT;
     HybridIndexFactory public immutable FACTORY;
     XindexVault public immutable VAULT;
     MockERC20 public immutable WETH;
@@ -37,11 +39,15 @@ contract HybridHandler is Test {
     uint256 public fillFails;
     uint256 public slashes;
     uint256 public bondReleases;
-    /// @notice Every BURN delivered to the vault, whose owed remainder the vault holds beyond the hub's book.
+    uint256 public migrations;
+    /// @notice Every BURN and MIGRATE the hub sent the vault, whose owed remainder the vault holds beyond its book.
     bytes32[] public burnIds;
+    /// @notice The MIGRATEs among them, whose remainder the next version's book counts before the vault moves it.
+    bytes32[] public migrationIds;
 
     constructor(
         IHybridIndex hub,
+        IHybridIndex next,
         HybridIndexFactory factory,
         XindexVault vault,
         MockERC20 weth,
@@ -49,6 +55,7 @@ contract HybridHandler is Test {
         address owner
     ) {
         HUB = hub;
+        NEXT = next;
         FACTORY = factory;
         VAULT = vault;
         WETH = weth;
@@ -65,7 +72,8 @@ contract HybridHandler is Test {
             bytes memory proof = abi.encode(logs[i].emitter, logs[i].topics[0], logs[i].topics[1], logs[i].data);
             VAULT.deliver(proof, proof);
             VaultMessages.Message memory m = VaultMessages.decode(abi.decode(logs[i].data, (bytes)));
-            if (m.kind == VaultMessages.BURN) burnIds.push(logs[i].topics[1]);
+            if (m.kind == VaultMessages.BURN || m.kind == VaultMessages.MIGRATE) burnIds.push(logs[i].topics[1]);
+            if (m.kind == VaultMessages.MIGRATE) migrationIds.push(logs[i].topics[1]);
         }
     }
 
@@ -191,6 +199,23 @@ contract HybridHandler is Test {
         HUB.redeem(amount, holder, r, skipWeth ? 1 : 0);
         _deliver();
         ++burns;
+    }
+
+    /// @notice A holder moves shares to the next version, one new share for each old one: at half the units, the old
+    ///         shares cover both components, and the rest goes to the holder, or a claim, as a redemption's would.
+    function migrate(uint256 who, uint256 amount, bool withRecipient) external {
+        if (_frozen()) return;
+        address holder = _actors[who % 3];
+        uint256 balance = HUB.balanceOf(holder);
+        if (balance == 0) return;
+        amount = bound(amount, 1, balance);
+        bytes32[] memory r = new bytes32[](1);
+        r[0] = withRecipient ? bytes32(uint256(uint160(makeAddr("vault chain recipient")))) : bytes32(0);
+        vm.recordLogs();
+        vm.prank(holder);
+        HUB.migrate(address(NEXT), amount, amount, holder, r);
+        _deliver();
+        ++migrations;
     }
 
     function claimBoth(uint256 who) external {
@@ -354,6 +379,10 @@ contract HybridHandler is Test {
     function burnCount() external view returns (uint256) {
         return burnIds.length;
     }
+
+    function migrationCount() external view returns (uint256) {
+        return migrationIds.length;
+    }
 }
 
 /// @notice Whatever orders, holders, forgers, the guardian and the clock do: the Ethereum escrow and backing are held in
@@ -361,12 +390,17 @@ contract HybridHandler is Test {
 ///         order's escrow is accounted for by its status.
 contract HybridHubInvariantTest is HybridTest {
     IHybridIndex hub;
+    IHybridIndex next;
     HybridHandler handler;
 
     function setUp() public {
         _deployStageB();
         hub = _createHybrid();
-        handler = new HybridHandler(hub, factory, vault, weth, guardian, owner);
+        address[] memory tokens = new address[](2);
+        (tokens[0], tokens[1]) = (address(weth), native);
+        next = IHybridIndex(factory.createIndex("Next", "NXT", tokens, K / 2));
+        vault.registerIndex(address(next), factory.indexSalt(address(next)));
+        handler = new HybridHandler(hub, next, factory, vault, weth, guardian, owner);
         targetContract(address(handler));
     }
 
@@ -392,6 +426,31 @@ contract HybridHubInvariantTest is HybridTest {
             owed += vault.owed(address(hub), handler.burnIds(i)).remaining;
         }
         assertEq(vault.balance(address(hub), address(0)), hub.vaultBacking(native) + owed);
+    }
+
+    /// @dev The next version's book counts every migration in at once; the vault moves it within its speed limit, so
+    ///      its balance plus what it still owes of those migrations is the book exactly.
+    function invariant_theNextVersionAgreesWithTheBook() public view {
+        uint256 moving = 0;
+        for (uint256 i = 0; i < handler.migrationCount(); ++i) {
+            moving += vault.owed(address(hub), handler.migrationIds(i)).remaining;
+        }
+        assertEq(vault.balance(address(next), address(0)) + moving, next.vaultBacking(native));
+    }
+
+    /// @dev The next version is backed on both chains, as the first is.
+    function invariant_theNextVersionIsBacked() public view {
+        (, uint256[] memory units,,) = next.components();
+        uint256 supply = next.totalSupply();
+        assertGe(weth.balanceOf(address(next)), supply * units[0] / 1e18 + next.totalClaims(address(weth)));
+        assertGe(next.vaultBacking(native), supply * units[1] / 1e18 + next.totalClaims(native));
+    }
+
+    /// @dev No vault record ever shows an index paid out more than it sent: the evidence of `reportOutflow` never
+    ///      fires on honest traffic.
+    function invariant_noVaultPaysMoreThanWasSent() public view {
+        assertLe(vault.paidTotal(address(hub), address(0)), hub.sentOut(native));
+        assertLe(vault.paidTotal(address(next), address(0)), next.sentOut(native));
     }
 
     /// @dev The index holds of its own shares exactly a live fill's bond, accepted or held after settlement.
@@ -471,6 +530,12 @@ contract HybridHubInvariantTest is HybridTest {
         handler.releaseOwed(handler.burnCount() - 1);
         assertEq(vault.owed(address(hub), handler.burnIds(handler.burnCount() - 1)).remaining, 0);
         handler.releaseOwed(handler.burnCount() - 1); // paid in full: skipped
+        handler.migrate(2, 0, true); // no shares: skipped
+        handler.migrate(1, 0.002e18, true);
+        handler.migrate(1, 0.001e18, false);
+        handler.freeze(0);
+        handler.migrate(1, 0.001e18, true); // frozen: skipped
+        vm.warp(block.timestamp + 14 days);
 
         // Three rebalance cycles: settled then slashed on a forged proof; settled with its bond released; abandoned.
         _cycle(true);
@@ -503,12 +568,16 @@ contract HybridHubInvariantTest is HybridTest {
         assertEq(handler.claims(), 2);
         assertEq(handler.fails(), 2);
         assertEq(handler.voids(), 1);
-        assertEq(handler.freezes(), 2);
         assertEq(handler.reconfirms(), 1);
         assertEq(handler.burns(), 3);
+        assertEq(handler.migrations(), 2);
+        assertEq(handler.freezes(), 3);
         invariant_theEthereumComponentIsBacked();
         invariant_theVaultComponentIsBacked();
         invariant_theVaultAgreesWithTheBook();
         invariant_escrowFollowsTheOrders();
+        invariant_theNextVersionAgreesWithTheBook();
+        invariant_theNextVersionIsBacked();
+        invariant_noVaultPaysMoreThanWasSent();
     }
 }

@@ -201,7 +201,7 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         } else if (m.kind == VaultMessages.INTAKE_FAILED) {
             _failIntake(m.index, abi.decode(m.body, (uint256)));
         } else {
-            _migrate(m.index, m.body);
+            _migrate(m.index, id, m.body);
         }
     }
 
@@ -286,7 +286,7 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         address to = _toAddress(recipient);
         if (amount == 0) revert ZeroAmount();
         if (to == address(0)) revert ZeroAddress();
-        _owed[index][id] = Owed({token: t, recipient: to, remaining: amount});
+        _owed[index][id] = Owed({token: t, toIndex: false, recipient: to, remaining: amount});
         emit BurnAccepted(index, id, t, amount, to);
         _release(index, id, false);
     }
@@ -296,8 +296,9 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         _release(index, id, true);
     }
 
-    /// @dev Pays what the speed limit, the index's balance and a freeze allow of an owed burn. `strict` is set for an
-    ///      explicit release, which reverts when it can pay nothing; a burn just delivered keeps waiting instead.
+    /// @dev Pays what the speed limit, the index's balance and a freeze allow of an owed burn or migration. `strict`
+    ///      is set for an explicit release, which reverts when it can pay nothing; a message just delivered keeps waiting
+    ///      instead. A migration is paid into the new index's balance, so the coins stay in the vault and `held` stays.
     function _release(address index, bytes32 id, bool strict) private {
         Owed storage o = _owed[index][id];
         uint256 remaining = o.remaining;
@@ -310,14 +311,20 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
             return;
         }
         address recipient = o.recipient;
+        bool toIndex = o.toIndex;
         o.remaining = remaining - pay;
         balance[index][token] -= pay;
         paidTotal[index][token] += pay;
-        held[token] -= pay;
         _recordOutflow(index, token, pay);
         emit Paid(index, id, recipient, pay, remaining - pay);
         _refreshIndexDigest(index);
-        _send(recipient, pay);
+        if (toIndex) {
+            _credit(recipient, token, pay);
+            _refreshIndexDigest(recipient);
+        } else {
+            held[token] -= pay;
+            _send(recipient, pay);
+        }
     }
 
     /// @inheritdoc IXindexVault
@@ -398,19 +405,16 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
     // Migration and freeze
     // ---------------------------------------------------------------------
 
-    function _migrate(address index, bytes memory body) private {
-        _checkNotFrozen();
+    /// @dev A migration leaves the old index's balance as a burn does, within the speed limit, so no message, forged or
+    ///      not, can empty an index faster than its redeemers could (design invariant I5).
+    function _migrate(address index, bytes32 id, bytes memory body) private {
         (address newIndex, bytes32 token, uint256 amount) = abi.decode(body, (address, bytes32, uint256));
         if (!isIndex[newIndex] || newIndex == index) revert NotAnIndex(newIndex);
         address t = _toAddress(token);
-        uint256 bal = balance[index][t];
         if (amount == 0) revert ZeroAmount();
-        if (amount > bal) revert InsufficientBalance(index, t, bal, amount);
-        balance[index][t] = bal - amount;
-        _credit(newIndex, t, amount);
-        emit Migrated(index, newIndex, t, amount);
-        _refreshIndexDigest(index);
-        _refreshIndexDigest(newIndex);
+        _owed[index][id] = Owed({token: t, toIndex: true, recipient: newIndex, remaining: amount});
+        emit MigrationAccepted(index, id, t, amount, newIndex);
+        _release(index, id, false);
     }
 
     /// @inheritdoc IXindexVault

@@ -49,8 +49,6 @@ interface IHybridHubTypes is IXindexErrors {
     event OrderFailed(uint256 indexed orderId, address indexed by);
     /// @notice A proof of `chainId`'s intake showed `proven` where the order rests on `recorded`.
     event OrderVoided(uint256 indexed orderId, uint256 indexed chainId, bytes32 proven, bytes32 recorded);
-    /// @notice A contradiction froze this index's mints on `chainId` until `until`.
-    event ChainFrozen(uint256 indexed chainId, uint256 until);
     /// @notice An intake of no order was failed, so its depositors can take their coins back.
     event IntakeFailed(uint256 indexed chainId, uint256 intakeId);
     event Redeemed(address indexed sender, address indexed to, uint256 shares, uint256[] amounts);
@@ -158,4 +156,38 @@ interface IHybridHubTypes is IXindexErrors {
     error WrongFillStatus(FillStatus status);
     error IntakeOfARebalance(uint256 intakeId);
     error DeliveryShort(address token, uint256 delivered, uint256 required);
+
+    // ---------------------------------------------------------------------
+    // Layer 3: migration and evidence
+    // ---------------------------------------------------------------------
+
+    /// @notice A vault's own records, the preimage of its digest for this index: its tokens, and for each its balance
+    ///         and everything paid out of it.
+    struct IndexRecord {
+        address[] tokens;
+        uint256[] balances;
+        uint256[] paid;
+    }
+
+    /// @notice `holder` moved `shares` of this index into `newShares` of `newIndex`, minted to `to`.
+    event MigratedOut(
+        address indexed holder, address indexed newIndex, address indexed to, uint256 shares, uint256 newShares
+    );
+    /// @notice `shares` of this index were minted to `to` against backing migrated from `oldIndex`.
+    event MigratedIn(address indexed oldIndex, address indexed to, uint256 shares);
+    /// @notice `amount` of `token` is moving inside its vault to `newIndex`, within the vault's speed limit.
+    event MigrateSent(
+        address indexed token, uint256 indexed chainId, address indexed newIndex, uint256 amount, bytes32 id
+    );
+    /// @notice `chainId`'s vault shows `paid` of `token` paid out of this index, more than the `sent` it ever sent out:
+    ///         a forged payout, which only a break of both Ethereum-side proofs allows.
+    event OutflowDisproved(uint256 indexed chainId, address indexed token, uint256 paid, uint256 sent);
+    /// @notice A proof of order `orderId`'s intake on `chainId` showed `proven`, neither the deposits the order was
+    ///         claimed on nor the same deposits settled: the proof it was claimed on was false.
+    event DepositDisproved(uint256 indexed orderId, uint256 indexed chainId, bytes32 proven);
+
+    /// @notice `index` is not another HybridHub index of this factory.
+    error NotAVersion(address index);
+    /// @notice `required` of `token` is needed for the new shares and only `available` comes from the old ones.
+    error MigrationShort(address token, uint256 available, uint256 required);
 }

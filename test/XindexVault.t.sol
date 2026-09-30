@@ -522,15 +522,38 @@ contract XindexVaultTest is VaultTestBase {
     // migration, caps, freeze, governance
     // ---------------------------------------------------------------------
 
-    function test_migrate_movesCoinsBetweenIndexes() public {
-        _fund(index, 10 ether);
+    /// @dev A migration leaves the old index's balance as a burn does: within the speed limit, into the new index's
+    ///      balance, without leaving the vault. What the limit does not allow yet stays owed and is released later.
+    function test_migrate_movesCoinsWithinTheSpeedLimit() public {
+        _fund(index, 100 ether);
         address next = _registered(keccak256("index-2"));
-        bytes memory body = abi.encode(next, bytes32(0), 6 ether);
-        _deliver(index, _payload(VaultMessages.MIGRATE, index, body));
-        assertEq(vault.balance(index, address(0)), 4 ether);
-        assertEq(vault.balance(next, address(0)), 6 ether);
-        assertEq(vault.held(address(0)), 10 ether, "nothing left the vault");
+        bytes memory payload = _payload(VaultMessages.MIGRATE, index, abi.encode(next, bytes32(0), 3 ether));
+        vm.expectEmit(address(vault));
+        emit IXindexVault.MigrationAccepted(index, keccak256(payload), address(0), 3 ether, next);
+        _deliver(index, payload);
+        assertEq(vault.balance(index, address(0)), 97 ether);
+        assertEq(vault.balance(next, address(0)), 3 ether);
+        assertEq(vault.paidTotal(index, address(0)), 3 ether, "a migration counts as paid out of the old index");
+        assertEq(vault.held(address(0)), 100 ether, "nothing left the vault");
         assertEq(vault.indexTokens(next).length, 1);
+
+        // 4% of the 100 before any outflow is 4, of which 3 are used: 1 moves now and 9 wait.
+        payload = _payload(VaultMessages.MIGRATE, index, abi.encode(next, bytes32(0), 10 ether));
+        bytes32 id = keccak256(payload);
+        _deliver(index, payload);
+        assertEq(vault.balance(next, address(0)), 4 ether);
+        IXindexVault.Owed memory o = vault.owed(index, id);
+        assertTrue(o.toIndex);
+        assertEq(o.recipient, next);
+        assertEq(o.remaining, 9 ether);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NothingPayable.selector, index, id));
+        vault.release(index, id);
+        vm.warp(block.timestamp + 25 hours);
+        vault.release(index, id);
+        assertEq(vault.balance(next, address(0)), 4 ether + 3.84 ether, "4% of the 96 left");
+        assertEq(vault.owed(index, id).remaining, 9 ether - 3.84 ether);
+        assertEq(vault.paidTotal(index, address(0)), 7.84 ether);
+        assertEq(vault.held(address(0)), 100 ether);
 
         address unregistered = _index(keccak256("index-3"));
         vm.expectRevert(abi.encodeWithSelector(IXindexVault.NotAnIndex.selector, unregistered));
@@ -539,13 +562,20 @@ contract XindexVaultTest is VaultTestBase {
         _deliver(index, _payload(VaultMessages.MIGRATE, index, abi.encode(index, bytes32(0), 1 ether)));
         vm.expectRevert(IXindexVault.ZeroAmount.selector);
         _deliver(index, _payload(VaultMessages.MIGRATE, index, abi.encode(next, bytes32(0), 0)));
-        vm.expectRevert(
-            abi.encodeWithSelector(IXindexVault.InsufficientBalance.selector, index, address(0), 4 ether, 5 ether)
-        );
-        _deliver(index, _payload(VaultMessages.MIGRATE, index, abi.encode(next, bytes32(0), 5 ether)));
     }
 
-    /// @dev Lowering a cap or a floor is protective and may rest on one proof; raising either needs both.
+    /// @dev A migration never moves more than the old index's balance: the rest stays owed, as a burn's would.
+    function test_migrate_neverMoreThanTheBalance() public {
+        _fund(index, 10 ether);
+        address next = _registered(keccak256("index-2"));
+        _deliver(factory, _payload(VaultMessages.CAP_UPDATE, factory, abi.encode(bytes32(0), CAP, 100 ether)));
+        bytes memory payload = _payload(VaultMessages.MIGRATE, index, abi.encode(next, bytes32(0), 30 ether));
+        _deliver(index, payload);
+        assertEq(vault.balance(index, address(0)), 0);
+        assertEq(vault.balance(next, address(0)), 10 ether, "the floor lets it all out, but no more than there is");
+        assertEq(vault.owed(index, keccak256(payload)).remaining, 20 ether);
+    }
+
     function test_capUpdate_raisingNeedsBothProofs() public {
         bytes memory lower = _payload(VaultMessages.CAP_UPDATE, factory, abi.encode(bytes32(0), CAP / 2, FLOOR / 2));
         vm.expectEmit(address(vault));
@@ -563,7 +593,8 @@ contract XindexVaultTest is VaultTestBase {
         assertEq(vault.cap(address(0)), CAP);
     }
 
-    /// @dev A freeze stops deposits, payouts, refunds and migration; accepted burns wait; it ends by itself.
+    /// @dev A freeze stops deposits, payouts, refunds and migration; accepted burns and migrations wait; it ends by
+    ///      itself.
     function test_freeze_stopsCoinsMovingAndExpires() public {
         _fund(index, 100 ether);
         vm.prank(alice);
@@ -584,8 +615,9 @@ contract XindexVaultTest is VaultTestBase {
         vm.expectRevert(abi.encodeWithSelector(IXindexVault.VaultFrozen.selector, until));
         _deposit(alice, index, _intake(block.timestamp + 1 hours, 9), 1 ether);
         address next = _registered(keccak256("index-2"));
-        vm.expectRevert(abi.encodeWithSelector(IXindexVault.VaultFrozen.selector, until));
-        _deliver(index, _payload(VaultMessages.MIGRATE, index, abi.encode(next, bytes32(0), 1 ether)));
+        bytes memory migration = _payload(VaultMessages.MIGRATE, index, abi.encode(next, bytes32(0), 1 ether));
+        _deliver(index, migration);
+        assertEq(vault.balance(next, address(0)), 0, "accepted, not moved");
 
         vm.warp(block.timestamp + 1 days);
         vm.prank(freezerKey);
@@ -597,6 +629,8 @@ contract XindexVaultTest is VaultTestBase {
         vm.warp(vault.frozenUntil());
         vault.release(index, id);
         assertEq(bob.balance, 1 ether, "paid once the freeze ended");
+        vault.release(index, keccak256(migration));
+        assertEq(vault.balance(next, address(0)), 1 ether, "moved once the freeze ended");
     }
 
     function test_freeze_refundsWaitToo() public {

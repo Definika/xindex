@@ -15,9 +15,11 @@ interface IXindexVault {
         Failed
     }
 
-    /// @notice A burn accepted from Ethereum and not yet paid in full.
+    /// @notice A burn or a migration accepted from Ethereum and not yet paid in full. A migration's recipient is the
+    ///         new index, whose balance it is paid into (`toIndex`).
     struct Owed {
         address token;
+        bool toIndex;
         address recipient;
         uint256 remaining;
     }
@@ -34,7 +36,9 @@ interface IXindexVault {
     event Refunded(
         address indexed index, uint256 indexed intakeId, address indexed depositor, address token, uint256 amount
     );
-    event Migrated(address indexed from, address indexed to, address token, uint256 amount);
+    event MigrationAccepted(
+        address indexed index, bytes32 indexed id, address token, uint256 amount, address indexed newIndex
+    );
     event CapSet(address indexed token, uint256 cap, uint256 outflowFloor);
     event Frozen(uint256 until, address indexed by);
     event FreezerChanged(address indexed freezer);
@@ -58,7 +62,6 @@ interface IXindexVault {
     error AlreadyDelivered(bytes32 id);
     error NotAnAddress(bytes32 value);
     error IntakeNotOpen(address index, uint256 intakeId);
-    error InsufficientBalance(address index, address token, uint256 balance, uint256 amount);
     error NothingOwed(address index, bytes32 id);
     error NothingPayable(address index, bytes32 id);
     error PaymentFailed(address recipient);
@@ -94,6 +97,8 @@ interface IXindexVault {
 
     function isIndex(address index) external view returns (bool);
     function balance(address index, address token) external view returns (uint256);
+    /// @notice Everything paid out of the index's balance of `token`: to burn recipients, and into other indexes'
+    ///         balances by migration. It can never exceed what the index sent out in BURN and MIGRATE messages.
     function paidTotal(address index, address token) external view returns (uint256);
     function held(address token) external view returns (uint256);
     function cap(address token) external view returns (uint256);
@@ -132,7 +137,7 @@ interface IXindexVault {
     /// @notice Anyone. Runs one message proven final on Ethereum by P1 (`proof1`), P2 (`proof2`) or both.
     function deliver(bytes calldata proof1, bytes calldata proof2) external;
 
-    /// @notice Anyone, while not frozen. Pays what the speed limit now allows of an owed burn.
+    /// @notice Anyone, while not frozen. Pays what the speed limit now allows of an owed burn or migration.
     function release(address index, bytes32 id) external;
 
     /// @notice A depositor of a failed intake, while not frozen. Takes their deposit back.

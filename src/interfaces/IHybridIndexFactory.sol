@@ -140,8 +140,10 @@ interface IHybridIndexFactory is IIndexFactory {
     function freezeChain(uint256 chainId) external;
 
     /// @notice A HybridHub index of this factory only, on evidence it has checked that `chainId`'s records or proofs
-    ///         are false. Freezes the chain as {freezeChain} does.
-    function freezeOnEvidence(uint256 chainId) external;
+    ///         are false. Freezes every index's mints on the chain, and with `payouts` the vault too, as {freezeChain}
+    ///         does. Evidence against the chain's deposit proofs stops mints only, since those proofs can only inflate
+    ///         mints; evidence of a payout Ethereum never sent stops the vault as well.
+    function freezeOnEvidence(uint256 chainId, bool payouts) external;
 
     /// @notice Owner only. Proposes `CAP_UPDATE` for `token` on `chainId`'s vault: its quantity cap and outflow floor.
     ///         Executable after LISTING_DELAY; the vault takes it on both proofs if it raises either figure, else on one.

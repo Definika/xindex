@@ -7,6 +7,7 @@ import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Ini
 import {HybridHub} from "../src/HybridHub.sol";
 import {IHybridHubTypes} from "../src/interfaces/IHybridHubTypes.sol";
 import {IHybridIndex} from "../src/interfaces/IHybridIndex.sol";
+import {HybridHubExtension} from "../src/hybrid/HybridHubExtension.sol";
 import {HybridHubModule} from "../src/hybrid/HybridHubModule.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {IXindexVault} from "../src/interfaces/IXindexVault.sol";
@@ -378,6 +379,8 @@ contract HybridHubTest is HybridTest {
         assertEq(uint256(hub.order(orderId).status), uint256(IHybridHubTypes.OrderStatus.Failed));
         (, uint256 frozenTo) = hub.chainFreeze(chainId);
         assertEq(frozenTo, block.timestamp + 14 days);
+        assertEq(factory.chainFreeze(chainId).until, frozenTo, "frozen at the factory, for every index");
+        assertEq(vault.frozenUntil(), 0, "a false deposit proof stops mints, not the vault's payouts");
         assertEq(hub.claimOf(minter, address(weth)), 1.2e18);
         uint256 intakeId = hub.intakeIdOf(orderId); // before the prank, which a call in the arguments would consume
         vm.prank(minter);
@@ -672,13 +675,19 @@ contract HybridHubTest is HybridTest {
     }
 
     function test_initialize_refusals() public {
-        HybridHubModule own_ = new HybridHubModule(address(this));
+        HybridHubExtension ownExtension = new HybridHubExtension(address(this));
+        HybridHubModule own_ = new HybridHubModule(address(this), address(ownExtension));
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
         new HybridHub(address(0), address(own_));
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new HybridHubModule(address(0));
+        new HybridHubModule(address(0), address(ownExtension));
+        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
+        new HybridHubExtension(address(0));
         vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.WrongModule.selector, address(module)));
         new HybridHub(address(this), address(module)); // a module built for another factory
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.WrongModule.selector, address(extension)));
+        new HybridHubModule(address(this), address(extension)); // an extension built for another factory
+        assertEq(own_.EXTENSION(), address(ownExtension));
         HybridHub own = new HybridHub(address(this), address(own_));
         address[] memory tokens = new address[](1);
         uint256[] memory units = new uint256[](1);

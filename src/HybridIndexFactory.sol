@@ -107,23 +107,24 @@ contract HybridIndexFactory is IndexFactory, IHybridIndexFactory {
 
     /// @inheritdoc IHybridIndexFactory
     function freezeChain(uint256 chainId) external onlyOwnerOrGuardian {
-        _freezeChain(chainId);
+        _freezeChain(chainId, true);
     }
 
     /// @inheritdoc IHybridIndexFactory
-    function freezeOnEvidence(uint256 chainId) external {
+    function freezeOnEvidence(uint256 chainId, bool payouts) external {
         // Only this factory's HybridHub clones have a recorded salt, and each checked the evidence before calling.
         if (indexSalt[msg.sender] == bytes32(0)) revert NotAHybridIndex(msg.sender);
-        _freezeChain(chainId);
+        _freezeChain(chainId, payouts);
     }
 
-    function _freezeChain(uint256 chainId) private {
+    /// @dev Freezes every index's mints on `chainId`, and with `payouts` the vault too, through a `FREEZE` message.
+    function _freezeChain(uint256 chainId, bool payouts) private {
         bytes32 vault = _chains[chainId].vault;
         if (vault == bytes32(0)) revert UnknownChain(chainId);
         uint256 until = block.timestamp + FREEZE_DURATION;
         _freezes[chainId] = Freeze({start: SafeCast.toUint64(block.timestamp), until: SafeCast.toUint64(until)});
         emit ChainFrozen(chainId, until, msg.sender);
-        _sendVault(chainId, vault, VaultMessages.FREEZE, "");
+        if (payouts) _sendVault(chainId, vault, VaultMessages.FREEZE, "");
     }
 
     /// @dev Emits a message to `chainId`'s vault, which P1, P2 or both prove final there, as its kind requires.

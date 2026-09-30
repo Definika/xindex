@@ -51,6 +51,18 @@ abstract contract HubShares {
         emit IERC20.Transfer(from, to, value);
     }
 
+    /// @dev A mint of `value` shares to `to`, which the caller has checked is neither zero, the index nor its factory.
+    function _mintShares(address to, uint256 value) internal {
+        Erc20Storage storage $ = _shares();
+        // As OpenZeppelin's: the supply is checked, and a balance is at most the supply.
+        $._totalSupply += value;
+        unchecked {
+            $._balances[to] += value;
+        }
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit IERC20.Transfer(address(0), to, value);
+    }
+
     /// @dev A burn of `value` shares held by `from`.
     function _burnShares(address from, uint256 value) internal {
         Erc20Storage storage $ = _shares();

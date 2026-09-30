@@ -44,10 +44,9 @@ contract VaultHandler is Test {
     Payout[] public payouts;
     bytes[] internal _delivered;
 
-    /// @notice What each index was credited (settled intakes and migrations in) and debited (migrations out).
+    /// @notice What each index was credited: settled intakes, and migrations in as they were paid.
     mapping(address index => uint256) public credited;
-    mapping(address index => uint256) public debited;
-    /// @notice What each index paid out, measured at the recipients.
+    /// @notice What each index paid out, burns and migrations alike, measured where it landed.
     mapping(address index => uint256) public paidOut;
     /// @notice Coins sent to the vault outside any deposit.
     uint256 public stray;
@@ -183,24 +182,33 @@ contract VaultHandler is Test {
         IXindexVault.Owed memory o = VAULT.owed(b.index, b.id);
         if (o.remaining == 0) return;
         if (VAULT.available(b.index, address(0)) == 0 || VAULT.balance(b.index, address(0)) == 0) return;
-        uint256 before = o.recipient.balance;
+        uint256 before = _received(o);
         uint256 balanceBefore = VAULT.balance(b.index, address(0));
         VAULT.release(b.index, b.id);
-        uint256 paid = o.recipient.balance - before;
+        uint256 paid = _received(o) - before;
         b.paid += paid;
+        if (o.toIndex) credited[o.recipient] += paid;
         _record(b.index, paid, balanceBefore);
         ++releases;
     }
 
+    /// @dev What an owed payout's recipient holds: a burn's recipient's coins, or a migration's new index's balance.
+    function _received(IXindexVault.Owed memory o) internal view returns (uint256) {
+        return o.toIndex ? VAULT.balance(o.recipient, address(0)) : o.recipient.balance;
+    }
+
+    /// @notice A migration proven from Ethereum: like a burn, it moves what the limit allows now and owes the rest,
+    ///         frozen or not.
     function migrate(uint256 pick, uint256 amount) external {
-        if (_frozen()) return;
         (address from, address to) = pick % 2 == 0 ? (indexes[0], indexes[1]) : (indexes[1], indexes[0]);
-        uint256 bal = VAULT.balance(from, address(0));
-        if (bal == 0) return;
-        amount = bound(amount, 1, bal);
-        _deliver(VaultMessages.MIGRATE, from, abi.encode(to, bytes32(0), amount));
-        debited[from] += amount;
-        credited[to] += amount;
+        amount = bound(amount, 1, 20 ether);
+        uint256 before = VAULT.balance(to, address(0));
+        uint256 balanceBefore = VAULT.balance(from, address(0));
+        bytes32 id = _deliver(VaultMessages.MIGRATE, from, abi.encode(to, bytes32(0), amount));
+        uint256 paid = VAULT.balance(to, address(0)) - before;
+        burns.push(Burn(from, id, amount, paid));
+        credited[to] += paid;
+        _record(from, paid, balanceBefore);
         ++migrations;
     }
 
@@ -312,7 +320,8 @@ contract XindexVaultInvariantTest is Test {
         assertLe(vault.held(address(0)), vault.cap(address(0)), "held above the cap");
     }
 
-    /// @dev V2: a delivered message never runs again, and a burn's payouts plus what it still owes are its amount.
+    /// @dev V2: a delivered message never runs again, and a burn's or a migration's payouts plus what it still owes are
+    ///      its amount.
     function invariant_V2_aMessagePaysAtMostOnce() public view {
         assertFalse(handler.replayed(), "a message was delivered twice");
         for (uint256 i = 0; i < handler.burnCount(); ++i) {
@@ -328,7 +337,7 @@ contract XindexVaultInvariantTest is Test {
             address index = indexes[i];
             assertEq(vault.paidTotal(index, address(0)), handler.paidOut(index), "paidTotal is not what was paid");
             assertEq(
-                vault.balance(index, address(0)) + handler.paidOut(index) + handler.debited(index),
+                vault.balance(index, address(0)) + handler.paidOut(index),
                 handler.credited(index),
                 "an index paid out more than it was credited"
             );
@@ -399,6 +408,10 @@ contract XindexVaultInvariantTest is Test {
         );
     }
 
+    function _burnId(uint256 k) internal view returns (bytes32 id) {
+        (, id,,) = handler.burns(k);
+    }
+
     /// @dev The campaign reaches every path the invariants are about.
     function test_handlerReachesEveryPath() public {
         handler.deposit(0, 0, 50 ether, 1 days, true);
@@ -425,8 +438,12 @@ contract XindexVaultInvariantTest is Test {
         handler.deposit(0, 0, 1 ether, 1 days, true); // frozen: skipped
         handler.burn(1, 1 ether, 1); // accepted, owed
         handler.warp(15 days - 1); // past the freeze (a seed of 3 mod 4 moves the clock by days)
-        handler.release(1);
-        handler.release(1); // paid in full: skipped
+        handler.release(1); // the migration: part of it moves
+        handler.release(1); // nothing more available yet: skipped
+        handler.warp(2 days + 3); // two days later (a seed of 3 mod 4), past the 25-hour window
+        handler.release(1); // the rest, within the limit
+        assertEq(vault.owed(indexes[0], _burnId(1)).remaining, 0);
+        handler.release(1); // moved in full: skipped
         invariant_V1_theVaultHoldsWhatItOwes();
         invariant_V2_aMessagePaysAtMostOnce();
         invariant_V3_aBurnPaysAtMostItsIndexsBalance();
@@ -435,7 +452,7 @@ contract XindexVaultInvariantTest is Test {
         assertEq(handler.settles(), 1);
         assertEq(handler.fails(), 1);
         assertEq(handler.refunds(), 1);
-        assertEq(handler.releases(), 2);
+        assertEq(handler.releases(), 3);
         assertEq(handler.migrations(), 1);
         assertEq(handler.capUpdates(), 1);
         assertEq(handler.freezes(), 1);

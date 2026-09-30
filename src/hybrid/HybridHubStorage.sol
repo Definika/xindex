@@ -2,19 +2,20 @@
 pragma solidity 0.8.28;
 
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IHybridHubTypes} from "../interfaces/IHybridHubTypes.sol";
 import {IHybridIndexFactory} from "../interfaces/IHybridIndexFactory.sol";
 import {IVaultStateVerifier} from "../interfaces/IVaultStateVerifier.sol";
 import {VaultMessages} from "../libraries/VaultMessages.sol";
 
 /// @title HybridHubStorage
-/// @notice The state a HybridHub index keeps, and the helpers its two halves share: the hub, and the module it
-///         delegates to. Both inherit this contract first and declare no state of their own, so their layouts are the
-///         same by construction; every OpenZeppelin part they use keeps its state in its own namespaced slot.
-/// @dev Append new state at the end, never between: a clone's storage outlives nothing, but the hub and the module
-///      must agree slot for slot. `test_theHubAndTheModuleShareOneLayout` checks it.
+/// @notice The state a HybridHub index keeps, and the helpers its three parts share: the hub, the module it
+///         delegates to, and the module's extension. Each inherits this contract first and declares no state of its
+///         own, so their layouts are the same by construction; every OpenZeppelin part they use keeps its state in its
+///         own namespaced slot.
+/// @dev Append new state at the end, never between: the three must agree slot for slot, which
+///      `test_theHubAndTheModuleShareOneLayout` checks.
 // Read alone, this contract uses little of its state: the hub and the module that inherit it read and write the rest.
 // forge-lint: disable-next-item(unused-state-variables)
 abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
@@ -34,6 +35,10 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
     ///      `test_theVaultLayoutIsPinned` checks both against a deployed vault.
     uint256 internal constant VAULT_INTAKE_DIGEST_SLOT = 15;
     bytes32 internal constant INTAKE_DIGEST_DOMAIN = keccak256("xindex.v4.vault.intake-digest");
+    /// @dev Likewise `indexDigest`, the mapping at slot 14: the hash of this domain, the vault chain's id, the vault,
+    ///      the index, and its tokens, balances and paid totals.
+    uint256 internal constant VAULT_INDEX_DIGEST_SLOT = 14;
+    bytes32 internal constant INDEX_DIGEST_DOMAIN = keccak256("xindex.v4.vault.index-digest");
     uint8 internal constant INTAKE_OPEN = 1;
     uint8 internal constant INTAKE_SETTLED = 2;
 
@@ -106,7 +111,6 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
     mapping(address token => uint256) internal _escrowed;
     mapping(address account => mapping(address token => uint256)) internal _claimOf;
     mapping(address token => uint256) internal _totalClaims;
-    mapping(uint256 chainId => IHybridIndexFactory.Freeze) internal _freezes;
     mapping(uint256 chainId => mapping(uint256 intakeId => bool)) internal _intakeFailed;
     Bucket[BUCKETS] internal _minted;
     uint256 internal _lockedShares;
@@ -135,6 +139,14 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
     bytes32[] internal _fillRecipients;
     /// @dev Every delivery intake id a fill ever took, so none can be failed as a stray.
     mapping(uint256 intakeId => bool) internal _fillIntakes;
+
+    // ---------------------------------------------------------------------
+    // Layer 3: migration and evidence
+    // ---------------------------------------------------------------------
+
+    /// @dev Per vault token: everything this index ever sent out of its vault balance, in BURN and MIGRATE messages.
+    ///      A vault can never have paid out more (section 5.5 of the Stage B spec).
+    mapping(address token => uint256) internal _sentOut;
 
     modifier onlyInitialized() {
         _checkInitialized();
@@ -191,12 +203,9 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
     // Freezes and proofs
     // ---------------------------------------------------------------------
 
-    /// @dev The later of the factory's freeze of `chainId` and this index's own.
-    function _freeze(uint256 chainId) internal view returns (IHybridIndexFactory.Freeze memory f) {
-        f = IHybridIndexFactory(_factory()).chainFreeze(chainId);
-        IHybridIndexFactory.Freeze memory own = _freezes[chainId];
-        if (own.start > f.start) f.start = own.start;
-        if (own.until > f.until) f.until = own.until;
+    /// @dev The factory's freeze of `chainId`, by the owner, the guardian, or an index's evidence.
+    function _freeze(uint256 chainId) internal view returns (IHybridIndexFactory.Freeze memory) {
+        return IHybridIndexFactory(_factory()).chainFreeze(chainId);
     }
 
     function _checkNotFrozen(uint256 chainId) internal view {
@@ -211,9 +220,19 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
         view
         returns (bytes32)
     {
+        bytes32 slot = keccak256(abi.encode(intakeId, keccak256(abi.encode(address(this), VAULT_INTAKE_DIGEST_SLOT))));
+        return _provenSlot(j, slot, notBefore, proof);
+    }
+
+    /// @dev One storage slot of the `j`-th chain's vault, proven as `_provenIntake` proves an intake's.
+    function _provenSlot(uint256 j, bytes32 slot, uint256 notBefore, bytes calldata proof)
+        internal
+        view
+        returns (bytes32)
+    {
         VaultChain memory c = _chains[j];
         bytes32[] memory slots = new bytes32[](1);
-        slots[0] = keccak256(abi.encode(intakeId, keccak256(abi.encode(address(this), VAULT_INTAKE_DIGEST_SLOT))));
+        slots[0] = slot;
         address verifier = IHybridIndexFactory(_factory()).stateVerifier(c.chainId);
         uint256 time;
         bytes32[] memory values;
@@ -296,6 +315,7 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
         address token = _components[i].token;
         uint256 j = _slotOf[i] - 1;
         _vaultBacking[token] -= amount;
+        _sentOut[token] += amount;
         bytes memory payload = _payload(j, VaultMessages.BURN, abi.encode(_vaultTokenOf[i], amount, recipient));
         bytes32 id = keccak256(payload);
         // `_payload` only encodes; the lint reads its internal library call as an external one.
@@ -331,12 +351,28 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
         _sendAll(VaultMessages.INTAKE_FAILED, abi.encode(_intakeIdOf(orderId, o.deadline)));
     }
 
-    /// @dev Freezes this index's mints on `chainId`: a contradiction showed its deposit proofs unsound.
-    function _freezeOwn(uint256 chainId) internal {
-        uint256 until = block.timestamp + FREEZE_LENGTH;
-        _freezes[chainId] =
-            IHybridIndexFactory.Freeze({start: SafeCast.toUint64(block.timestamp), until: SafeCast.toUint64(until)});
-        // forge-lint: disable-next-line(reentrancy-events)
-        emit ChainFrozen(chainId, until);
+    /// @dev Freezes `chainId`'s mints at the factory, for every index, and with `payouts` its vault too: evidence this
+    ///      index has just checked showed the chain's records or proofs false. The factory is the last call of every
+    ///      path that makes it.
+    function _freezeOnEvidence(uint256 chainId, bool payouts) internal {
+        IHybridIndexFactory(_factory()).freezeOnEvidence(chainId, payouts);
+    }
+
+    /// @dev The invariants at `supply`, for every component: Ethereum balances cover the backing, claims and escrow,
+    ///      and the book of each vault covers its backing and claims.
+    function _checkBacking(uint256 supply) internal view {
+        uint256 n = _components.length;
+        for (uint256 i = 0; i < n; ++i) {
+            address token = _components[i].token;
+            uint256 required = _backing(supply, _components[i].units, Math.Rounding.Floor) + _totalClaims[token];
+            uint256 held;
+            if (_slotOf[i] == 0) {
+                required += _escrowed[token];
+                held = IERC20(token).balanceOf(address(this));
+            } else {
+                held = _vaultBacking[token];
+            }
+            if (held < required) revert RebalanceUnderfunded(token, held, required);
+        }
     }
 }

@@ -23,6 +23,8 @@ interface IHybridHubModule is IHybridHubTypes {
     function BOND_HOLD() external view returns (uint256);
     /// @notice How long an executor has to deposit the vault deliveries after accepting: 6 hours.
     function DELIVERY_WINDOW() external view returns (uint256);
+    /// @notice The extension this module delegates everything it does not answer to: migration and evidence.
+    function EXTENSION() external view returns (address);
 
     /// @notice Anyone, during a locked order's lock. `proof` shows `chainId`'s intake at a block after the deadline
     ///         other than the order rests on: the order fails and the chain's mints freeze.

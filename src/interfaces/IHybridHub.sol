@@ -95,8 +95,8 @@ interface IHybridHub is IHybridHubTypes, IERC20, IERC20Permit {
     function previewRedeem(uint256 shares) external view returns (uint256[] memory amounts);
     /// @notice Shares that could become claimable now without breaking MINT_CAP.
     function mintRoom() external view returns (uint256);
-    /// @notice When the latest freeze of `chainId` began and when it ends, the factory's or this index's own: an order
-    ///         settled before `start` needs re-confirming before it can be claimed.
+    /// @notice When the factory's latest freeze of `chainId` began and when it ends, whether the owner, the guardian or an
+    ///         index's evidence froze it: an order settled before `start` needs re-confirming before it can be claimed.
     function chainFreeze(uint256 chainId) external view returns (uint256 start, uint256 until);
     function vaultBacking(address token) external view returns (uint256);
     function escrowed(address token) external view returns (uint256);

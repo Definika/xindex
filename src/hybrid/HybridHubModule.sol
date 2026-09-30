@@ -6,6 +6,8 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import {Address} from "@openzeppelin/contracts/utils/Address.sol";
+import {IHybridHub} from "../interfaces/IHybridHub.sol";
 import {IHybridHubModule} from "../interfaces/IHybridHubModule.sol";
 import {IHybridIndexFactory} from "../interfaces/IHybridIndexFactory.sol";
 import {IIndexFactory} from "../interfaces/IIndexFactory.sol";
@@ -21,7 +23,8 @@ import {HubShares} from "./HubShares.sol";
 ///      A's `IndexHub`'s, unchanged; its fill takes three steps, since vault legs cannot settle in one transaction:
 ///      accept (bond and Ethereum deliveries), the vault deliveries under the fill's intake, and settle on their proofs,
 ///      at the supply of the settling block. The bond is held BOND_HOLD after settlement and burned if a delivery
-///      proves forged (Stage B spec, section 5.3).
+///      proves forged (Stage B spec, section 5.3). Everything else, migration and evidence, runs in EXTENSION, which
+///      this module's fallback reaches by DELEGATECALL, still on the clone's storage.
 contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybridHubModule {
     using SafeERC20 for IERC20;
 
@@ -43,11 +46,21 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
     uint256 public constant DELIVERY_WINDOW = 6 hours;
     /// @notice The factory the hubs this module serves belong to.
     address public immutable FACTORY;
+    /// @inheritdoc IHybridHubModule
+    address public immutable EXTENSION;
 
-    constructor(address factory) {
+    /// @param extension The extension built for the same factory, which the fallback delegates to.
+    constructor(address factory, address extension) {
         if (factory == address(0)) revert ZeroAddress();
+        if (IHybridHub(extension).FACTORY() != factory) revert WrongModule(extension);
         FACTORY = factory;
+        EXTENSION = extension;
         _disableInitializers();
+    }
+
+    /// @notice Everything else an index answers (`IHybridHubExtension`) runs in EXTENSION, on the index's storage.
+    fallback(bytes calldata data) external returns (bytes memory) {
+        return Address.functionDelegateCall(EXTENSION, data);
     }
 
     function _factory() internal view override returns (address) {
@@ -72,8 +85,8 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
         // The calls before this are views: the factory's registry and a state verifier.
         // forge-lint: disable-next-line(reentrancy-events)
         emit OrderVoided(orderId, chainId, proven, recorded);
-        _freezeOwn(chainId);
         _fail(orderId, o);
+        _freezeOnEvidence(chainId, false);
     }
 
     /// @inheritdoc IHybridHubModule
@@ -357,24 +370,6 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
         }
     }
 
-    /// @dev The invariants with the new units, for every component: Ethereum balances cover the backing, claims and
-    ///      escrow, and the book of each vault covers its backing and claims.
-    function _checkBacking(uint256 supply) private view {
-        uint256 n = _components.length;
-        for (uint256 i = 0; i < n; ++i) {
-            address token = _components[i].token;
-            uint256 required = _backing(supply, _components[i].units, Math.Rounding.Floor) + _totalClaims[token];
-            uint256 held;
-            if (_slotOf[i] == 0) {
-                required += _escrowed[token];
-                held = IERC20(token).balanceOf(address(this));
-            } else {
-                held = _vaultBacking[token];
-            }
-            if (held < required) revert RebalanceUnderfunded(token, held, required);
-        }
-    }
-
     /// @inheritdoc IHybridHubModule
     function failRebalance() external nonReentrant onlyInitialized {
         StoredFill memory f = _fill;
@@ -444,7 +439,7 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
         // The calls before this are views: the factory's registry and a state verifier.
         // forge-lint: disable-next-line(reentrancy-events)
         emit RebalanceSlashed(f.nonce, chainId, f.bond);
-        _freezeOwn(chainId);
+        _freezeOnEvidence(chainId, false);
     }
 
     /// @dev A delivery intake after settlement is honestly open or settled, with at least what the fill recorded, for

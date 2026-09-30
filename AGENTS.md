@@ -118,7 +118,8 @@ src/IndexZap.sol              stateless Universal Router mint/burn router, a ven
 src/MintRequests.sol          ownerless escrow of USDC/USDT-for-shares requests at the requester's own limit, filled by anyone
 src/interfaces/               IIndexHub, IIndexFactory, IIndexZap, IMintRequests, IXindexErrors (shared errors), IRebalanceExecutor, IUniversalRouter,
                               and for Stage B IXindexVault, IEthereumEventVerifier, IVaultStateVerifier, IBnbStateVerifier,
-                              IHybridIndexFactory, IHybridHubTypes, IHybridHub, IHybridHubModule and IHybridIndex (both halves)
+                              IHybridIndexFactory, IHybridHubTypes, IHybridHub, IHybridHubModule, IHybridHubExtension and
+                              IHybridIndex (all three parts)
 src/libraries/PathLib.sol     V3 packed path decoding (shared with test mocks)
 src/libraries/UniversalRouterCommands.sol  the router command bytes the zap emits, vendored with their input layouts
 src/libraries/UniswapV4Types.sol           V4 actions, PathKey and the swap params, vendored from v4-periphery (MIT)
@@ -130,9 +131,10 @@ src/vault/XindexVault.sol     Stage B: the ownerless vault on an EVM chain, nati
 src/verifiers/BnbStateVerifier.sol  Stage B: BNB Chain's state on Ethereum from its own finality votes, following every epoch (not deployed)
 src/HybridIndexFactory.sol    Stage B: IndexFactory plus the chain registry, vault-token listings, the chain freeze and the template choice (not deployed)
 src/HybridHub.sol             Stage B: the index of tokens on Ethereum and in vaults: orders, burns, claims; delegates the rest to its module (not deployed)
-src/hybrid/HybridHubModule.sol  Stage B: the hub's other half, by DELEGATECALL: voids, re-confirmations, stray intakes, the rebalance with deliveries
-src/hybrid/HybridHubStorage.sol Stage B: every state variable the hub and the module share, and their common helpers
-src/hybrid/HubShares.sol      Stage B: the module's three share operations on OpenZeppelin's ERC-20 slot (supply, move, burn)
+src/hybrid/HybridHubModule.sol  Stage B: the hub's second part, by DELEGATECALL: voids, re-confirmations, stray intakes, the rebalance with deliveries
+src/hybrid/HybridHubExtension.sol Stage B: the third part, by DELEGATECALL from the module: migration between versions, evidence against a chain
+src/hybrid/HybridHubStorage.sol Stage B: every state variable the three parts share, and their common helpers
+src/hybrid/HubShares.sol      Stage B: share operations on OpenZeppelin's ERC-20 slot for the module and extension (supply, mint, move, burn)
 test/*.t.sol                  unit / fuzz / invariant / script tests
 test/XindexTest.sol           state and listing helpers the factory, hub, zap and security suites share
 test/Security.t.sol           regression tests for the security review findings (see gate 6 for ids tested elsewhere)
@@ -366,10 +368,11 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   the order until a proof from after the freeze re-confirms it.
 - **Failing never blocks a refund.** A failed order's escrow becomes claims instead of transfers, so vault depositors
   always get their `INTAKE_FAILED`.
-- **One layout, two contracts.** `HybridHub` and `HybridHubModule` run on one clone's storage, so neither declares a
-  state variable of its own: all of it lives in `HybridHubStorage`, appended at its end, never inserted.
-  `test_theHubAndTheModuleShareOneLayout` compares the two from the compiler's layouts (`extra_output` in
-  `foundry.toml`). The module is fixed in the template's constructor; there is no way to change it.
+- **One layout, three contracts.** `HybridHub`, `HybridHubModule` and `HybridHubExtension` run on one clone's storage,
+  so none declares a state variable of its own: all of it lives in `HybridHubStorage`, appended at its end, never
+  inserted. `test_theHubAndTheModuleShareOneLayout` compares the three from the compiler's layouts (`extra_output` in
+  `foundry.toml`). The module is fixed in the template's constructor and the extension in the module's; there is no
+  way to change either.
 - **Fills.** A rebalance of an index holding vault tokens settles in three steps:
   - accept, with a bond of 0.1% of the supply in shares and the Ethereum deliveries;
   - the vault deliveries, deposited under the fill's intake id;
@@ -377,11 +380,21 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
 
   Mint claims wait while a fill is accepted. The bond is held 24 hours after settlement, and burned if a delivery
   proves forged. It is burned on an executor's abort and returned on a guardian's cancel.
+- **Every outflow is speed-limited.** A vault pays a `MIGRATE` into the new index's balance as it pays a burn: owed,
+  within the 4% limit, counted in `paidTotal`. The hub counts both in `sentOut`, so a vault record showing more paid
+  than sent is evidence that both Ethereum-side proofs broke.
+- **Migration is atomic on Ethereum and trusts only clones.** `migrate` and `acceptMigration` accept only another
+  HybridHub of this factory (a recorded salt). A vault token the new version holds must be covered by the old
+  shares' backing of it; a vault token new to the version comes by order. `acceptMigration` checks the backing in real
+  balances, refuses while a fill is accepted or a chain is frozen, and never counts toward the mint cap.
+- **Evidence freezes the chain for every index.** A void, a slash, or a claimed order's deposit proven false freezes
+  mints on the chain at the factory, and leaves the vault paying. A vault record paying more than was sent freezes the
+  vault too.
 - **Vault governance is delayed and public.** The factory sends `CAP_UPDATE` only after `LISTING_DELAY`,
   `FREEZER_CHANGE` only after `GUARDIAN_DELAY` (the guardian cannot cancel it, as it cannot block its own replacement),
   and `VERIFIER_ROTATION` only after `ROTATION_DELAY` (30 days). P1 and P2 must always be two different verifiers.
-- **Size.** The hub and the module are both near the 24KB limit. Check `forge build --sizes` after any change to
-  either.
+- **Size.** The hub and the module are both near the 24KB limit; new code goes in the extension. Check
+  `forge build --sizes` after any change to any of the three.
 
 ## Conventions
 
@@ -429,7 +442,8 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   hub: plain arithmetic in place of the band's `mulDiv`, a floor in place of the ceiling on new units, no clamp, and λ
   rounded down.
 - **Tests.**
-  - One `*.t.sol` per contract; the hub's rebalancing and invariants have their own files.
+  - One `*.t.sol` per contract; the hub's rebalancing and invariants have their own files, and so does a HybridHub's
+    migration.
   - Mocks go under `test/mocks/`. Mainnet constants live in `script/MainnetAddresses.sol`, re-exported with test-only
     ones by `test/fork/ForkAddresses.sol`.
   - New behaviour needs a unit test, and a new revert path needs a test hitting the exact error

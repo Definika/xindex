@@ -76,7 +76,7 @@ event VaultMessage(bytes32 indexed id, bytes payload);
 | `BURN` | the index | `(token, amount, recipient)` | P1 **and** P2 | pays `recipient`, within the speed limit, else owes it |
 | `INTAKE_SETTLED` | the index | `(intakeId)` | P1 **and** P2 | the intake's deposits join the index's balance |
 | `INTAKE_FAILED` | the index | `(intakeId)` | P1 **and** P2 | each depositor can take their deposit back |
-| `MIGRATE` | the old index | `(newIndex, token, amount)` | P1 **and** P2 | moves coins between two indexes' balances (6.7) |
+| `MIGRATE` | the old index | `(newIndex, token, amount)` | P1 **and** P2 | moves coins from the old index's balance to the new one's, within the speed limit, else owes the rest (6.7, section 5.5) |
 | `CAP_UPDATE` | the factory | `(token, cap, floor)` | raise either: **and**; lower both: **or** | sets a quantity cap and an outflow floor |
 | `FREEZE` | the factory | `()` | P1 **or** P2 | freezes the vault for `FREEZE_DURATION` |
 | `FREEZER_CHANGE` | the factory | `(freezer)` | P1 **and** P2 | replaces the guardian's freeze address |
@@ -304,10 +304,11 @@ The choice matters only when Stage A is deployed. The factory is immutable, and 
 The first waits for the Stage B hub to be finished, audited and rehearsed on testnets, which is where the months come
 from, and a hub bug found after that factory is live would need a new factory anyway.
 
-**Not in layer 1:**
+**Not in layer 1** (all but the last item built since, in sections 5.3 to 5.5):
 - the rebalance with deliveries and bond, and migration between versions;
-- shortfall evidence from index digests, stall recovery and snapshot exit;
-- the governance messages `CAP_UPDATE`, `FREEZER_CHANGE` and `VERIFIER_ROTATION`, with its 30-day delay.
+- shortfall evidence from index digests;
+- the governance messages `CAP_UPDATE`, `FREEZER_CHANGE` and `VERIFIER_ROTATION`, with its 30-day delay;
+- stall recovery and the snapshot exit.
 
 ### 5.3 Layer 2: the rebalance with deliveries (design 6.6, step 4; built 2026-09-30)
 
@@ -410,6 +411,64 @@ proposal within `PROPOSAL_WINDOW` (7 days) after its delay.
 30 days in public, only if the guardian does not cancel, and holders can leave within those 30 days. That is design
 8.1's "owner Safe compromised" row.
 
+### 5.5 Migration and evidence against a chain (built 2026-09-30)
+
+Both live in `HybridHubExtension`, a third contract on the clone's storage, which the module reaches by `DELEGATECALL`
+from its fallback: the hub and the module are both near the 24KB limit. Like the module, it is fixed when the template
+is built.
+
+**Migration (design 6.7).** `migrate(newIndex, shares, newShares, to, recipients)` on the old index moves a holder to
+another HybridHub index of the same factory in one Ethereum transaction:
+- the old shares are burned;
+- each vault token both versions hold moves inside its vault, as a `MIGRATE` message, for exactly what the new shares
+  need;
+- each Ethereum token both hold moves from index to index, and the holder pays what the new shares need beyond it;
+- what the old shares back beyond the new ones goes to `to`, as a redemption's would: Ethereum tokens sent, vault tokens
+  burned toward `recipients`, or booked as `to`'s claims where a recipient is zero.
+
+The new index's `acceptMigration` accepts only another HybridHub clone of the factory. It credits its book with the
+vault legs, pulls the rest from the holder, mints, and checks its backing in real balances, so nothing the old index
+says goes unchecked. It refuses while a fill is accepted, as mint claims do, and while any of its chains is frozen.
+Migration is not a deposit and involves no vault-chain proof, so it has no lock and no mint cap.
+
+**The vault side.** A `MIGRATE` is now paid like a burn: owed, released within the 4% speed limit, into the new index's
+balance, and counted in the old index's `paidTotal`. Before, it moved the whole amount at once. That meant a forged
+`MIGRATE`, which needs P1 and P2 both broken, could empty an index's vault balance in one message, past invariant I5.
+
+**Evidence (design 5.3, 6.8, 7.2).** Anyone can prove either of two things, each from the vault's own records:
+- `reportOutflow(chainId, record, proof)` proves the vault's index digest, with its preimage of tokens, balances and
+  paid totals. If a token shows more paid out than this index ever sent out (`sentOut`, every `BURN` and `MIGRATE`),
+  the vault paid on a message Ethereum never sent. Only a break of both Ethereum-side proofs allows that.
+- `reportForgedDeposit(orderId, chainId, proof)` proves a claimed order's intake at a height after its deadline. The
+  intake can honestly be open with the deposits the order was claimed on, or settled with the same deposits. Anything
+  else shows the proof the order was claimed on was false.
+
+Both freeze the chain at the factory, for every index: the state verifier is shared by all of them. Voids and slashes
+now do the same, where layer 1 froze only the index that found the contradiction.
+
+**Proposals for the owner (deviations from the design):**
+1. **A vault token new to a version comes by order, not by migration.** The design's migration mints "against those
+   coins plus fresh deposits for the tokens only the new version holds". Fresh vault deposits need an order's deadline,
+   proof and lock, so a migration would have to wait on them: the old shares held across two transactions, and
+   returned if the order failed. Built instead: migration is atomic, and refuses a new version with a vault token the
+   old one lacks. Holders of such a version redeem and order. With the floor buffer, membership changes are rare, and
+   Stage B's four chains are in the flagship from the start.
+2. **Evidence against deposits freezes mints only.** The design (6.8) has every contradiction also emit `FREEZE`. A false
+   deposit proof can only inflate mints, and the mint freeze stops them. Stopping the vault's payouts too would only
+   delay every holder's exit on that chain. Evidence of a payout Ethereum never sent does stop the vault, since that is
+   where the forged payouts come from. The guardian can still freeze the vault after any evidence.
+3. **The design's shortfall inequality is replaced by the two checks above.** `settled − (burned − paid) < floor(S × u)`
+   cannot be proven soundly from the vault's records: a settle message still in flight leaves the vault's balance
+   below the hub's book with nothing wrong. The two checks compare only things that can never honestly disagree:
+   - paid totals, which never exceed the amounts sent;
+   - a claimed intake, which never changes after its deadline except to settle.
+
+**Not covered, stated plainly:**
+- A forged rebalance delivery found after its bond's 24-hour hold. It is bounded by the band, as design 8.1 states.
+- A vault crediting an index more than Ethereum told it to, for example a forged `INTAKE_SETTLED` of an intake the hub
+  failed. The index is not harmed. That intake's depositors are, and their refund failing is the signal. Only P1 and
+  P2 both broken allow it.
+
 ## 6. Build order
 
 1. The message library and the verifier interface. Then the EVM vault, with unit tests, an invariant suite, mock
@@ -417,8 +476,8 @@ proposal within `PROPOSAL_WINDOW` (7 days) after its delay.
 2. The BNB Chain state verifier on Ethereum, from the prototype, with validator-set tracking and fork tests against
    BNB Chain data.
 3. The factory's chain registry, and `HybridHub` (once proposal 1 is decided). Layer 1 is built (section 5.2); layer 2
-   is the rebalance with deliveries and bond (built, section 5.3); the governance messages are built (section 5.4);
-   then migration and shortfall evidence.
+   is the rebalance with deliveries and bond (built, section 5.3); the governance messages (section 5.4), and
+   migration with the evidence against a chain (section 5.5), are built.
 4. The Ethereum-event verifiers (P1, P2), once the owner decides the proof system after the GPU run.
 5. The Solana vault program, then HyperEVM and Tron.
 6. The stall recovery and snapshot exit, then watchers, then the testnet rehearsals of the design's Phase 3.

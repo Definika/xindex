@@ -5,6 +5,7 @@ import {Vm} from "forge-std/Test.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {HybridIndexFactory} from "../src/HybridIndexFactory.sol";
 import {HybridHub} from "../src/HybridHub.sol";
+import {HybridHubExtension} from "../src/hybrid/HybridHubExtension.sol";
 import {HybridHubModule} from "../src/hybrid/HybridHubModule.sol";
 import {IHybridIndex} from "../src/interfaces/IHybridIndex.sol";
 import {IndexHub} from "../src/IndexHub.sol";
@@ -27,7 +28,8 @@ contract HybridIndexFactoryTest is HybridTest {
     }
 
     function test_constructor_needsATemplateBuiltForIt() public {
-        HybridHub stranger = new HybridHub(address(this), address(new HybridHubModule(address(this))));
+        HybridHubExtension ext = new HybridHubExtension(address(this));
+        HybridHub stranger = new HybridHub(address(this), address(new HybridHubModule(address(this), address(ext))));
         vm.expectRevert(abi.encodeWithSelector(IHybridIndexFactory.NotFactoryTemplate.selector, address(stranger)));
         new HybridIndexFactory(owner, guardian, address(stranger));
         assertEq(factory.HYBRID_IMPLEMENTATION(), address(template));
@@ -198,25 +200,33 @@ contract HybridIndexFactoryTest is HybridTest {
     /// @dev Only the factory's own HybridHub clones may freeze a chain on evidence; an Ethereum-only index may not.
     function test_freezeOnEvidence_onlyAHybridIndex() public {
         vm.expectRevert(abi.encodeWithSelector(IHybridIndexFactory.NotAHybridIndex.selector, address(this)));
-        factory.freezeOnEvidence(chainId);
+        factory.freezeOnEvidence(chainId, true);
         address[] memory ethOnly = new address[](1);
         ethOnly[0] = address(weth);
         address plain = factory.createIndex("Eth", "ETHI", ethOnly, K);
         vm.prank(plain);
         vm.expectRevert(abi.encodeWithSelector(IHybridIndexFactory.NotAHybridIndex.selector, plain));
-        factory.freezeOnEvidence(chainId);
+        factory.freezeOnEvidence(chainId, true);
 
         address hub = address(_createHybrid());
         vm.prank(hub);
         vm.expectRevert(abi.encodeWithSelector(IHybridIndexFactory.UnknownChain.selector, OTHER));
-        factory.freezeOnEvidence(OTHER);
+        factory.freezeOnEvidence(OTHER, true);
         vm.recordLogs();
         vm.expectEmit(address(factory));
         emit IHybridIndexFactory.ChainFrozen(chainId, block.timestamp + 14 days, hub);
         vm.prank(hub);
-        factory.freezeOnEvidence(chainId);
+        factory.freezeOnEvidence(chainId, true);
         assertEq(factory.chainFreeze(chainId).until, block.timestamp + 14 days);
         assertEq(_message(vm.getRecordedLogs()).kind, VaultMessages.FREEZE);
+
+        // Evidence against deposits alone stops mints, not the vault.
+        vm.warp(block.timestamp + 1 days);
+        vm.recordLogs();
+        vm.prank(hub);
+        factory.freezeOnEvidence(chainId, false);
+        assertEq(factory.chainFreeze(chainId).until, block.timestamp + 14 days);
+        assertEq(_message(vm.getRecordedLogs()).kind, 0, "no message to the vault");
     }
 
     // ---------------------------------------------------------------------

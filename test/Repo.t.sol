@@ -246,20 +246,25 @@ contract RepoTest is Test {
     ///      their own; this pins it from the compiler's own layouts (`extra_output` in foundry.toml).
     function test_theHubAndTheModuleShareOneLayout() public view {
         string memory hub = _read("out/HybridHub.sol/HybridHub.json");
-        string memory module = _read("out/HybridHubModule.sol/HybridHubModule.json");
+        _sameLayout(hub, _read("out/HybridHubModule.sol/HybridHubModule.json"), "the module");
+        _sameLayout(hub, _read("out/HybridHubExtension.sol/HybridHubExtension.json"), "the extension");
+    }
+
+    /// @dev `other`'s storage variables are `hub`'s, one for one, in the same slots, offsets and types.
+    function _sameLayout(string memory hub, string memory other, string memory name) internal view {
         uint256 i = 0;
         for (; vm.keyExistsJson(hub, _entry(i, "")); ++i) {
-            assertTrue(vm.keyExistsJson(module, _entry(i, "")), "the module has fewer variables");
-            assertEq(vm.parseJsonString(hub, _entry(i, ".label")), vm.parseJsonString(module, _entry(i, ".label")));
-            assertEq(vm.parseJsonString(hub, _entry(i, ".slot")), vm.parseJsonString(module, _entry(i, ".slot")));
-            assertEq(vm.parseJsonUint(hub, _entry(i, ".offset")), vm.parseJsonUint(module, _entry(i, ".offset")));
+            assertTrue(vm.keyExistsJson(other, _entry(i, "")), string.concat(name, " has fewer variables"));
+            assertEq(vm.parseJsonString(hub, _entry(i, ".label")), vm.parseJsonString(other, _entry(i, ".label")));
+            assertEq(vm.parseJsonString(hub, _entry(i, ".slot")), vm.parseJsonString(other, _entry(i, ".slot")));
+            assertEq(vm.parseJsonUint(hub, _entry(i, ".offset")), vm.parseJsonUint(other, _entry(i, ".offset")));
             // A type names its struct with the compiler's AST id, which differs between separately cached builds.
             assertEq(
                 _withoutDigits(vm.parseJsonString(hub, _entry(i, ".type"))),
-                _withoutDigits(vm.parseJsonString(module, _entry(i, ".type")))
+                _withoutDigits(vm.parseJsonString(other, _entry(i, ".type")))
             );
         }
-        assertFalse(vm.keyExistsJson(module, _entry(i, "")), "the module has more variables");
+        assertFalse(vm.keyExistsJson(other, _entry(i, "")), string.concat(name, " has more variables"));
         assertGt(i, 30, "every variable of the storage base");
     }
 

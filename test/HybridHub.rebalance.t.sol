@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Vm} from "forge-std/Test.sol";
+import {Vm, stdError} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {IHybridHubTypes} from "../src/interfaces/IHybridHubTypes.sol";
@@ -696,7 +696,8 @@ contract HybridHubRebalanceTest is HybridTest {
         idx.transfer(executor, 1e18);
     }
 
-    /// @dev HubShares moves, burns and reads exactly what OpenZeppelin's token keeps, refusing what a balance lacks.
+    /// @dev HubShares mints, moves, burns and reads exactly what OpenZeppelin's token keeps, refusing what a balance
+    ///      lacks and a supply past 2^256.
     function test_hubSharesAreOpenZeppelinsShares() public {
         HubSharesHarness h = new HubSharesHarness();
         h.mint(minter, 10e18);
@@ -711,5 +712,15 @@ contract HybridHubRebalanceTest is HybridTest {
         h.move(holder, minter, 3e18);
         vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientBalance.selector, holder, 2e18, 3e18));
         h.burnFrom(holder, 3e18);
+
+        vm.expectEmit(address(h));
+        emit IERC20.Transfer(address(0), holder, 5e18);
+        h.mintShares(holder, 5e18);
+        assertEq(h.balanceOf(holder), 7e18);
+        assertEq(h.totalSupply(), 14e18);
+        h.mint(minter, 1e18); // OpenZeppelin's own mint reads the same supply
+        assertEq(h.shareSupply(), 15e18);
+        vm.expectRevert(stdError.arithmeticError);
+        h.mintShares(holder, type(uint256).max);
     }
 }

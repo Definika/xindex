@@ -6,6 +6,7 @@ import {HybridIndexFactory} from "../src/HybridIndexFactory.sol";
 import {HybridHub} from "../src/HybridHub.sol";
 import {IHybridHubTypes} from "../src/interfaces/IHybridHubTypes.sol";
 import {IHybridIndex} from "../src/interfaces/IHybridIndex.sol";
+import {HybridHubExtension} from "../src/hybrid/HybridHubExtension.sol";
 import {HybridHubModule} from "../src/hybrid/HybridHubModule.sol";
 import {XindexVault} from "../src/vault/XindexVault.sol";
 import {VaultMessages} from "../src/libraries/VaultMessages.sol";
@@ -19,6 +20,7 @@ import {MockStateVerifier} from "./mocks/MockStateVerifier.sol";
 abstract contract HybridTest is Test {
     HybridIndexFactory factory;
     HybridHub template;
+    HybridHubExtension extension;
     HybridHubModule module;
     XindexVault vault;
     MockStateVerifier stateVerifier;
@@ -41,9 +43,10 @@ abstract contract HybridTest is Test {
     function _deployStageB() internal {
         vm.warp(1_700_000_000);
         chainId = block.chainid;
-        // The module, then the template, then the factory both are built for.
-        address predicted = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 2);
-        module = new HybridHubModule(predicted);
+        // The extension, the module, then the template, then the factory all three are built for.
+        address predicted = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 3);
+        extension = new HybridHubExtension(predicted);
+        module = new HybridHubModule(predicted, address(extension));
         template = new HybridHub(predicted, address(module));
         factory = new HybridIndexFactory(owner, guardian, address(template));
         p1 = new MockEventVerifier();
