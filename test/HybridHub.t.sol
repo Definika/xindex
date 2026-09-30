@@ -5,7 +5,9 @@ import {Vm} from "forge-std/Test.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {HybridHub} from "../src/HybridHub.sol";
-import {IHybridHub} from "../src/interfaces/IHybridHub.sol";
+import {IHybridHubTypes} from "../src/interfaces/IHybridHubTypes.sol";
+import {IHybridIndex} from "../src/interfaces/IHybridIndex.sol";
+import {HybridHubModule} from "../src/hybrid/HybridHubModule.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {IXindexVault} from "../src/interfaces/IXindexVault.sol";
 import {XindexVault} from "../src/vault/XindexVault.sol";
@@ -16,7 +18,7 @@ import {HybridTest} from "./HybridTest.sol";
 /// @notice The HybridHub on one EVM, against a real vault: mint orders from opening to claim, burns delivered and paid,
 ///         failures, voids on contradiction, freezes and re-confirmation, stray intakes, claims, and the mint cap.
 contract HybridHubTest is HybridTest {
-    HybridHub hub;
+    IHybridIndex hub;
     address to = makeAddr("to");
     bytes32 recipient = bytes32(uint256(uint160(makeAddr("bnb recipient"))));
 
@@ -51,8 +53,8 @@ contract HybridHubTest is HybridTest {
         assertEq(amounts[0], 1.2e18);
         assertEq(amounts[1], 1.4e18);
         uint256 orderId = _settledOrder(hub, minter, 1e18);
-        IHybridHub.Order memory o = hub.order(orderId);
-        assertEq(uint256(o.status), uint256(IHybridHub.OrderStatus.Locked));
+        IHybridHubTypes.Order memory o = hub.order(orderId);
+        assertEq(uint256(o.status), uint256(IHybridHubTypes.OrderStatus.Locked));
         assertEq(o.lockEnds, block.timestamp + 24 hours);
         assertEq(hub.escrowed(address(weth)), 1.2e18);
         assertEq(hub.balanceOf(minter), 0, "nothing claimable in the lock");
@@ -70,7 +72,7 @@ contract HybridHubTest is HybridTest {
         assertEq(hub.escrowed(address(weth)), 0);
         assertEq(hub.vaultBacking(native), 1.4e18);
         assertEq(vault.balance(address(hub), address(0)), 1.4e18, "the vault's books agree");
-        assertEq(uint256(hub.order(orderId).status), uint256(IHybridHub.OrderStatus.Claimed));
+        assertEq(uint256(hub.order(orderId).status), uint256(IHybridHubTypes.OrderStatus.Claimed));
         _checkBacking();
     }
 
@@ -134,11 +136,11 @@ contract HybridHubTest is HybridTest {
     // ---------------------------------------------------------------------
 
     function test_openOrder_refusals() public {
-        vm.expectRevert(IHybridHub.ZeroShares.selector);
+        vm.expectRevert(IHybridHubTypes.ZeroShares.selector);
         hub.openOrder(0, block.timestamp + 1 hours);
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.BadDeadline.selector, block.timestamp));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.BadDeadline.selector, block.timestamp));
         hub.openOrder(1e18, block.timestamp);
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.BadDeadline.selector, block.timestamp + 6 hours + 1));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.BadDeadline.selector, block.timestamp + 6 hours + 1));
         hub.openOrder(1e18, block.timestamp + 6 hours + 1);
 
         weth.mint(minter, 10e18);
@@ -164,11 +166,11 @@ contract HybridHubTest is HybridTest {
         factory.executeListing(address(fee));
         address[] memory tokens = new address[](2);
         (tokens[0], tokens[1]) = (address(fee), native);
-        HybridHub feeHub = HybridHub(factory.createIndex("Fee", "FEE", tokens, K));
+        IHybridIndex feeHub = IHybridIndex(factory.createIndex("Fee", "FEE", tokens, K));
         fee.mint(minter, 10e18);
         vm.startPrank(minter);
         fee.approve(address(feeHub), 10e18);
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.TransferAmountMismatch.selector, address(fee)));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.TransferAmountMismatch.selector, address(fee)));
         feeHub.openOrder(1e18, block.timestamp + 1 hours);
         vm.stopPrank();
     }
@@ -184,23 +186,27 @@ contract HybridHubTest is HybridTest {
         vm.stopPrank();
         uint256 deadline = block.timestamp + 1 hours;
 
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.WrongStatus.selector, 2, IHybridHub.OrderStatus.None));
+        vm.expectRevert(
+            abi.encodeWithSelector(IHybridHubTypes.WrongStatus.selector, 2, IHybridHubTypes.OrderStatus.None)
+        );
         hub.settleOrder(2, _chainProof(deadline + 1, 0));
         vm.expectRevert(IXindexErrors.LengthMismatch.selector);
-        hub.settleOrder(orderId, new IHybridHub.ChainProof[](0));
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.ProofTooEarly.selector, chainId, deadline, deadline));
+        hub.settleOrder(orderId, new IHybridHubTypes.ChainProof[](0));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.ProofTooEarly.selector, chainId, deadline, deadline));
         hub.settleOrder(orderId, _chainProof(deadline, amounts[1] - 1));
 
         vm.warp(deadline + 1);
-        IHybridHub.ChainProof[] memory lying = _chainProof(block.timestamp, amounts[1]);
+        IHybridHubTypes.ChainProof[] memory lying = _chainProof(block.timestamp, amounts[1]);
         bytes32 honest = vault.intakeDigest(address(hub), intakeId);
         vm.expectRevert(); // the preimage claims the full amount: its hash is not the vault's
         hub.settleOrder(orderId, lying);
-        IHybridHub.ChainProof[] memory ragged = _chainProof(block.timestamp, amounts[1] - 1);
+        IHybridHubTypes.ChainProof[] memory ragged = _chainProof(block.timestamp, amounts[1] - 1);
         ragged[0].totals = new uint256[](2);
         vm.expectRevert(IXindexErrors.LengthMismatch.selector);
         hub.settleOrder(orderId, ragged);
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.DepositShort.selector, native, amounts[1] - 1, amounts[1]));
+        vm.expectRevert(
+            abi.encodeWithSelector(IHybridHubTypes.DepositShort.selector, native, amounts[1] - 1, amounts[1])
+        );
         hub.settleOrder(orderId, _chainProof(block.timestamp, amounts[1] - 1));
         assertTrue(honest != bytes32(0));
     }
@@ -215,7 +221,7 @@ contract HybridHubTest is HybridTest {
         vault.deposit{value: amounts[1]}(address(hub), intakeId);
         vm.stopPrank();
         vm.warp(block.timestamp + 2 hours);
-        IHybridHub.ChainProof[] memory p = _chainProof(block.timestamp, amounts[1] + 1); // more than was deposited
+        IHybridHubTypes.ChainProof[] memory p = _chainProof(block.timestamp, amounts[1] + 1); // more than was deposited
         bytes32 proven = vault.intakeDigest(address(hub), intakeId);
         address[] memory tokens = new address[](1);
         uint256[] memory totals = new uint256[](1);
@@ -232,7 +238,7 @@ contract HybridHubTest is HybridTest {
                 totals
             )
         );
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.DigestMismatch.selector, chainId, proven, expected));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.DigestMismatch.selector, chainId, proven, expected));
         hub.settleOrder(orderId, p);
     }
 
@@ -279,7 +285,7 @@ contract HybridHubTest is HybridTest {
         vault.deposit{value: amounts[1]}(address(hub), intakeId);
         vm.stopPrank();
         vm.warp(block.timestamp + 2 hours);
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.MintCapExceeded.selector, 5e18, 4e18));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.MintCapExceeded.selector, 5e18, 4e18));
         hub.settleOrder(orderId, _chainProof(block.timestamp, amounts[1]));
 
         _settledOrder(hub, minter, 3e18);
@@ -295,12 +301,12 @@ contract HybridHubTest is HybridTest {
     function test_claimOrder_refusals() public {
         uint256 orderId = _settledOrder(hub, minter, 1e18);
         uint256 lockEnds = hub.order(orderId).lockEnds;
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.NotYet.selector, lockEnds));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.NotYet.selector, lockEnds));
         hub.claimOrder(orderId);
         vm.warp(lockEnds);
         hub.claimOrder(orderId);
         vm.expectRevert(
-            abi.encodeWithSelector(IHybridHub.WrongStatus.selector, orderId, IHybridHub.OrderStatus.Claimed)
+            abi.encodeWithSelector(IHybridHubTypes.WrongStatus.selector, orderId, IHybridHubTypes.OrderStatus.Claimed)
         );
         hub.claimOrder(orderId);
     }
@@ -318,7 +324,7 @@ contract HybridHubTest is HybridTest {
         vm.stopPrank();
 
         uint256 openTo = block.timestamp + 1 hours + 6 hours;
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.NotYet.selector, openTo));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.NotYet.selector, openTo));
         hub.failOrder(orderId);
         vm.warp(openTo + 1);
         vm.recordLogs();
@@ -335,7 +341,9 @@ contract HybridHubTest is HybridTest {
         vm.prank(minter);
         vault.refund(address(hub), intakeId);
         assertEq(minter.balance, amounts[1], "refunded on the vault chain");
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.WrongStatus.selector, orderId, IHybridHub.OrderStatus.Failed));
+        vm.expectRevert(
+            abi.encodeWithSelector(IHybridHubTypes.WrongStatus.selector, orderId, IHybridHubTypes.OrderStatus.Failed)
+        );
         hub.failOrder(orderId);
     }
 
@@ -346,7 +354,7 @@ contract HybridHubTest is HybridTest {
         (uint256 orderId,) = hub.openOrder(1e18, block.timestamp + 1 hours);
         hub.failOrder(orderId);
         vm.stopPrank();
-        assertEq(uint256(hub.order(orderId).status), uint256(IHybridHub.OrderStatus.Failed));
+        assertEq(uint256(hub.order(orderId).status), uint256(IHybridHubTypes.OrderStatus.Failed));
     }
 
     /// @dev In the lock, a proof of the same intake showing anything else voids the order and freezes the chain's mints.
@@ -355,19 +363,19 @@ contract HybridHubTest is HybridTest {
         uint256 deadline = hub.order(orderId).deadline;
         bytes32 recorded = vault.intakeDigest(address(hub), hub.intakeIdOf(orderId));
 
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.NotAContradiction.selector, chainId));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.NotAContradiction.selector, chainId));
         hub.voidOrder(orderId, chainId, _honest(block.timestamp));
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.ProofTooEarly.selector, chainId, deadline, deadline));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.ProofTooEarly.selector, chainId, deadline, deadline));
         hub.voidOrder(orderId, chainId, _forged(deadline, bytes32(uint256(1))));
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.NotAVaultChain.selector, 7));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.NotAVaultChain.selector, 7));
         hub.voidOrder(orderId, 7, _forged(block.timestamp, bytes32(uint256(1))));
 
         vm.expectEmit(address(hub));
-        emit IHybridHub.OrderVoided(orderId, chainId, bytes32(uint256(1)), recorded);
+        emit IHybridHubTypes.OrderVoided(orderId, chainId, bytes32(uint256(1)), recorded);
         vm.recordLogs();
         hub.voidOrder(orderId, chainId, _forged(block.timestamp, bytes32(uint256(1))));
         _deliverAll(vm.getRecordedLogs());
-        assertEq(uint256(hub.order(orderId).status), uint256(IHybridHub.OrderStatus.Failed));
+        assertEq(uint256(hub.order(orderId).status), uint256(IHybridHubTypes.OrderStatus.Failed));
         (, uint256 frozenTo) = hub.chainFreeze(chainId);
         assertEq(frozenTo, block.timestamp + 14 days);
         assertEq(hub.claimOf(minter, address(weth)), 1.2e18);
@@ -376,9 +384,13 @@ contract HybridHubTest is HybridTest {
         vault.refund(address(hub), intakeId);
         assertEq(minter.balance, 1.4e18, "the deposit came back on the vault chain");
 
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.ChainIsFrozen.selector, chainId, block.timestamp + 14 days));
+        vm.expectRevert(
+            abi.encodeWithSelector(IHybridHubTypes.ChainIsFrozen.selector, chainId, block.timestamp + 14 days)
+        );
         hub.openOrder(1e18, block.timestamp + 1 hours);
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.WrongStatus.selector, orderId, IHybridHub.OrderStatus.Failed));
+        vm.expectRevert(
+            abi.encodeWithSelector(IHybridHubTypes.WrongStatus.selector, orderId, IHybridHubTypes.OrderStatus.Failed)
+        );
         hub.voidOrder(orderId, chainId, _forged(block.timestamp, bytes32(uint256(1))));
     }
 
@@ -402,18 +414,18 @@ contract HybridHubTest is HybridTest {
         assertEq(vault.frozenUntil(), until);
 
         vm.warp(hub.order(orderId).lockEnds);
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.ChainIsFrozen.selector, chainId, until));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.ChainIsFrozen.selector, chainId, until));
         hub.claimOrder(orderId);
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.ChainIsFrozen.selector, chainId, until));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.ChainIsFrozen.selector, chainId, until));
         hub.reconfirmOrder(orderId, _oneProof(_honest(until + 1)));
         vm.warp(until);
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.NeedsReconfirmation.selector, orderId, chainId));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.NeedsReconfirmation.selector, orderId, chainId));
         hub.claimOrder(orderId);
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.ProofTooEarly.selector, chainId, until, until));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.ProofTooEarly.selector, chainId, until, until));
         hub.reconfirmOrder(orderId, _oneProof(_honest(until)));
         bytes32 recorded = vault.intakeDigest(address(hub), hub.intakeIdOf(orderId));
         vm.expectRevert(
-            abi.encodeWithSelector(IHybridHub.DigestMismatch.selector, chainId, bytes32(uint256(2)), recorded)
+            abi.encodeWithSelector(IHybridHubTypes.DigestMismatch.selector, chainId, bytes32(uint256(2)), recorded)
         );
         hub.reconfirmOrder(orderId, _oneProof(_forged(until + 1, bytes32(uint256(2)))));
         vm.expectRevert(IXindexErrors.LengthMismatch.selector);
@@ -432,7 +444,7 @@ contract HybridHubTest is HybridTest {
         factory.freezeChain(chainId);
         uint256 until = block.timestamp + 14 days;
         vm.warp(until);
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.NeedsReconfirmation.selector, orderId, chainId));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.NeedsReconfirmation.selector, orderId, chainId));
         hub.claimOrder(orderId);
         vm.warp(until + 1);
         hub.reconfirmOrder(orderId, _oneProof(_honest(until + 1)));
@@ -450,14 +462,14 @@ contract HybridHubTest is HybridTest {
         vm.deal(holder, 1e18);
         vm.prank(holder);
         vault.deposit{value: 1e18}(address(hub), stray);
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.IntakeStillOpen.selector, block.timestamp + 1 hours));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.IntakeStillOpen.selector, block.timestamp + 1 hours));
         hub.failIntake(chainId, stray);
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.NotAVaultChain.selector, 5));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.NotAVaultChain.selector, 5));
         hub.failIntake(5, stray);
 
         uint256 orderId = _settledOrder(hub, minter, 1e18); // order 1
         uint256 ownIntake = hub.intakeIdOf(orderId);
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.IntakeOfAnOrder.selector, ownIntake));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.IntakeOfAnOrder.selector, ownIntake));
         hub.failIntake(chainId, ownIntake);
 
         vm.recordLogs();
@@ -466,7 +478,7 @@ contract HybridHubTest is HybridTest {
         vm.prank(holder);
         vault.refund(address(hub), stray);
         assertEq(holder.balance, 1e18);
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.IntakeAlreadyFailed.selector, stray));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.IntakeAlreadyFailed.selector, stray));
         hub.failIntake(chainId, stray);
 
         // Order 1's id under another deadline, and an id with no order part, are not order 1's.
@@ -483,7 +495,7 @@ contract HybridHubTest is HybridTest {
         _mint(hub, minter, 1e18);
         bytes32[] memory r = _recipients(recipient);
         vm.startPrank(minter);
-        vm.expectRevert(IHybridHub.ZeroShares.selector);
+        vm.expectRevert(IHybridHubTypes.ZeroShares.selector);
         hub.redeem(0, to, r, 0);
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
         hub.redeem(1, address(0), r, 0);
@@ -493,7 +505,7 @@ contract HybridHubTest is HybridTest {
         hub.redeem(1, address(factory), r, 0);
         vm.expectRevert(IXindexErrors.LengthMismatch.selector);
         hub.redeem(1, to, new bytes32[](2), 0);
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.InvalidSkipMask.selector, 4));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.InvalidSkipMask.selector, 4));
         hub.redeem(1, to, r, 4);
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(hub)));
         hub.transfer(address(hub), 1);
@@ -514,11 +526,11 @@ contract HybridHubTest is HybridTest {
         _checkBacking();
 
         vm.startPrank(to);
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.NotAnEthereumToken.selector, native));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.NotAnEthereumToken.selector, native));
         hub.claim(native, to);
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.NotAVaultToken.selector, address(weth)));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.NotAVaultToken.selector, address(weth)));
         hub.claimToVault(address(weth), recipient);
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.NotAVaultToken.selector, address(1)));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.NotAVaultToken.selector, address(1)));
         hub.claimToVault(address(1), recipient);
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
         hub.claimToVault(native, bytes32(0));
@@ -529,7 +541,7 @@ contract HybridHubTest is HybridTest {
         _deliverAll(vm.getRecordedLogs());
         assertEq(weth.balanceOf(to), 0.6e18);
         assertEq(address(uint160(uint256(recipient))).balance, 0.7e18);
-        vm.expectRevert(abi.encodeWithSelector(IHybridHub.NothingToClaim.selector, native));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.NothingToClaim.selector, native));
         vm.prank(to);
         hub.claimToVault(native, recipient);
         _checkBacking();
@@ -557,7 +569,7 @@ contract HybridHubTest is HybridTest {
 
         address[] memory tokens = new address[](3);
         (tokens[0], tokens[1], tokens[2]) = (address(weth), native, bnb);
-        HybridHub two = HybridHub(factory.createIndex("Two", "TWO", tokens, K));
+        IHybridIndex two = IHybridIndex(factory.createIndex("Two", "TWO", tokens, K));
         (uint256[] memory ids,) = two.chains();
         assertEq(ids.length, 2);
         assertEq(ids[1], bsc);
@@ -577,7 +589,7 @@ contract HybridHubTest is HybridTest {
         vm.stopPrank();
 
         vm.warp(block.timestamp + 2 hours);
-        IHybridHub.ChainProof[] memory proofs = new IHybridHub.ChainProof[](2);
+        IHybridHubTypes.ChainProof[] memory proofs = new IHybridHubTypes.ChainProof[](2);
         proofs[0] = _chainProof(block.timestamp, amounts[1])[0];
         proofs[1] = _chainProof(block.timestamp, amounts[2])[0];
         two.settleOrder(orderId, proofs);
@@ -648,7 +660,7 @@ contract HybridHubTest is HybridTest {
     function test_redeem_aDustComponentSendsNothing() public {
         address[] memory tokens = new address[](2);
         (tokens[0], tokens[1]) = (address(weth), native);
-        HybridHub small = HybridHub(factory.createIndex("Small", "SML", tokens, 1e22)); // 1.2e12 and 1.4e12 raw units
+        IHybridIndex small = IHybridIndex(factory.createIndex("Small", "SML", tokens, 1e22)); // 1.2e12 and 1.4e12 raw units
         vault.registerIndex(address(small), factory.indexSalt(address(small)));
         _mint(small, minter, 1e18);
         vm.recordLogs();
@@ -660,36 +672,41 @@ contract HybridHubTest is HybridTest {
     }
 
     function test_initialize_refusals() public {
+        HybridHubModule own_ = new HybridHubModule(address(this));
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new HybridHub(address(0));
-        HybridHub own = new HybridHub(address(this));
+        new HybridHub(address(0), address(own_));
+        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
+        new HybridHubModule(address(0));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.WrongModule.selector, address(module)));
+        new HybridHub(address(this), address(module)); // a module built for another factory
+        HybridHub own = new HybridHub(address(this), address(own_));
         address[] memory tokens = new address[](1);
         uint256[] memory units = new uint256[](1);
-        IHybridHub.Placement[] memory placements = new IHybridHub.Placement[](1);
+        IHybridHubTypes.Placement[] memory placements = new IHybridHubTypes.Placement[](1);
         vm.expectRevert(Initializable.InvalidInitialization.selector);
         own.initialize("x", "x", tokens, units, placements);
 
         tokens[0] = address(weth);
         units[0] = 1e18;
-        placements[0] = IHybridHub.Placement({chainId: 5, vaultToken: bytes32(0), vault: _b32(address(vault))});
-        HybridHub clone = HybridHub(Clones.clone(address(own)));
+        placements[0] = IHybridHubTypes.Placement({chainId: 5, vaultToken: bytes32(0), vault: _b32(address(vault))});
+        HybridHub clone = HybridHub(payable(Clones.clone(address(own))));
         vm.prank(minter);
-        vm.expectRevert(IHybridHub.NotFactory.selector);
+        vm.expectRevert(IHybridHubTypes.NotFactory.selector);
         clone.initialize("x", "x", tokens, units, placements);
-        vm.expectRevert(IHybridHub.InvalidComponents.selector);
-        clone.initialize("x", "x", new address[](0), new uint256[](0), new IHybridHub.Placement[](0));
-        vm.expectRevert(IHybridHub.InvalidComponents.selector);
+        vm.expectRevert(IHybridHubTypes.InvalidComponents.selector);
+        clone.initialize("x", "x", new address[](0), new uint256[](0), new IHybridHubTypes.Placement[](0));
+        vm.expectRevert(IHybridHubTypes.InvalidComponents.selector);
         clone.initialize("x", "x", tokens, new uint256[](2), placements);
-        vm.expectRevert(IHybridHub.InvalidComponents.selector);
-        clone.initialize("x", "x", tokens, units, new IHybridHub.Placement[](2));
-        vm.expectRevert(IHybridHub.InvalidComponents.selector);
+        vm.expectRevert(IHybridHubTypes.InvalidComponents.selector);
+        clone.initialize("x", "x", tokens, units, new IHybridHubTypes.Placement[](2));
+        vm.expectRevert(IHybridHubTypes.InvalidComponents.selector);
         clone.initialize("x", "x", new address[](1), units, placements);
-        vm.expectRevert(IHybridHub.InvalidComponents.selector);
+        vm.expectRevert(IHybridHubTypes.InvalidComponents.selector);
         clone.initialize("x", "x", tokens, new uint256[](1), placements);
-        vm.expectRevert(IHybridHub.InvalidComponents.selector); // Ethereum components only
-        clone.initialize("x", "x", tokens, units, new IHybridHub.Placement[](1));
+        vm.expectRevert(IHybridHubTypes.InvalidComponents.selector); // Ethereum components only
+        clone.initialize("x", "x", tokens, units, new IHybridHubTypes.Placement[](1));
         placements[0].vault = bytes32(0);
-        vm.expectRevert(IHybridHub.InvalidComponents.selector); // a vault chain without a vault
+        vm.expectRevert(IHybridHubTypes.InvalidComponents.selector); // a vault chain without a vault
         clone.initialize("x", "x", tokens, units, placements);
 
         // Two components on one chain share it.
@@ -697,15 +714,15 @@ contract HybridHubTest is HybridTest {
         (two[0], two[1]) = (address(weth), native);
         uint256[] memory twoUnits = new uint256[](2);
         (twoUnits[0], twoUnits[1]) = (1, 1);
-        IHybridHub.Placement[] memory both = new IHybridHub.Placement[](2);
-        both[0] = IHybridHub.Placement({chainId: 5, vaultToken: bytes32(uint256(1)), vault: _b32(address(vault))});
-        both[1] = IHybridHub.Placement({chainId: 5, vaultToken: bytes32(0), vault: _b32(address(vault))});
+        IHybridHubTypes.Placement[] memory both = new IHybridHubTypes.Placement[](2);
+        both[0] = IHybridHubTypes.Placement({chainId: 5, vaultToken: bytes32(uint256(1)), vault: _b32(address(vault))});
+        both[1] = IHybridHubTypes.Placement({chainId: 5, vaultToken: bytes32(0), vault: _b32(address(vault))});
         clone.initialize("x", "x", two, twoUnits, both);
         (uint256[] memory ids,) = clone.chains();
         assertEq(ids.length, 1);
 
-        HybridHub never = HybridHub(Clones.clone(address(own)));
-        vm.expectRevert(IHybridHub.NotInitialized.selector);
+        HybridHub never = HybridHub(payable(Clones.clone(address(own))));
+        vm.expectRevert(IHybridHubTypes.NotInitialized.selector);
         never.openOrder(1, block.timestamp + 1);
     }
 }

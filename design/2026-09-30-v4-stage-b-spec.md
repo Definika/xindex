@@ -309,6 +309,76 @@ from, and a hub bug found after that factory is live would need a new factory an
 - shortfall evidence from index digests, stall recovery and snapshot exit;
 - the governance messages `CAP_UPDATE`, `FREEZER_CHANGE` and `VERIFIER_ROTATION`, with its 30-day delay.
 
+### 5.3 Layer 2: the rebalance with deliveries (design 6.6, step 4; built 2026-09-30)
+
+**Architecture.** `HybridHub` is 23.9KB, so the rebalance lives in `HybridHubModule`, a contract the hub reaches
+through its fallback by `DELEGATECALL`. Both inherit one storage base, `HybridHubStorage`, which declares every state
+variable the two read. Every OpenZeppelin part they use keeps its state in its own namespaced slot. The module's
+address is fixed in the template's constructor, so nothing can change it: it is code split in two, not an upgrade
+path. The rarer order paths, `voidOrder`, `reconfirmOrder` and `failIntake`, move to the module too.
+
+**The auction.** The start, the band, the notice, the keep mask and the cancel are Stage A's, unchanged.
+`startRebalance`, `cancelRebalance`, `previewBand` and `canStartRebalance` behave as in `IndexHub`, over every
+component. A vault component's reference supply comes from the factory like any other.
+
+**Accepting.** An index holding vault tokens cannot settle in one transaction, so a fill has three steps.
+1. `acceptRebalance(recipients)` at the current λ, while the auction is live. It freezes λ and the settlement's units,
+   and takes three things from the executor:
+   - a bond of `REBALANCE_BOND` (0.1%) of the supply, in shares;
+   - every bought Ethereum component, in the same transaction;
+   - one recipient per vault chain, for the sold vault legs.
+
+   The executor then deposits every bought vault leg on its chain, under a delivery intake id,
+   `(deadline << 192) | 1 << 191 | nonce`. That id cannot be an order's, whose ids stay below 2^191. The deadline is
+   `DELIVERY_WINDOW` (6 hours) away. A chain with a moving vault leg must not be frozen.
+2. `settleRebalance(proofs)`, by anyone, with a proof of each delivery intake showing the deliveries at least the
+   settlement's.
+   - The settlement is recomputed at the supply of the settling block. Redemptions during the window can only lower
+     it, and any excess delivered stays with the holders.
+   - It writes the new units and pays the sold Ethereum legs to the executor.
+   - It burns the sold vault legs toward the executor's recipients, and tells each vault that the deliveries joined
+     the index.
+   - A proof may come from before the delivery deadline, since deposits only grow until then.
+3. The bond is held for `BOND_HOLD` (24 hours). Afterwards the executor takes it back with `releaseBond`.
+   - During the hold, `slashRebalance` takes a proof of a delivery intake that is neither open nor settled, or that
+     shows less than the settlement recorded. That means a delivery was forged. The bond is burned, raising every
+     share's backing, and the chain's mints freeze.
+   - This bounds a forged delivery by the band, as design 8.1 states: at most the bought vault legs, ≤ 1.0% × the vault
+     share, about 0.11% of the index, most of it covered by the bond.
+
+**Failing.**
+- `failRebalance` is open to the executor at any time before settlement, or to anyone `SETTLE_GRACE` after the
+  delivery deadline. It burns the bond, returns the Ethereum deliveries as the executor's claims, tells every vault to
+  refund the deliveries, and holds strangers off for `REBALANCE_DELAY`.
+- The executor pays for an abandoned fill, so accepting is never a free option.
+- A guardian's `cancelRebalance` of an accepted fill returns the bond, since the executor did nothing wrong. The rest
+  unwinds as a failure.
+
+**Orders across a rebalance.**
+- While a fill is accepted, `claimOrder` waits (`RebalanceInProgress`), at most the delivery window and its grace.
+  Supply then cannot grow under a settlement sized for it.
+- An order whose escrow or deposits no longer cover its shares at the units in force when it is claimed fails at that
+  claim, returning its escrow as claims and refunding its deposits. That is the rare order that lives across a settled
+  rebalance whose units moved against it.
+
+**As built.**
+- **Sizes.** The hub is 23.1KB and the module 23.5KB, each under the 24KB limit.
+- **Shares in the module.** The module does not inherit OpenZeppelin's ERC-20: `HubShares` reads the supply, moves the
+  bond and burns it on the same ERC-7201 slot, as OpenZeppelin's `_update` does for each case. A harness test checks
+  it against OpenZeppelin's own token.
+- **The layout.** `test_theHubAndTheModuleShareOneLayout` compares the two contracts' storage layouts from the
+  compiler's artifacts.
+- **Tests.** 15 mutants of the fill's safety checks each fail a test.
+- **The invariant suite** runs whole fills beside orders and redemptions. It holds the escrow to the open orders plus
+  a live fill's Ethereum deliveries, the index's own shares to exactly the live bond, and the vault's real balance to
+  the hub's book plus the burns it still owes.
+
+**New parameters, for the owner's review:**
+- `REBALANCE_BOND` 0.1% of supply, `BOND_HOLD` 24 hours and `DELIVERY_WINDOW` 6 hours, all from design §12;
+- the executor's bond burned on its own abort;
+- mint claims waiting during a delivery window;
+- an order failing at claim when its units moved against it.
+
 ## 6. Build order
 
 1. The message library and the verifier interface. Then the EVM vault, with unit tests, an invariant suite, mock
@@ -316,7 +386,8 @@ from, and a hub bug found after that factory is live would need a new factory an
 2. The BNB Chain state verifier on Ethereum, from the prototype, with validator-set tracking and fork tests against
    BNB Chain data.
 3. The factory's chain registry, and `HybridHub` (once proposal 1 is decided). Layer 1 is built (section 5.2); layer 2
-   is the rebalance with deliveries and bond, then migration, shortfall evidence and the governance messages.
+   is the rebalance with deliveries and bond (built, section 5.3); then migration, shortfall evidence and the
+   governance messages.
 4. The Ethereum-event verifiers (P1, P2), once the owner decides the proof system after the GPU run.
 5. The Solana vault program, then HyperEVM and Tron.
 6. The stall recovery and snapshot exit, then watchers, then the testnet rehearsals of the design's Phase 3.

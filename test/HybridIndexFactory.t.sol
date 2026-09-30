@@ -5,6 +5,8 @@ import {Vm} from "forge-std/Test.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {HybridIndexFactory} from "../src/HybridIndexFactory.sol";
 import {HybridHub} from "../src/HybridHub.sol";
+import {HybridHubModule} from "../src/hybrid/HybridHubModule.sol";
+import {IHybridIndex} from "../src/interfaces/IHybridIndex.sol";
 import {IndexHub} from "../src/IndexHub.sol";
 import {IHybridIndexFactory} from "../src/interfaces/IHybridIndexFactory.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
@@ -24,7 +26,7 @@ contract HybridIndexFactoryTest is HybridTest {
     }
 
     function test_constructor_needsATemplateBuiltForIt() public {
-        HybridHub stranger = new HybridHub(address(this));
+        HybridHub stranger = new HybridHub(address(this), address(new HybridHubModule(address(this))));
         vm.expectRevert(abi.encodeWithSelector(IHybridIndexFactory.NotFactoryTemplate.selector, address(stranger)));
         new HybridIndexFactory(owner, guardian, address(stranger));
         assertEq(factory.HYBRID_IMPLEMENTATION(), address(template));
@@ -219,7 +221,7 @@ contract HybridIndexFactoryTest is HybridTest {
         address[] memory vaultOnly = new address[](1);
         vaultOnly[0] = native;
         address pure_ = factory.createIndex("BNB", "XBNB", vaultOnly, K);
-        (uint256[] memory ids,) = HybridHub(pure_).chains();
+        (uint256[] memory ids,) = IHybridIndex(pure_).chains();
         assertEq(ids[0], chainId);
     }
 

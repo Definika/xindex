@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
-import {IXindexErrors} from "./IXindexErrors.sol";
+import {IHybridHubTypes} from "./IHybridHubTypes.sol";
 
 /// @title IHybridHub
 /// @notice An index whose basket holds tokens on Ethereum and coins in vaults on other chains. 1e18 shares are backed
@@ -20,93 +20,15 @@ import {IXindexErrors} from "./IXindexErrors.sol";
 ///          Ethereum: balanceOf(hub) >= floor(S * units / 1e18) + totalClaims + escrowed
 ///          vault:    vaultBacking   >= floor(S * units / 1e18) + totalClaims
 ///      where `vaultBacking` is the hub's own book of what the vault holds for it: the deposits of every claimed order,
-///      less every amount burned. Stage B layer 1: this hub does not rebalance yet.
-interface IHybridHub is IERC20, IERC20Permit, IXindexErrors {
-    enum OrderStatus {
-        None,
-        Open,
-        Locked,
-        Claimed,
-        Failed
-    }
-
-    /// @notice One vault chain's intake for an order: the state verifier's proof of the vault's intake digest, and the
-    ///         digest's preimage, the tokens deposited and their totals.
-    struct ChainProof {
-        bytes proof;
-        address[] tokens;
-        uint256[] totals;
-    }
-
-    /// @notice Where a component is held: its chain, its token id there and that chain's vault; all zero on Ethereum.
-    struct Placement {
-        uint256 chainId;
-        bytes32 vaultToken;
-        bytes32 vault;
-    }
-
-    /// @notice An order as stored: its minter, shares, the intake deadline (on the vault chains' clocks), the end of
-    ///         its lock, when it was last settled or re-confirmed, and its status.
-    struct Order {
-        address minter;
-        uint256 shares;
-        uint256 deadline;
-        uint256 lockEnds;
-        uint256 settledAt;
-        OrderStatus status;
-    }
-
-    event OrderOpened(
-        uint256 indexed orderId, address indexed minter, uint256 shares, uint256 intakeId, uint256[] amounts
-    );
-    event OrderSettled(uint256 indexed orderId, uint256 lockEnds, uint256[] deposits);
-    event OrderReconfirmed(uint256 indexed orderId);
-    event OrderClaimed(uint256 indexed orderId, address indexed minter, uint256 shares);
-    event OrderFailed(uint256 indexed orderId, address indexed by);
-    /// @notice A proof of `chainId`'s intake showed `proven` where the order rests on `recorded`.
-    event OrderVoided(uint256 indexed orderId, uint256 indexed chainId, bytes32 proven, bytes32 recorded);
-    /// @notice A contradiction froze this index's mints on `chainId` until `until`.
-    event ChainFrozen(uint256 indexed chainId, uint256 until);
-    /// @notice An intake of no order was failed, so its depositors can take their coins back.
-    event IntakeFailed(uint256 indexed chainId, uint256 intakeId);
-    event Redeemed(address indexed sender, address indexed to, uint256 shares, uint256[] amounts);
-    event ClaimRecorded(address indexed account, address indexed token, uint256 amount);
-    event Claimed(address indexed account, address indexed to, address indexed token, uint256 amount);
-    /// @notice `amount` of vault token `token` is burned toward `recipient` on `chainId` by message `messageId`.
-    event BurnSent(
-        address indexed token, uint256 indexed chainId, bytes32 recipient, uint256 amount, bytes32 messageId
-    );
-
-    error NotFactory();
-    error NotInitialized();
-    error InvalidComponents();
-    error ZeroShares();
-    error InvalidSkipMask(uint256 skipMask);
-    error NothingToClaim(address token);
-    error TransferAmountMismatch(address token);
-    /// @notice An order's deadline must lie after now and at most MAX_ORDER_LIFE ahead.
-    error BadDeadline(uint256 deadline);
-    error WrongStatus(uint256 orderId, OrderStatus status);
-    error NotYet(uint256 until);
-    error ChainIsFrozen(uint256 chainId, uint256 until);
-    /// @notice Settling `shares` would make more than MINT_CAP of the supply claimable in 24 hours; `room` is left.
-    error MintCapExceeded(uint256 shares, uint256 room);
-    error DepositShort(address token, uint256 deposited, uint256 required);
-    /// @notice A proof of `chainId`'s vault is of a block at `time`, not after `after`.
-    error ProofTooEarly(uint256 chainId, uint256 time, uint256 after_);
-    error DigestMismatch(uint256 chainId, bytes32 proven, bytes32 expected);
-    error NotAContradiction(uint256 chainId);
-    error NotAVaultChain(uint256 chainId);
-    error IntakeOfAnOrder(uint256 intakeId);
-    error IntakeStillOpen(uint256 deadline);
-    error IntakeAlreadyFailed(uint256 intakeId);
-    /// @notice `chainId` froze after the order settled: a fresh proof from after the freeze must re-confirm it.
-    error NeedsReconfirmation(uint256 orderId, uint256 chainId);
-    error NotAnEthereumToken(address token);
-    error NotAVaultToken(address token);
-
+///      less every amount burned. The rarer paths, voids, re-confirmations, stray intakes and the rebalance, run in the
+///      module the hub delegates to: {IHybridHubModule}. Integrators call an index through {IHybridIndex}, which has
+///      both.
+interface IHybridHub is IHybridHubTypes, IERC20, IERC20Permit {
     /// @notice The factory this template and its clones belong to.
     function FACTORY() external view returns (address);
+
+    /// @notice The module this hub delegates the rest of {IHybridIndex} to, fixed with the template.
+    function MODULE() external view returns (address);
 
     /// @notice How long a settled order waits before its shares can be claimed: 24 hours.
     function MINT_LOCK() external view returns (uint256);
@@ -136,25 +58,14 @@ interface IHybridHub is IERC20, IERC20Permit, IXindexErrors {
     ///         the deadline showing the intake's deposits at least what the order needs.
     function settleOrder(uint256 orderId, ChainProof[] calldata proofs) external;
 
-    /// @notice Anyone. For a locked order whose chain froze after it settled: proofs from after each such freeze that
-    ///         the intake is unchanged. Chains that did not freeze take an empty proof.
-    function reconfirmOrder(uint256 orderId, bytes[] calldata proofs) external;
-
     /// @notice Anyone, after the lock. Mints the order's shares to its minter and tells each vault the deposits joined
-    ///         the index.
+    ///         the index; or, if its escrow or deposits no longer cover its shares at the units now in force, fails it.
+    ///         Waits while a rebalance fill is accepted.
     function claimOrder(uint256 orderId) external;
 
     /// @notice An open order's minter at any time, or anyone SETTLE_GRACE after its deadline. The escrow is booked as
     ///         the minter's claims, and each vault is told to refund the deposits.
     function failOrder(uint256 orderId) external;
-
-    /// @notice Anyone, during a locked order's lock. `proof` shows `chainId`'s intake at a block after the deadline
-    ///         other than the order rests on: the order fails as {failOrder} does, and the chain's mints freeze.
-    function voidOrder(uint256 orderId, uint256 chainId, bytes calldata proof) external;
-
-    /// @notice Anyone, after an intake's deadline, for an intake that belongs to no order: tells the vault to refund
-    ///         whatever was deposited there.
-    function failIntake(uint256 chainId, uint256 intakeId) external;
 
     /// @notice Burns `shares` from the caller. Ethereum components go to `to`, and each vault component is burned toward
     ///         `recipients[j]` on the `j`-th of {chains}. A component in `skipMask`, or on a chain whose recipient is

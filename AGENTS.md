@@ -54,7 +54,8 @@ market from `script/testnet/SetupTestMarket.s.sol`.
    router- or pool-related. Their summary must list the four `test/fork/` suites and 0 skipped.
 5. The Wake VS Code analyzer reports no errors or warnings on `src/`. Its reentrancy detector does not model reentrancy
    guards; the three documented suppressions are on the `redeem` call in `IndexZap._burnBasket`, the `permit` call in
-   `IndexZap.burnToTokenWithPermit`, and the executor callback in `IndexHub._settle`.
+   `IndexZap.burnToTokenWithPermit`, and the executor callback in `IndexHub._settle`. One more marks `IHybridIndex`,
+   which only integrators and tests use, as meant to have no user in `src/`.
 6. Every testable finding of the security reviews keeps its regression test passing, named after its id. A test that
    covers two findings carries both ids. The id families:
    - v1 findings: by their v1 id.
@@ -117,7 +118,7 @@ src/IndexZap.sol              stateless Universal Router mint/burn router, a ven
 src/MintRequests.sol          ownerless escrow of USDC/USDT-for-shares requests at the requester's own limit, filled by anyone
 src/interfaces/               IIndexHub, IIndexFactory, IIndexZap, IMintRequests, IXindexErrors (shared errors), IRebalanceExecutor, IUniversalRouter,
                               and for Stage B IXindexVault, IEthereumEventVerifier, IVaultStateVerifier, IBnbStateVerifier,
-                              IHybridIndexFactory and IHybridHub
+                              IHybridIndexFactory, IHybridHubTypes, IHybridHub, IHybridHubModule and IHybridIndex (both halves)
 src/libraries/PathLib.sol     V3 packed path decoding (shared with test mocks)
 src/libraries/UniversalRouterCommands.sol  the router command bytes the zap emits, vendored with their input layouts
 src/libraries/UniswapV4Types.sol           V4 actions, PathKey and the swap params, vendored from v4-periphery (MIT)
@@ -128,7 +129,10 @@ src/libraries/Bls12381.sol                 Stage B: BLS on the EIP-2537 precompi
 src/vault/XindexVault.sol     Stage B: the ownerless vault on an EVM chain, native coin per index, speed limit, freeze (not deployed)
 src/verifiers/BnbStateVerifier.sol  Stage B: BNB Chain's state on Ethereum from its own finality votes, following every epoch (not deployed)
 src/HybridIndexFactory.sol    Stage B: IndexFactory plus the chain registry, vault-token listings, the chain freeze and the template choice (not deployed)
-src/HybridHub.sol             Stage B: the index of tokens on Ethereum and in vaults, minting through orders and redeeming through burns (not deployed)
+src/HybridHub.sol             Stage B: the index of tokens on Ethereum and in vaults: orders, burns, claims; delegates the rest to its module (not deployed)
+src/hybrid/HybridHubModule.sol  Stage B: the hub's other half, by DELEGATECALL: voids, re-confirmations, stray intakes, the rebalance with deliveries
+src/hybrid/HybridHubStorage.sol Stage B: every state variable the hub and the module share, and their common helpers
+src/hybrid/HubShares.sol      Stage B: the module's three share operations on OpenZeppelin's ERC-20 slot (supply, move, burn)
 test/*.t.sol                  unit / fuzz / invariant / script tests
 test/XindexTest.sol           state and listing helpers the factory, hub, zap and security suites share
 test/Security.t.sol           regression tests for the security review findings (see gate 6 for ids tested elsewhere)
@@ -362,8 +366,19 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   the order until a proof from after the freeze re-confirms it.
 - **Failing never blocks a refund.** A failed order's escrow becomes claims instead of transfers, so vault depositors
   always get their `INTAKE_FAILED`.
-- **Size.** `HybridHub` is near the 24KB limit, so new hub features go in a separate module. Check
-  `forge build --sizes` after any change to it.
+- **One layout, two contracts.** `HybridHub` and `HybridHubModule` run on one clone's storage, so neither declares a
+  state variable of its own: all of it lives in `HybridHubStorage`, appended at its end, never inserted.
+  `test_theHubAndTheModuleShareOneLayout` compares the two from the compiler's layouts (`extra_output` in
+  `foundry.toml`). The module is fixed in the template's constructor; there is no way to change it.
+- **Fills.** A rebalance of an index holding vault tokens settles in three steps:
+  - accept, with a bond of 0.1% of the supply in shares and the Ethereum deliveries;
+  - the vault deliveries, deposited under the fill's intake id;
+  - settle, on a proof of them, at the supply of the settling block.
+
+  Mint claims wait while a fill is accepted. The bond is held 24 hours after settlement, and burned if a delivery
+  proves forged. It is burned on an executor's abort and returned on a guardian's cancel.
+- **Size.** The hub and the module are both near the 24KB limit. Check `forge build --sizes` after any change to
+  either.
 
 ## Conventions
 

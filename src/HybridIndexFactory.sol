@@ -5,6 +5,7 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IndexFactory} from "./IndexFactory.sol";
 import {IHybridIndexFactory} from "./interfaces/IHybridIndexFactory.sol";
 import {IHybridHub} from "./interfaces/IHybridHub.sol";
+import {IHybridHubTypes} from "./interfaces/IHybridHubTypes.sol";
 import {VaultMessages} from "./libraries/VaultMessages.sol";
 
 /// @title HybridIndexFactory
@@ -148,12 +149,12 @@ contract HybridIndexFactory is IndexFactory, IHybridIndexFactory {
             return;
         }
         uint256 n = tokens.length;
-        IHybridHub.Placement[] memory placements = new IHybridHub.Placement[](n);
+        IHybridHubTypes.Placement[] memory placements = new IHybridHubTypes.Placement[](n);
         for (uint256 i = 0; i < n; ++i) {
             uint256 id = _tokenChain[tokens[i]];
             if (id == 0) continue;
             placements[i] =
-                IHybridHub.Placement({chainId: id, vaultToken: _tokenId[tokens[i]], vault: _chains[id].vault});
+                IHybridHubTypes.Placement({chainId: id, vaultToken: _tokenId[tokens[i]], vault: _chains[id].vault});
         }
         indexSalt[index] = salt;
         IHybridHub(index).initialize(name, symbol, tokens, units, placements);

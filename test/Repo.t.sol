@@ -240,4 +240,44 @@ contract RepoTest is Test {
             if (hit) ++found;
         }
     }
+
+    /// @dev HybridHub delegates to its module on the index's own storage, so the two must agree slot for slot: every
+    ///      variable, in order, at the same slot, offset and type. Both inherit HybridHubStorage and declare nothing of
+    ///      their own; this pins it from the compiler's own layouts (`extra_output` in foundry.toml).
+    function test_theHubAndTheModuleShareOneLayout() public view {
+        string memory hub = _read("out/HybridHub.sol/HybridHub.json");
+        string memory module = _read("out/HybridHubModule.sol/HybridHubModule.json");
+        uint256 i = 0;
+        for (; vm.keyExistsJson(hub, _entry(i, "")); ++i) {
+            assertTrue(vm.keyExistsJson(module, _entry(i, "")), "the module has fewer variables");
+            assertEq(vm.parseJsonString(hub, _entry(i, ".label")), vm.parseJsonString(module, _entry(i, ".label")));
+            assertEq(vm.parseJsonString(hub, _entry(i, ".slot")), vm.parseJsonString(module, _entry(i, ".slot")));
+            assertEq(vm.parseJsonUint(hub, _entry(i, ".offset")), vm.parseJsonUint(module, _entry(i, ".offset")));
+            // A type names its struct with the compiler's AST id, which differs between separately cached builds.
+            assertEq(
+                _withoutDigits(vm.parseJsonString(hub, _entry(i, ".type"))),
+                _withoutDigits(vm.parseJsonString(module, _entry(i, ".type")))
+            );
+        }
+        assertFalse(vm.keyExistsJson(module, _entry(i, "")), "the module has more variables");
+        assertGt(i, 30, "every variable of the storage base");
+    }
+
+    function _withoutDigits(string memory text) internal pure returns (string memory) {
+        bytes memory b = bytes(text);
+        bytes memory out = new bytes(b.length);
+        uint256 n = 0;
+        for (uint256 i = 0; i < b.length; ++i) {
+            if (b[i] >= "0" && b[i] <= "9") continue;
+            out[n++] = b[i];
+        }
+        assembly ("memory-safe") {
+            mstore(out, n)
+        }
+        return string(out);
+    }
+
+    function _entry(uint256 i, string memory field) internal pure returns (string memory) {
+        return string.concat(".storageLayout.storage[", vm.toString(i), "]", field);
+    }
 }

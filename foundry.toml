@@ -16,6 +16,10 @@ remappings = [
 # constructor call was silently skipped (LR-01). With it off, a constructor is an ordinary CREATE and the test goes on.
 dynamic_test_linking = false
 
+# Storage layouts in the artifacts, so test/Repo.t.sol can check that HybridHub and the module it delegates to agree
+# slot for slot. It changes no bytecode.
+extra_output = ["storageLayout"]
+
 # Read-only access for test/Repo.t.sol, which checks the repository files review findings rest on: the pinned compiler,
 # the CI gates and toolchain, the dependency lock against .gitmodules, the ABIs and the docs.
 fs_permissions = [{ access = "read", path = "./" }]

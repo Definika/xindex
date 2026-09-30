@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {ERC20Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 import {
     ERC20PermitUpgradeable
@@ -10,129 +9,63 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IHybridHub} from "./interfaces/IHybridHub.sol";
 import {IHybridIndexFactory} from "./interfaces/IHybridIndexFactory.sol";
-import {IVaultStateVerifier} from "./interfaces/IVaultStateVerifier.sol";
+import {HybridHubStorage} from "./hybrid/HybridHubStorage.sol";
 import {VaultMessages} from "./libraries/VaultMessages.sol";
 
 /// @title HybridHub
-/// @notice An index holding tokens on Ethereum and coins in vaults on other chains. See {IHybridHub}.
+/// @notice An index holding tokens on Ethereum and coins in vaults on other chains. See {IHybridHub}, and
+///         {IHybridIndex} for everything an index answers.
 /// @dev Deployed as an EIP-1167 clone by {HybridIndexFactory}, from a template built for that factory. Stage A's
 ///      `IndexHub` stays as it is for indexes held entirely on Ethereum (Stage B spec, proposal 1).
 ///
-///      The hub's book of each vault component, `vaultBacking`, is exact by construction: it grows by the proven
-///      deposits of every claimed order and falls by every amount burned, both derived from supply and units. What the
-///      vault really holds is the vault's own business and the watchers': a proof contradicting an order in its lock
-///      voids the order at once, and freezes the chain's mints.
+///      The hub keeps the common paths: orders from opening to claim, redemption and claims. The rest, voids,
+///      re-confirmations, stray intakes and the rebalance, runs in MODULE, which the fallback reaches by
+///      DELEGATECALL on this index's own storage. The two share {HybridHubStorage} and nothing else, and MODULE is
+///      fixed in the template's constructor, so it is one contract's code split in two for size, not an upgrade path.
 ///
-///      Orders span the whole basket, so every order touches every vault chain. An intake id carries its deadline in
-///      its top 64 bits and the order id below, as the vault expects: `(deadline << 192) | orderId`.
+///      The hub's book of each vault component, `_vaultBacking`, is exact by construction: it grows by the proven
+///      deposits of every claimed order and the deliveries of every settled fill, and falls by every amount burned, all
+///      derived from supply and units. Orders span the whole basket, so every order touches every vault chain.
 ///
-///      Every function that mints, burns, pays a claim or moves an order shares one reentrancy guard. The only calls out
-///      are to Ethereum components (escrow and payouts) and views: the factory's registry and the chains' state
-///      verifiers.
-contract HybridHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, ReentrancyGuard, IHybridHub {
+///      Every function that mints, burns, pays a claim or moves an order or a fill shares one reentrancy guard. The
+///      only calls out are to Ethereum components (escrow and payouts), to views (the factory's registry and the
+///      chains' state verifiers), and to MODULE.
+contract HybridHub is HybridHubStorage, ERC20Upgradeable, ERC20PermitUpgradeable, ReentrancyGuard, IHybridHub {
     using SafeERC20 for IERC20;
 
-    uint256 public constant SHARE_UNIT = 1e18;
+    uint256 public constant SHARE_UNIT = ONE_SHARE;
     /// @inheritdoc IHybridHub
     uint256 public constant MINT_LOCK = 24 hours;
     /// @inheritdoc IHybridHub
     uint256 public constant MAX_ORDER_LIFE = 6 hours;
     /// @inheritdoc IHybridHub
-    uint256 public constant SETTLE_GRACE = 6 hours;
+    uint256 public constant SETTLE_GRACE = GRACE;
     /// @inheritdoc IHybridHub
     uint256 public constant MINT_CAP = 0.04e18;
     /// @inheritdoc IHybridHub
-    uint256 public constant FREEZE_DURATION = 14 days;
+    uint256 public constant FREEZE_DURATION = FREEZE_LENGTH;
     /// @inheritdoc IHybridHub
     address public immutable FACTORY;
-
-    uint256 private constant WAD = 1e18;
-    /// @dev The mint cap counts the current hour and the 24 before it, so it holds over any real 24 hours.
-    uint256 private constant BUCKETS = 25;
-    uint256 private constant HOUR = 1 hours;
-    uint256 private constant DEADLINE_SHIFT = 192;
-    uint256 private constant ORDER_ID_MASK = (1 << DEADLINE_SHIFT) - 1;
-    /// @dev The vault's storage (`XindexVault`): `intakeDigest` is the mapping at slot 15, and an intake's digest is the
-    ///      hash of this domain, the vault chain's id, the vault, the index, the intake id, its state and its deposits.
-    ///      `test_theVaultLayoutIsPinned` checks both against a deployed vault.
-    uint256 private constant VAULT_INTAKE_DIGEST_SLOT = 15;
-    bytes32 private constant INTAKE_DIGEST_DOMAIN = keccak256("xindex.v4.vault.intake-digest");
-    uint8 private constant INTAKE_OPEN = 1;
-
-    struct Component {
-        address token;
-        uint96 units;
-    }
-
-    struct VaultChain {
-        uint256 chainId;
-        bytes32 vault;
-    }
-
-    struct StoredOrder {
-        address minter;
-        uint40 deadline;
-        uint40 lockEnds;
-        OrderStatus status;
-        uint40 settledAt;
-        uint256 shares;
-    }
-
-    /// @dev One hour's newly claimable shares, tagged with the hour so a stale slot reads as empty.
-    struct Bucket {
-        uint64 hour;
-        uint192 amount;
-    }
-
-    Component[] private _components;
-    /// @dev Per component: 0 for an Ethereum token, else 1 + its chain's position in `_chains`.
-    uint256[] private _slotOf;
-    /// @dev Per component: the token's id on its vault chain, zero for an Ethereum token.
-    bytes32[] private _vaultTokenOf;
-    /// @dev Per token: 1 + its position among the components.
-    mapping(address token => uint256) private _position;
-    VaultChain[] private _chains;
-
-    mapping(uint256 orderId => StoredOrder) private _orders;
-    /// @dev Per order and component: the escrow of an Ethereum token, what a vault token needs deposited.
-    mapping(uint256 orderId => uint256[]) private _amounts;
-    /// @dev Per order and component: the proven deposit of a vault token.
-    mapping(uint256 orderId => uint256[]) private _deposits;
-    /// @dev Per order and chain: the intake digest the order was settled on.
-    mapping(uint256 orderId => bytes32[]) private _digests;
-
     /// @inheritdoc IHybridHub
-    mapping(address token => uint256) public vaultBacking;
-    /// @inheritdoc IHybridHub
-    mapping(address token => uint256) public escrowed;
-    /// @inheritdoc IHybridHub
-    mapping(address account => mapping(address token => uint256)) public claimOf;
-    /// @inheritdoc IHybridHub
-    mapping(address token => uint256) public totalClaims;
-    mapping(uint256 chainId => IHybridIndexFactory.Freeze) private _freezes;
-    mapping(uint256 chainId => mapping(uint256 intakeId => bool)) private _intakeFailed;
-    Bucket[BUCKETS] private _minted;
-    uint256 private _lockedShares;
-
-    /// @inheritdoc IHybridHub
-    uint256 public orderCount;
-    /// @inheritdoc IHybridHub
-    uint256 public messageNonce;
-
-    modifier onlyInitialized() {
-        _checkInitialized();
-        _;
-    }
+    address public immutable MODULE;
 
     /// @param factory The factory whose clones this template serves; it checks this when it is deployed.
-    constructor(address factory) {
+    /// @param module The module built for the same factory, which the fallback delegates to.
+    constructor(address factory, address module) {
         if (factory == address(0)) revert ZeroAddress();
+        if (IHybridHub(module).FACTORY() != factory) revert WrongModule(module);
         FACTORY = factory;
+        MODULE = module;
         _disableInitializers();
+    }
+
+    function _factory() internal view override returns (address) {
+        return FACTORY;
     }
 
     /// @inheritdoc IHybridHub
@@ -147,6 +80,9 @@ contract HybridHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, R
         _addComponents(tokens, units, placements);
         __ERC20_init(name_, symbol_);
         __ERC20Permit_init(name_);
+        // Set once at creation: the first rebalance waits MIN_REBALANCE_INTERVAL, as in Stage A.
+        // forge-lint: disable-next-line(missing-events-arithmetic)
+        _lastRebalance = block.timestamp;
     }
 
     function _addComponents(address[] calldata tokens, uint256[] calldata units, Placement[] calldata placements)
@@ -177,6 +113,11 @@ contract HybridHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, R
         return m;
     }
 
+    /// @notice Everything else an index answers ({IHybridHubModule}) runs in MODULE, on this index's storage.
+    fallback(bytes calldata data) external returns (bytes memory) {
+        return Address.functionDelegateCall(MODULE, data);
+    }
+
     // ---------------------------------------------------------------------
     // Orders
     // ---------------------------------------------------------------------
@@ -195,8 +136,8 @@ contract HybridHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, R
             _checkNotFrozen(_chains[j].chainId);
         }
 
-        orderId = ++orderCount;
-        intakeId = (deadline << DEADLINE_SHIFT) | orderId;
+        orderId = ++_orderCount;
+        intakeId = _intakeIdOf(orderId, deadline);
         uint256[] memory amounts = _amountsFor(shares, Math.Rounding.Ceil);
         _orders[orderId] = StoredOrder({
             minter: msg.sender,
@@ -209,7 +150,7 @@ contract HybridHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, R
         _amounts[orderId] = amounts;
         uint256 n = amounts.length;
         for (uint256 i = 0; i < n; ++i) {
-            if (_slotOf[i] == 0) escrowed[_components[i].token] += amounts[i];
+            if (_slotOf[i] == 0) _escrowed[_components[i].token] += amounts[i];
         }
         // The calls before this are views on the factory's freeze record.
         // forge-lint: disable-next-line(reentrancy-events)
@@ -262,61 +203,25 @@ contract HybridHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, R
         uint256[] memory required,
         uint256[] memory deposits
     ) private view returns (bytes32 digest) {
-        if (p.tokens.length != p.totals.length) revert LengthMismatch();
-        VaultChain memory c = _chains[j];
-        digest = keccak256(
-            abi.encode(
-                INTAKE_DIGEST_DOMAIN,
-                c.chainId,
-                _vaultAddress(c.vault),
-                address(this),
-                intakeId,
-                INTAKE_OPEN,
-                p.tokens,
-                p.totals
-            )
-        );
+        digest = _intakeDigest(j, intakeId, INTAKE_OPEN, p.tokens, p.totals);
         bytes32 proven = _provenIntake(j, intakeId, deadline, p.proof);
-        if (proven != digest) revert DigestMismatch(c.chainId, proven, digest);
+        if (proven != digest) revert DigestMismatch(_chains[j].chainId, proven, digest);
         uint256 n = required.length;
         for (uint256 i = 0; i < n; ++i) {
             if (_slotOf[i] != j + 1) continue;
-            address token = _vaultAddress(_vaultTokenOf[i]);
-            uint256 total = 0;
-            for (uint256 t = 0; t < p.tokens.length; ++t) {
-                if (p.tokens[t] == token) total = p.totals[t];
-            }
+            uint256 total = _totalOf(i, p.tokens, p.totals);
             if (total < required[i]) revert DepositShort(_components[i].token, total, required[i]);
             deposits[i] = total;
         }
     }
 
     /// @inheritdoc IHybridHub
-    function reconfirmOrder(uint256 orderId, bytes[] calldata proofs) external nonReentrant onlyInitialized {
-        StoredOrder storage o = _openOrder(orderId, OrderStatus.Locked);
-        uint256 m = _chains.length;
-        if (proofs.length != m) revert LengthMismatch();
-        uint256 intakeId = _intakeIdOf(orderId, o.deadline);
-        for (uint256 j = 0; j < m; ++j) {
-            uint256 chainId = _chains[j].chainId;
-            IHybridIndexFactory.Freeze memory f = _freeze(chainId);
-            if (f.start < o.settledAt) continue;
-            if (block.timestamp < f.until) revert ChainIsFrozen(chainId, f.until);
-            // A proof from after the freeze ended: whatever the vault did while frozen is behind it.
-            bytes32 proven = _provenIntake(j, intakeId, f.until, proofs[j]);
-            bytes32 recorded = _digests[orderId][j];
-            if (proven != recorded) revert DigestMismatch(chainId, proven, recorded);
-        }
-        o.settledAt = SafeCast.toUint40(block.timestamp);
-        // The calls before this are views: the factory's registry and the state verifiers.
-        // forge-lint: disable-next-line(reentrancy-events)
-        emit OrderReconfirmed(orderId);
-    }
-
-    /// @inheritdoc IHybridHub
     function claimOrder(uint256 orderId) external nonReentrant onlyInitialized {
         StoredOrder storage o = _openOrder(orderId, OrderStatus.Locked);
         if (block.timestamp < o.lockEnds) revert NotYet(o.lockEnds);
+        // A fill sized for the supply at its acceptance settles at the supply of its settling block; minting in
+        // between would put shares under a settlement that did not count them.
+        if (_fill.status == FillStatus.Accepted) revert RebalanceInProgress();
         uint256 m = _chains.length;
         for (uint256 j = 0; j < m; ++j) {
             uint256 chainId = _chains[j].chainId;
@@ -328,101 +233,50 @@ contract HybridHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, R
             if (f.start >= o.settledAt) revert NeedsReconfirmation(orderId, chainId);
         }
 
-        o.status = OrderStatus.Claimed;
         uint256 shares = o.shares;
         _lockedShares -= shares;
+        // A settled rebalance may have moved units since the order opened: it claims only if what it holds still
+        // covers its shares at the units in force, and otherwise fails, returning its escrow and deposits.
+        if (!_covered(orderId, shares)) {
+            _fail(orderId, o);
+            return;
+        }
+        o.status = OrderStatus.Claimed;
         uint256[] memory amounts = _amounts[orderId];
         uint256[] memory deposits = _deposits[orderId];
         uint256 n = amounts.length;
         for (uint256 i = 0; i < n; ++i) {
             address token = _components[i].token;
-            if (_slotOf[i] == 0) escrowed[token] -= amounts[i];
+            if (_slotOf[i] == 0) _escrowed[token] -= amounts[i];
             // The whole deposit joins the index, surplus included, so any surplus stays with the holders.
-            else vaultBacking[token] += deposits[i];
+            else _vaultBacking[token] += deposits[i];
         }
         address minter = o.minter;
         _mint(minter, shares);
         // The calls before this are views on the factory's freeze record; `_mint` is internal.
         // forge-lint: disable-next-line(reentrancy-events)
         emit OrderClaimed(orderId, minter, shares);
-        uint256 intakeId = _intakeIdOf(orderId, o.deadline);
-        for (uint256 j = 0; j < m; ++j) {
-            _send(j, VaultMessages.INTAKE_SETTLED, abi.encode(intakeId));
+        _sendAll(VaultMessages.INTAKE_SETTLED, abi.encode(_intakeIdOf(orderId, o.deadline)));
+    }
+
+    /// @dev Whether an order's escrow and deposits cover its shares at the units in force.
+    function _covered(uint256 orderId, uint256 shares) private view returns (bool) {
+        uint256[] memory held = _amounts[orderId];
+        uint256[] memory deposits = _deposits[orderId];
+        uint256 n = held.length;
+        for (uint256 i = 0; i < n; ++i) {
+            uint256 have = _slotOf[i] == 0 ? held[i] : deposits[i];
+            if (have < _backing(shares, _components[i].units, Math.Rounding.Ceil)) return false;
         }
+        return true;
     }
 
     /// @inheritdoc IHybridHub
     function failOrder(uint256 orderId) external nonReentrant onlyInitialized {
         StoredOrder storage o = _openOrder(orderId, OrderStatus.Open);
-        uint256 openTo = o.deadline + SETTLE_GRACE;
+        uint256 openTo = o.deadline + GRACE;
         if (msg.sender != o.minter && block.timestamp <= openTo) revert NotYet(openTo);
         _fail(orderId, o);
-    }
-
-    /// @inheritdoc IHybridHub
-    function voidOrder(uint256 orderId, uint256 chainId, bytes calldata proof) external nonReentrant onlyInitialized {
-        StoredOrder storage o = _openOrder(orderId, OrderStatus.Locked);
-        uint256 j = _slotIndex(chainId);
-        bytes32 proven = _provenIntake(j, _intakeIdOf(orderId, o.deadline), o.deadline, proof);
-        bytes32 recorded = _digests[orderId][j];
-        // After the deadline an intake's deposits are final, and it stays open until the hub settles or fails it, so a
-        // proof showing anything else means the deposit or the proof that settled the order was false.
-        if (proven == recorded) revert NotAContradiction(chainId);
-
-        _lockedShares -= o.shares;
-        uint256 until = block.timestamp + FREEZE_DURATION;
-        _freezes[chainId] =
-            IHybridIndexFactory.Freeze({start: SafeCast.toUint64(block.timestamp), until: SafeCast.toUint64(until)});
-        // The calls before this are views: the factory's registry and a state verifier.
-        // forge-lint: disable-next-line(reentrancy-events)
-        emit OrderVoided(orderId, chainId, proven, recorded);
-        // forge-lint: disable-next-line(reentrancy-events)
-        emit ChainFrozen(chainId, until);
-        _fail(orderId, o);
-    }
-
-    /// @dev Fails an open or locked order: its escrow is booked as its minter's claims, never sent here, so a paused
-    ///      Ethereum token cannot keep a vault's depositors from their refund.
-    function _fail(uint256 orderId, StoredOrder storage o) private {
-        o.status = OrderStatus.Failed;
-        address minter = o.minter;
-        uint256[] memory amounts = _amounts[orderId];
-        uint256 n = amounts.length;
-        for (uint256 i = 0; i < n; ++i) {
-            if (_slotOf[i] != 0 || amounts[i] == 0) continue;
-            address token = _components[i].token;
-            escrowed[token] -= amounts[i];
-            claimOf[minter][token] += amounts[i];
-            totalClaims[token] += amounts[i];
-            // A void reaches here after views only: the factory's registry and a state verifier.
-            // forge-lint: disable-next-line(reentrancy-events)
-            emit ClaimRecorded(minter, token, amounts[i]);
-        }
-        // forge-lint: disable-next-line(reentrancy-events)
-        emit OrderFailed(orderId, msg.sender);
-        uint256 intakeId = _intakeIdOf(orderId, o.deadline);
-        uint256 m = _chains.length;
-        for (uint256 j = 0; j < m; ++j) {
-            _send(j, VaultMessages.INTAKE_FAILED, abi.encode(intakeId));
-        }
-    }
-
-    /// @inheritdoc IHybridHub
-    function failIntake(uint256 chainId, uint256 intakeId) external nonReentrant onlyInitialized {
-        uint256 j = _slotIndex(chainId);
-        uint256 deadline = intakeId >> DEADLINE_SHIFT;
-        // No order can ever take an intake whose deadline has passed, since an order's deadline lies in the future.
-        if (deadline >= block.timestamp) revert IntakeStillOpen(deadline);
-        uint256 orderId = intakeId & ORDER_ID_MASK;
-        if (orderId != 0 && orderId <= orderCount && _orders[orderId].deadline == deadline) {
-            revert IntakeOfAnOrder(intakeId);
-        }
-        if (_intakeFailed[chainId][intakeId]) revert IntakeAlreadyFailed(intakeId);
-        _intakeFailed[chainId][intakeId] = true;
-        // No external call precedes this; the lint reads internal library calls, such as the guard's, as external.
-        // forge-lint: disable-next-line(reentrancy-events)
-        emit IntakeFailed(chainId, intakeId);
-        _send(j, VaultMessages.INTAKE_FAILED, abi.encode(intakeId));
     }
 
     // ---------------------------------------------------------------------
@@ -451,16 +305,12 @@ contract HybridHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, R
             uint256 amount = amounts[i];
             if (amount == 0) continue;
             uint256 slot = _slotOf[i];
-            address token = _components[i].token;
             bool skipped = skipMask & (1 << i) != 0;
+            // Booked to `to`, which receives every other component of this redemption (DA-17).
             if (skipped || (slot != 0 && recipients[slot - 1] == bytes32(0))) {
-                // Booked to `to`, which receives every other component of this redemption (DA-17).
-                claimOf[to][token] += amount;
-                totalClaims[token] += amount;
-                // forge-lint: disable-next-line(reentrancy-events)
-                emit ClaimRecorded(to, token, amount);
+                _bookClaim(to, _components[i].token, amount);
             } else if (slot != 0) {
-                _burnToVault(i, amount, recipients[slot - 1]);
+                _sendBurn(i, amount, recipients[slot - 1]);
             }
         }
         for (uint256 i = 0; i < n; ++i) {
@@ -487,94 +337,23 @@ contract HybridHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, R
         amount = _takeClaim(token);
         // `to` is zero for a vault claim: it is burned toward `recipient`, as BurnSent records.
         emit Claimed(msg.sender, address(0), token, amount);
-        _burnToVault(position - 1, amount, recipient);
+        _sendBurn(position - 1, amount, recipient);
     }
 
     function _takeClaim(address token) private returns (uint256 amount) {
-        amount = claimOf[msg.sender][token];
+        amount = _claimOf[msg.sender][token];
         if (amount == 0) revert NothingToClaim(token);
-        delete claimOf[msg.sender][token];
-        totalClaims[token] -= amount;
-    }
-
-    /// @dev Burns `amount` of vault component `i` toward `recipient` on its chain: the hub's book falls now, and the
-    ///      vault pays once P1 and P2 prove the message, within its speed limit. Nothing expires.
-    function _burnToVault(uint256 i, uint256 amount, bytes32 recipient) private {
-        address token = _components[i].token;
-        uint256 j = _slotOf[i] - 1;
-        vaultBacking[token] -= amount;
-        bytes memory payload = _payload(j, VaultMessages.BURN, abi.encode(_vaultTokenOf[i], amount, recipient));
-        bytes32 id = keccak256(payload);
-        // `_payload` only encodes; the lint reads its internal library call as an external one.
-        // forge-lint: disable-next-line(reentrancy-events)
-        emit VaultMessages.VaultMessage(id, payload);
-        // forge-lint: disable-next-line(reentrancy-events)
-        emit BurnSent(token, _chains[j].chainId, recipient, amount, id);
+        delete _claimOf[msg.sender][token];
+        _totalClaims[token] -= amount;
     }
 
     // ---------------------------------------------------------------------
-    // Messages, proofs, freezes, the mint cap
+    // The mint cap, recipients
     // ---------------------------------------------------------------------
-
-    /// @dev Emits a message to the `j`-th chain's vault: an event on Ethereum, which P1 and P2 prove final there.
-    function _send(uint256 j, uint8 kind, bytes memory body) private {
-        bytes memory payload = _payload(j, kind, body);
-        // `_payload` only encodes; the lint reads its internal library call as an external one.
-        // forge-lint: disable-next-line(reentrancy-events)
-        emit VaultMessages.VaultMessage(keccak256(payload), payload);
-    }
-
-    /// @dev A message to the `j`-th chain's vault, under the next nonce, so no two messages share an id.
-    function _payload(uint256 j, uint8 kind, bytes memory body) private returns (bytes memory) {
-        VaultChain memory c = _chains[j];
-        return VaultMessages.encode(
-            VaultMessages.Message({
-                sourceChainId: block.chainid,
-                kind: kind,
-                destChainId: c.chainId,
-                vault: c.vault,
-                index: address(this),
-                nonce: ++messageNonce,
-                body: body
-            })
-        );
-    }
-
-    /// @dev The `j`-th chain's intake digest for `intakeId`, proven by the chain's state verifier, which the factory
-    ///      names and can rotate, at a block whose timestamp is after `notBefore`.
-    function _provenIntake(uint256 j, uint256 intakeId, uint256 notBefore, bytes calldata proof)
-        private
-        view
-        returns (bytes32)
-    {
-        VaultChain memory c = _chains[j];
-        bytes32[] memory slots = new bytes32[](1);
-        slots[0] = keccak256(abi.encode(intakeId, keccak256(abi.encode(address(this), VAULT_INTAKE_DIGEST_SLOT))));
-        address verifier = IHybridIndexFactory(FACTORY).stateVerifier(c.chainId);
-        uint256 time;
-        bytes32[] memory values;
-        // The block number is not needed: the timestamp bounds the proof, and the value is the whole claim.
-        // forge-lint: disable-next-line(unused-return)
-        (, time, values) = IVaultStateVerifier(verifier).verifySlots(_vaultAddress(c.vault), slots, proof);
-        if (time <= notBefore) revert ProofTooEarly(c.chainId, time, notBefore);
-        return values[0];
-    }
-
-    /// @dev The later of the factory's freeze of `chainId` and this index's own.
-    function _freeze(uint256 chainId) private view returns (IHybridIndexFactory.Freeze memory f) {
-        f = IHybridIndexFactory(FACTORY).chainFreeze(chainId);
-        IHybridIndexFactory.Freeze memory own = _freezes[chainId];
-        if (own.start > f.start) f.start = own.start;
-        if (own.until > f.until) f.until = own.until;
-    }
-
-    function _checkNotFrozen(uint256 chainId) private view {
-        uint256 until = _freeze(chainId).until;
-        if (block.timestamp < until) revert ChainIsFrozen(chainId, until);
-    }
 
     /// @dev Records `shares` as claimable in the current hour, within MINT_CAP of the supply over the last 25 hourly
-    ///      buckets. The first order of an empty index, with nothing locked either, is the seed and has no cap.
+    ///      buckets. The first order of an empty index, with nothing locked either, is the seed and has no cap: the
+    ///      vault's quantity cap bounds it.
     function _useMintRoom(uint256 shares) private {
         uint256 room = mintRoom();
         if (shares > room) revert MintCapExceeded(shares, room);
@@ -585,38 +364,13 @@ contract HybridHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, R
         b.amount = SafeCast.toUint192(total);
     }
 
-    function _openOrder(uint256 orderId, OrderStatus expected) private view returns (StoredOrder storage o) {
-        o = _orders[orderId];
-        if (o.status != expected) revert WrongStatus(orderId, o.status);
-    }
-
-    function _intakeIdOf(uint256 orderId, uint256 deadline) private pure returns (uint256) {
-        return (deadline << DEADLINE_SHIFT) | orderId;
-    }
-
-    function _slotIndex(uint256 chainId) private view returns (uint256) {
-        uint256 m = _chains.length;
-        for (uint256 j = 0; j < m; ++j) {
-            if (_chains[j].chainId == chainId) return j;
-        }
-        revert NotAVaultChain(chainId);
-    }
-
-    /// @dev An EVM vault chain's address in its 32-byte form; Stage B's vaults all run on EVM chains.
-    function _vaultAddress(bytes32 value) private pure returns (address) {
-        return address(uint160(uint256(value)));
-    }
-
-    function _checkInitialized() private view {
-        if (_getInitializedVersion() != 1) revert NotInitialized();
-    }
-
     function _checkRecipient(address to) private view {
         if (to == address(0)) revert ZeroAddress();
         if (_isTrap(to)) revert InvalidRecipient(to);
     }
 
-    /// @dev Shares or tokens sent to the index or its factory could never move on (CR-I01, RT-21).
+    /// @dev Shares or tokens sent to the index or its factory could never move on (CR-I01, RT-21). A fill's bond is
+    ///      the one holding of the index's own shares, and the module moves it without this check.
     function _update(address from, address to, uint256 value) internal override {
         if (_isTrap(to)) revert InvalidRecipient(to);
         super._update(from, to, value);
@@ -624,15 +378,6 @@ contract HybridHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, R
 
     function _isTrap(address to) private view returns (bool) {
         return to == address(this) || to == FACTORY;
-    }
-
-    /// @dev Every component's amount for `shares`, rounded as asked: up for what comes in, down for what goes out.
-    function _amountsFor(uint256 shares, Math.Rounding rounding) private view returns (uint256[] memory amounts) {
-        uint256 n = _components.length;
-        amounts = new uint256[](n);
-        for (uint256 i = 0; i < n; ++i) {
-            amounts[i] = Math.mulDiv(shares, _components[i].units, SHARE_UNIT, rounding);
-        }
     }
 
     // ---------------------------------------------------------------------
@@ -720,6 +465,36 @@ contract HybridHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, R
         }
         uint256 limit = supply * MINT_CAP / WAD;
         return limit > recent ? limit - recent : 0;
+    }
+
+    /// @inheritdoc IHybridHub
+    function vaultBacking(address token) external view returns (uint256) {
+        return _vaultBacking[token];
+    }
+
+    /// @inheritdoc IHybridHub
+    function escrowed(address token) external view returns (uint256) {
+        return _escrowed[token];
+    }
+
+    /// @inheritdoc IHybridHub
+    function claimOf(address account, address token) external view returns (uint256) {
+        return _claimOf[account][token];
+    }
+
+    /// @inheritdoc IHybridHub
+    function totalClaims(address token) external view returns (uint256) {
+        return _totalClaims[token];
+    }
+
+    /// @inheritdoc IHybridHub
+    function orderCount() external view returns (uint256) {
+        return _orderCount;
+    }
+
+    /// @inheritdoc IHybridHub
+    function messageNonce() external view returns (uint256) {
+        return _messageNonce;
     }
 
     /// @inheritdoc IHybridHub
