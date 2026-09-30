@@ -199,3 +199,26 @@ checked by Ethereum's precompiles, within the 1M threshold. The validator set ne
 its membership changes, at most about daily, because a finality vote by an unchanged set proves an epoch block's list
 as well as any other block. Still to measure in M6: the storage proof, with a Merkle-Patricia verifier against a
 recorded `eth_getProof`, and the set update.
+
+### M5: verifying the wrapped proof
+
+A Groth16 proof has a constant size whatever it proves, so these figures hold for the full finality proof.
+
+| Chain | Measure | Pass? |
+|---|---|---|
+| EVM (BNB Chain, HyperEVM; BN254 precompiles priced by EIP-1108 as on Ethereum) | **227,385 gas** to verify SP1 v6's own Groth16 fixture with the vendored `SP1VerifierGroth16` (`prototype/evm/test/SP1VerifierGroth16V6.t.sol`); a tampered public value is refused | yes, under 1M |
+| Solana | about **280,000 compute units**, published by Succinct for `sp1-solana` (README at `4181cae`); **not yet measured here**, because its example pulls in a second SP1 SDK build of about 2 GB | likely, under 1.4M |
+
+The Solana figure is measured once there is a lighter harness: a small program built with `cargo build-sbf` that
+verifies the same v6 fixture on `solana-test-validator`.
+
+### Where Phase 2 stands
+
+| Threshold | Status |
+|---|---|
+| Verify ≤ 1M gas on BNB Chain | **passes**: 227k gas measured |
+| Verify ≤ 1.4M CU on Solana | likely passes: about 280k CU published, to be measured |
+| ≤ $50 per proof | open: about 11B prover gas (6.7B with one epoch), priced by the owner's M4 run |
+| ≤ 60 minutes end to end | open: Ethereum's finality (about 13 min) plus the proving time from M4 |
+
+The vault → Ethereum direction for BNB Chain needs no zkVM at all (M6).
