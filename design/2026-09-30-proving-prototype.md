@@ -213,16 +213,52 @@ A Groth16 proof has a constant size whatever it proves, so these figures hold fo
 | EVM (BNB Chain, HyperEVM; BN254 precompiles priced by EIP-1108 as on Ethereum) | **227,385 gas** to verify SP1 v6's own Groth16 fixture with the vendored `SP1VerifierGroth16` (`prototype/evm/test/SP1VerifierGroth16V6.t.sol`); a tampered public value is refused | yes, under 1M |
 | Solana | about **280,000 compute units**, published by Succinct for `sp1-solana` (README at `4181cae`); **not yet measured here**, because its example pulls in a second SP1 SDK build of about 2 GB | likely, under 1.4M |
 
-The Solana figure is measured once there is a lighter harness: a small program built with `cargo build-sbf` that
-verifies the same v6 fixture on `solana-test-validator`.
+Solana's figure can also be bounded from its own syscall prices. A Groth16 check with SP1 v6's five public inputs is:
+- five scalar multiplications on BN254 at 3,840 compute units each;
+- five additions at 334;
+- one four-pair pairing, 36,364 for the first pair and 12,121 for each further one.
+
+That is about 94,000 compute units before the program's own parsing, and Succinct's published 280,000 covers that
+too. Either figure is a fifth or less of the 1.4M threshold.
+
+Measuring it on chain needs Solana's program-test runtime, another multi-gigabyte build. That is too heavy for this
+machine now (the owner's rule on load), so it moves to the Solana vault's own build in Stage B, which needs that
+toolchain anyway.
 
 ### Where Phase 2 stands
 
 | Threshold | Status |
 |---|---|
 | Verify ≤ 1M gas on BNB Chain | **passes**: 227k gas measured |
-| Verify ≤ 1.4M CU on Solana | likely passes: about 280k CU published, to be measured |
+| Verify ≤ 1.4M CU on Solana | passes on paper: about 94k CU from Solana's syscall prices, 280k published; measured with the Solana vault |
 | ≤ $50 per proof | open: about 11B prover gas (6.7B with one epoch), priced by the owner's M4 run |
 | ≤ 60 minutes end to end | open: Ethereum's finality (about 13 min) plus the proving time from M4 |
 
-The vault → Ethereum direction for BNB Chain needs no zkVM at all (M6).
+The vault → Ethereum direction for BNB Chain needs no zkVM at all (M6): about 650k gas a proof, measured.
+
+## One-epoch finality: the argument, for review
+
+The full rule proves two epochs' supermajorities: one justifying `C1`, one linking `C1` to its child `C2`. The
+cheaper statement proves only the second: two thirds of the stake signed attestations with source `C1` and target
+`C2`, where `C2` is `C1`'s direct child.
+
+**The argument.** Assume, as the full rule does, that less than a third of the stake is faulty.
+1. Then more than a third of the stake among the link's signers is honest.
+2. An honest validator attests with its state's current justified checkpoint as the source. The protocol enforces
+   this too: `process_attestation` includes an attestation only if its source equals the including state's current or
+   previous justified checkpoint.
+3. So `C1` was justified in some honest validator's view. That means two thirds of the stake signed target votes for
+   `C1` from a justified source, as signed messages that exist whether or not we check them.
+4. `C1` is therefore justified in Casper's sense, and the link `C1 → C2` finalizes it. Accountable safety carries
+   over: a conflicting finalized checkpoint still needs a third of the stake to be slashable.
+
+The one step not checked cryptographically is step 2, honest behaviour. It fails only if every signer of the link is
+faulty, which means two thirds faulty, and then the full rule fails as well.
+
+**What to check before relying on it:**
+- The argument, by someone who knows Casper's safety proof.
+- That the prover chooses epochs with a direct-child link; finality through the rule's two-epoch-old sources is left
+  out, which only skips some finalizations.
+- That the committee shuffle and the balances are those of `C2`'s epoch.
+
+If it holds, the proof costs about 6.7B prover gas instead of 11B. It is not adopted.
