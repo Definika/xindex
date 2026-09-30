@@ -22,7 +22,7 @@ forge test                   # unit + fuzz + invariant tests, no RPC needed; for
                              # there makes the fork suites run too (archive node, or FORK_BLOCK, or --no-match-path 'test/fork/*');
                              # an RPC that cannot serve the pinned block fails with that sentence, not a raw fork error
 forge coverage               # must stay at 100% for every file (lines, statements, branches, functions)
-for c in IndexFactory IndexHub IndexRule IndexZap; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
+for c in IndexFactory IndexHub IndexZap; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
 
 # mainnet fork tests (real Chainlink feeds, Universal Router, V3 and V4 pools); skipped when the env var is unset
 MAINNET_RPC_URL=https://... forge test --match-path 'test/fork/*' -vvv

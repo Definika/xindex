@@ -77,7 +77,7 @@ jobs:
       - name: Check the committed ABIs are current
         run: |
           set -euo pipefail
-          for contract in IndexFactory IndexHub IndexRule IndexZap; do
+          for contract in IndexFactory IndexHub IndexZap; do
             forge inspect "$contract" abi --json > "abi/$contract.json"
           done
           git diff --exit-code abi/

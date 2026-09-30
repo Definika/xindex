@@ -41,15 +41,19 @@ contract IndexHubTest is XindexTest {
     address[] tokens;
     uint256[] units;
 
+    /// @dev With each component listed at its units as its supply, this scale gives exactly those units.
+    uint256 constant K = 1e36;
+
     function setUp() public {
         market = new MockMarket();
         factory = new IndexFactory(owner, address(0));
         wbtc = new MockERC20("Wrapped BTC", "WBTC", 8);
         weth = market.weth();
         usdc = market.usdc();
-        _list(address(wbtc));
-        _list(address(weth));
-        _list(address(usdc));
+        // Listed with their units as their supplies, so k = K_SCALE gives exactly these units.
+        _listWith(address(wbtc), U_WBTC);
+        _listWith(address(weth), U_WETH);
+        _listWith(address(usdc), U_USDC);
 
         tokens.push(address(wbtc));
         tokens.push(address(weth));
@@ -58,7 +62,7 @@ contract IndexHubTest is XindexTest {
         units.push(U_WETH);
         units.push(U_USDC);
 
-        index = IndexHub(factory.createIndex("Blue Chip", "BLUE", tokens, units, 0));
+        index = IndexHub(factory.createIndex("Blue Chip", "BLUE", tokens, K));
     }
 
     // ---------------------------------------------------------------------
@@ -104,8 +108,6 @@ contract IndexHubTest is XindexTest {
         assertEq(index.decimals(), 18);
         assertEq(index.SHARE_UNIT(), 1e18);
         assertEq(index.FACTORY(), address(factory));
-        assertEq(index.RULE(), factory.RULE());
-        assertEq(index.methodology(), 0);
         assertEq(index.rebalanceNonce(), 0);
         assertEq(index.lastRebalance(), block.timestamp);
         assertEq(index.componentCount(), 3);
@@ -122,28 +124,28 @@ contract IndexHubTest is XindexTest {
         assertEq(onlyTokens[2], address(usdc));
     }
 
-    function test_constructor_rejectsZeroRule() public {
-        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new IndexHub(address(0));
+    function test_constructor_recordsTheDeployerAsTheFactory() public {
+        IndexHub impl = new IndexHub();
+        assertEq(impl.FACTORY(), address(this), "whoever deploys the implementation is the factory its clones serve");
     }
 
     function test_cannotReinitialize() public {
         vm.prank(address(factory));
         vm.expectRevert(Initializable.InvalidInitialization.selector);
-        index.initialize("x", "x", tokens, units, 0);
+        index.initialize("x", "x", tokens, units);
     }
 
     function test_implementationCannotBeInitialized() public {
         IndexHub impl = IndexHub(factory.IMPLEMENTATION());
         vm.prank(address(factory));
         vm.expectRevert(Initializable.InvalidInitialization.selector);
-        impl.initialize("x", "x", tokens, units, 0);
+        impl.initialize("x", "x", tokens, units);
     }
 
     function test_nonFactoryCannotInitializeFreshClone() public {
         IndexHub rogue = IndexHub(Clones.clone(factory.IMPLEMENTATION()));
         vm.expectRevert(IIndexHub.NotFactory.selector);
-        rogue.initialize("x", "x", tokens, units, 0);
+        rogue.initialize("x", "x", tokens, units);
     }
 
     /// @dev The factory validates inputs before initializing, so these branches are only reachable
@@ -156,37 +158,37 @@ contract IndexHubTest is XindexTest {
         vm.startPrank(address(factory));
 
         vm.expectRevert(IIndexHub.InvalidComponents.selector);
-        fresh.initialize("x", "x", t, u, 0);
+        fresh.initialize("x", "x", t, u);
 
         t = new address[](1);
         u = new uint256[](2);
         t[0] = address(wbtc);
         vm.expectRevert(IIndexHub.InvalidComponents.selector);
-        fresh.initialize("x", "x", t, u, 0);
+        fresh.initialize("x", "x", t, u);
 
         u = new uint256[](1);
         u[0] = 1;
         t[0] = address(0);
         vm.expectRevert(IIndexHub.InvalidComponents.selector);
-        fresh.initialize("x", "x", t, u, 0);
+        fresh.initialize("x", "x", t, u);
 
         t[0] = address(wbtc);
         u[0] = 0;
         vm.expectRevert(IIndexHub.InvalidComponents.selector);
-        fresh.initialize("x", "x", t, u, 0);
+        fresh.initialize("x", "x", t, u);
 
         u[0] = uint256(type(uint96).max) + 1;
         vm.expectRevert(abi.encodeWithSelector(SafeCast.SafeCastOverflowedUintDowncast.selector, 96, u[0]));
-        fresh.initialize("x", "x", t, u, 0);
+        fresh.initialize("x", "x", t, u);
 
         u[0] = type(uint96).max;
-        fresh.initialize("x", "x", t, u, 0);
+        fresh.initialize("x", "x", t, u);
         vm.stopPrank();
         (, uint256[] memory uu) = fresh.components();
         assertEq(uu[0], type(uint96).max);
     }
 
-    function test_uninitializedInstancesCannotIssueOrRedeem() public {
+    function test_DA22_uninitializedInstancesCannotIssueRedeemOrRebalance() public {
         IndexHub impl = IndexHub(factory.IMPLEMENTATION());
         IndexHub rogue = IndexHub(Clones.clone(address(impl)));
 
@@ -287,13 +289,11 @@ contract IndexHubTest is XindexTest {
 
     function test_issue_rejectsFeeOnTransferToken() public {
         MockFeeToken fee = new MockFeeToken();
-        _list(address(fee));
+        _listWith(address(fee), 1e18);
 
         address[] memory t = new address[](1);
-        uint256[] memory u = new uint256[](1);
         t[0] = address(fee);
-        u[0] = 1e18;
-        IndexHub feeIndex = IndexHub(factory.createIndex("Fee", "FEE", t, u, 0));
+        IndexHub feeIndex = IndexHub(factory.createIndex("Fee", "FEE", t, K));
 
         fee.mint(alice, 10e18);
         vm.startPrank(alice);
@@ -648,16 +648,16 @@ contract IndexHubTest is XindexTest {
         _assertBacked();
     }
 
-    /// @dev RT-21, CR-I01's class. The factory and the rule can never move a share or a component on either: the factory
-    ///      has no transfer or arbitrary-call function and the rule is a stateless view contract. Shares sent to either,
-    ///      or shares issued, redeemed, skipped or claimed to either, were locked for good, and the factory is the
-    ///      contract a user deals with to create indexes, so it is the likeliest wrong paste after the index.
-    function test_RT21_sharesAndComponentsCannotBeSentToTheFactoryOrRule() public {
+    /// @dev RT-21, CR-I01's class. The factory can never move a share or a component on: it has no transfer or
+    ///      arbitrary-call function. Shares sent to it, or shares issued, redeemed, skipped or claimed to it, were locked
+    ///      for good, and the factory is the contract a user deals with to create indexes, so it is the likeliest wrong
+    ///      paste after the index. (The v3 rule, the other trap, is gone with prices.)
+    function test_RT21_sharesAndComponentsCannotBeSentToTheFactory() public {
         _fund(alice, 4e18);
         vm.prank(alice);
         index.issue(2e18, alice);
-        address[2] memory traps = [index.FACTORY(), index.RULE()];
-        for (uint256 i = 0; i < 2; ++i) {
+        address[1] memory traps = [index.FACTORY()];
+        for (uint256 i = 0; i < traps.length; ++i) {
             bytes memory refused = abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, traps[i]);
             vm.prank(alice);
             vm.expectRevert(refused);
@@ -683,7 +683,7 @@ contract IndexHubTest is XindexTest {
             assertEq(index.balanceOf(traps[i]), 0, "nothing was locked there");
         }
 
-        // A claim cannot be paid to either: book one to alice, then try to collect it at the factory.
+        // A claim cannot be paid to it: book one to alice, then try to collect it at the factory.
         vm.prank(alice);
         index.redeemSkipping(1e18, alice, 1 << 0);
         vm.prank(alice);
@@ -757,11 +757,10 @@ contract IndexHubTest is XindexTest {
     ///      still shows the fee.
     function test_RT05_theFeeCheckMeasuresTheChangeWhenTheIndexAlreadyHoldsTheToken() public {
         MockFeeToken fee = new MockFeeToken();
-        _list(address(fee));
+        _listWith(address(fee), 1e18);
         address[] memory t = new address[](1);
-        uint256[] memory u = new uint256[](1);
-        (t[0], u[0]) = (address(fee), 1e18);
-        IndexHub feeIndex = IndexHub(factory.createIndex("Fee", "FEE", t, u, 0));
+        t[0] = address(fee);
+        IndexHub feeIndex = IndexHub(factory.createIndex("Fee", "FEE", t, K));
 
         fee.mint(bob, 10e18);
         vm.prank(bob);

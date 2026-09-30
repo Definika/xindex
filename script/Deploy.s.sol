@@ -6,12 +6,10 @@ import {IndexFactory} from "../src/IndexFactory.sol";
 import {IndexZap} from "../src/IndexZap.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
 import {ISafeThreshold} from "./interfaces/ISafeThreshold.sol";
-import {IAggregatorV3} from "../src/interfaces/IAggregatorV3.sol";
-import {CompositeFeed} from "../src/CompositeFeed.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
 
-/// @notice Deploys the factory (which deploys the rule and the IndexHub implementation) and the zap.
+/// @notice Deploys the factory (which deploys the IndexHub implementation) and the zap.
 ///
 ///   OWNER=<safe address> GUARDIAN=<guardian address> forge script script/Deploy.s.sol --rpc-url mainnet \
 ///     --account deployer --sender <deployer address> --broadcast --verify
@@ -19,8 +17,9 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 /// Env:
 ///   OWNER               Required. Factory owner. On mainnet it must be a contract that is not an EIP-7702 delegated
 ///                       account, and a Safe must require at least two signatures and have no enabled module.
-///   GUARDIAN            Required. Can cancel pending listings and rebalances, start a rebalance that leaves a paused
-///                       component untouched, and delist tokens. Must differ from OWNER; replacing it later takes 7 days.
+///   GUARDIAN            Required. Can cancel pending listings, supply batches and rebalances, start a rebalance
+///                       that leaves a paused component untouched, and delist tokens. Must differ from OWNER; replacing
+///                       it later takes 7 days.
 ///   UNIVERSAL_ROUTER    Uniswap's Universal Router, through which the zap swaps. Required off mainnet; defaults on
 ///                       chain 1 to the 2.0.0 deployment.
 contract Deploy is Script {
@@ -55,22 +54,20 @@ contract Deploy is Script {
     error WrongWiring(string name, address expected, address actual);
 
     /// @notice Reads OWNER, GUARDIAN and the optional market addresses from the environment and calls {deploy}.
-    function run() external returns (IndexFactory factory, IndexZap zap, CompositeFeed wbtcFeed) {
+    function run() external returns (IndexFactory factory, IndexZap zap) {
         return deploy(vm.envAddress("OWNER"), vm.envAddress("GUARDIAN"), vm.envOr("UNIVERSAL_ROUTER", address(0)));
     }
 
-    /// @notice Checks the owner and guardian, resolves the market, and broadcasts the factory (which deploys the rule
-    ///         and the IndexHub implementation) and the zap. Logs every address.
+    /// @notice Checks the owner and guardian, resolves the market, and broadcasts the factory (which deploys the
+    ///         IndexHub implementation) and the zap. Logs every address.
     /// @param owner Factory owner; see {checkOwner}.
     /// @param guardian Initial guardian; see {checkGuardian}.
     /// @param router Uniswap's Universal Router, through which the zap swaps; see {resolveRouter}.
     /// @return factory The deployed factory.
     /// @return zap The deployed zap.
-    /// @return wbtcFeed The composite BTC/USD times WBTC/BTC feed, deployed on chain 1 only, else zero. It takes no
-    ///         owner and no arguments beyond its two legs, so a later run deploys an identical one.
     function deploy(address owner, address guardian, address router)
         public
-        returns (IndexFactory factory, IndexZap zap, CompositeFeed wbtcFeed)
+        returns (IndexFactory factory, IndexZap zap)
     {
         checkOwner(owner);
         checkGuardian(owner, guardian);
@@ -80,52 +77,35 @@ contract Deploy is Script {
         vm.startBroadcast();
         factory = new IndexFactory(owner, guardian);
         zap = new IndexZap(factory, IUniversalRouter(router));
-        if (block.chainid == 1) {
-            wbtcFeed = new CompositeFeed(
-                IAggregatorV3(MainnetAddresses.BTC_USD_FEED),
-                IAggregatorV3(MainnetAddresses.WBTC_BTC_FEED),
-                MainnetAddresses.STALENESS_1H,
-                MainnetAddresses.STALENESS_24H
-            );
-        }
         vm.stopBroadcast();
 
         console2.log("IndexFactory:            ", address(factory));
-        console2.log("IndexRule:               ", factory.RULE());
-        console2.log("IndexHub impl:         ", factory.IMPLEMENTATION());
+        console2.log("IndexHub impl:           ", factory.IMPLEMENTATION());
         console2.log("IndexZap:                ", address(zap));
         console2.log("Factory owner:           ", owner);
         console2.log("Guardian:                ", guardian);
         console2.log("Universal Router:        ", router);
         console2.log("PoolManager:             ", zap.POOL_MANAGER());
-        if (address(wbtcFeed) != address(0)) console2.log("WBTC_FEED (composite):   ", address(wbtcFeed));
 
         // The release record: the addresses above plus the code they ended up with, so a later run of
         // {checkDeployment} against the recorded addresses proves a deployment is this build.
-        bytes32[4] memory codehashes = checkDeployment(factory, zap);
+        bytes32[3] memory codehashes = checkDeployment(factory, zap);
         console2.log("IndexFactory codehash:   ", vm.toString(codehashes[0]));
-        console2.log("IndexRule codehash:      ", vm.toString(codehashes[1]));
-        console2.log("IndexHub impl codehash:", vm.toString(codehashes[2]));
-        console2.log("IndexZap codehash:       ", vm.toString(codehashes[3]));
-        // `ConfigureWhitelist` refuses a WBTC_FEED whose executable code is not this build's adapter; the record keeps
-        // the deployed one's hash beside the others (CR-L04).
-        if (address(wbtcFeed) != address(0)) {
-            console2.log("WBTC_FEED codehash:      ", vm.toString(address(wbtcFeed).codehash));
-        }
+        console2.log("IndexHub impl codehash:  ", vm.toString(codehashes[1]));
+        console2.log("IndexZap codehash:       ", vm.toString(codehashes[2]));
     }
 
     /// @notice Checks that a factory and a zap are one deployment and returns the runtime code hashes to freeze in the
     ///         release record (README, "Deployment record"). Run it again later against the recorded addresses: equal
     ///         hashes prove the deployed code is unchanged and still the build the record names.
-    /// @param factory The deployed factory, which names the rule and the IndexHub implementation.
+    /// @param factory The deployed factory, which names the IndexHub implementation.
     /// @param zap The deployed zap, which must point back at `factory`.
-    /// @return codehashes keccak256 of the runtime code of the factory, the rule, the implementation and the zap.
-    function checkDeployment(IndexFactory factory, IndexZap zap) public view returns (bytes32[4] memory codehashes) {
-        address rule = factory.RULE();
+    /// @return codehashes keccak256 of the runtime code of the factory, the implementation and the zap.
+    function checkDeployment(IndexFactory factory, IndexZap zap) public view returns (bytes32[3] memory codehashes) {
         address implementation = factory.IMPLEMENTATION();
         address zapFactory = address(zap.FACTORY());
         if (zapFactory != address(factory)) revert WrongWiring("IndexZap.FACTORY", address(factory), zapFactory);
-        codehashes = [address(factory).codehash, rule.codehash, implementation.codehash, address(zap).codehash];
+        codehashes = [address(factory).codehash, implementation.codehash, address(zap).codehash];
     }
 
     /// @notice Rejects a missing owner and Foundry's default sender. On mainnet the owner must be a contract, not
@@ -174,8 +154,8 @@ contract Deploy is Script {
 
     /// @notice Rejects an owner or guardian that is one of the market contracts, such as one pasted as OWNER. None of
     ///         them answers `getThreshold`, so {checkOwner} would accept any as a contract owner, and a factory owned
-    ///         by one could never be administered: no listing, no config change, and a redeploy. v3 had narrowed this
-    ///         to the router alone (XA-39, CR-I37).
+    ///         by one could never be administered: no listing, no supply batch, and a redeploy. An earlier version had
+    ///         narrowed this to the router alone (XA-39, CR-I37).
     /// @param owner The intended factory owner.
     /// @param guardian The intended guardian.
     /// @param router The resolved router.
@@ -188,7 +168,7 @@ contract Deploy is Script {
 
     /// @notice The contracts a deployment on this chain trades or prices through, none of which may hold a role.
     /// @param router The resolved Universal Router.
-    /// @return list The router and the PoolManager it settles against, then, on chain 1, every token and feed in
+    /// @return list The router and the PoolManager it settles against, then, on chain 1, every token in
     ///         `MainnetAddresses`.
     function marketContracts(address router) public view returns (address[] memory list) {
         address[] memory mainnet = block.chainid == 1 ? _mainnetMarket() : new address[](0);
@@ -200,34 +180,12 @@ contract Deploy is Script {
         }
     }
 
-    /// @dev Every token and feed the mainnet address book names.
+    /// @dev Every token the mainnet address book names.
     function _mainnetMarket() private pure returns (address[] memory list) {
-        list = new address[](17);
-        (list[0], list[1], list[2], list[3], list[4], list[5], list[6]) =
-        (
-            MainnetAddresses.WETH,
-            MainnetAddresses.WSTETH,
-            MainnetAddresses.WBTC,
-            MainnetAddresses.WSOL,
-            MainnetAddresses.UNI,
-            MainnetAddresses.LINK,
-            MainnetAddresses.AAVE
-        );
-        (list[7], list[8]) = (MainnetAddresses.USDC, MainnetAddresses.USDT);
-        (list[9], list[10], list[11], list[12]) =
-        (
-            MainnetAddresses.ETH_USD_FEED,
-            MainnetAddresses.WSTETH_USD_FEED,
-            MainnetAddresses.BTC_USD_FEED,
-            MainnetAddresses.WBTC_BTC_FEED
-        );
-        (list[13], list[14], list[15], list[16]) =
-        (
-            MainnetAddresses.SOL_USD_FEED,
-            MainnetAddresses.UNI_USD_FEED,
-            MainnetAddresses.LINK_USD_FEED,
-            MainnetAddresses.AAVE_USD_FEED
-        );
+        list = new address[](6);
+        (list[0], list[1], list[2], list[3]) =
+        (MainnetAddresses.WETH, MainnetAddresses.WBTC, MainnetAddresses.UNI, MainnetAddresses.LINK);
+        (list[4], list[5]) = (MainnetAddresses.USDC, MainnetAddresses.USDT);
     }
 
     /// @notice Fills a zero router with the mainnet default on chain 1 only, and requires it to have code. On chain 1

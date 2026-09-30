@@ -8,14 +8,9 @@ import {IndexFactory} from "../../src/IndexFactory.sol";
 import {IndexHub} from "../../src/IndexHub.sol";
 import {IndexZap} from "../../src/IndexZap.sol";
 import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
-import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
-import {IIndexRule} from "../../src/interfaces/IIndexRule.sol";
 import {IUniversalRouter} from "../../src/interfaces/IUniversalRouter.sol";
 import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
-import {ForkFeeds} from "./ForkFeeds.sol";
-import {CompositeFeed} from "../../src/CompositeFeed.sol";
-import {IAggregatorV3} from "../../src/interfaces/IAggregatorV3.sol";
 
 interface IQuoterV2 {
     function quoteExactInput(bytes memory path, uint256 amountIn)
@@ -39,7 +34,7 @@ interface IQuoterV2 {
 
 /// @notice End-to-end against the real Universal Router, real V3 and V4 pools, USDC and USDT. Skips when
 ///         MAINNET_RPC_URL is unset. Run: MAINNET_RPC_URL=... forge test --match-path 'test/fork/*' -vvv
-contract IndexZapForkTest is ForkFeeds {
+contract IndexZapForkTest is Test {
     using SafeERC20 for IERC20;
 
     IndexFactory factory;
@@ -53,6 +48,8 @@ contract IndexZapForkTest is ForkFeeds {
     uint256 constant U_WBTC = 100_000;
     uint256 constant U_WETH = 1e16;
     uint256 constant U_LINK = 1e18;
+    /// @dev With each component listed at its units as its supply, this scale gives exactly those units.
+    uint256 constant K = 1e36;
 
     uint24 constant F500 = 500;
     uint24 constant F3000 = 3000;
@@ -85,45 +82,20 @@ contract IndexZapForkTest is ForkFeeds {
         factory = new IndexFactory(address(this), address(0));
         zap = new IndexZap(factory, IUniversalRouter(A.UNIVERSAL_ROUTER));
 
-        _pinFeedsToTheBlockClock();
-        factory.proposeListing(A.WBTC, _config(address(_wbtcFeed()), A.STALENESS_24H, A.BTC_SUPPLY));
-        factory.proposeListing(A.WETH, _config(A.ETH_USD_FEED, A.STALENESS_1H, A.ETH_SUPPLY));
-        factory.proposeListing(A.LINK, _config(A.LINK_USD_FEED, A.STALENESS_1H, A.LINK_SUPPLY));
+        // Listed with their units as their supplies, so k = K gives exactly the units the suite's amounts use.
+        factory.proposeListing(A.WBTC, U_WBTC);
+        factory.proposeListing(A.WETH, U_WETH);
+        factory.proposeListing(A.LINK, U_LINK);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(A.WBTC);
         factory.executeListing(A.WETH);
         factory.executeListing(A.LINK);
 
         address[] memory t = new address[](3);
-        uint256[] memory u = new uint256[](3);
         t[0] = A.WBTC;
         t[1] = A.WETH;
         t[2] = A.LINK;
-        u[0] = U_WBTC;
-        u[1] = U_WETH;
-        u[2] = U_LINK;
-        index = IndexHub(factory.createIndex("Blue Chip", "BLUE", t, u, 0));
-    }
-
-    /// @dev A listing config whose minimum liquidity is a tenth of the pool's liquidity at the fork block, under the
-    ///      mainnet list's policy of a third so that a fixture never fails on the pool's own drift.
-    /// @dev The composite adapter for WBTC, deployed the way `Deploy` does on chain 1.
-    function _wbtcFeed() internal returns (CompositeFeed) {
-        return new CompositeFeed(
-            IAggregatorV3(A.BTC_USD_FEED), IAggregatorV3(A.WBTC_BTC_FEED), A.STALENESS_1H, A.STALENESS_24H
-        );
-    }
-
-    /// @dev A listing config naming a real Chainlink feed. WBTC has no USD feed, so the suite deploys the composite
-    ///      adapter over BTC/USD and WBTC/BTC and lists it with that.
-    function _config(address feed, uint32 maxStaleness, uint256 referenceSupply)
-        internal
-        pure
-        returns (IIndexFactory.TokenConfig memory c)
-    {
-        c.feed = feed;
-        c.maxStaleness = maxStaleness;
-        c.referenceSupply = referenceSupply;
+        index = IndexHub(factory.createIndex("Blue Chip", "BLUE", t, K));
     }
 
     // ---------------------------------------------------------------------
@@ -480,22 +452,16 @@ contract IndexZapForkTest is ForkFeeds {
     /// @dev tBTC has no deep direct stable pool; it routes stable -> WETH (0.05%) -> tBTC (0.3%).
     function testFork_btcBasketWithTBTC_mintAndBurn() public {
         address[] memory t = new address[](2);
-        uint256[] memory u = new uint256[](2);
         t[0] = A.WBTC;
         t[1] = A.TBTC;
-        u[0] = 50_000; // 0.0005 WBTC (8 decimals)
-        u[1] = 5e14; // 0.0005 tBTC (18 decimals)
 
-        // tBTC is not on the launch whitelist; it is listed here from its own USD feed to exercise a two-hop route,
-        // and how thin its pool is no longer bears on whether the rule can price it.
-        _pinFeed(A.TBTC_USD_FEED); // not on the launch whitelist, so the setup did not pin it
-        // Every config carries a reference supply (CR-M01); tBTC's own at the fork block serves for this fixture.
-        IIndexFactory.TokenConfig memory tbtc = _config(A.TBTC_USD_FEED, A.STALENESS_24H, IERC20(A.TBTC).totalSupply());
-        factory.proposeListing(A.TBTC, tbtc);
+        // tBTC is not on the Stage A whitelist; it is listed here to exercise a two-hop route. Its supply is set so
+        // that half of K gives 0.0005 of each: 50,000 raw units of WBTC (8 decimals) and 5e14 of tBTC (18).
+        factory.proposeListing(A.TBTC, 1e15);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(A.TBTC);
 
-        IndexHub btc = IndexHub(factory.createIndex("BTC Basket", "BTC2", t, u, 0));
+        IndexHub btc = IndexHub(factory.createIndex("BTC Basket", "BTC2", t, K / 2));
 
         bytes[] memory mintPaths = new bytes[](2);
         mintPaths[0] = abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDC);

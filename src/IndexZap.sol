@@ -158,7 +158,7 @@ contract IndexZap is ReentrancyGuard, IIndexZap {
     ///      anything and never has an allowance here to spend later. `amountOut` is never zero, which matters because
     ///      zero is the V4 router's open-delta sentinel in the swap-amount position too, meaning "the full debt": it
     ///      is `ceil(shares * units / 1e18)` with non-zero shares, and every component's units are at least one raw
-    ///      unit, since they start non-zero and a rebalance targets no less than half of them, rounded up (CR-I05).
+    ///      unit, since they start at MIN_RAW_UNITS or more and a rebalance rounds every new unit up (CR-I05).
     function _buy(MintParams calldata p, address component, uint256 amountOut, uint256 budget, uint256 i)
         private
         returns (uint256 amountIn)
@@ -388,11 +388,11 @@ contract IndexZap is ReentrancyGuard, IIndexZap {
         _checkNonce(index, expectedNonce);
         if (to == address(0)) revert ZeroAddress();
         // Tokens left in the router can be swept by anyone, and anything sent to the pool manager is a donation. The
-        // factory and the rule can never move a token on either, so a burn paid to one of them is lost (RT-21).
-        if (
-            to == address(this) || to == index || to == address(ROUTER) || to == POOL_MANAGER || to == address(FACTORY)
-                || to == FACTORY.RULE()
-        ) revert InvalidRecipient(to);
+        // factory can never move a token on either, so a burn paid to it is lost (RT-21).
+        if (to == address(this) || to == index || to == address(ROUTER) || to == POOL_MANAGER || to == address(FACTORY))
+        {
+            revert InvalidRecipient(to);
+        }
     }
 
     function _checkNonce(address index, uint256 expectedNonce) private view {

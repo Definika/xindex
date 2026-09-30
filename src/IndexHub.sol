@@ -13,16 +13,15 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IIndexFactory} from "./interfaces/IIndexFactory.sol";
-import {IIndexRule} from "./interfaces/IIndexRule.sol";
 import {IIndexHub} from "./interfaces/IIndexHub.sol";
 import {IRebalanceExecutor} from "./interfaces/IRebalanceExecutor.sol";
 
 /// @title IndexHub
-/// @notice Fully collateralized index token with fixed constituents whose units follow an on-chain weighting rule.
+/// @notice Fully collateralized index token with fixed constituents whose units follow their reference supplies.
 ///         See {IIndexHub}.
 /// @dev Deployed as an EIP-1167 clone by {IndexFactory}. The implementation is deployed from the factory constructor,
-///      so `FACTORY` and `RULE` can be immutables (immutables live in bytecode, which clones delegate to, so every clone
-///      sees the same values).
+///      so `FACTORY` can be an immutable (immutables live in bytecode, which clones delegate to, so every clone sees the
+///      same value).
 ///
 ///      The storage-based {ReentrancyGuard} is used deliberately: its namespaced slot reads as "not entered" when zero,
 ///      so it needs no initializer and is safe in a clone. Every function that mints, burns, pays a claim or changes a
@@ -38,33 +37,28 @@ import {IRebalanceExecutor} from "./interfaces/IRebalanceExecutor.sol";
 ///      never dilute other holders. Nothing is ever computed from balances, so there is no share price to manipulate
 ///      and no first-depositor attack.
 ///
-///      Rebalancing. Once MIN_REBALANCE_INTERVAL has passed, anyone can snapshot the rule's target units. After
-///      REBALANCE_DELAY of notice, an auction runs for AUCTION_DURATION. The executor receives what the index no longer
-///      needs of every shrinking component, and must send back what the growing components need. The multiplier
-///      scales only the growing components' extra units: it opens at AUCTION_START_MULTIPLIER, so an executor first has
-///      to deliver more value than it takes, and falls linearly to AUCTION_END_MULTIPLIER. Transfer amounts come from
-///      supply and units alone, and the settlement stands only if the invariant holds with the new units. Prices never
-///      size a settlement, but they do gate it: what arrives has to be worth MIN_SETTLEMENT_RATIO of what leaves at
-///      feed prices read in the settling block (DA-05), so a leg that moves needs a feed that can be read (CR-I11).
+///      Rebalancing, with no price anywhere. Units should be proportional to reference supplies, so a market-cap
+///      index never trades on a price move. Once MIN_REBALANCE_INTERVAL has passed, anyone can snapshot the band: for
+///      each moving component, ρ = units / reference supply, and its ratio r = 2ρ / (ρmin + ρmax), clamped to
+///      [1 − MAX_SUPPLY_STEP, 1 + MAX_SUPPLY_STEP]. After REBALANCE_DELAY of notice, λ falls linearly from the
+///      largest ratio to the smallest over AUCTION_DURATION, and a fill at λ sets each moving component's units to
+///      ceil(λ · u / r). At any prices the value-neutral λ, Σ u·p / Σ (u/r)·p, is a weighted average of the ratios, so
+///      it lies inside the band: a fill leaves holders at least λmin / λmax of the moving value, at most 0.995% less,
+///      whatever the market does between the snapshot and the fill. A full fill makes units proportional to supplies
+///      again, so the skew a keep mask leaves and rounding drift heal instead of compounding. Transfer amounts come
+///      from supply and units alone, and the settlement stands only if the invariant holds with the new units.
 contract IndexHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, ReentrancyGuard, IIndexHub {
     using SafeERC20 for IERC20;
 
     uint256 public constant SHARE_UNIT = 1e18;
     uint256 public constant REBALANCE_DELAY = 2 days;
-    uint256 public constant MIN_REBALANCE_INTERVAL = 28 days;
+    uint256 public constant MIN_REBALANCE_INTERVAL = 7 days;
     uint256 public constant AUCTION_DURATION = 24 hours;
-    uint256 public constant AUCTION_START_MULTIPLIER = 1.5e18;
-    uint256 public constant AUCTION_END_MULTIPLIER = 0.9e18;
-    uint256 public constant MIN_TURNOVER = 0.005e18;
-    /// @dev AUCTION_END_MULTIPLIER, less 2.5% for the gap between the rule's feed price, which moves only when the
-    ///      feed publishes, and the spot an executor trades at. It was 5% until the 2026-09-23 audit replayed 26 months
-    ///      of feed answers against market prices on the default basket: the 5% bought no liveness, since no ratio up
-    ///      to 0.9 refused a competitive fill, while it let a lone executor keep more than 15% of the traded value at
-    ///      market prices in about 4% of auctions, which this ratio cuts to about 0.04% (CR-L06). See
-    ///      _checkSettlementValue.
-    uint256 public constant MIN_SETTLEMENT_RATIO = 0.875e18;
+    uint256 public constant MAX_SUPPLY_STEP = 0.005e18;
+    /// @dev Twice the widest rounding gap between two freshly anchored components held at 10,000 raw units, and a tenth
+    ///      of the widest band, so a band this narrow means units already follow supplies to within rounding.
+    uint256 public constant MIN_BAND = 0.001e18;
     address public immutable FACTORY;
-    address public immutable RULE;
 
     uint256 private constant WAD = 1e18;
 
@@ -73,10 +67,11 @@ contract IndexHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, Re
         uint96 units;
     }
 
-    /// @dev `eta == 0` means no rebalance is pending.
+    /// @dev `eta == 0` means no rebalance is pending. Both ends of the band lie within 1e18 ± MAX_SUPPLY_STEP.
     struct PendingRebalance {
         uint40 eta;
-        uint24 keepMask;
+        uint64 lambdaMax;
+        uint64 lambdaMin;
     }
 
     Component[] private _components;
@@ -88,7 +83,9 @@ contract IndexHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, Re
     mapping(address token => uint256 amount) public totalClaims;
 
     PendingRebalance private _pending;
-    uint96[] private _targetUnits;
+    uint256 private _keepMask;
+    /// @dev The pending band's ratio per component, zero for a kept one; empty when nothing is pending.
+    uint64[] private _ratios;
 
     /// @inheritdoc IIndexHub
     uint256 public proposalCount;
@@ -102,18 +99,13 @@ contract IndexHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, Re
     /// @inheritdoc IIndexHub
     uint256 public restartAllowedAt;
 
-    /// @inheritdoc IIndexHub
-    uint8 public methodology;
-
     modifier onlyInitialized() {
         _checkInitialized();
         _;
     }
 
-    constructor(address rule) {
-        if (rule == address(0)) revert ZeroAddress();
+    constructor() {
         FACTORY = msg.sender;
-        RULE = rule;
         _disableInitializers();
     }
 
@@ -122,8 +114,7 @@ contract IndexHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, Re
         string calldata name_,
         string calldata symbol_,
         address[] calldata tokens,
-        uint256[] calldata units,
-        uint8 methodology_
+        uint256[] calldata units
     ) external initializer {
         if (msg.sender != FACTORY) revert NotFactory();
         uint256 n = tokens.length;
@@ -136,7 +127,6 @@ contract IndexHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, Re
             if (tokens[i] == address(0) || units[i] == 0) revert InvalidComponents();
             _components.push(Component({token: tokens[i], units: SafeCast.toUint96(units[i])}));
         }
-        methodology = methodology_;
         // Set once at creation, in the same transaction as the factory's IndexCreated event.
         // forge-lint: disable-next-line(missing-events-arithmetic)
         lastRebalance = block.timestamp;
@@ -247,25 +237,26 @@ contract IndexHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, Re
                 && !IIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender)
         ) revert Unauthorized(msg.sender);
 
-        (uint256[] memory targets, uint256 turnover) = _previewTarget(keepMask);
-        // A step that trades too little still starts when the basket sits at least MIN_TURNOVER from its rule: the band
-        // lets a growing component at most double, so a step measured alone buys at most that component's own holding,
-        // and an index the rule wants holding 4% of a component it holds at 0.4% could never start the rebalances that
-        // walk it back (RT-04). A step that trades nothing certifies nothing, however far the basket sits (DA-08).
-        if (turnover < MIN_TURNOVER && (turnover == 0 || _shortfall(keepMask) < MIN_TURNOVER)) {
-            revert TurnoverTooLow(turnover);
-        }
+        (uint256[] memory ratios, uint256 lambdaMin, uint256 lambdaMax) = _band(keepMask);
+        // Nothing to trade: every moving component's units already follow its supply to within rounding, which covers
+        // no supply changing, every supply changing alike and a single moving component.
+        if (lambdaMax * WAD < lambdaMin * (WAD + MIN_BAND)) revert BandTooNarrow(lambdaMin, lambdaMax);
 
-        delete _targetUnits;
+        delete _ratios;
         for (uint256 i = 0; i < n; ++i) {
-            _targetUnits.push(SafeCast.toUint96(targets[i]));
+            _ratios.push(SafeCast.toUint64(ratios[i]));
         }
         uint256 eta = block.timestamp + REBALANCE_DELAY;
-        _pending = PendingRebalance({eta: SafeCast.toUint40(eta), keepMask: SafeCast.toUint24(keepMask)});
+        _pending = PendingRebalance({
+            eta: SafeCast.toUint40(eta),
+            lambdaMax: SafeCast.toUint64(lambdaMax),
+            lambdaMin: SafeCast.toUint64(lambdaMin)
+        });
+        _keepMask = keepMask;
         uint256 proposalId = ++proposalCount;
-        // The calls above are views on the factory and the rule; nothing external can run in between.
+        // The calls above are views on the factory; nothing external can run in between.
         // forge-lint: disable-next-line(reentrancy-events)
-        emit RebalanceStarted(proposalId, rebalanceNonce + 1, msg.sender, targets, keepMask, eta);
+        emit RebalanceStarted(proposalId, rebalanceNonce + 1, msg.sender, keepMask, lambdaMin, lambdaMax, ratios, eta);
     }
 
     /// @dev First moment anyone may start a rebalance. A cancel holds strangers off for REBALANCE_DELAY, and so does an
@@ -288,8 +279,7 @@ contract IndexHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, Re
         // runs longer. A live auction still costs a full REBALANCE_DELAY from now (VR-04).
         uint256 restartAt =
             block.timestamp <= eta + AUCTION_DURATION ? block.timestamp + REBALANCE_DELAY : _permissionlessAt(eta);
-        delete _pending;
-        delete _targetUnits;
+        _clearPending();
         restartAllowedAt = restartAt;
         // The factory call above is a view; nothing external can run in between.
         // forge-lint: disable-next-line(reentrancy-events)
@@ -311,7 +301,7 @@ contract IndexHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, Re
     }
 
     function _settle(bytes calldata data, uint256[] memory maxAmountsIn) private {
-        (uint256 multiplier, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn) =
+        (uint256 lambda, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn) =
             _previewRebalance(totalSupply());
 
         // Settlement amounts scale with the supply at execution time, and issue stays open through the auction, so a
@@ -326,8 +316,6 @@ contract IndexHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, Re
                 }
             }
         }
-
-        _checkSettlementValue(amountsOut, amountsIn);
 
         // What the index holds before it pays out, so the check afterwards can require the whole of `amountsIn` back:
         // surplus from rounding or a donation belongs to the holders, not to the executor.
@@ -347,7 +335,7 @@ contract IndexHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, Re
         uint256 id = _applyRebalance(units);
         // No external call precedes this event: the transfers and the executor callback come after it.
         // forge-lint: disable-next-line(reentrancy-events)
-        emit Rebalanced(proposalId, id, msg.sender, multiplier, units, amountsOut, amountsIn);
+        emit Rebalanced(proposalId, id, msg.sender, lambda, units, amountsOut, amountsIn);
 
         for (uint256 i = 0; i < n; ++i) {
             if (amountsOut[i] != 0) IERC20(_components[i].token).safeTransfer(msg.sender, amountsOut[i]);
@@ -367,8 +355,13 @@ contract IndexHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, Re
         }
         id = ++rebalanceNonce;
         lastRebalance = block.timestamp;
+        _clearPending();
+    }
+
+    function _clearPending() private {
         delete _pending;
-        delete _targetUnits;
+        delete _keepMask;
+        delete _ratios;
     }
 
     /// @dev The backing invariant with the new units, and the whole of `amountsIn` on top of what the index held
@@ -387,7 +380,7 @@ contract IndexHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, Re
             // Nothing moved and nothing was required to: see the note in executeRebalance (DA-14).
             if (amountsOut[i] == 0 && amountsIn[i] == 0) continue;
             address token = _components[i].token;
-            uint256 required = Math.mulDiv(supply, units[i], SHARE_UNIT) + totalClaims[token];
+            uint256 required = _backing(supply, units[i], Math.Rounding.Floor) + totalClaims[token];
             uint256 delivered = held[i] - amountsOut[i] + amountsIn[i];
             if (delivered > required) required = delivered;
             uint256 balance = IERC20(token).balanceOf(address(this));
@@ -395,95 +388,143 @@ contract IndexHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, Re
         }
     }
 
-    /// @dev Settlement for the current block. A shrinking component moves straight to its target; a growing component
-    ///      gains its extra units times the multiplier, rounded up. Amounts are the change in required backing, so they
-    ///      depend only on supply and units: the index never sends out rounding dust or donations, and the executor has
-    ///      to deliver every amount in full.
+    /// @dev Settlement for the current block at the current λ. Every moving component's units become
+    ///      ceil(λ · u / r); a kept one keeps its units. Amounts are the change in required backing, so they depend only
+    ///      on supply and units: the index never sends out rounding dust or donations, and the executor has to deliver
+    ///      every amount in full. A settlement that would send nothing out, as on an empty index or one so small that
+    ///      every shrinking leg rounds to zero, is taken at λmax instead, so the units never depend on timing when
+    ///      nothing is paid for: at λmax nothing shrinks, since no ratio exceeds it.
     function _previewRebalance(uint256 supply)
         private
         view
-        returns (uint256 multiplier, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn)
+        returns (uint256 lambda, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn)
     {
-        uint256 eta = _pending.eta;
+        PendingRebalance memory pending = _pending;
+        uint256 eta = pending.eta;
         if (eta == 0) revert NoPendingRebalance();
         if (block.timestamp < eta) revert RebalanceNotReady(eta);
         if (block.timestamp > eta + AUCTION_DURATION) revert RebalanceExpired(eta + AUCTION_DURATION);
 
+        lambda = _lambda(pending);
+        bool sells;
+        (units, amountsOut, amountsIn, sells) = _settlementAt(lambda, supply);
+        if (!sells && lambda != pending.lambdaMax) {
+            lambda = pending.lambdaMax;
+            (units, amountsOut, amountsIn,) = _settlementAt(lambda, supply);
+        }
+    }
+
+    function _settlementAt(uint256 lambda, uint256 supply)
+        private
+        view
+        returns (uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn, bool sells)
+    {
         uint256 n = _components.length;
         units = new uint256[](n);
         amountsOut = new uint256[](n);
         amountsIn = new uint256[](n);
-        // A shrinking component moves straight to its target, so what leaves the index does not depend on the
-        // multiplier: it can be settled before the auction's price is known.
-        bool sells = false;
+        sells = false;
+        uint256 keepMask = _keepMask;
         for (uint256 i = 0; i < n; ++i) {
             uint256 current = _components[i].units;
-            uint256 target = _targetUnits[i];
-            if (target >= current) continue;
-            units[i] = target;
-            amountsOut[i] = Math.mulDiv(supply, current, SHARE_UNIT) - Math.mulDiv(supply, target, SHARE_UNIT);
-            if (amountsOut[i] != 0) sells = true;
-        }
-        multiplier = sells ? _multiplier(eta) : WAD;
-
-        for (uint256 i = 0; i < n; ++i) {
-            uint256 current = _components[i].units;
-            uint256 target = _targetUnits[i];
-            if (target < current) continue;
-            uint256 next = current + Math.mulDiv(target - current, multiplier, WAD, Math.Rounding.Ceil);
+            if ((keepMask & (1 << i)) != 0) {
+                units[i] = current;
+                continue;
+            }
+            uint256 next = Math.mulDiv(lambda, current, _ratios[i], Math.Rounding.Ceil);
             units[i] = next;
-            amountsIn[i] = Math.mulDiv(supply, next, SHARE_UNIT) - Math.mulDiv(supply, current, SHARE_UNIT);
+            uint256 before = _backing(supply, current, Math.Rounding.Floor);
+            uint256 later = _backing(supply, next, Math.Rounding.Floor);
+            if (later < before) {
+                amountsOut[i] = before - later;
+                sells = true;
+            } else {
+                amountsIn[i] = later - before;
+            }
         }
     }
 
-    /// @dev The auction band fixes the multiplier on the bought legs at the snapshot's prices. Settlement happens up
-    ///      to REBALANCE_DELAY + AUCTION_DURATION later, and nothing bounded how far the market moved in between, so a
-    ///      fill was worth whatever three-day-old relative prices said it was and an executor filled only when the
-    ///      drift favoured them (DA-05). The two sides are therefore valued again in the settling block and the fill
-    ///      has to clear MIN_SETTLEMENT_RATIO of what it takes. The test is a ratio, not a price, so a market-wide
-    ///      move reprices both sides together and changes nothing; only the drift between the legs sold and the legs
-    ///      bought can fail it. It can only refuse a settlement, never enlarge one: the amounts still come from supply
-    ///      and units, and the band still bounds them. Against drift it mostly moves a lone executor's fill earlier in
-    ///      the auction, to a multiplier the drift has not eaten. The cost is liveness: a feed on a moving leg that has
-    ///      stopped publishing, or a market that moved so far that no multiplier the auction offers clears the ratio,
-    ///      makes the auction expire unfilled, and the restart hold-off then gives the owner and the guardian the first
-    ///      move on a fresh snapshot.
-    ///
-    ///      The bound holds at feed prices: a fill that passes keeps at most 1 - MIN_SETTLEMENT_RATIO of what it takes,
-    ///      valued at the answers in force. At market prices it moves by however far those answers sit from the market
-    ///      on the traded legs, and a deviation threshold does not bound that during a fast move, when an answer can
-    ///      trail the market by minutes and by more than its threshold (CR-L06).
-    function _checkSettlementValue(uint256[] memory amountsOut, uint256[] memory amountsIn) private view {
-        uint256 n = amountsOut.length;
-        address[] memory tokens = new address[](n);
+    /// @dev Linear decay from λmax at `eta` to λmin at `eta + AUCTION_DURATION`; the decrement rounds down, so λ rounds
+    ///      up, towards the holders.
+    function _lambda(PendingRebalance memory pending) private view returns (uint256) {
+        uint256 lambdaMax = pending.lambdaMax;
+        return lambdaMax - Math.mulDiv(lambdaMax - pending.lambdaMin, block.timestamp - pending.eta, AUCTION_DURATION);
+    }
+
+    /// @dev The band over the components not in `keepMask`. With ρ_i = units_i / supply_i, each moving component's
+    ///      ratio is r_i = 2ρ_i / (ρmin + ρmax), clamped to 1e18 ± MAX_SUPPLY_STEP. It is computed through
+    ///      R_i = ρ_i / ρ_a for the first moving component a, which cancels a's own figures exactly: the products fit,
+    ///      since units are below 2^96 and supplies below 2^128. Centring before clamping means a wide band narrows to
+    ///      exactly [1 − STEP, 1 + STEP] and never collapses, so no gap between the factory's supplies and the index's
+    ///      units can stall it. Kept components are not read, from the factory or anywhere else.
+    function _band(uint256 keepMask)
+        private
+        view
+        returns (uint256[] memory ratios, uint256 lambdaMin, uint256 lambdaMax)
+    {
+        (uint256[] memory relative, uint256 low, uint256 high) = _relatives(keepMask, _supplies(keepMask));
+        ratios = relative;
+        uint256 centre = (low + high) / 2;
+        lambdaMin = type(uint256).max;
+        lambdaMax = 0;
+        uint256 n = ratios.length;
         for (uint256 i = 0; i < n; ++i) {
-            tokens[i] = _components[i].token;
+            if ((keepMask & (1 << i)) != 0) continue;
+            uint256 r = Math.mulDiv(ratios[i], WAD, centre);
+            if (r < WAD - MAX_SUPPLY_STEP) r = WAD - MAX_SUPPLY_STEP;
+            else if (r > WAD + MAX_SUPPLY_STEP) r = WAD + MAX_SUPPLY_STEP;
+            ratios[i] = r;
+            if (r < lambdaMin) lambdaMin = r;
+            if (r > lambdaMax) lambdaMax = r;
         }
-        (uint256 outValue, uint256 inValue) = IIndexRule(RULE).settlementValues(tokens, amountsOut, amountsIn);
-        uint256 required = Math.mulDiv(outValue, MIN_SETTLEMENT_RATIO, WAD);
-        if (inValue < required) revert SettlementValueTooLow(inValue, outValue, required);
     }
 
-    /// @dev Linear decay from the start to the end multiplier; the decrement rounds down, so the multiplier rounds up.
-    ///      A settlement that sends nothing out (an empty index, or one whose supply is so small that every shrinking
-    ///      leg rounds to zero) is priced at parity instead, because the auction has nothing to pay for and the new
-    ///      units should not depend on timing. A dust supply that still moves a few raw units does decay: a lone
-    ///      executor then picks the multiplier in [0.9, 1.5] for next to nothing, which sets the new units within their
-    ///      bounds but moves no holder's value. Any supply threshold for parity would be arbitrary and cheap to step
-    ///      over.
-    function _multiplier(uint256 eta) private view returns (uint256) {
-        return AUCTION_START_MULTIPLIER
-            - Math.mulDiv(AUCTION_START_MULTIPLIER - AUCTION_END_MULTIPLIER, block.timestamp - eta, AUCTION_DURATION);
+    /// @dev The reference supply of every component not in `keepMask`, in component order, zero for a kept one. Only
+    ///      the moving components' supplies are asked for.
+    function _supplies(uint256 keepMask) private view returns (uint256[] memory supplies) {
+        uint256 n = _components.length;
+        uint256 moving = 0;
+        for (uint256 i = 0; i < n; ++i) {
+            if ((keepMask & (1 << i)) == 0) ++moving;
+        }
+        address[] memory tokens = new address[](moving);
+        uint256 k = 0;
+        for (uint256 i = 0; i < n; ++i) {
+            if ((keepMask & (1 << i)) == 0) tokens[k++] = _components[i].token;
+        }
+        uint256[] memory read = IIndexFactory(FACTORY).referenceSupplies(tokens);
+        supplies = new uint256[](n);
+        k = 0;
+        for (uint256 i = 0; i < n; ++i) {
+            if ((keepMask & (1 << i)) == 0) supplies[i] = read[k++];
+        }
     }
 
-    function _previewTarget(uint256 keepMask) private view returns (uint256[] memory targets, uint256 turnover) {
-        (address[] memory tokens, uint256[] memory units) = _componentArrays();
-        return IIndexRule(RULE).targetUnits(tokens, units, methodology, keepMask);
-    }
-
-    function _shortfall(uint256 keepMask) private view returns (uint256) {
-        (address[] memory tokens, uint256[] memory units) = _componentArrays();
-        return IIndexRule(RULE).shortfall(tokens, units, methodology, keepMask);
+    /// @dev ρ_i / ρ_a in WAD for every moving component, where ρ = units / supply and a is the first moving component,
+    ///      with the smallest and largest of them.
+    function _relatives(uint256 keepMask, uint256[] memory supplies)
+        private
+        view
+        returns (uint256[] memory relative, uint256 low, uint256 high)
+    {
+        uint256 n = supplies.length;
+        relative = new uint256[](n);
+        low = type(uint256).max;
+        high = 0;
+        uint256 anchorUnits = 0;
+        uint256 anchorSupply = 0;
+        for (uint256 i = 0; i < n; ++i) {
+            if ((keepMask & (1 << i)) != 0) continue;
+            uint256 units = _components[i].units;
+            if (anchorUnits == 0) {
+                anchorUnits = units;
+                anchorSupply = supplies[i];
+            }
+            uint256 r = Math.mulDiv(units * anchorSupply, WAD, supplies[i] * anchorUnits);
+            relative[i] = r;
+            if (r < low) low = r;
+            if (r > high) high = r;
+        }
     }
 
     function _checkInitialized() private view {
@@ -505,12 +546,12 @@ contract IndexHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, Re
         super._update(from, to, value);
     }
 
-    /// @dev The addresses this index knows can never move a share or a component on: itself, the factory, which has no
-    ///      transfer or arbitrary-call function, and the stateless rule. The factory is the contract a user deals with
-    ///      to create indexes, so it is the likeliest wrong paste after the index (RT-21, extending CR-I01). Both are
-    ///      immutables, so the check costs no storage read.
+    /// @dev The addresses this index knows can never move a share or a component on: itself, and the factory, which
+    ///      has no transfer or arbitrary-call function. The factory is the contract a user deals with to create
+    ///      indexes, so it is the likeliest wrong paste after the index (RT-21, extending CR-I01). Both are known
+    ///      without a storage read.
     function _isTrap(address to) private view returns (bool) {
-        return to == address(this) || to == FACTORY || to == RULE;
+        return to == address(this) || to == FACTORY;
     }
 
     // ---------------------------------------------------------------------
@@ -546,26 +587,37 @@ contract IndexHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, Re
     }
 
     /// @inheritdoc IIndexHub
-    function previewTarget(uint256 keepMask) external view returns (uint256[] memory targetUnits, uint256 turnover) {
-        return _previewTarget(keepMask);
+    function previewBand(uint256 keepMask)
+        external
+        view
+        returns (uint256[] memory ratios, uint256 lambdaMin, uint256 lambdaMax)
+    {
+        return _band(keepMask);
     }
 
     /// @inheritdoc IIndexHub
-    function pendingRebalance() external view returns (uint256 eta, uint256 keepMask, uint256[] memory targetUnits) {
-        eta = _pending.eta;
-        keepMask = _pending.keepMask;
-        uint256 n = _targetUnits.length;
-        targetUnits = new uint256[](n);
+    function pendingRebalance()
+        external
+        view
+        returns (uint256 eta, uint256 keepMask, uint256 lambdaMin, uint256 lambdaMax, uint256[] memory ratios)
+    {
+        PendingRebalance memory pending = _pending;
+        eta = pending.eta;
+        keepMask = _keepMask;
+        lambdaMin = pending.lambdaMin;
+        lambdaMax = pending.lambdaMax;
+        uint256 n = _ratios.length;
+        ratios = new uint256[](n);
         for (uint256 i = 0; i < n; ++i) {
-            targetUnits[i] = _targetUnits[i];
+            ratios[i] = _ratios[i];
         }
     }
 
     /// @inheritdoc IIndexHub
-    function currentMultiplier() external view returns (uint256 multiplier) {
+    function currentLambda() external view returns (uint256 lambda) {
         uint256 eta = _pending.eta;
         if (eta == 0 || block.timestamp < eta || block.timestamp > eta + AUCTION_DURATION) return 0;
-        (multiplier,,,) = _previewRebalance(totalSupply());
+        (lambda,,,) = _previewRebalance(totalSupply());
     }
 
     /// @inheritdoc IIndexHub
@@ -585,7 +637,7 @@ contract IndexHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, Re
     function previewRebalance()
         external
         view
-        returns (uint256 multiplier, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn)
+        returns (uint256 lambda, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn)
     {
         return _previewRebalance(totalSupply());
     }
@@ -605,8 +657,14 @@ contract IndexHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, Re
         uint256 n = _components.length;
         amounts = new uint256[](n);
         for (uint256 i = 0; i < n; ++i) {
-            amounts[i] = Math.mulDiv(shares, _components[i].units, SHARE_UNIT, rounding);
+            amounts[i] = _backing(shares, _components[i].units, rounding);
         }
+    }
+
+    /// @dev The one place a share count turns into an amount of a component: issue, redeem, the settlement and its
+    ///      backing check all go through it, so a fee model changes this and its callers and nothing else.
+    function _backing(uint256 shares, uint256 units, Math.Rounding rounding) private pure returns (uint256) {
+        return Math.mulDiv(shares, units, SHARE_UNIT, rounding);
     }
 
     // ---------------------------------------------------------------------

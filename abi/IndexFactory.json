@@ -43,7 +43,33 @@
   },
   {
     "type": "function",
+    "name": "K_SCALE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "LISTING_DELAY",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_BATCH",
     "inputs": [],
     "outputs": [
       {
@@ -69,7 +95,7 @@
   },
   {
     "type": "function",
-    "name": "MAX_SUPPLY_CHANGE",
+    "name": "MAX_SUPPLY",
     "inputs": [],
     "outputs": [
       {
@@ -82,7 +108,33 @@
   },
   {
     "type": "function",
-    "name": "MIN_CAPPED_COMPONENTS",
+    "name": "MAX_SUPPLY_STEP",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_UNITS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MIN_RAW_UNITS",
     "inputs": [],
     "outputs": [
       {
@@ -102,19 +154,6 @@
         "name": "",
         "type": "uint256",
         "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "RULE",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
       }
     ],
     "stateMutability": "view"
@@ -180,6 +219,13 @@
   },
   {
     "type": "function",
+    "name": "cancelSupplies",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "createIndex",
     "inputs": [
       {
@@ -198,14 +244,9 @@
         "internalType": "address[]"
       },
       {
-        "name": "units",
-        "type": "uint256[]",
-        "internalType": "uint256[]"
-      },
-      {
-        "name": "methodology",
-        "type": "uint8",
-        "internalType": "uint8"
+        "name": "k",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "outputs": [
@@ -266,6 +307,13 @@
         "internalType": "address"
       }
     ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "executeSupplies",
+    "inputs": [],
     "outputs": [],
     "stateMutability": "nonpayable"
   },
@@ -431,25 +479,6 @@
   },
   {
     "type": "function",
-    "name": "pendingIsListing",
-    "inputs": [
-      {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "listing",
-        "type": "bool",
-        "internalType": "bool"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "pendingOwner",
     "inputs": [],
     "outputs": [
@@ -463,7 +492,7 @@
   },
   {
     "type": "function",
-    "name": "pendingTokenConfig",
+    "name": "pendingReferenceSupply",
     "inputs": [
       {
         "name": "token",
@@ -473,45 +502,37 @@
     ],
     "outputs": [
       {
-        "name": "",
-        "type": "tuple",
-        "internalType": "struct IIndexFactory.TokenConfig",
-        "components": [
-          {
-            "name": "feed",
-            "type": "address",
-            "internalType": "address"
-          },
-          {
-            "name": "maxStaleness",
-            "type": "uint32",
-            "internalType": "uint32"
-          },
-          {
-            "name": "referenceSupply",
-            "type": "uint256",
-            "internalType": "uint256"
-          }
-        ]
+        "name": "supply",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
   },
   {
     "type": "function",
-    "name": "pendingTokenDecimals",
-    "inputs": [
-      {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
+    "name": "pendingSupplies",
+    "inputs": [],
     "outputs": [
       {
-        "name": "decimals",
-        "type": "uint8",
-        "internalType": "uint8"
+        "name": "batchId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "eta",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "tokens",
+        "type": "address[]",
+        "internalType": "address[]"
+      },
+      {
+        "name": "supplies",
+        "type": "uint256[]",
+        "internalType": "uint256[]"
       }
     ],
     "stateMutability": "view"
@@ -541,14 +562,9 @@
         "internalType": "address[]"
       },
       {
-        "name": "units",
-        "type": "uint256[]",
-        "internalType": "uint256[]"
-      },
-      {
-        "name": "methodology",
-        "type": "uint8",
-        "internalType": "uint8"
+        "name": "k",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "outputs": [
@@ -562,38 +578,27 @@
   },
   {
     "type": "function",
-    "name": "proposeConfig",
+    "name": "previewUnits",
     "inputs": [
       {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
+        "name": "tokens",
+        "type": "address[]",
+        "internalType": "address[]"
       },
       {
-        "name": "config",
-        "type": "tuple",
-        "internalType": "struct IIndexFactory.TokenConfig",
-        "components": [
-          {
-            "name": "feed",
-            "type": "address",
-            "internalType": "address"
-          },
-          {
-            "name": "maxStaleness",
-            "type": "uint32",
-            "internalType": "uint32"
-          },
-          {
-            "name": "referenceSupply",
-            "type": "uint256",
-            "internalType": "uint256"
-          }
-        ]
+        "name": "k",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
+    "outputs": [
+      {
+        "name": "units",
+        "type": "uint256[]",
+        "internalType": "uint256[]"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -618,30 +623,69 @@
         "internalType": "address"
       },
       {
-        "name": "config",
-        "type": "tuple",
-        "internalType": "struct IIndexFactory.TokenConfig",
-        "components": [
-          {
-            "name": "feed",
-            "type": "address",
-            "internalType": "address"
-          },
-          {
-            "name": "maxStaleness",
-            "type": "uint32",
-            "internalType": "uint32"
-          },
-          {
-            "name": "referenceSupply",
-            "type": "uint256",
-            "internalType": "uint256"
-          }
-        ]
+        "name": "supply",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "proposeSupplies",
+    "inputs": [
+      {
+        "name": "tokens",
+        "type": "address[]",
+        "internalType": "address[]"
+      },
+      {
+        "name": "supplies",
+        "type": "uint256[]",
+        "internalType": "uint256[]"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "referenceSupplies",
+    "inputs": [
+      {
+        "name": "tokens",
+        "type": "address[]",
+        "internalType": "address[]"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "supplies",
+        "type": "uint256[]",
+        "internalType": "uint256[]"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "referenceSupply",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "supply",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -652,55 +696,26 @@
   },
   {
     "type": "function",
-    "name": "tokenConfig",
-    "inputs": [
-      {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
+    "name": "suppliesPending",
+    "inputs": [],
     "outputs": [
       {
         "name": "",
-        "type": "tuple",
-        "internalType": "struct IIndexFactory.TokenConfig",
-        "components": [
-          {
-            "name": "feed",
-            "type": "address",
-            "internalType": "address"
-          },
-          {
-            "name": "maxStaleness",
-            "type": "uint32",
-            "internalType": "uint32"
-          },
-          {
-            "name": "referenceSupply",
-            "type": "uint256",
-            "internalType": "uint256"
-          }
-        ]
+        "type": "bool",
+        "internalType": "bool"
       }
     ],
     "stateMutability": "view"
   },
   {
     "type": "function",
-    "name": "tokenDecimals",
-    "inputs": [
-      {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
+    "name": "supplyBatchCount",
+    "inputs": [],
     "outputs": [
       {
-        "name": "decimals",
-        "type": "uint8",
-        "internalType": "uint8"
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -821,12 +836,6 @@
         "type": "uint256[]",
         "indexed": false,
         "internalType": "uint256[]"
-      },
-      {
-        "name": "methodology",
-        "type": "uint8",
-        "indexed": false,
-        "internalType": "uint8"
       }
     ],
     "anonymous": false
@@ -859,24 +868,6 @@
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
-      },
-      {
-        "name": "listing",
-        "type": "bool",
-        "indexed": false,
-        "internalType": "bool"
-      },
-      {
-        "name": "feed",
-        "type": "address",
-        "indexed": false,
-        "internalType": "address"
-      },
-      {
-        "name": "maxStaleness",
-        "type": "uint32",
-        "indexed": false,
-        "internalType": "uint32"
       },
       {
         "name": "referenceSupply",
@@ -927,7 +918,7 @@
   },
   {
     "type": "event",
-    "name": "TokenConfigured",
+    "name": "ReferenceSupplySet",
     "inputs": [
       {
         "name": "token",
@@ -936,16 +927,10 @@
         "internalType": "address"
       },
       {
-        "name": "feed",
-        "type": "address",
+        "name": "previous",
+        "type": "uint256",
         "indexed": false,
-        "internalType": "address"
-      },
-      {
-        "name": "maxStaleness",
-        "type": "uint32",
-        "indexed": false,
-        "internalType": "uint32"
+        "internalType": "uint256"
       },
       {
         "name": "referenceSupply",
@@ -958,25 +943,57 @@
   },
   {
     "type": "event",
-    "name": "TokenDecimalsRecorded",
+    "name": "SuppliesCancelled",
     "inputs": [
       {
-        "name": "token",
-        "type": "address",
+        "name": "batchId",
+        "type": "uint256",
         "indexed": true,
-        "internalType": "address"
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "SuppliesExecuted",
+    "inputs": [
+      {
+        "name": "batchId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "SuppliesProposed",
+    "inputs": [
+      {
+        "name": "batchId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
       },
       {
-        "name": "previousDecimals",
-        "type": "uint8",
+        "name": "eta",
+        "type": "uint256",
         "indexed": false,
-        "internalType": "uint8"
+        "internalType": "uint256"
       },
       {
-        "name": "decimals",
-        "type": "uint8",
+        "name": "tokens",
+        "type": "address[]",
         "indexed": false,
-        "internalType": "uint8"
+        "internalType": "address[]"
+      },
+      {
+        "name": "referenceSupplies",
+        "type": "uint256[]",
+        "indexed": false,
+        "internalType": "uint256[]"
       }
     ],
     "anonymous": false
@@ -1002,22 +1019,12 @@
   },
   {
     "type": "error",
-    "name": "DecimalsChanged",
+    "name": "AlreadyListed",
     "inputs": [
       {
         "name": "token",
         "type": "address",
         "internalType": "address"
-      },
-      {
-        "name": "proposed",
-        "type": "uint8",
-        "internalType": "uint8"
-      },
-      {
-        "name": "current",
-        "type": "uint8",
-        "internalType": "uint8"
       }
     ]
   },
@@ -1093,6 +1100,17 @@
   },
   {
     "type": "error",
+    "name": "InvalidBatch",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "InvalidComponentCount",
     "inputs": [
       {
@@ -1104,39 +1122,12 @@
   },
   {
     "type": "error",
-    "name": "InvalidMethodology",
-    "inputs": [
-      {
-        "name": "methodology",
-        "type": "uint8",
-        "internalType": "uint8"
-      }
-    ]
-  },
-  {
-    "type": "error",
     "name": "InvalidRecipient",
     "inputs": [
       {
         "name": "to",
         "type": "address",
         "internalType": "address"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "InvalidUnits",
-    "inputs": [
-      {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "units",
-        "type": "uint256",
-        "internalType": "uint256"
       }
     ]
   },
@@ -1208,6 +1199,11 @@
         "internalType": "address"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "NoPendingSupplies",
+    "inputs": []
   },
   {
     "type": "error",
@@ -1287,7 +1283,56 @@
   },
   {
     "type": "error",
-    "name": "SupplyChangeTooLarge",
+    "name": "SuppliesExpired",
+    "inputs": [
+      {
+        "name": "deadline",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "SuppliesNotReady",
+    "inputs": [
+      {
+        "name": "eta",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "SuppliesPending",
+    "inputs": [
+      {
+        "name": "eta",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "SupplyOutOfRange",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "referenceSupply",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "SupplyStepTooLarge",
     "inputs": [
       {
         "name": "token",
@@ -1308,6 +1353,17 @@
   },
   {
     "type": "error",
+    "name": "TokenInBatch",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "TokenNotWhitelisted",
     "inputs": [
       {
@@ -1319,23 +1375,28 @@
   },
   {
     "type": "error",
-    "name": "TooFewComponentsForCapped",
-    "inputs": [
-      {
-        "name": "count",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
     "name": "Unauthorized",
     "inputs": [
       {
         "name": "account",
         "type": "address",
         "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "UnitsOutOfRange",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "units",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ]
   },

@@ -8,18 +8,17 @@ import {IXindexErrors} from "./IXindexErrors.sol";
 /// @title IIndexHub
 /// @notice An index is a plain ERC-20 fully backed, in kind, by a basket of component tokens. 1e18 shares (one whole
 ///         index token) are always redeemable for exactly `units_i` raw units of each component. The constituents never
-///         change; the units change only through a rebalance that follows the index's on-chain rule and settles through
-///         an auction. There is no share price and no admin control over funds.
+///         change. The units follow the components' reference supplies, and change only through a rebalance that
+///         settles through a price-free auction on a single number, λ. Nothing in the hub reads a price, and nobody
+///         controls its funds.
 /// @dev Integrators: value an index as the sum of `units_i * price_i` from {components} and an independent price
-///      source, or read `IIndexRule.navPerToken` for display. Never derive a price from `balanceOf(index)` and
-///      `totalSupply()`: inside `issue`, `redeem` and `executeRebalance` they change at different moments, and a
-///      component with transfer callbacks could expose that intermediate state to a reading contract. Only
-///      `IndexFactory.isIndex` proves an address is an index.
-///      Recipients: `to` can be neither zero (ZeroAddress) nor the index itself, its FACTORY or its RULE
-///      (InvalidRecipient). A plain ERC-20 `transfer` or `transferFrom` to any of those three reverts InvalidRecipient
-///      too, since none of them can ever move a share on (CR-I01, RT-21); one to zero reverts with OpenZeppelin's
-///      ERC20InvalidReceiver. Callers other than the factory owner or guardian get Unauthorized where those roles are
-///      required.
+///      source. Never derive a price from `balanceOf(index)` and `totalSupply()`: inside `issue`, `redeem` and
+///      `executeRebalance` they change at different moments, and a component with transfer callbacks could expose that
+///      intermediate state to a reading contract. Only `IndexFactory.isIndex` proves an address is an index.
+///      Recipients: `to` can be neither zero (ZeroAddress) nor the index itself or its FACTORY (InvalidRecipient). A
+///      plain ERC-20 `transfer` or `transferFrom` to either of those reverts InvalidRecipient too, since neither can
+///      ever move a share on (CR-I01, RT-21); one to zero reverts with OpenZeppelin's ERC20InvalidReceiver. Callers
+///      other than the factory owner or guardian get Unauthorized where those roles are required.
 interface IIndexHub is IERC20, IERC20Permit, IXindexErrors {
     /// @notice `sender` paid `amounts` (per component, in component order, rounded up) and `to` received `shares`.
     event Issued(address indexed sender, address indexed to, uint256 shares, uint256[] amounts);
@@ -39,15 +38,19 @@ interface IIndexHub is IERC20, IERC20Permit, IXindexErrors {
     /// @param proposalId Counts every proposal ever started on this index, from 1.
     /// @param id The value {rebalanceNonce} takes if this proposal executes.
     /// @param caller The account that started it.
-    /// @param targetUnits Snapshot target units per component, in component order, in raw units per 1e18 shares.
     /// @param keepMask Bit i set leaves component i untouched.
+    /// @param lambdaMin Where λ ends, at `eta + AUCTION_DURATION` (1e18 = parity).
+    /// @param lambdaMax Where λ starts, at `eta`.
+    /// @param ratios Each moving component's clamped ratio r_i (1e18 = parity), in component order; zero for a kept one.
     /// @param eta Start of the auction, after REBALANCE_DELAY of notice.
     event RebalanceStarted(
         uint256 indexed proposalId,
         uint256 indexed id,
         address indexed caller,
-        uint256[] targetUnits,
         uint256 keepMask,
+        uint256 lambdaMin,
+        uint256 lambdaMax,
+        uint256[] ratios,
         uint256 eta
     );
     /// @notice Cancels the proposal with this `proposalId`, which is the most recent one: usually the live proposal,
@@ -61,7 +64,7 @@ interface IIndexHub is IERC20, IERC20Permit, IXindexErrors {
     /// @param proposalId The settled proposal's id, as its `RebalanceStarted` carried it.
     /// @param id The new {rebalanceNonce}.
     /// @param executor The contract that filled the auction.
-    /// @param multiplier Multiplier applied to the growing components' extra units (1e18 = parity).
+    /// @param lambda The λ the settlement used (1e18 = parity).
     /// @param units New units per component, in component order.
     /// @param amountsOut What the index sent `executor` per component.
     /// @param amountsIn What the index needed back per component; see `IRebalanceExecutor`.
@@ -69,7 +72,7 @@ interface IIndexHub is IERC20, IERC20Permit, IXindexErrors {
         uint256 indexed proposalId,
         uint256 indexed id,
         address indexed executor,
-        uint256 multiplier,
+        uint256 lambda,
         uint256[] units,
         uint256[] amountsOut,
         uint256[] amountsIn
@@ -95,9 +98,10 @@ interface IIndexHub is IERC20, IERC20Permit, IXindexErrors {
     error RebalancePending(uint256 deadline);
     /// @notice `keepMask` sets a bit at or above {componentCount}, or keeps every component.
     error InvalidKeepMask(uint256 keepMask);
-    /// @notice The snapshot would trade `turnover` of the rebalanced value, less than MIN_TURNOVER, and either trades
-    ///         nothing or is taken while the basket sits less than MIN_TURNOVER from its rule (RT-04).
-    error TurnoverTooLow(uint256 turnover);
+    /// @notice The moving components' ratios span less than MIN_BAND: their units already follow their reference
+    ///         supplies (no supply changed, every supply changed alike, or a single component moves), so there is
+    ///         nothing to rebalance.
+    error BandTooNarrow(uint256 lambdaMin, uint256 lambdaMax);
     /// @notice No rebalance is pending.
     error NoPendingRebalance();
     /// @notice The auction opens at `eta`.
@@ -111,9 +115,6 @@ interface IIndexHub is IERC20, IERC20Permit, IXindexErrors {
     /// @notice The settlement needs more of `token` than the caller said it would fill, because the supply grew
     ///         between the quote and this block. Only raised by the bounded `executeRebalance`.
     error RebalanceMovedOn(address token, uint256 required, uint256 maxAmountIn);
-
-    /// @notice The fill is worth less than MIN_SETTLEMENT_RATIO of what it takes, priced in the settling block.
-    error SettlementValueTooLow(uint256 inValue, uint256 outValue, uint256 required);
 
     /// @notice Number of shares that make up one whole index token (1e18).
     function SHARE_UNIT() external view returns (uint256);
@@ -129,42 +130,29 @@ interface IIndexHub is IERC20, IERC20Permit, IXindexErrors {
     ///         {canStartRebalance} (RT-08).
     function AUCTION_DURATION() external view returns (uint256);
 
-    /// @notice Multiplier on the growing components' extra units when the auction opens (1e18 = parity).
-    function AUCTION_START_MULTIPLIER() external view returns (uint256);
+    /// @notice How far a moving component's ratio may sit from the band's centre (1e18 = 100%): the hub's per-rebalance
+    ///         clamp, the same 0.5% as the factory's per-update step. It bounds the band at
+    ///         (1 + STEP) / (1 − STEP), so a lone executor at the auction's floor takes at most 0.995% of the moving value.
+    function MAX_SUPPLY_STEP() external view returns (uint256);
 
-    /// @notice Multiplier on the growing components' extra units when the auction closes.
-    function AUCTION_END_MULTIPLIER() external view returns (uint256);
+    /// @notice Narrowest band a rebalance can start with (1e18 = 100%): below it units already follow supplies to
+    ///         within rounding.
+    function MIN_BAND() external view returns (uint256);
 
-    /// @notice Least the index may receive as a fraction of what it pays out, valued at feed prices in the settling
-    ///         block (1e18 = parity). The auction's own floor with room for the difference between a published feed
-    ///         price and the spot an executor trades at. It bounds an executor's take at feed prices; at market prices
-    ///         the take can exceed it by however far the answers trail the market on the traded legs (CR-L06).
-    function MIN_SETTLEMENT_RATIO() external view returns (uint256);
-
-    /// @notice Least turnover, as a share of the rebalanced value (1e18 = 100%), for which a rebalance can start. A
-    ///         smaller step that trades something also starts when the basket sits at least this far from its rule
-    ///         (`IIndexRule.shortfall`): the band lets a growing component at most double, so a step alone could never
-    ///         reach a component held far below its weight (RT-04).
-    function MIN_TURNOVER() external view returns (uint256);
-
-    /// @notice Factory that deployed this index; the only address allowed to initialize it.
+    /// @notice Factory that deployed this index: the only address allowed to initialize it, and the source of the
+    ///         reference supplies a rebalance reads.
     function FACTORY() external view returns (address);
-
-    /// @notice Stateless rule contract that computes rebalance targets.
-    function RULE() external view returns (address);
 
     /// @notice One-time initializer called by the factory in the same transaction as the clone.
     /// @param name_ ERC-20 name, also the EIP-712 domain name for permits.
     /// @param symbol_ ERC-20 symbol.
     /// @param tokens Components, in the order every array of this index uses.
     /// @param units Starting raw units per 1e18 shares, non-zero and within uint96.
-    /// @param methodology_ Weighting rule id. Not checked here: the factory validates it before initializing.
     function initialize(
         string calldata name_,
         string calldata symbol_,
         address[] calldata tokens,
-        uint256[] calldata units,
-        uint8 methodology_
+        uint256[] calldata units
     ) external;
 
     /// @notice Pulls the exact basket for `shares` from msg.sender and mints `shares` to `to`.
@@ -216,9 +204,6 @@ interface IIndexHub is IERC20, IERC20Permit, IXindexErrors {
     /// @notice Exact amounts `redeem(shares)` will push for each component (rounded down).
     function previewRedeem(uint256 shares) external view returns (uint256[] memory amountsOut);
 
-    /// @notice Weighting rule id, see `Methodology`.
-    function methodology() external view returns (uint8);
-
     /// @notice Number of rebalance proposals ever started, including cancelled and expired ones. Every
     ///         `RebalanceStarted` carries its own value, so an indexer can tell attempts apart.
     function proposalCount() external view returns (uint256);
@@ -234,16 +219,15 @@ interface IIndexHub is IERC20, IERC20Permit, IXindexErrors {
     ///         REBALANCE_DELAY` without moving it, so read {canStartRebalance} rather than this alone (RT-08).
     function restartAllowedAt() external view returns (uint256);
 
-    /// @notice Snapshots the rule's target units and starts the notice period. Anyone can call it once
+    /// @notice Snapshots the band of the moving components' ratios and starts the notice period. Anyone can call it once
     ///         MIN_REBALANCE_INTERVAL has passed since the last rebalance, while no unexpired rebalance is pending, and
     ///         once {restartAllowedAt} and, after an auction nobody filled, REBALANCE_DELAY past that auction's end
     ///         have passed ({canStartRebalance} answers all of this); before those the factory owner or guardian can
     ///         start it and nobody else. The auction's end is its last fillable second, `eta + AUCTION_DURATION`, so
     ///         after an expiry the owner and guardian have the start to themselves for REBALANCE_DELAY less one second,
-    ///         against a full REBALANCE_DELAY after a cancel (CR-I02). Reverts with TurnoverTooLow when the targets
-    ///         would trade less than MIN_TURNOVER and either trade nothing or the basket sits less than MIN_TURNOVER
-    ///         from its rule before the step (RT-04), and with the rule's StalePrice or InvalidPrice when a component
-    ///         the snapshot reads has no usable price.
+    ///         against a full REBALANCE_DELAY after a cancel (CR-I02). Reverts BandTooNarrow when the band is narrower
+    ///         than MIN_BAND. It reads the reference supplies of the moving components from the factory, and calls
+    ///         nothing on any component.
     /// @param keepMask Bit i set leaves component i untouched, for example while it is paused. Only the factory owner or
     ///        guardian can pass a non-zero mask, and it must leave at least one component to rebalance.
     function startRebalance(uint256 keepMask) external;
@@ -253,12 +237,10 @@ interface IIndexHub is IERC20, IERC20Permit, IXindexErrors {
     ///         the views still report: the hold-off that expiry granted stands, and the cancel never pushes it out.
     function cancelRebalance() external;
 
-    /// @notice Settles the pending rebalance during its auction. Sends msg.sender what the index no longer needs of each
-    ///         shrinking component, calls `IRebalanceExecutor.onXindexRebalance` on it, and reverts unless the index
-    ///         then holds every component's new backing and the whole of `amountsIn` on top of what it held before.
-    ///         Only a contract can execute. Before any token moves, both sides are valued at feed prices and the fill
-    ///         must reach MIN_SETTLEMENT_RATIO of what it takes (SettlementValueTooLow); every leg that moves is priced,
-    ///         so the rule's StalePrice or InvalidPrice on such a leg stops the settlement too.
+    /// @notice Settles the pending rebalance during its auction at the current λ. Sends msg.sender what the index no
+    ///         longer needs of each shrinking component, calls `IRebalanceExecutor.onXindexRebalance` on it, and
+    ///         reverts unless the index then holds every component's new backing and the whole of `amountsIn` on top
+    ///         of what it held before. Only a contract can execute. Nothing is priced.
     /// @dev `amountsOut` and `amountsIn` are recomputed from `totalSupply()` in the block that settles, and issue and
     ///      redeem stay open throughout the notice and the auction, so they can differ from any earlier simulation.
     ///      The callback's arguments are authoritative; an executor that sizes itself off chain should either source
@@ -273,44 +255,43 @@ interface IIndexHub is IERC20, IERC20Permit, IXindexErrors {
     ///        component (else LengthMismatch); an empty array is the unbounded {executeRebalance}.
     function executeRebalance(bytes calldata data, uint256[] calldata maxAmountsIn) external;
 
-    /// @notice Targets and turnover {startRebalance} would snapshot now with `keepMask`, with the same price checks. It
-    ///         checks neither the caller nor the mask: bits at or above {componentCount}, and a turnover below
-    ///         MIN_TURNOVER that is zero or on a basket sitting less than MIN_TURNOVER from its rule
-    ///         (`IIndexRule.shortfall`), are accepted here but make {startRebalance} revert. A mask that keeps every
-    ///         component reverts with the rule's DegenerateBasket.
-    /// @return targetUnits Target raw units per 1e18 shares, per component in component order.
-    /// @return turnover Value the rebalance would trade, the smaller of what it sells and what it buys, as a share of
-    ///         the rebalanced components' value (1e18 = 100%). One below MIN_TURNOVER still starts when it is non-zero
-    ///         and the basket sits at least MIN_TURNOVER from its rule (`IIndexRule.shortfall`, RT-04).
-    function previewTarget(uint256 keepMask) external view returns (uint256[] memory targetUnits, uint256 turnover);
+    /// @notice The band {startRebalance} would snapshot now with `keepMask`. It checks neither the caller nor the mask,
+    ///         and a band narrower than MIN_BAND is returned rather than refused.
+    /// @return ratios Each moving component's clamped ratio (1e18 = parity), in component order; zero for a kept one.
+    /// @return lambdaMin The smallest ratio, where the auction would end.
+    /// @return lambdaMax The largest ratio, where it would start.
+    function previewBand(uint256 keepMask)
+        external
+        view
+        returns (uint256[] memory ratios, uint256 lambdaMin, uint256 lambdaMax);
 
-    /// @notice The last started rebalance: auction start, keep mask and target units. `eta` is 0 when none was started
-    ///         or the last one was executed or cancelled; an auction nobody filled keeps its `eta` after `eta +
-    ///         AUCTION_DURATION`, and a new rebalance can then be started by the factory owner or guardian at once and
-    ///         by anyone else from `eta + AUCTION_DURATION + REBALANCE_DELAY` (RT-08).
-    function pendingRebalance() external view returns (uint256 eta, uint256 keepMask, uint256[] memory targetUnits);
+    /// @notice The last started rebalance. `eta` is 0 when none was started or the last one was executed or cancelled;
+    ///         an auction nobody filled keeps its `eta` after `eta + AUCTION_DURATION`, and a new rebalance can then be
+    ///         started by the factory owner or guardian at once and by anyone else from `eta + AUCTION_DURATION +
+    ///         REBALANCE_DELAY` (RT-08).
+    function pendingRebalance()
+        external
+        view
+        returns (uint256 eta, uint256 keepMask, uint256 lambdaMin, uint256 lambdaMax, uint256[] memory ratios);
 
-    /// @notice Multiplier an execution in this block would use, or 0 outside an auction. It is parity when the
-    ///         settlement would send nothing out, as on an empty index.
-    function currentMultiplier() external view returns (uint256);
+    /// @notice λ an execution in this block would use, or 0 outside an auction. It is `lambdaMax` when the settlement
+    ///         would send nothing out, as on an empty index.
+    function currentLambda() external view returns (uint256);
 
     /// @notice Whether anyone can start a rebalance now: MIN_REBALANCE_INTERVAL has passed, no auction is live (an
     ///         unfilled one keeps its `eta` but stops counting after `eta + AUCTION_DURATION`), and the waits after a
-    ///         cancel and after an unfilled auction are over. It does not read the rule, so a start can still revert
-    ///         with TurnoverTooLow or a snapshot price error. While it is false the factory owner and guardian can
-    ///         still start during those two waits, but not before MIN_REBALANCE_INTERVAL or while an auction is live
-    ///         (RT-09).
+    ///         cancel and after an unfilled auction are over. It does not read the band, so a start can still revert
+    ///         BandTooNarrow; {previewBand} answers that. While it is false the factory owner and guardian can still
+    ///         start during those two waits, but not before MIN_REBALANCE_INTERVAL or while an auction is live (RT-09).
     function canStartRebalance() external view returns (bool);
 
     /// @notice Exact settlement an execution in this block would use. Reverts like {executeRebalance} outside an auction.
-    ///         It prices nothing, so it answers even when {executeRebalance} would revert SettlementValueTooLow or on a
-    ///         stale feed; `IIndexRule.settlementValues` values the two sides it returns.
-    /// @return multiplier Multiplier on the growing components' extra units (1e18 = parity).
+    /// @return lambda The λ it would use (1e18 = parity).
     /// @return units New units per component, in component order.
     /// @return amountsOut What the index would send the executor per component.
     /// @return amountsIn What the index would need back per component, in full.
     function previewRebalance()
         external
         view
-        returns (uint256 multiplier, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn);
+        returns (uint256 lambda, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn);
 }

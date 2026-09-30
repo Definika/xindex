@@ -5,13 +5,11 @@ import {XindexTest} from "./XindexTest.sol";
 import {Vm} from "forge-std/Vm.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
-import {IndexRule} from "../src/IndexRule.sol";
 import {IndexHub} from "../src/IndexHub.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
-import {IIndexRule} from "../src/interfaces/IIndexRule.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
-import {DEFAULT_STALENESS, MockMarket} from "./mocks/MockMarket.sol";
+import {MockMarket} from "./mocks/MockMarket.sol";
 
 contract IndexFactoryTest is XindexTest {
     MockERC20 a;
@@ -22,42 +20,40 @@ contract IndexFactoryTest is XindexTest {
     address creator = makeAddr("creator");
     address stranger = makeAddr("stranger");
 
+    /// @dev With this scale a component's units equal its reference supply.
+    uint256 constant K = 1e36;
+    uint256 constant A_SUPPLY = 1e18;
+    uint256 constant B_SUPPLY = 1e8;
+    uint256 constant C_SUPPLY = 5e6;
+
     function setUp() public {
         market = new MockMarket();
         factory = _newFactory(owner, guardian);
         a = new MockERC20("A", "A", 18);
         b = new MockERC20("B", "B", 8);
         c = new MockERC20("C", "C", 6);
-        _list(address(a));
-        _list(address(b));
+        _listWith(address(a), A_SUPPLY);
+        _listWith(address(b), B_SUPPLY);
     }
 
     function _newFactory(address owner_, address guardian_) internal returns (IndexFactory) {
         return new IndexFactory(owner_, guardian_);
     }
 
-    function _two() internal view returns (address[] memory t, uint256[] memory u) {
+    function _two() internal view returns (address[] memory t) {
         t = new address[](2);
-        u = new uint256[](2);
-        t[0] = address(a);
-        t[1] = address(b);
-        u[0] = 1e18;
-        u[1] = 1e8;
+        (t[0], t[1]) = (address(a), address(b));
     }
 
-    /// @dev Lists `n` fresh tokens within one delay and returns them with one raw unit each.
-    function _listed(uint256 n) internal returns (address[] memory t, uint256[] memory u) {
+    /// @dev Lists `n` fresh tokens within one delay, each with a supply of MIN_RAW_UNITS, so k = K gives each the
+    ///      smallest units an index can start with.
+    function _listed(uint256 n) internal returns (address[] memory t) {
         t = new address[](n);
-        u = new uint256[](n);
-        IIndexFactory.TokenConfig[] memory configs = new IIndexFactory.TokenConfig[](n);
-        for (uint256 i = 0; i < n; ++i) {
-            t[i] = address(new MockERC20("M", "M", 18));
-            u[i] = 1;
-            configs[i] = market.config(t[i], ONE_DOLLAR);
-        }
+        uint256 supply = factory.MIN_RAW_UNITS();
         vm.startPrank(owner);
         for (uint256 i = 0; i < n; ++i) {
-            factory.proposeListing(t[i], configs[i]);
+            t[i] = address(new MockERC20("M", "M", 18));
+            factory.proposeListing(t[i], supply);
         }
         vm.stopPrank();
         vm.warp(block.timestamp + factory.LISTING_DELAY());
@@ -66,10 +62,21 @@ contract IndexFactoryTest is XindexTest {
         }
     }
 
-    function _assertConfig(IIndexFactory.TokenConfig memory got, IIndexFactory.TokenConfig memory want) internal pure {
-        assertEq(got.feed, want.feed, "feed");
-        assertEq(got.maxStaleness, want.maxStaleness, "max staleness");
-        assertEq(got.referenceSupply, want.referenceSupply, "reference supply");
+    /// @dev `a` and `b` in ascending address order, with the supplies given for each.
+    function _batch(uint256 supplyA, uint256 supplyB)
+        internal
+        view
+        returns (address[] memory tokens, uint256[] memory supplies)
+    {
+        tokens = new address[](2);
+        supplies = new uint256[](2);
+        bool aFirst = address(a) < address(b);
+        (tokens[0], tokens[1]) = aFirst ? (address(a), address(b)) : (address(b), address(a));
+        (supplies[0], supplies[1]) = aFirst ? (supplyA, supplyB) : (supplyB, supplyA);
+    }
+
+    function _step(uint256 supply) internal view returns (uint256) {
+        return supply * factory.MAX_SUPPLY_STEP() / 1e18;
     }
 
     // ---------------------------------------------------------------------
@@ -83,10 +90,15 @@ contract IndexFactoryTest is XindexTest {
 
         assertEq(fresh.owner(), owner);
         assertEq(fresh.guardian(), guardian);
-        assertEq(fresh.MAX_COMPONENTS(), 20);
-        // IndexHub stores a keep mask in 24 bits, one per component.
-        assertLe(fresh.MAX_COMPONENTS(), 24);
-        assertEq(fresh.MIN_CAPPED_COMPONENTS(), 5);
+        assertEq(fresh.MAX_COMPONENTS(), 100);
+        // IndexHub stores keep and skip masks in 256 bits, one per component.
+        assertLe(fresh.MAX_COMPONENTS(), 256);
+        assertEq(fresh.MAX_BATCH(), 256);
+        assertEq(fresh.MAX_SUPPLY_STEP(), 0.005e18);
+        assertEq(fresh.MAX_SUPPLY(), type(uint128).max);
+        assertEq(fresh.MIN_RAW_UNITS(), 10_000);
+        assertEq(fresh.MAX_UNITS(), type(uint96).max >> 10);
+        assertEq(fresh.K_SCALE(), 1e36);
         assertEq(fresh.LISTING_DELAY(), 2 days);
         assertEq(fresh.GUARDIAN_DELAY(), 7 days);
         assertEq(fresh.PROPOSAL_WINDOW(), 7 days);
@@ -94,11 +106,9 @@ contract IndexFactoryTest is XindexTest {
         assertEq(fresh.pendingGuardianEta(), 0);
         assertEq(fresh.allIndexesLength(), 0);
         assertEq(fresh.whitelistedTokens().length, 0);
-
-        IndexRule rule = IndexRule(fresh.RULE());
-        assertEq(rule.FACTORY(), address(fresh));
+        assertEq(fresh.supplyBatchCount(), 0);
+        assertFalse(fresh.suppliesPending());
         assertEq(IndexHub(fresh.IMPLEMENTATION()).FACTORY(), address(fresh));
-        assertEq(IndexHub(fresh.IMPLEMENTATION()).RULE(), address(rule));
 
         IndexFactory unguarded = _newFactory(owner, address(0));
         assertEq(unguarded.guardian(), address(0));
@@ -154,7 +164,6 @@ contract IndexFactoryTest is XindexTest {
         assertEq(factory.pendingGuardianEta(), eta);
         assertEq(factory.guardian(), guardian, "the current guardian keeps its powers while the change is pending");
 
-        // A new proposal replaces the pending one and restarts the delay.
         address later = makeAddr("later");
         vm.warp(block.timestamp + 1 days);
         vm.prank(owner);
@@ -169,7 +178,6 @@ contract IndexFactoryTest is XindexTest {
         vm.prank(owner);
         factory.proposeGuardian(first);
 
-        // An app that builds pending proposals from events must see the first one end.
         vm.expectEmit(true, true, true, true, address(factory));
         emit IIndexFactory.GuardianChangeCancelled(first);
         vm.expectEmit(true, true, true, true, address(factory));
@@ -224,10 +232,9 @@ contract IndexFactoryTest is XindexTest {
         assertEq(factory.guardian(), guardian);
     }
 
-    /// @dev DA-16. An expired proposal can never be executed but still leaves `pendingGuardian` and
-    ///      `pendingGuardianEta` set, so a monitor reading those alone reports a guardian change as pending forever
-    ///      and an operator can believe a compromised guardian was replaced when it never was. The predicate views
-    ///      answer the question the stored fields cannot.
+    /// @dev DA-16. An expired proposal can never be executed but still leaves its stored fields set, so a monitor
+    ///      reading those alone reports it as pending forever. The predicate views answer the question the stored
+    ///      fields cannot: for a guardian change, a listing and a supply batch alike.
     function test_DA16_theViewsTellAPendingProposalFromAnExpiredOne() public {
         address next = makeAddr("next guardian");
         assertFalse(factory.guardianChangePending(), "nothing proposed");
@@ -245,26 +252,33 @@ contract IndexFactoryTest is XindexTest {
         assertGt(factory.pendingGuardianEta(), 0);
         assertEq(factory.guardian(), guardian, "the guardian never changed");
 
-        // Listings carry the same trap and the same answer.
         MockERC20 token = new MockERC20("Late", "LATE", 18);
         assertFalse(factory.listingPending(address(token)));
-        IIndexFactory.TokenConfig memory config = market.config(address(token), ONE_DOLLAR);
         vm.prank(owner);
-        factory.proposeListing(address(token), config);
+        factory.proposeListing(address(token), 1e30);
         assertTrue(factory.listingPending(address(token)));
         vm.warp(factory.listingEta(address(token)) + factory.PROPOSAL_WINDOW() + 1);
         assertFalse(factory.listingPending(address(token)), "expired listing");
         assertGt(factory.listingEta(address(token)), 0);
+
+        (address[] memory t, uint256[] memory s) = _batch(A_SUPPLY, B_SUPPLY + 1);
+        vm.prank(owner);
+        factory.proposeSupplies(t, s);
+        (, uint256 batchEta,,) = factory.pendingSupplies();
+        vm.warp(batchEta + factory.PROPOSAL_WINDOW());
+        assertTrue(factory.suppliesPending(), "a batch's last moment still counts");
+        vm.warp(batchEta + factory.PROPOSAL_WINDOW() + 1);
+        assertFalse(factory.suppliesPending(), "an expired batch");
+        (, uint256 stillSet,,) = factory.pendingSupplies();
+        assertEq(stillSet, batchEta, "though its eta still reads as set");
     }
 
-    /// @dev CR-I33. DA-16's test pins the last moment of the window for `guardianChangePending` only, and probes a
-    ///      listing just past its deadline. At exactly `listingEta + PROPOSAL_WINDOW` a listing still executes, so the
-    ///      view has to call it pending there, and stop a second later: `<` in place of `<=` passed every test.
+    /// @dev CR-I33. At exactly `listingEta + PROPOSAL_WINDOW` a listing still executes, so the view has to call it
+    ///      pending there, and stop a second later.
     function test_CRI33_aListingIsPendingAtTheLastMomentItCanExecute() public {
         MockERC20 late = new MockERC20("Late", "LATE", 18);
-        IIndexFactory.TokenConfig memory config = market.config(address(late), ONE_DOLLAR);
         vm.prank(owner);
-        factory.proposeListing(address(late), config);
+        factory.proposeListing(address(late), 1e30);
         uint256 deadline = factory.listingEta(address(late)) + factory.PROPOSAL_WINDOW();
 
         uint256 snapshot = vm.snapshotState();
@@ -278,22 +292,20 @@ contract IndexFactoryTest is XindexTest {
         assertTrue(factory.isWhitelisted(address(late)), "and it does execute");
     }
 
-    /// @dev CR-I33. Executing a proposal clears the flag that described it, so `pendingIsListing` cannot keep reading as
-    ///      a listing waiting to happen once it has happened.
-    function test_CRI33_anExecutedListingLeavesNoPendingFlag() public {
-        IIndexFactory.TokenConfig memory config = market.config(address(c), ONE_DOLLAR);
+    /// @dev CR-I33. Executing a listing clears what described it, so nothing reads as a listing waiting to happen once
+    ///      it has happened.
+    function test_CRI33_anExecutedListingLeavesNothingPending() public {
         vm.prank(owner);
-        factory.proposeListing(address(c), config);
-        assertTrue(factory.pendingIsListing(address(c)));
+        factory.proposeListing(address(c), C_SUPPLY);
+        assertEq(factory.pendingReferenceSupply(address(c)), C_SUPPLY);
         vm.warp(factory.listingEta(address(c)));
         factory.executeListing(address(c));
         assertEq(factory.listingEta(address(c)), 0);
-        assertFalse(factory.pendingIsListing(address(c)), "nothing is pending once the listing has executed");
+        assertEq(factory.pendingReferenceSupply(address(c)), 0, "nothing is pending once the listing has executed");
+        assertFalse(factory.listingPending(address(c)));
     }
 
-    /// @dev CR-I33. With no change pending, a guardian proposal cancels nothing, so it announces nothing but itself. A
-    ///      GuardianChangeCancelled(0) here would be the very event a monitor reads as the guardian calling off its
-    ///      own removal.
+    /// @dev CR-I33. With no change pending, a guardian proposal cancels nothing, so it announces nothing but itself.
     function test_CRI33_aFirstGuardianProposalCancelsNothing() public {
         assertEq(factory.pendingGuardianEta(), 0);
         vm.recordLogs();
@@ -323,7 +335,6 @@ contract IndexFactoryTest is XindexTest {
         vm.prank(owner);
         factory.proposeGuardian(next);
 
-        // The guardian cannot block its own replacement, and nobody else can cancel at all.
         vm.prank(guardian);
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, guardian));
         factory.cancelGuardianChange();
@@ -359,7 +370,6 @@ contract IndexFactoryTest is XindexTest {
         assertEq(factory.pendingGuardianEta(), 0);
         assertEq(factory.guardian(), guardian, "the guardian is still there");
 
-        // A factory that already has no guardian has nobody to cancel with, and the owner is unaffected either way.
         vm.startPrank(owner);
         factory.proposeGuardian(address(0));
         vm.warp(block.timestamp + factory.GUARDIAN_DELAY());
@@ -375,227 +385,100 @@ contract IndexFactoryTest is XindexTest {
     }
 
     // ---------------------------------------------------------------------
-    // listings and token configs
+    // listings
     // ---------------------------------------------------------------------
 
-    function test_proposeListing_startsDelayWithTheConfig() public {
-        IIndexFactory.TokenConfig memory config = market.config(address(c), ONE_DOLLAR);
+    function test_proposeListing_startsDelayWithTheSupply() public {
         uint256 eta = block.timestamp + factory.LISTING_DELAY();
         vm.expectEmit(true, true, true, true, address(factory));
-        emit IIndexFactory.ListingProposed(
-            address(c), eta, true, config.feed, config.maxStaleness, config.referenceSupply
-        );
+        emit IIndexFactory.ListingProposed(address(c), eta, C_SUPPLY);
         vm.prank(owner);
-        factory.proposeListing(address(c), config);
-
+        factory.proposeListing(address(c), C_SUPPLY);
         assertEq(factory.listingEta(address(c)), eta);
-        assertFalse(factory.isWhitelisted(address(c)));
-        _assertConfig(factory.pendingTokenConfig(address(c)), config);
-        assertEq(factory.tokenConfig(address(c)).feed, address(0), "nothing is in force before execution");
+        assertEq(factory.pendingReferenceSupply(address(c)), C_SUPPLY);
+        assertFalse(factory.isWhitelisted(address(c)), "nothing is listed before the delay");
+        assertEq(factory.referenceSupply(address(c)), 0);
     }
 
     function test_proposeListing_reverts() public {
-        IIndexFactory.TokenConfig memory config = market.config(address(c), ONE_DOLLAR);
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
-        factory.proposeListing(address(c), config);
+        factory.proposeListing(address(c), C_SUPPLY);
 
         vm.startPrank(owner);
         vm.expectRevert(abi.encodeWithSelector(IIndexFactory.NotAContract.selector, stranger));
-        factory.proposeListing(stranger, config);
-        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.NotAContract.selector, address(0)));
-        factory.proposeListing(address(0), config);
+        factory.proposeListing(stranger, C_SUPPLY);
 
-        factory.proposeListing(address(c), config);
+        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.AlreadyListed.selector, address(a)));
+        factory.proposeListing(address(a), A_SUPPLY);
+
+        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.SupplyOutOfRange.selector, address(c), 0));
+        factory.proposeListing(address(c), 0);
+        uint256 tooMuch = factory.MAX_SUPPLY() + 1;
+        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.SupplyOutOfRange.selector, address(c), tooMuch));
+        factory.proposeListing(address(c), tooMuch);
+        factory.proposeListing(address(c), factory.MAX_SUPPLY()); // the largest supply is accepted
+
         uint256 eta = factory.listingEta(address(c));
         vm.expectRevert(abi.encodeWithSelector(IIndexFactory.ListingPending.selector, address(c), eta));
-        factory.proposeListing(address(c), config);
+        factory.proposeListing(address(c), C_SUPPLY);
         vm.stopPrank();
     }
 
-    function test_proposeListing_rejectsAConfigTheRuleRejects() public {
-        IIndexFactory.TokenConfig memory noFeed =
-            IIndexFactory.TokenConfig({feed: address(0), maxStaleness: 1, referenceSupply: 1});
-        vm.prank(owner);
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.InvalidFeed.selector, address(c), address(0)));
-        factory.proposeListing(address(c), noFeed);
-        assertEq(factory.listingEta(address(c)), 0);
-    }
-
     function test_proposeListing_againAfterExpiry() public {
-        IIndexFactory.TokenConfig memory config = market.config(address(c), ONE_DOLLAR);
         vm.prank(owner);
-        factory.proposeListing(address(c), config);
-        uint256 eta = factory.listingEta(address(c));
-
-        vm.warp(eta + factory.PROPOSAL_WINDOW()); // last moment of the window: still pending
+        factory.proposeListing(address(c), C_SUPPLY);
+        uint256 deadline = factory.listingEta(address(c)) + factory.PROPOSAL_WINDOW();
+        vm.warp(deadline + 1);
         vm.prank(owner);
-        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.ListingPending.selector, address(c), eta));
-        factory.proposeListing(address(c), config);
-
-        vm.warp(block.timestamp + 1); // expired: it can be proposed again, with a fresh delay
-        vm.prank(owner);
-        factory.proposeListing(address(c), config);
-        assertEq(factory.listingEta(address(c)), block.timestamp + factory.LISTING_DELAY());
-    }
-
-    function test_configChange_forAListedTokenWaitsForTheDelay() public {
-        IIndexFactory.TokenConfig memory current = factory.tokenConfig(address(a));
-        IIndexFactory.TokenConfig memory next =
-            market.configWith(address(a), 5 * ONE_DOLLAR, 2 * market.DEFAULT_SUPPLY());
-
-        vm.prank(owner);
-        factory.proposeListing(address(a), next);
-        assertTrue(factory.isWhitelisted(address(a)), "a config change does not delist");
-        _assertConfig(factory.tokenConfig(address(a)), current);
-
-        vm.warp(factory.listingEta(address(a)));
-        vm.expectEmit(true, true, true, true, address(factory));
-        emit IIndexFactory.TokenConfigured(address(a), next.feed, next.maxStaleness, next.referenceSupply);
-        factory.executeListing(address(a));
-
-        _assertConfig(factory.tokenConfig(address(a)), next);
-        assertEq(factory.whitelistedTokens().length, 2, "the token is not listed twice");
+        factory.proposeListing(address(c), C_SUPPLY * 2);
+        assertEq(factory.pendingReferenceSupply(address(c)), C_SUPPLY * 2, "an expired proposal is replaced");
     }
 
     function test_executeListing_onlyAfterDelay_byAnyone() public {
-        IIndexFactory.TokenConfig memory config = market.config(address(c), ONE_DOLLAR);
-        vm.prank(owner);
-        factory.proposeListing(address(c), config);
-        uint256 eta = factory.listingEta(address(c));
+        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.NoPendingListing.selector, address(c)));
+        factory.executeListing(address(c));
 
+        vm.prank(owner);
+        factory.proposeListing(address(c), C_SUPPLY);
+        uint256 eta = factory.listingEta(address(c));
         vm.warp(eta - 1);
         vm.expectRevert(abi.encodeWithSelector(IIndexFactory.ListingNotReady.selector, address(c), eta));
         factory.executeListing(address(c));
 
         vm.warp(eta);
         vm.expectEmit(true, true, true, true, address(factory));
-        emit IIndexFactory.TokenConfigured(address(c), config.feed, config.maxStaleness, config.referenceSupply);
+        emit IIndexFactory.ReferenceSupplySet(address(c), 0, C_SUPPLY);
         vm.expectEmit(true, true, true, true, address(factory));
         emit IIndexFactory.TokenWhitelisted(address(c), true);
         vm.prank(stranger);
         factory.executeListing(address(c));
-
         assertTrue(factory.isWhitelisted(address(c)));
-        assertEq(factory.listingEta(address(c)), 0);
-        _assertConfig(factory.tokenConfig(address(c)), config);
-        assertEq(factory.pendingTokenConfig(address(c)).feed, address(0));
-        address[] memory list = factory.whitelistedTokens();
-        assertEq(list.length, 3);
-        assertEq(list[2], address(c));
-
-        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.NoPendingListing.selector, address(c)));
-        factory.executeListing(address(c));
+        assertEq(factory.referenceSupply(address(c)), C_SUPPLY);
+        assertEq(factory.whitelistedTokens().length, 3);
     }
 
     function test_executeListing_lastMomentOfWindowSucceeds() public {
-        IIndexFactory.TokenConfig memory config = market.config(address(c), ONE_DOLLAR);
         vm.prank(owner);
-        factory.proposeListing(address(c), config);
+        factory.proposeListing(address(c), C_SUPPLY);
         vm.warp(factory.listingEta(address(c)) + factory.PROPOSAL_WINDOW());
         factory.executeListing(address(c));
         assertTrue(factory.isWhitelisted(address(c)));
     }
 
     function test_executeListing_expires() public {
-        IIndexFactory.TokenConfig memory config = market.config(address(c), ONE_DOLLAR);
         vm.prank(owner);
-        factory.proposeListing(address(c), config);
+        factory.proposeListing(address(c), C_SUPPLY);
         uint256 deadline = factory.listingEta(address(c)) + factory.PROPOSAL_WINDOW();
-
         vm.warp(deadline + 1);
         vm.expectRevert(abi.encodeWithSelector(IIndexFactory.ListingExpired.selector, address(c), deadline));
         factory.executeListing(address(c));
         assertFalse(factory.isWhitelisted(address(c)));
-
-        vm.prank(guardian); // an expired proposal can still be cleaned up
-        factory.cancelListing(address(c));
-        assertEq(factory.listingEta(address(c)), 0);
-        assertEq(factory.pendingTokenConfig(address(c)).feed, address(0));
-    }
-
-    /// @dev DA-11. `checkConfig` ran at propose time only, and `executeListing` is permissionless, so a config that
-    ///      stopped passing it during the two-day notice was whitelisted anyway and the token stayed index-creatable
-    ///      against a price the rule would refuse. The finding was about a pool that fell below its minimum liquidity;
-    ///      with Chainlink pricing the same shape is a feed that stops publishing (CR-I21). Execution re-runs the same
-    ///      validation, and the proposal survives for the rest of its window, so the listing lands once the feed
-    ///      publishes again.
-    function test_DA11_executeListingRevalidatesTheConfig() public {
-        IIndexFactory.TokenConfig memory config = market.config(address(c), ONE_DOLLAR);
-        vm.prank(owner);
-        factory.proposeListing(address(c), config);
-        uint256 eta = factory.listingEta(address(c));
-        vm.warp(eta);
-
-        // The feed stops publishing between the proposal and the execution.
-        market.setAge(address(c), uint256(DEFAULT_STALENESS) + 1);
-        vm.expectRevert(
-            abi.encodeWithSelector(IIndexRule.StalePrice.selector, address(c), block.timestamp - DEFAULT_STALENESS - 1)
-        );
-        factory.executeListing(address(c));
-        assertFalse(factory.isWhitelisted(address(c)), "not listed against a price the rule refuses");
-        assertEq(factory.listingEta(address(c)), eta, "the proposal is untouched and can still be executed");
-
-        market.setAge(address(c), 0);
-        factory.executeListing(address(c));
-        assertTrue(factory.isWhitelisted(address(c)), "and it lists once the feed publishes again");
-    }
-
-    /// @dev RT-23. The decimals the rule prices a token with are recorded at execution, which is permissionless and
-    ///      comes up to nine days after the proposal the guardian reviewed. A token whose decimals moved in between got
-    ///      a record nobody had seen, repricing it by a power of ten with no event. They are now pinned at the proposal,
-    ///      an execution against moved decimals reverts, and a record that changes says so.
-    function test_RT23_decimalsArePinnedAtTheProposalAndAnnouncedWhenTheyChange() public {
-        MockERC20 token = new MockERC20("Six", "SIX", 6);
-        IIndexFactory.TokenConfig memory config = market.config(address(token), ONE_DOLLAR);
-        vm.prank(owner);
-        factory.proposeListing(address(token), config);
-        assertEq(factory.pendingTokenDecimals(address(token)), 6, "pinned with the proposal, on show to the guardian");
-        vm.warp(factory.listingEta(address(token)));
-        vm.expectEmit(true, false, false, true, address(factory));
-        emit IIndexFactory.TokenDecimalsRecorded(address(token), 0, 6);
-        factory.executeListing(address(token));
-        assertEq(factory.pendingTokenDecimals(address(token)), 0, "and cleared once executed");
-
-        // A refresh that leaves the decimals alone records nothing new and announces nothing.
-        vm.prank(owner);
-        factory.proposeConfig(address(token), config);
-        vm.warp(factory.listingEta(address(token)));
-        vm.recordLogs();
-        factory.executeListing(address(token));
-        Vm.Log[] memory logs = vm.getRecordedLogs();
-        for (uint256 i = 0; i < logs.length; ++i) {
-            assertTrue(logs[i].topics[0] != IIndexFactory.TokenDecimalsRecorded.selector, "nothing changed");
-        }
-
-        // The decimals move while a refresh waits out its delay: the reviewed proposal no longer describes the token.
-        vm.prank(owner);
-        factory.proposeConfig(address(token), config);
-        uint256 eta = factory.listingEta(address(token));
-        token.setDecimals(18);
-        vm.warp(eta);
-        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.DecimalsChanged.selector, address(token), 6, 18));
-        factory.executeListing(address(token));
-        assertEq(factory.tokenDecimals(address(token)), 6, "the record stays what was reviewed");
-        assertEq(factory.listingEta(address(token)), eta, "and the proposal is untouched");
-
-        // Proposed again, the new decimals go through the delay and the veto, then into the record.
-        vm.prank(guardian);
-        factory.cancelListing(address(token));
-        assertEq(factory.pendingTokenDecimals(address(token)), 0, "a cancel clears the pin");
-        vm.prank(owner);
-        factory.proposeConfig(address(token), config);
-        vm.warp(factory.listingEta(address(token)));
-        vm.expectEmit(true, false, false, true, address(factory));
-        emit IIndexFactory.TokenDecimalsRecorded(address(token), 6, 18);
-        factory.executeListing(address(token));
-        assertEq(factory.tokenDecimals(address(token)), 18);
     }
 
     function test_cancelListing() public {
-        IIndexFactory.TokenConfig memory config = market.config(address(c), ONE_DOLLAR);
         vm.prank(owner);
-        factory.proposeListing(address(c), config);
+        factory.proposeListing(address(c), C_SUPPLY);
 
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, stranger));
@@ -606,7 +489,7 @@ contract IndexFactoryTest is XindexTest {
         vm.prank(guardian);
         factory.cancelListing(address(c));
         assertEq(factory.listingEta(address(c)), 0);
-        assertEq(factory.pendingTokenConfig(address(c)).feed, address(0));
+        assertEq(factory.pendingReferenceSupply(address(c)), 0);
 
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         vm.expectRevert(abi.encodeWithSelector(IIndexFactory.NoPendingListing.selector, address(c)));
@@ -617,17 +500,16 @@ contract IndexFactoryTest is XindexTest {
         factory.cancelListing(address(c));
 
         vm.startPrank(owner);
-        factory.proposeListing(address(c), config);
+        factory.proposeListing(address(c), C_SUPPLY);
         factory.cancelListing(address(c));
         vm.stopPrank();
         assertEq(factory.listingEta(address(c)), 0);
     }
 
-    function test_delist_swapAndPopAndKeepsTheConfig() public {
-        _list(address(c));
+    function test_delist_swapAndPopAndKeepsTheSupply() public {
+        _listWith(address(c), C_SUPPLY);
         address[] memory list = factory.whitelistedTokens();
         assertEq(list.length, 3);
-        address poolOfA = factory.tokenConfig(address(a)).feed;
 
         vm.expectEmit(true, true, true, true, address(factory));
         emit IIndexFactory.TokenWhitelisted(address(a), false);
@@ -638,7 +520,7 @@ contract IndexFactoryTest is XindexTest {
         assertEq(list[0], address(c));
         assertEq(list[1], address(b));
         assertFalse(factory.isWhitelisted(address(a)));
-        assertEq(factory.tokenConfig(address(a)).feed, poolOfA, "existing indexes still rebalance with the config");
+        assertEq(factory.referenceSupply(address(a)), A_SUPPLY, "existing indexes still rebalance with the supply");
 
         vm.prank(owner);
         factory.delist(address(b));
@@ -646,16 +528,15 @@ contract IndexFactoryTest is XindexTest {
         assertEq(list.length, 1);
         assertEq(list[0], address(c));
 
-        _list(address(a));
+        _listWith(address(a), A_SUPPLY);
         list = factory.whitelistedTokens();
         assertEq(list.length, 2);
         assertEq(list[1], address(a));
     }
 
-    /// @dev LR-05: the test above never delists the token that swap-and-pop moved. Without the moved token's position
-    ///      being updated, delisting it next panics on an out-of-bounds read, and the guardian loses that power.
+    /// @dev LR-05: delisting the token that swap-and-pop moved must still work.
     function test_LR05_aTokenMovedBySwapAndPopCanStillBeDelisted() public {
-        _list(address(c));
+        _listWith(address(c), C_SUPPLY);
         vm.startPrank(guardian);
         factory.delist(address(a)); // moves c into a's slot: [c, b]
         factory.delist(address(c)); // c is now first, and b moves into its slot: [b]
@@ -670,159 +551,6 @@ contract IndexFactoryTest is XindexTest {
         assertEq(factory.whitelistedTokens().length, 0);
     }
 
-    /// @dev DA-18. `checkConfig` accepts any non-zero reference supply, so a stale or mistyped figure drove the
-    ///      component straight to its floor at the next rebalance and handed the difference to the auction. A
-    ///      revision is a correction, so it stays within an order of magnitude of the supply in force; a genuine
-    ///      re-founding goes in steps, each behind its own timelock and guardian veto.
-    function test_DA18_aReferenceSupplyCannotJumpByOrdersOfMagnitude() public {
-        uint256 inForce = factory.tokenConfig(address(a)).referenceSupply;
-        assertEq(inForce, market.DEFAULT_SUPPLY(), "a is listed with the market's default supply");
-
-        IIndexFactory.TokenConfig memory typo = market.configWith(address(a), ONE_DOLLAR, 1);
-        vm.prank(owner);
-        vm.expectRevert(
-            abi.encodeWithSelector(IIndexFactory.SupplyChangeTooLarge.selector, address(a), inForce, uint256(1))
-        );
-        factory.proposeConfig(address(a), typo);
-
-        // The decimals slip the finding names, an 18-decimal figure typed for an 8-decimal token, is caught too.
-        IIndexFactory.TokenConfig memory slipped = market.configWith(address(a), ONE_DOLLAR, inForce * 1e10);
-        vm.prank(owner);
-        vm.expectRevert(
-            abi.encodeWithSelector(IIndexFactory.SupplyChangeTooLarge.selector, address(a), inForce, inForce * 1e10)
-        );
-        factory.proposeConfig(address(a), slipped);
-
-        // A revision within the bound is the normal case and goes through.
-        IIndexFactory.TokenConfig memory revised = market.configWith(address(a), ONE_DOLLAR, inForce * 3);
-        vm.prank(owner);
-        factory.proposeConfig(address(a), revised);
-        vm.warp(block.timestamp + factory.LISTING_DELAY());
-        factory.executeListing(address(a));
-        assertEq(factory.tokenConfig(address(a)).referenceSupply, inForce * 3);
-
-        // A first listing has nothing to compare against, so any supply the rule accepts still lists.
-        IIndexFactory.TokenConfig memory fresh = market.configWith(address(c), ONE_DOLLAR, 1);
-        vm.prank(owner);
-        factory.proposeListing(address(c), fresh);
-        vm.warp(block.timestamp + factory.LISTING_DELAY());
-        factory.executeListing(address(c));
-        assertTrue(factory.isWhitelisted(address(c)));
-    }
-
-    /// @dev CR-L03. DA-18's bound compared the stored figures and skipped any change into or out of zero, as "a change
-    ///      of kind, not of size". But zero meant the token's own total supply, so the supply the rule read could move
-    ///      by any factor in one step -- 173 times for WBTC, from bitcoin's supply to its wrapped float -- and to any
-    ///      figure in two, and a WHITELIST entry that left out its fourth field produced exactly that change. Zero is no
-    ///      longer a config at all (CR-M01), so every revision is between two reference figures and the bound applies.
-    function test_CRL03_noConfigChangeCanStepAroundTheSupplyBound() public {
-        uint256 inForce = factory.tokenConfig(address(a)).referenceSupply;
-        uint256 float = inForce / 173;
-        a.mint(stranger, float); // what a wrapper's own supply looks like next to the supply of what it wraps
-
-        IIndexFactory.TokenConfig memory toOwnSupply = market.configWith(address(a), ONE_DOLLAR, 0);
-        vm.prank(owner);
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.ZeroSupply.selector, address(a)));
-        factory.proposeConfig(address(a), toOwnSupply);
-        vm.prank(owner);
-        vm.expectRevert(abi.encodeWithSelector(IIndexRule.ZeroSupply.selector, address(a)));
-        factory.proposeListing(address(a), toOwnSupply);
-
-        // The same float typed in as a figure is a revision of size, and the bound catches it.
-        IIndexFactory.TokenConfig memory toFloat = market.configWith(address(a), ONE_DOLLAR, float);
-        vm.prank(owner);
-        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.SupplyChangeTooLarge.selector, address(a), inForce, float));
-        factory.proposeConfig(address(a), toFloat);
-    }
-
-    /// @dev CR-I29. The DA-18 test probes 1, 3x and 1e10x, so any bound from 3 to 9,999,999,999 passed it. The bound
-    ///      is an order of magnitude, exactly: tenfold either way is a revision, one step past it is refused.
-    function test_CRI29_theSupplyBoundIsExactlyAnOrderOfMagnitude() public {
-        assertEq(factory.MAX_SUPPLY_CHANGE(), 10);
-        uint256 inForce = factory.tokenConfig(address(a)).referenceSupply;
-        uint256[2] memory edges = [inForce * 10, inForce / 10];
-        uint256[2] memory past = [inForce * 10 + 10, inForce / 10 - 1];
-        for (uint256 i = 0; i < 2; ++i) {
-            IIndexFactory.TokenConfig memory atTheEdge = market.configWith(address(a), ONE_DOLLAR, edges[i]);
-            vm.prank(owner);
-            factory.proposeConfig(address(a), atTheEdge);
-            vm.prank(owner);
-            factory.cancelListing(address(a));
-
-            IIndexFactory.TokenConfig memory pastTheEdge = market.configWith(address(a), ONE_DOLLAR, past[i]);
-            vm.prank(owner);
-            vm.expectRevert(
-                abi.encodeWithSelector(IIndexFactory.SupplyChangeTooLarge.selector, address(a), inForce, past[i])
-            );
-            factory.proposeConfig(address(a), pastTheEdge);
-        }
-    }
-
-    function test_proposeConfig_replacesTheConfigWithoutListing() public {
-        IIndexFactory.TokenConfig memory config = market.config(address(c), ONE_DOLLAR);
-        vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
-        factory.proposeConfig(address(c), config);
-        vm.prank(owner);
-        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.NotConfigured.selector, address(c)));
-        factory.proposeConfig(address(c), config); // c was never listed
-
-        // A listed token: the change applies and the whitelist is untouched.
-        IIndexFactory.TokenConfig memory next = market.configWith(address(a), ONE_DOLLAR, 5e29);
-        uint256 eta = block.timestamp + factory.LISTING_DELAY();
-        vm.expectEmit(true, true, true, true, address(factory));
-        emit IIndexFactory.ListingProposed(address(a), eta, false, next.feed, next.maxStaleness, next.referenceSupply);
-        vm.prank(owner);
-        factory.proposeConfig(address(a), next);
-        assertFalse(factory.pendingIsListing(address(a)));
-
-        // Delisting keeps a pending config-only change; executing it leaves the token delisted.
-        vm.prank(guardian);
-        factory.delist(address(a));
-        assertEq(factory.listingEta(address(a)), eta);
-        vm.warp(eta);
-        factory.executeListing(address(a));
-        assertFalse(factory.isWhitelisted(address(a)));
-        assertEq(factory.tokenConfig(address(a)).referenceSupply, 5e29);
-        assertEq(factory.whitelistedTokens().length, 1);
-
-        // WETH's config has no pool, only a reference supply, and can be refreshed too.
-        address weth = address(market.weth());
-        _list(weth);
-        IIndexFactory.TokenConfig memory etherConfig = market.configWith(weth, ONE_DOLLAR, 121_000_000e18);
-        vm.prank(owner);
-        factory.proposeConfig(weth, etherConfig);
-        vm.warp(block.timestamp + factory.LISTING_DELAY());
-        factory.executeListing(weth);
-        assertTrue(factory.isWhitelisted(weth));
-        assertEq(factory.tokenConfig(weth).referenceSupply, 121_000_000e18);
-    }
-
-    function test_delist_cancelsAPendingListingProposal() public {
-        IIndexFactory.TokenConfig memory next = market.config(address(a), ONE_DOLLAR);
-        vm.prank(owner);
-        factory.proposeListing(address(a), next);
-        assertTrue(factory.pendingIsListing(address(a)));
-
-        vm.expectEmit(true, true, true, true, address(factory));
-        emit IIndexFactory.TokenWhitelisted(address(a), false);
-        vm.expectEmit(true, true, true, true, address(factory));
-        emit IIndexFactory.ListingCancelled(address(a));
-        vm.prank(guardian);
-        factory.delist(address(a));
-        assertEq(factory.listingEta(address(a)), 0);
-        assertFalse(factory.pendingIsListing(address(a)));
-        assertEq(factory.pendingTokenConfig(address(a)).feed, address(0));
-
-        // Relisting needs a fresh proposal and a full delay.
-        vm.prank(owner);
-        factory.proposeListing(address(a), next);
-        assertEq(factory.listingEta(address(a)), block.timestamp + factory.LISTING_DELAY());
-        vm.prank(guardian);
-        factory.cancelListing(address(a));
-        assertFalse(factory.pendingIsListing(address(a)), "cancelling clears the intent too");
-    }
-
     function test_delist_reverts() public {
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, stranger));
@@ -833,18 +561,255 @@ contract IndexFactoryTest is XindexTest {
         factory.delist(address(c));
     }
 
+    /// @dev DA-18 and CR-L03, re-targeted: a relisting is bounded by the step from the supply the token carried, since
+    ///      the indexes still holding it follow that supply; a first listing has nothing to compare against. A
+    ///      whitelisted token cannot take a listing at all, so no path around a batch moves a supply.
+    function test_DA18_CRL03_aRelistingMovesTheSupplyAtMostOneStep() public {
+        vm.prank(owner);
+        factory.delist(address(a));
+        uint256 step = _step(A_SUPPLY);
+
+        vm.startPrank(owner);
+        vm.expectRevert(
+            abi.encodeWithSelector(IIndexFactory.SupplyStepTooLarge.selector, address(a), A_SUPPLY, A_SUPPLY * 10)
+        );
+        factory.proposeListing(address(a), A_SUPPLY * 10); // the decimals slip an order of magnitude would be
+        vm.expectRevert(
+            abi.encodeWithSelector(IIndexFactory.SupplyStepTooLarge.selector, address(a), A_SUPPLY, A_SUPPLY + step + 1)
+        );
+        factory.proposeListing(address(a), A_SUPPLY + step + 1);
+        factory.proposeListing(address(a), A_SUPPLY + step);
+        vm.stopPrank();
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        factory.executeListing(address(a));
+        assertEq(factory.referenceSupply(address(a)), A_SUPPLY + step);
+
+        // A first listing takes any supply in range.
+        vm.prank(owner);
+        factory.proposeListing(address(c), 1);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        factory.executeListing(address(c));
+        assertEq(factory.referenceSupply(address(c)), 1);
+    }
+
+    // ---------------------------------------------------------------------
+    // supply batches
+    // ---------------------------------------------------------------------
+
+    function test_proposeSupplies_andExecuteThemAllAtOnce() public {
+        (address[] memory t, uint256[] memory s) = _batch(A_SUPPLY + _step(A_SUPPLY), B_SUPPLY - _step(B_SUPPLY));
+        uint256 eta = block.timestamp + factory.LISTING_DELAY();
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit IIndexFactory.SuppliesProposed(1, eta, t, s);
+        vm.prank(owner);
+        factory.proposeSupplies(t, s);
+
+        (uint256 id, uint256 pendingEta, address[] memory pt, uint256[] memory ps) = factory.pendingSupplies();
+        assertEq(id, 1);
+        assertEq(pendingEta, eta);
+        assertEq(pt, t);
+        assertEq(ps, s);
+        assertTrue(factory.suppliesPending());
+        assertEq(factory.referenceSupply(address(a)), A_SUPPLY, "nothing changes before the delay");
+
+        vm.warp(eta - 1);
+        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.SuppliesNotReady.selector, eta));
+        factory.executeSupplies();
+
+        vm.warp(eta);
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit IIndexFactory.ReferenceSupplySet(t[0], t[0] == address(a) ? A_SUPPLY : B_SUPPLY, s[0]);
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit IIndexFactory.ReferenceSupplySet(t[1], t[1] == address(a) ? A_SUPPLY : B_SUPPLY, s[1]);
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit IIndexFactory.SuppliesExecuted(1);
+        vm.prank(stranger);
+        factory.executeSupplies();
+
+        assertEq(factory.referenceSupply(address(a)), A_SUPPLY + _step(A_SUPPLY));
+        assertEq(factory.referenceSupply(address(b)), B_SUPPLY - _step(B_SUPPLY));
+        (, pendingEta, pt, ps) = factory.pendingSupplies();
+        assertEq(pendingEta + pt.length + ps.length, 0, "the executed batch is cleared");
+        assertFalse(factory.suppliesPending());
+        uint256[] memory both = factory.referenceSupplies(t);
+        assertEq(both, s, "the batch view reads the supplies in force");
+
+        vm.expectRevert(IIndexFactory.NoPendingSupplies.selector);
+        factory.executeSupplies();
+    }
+
+    function test_proposeSupplies_validatesEveryEntry() public {
+        (address[] memory t, uint256[] memory s) = _batch(A_SUPPLY, B_SUPPLY);
+
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
+        factory.proposeSupplies(t, s);
+
+        vm.startPrank(owner);
+        vm.expectRevert(IXindexErrors.LengthMismatch.selector);
+        factory.proposeSupplies(t, new uint256[](1));
+        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.InvalidBatch.selector, address(0)));
+        factory.proposeSupplies(new address[](0), new uint256[](0));
+        uint256 tooLong = factory.MAX_BATCH() + 1;
+        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.InvalidBatch.selector, address(0)));
+        factory.proposeSupplies(new address[](tooLong), new uint256[](tooLong));
+
+        // Out of order, and a repeat: both break strict ascent at the second entry.
+        (address[] memory swapped, uint256[] memory swappedSupplies) = (new address[](2), new uint256[](2));
+        (swapped[0], swapped[1], swappedSupplies[0], swappedSupplies[1]) = (t[1], t[0], s[1], s[0]);
+        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.InvalidBatch.selector, t[0]));
+        factory.proposeSupplies(swapped, swappedSupplies);
+        swapped[1] = t[1];
+        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.InvalidBatch.selector, t[1]));
+        factory.proposeSupplies(swapped, swappedSupplies);
+
+        // A token that never carried a supply.
+        address[] memory one = new address[](1);
+        uint256[] memory oneSupply = new uint256[](1);
+        (one[0], oneSupply[0]) = (address(c), C_SUPPLY);
+        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.NotConfigured.selector, address(c)));
+        factory.proposeSupplies(one, oneSupply);
+
+        // Zero, and past one step either way.
+        (one[0], oneSupply[0]) = (address(a), 0);
+        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.SupplyOutOfRange.selector, address(a), 0));
+        factory.proposeSupplies(one, oneSupply);
+        uint256 step = _step(A_SUPPLY);
+        oneSupply[0] = A_SUPPLY + step + 1;
+        vm.expectRevert(
+            abi.encodeWithSelector(IIndexFactory.SupplyStepTooLarge.selector, address(a), A_SUPPLY, oneSupply[0])
+        );
+        factory.proposeSupplies(one, oneSupply);
+        oneSupply[0] = A_SUPPLY - step - 1;
+        vm.expectRevert(
+            abi.encodeWithSelector(IIndexFactory.SupplyStepTooLarge.selector, address(a), A_SUPPLY, oneSupply[0])
+        );
+        factory.proposeSupplies(one, oneSupply);
+        vm.stopPrank();
+    }
+
+    /// @dev CR-I29, re-targeted: the step is exactly MAX_SUPPLY_STEP of the supply in force, rounded down, in both
+    ///      directions: a supply at the edge is a revision, one raw unit past it is refused.
+    function test_CRI29_theStepIsExactlyHalfAPercent() public {
+        uint256 inForce = factory.referenceSupply(address(a));
+        uint256 step = _step(inForce);
+        assertEq(step, inForce / 200, "half a percent");
+        address[] memory one = new address[](1);
+        uint256[] memory supply = new uint256[](1);
+        one[0] = address(a);
+        uint256[2] memory edges = [inForce + step, inForce - step];
+        uint256[2] memory past = [inForce + step + 1, inForce - step - 1];
+        for (uint256 i = 0; i < 2; ++i) {
+            supply[0] = edges[i];
+            vm.prank(owner);
+            factory.proposeSupplies(one, supply);
+            vm.prank(owner);
+            factory.cancelSupplies();
+
+            supply[0] = past[i];
+            vm.prank(owner);
+            vm.expectRevert(
+                abi.encodeWithSelector(IIndexFactory.SupplyStepTooLarge.selector, address(a), inForce, past[i])
+            );
+            factory.proposeSupplies(one, supply);
+        }
+    }
+
+    function test_proposeSupplies_oneBatchAtATime() public {
+        (address[] memory t, uint256[] memory s) = _batch(A_SUPPLY + 1, B_SUPPLY);
+        vm.prank(owner);
+        factory.proposeSupplies(t, s);
+        (, uint256 eta,,) = factory.pendingSupplies();
+
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.SuppliesPending.selector, eta));
+        factory.proposeSupplies(t, s);
+
+        // Executable and then expired: still one at a time until the window closes, replaced afterwards.
+        vm.warp(eta + factory.PROPOSAL_WINDOW());
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.SuppliesPending.selector, eta));
+        factory.proposeSupplies(t, s);
+        vm.warp(eta + factory.PROPOSAL_WINDOW() + 1);
+        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.SuppliesExpired.selector, eta + factory.PROPOSAL_WINDOW()));
+        factory.executeSupplies();
+        vm.prank(owner);
+        factory.proposeSupplies(t, s);
+        assertEq(factory.supplyBatchCount(), 2, "the expired batch was replaced by a new one");
+    }
+
+    function test_cancelSupplies() public {
+        vm.prank(guardian);
+        vm.expectRevert(IIndexFactory.NoPendingSupplies.selector);
+        factory.cancelSupplies();
+
+        (address[] memory t, uint256[] memory s) = _batch(A_SUPPLY + 1, B_SUPPLY);
+        vm.prank(owner);
+        factory.proposeSupplies(t, s);
+
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, stranger));
+        factory.cancelSupplies();
+
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit IIndexFactory.SuppliesCancelled(1);
+        vm.prank(guardian);
+        factory.cancelSupplies();
+        assertFalse(factory.suppliesPending());
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        vm.expectRevert(IIndexFactory.NoPendingSupplies.selector);
+        factory.executeSupplies();
+        assertEq(factory.referenceSupply(address(a)), A_SUPPLY, "a cancelled batch changes nothing");
+
+        vm.prank(owner);
+        factory.proposeSupplies(t, s); // a cancelled batch leaves room for the next at once
+    }
+
+    /// @dev Nothing but the batch may change a supply the batch was checked against: a listing of a token in the live
+    ///      batch waits, and a batch refuses a token with a live listing. Once the batch has executed, expired or been
+    ///      cancelled, the listing is free again.
+    function test_aBatchAndAListingNeverOverlapOnAToken() public {
+        vm.prank(owner);
+        factory.delist(address(a));
+        (address[] memory t, uint256[] memory s) = _batch(A_SUPPLY + 1, B_SUPPLY);
+        vm.prank(owner);
+        factory.proposeSupplies(t, s);
+
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.TokenInBatch.selector, address(a)));
+        factory.proposeListing(address(a), A_SUPPLY);
+
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        factory.executeSupplies();
+        vm.prank(owner);
+        factory.proposeListing(address(a), A_SUPPLY + 1); // the batch is done, so the relisting may go ahead
+
+        uint256 eta = factory.listingEta(address(a));
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.ListingPending.selector, address(a), eta));
+        factory.proposeSupplies(t, s);
+
+        // An expired listing no longer blocks a batch.
+        vm.warp(eta + factory.PROPOSAL_WINDOW() + 1);
+        vm.prank(owner);
+        factory.proposeSupplies(t, s);
+    }
+
     // ---------------------------------------------------------------------
     // createIndex
     // ---------------------------------------------------------------------
 
     function test_createIndex_success() public {
-        (address[] memory t, uint256[] memory u) = _two();
-        address predicted = factory.predictIndexAddress(creator, "My Index", "MYX", t, u, 0);
+        address[] memory t = _two();
+        uint256[] memory u = factory.previewUnits(t, K);
+        assertEq(u[0], A_SUPPLY, "units are k times the supply over K_SCALE");
+        assertEq(u[1], B_SUPPLY);
+        address predicted = factory.predictIndexAddress(creator, "My Index", "MYX", t, K);
 
         vm.expectEmit(true, true, true, true, address(factory));
-        emit IIndexFactory.IndexCreated(predicted, creator, "My Index", "MYX", t, u, 0);
+        emit IIndexFactory.IndexCreated(predicted, creator, "My Index", "MYX", t, u);
         vm.prank(creator);
-        address index = factory.createIndex("My Index", "MYX", t, u, 0);
+        address index = factory.createIndex("My Index", "MYX", t, K);
 
         assertEq(index, predicted);
         assertTrue(factory.isIndex(index));
@@ -856,94 +821,78 @@ contract IndexFactoryTest is XindexTest {
         assertEq(it.name(), "My Index");
         assertEq(it.symbol(), "MYX");
         assertEq(it.FACTORY(), address(factory));
-        assertEq(it.methodology(), 0);
         assertEq(it.lastRebalance(), block.timestamp);
         (address[] memory tt, uint256[] memory uu) = it.components();
-        assertEq(tt[0], address(a));
-        assertEq(tt[1], address(b));
-        assertEq(uu[0], 1e18);
-        assertEq(uu[1], 1e8);
+        assertEq(tt, t);
+        assertEq(uu, u);
         assertEq(it.totalSupply(), 0);
     }
 
-    function test_createIndex_addressCommitsToCreatorCompositionAndMethodology() public {
-        (address[] memory t, uint256[] memory u) = _two();
-        address mine = factory.predictIndexAddress(creator, "Same", "SAME", t, u, 0);
-        address theirs = factory.predictIndexAddress(stranger, "Same", "SAME", t, u, 0);
-        address otherRule = factory.predictIndexAddress(creator, "Same", "SAME", t, u, 1);
-        u[1] = 2e8;
-        address otherUnits = factory.predictIndexAddress(creator, "Same", "SAME", t, u, 0);
-        assertTrue(mine != theirs);
-        assertTrue(mine != otherUnits);
-        assertTrue(mine != otherRule);
-        assertTrue(theirs != otherUnits);
-
-        u[1] = 1e8;
+    function test_createIndex_unitsFollowTheSuppliesInForce() public {
+        address[] memory t = _two();
+        uint256 k = 3 * K / 7; // a scale with a remainder, so the rounding shows
+        uint256[] memory u = factory.previewUnits(t, k);
+        assertEq(u[0], A_SUPPLY * 3 / 7, "rounded down");
+        assertEq(u[1], B_SUPPLY * 3 / 7);
         vm.prank(creator);
-        assertEq(factory.createIndex("Same", "SAME", t, u, 0), mine);
-        vm.prank(stranger);
-        assertEq(factory.createIndex("Same", "SAME", t, u, 0), theirs);
-        assertEq(factory.creatorOf(theirs), stranger);
-        assertEq(factory.allIndexesLength(), 2);
+        (, uint256[] memory created) = IndexHub(factory.createIndex("Scaled", "SCL", t, k)).components();
+        assertEq(created, u);
     }
 
-    /// @dev LR-05: the address also commits to the token list, the name and the symbol, which no test varied on its
-    ///      own: a salt without any one of them passed the suite.
-    function test_LR05_addressCommitsToTheTokenListTheNameAndTheSymbol() public {
-        _list(address(c));
-        (address[] memory t, uint256[] memory u) = _two();
-        address mine = factory.predictIndexAddress(creator, "Same", "SAME", t, u, 0);
-        assertTrue(mine != factory.predictIndexAddress(creator, "Other", "SAME", t, u, 0), "the name");
-        assertTrue(mine != factory.predictIndexAddress(creator, "Same", "OTHER", t, u, 0), "the symbol");
+    /// @dev LR-05 and the units salt: the address commits to the creator, the name, the symbol, the token list and its
+    ///      order, and the computed units, each varied on its own.
+    function test_LR05_addressCommitsToEveryPartOfTheBasket() public {
+        _listWith(address(c), C_SUPPLY);
+        address[] memory t = _two();
+        address mine = factory.predictIndexAddress(creator, "Same", "SAME", t, K);
+        assertTrue(mine != factory.predictIndexAddress(stranger, "Same", "SAME", t, K), "the creator");
+        assertTrue(mine != factory.predictIndexAddress(creator, "Other", "SAME", t, K), "the name");
+        assertTrue(mine != factory.predictIndexAddress(creator, "Same", "OTHER", t, K), "the symbol");
+        assertTrue(mine != factory.predictIndexAddress(creator, "Same", "SAME", t, 2 * K), "the units");
 
         address[] memory otherTokens = new address[](2);
         (otherTokens[0], otherTokens[1]) = (t[0], address(c));
-        address other = factory.predictIndexAddress(creator, "Same", "SAME", otherTokens, u, 0);
-        assertTrue(mine != other, "the token list, with the same units");
+        address other = factory.predictIndexAddress(creator, "Same", "SAME", otherTokens, K);
+        assertTrue(mine != other, "the token list");
         (otherTokens[0], otherTokens[1]) = (t[1], t[0]);
-        assertTrue(mine != factory.predictIndexAddress(creator, "Same", "SAME", otherTokens, u, 0), "and its order");
+        assertTrue(mine != factory.predictIndexAddress(creator, "Same", "SAME", otherTokens, K), "and its order");
 
-        // Both baskets can exist side by side, each at its predicted address.
         (otherTokens[0], otherTokens[1]) = (t[0], address(c));
         vm.startPrank(creator);
-        assertEq(factory.createIndex("Same", "SAME", t, u, 0), mine);
-        assertEq(factory.createIndex("Same", "SAME", otherTokens, u, 0), other);
+        assertEq(factory.createIndex("Same", "SAME", t, K), mine);
+        assertEq(factory.createIndex("Same", "SAME", otherTokens, K), other);
         vm.stopPrank();
     }
 
-    function test_createIndex_methodologyChecks() public {
-        (address[] memory t, uint256[] memory u) = _two();
-        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidMethodology.selector, 2));
-        factory.createIndex("X", "X", t, u, 2);
-        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.TooFewComponentsForCapped.selector, 2));
-        factory.createIndex("X", "X", t, u, 1);
+    /// @dev The salt covers the computed units, not `k`: a supply batch that lands between a prediction and a creation
+    ///      moves the address, so an address can never hold another basket than the one predicted for it.
+    function test_aBatchBetweenPredictionAndCreationMovesTheAddressNotTheBasket() public {
+        address[] memory t = _two();
+        address predicted = factory.predictIndexAddress(creator, "Same", "SAME", t, K);
+        uint256[] memory promised = factory.previewUnits(t, K);
+        (address[] memory bt, uint256[] memory bs) = _batch(A_SUPPLY + _step(A_SUPPLY), B_SUPPLY);
+        _revise(bt, bs);
 
-        (address[] memory five, uint256[] memory fiveUnits) = _listed(5);
-        address[] memory four = new address[](4);
-        uint256[] memory fourUnits = new uint256[](4);
-        for (uint256 i = 0; i < 4; ++i) {
-            four[i] = five[i];
-            fourUnits[i] = fiveUnits[i];
-        }
-        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.TooFewComponentsForCapped.selector, 4));
-        factory.createIndex("Capped", "CAP", four, fourUnits, 1);
-
-        address capped = factory.createIndex("Capped", "CAP", five, fiveUnits, 1);
-        assertEq(IndexHub(capped).methodology(), 1);
+        vm.prank(creator);
+        address index = factory.createIndex("Same", "SAME", t, K);
+        assertTrue(index != predicted, "a different basket lands at a different address");
+        (, uint256[] memory units) = IndexHub(index).components();
+        assertTrue(units[0] != promised[0]);
+        assertEq(predicted.code.length, 0, "nothing was ever deployed at the predicted address");
     }
 
     function test_createIndex_revertsDuplicateBySameCreator() public {
-        (address[] memory t, uint256[] memory u) = _two();
+        address[] memory t = _two();
         vm.prank(creator);
-        address first = factory.createIndex("Same", "SAME", t, u, 0);
+        address first = factory.createIndex("Same", "SAME", t, K);
         vm.prank(creator);
         vm.expectRevert(abi.encodeWithSelector(IIndexFactory.IndexAlreadyExists.selector, first));
-        factory.createIndex("Same", "SAME", t, u, 0);
+        factory.createIndex("Same", "SAME", t, K);
     }
 
     function test_createIndex_delistingDoesNotAffectExisting() public {
-        (address[] memory t, uint256[] memory u) = _two();
-        address index = factory.createIndex("X", "X", t, u, 0);
+        address[] memory t = _two();
+        address index = factory.createIndex("X", "X", t, K);
 
         vm.prank(owner);
         factory.delist(address(a));
@@ -953,87 +902,78 @@ contract IndexFactoryTest is XindexTest {
         assertTrue(factory.isIndex(index));
 
         vm.expectRevert(abi.encodeWithSelector(IIndexFactory.TokenNotWhitelisted.selector, address(a)));
-        factory.createIndex("Y", "Y", t, u, 0);
+        factory.createIndex("Y", "Y", t, K);
     }
 
     function test_createIndex_revertsEmptyName() public {
-        (address[] memory t, uint256[] memory u) = _two();
+        address[] memory t = _two();
         vm.expectRevert(IIndexFactory.EmptyString.selector);
-        factory.createIndex("", "X", t, u, 0);
+        factory.createIndex("", "X", t, K);
         vm.expectRevert(IIndexFactory.EmptyString.selector);
-        factory.createIndex("X", "", t, u, 0);
+        factory.createIndex("X", "", t, K);
     }
 
     function test_createIndex_revertsNoComponents() public {
-        address[] memory t = new address[](0);
-        uint256[] memory u = new uint256[](0);
         vm.expectRevert(abi.encodeWithSelector(IIndexFactory.InvalidComponentCount.selector, 0));
-        factory.createIndex("X", "X", t, u, 0);
+        factory.createIndex("X", "X", new address[](0), K);
     }
 
     function test_createIndex_revertsTooManyComponents() public {
         uint256 n = factory.MAX_COMPONENTS() + 1;
-        address[] memory t = new address[](n);
-        uint256[] memory u = new uint256[](n);
         vm.expectRevert(abi.encodeWithSelector(IIndexFactory.InvalidComponentCount.selector, n));
-        factory.createIndex("X", "X", t, u, 0);
+        factory.createIndex("X", "X", new address[](n), K);
     }
 
+    /// @dev An index of MAX_COMPONENTS is created inside one transaction under EIP-7825's 2^24 cap, with the factory
+    ///      and every token cooled so the call pays the cold reads a transaction of its own would, and 100,000 gas left
+    ///      for the transaction's base cost and calldata.
     function test_createIndex_maxComponentsOk() public {
-        (address[] memory t, uint256[] memory u) = _listed(factory.MAX_COMPONENTS());
-        address index = factory.createIndex("Big", "BIG", t, u, 1);
+        address[] memory t = _listed(factory.MAX_COMPONENTS());
+        vm.cool(address(factory));
+        for (uint256 i = 0; i < t.length; ++i) {
+            vm.cool(t[i]);
+        }
+        uint256 before = gasleft();
+        address index = factory.createIndex("Big", "BIG", t, K);
+        uint256 used = before - gasleft();
+        assertLe(used + 100_000, 2 ** 24, "createIndex fits one transaction");
         assertEq(IndexHub(index).componentCount(), t.length);
-    }
-
-    function test_createIndex_revertsLengthMismatch() public {
-        address[] memory t = new address[](2);
-        uint256[] memory u = new uint256[](1);
-        t[0] = address(a);
-        t[1] = address(b);
-        u[0] = 1;
-        vm.expectRevert(IXindexErrors.LengthMismatch.selector);
-        factory.createIndex("X", "X", t, u, 0);
     }
 
     function test_createIndex_revertsNotWhitelisted() public {
         address[] memory t = new address[](1);
-        uint256[] memory u = new uint256[](1);
         t[0] = address(c);
-        u[0] = 1;
         vm.expectRevert(abi.encodeWithSelector(IIndexFactory.TokenNotWhitelisted.selector, address(c)));
-        factory.createIndex("X", "X", t, u, 0);
+        factory.createIndex("X", "X", t, K);
 
-        IIndexFactory.TokenConfig memory config = market.config(address(c), ONE_DOLLAR);
         vm.prank(owner);
-        factory.proposeListing(address(c), config);
+        factory.proposeListing(address(c), C_SUPPLY);
         vm.expectRevert(abi.encodeWithSelector(IIndexFactory.TokenNotWhitelisted.selector, address(c)));
-        factory.createIndex("X", "X", t, u, 0);
+        factory.createIndex("X", "X", t, K);
     }
 
     function test_createIndex_revertsDuplicate() public {
         address[] memory t = new address[](2);
-        uint256[] memory u = new uint256[](2);
-        t[0] = address(a);
-        t[1] = address(a);
-        u[0] = 1;
-        u[1] = 1;
+        (t[0], t[1]) = (address(a), address(a));
         vm.expectRevert(abi.encodeWithSelector(IIndexFactory.DuplicateToken.selector, address(a)));
-        factory.createIndex("X", "X", t, u, 0);
+        factory.createIndex("X", "X", t, K);
     }
 
-    function test_createIndex_revertsZeroUnits() public {
-        (address[] memory t, uint256[] memory u) = _two();
-        u[1] = 0;
-        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.InvalidUnits.selector, address(b), 0));
-        factory.createIndex("X", "X", t, u, 0);
-    }
+    /// @dev DA-09, re-targeted: no index starts with a component coarser than MIN_RAW_UNITS, and none so large that its
+    ///      units could not grow through the rebalances ahead. Both edges are inclusive.
+    function test_DA09_unitsMustStartBetweenTheFloorAndTheHeadroom() public {
+        address[] memory t = _two();
+        uint256 floorK = factory.MIN_RAW_UNITS() * K / B_SUPPLY; // B, the smaller supply, sets the floor
+        vm.expectRevert(
+            abi.encodeWithSelector(IIndexFactory.UnitsOutOfRange.selector, address(b), factory.MIN_RAW_UNITS() - 1)
+        );
+        factory.createIndex("X", "X", t, floorK - K / B_SUPPLY);
+        factory.createIndex("X", "X", t, floorK);
 
-    function test_createIndex_revertsUnitsTooLarge() public {
-        (address[] memory t, uint256[] memory u) = _two();
-        u[0] = uint256(type(uint96).max) + 1;
-        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.InvalidUnits.selector, address(a), u[0]));
-        factory.createIndex("X", "X", t, u, 0);
-        u[0] = type(uint96).max;
-        factory.createIndex("X", "X", t, u, 0);
+        uint256 maxUnits = factory.MAX_UNITS();
+        uint256 ceilingK = maxUnits * K / A_SUPPLY; // A, the larger supply, sets the ceiling
+        vm.expectRevert(abi.encodeWithSelector(IIndexFactory.UnitsOutOfRange.selector, address(a), maxUnits + 1));
+        factory.createIndex("Y", "Y", t, ceilingK + K / A_SUPPLY);
+        factory.createIndex("Y", "Y", t, ceilingK);
     }
 }

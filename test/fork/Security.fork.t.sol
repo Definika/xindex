@@ -8,16 +8,10 @@ import {IndexFactory} from "../../src/IndexFactory.sol";
 import {IndexHub} from "../../src/IndexHub.sol";
 import {IndexZap} from "../../src/IndexZap.sol";
 import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
-import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {IUniversalRouter} from "../../src/interfaces/IUniversalRouter.sol";
 import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
-import {ForkFeeds} from "./ForkFeeds.sol";
-import {CompositeFeed} from "../../src/CompositeFeed.sol";
-import {IAggregatorV3} from "../../src/interfaces/IAggregatorV3.sol";
-import {IIndexRule} from "../../src/interfaces/IIndexRule.sol";
 import {IIndexHub} from "../../src/interfaces/IIndexHub.sol";
-import {ConfigureWhitelist} from "../../script/ConfigureWhitelist.s.sol";
 import {Deploy} from "../../script/Deploy.s.sol";
 
 interface IWbtcAdmin {
@@ -31,8 +25,8 @@ interface IUsdtAdmin {
     function setParams(uint256 newBasisPoints, uint256 newMaxFee) external;
 }
 
-interface IWstETH {
-    function unwrap(uint256 wstETHAmount) external returns (uint256);
+interface IWETH9 {
+    function deposit() external payable;
 }
 
 interface ISafeProxyFactory {
@@ -87,12 +81,19 @@ interface ISafe {
 
 /// @notice Security-review regression tests against the real mainnet tokens and router.
 ///         Skips when MAINNET_RPC_URL is unset.
-contract SecurityForkTest is ForkFeeds {
+contract SecurityForkTest is Test {
     using SafeERC20 for IERC20;
 
     IndexFactory factory;
     IndexZap zap;
     address user = makeAddr("user");
+
+    // 0.0001 WBTC + 0.001 WETH + 1 LINK per index token
+    uint256 constant U_WBTC = 10_000;
+    uint256 constant U_WETH = 1e15;
+    uint256 constant U_LINK = 1e18;
+    /// @dev With each component listed at its units as its supply, this scale gives exactly those units.
+    uint256 constant K = 1e36;
 
     uint24 constant F500 = 500;
     uint24 constant F3000 = 3000;
@@ -127,45 +128,21 @@ contract SecurityForkTest is ForkFeeds {
         factory = new IndexFactory(address(this), address(0));
         zap = new IndexZap(factory, IUniversalRouter(A.UNIVERSAL_ROUTER));
 
-        _pinFeedsToTheBlockClock();
-        factory.proposeListing(A.WBTC, _config(address(_wbtcFeed()), A.STALENESS_24H, A.BTC_SUPPLY));
-        factory.proposeListing(A.WETH, _config(A.ETH_USD_FEED, A.STALENESS_1H, A.ETH_SUPPLY));
-        factory.proposeListing(A.LINK, _config(A.LINK_USD_FEED, A.STALENESS_1H, A.LINK_SUPPLY));
+        // Listed with their units as their supplies, so k = K gives exactly the units the suite's amounts use.
+        factory.proposeListing(A.WBTC, U_WBTC);
+        factory.proposeListing(A.WETH, U_WETH);
+        factory.proposeListing(A.LINK, U_LINK);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(A.WBTC);
         factory.executeListing(A.WETH);
         factory.executeListing(A.LINK);
     }
 
-    /// @dev A listing config whose minimum liquidity is a tenth of the pool's liquidity at the fork block, under the
-    ///      mainnet list's policy of a third so that a fixture never fails on the pool's own drift.
-    /// @dev The composite adapter for WBTC, deployed the way `Deploy` does on chain 1.
-    function _wbtcFeed() internal returns (CompositeFeed) {
-        return new CompositeFeed(
-            IAggregatorV3(A.BTC_USD_FEED), IAggregatorV3(A.WBTC_BTC_FEED), A.STALENESS_1H, A.STALENESS_24H
-        );
-    }
-
-    /// @dev A listing config naming a real Chainlink feed. WBTC has no USD feed, so the suite deploys the composite
-    ///      adapter over BTC/USD and WBTC/BTC and lists it with that.
-    function _config(address feed, uint32 maxStaleness, uint256 referenceSupply)
-        internal
-        pure
-        returns (IIndexFactory.TokenConfig memory c)
-    {
-        c.feed = feed;
-        c.maxStaleness = maxStaleness;
-        c.referenceSupply = referenceSupply;
-    }
-
-    function _create(address a, uint256 ua, address b, uint256 ub) internal returns (IndexHub idx) {
+    function _create(address a, address b) internal returns (IndexHub idx) {
         address[] memory t = new address[](2);
-        uint256[] memory u = new uint256[](2);
         t[0] = a;
         t[1] = b;
-        u[0] = ua;
-        u[1] = ub;
-        idx = IndexHub(factory.createIndex("Fork Security", "FSEC", t, u, 0));
+        idx = IndexHub(factory.createIndex("Fork Security", "FSEC", t, K));
     }
 
     function _issue(IndexHub idx, uint256 shares) internal {
@@ -183,7 +160,7 @@ contract SecurityForkTest is ForkFeeds {
     }
 
     function test_M01_realWbtcPause_redeemSkippingFreesWethAndClaimPaysLater() public {
-        IndexHub idx = _create(A.WBTC, 10_000, A.WETH, 1e15);
+        IndexHub idx = _create(A.WBTC, A.WETH);
         _issue(idx, 1e18);
         address wbtcController = IWbtcAdmin(A.WBTC).owner();
         vm.prank(wbtcController);
@@ -210,7 +187,7 @@ contract SecurityForkTest is ForkFeeds {
     }
 
     function test_I02_realUsdtFeeSwitch_zapRevertsWithTransferShortfall() public {
-        IndexHub idx = _create(A.WBTC, 10_000, A.WETH, 1e15);
+        IndexHub idx = _create(A.WBTC, A.WETH);
         _issue(idx, 1e18);
 
         vm.prank(IUsdtAdmin(A.USDT).owner());
@@ -270,7 +247,7 @@ contract SecurityForkTest is ForkFeeds {
     }
 
     function test_I03_strayRouterEthIsRefundedNotLocked() public {
-        IndexHub idx = _create(A.WBTC, 10_000, A.LINK, 1e18);
+        IndexHub idx = _create(A.WBTC, A.LINK);
         IIndexZap.MintLeg[] memory legs = new IIndexZap.MintLeg[](2);
         legs[0] = IIndexZap.MintLeg({
             v3Path: abi.encodePacked(A.WBTC, F500, A.WETH), v4Path: new PathKey[](0), maxAmountIn: 0
@@ -307,7 +284,7 @@ contract SecurityForkTest is ForkFeeds {
     }
 
     function test_FR01_strayRouterEthNoLongerBlocksBurns() public {
-        IndexHub idx = _create(A.WBTC, 10_000, A.WETH, 1e15);
+        IndexHub idx = _create(A.WBTC, A.WETH);
         _issue(idx, 1e18);
 
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](2);
@@ -368,7 +345,7 @@ contract SecurityForkTest is ForkFeeds {
     ///      through that token. What came back is now measured as the balance above what was left, and handed on with
     ///      the hop's unsold input.
     function test_FR01_CRL02_aStrayTokenInTheRouterNoLongerBlocksABurn() public {
-        IndexHub idx = _create(A.WBTC, 10_000, A.WETH, 1e15);
+        IndexHub idx = _create(A.WBTC, A.WETH);
         _issue(idx, 1e18);
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](2);
         legs[0] = IIndexZap.BurnLeg({
@@ -389,10 +366,10 @@ contract SecurityForkTest is ForkFeeds {
         assertEq(IERC20(A.WETH).balanceOf(address(zap)), 0, "and nothing stays in the zap");
     }
 
-    /// @dev FR-01, CR-L02: the same for a V4 leg, whose sweep returns the component itself. The stray is more LINK than
-    ///      the leg sells.
+    /// @dev FR-01, CR-L02: the same for a V4 leg, whose sweep returns the component itself. The stray, 3 LINK, is more
+    ///      than the leg's 1 LINK.
     function test_FR01_CRL02_aStrayComponentInTheRouterNoLongerBlocksAV4Burn() public {
-        IndexHub idx = _create(A.LINK, 2e18, A.WETH, 1e15);
+        IndexHub idx = _create(A.LINK, A.WETH);
         _issue(idx, 1e18);
         PathKey[] memory route = new PathKey[](2);
         route[0] =
@@ -414,46 +391,58 @@ contract SecurityForkTest is ForkFeeds {
         assertEq(IERC20(A.LINK).balanceOf(address(zap)), 0, "and nothing stays in the zap");
     }
 
-    /// @dev CR-M01. The rule read a token's own live supply whenever its config carried no reference supply, and
-    ///      wstETH's supply moves one for one with wrapping and unwrapping, which any holder can do inside a single
-    ///      transaction, so the targets of an index holding it, and whether a stranger could start its rebalance,
-    ///      were for sale. Every config carries a reference supply now and the rule reads nothing else: with wstETH
-    ///      listed as the script ships it, unwrapping a third of all wstETH moves neither the rule's supply nor the
-    ///      targets, and an index on its rule still cannot be made to rebalance.
-    function test_CRM01_unwrappingWstethAroundAStartMovesNothing() public {
-        ConfigureWhitelist configure = new ConfigureWhitelist();
-        ConfigureWhitelist.Entry memory entry = configure.defaultMainnetList(address(_wbtcFeed()))[1];
-        assertEq(entry.token, A.WSTETH);
-        factory.proposeListing(A.WSTETH, configure.configFor(entry));
-        vm.warp(block.timestamp + factory.LISTING_DELAY());
-        factory.executeListing(A.WSTETH);
-
-        IIndexRule rule = IIndexRule(factory.RULE());
+    /// @dev CR-M01. The v3 rule read a token's own live supply whenever its config carried no reference supply, and a
+    ///      supply that anyone can move inside one transaction put the targets, and whether a stranger could start a
+    ///      rebalance, up for sale. The hub now reads only the factory's reference supplies. WETH's own supply moves one
+    ///      for one with every deposit, so wrapping a million ether around a start is the live test: the band a start
+    ///      would take does not move by a wei, an index on its supplies still cannot be started, and after a revision
+    ///      the band the start stores is the one read before the wrap.
+    function test_CRM01_wrappingEtherAroundAStartMovesNothing() public {
         address[] memory t = new address[](3);
-        (t[0], t[1], t[2]) = (A.WSTETH, A.WETH, A.LINK);
-        IndexHub idx = IndexHub(factory.createIndex("Staked", "STK", t, rule.initialUnits(t, 0, 1_000e18), 0));
+        (t[0], t[1], t[2]) = (A.WBTC, A.WETH, A.LINK);
+        IndexHub idx = IndexHub(factory.createIndex("Wrapped", "WRP", t, K));
         _issue(idx, 10e18);
         vm.warp(block.timestamp + idx.MIN_REBALANCE_INTERVAL());
-        (uint256[] memory targets, uint256 turnover) = idx.previewTarget(0);
         address stranger = makeAddr("stranger");
         vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(IIndexHub.TurnoverTooLow.selector, turnover));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.BandTooNarrow.selector, 1e18, 1e18));
         idx.startRebalance(0);
 
-        uint256 live = IERC20(A.WSTETH).totalSupply();
-        address unwrapper = makeAddr("unwrapper");
-        deal(A.WSTETH, unwrapper, live / 3);
-        vm.prank(unwrapper);
-        IWstETH(A.WSTETH).unwrap(live / 3);
-        assertEq(IERC20(A.WSTETH).totalSupply(), live - live / 3, "a third of all wstETH is unwrapped");
-        assertEq(rule.supply(A.WSTETH), entry.referenceSupply, "the rule still reads the reference supply");
-
-        (uint256[] memory targetsAfter, uint256 turnoverAfter) = idx.previewTarget(0);
-        assertEq(targetsAfter, targets, "the targets do not move");
-        assertEq(turnoverAfter, turnover);
+        _wrap(1_000_000 ether);
         vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(IIndexHub.TurnoverTooLow.selector, turnover));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.BandTooNarrow.selector, 1e18, 1e18));
         idx.startRebalance(0);
+
+        address[] memory revised = new address[](1);
+        uint256[] memory supplies = new uint256[](1);
+        (revised[0], supplies[0]) = (A.WETH, U_WETH + U_WETH / 200);
+        factory.proposeSupplies(revised, supplies);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        factory.executeSupplies();
+        (uint256[] memory ratios, uint256 lambdaMin, uint256 lambdaMax) = idx.previewBand(0);
+        assertGt(lambdaMax, lambdaMin, "the revision opens a band");
+
+        _wrap(1_000_000 ether);
+        (uint256[] memory ratiosAfter, uint256 minAfter, uint256 maxAfter) = idx.previewBand(0);
+        assertEq(ratiosAfter, ratios, "the wrap moves no ratio");
+        assertEq(minAfter, lambdaMin);
+        assertEq(maxAfter, lambdaMax);
+        vm.prank(stranger);
+        idx.startRebalance(0);
+        (,, uint256 storedMin, uint256 storedMax, uint256[] memory stored) = idx.pendingRebalance();
+        assertEq(stored, ratios, "the start stores the band read before the wrap");
+        assertEq(storedMin, lambdaMin);
+        assertEq(storedMax, lambdaMax);
+    }
+
+    /// @dev Wraps `amount` of fresh ether into WETH, which raises WETH's own total supply by exactly that.
+    function _wrap(uint256 amount) internal {
+        address wrapper = makeAddr("wrapper");
+        uint256 before = IERC20(A.WETH).totalSupply();
+        vm.deal(wrapper, amount);
+        vm.prank(wrapper);
+        IWETH9(A.WETH).deposit{value: amount}();
+        assertEq(IERC20(A.WETH).totalSupply(), before + amount, "WETH's live supply moves with the wrap");
     }
 
     /// @dev XA-07, CR-I36. The module check reads the page of modules that starts at the sentinel, and the offline mock

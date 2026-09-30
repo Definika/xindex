@@ -46,7 +46,7 @@ contract RebalanceExecutorV3 is IRebalanceExecutor {
         IERC20(token).forceApprove(address(ROUTER), type(uint256).max);
     }
 
-    /// @notice Deployer only. Settles the auction of `index`, one of the factory's indexes, at the current multiplier.
+    /// @notice Deployer only. Settles the auction of `index`, one of the factory's indexes, at the current λ.
     function fill(IIndexHub index) external {
         if (msg.sender != OWNER) revert NotOwner(msg.sender);
         if (!FACTORY.isIndex(address(index))) revert NotIndex(address(index));

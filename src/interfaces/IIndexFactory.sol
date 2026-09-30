@@ -4,55 +4,31 @@ pragma solidity 0.8.28;
 import {IXindexErrors} from "./IXindexErrors.sol";
 
 /// @title IIndexFactory
-/// @notice Deploys index tokens as EIP-1167 clones at creator-bound CREATE2 addresses, curates the component whitelist
-///         and each token's market-data configuration behind public delays, and keeps the registry.
+/// @notice Deploys index hubs as EIP-1167 clones at creator-bound CREATE2 addresses, curates the component whitelist
+///         and each token's reference supply behind public delays, and keeps the registry. Nothing here reads a price.
 /// @dev "Owner only" functions revert with OpenZeppelin's `OwnableUnauthorizedAccount` for any other caller, and
 ///      "owner or guardian" functions with `Unauthorized`.
 interface IIndexFactory is IXindexErrors {
-    /// @notice Where the rebalance rule reads a token's price and supply.
-    /// @param feed Chainlink-shaped USD price feed for the token, read through {IAggregatorV3}. A token whose USD price
-    ///        exists only as a product of two feeds, as WBTC does, is listed with a `CompositeFeed` over both.
-    /// @param maxStaleness Oldest `updatedAt` the rule will price the token from, in seconds. The policy is the feed's
-    ///        heartbeat plus half an hour, and the rule caps it at its own MAX_FEED_STALENESS. Non-zero for every token.
-    /// @param referenceSupply The supply the rule counts for the token, in its raw units, and the only one it reads.
-    ///        Required: the rule refuses zero, which used to mean the token's own total supply, read live, and that
-    ///        could be moved inside the transaction that snapshots it, as flash-borrowed wstETH can be unwrapped around
-    ///        `startRebalance` (CR-M01). Wrapped and bridged assets such as WBTC or WETH carry the supply of what they
-    ///        wrap, because their own counts only the wrapped coins. Refreshed with {proposeConfig}.
-    struct TokenConfig {
-        address feed;
-        uint32 maxStaleness;
-        uint256 referenceSupply;
-    }
-
-    /// @notice `creator` deployed and initialized `index` with these constituents, starting units (raw units of each
-    ///         token per 1e18 shares, in the same order) and methodology.
+    /// @notice `creator` deployed and initialized `index` with these constituents and starting units (raw units of each
+    ///         token per 1e18 shares, in the same order), computed as `k * referenceSupply / K_SCALE`.
     event IndexCreated(
-        address indexed index,
-        address indexed creator,
-        string name,
-        string symbol,
-        address[] tokens,
-        uint256[] units,
-        uint8 methodology
+        address indexed index, address indexed creator, string name, string symbol, address[] tokens, uint256[] units
     );
-    /// @notice A listing or config change for `token` was proposed with this config. It can be executed from `eta`
-    ///         until `eta + PROPOSAL_WINDOW`.
-    /// @param listing True when executing the proposal whitelists `token`; false for a config change only.
-    event ListingProposed(
-        address indexed token, uint256 eta, bool listing, address feed, uint32 maxStaleness, uint256 referenceSupply
-    );
-    /// @notice The pending proposal for `token` was cancelled, or dropped because {delist} removed the token.
+    /// @notice Listing `token` with `referenceSupply` was proposed. It can be executed from `eta` until
+    ///         `eta + PROPOSAL_WINDOW`.
+    event ListingProposed(address indexed token, uint256 eta, uint256 referenceSupply);
+    /// @notice The pending listing of `token` was cancelled, or dropped because {delist} removed the token.
     event ListingCancelled(address indexed token);
-    /// @notice An executed proposal put this config in force for `token`.
-    event TokenConfigured(address indexed token, address feed, uint32 maxStaleness, uint256 referenceSupply);
-    /// @notice An executed proposal changed the decimals the rule prices `token` with ({tokenDecimals}), from
-    ///         `previousDecimals` (zero before a first listing) to `decimals`. Emitted only when the record changes,
-    ///         so after a first listing it marks a token whose own `decimals()` moved, which reprices it by a power of
-    ///         ten (RT-23).
-    event TokenDecimalsRecorded(address indexed token, uint8 previousDecimals, uint8 decimals);
+    /// @notice `token`'s reference supply changed from `previous` (zero before a first listing) to `referenceSupply`.
+    event ReferenceSupplySet(address indexed token, uint256 previous, uint256 referenceSupply);
     /// @notice `token` was whitelisted (`allowed`) or delisted.
     event TokenWhitelisted(address indexed token, bool allowed);
+    /// @notice Supply batch `batchId` was proposed. It can be executed from `eta` until `eta + PROPOSAL_WINDOW`.
+    event SuppliesProposed(uint256 indexed batchId, uint256 eta, address[] tokens, uint256[] referenceSupplies);
+    /// @notice Supply batch `batchId` was cancelled.
+    event SuppliesCancelled(uint256 indexed batchId);
+    /// @notice Supply batch `batchId` came into force; a `ReferenceSupplySet` precedes this for each of its tokens.
+    event SuppliesExecuted(uint256 indexed batchId);
     /// @notice A change to `newGuardian` was proposed. It can be executed from `eta` until `eta + PROPOSAL_WINDOW`.
     event GuardianProposed(address indexed newGuardian, uint256 eta);
     /// @notice The pending change to `newGuardian` was cancelled, or replaced by a new proposal.
@@ -68,53 +44,83 @@ interface IIndexFactory is IXindexErrors {
     error TokenNotWhitelisted(address token);
     /// @notice `token` appears twice in the components.
     error DuplicateToken(address token);
-    /// @notice The starting `units` of `token` are zero or do not fit uint96.
-    error InvalidUnits(address token, uint256 units);
+    /// @notice `k` gives `token` `units` raw units per whole index token, outside [MIN_RAW_UNITS, MAX_UNITS].
+    error UnitsOutOfRange(address token, uint256 units);
     /// @notice The same creator already deployed an index with these exact arguments, at `index`.
     error IndexAlreadyExists(address index);
     /// @notice `token` has no code.
     error NotAContract(address token);
-    /// @notice {proposeConfig} for a token that has never been listed; use {proposeListing}.
+    /// @notice `token` has never been listed, so it has no reference supply to revise.
     error NotConfigured(address token);
-
-    /// @notice A proposed reference supply for `token` sits further than MAX_SUPPLY_CHANGE from the one in force. A
-    ///         larger change goes in steps, each behind its own delay.
-    error SupplyChangeTooLarge(address token, uint256 inForce, uint256 proposed);
-    /// @notice A proposal for `token` executable from `eta` is still pending or executable. Cancel it first; one that
+    /// @notice A reference supply of `referenceSupply` for `token` is zero or above MAX_SUPPLY.
+    error SupplyOutOfRange(address token, uint256 referenceSupply);
+    /// @notice A proposed reference supply for `token` moves more than MAX_SUPPLY_STEP from the one in force. A larger
+    ///         change goes in steps, each behind its own delay and the guardian's veto.
+    error SupplyStepTooLarge(address token, uint256 inForce, uint256 proposed);
+    /// @notice A listing of `token` executable from `eta` is still pending or executable. Cancel it first; one that
     ///         expired can be replaced.
     error ListingPending(address token, uint256 eta);
-    /// @notice Nothing is proposed for `token`.
+    /// @notice No listing is proposed for `token`.
     error NoPendingListing(address token);
-    /// @notice The proposal for `token` can be executed from `eta`.
+    /// @notice The listing of `token` can be executed from `eta`.
     error ListingNotReady(address token, uint256 eta);
-    /// @notice The proposal for `token` could be executed until `deadline`; propose it again.
+    /// @notice The listing of `token` could be executed until `deadline`; propose it again.
     error ListingExpired(address token, uint256 deadline);
     /// @notice {delist} for a token that is not whitelisted.
     error NotWhitelisted(address token);
-    /// @notice `token` reported `proposed` decimals when its pending proposal was made and reports `current` now. The
-    ///         proposal cannot be executed: cancel it, or let it expire, and propose it again, so the new decimals go
-    ///         through the delay (RT-23).
-    error DecimalsChanged(address token, uint8 proposed, uint8 current);
+    /// @notice {proposeListing} for a token that is whitelisted: its reference supply changes only through a supply
+    ///         batch, so no revision can land outside one.
+    error AlreadyListed(address token);
+    /// @notice A supply batch executable from `eta` is still pending or executable. Cancel it first; one that expired
+    ///         can be replaced.
+    error SuppliesPending(uint256 eta);
+    /// @notice `token` is in the live supply batch, so its listing waits for that batch to execute, be cancelled or
+    ///         expire: nothing but the batch may change a supply the batch was checked against.
+    error TokenInBatch(address token);
+    /// @notice A supply batch must name 1 to MAX_BATCH tokens in strictly ascending address order; this one breaks that
+    ///         at `token`, or is empty or too long (`token` zero).
+    error InvalidBatch(address token);
+    /// @notice No supply batch is proposed.
+    error NoPendingSupplies();
+    /// @notice The supply batch can be executed from `eta`.
+    error SuppliesNotReady(uint256 eta);
+    /// @notice The supply batch could be executed until `deadline`; propose it again.
+    error SuppliesExpired(uint256 deadline);
     /// @notice No guardian change is pending.
     error NoPendingGuardianChange();
     /// @notice The pending guardian change can be executed from `eta`.
     error GuardianChangeNotReady(uint256 eta);
     /// @notice The pending guardian change could be executed until `deadline`; propose it again.
     error GuardianChangeExpired(uint256 deadline);
-    /// @notice Ownership cannot be renounced: without an owner, listings and token configs could never change again.
+    /// @notice Ownership cannot be renounced: without an owner, listings and reference supplies could never change.
     error RenounceDisabled();
 
     /// @notice Most components an index can have.
     function MAX_COMPONENTS() external view returns (uint256);
 
-    /// @notice Largest factor by which a config change may move a token's reference supply, either way. Every config
-    ///         carries one, so the bound applies to every change after the first listing.
-    function MAX_SUPPLY_CHANGE() external view returns (uint256);
+    /// @notice Most tokens one supply batch can name.
+    function MAX_BATCH() external view returns (uint256);
 
-    /// @notice Fewest components an index with the capped methodology can have.
-    function MIN_CAPPED_COMPONENTS() external view returns (uint256);
+    /// @notice Largest move of a token's reference supply one relisting or batch can make, either way (1e18 = 100%),
+    ///         after its first listing. The hub clamps each rebalance to the same step, however many batches landed
+    ///         between two rebalances, so neither bound alone is the one holders rely on.
+    function MAX_SUPPLY_STEP() external view returns (uint256);
 
-    /// @notice Time between {proposeListing} and the earliest {executeListing}.
+    /// @notice Largest reference supply, in a token's raw units: the hub multiplies it by units below 2^96, and the
+    ///         product has to fit.
+    function MAX_SUPPLY() external view returns (uint256);
+
+    /// @notice Fewest raw units of any component an index can start with (DA-09's granularity floor).
+    function MIN_RAW_UNITS() external view returns (uint256);
+
+    /// @notice Most raw units of any component an index can start with: a 2^10 margin below uint96, so the units can
+    ///         grow through about 690 rebalances at the widest band.
+    function MAX_UNITS() external view returns (uint256);
+
+    /// @notice Scale of `k` in {createIndex}: `units = k * referenceSupply / K_SCALE`.
+    function K_SCALE() external view returns (uint256);
+
+    /// @notice Time between a proposal and the earliest execution of a listing or a supply batch.
     function LISTING_DELAY() external view returns (uint256);
 
     /// @notice Time between {proposeGuardian} and the earliest {executeGuardianChange}.
@@ -126,12 +132,9 @@ interface IIndexFactory is IXindexErrors {
     /// @notice IndexHub implementation every index clones. It cannot be initialized, so it can never issue shares.
     function IMPLEMENTATION() external view returns (address);
 
-    /// @notice Stateless contract that reads market data, computes rebalance targets and prices indexes.
-    function RULE() external view returns (address);
-
-    /// @notice Address that, alongside the owner, can cancel pending listings and rebalances, delist tokens, start a
-    ///         rebalance with a keep mask on any index, and start one while strangers are held off after a cancel or
-    ///         an unfilled auction (RT-08). May be zero.
+    /// @notice Address that, alongside the owner, can cancel pending listings, supply batches and rebalances, delist
+    ///         tokens, start a rebalance with a keep mask on any index, and start one while strangers are held off after
+    ///         a cancel or an unfilled auction (RT-08). May be zero.
     function guardian() external view returns (address);
 
     /// @notice Guardian the last proposed change names. It stays set after that proposal expires, so on its own it does
@@ -151,44 +154,43 @@ interface IIndexFactory is IXindexErrors {
     /// @notice Whitelisted tokens. The order is not stable: {delist} moves the last entry into the freed position.
     function whitelistedTokens() external view returns (address[] memory);
 
-    /// @notice Timestamp from which the last proposed listing or config change for `token` can be executed, 0 once it
-    ///         is executed or cancelled. An expired proposal keeps it non-zero; ask {listingPending} whether it can
-    ///         still run (DA-16).
+    /// @notice The reference supply in force for `token`, in its raw units: the supply of what the token represents
+    ///         (Bitcoin's for WBTC, ether's for WETH), never read from the token itself. Zero for a token never listed.
+    ///         It stays after delisting, because existing indexes still rebalance with it.
+    function referenceSupply(address token) external view returns (uint256);
+
+    /// @notice {referenceSupply} for each of `tokens`, in order. Reads storage only: no call reaches a token.
+    function referenceSupplies(address[] calldata tokens) external view returns (uint256[] memory supplies);
+
+    /// @notice Timestamp from which the last proposed listing of `token` can be executed, 0 once it is executed or
+    ///         cancelled. An expired proposal keeps it non-zero; ask {listingPending} whether it can still run (DA-16).
     function listingEta(address token) external view returns (uint256);
 
-    /// @notice Market-data configuration in force for `token`. It stays after delisting, because existing indexes still
-    ///         rebalance with it. A proposal comes into force only when someone calls {executeListing}, which anyone can
-    ///         do from its eta, so until then the previous config is what a snapshot or a settlement reads.
-    function tokenConfig(address token) external view returns (TokenConfig memory);
+    /// @notice Reference supply the last listing proposal for `token` carries, pending or expired; zero once it is
+    ///         executed or cancelled.
+    function pendingReferenceSupply(address token) external view returns (uint256);
 
-    /// @notice Decimals `token` reported when its config last came into force, read by {executeListing} once the rule
-    ///         had checked them, and equal to what the token reported when that config was proposed (RT-23). The rule
-    ///         prices a listed token with this record instead of calling the token, so a component whose contract
-    ///         stops answering can still be kept out of a capped rebalance (RT-01). Zero for a token never listed.
-    function tokenDecimals(address token) external view returns (uint8);
+    /// @notice Whether a proposed listing of `token` can still be executed: `listingEta` alone stays set after the window
+    ///         closes (DA-16).
+    function listingPending(address token) external view returns (bool);
 
-    /// @notice Configuration the last proposal for `token` carries, pending or expired; empty once it is executed or
-    ///         cancelled. {listingPending} says whether {executeListing} can still apply it.
-    function pendingTokenConfig(address token) external view returns (TokenConfig memory);
+    /// @notice Number of supply batches ever proposed, which is the last one's id.
+    function supplyBatchCount() external view returns (uint256);
 
-    /// @notice Decimals `token` reported when its last proposal, pending or expired, was made, pinned with it:
-    ///         {executeListing} reverts DecimalsChanged if the token reports others by then, so a guardian reviewing
-    ///         the proposal sees the decimals it would record (RT-23). Zero once the proposal is executed or cancelled.
-    function pendingTokenDecimals(address token) external view returns (uint8);
+    /// @notice The last proposed supply batch: its id, the time from which it can be executed (0 once executed or
+    ///         cancelled; an expired one keeps it), and its tokens and supplies.
+    function pendingSupplies()
+        external
+        view
+        returns (uint256 batchId, uint256 eta, address[] memory tokens, uint256[] memory referenceSupplies);
+
+    /// @notice Whether the last proposed supply batch can still be executed.
+    function suppliesPending() external view returns (bool);
 
     /// @notice Whether a proposed guardian change can still be executed. A proposal that passed its PROPOSAL_WINDOW is
     ///         dead but leaves `pendingGuardian` and `pendingGuardianEta` set, so those alone read as pending forever
     ///         and an operator could believe a guardian was replaced when it never was (DA-16). Ask this instead.
     function guardianChangePending() external view returns (bool);
-
-    /// @notice Whether a proposed listing or config change can still be executed, for the same reason as
-    ///         {guardianChangePending}: `listingEta` alone stays set after the window closes.
-    function listingPending(address token) external view returns (bool);
-
-    /// @notice Whether the last proposal for `token`, pending or expired, whitelists it when executed ({proposeListing})
-    ///         or only replaces its config ({proposeConfig}). False once it is executed or cancelled; meaningful only
-    ///         while `listingEta(token)` is non-zero, and {listingPending} says whether it can still run.
-    function pendingIsListing(address token) external view returns (bool);
 
     /// @notice Whether this factory deployed `index`: the only proof that an address is an Xindex index.
     function isIndex(address index) external view returns (bool);
@@ -202,81 +204,70 @@ interface IIndexFactory is IXindexErrors {
     /// @notice Number of indexes this factory has deployed.
     function allIndexesLength() external view returns (uint256);
 
-    /// @notice Address {createIndex} will use for these exact arguments when called by `creator`. It is computed for
-    ///         any arguments; only {createIndex} validates them.
-    /// @param creator The account that will call {createIndex}.
-    /// @return The index address.
+    /// @notice Starting units {createIndex} would give `tokens` for `k` with the supplies in force: `k * supply /
+    ///         K_SCALE` each, rounded down. Computed for any arguments; only {createIndex} validates them.
+    function previewUnits(address[] calldata tokens, uint256 k) external view returns (uint256[] memory units);
+
+    /// @notice Address {createIndex} will use when `creator` calls it with these arguments while the supplies in force
+    ///         stay as they are. The address commits to the computed units, so a supply batch executed in between moves
+    ///         the address, never the basket at an address. Computed for any arguments; only {createIndex} validates.
     function predictIndexAddress(
         address creator,
         string calldata name,
         string calldata symbol,
         address[] calldata tokens,
-        uint256[] calldata units,
-        uint8 methodology
+        uint256 k
     ) external view returns (address);
 
-    /// @notice Permissionless. Deploys a new index whose constituents are fixed and whose units follow `methodology`.
-    ///         The index starts with no supply; anyone can then issue shares against the basket.
+    /// @notice Permissionless. Deploys a new index whose constituents are fixed and whose units start proportional to
+    ///         the reference supplies in force: `units_i = k * referenceSupply_i / K_SCALE`, rounded down. The index
+    ///         starts with no supply; anyone can then issue shares against the basket. No price is read.
     /// @param name ERC-20 name, non-empty. It is also the index's EIP-712 domain name for permits.
     /// @param symbol ERC-20 symbol, non-empty.
     /// @param tokens Whitelisted component tokens, no duplicates, 1..MAX_COMPONENTS entries.
-    /// @param units  Starting raw units (in each token's own decimals) backing one whole index token (1e18 shares),
-    ///               each from 1 to type(uint96).max. `IIndexRule.initialUnits` returns units that already follow the
-    ///               methodology.
-    /// @param methodology `Methodology.UNCAPPED` or `Methodology.CAPPED`, the latter with at least MIN_CAPPED_COMPONENTS
-    ///               components.
+    /// @param k Scale of the basket: every resulting unit must lie in [MIN_RAW_UNITS, MAX_UNITS] (UnitsOutOfRange).
     /// @return index The new index, at {predictIndexAddress} for msg.sender and these arguments.
-    function createIndex(
-        string calldata name,
-        string calldata symbol,
-        address[] calldata tokens,
-        uint256[] calldata units,
-        uint8 methodology
-    ) external returns (address index);
+    function createIndex(string calldata name, string calldata symbol, address[] calldata tokens, uint256 k)
+        external
+        returns (address index);
 
-    /// @notice Owner only. Starts the delay after which `token` is whitelisted with `config`, or, for a token that is
-    ///         already listed, after which its config is replaced. The rule validates the config first, and the token's
-    ///         decimals are pinned with the proposal (RT-23). An expired proposal can be proposed again.
+    /// @notice Owner only. Starts the delay after which `token` is whitelisted with `referenceSupply`. A token that has
+    ///         carried a supply before, as a delisted one does, is relisted only within MAX_SUPPLY_STEP of it; a first
+    ///         listing is bounded only by MAX_SUPPLY. Reverts AlreadyListed for a whitelisted token, whose supply changes
+    ///         only in a batch, and TokenInBatch while `token` is in the live supply batch. An expired proposal can be
+    ///         proposed again.
     /// @param token Token to list; must have code.
-    /// @param config Market-data config, checked with `IIndexRule.checkConfig`.
-    function proposeListing(address token, TokenConfig calldata config) external;
+    /// @param referenceSupply Its reference supply, in raw units, from 1 to MAX_SUPPLY.
+    function proposeListing(address token, uint256 referenceSupply) external;
 
-    /// @notice Owner only. Starts the delay after which `config` replaces the config in force for `token`, which must
-    ///         have been listed, without whitelisting it: a delisted token keeps receiving config refreshes for the
-    ///         indexes that still hold it. The rule validates the config first, and the token's decimals are pinned
-    ///         with the proposal (RT-23); proposing the config in force again is how a record whose token changed its
-    ///         decimals catches up. Reverts NotConfigured for a token never listed.
-    /// @param token Listed or delisted token whose config changes.
-    /// @param config Replacement config, checked with `IIndexRule.checkConfig`.
-    function proposeConfig(address token, TokenConfig calldata config) external;
-
-    /// @notice Owner or guardian. Cancels a pending or expired listing or config change.
-    /// @param token Token whose proposal is dropped.
+    /// @notice Owner or guardian. Cancels a pending or expired listing.
     function cancelListing(address token) external;
 
-    /// @notice Permissionless between the proposal's eta and eta + PROPOSAL_WINDOW. Applies the proposed config,
-    ///         records the token's decimals ({tokenDecimals}) and, for a {proposeListing} proposal, whitelists the
-    ///         token if it is not listed. The rule checks the stored config again first, so one whose feed has since
-    ///         gone stale is not applied (DA-11), and the token must still report the decimals it reported when the
-    ///         proposal was made, or this reverts DecimalsChanged (RT-23).
-    /// @dev A config comes into force when this runs, not at its eta, and anyone can run it. Between the eta and the
-    ///      first call, both the config in force and the one due have passed the delay and the guardian's veto, and the
-    ///      first caller decides which of them prices a snapshot or a settlement: a stranger can execute a due config
-    ///      and start a rebalance in one transaction, or a filler execute it and settle, and either can leave it
-    ///      unexecuted instead. The effect is bounded by how far the two configs disagree (CR-I09). Execute a config
-    ///      change at its eta, and do not let one fall due inside the notice or auction of an index holding the token.
-    /// @param token Token whose proposal is executed.
+    /// @notice Permissionless between the proposal's eta and eta + PROPOSAL_WINDOW. Sets the proposed reference supply
+    ///         and whitelists the token if it is not listed.
     function executeListing(address token) external;
 
-    /// @notice Owner or guardian, effective immediately. Also cancels a pending {proposeListing} proposal for `token`,
-    ///         so relisting always takes a fresh proposal and delay; a pending {proposeConfig} change stays. Existing
-    ///         indexes are not affected.
-    /// @param token Whitelisted token to remove from the whitelist.
+    /// @notice Owner or guardian, effective immediately. Relisting takes a fresh proposal and delay. The reference supply
+    ///         stays, and existing indexes are not affected.
     function delist(address token) external;
+
+    /// @notice Owner only. Proposes one batch of reference supplies, which executes all or nothing after LISTING_DELAY.
+    ///         `tokens` must be 1 to MAX_BATCH tokens in strictly ascending address order (InvalidBatch), each already
+    ///         carrying a supply (NotConfigured) and none with a live listing proposal (ListingPending); each supply
+    ///         from 1 to MAX_SUPPLY and within MAX_SUPPLY_STEP of the one in force. Only one batch can be live: an
+    ///         executable one reverts SuppliesPending, an expired one is replaced.
+    /// @dev Atomic because a stranger who could execute half a batch and start a rebalance on the half would turn a
+    ///      uniform revision, which trades nothing, into a trade.
+    function proposeSupplies(address[] calldata tokens, uint256[] calldata referenceSupplies) external;
+
+    /// @notice Owner or guardian. Cancels the pending or expired supply batch.
+    function cancelSupplies() external;
+
+    /// @notice Permissionless between the batch's eta and eta + PROPOSAL_WINDOW. Puts every supply of the batch in force.
+    function executeSupplies() external;
 
     /// @notice Owner only. Starts GUARDIAN_DELAY before `newGuardian` replaces the guardian; zero removes the role.
     ///         Replaces any pending change, emitting GuardianChangeCancelled for it first.
-    /// @param newGuardian The next guardian, or zero for none.
     function proposeGuardian(address newGuardian) external;
 
     /// @notice Cancels the pending guardian change. The owner can cancel any; the current guardian can cancel only a

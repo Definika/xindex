@@ -551,17 +551,6 @@
   },
   {
     "type": "error",
-    "name": "InvalidMethodology",
-    "inputs": [
-      {
-        "name": "methodology",
-        "type": "uint8",
-        "internalType": "uint8"
-      }
-    ]
-  },
-  {
-    "type": "error",
     "name": "InvalidRecipient",
     "inputs": [
       {
@@ -656,17 +645,6 @@
       },
       {
         "name": "actual",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "TooFewComponentsForCapped",
-    "inputs": [
-      {
-        "name": "count",
         "type": "uint256",
         "internalType": "uint256"
       }

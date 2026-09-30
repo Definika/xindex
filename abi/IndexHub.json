@@ -1,44 +1,12 @@
 [
   {
     "type": "constructor",
-    "inputs": [
-      {
-        "name": "rule",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
+    "inputs": [],
     "stateMutability": "nonpayable"
   },
   {
     "type": "function",
     "name": "AUCTION_DURATION",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "AUCTION_END_MULTIPLIER",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "AUCTION_START_MULTIPLIER",
     "inputs": [],
     "outputs": [
       {
@@ -77,33 +45,33 @@
   },
   {
     "type": "function",
+    "name": "MAX_SUPPLY_STEP",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MIN_BAND",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "MIN_REBALANCE_INTERVAL",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "MIN_SETTLEMENT_RATIO",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "MIN_TURNOVER",
     "inputs": [],
     "outputs": [
       {
@@ -123,19 +91,6 @@
         "name": "",
         "type": "uint256",
         "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "RULE",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
       }
     ],
     "stateMutability": "view"
@@ -334,11 +289,11 @@
   },
   {
     "type": "function",
-    "name": "currentMultiplier",
+    "name": "currentLambda",
     "inputs": [],
     "outputs": [
       {
-        "name": "multiplier",
+        "name": "lambda",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -455,11 +410,6 @@
         "name": "units",
         "type": "uint256[]",
         "internalType": "uint256[]"
-      },
-      {
-        "name": "methodology_",
-        "type": "uint8",
-        "internalType": "uint8"
       }
     ],
     "outputs": [],
@@ -492,19 +442,6 @@
         "name": "",
         "type": "uint256",
         "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "methodology",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint8",
-        "internalType": "uint8"
       }
     ],
     "stateMutability": "view"
@@ -557,7 +494,17 @@
         "internalType": "uint256"
       },
       {
-        "name": "targetUnits",
+        "name": "lambdaMin",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "lambdaMax",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "ratios",
         "type": "uint256[]",
         "internalType": "uint256[]"
       }
@@ -609,6 +556,35 @@
   },
   {
     "type": "function",
+    "name": "previewBand",
+    "inputs": [
+      {
+        "name": "keepMask",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "ratios",
+        "type": "uint256[]",
+        "internalType": "uint256[]"
+      },
+      {
+        "name": "lambdaMin",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "lambdaMax",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "previewIssue",
     "inputs": [
       {
@@ -632,7 +608,7 @@
     "inputs": [],
     "outputs": [
       {
-        "name": "multiplier",
+        "name": "lambda",
         "type": "uint256",
         "internalType": "uint256"
       },
@@ -669,30 +645,6 @@
         "name": "amountsOut",
         "type": "uint256[]",
         "internalType": "uint256[]"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "previewTarget",
-    "inputs": [
-      {
-        "name": "keepMask",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "targetUnits",
-        "type": "uint256[]",
-        "internalType": "uint256[]"
-      },
-      {
-        "name": "turnover",
-        "type": "uint256",
-        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -1067,16 +1019,28 @@
         "internalType": "address"
       },
       {
-        "name": "targetUnits",
-        "type": "uint256[]",
-        "indexed": false,
-        "internalType": "uint256[]"
-      },
-      {
         "name": "keepMask",
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
+      },
+      {
+        "name": "lambdaMin",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "lambdaMax",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "ratios",
+        "type": "uint256[]",
+        "indexed": false,
+        "internalType": "uint256[]"
       },
       {
         "name": "eta",
@@ -1110,7 +1074,7 @@
         "internalType": "address"
       },
       {
-        "name": "multiplier",
+        "name": "lambda",
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
@@ -1191,6 +1155,22 @@
       }
     ],
     "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "BandTooNarrow",
+    "inputs": [
+      {
+        "name": "lambdaMin",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "lambdaMax",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
   },
   {
     "type": "error",
@@ -1366,17 +1346,6 @@
         "name": "keepMask",
         "type": "uint256",
         "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "InvalidMethodology",
-    "inputs": [
-      {
-        "name": "methodology",
-        "type": "uint8",
-        "internalType": "uint8"
       }
     ]
   },
@@ -1569,55 +1538,12 @@
   },
   {
     "type": "error",
-    "name": "SettlementValueTooLow",
-    "inputs": [
-      {
-        "name": "inValue",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "outValue",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "required",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "TooFewComponentsForCapped",
-    "inputs": [
-      {
-        "name": "count",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
     "name": "TransferAmountMismatch",
     "inputs": [
       {
         "name": "token",
         "type": "address",
         "internalType": "address"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "TurnoverTooLow",
-    "inputs": [
-      {
-        "name": "turnover",
-        "type": "uint256",
-        "internalType": "uint256"
       }
     ]
   },

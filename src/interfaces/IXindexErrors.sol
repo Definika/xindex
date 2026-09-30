@@ -2,7 +2,7 @@
 pragma solidity 0.8.28;
 
 /// @title IXindexErrors
-/// @notice Errors that more than one Xindex contract can raise, declared once so that the factory, rule, token and zap
+/// @notice Errors that more than one Xindex contract can raise, declared once so that the factory, hub, zap and request
 ///         interfaces can be combined and their shared selectors can never drift apart. Each function's NatSpec says
 ///         when it raises one of them.
 interface IXindexErrors {
@@ -11,12 +11,6 @@ interface IXindexErrors {
 
     /// @notice Two arrays that pair up entry by entry have different lengths.
     error LengthMismatch();
-
-    /// @notice `methodology` is not a `Methodology` id.
-    error InvalidMethodology(uint8 methodology);
-
-    /// @notice `count` components are too few for the capped methodology (`Methodology.MIN_CAPPED_COMPONENTS`).
-    error TooFewComponentsForCapped(uint256 count);
 
     /// @notice `account` is not allowed to make this call: it needs the factory owner, or the owner or guardian.
     error Unauthorized(address account);
