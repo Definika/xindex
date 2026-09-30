@@ -109,12 +109,13 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         if (bytes(name).length == 0 || bytes(symbol).length == 0) revert EmptyString();
         uint256[] memory units = _validateComponents(tokens, k);
 
+        address template = _template(tokens);
         bytes32 salt = _salt(msg.sender, name, symbol, tokens, units);
-        address predicted = Clones.predictDeterministicAddress(IMPLEMENTATION, salt);
+        address predicted = Clones.predictDeterministicAddress(template, salt);
         if (predicted.code.length != 0) revert IndexAlreadyExists(predicted);
 
         // Effects before interaction: register the clone, then initialize it in the same tx.
-        index = Clones.cloneDeterministic(IMPLEMENTATION, salt);
+        index = Clones.cloneDeterministic(template, salt);
         isIndex[index] = true;
         creatorOf[index] = msg.sender;
         allIndexes.push(index);
@@ -123,6 +124,24 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         // forge-lint: disable-next-line(reentrancy-events)
         emit IndexCreated(index, msg.sender, name, symbol, tokens, units);
 
+        _initializeIndex(index, salt, name, symbol, tokens, units);
+    }
+
+    /// @dev The template an index of `tokens` is a clone of. Stage A has one; a factory that also creates indexes with
+    ///      tokens held elsewhere overrides this and `_initializeIndex`.
+    function _template(address[] calldata) internal view virtual returns (address) {
+        return IMPLEMENTATION;
+    }
+
+    /// @dev Initializes a fresh clone. The salt is unused here, and kept for a factory that records it.
+    function _initializeIndex(
+        address index,
+        bytes32,
+        string calldata name,
+        string calldata symbol,
+        address[] calldata tokens,
+        uint256[] memory units
+    ) internal virtual {
         IIndexHub(index).initialize(name, symbol, tokens, units);
     }
 
@@ -131,7 +150,7 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         return _units(tokens, k);
     }
 
-    function _units(address[] calldata tokens, uint256 k) private view returns (uint256[] memory units) {
+    function _units(address[] calldata tokens, uint256 k) internal view returns (uint256[] memory units) {
         uint256 n = tokens.length;
         units = new uint256[](n);
         for (uint256 i = 0; i < n; ++i) {
@@ -148,7 +167,7 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         uint256 k
     ) external view returns (address) {
         return Clones.predictDeterministicAddress(
-            IMPLEMENTATION, _salt(creator, name, symbol, tokens, _units(tokens, k))
+            _template(tokens), _salt(creator, name, symbol, tokens, _units(tokens, k))
         );
     }
 
@@ -157,7 +176,7 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         return account == owner() || (account == guardian && account != address(0));
     }
 
-    function _checkOwnerOrGuardian() private view {
+    function _checkOwnerOrGuardian() internal view {
         if (!isOwnerOrGuardian(msg.sender)) revert Unauthorized(msg.sender);
     }
 
@@ -182,7 +201,7 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         string calldata symbol,
         address[] calldata tokens,
         uint256[] memory units
-    ) private pure returns (bytes32) {
+    ) internal pure returns (bytes32) {
         return keccak256(
             abi.encode(
                 creator,
@@ -201,6 +220,12 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
     /// @inheritdoc IIndexFactory
     function proposeListing(address token, uint256 supply) external onlyOwner {
         if (token.code.length == 0) revert NotAContract(token);
+        _proposeListing(token, supply);
+    }
+
+    /// @dev The listing flow for any token id: an ERC-20 on Ethereum, or a factory that also lists tokens held
+    ///      elsewhere, under an id of its own making.
+    function _proposeListing(address token, uint256 supply) internal {
         if (isWhitelisted[token]) revert AlreadyListed(token);
         uint256 pending = listingEta[token];
         if (pending != 0 && block.timestamp <= pending + PROPOSAL_WINDOW) revert ListingPending(token, pending);

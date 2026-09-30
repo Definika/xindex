@@ -54,9 +54,7 @@ market from `script/testnet/SetupTestMarket.s.sol`.
    router- or pool-related. Their summary must list the four `test/fork/` suites and 0 skipped.
 5. The Wake VS Code analyzer reports no errors or warnings on `src/`. Its reentrancy detector does not model reentrancy
    guards; the three documented suppressions are on the `redeem` call in `IndexZap._burnBasket`, the `permit` call in
-   `IndexZap.burnToTokenWithPermit`, and the executor callback in `IndexHub._settle`. Two more, on
-   `VaultMessages.VaultMessage` and `VaultMessages.encode`, cover the half of the Stage B message format that only the
-   Ethereum side uses; they go when that side is built.
+   `IndexZap.burnToTokenWithPermit`, and the executor callback in `IndexHub._settle`.
 6. Every testable finding of the security reviews keeps its regression test passing, named after its id. A test that
    covers two findings carries both ids. The id families:
    - v1 findings: by their v1 id.
@@ -118,7 +116,8 @@ src/IndexFactory.sol          listings, reference supplies and weekly supply bat
 src/IndexZap.sol              stateless Universal Router mint/burn router, a venue per leg, per-leg limits, nonce check
 src/MintRequests.sol          ownerless escrow of USDC/USDT-for-shares requests at the requester's own limit, filled by anyone
 src/interfaces/               IIndexHub, IIndexFactory, IIndexZap, IMintRequests, IXindexErrors (shared errors), IRebalanceExecutor, IUniversalRouter,
-                              and for Stage B IXindexVault, IEthereumEventVerifier, IVaultStateVerifier and IBnbStateVerifier
+                              and for Stage B IXindexVault, IEthereumEventVerifier, IVaultStateVerifier, IBnbStateVerifier,
+                              IHybridIndexFactory and IHybridHub
 src/libraries/PathLib.sol     V3 packed path decoding (shared with test mocks)
 src/libraries/UniversalRouterCommands.sol  the router command bytes the zap emits, vendored with their input layouts
 src/libraries/UniswapV4Types.sol           V4 actions, PathKey and the swap params, vendored from v4-periphery (MIT)
@@ -128,6 +127,8 @@ src/libraries/MerklePatricia.sol           Stage B: storage proofs from a state 
 src/libraries/Bls12381.sol                 Stage B: BLS on the EIP-2537 precompiles, BNB Chain's vote ciphersuite
 src/vault/XindexVault.sol     Stage B: the ownerless vault on an EVM chain, native coin per index, speed limit, freeze (not deployed)
 src/verifiers/BnbStateVerifier.sol  Stage B: BNB Chain's state on Ethereum from its own finality votes, following every epoch (not deployed)
+src/HybridIndexFactory.sol    Stage B: IndexFactory plus the chain registry, vault-token listings, the chain freeze and the template choice (not deployed)
+src/HybridHub.sol             Stage B: the index of tokens on Ethereum and in vaults, minting through orders and redeeming through burns (not deployed)
 test/*.t.sol                  unit / fuzz / invariant / script tests
 test/XindexTest.sol           state and listing helpers the factory, hub, zap and security suites share
 test/Security.t.sol           regression tests for the security review findings (see gate 6 for ids tested elsewhere)
@@ -135,6 +136,7 @@ test/Repo.t.sol               repository facts findings rest on: pinned compiler
 test/mocks/                   mock tokens, WETH, a strict Universal Router, V3 pools for the testnet script, the market fixture (+ Mocks.t.sol)
 test/fixtures/bnb/            real BNB Chain data for the Stage B verifier, and generate.py, which rebuilds it from a public RPC (py_ecc, pycryptodome)
 test/utils/                   test-only helpers (an RLP writer)
+test/HybridTest.sol           Stage B on one EVM: a real vault standing for another chain, a state verifier reading its storage, message delivery
 test/fork/                    test-only mainnet addresses, end-to-end fork tests, a V3 rebalance executor, fork security regressions
 script/                       Deploy, ConfigureWhitelist, MainnetAddresses (the one copy of mainnet addresses and dated reference supplies)
 script/interfaces/            the Safe, WETH and Uniswap setup calls the scripts make
@@ -345,6 +347,23 @@ prototype/                    the proving prototype: an SP1 workspace and its ow
   whitelist USDC/USDT as components in scripts or docs; they are fine as mint/burn currencies. The script's policy
   also wants 6 to 18 decimals, which now matter only to display. Pausable components such as WBTC must be labelled in
   the app, and so must every other issuer a component adds, starting with WBTC's custodian.
+
+## Stage B (in progress, not deployed)
+
+Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the ones code must never break.
+- **Stage A stays as it is.** An index of Ethereum tokens only is an `IndexHub` clone, byte-identical to Stage A's;
+  `HybridIndexFactory` reaches it only through `IndexFactory`'s two template hooks.
+- **Vaults.** A chain's vault is fixed once registered, and an index copies its vaults at creation. A vault pays out
+  only on messages both Ethereum-side proofs carry, and only protective messages (a freeze, a lowered cap) pass on one.
+- **The hub's book is exact.** `vaultBacking` changes only by the proven deposits of a claimed order and by burns, both
+  from supply and units. Every order spans every chain of its index, and its intake id carries its deadline.
+- **Nothing an order rests on can change unseen.** Deposits are proven only after their deadline. During the lock, any
+  different proof of the intake voids the order and freezes the chain. A freeze that began at or after settlement holds
+  the order until a proof from after the freeze re-confirms it.
+- **Failing never blocks a refund.** A failed order's escrow becomes claims instead of transfers, so vault depositors
+  always get their `INTAKE_FAILED`.
+- **Size.** `HybridHub` is near the 24KB limit, so new hub features go in a separate module. Check
+  `forge build --sizes` after any change to it.
 
 ## Conventions
 

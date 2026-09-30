@@ -6,9 +6,7 @@ pragma solidity 0.8.28;
 ///         once a proof shows that log in a final Ethereum block. The payload names its domain, source and
 ///         destination chains, vault and index, so no proof can be replayed on another chain, vault or index.
 library VaultMessages {
-    /// @notice The event every message travels in.
-    // Emitted by the Ethereum side, which is not built yet; the vault reads it by its topic, EVENT_TOPIC.
-    // wake-disable-next-line unused-event
+    /// @notice The event every message travels in, emitted by a hub or the factory; the vault reads it by its topic.
     event VaultMessage(bytes32 indexed id, bytes payload);
 
     /// @notice Separates these messages from any other abi-encoded data.
@@ -49,10 +47,8 @@ library VaultMessages {
     /// @notice The payload is not of this domain.
     error WrongDomain(bytes32 domain);
 
-    /// @notice The payload of `m`. The hub and the factory on Ethereum send with it, and the vault's tests build their
-    ///         messages with it, so both directions share this one definition of the format.
-    // The Ethereum side that sends messages is not built yet; until it is, nothing in src/ calls this.
-    // wake-disable-next-line unused-function
+    /// @notice The payload of `m`. The hub and the factory on Ethereum send with it, and the vault decodes it, so both
+    ///         directions share this one definition of the format.
     function encode(Message memory m) internal pure returns (bytes memory) {
         return abi.encode(DOMAIN, m.sourceChainId, m.kind, m.destChainId, m.vault, m.index, m.nonce, m.body);
     }

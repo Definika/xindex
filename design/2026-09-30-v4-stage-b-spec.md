@@ -222,13 +222,95 @@ for several epochs' votes (BLS aggregate verification over distinct messages), w
 to a transaction, but it mixes two signature checks whose combination needs its own security argument, so it waits
 for review.
 
+### 5.2 The factory and `HybridHub`, layer 1 (built 2026-09-30)
+
+The Ethereum side is built in layers, each committed only when every gate is green. Layer 1 is the chain registry,
+vault-token listings, and a `HybridHub` that mints through orders and redeems through burns. It does not rebalance.
+
+**The factory.** `HybridIndexFactory` extends Stage A's `IndexFactory`, which gains only two internal hooks: which
+template an index is a clone of, and how to initialize it. Stage A's behaviour is unchanged, and its `IndexHub` is
+byte-identical: an index of Ethereum tokens only is still an `IndexHub` clone.
+- **Chains.** `proposeChain(chainId, vault, stateVerifier)` by the owner, executable by anyone after `LISTING_DELAY`
+  and within `PROPOSAL_WINDOW`, cancellable by the owner or guardian. Chain id zero is refused, since zero is
+  Ethereum's place in an index.
+- **Fixed vault.** A chain's vault is fixed at its first registration, because every index holding its tokens copies it
+  (I8). After that, only its state verifier changes, through the same delay, and every index reads the verifier live
+  at each proof. That is how a verifier follows a chain upgrade (design 6.10).
+- **Vault tokens.** `proposeVaultListing(chainId, tokenId, supply)` lists a token held in a vault under an Ethereum-side
+  id, a hash of the chain and the token id that no contract holds. From its proposal on it runs Stage A's flow
+  unchanged: executeListing, delist, and weekly supply batches.
+- **Freeze.** `freezeChain(chainId)`, by the owner or guardian, freezes every index's mints on that chain for 14 days.
+  It also emits a `FREEZE` message, which the vault accepts on either proof.
+- **Templates.** An index holding any vault token is a `HybridHub` clone. The factory records its CREATE2 salt, which
+  the vault's `registerIndex` needs. The `HybridHub` template is deployed first, for the factory's predicted address,
+  and the factory's constructor refuses a template built for another factory: with both templates, its own initcode
+  would pass the 48KB limit.
+
+**`HybridHub`.**
+- **Tokens on Ethereum** are held in the hub's balance as in Stage A.
+- **Tokens in vaults** are held in the hub's book, `vaultBacking`, which is exact by construction: it grows by the
+  proven deposits of every claimed order and falls by every amount burned.
+- **Invariants:** `balanceOf ≥ floor(S·u) + claims + escrow` on Ethereum, and `vaultBacking ≥ floor(S·u) + claims`
+  per vault token. The invariant suite also checks, with every message delivered, that the vault's real balance
+  equals the book.
+
+The order flow:
+- **Open.** `openOrder(shares, deadline)` escrows the Ethereum components and gives an intake id,
+  `(deadline << 192) | orderId`. The deadline is at most `MAX_ORDER_LIFE` (6 hours) ahead: the design's 2-hour default,
+  its 6-hour maximum. The minter deposits on each vault chain under that id.
+- **Settle.** `settleOrder` proves each vault's intake digest at a block after the deadline, when deposits are final. It
+  checks the digest's preimage and that each deposit covers the order. The whole deposit, surplus included, joins the
+  index.
+- **Mint cap.** Settling applies the mint cap, 4% of the supply over the current hour and the 24 before it. The first
+  order of an empty index is its seed and has no cap of its own: the vault's quantity cap bounds it.
+- **Void.** During the 24-hour lock, `voidOrder` takes any proof of the same intake, at a block after the deadline,
+  showing a different digest. An intake cannot change between its deadline and the hub's message, so such a proof means
+  the deposit or the proof was false. The order fails, and the hub freezes that chain's mints for 14 days.
+- **Freeze.** A freeze of the chain, by the factory or by a void, that begins at or after an order's settlement holds
+  the order. It cannot be claimed until `reconfirmOrder` proves the intake unchanged at a block after the freeze ended.
+  Same-second freezes count, since nothing settles while frozen; a mutant using `>` fails
+  `test_freeze_inTheSettlingSecondHoldsTheOrder`.
+- **Claim.** `claimOrder` mints the shares, credits the deposits to the book, and sends `INTAKE_SETTLED` to each vault.
+- **Fail.** `failOrder` works for the minter at any time while the order is open, or for anyone `SETTLE_GRACE` (6 hours)
+  after the deadline. It books the escrow as the minter's claims, never transfers it, so a paused Ethereum token cannot
+  keep vault depositors from their refund. It then sends `INTAKE_FAILED`.
+- **Stray intakes.** `failIntake` fails an intake that belongs to no order, once its deadline has passed, so a stray
+  deposit is never stuck.
+
+Redeeming and claims:
+- `redeem(shares, to, recipients, skipMask)` pays the Ethereum components to `to` and sends each vault a `BURN` toward
+  `recipients[j]`.
+- A skipped component, or one on a chain whose recipient is zero, is booked as a claim of `to`.
+- `claim` pays an Ethereum claim; `claimToVault` burns a vault claim toward a recipient named then.
+
+**New parameters, for the owner's review.**
+- `SETTLE_GRACE` (6 hours): how long an unsettled order stays its minter's before anyone may fail it.
+- `MAX_ORDER_LIFE` (6 hours): the design's maximum deadline.
+- The seed's exemption from the mint cap, bounded by the vault's quantity cap. It replaces the design's "launch cap".
+
+**Size.** The hub is 23.9KB of the 24KB limit, so layer 2 (the rebalance with deliveries and bond) goes in a separate
+module the hub delegates to, not in the hub itself.
+
+**For the owner: one factory or two.** The factory is immutable, and the Stage B factory must know the `HybridHub`
+template when it is deployed. The alternatives:
+- Stage A launches on this factory with no chains registered: one factory, one set of supplies, and Stage A's audit
+  covering the registry. Stage A's launch then waits for the `HybridHub` template to be final.
+- Stage A launches on `IndexFactory` now, and Stage B deploys this factory beside it: two sets of supplies for the
+  owner to keep, and Stage A's indexes never hold a vault token.
+
+**Not in layer 1:**
+- the rebalance with deliveries and bond, and migration between versions;
+- shortfall evidence from index digests, stall recovery and snapshot exit;
+- the governance messages `CAP_UPDATE`, `FREEZER_CHANGE` and `VERIFIER_ROTATION`, with its 30-day delay.
+
 ## 6. Build order
 
 1. The message library and the verifier interface. Then the EVM vault, with unit tests, an invariant suite, mock
    verifiers, and 100% coverage under the repository's gates.
 2. The BNB Chain state verifier on Ethereum, from the prototype, with validator-set tracking and fork tests against
    BNB Chain data.
-3. The factory's chain registry, and `HybridHub` (once proposal 1 is decided).
+3. The factory's chain registry, and `HybridHub` (once proposal 1 is decided). Layer 1 is built (section 5.2); layer 2
+   is the rebalance with deliveries and bond, then migration, shortfall evidence and the governance messages.
 4. The Ethereum-event verifiers (P1, P2), once the owner decides the proof system after the GPU run.
 5. The Solana vault program, then HyperEVM and Tron.
 6. The stall recovery and snapshot exit, then watchers, then the testnet rehearsals of the design's Phase 3.
