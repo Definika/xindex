@@ -200,9 +200,9 @@ Deposits proved against the same voted block share one vote check. The first ver
 memory array of structs for every trie node and cost 418k gas; locating items in place halved it.
 
 So the vault → Ethereum direction for BNB Chain needs **no zkVM and no trusted setup**, only the chain's own signatures
-checked by Ethereum's precompiles, at about 650k gas against the 1M threshold. The validator set needs an update transaction only when
-its membership changes, at most about daily, because a finality vote by an unchanged set proves an epoch block's list
-as well as any other block. Still to measure in M6: the set update itself.
+checked by Ethereum's precompiles, at about 650k gas against the 1M threshold. The validator set needs an update
+transaction only when its membership changes, at most about daily, because a finality vote by an unchanged set proves an
+epoch block's list as well as any other block. Still to measure in M6: the set update itself.
 
 ### M5: verifying the wrapped proof
 
