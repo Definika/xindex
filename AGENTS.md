@@ -136,6 +136,7 @@ src/libraries/Bls12381.sol                 Stage B: BLS on the EIP-2537 precompi
 src/vault/XindexVault.sol     Stage B: the ownerless vault on an EVM chain, native coin per index, speed limit, freeze (not deployed)
 src/vault/VaultSnapshot.sol   Stage B: the vault's linked library for a holder's snapshot claim: the hub's storage it reads, and the signature
 src/verifiers/BnbStateVerifier.sol  Stage B: BNB Chain's state on Ethereum from its own finality votes, following every epoch (not deployed)
+src/verifiers/EthereumFinalityVerifier.sol  Stage B: P1 on an EVM vault chain, a light client of Ethereum advanced by SP1 proofs, proving a vault message by its receipt (not deployed)
 src/verifiers/EthereumStateReader.sol Stage B: reads Ethereum storage under a trusted root, for a vault's snapshot exit (not deployed)
 src/HybridIndexFactory.sol    Stage B: IndexFactory plus the chain registry, vault-token listings, the chain freeze and the template choice (not deployed)
 src/HybridHub.sol             Stage B: the index of tokens on Ethereum and in vaults: orders, burns, claims; delegates the rest to its module (not deployed)
@@ -149,6 +150,7 @@ test/Security.t.sol           regression tests for the security review findings 
 test/Repo.t.sol               repository facts findings rest on: pinned compiler, CI gates and toolchain, dependency lock, ABIs, no price, docs
 test/mocks/                   mock tokens, WETH, a strict Universal Router, V3 pools for the testnet script, the market fixture (+ Mocks.t.sol)
 test/fixtures/bnb/            real BNB Chain data for the Stage B verifier, and generate.py, which rebuilds it from a public RPC (py_ecc, pycryptodome)
+test/fixtures/ethereum/       a real mainnet block's receipts trie proofs for P1's verifier, and generate.py, which rebuilds them and checks the root (rlp, trie)
 test/utils/                   test-only helpers (an RLP writer)
 test/HybridTest.sol           Stage B on one EVM: a real vault standing for another chain, a state verifier reading its storage, message delivery
 test/fork/                    test-only mainnet addresses, end-to-end fork tests, a V3 rebalance executor, fork security regressions
@@ -472,6 +474,8 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
     `3663f6db6e2fe121753cd2d899699c2dc75dca86`, which is tag 2.0.0 and the deployment the zap is pinned to.
   - `UniswapV4Types` comes from v4-periphery (MIT) at `444c526b77d804590f0d7bc5a481af5a3277c952`, the commit that
     router was built against.
+  - `ISP1Verifier` comes from succinctlabs/sp1-contracts (MIT) at `d3629729c3216eb51bd4859d027a8eb729399fa4`, the SP1
+    v6 verifiers the prototype measured, with its pragma pinned.
 
   A vendored struct may retype `Currency` and `IHooks` to `address`, which is ABI-identical. Change vendored code only
   to replace a dependency, never to restyle. Both router libraries record the input layout of every command and action

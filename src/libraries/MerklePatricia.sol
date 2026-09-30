@@ -3,9 +3,10 @@ pragma solidity 0.8.28;
 
 import {RlpReader} from "./RlpReader.sol";
 
-/// @notice Walks Merkle-Patricia proofs, the node lists `eth_getProof` returns, on an EVM chain's state trie. Every node
-///         is authenticated by its hash from the root down, or embedded in an authenticated parent, so the value found
-///         is the one the root commits to; a proof that the key is absent returns nothing.
+/// @notice Walks Merkle-Patricia proofs, the node lists `eth_getProof` returns, on an EVM chain's state trie, and on a
+///         block's receipts trie, whose keys are shorter. Every node is authenticated by its hash from the root down, or
+///         embedded in an authenticated parent, so the value found is the one the root commits to; a proof that the key
+///         is absent returns nothing.
 library MerklePatricia {
     using RlpReader for RlpReader.Item;
 
@@ -24,6 +25,7 @@ library MerklePatricia {
     ///      must have unless it is embedded, and, once the walk is over, what it found.
     struct Cursor {
         RlpReader.Item node;
+        uint256 keyNibbles;
         uint256 nibble;
         bytes32 expected;
         bool embedded;
@@ -52,14 +54,25 @@ library MerklePatricia {
         return bytes32(RlpReader.toItem(valueRlp.toBytes()).toUint());
     }
 
-    /// @notice The leaf value stored under `key`, if the proof shows one.
+    /// @notice The leaf value stored under `key`, a 32-byte hash, if the proof shows one.
     function get(bytes32 root, bytes32 key, bytes[] memory proof)
+        internal
+        pure
+        returns (bool found, RlpReader.Item memory value)
+    {
+        return get(root, key, KEY_NIBBLES, proof);
+    }
+
+    /// @notice The leaf value stored under the key whose `keyNibbles` nibbles lead `key`, if the proof shows one. In a
+    ///         receipts trie no key is a prefix of another, so a value is only ever a leaf's.
+    function get(bytes32 root, bytes32 key, uint256 keyNibbles, bytes[] memory proof)
         internal
         pure
         returns (bool found, RlpReader.Item memory value)
     {
         Cursor memory c;
         c.expected = root;
+        c.keyNibbles = keyNibbles;
         uint256 next = 0; // the proof node the next hash reference must match
         while (!c.done) {
             if (!c.embedded) {
@@ -80,8 +93,8 @@ library MerklePatricia {
 
     /// @dev A branch node: follows the key's next nibble, or ends the walk when that child is empty.
     function _branch(Cursor memory c, bytes32 key, uint256 i) private pure {
-        // Keys are 32-byte hashes, so a walk never ends at a branch's own value slot.
-        if (c.nibble >= KEY_NIBBLES) revert BadProof(i);
+        // No key is a prefix of another in the tries walked here, so a walk never ends at a branch's own value slot.
+        if (c.nibble >= c.keyNibbles) revert BadProof(i);
         RlpReader.Item memory child = c.node.at(_nibble(key, c.nibble));
         c.nibble += 1;
         if (!child.isList && child.len == 0) c.done = true;
@@ -90,7 +103,7 @@ library MerklePatricia {
 
     /// @dev A leaf or an extension: its path must continue the key, else the key is absent.
     function _shortNode(Cursor memory c, bytes32 key, uint256 i) private pure {
-        (uint256 length, bool isLeaf, bool matches) = _matchPath(c.node.at(0), key, c.nibble);
+        (uint256 length, bool isLeaf, bool matches) = _matchPath(c.node.at(0), key, c.nibble, c.keyNibbles);
         if (!matches) {
             c.done = true;
             return;
@@ -98,7 +111,7 @@ library MerklePatricia {
         c.nibble += length;
         RlpReader.Item memory child = c.node.at(1);
         if (isLeaf) {
-            if (c.nibble != KEY_NIBBLES) revert BadProof(i);
+            if (c.nibble != c.keyNibbles) revert BadProof(i);
             c.value = child;
             c.found = true;
             c.done = true;
@@ -122,7 +135,7 @@ library MerklePatricia {
     ///      is a flag: 0 or 1 an extension, 2 or 3 a leaf, odd when the path has an odd number of nibbles, whose first
     ///      then shares the flag's byte; an even path pads that byte's second nibble with zero. The path's nibbles
     ///      are compared with the key's as two numbers, not one by one.
-    function _matchPath(RlpReader.Item memory path, bytes32 key, uint256 offset)
+    function _matchPath(RlpReader.Item memory path, bytes32 key, uint256 offset, uint256 keyNibbles)
         private
         pure
         returns (uint256 length, bool isLeaf, bool matches)
@@ -135,7 +148,7 @@ library MerklePatricia {
         if (!odd && first & NIBBLE_MASK != 0) revert RlpReader.BadRlp();
         uint256 rest = path.len - 1; // bytes after the flag's
         length = 2 * rest + (odd ? 1 : 0);
-        matches = offset + length <= KEY_NIBBLES;
+        matches = offset + length <= keyNibbles;
         if (!matches) return (length, isLeaf, matches);
         uint256 nibbles = rest == 0 ? 0 : path.uintAt(1, rest);
         if (odd) nibbles |= (first & NIBBLE_MASK) << (NIBBLE_BITS * 2 * rest);
