@@ -243,6 +243,40 @@ toolchain anyway.
 
 The vault → Ethereum direction for BNB Chain needs no zkVM at all (M6): about 650k gas a proof, measured.
 
+## M3 on real data: the full P1 statement in execute mode (1 October 2026)
+
+`proofs/p1-input` built a real input from mainnet, and `p1 execute` ran the whole statement of the Stage B spec's
+section 10 on it, without proving:
+
+| Input | Value |
+|---|---|
+| Anchor | epoch 479,099, a registry of 2,375,541 validators, exited ones included |
+| C1 | epoch 479,101, finalized by 149 and 170 real aggregates |
+| Signers counted | 1,051,438 into C1 and 964,758 out of it |
+| Execution headers | 63 |
+
+| Result | Value |
+|---|---|
+| Instructions | 68.5 billion |
+| Prover gas | **92.9 billion**, against the model's 11 billion |
+| Execute time | 571 s on two threads |
+| Public values | equal to the native run's |
+
+Where the model went wrong:
+- **The registry.** The statement re-hashes the whole SSZ registry to check it against the anchor, and the registry holds
+  2.4 million validators, not the 0.9 million active ones the model counted. Each validator costs about 8 SHA-256 hashes,
+  and SSZ's 64-byte hashes take two compressions each.
+- **The keys.** Each signer's key is read and checked once per link, so about 2 million times.
+- **The input.** Its 560 MB, mostly the registry, is read into the zkVM.
+
+The cuts, in order of risk:
+1. Read each signer's key once for both links, and pass keys only for signers.
+2. Pass an exited validator's record as the few leaves the statement needs, with the rest as subtree hashes.
+3. Replace the SSZ registry root in the anchor with a cheaper commitment kept up by the proofs, as the model assumed. That
+   changes the statement's security argument and needs review.
+
+The $50 threshold now depends on the price of a billion prover gas, which M4 measures.
+
 ## One-epoch finality: the argument, for review
 
 The full rule proves two epochs' supermajorities: one justifying `C1`, one linking `C1` to its child `C2`. The
