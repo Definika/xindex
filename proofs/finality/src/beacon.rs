@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 pub const SLOTS_PER_EPOCH: u64 = 32;
 pub const FAR_FUTURE_EPOCH: u64 = u64::MAX;
 pub const DOMAIN_BEACON_ATTESTER: [u8; 4] = [1, 0, 0, 0];
+pub const DOMAIN_DEPOSIT: [u8; 4] = [3, 0, 0, 0];
+pub const GENESIS_FORK_VERSION: [u8; 4] = [0, 0, 0, 0];
 
 /// Mainnet's `genesis_validators_root`.
 pub const GENESIS_VALIDATORS_ROOT: Root = [
@@ -30,10 +32,11 @@ pub fn fork_version(epoch: u64) -> Option<[u8; 4]> {
 /// `BeaconState` has 37 fields in Electra and 38 in Fulu, so 64 leaves either way; `validators` is field 11.
 pub const STATE_DEPTH: usize = 6;
 pub const STATE_VALIDATORS_INDEX: u64 = 11;
-/// From a block's body root to its execution payload's `block_hash`: `BeaconBlockBody` has 13 fields (16 leaves) with
-/// `execution_payload` at 9, and `ExecutionPayload` 17 fields (32 leaves) with `block_hash` at 12.
-pub const BODY_BLOCK_HASH_DEPTH: usize = 4 + 5;
-pub const BODY_BLOCK_HASH_INDEX: u64 = 9 * 32 + 12;
+/// From a block's state root to the `block_hash` of the execution payload that block carried: the state's
+/// `latest_execution_payload_header` is field 24, and an `ExecutionPayloadHeader` has 17 fields (32 leaves) with
+/// `block_hash` at 12. A block's state is its post-state, so that header is the block's own payload's.
+pub const STATE_BLOCK_HASH_DEPTH: usize = STATE_DEPTH + 5;
+pub const STATE_BLOCK_HASH_INDEX: u64 = 24 * 32 + 12;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Checkpoint {
@@ -113,4 +116,20 @@ pub fn compute_domain(
 /// The consensus specs' `compute_signing_root`: the root of `SigningData(object_root, domain)`.
 pub fn signing_root(object_root: &Root, domain: &Root) -> Root {
     hash_pair(object_root, domain)
+}
+
+/// The root of `DepositMessage(pubkey, withdrawal_credentials, amount)`, which a deposit signs.
+pub fn deposit_message_root(pubkey: &[u8; 48], withdrawal_credentials: &Root, amount: u64) -> Root {
+    let mut low = [0u8; 32];
+    low.copy_from_slice(&pubkey[..32]);
+    let mut high = [0u8; 32];
+    high[..16].copy_from_slice(&pubkey[32..]);
+    merkleize(
+        &[
+            hash_pair(&low, &high),
+            *withdrawal_credentials,
+            u64_chunk(amount),
+        ],
+        2,
+    )
 }

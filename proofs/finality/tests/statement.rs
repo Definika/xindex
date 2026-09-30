@@ -2,18 +2,16 @@
 //! checkpoint block whose state and body commit to what the proof reads, and execution headers as RLP. Each refusal
 //! is reached by changing one thing.
 
-use bls12_381::hash_to_curve::{ExpandMsgXmd, HashToCurve};
-use bls12_381::{G1Affine, G2Projective, Scalar};
+use bls12_381::{G1Affine, G1Projective, Scalar};
 use group::Curve;
-use sha2::Sha256;
 use xindex_finality::beacon::{
-    compute_domain, fork_version, signing_root, AttestationData, BeaconBlockHeader, Checkpoint,
-    DOMAIN_BEACON_ATTESTER, GENESIS_VALIDATORS_ROOT,
+    compute_domain, fork_version, signing_root, Checkpoint, DOMAIN_BEACON_ATTESTER,
+    GENESIS_VALIDATORS_ROOT,
 };
-use xindex_finality::bls::DST;
+use xindex_finality::bls;
 use xindex_finality::execution::{keccak, keccak_root, parse_header};
-use xindex_finality::registry::{validators_root, Validator};
-use xindex_finality::ssz::{hash_pair, merkleize};
+use xindex_finality::registry::validators_root;
+use xindex_finality::ssz::merkleize;
 use xindex_finality::statement::{UncompressedKey, MARGIN_PER_EPOCH_GWEI, MAX_EPOCH_GAP};
 use xindex_finality::{verify, Aggregate, Anchor, Error, Input, Root};
 
@@ -21,140 +19,7 @@ const N: usize = 300;
 const BALANCE: u64 = 2_048_000_000_000;
 const E0: u64 = 411_400;
 
-struct Chain {
-    secrets: Vec<Scalar>,
-    validators: Vec<Validator>,
-    keys: Vec<UncompressedKey>,
-}
-
-fn chain(balance: u64) -> Chain {
-    let secrets: Vec<Scalar> = (0..N).map(|i| Scalar::from(1_000 + i as u64)).collect();
-    let mut validators = Vec::new();
-    let mut keys = Vec::new();
-    for s in &secrets {
-        let point = (G1Affine::generator() * s).to_affine();
-        validators.push(Validator {
-            pubkey: point.to_compressed(),
-            withdrawal_credentials: [0x01; 32],
-            effective_balance: balance,
-            slashed: false,
-            activation_eligibility_epoch: 0,
-            activation_epoch: 0,
-            exit_epoch: u64::MAX,
-            withdrawable_epoch: u64::MAX,
-        });
-        keys.push(UncompressedKey(point.to_uncompressed()));
-    }
-    Chain {
-        secrets,
-        validators,
-        keys,
-    }
-}
-
-fn sign(chain: &Chain, signers: &[u32], data: &AttestationData) -> [u8; 96] {
-    let domain = compute_domain(
-        DOMAIN_BEACON_ATTESTER,
-        fork_version(data.target.epoch).unwrap(),
-        &GENESIS_VALIDATORS_ROOT,
-    );
-    let message = signing_root(&data.hash_tree_root(), &domain);
-    let hashed =
-        <G2Projective as HashToCurve<ExpandMsgXmd<Sha256>>>::hash_to_curve([&message[..]], DST);
-    let secret = signers
-        .iter()
-        .fold(Scalar::zero(), |acc, &i| acc + chain.secrets[i as usize]);
-    (hashed * secret).to_affine().to_compressed()
-}
-
-// ---------------------------------------------------------------------
-// RLP, as an execution client writes a header
-// ---------------------------------------------------------------------
-
-fn rlp_bytes(b: &[u8]) -> Vec<u8> {
-    if b.len() == 1 && b[0] < 0x80 {
-        return b.to_vec();
-    }
-    let mut out = length_prefix(b.len(), 0x80);
-    out.extend_from_slice(b);
-    out
-}
-
-fn rlp_list(items: &[Vec<u8>]) -> Vec<u8> {
-    let payload: Vec<u8> = items.concat();
-    let mut out = length_prefix(payload.len(), 0xc0);
-    out.extend(payload);
-    out
-}
-
-fn length_prefix(len: usize, base: u8) -> Vec<u8> {
-    if len <= 55 {
-        return vec![base + len as u8];
-    }
-    let be: Vec<u8> = len
-        .to_be_bytes()
-        .iter()
-        .copied()
-        .skip_while(|b| *b == 0)
-        .collect();
-    let mut out = vec![base + 55 + be.len() as u8];
-    out.extend(be);
-    out
-}
-
-fn rlp_int(x: u64) -> Vec<u8> {
-    let be: Vec<u8> = x
-        .to_be_bytes()
-        .iter()
-        .copied()
-        .skip_while(|b| *b == 0)
-        .collect();
-    rlp_bytes(&be)
-}
-
-/// A Prague header with every field an execution client writes.
-fn exec_header(parent: Root, number: u64) -> Vec<u8> {
-    rlp_list(&[
-        rlp_bytes(&parent),
-        rlp_bytes(&[0x1d; 32]),
-        rlp_bytes(&[0x95; 20]),
-        rlp_bytes(&keccak(&[b"state", &number.to_be_bytes()])),
-        rlp_bytes(&[0x56; 32]),
-        rlp_bytes(&keccak(&[b"receipts", &number.to_be_bytes()])),
-        rlp_bytes(&[0u8; 256]),
-        rlp_int(0),
-        rlp_int(number),
-        rlp_int(36_000_000),
-        rlp_int(12_345_678),
-        rlp_int(1_750_000_000 + 12 * number),
-        rlp_bytes(b"xindex"),
-        rlp_bytes(&[0x33; 32]),
-        rlp_bytes(&[0u8; 8]),
-        rlp_int(7),
-        rlp_bytes(&[0x44; 32]),
-        rlp_int(0),
-        rlp_int(0),
-        rlp_bytes(&[0x55; 32]),
-        rlp_bytes(&[0x66; 32]),
-    ])
-}
-
-// ---------------------------------------------------------------------
-// SSZ trees for the checkpoint's state and body
-// ---------------------------------------------------------------------
-
-/// The root of `leaves` (a power of two long) and the branch of leaf `index`, bottom up.
-fn tree(leaves: &[Root], index: usize) -> (Root, Vec<Root>) {
-    let mut layer = leaves.to_vec();
-    let mut i = index;
-    let mut branch = Vec::new();
-    while layer.len() > 1 {
-        branch.push(layer[i ^ 1]);
-        layer = layer.chunks(2).map(|p| hash_pair(&p[0], &p[1])).collect();
-        i /= 2;
-    }
-    (layer[0], branch)
-}
+use xindex_finality::testkit::{self, exec_header, Chain};
 
 struct Built {
     input: Input,
@@ -168,97 +33,10 @@ fn build(gap: u64, signers: &[u32], headers: u64) -> Built {
 
 /// As `build`, every validator holding `balance`: a day's margin is more than 300 validators of 2,048 ETH hold.
 fn build_with(gap: u64, signers: &[u32], headers: u64, balance: u64) -> Built {
-    let chain = chain(balance);
-    let anchor_exec = keccak(&[b"the anchor's block"]);
-    let anchor = Anchor {
-        epoch: E0,
-        validators_root: validators_root(&chain.validators),
-        exec_hash: anchor_exec,
-        exec_number: 20_000_000,
-    };
-
-    // Execution headers from the anchor's block on.
-    let mut exec_headers = Vec::new();
-    let mut parent = anchor_exec;
-    for k in 1..=headers {
-        let rlp = exec_header(parent, anchor.exec_number + k);
-        parent = keccak(&[&rlp]);
-        exec_headers.push(rlp);
-    }
-    let block_hash = parent;
-
-    // C1's block: a state holding the next registry at field 11, and a body holding the payload's block hash.
-    let new_validators_root = keccak(&[b"the registry at C1"]);
-    let mut state_leaves: Vec<Root> = (0..64u8).map(|i| [i; 32]).collect();
-    state_leaves[11] = new_validators_root;
-    let (state_root, validators_branch) = tree(&state_leaves, 11);
-    let mut body_leaves = vec![[0u8; 32]; 512];
-    body_leaves[300] = block_hash;
-    let (body_root, block_hash_branch) = tree(&body_leaves, 300);
-    let header = BeaconBlockHeader {
-        slot: (E0 + gap) * 32,
-        proposer_index: 7,
-        parent_root: [9; 32],
-        state_root,
-        body_root,
-    };
-
-    let e1 = E0 + gap;
-    let source = Checkpoint {
-        epoch: e1 - 1,
-        root: [0x51; 32],
-    };
-    let c1 = Checkpoint {
-        epoch: e1,
-        root: header.hash_tree_root(),
-    };
-    let c2 = Checkpoint {
-        epoch: e1 + 1,
-        root: [0x52; 32],
-    };
-    let justification = votes(&chain, signers, source, c1);
-    let finalization = votes(&chain, signers, c1, c2);
-    let keys = chain.keys.clone();
-    let validators = chain.validators.clone();
+    let chain: Chain = testkit::chain(N, balance);
     Built {
-        input: Input {
-            anchor,
-            validators,
-            keys,
-            justification,
-            finalization,
-            header,
-            new_validators_root,
-            validators_branch,
-            block_hash,
-            block_hash_branch,
-            exec_headers,
-        },
+        input: testkit::build(&chain, E0, gap, signers, headers),
     }
-}
-
-/// `signers` split into two aggregates at two slots of the target epoch, overlapping by one.
-fn votes(chain: &Chain, signers: &[u32], source: Checkpoint, target: Checkpoint) -> Vec<Aggregate> {
-    let half = signers.len() / 2;
-    let parts = [&signers[..half + 1], &signers[half..]];
-    parts
-        .iter()
-        .enumerate()
-        .map(|(k, part)| {
-            let data = AttestationData {
-                slot: target.epoch * 32 + k as u64,
-                index: 0,
-                beacon_block_root: [0x70 + k as u8; 32],
-                source,
-                target,
-            };
-            Aggregate {
-                data,
-                signature: sign(chain, part, &data),
-                signers: part.to_vec(),
-            }
-        })
-        .collect()
 }
 
 fn range(n: u32) -> Vec<u32> {
@@ -533,6 +311,100 @@ fn the_execution_headers_are_one_unbroken_chain() {
     let mut b = build(1, &range(NEEDED), 1);
     b.input.exec_headers.clear();
     assert_eq!(verify(&b.input), Err(Error::WrongHeaderCount));
+}
+
+fn secret_of(chain: &Chain, signers: &[u32]) -> Scalar {
+    signers
+        .iter()
+        .fold(Scalar::zero(), |acc, &i| acc + chain.secrets[i as usize])
+}
+
+/// Validators added since the anchor sign in the same aggregates, as a slot's aggregate spans every committee: their
+/// keys join with the deposits that prove their owners hold them, and count no stake.
+#[test]
+fn keys_added_since_the_anchor_sign_but_count_nothing() {
+    let chain = testkit::chain(N, BALANCE);
+    let fresh: Vec<Scalar> = (0..3u64).map(|k| Scalar::from(900_000 + k)).collect();
+    let fresh_secret = fresh.iter().fold(Scalar::zero(), |acc, s| acc + s);
+    let with_new = |signers: &[u32]| {
+        let mut input = testkit::build(&chain, E0, 1, signers, 1);
+        input.new_keys = fresh
+            .iter()
+            .map(|s| testkit::new_key(*s, 32_000_000_000))
+            .collect();
+        for a in input
+            .justification
+            .iter_mut()
+            .chain(input.finalization.iter_mut())
+        {
+            let secret = secret_of(&chain, &a.signers) + fresh_secret;
+            a.signers.extend((0..3).map(|k| (N + k) as u32));
+            a.signature = testkit::sign_with(secret, &a.data);
+        }
+        input
+    };
+    let input = with_new(&range(NEEDED));
+    assert!(verify(&input).is_ok());
+    // They count nothing: one registry signer short is still short.
+    assert!(matches!(
+        verify(&with_new(&range(NEEDED - 1))),
+        Err(Error::BelowThreshold { .. })
+    ));
+    // A signer past the new keys does not exist.
+    let mut input = with_new(&range(NEEDED));
+    input.justification[0].signers.push((N + 3) as u32);
+    assert_eq!(verify(&input), Err(Error::BadSigner((N + 3) as u32)));
+    // A deposit signed over anything else, or a key that does not decompress, proves nothing.
+    let mut input = with_new(&range(NEEDED));
+    input.new_keys[1].amount += 1;
+    assert_eq!(verify(&input), Err(Error::BadNewKey(1)));
+    let mut input = with_new(&range(NEEDED));
+    input.new_keys[2].pubkey = [0xff; 48];
+    assert_eq!(verify(&input), Err(Error::BadNewKey(2)));
+}
+
+/// The rogue-key attack the deposit check stops. An attacker who holds none of the honest validators' keys names a key
+/// equal to its own minus theirs: the aggregate key of "the honest validators plus that key" is then its own, and its
+/// own signature verifies for all of them. Without a proof of possession that would pass off the honest stake as
+/// signing a checkpoint it never signed; the rogue key cannot sign its deposit, so it is refused.
+#[test]
+fn a_rogue_key_cannot_forge_the_honest_stake() {
+    let chain = testkit::chain(N, BALANCE);
+    let honest = range(NEEDED);
+    let mut input = testkit::build(&chain, E0, 1, &honest, 1);
+    let attacker = Scalar::from(424_242u64);
+    let honest_key = honest.iter().fold(G1Projective::identity(), |acc, &i| {
+        acc + G1Affine::generator() * chain.secrets[i as usize]
+    });
+    let rogue = (G1Affine::generator() * attacker - honest_key).to_affine();
+    let mut rogue_key = testkit::new_key(attacker, 32_000_000_000);
+    rogue_key.pubkey = rogue.to_compressed();
+    input.new_keys = vec![rogue_key];
+    for link in [&mut input.justification, &mut input.finalization] {
+        let data = link[0].data;
+        let mut signers = honest.clone();
+        signers.push(N as u32);
+        *link = vec![Aggregate {
+            data,
+            signature: testkit::sign_with(attacker, &data),
+            signers,
+        }];
+    }
+    // The forgery itself verifies: the claimed signers' keys sum to the attacker's.
+    let data = input.justification[0].data;
+    let domain = compute_domain(
+        DOMAIN_BEACON_ATTESTER,
+        fork_version(data.target.epoch).unwrap(),
+        &GENESIS_VALIDATORS_ROOT,
+    );
+    let sum = (honest_key + rogue).to_affine();
+    assert!(bls::verify(
+        &sum,
+        &signing_root(&data.hash_tree_root(), &domain),
+        &input.justification[0].signature
+    ));
+    // The statement refuses it at the rogue key's missing proof of possession.
+    assert_eq!(verify(&input), Err(Error::BadNewKey(0)));
 }
 
 /// The pieces the contracts recompute: the anchor's hash, the header leaf and the keccak tree, pinned against `cast`.

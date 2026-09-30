@@ -9,8 +9,9 @@ pub mod execution;
 pub mod registry;
 pub mod ssz;
 pub mod statement;
+pub mod testkit;
 
-pub use statement::{verify, Aggregate, Anchor, Error, Input, Output};
+pub use statement::{verify, Aggregate, Anchor, Error, Input, NewKey, Output};
 
 /// A 32-byte hash or root.
 pub type Root = [u8; 32];

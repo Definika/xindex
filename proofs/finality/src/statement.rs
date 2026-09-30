@@ -2,9 +2,10 @@
 //! the anchor's own validators, and the execution headers since the anchor lead to that checkpoint's block.
 
 use crate::beacon::{
-    compute_domain, fork_version, signing_root, AttestationData, BeaconBlockHeader, Checkpoint,
-    BODY_BLOCK_HASH_DEPTH, BODY_BLOCK_HASH_INDEX, DOMAIN_BEACON_ATTESTER, GENESIS_VALIDATORS_ROOT,
-    SLOTS_PER_EPOCH, STATE_DEPTH, STATE_VALIDATORS_INDEX,
+    compute_domain, deposit_message_root, fork_version, signing_root, AttestationData,
+    BeaconBlockHeader, Checkpoint, DOMAIN_BEACON_ATTESTER, DOMAIN_DEPOSIT, GENESIS_FORK_VERSION,
+    GENESIS_VALIDATORS_ROOT, SLOTS_PER_EPOCH, STATE_BLOCK_HASH_DEPTH, STATE_BLOCK_HASH_INDEX,
+    STATE_DEPTH, STATE_VALIDATORS_INDEX,
 };
 use crate::bls;
 use crate::execution::{keccak, keccak_root, parse_header, ExecHeader};
@@ -62,6 +63,10 @@ pub struct Input {
     /// The anchor's whole registry, in index order, and each key's uncompressed form.
     pub validators: Vec<Validator>,
     pub keys: Vec<UncompressedKey>,
+    /// Keys outside the anchor's registry that sign in an aggregate: validators added since the anchor. A signer index
+    /// of the registry's length plus `k` names `new_keys[k]`. Each proves its possession by its deposit's signature and
+    /// counts no stake.
+    pub new_keys: Vec<NewKey>,
     /// Votes of one source for the target `C1 = (e1, r1)`.
     pub justification: Vec<Aggregate>,
     /// Votes of source `C1` for the target `C2 = (e1 + 1, r2)`.
@@ -71,7 +76,7 @@ pub struct Input {
     /// The registry root in `C1`'s state, and its branch from the header's state root.
     pub new_validators_root: Root,
     pub validators_branch: Vec<Root>,
-    /// The execution payload's block hash, from the header's body root.
+    /// The block hash of the execution payload `C1`'s block carried, from the header's state root.
     pub block_hash: Root,
     pub block_hash_branch: Vec<Root>,
     /// Every execution header after the anchor's, up to `C1`'s, oldest first, as RLP.
@@ -80,6 +85,18 @@ pub struct Input {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UncompressedKey(#[serde(with = "BigArray")] pub [u8; 96]);
+
+/// A validator's key the anchor's registry does not hold, with the deposit that added it: its message and its
+/// signature, made with the key's secret.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewKey {
+    #[serde(with = "BigArray")]
+    pub pubkey: [u8; 48],
+    pub withdrawal_credentials: Root,
+    pub amount: u64,
+    #[serde(with = "BigArray")]
+    pub signature: [u8; 96],
+}
 
 /// The proof's public values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,6 +136,7 @@ pub enum Error {
     UnknownFork(u64),
     BadSigner(u32),
     BadKey(u32),
+    BadNewKey(usize),
     BadSignature,
     BelowThreshold {
         signed: u128,
@@ -159,8 +177,9 @@ pub fn verify(input: &Input) -> Result<Output, Error> {
     if c2.epoch - anchor.epoch > MAX_EPOCH_GAP + 1 {
         return Err(Error::TooFarFromAnchor);
     }
-    count_link(input, &input.justification, first.source, c1)?;
-    count_link(input, &input.finalization, c1, c2)?;
+    let new_keys = new_key_points(&input.new_keys)?;
+    count_link(input, &new_keys, &input.justification, first.source, c1)?;
+    count_link(input, &new_keys, &input.finalization, c1, c2)?;
 
     // C1's block: its state holds the next registry, its body the execution block hash.
     let header = &input.header;
@@ -179,9 +198,9 @@ pub fn verify(input: &Input) -> Result<Output, Error> {
     if !is_valid_branch(
         &input.block_hash,
         &input.block_hash_branch,
-        BODY_BLOCK_HASH_DEPTH,
-        BODY_BLOCK_HASH_INDEX,
-        &header.body_root,
+        STATE_BLOCK_HASH_DEPTH,
+        STATE_BLOCK_HASH_INDEX,
+        &header.state_root,
     ) {
         return Err(Error::BadBlockHashBranch);
     }
@@ -229,6 +248,7 @@ pub fn verify(input: &Input) -> Result<Output, Error> {
 /// the anchor's records show active then, plus the margin.
 fn count_link(
     input: &Input,
+    new_keys: &[G1Affine],
     aggregates: &[Aggregate],
     source: Checkpoint,
     target: Checkpoint,
@@ -251,7 +271,12 @@ fn count_link(
         }
         let mut key = G1Projective::identity();
         for &i in &aggregate.signers {
-            let v = validators.get(i as usize).ok_or(Error::BadSigner(i))?;
+            let Some(v) = validators.get(i as usize) else {
+                // A key outside the registry signs, and counts nothing.
+                let k = i as usize - validators.len();
+                key += new_keys.get(k).ok_or(Error::BadSigner(i))?;
+                continue;
+            };
             key +=
                 bls::registry_key(&input.keys[i as usize].0, &v.pubkey).ok_or(Error::BadKey(i))?;
             // A key may sign in several aggregates, but its stake counts once per link.
@@ -284,6 +309,27 @@ fn count_link(
         });
     }
     Ok(())
+}
+
+/// The points of the keys outside the anchor's registry. Each is fully checked, its subgroup included, and must have
+/// signed its deposit message under the deposit domain. That signature is its proof of possession: without it, a
+/// prover could name a key chosen to cancel honest keys out of an aggregate, the rogue-key attack, and pass off its
+/// own signature as theirs.
+fn new_key_points(new_keys: &[NewKey]) -> Result<Vec<G1Affine>, Error> {
+    let domain = compute_domain(DOMAIN_DEPOSIT, GENESIS_FORK_VERSION, &[0u8; 32]);
+    new_keys
+        .iter()
+        .enumerate()
+        .map(|(k, n)| {
+            let point = Option::<G1Affine>::from(G1Affine::from_compressed(&n.pubkey))
+                .ok_or(Error::BadNewKey(k))?;
+            let message = deposit_message_root(&n.pubkey, &n.withdrawal_credentials, n.amount);
+            if !bls::verify(&point, &signing_root(&message, &domain), &n.signature) {
+                return Err(Error::BadNewKey(k));
+            }
+            Ok(point)
+        })
+        .collect()
 }
 
 /// A `uint64` as an ABI word.

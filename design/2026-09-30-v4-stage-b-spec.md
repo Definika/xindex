@@ -787,6 +787,19 @@ no committee assignment, shuffle or later state has to be trusted to count a vot
 signed it was in the trusted registry. The prover supplies each aggregate's signer list, which it reads from a beacon
 node. A wrong list only makes the signature fail.
 
+**Keys added since the anchor.** An on-chain aggregate spans every committee of its slot, so once validators join after
+the anchor, nearly every aggregate includes some. Their keys are not in the anchor's registry, yet the signature
+cannot be checked without them. A new key may therefore join an aggregate, counting no stake, but only with the
+signature of the deposit that added it, which only the holder of its secret could make.
+- **Why the proof of possession is essential.** Without it, a prover could name a key equal to its own minus the
+  honest signers' keys. "The honest signers plus that key" would then sum to the prover's own key, and its own
+  signature would verify as theirs: the rogue-key attack, which forges any finality.
+  `a_rogue_key_cannot_forge_the_honest_stake` mounts it and shows the forged aggregate verifying until the check
+  refuses the key.
+- **Cost.** Every new key is fully checked, subgroup included, at about one pairing. Activations are limited to 256
+  ETH an epoch, so a day holds at most about 1,800 new keys: about 7 billion prover gas at worst, far less than proving
+  every few epochs to keep the registry current would cost.
+
 **The margin.** Records at `e0` go stale by `e1`. A validator that exits or consolidates away after `e0` still counts
 by them, and its key might then sign at no risk to itself. The protocol limits both per epoch:
 - exits and activations by `MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT` (256 ETH);
@@ -799,8 +812,10 @@ the margin is at most 460,800 ETH, about 1.4% of today's stake, and honest parti
 that easily. Slashed validators exit through the same churn. A day
 behind, a verifier stops for good and is rotated, as the BNB one is.
 
-**The new anchor.** `C1`'s block header hashes to `r1`. An SSZ proof from its state root gives the new
-`validatorsRoot`, and one from its body root gives the execution payload's block hash.
+**The new anchor.** `C1`'s block header hashes to `r1`. Two SSZ proofs from its state root give the new
+`validatorsRoot` (field 11) and the block hash of the execution payload the block carried: the state's
+`latest_execution_payload_header` (field 24), which a block's post-state sets to its own payload's. So the block's body
+is never needed.
 
 **Execution headers.** The prover supplies every execution header from the anchor's last block to `C1`'s, each
 hashing to its successor's parent hash and the last to `C1`'s payload hash. The proof commits to a Merkle root
