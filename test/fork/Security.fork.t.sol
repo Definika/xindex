@@ -109,6 +109,7 @@ contract SecurityForkTest is Test {
     address constant SAFE_141 = 0x41675C099F32341bf84BFc5382aF534df5C7461a;
     uint256 constant SIGNER_A = 0xA11CE;
     uint256 constant SIGNER_B = 0xB0B;
+    uint256 constant SIGNER_C = 0xCA201;
 
     function setUp() public {
         string memory url = vm.envOr("MAINNET_RPC_URL", string(""));
@@ -543,16 +544,21 @@ contract SecurityForkTest is Test {
     }
 
     /// @dev XA-07, CR-I36. The module check reads the page of modules that starts at the sentinel, and the offline mock
-    ///      only learned to honour `start` in this review, so the real Safe is the proof: a 2-of-2 Safe without modules
+    ///      only learned to honour `start` in this review, so the real Safe is the proof: a 3-of-3 Safe without modules
     ///      is accepted as an owner, and the same Safe with one module enabled is refused, on 1.3.0, which answers any
-    ///      other start with an empty page, and on 1.4.1, which refuses one.
+    ///      other start with an empty page, and on 1.4.1, which refuses one. A real 2-of-3 is refused outright, since
+    ///      the owner needs at least three signatures (the owner's call on 2026-09-30).
     function test_XA07_CRI36_aRealSafeWithAModuleIsRefused() public {
         Deploy deployer = new Deploy();
         address module = makeAddr("module");
         address[2] memory factories = [SAFE_FACTORY_130, SAFE_FACTORY_141];
         address[2] memory singletons = [SAFE_130, SAFE_141];
         for (uint256 i = 0; i < factories.length; ++i) {
-            ISafe safe = _twoOfTwoSafe(factories[i], singletons[i]);
+            ISafe twoOfThree = _safe(factories[i], singletons[i], 2, 0);
+            vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerThresholdTooLow.selector, address(twoOfThree), 2));
+            deployer.checkOwner(address(twoOfThree));
+
+            ISafe safe = _safe(factories[i], singletons[i], 3, 1);
             deployer.checkOwner(address(safe));
             _enableModule(safe, module);
             vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerHasModules.selector, address(safe), module));
@@ -560,22 +566,31 @@ contract SecurityForkTest is Test {
         }
     }
 
-    function _twoOfTwoSafe(address safeFactory, address singleton) internal returns (ISafe) {
-        address[] memory owners = new address[](2);
-        (owners[0], owners[1]) = (vm.addr(SIGNER_A), vm.addr(SIGNER_B));
-        bytes memory init =
-            abi.encodeCall(ISafe.setup, (owners, 2, address(0), "", address(0), address(0), 0, payable(address(0))));
-        return ISafe(ISafeProxyFactory(safeFactory).createProxyWithNonce(singleton, init, 0));
+    function _safe(address safeFactory, address singleton, uint256 threshold, uint256 saltNonce)
+        internal
+        returns (ISafe)
+    {
+        address[] memory owners = new address[](3);
+        (owners[0], owners[1], owners[2]) = (vm.addr(SIGNER_A), vm.addr(SIGNER_B), vm.addr(SIGNER_C));
+        bytes memory init = abi.encodeCall(
+            ISafe.setup, (owners, threshold, address(0), "", address(0), address(0), 0, payable(address(0)))
+        );
+        return ISafe(ISafeProxyFactory(safeFactory).createProxyWithNonce(singleton, init, saltNonce));
     }
 
-    /// @dev Enables `module` the way a real one is: a Safe transaction to itself, signed by both owners in the
-    ///      ascending order the Safe requires.
+    /// @dev Enables `module` the way a real one is: a Safe transaction to itself, signed by all three owners in the
+    ///      ascending order of their addresses, as the Safe requires.
     function _enableModule(ISafe safe, address module) internal {
         bytes memory data = abi.encodeCall(ISafe.enableModule, (module));
         bytes32 hash = safe.getTransactionHash(address(safe), 0, data, 0, 0, 0, 0, address(0), address(0), safe.nonce());
-        (uint256 first, uint256 second) =
-            vm.addr(SIGNER_A) < vm.addr(SIGNER_B) ? (SIGNER_A, SIGNER_B) : (SIGNER_B, SIGNER_A);
-        bytes memory signatures = abi.encodePacked(_signature(first, hash), _signature(second, hash));
+        uint256[3] memory keys = [SIGNER_A, SIGNER_B, SIGNER_C];
+        for (uint256 i = 1; i < 3; ++i) {
+            for (uint256 j = i; j > 0 && vm.addr(keys[j]) < vm.addr(keys[j - 1]); --j) {
+                (keys[j], keys[j - 1]) = (keys[j - 1], keys[j]);
+            }
+        }
+        bytes memory signatures =
+            abi.encodePacked(_signature(keys[0], hash), _signature(keys[1], hash), _signature(keys[2], hash));
         assertTrue(
             safe.execTransaction(address(safe), 0, data, 0, 0, 0, 0, address(0), payable(address(0)), signatures)
         );

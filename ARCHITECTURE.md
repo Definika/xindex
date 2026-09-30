@@ -28,8 +28,8 @@ and is deployed nowhere; section 10 lists what remains.
 Constraints carried from v3: in-kind backing, CREATE2 addresses that commit to their contents, fixed constituents,
 reentrancy-guarded untrusted executors, standard ERC-20s only, no admin over funds. Changed by the owner's decisions of
 2026-09-29 and 2026-09-30 (design section 13): no prices in money paths, uncapped only, weekly supply updates with a
-0.5% step, up to 100 components, v4 replaces v3. Fees are an open decision (design section 13.1); until it is made
-there are none.
+0.5% step, up to 100 components, v4 replaces v3; then no fee in Stage A, WBT off after its listing check, the floor
+buffer, and an owner Safe of at least three signatures (design section 13.1, `design/2026-09-30-wbt-check.md`).
 
 ## 2. Components
 
@@ -486,8 +486,8 @@ balance-measured zap, and fixed constituents (a new list is a new index version,
   floor, and one with a supply of one raw unit beside a component at `MAX_UNITS`; it fails with the band's `mulDiv`
   replaced by plain arithmetic.
 - **Operations.** `OWNER` and `GUARDIAN` are required at deploy, with `UNIVERSAL_ROUTER` the only market address; on
-  mainnet the owner must be a contract that is not an EIP-7702 delegated account, and a Safe must need at least two
-  signatures and have no enabled module. Neither role may be a market contract: the router, the PoolManager, and on
+  mainnet the owner must be a contract that is not an EIP-7702 delegated account, and a Safe must need at least three
+  signatures and have no enabled module; neither the guardian nor the deploying key may be one of its signers. Neither role may be a market contract: the router, the PoolManager, and on
   chain 1 every token and mint currency in the address book (XA-39, CR-I37). The supplies need a weekly review against
   dated sources, and a due batch should be executed at its eta.
 - **Known limitations** are listed in the README, where users read them.
@@ -551,9 +551,8 @@ tests, and the PoolManager is reached through the router. The V3 pools the fork 
 
 ## 10. Roadmap
 
-**Stage A, what remains.** The fee model once the owner chooses it (section 4), WBT's listing after its check and the
-owner's decision, an internal review of the new surface (the λ band, supply batches, `createIndex(k)` and its unit
-bounds, `MintRequests`, the scripts' batch mode), an external audit, a Sepolia deployment with a smoke test, and a
+**Stage A, what remains.** The internal red team has reviewed the new surface (`audit/2026-09-30-stage-a-red-team.md`);
+what remains is an external audit, a Sepolia deployment with a smoke test, and a
 mainnet deployment through the Safe.
 
 **Proving prototype.** A full-finality Ethereum proof verified on BNB Chain and on Solana, and a BNB Chain state proof

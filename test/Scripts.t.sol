@@ -100,7 +100,7 @@ contract RevertsOneWord {
 ///         forgot to check that the call succeeded.
 contract ModuleListReverts {
     function getThreshold() external pure returns (uint256) {
-        return 2;
+        return 3;
     }
 
     function getModulesPaginated(address, uint256) external pure returns (address[] memory, address) {
@@ -267,23 +267,27 @@ contract ScriptsTest is Test {
         vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerThresholdTooLow.selector, address(singleSigner), 1));
         deployer.checkOwner(address(singleSigner));
 
-        deployer.checkOwner(address(new MockSafe(2))); // a real multisig
+        MockSafe twoOfN = new MockSafe(2);
+        vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerThresholdTooLow.selector, address(twoOfN), 2));
+        deployer.checkOwner(address(twoOfN)); // two signatures no longer suffice (the owner's call on 2026-09-30)
+        assertEq(deployer.MIN_OWNER_THRESHOLD(), 3);
+        deployer.checkOwner(address(new MockSafe(3))); // a real multisig, as the design's 3-of-5
         deployer.checkOwner(address(router)); // a contract without getThreshold, such as a timelock
         deployer.checkOwner(address(new SilentFallback())); // an empty answer is not a threshold
     }
 
     function test_XA07_checkOwnerRejectsASafeWithModules() public {
         vm.chainId(1);
-        MockSafe withModule = new MockSafe(2);
+        MockSafe withModule = new MockSafe(3);
         address module = makeAddr("module");
         withModule.enableModule(module);
         vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerHasModules.selector, address(withModule), module));
         deployer.checkOwner(address(withModule));
 
-        address unknown = address(new ThresholdOnly(2));
+        address unknown = address(new ThresholdOnly(3));
         vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerModulesUnknown.selector, unknown));
         deployer.checkOwner(unknown);
-        MockSafe malformed = new MockSafe(2);
+        MockSafe malformed = new MockSafe(3);
         malformed.setMalformedModules(true);
         vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerModulesUnknown.selector, address(malformed)));
         deployer.checkOwner(address(malformed));
@@ -322,7 +326,7 @@ contract ScriptsTest is Test {
     ///      acting on both sides, and the broadcasting key, which holds no role, must not hold a share of the owner's
     ///      either. An owner that answers no signer list, a key or a timelock, is accepted as before.
     function test_SA06_neitherTheGuardianNorTheBroadcasterSignsForTheOwner() public {
-        MockSafe safe = new MockSafe(2);
+        MockSafe safe = new MockSafe(3);
         safe.addOwner(makeAddr("signer"));
         deployer.checkGuardian(address(safe), guardian);
 
@@ -332,7 +336,7 @@ contract ScriptsTest is Test {
         vm.expectRevert(abi.encodeWithSelector(Deploy.GuardianSignsForOwner.selector, guardian));
         deployer.deploy(address(safe), guardian, address(router), usdc, usdt);
 
-        MockSafe other = new MockSafe(2);
+        MockSafe other = new MockSafe(3);
         other.addOwner(address(this)); // the account calling the script, as the broadcasting key does
         vm.expectRevert(abi.encodeWithSelector(Deploy.BroadcasterSignsForOwner.selector, address(this)));
         deployer.checkGuardian(address(other), guardian);
@@ -407,7 +411,7 @@ contract ScriptsTest is Test {
 
     /// @dev XA-38: the release record freezes what was deployed, and the check proves a deployment is one build.
     function test_XA38_checkDeploymentFreezesTheCodeHashes() public {
-        address safeOwner = address(new MockSafe(2));
+        address safeOwner = address(new MockSafe(3));
         (IndexFactory factory, IndexZap zap, MintRequests requests) =
             deployer.deploy(safeOwner, guardian, address(router), usdc, usdt);
 
@@ -464,7 +468,7 @@ contract ScriptsTest is Test {
     /// @dev CR-I36. The module check pages from Safe's sentinel, as 1.3.0 answers.
     function test_CRI36_theModuleCheckPagesFromTheSentinel() public {
         assertEq(deployer.SENTINEL_MODULES(), address(1));
-        MockSafe safe = new MockSafe(2);
+        MockSafe safe = new MockSafe(3);
         address module = makeAddr("module");
         safe.enableModule(module);
         (address[] memory fromZero,) = safe.getModulesPaginated(address(0), 1);
@@ -619,7 +623,7 @@ contract ScriptsTest is Test {
     // ---------------------------------------------------------------------
 
     function test_XA18_proposeRefusesAContractOwner() public {
-        MockSafe safe = new MockSafe(2);
+        MockSafe safe = new MockSafe(3);
         IndexFactory factory = _factory(address(safe), address(0));
         ConfigureWhitelist.Entry[] memory list = _twoEntries();
 

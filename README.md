@@ -10,9 +10,9 @@ This repository holds the smart contracts (Foundry). The web app lives elsewhere
 
 **Status (2026-09-30): v4 Stage A, built on the local branch `v4-stage-a`, reviewed by nobody yet, deployed nowhere.**
 Stage A is the Ethereum-only, price-free half of the v4 design (`design/2026-09-29-v4-hybrid-architecture.md`), as the
-contract spec `design/2026-09-30-v4-stage-a-spec.md` describes it, `MintRequests` included. Still to come in Stage A:
-the fee model (the owner's decision; until then there is no fee), WBT's listing (the owner's decision after its check),
-an internal review, an external audit, and a Sepolia deployment. v3 stays at the git
+contract spec `design/2026-09-30-v4-stage-a-spec.md` describes it, `MintRequests` included, with the owner's decisions of
+2026-09-30: no fee, WBT off after its check, and an owner Safe of at least three signatures. An internal red team has
+reviewed it (`audit/2026-09-30-stage-a-red-team.md`). Still to come: an external audit and a Sepolia deployment. v3 stays at the git
 tag `v3.0.0` and on Sepolia, and never launches on mainnet.
 
 ## Product brief
@@ -61,7 +61,7 @@ The history, in one paragraph each:
 | Rebalancing | Anyone starts a rebalance 7 days after the last one (`MIN_REBALANCE_INTERVAL`), 2 days of notice (`REBALANCE_DELAY`), then a 24-hour auction (`AUCTION_DURATION`) in which λ falls from the top of the band to the bottom and any contract can fill. Every moving component's units move within `[λmin/λmax, λmax/λmin] ⊂ [0.990, 1.0101]` per rebalance, plus one raw unit of rounding. |
 | Prices | None on chain. The app values an index off chain as the sum of units times its own prices (design section 10). |
 | Swaps | Uniswap's Universal Router 2.0.0, V3 and V4, one venue per leg, chosen by the caller: as in v3. The app offers the one-click zap only up to about 35 components (EIP-7825's 16.78M gas per transaction). |
-| Fees | None yet. The fee model is the owner's open decision (design section 13.1: a minter fee in shares, a management fee, or outside funding). Every amount the hub moves goes through one helper, `_backing`, so either fee model lands in one reviewed change. |
+| Fees | None: Stage A is funded from outside (the owner's call on 2026-09-30, design section 13.1). Every amount the hub moves goes through one helper, `_backing`, so a fee in a later version would land in one reviewed change. |
 | Layer-1 coins | Stage A holds Ethereum tokens only; Bitcoin is held as WBTC. Native coins of chains whose contracts can verify a proof about Ethereum come in vaults from Stage B. Chains that cannot (Bitcoin, XRP Ledger, Dogecoin, ...) are out of scope. |
 | Stable in / out | Mint with USDC or USDT through the zap, or through `MintRequests` at a limit of the requester's own, filled by anyone who holds shares. The burner chooses USDC, USDT or any other token at exit, or asks for USDC or USDT at a limit through `MintRequests`. Index tokens are fungible, so the protocol cannot know which stable a holder used. |
 | Decentralization | No admin can move an index's funds, mint or burn its shares, pause or upgrade it, or set its units by hand. The owner proposes listings and supply batches, which take effect after 2 days, and guardian changes, which take 7; a proposal not executed within 7 days of becoming ready expires. Owner and guardian both cancel pending listings and batches, delist, cancel a rebalance, and start one with a keep mask or before strangers may. The guardian can cancel a change that would remove it, not one that replaces it. Ownership moves in two steps with no delay, and cannot be renounced. |
@@ -380,11 +380,10 @@ least 0.1% of market cap). `ConfigureWhitelist.defaultMainnetList()` ships them 
 | LINK | 748,099,970 LINK (`748_099_970e18`) | circulating, CoinGecko, 2026-09-22 |
 | UNI | 620,716,422 UNI (`620_716_422e18`) | circulating, CoinGecko, 2026-09-22 |
 
-- **WBT** (WhiteBIT's token) is on the design's floor list and **waits for the owner's decision** after a check of its
-  admin powers (mint, pause, blacklist), its float (the issuer holds much of it, so its reference would be the
-  circulating supply) and its Ethereum depth. It is not in the scripts. With WBT, the design's Stage A covers 79.8% of
-  the holdable top-100 value at 4.2% a year of tracking error, on a backtest that held supplies constant and so
-  understates it.
+- **WBT** (WhiteBIT's token) is on the design's floor list by weight but **stays off** (the owner's call on 2026-09-30,
+  `design/2026-09-30-wbt-check.md`): its Ethereum contract lets a single key blacklist any holder and destroy its
+  balance, and no Uniswap V2, V3 or V4 pool holds it. Without it the Stage A list covers 79.4% of the holdable top-100
+  value at 4.2% a year of tracking error, on a backtest that held supplies constant and so understates it.
 - **Left out.** v3's wstETH (a second claim on ether), wSOL (native SOL comes with Stage B) and AAVE (below the floor).
   LEO is on the floor list by weight but fails the liquidity screen.
 - **Depth, measured on 2026-09-22.** LINK is deeper on V4 than V3 (about 6.6x); WBTC (0.26x) and UNI (0.66x) are
@@ -464,7 +463,7 @@ least 0.1% of market cap). `ConfigureWhitelist.defaultMainnetList()` ships them 
   requester after they sign, for instance every component pausing, a filler can still deliver at the old limit, and a
   cancel sent to the public mempool can be overtaken by a fill. The loss is bounded by the requester's own limit. The
   app should default to short deadlines and send cancels through a private relay.
-- **No fees.** Audits, a bug bounty and watchers are paid from outside until the owner chooses a fee model.
+- **No fees.** Audits, a bug bounty and watchers are paid from outside (the owner's call on 2026-09-30).
 - **Airdrops, rewards and governance votes** that accrue to tokens held by an index cannot be claimed or used; by design
   there is no admin who could sweep them.
 - **A hooked V4 pool cannot be routed through.** The zap rejects any V4 route whose hops carry hooks or hook data, so a
@@ -536,7 +535,8 @@ forge script script/Deploy.s.sol --rpc-url mainnet --account deployer --sender <
 
 `Deploy` deploys the factory, which deploys the `IndexHub` implementation, the zap and `MintRequests`. `OWNER` and
 `GUARDIAN` are required and must differ. On mainnet the owner must be a contract that is not an EIP-7702 delegated account, and a Safe
-must need at least two signatures and have no enabled module, because a module acts as the Safe without signatures
+must need at least three signatures (`MIN_OWNER_THRESHOLD`, the design's 3-of-5) and have no enabled module, because
+a module acts as the Safe without signatures
 (keep it that way after deployment; the script cannot see later changes). The guardian must not be the broadcasting
 key, which must hold no role; when the owner is a Safe, neither the guardian nor the broadcasting key may be one of
 its signers, since the guardian is the owner's veto (SA-06); and neither role may be a market contract: the router and its PoolManager everywhere, and
@@ -694,7 +694,7 @@ audit/                        the security reviews, their triage, and the two re
 
 ## Not in Stage A (candidates for later)
 
-Vaults and the native coins of other chains (Stage B and C, see `ARCHITECTURE.md`), a fee model (the owner's decision), ETH in/out (`mintWithETH` / `burnToETH`), `createAndMint` in one call,
+Vaults and the native coins of other chains (Stage B and C, see `ARCHITECTURE.md`), a fee in a later index version, ETH in/out (`mintWithETH` / `burnToETH`), `createAndMint` in one call,
 `mintWithTokenPermit` for USDC, constituent changes (a new list is a new index version), mixed-venue legs that split one
 leg across V3 and V4, a backstop executor or trigger reminder, an aggregator or Universal Router 2.1 zap, V4 pools on
 the Sepolia market, and an auction whose exposure scales with the trade rather than the moving value.

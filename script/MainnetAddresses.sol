@@ -8,7 +8,8 @@ library MainnetAddresses {
     // ---------------------------------------------------------------------
     // Components: the Stage A list, the Ethereum tokens of the design's 0.2% weight floor that pass its liquidity
     // screen (design/2026-09-29-v4-hybrid-architecture.md, section 2.1). Checked on 2026-09-22 by symbol and decimals.
-    // WBT, also on the floor list, waits for a check of its admin powers, float and depth.
+    // WBT, also on the floor list, stays off after its check: a single key can blacklist a holder and destroy its
+    // balance, and no Uniswap pool holds it (design/2026-09-30-wbt-check.md, the owner's call on 2026-09-30).
     // ---------------------------------------------------------------------
     address internal constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     address internal constant WBTC = 0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599;

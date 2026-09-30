@@ -307,8 +307,8 @@ def diagram_layers():
 def diagram_stages():
     w, h = CW, 120
     d = Drawing(w, h)
-    stages = [("A", "WBTC, ETH, LINK, WBT, UNI", 79.8, 4.2), ("B", "A + BNB, SOL, TRX, HYPE", 88.6, 3.1),
-              ("C", "B + 5 more chains' coins", 89.9, 2.6)]
+    stages = [("A", "WBTC, ETH, LINK, UNI", 79.4, 4.2), ("B", "A + BNB, SOL, TRX, HYPE", 88.2, 3.1),
+              ("C", "B + 5 more chains' coins", 89.5, 2.6)]
     x0, bwmax = 150, w - 260
     for i, (s, t, cov, te) in enumerate(stages):
         y = h - 30 - i * 34
@@ -343,8 +343,8 @@ def on_cover(c, doc):
     c.drawString(M, H - 88.5 * mm, "across chains, with no custodian inside the protocol.")
     c.setFont("Arial", 8.5)
     c.setFillColor(colors.HexColor("#C9D6E3"))
-    c.drawString(M, H - 108 * mm, "Status: proposal. Nothing described here is implemented. Measurements dated "
-                                  "29 Sep 2026; re-measure before fixing any parameter.")
+    c.drawString(M, H - 108 * mm, "Status: proposal. Stage A is built (branch v4-stage-a), not yet audited or deployed; "
+                                  "nothing beyond it is. Measurements dated 29 Sep 2026.")
     c.restoreState()
     footer(c, doc, cover=True)
 
@@ -383,8 +383,8 @@ def tile(big, small, col=NAVY):
             Paragraph(small, ss["small"])]
 
 
-tiles = Table([[tile("14", "tokens held in kind:<br/>WBTC, WETH, 3 Ethereum<br/>tokens, 9 chains' coins"),
-                tile("89.9%", "of the top 100's value<br/>(without stablecoins and<br/>wrapped copies)"),
+tiles = Table([[tile("13", "tokens held in kind:<br/>WBTC, WETH, LINK, UNI<br/>and 9 chains' coins"),
+                tile("89.5%", "of the top 100's value<br/>(without stablecoins and<br/>wrapped copies)"),
                 tile("2.6%", "tracking error per year<br/>against the top 100<br/>(one-year backtest)"),
                 tile("≤ 0.5%", "of an index per day: the most<br/>any single failure can cost<br/>(WBTC excepted)",
                      col=GREEN)]], colWidths=[CW / 4] * 4)
@@ -421,16 +421,19 @@ S += bullets([
     "index token on Uniswap or through mint and redeem requests, without leaving Ethereum.",
     "<b>The bounded-loss standard:</b> no single failure in anything v4 builds can cost holders more than about 0.5% "
     "of an index per day, anyone can check everything, and holders can always take the rest out.",
-    "<b>A weight floor keeps it practical:</b> the flagship index holds the 14 tokens above 0.2% of the market that "
-    "pass the liquidity screen, 89.9% of the value on 9 vault chains, instead of all 54 holdable tokens on 22."])
+    "<b>A weight floor keeps it practical:</b> the flagship index holds the 13 tokens above 0.2% of the market that "
+    "pass the liquidity screen and the listing check, 89.5% of the value on 9 vault chains, instead of all 54 "
+    "holdable tokens on 22."])
 S += callout("The one exception.", "Bitcoin's chain cannot verify proofs, so Bitcoin enters as WBTC, whose custodian "
              "holds 73–83% of an index's value. The owner accepted this on 29 Sep 2026 (\"WBTC only for now\"); "
              "section 9.4 shows the measured options for later.", "warn")
 S += callout("Revised 30 Sep 2026 after an external review:", "two proof systems only where coins leave a vault; the "
              "0.2% weight floor; upgrade prevention for vault chains too; weekly supply updates; a units-anchored "
              "rebalance formula that corrects the first draft's; automatic voiding, look-through snapshot claims, "
-             "concentration caps and in-place migration; 4% daily limits; funding set out as an open decision. The "
-             "owner decided on 30 Sep 2026 that v4 replaces v3.", "info")
+             "concentration caps and in-place migration; 4% daily limits; funding set out as a decision. The owner "
+             "decided on 30 Sep 2026 that v4 replaces v3, that Stage A has no fee, that WBT stays off after its "
+             "listing check, that the floor buffer applies, and that the owner Safe needs at least 3 signatures.",
+             "info")
 
 # ---------------------------------------------------------------- 2 why
 S += H1("2. Why a new model")
@@ -483,20 +486,20 @@ S += table([["Token", "Weight", "Held on", "Token", "Weight", "Held on"],
             ["TRX", "1.4%", "Tron", "UNI", "0.24%", "Ethereum"],
             ["HYPE", "0.85%", "HyperEVM", "HBAR", "0.21%", "Hedera"],
             ["LINK", "0.49%", "Ethereum", "AVAX", "0.21%", "Avalanche"],
-            ["WBT", "0.43%", "Ethereum", "", "", ""]],
+            ["WBT", "0.43%", "Ethereum: <b>fails its listing check</b>", "", "", ""]],
            [0.11, 0.11, 0.22, 0.11, 0.11, 0.34])
-S += [P("LEO trades 0.006% of its market cap a day, so the flagship holds <b>14 tokens: 89.9% of the value at 2.6% a "
-        "year</b>, and the smallest coin in a $250k mint is about $530. It is built in three stages, each of which "
+S += [P("LEO trades 0.006% of its market cap a day, and WBT failed its listing check (a single key can blacklist any "
+        "holder and destroy its balance, and no Uniswap pool holds it on Ethereum), so the flagship holds <b>13 tokens: "
+        "89.5% of the value at 2.6% a year</b>, and the smallest coin in a $250k mint is about $530. It is built in three stages, each of which "
         "works on its own:")]
 S += diagram_stages()
 S += table([["Stage", "Holds", "Tokens", "Coverage", "Tracking error/yr", "WBTC share", "Vault share"],
-            ["A", "WBTC, ETH, LINK, WBT, UNI", "5", "79.8%", "4.2%", "82.5%", "0"],
-            ["B", "A + BNB, SOL, TRX, HYPE", "9", "88.6%", "3.1%", "74.3%", "9.9%"],
-            ["C", "B + ADA, XLM, NEAR, HBAR, AVAX", "14", "89.9%", "2.6%", "73.2%", "11.2%"]],
+            ["A", "WBTC, ETH, LINK, UNI", "4", "79.4%", "4.2%", "82.9%", "0"],
+            ["B", "A + BNB, SOL, TRX, HYPE", "8", "88.2%", "3.1%", "74.6%", "9.9%"],
+            ["C", "B + ADA, XLM, NEAR, HBAR, AVAX", "13", "89.5%", "2.6%", "73.5%", "11.3%"]],
            [0.08, 0.3, 0.08, 0.11, 0.15, 0.13, 0.15], first_bold=True)
 S += [P("Vault share is the part of the index held in vaults; every per-day bound in section 9 is a vault share times "
-        "a daily limit. WBT is listed subject to a check of its admin powers, float and Ethereum depth; without it "
-        "Stage A holds 4 tokens.")]
+        "a daily limit. With WBT, Stage A would hold 5 tokens and cover 79.8%.")]
 S += callout("The backtest understates tracking error.", "It held today's supplies constant, so it measures drift "
              "from price moves only. Tokens whose supply grows through unlocks drift as well, which weekly supply "
              "updates follow (7.6); a re-run with real supply histories is an open task.", "warn")
@@ -694,7 +697,7 @@ S += H2("7.7 Membership changes and freezes")
 S += bullets([
     "<b>Versions:</b> a new top-100 list is a new index (for example, quarterly). A coin enters only at rank 80 or "
     "better and leaves only below 120; under the weight floor it joins at 0.2% and leaves only below 0.1% "
-    "(proposed), so tokens near the line do not flip in and out.",
+    "(adopted on 30 Sep 2026), so tokens near the line do not flip in and out.",
     "<b>In-place migration:</b> burning old-version shares into the new version moves the coins both versions share "
     "inside each vault, by a proven Migrate message, so only the differences trade. The old version stays fully "
     "backed.",
@@ -743,13 +746,13 @@ S += table([["Requirement", "Meaning"],
             ["Limits in code", "Every bound is enforced by contracts, not by operators or process"]],
            [0.27, 0.73], first_bold=True)
 S += H2("9.2 Every failure and its bound")
-S += [P("For the floor list (11.2% of the index in vaults, BNB the largest at 4.4%) with 4% daily limits. The Ethereum "
+S += [P("For the floor list (11.3% of the index in vaults, BNB the largest at 4.4%) with 4% daily limits. The Ethereum "
         "proofs are shared by every chain, so a failure there reaches every vault at once; limits of 5% and 10% would "
         "give 0.56% and 1.1% a day below, which is why both are 4%.")]
 S += table([["Failure", "Defense", "Worst case"],
             ["One Ethereum-side proof system broken", "Coins leave a vault only on P1 and P2", "Nothing moves"],
             ["Both Ethereum-side systems broken (double failure)", "Speed limit, watchers, freeze",
-             "Every vault at once: 11.2% × 4% ≈ 0.45%/day"],
+             "Every vault at once: 11.3% × 4% ≈ 0.45%/day"],
             ["A chain's deposit proof broken: forged deposit", "A mint needs every token and Tier 1 in real balances; "
              "any honest proof contradicts it; 24h lock; mint cap",
              "In the lock: 0. Undetected (double failure): 4.4% × 4% ≈ 0.18%/day one chain; 0.45%/day all chains"],
@@ -771,7 +774,7 @@ S += table([["Failure", "Defense", "Worst case"],
             ["Ethereum upgrade breaks proofs", "Section 10's four layers", "Delay: 37–97 days; 180 at most"],
             ["Provers disappear · a chain halts", "Open-source prover · skip the chain; claims never expire", "Delay"],
             ["Liquidity disappears", "In-kind exit always available", "A discount, not a loss"],
-            ["<b>WBTC custodian fails or freezes</b>", "Accepted exception (9.4)", "<b>73.2–82.5%</b>"]],
+            ["<b>WBTC custodian fails or freezes</b>", "Accepted exception (9.4)", "<b>73.5–82.9%</b>"]],
            [0.27, 0.46, 0.27])
 S += H2("9.3 Cost-to-corrupt caps")
 S += formula("value held in a chain's vault (all indexes)   ≤   α × cost of corrupting that chain's finality",
@@ -941,7 +944,7 @@ S += table([["Parameter", "Value"],
             ["Minimum band", "0.1%"],
             ["Rebalance interval · notice · auction · delivery", "7 days · 2 days · 24 hours · 6 hours"],
             ["Rebalance bond", "0.1% of supply, in index shares; held 24 hours after settlement"],
-            ["Weight floor · membership buffer (flagship policy)", "Join at 0.2%, leave below 0.1% (proposed) · "
+            ["Weight floor · membership buffer (flagship policy)", "Join at 0.2%, leave below 0.1% (adopted) · "
                                                                   "enter at rank ≤ 80, leave below 120"],
             ["Quantity caps", "Per token, from 9.3; low at launch"],
             ["Liquidity screen (listing policy)", "Daily volume ≥ 0.1% of market cap over 30 days"]], [0.55, 0.45])
@@ -957,15 +960,15 @@ S += table([["Recorded decision (AGENTS.md)", "Change in v4"],
             ["One-click mint and burn for every index", "Only for Ethereum-only indexes up to ~35 tokens"],
             ["Capped 30/20 methodology", "Retired: it trades on every price move and needs every price"],
             ["Monthly rebalancing", "Weekly supply updates, 7-day interval (owner decision, 30 Sep 2026)"],
-            ["The seven-token launch whitelist", "The floor list's Ethereum tokens: WBTC, WETH, LINK, UNI (+ WBT after "
+            ["The seven-token launch whitelist", "The floor list's Ethereum tokens: WBTC, WETH, LINK, UNI (WBT failed "
                                                  "its check); native SOL comes with Stage B"],
             ["v3 as the product", "v4 replaces v3, kept at tag v3.0.0 and on Sepolia (owner decision, 30 Sep 2026)"],
-            ["No fees", "Under review (15.1)"],
-            ["Owner Safe of at least 2 signatures", "3-of-5 hardware wallets, because rotation can reach existing funds "
-                                                    "after 30 days"]], [0.42, 0.58], first_bold=True)
+            ["No fees", "Kept for Stage A, funded from outside (owner decision, 30 Sep 2026)"],
+            ["Owner Safe of at least 2 signatures", "At least 3, checked at deployment; 3-of-5 hardware wallets, "
+                                                    "because rotation can reach existing funds after 30 days"]], [0.42, 0.58], first_bold=True)
 S += [P("Kept from v3: in-kind backing, addresses that commit to contents, fixed constituents per index, untrusted "
         "executors behind a reentrancy guard, standard ERC-20s only on Ethereum.")]
-S += H2("15.1 Funding: an open decision")
+S += H2("15.1 Funding: no fee in Stage A")
 S += [P("Minters earn spreads and executors earn auction discounts, but nobody is paid for two audits per component, "
         "ZK-specialist audits, watchers on every chain, or a bug bounty sized to the largest vault: 4.4% of the index, "
         "<b>$4.4M at $100M</b>. Three price-free models:")]
@@ -978,13 +981,14 @@ S += table([["Model", "How", "Revenue at $100M", "Who pays"],
             ["No fee", "The team or grants fund it", "—", "Outside funders"]], [0.16, 0.38, 0.18, 0.28],
            first_bold=True)
 S += [P("In each case the treasury is fixed at creation and can do nothing but receive, so no model gives anyone power "
-        "over index coins. <b>This is the owner's decision</b>; until it is made, v4 keeps no fees.")]
+        "over index coins. <b>The owner decided on 30 Sep 2026: no fee in Stage A.</b> Audits, the bounty and watchers "
+        "are funded from outside; a fee, if one comes, arrives with a later index version.")]
 
 # ---------------------------------------------------------------- 16 build
 S += H1("16. Build stages and verification")
 S += table([["Stage", "Build", "Not needed yet"],
             ["A", "Price-free factory and hub, supply batches, MintRequests, the λ auction (atomic, on Ethereum), "
-                  "zap limit; holds WBTC, WETH, LINK, UNI (+ WBT)", "Vaults, proofs, mirror, freeze"],
+                  "zap limit; holds WBTC, WETH, LINK, UNI", "Vaults, proofs, mirror, freeze"],
             ["Prototype", "A full-finality Ethereum proof verified on BNB Chain and on Solana, and a BNB Chain state "
                            "proof verified on Ethereum, with measured cost and latency: decides Stage B", "—"],
             ["B", "One EVM vault for BNB Chain, HyperEVM and Tron; one for Solana; P1/P2 Ethereum verifiers on each; "
@@ -1013,8 +1017,7 @@ S += bullets([
     "finality is probabilistic</b>, which the deterministic-finality rule excludes; its Stage C gate decides. Hedera's "
     "permissioned council gets the same check.",
     "<b>Real supply histories</b> for the backtest, since constant supplies understate tracking error.",
-    "<b>WBT's listing check:</b> admin powers, float and Ethereum depth.",
-    "<b>Funding</b> (15.1), and <b>a tighter auction</b> whose exposure scales with the trade's size.",
+    "<b>A tighter auction</b> whose exposure scales with the trade's size.",
     "<b>Small indexes and the speed limit:</b> a floor so the 4% limit never blocks small redemptions.",
     "<b>On-chain value</b> for lending markets, if wanted: a time-weighted average of the index token's own Uniswap "
     "price, never a posted price.",

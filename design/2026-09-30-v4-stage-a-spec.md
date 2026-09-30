@@ -5,8 +5,8 @@ Status: **the build spec for Stage A, 2026-09-30.** It turns sections 4.1, 4.2, 
 vaults, proofs and the mirror to the same hub. Everything here is price-free: no contract reads a price, a feed or a
 pool. AGENTS.md's definition of done applies to every change.
 
-**Waiting for the owner:** the fee model (section 7; until chosen, no fee), WBT's listing (section 8), and this spec
-itself, which the build follows on the local branch `v4-stage-a` in the meantime.
+**The owner's decisions of 2026-09-30:** no fee in Stage A (section 7), WBT off after its check (section 8), the floor
+buffer, and an owner Safe of at least three signatures, which `Deploy` checks.
 
 ## 1. What changes from v3
 
@@ -168,12 +168,13 @@ No owner, no upgrade, `nonReentrant` on every entry point, immutable `FACTORY`, 
 `Deploy` deploys the factory (which deploys the hub implementation), the zap and `MintRequests`, with v3's owner and
 guardian checks. `ConfigureWhitelist` proposes and executes listings from `token:supply` entries and, in a `SUPPLIES`
 mode, the weekly batch (sorted, each within the step, entries beyond it skipped and logged), both also as Safe calldata.
-`MainnetAddresses` keeps WBTC, WETH, LINK and UNI (WBT after its check), USDC, USDT, the Universal Router and the
+`MainnetAddresses` keeps WBTC, WETH, LINK and UNI, USDC, USDT, the Universal Router and the
 PoolManager, with dated reference supplies.
 
-## 7. Fees: the owner's decision
+## 7. Fees: none in Stage A
 
-Until chosen, Stage A has no fee. Where each model lands:
+The owner decided on 2026-09-30 that Stage A has no fee and is funded from outside. Where each model would land, if a
+later version adds one:
 - **Minter fee in shares:** `issue` pulls the basket for `shares + fee` and mints `fee` to an immutable `TREASURY`;
   redeem takes `fee` shares from the redeemer to the treasury before paying out. Only `_backing`'s callers change.
 - **Management fee:** a WAD unit scale applied inside `_backing` that shrinks over time; the released backing is paid
@@ -183,8 +184,9 @@ Until chosen, Stage A has no fee. Where each model lands:
 ## 8. Stage A whitelist
 
 WBTC, WETH, LINK, UNI, with reference supplies dated and sourced in `script/MainnetAddresses.sol`. WBT (WhiteBIT's
-token) is on the floor list but waits for the owner after a check of its admin powers, its float (the issuer holds much
-of it, so the reference must be the circulating supply) and its Ethereum depth. LEO fails the liquidity screen. wstETH,
+token) is on the floor list by weight but stays off after its check (`design/2026-09-30-wbt-check.md`, the owner's
+call on 2026-09-30): a single key can blacklist any holder and destroy its balance, and no Uniswap pool holds it on
+Ethereum. LEO fails the liquidity screen. wstETH,
 wSOL and AAVE leave the v3 list: wstETH duplicates ETH, native SOL comes with Stage B, AAVE is below the floor.
 
 ## 9. Retirement

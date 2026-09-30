@@ -17,7 +17,7 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///
 /// Env:
 ///   OWNER               Required. Factory owner. On mainnet it must be a contract that is not an EIP-7702 delegated
-///                       account, and a Safe must require at least two signatures and have no enabled module.
+///                       account, and a Safe must require at least three signatures and have no enabled module.
 ///   GUARDIAN            Required. Can cancel pending listings, supply batches and rebalances, start a rebalance
 ///                       that leaves a paused component untouched, and delist tokens. Must differ from OWNER; replacing
 ///                       it later takes 7 days.
@@ -28,6 +28,9 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 contract Deploy is Script {
     /// @notice Mainnet default {resolveRouter} uses on chain 1, from `MainnetAddresses`.
     address public constant MAINNET_UNIVERSAL_ROUTER = MainnetAddresses.UNIVERSAL_ROUTER;
+    /// @notice Fewest signatures a Safe owner may need on mainnet: the design's 3-of-5 hardware wallets held by
+    ///         separate people (the owner's call on 2026-09-30).
+    uint256 public constant MIN_OWNER_THRESHOLD = 3;
     /// @notice Start of a Safe's module list.
     address public constant SENTINEL_MODULES = address(0x1);
 
@@ -142,7 +145,8 @@ contract Deploy is Script {
     }
 
     /// @notice Rejects a missing owner and Foundry's default sender. On mainnet the owner must be a contract, not
-    ///         an EIP-7702 delegated account, and a Safe must need at least two signatures and have no enabled module,
+    ///         an EIP-7702 delegated account, and a Safe must need at least MIN_OWNER_THRESHOLD (3) signatures, the
+    ///         owner's call on 2026-09-30 to match the design's 3-of-5, and have no enabled module,
     ///         because a module acts as the Safe without signatures. Modules or guards added later are not checked, so
     ///         the Safe must keep none.
     /// @param owner The intended factory owner.
@@ -158,7 +162,7 @@ contract Deploy is Script {
         (bool ok, bytes memory data) = owner.staticcall(abi.encodeCall(ISafeThreshold.getThreshold, ()));
         if (ok && data.length == 32) {
             uint256 threshold = abi.decode(data, (uint256));
-            if (threshold < 2) revert OwnerThresholdTooLow(owner, threshold);
+            if (threshold < MIN_OWNER_THRESHOLD) revert OwnerThresholdTooLow(owner, threshold);
             _checkNoModules(owner);
         }
     }

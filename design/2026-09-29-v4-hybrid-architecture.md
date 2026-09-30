@@ -1,6 +1,7 @@
 # Xindex v4 (hybrid multichain): Architecture
 
-Status: **proposal, 2026-09-29, revised 2026-09-30 after an external review. Nothing here is implemented.**
+Status: **proposal, 2026-09-29, revised 2026-09-30 after an external review. Stage A is built on the branch
+`v4-stage-a`, internally reviewed, not yet externally audited or deployed; nothing beyond Stage A is implemented.**
 `ARCHITECTURE.md` describes v3 as deployed; this document describes the design that replaces it (the owner's decision of
 2026-09-30: v3 stays at tag `v3.0.0` and on Sepolia and never launches on mainnet). Measurements are dated 2026-09-29
 and must be re-taken before any parameter is fixed; `design/analysis/floor.py` reproduces every coverage, tracking and
@@ -9,8 +10,10 @@ capacity figure from the saved snapshot.
 The revision: two proof systems only where coins leave a vault (4.4); a 0.2% weight floor, which cuts the vault chains
 from 22 to 9 (2.1); upgrade prevention for vault chains as well as Ethereum (6.10); weekly supply updates (6.6); a
 units-anchored rebalance formula that corrects the first draft's (6.6); the gap fixes of 6.3, 6.7, 6.8, 6.9 and 8.2;
-speed limit and mint cap of 4% a day (8.1); funding set out as an open decision (13.1); and the non-functional standard
-renamed the bounded-loss standard.
+speed limit and mint cap of 4% a day (8.1); funding set out as a decision (13.1); and the non-functional standard
+renamed the bounded-loss standard. The owner's decisions of 2026-09-30: no fee in Stage A, funded from outside (13.1);
+WBT stays off after its listing check (2.1); the floor buffer is adopted (6.7); and the owner Safe needs at least 3
+signatures, which deployment now checks.
 
 v4 lets one ERC-20 index hold the largest crypto assets **in kind, with no custodian inside the protocol**: WBTC, WETH
 and the tokens native to Ethereum sit in the index contract on Ethereum, and the native coins of smart-contract chains
@@ -106,22 +109,23 @@ the vault chains from 22 to 9. Its list, with each token's weight in the index:
 | TRX | 1.4% | Tron | | UNI | 0.24% | Ethereum |
 | HYPE | 0.85% | HyperEVM | | HBAR | 0.21% | Hedera |
 | LINK | 0.49% | Ethereum | | AVAX | 0.21% | Avalanche |
-| WBT | 0.43% | Ethereum | | | | |
+| WBT | 0.43% | Ethereum, **fails its listing check** | | | | |
 
-LEO trades 0.006% of its market cap a day, against the screen's 0.1%, so the flagship holds **14 tokens: 89.9% of the
-value at 2.6% a year**. Under the floor, the smallest coin in a $250k mint is about $530.
+LEO trades 0.006% of its market cap a day, against the screen's 0.1%. WBT passes the screen but failed its listing check:
+a single key can blacklist any holder and destroy its balance, and no Uniswap pool holds it on Ethereum
+(`design/2026-09-30-wbt-check.md`; the owner kept it off on 2026-09-30). So the flagship holds **13 tokens: 89.5% of
+the value at 2.6% a year**. Under the floor, the smallest coin in a $250k mint is about $530.
 
-Staged, each stage working on its own (LEO out):
+Staged, each stage working on its own (LEO and WBT out):
 
 | Stage | Holds | Tokens | Coverage | Tracking error/yr | WBTC share | Vault share |
 |---|---|---|---|---|---|---|
-| A | WBTC, ETH, LINK, WBT, UNI | 5 | 79.8% | 4.2% | 82.5% | 0 |
-| B | A + BNB, SOL, TRX, HYPE | 9 | 88.6% | 3.1% | 74.3% | 9.9% |
-| C | B + ADA, XLM, NEAR, HBAR, AVAX | 14 | 89.9% | 2.6% | 73.2% | 11.2% |
+| A | WBTC, ETH, LINK, UNI | 4 | 79.4% | 4.2% | 82.9% | 0 |
+| B | A + BNB, SOL, TRX, HYPE | 8 | 88.2% | 3.1% | 74.6% | 9.9% |
+| C | B + ADA, XLM, NEAR, HBAR, AVAX | 13 | 89.5% | 2.6% | 73.5% | 11.3% |
 
 "Vault share" is the part of the index held in vaults; every per-day bound in section 8 is a vault share times a daily
-limit. WBT (WhiteBIT's token) is on the list subject to the listing check of its admin powers, float and Ethereum depth
-(section 15); without it Stage A holds 4 tokens.
+limit. With WBT, Stage A would hold 5 tokens and cover 79.8%.
 
 **The backtest understates tracking error.** It held today's supplies constant, so it measures drift from price moves
 only. Tokens whose supply grows through unlocks or emissions drift as well, which is what weekly supply updates follow
@@ -234,7 +238,7 @@ only. Tokens whose supply grows through unlocks or emissions drift as well, whic
   committee, plus a `CHALLENGE_DELAY` on every payout during which a full-finality proof or a conflicting
   committee-signed header freezes the vault, plus lower caps. This is a weaker trust assumption: the committee's 512
   members are not slashable, so a bribe to 342 of them replaces a circuit bug as the way in, and "both systems broken"
-  becomes a single failure. The worst case is then 0 if anyone challenges within the delay, and 11.2% × 4% ≈ **0.45% a
+  becomes a single failure. The worst case is then 0 if anyone challenges within the delay, and 11.3% × 4% ≈ **0.45% a
   day** of the index if nobody does. Payouts also wait the delay. Adopting it is the owner's call.
 
 ### 4.5 MintRequests (Ethereum)
@@ -449,7 +453,8 @@ churning:
 
 - **Rank buffer:** a coin enters a new version only if it ranks 80th or better, and a held coin leaves only if it
   falls below 120th.
-- **Floor buffer (proposed, owner's call):** a coin joins at a weight of 0.2% or more and leaves only below 0.1%.
+- **Floor buffer (adopted by the owner on 2026-09-30):** a coin joins at a weight of 0.2% or more and leaves only below
+  0.1%.
   The 0.2% floor sits near rank 32, so the rank buffer alone would never bind, and AVAX and HBAR (0.21% each) would
   flip in and out with each version.
 
@@ -588,16 +593,16 @@ settled[c][t] − (burned[c][t] − paid[c][t])  ≥  floor(S × u_t / 1e18)
 
 ### 8.1 Every failure and its bound
 
-Figures are for the full floor list (vault share 11.2% of the index, largest vault BNB at 4.4%) with the 4% daily speed
+Figures are for the full floor list (vault share 11.3% of the index, largest vault BNB at 4.4%) with the 4% daily speed
 limit and mint cap. The Ethereum-side proofs are shared by every chain, so a failure there hits every vault at once:
 that is why the daily limits are 4% and not 5% and 10%, which would give 0.56% and 1.1% a day below.
 
 | Failure | Defense | Worst case |
 |---|---|---|
 | One Ethereum-side proof system broken | Coins leave a vault only on P1 and P2 | Nothing moves |
-| Both Ethereum-side systems broken (double failure): forged burns on every vault at once | Speed limit, watchers, freeze | 11.2% × 4% ≈ **0.45% per day** |
+| Both Ethereum-side systems broken (double failure): forged burns on every vault at once | Speed limit, watchers, freeze | 11.3% × 4% ≈ **0.45% per day** |
 | A chain's deposit proof broken: forged deposit | A mint needs every token and Tier 1 is checked in real balances, so the forger pays for the rest of the basket and gains only the forged chains' weight; any honest proof of the same vault and height contradicts it; 24h lock; mint cap | Caught in the lock: **0**. Undetected (double failure: the proof and every watcher for 24 hours): one chain 4.4% × 4% ≈ **0.18% per day**; every chain on one proving stack 11.2% × 4% ≈ **0.45% per day** |
-| A chain's deposit proof broken: forged rebalance delivery | Bought legs are bounded by the band; bond held 24h and burned on proven shortfall | ≤ 1.0% × 11.2% ≈ **0.11% per rebalance**, most of it covered by the 0.1% bond |
+| A chain's deposit proof broken: forged rebalance delivery | Bought legs are bounded by the band; bond held 24h and burned on proven shortfall | ≤ 1.0% × 11.3% ≈ **0.11% per rebalance**, most of it covered by the 0.1% bond |
 | Sync-committee fallback (only if adopted, 4.4): the committee signs a false header | Challenge delay, lower caps | Challenged in the delay: **0**. Unchallenged: **0.45% per day** (a single failure) |
 | Lone executor at the auction's floor | Competition; guardian cancel | **0.995% per rebalance**, ≈ 0.11% per day at the weekly cadence (6.6) |
 | A vault chain's validators corrupted | Quantity caps below the lower of the economic and the concentration cap (8.2) | Unprofitable by construction; concentration capped separately |
@@ -611,7 +616,7 @@ that is why the daily limits are 4% and not 5% and 10%, which would give 0.56% a
 | Provers disappear | Open-source prover anyone can run | Delay |
 | A chain halts | Skip it; claims never expire | Delay |
 | Liquidity disappears | In-kind exit always available | Discount on the index token, not loss |
-| **WBTC custodian fails or freezes** | Accepted exception (8.3) | **73.2–82.5%** (floor list, stages C to A) |
+| **WBTC custodian fails or freezes** | Accepted exception (8.3) | **73.5–82.9%** (floor list, stages C to A) |
 
 ### 8.2 Cost-to-corrupt caps
 
@@ -740,7 +745,7 @@ excluded. The method and code are public; nothing on-chain depends on this value
 |---|---|
 | `MAX_COMPONENTS` | 100 |
 | `MIN_RAW_UNITS`, `MAX_UNITS` | 10,000; (2^96 − 1) / 2^10 |
-| Weight floor (flagship policy) | Join at 0.2%; leave below 0.1% (proposed) |
+| Weight floor (flagship policy) | Join at 0.2%; leave below 0.1% (adopted) |
 | Membership buffer (policy) | Enter at rank ≤ 80; leave below rank 120 |
 | `ORDER_DEADLINE` | 2 hours (max 6) |
 | `MINT_LOCK` | 24 hours |
@@ -774,9 +779,9 @@ excluded. The method and code are public; nothing on-chain depends on this value
 | Monthly rebalancing cadence | Weekly supply updates, 7-day interval (owner decision 2026-09-30) |
 | The seven-token launch whitelist (WETH, wstETH, WBTC, wSOL, UNI, LINK, AAVE) | The floor list's Ethereum tokens after the screen: WBTC, WETH, LINK, UNI, and WBT subject to its check; native SOL arrives with Stage B |
 | v3 as the product | v4 replaces v3, which stays at tag `v3.0.0` and on Sepolia (owner decision 2026-09-30) |
-| No fees | Under review: 13.1 |
+| No fees | Kept for Stage A, funded from outside (13.1) |
 
-### 13.1 Funding: an open decision
+### 13.1 Funding: no fee in Stage A
 
 v3 decided on no fees, because minters earn spreads and executors earn auction discounts. v4 needs things that nobody
 is paid for:
@@ -795,13 +800,15 @@ Three models, each price-free and in kind:
 
 In each case the treasury is an address fixed at creation that can receive shares or released backing and do nothing
 else, so no fee model gives anyone power over index coins. Stage A's hub computes every backing amount in one place, so
-either fee model lands in one reviewed change. **This is the owner's decision**; until it is made, v4 keeps "no fees".
+either fee model lands in one reviewed change. **The owner's decision of 2026-09-30: no fee in Stage A**. Audits, the
+bounty and watchers are funded from outside, and a fee, if one comes, arrives with a later index version, so the
+Stage A audit reviews no fee code.
 
 ## 14. Build stages and verification
 
 | Stage | Build | Needs no |
 |---|---|---|
-| A | Price-free factory and hub, supply batches, MintRequests, the λ auction (atomic), zap limit; holds WBTC, WETH, LINK, UNI (+ WBT) | Vaults, proofs, mirror, freeze |
+| A | Price-free factory and hub, supply batches, MintRequests, the λ auction (atomic), zap limit; holds WBTC, WETH, LINK, UNI | Vaults, proofs, mirror, freeze |
 | Prototype | A full-finality Ethereum proof verified on BNB Chain and on Solana, and a BNB Chain state proof verified on Ethereum, with measured cost and latency; decides Stage B, or the sync-committee fallback | — |
 | B | EVM vault (BNB Chain, HyperEVM, Tron), Solana vault, P1/P2 Ethereum verifiers on each, one state verifier per chain on Ethereum, mirror, orders, limits, freeze, migration, rotation, snapshot exit, watchers; BNB Chain end to end first | — |
 | C | Avalanche, NEAR, Stellar, Hedera, Cardano, one at a time, each only if its finality is deterministic, its proof cost is measured, its cap matters and its value pays for its vault, verifiers and audits (all of Stage C adds 1.3 points of coverage and 0.5 of tracking error) | — |
@@ -829,9 +836,6 @@ tests named after each finding id, as gate 6 of AGENTS.md requires.
   and its state-proof support get the same check.
 - **Real supply histories:** re-run the backtest with each token's supply over time, since constant supplies
   understate tracking error (2.1). CoinGecko's API was blocked on 2026-09-29; another source is needed.
-- **WBT's listing check:** its circulating supply as the reference (the issuer holds much of the float), any mint,
-  pause or blacklist powers, and its Ethereum depth for executors and the zap.
-- **Funding** (13.1).
 - **A tighter auction:** the λ band exposes the whole moving value however small the trade (6.6); whether a price-free
   design can bound the exposure by the trade's size.
 - **Small indexes and the speed limit:** a floor so a 4% limit does not block small redemptions.

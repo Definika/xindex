@@ -142,7 +142,8 @@ audit/                        review reports, their triages, and the two retirem
 - **Value-bearing amounts are in-kind.** `IndexHub` only ever moves amounts derived from supply and units: issue,
   redeem, claims and rebalance settlements. Never compute an amount from balances (balances only verify), and never
   add a share price to the hub. `_backing(shares, units, rounding)` is the one place that turns shares and units into an
-  amount, and the seam a fee model would change. No fee code goes in until the owner picks a model (design §13.1). No
+  amount, and the seam a fee model would change. Stage A has no fee (the owner's call on 2026-09-30, design §13.1), so
+  no fee code goes in; a fee, if one comes, arrives with a later index version through this seam. No
   share can be sent to the index itself or its factory: `_update` refuses both, because neither can ever move a share
   on (CR-I01, RT-21).
 - **No admin power over funds, no rebalancing key.**
@@ -391,7 +392,8 @@ audit/                        review reports, their triages, and the two retirem
   - Deployments never use raw private keys: `--account` keystores or `--ledger`.
   - `OWNER` and `GUARDIAN` are required.
   - On mainnet the owner must be a contract that is not an EIP-7702 delegated account. A Safe owner must need at least
-    two signatures and have no enabled module.
+    `MIN_OWNER_THRESHOLD` (3) signatures, the design's 3-of-5 (the owner's call on 2026-09-30), and have no enabled
+    module.
   - When the owner is a Safe, neither the guardian nor the broadcasting key may be one of its signers (SA-06).
   - Neither role may be a market contract: the router and its PoolManager, and on chain 1 every token and mint
     currency in `script/MainnetAddresses.sol` (CR-I37).
@@ -418,14 +420,17 @@ records what went with them:
   `λmin`. Monthly updates would have followed only about 6.7% a year of supply growth.
 - **Components.** Up to `MAX_COMPONENTS` (100) per index. The flagship follows the design's weight floor (§2.1): it
   holds only tokens whose weight in the holdable universe is at least 0.2% and that pass the liquidity screen, daily
-  volume of at least 0.1% of market cap, which drops LEO. The floor buffer, join at 0.2% and leave below 0.1%, is
-  proposed and awaits the owner.
+  volume of at least 0.1% of market cap, which drops LEO. A coin joins at 0.2% and leaves only below 0.1%, so borderline
+  coins do not churn between versions (the floor buffer, the owner's call on 2026-09-30).
 - **Stage A whitelist.** WETH, WBTC, LINK and UNI, each with a dated reference supply (`script/MainnetAddresses.sol`).
-  WBT joins only after its check, which waits for the owner. The whitelist follows from the floor, the screen and the
+  WBT stays off: a single key can blacklist any holder and destroy its balance, and no Uniswap pool holds it on
+  Ethereum (`design/2026-09-30-wbt-check.md`, the owner's call on 2026-09-30). The whitelist follows from the floor,
+  the screen, the listing check and the
   owner's preference for native coins in vaults over wrapped ones. Bitcoin is held as WBTC only (the owner's call on
   2026-09-29; do not reopen it).
-- **Fees.** Still none. The fee model, whether an in-kind fee on minters, a streaming management fee or outside
-  funding, is an open decision for the owner (design §13.1). Only `_backing` would change.
+- **Fees.** None in Stage A: audits, the bounty and watchers are funded from outside (the owner's call on 2026-09-30,
+  over a minter fee in shares or a management fee, design §13.1). A later version could add one; only `_backing` and
+  its callers would change.
 - **Stage B and C limits.** `SPEED_LIMIT` and `MINT_CAP` are 4% a day (the owner's call on 2026-09-30). The guardian's
   freeze expires. Ethereum verifiers rotate every 30 days. Script-only chains are out.
 
@@ -440,7 +445,7 @@ If a change would alter any of these, say so explicitly.
 
 ## Not in Stage A (candidate backlog)
 
-- The fee model, once chosen.
+- A fee, in a later index version.
 - `mintWithETH` / `burnToETH`, `createAndMint`, `mintWithTokenPermit` for USDC.
 - Creator fees (attribute them by `creatorOf`, never by name).
 - Constituent changes.
