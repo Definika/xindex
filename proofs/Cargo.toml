@@ -1,5 +1,5 @@
 [workspace]
-members = ["finality", "p1-program", "p1-script"]
+members = ["finality", "p1-program", "p1-script", "p1-input"]
 resolver = "2"
 
 # SP1's accelerated crates, pinned to the SP1 6.x precompiles, as in the prototype. Off the zkVM they build as the

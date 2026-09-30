@@ -3028,6 +3028,7 @@ checksum = "d19c46a6fdd48bc4dab94b6103fccc55d34c67cc0ad04653aad4ea2a07cd7bbb"
 dependencies = [
  "base64 0.22.1",
  "bytes",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "http",
@@ -5661,6 +5662,18 @@ dependencies = [
  "serde-big-array",
  "sha2",
  "tiny-keccak",
+]
+
+[[package]]
+name = "xindex-p1-input"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "bls12_381",
+ "hex",
+ "reqwest",
+ "serde_json",
+ "xindex-finality",
 ]
 
 [[package]]

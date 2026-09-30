@@ -162,7 +162,7 @@ design/                       the v4 design and its PDF, the Stage A and Stage B
 audit/                        review reports, their triages, and the two retirement records
 demo/                         the hackathon's testnet demonstration: STUB verifiers, deploy scripts along the timelocks, the relayer (TypeScript); its own Foundry project, never deployed to a mainnet
 solana/                       Stage B on Solana: the vault program (Anchor 1.2) and a STUB verifier for testnets, with LiteSVM tests (see solana/README.md)
-proofs/                       Stage B's proof systems in Rust: `finality`, P1's statement that an Ethereum checkpoint is final (spec section 10), tested natively against the consensus specs' libraries and mainnet data
+proofs/                       Stage B's proof systems in Rust: `finality`, P1's statement that an Ethereum checkpoint is final (spec section 10), tested natively against the consensus specs' libraries and mainnet data; `p1-program` and `p1-script`, its SP1 program and host; `p1-input`, which builds a real input from chain data
 prototype/                    the proving prototype: an SP1 workspace and its own Foundry project (via-IR); the gates skip it and Wake excludes it
 ```
 
