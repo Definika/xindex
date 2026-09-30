@@ -172,13 +172,30 @@ run proves a representative slice, the key-aggregation step alone at about 3B pr
 price per billion prover gas, scaled to about 11B (or about 6.7B), decide the $50 and 60-minute thresholds. The
 commands are in `prototype/README.md`.
 
-### M6 started: BNB Chain's finality vote, recorded
+### M6: BNB Chain's finality vote, checked on Ethereum without a zkVM
 
-At BNB Chain block 124,884,057, 20 of the 21 validators (bitset `0x1dffff`) signed one aggregate BLS signature over the
-vote for block 124,884,056. `prototype/fixtures-bsc-vote.json` holds the vote, the signature and the 21 validators' BLS
-keys from epoch block 124,884,000. Checking it on Ethereum costs, by EIP-2537's schedule, about:
-- 103k gas for the two pairings;
-- 50k for hashing the vote to G2;
-- 8k for 20 key additions.
+At BNB Chain block 124,884,600, 20 of the 21 validators (bitset `0x1effff`) signed one aggregate BLS signature over
+the vote for block 124,884,599. The scheme, checked natively with the reference library before any Solidity:
+- the message is the keccak256 of the RLP-encoded vote data (source and target number and hash);
+- the domain tag is Ethereum's proof-of-possession tag;
+- voters are indexed in the order of the epoch header's validator list.
 
-So the vote check alone should come to about 160k to 200k gas; the verifier contract measures it.
+A vote 57 blocks after its epoch block did not verify against that epoch's set: a new set takes effect some blocks
+after its epoch block, and the verifier has to follow that switch.
+
+`prototype/evm/src/BscVoteVerifier.sol` checks the vote on the Prague EVM with the EIP-2537 precompiles:
+- it sums the voters' keys;
+- it hashes the vote to G2 as RFC 9380 prescribes, with SHA-256, the modexp precompile and `MAP_FP2_TO_G2`;
+- it makes one pairing check.
+
+| Measure | Gas |
+|---|---|
+| `verifyVote`, 20 voters (the recorded vote verifies; a different vote or a missing voter does not) | **267,251** |
+| The same called from a test, calldata copied | 280,360 |
+| Estimated whole proof: 21,000 base, about 45k of calldata, the vote, the target header's hash check, and a storage proof of about 100k to 150k | about **0.5M** |
+
+So the vault → Ethereum direction for BNB Chain needs **no zkVM and no trusted setup**, only the chain's own signatures
+checked by Ethereum's precompiles, within the 1M threshold. The validator set needs an update transaction only when
+its membership changes, at most about daily, because a finality vote by an unchanged set proves an epoch block's list
+as well as any other block. Still to measure in M6: the storage proof, with a Merkle-Patricia verifier against a
+recorded `eth_getProof`, and the set update.

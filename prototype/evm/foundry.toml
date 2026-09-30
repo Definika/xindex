@@ -1,0 +1,14 @@
+# M6 of the proving prototype: a BNB Chain finality vote checked on Ethereum with the EIP-2537 precompiles. Separate
+# from the Xindex contracts; the Prague EVM is the first with BLS12-381 precompiles.
+[profile.default]
+src = "src"
+test = "test"
+out = "out"
+cache_path = "cache"
+libs = ["../../lib"]
+remappings = ["forge-std/=../../lib/forge-std/src/"]
+solc_version = "0.8.28"
+evm_version = "prague"
+optimizer = true
+optimizer_runs = 200
+fs_permissions = [{ access = "read", path = "./test" }]
