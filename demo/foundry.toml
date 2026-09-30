@@ -1,0 +1,28 @@
+# The hackathon demonstration (design/2026-09-30-hackathon-plan.md): testnet STUBS and deploy scripts. A Foundry
+# project of its own, outside src/, test/ and script/, so nothing here can reach a mainnet deployment or the gates of the
+# Xindex contracts. The Xindex contracts are compiled from ../src with the root project's settings, so the bytecode
+# deployed on the testnets is the audited build's.
+[profile.default]
+src = "src"
+test = "test"
+script = "script"
+out = "out"
+cache_path = "cache"
+libs = ["../lib"]
+allow_paths = ["../src"]
+remappings = [
+    "forge-std/=../lib/forge-std/src/",
+    "@openzeppelin/contracts/=../lib/openzeppelin-contracts/contracts/",
+    "@openzeppelin/contracts-upgradeable/=../lib/openzeppelin-contracts-upgradeable/contracts/",
+    "xindex/=../src/",
+]
+solc = "0.8.28"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 1000
+dynamic_test_linking = false
+fs_permissions = [{ access = "read-write", path = "./deployments" }]
+
+[lint]
+# ../src is linted by the root project; this one holds only the stubs and scripts.
+lint_on_build = false

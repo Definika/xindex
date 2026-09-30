@@ -151,6 +151,7 @@ script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test 
 abi/                          generated ABIs the web app decodes with; CI regenerates them and fails on a diff
 design/                       the v4 design and its PDF, the Stage A and Stage B specs, the prototype record, the PDF builder, and the analysis scripts (their data is not committed)
 audit/                        review reports, their triages, and the two retirement records
+demo/                         the hackathon's testnet demonstration: STUB verifiers, deploy scripts along the timelocks, the relayer (TypeScript); its own Foundry project, never deployed to a mainnet
 solana/                       Stage B on Solana: the vault program (Anchor 1.2) and a STUB verifier for testnets, with LiteSVM tests (see solana/README.md)
 prototype/                    the proving prototype: an SP1 workspace and its own Foundry project (via-IR); the gates skip it and Wake excludes it
 ```
