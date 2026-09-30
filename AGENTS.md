@@ -377,6 +377,9 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
 
   Mint claims wait while a fill is accepted. The bond is held 24 hours after settlement, and burned if a delivery
   proves forged. It is burned on an executor's abort and returned on a guardian's cancel.
+- **Vault governance is delayed and public.** The factory sends `CAP_UPDATE` only after `LISTING_DELAY`,
+  `FREEZER_CHANGE` only after `GUARDIAN_DELAY` (the guardian cannot cancel it, as it cannot block its own replacement),
+  and `VERIFIER_ROTATION` only after `ROTATION_DELAY` (30 days). P1 and P2 must always be two different verifiers.
 - **Size.** The hub and the module are both near the 24KB limit. Check `forge build --sizes` after any change to
   either.
 

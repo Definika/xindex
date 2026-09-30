@@ -12,6 +12,7 @@ import {IHybridIndexFactory} from "../src/interfaces/IHybridIndexFactory.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {VaultMessages} from "../src/libraries/VaultMessages.sol";
+import {MockEventVerifier} from "./mocks/MockEventVerifier.sol";
 import {MockStateVerifier} from "./mocks/MockStateVerifier.sol";
 import {HybridTest} from "./HybridTest.sol";
 
@@ -31,6 +32,7 @@ contract HybridIndexFactoryTest is HybridTest {
         new HybridIndexFactory(owner, guardian, address(stranger));
         assertEq(factory.HYBRID_IMPLEMENTATION(), address(template));
         assertEq(factory.FREEZE_DURATION(), 14 days);
+        assertEq(factory.ROTATION_DELAY(), 30 days);
     }
 
     // ---------------------------------------------------------------------
@@ -191,6 +193,185 @@ contract HybridIndexFactoryTest is HybridTest {
         assertEq(factory.messageNonce(), 1);
         _deliverAll(logs);
         assertEq(vault.frozenUntil(), block.timestamp + 14 days);
+    }
+
+    /// @dev Only the factory's own HybridHub clones may freeze a chain on evidence; an Ethereum-only index may not.
+    function test_freezeOnEvidence_onlyAHybridIndex() public {
+        vm.expectRevert(abi.encodeWithSelector(IHybridIndexFactory.NotAHybridIndex.selector, address(this)));
+        factory.freezeOnEvidence(chainId);
+        address[] memory ethOnly = new address[](1);
+        ethOnly[0] = address(weth);
+        address plain = factory.createIndex("Eth", "ETHI", ethOnly, K);
+        vm.prank(plain);
+        vm.expectRevert(abi.encodeWithSelector(IHybridIndexFactory.NotAHybridIndex.selector, plain));
+        factory.freezeOnEvidence(chainId);
+
+        address hub = address(_createHybrid());
+        vm.prank(hub);
+        vm.expectRevert(abi.encodeWithSelector(IHybridIndexFactory.UnknownChain.selector, OTHER));
+        factory.freezeOnEvidence(OTHER);
+        vm.recordLogs();
+        vm.expectEmit(address(factory));
+        emit IHybridIndexFactory.ChainFrozen(chainId, block.timestamp + 14 days, hub);
+        vm.prank(hub);
+        factory.freezeOnEvidence(chainId);
+        assertEq(factory.chainFreeze(chainId).until, block.timestamp + 14 days);
+        assertEq(_message(vm.getRecordedLogs()).kind, VaultMessages.FREEZE);
+    }
+
+    // ---------------------------------------------------------------------
+    // governance messages
+    // ---------------------------------------------------------------------
+
+    /// @dev A cap waits LISTING_DELAY, then goes to the vault; raising it needs both proofs there, as it does here.
+    function test_proposeCap_reachesTheVault() public {
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(this)));
+        factory.proposeCap(chainId, bytes32(0), 5e24, 1e21);
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(IHybridIndexFactory.UnknownChain.selector, OTHER));
+        factory.proposeCap(OTHER, bytes32(0), 5e24, 1e21);
+
+        bytes32 id = factory.vaultProposalId(chainId, VaultMessages.CAP_UPDATE, bytes32(0));
+        bytes memory body = abi.encode(bytes32(0), uint256(5e24), uint256(1e21));
+        vm.expectEmit(address(factory));
+        emit IHybridIndexFactory.VaultProposalMade(
+            id, chainId, VaultMessages.CAP_UPDATE, body, block.timestamp + 2 days
+        );
+        vm.prank(owner);
+        assertEq(factory.proposeCap(chainId, bytes32(0), 5e24, 1e21), id);
+        IHybridIndexFactory.VaultProposal memory p = factory.vaultProposal(id);
+        assertEq(p.chainId, chainId);
+        assertEq(p.kind, VaultMessages.CAP_UPDATE);
+        assertEq(p.body, body);
+        vm.prank(owner);
+        vm.expectRevert(
+            abi.encodeWithSelector(IHybridIndexFactory.VaultProposalPending.selector, id, block.timestamp + 2 days)
+        );
+        factory.proposeCap(chainId, bytes32(0), 6e24, 1e21);
+        // Another token has a proposal of its own.
+        vm.prank(owner);
+        factory.proposeCap(chainId, bytes32(uint256(7)), 1, 1);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(IHybridIndexFactory.VaultProposalNotReady.selector, id, block.timestamp + 2 days)
+        );
+        factory.executeVaultProposal(id);
+        vm.warp(block.timestamp + 2 days);
+        vm.recordLogs();
+        factory.executeVaultProposal(id);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        assertEq(factory.vaultProposal(id).eta, 0);
+        VaultMessages.Message memory m = _message(logs);
+        assertEq(m.kind, VaultMessages.CAP_UPDATE);
+        assertEq(m.index, address(factory));
+        assertEq(m.body, body);
+        _deliverAll(logs);
+        assertEq(vault.cap(address(0)), 5e24);
+        assertEq(vault.outflowFloor(address(0)), 1e21);
+        vm.expectRevert(abi.encodeWithSelector(IHybridIndexFactory.NoVaultProposal.selector, id));
+        factory.executeVaultProposal(id);
+    }
+
+    /// @dev Each proposal must be executed within PROPOSAL_WINDOW of its eta; an expired one can be replaced.
+    function test_vaultProposals_expire() public {
+        vm.prank(owner);
+        bytes32 id = factory.proposeCap(chainId, bytes32(0), 5e24, 1e21);
+        uint256 deadline = block.timestamp + 2 days + 7 days;
+        vm.warp(deadline + 1);
+        vm.expectRevert(abi.encodeWithSelector(IHybridIndexFactory.VaultProposalExpired.selector, id, deadline));
+        factory.executeVaultProposal(id);
+        vm.prank(owner);
+        factory.proposeCap(chainId, bytes32(0), 4e24, 1e21);
+        assertEq(factory.vaultProposal(id).eta, block.timestamp + 2 days);
+    }
+
+    /// @dev The freezer changes after GUARDIAN_DELAY, as the guardian does, and the guardian cannot stop it.
+    function test_proposeFreezer_theGuardianCannotBlockIt() public {
+        vm.prank(owner);
+        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
+        factory.proposeFreezer(chainId, bytes32(0));
+        address next = makeAddr("next freezer");
+        vm.prank(owner);
+        bytes32 id = factory.proposeFreezer(chainId, _b32(next));
+        assertEq(factory.vaultProposal(id).eta, block.timestamp + 7 days);
+        vm.prank(guardian);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, guardian));
+        factory.cancelVaultProposal(id);
+
+        vm.warp(block.timestamp + 7 days);
+        vm.recordLogs();
+        factory.executeVaultProposal(id);
+        _deliverAll(vm.getRecordedLogs());
+        assertEq(vault.freezer(), next);
+    }
+
+    /// @dev A rotation waits 30 days, in public; the guardian or the owner can cancel it.
+    function test_proposeRotation_waitsThirtyDaysAndTheGuardianMayCancel() public {
+        MockEventVerifier n1 = new MockEventVerifier();
+        MockEventVerifier n2 = new MockEventVerifier();
+        vm.startPrank(owner);
+        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
+        factory.proposeRotation(chainId, bytes32(0), _b32(address(n2)));
+        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
+        factory.proposeRotation(chainId, _b32(address(n1)), bytes32(0));
+        vm.expectRevert(IHybridIndexFactory.VerifiersNotDistinct.selector);
+        factory.proposeRotation(chainId, _b32(address(n1)), _b32(address(n1)));
+        bytes32 id = factory.proposeRotation(chainId, _b32(address(n1)), _b32(address(n2)));
+        vm.stopPrank();
+        assertEq(factory.vaultProposal(id).eta, block.timestamp + 30 days);
+
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, address(this)));
+        factory.cancelVaultProposal(id);
+        vm.expectEmit(address(factory));
+        emit IHybridIndexFactory.VaultProposalCancelled(id, guardian);
+        vm.prank(guardian);
+        factory.cancelVaultProposal(id);
+        vm.expectRevert(abi.encodeWithSelector(IHybridIndexFactory.NoVaultProposal.selector, id));
+        vm.prank(owner);
+        factory.cancelVaultProposal(id);
+
+        vm.prank(owner);
+        factory.proposeRotation(chainId, _b32(address(n1)), _b32(address(n2)));
+        vm.warp(block.timestamp + 30 days - 1);
+        vm.expectRevert(
+            abi.encodeWithSelector(IHybridIndexFactory.VaultProposalNotReady.selector, id, block.timestamp + 1)
+        );
+        factory.executeVaultProposal(id);
+        vm.warp(block.timestamp + 1);
+        bytes memory payload = _rotationPayload(n1, n2);
+        vm.expectEmit(address(factory));
+        emit IHybridIndexFactory.VaultProposalExecuted(id);
+        vm.expectEmit(address(factory));
+        emit VaultMessages.VaultMessage(keccak256(payload), payload);
+        // Recording starts after the expectations, whose own emits would otherwise be recorded as logs of this test.
+        vm.recordLogs();
+        factory.executeVaultProposal(id);
+        _deliverAll(vm.getRecordedLogs());
+        assertEq(address(vault.p1()), address(n1));
+        assertEq(address(vault.p2()), address(n2));
+    }
+
+    /// @dev The owner can cancel any of its proposals, a freezer change included.
+    function test_cancelVaultProposal_byTheOwner() public {
+        vm.startPrank(owner);
+        bytes32 id = factory.proposeFreezer(chainId, _b32(makeAddr("next")));
+        factory.cancelVaultProposal(id);
+        vm.stopPrank();
+        assertEq(factory.vaultProposal(id).eta, 0);
+    }
+
+    function _rotationPayload(MockEventVerifier n1, MockEventVerifier n2) internal view returns (bytes memory) {
+        return VaultMessages.encode(
+            VaultMessages.Message({
+                sourceChainId: block.chainid,
+                kind: VaultMessages.VERIFIER_ROTATION,
+                destChainId: chainId,
+                vault: _b32(address(vault)),
+                index: address(factory),
+                nonce: factory.messageNonce() + 1,
+                body: abi.encode(_b32(address(n1)), _b32(address(n2)))
+            })
+        );
     }
 
     // ---------------------------------------------------------------------

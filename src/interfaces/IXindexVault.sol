@@ -66,6 +66,8 @@ interface IXindexVault {
     error NotFreezer(address caller);
     error NotAContract(address account);
     error OutflowOverflow();
+    /// @notice P1 and P2 must be two different verifiers, or "P1 and P2" would be one proof.
+    error VerifiersNotDistinct();
 
     /// @notice Largest share of an index's balance of a token that may leave in any 24 hours: 4%.
     function SPEED_LIMIT() external view returns (uint256);

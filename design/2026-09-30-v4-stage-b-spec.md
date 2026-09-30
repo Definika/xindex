@@ -379,6 +379,37 @@ component. A vault component's reference supply comes from the factory like any 
 - mint claims waiting during a delivery window;
 - an order failing at claim when its units moved against it.
 
+### 5.4 Governance messages to vaults (built 2026-09-30)
+
+A vault has no owner. Its settings change only through messages the factory emits, which P1 and P2 prove on the vault's
+chain. The factory sends them only after a public delay, the same way it runs listings, and anyone can execute a
+proposal within `PROPOSAL_WINDOW` (7 days) after its delay.
+
+| Proposal (owner only) | Message | Delay | Who can cancel |
+|---|---|---|---|
+| `proposeCap(chainId, token, cap, floor)` | `CAP_UPDATE` | `LISTING_DELAY`, 2 days | owner or guardian |
+| `proposeFreezer(chainId, freezer)` | `FREEZER_CHANGE` | `GUARDIAN_DELAY`, 7 days | owner only |
+| `proposeRotation(chainId, p1, p2)` | `VERIFIER_ROTATION` | `ROTATION_DELAY`, 30 days | owner or guardian |
+
+- **One live proposal** per chain and kind, and per token for caps. An expired one can be replaced.
+- **Caps.** Every cap change waits the delay, a lowering included. The immediate protection is the freeze, which
+  either proof system carries. On the vault, a message that raises the cap or the floor needs both proofs.
+- **Freezer.** A freezer change follows the guardian's own rule: the guardian cannot block its own replacement. The
+  vault refuses a zero freezer, so the role can never be removed.
+- **Rotation.** A rotation must name two different, non-zero verifiers. The vault checks the same, and its constructor
+  refuses one verifier used twice, since "P1 and P2" would then be a single proof.
+  - The 30 days are public: holders who object can leave, and the guardian can cancel.
+  - `ROTATION_LEAD` (90 days) stays operational, not enforced. The owner proposes the next pair at least 90 days before a
+    scheduled Ethereum upgrade, so a guardian's veto, the guardian's replacement (7 days) and a second 30-day rotation
+    all fit before the upgrade.
+- **Evidence.** `freezeOnEvidence(chainId)` lets any of the factory's HybridHub clones freeze a chain as the owner or
+  guardian can, once it has checked evidence that the chain's records or proofs are false (section 5.5). An
+  Ethereum-only index cannot call it.
+
+**Unchanged, for the record:** a compromised owner could rotate a vault's verifiers to ones it controls, but only after
+30 days in public, only if the guardian does not cancel, and holders can leave within those 30 days. That is design
+8.1's "owner Safe compromised" row.
+
 ## 6. Build order
 
 1. The message library and the verifier interface. Then the EVM vault, with unit tests, an invariant suite, mock
@@ -386,8 +417,8 @@ component. A vault component's reference supply comes from the factory like any 
 2. The BNB Chain state verifier on Ethereum, from the prototype, with validator-set tracking and fork tests against
    BNB Chain data.
 3. The factory's chain registry, and `HybridHub` (once proposal 1 is decided). Layer 1 is built (section 5.2); layer 2
-   is the rebalance with deliveries and bond (built, section 5.3); then migration, shortfall evidence and the
-   governance messages.
+   is the rebalance with deliveries and bond (built, section 5.3); the governance messages are built (section 5.4);
+   then migration and shortfall evidence.
 4. The Ethereum-event verifiers (P1, P2), once the owner decides the proof system after the GPU run.
 5. The Solana vault program, then HyperEVM and Tron.
 6. The stall recovery and snapshot exit, then watchers, then the testnet rehearsals of the design's Phase 3.

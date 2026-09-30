@@ -112,6 +112,7 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         ) revert ZeroAddress();
         if (address(verifier1).code.length == 0) revert NotAContract(address(verifier1));
         if (address(verifier2).code.length == 0) revert NotAContract(address(verifier2));
+        if (verifier1 == verifier2) revert VerifiersNotDistinct();
         SOURCE_CHAIN_ID = sourceChainId;
         FACTORY = factory;
         HUB_IMPLEMENTATION = hubImplementation;
@@ -223,6 +224,7 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
             (address newP1, address newP2) = (_toAddress(a), _toAddress(b));
             if (newP1.code.length == 0) revert NotAContract(newP1);
             if (newP2.code.length == 0) revert NotAContract(newP2);
+            if (newP1 == newP2) revert VerifiersNotDistinct();
             p1 = IEthereumEventVerifier(newP1);
             p2 = IEthereumEventVerifier(newP2);
             emit VerifiersRotated(newP1, newP2);

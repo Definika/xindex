@@ -135,6 +135,8 @@ contract XindexVaultTest is VaultTestBase {
         new XindexVault(1, factory, hubImplementation, noCode, v2, freezerKey, CAP, FLOOR);
         vm.expectRevert(abi.encodeWithSelector(IXindexVault.NotAContract.selector, address(noCode)));
         new XindexVault(1, factory, hubImplementation, v1, noCode, freezerKey, CAP, FLOOR);
+        vm.expectRevert(IXindexVault.VerifiersNotDistinct.selector);
+        new XindexVault(1, factory, hubImplementation, v1, v1, freezerKey, CAP, FLOOR);
     }
 
     /// @dev An index is legitimate when its address is the factory's clone of the hub template under some salt: anyone
@@ -631,6 +633,12 @@ contract XindexVaultTest is VaultTestBase {
         vm.expectRevert(abi.encodeWithSelector(IXindexVault.NotAContract.selector, alice));
         _deliver(
             factory, _payload(VaultMessages.VERIFIER_ROTATION, factory, abi.encode(_b32(address(n1)), _b32(alice)))
+        );
+        // One verifier twice would turn "P1 and P2" into a single proof.
+        vm.expectRevert(IXindexVault.VerifiersNotDistinct.selector);
+        _deliver(
+            factory,
+            _payload(VaultMessages.VERIFIER_ROTATION, factory, abi.encode(_b32(address(n2)), _b32(address(n2))))
         );
     }
 
