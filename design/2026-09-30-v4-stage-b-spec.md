@@ -705,3 +705,80 @@ What changed in the rules above:
 
 Each trades availability for a bound on loss.
 
+
+## 10. P1: the Ethereum-finality proof (design, 30 September 2026)
+
+P1 proves to a vault chain that an Ethereum block is final, so the vault can accept a message logged in it. It
+replaces the testnet stubs. The zkVM is SP1; its proof is wrapped as BN254 Groth16, which an EVM checks with the BN254
+precompiles (about 227k gas, measured) and Solana with its `alt_bn128` syscalls.
+
+### What each verifier keeps
+
+Each vault chain runs one P1 verifier: a light client of Ethereum that anyone can advance. It keeps an **anchor**, the
+last checkpoint it accepted:
+- `epoch`, a finalized checkpoint's epoch `e0`;
+- `validatorsRoot`, the SSZ `hash_tree_root` of `state.validators` in that checkpoint's state;
+- the last execution block it covers, by hash and number.
+
+The first anchor comes from the deployer, and the vault's listing delay lets the owner and guardian check it, as for
+the BNB verifier. Every later anchor is proven.
+
+### The statement
+
+Given the anchor, the proof shows that checkpoint `C1 = (e1, r1)` is finalized, by Casper's two-epoch rule:
+1. **Justification.** Aggregate attestations whose data share a source `S` and the target `C1` are signed by
+   validators holding at least the threshold below.
+2. **Finalization.** Aggregate attestations with source `C1` and target `C2 = (e1 + 1, r2)` are signed the same way.
+3. **Who counts.** Every signer is looked up in the anchor's validator registry: its public key, effective balance,
+   activation and exit epochs and slashed flag, all proven against `validatorsRoot`. A signer counts once per link,
+   only if unslashed and active at the target epoch by those records. The threshold is two thirds of the stake the
+   records show active at that epoch, plus a margin.
+4. **The signatures.** Each aggregate's signature verifies against its signers' keys, over the attestation's signing
+   root under `DOMAIN_BEACON_ATTESTER`, the fork version of the target epoch and mainnet's genesis validators root.
+
+Only the anchor's keys are trusted, and each is a real validator's, checked for possession when it was deposited. So
+no committee assignment, shuffle or later state has to be trusted to count a vote: a vote counts because the key that
+signed it was in the trusted registry. The prover supplies each aggregate's signer list, which it reads from a beacon
+node. A wrong list only makes the signature fail.
+
+**The margin.** Records at `e0` go stale by `e1`. A validator that exits or consolidates away after `e0` still counts
+by them, and its key might then sign at no risk to itself. The protocol limits both per epoch:
+- exits and activations by `MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT` (256 ETH);
+- consolidations by the rest of the balance churn, about 263 ETH at today's stake.
+
+Together that is the whole balance churn, `max(128 ETH, total active balance / 65,536)`: about 519 ETH an epoch at
+34M ETH staked, and about 760 ETH at 50M. So the threshold adds 2,048 ETH for every epoch since `e0`, over twice the
+churn at any stake below about 67M ETH. `e1 − e0` is at most 225 epochs, a day, as the BNB verifier's `MAX_LAG` is. So
+the margin is at most 460,800 ETH, about 1.4% of today's stake, and honest participation near 99% clears 66.7% plus
+that easily. Slashed validators exit through the same churn. A day
+behind, a verifier stops for good and is rotated, as the BNB one is.
+
+**The new anchor.** `C1`'s block header hashes to `r1`. An SSZ proof from its state root gives the new
+`validatorsRoot`, and one from its body root gives the execution payload's block hash.
+
+**Execution headers.** The prover supplies every execution header from the anchor's last block to `C1`'s, each
+hashing to its successor's parent hash and the last to `C1`'s payload hash. The proof commits to a Merkle root
+(keccak) over one leaf per header, `keccak256(abi.encode(number, timestamp, stateRoot, receiptsRoot))`, so a
+message in any block since the last anchor can be proven.
+
+**Public values** (ABI-encoded): the anchor in, the anchor out, `e1`, the headers root, and the first and last block
+numbers it covers.
+
+### The verifier contract, and what the vault asks of it
+
+`update(publicValues, proof)`: anyone. It checks the SP1 proof against the fixed program key, requires the anchor in
+to equal the stored one, stores the anchor out, and records the headers root. Then:
+- `verifyEvent(proof)`: a header leaf proven into a recorded headers root, a receipt proven against the leaf's
+  `receiptsRoot` (Merkle-Patricia, key `rlp(txIndex)`), and the log at `logIndex`. It returns what the vault needs.
+- `verifyCheckpoint(proof)`: a header leaf proven into a recorded headers root, returned as the checkpoint.
+
+### Deliberately not in P1
+
+- **The full statement's cost.** Every signer's record is proven against the SSZ registry root, which means re-hashing
+  the whole registry, about 1M validators, in every proof. That is simple and obviously sound, but about 1.6 times the
+  prototype's cost model, which assumed a cheaper flat commitment. A cheaper incremental commitment is left for a
+  reviewed later version.
+- **One-epoch finality.** Section "One-epoch finality" of the prototype record is not relied on; both links are
+  proven.
+- **Forks.** The fork schedule is a constant of the program, so a new Ethereum fork needs a new program key, which is
+  a verifier rotation (30 days), proposed well ahead of the fork.
