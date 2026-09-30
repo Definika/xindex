@@ -619,3 +619,30 @@ proof exists; the vault's state proven to Ethereum, which a relayer stub stands 
 **The stubs.** `solana/programs/stub-verifier` accepts any log its relayer key signed. It is deployed twice, as P1 and
 as P2, under two keys. Its name, its first line and the submission all say it is a stub. The Ethereum side's stub is
 in `demo/`.
+
+## 8. Open design problem: proving a vault's state on Ethereum, chain by chain (found 30 September 2026)
+
+Proposal 3 (section 1) has Ethereum prove one storage slot of the vault per index or intake, against a state root the
+chain's finality signs. That holds where a block commits to contract storage, and not everywhere:
+
+| Chain | Does a block commit to the vault's storage? | Consequence |
+|---|---|---|
+| BNB Chain | Yes: an Ethereum-style state root | Built and tested (section 5.1) |
+| HyperEVM | Its blocks carry an Ethereum-style state root; how HyperBFT finalizes them has no public light-client specification | Waits on that specification |
+| Tron | No: a header's `accountStateRoot` covers balances only, not contract storage | Slot proofs are impossible |
+| Solana | No: the accounts lattice hash (SIMD-0215) has no inclusion proofs | Slot proofs are impossible |
+
+For Tron and Solana the vault's state has to reach Ethereum another way. The options, for the owner:
+1. **Prove transactions, not storage.** Ethereum proves each deposit transaction in a final block, through
+   `txTrieRoot` on Tron and Solana's transaction inclusion. The hub rebuilds the intake from them. Deadlines and
+   refunds need the same care as today's digests.
+2. **Prove execution** in a zkVM: the vault's state at a height, from the chain's blocks. That is general but heavy,
+   another proof system per chain.
+3. **Defer those chains.** Stage B launches with BNB Chain, whose path is built, and adds each chain once its proof
+   exists.
+
+The hackathon demonstration is unaffected: its state verifiers are stubs on every chain.
+
+Sources: the TRON VM storage note (blog.phor.net/tron-vm-storage-vulnerability) and java-tron's archive-node
+discussion; SIMD-0215 (accounts lattice hash) and the Solana light-client discussion #278 in
+solana-improvement-documents.
