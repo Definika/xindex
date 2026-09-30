@@ -5,7 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IndexFactory} from "../../src/IndexFactory.sol";
-import {IndexToken} from "../../src/IndexToken.sol";
+import {IndexHub} from "../../src/IndexHub.sol";
 import {IndexZap} from "../../src/IndexZap.sol";
 import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
@@ -44,7 +44,7 @@ contract IndexZapForkTest is ForkFeeds {
 
     IndexFactory factory;
     IndexZap zap;
-    IndexToken index;
+    IndexHub index;
     IQuoterV2 quoter = IQuoterV2(A.QUOTER_V2);
 
     address alice = makeAddr("alice");
@@ -102,7 +102,7 @@ contract IndexZapForkTest is ForkFeeds {
         u[0] = U_WBTC;
         u[1] = U_WETH;
         u[2] = U_LINK;
-        index = IndexToken(factory.createIndex("Blue Chip", "BLUE", t, u, 0));
+        index = IndexHub(factory.createIndex("Blue Chip", "BLUE", t, u, 0));
     }
 
     /// @dev A listing config whose minimum liquidity is a tenth of the pool's liquidity at the fork block, under the
@@ -195,7 +195,7 @@ contract IndexZapForkTest is ForkFeeds {
         }
     }
 
-    function _mintCall(IndexToken idx, address tokenIn, uint256 maxIn, uint256 shares, IIndexZap.MintLeg[] memory legs)
+    function _mintCall(IndexHub idx, address tokenIn, uint256 maxIn, uint256 shares, IIndexZap.MintLeg[] memory legs)
         internal
         returns (uint256)
     {
@@ -213,13 +213,10 @@ contract IndexZapForkTest is ForkFeeds {
         );
     }
 
-    function _burnCall(
-        IndexToken idx,
-        uint256 shares,
-        address tokenOut,
-        uint256 minOut,
-        IIndexZap.BurnLeg[] memory legs
-    ) internal returns (uint256) {
+    function _burnCall(IndexHub idx, uint256 shares, address tokenOut, uint256 minOut, IIndexZap.BurnLeg[] memory legs)
+        internal
+        returns (uint256)
+    {
         return zap.burnToToken(
             IIndexZap.BurnParams({
                 index: address(idx),
@@ -498,7 +495,7 @@ contract IndexZapForkTest is ForkFeeds {
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(A.TBTC);
 
-        IndexToken btc = IndexToken(factory.createIndex("BTC Basket", "BTC2", t, u, 0));
+        IndexHub btc = IndexHub(factory.createIndex("BTC Basket", "BTC2", t, u, 0));
 
         bytes[] memory mintPaths = new bytes[](2);
         mintPaths[0] = abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDC);

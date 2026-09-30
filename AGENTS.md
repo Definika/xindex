@@ -22,7 +22,7 @@ forge test                   # unit + fuzz + invariant tests, no RPC needed; for
                              # there makes the fork suites run too (archive node, or FORK_BLOCK, or --no-match-path 'test/fork/*');
                              # an RPC that cannot serve the pinned block fails with that sentence, not a raw fork error
 forge coverage               # must stay at 100% for every file (lines, statements, branches, functions)
-for c in IndexFactory IndexToken IndexRule IndexZap; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
+for c in IndexFactory IndexHub IndexRule IndexZap; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
 
 # mainnet fork tests (real Chainlink feeds, Universal Router, V3 and V4 pools); skipped when the env var is unset
 MAINNET_RPC_URL=https://... forge test --match-path 'test/fork/*' -vvv
@@ -46,7 +46,7 @@ market from `script/testnet/SetupTestMarket.s.sol`.
    feed-, router- or pool-related.
 5. The Wake VS Code analyzer reports no errors or warnings on `src/`. Its reentrancy detector does not model reentrancy
    guards; the three documented suppressions are on the `redeem` call in `IndexZap._burnBasket`, the `permit` call in
-   `IndexZap.burnToTokenWithPermit`, and the executor callback in `IndexToken.executeRebalance`.
+   `IndexZap.burnToTokenWithPermit`, and the executor callback in `IndexHub.executeRebalance`.
 6. Every testable finding of the security reviews keeps its regression test passing, named after its id (a test that
    covers two findings carries both): v1 findings by id, v2 rebalancing findings as `R01`..`R23`, whole-repo audit
    findings of 2026-09-16 as `XA..`, the logic review's findings of 2026-09-18 as `LR..`
@@ -69,14 +69,14 @@ market from `script/testnet/SetupTestMarket.s.sol`.
    among them. `audit/triage.md` gives the evidence for each.
    `audit/2026-09-19-triage.md` gives the DA evidence: DA-01 and DA-08 in `test/Security.t.sol`; DA-06, DA-09 and
    the DA-22 value fuzz in `test/IndexRule.t.sol`; DA-13, DA-14 and the DA-22 turnover test in
-   `test/IndexToken.rebalance.t.sol`; DA-17 in `test/IndexToken.t.sol`, where
+   `test/IndexHub.rebalance.t.sol`; DA-17 in `test/IndexHub.t.sol`, where
    `test_uninitializedInstancesCannotIssueOrRedeem` carries the DA-22 `canStartRebalance` assertion as well; DA-15 in
    `test/IndexZap.t.sol`; DA-16 and DA-11 and DA-18 in `test/IndexFactory.t.sol`; DA-20 in `test/Scripts.t.sol`;
-   DA-05 in `test/IndexToken.rebalance.t.sol`, with `test_settlementValues` in `test/IndexRule.t.sol` covering the
+   DA-05 in `test/IndexHub.rebalance.t.sol`, with `test_settlementValues` in `test/IndexRule.t.sol` covering the
    rule's half; DA-10 in `test/Repo.t.sol`, since deleting a struct field is only testable through the shipped ABI.
    DA-12, DA-21 and DA-23 have no test, because no code fix exists for them.
    The VR tests: VR-01 and VR-02 in `test/IndexRule.t.sol`, VR-03 in `test/Security.t.sol`, VR-04 in
-   `test/IndexToken.rebalance.t.sol`, and VR-06 in both `test/IndexRule.t.sol` (the two value-floor tests) and
+   `test/IndexHub.rebalance.t.sol`, and VR-06 in both `test/IndexRule.t.sol` (the two value-floor tests) and
    `test/mocks/Mocks.t.sol`, where the `ISwapRouter02` calldata pin moved when the zap stopped using that interface.
    The RT tests sit in the suite of what they check, and `audit/2026-09-24-red-team.md` names each one. RT-02, RT-03,
    RT-07, RT-08, RT-09, RT-11 and RT-18 were fixed by documentation or comments alone, and RT-20 was already a known
@@ -105,12 +105,12 @@ fork suites skip and a maintainer re-runs them before merging.
 ## Layout
 
 ```
-src/IndexToken.sol            index implementation (ERC20 + permit + in-kind issue, redeem, redeemSkipping, claim, rebalance), cloned
+src/IndexHub.sol            index implementation (ERC20 + permit + in-kind issue, redeem, redeemSkipping, claim, rebalance), cloned
 src/IndexRule.sol             stateless rule: reference supplies, Chainlink USD prices, weights, rebalance targets, index price
 src/CompositeFeed.sol         immutable adapter multiplying two feeds into one, for WBTC (BTC/USD x WBTC/BTC)
 src/IndexFactory.sol          listing delay + token configs + guardian, registry, CREATE2 clone deployer
 src/IndexZap.sol              stateless Universal Router mint/burn router, a venue per leg, per-leg limits, nonce check
-src/interfaces/               IIndexToken, IIndexFactory, IIndexRule, IIndexZap, IXindexErrors (shared errors), IRebalanceExecutor, IAggregatorV3, IUniversalRouter
+src/interfaces/               IIndexHub, IIndexFactory, IIndexRule, IIndexZap, IXindexErrors (shared errors), IRebalanceExecutor, IAggregatorV3, IUniversalRouter
 src/libraries/PathLib.sol     V3 packed path decoding (shared with test mocks)
 src/libraries/UniversalRouterCommands.sol  the router command bytes the zap emits, vendored with their input layouts
 src/libraries/UniswapV4Types.sol           V4 actions, PathKey and the swap params, vendored from v4-periphery (MIT)
@@ -128,7 +128,7 @@ script/testnet/               SetupTestMarket, FaucetToken and TestAggregator: t
 
 ## Design rules that must not be broken
 
-- **Value-bearing amounts are in-kind and oracle-free.** `IndexToken` only ever moves amounts derived from supply and
+- **Value-bearing amounts are in-kind and oracle-free.** `IndexHub` only ever moves amounts derived from supply and
   units: issue, redeem, claims and rebalance settlements. Never compute an amount from balances (balances only verify),
   never add a share price to the token. Prices from `IndexRule` shape rebalance targets, gate a settlement (DA-05) and
   display prices; they never size an amount. A settlement reads every moving leg's feed, so it is not oracle-free, and a

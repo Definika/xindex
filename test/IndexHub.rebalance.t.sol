@@ -6,10 +6,10 @@ import {Vm} from "forge-std/Vm.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
-import {IndexToken} from "../src/IndexToken.sol";
+import {IndexHub} from "../src/IndexHub.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IIndexRule} from "../src/interfaces/IIndexRule.sol";
-import {IIndexToken} from "../src/interfaces/IIndexToken.sol";
+import {IIndexHub} from "../src/interfaces/IIndexHub.sol";
 import {IRebalanceExecutor} from "../src/interfaces/IRebalanceExecutor.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
@@ -29,12 +29,12 @@ contract ClawingExecutor is IRebalanceExecutor {
         CLAWED = clawed;
     }
 
-    function execute(IIndexToken index) external {
+    function execute(IIndexHub index) external {
         index.executeRebalance("");
     }
 
     function onXindexRebalance(uint256[] calldata, uint256[] calldata amountsIn, bytes calldata) external {
-        address[] memory t = IIndexToken(msg.sender).componentTokens();
+        address[] memory t = IIndexHub(msg.sender).componentTokens();
         for (uint256 i = 0; i < t.length; ++i) {
             if (amountsIn[i] != 0) MockERC20(t[i]).mint(msg.sender, amountsIn[i]);
         }
@@ -46,10 +46,10 @@ contract ClawingExecutor is IRebalanceExecutor {
 /// @dev The basket holds five tokens worth one WETH each, 100 units apiece, while the rule wants the first at 60% and
 ///      the others at 10%. The first target is clipped at 200 units and the others land at 75, for 20% turnover. The
 ///      second component can be paused.
-contract IndexTokenRebalanceTest is Test {
+contract IndexHubRebalanceTest is Test {
     MockMarket market;
     IndexFactory factory;
-    IndexToken index;
+    IndexHub index;
     MockRebalanceExecutor executor;
     MockPausableToken pausable;
     address[] tokens;
@@ -89,7 +89,7 @@ contract IndexTokenRebalanceTest is Test {
             factory.executeListing(tokens[i]);
         }
 
-        index = IndexToken(factory.createIndex("Rebalanced", "RBL", tokens, startUnits, 0));
+        index = IndexHub(factory.createIndex("Rebalanced", "RBL", tokens, startUnits, 0));
         _issue(index, alice, SHARES);
     }
 
@@ -97,7 +97,7 @@ contract IndexTokenRebalanceTest is Test {
     // helpers
     // ---------------------------------------------------------------------
 
-    function _issue(IndexToken idx, address who, uint256 shares) internal {
+    function _issue(IndexHub idx, address who, uint256 shares) internal {
         uint256[] memory need = idx.previewIssue(shares);
         for (uint256 i = 0; i < tokens.length; ++i) {
             MockERC20(tokens[i]).mint(who, need[i]);
@@ -114,18 +114,18 @@ contract IndexTokenRebalanceTest is Test {
     }
 
     /// @dev Warps to the first moment a rebalance may start and starts one as a stranger.
-    function _start(IndexToken idx) internal returns (uint256 eta) {
+    function _start(IndexHub idx) internal returns (uint256 eta) {
         vm.warp(idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL());
         vm.prank(stranger);
         idx.startRebalance(0);
         (eta,,) = idx.pendingRebalance();
     }
 
-    function _units(IndexToken idx) internal view returns (uint256[] memory units) {
+    function _units(IndexHub idx) internal view returns (uint256[] memory units) {
         (, units) = idx.components();
     }
 
-    function _assertBacked(IndexToken idx) internal view {
+    function _assertBacked(IndexHub idx) internal view {
         (address[] memory t, uint256[] memory u) = idx.components();
         uint256 supply = idx.totalSupply();
         for (uint256 i = 0; i < t.length; ++i) {
@@ -151,7 +151,7 @@ contract IndexTokenRebalanceTest is Test {
         assertEq(keepMask, 0);
         assertEq(targets.length, 0);
         assertEq(index.currentMultiplier(), 0);
-        vm.expectRevert(IIndexToken.NoPendingRebalance.selector);
+        vm.expectRevert(IIndexHub.NoPendingRebalance.selector);
         index.previewRebalance();
     }
 
@@ -159,7 +159,7 @@ contract IndexTokenRebalanceTest is Test {
         uint256 earliest = index.lastRebalance() + index.MIN_REBALANCE_INTERVAL();
         vm.warp(earliest - 1);
         vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.RebalanceTooSoon.selector, earliest));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.RebalanceTooSoon.selector, earliest));
         index.startRebalance(0);
 
         vm.warp(earliest);
@@ -167,7 +167,7 @@ contract IndexTokenRebalanceTest is Test {
         assertEq(turnover, 0.2e18);
         uint256 eta = block.timestamp + index.REBALANCE_DELAY();
         vm.expectEmit(true, true, true, true, address(index));
-        emit IIndexToken.RebalanceStarted(1, 1, stranger, _expectedTargets(), 0, eta);
+        emit IIndexHub.RebalanceStarted(1, 1, stranger, _expectedTargets(), 0, eta);
         vm.prank(stranger);
         index.startRebalance(0);
 
@@ -186,7 +186,7 @@ contract IndexTokenRebalanceTest is Test {
         vm.warp(deadline);
         assertFalse(index.canStartRebalance());
         vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.RebalancePending.selector, deadline));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.RebalancePending.selector, deadline));
         index.startRebalance(0);
 
         // An auction nobody filled holds strangers off for REBALANCE_DELAY more, so the guardian gets the first
@@ -233,9 +233,9 @@ contract IndexTokenRebalanceTest is Test {
         index.startRebalance(1);
 
         vm.startPrank(guardian);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.InvalidKeepMask.selector, 1 << 5));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.InvalidKeepMask.selector, 1 << 5));
         index.startRebalance(1 << 5);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.InvalidKeepMask.selector, 31));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.InvalidKeepMask.selector, 31));
         index.startRebalance(31);
         index.startRebalance(1 << 1);
         vm.stopPrank();
@@ -257,10 +257,10 @@ contract IndexTokenRebalanceTest is Test {
         uint256[] memory onTarget = new uint256[](5);
         (onTarget[0], onTarget[1], onTarget[2], onTarget[3], onTarget[4]) = (600e18, 100e18, 100e18, 100e18, 100e18);
         vm.prank(alice);
-        IndexToken balanced = IndexToken(factory.createIndex("Balanced", "BAL", tokens, onTarget, 0));
+        IndexHub balanced = IndexHub(factory.createIndex("Balanced", "BAL", tokens, onTarget, 0));
         vm.warp(balanced.lastRebalance() + balanced.MIN_REBALANCE_INTERVAL());
         vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, 0));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.TurnoverTooLow.selector, 0));
         balanced.startRebalance(0);
     }
 
@@ -272,7 +272,7 @@ contract IndexTokenRebalanceTest is Test {
         (nearTarget[0], nearTarget[1], nearTarget[2], nearTarget[3], nearTarget[4]) =
         (604e18, 99e18, 99e18, 99e18, 99e18);
         vm.prank(alice);
-        IndexToken drifted = IndexToken(factory.createIndex("Drifted", "DRIFT", tokens, nearTarget, 0));
+        IndexHub drifted = IndexHub(factory.createIndex("Drifted", "DRIFT", tokens, nearTarget, 0));
 
         (, uint256 turnover) = drifted.previewTarget(0);
         assertGt(turnover, 0, "the basket really is off target");
@@ -280,7 +280,7 @@ contract IndexTokenRebalanceTest is Test {
 
         vm.warp(drifted.lastRebalance() + drifted.MIN_REBALANCE_INTERVAL());
         vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, turnover));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.TurnoverTooLow.selector, turnover));
         drifted.startRebalance(0);
 
         // The index in setUp is far enough off target to clear the same gate, so the check is a threshold.
@@ -295,7 +295,7 @@ contract IndexTokenRebalanceTest is Test {
 
     function test_cancelRebalance_andTheRestartCooldown() public {
         vm.prank(guardian);
-        vm.expectRevert(IIndexToken.NoPendingRebalance.selector);
+        vm.expectRevert(IIndexHub.NoPendingRebalance.selector);
         index.cancelRebalance();
 
         _start(index);
@@ -305,7 +305,7 @@ contract IndexTokenRebalanceTest is Test {
 
         uint256 restartAt = block.timestamp + index.REBALANCE_DELAY();
         vm.expectEmit(true, true, true, true, address(index));
-        emit IIndexToken.RebalanceCancelled(1, guardian, restartAt);
+        emit IIndexHub.RebalanceCancelled(1, guardian, restartAt);
         vm.prank(guardian);
         index.cancelRebalance();
 
@@ -350,7 +350,7 @@ contract IndexTokenRebalanceTest is Test {
         assertTrue(index.canStartRebalance(), "the expiry alone has already let strangers in");
 
         vm.expectEmit(true, true, false, true, address(index));
-        emit IIndexToken.RebalanceCancelled(index.proposalCount(), owner, fromExpiry);
+        emit IIndexHub.RebalanceCancelled(index.proposalCount(), owner, fromExpiry);
         vm.prank(owner);
         index.cancelRebalance();
 
@@ -392,12 +392,12 @@ contract IndexTokenRebalanceTest is Test {
     }
 
     function test_uninitializedClonesCannotRebalance() public {
-        IndexToken rogue = IndexToken(Clones.clone(factory.IMPLEMENTATION()));
-        vm.expectRevert(IIndexToken.NotInitialized.selector);
+        IndexHub rogue = IndexHub(Clones.clone(factory.IMPLEMENTATION()));
+        vm.expectRevert(IIndexHub.NotInitialized.selector);
         rogue.startRebalance(0);
-        vm.expectRevert(IIndexToken.NotInitialized.selector);
+        vm.expectRevert(IIndexHub.NotInitialized.selector);
         rogue.cancelRebalance();
-        vm.expectRevert(IIndexToken.NotInitialized.selector);
+        vm.expectRevert(IIndexHub.NotInitialized.selector);
         executor.execute(rogue, "");
     }
 
@@ -406,19 +406,19 @@ contract IndexTokenRebalanceTest is Test {
     // ---------------------------------------------------------------------
 
     function test_executeRebalance_windowChecks() public {
-        vm.expectRevert(IIndexToken.NoPendingRebalance.selector);
+        vm.expectRevert(IIndexHub.NoPendingRebalance.selector);
         executor.execute(index, "");
 
         uint256 eta = _start(index);
         vm.warp(eta - 1);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.RebalanceNotReady.selector, eta));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.RebalanceNotReady.selector, eta));
         executor.execute(index, "");
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.RebalanceNotReady.selector, eta));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.RebalanceNotReady.selector, eta));
         index.previewRebalance();
 
         uint256 deadline = eta + index.AUCTION_DURATION();
         vm.warp(deadline + 1);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.RebalanceExpired.selector, deadline));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.RebalanceExpired.selector, deadline));
         executor.execute(index, "");
         assertEq(index.currentMultiplier(), 0);
     }
@@ -444,7 +444,7 @@ contract IndexTokenRebalanceTest is Test {
         );
 
         vm.expectEmit(true, true, true, true, address(index));
-        emit IIndexToken.Rebalanced(1, 1, address(executor), 1.5e18, units, amountsOut, amountsIn);
+        emit IIndexHub.Rebalanced(1, 1, address(executor), 1.5e18, units, amountsOut, amountsIn);
         executor.execute(index, "fill");
 
         assertEq(keccak256(abi.encode(_units(index))), keccak256(abi.encode(units)));
@@ -461,10 +461,10 @@ contract IndexTokenRebalanceTest is Test {
         assertEq(keccak256(abi.encode(executor.lastAmountsIn())), keccak256(abi.encode(amountsIn)));
         _assertBacked(index);
 
-        vm.expectRevert(IIndexToken.NoPendingRebalance.selector);
+        vm.expectRevert(IIndexHub.NoPendingRebalance.selector);
         executor.execute(index, "");
         vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.RebalanceTooSoon.selector, block.timestamp + 28 days));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.RebalanceTooSoon.selector, block.timestamp + 28 days));
         index.startRebalance(0);
     }
 
@@ -489,7 +489,7 @@ contract IndexTokenRebalanceTest is Test {
         uint256[] memory odd = new uint256[](5);
         (odd[0], odd[1], odd[2], odd[3], odd[4]) = (100e18 + 7, 100e18, 100e18, 100e18, 100e18);
         vm.prank(stranger);
-        IndexToken idx = IndexToken(factory.createIndex("Odd", "ODD", tokens, odd, 0));
+        IndexHub idx = IndexHub(factory.createIndex("Odd", "ODD", tokens, odd, 0));
         _issue(idx, alice, SHARES);
         uint256 eta = _start(idx);
         (,, uint256[] memory targets) = idx.pendingRebalance();
@@ -502,7 +502,7 @@ contract IndexTokenRebalanceTest is Test {
 
     function test_executeRebalance_emptyIndexSettlesAtParity() public {
         vm.prank(stranger);
-        IndexToken empty = IndexToken(factory.createIndex("Empty", "EMPTY", tokens, startUnits, 0));
+        IndexHub empty = IndexHub(factory.createIndex("Empty", "EMPTY", tokens, startUnits, 0));
         uint256 eta = _start(empty);
         vm.warp(eta + 1 hours);
         assertEq(empty.currentMultiplier(), WAD);
@@ -518,14 +518,12 @@ contract IndexTokenRebalanceTest is Test {
         executor.setMode(MockRebalanceExecutor.Mode.Short);
         executor.setShortComponent(0);
         vm.expectRevert(
-            abi.encodeWithSelector(IIndexToken.RebalanceUnderfunded.selector, tokens[0], 2_500e18 - 1, 2_500e18)
+            abi.encodeWithSelector(IIndexHub.RebalanceUnderfunded.selector, tokens[0], 2_500e18 - 1, 2_500e18)
         );
         executor.execute(index, "");
 
         executor.setMode(MockRebalanceExecutor.Mode.Noop);
-        vm.expectRevert(
-            abi.encodeWithSelector(IIndexToken.RebalanceUnderfunded.selector, tokens[0], 1_000e18, 2_500e18)
-        );
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.RebalanceUnderfunded.selector, tokens[0], 1_000e18, 2_500e18));
         executor.execute(index, "");
         assertEq(
             keccak256(abi.encode(_units(index))), keccak256(abi.encode(startUnits)), "a failed fill changes nothing"
@@ -665,9 +663,7 @@ contract IndexTokenRebalanceTest is Test {
         (,,, uint256[] memory enlarged) = index.previewRebalance();
         assertGt(enlarged[0], quoted[0], "the settlement grew under the executor");
 
-        vm.expectRevert(
-            abi.encodeWithSelector(IIndexToken.RebalanceMovedOn.selector, tokens[0], enlarged[0], quoted[0])
-        );
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.RebalanceMovedOn.selector, tokens[0], enlarged[0], quoted[0]));
         executor.executeBounded(index, "", quoted);
         assertEq(index.rebalanceNonce(), 0, "the bounded fill did not settle");
 
@@ -702,7 +698,7 @@ contract IndexTokenRebalanceTest is Test {
         uint256 required = outValue * index.MIN_SETTLEMENT_RATIO() / WAD;
         assertLt(inValue, required, "the fill is worth less than the basket it takes");
 
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.SettlementValueTooLow.selector, inValue, outValue, required));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.SettlementValueTooLow.selector, inValue, outValue, required));
         executor.execute(index, "");
         assertEq(index.rebalanceNonce(), 0, "nothing settled at three-day-old rates");
         _assertBacked(index);
@@ -762,7 +758,7 @@ contract IndexTokenRebalanceTest is Test {
     ///      help, since `checkConfig` reads the token too. The rule now prices a listed token with the decimals the
     ///      factory recorded at listing and calls only its feed.
     function test_RT01_aCappedKeepMaskRoutesAroundAComponentThatNoLongerAnswers() public {
-        IndexToken capped = IndexToken(factory.createIndex("Capped", "CAP", tokens, startUnits, Methodology.CAPPED));
+        IndexHub capped = IndexHub(factory.createIndex("Capped", "CAP", tokens, startUnits, Methodology.CAPPED));
         _issue(capped, alice, SHARES);
         pausable.setPaused(true);
         pausable.setReadsBroken(true);
@@ -835,7 +831,7 @@ contract IndexTokenRebalanceTest is Test {
     function test_RT04_aBasketFarFromItsRuleStartsThoughEachStepIsSmall() public {
         uint256[] memory units = new uint256[](5);
         (units[0], units[1], units[2], units[3], units[4]) = (0.2e18, 100e18, 100e18, 100e18, 100e18);
-        IndexToken stuck = IndexToken(factory.createIndex("Stuck", "STK", tokens, units, 0));
+        IndexHub stuck = IndexHub(factory.createIndex("Stuck", "STK", tokens, units, 0));
         _issue(stuck, alice, SHARES);
 
         vm.warp(stuck.lastRebalance() + stuck.MIN_REBALANCE_INTERVAL());
@@ -871,7 +867,7 @@ contract IndexTokenRebalanceTest is Test {
         coarse[2] = _listNew(18, 1e8, 1e24);
         uint256[] memory units = new uint256[](3);
         (units[0], units[1], units[2]) = (1, 0.495e18, 0.495e18);
-        IndexToken idx = IndexToken(factory.createIndex("Coarse", "CRS", coarse, units, Methodology.UNCAPPED));
+        IndexHub idx = IndexHub(factory.createIndex("Coarse", "CRS", coarse, units, Methodology.UNCAPPED));
         IIndexRule rule = IIndexRule(factory.RULE());
 
         vm.warp(idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL());
@@ -896,7 +892,7 @@ contract IndexTokenRebalanceTest is Test {
         assertLt(turnover, idx.MIN_TURNOVER(), "but less than the gate");
         assertLt(rule.shortfall(coarse, units, Methodology.UNCAPPED, 0), idx.MIN_TURNOVER(), "as does the distance");
         vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, turnover));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.TurnoverTooLow.selector, turnover));
         idx.startRebalance(0);
     }
 
@@ -906,7 +902,7 @@ contract IndexTokenRebalanceTest is Test {
     function test_RT04_aKeepMaskStartIsMeasuredOverTheRebalancedComponentsOnly() public {
         uint256[] memory units = new uint256[](5);
         (units[0], units[1], units[2], units[3], units[4]) = (100e18, 100e18, 100e18, 100e18, 100.4e18);
-        IndexToken idx = IndexToken(factory.createIndex("Kept", "KPT", tokens, units, Methodology.UNCAPPED));
+        IndexHub idx = IndexHub(factory.createIndex("Kept", "KPT", tokens, units, Methodology.UNCAPPED));
         _issue(idx, alice, SHARES);
         vm.warp(idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL());
         (, uint256 turnover) = idx.previewTarget(1 << 0);
@@ -916,7 +912,7 @@ contract IndexTokenRebalanceTest is Test {
             IIndexRule(factory.RULE()).shortfall(tokens, units, 0, 0), idx.MIN_TURNOVER(), "the whole basket does not"
         );
         vm.prank(guardian);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, turnover));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.TurnoverTooLow.selector, turnover));
         idx.startRebalance(1 << 0);
     }
 
@@ -985,13 +981,13 @@ contract IndexTokenRebalanceTest is Test {
         vm.mockCall(rule, snapshot, abi.encode(targets, 0));
         vm.mockCall(rule, distance, abi.encode(1e18));
         vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, 0));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.TurnoverTooLow.selector, 0));
         index.startRebalance(0);
 
         vm.mockCall(rule, snapshot, abi.encode(targets, 1));
         vm.mockCall(rule, distance, abi.encode(threshold - 1));
         vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, 1));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.TurnoverTooLow.selector, 1));
         index.startRebalance(0);
 
         vm.mockCall(rule, distance, abi.encode(threshold));
@@ -1007,7 +1003,7 @@ contract IndexTokenRebalanceTest is Test {
     // ---------------------------------------------------------------------
 
     /// @dev Starts a rebalance as a stranger and warps to the auction's opening, at the 1.5 multiplier.
-    function _toAuction(IndexToken idx) internal {
+    function _toAuction(IndexHub idx) internal {
         vm.warp(_start(idx));
     }
 
@@ -1023,9 +1019,7 @@ contract IndexTokenRebalanceTest is Test {
         bytes memory valuation = abi.encodeWithSelector(IIndexRule.settlementValues.selector);
 
         vm.mockCall(rule, valuation, abi.encode(1_000e18, 875e18 - 1));
-        vm.expectRevert(
-            abi.encodeWithSelector(IIndexToken.SettlementValueTooLow.selector, 875e18 - 1, 1_000e18, 875e18)
-        );
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.SettlementValueTooLow.selector, 875e18 - 1, 1_000e18, 875e18));
         executor.execute(index, "");
 
         // 87.5% of 1,000e18 + 1 is 875e18 + 0.875: the floor rounds down, so a fill worth exactly 875e18 clears it.
@@ -1070,7 +1064,7 @@ contract IndexTokenRebalanceTest is Test {
         assertEq(inValue, 900e18, "900 units bought at the floor");
         assertGt(inValue, outValue * 0.85e18 / WAD, "the old ratio let this through");
         uint256 required = outValue * 0.875e18 / WAD;
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.SettlementValueTooLow.selector, inValue, outValue, required));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.SettlementValueTooLow.selector, inValue, outValue, required));
         executor.execute(index, "");
 
         vm.revertToState(beforeTheFloor);
@@ -1093,7 +1087,7 @@ contract IndexTokenRebalanceTest is Test {
         MockERC20(tokens[0]).burn(address(index), 1); // the issuer's clawback
         uint256 required = SHARES * units[0] / WAD;
         vm.expectRevert(
-            abi.encodeWithSelector(IIndexToken.RebalanceUnderfunded.selector, tokens[0], required - 1, required)
+            abi.encodeWithSelector(IIndexHub.RebalanceUnderfunded.selector, tokens[0], required - 1, required)
         );
         executor.execute(index, "");
     }
@@ -1112,7 +1106,7 @@ contract IndexTokenRebalanceTest is Test {
         MockERC20(tokens[0]).burn(address(index), 1);
         uint256 required = index.totalSupply() * units[0] / WAD + index.totalClaims(tokens[0]);
         vm.expectRevert(
-            abi.encodeWithSelector(IIndexToken.RebalanceUnderfunded.selector, tokens[0], required - 1, required)
+            abi.encodeWithSelector(IIndexHub.RebalanceUnderfunded.selector, tokens[0], required - 1, required)
         );
         executor.execute(index, "");
     }
@@ -1129,7 +1123,7 @@ contract IndexTokenRebalanceTest is Test {
         uint256 required = SHARES * units[2] / WAD;
         ClawingExecutor clawing = new ClawingExecutor(2);
         vm.expectRevert(
-            abi.encodeWithSelector(IIndexToken.RebalanceUnderfunded.selector, tokens[2], required - 1, required)
+            abi.encodeWithSelector(IIndexHub.RebalanceUnderfunded.selector, tokens[2], required - 1, required)
         );
         clawing.execute(index);
     }
@@ -1138,23 +1132,23 @@ contract IndexTokenRebalanceTest is Test {
     ///      a separate entry point with its own guard; without it the call still reverts, but with NoPendingRebalance,
     ///      as though an instance with no components could have a rebalance pending.
     function test_CRI33_theBoundedSettlementRefusesAnUninitializedInstance() public {
-        IndexToken impl = IndexToken(factory.IMPLEMENTATION());
-        IndexToken rogue = IndexToken(Clones.clone(address(impl)));
-        vm.expectRevert(IIndexToken.NotInitialized.selector);
+        IndexHub impl = IndexHub(factory.IMPLEMENTATION());
+        IndexHub rogue = IndexHub(Clones.clone(address(impl)));
+        vm.expectRevert(IIndexHub.NotInitialized.selector);
         executor.executeBounded(rogue, "", new uint256[](0));
-        vm.expectRevert(IIndexToken.NotInitialized.selector);
+        vm.expectRevert(IIndexHub.NotInitialized.selector);
         executor.executeBounded(impl, "", new uint256[](0));
     }
 
     /// @dev A second index over the fixture's tokens whose pausable component carries one raw unit a share, so any
     ///      redemption of less than a whole share owes nothing of it.
-    function _dustIndex() internal returns (IndexToken idx) {
+    function _dustIndex() internal returns (IndexHub idx) {
         uint256[] memory units = new uint256[](5);
         for (uint256 i = 0; i < 5; ++i) {
             units[i] = i == 1 ? 1 : 100e18;
         }
         vm.prank(alice);
-        idx = IndexToken(factory.createIndex("Dust", "DUST", tokens, units, 0));
+        idx = IndexHub(factory.createIndex("Dust", "DUST", tokens, units, 0));
         _issue(idx, alice, 3e18);
     }
 
@@ -1163,7 +1157,7 @@ contract IndexTokenRebalanceTest is Test {
     ///      it refuses any other, and a redemption owing nothing of it could not exit; without the second,
     ///      `redeemSkipping` would record a claim of nothing.
     function test_CRI33_aRedemptionOwingNothingOfAFrozenComponentNeverTouchesIt() public {
-        IndexToken idx = _dustIndex();
+        IndexHub idx = _dustIndex();
         pausable.setPaused(true);
         assertEq(idx.previewRedeem(0.5e18)[1], 0, "half a share owes nothing of the one-raw-unit component");
         vm.prank(alice);
@@ -1175,7 +1169,7 @@ contract IndexTokenRebalanceTest is Test {
         idx.redeemSkipping(0.5e18, alice, 1 << 1);
         Vm.Log[] memory logs = vm.getRecordedLogs();
         for (uint256 i = 0; i < logs.length; ++i) {
-            assertTrue(logs[i].topics[0] != IIndexToken.ClaimRecorded.selector, "no claim of nothing is recorded");
+            assertTrue(logs[i].topics[0] != IIndexHub.ClaimRecorded.selector, "no claim of nothing is recorded");
         }
         assertEq(idx.claimOf(alice, address(pausable)), 0);
     }
@@ -1195,7 +1189,7 @@ contract IndexTokenRebalanceTest is Test {
 
         vm.mockCall(rule, snapshot, abi.encode(targets, threshold - 1));
         vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, threshold - 1));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.TurnoverTooLow.selector, threshold - 1));
         index.startRebalance(0);
 
         vm.mockCall(rule, snapshot, abi.encode(targets, threshold));
@@ -1213,7 +1207,7 @@ contract IndexTokenRebalanceTest is Test {
         vm.warp(due - 1);
         assertFalse(index.canStartRebalance(), "not due yet");
         vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.RebalanceTooSoon.selector, due));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.RebalanceTooSoon.selector, due));
         index.startRebalance(0);
         vm.warp(due);
         assertTrue(index.canStartRebalance(), "due on the dot");
@@ -1246,7 +1240,7 @@ contract IndexTokenRebalanceTest is Test {
         address[] memory t = new address[](2);
         uint256[] memory u = new uint256[](2);
         (t[0], t[1], u[0], u[1]) = (address(coarse), tokens[2], 1, 1e16); // a cent of each per index token
-        IndexToken idx = IndexToken(factory.createIndex("Coarse", "CRS", t, u, 0));
+        IndexHub idx = IndexHub(factory.createIndex("Coarse", "CRS", t, u, 0));
         uint256[] memory need = idx.previewIssue(1e24);
         for (uint256 i = 0; i < 2; ++i) {
             MockERC20(t[i]).mint(alice, need[i]);
@@ -1269,7 +1263,7 @@ contract IndexTokenRebalanceTest is Test {
     // ---------------------------------------------------------------------
 
     /// @dev What `idx` holds of each component above its backing: the holders' rounding surplus.
-    function _surpluses(IndexToken idx) internal view returns (uint256[] memory surplus) {
+    function _surpluses(IndexHub idx) internal view returns (uint256[] memory surplus) {
         (address[] memory t, uint256[] memory u) = idx.components();
         uint256 supply = idx.totalSupply();
         surplus = new uint256[](t.length);
@@ -1309,7 +1303,7 @@ contract IndexTokenRebalanceTest is Test {
             odd[i] = 100e18 + 1_234_567_891 * (i + 1);
         }
         vm.prank(stranger);
-        IndexToken idx = IndexToken(factory.createIndex("Odd", "ODD", tokens, odd, 0));
+        IndexHub idx = IndexHub(factory.createIndex("Odd", "ODD", tokens, odd, 0));
         _issue(idx, alice, 3_333_333_333_333_333_350);
         uint256 supply = idx.totalSupply();
         uint256[] memory surplus = _surpluses(idx);
@@ -1340,7 +1334,7 @@ contract IndexTokenRebalanceTest is Test {
         (uint256[] memory targets,) = index.previewTarget(1 << 1);
         assertEq(targets[1], 100e18, "the kept component keeps its units");
         vm.expectEmit(true, true, true, true, address(index));
-        emit IIndexToken.RebalanceStarted(1, 1, guardian, targets, 1 << 1, block.timestamp + index.REBALANCE_DELAY());
+        emit IIndexHub.RebalanceStarted(1, 1, guardian, targets, 1 << 1, block.timestamp + index.REBALANCE_DELAY());
         vm.prank(guardian);
         index.startRebalance(1 << 1);
     }

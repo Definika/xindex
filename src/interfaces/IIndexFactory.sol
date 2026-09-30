@@ -123,7 +123,7 @@ interface IIndexFactory is IXindexErrors {
     /// @notice Once a proposal is ready it must be executed within this window, or proposed again.
     function PROPOSAL_WINDOW() external view returns (uint256);
 
-    /// @notice IndexToken implementation every index clones. It cannot be initialized, so it can never issue shares.
+    /// @notice IndexHub implementation every index clones. It cannot be initialized, so it can never issue shares.
     function IMPLEMENTATION() external view returns (address);
 
     /// @notice Stateless contract that reads market data, computes rebalance targets and prices indexes.

@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {Vm} from "forge-std/Vm.sol";
-import {IndexToken} from "../src/IndexToken.sol";
+import {IndexHub} from "../src/IndexHub.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 
 /// @notice Repository facts that security-review findings rest on and that no contract test can reach: the pinned
@@ -113,7 +113,7 @@ contract RepoTest is Test {
 
     /// @dev XA-44: the ABIs the web app decodes with are committed, and CI regenerates them and fails on a diff.
     function test_XA44_theAbisAreCommittedAndChecked() public view {
-        string[4] memory contracts = ["IndexFactory", "IndexToken", "IndexRule", "IndexZap"];
+        string[4] memory contracts = ["IndexFactory", "IndexHub", "IndexRule", "IndexZap"];
         for (uint256 i = 0; i < contracts.length; ++i) {
             assertTrue(
                 _contains(_read(string.concat("abi/", contracts[i], ".json")), '"type": "function"'),
@@ -122,7 +122,7 @@ contract RepoTest is Test {
         }
         string memory workflow = _read(".github/workflows/test.yml");
         assertTrue(
-            _contains(workflow, "for contract in IndexFactory IndexToken IndexRule IndexZap; do"),
+            _contains(workflow, "for contract in IndexFactory IndexHub IndexRule IndexZap; do"),
             "CI regenerates every ABI"
         );
         assertTrue(_contains(workflow, "git diff --exit-code abi/"), "a stale ABI fails CI");
@@ -173,7 +173,7 @@ contract RepoTest is Test {
     function test_LR01_checksAfterAnExpectedConstructorRevertStillRun() public {
         assertTrue(_contains(_read("foundry.toml"), "\ndynamic_test_linking = false\n"), "test linking stays static");
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new IndexToken(address(0));
+        new IndexHub(address(0));
         vm.expectCall(address(this), abi.encodeCall(this.reachedAfterTheRevert, ()));
         this.reachedAfterTheRevert();
     }

@@ -5,7 +5,7 @@ import {Test, console2} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IndexFactory} from "../../src/IndexFactory.sol";
-import {IndexToken} from "../../src/IndexToken.sol";
+import {IndexHub} from "../../src/IndexHub.sol";
 import {IndexZap} from "../../src/IndexZap.sol";
 import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
@@ -131,7 +131,7 @@ contract RebalanceForkTest is ForkFeeds {
         return abi.encodePacked(token, _feeOf(token), A.WETH, F500, A.USDC);
     }
 
-    function _issue(IndexToken index, address who, uint256 shares) internal {
+    function _issue(IndexHub index, address who, uint256 shares) internal {
         uint256[] memory need = index.previewIssue(shares);
         for (uint256 i = 0; i < tokens.length; ++i) {
             deal(tokens[i], who, need[i]);
@@ -144,7 +144,7 @@ contract RebalanceForkTest is ForkFeeds {
         vm.stopPrank();
     }
 
-    function _assertBacked(IndexToken index) internal view {
+    function _assertBacked(IndexHub index) internal view {
         (address[] memory t, uint256[] memory u) = index.components();
         uint256 supply = index.totalSupply();
         for (uint256 i = 0; i < t.length; ++i) {
@@ -154,7 +154,7 @@ contract RebalanceForkTest is ForkFeeds {
     }
 
     /// @dev What `shares` of the index sell for on Uniswap, leg by leg, in raw USDC.
-    function _quoteInUsdc(IndexToken index, uint256 shares) internal returns (uint256 total) {
+    function _quoteInUsdc(IndexHub index, uint256 shares) internal returns (uint256 total) {
         uint256[] memory amounts = index.previewRedeem(shares);
         for (uint256 i = 0; i < tokens.length; ++i) {
             (uint256 out,,,) = quoter.quoteExactInput(_toUsdc(tokens[i]), amounts[i]);
@@ -164,11 +164,11 @@ contract RebalanceForkTest is ForkFeeds {
 
     /// @dev Units that follow `methodology` at 1,000 dollars, pushed off target: the first component 60% heavier and
     ///      the third 40% lighter.
-    function _offTargetIndex(uint8 methodology, string memory symbol) internal returns (IndexToken index) {
+    function _offTargetIndex(uint8 methodology, string memory symbol) internal returns (IndexHub index) {
         uint256[] memory units = rule.initialUnits(tokens, methodology, 1_000e18);
         units[0] = units[0] * 16 / 10;
         units[2] = units[2] * 6 / 10;
-        index = IndexToken(factory.createIndex(symbol, symbol, tokens, units, methodology));
+        index = IndexHub(factory.createIndex(symbol, symbol, tokens, units, methodology));
         _issue(index, alice, 10e18);
     }
 
@@ -202,7 +202,7 @@ contract RebalanceForkTest is ForkFeeds {
         _rebalanceThroughUniswap(_offTargetIndex(1, "CBLUE"));
     }
 
-    function _rebalanceThroughUniswap(IndexToken index) internal {
+    function _rebalanceThroughUniswap(IndexHub index) internal {
         (, uint256[] memory units) = index.components();
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
         uint256 gasBefore = gasleft();
@@ -257,7 +257,7 @@ contract RebalanceForkTest is ForkFeeds {
     }
 
     function testFork_guardianRebalancesAroundAPausedWbtc() public {
-        IndexToken index = _offTargetIndex(0, "PAUSE");
+        IndexHub index = _offTargetIndex(0, "PAUSE");
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
         index.startRebalance(0);
         (uint256 eta,,) = index.pendingRebalance();

@@ -11,7 +11,7 @@ import {CompositeFeed} from "../src/CompositeFeed.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
 
-/// @notice Deploys the factory (which deploys the rule and the IndexToken implementation) and the zap.
+/// @notice Deploys the factory (which deploys the rule and the IndexHub implementation) and the zap.
 ///
 ///   OWNER=<safe address> GUARDIAN=<guardian address> forge script script/Deploy.s.sol --rpc-url mainnet \
 ///     --account deployer --sender <deployer address> --broadcast --verify
@@ -60,7 +60,7 @@ contract Deploy is Script {
     }
 
     /// @notice Checks the owner and guardian, resolves the market, and broadcasts the factory (which deploys the rule
-    ///         and the IndexToken implementation) and the zap. Logs every address.
+    ///         and the IndexHub implementation) and the zap. Logs every address.
     /// @param owner Factory owner; see {checkOwner}.
     /// @param guardian Initial guardian; see {checkGuardian}.
     /// @param router Uniswap's Universal Router, through which the zap swaps; see {resolveRouter}.
@@ -92,7 +92,7 @@ contract Deploy is Script {
 
         console2.log("IndexFactory:            ", address(factory));
         console2.log("IndexRule:               ", factory.RULE());
-        console2.log("IndexToken impl:         ", factory.IMPLEMENTATION());
+        console2.log("IndexHub impl:         ", factory.IMPLEMENTATION());
         console2.log("IndexZap:                ", address(zap));
         console2.log("Factory owner:           ", owner);
         console2.log("Guardian:                ", guardian);
@@ -105,7 +105,7 @@ contract Deploy is Script {
         bytes32[4] memory codehashes = checkDeployment(factory, zap);
         console2.log("IndexFactory codehash:   ", vm.toString(codehashes[0]));
         console2.log("IndexRule codehash:      ", vm.toString(codehashes[1]));
-        console2.log("IndexToken impl codehash:", vm.toString(codehashes[2]));
+        console2.log("IndexHub impl codehash:", vm.toString(codehashes[2]));
         console2.log("IndexZap codehash:       ", vm.toString(codehashes[3]));
         // `ConfigureWhitelist` refuses a WBTC_FEED whose executable code is not this build's adapter; the record keeps
         // the deployed one's hash beside the others (CR-L04).
@@ -117,7 +117,7 @@ contract Deploy is Script {
     /// @notice Checks that a factory and a zap are one deployment and returns the runtime code hashes to freeze in the
     ///         release record (README, "Deployment record"). Run it again later against the recorded addresses: equal
     ///         hashes prove the deployed code is unchanged and still the build the record names.
-    /// @param factory The deployed factory, which names the rule and the IndexToken implementation.
+    /// @param factory The deployed factory, which names the rule and the IndexHub implementation.
     /// @param zap The deployed zap, which must point back at `factory`.
     /// @return codehashes keccak256 of the runtime code of the factory, the rule, the implementation and the zap.
     function checkDeployment(IndexFactory factory, IndexZap zap) public view returns (bytes32[4] memory codehashes) {

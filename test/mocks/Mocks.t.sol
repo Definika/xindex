@@ -29,9 +29,9 @@ import {INonfungiblePositionManager} from "../../script/interfaces/INonfungibleP
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {IndexFactory} from "../../src/IndexFactory.sol";
 import {IndexRule} from "../../src/IndexRule.sol";
-import {IndexToken} from "../../src/IndexToken.sol";
+import {IndexHub} from "../../src/IndexHub.sol";
 import {RebalanceExecutorV3} from "../fork/RebalanceExecutorV3.sol";
-import {IIndexToken} from "../../src/interfaces/IIndexToken.sol";
+import {IIndexHub} from "../../src/interfaces/IIndexHub.sol";
 
 /// @notice Exercises the mocks' own guard rails so their behaviour in the real tests is trustworthy.
 contract MocksTest is Test {
@@ -728,7 +728,7 @@ contract MocksTest is Test {
         }
         uint256[] memory u = new uint256[](3);
         (u[0], u[1], u[2]) = (100e18, 100e18, 100e18);
-        IndexToken idx = IndexToken(f.createIndex("Executor", "EXEC", t, u, 0));
+        IndexHub idx = IndexHub(f.createIndex("Executor", "EXEC", t, u, 0));
         shrinking.mint(address(this), 100e18);
         mWeth.mint(address(this), 100e18);
         growing.mint(address(this), 100e18);
@@ -774,7 +774,7 @@ contract MocksTest is Test {
         vm.etch(fake, hex"00");
         address[] memory onlyWeth = new address[](1);
         onlyWeth[0] = address(mWeth);
-        vm.mockCall(fake, abi.encodeWithSelector(IIndexToken.componentTokens.selector), abi.encode(onlyWeth));
+        vm.mockCall(fake, abi.encodeWithSelector(IIndexHub.componentTokens.selector), abi.encode(onlyWeth));
         uint256[] memory nothing = new uint256[](1);
         uint256[] memory everything = new uint256[](1);
         everything[0] = 10e18;
@@ -804,10 +804,10 @@ contract MocksTest is Test {
         address stranger = makeAddr("stranger");
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(RebalanceExecutorV3.NotOwner.selector, stranger));
-        executor.fill(IIndexToken(address(fake)));
+        executor.fill(IIndexHub(address(fake)));
 
         vm.expectRevert(abi.encodeWithSelector(RebalanceExecutorV3.NotIndex.selector, address(fake)));
-        executor.fill(IIndexToken(address(fake)));
+        executor.fill(IIndexHub(address(fake)));
         assertEq(mWeth.balanceOf(address(executor)), 10e18, "the float stays");
 
         // The fake does what the finding describes: without the two checks above, this callback emptied the float.

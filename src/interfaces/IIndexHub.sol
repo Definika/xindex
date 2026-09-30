@@ -5,7 +5,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
 import {IXindexErrors} from "./IXindexErrors.sol";
 
-/// @title IIndexToken
+/// @title IIndexHub
 /// @notice An index is a plain ERC-20 fully backed, in kind, by a basket of component tokens. 1e18 shares (one whole
 ///         index token) are always redeemable for exactly `units_i` raw units of each component. The constituents never
 ///         change; the units change only through a rebalance that follows the index's on-chain rule and settles through
@@ -20,7 +20,7 @@ import {IXindexErrors} from "./IXindexErrors.sol";
 ///      too, since none of them can ever move a share on (CR-I01, RT-21); one to zero reverts with OpenZeppelin's
 ///      ERC20InvalidReceiver. Callers other than the factory owner or guardian get Unauthorized where those roles are
 ///      required.
-interface IIndexToken is IERC20, IERC20Permit, IXindexErrors {
+interface IIndexHub is IERC20, IERC20Permit, IXindexErrors {
     /// @notice `sender` paid `amounts` (per component, in component order, rounded up) and `to` received `shares`.
     event Issued(address indexed sender, address indexed to, uint256 shares, uint256[] amounts);
     /// @notice `sender` burned `shares` for `amounts` (per component, in component order, rounded down). With

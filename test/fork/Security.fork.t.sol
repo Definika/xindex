@@ -5,7 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IndexFactory} from "../../src/IndexFactory.sol";
-import {IndexToken} from "../../src/IndexToken.sol";
+import {IndexHub} from "../../src/IndexHub.sol";
 import {IndexZap} from "../../src/IndexZap.sol";
 import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
@@ -16,7 +16,7 @@ import {ForkFeeds} from "./ForkFeeds.sol";
 import {CompositeFeed} from "../../src/CompositeFeed.sol";
 import {IAggregatorV3} from "../../src/interfaces/IAggregatorV3.sol";
 import {IIndexRule} from "../../src/interfaces/IIndexRule.sol";
-import {IIndexToken} from "../../src/interfaces/IIndexToken.sol";
+import {IIndexHub} from "../../src/interfaces/IIndexHub.sol";
 import {ConfigureWhitelist} from "../../script/ConfigureWhitelist.s.sol";
 import {Deploy} from "../../script/Deploy.s.sol";
 
@@ -158,17 +158,17 @@ contract SecurityForkTest is ForkFeeds {
         c.referenceSupply = referenceSupply;
     }
 
-    function _create(address a, uint256 ua, address b, uint256 ub) internal returns (IndexToken idx) {
+    function _create(address a, uint256 ua, address b, uint256 ub) internal returns (IndexHub idx) {
         address[] memory t = new address[](2);
         uint256[] memory u = new uint256[](2);
         t[0] = a;
         t[1] = b;
         u[0] = ua;
         u[1] = ub;
-        idx = IndexToken(factory.createIndex("Fork Security", "FSEC", t, u, 0));
+        idx = IndexHub(factory.createIndex("Fork Security", "FSEC", t, u, 0));
     }
 
-    function _issue(IndexToken idx, uint256 shares) internal {
+    function _issue(IndexHub idx, uint256 shares) internal {
         address[] memory t = idx.componentTokens();
         uint256[] memory need = idx.previewIssue(shares);
         for (uint256 i = 0; i < t.length; ++i) {
@@ -183,7 +183,7 @@ contract SecurityForkTest is ForkFeeds {
     }
 
     function test_M01_realWbtcPause_redeemSkippingFreesWethAndClaimPaysLater() public {
-        IndexToken idx = _create(A.WBTC, 10_000, A.WETH, 1e15);
+        IndexHub idx = _create(A.WBTC, 10_000, A.WETH, 1e15);
         _issue(idx, 1e18);
         address wbtcController = IWbtcAdmin(A.WBTC).owner();
         vm.prank(wbtcController);
@@ -210,7 +210,7 @@ contract SecurityForkTest is ForkFeeds {
     }
 
     function test_I02_realUsdtFeeSwitch_zapRevertsWithTransferShortfall() public {
-        IndexToken idx = _create(A.WBTC, 10_000, A.WETH, 1e15);
+        IndexHub idx = _create(A.WBTC, 10_000, A.WETH, 1e15);
         _issue(idx, 1e18);
 
         vm.prank(IUsdtAdmin(A.USDT).owner());
@@ -270,7 +270,7 @@ contract SecurityForkTest is ForkFeeds {
     }
 
     function test_I03_strayRouterEthIsRefundedNotLocked() public {
-        IndexToken idx = _create(A.WBTC, 10_000, A.LINK, 1e18);
+        IndexHub idx = _create(A.WBTC, 10_000, A.LINK, 1e18);
         IIndexZap.MintLeg[] memory legs = new IIndexZap.MintLeg[](2);
         legs[0] = IIndexZap.MintLeg({
             v3Path: abi.encodePacked(A.WBTC, F500, A.WETH), v4Path: new PathKey[](0), maxAmountIn: 0
@@ -307,7 +307,7 @@ contract SecurityForkTest is ForkFeeds {
     }
 
     function test_FR01_strayRouterEthNoLongerBlocksBurns() public {
-        IndexToken idx = _create(A.WBTC, 10_000, A.WETH, 1e15);
+        IndexHub idx = _create(A.WBTC, 10_000, A.WETH, 1e15);
         _issue(idx, 1e18);
 
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](2);
@@ -344,7 +344,7 @@ contract SecurityForkTest is ForkFeeds {
         assertEq(A.UNIVERSAL_ROUTER.balance, 10 ether, "and the stray ether is untouched: nothing here wraps it");
     }
 
-    function _burnToUsdc(IndexToken idx, IIndexZap.BurnLeg[] memory legs) internal returns (uint256 out) {
+    function _burnToUsdc(IndexHub idx, IIndexZap.BurnLeg[] memory legs) internal returns (uint256 out) {
         vm.startPrank(user);
         idx.approve(address(zap), 1e18);
         out = zap.burnToToken(
@@ -368,7 +368,7 @@ contract SecurityForkTest is ForkFeeds {
     ///      through that token. What came back is now measured as the balance above what was left, and handed on with
     ///      the hop's unsold input.
     function test_FR01_CRL02_aStrayTokenInTheRouterNoLongerBlocksABurn() public {
-        IndexToken idx = _create(A.WBTC, 10_000, A.WETH, 1e15);
+        IndexHub idx = _create(A.WBTC, 10_000, A.WETH, 1e15);
         _issue(idx, 1e18);
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](2);
         legs[0] = IIndexZap.BurnLeg({
@@ -392,7 +392,7 @@ contract SecurityForkTest is ForkFeeds {
     /// @dev FR-01, CR-L02: the same for a V4 leg, whose sweep returns the component itself. The stray is more LINK than
     ///      the leg sells.
     function test_FR01_CRL02_aStrayComponentInTheRouterNoLongerBlocksAV4Burn() public {
-        IndexToken idx = _create(A.LINK, 2e18, A.WETH, 1e15);
+        IndexHub idx = _create(A.LINK, 2e18, A.WETH, 1e15);
         _issue(idx, 1e18);
         PathKey[] memory route = new PathKey[](2);
         route[0] =
@@ -431,13 +431,13 @@ contract SecurityForkTest is ForkFeeds {
         IIndexRule rule = IIndexRule(factory.RULE());
         address[] memory t = new address[](3);
         (t[0], t[1], t[2]) = (A.WSTETH, A.WETH, A.LINK);
-        IndexToken idx = IndexToken(factory.createIndex("Staked", "STK", t, rule.initialUnits(t, 0, 1_000e18), 0));
+        IndexHub idx = IndexHub(factory.createIndex("Staked", "STK", t, rule.initialUnits(t, 0, 1_000e18), 0));
         _issue(idx, 10e18);
         vm.warp(block.timestamp + idx.MIN_REBALANCE_INTERVAL());
         (uint256[] memory targets, uint256 turnover) = idx.previewTarget(0);
         address stranger = makeAddr("stranger");
         vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, turnover));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.TurnoverTooLow.selector, turnover));
         idx.startRebalance(0);
 
         uint256 live = IERC20(A.WSTETH).totalSupply();
@@ -452,7 +452,7 @@ contract SecurityForkTest is ForkFeeds {
         assertEq(targetsAfter, targets, "the targets do not move");
         assertEq(turnoverAfter, turnover);
         vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, turnover));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.TurnoverTooLow.selector, turnover));
         idx.startRebalance(0);
     }
 

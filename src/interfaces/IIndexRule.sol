@@ -6,7 +6,7 @@ import {IXindexErrors} from "./IXindexErrors.sol";
 
 /// @title IIndexRule
 /// @notice Reads each token's reference supply and Chainlink USD price and applies an index's weighting rule. It is
-///         stateless and view-only: it computes rebalance targets for `IIndexToken.startRebalance` and index prices for
+///         stateless and view-only: it computes rebalance targets for `IIndexHub.startRebalance` and index prices for
 ///         display, and never moves funds. No supply is read live: a token's market cap is the reference supply its
 ///         timelocked config names, so nothing done inside a snapshot's own transaction can move it (CR-M01).
 /// @dev Prices are USD with 18 decimals ("USD-WAD", 1e18 = one dollar) per 1e18 raw units of a token, from the token's
@@ -151,7 +151,7 @@ interface IIndexRule is IXindexErrors {
     ///         their weight's share and can still shrink, as a share of the rebalanced components' value (1e18 = 100%).
     ///         A component held at one raw unit cannot shrink, so an excess it holds is not counted. The band lets a
     ///         growing component at most double per rebalance, so a basket far from its rule can move only in small
-    ///         steps; `IIndexToken.startRebalance` accepts such a step when this distance clears MIN_TURNOVER (RT-04).
+    ///         steps; `IIndexHub.startRebalance` accepts such a step when this distance clears MIN_TURNOVER (RT-04).
     ///         Same inputs, snapshot and price checks as {targetUnits}.
     /// @param tokens Components, in index order.
     /// @param units Current raw units per 1e18 shares, one per component.

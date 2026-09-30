@@ -14,12 +14,12 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IIndexFactory} from "./interfaces/IIndexFactory.sol";
 import {IIndexRule} from "./interfaces/IIndexRule.sol";
-import {IIndexToken} from "./interfaces/IIndexToken.sol";
+import {IIndexHub} from "./interfaces/IIndexHub.sol";
 import {IRebalanceExecutor} from "./interfaces/IRebalanceExecutor.sol";
 
-/// @title IndexToken
+/// @title IndexHub
 /// @notice Fully collateralized index token with fixed constituents whose units follow an on-chain weighting rule.
-///         See {IIndexToken}.
+///         See {IIndexHub}.
 /// @dev Deployed as an EIP-1167 clone by {IndexFactory}. The implementation is deployed from the factory constructor,
 ///      so `FACTORY` and `RULE` can be immutables (immutables live in bytecode, which clones delegate to, so every clone
 ///      sees the same values).
@@ -46,7 +46,7 @@ import {IRebalanceExecutor} from "./interfaces/IRebalanceExecutor.sol";
 ///      supply and units alone, and the settlement stands only if the invariant holds with the new units. Prices never
 ///      size a settlement, but they do gate it: what arrives has to be worth MIN_SETTLEMENT_RATIO of what leaves at
 ///      feed prices read in the settling block (DA-05), so a leg that moves needs a feed that can be read (CR-I11).
-contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, ReentrancyGuard, IIndexToken {
+contract IndexHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, ReentrancyGuard, IIndexHub {
     using SafeERC20 for IERC20;
 
     uint256 public constant SHARE_UNIT = 1e18;
@@ -81,28 +81,28 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
 
     Component[] private _components;
 
-    /// @inheritdoc IIndexToken
+    /// @inheritdoc IIndexHub
     mapping(address account => mapping(address token => uint256 amount)) public claimOf;
 
-    /// @inheritdoc IIndexToken
+    /// @inheritdoc IIndexHub
     mapping(address token => uint256 amount) public totalClaims;
 
     PendingRebalance private _pending;
     uint96[] private _targetUnits;
 
-    /// @inheritdoc IIndexToken
+    /// @inheritdoc IIndexHub
     uint256 public proposalCount;
 
-    /// @inheritdoc IIndexToken
+    /// @inheritdoc IIndexHub
     uint256 public rebalanceNonce;
 
-    /// @inheritdoc IIndexToken
+    /// @inheritdoc IIndexHub
     uint256 public lastRebalance;
 
-    /// @inheritdoc IIndexToken
+    /// @inheritdoc IIndexHub
     uint256 public restartAllowedAt;
 
-    /// @inheritdoc IIndexToken
+    /// @inheritdoc IIndexHub
     uint8 public methodology;
 
     modifier onlyInitialized() {
@@ -117,7 +117,7 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
         _disableInitializers();
     }
 
-    /// @inheritdoc IIndexToken
+    /// @inheritdoc IIndexHub
     function initialize(
         string calldata name_,
         string calldata symbol_,
@@ -146,7 +146,7 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
     // Issue / redeem / claim
     // ---------------------------------------------------------------------
 
-    /// @inheritdoc IIndexToken
+    /// @inheritdoc IIndexHub
     function issue(uint256 shares, address to) external nonReentrant onlyInitialized {
         if (shares == 0) revert ZeroShares();
         _checkRecipient(to);
@@ -171,18 +171,18 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
         }
     }
 
-    /// @inheritdoc IIndexToken
+    /// @inheritdoc IIndexHub
     function redeem(uint256 shares, address to) external nonReentrant onlyInitialized {
         _redeem(shares, to, 0);
     }
 
-    /// @inheritdoc IIndexToken
+    /// @inheritdoc IIndexHub
     function redeemSkipping(uint256 shares, address to, uint256 skipMask) external nonReentrant onlyInitialized {
         if (skipMask == 0 || skipMask >> _components.length != 0) revert InvalidSkipMask(skipMask);
         _redeem(shares, to, skipMask);
     }
 
-    /// @inheritdoc IIndexToken
+    /// @inheritdoc IIndexHub
     function claim(address token, address to) external nonReentrant returns (uint256 amount) {
         _checkRecipient(to);
         amount = claimOf[msg.sender][token];
@@ -232,7 +232,7 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
     // Rebalance
     // ---------------------------------------------------------------------
 
-    /// @inheritdoc IIndexToken
+    /// @inheritdoc IIndexHub
     function startRebalance(uint256 keepMask) external nonReentrant onlyInitialized {
         uint256 earliest = lastRebalance + MIN_REBALANCE_INTERVAL;
         if (block.timestamp < earliest) revert RebalanceTooSoon(earliest);
@@ -277,7 +277,7 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
         return Math.max(restartAllowedAt, afterExpiry);
     }
 
-    /// @inheritdoc IIndexToken
+    /// @inheritdoc IIndexHub
     function cancelRebalance() external nonReentrant onlyInitialized {
         uint256 eta = _pending.eta;
         if (eta == 0) revert NoPendingRebalance();
@@ -296,12 +296,12 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
         emit RebalanceCancelled(proposalCount, msg.sender, restartAt);
     }
 
-    /// @inheritdoc IIndexToken
+    /// @inheritdoc IIndexHub
     function executeRebalance(bytes calldata data) external nonReentrant onlyInitialized {
         _settle(data, new uint256[](0));
     }
 
-    /// @inheritdoc IIndexToken
+    /// @inheritdoc IIndexHub
     function executeRebalance(bytes calldata data, uint256[] calldata maxAmountsIn)
         external
         nonReentrant
@@ -521,7 +521,7 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
         return _components.length;
     }
 
-    /// @inheritdoc IIndexToken
+    /// @inheritdoc IIndexHub
     function componentTokens() external view returns (address[] memory tokens) {
         uint256 n = _components.length;
         tokens = new address[](n);
@@ -530,27 +530,27 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
         }
     }
 
-    /// @inheritdoc IIndexToken
+    /// @inheritdoc IIndexHub
     function components() external view returns (address[] memory tokens, uint256[] memory units) {
         return _componentArrays();
     }
 
-    /// @inheritdoc IIndexToken
+    /// @inheritdoc IIndexHub
     function previewIssue(uint256 shares) external view returns (uint256[] memory amountsIn) {
         return _amounts(shares, Math.Rounding.Ceil);
     }
 
-    /// @inheritdoc IIndexToken
+    /// @inheritdoc IIndexHub
     function previewRedeem(uint256 shares) external view returns (uint256[] memory amountsOut) {
         return _amounts(shares, Math.Rounding.Floor);
     }
 
-    /// @inheritdoc IIndexToken
+    /// @inheritdoc IIndexHub
     function previewTarget(uint256 keepMask) external view returns (uint256[] memory targetUnits, uint256 turnover) {
         return _previewTarget(keepMask);
     }
 
-    /// @inheritdoc IIndexToken
+    /// @inheritdoc IIndexHub
     function pendingRebalance() external view returns (uint256 eta, uint256 keepMask, uint256[] memory targetUnits) {
         eta = _pending.eta;
         keepMask = _pending.keepMask;
@@ -561,14 +561,14 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
         }
     }
 
-    /// @inheritdoc IIndexToken
+    /// @inheritdoc IIndexHub
     function currentMultiplier() external view returns (uint256 multiplier) {
         uint256 eta = _pending.eta;
         if (eta == 0 || block.timestamp < eta || block.timestamp > eta + AUCTION_DURATION) return 0;
         (multiplier,,,) = _previewRebalance(totalSupply());
     }
 
-    /// @inheritdoc IIndexToken
+    /// @inheritdoc IIndexHub
     function canStartRebalance() external view returns (bool) {
         // The implementation and any clone deployed outside the factory hold no components and cannot rebalance at
         // all; without this they answered true, because their `lastRebalance` is zero (DA-22).
@@ -581,7 +581,7 @@ contract IndexToken is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, 
         return block.timestamp >= _permissionlessAt(pendingEta);
     }
 
-    /// @inheritdoc IIndexToken
+    /// @inheritdoc IIndexHub
     function previewRebalance()
         external
         view

@@ -7,9 +7,9 @@ import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Ini
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
-import {IndexToken} from "../src/IndexToken.sol";
+import {IndexHub} from "../src/IndexHub.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
-import {IIndexToken} from "../src/interfaces/IIndexToken.sol";
+import {IIndexHub} from "../src/interfaces/IIndexHub.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockFeeToken} from "./mocks/MockFeeToken.sol";
@@ -18,13 +18,13 @@ import {MockMarket} from "./mocks/MockMarket.sol";
 /// @notice A stateless forwarding router, the shape a zap or an aggregator has: it holds nothing between calls and has
 ///         no way to call `claim` on anyone's behalf afterwards.
 contract PassThroughRouter {
-    function redeemSkippingFor(IndexToken index, uint256 shares, address to, uint256 skipMask) external {
-        IIndexToken(address(index)).redeemSkipping(shares, to, skipMask);
+    function redeemSkippingFor(IndexHub index, uint256 shares, address to, uint256 skipMask) external {
+        IIndexHub(address(index)).redeemSkipping(shares, to, skipMask);
     }
 }
 
-contract IndexTokenTest is XindexTest {
-    IndexToken index;
+contract IndexHubTest is XindexTest {
+    IndexHub index;
 
     MockERC20 wbtc; // 8 decimals
     MockERC20 weth; // 18 decimals
@@ -58,7 +58,7 @@ contract IndexTokenTest is XindexTest {
         units.push(U_WETH);
         units.push(U_USDC);
 
-        index = IndexToken(factory.createIndex("Blue Chip", "BLUE", tokens, units, 0));
+        index = IndexHub(factory.createIndex("Blue Chip", "BLUE", tokens, units, 0));
     }
 
     // ---------------------------------------------------------------------
@@ -124,7 +124,7 @@ contract IndexTokenTest is XindexTest {
 
     function test_constructor_rejectsZeroRule() public {
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new IndexToken(address(0));
+        new IndexHub(address(0));
     }
 
     function test_cannotReinitialize() public {
@@ -134,45 +134,45 @@ contract IndexTokenTest is XindexTest {
     }
 
     function test_implementationCannotBeInitialized() public {
-        IndexToken impl = IndexToken(factory.IMPLEMENTATION());
+        IndexHub impl = IndexHub(factory.IMPLEMENTATION());
         vm.prank(address(factory));
         vm.expectRevert(Initializable.InvalidInitialization.selector);
         impl.initialize("x", "x", tokens, units, 0);
     }
 
     function test_nonFactoryCannotInitializeFreshClone() public {
-        IndexToken rogue = IndexToken(Clones.clone(factory.IMPLEMENTATION()));
-        vm.expectRevert(IIndexToken.NotFactory.selector);
+        IndexHub rogue = IndexHub(Clones.clone(factory.IMPLEMENTATION()));
+        vm.expectRevert(IIndexHub.NotFactory.selector);
         rogue.initialize("x", "x", tokens, units, 0);
     }
 
     /// @dev The factory validates inputs before initializing, so these branches are only reachable
     ///      by calling a fresh clone as the factory.
     function test_initialize_rejectsBadComponents() public {
-        IndexToken fresh = IndexToken(Clones.clone(factory.IMPLEMENTATION()));
+        IndexHub fresh = IndexHub(Clones.clone(factory.IMPLEMENTATION()));
         address[] memory t;
         uint256[] memory u;
 
         vm.startPrank(address(factory));
 
-        vm.expectRevert(IIndexToken.InvalidComponents.selector);
+        vm.expectRevert(IIndexHub.InvalidComponents.selector);
         fresh.initialize("x", "x", t, u, 0);
 
         t = new address[](1);
         u = new uint256[](2);
         t[0] = address(wbtc);
-        vm.expectRevert(IIndexToken.InvalidComponents.selector);
+        vm.expectRevert(IIndexHub.InvalidComponents.selector);
         fresh.initialize("x", "x", t, u, 0);
 
         u = new uint256[](1);
         u[0] = 1;
         t[0] = address(0);
-        vm.expectRevert(IIndexToken.InvalidComponents.selector);
+        vm.expectRevert(IIndexHub.InvalidComponents.selector);
         fresh.initialize("x", "x", t, u, 0);
 
         t[0] = address(wbtc);
         u[0] = 0;
-        vm.expectRevert(IIndexToken.InvalidComponents.selector);
+        vm.expectRevert(IIndexHub.InvalidComponents.selector);
         fresh.initialize("x", "x", t, u, 0);
 
         u[0] = uint256(type(uint96).max) + 1;
@@ -187,16 +187,16 @@ contract IndexTokenTest is XindexTest {
     }
 
     function test_uninitializedInstancesCannotIssueOrRedeem() public {
-        IndexToken impl = IndexToken(factory.IMPLEMENTATION());
-        IndexToken rogue = IndexToken(Clones.clone(address(impl)));
+        IndexHub impl = IndexHub(factory.IMPLEMENTATION());
+        IndexHub rogue = IndexHub(Clones.clone(address(impl)));
 
-        vm.expectRevert(IIndexToken.NotInitialized.selector);
+        vm.expectRevert(IIndexHub.NotInitialized.selector);
         impl.issue(1_000_000e18, alice);
-        vm.expectRevert(IIndexToken.NotInitialized.selector);
+        vm.expectRevert(IIndexHub.NotInitialized.selector);
         rogue.issue(42e18, alice);
-        vm.expectRevert(IIndexToken.NotInitialized.selector);
+        vm.expectRevert(IIndexHub.NotInitialized.selector);
         rogue.redeem(1, alice);
-        vm.expectRevert(IIndexToken.NotInitialized.selector);
+        vm.expectRevert(IIndexHub.NotInitialized.selector);
         rogue.redeemSkipping(1, alice, 1);
         assertEq(impl.totalSupply(), 0);
         assertEq(rogue.totalSupply(), 0);
@@ -205,7 +205,7 @@ contract IndexTokenTest is XindexTest {
         // predicate used to answer true for a clone that can never rebalance at all.
         assertFalse(impl.canStartRebalance(), "the implementation is not waiting to be rebalanced");
         assertFalse(rogue.canStartRebalance(), "nor is a clone deployed outside the factory");
-        vm.expectRevert(IIndexToken.NotInitialized.selector);
+        vm.expectRevert(IIndexHub.NotInitialized.selector);
         rogue.startRebalance(0);
     }
 
@@ -221,7 +221,7 @@ contract IndexTokenTest is XindexTest {
         expected[2] = U_USDC;
 
         vm.expectEmit(true, true, true, true, address(index));
-        emit IIndexToken.Issued(alice, alice, 1e18, expected);
+        emit IIndexHub.Issued(alice, alice, 1e18, expected);
         vm.prank(alice);
         index.issue(1e18, alice);
 
@@ -261,7 +261,7 @@ contract IndexTokenTest is XindexTest {
 
     function test_issue_revertsZeroShares() public {
         vm.prank(alice);
-        vm.expectRevert(IIndexToken.ZeroShares.selector);
+        vm.expectRevert(IIndexHub.ZeroShares.selector);
         index.issue(0, alice);
     }
 
@@ -293,12 +293,12 @@ contract IndexTokenTest is XindexTest {
         uint256[] memory u = new uint256[](1);
         t[0] = address(fee);
         u[0] = 1e18;
-        IndexToken feeIndex = IndexToken(factory.createIndex("Fee", "FEE", t, u, 0));
+        IndexHub feeIndex = IndexHub(factory.createIndex("Fee", "FEE", t, u, 0));
 
         fee.mint(alice, 10e18);
         vm.startPrank(alice);
         fee.approve(address(feeIndex), 10e18);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TransferAmountMismatch.selector, address(fee)));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.TransferAmountMismatch.selector, address(fee)));
         feeIndex.issue(1e18, alice);
         vm.stopPrank();
     }
@@ -318,7 +318,7 @@ contract IndexTokenTest is XindexTest {
         expected[2] = 2 * U_USDC;
 
         vm.expectEmit(true, true, true, true, address(index));
-        emit IIndexToken.Redeemed(alice, alice, 2e18, expected);
+        emit IIndexHub.Redeemed(alice, alice, 2e18, expected);
         vm.prank(alice);
         index.redeem(2e18, alice);
 
@@ -359,7 +359,7 @@ contract IndexTokenTest is XindexTest {
 
     function test_redeem_revertsZeroShares() public {
         vm.prank(alice);
-        vm.expectRevert(IIndexToken.ZeroShares.selector);
+        vm.expectRevert(IIndexHub.ZeroShares.selector);
         index.redeem(0, alice);
     }
 
@@ -393,7 +393,7 @@ contract IndexTokenTest is XindexTest {
         index.issue(2e18, alice);
 
         vm.expectEmit(true, true, true, true, address(index));
-        emit IIndexToken.ClaimRecorded(bob, address(wbtc), U_WBTC);
+        emit IIndexHub.ClaimRecorded(bob, address(wbtc), U_WBTC);
         vm.prank(alice);
         index.redeemSkipping(1e18, bob, 1 << 0);
 
@@ -461,9 +461,9 @@ contract IndexTokenTest is XindexTest {
         _fund(alice, 1e18);
         vm.startPrank(alice);
         index.issue(1e18, alice);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.InvalidSkipMask.selector, 0));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.InvalidSkipMask.selector, 0));
         index.redeemSkipping(1e18, alice, 0);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.InvalidSkipMask.selector, 1 << 3));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.InvalidSkipMask.selector, 1 << 3));
         index.redeemSkipping(1e18, alice, 1 << 3);
         vm.stopPrank();
     }
@@ -472,7 +472,7 @@ contract IndexTokenTest is XindexTest {
         _fund(alice, 1e18);
         vm.startPrank(alice);
         index.issue(1e18, alice);
-        vm.expectRevert(IIndexToken.ZeroShares.selector);
+        vm.expectRevert(IIndexHub.ZeroShares.selector);
         index.redeemSkipping(0, alice, 1);
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
         index.redeemSkipping(1e18, address(0), 1);
@@ -488,7 +488,7 @@ contract IndexTokenTest is XindexTest {
         index.redeemSkipping(1e18, alice, (1 << 0) | (1 << 2));
 
         vm.expectEmit(true, true, true, true, address(index));
-        emit IIndexToken.Claimed(alice, bob, address(wbtc), U_WBTC);
+        emit IIndexHub.Claimed(alice, bob, address(wbtc), U_WBTC);
         uint256 paid = index.claim(address(wbtc), bob);
         vm.stopPrank();
 
@@ -504,7 +504,7 @@ contract IndexTokenTest is XindexTest {
 
     function test_claim_reverts() public {
         vm.startPrank(alice);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.NothingToClaim.selector, address(wbtc)));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.NothingToClaim.selector, address(wbtc)));
         index.claim(address(wbtc), alice);
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
         index.claim(address(wbtc), address(0));
@@ -697,13 +697,13 @@ contract IndexTokenTest is XindexTest {
     ///      in the future and the view answers false without the fix. At a mainnet timestamp only the initialization
     ///      check stands between the implementation, or a clone deployed outside the factory, and an answer of true.
     function test_CRI25_anUninitializedInstanceIsNeverDueAtAMainnetTimestamp() public {
-        IndexToken impl = IndexToken(factory.IMPLEMENTATION());
-        IndexToken rogue = IndexToken(Clones.clone(address(impl)));
+        IndexHub impl = IndexHub(factory.IMPLEMENTATION());
+        IndexHub rogue = IndexHub(Clones.clone(address(impl)));
         vm.warp(1_790_000_000); // September 2026
         assertGe(block.timestamp, impl.lastRebalance() + impl.MIN_REBALANCE_INTERVAL(), "the interval is long past");
         assertFalse(impl.canStartRebalance(), "the implementation is not waiting to be rebalanced");
         assertFalse(rogue.canStartRebalance(), "nor is a clone deployed outside the factory");
-        vm.expectRevert(IIndexToken.NotInitialized.selector);
+        vm.expectRevert(IIndexHub.NotInitialized.selector);
         rogue.startRebalance(0);
     }
 
@@ -761,7 +761,7 @@ contract IndexTokenTest is XindexTest {
         address[] memory t = new address[](1);
         uint256[] memory u = new uint256[](1);
         (t[0], u[0]) = (address(fee), 1e18);
-        IndexToken feeIndex = IndexToken(factory.createIndex("Fee", "FEE", t, u, 0));
+        IndexHub feeIndex = IndexHub(factory.createIndex("Fee", "FEE", t, u, 0));
 
         fee.mint(bob, 10e18);
         vm.prank(bob);
@@ -772,7 +772,7 @@ contract IndexTokenTest is XindexTest {
         vm.startPrank(alice);
         fee.approve(address(feeIndex), 1e18);
         // A share needs 1e18 and 0.99e18 arrives. The balance afterwards, 10.89e18, would clear the check on its own.
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TransferAmountMismatch.selector, address(fee)));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.TransferAmountMismatch.selector, address(fee)));
         feeIndex.issue(1e18, alice);
         vm.stopPrank();
         assertEq(feeIndex.totalSupply(), 0, "no share was minted against 0.99 of its basket");
@@ -788,12 +788,12 @@ contract IndexTokenTest is XindexTest {
         (basket[0], basket[1], basket[2]) = (U_WBTC, U_WETH, U_USDC);
 
         vm.expectEmit(true, true, true, true, address(index));
-        emit IIndexToken.Issued(alice, bob, 1e18, basket);
+        emit IIndexHub.Issued(alice, bob, 1e18, basket);
         vm.prank(alice);
         index.issue(1e18, bob);
 
         vm.expectEmit(true, true, true, true, address(index));
-        emit IIndexToken.Redeemed(bob, alice, 1e18, basket);
+        emit IIndexHub.Redeemed(bob, alice, 1e18, basket);
         vm.prank(bob);
         index.redeem(1e18, alice);
         assertEq(wbtc.balanceOf(alice), U_WBTC, "the basket came back to alice");

@@ -7,10 +7,10 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IIndexFactory} from "./interfaces/IIndexFactory.sol";
 import {IIndexRule} from "./interfaces/IIndexRule.sol";
-import {IIndexToken} from "./interfaces/IIndexToken.sol";
+import {IIndexHub} from "./interfaces/IIndexHub.sol";
 import {Methodology} from "./libraries/Methodology.sol";
 import {IndexRule} from "./IndexRule.sol";
-import {IndexToken} from "./IndexToken.sol";
+import {IndexHub} from "./IndexHub.sol";
 
 /// @title IndexFactory
 /// @notice Permissionless index creation with a curated component whitelist. See {IIndexFactory}.
@@ -39,7 +39,7 @@ import {IndexToken} from "./IndexToken.sol";
 ///      mint or burn is listed on the same terms as a fixed-supply token (CR-M01). Components that an issuer can pause
 ///      or blacklist, such as WBTC, or whose issuer or bridge is a trust assumption, such as wstETH and wrapped SOL,
 ///      must be labelled in the app; while one is frozen, holders can still take the other components out with
-///      `IndexToken.redeemSkipping`.
+///      `IndexHub.redeemSkipping`.
 contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
     uint256 public constant MAX_COMPONENTS = 20;
     uint256 public constant MIN_CAPPED_COMPONENTS = Methodology.MIN_CAPPED_COMPONENTS;
@@ -84,7 +84,7 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         emit GuardianSet(address(0), initialGuardian);
         address rule = address(new IndexRule());
         RULE = rule;
-        IMPLEMENTATION = address(new IndexToken(rule));
+        IMPLEMENTATION = address(new IndexHub(rule));
     }
 
     // ---------------------------------------------------------------------
@@ -116,7 +116,7 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
         allIndexes.push(index);
         emit IndexCreated(index, msg.sender, name, symbol, tokens, units, methodology);
 
-        IIndexToken(index).initialize(name, symbol, tokens, units, methodology);
+        IIndexHub(index).initialize(name, symbol, tokens, units, methodology);
     }
 
     /// @inheritdoc IIndexFactory

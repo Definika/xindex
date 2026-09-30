@@ -2,7 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {IIndexToken} from "../../src/interfaces/IIndexToken.sol";
+import {IIndexHub} from "../../src/interfaces/IIndexHub.sol";
 import {IRebalanceExecutor} from "../../src/interfaces/IRebalanceExecutor.sol";
 
 interface IMintable {
@@ -40,12 +40,12 @@ contract MockRebalanceExecutor is IRebalanceExecutor {
         shortComponent = i;
     }
 
-    function execute(IIndexToken index, bytes calldata data) external {
+    function execute(IIndexHub index, bytes calldata data) external {
         index.executeRebalance(data);
     }
 
     /// @notice Fills through the bounded entry point, saying what it is prepared to deliver.
-    function executeBounded(IIndexToken index, bytes calldata data, uint256[] calldata maxAmountsIn) external {
+    function executeBounded(IIndexHub index, bytes calldata data, uint256[] calldata maxAmountsIn) external {
         index.executeRebalance(data, maxAmountsIn);
     }
 
@@ -70,7 +70,7 @@ contract MockRebalanceExecutor is IRebalanceExecutor {
         _lastAmountsIn = amountsIn;
         if (mode == Mode.Noop) return;
 
-        IIndexToken index = IIndexToken(msg.sender);
+        IIndexHub index = IIndexHub(msg.sender);
         if (mode == Mode.Reentrant) _reenter(index);
 
         address[] memory tokens = index.componentTokens();
@@ -81,16 +81,16 @@ contract MockRebalanceExecutor is IRebalanceExecutor {
         }
     }
 
-    function _reenter(IIndexToken index) internal {
+    function _reenter(IIndexHub index) internal {
         delete _reentryErrors;
         // Both settlement entry points are listed: each is mutating, so each has to carry the guard.
         bytes[8] memory attempts = [
-            abi.encodeCall(IIndexToken.issue, (1, address(this))),
-            abi.encodeCall(IIndexToken.redeem, (1, address(this))),
-            abi.encodeCall(IIndexToken.redeemSkipping, (1, address(this), 1)),
-            abi.encodeCall(IIndexToken.claim, (address(0), address(this))),
-            abi.encodeCall(IIndexToken.startRebalance, (0)),
-            abi.encodeCall(IIndexToken.cancelRebalance, ()),
+            abi.encodeCall(IIndexHub.issue, (1, address(this))),
+            abi.encodeCall(IIndexHub.redeem, (1, address(this))),
+            abi.encodeCall(IIndexHub.redeemSkipping, (1, address(this), 1)),
+            abi.encodeCall(IIndexHub.claim, (address(0), address(this))),
+            abi.encodeCall(IIndexHub.startRebalance, (0)),
+            abi.encodeCall(IIndexHub.cancelRebalance, ()),
             abi.encodeWithSignature("executeRebalance(bytes)", ""),
             abi.encodeWithSignature("executeRebalance(bytes,uint256[])", "", new uint256[](0))
         ];

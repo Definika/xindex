@@ -10,7 +10,7 @@ protocol key or bot is involved in rebalancing.
 
 | Requirement (from the product brief) | How it is met |
 |---|---|
-| Create a portfolio as one ERC-20, any name/symbol | `IndexFactory.createIndex` deploys an `IndexToken` clone with free-form name and symbol |
+| Create a portfolio as one ERC-20, any name/symbol | `IndexFactory.createIndex` deploys an `IndexHub` clone with free-form name and symbol |
 | Others can mint the same index | `issue` / `mintWithToken` are permissionless |
 | Decentralized | No custody, no pause, no upgrade, no rebalancing key; listings and token data configs activate after a public 2-day delay |
 | Mint and burn | In-kind `issue` / `redeem` on the token; USDC/USDT convenience via the zap |
@@ -27,7 +27,7 @@ whitelist only. The first two supersede v2's "Uniswap V3" for both jobs; section
 
 ```
                   createIndex(name, symbol, tokens[], units[], methodology)
-   creator ────────────────────────────────────────────────────► IndexFactory ──CREATE2 clone──► IndexToken (ERC-20)
+   creator ────────────────────────────────────────────────────► IndexFactory ──CREATE2 clone──► IndexHub (ERC-20)
                                                                   │ listings + token configs      │ holds the basket
                                                                   │ (2-day delay), guardian,      │ issue / redeem in kind
                                                                   │ registry                      │ redeemSkipping / claim
@@ -45,7 +45,7 @@ whitelist only. The first two supersede v2's "Uniswap V3" for both jobs; section
                                       └──────── issue() / redeem() ───────────────────────────────┘
 ```
 
-### IndexToken (`src/IndexToken.sol`)
+### IndexHub (`src/IndexHub.sol`)
 
 The index itself. An EIP-1167 clone of one implementation, using OpenZeppelin's upgradeable ERC20 and ERC20Permit
 (clones skip constructors, so name and symbol are set in `initialize`).
@@ -261,7 +261,7 @@ protocol's ABI set: a config points at it, nothing calls it.
 
 ### IndexFactory (`src/IndexFactory.sol`)
 
-- The constructor takes the owner and the guardian, deploys the rule, then deploys the `IndexToken` implementation
+- The constructor takes the owner and the guardian, deploys the rule, then deploys the `IndexHub` implementation
   pointing at the rule. It takes no market addresses: the rule and the factory depend on no Uniswap contract, and the
   only reason the whole stack is new rather than upgraded is that the rule is built here and held immutably.
 - `createIndex(name, symbol, tokens, units, methodology)`: permissionless. Validates non-empty name and symbol, `1..20`
@@ -598,7 +598,7 @@ party can push. Execution goes through the Universal Router, which reaches V3 **
 by the caller — because committing to V4 would have been wrong for most of the list: of the seven launch components
 only LINK is deeper on V4, while WBTC (0.26x), UNI (0.66x) and AAVE (0.86x) are deeper on V3. The cost of the change is
 in the paragraph above, and in the one new dependency: the zap now depends on the Universal Router and the PoolManager,
-which the token, rule and factory do not, because the zap is the replaceable layer. `IndexToken`'s executable code
+which the token, rule and factory do not, because the zap is the replaceable layer. `IndexHub`'s executable code
 was unchanged by the move itself; the one behavioural change it took in v3 was VR-04, merged with the verification
 review in 8fab3ba, and the 2026-09-23 audit then added the share-transfer check (CR-I01) and the tighter settlement
 ratio (CR-L06). An earlier sentence here called it byte-identical across the change, which was never true of the
@@ -769,7 +769,7 @@ its own address.
 
 ## 6. Verification
 
-- Unit and fuzz tests per contract: `IndexToken.t.sol`, `IndexToken.rebalance.t.sol`, `IndexRule.t.sol` (including the
+- Unit and fuzz tests per contract: `IndexHub.t.sol`, `IndexHub.rebalance.t.sol`, `IndexRule.t.sol` (including the
   Numbers model's weight vector and its divisor prices), `IndexFactory.t.sol`, `IndexZap.t.sol`, and the
   `CompositeFeed` tests beside the mocks' in `test/mocks/Mocks.t.sol` (an earlier inventory named a
   `CompositeFeed.t.sol` that never existed, CR-I15), with 6/8/13/18-decimal mocks, settable feeds behind a market

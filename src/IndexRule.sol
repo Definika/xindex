@@ -6,7 +6,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IAggregatorV3} from "./interfaces/IAggregatorV3.sol";
 import {IIndexFactory} from "./interfaces/IIndexFactory.sol";
 import {IIndexRule} from "./interfaces/IIndexRule.sol";
-import {IIndexToken} from "./interfaces/IIndexToken.sol";
+import {IIndexHub} from "./interfaces/IIndexHub.sol";
 import {Methodology} from "./libraries/Methodology.sol";
 
 /// @title IndexRule
@@ -126,7 +126,7 @@ contract IndexRule is IIndexRule {
     }
 
     /// @inheritdoc IIndexRule
-    /// @dev The two sides of a settlement, valued in the settling block. `IndexToken` holds them against its own floor:
+    /// @dev The two sides of a settlement, valued in the settling block. `IndexHub` holds them against its own floor:
     ///      the auction band fixes the multiplier on the bought legs at snapshot prices, and says nothing about how far
     ///      the market moved in the up to three days before the fill (DA-05). They gate the settlement and never size
     ///      it, so the amounts that move stay derived from supply and units alone.
@@ -223,7 +223,7 @@ contract IndexRule is IIndexRule {
     /// @inheritdoc IIndexRule
     function navPerToken(address index) external view returns (uint256 usdValue) {
         if (!IIndexFactory(FACTORY).isIndex(index)) revert NotIndex(index);
-        (address[] memory tokens, uint256[] memory units) = IIndexToken(index).components();
+        (address[] memory tokens, uint256[] memory units) = IIndexHub(index).components();
         usdValue = 0;
         uint256 n = tokens.length;
         for (uint256 i = 0; i < n; ++i) {
@@ -625,7 +625,7 @@ contract IndexRule is IIndexRule {
             // Rounded up, so the targets buy back at least the value the shrinking legs release. Rounding down left a
             // residue of up to one raw unit per component that nothing reallocated, because the component it came from
             // was pinned at its floor: the index sent it out as `amountsOut` with no matching `amountsIn`, and
-            // `IndexToken._checkBacking` verifies backing, not value (VR-03). Rounding up puts the residue on the
+            // `IndexHub._checkBacking` verifies backing, not value (VR-03). Rounding up puts the residue on the
             // executor's side of the trade, where every other rounding in the system already sits. The share is at most
             // the ceiling's value, so the ceiling bounds the result; the minimum only makes that explicit.
             uint256 unclipped = Math.mulDiv(share, basket.scale, p, Math.Rounding.Ceil);

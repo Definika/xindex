@@ -6,7 +6,7 @@ import {Deploy} from "../script/Deploy.s.sol";
 import {MainnetAddresses} from "../script/MainnetAddresses.sol";
 import {ConfigureWhitelist} from "../script/ConfigureWhitelist.s.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
-import {IndexToken} from "../src/IndexToken.sol";
+import {IndexHub} from "../src/IndexHub.sol";
 import {IndexZap} from "../src/IndexZap.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IIndexRule} from "../src/interfaces/IIndexRule.sol";
@@ -404,7 +404,7 @@ contract ScriptsTest is Test {
         assertEq(factory.guardian(), guardian);
         assertEq(address(zap.FACTORY()), address(factory));
         assertEq(address(zap.ROUTER()), address(router));
-        assertEq(IndexToken(factory.IMPLEMENTATION()).FACTORY(), address(factory));
+        assertEq(IndexHub(factory.IMPLEMENTATION()).FACTORY(), address(factory));
         assertEq(IIndexRule(factory.RULE()).FACTORY(), address(factory));
         assertEq(address(wbtcFeed), address(0), "the composite feed is a chain-1 deployment");
     }

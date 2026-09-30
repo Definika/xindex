@@ -5,14 +5,14 @@ import {Test} from "forge-std/Test.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
 import {IIndexRule} from "../src/interfaces/IIndexRule.sol";
-import {IndexToken} from "../src/IndexToken.sol";
+import {IndexHub} from "../src/IndexHub.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockMarket} from "./mocks/MockMarket.sol";
 import {MockRebalanceExecutor} from "./mocks/MockRebalanceExecutor.sol";
 
 contract IndexHandler is Test {
-    IndexToken public index;
+    IndexHub public index;
     MockMarket public market;
     MockRebalanceExecutor public executor;
     address public guardian;
@@ -28,7 +28,7 @@ contract IndexHandler is Test {
     bool public holdOffMisjudged;
 
     constructor(
-        IndexToken index_,
+        IndexHub index_,
         MockERC20[] memory comps_,
         int256[] memory basePrices_,
         address[] memory actors_,
@@ -245,10 +245,10 @@ contract IndexHandler is Test {
     }
 }
 
-contract IndexTokenInvariantTest is Test {
+contract IndexHubInvariantTest is Test {
     MockMarket market;
     IndexFactory factory;
-    IndexToken index;
+    IndexHub index;
     IndexHandler handler;
     MockERC20[] comps;
     address[] actors;
@@ -286,7 +286,7 @@ contract IndexTokenInvariantTest is Test {
         for (uint256 i = 0; i < comps.length; ++i) {
             factory.executeListing(t[i]);
         }
-        index = IndexToken(factory.createIndex("Inv", "INV", t, units, 0));
+        index = IndexHub(factory.createIndex("Inv", "INV", t, units, 0));
 
         for (uint256 i = 0; i < 5; ++i) {
             actors.push(makeAddr(string(abi.encodePacked("actor", i))));

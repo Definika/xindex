@@ -6,7 +6,7 @@ import {Vm} from "forge-std/Vm.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
 import {IndexRule} from "../src/IndexRule.sol";
-import {IndexToken} from "../src/IndexToken.sol";
+import {IndexHub} from "../src/IndexHub.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IIndexRule} from "../src/interfaces/IIndexRule.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
@@ -84,7 +84,7 @@ contract IndexFactoryTest is XindexTest {
         assertEq(fresh.owner(), owner);
         assertEq(fresh.guardian(), guardian);
         assertEq(fresh.MAX_COMPONENTS(), 20);
-        // IndexToken stores a keep mask in 24 bits, one per component.
+        // IndexHub stores a keep mask in 24 bits, one per component.
         assertLe(fresh.MAX_COMPONENTS(), 24);
         assertEq(fresh.MIN_CAPPED_COMPONENTS(), 5);
         assertEq(fresh.LISTING_DELAY(), 2 days);
@@ -97,8 +97,8 @@ contract IndexFactoryTest is XindexTest {
 
         IndexRule rule = IndexRule(fresh.RULE());
         assertEq(rule.FACTORY(), address(fresh));
-        assertEq(IndexToken(fresh.IMPLEMENTATION()).FACTORY(), address(fresh));
-        assertEq(IndexToken(fresh.IMPLEMENTATION()).RULE(), address(rule));
+        assertEq(IndexHub(fresh.IMPLEMENTATION()).FACTORY(), address(fresh));
+        assertEq(IndexHub(fresh.IMPLEMENTATION()).RULE(), address(rule));
 
         IndexFactory unguarded = _newFactory(owner, address(0));
         assertEq(unguarded.guardian(), address(0));
@@ -852,7 +852,7 @@ contract IndexFactoryTest is XindexTest {
         assertEq(factory.allIndexesLength(), 1);
         assertEq(factory.allIndexes(0), index);
 
-        IndexToken it = IndexToken(index);
+        IndexHub it = IndexHub(index);
         assertEq(it.name(), "My Index");
         assertEq(it.symbol(), "MYX");
         assertEq(it.FACTORY(), address(factory));
@@ -929,7 +929,7 @@ contract IndexFactoryTest is XindexTest {
         factory.createIndex("Capped", "CAP", four, fourUnits, 1);
 
         address capped = factory.createIndex("Capped", "CAP", five, fiveUnits, 1);
-        assertEq(IndexToken(capped).methodology(), 1);
+        assertEq(IndexHub(capped).methodology(), 1);
     }
 
     function test_createIndex_revertsDuplicateBySameCreator() public {
@@ -948,7 +948,7 @@ contract IndexFactoryTest is XindexTest {
         vm.prank(owner);
         factory.delist(address(a));
 
-        (address[] memory tt,) = IndexToken(index).components();
+        (address[] memory tt,) = IndexHub(index).components();
         assertEq(tt[0], address(a));
         assertTrue(factory.isIndex(index));
 
@@ -982,7 +982,7 @@ contract IndexFactoryTest is XindexTest {
     function test_createIndex_maxComponentsOk() public {
         (address[] memory t, uint256[] memory u) = _listed(factory.MAX_COMPONENTS());
         address index = factory.createIndex("Big", "BIG", t, u, 1);
-        assertEq(IndexToken(index).componentCount(), t.length);
+        assertEq(IndexHub(index).componentCount(), t.length);
     }
 
     function test_createIndex_revertsLengthMismatch() public {

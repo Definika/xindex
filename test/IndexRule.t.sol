@@ -5,10 +5,10 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {Test} from "forge-std/Test.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
 import {IndexRule} from "../src/IndexRule.sol";
-import {IndexToken} from "../src/IndexToken.sol";
+import {IndexHub} from "../src/IndexHub.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IIndexRule} from "../src/interfaces/IIndexRule.sol";
-import {IIndexToken} from "../src/interfaces/IIndexToken.sol";
+import {IIndexHub} from "../src/interfaces/IIndexHub.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {DEFAULT_STALENESS, FEED_DECIMALS, MockMarket, usdWad} from "./mocks/MockMarket.sol";
@@ -220,7 +220,7 @@ contract IndexRuleTest is Test {
         address[] memory tokens = _flatBasket(_arr(1, 1, 1, 1, 1));
         tokens[0] = address(wrapper);
         uint256[] memory onRule = _hundreds();
-        IndexToken idx = IndexToken(factory.createIndex("Wrapped", "WRAP", tokens, onRule, UNCAPPED));
+        IndexHub idx = IndexHub(factory.createIndex("Wrapped", "WRAP", tokens, onRule, UNCAPPED));
         vm.warp(idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL());
 
         (uint256[] memory before, uint256 turnover) = idx.previewTarget(0);
@@ -231,7 +231,7 @@ contract IndexRuleTest is Test {
         (uint256[] memory during, uint256 forced) = idx.previewTarget(0);
         assertEq(keccak256(abi.encode(during)), keccak256(abi.encode(before)), "no target moves");
         assertEq(forced, 0, "and there is still nothing to trade");
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, 0));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.TurnoverTooLow.selector, 0));
         vm.prank(alice);
         idx.startRebalance(0);
 
@@ -401,7 +401,7 @@ contract IndexRuleTest is Test {
     function test_price_hasNoDisplayPath() public {
         address[] memory tokens = _flatBasket(_arr(1, 1, 1, 1, 1));
         uint256[] memory units = _arr(1e18, 1e18, 1e18, 1e18, 1e18);
-        IndexToken index = IndexToken(factory.createIndex("Display", "DISP", tokens, units, UNCAPPED));
+        IndexHub index = IndexHub(factory.createIndex("Display", "DISP", tokens, units, UNCAPPED));
 
         market.setAge(tokens[0], uint256(DEFAULT_STALENESS) + 1);
         bytes memory err =
@@ -435,7 +435,7 @@ contract IndexRuleTest is Test {
         assertEq(supplies[0], 7e18, "and the rule weighs it on the reference figure");
     }
 
-    /// @dev DA-05. The values `IndexToken` holds a fill against. Only a leg that moves is priced, so a keep mask still
+    /// @dev DA-05. The values `IndexHub` holds a fill against. Only a leg that moves is priced, so a keep mask still
     ///      routes around a component whose feed cannot be read.
     function test_settlementValues() public {
         address[] memory tokens = _flatBasket(_arr(1, 1, 1, 1, 1));
@@ -1059,8 +1059,8 @@ contract IndexRuleTest is Test {
         address[] memory tokens = _sheetTokens();
         uint256[] memory uncappedUnits = rule.initialUnits(tokens, UNCAPPED, 1_000e18);
         uint256[] memory cappedUnits = rule.initialUnits(tokens, CAPPED, 1_000e18);
-        IndexToken uncapped = IndexToken(factory.createIndex("Memes", "MEME", tokens, uncappedUnits, UNCAPPED));
-        IndexToken capped = IndexToken(factory.createIndex("Capped Memes", "CMEME", tokens, cappedUnits, CAPPED));
+        IndexHub uncapped = IndexHub(factory.createIndex("Memes", "MEME", tokens, uncappedUnits, UNCAPPED));
+        IndexHub capped = IndexHub(factory.createIndex("Capped Memes", "CMEME", tokens, cappedUnits, CAPPED));
 
         assertApproxEqRel(rule.navPerToken(address(uncapped)), 1_000e18, 1e12, "starts at the chosen price");
         assertApproxEqRel(rule.navPerToken(address(capped)), 1_000e18, 1e12);
@@ -1145,7 +1145,7 @@ contract IndexRuleTest is Test {
     function test_VR01_aBasisPointMoveNoLongerClearsMinTurnover() public {
         address[] memory tokens = _flatBasket(_arr(1000, 1000, 1000, 1000, 1000));
         uint256[] memory onRule = _arr(100e18, 100e18, 100e18, 100e18, 100e18);
-        IndexToken idx = IndexToken(factory.createIndex("Capped", "CAP", tokens, onRule, CAPPED));
+        IndexHub idx = IndexHub(factory.createIndex("Capped", "CAP", tokens, onRule, CAPPED));
         vm.warp(idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL());
 
         (uint256[] memory t, uint256 turnover) = idx.previewTarget(0);
@@ -1157,7 +1157,7 @@ contract IndexRuleTest is Test {
         market.movePrice(tokens[1], 10_001, 10_000);
         (, turnover) = idx.previewTarget(0);
         assertLt(turnover, idx.MIN_TURNOVER(), "a basis point no longer clears the dust filter");
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, turnover));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.TurnoverTooLow.selector, turnover));
         vm.prank(alice);
         idx.startRebalance(0);
     }
@@ -1247,7 +1247,7 @@ contract IndexRuleTest is Test {
         for (uint256 i = 0; i < 5; ++i) {
             assertEq(w[i], 0.2e18, "both leaders at 20%, and the three smaller shares pinned there too");
         }
-        IndexToken idx = IndexToken(factory.createIndex("Tied", "TIE", tokens, _hundreds(), CAPPED));
+        IndexHub idx = IndexHub(factory.createIndex("Tied", "TIE", tokens, _hundreds(), CAPPED));
         vm.warp(idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL());
         (, uint256 turnover) = idx.previewTarget(0);
         assertEq(turnover, 0, "on its methodology");
@@ -1256,7 +1256,7 @@ contract IndexRuleTest is Test {
         (, turnover) = idx.previewTarget(0);
         assertLt(turnover, idx.MIN_TURNOVER() / 100, "a basis point is a basis point's worth of weight");
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, turnover));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.TurnoverTooLow.selector, turnover));
         idx.startRebalance(0);
     }
 
