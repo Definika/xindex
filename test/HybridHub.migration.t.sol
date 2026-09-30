@@ -34,9 +34,13 @@ contract HybridHubMigrationTest is HybridTest {
         factory.executeListing(address(link));
         address[] memory tokens = new address[](3);
         (tokens[0], tokens[1], tokens[2]) = (address(weth), native, address(link));
+        // The holder creates the next version, so its first migration seeds it.
+        vm.prank(holder);
         next = IHybridIndex(factory.createIndex("Version 2", "V2", tokens, K2));
         vault.registerIndex(address(next), factory.indexSalt(address(next)));
-        _mint(old, holder, 1e18);
+        _mint(old, minter, 1e18); // the creator's seed
+        vm.prank(minter);
+        old.transfer(holder, 1e18);
     }
 
     function _recipients(bytes32 r) internal pure returns (bytes32[] memory list) {
@@ -232,6 +236,7 @@ contract HybridHubMigrationTest is HybridTest {
         factory.executeListing(address(fee));
         address[] memory tokens = new address[](3);
         (tokens[0], tokens[1], tokens[2]) = (address(weth), native, address(fee));
+        vm.prank(holder);
         IHybridIndex feeHub = IHybridIndex(factory.createIndex("Fee", "FEE", tokens, K2));
         fee.mint(holder, 10e18);
         vm.prank(holder);
@@ -239,6 +244,58 @@ contract HybridHubMigrationTest is HybridTest {
         vm.prank(holder);
         vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.TransferAmountMismatch.selector, address(fee)));
         old.migrate(address(feeHub), 1e18, 1e18, to, _recipients(recipient));
+    }
+
+    /// @dev MOD-2: an index seeded on a forged deposit cannot carry that book into another index past the other's mint
+    ///      cap, nor seed another's empty index. The cap bounds every share that rests on a vault proof, a migrated one
+    ///      included.
+    function test_MOD2_migrationRespectsTheNewIndexsMintCap() public {
+        address attacker = makeAddr("attacker");
+        address[] memory only = new address[](1);
+        only[0] = native;
+        uint256 n = 10_000e18;
+        vm.prank(attacker);
+        IHybridIndex phantom = IHybridIndex(factory.createIndex("Phantom", "PHM", only, K));
+        vault.registerIndex(address(phantom), factory.indexSalt(address(phantom)));
+        uint256 need = phantom.previewOrder(n)[0];
+        vm.prank(attacker);
+        (uint256 orderId, uint256 intakeId) = phantom.openOrder(n, block.timestamp + 1 hours);
+        vm.warp(block.timestamp + 1 hours + 1);
+        // Nothing deposited, and a broken state proof shows the intake full: the creator's seed has no cap.
+        IHybridHubTypes.ChainProof[] memory p = _chainProof(block.timestamp, need);
+        p[0].proof = _forged(
+            block.timestamp,
+            keccak256(
+                abi.encode(
+                    keccak256("xindex.v4.vault.intake-digest"),
+                    chainId,
+                    address(vault),
+                    address(phantom),
+                    intakeId,
+                    uint8(1),
+                    p[0].tokens,
+                    p[0].totals
+                )
+            )
+        );
+        phantom.settleOrder(orderId, p);
+        vm.warp(block.timestamp + phantom.MINT_LOCK());
+        phantom.claimOrder(orderId);
+        assertEq(phantom.balanceOf(attacker), n);
+
+        uint256 wethNeed = old.previewOrder(n)[0];
+        weth.mint(attacker, wethNeed);
+        vm.prank(attacker);
+        weth.approve(address(old), wethNeed);
+        uint256 room = old.mintRoom();
+        assertEq(room, 0.04e18, "4% of the old index's supply");
+        vm.prank(attacker);
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.MintCapExceeded.selector, n, room));
+        phantom.migrate(address(old), n, n, attacker, _recipients(recipient));
+        // Nor may it seed an empty index someone else created.
+        vm.prank(attacker);
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.MintCapExceeded.selector, 1e18, 0));
+        phantom.migrate(address(next), 1e18, 1e18, attacker, _recipients(recipient));
     }
 
     /// @dev No backing joins an index on a frozen chain, and supply cannot grow under an accepted fill.
@@ -252,7 +309,7 @@ contract HybridHubMigrationTest is HybridTest {
         old.migrate(address(next), 1e18, 1e18, to, _recipients(recipient));
 
         vm.warp(until);
-        _mintNext(minter, 1e18);
+        _mintNext(holder, 1e18); // the creator's seed
         vm.warp(block.timestamp + next.MIN_REBALANCE_INTERVAL());
         uint256[] memory supplies = new uint256[](1);
         address[] memory tokens = new address[](1);
@@ -265,7 +322,7 @@ contract HybridHubMigrationTest is HybridTest {
         vm.warp(block.timestamp + next.REBALANCE_DELAY());
         (,,, uint256[] memory amountsIn) = next.previewRebalance();
         address executor = makeAddr("executor");
-        vm.prank(minter);
+        vm.prank(holder);
         next.transfer(executor, 0.01e18);
         for (uint256 i = 0; i < 3; ++i) {
             if (amountsIn[i] == 0 || i == 1) continue;

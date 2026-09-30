@@ -98,6 +98,8 @@ contract DemoFlowTest is Test {
 
         address[] memory tokens = new address[](3);
         (tokens[0], tokens[1], tokens[2]) = (address(weth), hype, sol);
+        // The sender who seeds it creates it: only an index's creator may mint into it empty.
+        vm.prank(minter);
         index = IHybridIndex(factory.createIndex("Xindex Hybrid Demo", "XHD", tokens, K));
         vault.registerIndex(address(index), factory.indexSalt(address(index)));
         _checkpoint();

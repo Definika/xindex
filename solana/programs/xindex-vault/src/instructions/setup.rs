@@ -6,7 +6,7 @@ use crate::constants::*;
 use crate::error::VaultError;
 use crate::events::{CapSet, IndexRegistered};
 use crate::program::XindexVault;
-use crate::state::{Config, IndexState};
+use crate::state::{Config, IndexState, PendingChange};
 use crate::vault;
 
 /// The vault's settings, fixed at initialization but for what governance messages change.
@@ -31,17 +31,19 @@ pub struct Initialize<'info> {
     pub config: Account<'info, Config>,
     #[account(mut, seeds = [TREASURY_SEED], bump)]
     pub treasury: SystemAccount<'info>,
-    /// CHECK: P1, a verifier program: only its key and that it is a program are kept.
-    #[account(executable)]
+    /// CHECK: P1, a verifier program nobody can upgrade: checked in `check_immutable`.
     pub p1: UncheckedAccount<'info>,
     /// CHECK: P2, as P1.
-    #[account(executable)]
     pub p2: UncheckedAccount<'info>,
     #[account(constraint = program.programdata_address()? == Some(program_data.key()) @ VaultError::NotDeployer)]
     pub program: Program<'info, XindexVault>,
     #[account(constraint = program_data.upgrade_authority_address == Some(authority.key()) @ VaultError::NotDeployer)]
     pub program_data: Account<'info, ProgramData>,
     pub system_program: Program<'info, System>,
+    /// CHECK: P1's ProgramData account, when the upgradeable loader owns it; checked in `check_immutable`.
+    pub p1_data: Option<UncheckedAccount<'info>>,
+    /// CHECK: P2's, as P1's.
+    pub p2_data: Option<UncheckedAccount<'info>>,
 }
 
 /// Only the program's upgrade authority, once: nobody can take the configuration in front of the deployer.
@@ -57,6 +59,14 @@ pub fn handle_initialize(ctx: Context<Initialize>, args: InitArgs) -> Result<()>
         ctx.accounts.p2.key(),
         VaultError::VerifiersNotDistinct
     );
+    vault::check_immutable(
+        &ctx.accounts.p1.to_account_info(),
+        ctx.accounts.p1_data.as_ref().map(|d| d.as_ref()),
+    )?;
+    vault::check_immutable(
+        &ctx.accounts.p2.to_account_info(),
+        ctx.accounts.p2_data.as_ref().map(|d| d.as_ref()),
+    )?;
 
     // The treasury exists from the start, rent-exempt, outside `held`, so no payout can leave it short of rent.
     let reserve = Rent::get()?.minimum_balance(0);
@@ -86,6 +96,12 @@ pub fn handle_initialize(ctx: Context<Initialize>, args: InitArgs) -> Result<()>
         cap: args.native_cap,
         outflow_floor: args.native_floor,
         held: 0,
+        cap_nonce: 0,
+        freezer_nonce: 0,
+        rotation_nonce: 0,
+        pending_cap: PendingChange::default(),
+        pending_freezer: PendingChange::default(),
+        pending_rotation: PendingChange::default(),
         treasury_bump: ctx.bumps.treasury,
         bump: ctx.bumps.config,
     });

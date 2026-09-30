@@ -95,6 +95,16 @@ contract HybridHandler is Test {
         VAULT.advanceCheckpoint(proof, proof);
     }
 
+    /// @dev Whether `who` may seed `idx`: it is empty, with nothing locked, and `who` created it.
+    function _seedable(IHybridIndex idx, address who) internal view returns (bool) {
+        if (idx.totalSupply() != 0 || who != FACTORY.creatorOf(address(idx))) return false;
+        if (idx != HUB) return true; // the next version takes no orders
+        for (uint256 i = 0; i < orders.length; ++i) {
+            if (HUB.order(orders[i]).status == IHybridHubTypes.OrderStatus.Locked) return false;
+        }
+        return true;
+    }
+
     function _order(uint256 pick) internal view returns (uint256 id, IHybridHubTypes.Order memory o) {
         id = orders[pick % orders.length];
         o = HUB.order(id);
@@ -132,7 +142,8 @@ contract HybridHandler is Test {
         if (o.status != IHybridHubTypes.OrderStatus.Open || block.timestamp <= o.deadline) return;
         uint256 intakeId = HUB.intakeIdOf(id);
         uint256 deposited = VAULT.intakeTotal(address(HUB), intakeId, address(0));
-        if (deposited < HUB.previewOrder(o.shares)[1] || o.shares > HUB.mintRoom()) return;
+        if (deposited < HUB.previewOrder(o.shares)[1]) return;
+        if (o.shares > HUB.mintRoom() && !_seedable(HUB, o.minter)) return;
         IHybridHubTypes.ChainProof[] memory p = new IHybridHubTypes.ChainProof[](1);
         p[0].proof = _proof(block.timestamp);
         p[0].tokens = new address[](1);
@@ -223,6 +234,7 @@ contract HybridHandler is Test {
         uint256 balance = HUB.balanceOf(holder);
         if (balance == 0) return;
         amount = bound(amount, 1, balance);
+        if (amount > NEXT.mintRoom() && !_seedable(NEXT, holder)) return;
         bytes32[] memory r = new bytes32[](1);
         r[0] = withRecipient ? bytes32(uint256(uint160(makeAddr("vault chain recipient")))) : bytes32(0);
         vm.recordLogs();
@@ -355,9 +367,26 @@ contract HybridHandler is Test {
     function slashFill() external {
         IHybridHubTypes.Fill memory f = HUB.fill();
         if (f.status != IHybridHubTypes.FillStatus.Settled || block.timestamp >= f.bondRelease) return;
+        // Evidence is proven after the delivery deadline, which lies well inside the bond's hold.
+        if (block.timestamp <= f.deadline) vm.warp(f.deadline + 1);
+        // A forged state no honest vault shows: the delivery intake failed.
         IHybridHubTypes.ChainProof memory p;
-        p.proof = abi.encode(block.timestamp, true, bytes32(0));
-        HUB.slashRebalance(CHAIN_ID, 0, p);
+        p.tokens = new address[](0);
+        p.totals = new uint256[](0);
+        bytes32 failed = keccak256(
+            abi.encode(
+                keccak256("xindex.v4.vault.intake-digest"),
+                CHAIN_ID,
+                address(VAULT),
+                address(HUB),
+                HUB.fillIntakeId(),
+                uint8(3),
+                p.tokens,
+                p.totals
+            )
+        );
+        p.proof = abi.encode(block.timestamp, true, failed);
+        HUB.slashRebalance(CHAIN_ID, 3, p);
         ++slashes;
     }
 
@@ -410,9 +439,13 @@ contract HybridHubInvariantTest is HybridTest {
 
     function setUp() public {
         _deployStageB();
-        hub = _createHybrid();
         address[] memory tokens = new address[](2);
         (tokens[0], tokens[1]) = (address(weth), native);
+        // The handler's actors a0 and a1 create the index and its next version: their first order and migration seed them.
+        vm.prank(makeAddr("a0"));
+        hub = IHybridIndex(factory.createIndex("Hybrid", "HYB", tokens, K));
+        vault.registerIndex(address(hub), factory.indexSalt(address(hub)));
+        vm.prank(makeAddr("a1"));
         next = IHybridIndex(factory.createIndex("Next", "NXT", tokens, K / 2));
         vault.registerIndex(address(next), factory.indexSalt(address(next)));
         handler = new HybridHandler(hub, next, factory, vault, weth, guardian, owner);
@@ -517,6 +550,17 @@ contract HybridHubInvariantTest is HybridTest {
     }
 
     /// @dev The campaign reaches every path the invariants are about.
+    /// @dev While the creator's seed is locked, the supply is still zero and its next order waits: the handler skips it.
+    function test_handlerWaitsOnALockedSeed() public {
+        handler.open(0, 2e18, false); // order 1: a0's seed
+        handler.open(0, 1e18, false); // order 2: a0's too
+        handler.warp(7200);
+        handler.settle(0);
+        handler.settle(1); // skipped, not reverted
+        assertEq(uint256(hub.order(1).status), uint256(IHybridHubTypes.OrderStatus.Locked));
+        assertEq(uint256(hub.order(2).status), uint256(IHybridHubTypes.OrderStatus.Open));
+    }
+
     function test_handlerReachesEveryPath() public {
         handler.open(0, 2e18, false); // order 1: the seed
         handler.open(1, 1e18, true); // order 2: one wei short, never settles
@@ -555,8 +599,11 @@ contract HybridHubInvariantTest is HybridTest {
         assertEq(vault.owed(address(hub), handler.burnIds(handler.burnCount() - 1)).remaining, 0);
         handler.releaseOwed(handler.burnCount() - 1); // paid in full: skipped
         handler.migrate(2, 0, true); // no shares: skipped
-        handler.migrate(1, 0.002e18, true);
-        handler.migrate(1, 0.001e18, false);
+        handler.migrate(1, 0.002e18, true); // a1 created the next version: its seed
+        handler.migrate(1, 0.001e18, false); // above 4% of the next version's supply: skipped
+        handler.warp(90_001); // 25 hours on: the seed has left the window
+        handler.migrate(1, 0.00008e18, false);
+        assertEq(next.totalSupply(), 0.00208e18);
         handler.freeze(0);
         handler.migrate(1, 0.001e18, true); // frozen: skipped
         vm.warp(block.timestamp + 14 days);

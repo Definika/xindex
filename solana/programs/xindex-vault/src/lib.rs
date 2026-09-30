@@ -96,4 +96,12 @@ pub mod xindex_vault {
     pub fn freeze(ctx: Context<Freeze>) -> Result<()> {
         instructions::payouts::handle_freeze(ctx)
     }
+
+    pub fn apply_change(ctx: Context<ApplyChange>, kind: u8, body: Vec<u8>) -> Result<()> {
+        instructions::governance::handle_apply_change(ctx, kind, body)
+    }
+
+    pub fn cancel_change(ctx: Context<CancelChange>, kind: u8) -> Result<()> {
+        instructions::governance::handle_cancel_change(ctx, kind)
+    }
 }

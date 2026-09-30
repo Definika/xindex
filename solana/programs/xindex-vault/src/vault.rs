@@ -88,16 +88,21 @@ pub fn pay_owed(
     index: &mut IndexState,
     owed: &mut Owed,
     strict: bool,
+    min_pay: u64,
 ) -> Result<u64> {
     require!(owed.remaining != 0, VaultError::NothingOwed);
     let now = now()?;
-    let pay = if now < config.frozen_until {
+    let mut pay = if now < config.frozen_until {
         0
     } else {
         owed.remaining
             .min(available(index, config.outflow_floor, now))
             .min(index.balance)
     };
+    // A payout the recipient could not hold, below rent to an empty account, waits instead of failing (SOL-5).
+    if pay < min_pay {
+        pay = 0;
+    }
     if pay == 0 {
         require!(!strict, VaultError::NothingPayable);
         return Ok(0);
@@ -114,6 +119,46 @@ pub fn pay_owed(
     });
     Ok(pay)
 }
+
+/// The least a payout to `recipient` may be: an account holding nothing must be left rent-exempt, or the transfer fails.
+pub fn min_payout(recipient: &AccountInfo) -> Result<u64> {
+    Ok(if recipient.lamports() == 0 {
+        Rent::get()?.minimum_balance(0)
+    } else {
+        0
+    })
+}
+
+/// A verifier must be a program nobody can change: an upgradeable one only with its upgrade authority removed, whose
+/// ProgramData account `program_data` shows it. Otherwise whoever holds that authority could rewrite P1 or P2 at once,
+/// past the 30-day rotation (SOL-2).
+pub fn check_immutable(program: &AccountInfo, program_data: Option<&AccountInfo>) -> Result<()> {
+    require!(program.executable, VaultError::NotAContract);
+    let loader = anchor_lang::solana_program::bpf_loader_upgradeable::id();
+    if *program.owner != loader {
+        // The older loaders cannot upgrade a program at all.
+        require!(
+            *program.owner == BPF_LOADER || *program.owner == BPF_LOADER_DEPRECATED,
+            VaultError::NotAContract
+        );
+        return Ok(());
+    }
+    let data = program_data.ok_or(VaultError::VerifierUpgradeable)?;
+    let expected = Pubkey::find_program_address(&[program.key.as_ref()], &loader).0;
+    require_keys_eq!(*data.key, expected, VaultError::VerifierUpgradeable);
+    require_keys_eq!(*data.owner, loader, VaultError::VerifierUpgradeable);
+    let bytes = data.try_borrow_data()?;
+    // UpgradeableLoaderState::ProgramData: tag 3 (u32), slot (u64), then Option<Pubkey>: 0 is None.
+    require!(
+        bytes.len() >= 13 && bytes[..4] == [3, 0, 0, 0] && bytes[12] == 0,
+        VaultError::VerifierUpgradeable
+    );
+    Ok(())
+}
+
+const BPF_LOADER: Pubkey = Pubkey::from_str_const("BPFLoader2111111111111111111111111111111111");
+const BPF_LOADER_DEPRECATED: Pubkey =
+    Pubkey::from_str_const("BPFLoader1111111111111111111111111111111111");
 
 /// Sends `amount` lamports from the treasury, which only this program signs for.
 pub fn send<'info>(

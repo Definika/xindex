@@ -31,6 +31,15 @@ export const owedPda = (index: Address, id: Hex) => pda([utf8("owed"), hexToByte
 export const depositPda = (index: Address, intakeId: Uint8Array, depositor: PublicKey) =>
   pda([utf8("deposit"), hexToBytes(index), intakeId, depositor.toBytes()]);
 export const stubState = (program: PublicKey) => pda([utf8("verifier")], program);
+/** A program's ProgramData account under the upgradeable loader. */
+export const programData = (program: PublicKey) =>
+  PublicKey.findProgramAddressSync([program.toBytes()], UPGRADEABLE_LOADER)[0];
+
+/** Whether `program` can still be upgraded: its ProgramData names an upgrade authority. */
+export async function upgradeable(program: PublicKey) {
+  const data = (await connection().getAccountInfo(programData(program)))?.data;
+  return data !== undefined && data.length >= 13 && data[12] === 1;
+}
 
 /** Anchor's instruction discriminator: the first 8 bytes of sha256("global:<name>"). */
 export const discriminator = (name: string) => sha256(utf8(`global:${name}`)).slice(0, 8);
@@ -71,14 +80,19 @@ const meta = (pubkey: PublicKey, isWritable: boolean, isSigner = false): Account
 // setup
 // ---------------------------------------------------------------------
 
-/** Sets a stub verifier's relayer key, once. */
-export async function initStub(program: PublicKey, relayer: PublicKey, payer: Keypair) {
+/** Sets a stub verifier's relayer key, once, from the stub's upgrade authority (SOL-1). */
+export async function initStub(program: PublicKey, relayer: PublicKey, authority: Keypair) {
   const ix = new TransactionInstruction({
     programId: program,
-    keys: [meta(stubState(program), true), meta(payer.publicKey, true, true), meta(SystemProgram.programId, false)],
+    keys: [
+      meta(stubState(program), true),
+      meta(authority.publicKey, true, true),
+      meta(SystemProgram.programId, false),
+      meta(programData(program), false),
+    ],
     data: Buffer.from(concat(new Uint8Array([1]), relayer.toBytes())),
   });
-  return sendAndConfirmTransaction(connection(), new Transaction().add(ix), [payer]);
+  return sendAndConfirmTransaction(connection(), new Transaction().add(ix), [authority]);
 }
 
 export interface InitArgs {
@@ -91,10 +105,9 @@ export interface InitArgs {
   nativeFloor: bigint;
 }
 
-/** Initializes the vault, from its upgrade authority. */
+/** Initializes the vault, from its upgrade authority. P1 and P2 must be programs nobody can upgrade (SOL-2). */
 export async function initVault(authority: Keypair, p1: PublicKey, p2: PublicKey, args: InitArgs) {
   const program = vaultProgram();
-  const programData = PublicKey.findProgramAddressSync([program.toBytes()], UPGRADEABLE_LOADER)[0];
   const data = concat(
     discriminator("initialize"),
     u64(args.sourceChainId),
@@ -114,8 +127,10 @@ export async function initVault(authority: Keypair, p1: PublicKey, p2: PublicKey
       meta(p1, false),
       meta(p2, false),
       meta(program, false),
-      meta(programData, false),
+      meta(programData(program), false),
       meta(SystemProgram.programId, false),
+      meta(programData(p1), false),
+      meta(programData(p2), false),
     ],
     data: Buffer.from(data),
   });
@@ -203,11 +218,9 @@ export async function deliverSolana(m: Message, block: bigint, relayer1: Keypair
       system,
     ];
   } else {
+    // A raise, a new freezer or new verifiers then wait a week on the vault before anyone applies them (VLT-2).
     name = "deliver_governance";
-    // Absent optional accounts are the program's own id, as Anchor reads them.
-    const newP1 = m.kind === KIND.VERIFIER_ROTATION ? new PublicKey(body.slice(0, 32)) : vaultProgram();
-    const newP2 = m.kind === KIND.VERIFIER_ROTATION ? new PublicKey(body.slice(32, 64)) : vaultProgram();
-    keys = [payer, meta(configPda(), true), meta(usedPda(m.id), true), meta(newP1, false), meta(newP2, false), system];
+    keys = [payer, meta(configPda(), true), meta(usedPda(m.id), true), system];
   }
   keys.push(
     meta(p1, false),

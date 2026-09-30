@@ -121,8 +121,9 @@ interface IHybridIndexFactory is IIndexFactory {
     ///         cap update and zero for the other kinds.
     function vaultProposalId(uint256 chainId, uint8 kind, bytes32 key) external pure returns (bytes32);
 
-    /// @notice Owner only. Proposes registering `chainId` with `vault` and `stateVerifier`, or, for a registered chain,
-    ///         a new state verifier with the same vault. Executable after LISTING_DELAY.
+    /// @notice Owner only. Proposes registering `chainId` with `vault` and `stateVerifier`, executable after
+    ///         LISTING_DELAY; or, for a registered chain, a new state verifier with the same vault, executable after
+    ///         ROTATION_DELAY, since it decides every index's mints on that chain.
     function proposeChain(uint256 chainId, bytes32 vault, address stateVerifier) external;
 
     /// @notice Owner or guardian. Cancels the pending proposal for `chainId`.

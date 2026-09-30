@@ -67,6 +67,8 @@ interface IBnbStateVerifier is IVaultStateVerifier {
     error NotAscending(uint256 index);
     error TargetOutsideWindow(uint256 target, uint256 firstTarget, uint256 end);
     error TimeOutsideWindow(uint256 time, uint256 epochTime);
+    /// @notice A block, or a set's epoch block, dated `time`, more than MAX_LAG ago.
+    error TooOld(uint256 time);
     error BadBitset();
     error NoQuorum(uint256 voters, uint256 count);
     error BadSignature();
@@ -75,8 +77,13 @@ interface IBnbStateVerifier is IVaultStateVerifier {
     /// @notice Blocks between epoch blocks: 1,000 since Maxwell.
     function EPOCH_LENGTH() external view returns (uint256);
 
-    /// @notice How long after its epoch block's timestamp a set may sign a proven block: 1 hour.
+    /// @notice How long after its epoch block's timestamp a set may sign a proven block: 15 minutes, twice an epoch's
+    ///         length at 0.45 seconds a block.
     function MAX_SPAN() external view returns (uint256);
+
+    /// @notice How old a proven block, or the latest set when it names the next, may be: 1 day. A verifier left further
+    ///         behind stops for good and is replaced through the chain registry.
+    function MAX_LAG() external view returns (uint256);
 
     /// @notice The latest epoch block recorded.
     function latestEpoch() external view returns (uint256);

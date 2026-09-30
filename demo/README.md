@@ -36,13 +36,15 @@ early.
 | 0 | `forge script script/Demo.s.sol --sig "hyperevm0()"` | HyperEVM testnet |
 | 0 | `forge script script/Demo.s.sol --sig "sepolia0b()"`; `npm run cli -- solana-init` | Sepolia, Solana |
 | 2 to 9 | `forge script script/Demo.s.sol --sig "sepolia2()"` | Sepolia |
-| 4 to 11 | `forge script script/Demo.s.sol --sig "sepolia4()"`; `npm run cli -- register` | all three |
+| 4 to 11 | `forge script script/Demo.s.sol --sig "sepolia4()"` from `SENDER_KEY`'s account; `npm run cli -- register` | all three |
 | 4 on | `npm run cli -- relay` in its own terminal, left running | all three |
 | 4 on | `open 10 30`, `deposit <order>`, after 30 minutes `settle <order>` | all three |
 | 5 on | `claim <order>`, then `redeem 4 <HyperEVM address> <Solana address>` | all three |
 
 Each `forge script` also takes `--rpc-url <chain> --broadcast` and your wallet (`--account <keystore>` or `--browser`).
-The broadcaster is the factory's owner on the testnet.
+The broadcaster is the factory's owner on the testnet, except for `sepolia4`, which only executes and creates. Broadcast
+that one from the account of `SENDER_KEY`, imported as a keystore (`cast wallet import sender --private-key ...`),
+because only an index's creator may seed it and `open` sends the first order from `SENDER_KEY`.
 
 ## Setting up
 
@@ -71,7 +73,12 @@ solana program deploy target/deploy/stub_verifier.so --program-id p1.json --url 
 solana program deploy target/deploy/stub_verifier.so --program-id p2.json --url devnet   # P2
 ```
 
-**HyperEVM.** The vault is about 23KB, larger than a small HyperEVM block takes, so it deploys in a big block. The
+Then `npm run cli -- solana-init` sets each stub's relayer key from the deployer, which only a stub's upgrade authority
+may do. The vault takes only verifiers nobody can upgrade, so `solana-init` then stops and prints the command that makes
+each stub final (`solana program set-upgrade-authority <stub> --final`). Run both, then `solana-init` again to
+initialize the vault.
+
+**HyperEVM.** The vault is about 24KB, larger than a small HyperEVM block takes, so it deploys in a big block. The
 deployer must first opt into big blocks, which Hyperliquid does with the `evmUserModify` action (`usingBigBlocks`).
 Check Hyperliquid's documentation for the current way.
 
@@ -82,9 +89,9 @@ Check Hyperliquid's documentation for the current way.
 | Command | What it does |
 |---|---|
 | `solana-vault` | prints the Solana vault's 32-byte id for `sepolia0` |
-| `solana-init` | sets both Solana stubs' relayer keys and initializes the vault (from its upgrade authority) |
+| `solana-init` | sets both Solana stubs' relayer keys; once they are final, initializes the vault (from its upgrade authority) |
 | `register` | registers the index on both vaults with its CREATE2 salt |
-| `relay [--once]` | carries every message the factory and its indexes emit, from Sepolia's finalized head, to its vault; keeps the HyperEVM vault's checkpoint current |
+| `relay [--once]` | carries every message the factory and its indexes emit, from Sepolia's finalized head, to its vault; advances the HyperEVM vault's checkpoint first where a message needs it, and hourly |
 | `open <shares> <minutes>` | mints demo WETH, approves, and opens an order with its deposit deadline |
 | `deposit <order>` | deposits the order's HYPE and SOL from the demo wallets |
 | `settle <order>` | after the deadline: reads both intakes, has the state relayer sign them, settles the order |

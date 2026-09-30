@@ -46,8 +46,9 @@ interface IHybridHubModule is IHybridHubTypes {
     function cancelRebalance() external;
 
     /// @notice Anyone, while the auction is live. Takes it at the current λ: posts the bond, delivers the bought
-    ///         Ethereum components now, and names a recipient per vault chain for the sold vault legs. `maxAmountsIn`,
-    ///         if not empty, bounds each component's delivery.
+    ///         Ethereum components now, and names a recipient per vault chain for the sold vault legs, whose share
+    ///         is booked as the executor's claim where that is zero. `maxAmountsIn`, if not empty, bounds each
+    ///         component's delivery.
     function acceptRebalance(bytes32[] calldata recipients, uint256[] calldata maxAmountsIn) external;
 
     /// @notice Anyone, while a fill is accepted. Settles it with a proof of each vault chain's delivery intake; a chain

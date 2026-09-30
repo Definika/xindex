@@ -7,14 +7,17 @@
 //!
 //! Instructions, by their first byte:
 //! - `0`, verify_event: accounts `[state, relayer]`; succeeds only if `relayer` is the key `state` holds and signed.
-//! - `1`, initialize: accounts `[state, payer, system_program]`, data the relayer's key; once.
+//! - `1`, initialize: accounts `[state, payer, system_program, program_data]`, data the relayer's key; once, and only
+//!   by this program's upgrade authority, so nobody can set the key in front of its deployer. The deployer then makes
+//!   the program immutable, which the vault requires of a verifier.
 //!
 //! `state` is this program's account at the seed `"verifier"`.
 
 use anchor_lang::solana_program::account_info::AccountInfo;
+use anchor_lang::solana_program::bpf_loader_upgradeable;
 use anchor_lang::solana_program::entrypoint::ProgramResult;
 use anchor_lang::solana_program::msg;
-use anchor_lang::solana_program::program::invoke_signed;
+use anchor_lang::solana_program::program::{invoke, invoke_signed};
 use anchor_lang::solana_program::program_error::ProgramError;
 use anchor_lang::solana_program::pubkey::Pubkey;
 use anchor_lang::solana_program::rent::Rent;
@@ -56,26 +59,60 @@ pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Pr
         INITIALIZE => {
             let payer = accounts.get(1).ok_or(ProgramError::NotEnoughAccountKeys)?;
             let system = accounts.get(2).ok_or(ProgramError::NotEnoughAccountKeys)?;
+            let program_data = accounts.get(3).ok_or(ProgramError::NotEnoughAccountKeys)?;
             let relayer: [u8; 32] = rest
                 .try_into()
                 .map_err(|_| ProgramError::InvalidInstructionData)?;
-            if state.lamports() != 0 {
+            check_upgrade_authority(program_id, program_data, payer)?;
+            if state.owner == program_id {
                 return Err(ProgramError::AccountAlreadyInitialized);
             }
+            // Transfer, allocate and assign rather than create: lamports someone sent to the address in advance cannot
+            // block the account's creation.
+            let rent = Rent::default().minimum_balance(32);
+            if state.lamports() < rent {
+                invoke(
+                    &system_instruction::transfer(payer.key, state.key, rent - state.lamports()),
+                    &[payer.clone(), state.clone(), system.clone()],
+                )?;
+            }
+            let seeds: &[&[u8]] = &[STATE_SEED, &[bump]];
             invoke_signed(
-                &system_instruction::create_account(
-                    payer.key,
-                    state.key,
-                    Rent::default().minimum_balance(32),
-                    32,
-                    program_id,
-                ),
-                &[payer.clone(), state.clone(), system.clone()],
-                &[&[STATE_SEED, &[bump]]],
+                &system_instruction::allocate(state.key, 32),
+                &[state.clone(), system.clone()],
+                &[seeds],
+            )?;
+            invoke_signed(
+                &system_instruction::assign(state.key, program_id),
+                &[state.clone(), system.clone()],
+                &[seeds],
             )?;
             state.data.borrow_mut().copy_from_slice(&relayer);
             Ok(())
         }
         _ => Err(ProgramError::InvalidInstructionData),
     }
+}
+
+/// `program_data` is this program's ProgramData account, and `payer` its upgrade authority, signing.
+fn check_upgrade_authority(
+    program_id: &Pubkey,
+    program_data: &AccountInfo,
+    payer: &AccountInfo,
+) -> ProgramResult {
+    let loader = bpf_loader_upgradeable::id();
+    let expected = Pubkey::find_program_address(&[program_id.as_ref()], &loader).0;
+    if *program_data.key != expected || *program_data.owner != loader {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    let data = program_data.data.borrow();
+    // UpgradeableLoaderState::ProgramData: tag 3 (u32), slot (u64), then Option<Pubkey> for the upgrade authority.
+    let authority_is_payer = data.len() >= 45
+        && data[..4] == [3, 0, 0, 0]
+        && data[12] == 1
+        && data[13..45] == payer.key.as_ref()[..];
+    if !authority_is_payer || !payer.is_signer {
+        return Err(ProgramError::MissingRequiredSignature);
+    }
+    Ok(())
 }

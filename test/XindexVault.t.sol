@@ -109,6 +109,14 @@ abstract contract VaultTestBase is Test {
         lastDelivered = _proof(emitter, payload);
     }
 
+    /// @dev Delivers the factory's governance message that loosens a rule, then applies it once its delay has passed.
+    function _govern(uint8 kind, bytes memory body) internal {
+        uint256 readyAt = block.timestamp + vault.GOVERNANCE_DELAY();
+        _deliver(factory, _payload(kind, factory, body));
+        vm.warp(readyAt);
+        vault.applyChange(kind, body, readyAt);
+    }
+
     function _deposit(address from, address index, uint256 intakeId, uint256 amount) internal {
         vm.deal(from, from.balance + amount);
         vm.prank(from);
@@ -628,9 +636,9 @@ contract XindexVaultTest is VaultTestBase {
 
     /// @dev A migration never moves more than the old index's balance: the rest stays owed, as a burn's would.
     function test_migrate_neverMoreThanTheBalance() public {
+        _govern(VaultMessages.CAP_UPDATE, abi.encode(bytes32(0), CAP, 100 ether));
         _fund(index, 10 ether);
         address next = _registered(keccak256("index-2"));
-        _deliver(factory, _payload(VaultMessages.CAP_UPDATE, factory, abi.encode(bytes32(0), CAP, 100 ether)));
         bytes memory payload = _payload(VaultMessages.MIGRATE, index, abi.encode(next, bytes32(0), 30 ether));
         _deliver(index, payload);
         assertEq(vault.balance(index, address(0)), 0);
@@ -652,6 +660,9 @@ contract XindexVaultTest is VaultTestBase {
         vm.expectRevert(abi.encodeWithSelector(IXindexVault.BothProofsRequired.selector, VaultMessages.CAP_UPDATE));
         vault.deliver("", _proof(factory, raiseFloor));
         _deliver(factory, raiseCap);
+        assertEq(vault.cap(address(0)), CAP / 2, "a raise waits");
+        vm.warp(block.timestamp + vault.GOVERNANCE_DELAY());
+        vault.applyChange(VaultMessages.CAP_UPDATE, abi.encode(bytes32(0), CAP, FLOOR / 2), block.timestamp);
         assertEq(vault.cap(address(0)), CAP);
     }
 
@@ -707,35 +718,154 @@ contract XindexVaultTest is VaultTestBase {
 
     function test_governance_freezerAndVerifiers() public {
         address newFreezer = makeAddr("new freezer");
-        _deliver(factory, _payload(VaultMessages.FREEZER_CHANGE, factory, abi.encode(_b32(newFreezer))));
+        _govern(VaultMessages.FREEZER_CHANGE, abi.encode(_b32(newFreezer)));
         assertEq(vault.freezer(), newFreezer);
-        vm.expectRevert(IXindexVault.ZeroAddress.selector);
         _deliver(factory, _payload(VaultMessages.FREEZER_CHANGE, factory, abi.encode(bytes32(0))));
+        vm.warp(block.timestamp + vault.GOVERNANCE_DELAY());
+        vm.expectRevert(IXindexVault.ZeroAddress.selector);
+        vault.applyChange(VaultMessages.FREEZER_CHANGE, abi.encode(bytes32(0)), block.timestamp);
         vm.expectRevert(abi.encodeWithSelector(IXindexVault.BothProofsRequired.selector, VaultMessages.FREEZER_CHANGE));
         vault.deliver(_proof(factory, _payload(VaultMessages.FREEZER_CHANGE, factory, abi.encode(_b32(alice)))), "");
 
         MockEventVerifier n1 = new MockEventVerifier();
         MockEventVerifier n2 = new MockEventVerifier();
-        _deliver(
-            factory,
-            _payload(VaultMessages.VERIFIER_ROTATION, factory, abi.encode(_b32(address(n1)), _b32(address(n2))))
-        );
+        _govern(VaultMessages.VERIFIER_ROTATION, abi.encode(_b32(address(n1)), _b32(address(n2))));
         assertEq(address(vault.p1()), address(n1));
         assertEq(address(vault.p2()), address(n2));
-        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NotAContract.selector, alice));
-        _deliver(
-            factory, _payload(VaultMessages.VERIFIER_ROTATION, factory, abi.encode(_b32(alice), _b32(address(n2))))
+        _checkRotationRefused(
+            abi.encode(_b32(alice), _b32(address(n2))),
+            abi.encodeWithSelector(IXindexVault.NotAContract.selector, alice)
         );
-        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NotAContract.selector, alice));
-        _deliver(
-            factory, _payload(VaultMessages.VERIFIER_ROTATION, factory, abi.encode(_b32(address(n1)), _b32(alice)))
+        _checkRotationRefused(
+            abi.encode(_b32(address(n1)), _b32(alice)),
+            abi.encodeWithSelector(IXindexVault.NotAContract.selector, alice)
         );
         // One verifier twice would turn "P1 and P2" into a single proof.
-        vm.expectRevert(IXindexVault.VerifiersNotDistinct.selector);
-        _deliver(
-            factory,
-            _payload(VaultMessages.VERIFIER_ROTATION, factory, abi.encode(_b32(address(n2)), _b32(address(n2))))
+        _checkRotationRefused(
+            abi.encode(_b32(address(n2)), _b32(address(n2))),
+            abi.encodeWithSelector(IXindexVault.VerifiersNotDistinct.selector)
         );
+    }
+
+    function _checkRotationRefused(bytes memory body, bytes memory err) internal {
+        uint256 readyAt = block.timestamp + vault.GOVERNANCE_DELAY();
+        _deliver(factory, _payload(VaultMessages.VERIFIER_ROTATION, factory, body));
+        vm.warp(readyAt);
+        vm.expectRevert(err);
+        vault.applyChange(VaultMessages.VERIFIER_ROTATION, body, readyAt);
+    }
+
+    /// @dev VLT-2: a raised floor, a new freezer and new verifiers wait a week on the vault, however their proofs were
+    ///      obtained. The freezer may drop a raise or a rotation, never its own replacement; a freeze holds every change
+    ///      but that one.
+    function test_VLT2_aLooseningWaitsAndTheFreezerCanStopIt() public {
+        _fund(index, 100 ether);
+        bytes memory raise = abi.encode(bytes32(0), CAP, 100 ether);
+        bytes32 capKey = bytes32(uint256(VaultMessages.CAP_UPDATE) << 160);
+        uint256 readyAt = block.timestamp + 7 days;
+        vm.expectEmit(address(vault));
+        emit IXindexVault.ChangeQueued(capKey, VaultMessages.CAP_UPDATE, raise, readyAt);
+        _deliver(factory, _payload(VaultMessages.CAP_UPDATE, factory, raise));
+        assertEq(vault.outflowFloor(address(0)), FLOOR, "the floor has not moved");
+        assertEq(vault.pendingChange(capKey), keccak256(abi.encode(raise, readyAt)));
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.ChangeNotReady.selector, capKey, readyAt));
+        vault.applyChange(VaultMessages.CAP_UPDATE, raise, readyAt);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NoPendingChange.selector, capKey));
+        vault.applyChange(VaultMessages.CAP_UPDATE, raise, readyAt + 1);
+        // A burn in the meantime still sees the old floor.
+        _deliver(index, _burnPayload(index, 50 ether, bob));
+        assertEq(bob.balance, 4 ether, "4% of 100, not the raised floor");
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NotFreezer.selector, alice));
+        vault.cancelChange(capKey);
+        vm.expectEmit(address(vault));
+        emit IXindexVault.ChangeCancelled(capKey);
+        vm.prank(freezerKey);
+        vault.cancelChange(capKey);
+        vm.warp(readyAt);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NoPendingChange.selector, capKey));
+        vault.applyChange(VaultMessages.CAP_UPDATE, raise, readyAt);
+        vm.prank(freezerKey);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NoPendingChange.selector, capKey));
+        vault.cancelChange(capKey);
+
+        // Sent again, it waits again, and a freeze holds it.
+        readyAt = block.timestamp + 7 days;
+        _deliver(factory, _payload(VaultMessages.CAP_UPDATE, factory, raise));
+        bytes32 freezerKeyId = bytes32(uint256(VaultMessages.FREEZER_CHANGE) << 160);
+        address next = makeAddr("next freezer");
+        _deliver(factory, _payload(VaultMessages.FREEZER_CHANGE, factory, abi.encode(_b32(next))));
+        vm.prank(freezerKey);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NotFreezer.selector, freezerKey));
+        vault.cancelChange(freezerKeyId);
+        vm.warp(readyAt - 1 days);
+        vm.prank(freezerKey);
+        vault.freeze();
+        vm.warp(readyAt);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.VaultFrozen.selector, vault.frozenUntil()));
+        vault.applyChange(VaultMessages.CAP_UPDATE, raise, readyAt);
+        // The freezer's replacement is not held: a freezer freezing again and again cannot keep itself in place.
+        vm.expectEmit(address(vault));
+        emit IXindexVault.ChangeApplied(freezerKeyId);
+        vault.applyChange(VaultMessages.FREEZER_CHANGE, abi.encode(_b32(next)), readyAt);
+        assertEq(vault.freezer(), next);
+        vm.warp(vault.frozenUntil());
+        vault.applyChange(VaultMessages.CAP_UPDATE, raise, readyAt);
+        assertEq(vault.outflowFloor(address(0)), 100 ether);
+        assertEq(vault.pendingChange(capKey), bytes32(0));
+
+        // A newer lowering drops a raise still waiting under its key.
+        bytes memory raiseAgain = abi.encode(bytes32(0), CAP, 200 ether);
+        readyAt = block.timestamp + 7 days;
+        _deliver(factory, _payload(VaultMessages.CAP_UPDATE, factory, raiseAgain));
+        _deliver(factory, _payload(VaultMessages.CAP_UPDATE, factory, abi.encode(bytes32(0), CAP / 2, 50 ether)));
+        assertEq(vault.pendingChange(capKey), bytes32(0));
+        vm.warp(readyAt);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NoPendingChange.selector, capKey));
+        vault.applyChange(VaultMessages.CAP_UPDATE, raiseAgain, readyAt);
+        assertEq(vault.outflowFloor(address(0)), 50 ether);
+    }
+
+    /// @dev VLT-4: a governance message older than the last of its kind never runs, so a late delivery cannot undo a
+    ///      newer change. Only a message on both proofs moves the mark: one proof, even a forged one, cannot lock the
+    ///      factory out with a huge nonce, and can only tighten.
+    function test_VLT4_anOlderGovernanceMessageCannotUndoANewerOne() public {
+        bytes memory older = _payload(VaultMessages.CAP_UPDATE, factory, abi.encode(bytes32(0), CAP / 4, FLOOR));
+        bytes memory otherToken = _payload(VaultMessages.CAP_UPDATE, factory, abi.encode(_b32(alice), 0, 0));
+        bytes memory newer = _payload(VaultMessages.CAP_UPDATE, factory, abi.encode(bytes32(0), CAP / 2, FLOOR));
+        bytes32 capKey = bytes32(uint256(VaultMessages.CAP_UPDATE) << 160);
+        _deliver(factory, newer);
+        assertEq(vault.governanceNonce(capKey), nonce);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.StaleGovernance.selector, nonce - 2, nonce));
+        _deliver(factory, older);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.StaleGovernance.selector, nonce - 2, nonce));
+        vault.deliver(_proof(factory, older), "");
+        assertEq(vault.cap(address(0)), CAP / 2);
+        // Per token: another token's mark is its own, so its message, sent before the newer one, still runs.
+        _deliver(factory, otherToken);
+        assertEq(vault.governanceNonce(bytes32(uint256(VaultMessages.CAP_UPDATE) << 160 | uint160(alice))), nonce - 1);
+
+        // One proof, a nonce far ahead: it may lower the cap, but the mark stays where both proofs put it.
+        VaultMessages.Message memory forged = VaultMessages.Message({
+            sourceChainId: 1,
+            kind: VaultMessages.CAP_UPDATE,
+            destChainId: block.chainid,
+            vault: _b32(address(vault)),
+            index: factory,
+            nonce: type(uint64).max,
+            body: abi.encode(bytes32(0), CAP / 8, FLOOR)
+        });
+        uint256 mark = vault.governanceNonce(capKey);
+        vault.deliver(_proof(factory, VaultMessages.encode(forged)), "");
+        assertEq(vault.cap(address(0)), CAP / 8);
+        assertEq(vault.governanceNonce(capKey), mark, "one proof moves no mark");
+        _govern(VaultMessages.CAP_UPDATE, abi.encode(bytes32(0), CAP, FLOOR));
+        assertEq(vault.cap(address(0)), CAP, "the factory's next message still runs");
+
+        // A freeze is never stale.
+        _deliver(factory, _payload(VaultMessages.FREEZE, factory, ""));
+        assertGt(vault.frozenUntil(), block.timestamp);
     }
 
     // ---------------------------------------------------------------------
@@ -1070,6 +1200,72 @@ contract XindexVaultTest is VaultTestBase {
         assertEq(bob.balance, 1 ether);
     }
 
+    /// @dev VLT-1: a snapshot claim reads a component only inside the hub's components array. Past its end lies other
+    ///      storage a holder may be able to fill, with a token and "units" of its choosing.
+    function test_VLT1_theComponentMustLieInsideTheArray() public {
+        _fund(index, 100 ether);
+        (address holder, uint256 key) = makeAddrAndKey("holder");
+        _hubState(index, holder, 2e18, 1.4e18, 0, address(0));
+        // Storage past the array's end, filled as if a component: the vault's coin at a far larger unit count.
+        uint256 past = 7;
+        vm.store(
+            index,
+            bytes32(uint256(keccak256(abi.encode(uint256(0)))) + past),
+            bytes32(uint256(1e24) << 160 | uint160(_nativeId()))
+        );
+        _snapshot();
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.WrongComponent.selector, past));
+        vault.claimSnapshot(index, holder, bob, past, "", _sign(key, index, holder, bob));
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.WrongComponent.selector, 2));
+        vault.claimSnapshot(index, holder, bob, 2, "", _sign(key, index, holder, bob));
+        vault.claimSnapshot(index, holder, bob, 1, "", _sign(key, index, holder, bob));
+        assertEq(bob.balance, 2.8 ether);
+    }
+
+    /// @dev VLT-I3: a recovery address that can be no address here counts as none, so its holder still claims by
+    ///      signature.
+    function test_VLTI3_aMalformedRecoveryAddressCountsAsNone() public {
+        _fund(index, 100 ether);
+        (address holder, uint256 key) = makeAddrAndKey("holder");
+        _hubState(index, holder, 2e18, 1.4e18, 0, address(0));
+        bytes32 slot = keccak256(abi.encode(block.chainid, keccak256(abi.encode(holder, uint256(59)))));
+        vm.store(index, slot, bytes32(type(uint256).max));
+        _snapshot();
+        vault.claimSnapshot(index, holder, bob, 1, "", _sign(key, index, holder, bob));
+        assertEq(bob.balance, 2.8 ether);
+    }
+
+    /// @dev VLT-3: a message that moves coins or loosens a rule runs only from a block the checkpoint covers, so the
+    ///      snapshot at that checkpoint never pays a holder whose burn the vault paid too. A freeze and a lowered cap
+    ///      need no checkpoint.
+    function test_VLT3_aMessageAfterTheCheckpointWaitsForIt() public {
+        _fund(index, 10 ether);
+        _advance(100);
+        v1.setEventBlock(101);
+        v2.setEventBlock(101);
+        bytes memory payload = _burnPayload(index, 1 ether, bob);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NotCheckpointed.selector, 101, 100));
+        _deliver(index, payload);
+        _deliver(factory, _payload(VaultMessages.CAP_UPDATE, factory, abi.encode(bytes32(0), CAP / 2, FLOOR)));
+        assertEq(vault.cap(address(0)), CAP / 2);
+        _deliver(factory, _payload(VaultMessages.FREEZE, factory, ""));
+        vm.warp(vault.frozenUntil());
+        _advance(101);
+        _deliver(index, payload);
+        assertEq(bob.balance, 1 ether);
+    }
+
+    /// @dev VLT-5: after the snapshot a proven freeze cannot hold the exit off, as the freezer's own cannot.
+    function test_VLT5_noFreezeAfterTheSnapshot() public {
+        _fund(index, 10 ether);
+        _snapshot();
+        vm.expectRevert(IXindexVault.SnapshotTaken.selector);
+        _deliver(factory, _payload(VaultMessages.FREEZE, factory, ""));
+        vm.expectRevert(IXindexVault.SnapshotTaken.selector);
+        vault.deliver(_proof(factory, _payload(VaultMessages.FREEZE, factory, "")), "");
+        assertEq(vault.frozenUntil(), 0);
+    }
+
     /// @dev Writes the hub's storage the snapshot reads, at the index's address: shares, the component, the claim, the
     ///      recovery address.
     function _hubState(address idx, address holder, uint256 shares, uint256 units, uint256 claim, address recovery)
@@ -1078,6 +1274,7 @@ contract XindexVaultTest is VaultTestBase {
         bytes32 hubShares = 0x52c63247e1f47db19d5ce0460030c497f067ca4cebf71ba98eeadabe20bace00;
         address token = _nativeId();
         vm.store(idx, keccak256(abi.encode(holder, hubShares)), bytes32(shares));
+        vm.store(idx, bytes32(0), bytes32(uint256(2))); // two components; the vault's coin is the second
         vm.store(idx, bytes32(uint256(keccak256(abi.encode(uint256(0)))) + 1), bytes32(units << 160 | uint160(token)));
         vm.store(idx, keccak256(abi.encode(token, keccak256(abi.encode(holder, uint256(11))))), bytes32(claim));
         vm.store(

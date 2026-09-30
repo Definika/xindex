@@ -38,7 +38,8 @@ interface IHybridHub is IHybridHubTypes, IERC20, IERC20Permit {
     function SETTLE_GRACE() external view returns (uint256);
     /// @notice The most of the supply that may become claimable in any 24 hours: 4%.
     function MINT_CAP() external view returns (uint256);
-    /// @notice How long a contradiction freezes this index's mints on a chain: 14 days.
+    /// @notice How long a freeze of a chain lasts: 14 days. The factory keeps every freeze, so one holds every index's
+    ///         mints on that chain, whoever began it.
     function FREEZE_DURATION() external view returns (uint256);
 
     /// @notice The factory only, once. `placements` is per component; an Ethereum component's is all zero.
@@ -93,7 +94,8 @@ interface IHybridHub is IHybridHubTypes, IERC20, IERC20Permit {
     function intakeIdOf(uint256 orderId) external view returns (uint256);
     function previewOrder(uint256 shares) external view returns (uint256[] memory amounts);
     function previewRedeem(uint256 shares) external view returns (uint256[] memory amounts);
-    /// @notice Shares that could become claimable now without breaking MINT_CAP.
+    /// @notice Shares that could become claimable now without breaking MINT_CAP, by an order or a migration: none on an
+    ///         empty index, which only its creator may seed.
     function mintRoom() external view returns (uint256);
     /// @notice When the factory's latest freeze of `chainId` began and when it ends, whether the owner, the guardian or an
     ///         index's evidence froze it: an order settled before `start` needs re-confirming before it can be claimed.

@@ -31,11 +31,13 @@ pub struct Release<'info> {
 /// Anyone, while not frozen: pays what the speed limit now allows of an owed burn.
 pub fn handle_release(ctx: Context<Release>, _index: [u8; 20], _id: [u8; 32]) -> Result<()> {
     let accounts = ctx.accounts;
+    let min_pay = vault::min_payout(&accounts.recipient.to_account_info())?;
     let pay = vault::pay_owed(
         &accounts.config,
         &mut accounts.index_state,
         &mut accounts.owed,
         true,
+        min_pay,
     )?;
     let config = &mut accounts.config;
     config.held -= pay;
@@ -83,6 +85,7 @@ pub fn handle_release_migration(
         &mut accounts.index_state,
         &mut accounts.owed,
         true,
+        0,
     )?;
     credit_migration(
         &accounts.config,

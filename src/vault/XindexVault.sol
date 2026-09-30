@@ -35,6 +35,8 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
     uint256 public constant MAX_RECOVERY_VETOES = 2;
     /// @inheritdoc IXindexVault
     uint256 public constant SNAPSHOT_EXIT_DELAY = 180 days;
+    /// @inheritdoc IXindexVault
+    uint256 public constant GOVERNANCE_DELAY = 7 days;
 
     uint256 private constant WAD = 1e18;
     /// @dev The current hour and the 24 before it: every real 24-hour span lies inside them.
@@ -55,6 +57,8 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
     /// @dev The factory's id of a vault token on Ethereum: `vaultTokenId(chainId, tokenId)`.
     bytes32 private constant VAULT_TOKEN_DOMAIN = keccak256("xindex.v4.vault-token");
     uint256 private constant UNITS_SHIFT = 160;
+    /// @dev The key of a waiting freezer change, which the freezer may not cancel and a freeze does not hold.
+    bytes32 private constant FREEZER_KEY = bytes32(uint256(VaultMessages.FREEZER_CHANGE) << 160);
     bytes32 private constant EIP712_DOMAIN_TYPEHASH =
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
     bytes32 private constant SNAPSHOT_CLAIM_TYPEHASH =
@@ -132,6 +136,10 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
     uint256 private _vetoStall;
     /// @inheritdoc IXindexVault
     mapping(address index => mapping(address holder => bool)) public snapshotClaimed;
+    /// @inheritdoc IXindexVault
+    mapping(bytes32 key => uint256) public governanceNonce;
+    /// @inheritdoc IXindexVault
+    mapping(bytes32 key => bytes32) public pendingChange;
 
     /// @param config The vault's settings: see {Config}.
     constructor(Config memory config) {
@@ -224,14 +232,20 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         if (governance ? (emitter != FACTORY || m.index != FACTORY) : emitter != m.index) revert WrongEmitter(emitter);
         // Any Ethereum contract can emit a VaultMessage naming itself; only the factory's clones of the hub are indexes.
         if (!governance && !isIndex[m.index]) revert NotAnIndex(m.index);
-        if (!both && _needsBoth(m)) revert BothProofsRequired(m.kind);
+        bool loosening = _needsBoth(m);
+        if (!both && loosening) revert BothProofsRequired(m.kind);
+        // A message that moves coins or loosens a rule runs only from a block the vault's checkpoint covers, so a
+        // snapshot at that checkpoint never pays twice what such a message already paid (VLT-3).
+        if (loosening && blockNumber > _checkpoint.blockNumber) {
+            revert NotCheckpointed(blockNumber, _checkpoint.blockNumber);
+        }
         if (used[id]) revert AlreadyDelivered(id);
         used[id] = true;
         lastMessage = id;
         emit MessageDelivered(id, m.kind, m.index);
 
         if (m.kind < VaultMessages.CAP_UPDATE) _indexMessage(m, id);
-        else _governanceMessage(m);
+        else _governanceMessage(m, loosening, both);
     }
 
     function _indexMessage(VaultMessages.Message memory m, bytes32 id) private {
@@ -246,22 +260,75 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         }
     }
 
-    function _governanceMessage(VaultMessages.Message memory m) private {
-        if (m.kind == VaultMessages.CAP_UPDATE) {
-            (bytes32 token, uint256 newCap, uint256 newFloor) = abi.decode(m.body, (bytes32, uint256, uint256));
+    /// @dev A freeze runs at once, always, but not after a snapshot: nothing could then replace the freezer, and nothing
+    ///      may hold the exit off (VLT-5). Every other governance message must be newer than the last of its key taken on
+    ///      both proofs, and only one taken on both proofs moves that mark, so one broken proof system cannot lock the
+    ///      factory out with a forged nonce (VLT-4). A message that loosens nothing applies at once. One that loosens
+    ///      waits GOVERNANCE_DELAY here, on the vault, where the freezer can see it and stop it however its proofs were
+    ///      obtained (VLT-2).
+    function _governanceMessage(VaultMessages.Message memory m, bool loosening, bool both) private {
+        if (m.kind == VaultMessages.FREEZE) {
+            _checkNoSnapshot();
+            _freeze(FACTORY);
+            return;
+        }
+        bytes32 key = _changeKey(m.kind, m.body);
+        uint256 last = governanceNonce[key];
+        if (m.nonce <= last) revert StaleGovernance(m.nonce, last);
+        if (both) governanceNonce[key] = m.nonce;
+        // Newer than whatever waits under its key, so it replaces that.
+        if (loosening) {
+            uint256 readyAt = block.timestamp + GOVERNANCE_DELAY;
+            pendingChange[key] = keccak256(abi.encode(m.body, readyAt));
+            emit ChangeQueued(key, m.kind, m.body, readyAt);
+        } else {
+            delete pendingChange[key];
+            _applyChange(m.kind, m.body);
+        }
+    }
+
+    /// @dev One mark and one waiting change per kind, and per token for a cap: the kind above the token's address.
+    function _changeKey(uint8 kind, bytes memory body) private pure returns (bytes32) {
+        address token = kind == VaultMessages.CAP_UPDATE ? _toAddress(abi.decode(body, (bytes32))) : address(0);
+        return bytes32(uint256(kind) << 160 | uint160(token));
+    }
+
+    /// @inheritdoc IXindexVault
+    function applyChange(uint8 kind, bytes calldata body, uint256 readyAt) external {
+        bytes32 key = _changeKey(kind, body);
+        if (pendingChange[key] != keccak256(abi.encode(body, readyAt))) revert NoPendingChange(key);
+        if (block.timestamp < readyAt) revert ChangeNotReady(key, readyAt);
+        // A freeze in force holds every change but the freezer's own replacement: a freezer that froze again and again
+        // must not be able to keep itself in place.
+        if (key != FREEZER_KEY) _checkNotFrozen();
+        delete pendingChange[key];
+        emit ChangeApplied(key);
+        _applyChange(kind, body);
+    }
+
+    /// @inheritdoc IXindexVault
+    function cancelChange(bytes32 key) external {
+        // The freezer cannot block its own replacement.
+        if (msg.sender != freezer || key == FREEZER_KEY) revert NotFreezer(msg.sender);
+        if (pendingChange[key] == bytes32(0)) revert NoPendingChange(key);
+        delete pendingChange[key];
+        emit ChangeCancelled(key);
+    }
+
+    function _applyChange(uint8 kind, bytes memory body) private {
+        if (kind == VaultMessages.CAP_UPDATE) {
+            (bytes32 token, uint256 newCap, uint256 newFloor) = abi.decode(body, (bytes32, uint256, uint256));
             address t = _toAddress(token);
             cap[t] = newCap;
             outflowFloor[t] = newFloor;
             emit CapSet(t, newCap, newFloor);
-        } else if (m.kind == VaultMessages.FREEZE) {
-            _freeze(FACTORY);
-        } else if (m.kind == VaultMessages.FREEZER_CHANGE) {
-            address newFreezer = _toAddress(abi.decode(m.body, (bytes32)));
+        } else if (kind == VaultMessages.FREEZER_CHANGE) {
+            address newFreezer = _toAddress(abi.decode(body, (bytes32)));
             if (newFreezer == address(0)) revert ZeroAddress();
             freezer = newFreezer;
             emit FreezerChanged(newFreezer);
         } else {
-            (bytes32 a, bytes32 b) = abi.decode(m.body, (bytes32, bytes32));
+            (bytes32 a, bytes32 b) = abi.decode(body, (bytes32, bytes32));
             (address newP1, address newP2) = (_toAddress(a), _toAddress(b));
             _checkPair(newP1, newP2);
             p1 = IEthereumEventVerifier(newP1);
@@ -623,16 +690,20 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
     {
         bytes32 root = _snapshotRoot();
         address token = _ethereumId(NATIVE);
-        bytes32[] memory slots = new bytes32[](4);
+        bytes32[] memory slots = new bytes32[](5);
         slots[0] = keccak256(abi.encode(holder, HUB_SHARES));
         slots[1] = bytes32(uint256(keccak256(abi.encode(HUB_COMPONENTS_SLOT))) + component);
         slots[2] = keccak256(abi.encode(token, keccak256(abi.encode(holder, HUB_CLAIMS_SLOT))));
         slots[3] = keccak256(abi.encode(block.chainid, keccak256(abi.encode(holder, HUB_RECOVERY_SLOT))));
+        slots[4] = bytes32(HUB_COMPONENTS_SLOT);
         bytes32[] memory v = STATE_READER.readSlots(root, index, slots, proof);
-        if (address(uint160(uint256(v[1]))) != token) revert WrongComponent(component);
+        // Inside the components array, whose length the slot itself holds: past it lies any other storage a holder
+        // could fill, an allowance included, with whatever "units" it likes (VLT-1).
+        if (component >= uint256(v[4]) || address(uint160(uint256(v[1]))) != token) revert WrongComponent(component);
         amount = uint256(v[0]) * (uint256(v[1]) >> UNITS_SHIFT) / WAD + uint256(v[2]);
         if (amount == 0) revert ZeroAmount();
-        registered = _toAddress(v[3]);
+        // A value that is no address here counts as none, so a holder that mistyped one can still sign (VLT-I3).
+        registered = uint256(v[3]) >> 160 == 0 ? address(uint160(uint256(v[3]))) : address(0);
     }
 
     /// @inheritdoc IXindexVault

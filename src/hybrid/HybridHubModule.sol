@@ -317,17 +317,30 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
         // forge-lint: disable-next-line(reentrancy-events)
         emit Rebalanced(f.nonce, f.executor, _fillUnits, out, delivered);
 
-        for (uint256 i = 0; i < n; ++i) {
-            uint256 slot = _slotOf[i];
-            if (out[i] == 0 || slot == 0) continue;
-            _sendBurn(i, out[i], _fillRecipients[slot - 1]);
-        }
+        _sendSold(f.executor, out);
         _settledIntakes[intakeId] = true;
         _sendAll(VaultMessages.INTAKE_SETTLED, abi.encode(intakeId));
         for (uint256 i = 0; i < n; ++i) {
             if (out[i] != 0 && _slotOf[i] == 0) IERC20(_components[i].token).safeTransfer(f.executor, out[i]);
         }
-        _checkBacking(supply);
+        // Only a leg that sends or receives is read, so a kept component whose token no longer answers cannot block
+        // the settlement (DA-14, RT-01, MOD-3).
+        for (uint256 i = 0; i < n; ++i) {
+            if (out[i] != 0 || need[i] != 0) _checkLeg(supply, i);
+        }
+    }
+
+    /// @dev Burns each sold vault leg toward the fill's recipient on its chain, or books it as the executor's claim where
+    ///      that is zero, as `redeem` does, since a vault can pay no burn to nobody (MOD-4).
+    function _sendSold(address executor, uint256[] memory out) private {
+        uint256 n = out.length;
+        for (uint256 i = 0; i < n; ++i) {
+            uint256 slot = _slotOf[i];
+            if (out[i] == 0 || slot == 0) continue;
+            bytes32 recipient = _fillRecipients[slot - 1];
+            if (recipient == bytes32(0)) _bookClaim(executor, _components[i].token, out[i]);
+            else _sendBurn(i, out[i], recipient);
+        }
     }
 
     /// @dev Each component's payout and needed delivery for the live fill at `supply`: the change in required backing,
@@ -431,7 +444,9 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
         if (block.timestamp >= f.bondRelease) revert NotYet(f.bondRelease);
         uint256 j = _slotIndex(chainId);
         uint256 intakeId = _fillIntakeIdOf(f);
-        bytes32 proven = _provenIntake(j, intakeId, 0, proof.proof);
+        // From after the delivery deadline: an older state is honestly short, and state verifiers prove old blocks
+        // (MOD-1).
+        bytes32 proven = _provenIntake(j, intakeId, f.deadline, proof.proof);
         if (!_isForged(j, intakeId, proven, state, proof)) revert NotAContradiction(chainId);
 
         delete _fill;
@@ -443,19 +458,25 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
         _freezeOnEvidence(chainId, false);
     }
 
-    /// @dev A delivery intake after settlement is honestly open or settled, with at least what the fill recorded, for
-    ///      deliveries only grow and the settle message moves them whole. Anything else, an intake the vault never had
-    ///      (an empty slot) included, shows a delivery was forged.
+    /// @dev A delivery intake after its deadline is honestly open or settled, with at least what the fill recorded, for
+    ///      deliveries only grow and the settle message moves them whole. Anything else shows a delivery was forged,
+    ///      an intake the vault never had (an empty slot) included, but only on a chain where the fill recorded one: a
+    ///      chain it bought nothing on honestly has none (MOD-1).
     function _isForged(uint256 j, uint256 intakeId, bytes32 proven, uint8 state, ChainProof calldata p)
         private
         view
         returns (bool)
     {
-        if (proven == bytes32(0)) return true;
+        uint256 n = _components.length;
+        if (proven == bytes32(0)) {
+            for (uint256 i = 0; i < n; ++i) {
+                if (_slotOf[i] == j + 1 && _fillDelivered[i] != 0) return true;
+            }
+            return false;
+        }
         bytes32 digest = _intakeDigest(j, intakeId, state, p.tokens, p.totals);
         if (proven != digest) revert DigestMismatch(_chains[j].chainId, proven, digest);
         if (state != INTAKE_OPEN && state != INTAKE_SETTLED) return true;
-        uint256 n = _components.length;
         for (uint256 i = 0; i < n; ++i) {
             if (_slotOf[i] == j + 1 && _totalOf(i, p.tokens, p.totals) < _fillDelivered[i]) return true;
         }

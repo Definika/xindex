@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IHybridHubTypes} from "../interfaces/IHybridHubTypes.sol";
 import {IHybridIndexFactory} from "../interfaces/IHybridIndexFactory.sol";
 import {IVaultStateVerifier} from "../interfaces/IVaultStateVerifier.sol";
@@ -26,6 +27,8 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
     /// @dev The mint cap counts the current hour and the 24 before it, so it holds over any real 24 hours.
     uint256 internal constant BUCKETS = 25;
     uint256 internal constant HOUR = 1 hours;
+    /// @dev What may become claimable in any 24 hours, as a share of the supply.
+    uint256 internal constant MINT_LIMIT = 0.04e18;
     uint256 internal constant DEADLINE_SHIFT = 192;
     uint256 internal constant ORDER_ID_MASK = (1 << DEADLINE_SHIFT) - 1;
     /// @dev Set in a rebalance fill's delivery intake id, never in an order's, whose ids stay far below it.
@@ -263,6 +266,36 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
         return values[0];
     }
 
+    /// @dev What may still become claimable this hour at `supply`: MINT_LIMIT of it, less what did over the last 25
+    ///      hourly buckets. An empty index allows nothing.
+    function _mintRoom(uint256 supply) internal view returns (uint256) {
+        uint256 hour = block.timestamp / HOUR;
+        uint256 recent = 0;
+        for (uint256 i = 0; i < BUCKETS; ++i) {
+            Bucket memory b = _minted[i];
+            if (b.hour + BUCKETS > hour) recent += b.amount;
+        }
+        uint256 limit = supply * MINT_LIMIT / WAD;
+        return limit > recent ? limit - recent : 0;
+    }
+
+    /// @dev Records `shares` as claimable in the current hour, within the mint room. Every share that rests on a vault
+    ///      proof enters at most MINT_LIMIT a day, a migration's included, since the old index's book rests on proofs
+    ///      too (MOD-2). The one exception is the seed: on an empty index with nothing locked, its creator, and only its
+    ///      creator, may mint any amount, by an order the vaults' quantity caps bound or by migrating its own shares. A
+    ///      stranger's seed could be dust, which the cap would never let grow (HUB-2).
+    function _useMintRoom(uint256 shares, uint256 supply, address minter) internal {
+        if (supply != 0 || _lockedShares != 0 || minter != IHybridIndexFactory(_factory()).creatorOf(address(this))) {
+            uint256 room = _mintRoom(supply);
+            if (shares > room) revert MintCapExceeded(shares, room);
+        }
+        uint256 hour = block.timestamp / HOUR;
+        Bucket storage b = _minted[hour % BUCKETS];
+        uint256 total = b.hour == hour ? b.amount + shares : shares;
+        b.hour = SafeCast.toUint64(hour);
+        b.amount = SafeCast.toUint192(total);
+    }
+
     /// @dev The digest the `j`-th chain's vault keeps for an intake in `state` with these deposits.
     function _intakeDigest(
         uint256 j,
@@ -378,21 +411,26 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
         IHybridIndexFactory(_factory()).freezeOnEvidence(chainId, payouts);
     }
 
-    /// @dev The invariants at `supply`, for every component: Ethereum balances cover the backing, claims and escrow,
-    ///      and the book of each vault covers its backing and claims.
+    /// @dev The invariants at `supply`, for every component.
     function _checkBacking(uint256 supply) internal view {
         uint256 n = _components.length;
         for (uint256 i = 0; i < n; ++i) {
-            address token = _components[i].token;
-            uint256 required = _backing(supply, _components[i].units, Math.Rounding.Floor) + _totalClaims[token];
-            uint256 held;
-            if (_slotOf[i] == 0) {
-                required += _escrowed[token];
-                held = IERC20(token).balanceOf(address(this));
-            } else {
-                held = _vaultBacking[token];
-            }
-            if (held < required) revert RebalanceUnderfunded(token, held, required);
+            _checkLeg(supply, i);
         }
+    }
+
+    /// @dev The invariant at `supply` for the `i`-th component: an Ethereum balance covers the backing, claims and
+    ///      escrow, and a vault's book covers the backing and claims.
+    function _checkLeg(uint256 supply, uint256 i) internal view {
+        address token = _components[i].token;
+        uint256 required = _backing(supply, _components[i].units, Math.Rounding.Floor) + _totalClaims[token];
+        uint256 held;
+        if (_slotOf[i] == 0) {
+            required += _escrowed[token];
+            held = IERC20(token).balanceOf(address(this));
+        } else {
+            held = _vaultBacking[token];
+        }
+        if (held < required) revert RebalanceUnderfunded(token, held, required);
     }
 }

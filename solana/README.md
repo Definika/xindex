@@ -48,11 +48,22 @@ cargo fmt --all --check && cargo clippy -p xindex-vault -p stub-verifier
 
 1. `solana config set --url devnet` and fund the deployer (`solana airdrop 2`).
 2. Deploy the vault (`anchor deploy --no-idl`) and the stub twice.
-3. Initialize each stub with its relayer's key: instruction `1` with the key as data, accounts
-   `[state, payer, system program]`, where `state` is the stub's address at the seed `"verifier"`.
-4. Initialize the vault from the upgrade authority, with Sepolia's chain id, the Solana id the factory's registry
-   assigns, the factory, the hub template, the freezer, and the cap and floor in lamports.
-5. On Sepolia, the factory's owner proposes the chain with the vault's `config` address as its 32-byte vault.
+3. Initialize each stub with its relayer's key, from the stub's upgrade authority (SOL-1): instruction `1` with the key
+   as data, accounts `[state, authority (signer), system program, the stub's ProgramData]`, where `state` is the
+   stub's address at the seed `"verifier"`.
+4. Make each stub final: `solana program set-upgrade-authority <stub> --final`. The vault takes only verifiers nobody
+   can upgrade (SOL-2).
+5. Initialize the vault from its upgrade authority, with Sepolia's chain id, the Solana id the factory's registry
+   assigns, the factory, the hub template, the freezer, and the cap and floor in lamports. It takes each verifier's
+   ProgramData account too.
+6. On Sepolia, the factory's owner proposes the chain with the vault's `config` address as its 32-byte vault.
+
+`npm run cli -- solana-init` in `demo/relayer` does steps 3 and 5, and stops between them to print step 4's commands.
+
+A governance message that raises the cap or the floor, changes the freezer or rotates the verifiers then waits
+`GOVERNANCE_DELAY` (7 days) in `config`, as on the EVM vault. Anyone applies it with `apply_change(kind, body)`, and a
+rotation names the new verifiers and their ProgramData accounts there. The freezer may drop a waiting raise or rotation
+with `cancel_change(kind)`.
 
 ## Size
 

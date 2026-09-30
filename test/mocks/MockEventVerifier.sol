@@ -6,7 +6,7 @@ import {IEthereumEventVerifier} from "../../src/interfaces/IEthereumEventVerifie
 /// @notice Stands in for P1 or P2 in tests: a "proof" of a log is the log itself, `abi.encode(emitter, topic0, topic1,
 ///         data)`, and a proof of a checkpoint is the checkpoint, `abi.encode(Checkpoint)`, both accepted as final
 ///         unless the verifier is set to refuse, as a real one refuses a proof it cannot verify. A log's block is the
-///         one set with `setEventBlock`, or the current block while none is.
+///         one set with `setEventBlock`, zero until one is: a log older than any checkpoint, which a vault takes.
 contract MockEventVerifier is IEthereumEventVerifier {
     bool public refuse;
     uint256 public eventBlock;
@@ -28,7 +28,7 @@ contract MockEventVerifier is IEthereumEventVerifier {
     {
         if (refuse) revert Refused();
         (emitter, topic0, topic1, data) = abi.decode(proof, (address, bytes32, bytes32, bytes));
-        blockNumber = eventBlock == 0 ? block.number : eventBlock;
+        blockNumber = eventBlock;
     }
 
     function verifyCheckpoint(bytes calldata proof) external view returns (Checkpoint memory) {

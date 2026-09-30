@@ -114,6 +114,8 @@ abstract contract HybridTest is Test {
     function _createHybrid() internal returns (IHybridIndex hub) {
         address[] memory tokens = new address[](2);
         (tokens[0], tokens[1]) = (address(weth), native);
+        // Its creator seeds it: only the creator may mint into an empty index.
+        vm.prank(minter);
         hub = IHybridIndex(factory.createIndex("Hybrid", "HYB", tokens, K));
         vault.registerIndex(address(hub), factory.indexSalt(address(hub)));
     }
@@ -177,6 +179,13 @@ abstract contract HybridTest is Test {
             vault.deliver(proof, proof);
             ++delivered;
         }
+    }
+
+    /// @dev Applies a governance change `_deliverAll` just delivered to `vault`, once the vault's own delay has passed.
+    function _applyChange(uint8 kind, bytes memory body) internal {
+        uint256 readyAt = block.timestamp + vault.GOVERNANCE_DELAY();
+        vm.warp(readyAt);
+        vault.applyChange(kind, body, readyAt);
     }
 
     /// @dev The first VaultMessage in `logs`, decoded; an empty message, of kind zero, if there is none.

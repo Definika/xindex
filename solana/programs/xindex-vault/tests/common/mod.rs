@@ -45,6 +45,15 @@ pub fn pda(seeds: &[&[u8]]) -> Pubkey {
     Pubkey::find_program_address(seeds, &xindex_vault::id()).0
 }
 
+/// A program's ProgramData account under the upgradeable loader.
+pub fn programdata_of(program: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[program.as_ref()],
+        &anchor_lang::solana_program::bpf_loader_upgradeable::id(),
+    )
+    .0
+}
+
 pub fn index_of(salt: u8) -> ([u8; 20], [u8; 32]) {
     let salt = [salt; 32];
     (abi::predict_clone(&HUB, &salt, &FACTORY), salt)
@@ -219,19 +228,47 @@ impl Harness {
         msg.serialize().len() + 1 + 64 * signers.len()
     }
 
+    /// Deploys the stub as a deployer does: its upgrade authority sets the relayer key, then the program is made
+    /// immutable, as the vault requires of a verifier.
     pub fn init_stub(&mut self, program: Pubkey, relayer: &Pubkey) -> Outcome {
+        let payer = self.payer.insecure_clone();
+        self.set_upgrade_authority(program, Some(payer.pubkey()));
+        let outcome = self.init_stub_by(program, relayer, &payer);
+        self.set_upgrade_authority(program, None);
+        outcome
+    }
+
+    pub fn init_stub_by(&mut self, program: Pubkey, relayer: &Pubkey, by: &Keypair) -> Outcome {
         let state = Pubkey::find_program_address(&[b"verifier"], &program).0;
         let ix = Instruction {
             program_id: program,
             accounts: vec![
                 AccountMeta::new(state, false),
-                AccountMeta::new(self.payer.pubkey(), true),
+                AccountMeta::new(by.pubkey(), true),
                 AccountMeta::new_readonly(system_program::ID, false),
+                AccountMeta::new_readonly(programdata_of(&program), false),
             ],
             data: [&[1u8][..], relayer.as_ref()].concat(),
         };
-        let payer = self.payer.insecure_clone();
-        self.send(&[ix], &[&payer])
+        self.send(&[ix], &[by])
+    }
+
+    /// Rewrites a program's upgrade authority in its ProgramData account, as `solana program set-upgrade-authority`
+    /// would; `None` makes it immutable.
+    pub fn set_upgrade_authority(&mut self, program: Pubkey, authority: Option<Pubkey>) {
+        let data = programdata_of(&program);
+        let mut account = self.svm.get_account(&data).unwrap();
+        match authority {
+            Some(key) => {
+                account.data[12] = 1;
+                account.data[13..45].copy_from_slice(key.as_ref());
+            }
+            None => {
+                account.data[12] = 0;
+                account.data[13..45].fill(0);
+            }
+        }
+        self.svm.set_account(data, account).unwrap();
     }
 
     pub fn init_args(&self) -> xindex_vault::InitArgs {
@@ -270,6 +307,8 @@ impl Harness {
                 program: xindex_vault::id(),
                 program_data: programdata,
                 system_program: system_program::ID,
+                p1_data: Some(programdata_of(&p1)),
+                p2_data: Some(programdata_of(&p2)),
             }
             .to_account_metas(None),
         )
@@ -521,12 +560,7 @@ impl Harness {
         self.deliver(data, metas, by)
     }
 
-    pub fn deliver_governance(
-        &mut self,
-        payload: Vec<u8>,
-        by: By,
-        new_verifiers: Option<(Pubkey, Pubkey)>,
-    ) -> Outcome {
+    pub fn deliver_governance(&mut self, payload: Vec<u8>, by: By) -> Outcome {
         let id = abi::keccak(&[&payload]);
         let data = xindex_vault::instruction::DeliverGovernance {
             payload,
@@ -537,12 +571,64 @@ impl Harness {
             payer: self.payer.pubkey(),
             config: self.config,
             used: pda(&[USED_SEED, &id]),
-            new_p1: new_verifiers.map(|v| v.0),
-            new_p2: new_verifiers.map(|v| v.1),
             system_program: system_program::ID,
         }
         .to_account_metas(None);
         self.deliver(data, metas, by)
+    }
+
+    /// Applies the waiting change of `kind` with `body`; a rotation names its new verifiers' accounts.
+    pub fn apply_change(
+        &mut self,
+        kind: u8,
+        body: &[u8],
+        new_verifiers: Option<(Pubkey, Pubkey)>,
+    ) -> Outcome {
+        let ix = Instruction::new_with_bytes(
+            xindex_vault::id(),
+            &xindex_vault::instruction::ApplyChange {
+                kind,
+                body: body.to_vec(),
+            }
+            .data(),
+            xindex_vault::accounts::ApplyChange {
+                config: self.config,
+                new_p1: new_verifiers.map(|v| v.0),
+                new_p2: new_verifiers.map(|v| v.1),
+                new_p1_data: new_verifiers.map(|v| programdata_of(&v.0)),
+                new_p2_data: new_verifiers.map(|v| programdata_of(&v.1)),
+            }
+            .to_account_metas(None),
+        );
+        let payer = self.payer.insecure_clone();
+        self.send(&[ix], &[&payer])
+    }
+
+    pub fn cancel_change(&mut self, by: &Keypair, kind: u8) -> Outcome {
+        let ix = Instruction::new_with_bytes(
+            xindex_vault::id(),
+            &xindex_vault::instruction::CancelChange { kind }.data(),
+            xindex_vault::accounts::CancelChange {
+                freezer: by.pubkey(),
+                config: self.config,
+            }
+            .to_account_metas(None),
+        );
+        let payer = self.payer.insecure_clone();
+        self.send(&[ix], &[&payer, by])
+    }
+
+    /// The factory's governance message that loosens a rule, on both proofs, applied once its delay has passed.
+    pub fn govern(
+        &mut self,
+        kind: u8,
+        body: &[u8],
+        new_verifiers: Option<(Pubkey, Pubkey)>,
+    ) -> Outcome {
+        let p = self.payload(kind, FACTORY, body);
+        self.deliver_governance(p, By::Both).expect_ok();
+        self.warp(GOVERNANCE_DELAY);
+        self.apply_change(kind, body, new_verifiers)
     }
 
     pub fn release(&mut self, index: [u8; 20], id: [u8; 32], recipient: Pubkey) -> Outcome {

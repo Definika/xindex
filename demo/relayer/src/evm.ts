@@ -97,6 +97,10 @@ export async function deliverHyper(log: Log): Promise<"delivered" | "done"> {
   const h = deployments.hyperevm();
   const client = hyperClient();
   if (await read(client, h.vault, "XindexVault", "used", [log.topic1])) return "done";
+  // The vault runs a message that moves coins only from a block its checkpoint covers (VLT-3). A log newer than
+  // Sepolia's finalized head stays for a later pass.
+  const covered = (await read(client, h.vault, "XindexVault", "checkpoint")).blockNumber;
+  if (BigInt(covered) < log.blockNumber) await checkpointHyper();
   const proof1 = await eventProof(client, h.p1, "RELAYER1_KEY", log);
   const proof2 = await eventProof(client, h.p2, "RELAYER2_KEY", log);
   await send(client, wallet(hyperevm, "SENDER_KEY"), h.vault, "XindexVault", "deliver", [proof1, proof2]);

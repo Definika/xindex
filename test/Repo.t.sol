@@ -83,8 +83,8 @@ contract RepoTest is Test {
     }
 
     /// @dev XA-10: CI runs every gate of the definition of done. Wake's generated config must leave out `audit/`, whose
-    ///      PoC tests compile only inside the audited commit, and `prototype/`, a separate Foundry project that needs
-    ///      via-IR: Wake stops on either before running a detector.
+    ///      PoC tests compile only inside the audited commit, `prototype/`, a separate Foundry project that needs via-IR,
+    ///      and `demo/`, one whose remapping only it knows: Wake stops on any of them before running a detector.
     function test_XA10_ciRunsEveryGate() public view {
         string memory workflow = _read(".github/workflows/test.yml");
         assertTrue(_contains(workflow, "forge lint -D notes"), "lint fails on notes");
@@ -96,12 +96,15 @@ contract RepoTest is Test {
         );
         assertTrue(_contains(workflow, "wake init config --force"), "Wake's config comes from foundry.toml");
         assertTrue(
-            _contains(workflow, 'exclude_paths = ["audit", "prototype", '),
-            "Wake compiles neither the PoCs nor the prototype"
+            _contains(workflow, 'exclude_paths = ["audit", "prototype", "demo", '),
+            "Wake compiles neither the PoCs, the prototype nor the demo"
         );
         assertTrue(_contains(workflow, "wake detect all src"), "the Wake detectors run");
         string memory settings = _read(".vscode/settings.json");
-        assertTrue(_contains(settings, '"audit"') && _contains(settings, '"prototype"'), "nor does the Wake extension");
+        assertTrue(
+            _contains(settings, '"audit"') && _contains(settings, '"prototype"') && _contains(settings, '"demo"'),
+            "nor does the Wake extension"
+        );
     }
 
     /// @dev XA-43: mainnet-fork rehearsals keep chain id 1, so chain-1 broadcast records stay out of git unless a real

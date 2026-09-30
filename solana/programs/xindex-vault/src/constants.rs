@@ -13,6 +13,8 @@ pub const OWED_SEED: &[u8] = b"owed";
 pub const SPEED_LIMIT_PERCENT: u128 = 4;
 /// How long a freeze lasts: 14 days.
 pub const FREEZE_DURATION: i64 = 14 * 24 * 3600;
+/// How long a raised cap or floor, a new freezer or new verifiers wait on the vault before they apply (VLT-2).
+pub const GOVERNANCE_DELAY: i64 = 7 * 24 * 3600;
 /// How far ahead a first deposit may set an intake's deadline: 7 days.
 pub const MAX_INTAKE_LIFE: i64 = 7 * 24 * 3600;
 /// The current hour and the 24 before it: every real 24-hour span lies inside them.

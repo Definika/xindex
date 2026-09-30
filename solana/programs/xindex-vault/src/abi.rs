@@ -23,6 +23,8 @@ pub struct Message<'a> {
     pub dest_chain_id: u64,
     pub vault: [u8; 32],
     pub index: [u8; 20],
+    /// The sender's message counter: the factory's `messageNonce` for governance, which only rises.
+    pub nonce: u64,
     pub body: &'a [u8],
 }
 
@@ -75,6 +77,7 @@ pub fn decode_message(p: &[u8]) -> Result<Message<'_>> {
     let dest_chain_id = to_u64(word(p, 3)?)?;
     let vault = *word(p, 4)?;
     let index = to_address(word(p, 5)?)?;
+    let nonce = to_u64(word(p, 6)?)?;
     require!(to_u64(word(p, 7)?)? == HEAD as u64, VaultError::BadMessage);
     let len = to_u64(word(p, 8)?)? as usize;
     let start = HEAD + WORD;
@@ -89,6 +92,7 @@ pub fn decode_message(p: &[u8]) -> Result<Message<'_>> {
         dest_chain_id,
         vault,
         index,
+        nonce,
         body: &p[start..start + len],
     })
 }

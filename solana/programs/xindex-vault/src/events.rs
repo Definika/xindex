@@ -88,3 +88,20 @@ pub struct VerifiersRotated {
     pub p1: Pubkey,
     pub p2: Pubkey,
 }
+
+#[event]
+pub struct ChangeQueued {
+    pub kind: u8,
+    pub body: Vec<u8>,
+    pub ready_at: i64,
+}
+
+#[event]
+pub struct ChangeApplied {
+    pub kind: u8,
+}
+
+#[event]
+pub struct ChangeCancelled {
+    pub kind: u8,
+}

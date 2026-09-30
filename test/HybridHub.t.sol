@@ -168,6 +168,7 @@ contract HybridHubTest is HybridTest {
         factory.executeListing(address(fee));
         address[] memory tokens = new address[](2);
         (tokens[0], tokens[1]) = (address(fee), native);
+        vm.prank(minter);
         IHybridIndex feeHub = IHybridIndex(factory.createIndex("Fee", "FEE", tokens, K));
         fee.mint(minter, 10e18);
         vm.startPrank(minter);
@@ -270,9 +271,10 @@ contract HybridHubTest is HybridTest {
     // the mint cap
     // ---------------------------------------------------------------------
 
-    /// @dev The seed of an empty index has no cap; after it, 4% of the supply over any 24 hours.
+    /// @dev An empty index has no room: only its creator seeds it, with no cap. After the seed, 4% of the supply over
+    ///      any 24 hours.
     function test_mintCap() public {
-        assertEq(hub.mintRoom(), type(uint256).max, "an empty index: the seed");
+        assertEq(hub.mintRoom(), 0, "an empty index: only its creator's seed");
         uint256 seed = _settledOrder(hub, minter, 100e18);
         assertEq(hub.mintRoom(), 0, "nothing more while the seed is locked");
         vm.warp(block.timestamp + 1 days);
@@ -298,6 +300,42 @@ contract HybridHubTest is HybridTest {
         assertEq(hub.mintRoom(), 1e18);
         _settledOrder(hub, minter, 1e18);
         assertEq(hub.mintRoom(), 0);
+    }
+
+    /// @dev HUB-2: a stranger cannot seed an empty index. Its dust would be the whole supply, and 4% of dust a day would
+    ///      never let the index grow.
+    function test_HUB2_onlyTheCreatorSeedsAnEmptyIndex() public {
+        address stranger = makeAddr("stranger");
+        uint256 dust = 1e15;
+        uint256[] memory amounts = hub.previewOrder(dust);
+        weth.mint(stranger, amounts[0]);
+        vm.startPrank(stranger);
+        weth.approve(address(hub), amounts[0]);
+        (uint256 orderId, uint256 intakeId) = hub.openOrder(dust, block.timestamp + 1 hours);
+        vm.deal(stranger, amounts[1]);
+        _fresh();
+        vault.deposit{value: amounts[1]}(address(hub), intakeId);
+        vm.stopPrank();
+        vm.warp(block.timestamp + 1 hours + 1);
+        IHybridHubTypes.ChainProof[] memory p = _chainProof(block.timestamp, amounts[1]);
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.MintCapExceeded.selector, dust, 0));
+        hub.settleOrder(orderId, p);
+        // The creator's seed settles, however large; while it is locked, nobody's order does, the creator's included.
+        amounts = hub.previewOrder(dust);
+        weth.mint(minter, amounts[0]);
+        vm.startPrank(minter);
+        weth.approve(address(hub), amounts[0]);
+        (uint256 second, uint256 secondIntake) = hub.openOrder(dust, block.timestamp + 1 hours);
+        vm.deal(minter, amounts[1]);
+        vault.deposit{value: amounts[1]}(address(hub), secondIntake);
+        vm.stopPrank();
+        _settledOrder(hub, minter, 100e18);
+        assertEq(hub.mintRoom(), 0);
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.MintCapExceeded.selector, dust, 0));
+        hub.settleOrder(orderId, p);
+        p = _chainProof(block.timestamp, amounts[1]);
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.MintCapExceeded.selector, dust, 0));
+        hub.settleOrder(second, p);
     }
 
     // ---------------------------------------------------------------------
@@ -445,6 +483,36 @@ contract HybridHubTest is HybridTest {
         assertEq(hub.balanceOf(minter), 1e18);
     }
 
+    /// @dev HUB-3: an order a freeze holds, never re-confirmed, is not stuck for good. Once the freeze has been over for
+    ///      a week, its minter, and only its minter, may give it up: the escrow becomes its claims, and the vault refunds
+    ///      the deposit.
+    function test_HUB3_theMinterMayGiveUpAnOrderAFreezeHolds() public {
+        uint256 orderId = _settledOrder(hub, minter, 1e18);
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.ChainNotExited.selector, chainId));
+        vm.prank(minter);
+        hub.failHeldOrder(orderId, chainId); // nothing holds it
+        vm.warp(block.timestamp + 1 hours);
+        vm.prank(guardian);
+        factory.freezeChain(chainId);
+        (, uint256 until) = hub.chainFreeze(chainId);
+        uint256 openAt = until + hub.HELD_ORDER_GRACE();
+        assertEq(openAt, until + 7 days);
+        vm.warp(openAt - 1);
+        vm.prank(minter);
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.NotYet.selector, openAt));
+        hub.failHeldOrder(orderId, chainId);
+        vm.warp(openAt);
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.ChainNotExited.selector, chainId));
+        hub.failHeldOrder(orderId, chainId); // not its minter
+        (uint256[] memory escrow,) = hub.orderAmounts(orderId);
+        vm.recordLogs();
+        vm.prank(minter);
+        hub.failHeldOrder(orderId, chainId);
+        assertEq(uint256(hub.order(orderId).status), uint256(IHybridHubTypes.OrderStatus.Failed));
+        assertEq(hub.claimOf(minter, address(weth)), escrow[0]);
+        assertEq(_message(vm.getRecordedLogs()).kind, VaultMessages.INTAKE_FAILED);
+    }
+
     /// @dev A freeze in the very second an order settles came after the settlement, since nothing settles while
     ///      frozen, so it holds the order as a later one would.
     function test_freeze_inTheSettlingSecondHoldsTheOrder() public {
@@ -579,6 +647,7 @@ contract HybridHubTest is HybridTest {
 
         address[] memory tokens = new address[](3);
         (tokens[0], tokens[1], tokens[2]) = (address(weth), native, bnb);
+        vm.prank(minter);
         IHybridIndex two = IHybridIndex(factory.createIndex("Two", "TWO", tokens, K));
         (uint256[] memory ids,) = two.chains();
         assertEq(ids.length, 2);
@@ -672,6 +741,7 @@ contract HybridHubTest is HybridTest {
     function test_redeem_aDustComponentSendsNothing() public {
         address[] memory tokens = new address[](2);
         (tokens[0], tokens[1]) = (address(weth), native);
+        vm.prank(minter);
         IHybridIndex small = IHybridIndex(factory.createIndex("Small", "SML", tokens, 1e22)); // 1.2e12 and 1.4e12 raw units
         vault.registerIndex(address(small), factory.indexSalt(address(small)));
         _mint(small, minter, 1e18);

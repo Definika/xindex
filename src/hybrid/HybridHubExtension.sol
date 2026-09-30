@@ -20,6 +20,9 @@ import {HubShares} from "./HubShares.sol";
 ///      is a clone of the same template, which the factory records by its salt; everything it says it sent is checked
 ///      against real balances, or is a vault amount the other index has just taken off its own book.
 contract HybridHubExtension is HybridHubStorage, HubShares, ReentrancyGuard, IHybridHubExtension {
+    /// @inheritdoc IHybridHubExtension
+    uint256 public constant HELD_ORDER_GRACE = 7 days;
+
     using SafeERC20 for IERC20;
 
     /// @notice The factory the hubs this extension serves belong to.
@@ -160,6 +163,7 @@ contract HybridHubExtension is HybridHubStorage, HubShares, ReentrancyGuard, IHy
             if (vaultIn[i] < need) revert MigrationShort(token, vaultIn[i], need);
             _vaultBacking[token] += vaultIn[i];
         }
+        _useMintRoom(shares, _shareSupply(), holder);
         _mintShares(to, shares);
         // The calls before this are views: the factory's freeze records.
         // forge-lint: disable-next-line(reentrancy-events)
@@ -207,6 +211,8 @@ contract HybridHubExtension is HybridHubStorage, HubShares, ReentrancyGuard, IHy
         onlyInitialized
     {
         uint256 j = _slotIndex(chainId);
+        // After the snapshot exit, the vault's paid totals include the holders' claims, which this index never sent.
+        if (_exitedAt[chainId] != 0) revert ChainExited(chainId);
         if (record.balances.length != record.tokens.length || record.paid.length != record.tokens.length) {
             revert LengthMismatch();
         }
@@ -252,6 +258,8 @@ contract HybridHubExtension is HybridHubStorage, HubShares, ReentrancyGuard, IHy
     {
         StoredOrder storage o = _openOrder(orderId, OrderStatus.Claimed);
         uint256 j = _slotIndex(chainId);
+        // After the snapshot exit, the vault resolves every intake itself, and the chain is frozen for good anyway.
+        if (_exitedAt[chainId] != 0) revert ChainExited(chainId);
         uint256 intakeId = _intakeIdOf(orderId, o.deadline);
         bytes32 recorded = _digests[orderId][j];
         bytes32 open = _intakeDigest(j, intakeId, INTAKE_OPEN, proof.tokens, proof.totals);
@@ -298,7 +306,14 @@ contract HybridHubExtension is HybridHubStorage, HubShares, ReentrancyGuard, IHy
     function failHeldOrder(uint256 orderId, uint256 chainId) external nonReentrant onlyInitialized {
         StoredOrder storage o = _openOrder(orderId, OrderStatus.Locked);
         _checkChain(chainId);
-        if (_exitedAt[chainId] == 0) revert ChainNotExited(chainId);
+        if (_exitedAt[chainId] == 0) {
+            // Short of an exit, only its minter may give up an order a freeze holds, once the freeze has been over for
+            // HELD_ORDER_GRACE with nobody re-confirming it: the proof that could may never come (HUB-3).
+            IHybridIndexFactory.Freeze memory f = _freeze(chainId);
+            if (msg.sender != o.minter || f.start < o.settledAt) revert ChainNotExited(chainId);
+            uint256 openAt = f.until + HELD_ORDER_GRACE;
+            if (block.timestamp < openAt) revert NotYet(openAt);
+        }
         _lockedShares -= o.shares;
         // Its chain's vault settles or refunds the order's intake from its snapshot, where it was never settled.
         _fail(orderId, o);

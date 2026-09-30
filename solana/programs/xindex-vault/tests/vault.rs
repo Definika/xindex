@@ -33,7 +33,8 @@ fn only_the_deployer_initializes_once() {
     h.send(&[ix], &[&authority])
         .expect_code(VaultError::ZeroAddress);
     let ix = h.initialize_ix(&authority.pubkey(), h.init_args(), h.p1, authority.pubkey());
-    h.send(&[ix], &[&authority]).expect_error("Custom(2007)"); // ConstraintExecutable
+    h.send(&[ix], &[&authority])
+        .expect_code(VaultError::NotAContract);
 
     let ix = h.initialize_ix(&authority.pubkey(), h.init_args(), h.p1, h.p2);
     h.send(&[ix], &[&authority]).expect_ok();
@@ -132,7 +133,7 @@ fn a_deposit_opens_an_intake_within_its_rules() {
 fn deposits_stay_within_the_cap() {
     let (mut h, index) = Harness::ready();
     let lower = h.payload(CAP_UPDATE, FACTORY, &cap_body(100 * SOL, FLOOR));
-    h.deliver_governance(lower, By::Both, None).expect_ok();
+    h.deliver_governance(lower, By::Both).expect_ok();
     let whale = Keypair::new();
     h.svm.airdrop(&whale.pubkey(), 200 * SOL).unwrap();
     let intake = intake_id(h.now() + 3600, 1);
@@ -517,15 +518,19 @@ fn a_migration_moves_within_the_speed_limit() {
 fn a_cap_raise_needs_both_proofs_and_a_lowering_one() {
     let (mut h, _) = Harness::ready();
     let raise = h.payload(CAP_UPDATE, FACTORY, &cap_body(CAP + 1, FLOOR));
-    h.deliver_governance(raise.clone(), By::P1, None)
+    h.deliver_governance(raise.clone(), By::P1)
         .expect_code(VaultError::BothProofsRequired);
-    h.deliver_governance(raise, By::Both, None).expect_ok();
+    h.deliver_governance(raise, By::Both).expect_ok();
+    assert_eq!(h.config().cap, CAP, "a raise waits");
+    h.warp(GOVERNANCE_DELAY);
+    h.apply_change(CAP_UPDATE, &cap_body(CAP + 1, FLOOR), None)
+        .expect_ok();
     assert_eq!(h.config().cap, CAP + 1);
     let lower = h.payload(CAP_UPDATE, FACTORY, &cap_body(CAP, FLOOR / 2));
-    h.deliver_governance(lower, By::P2, None).expect_ok();
+    h.deliver_governance(lower, By::P2).expect_ok();
     assert_eq!((h.config().cap, h.config().outflow_floor), (CAP, FLOOR / 2));
     let floor = h.payload(CAP_UPDATE, FACTORY, &cap_body(CAP, FLOOR));
-    h.deliver_governance(floor, By::P1, None)
+    h.deliver_governance(floor, By::P1)
         .expect_code(VaultError::BothProofsRequired);
 }
 
@@ -534,11 +539,11 @@ fn only_the_factory_governs() {
     let (mut h, index) = Harness::ready();
     // An index's FREEZE: its emitter is not the factory.
     let p = h.payload(FREEZE, index, &[]);
-    h.deliver_governance(p, By::Both, None)
+    h.deliver_governance(p, By::Both)
         .expect_code(VaultError::WrongEmitter);
     // An index's kind from the factory, on the governance instruction.
     let p = h.payload(BURN, FACTORY, &burn_body(SOL, &Pubkey::new_unique()));
-    h.deliver_governance(p, By::Both, None)
+    h.deliver_governance(p, By::Both)
         .expect_code(VaultError::UnknownKind);
 }
 
@@ -570,7 +575,7 @@ fn a_freeze_stops_coins_moving_and_expires() {
     // The factory's FREEZE rests on either proof, and never shortens a freeze.
     h.warp(24 * 3600);
     let p = h.payload(FREEZE, FACTORY, &[]);
-    h.deliver_governance(p, By::P2, None).expect_ok();
+    h.deliver_governance(p, By::P2).expect_ok();
     assert_eq!(h.config().frozen_until, h.now() + FREEZE_DURATION);
     let later = h.config().frozen_until;
     h.set_time(later);
@@ -583,12 +588,12 @@ fn the_freezer_and_the_verifiers_rotate_on_both_proofs() {
     let (mut h, index) = Harness::ready();
     let next = Keypair::new();
     let p = h.payload(FREEZER_CHANGE, FACTORY, &next.pubkey().to_bytes());
-    h.deliver_governance(p.clone(), By::P1, None)
+    h.deliver_governance(p, By::P1)
         .expect_code(VaultError::BothProofsRequired);
-    h.deliver_governance(p, By::Both, None).expect_ok();
+    h.govern(FREEZER_CHANGE, &next.pubkey().to_bytes(), None)
+        .expect_ok();
     assert_eq!(h.config().freezer, next.pubkey());
-    let p = h.payload(FREEZER_CHANGE, FACTORY, &[0u8; 32]);
-    h.deliver_governance(p, By::Both, None)
+    h.govern(FREEZER_CHANGE, &[0u8; 32], None)
         .expect_code(VaultError::ZeroAddress);
 
     // New stubs, under new relayers.
@@ -603,17 +608,14 @@ fn the_freezer_and_the_verifiers_rotate_on_both_proofs() {
     h.init_stub(n1, &r1.pubkey()).expect_ok();
     h.init_stub(n2, &r2.pubkey()).expect_ok();
     let body = [n1.to_bytes(), n1.to_bytes()].concat();
-    let p = h.payload(VERIFIER_ROTATION, FACTORY, &body);
-    h.deliver_governance(p, By::Both, Some((n1, n1)))
+    h.govern(VERIFIER_ROTATION, &body, Some((n1, n1)))
         .expect_code(VaultError::VerifiersNotDistinct);
-    let body = [n1.to_bytes(), h.relayer1.pubkey().to_bytes()].concat();
-    let p = h.payload(VERIFIER_ROTATION, FACTORY, &body);
     let not_a_program = h.relayer1.pubkey();
-    h.deliver_governance(p, By::Both, Some((n1, not_a_program)))
+    let body = [n1.to_bytes(), not_a_program.to_bytes()].concat();
+    h.govern(VERIFIER_ROTATION, &body, Some((n1, not_a_program)))
         .expect_code(VaultError::NotAContract);
     let body = [n1.to_bytes(), n2.to_bytes()].concat();
-    let p = h.payload(VERIFIER_ROTATION, FACTORY, &body);
-    h.deliver_governance(p, By::Both, Some((n1, n2)))
+    h.govern(VERIFIER_ROTATION, &body, Some((n1, n2)))
         .expect_ok();
     assert_eq!((h.config().p1, h.config().p2), (n1, n2));
 
@@ -630,4 +632,215 @@ fn the_freezer_and_the_verifiers_rotate_on_both_proofs() {
     }
     h.deliver_intake(index, intake, INTAKE_SETTLED, By::Both)
         .expect_ok();
+}
+
+// ---------------------------------------------------------------------
+// the internal red team of 30 September (SOL-1 to SOL-9)
+// ---------------------------------------------------------------------
+
+fn fresh_stub(h: &mut Harness) -> Pubkey {
+    let stub = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../target/deploy/stub_verifier.so"
+    ));
+    let fresh = Pubkey::new_unique();
+    h.svm.add_program(fresh, stub).unwrap();
+    fresh
+}
+
+/// SOL-1: only a stub's upgrade authority sets its relayer key, so nobody can take it in front of the deployer.
+#[test]
+fn test_sol1_only_the_deployer_initializes_a_stub() {
+    let mut h = Harness::new();
+    let fresh = fresh_stub(&mut h);
+    let (deployer, attacker) = (Keypair::new(), Keypair::new());
+    for k in [&deployer, &attacker] {
+        h.svm.airdrop(&k.pubkey(), 10 * SOL).unwrap();
+    }
+    h.set_upgrade_authority(fresh, Some(deployer.pubkey()));
+    h.init_stub_by(fresh, &attacker.pubkey(), &attacker)
+        .expect_error("MissingRequiredSignature");
+    h.init_stub_by(fresh, &Keypair::new().pubkey(), &deployer)
+        .expect_ok();
+    h.init_stub_by(fresh, &attacker.pubkey(), &deployer)
+        .expect_error("AccountAlreadyInitialized");
+}
+
+/// SOL-4: lamports sent to a stub's state address in advance do not block its initialization.
+#[test]
+fn test_sol4_lamports_at_a_stubs_state_do_not_block_it() {
+    let mut h = Harness::new();
+    let fresh = fresh_stub(&mut h);
+    let state = Pubkey::find_program_address(&[b"verifier"], &fresh).0;
+    let rent = h.svm.minimum_balance_for_rent_exemption(0);
+    h.svm.airdrop(&state, rent).unwrap();
+    h.init_stub(fresh, &Keypair::new().pubkey()).expect_ok();
+}
+
+/// SOL-2: a verifier whose code its upgrade authority could rewrite is refused as P1 or P2, at initialization and at a
+/// rotation, since it would bypass the 30-day rotation.
+#[test]
+fn test_sol2_an_upgradeable_verifier_is_refused() {
+    let mut h = Harness::new();
+    let authority = h.authority.insecure_clone();
+    h.set_upgrade_authority(h.p1, Some(Keypair::new().pubkey()));
+    let ix = h.initialize_ix(&authority.pubkey(), h.init_args(), h.p1, h.p2);
+    h.send(&[ix], &[&authority])
+        .expect_code(VaultError::VerifierUpgradeable);
+    h.set_upgrade_authority(h.p1, None);
+    let ix = h.initialize_ix(&authority.pubkey(), h.init_args(), h.p1, h.p2);
+    h.send(&[ix], &[&authority]).expect_ok();
+
+    let (n1, n2) = (fresh_stub(&mut h), fresh_stub(&mut h));
+    let (r1, r2) = (Keypair::new(), Keypair::new());
+    h.init_stub(n1, &r1.pubkey()).expect_ok();
+    h.init_stub(n2, &r2.pubkey()).expect_ok();
+    h.set_upgrade_authority(n2, Some(Keypair::new().pubkey()));
+    let body = [n1.to_bytes(), n2.to_bytes()].concat();
+    h.govern(VERIFIER_ROTATION, &body, Some((n1, n2)))
+        .expect_code(VaultError::VerifierUpgradeable);
+}
+
+/// SOL-3: an older governance message of a kind, delivered after a newer one, is refused; a freeze always runs.
+#[test]
+fn test_sol3_an_older_freezer_change_cannot_undo_a_newer_one() {
+    let (mut h, _) = Harness::ready();
+    let (old, new) = (Keypair::new(), Keypair::new());
+    let first = h.payload(FREEZER_CHANGE, FACTORY, &old.pubkey().to_bytes());
+    let second = h.payload(FREEZER_CHANGE, FACTORY, &new.pubkey().to_bytes());
+    h.deliver_governance(second, By::Both).expect_ok();
+    h.deliver_governance(first, By::Both)
+        .expect_code(VaultError::StaleGovernance);
+    h.warp(GOVERNANCE_DELAY);
+    h.apply_change(FREEZER_CHANGE, &old.pubkey().to_bytes(), None)
+        .expect_code(VaultError::NoPendingChange);
+    h.apply_change(FREEZER_CHANGE, &new.pubkey().to_bytes(), None)
+        .expect_ok();
+    assert_eq!(h.config().freezer, new.pubkey());
+
+    let lower = h.payload(CAP_UPDATE, FACTORY, &cap_body(CAP / 2, FLOOR));
+    let raise = h.payload(CAP_UPDATE, FACTORY, &cap_body(CAP * 2, FLOOR));
+    h.deliver_governance(raise, By::Both).expect_ok();
+    h.deliver_governance(lower, By::Both)
+        .expect_code(VaultError::StaleGovernance);
+    // An older freeze still runs: it only protects.
+    let freeze = h.payload(FREEZE, FACTORY, &[]);
+    let later = h.payload(FREEZE, FACTORY, &[]);
+    h.deliver_governance(later, By::P1).expect_ok();
+    h.deliver_governance(freeze, By::P2).expect_ok();
+}
+
+/// SOL-5: a payout below rent to an empty account waits as owed instead of failing the delivery; once someone funds the
+/// recipient, it is released.
+#[test]
+fn test_sol5_a_small_burn_to_a_new_account_is_still_delivered() {
+    let (mut h, index) = Harness::ready();
+    h.fund(index, 10 * SOL);
+    let bob = Pubkey::new_unique();
+    let small = h.svm.minimum_balance_for_rent_exemption(0) / 2;
+    let p = h.payload(BURN, index, &burn_body(small, &bob));
+    let id = abi::keccak(&[&p]);
+    h.deliver_burn(index, p, bob, By::Both).expect_ok();
+    assert_eq!(h.owed(&index, &id).remaining, small);
+    h.release(index, id, bob)
+        .expect_code(VaultError::NothingPayable);
+    h.svm.airdrop(&bob, SOL).unwrap();
+    h.release(index, id, bob).expect_ok();
+    assert_eq!(h.lamports(&bob), SOL + small);
+}
+
+/// SOL-9: a burn cannot name the treasury or one of the vault's own accounts, where its payout would be stranded.
+#[test]
+fn test_sol9_the_vaults_own_accounts_are_no_recipients() {
+    let (mut h, index) = Harness::ready();
+    h.fund(index, 10 * SOL);
+    let treasury = h.treasury;
+    let p = h.payload(BURN, index, &burn_body(SOL, &treasury));
+    h.deliver_burn(index, p, treasury, By::Both)
+        .expect_code(VaultError::WrongRecipient);
+    let index_account = pda(&[INDEX_SEED, &index]);
+    let p = h.payload(BURN, index, &burn_body(SOL, &index_account));
+    h.deliver_burn(index, p, index_account, By::Both)
+        .expect_code(VaultError::WrongRecipient);
+}
+
+// ---------------------------------------------------------------------
+// the Stage B red team of 30 September, on the EVM vault's twin (VLT-2, VLT-4)
+// ---------------------------------------------------------------------
+
+/// VLT-2: a raised cap or floor, a new freezer and new verifiers wait a week on the vault, however their proofs were
+/// obtained. The freezer may drop a raise or a rotation, never its own replacement; a freeze holds every change but
+/// that one; a newer lowering drops a waiting raise.
+#[test]
+fn test_vlt2_a_loosening_waits_and_the_freezer_can_stop_it() {
+    let (mut h, _) = Harness::ready();
+    let raise = cap_body(CAP, 100 * SOL);
+    let p = h.payload(CAP_UPDATE, FACTORY, &raise);
+    h.deliver_governance(p, By::Both).expect_ok();
+    assert_eq!(h.config().outflow_floor, FLOOR, "the floor has not moved");
+    assert_eq!(h.config().pending_cap.ready_at, h.now() + GOVERNANCE_DELAY);
+    h.apply_change(CAP_UPDATE, &raise, None)
+        .expect_code(VaultError::ChangeNotReady);
+    let stranger = Keypair::new();
+    h.cancel_change(&stranger, CAP_UPDATE)
+        .expect_code(VaultError::NotFreezer);
+    let freezer = h.freezer.insecure_clone();
+    h.cancel_change(&freezer, CAP_UPDATE).expect_ok();
+    h.cancel_change(&freezer, CAP_UPDATE)
+        .expect_code(VaultError::NoPendingChange);
+    h.warp(GOVERNANCE_DELAY);
+    h.apply_change(CAP_UPDATE, &raise, None)
+        .expect_code(VaultError::NoPendingChange);
+
+    // Sent again, it waits again, and a freeze holds it; the freezer's replacement it neither holds nor may drop.
+    let p = h.payload(CAP_UPDATE, FACTORY, &raise);
+    h.deliver_governance(p, By::Both).expect_ok();
+    let next = Keypair::new();
+    let p = h.payload(FREEZER_CHANGE, FACTORY, &next.pubkey().to_bytes());
+    h.deliver_governance(p, By::Both).expect_ok();
+    h.cancel_change(&freezer, FREEZER_CHANGE)
+        .expect_code(VaultError::NotFreezer);
+    h.warp(GOVERNANCE_DELAY - 24 * 3600);
+    h.freeze(&freezer).expect_ok();
+    h.warp(24 * 3600);
+    h.apply_change(CAP_UPDATE, &raise, None)
+        .expect_code(VaultError::VaultFrozen);
+    h.apply_change(FREEZER_CHANGE, &next.pubkey().to_bytes(), None)
+        .expect_ok();
+    assert_eq!(h.config().freezer, next.pubkey());
+    let until = h.config().frozen_until;
+    h.set_time(until);
+    h.apply_change(CAP_UPDATE, &raise, None).expect_ok();
+    assert_eq!(h.config().outflow_floor, 100 * SOL);
+    assert_eq!(h.config().pending_cap.ready_at, 0);
+
+    // A newer lowering drops a waiting raise.
+    let again = cap_body(CAP, 200 * SOL);
+    let p = h.payload(CAP_UPDATE, FACTORY, &again);
+    h.deliver_governance(p, By::Both).expect_ok();
+    let p = h.payload(CAP_UPDATE, FACTORY, &cap_body(CAP / 2, 50 * SOL));
+    h.deliver_governance(p, By::P1).expect_ok();
+    h.warp(GOVERNANCE_DELAY);
+    h.apply_change(CAP_UPDATE, &again, None)
+        .expect_code(VaultError::NoPendingChange);
+    assert_eq!(h.config().outflow_floor, 50 * SOL);
+}
+
+/// VLT-4: only a message on both proofs moves the mark. One proof, even with a nonce far ahead, may lower the cap but
+/// cannot lock the factory's later messages out.
+#[test]
+fn test_vlt4_one_proof_moves_no_mark() {
+    let (mut h, _) = Harness::ready();
+    let mark = h.config().cap_nonce;
+    let honest = h.nonce;
+    h.nonce = u64::MAX - 1;
+    let forged = h.payload(CAP_UPDATE, FACTORY, &cap_body(CAP / 8, FLOOR));
+    h.nonce = honest;
+    h.deliver_governance(forged, By::P1).expect_ok();
+    assert_eq!(h.config().cap, CAP / 8);
+    assert_eq!(h.config().cap_nonce, mark, "one proof moves no mark");
+    h.govern(CAP_UPDATE, &cap_body(CAP, FLOOR), None)
+        .expect_ok();
+    assert_eq!(h.config().cap, CAP, "the factory's next message still runs");
+    assert_eq!(h.config().cap_nonce, h.nonce);
 }

@@ -9,6 +9,7 @@ import {IHybridIndex} from "../src/interfaces/IHybridIndex.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {VaultMessages} from "../src/libraries/VaultMessages.sol";
 import {HybridTest} from "./HybridTest.sol";
+import {MockPausableToken} from "./mocks/MockPausableToken.sol";
 import {MockUSDT} from "./mocks/MockUSDT.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {HubSharesHarness} from "./mocks/HubSharesHarness.sol";
@@ -373,6 +374,7 @@ contract HybridHubRebalanceTest is HybridTest {
         hub.settleRebalance(_proofOf(deliveries[1]));
         _deliverAll(vm.getRecordedLogs());
         uint256 intakeId = hub.fillIntakeId();
+        vm.warp(hub.fill().deadline + 1);
 
         // The honest state now: settled, with the whole delivery.
         IHybridHubTypes.ChainProof memory honest = _proofOf(deliveries[1])[0];
@@ -398,6 +400,7 @@ contract HybridHubRebalanceTest is HybridTest {
         _deliver(deliveries[1]);
         hub.settleRebalance(_proofOf(deliveries[1]));
         uint256 intakeId = hub.fillIntakeId();
+        vm.warp(hub.fill().deadline + 1);
         IHybridHubTypes.ChainProof memory failed = _proofOf(deliveries[1])[0];
         failed.proof = _forged(block.timestamp, _digestOf(intakeId, 3, deliveries[1]));
         uint256 snap = vm.snapshotState();
@@ -407,6 +410,7 @@ contract HybridHubRebalanceTest is HybridTest {
         never.proof = _forged(block.timestamp, bytes32(0));
         hub.slashRebalance(chainId, 0, never);
         vm.warp(block.timestamp + 24 hours);
+        never.proof = _forged(block.timestamp, bytes32(0));
         vm.expectRevert(
             abi.encodeWithSelector(IHybridHubTypes.WrongFillStatus.selector, IHybridHubTypes.FillStatus.None)
         );
@@ -427,6 +431,43 @@ contract HybridHubRebalanceTest is HybridTest {
         vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.NotAVaultChain.selector, 9));
         vm.warp(release - 1);
         hub.slashRebalance(9, 0, never);
+    }
+
+    /// @dev HUB-1, MOD-1 and BNB-1: a chain the fill bought nothing on honestly shows no intake until its settle message lands. An honest
+    ///      proof of that is no evidence: it burns no bond and freezes nothing.
+    function test_HUB1_MOD1_BNB1_anHonestEmptyIntakeIsNoEvidence() public {
+        _liveAuction(false); // WETH bought, the vault's coin sold
+        _accept();
+        hub.settleRebalance(_oneEmpty());
+        vm.warp(hub.fill().deadline + 1);
+        IHybridHubTypes.ChainProof memory p = _oneEmpty()[0];
+        p.proof = _honest(block.timestamp);
+        uint256 supply = hub.totalSupply();
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.NotAContradiction.selector, chainId));
+        hub.slashRebalance(chainId, 0, p);
+        assertEq(hub.totalSupply(), supply, "the bond stands");
+        (, uint256 until) = hub.chainFreeze(chainId);
+        assertEq(until, 0, "no freeze");
+    }
+
+    /// @dev HUB-1, MOD-1 and BNB-1: state verifiers prove old final blocks, and a state from before the deliveries is honestly short, so
+    ///      evidence must come from after the delivery deadline.
+    function test_HUB1_MOD1_BNB1_aProofFromBeforeTheDeadlineIsNoEvidence() public {
+        _liveAuction(true);
+        uint256 accepted = block.timestamp;
+        uint256[] memory deliveries = _accept();
+        vm.warp(block.timestamp + 1 hours);
+        _deliver(deliveries[1]);
+        hub.settleRebalance(_proofOf(deliveries[1]));
+        uint256 deadline = hub.fill().deadline;
+        vm.warp(deadline + 1);
+        IHybridHubTypes.ChainProof memory stale = _proofOf(0)[0];
+        stale.proof = _forged(accepted, bytes32(0)); // the slot as it truly was at acceptance
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.ProofTooEarly.selector, chainId, accepted, deadline));
+        hub.slashRebalance(chainId, 0, stale);
+        stale.proof = _forged(deadline, bytes32(0));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.ProofTooEarly.selector, chainId, deadline, deadline));
+        hub.slashRebalance(chainId, 0, stale);
     }
 
     function _digestOf(uint256 intakeId, uint8 state, uint256 total) internal view returns (bytes32) {
@@ -604,6 +645,7 @@ contract HybridHubRebalanceTest is HybridTest {
         factory.executeListing(address(link));
         address[] memory tokens = new address[](3);
         (tokens[0], tokens[1], tokens[2]) = (address(weth), native, address(link));
+        vm.prank(minter);
         IHybridIndex three = IHybridIndex(factory.createIndex("Three", "THR", tokens, K));
         vault.registerIndex(address(three), factory.indexSalt(address(three)));
         uint256[] memory amounts = three.previewOrder(10e18);
@@ -632,6 +674,63 @@ contract HybridHubRebalanceTest is HybridTest {
         three.settleRebalance(_proofOf(amountsIn[1]));
         (, uint256[] memory afterUnits,,) = three.components();
         assertEq(afterUnits[2], before[2]);
+    }
+
+    /// @dev MOD-4: a sold vault leg with no recipient becomes the executor's claim, as in `redeem`, rather than a burn no
+    ///      vault could ever pay.
+    function test_MOD4_aSoldVaultLegWithoutARecipientIsTheExecutorsClaim() public {
+        _liveAuction(false); // the vault's coin sold
+        (,, uint256[] memory amountsOut,) = hub.previewRebalance();
+        (,,, uint256[] memory amountsIn) = hub.previewRebalance();
+        weth.mint(executor, amountsIn[0]);
+        vm.startPrank(executor);
+        weth.approve(address(hub), amountsIn[0]);
+        hub.acceptRebalance(new bytes32[](1), new uint256[](0));
+        vm.stopPrank();
+        vm.recordLogs();
+        hub.settleRebalance(_oneEmpty());
+        assertEq(hub.claimOf(executor, native), amountsOut[1]);
+        assertEq(_message(vm.getRecordedLogs()).kind, VaultMessages.INTAKE_SETTLED, "no burn");
+        _checkBacking();
+    }
+
+    /// @dev MOD-3: DA-14 and RT-01 on the hybrid hub: a kept component whose token no longer answers even a read does
+    ///      not block the settlement, which reads only the legs that move.
+    function test_MOD3_aKeptComponentThatNoLongerAnswersDoesNotBlockSettlement() public {
+        MockPausableToken wbtc = new MockPausableToken("Wrapped BTC", "WBTC", 8);
+        vm.prank(owner);
+        factory.proposeListing(address(wbtc), 1e27);
+        vm.warp(block.timestamp + 2 days);
+        factory.executeListing(address(wbtc));
+        address[] memory tokens = new address[](3);
+        (tokens[0], tokens[1], tokens[2]) = (address(weth), native, address(wbtc));
+        vm.prank(minter);
+        IHybridIndex three = IHybridIndex(factory.createIndex("Three", "THR", tokens, K));
+        vault.registerIndex(address(three), factory.indexSalt(address(three)));
+        uint256[] memory amounts = three.previewOrder(10e18);
+        wbtc.mint(minter, amounts[2]);
+        vm.prank(minter);
+        wbtc.approve(address(three), amounts[2]);
+        _mint(three, minter, 10e18);
+        vm.prank(minter);
+        three.transfer(executor, 1e18);
+
+        _revise(native, BNB_SUPPLY);
+        vm.warp(block.timestamp + 7 days);
+        vm.prank(guardian);
+        three.startRebalance(4); // keep WBTC
+        wbtc.setReadsBroken(true);
+        vm.warp(block.timestamp + 2 days + 12 hours);
+        (,,, uint256[] memory amountsIn) = three.previewRebalance();
+        bytes32[] memory r = new bytes32[](1);
+        vm.startPrank(executor);
+        three.acceptRebalance(r, new uint256[](0));
+        vm.deal(executor, amountsIn[1]);
+        _fresh();
+        vault.deposit{value: amountsIn[1]}(address(three), three.fillIntakeId());
+        vm.stopPrank();
+        three.settleRebalance(_proofOf(amountsIn[1]));
+        assertEq(three.rebalanceNonce(), 1);
     }
 
     /// @dev An Ethereum delivery must arrive whole: a component that starts taking a fee refuses the fill.
@@ -684,6 +783,7 @@ contract HybridHubRebalanceTest is HybridTest {
         factory.executeListing(address(usdt));
         address[] memory tokens = new address[](2);
         (tokens[0], tokens[1]) = (address(usdt), native);
+        vm.prank(minter);
         idx = IHybridIndex(factory.createIndex("Tether", "XUSD", tokens, K));
         vault.registerIndex(address(idx), factory.indexSalt(address(idx)));
         uint256[] memory amounts = idx.previewOrder(10e18);

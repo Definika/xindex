@@ -15,7 +15,7 @@ import {VaultMessages} from "./libraries/VaultMessages.sol";
 ///      it. Chains follow the listing flow's timelock: proposed by the owner, executable by anyone after LISTING_DELAY
 ///      and within PROPOSAL_WINDOW, cancellable by the owner or guardian. A chain's vault is fixed at its first
 ///      registration, because every index holding its tokens copies it; only its state verifier can change after that,
-///      which is how a verifier follows a chain upgrade (design 6.10). A vault's own settings change only through
+///      which is how a verifier follows a chain upgrade (design 6.10), and a new one waits ROTATION_DELAY (FAC-1). A vault's own settings change only through
 ///      messages the factory sends after a delay: a cap after LISTING_DELAY, the freezer after GUARDIAN_DELAY, and the
 ///      Ethereum-event verifiers after ROTATION_DELAY (design 6.9).
 contract HybridIndexFactory is IndexFactory, IHybridIndexFactory {
@@ -69,7 +69,9 @@ contract HybridIndexFactory is IndexFactory, IHybridIndexFactory {
         uint256 pending = _chainProposals[chainId].eta;
         if (pending != 0 && block.timestamp <= pending + PROPOSAL_WINDOW) revert ChainPending(chainId, pending);
 
-        uint256 eta = block.timestamp + LISTING_DELAY;
+        // A new state verifier for a registered chain decides every index's mints there, as new P1 and P2 decide the
+        // vault's payouts, so it waits as long (FAC-1).
+        uint256 eta = block.timestamp + (fixedVault == bytes32(0) ? LISTING_DELAY : ROTATION_DELAY);
         _chainProposals[chainId] = ChainProposal({vault: vault, stateVerifier: verifier, eta: SafeCast.toUint64(eta)});
         emit ChainProposed(chainId, vault, verifier, eta);
     }

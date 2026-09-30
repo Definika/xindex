@@ -12,6 +12,9 @@ import {IHybridHubTypes} from "./IHybridHubTypes.sol";
 ///      index mints against those and against the Ethereum tokens only it holds, which the holder pays. A vault token
 ///      only the new index holds needs fresh deposits, and so an order, not a migration.
 interface IHybridHubExtension is IHybridHubTypes {
+    /// @notice How long after a freeze that holds an order has ended its minter must wait to give up the order: 7 days.
+    function HELD_ORDER_GRACE() external view returns (uint256);
+
     /// @notice Everything this index ever sent out of its vault balance of `token`, in BURN and MIGRATE messages.
     function sentOut(address token) external view returns (uint256);
 
@@ -25,8 +28,9 @@ interface IHybridHubExtension is IHybridHubTypes {
 
     /// @notice Another HybridHub index of this factory only, from its `migrate`. Mints `shares` to `to` against
     ///         `ethIn` of each Ethereum component already sent here, what `holder` pays of the rest, and `vaultIn` of
-    ///         each vault component on its way inside its vault. Refused while a fill is accepted, or while a chain of
-    ///         this index is frozen.
+    ///         each vault component on its way inside its vault. Refused while a fill is accepted, while a chain of
+    ///         this index is frozen, or beyond this index's mint room, which only its creator's migration into it empty
+    ///         escapes.
     function acceptMigration(
         address holder,
         address to,
@@ -47,7 +51,9 @@ interface IHybridHubExtension is IHybridHubTypes {
     ///         for good here: nothing mints on it, and its holders were paid there.
     function recordExit(uint256 chainId, bytes calldata proof) external;
 
-    /// @notice Anyone. Fails a locked order that `chainId`'s snapshot exit keeps from its claim for good.
+    /// @notice Fails a locked order, its escrow booked as its minter's claims and its intake refunded by every vault.
+    ///         Anyone, once `chainId`'s snapshot exit keeps the order from its claim for good; or its minter, once a
+    ///         freeze of `chainId` that holds it has been over for HELD_ORDER_GRACE without a re-confirmation.
     function failHeldOrder(uint256 orderId, uint256 chainId) external;
 
     /// @notice `holder`'s recovery address on `chainId`.

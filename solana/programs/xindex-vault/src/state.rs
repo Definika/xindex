@@ -26,8 +26,25 @@ pub struct Config {
     pub outflow_floor: u64,
     /// Every lamport the vault accounts for: settled balances plus the deposits of open and failed intakes.
     pub held: u64,
+    /// The factory's nonce of the last cap update, freezer change and rotation delivered: an older one of the same kind,
+    /// delivered late, cannot undo a newer one (SOL-3).
+    pub cap_nonce: u64,
+    pub freezer_nonce: u64,
+    pub rotation_nonce: u64,
+    /// A raised cap or floor, a new freezer and new verifiers each wait GOVERNANCE_DELAY here, where the freezer can
+    /// see them and stop a raise or a rotation, however their proofs were obtained (VLT-2).
+    pub pending_cap: PendingChange,
+    pub pending_freezer: PendingChange,
+    pub pending_rotation: PendingChange,
     pub treasury_bump: u8,
     pub bump: u8,
+}
+
+/// A governance change waiting: the hash of its message body and when it may apply, all zero when none waits.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Default, InitSpace)]
+pub struct PendingChange {
+    pub body_hash: [u8; 32],
+    pub ready_at: i64,
 }
 
 /// One hour's payouts, tagged with the hour so a stale slot reads as empty.

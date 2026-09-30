@@ -90,12 +90,29 @@ contract HybridHubExitTest is HybridTest {
         assertFalse(hub.intakeSettled(hub.intakeIdOf(orderId)), "locked, not claimed");
     }
 
+    /// @dev VLT-I6 and MOD-I1: after the exit, the vault's paid totals include the holders' claims and it resolves every intake
+    ///      itself, so neither is evidence against it.
+    function test_VLTI6_MODI1_noEvidenceAfterTheExit() public {
+        uint256 claimed = _mint(hub, minter, 1e18);
+        _checkpointAt(SNAPSHOT_BLOCK);
+        _snapshot();
+        hub.recordExit(chainId, _honest(block.timestamp));
+        IHybridHubTypes.IndexRecord memory record;
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.ChainExited.selector, chainId));
+        hub.reportOutflow(chainId, record, _honest(block.timestamp));
+        IHybridHubTypes.ChainProof memory p;
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.ChainExited.selector, chainId));
+        hub.reportForgedDeposit(claimed, chainId, p);
+    }
+
     /// @dev The whole exit. At the last checkpoint an EOA and a safe hold shares, one order is claimed but its settle
     ///      message never reached the vault, and another is locked. 187 days later the vault pays each holder from the
     ///      hub's storage at the checkpoint, settles the claimed order's intake and refunds the locked one's; the hub
     ///      records the exit, fails the locked order, and nothing mints on the chain again.
     function test_theSnapshotExit() public {
-        _mint(hub, eoa, 1e18);
+        _mint(hub, minter, 1e18); // the creator's seed
+        vm.prank(minter);
+        hub.transfer(eoa, 1e18);
         vm.prank(eoa);
         hub.transfer(safe, 0.25e18);
         vm.prank(safe);
@@ -165,6 +182,8 @@ contract HybridHubExitTest is HybridTest {
         assertEq(message.topics[0], VaultMessages.EVENT_TOPIC);
         assertEq(_message(logs).kind, VaultMessages.INTAKE_FAILED);
         bytes memory proof = abi.encode(message.emitter, message.topics[0], message.topics[1], message.data);
+        p1.setEventBlock(block.number);
+        p2.setEventBlock(block.number);
         vm.expectRevert(abi.encodeWithSelector(IXindexVault.IssuedAfterSnapshot.selector, SNAPSHOT_BLOCK + 100));
         vault.deliver(proof, proof);
     }

@@ -73,6 +73,12 @@ market from `script/testnet/SetupTestMarket.s.sol`.
    - The red team of 2026-09-24: `RT-01`..`RT-25` (`audit/2026-09-24-red-team.md`), a test named `test_RT01_...`.
    - The internal red team of Stage A on 2026-09-30: `SA-01`..`SA-15` (`audit/2026-09-30-stage-a-red-team.md`), a test
      named `test_SA01_...`. SA-08 to SA-15 were fixed or recorded by documentation alone and have no test.
+   - The internal red team of Stage B on 2026-09-30 (`audit/2026-09-30-stage-b-red-team.md`), each id carrying its
+     report's prefix: `VLT-1`..`VLT-5` and `VLT-I1`..`VLT-I6`, `HUB-1`..`HUB-4` and `HUB-I1`..`HUB-I3`, `MOD-1`..`MOD-5`
+     and `MOD-I1`..`MOD-I6`, `BNB-1`, `BNB-2`, `FAC-1`, `FAC-2` and `BNB-I1`..`BNB-I4`, and `SOL-1`..`SOL-10`. A test is
+     named `test_VLT1_...` or `test_VLTI3_...`; the Solana program's are Rust tests named `test_sol1_...`, and
+     `test_vlt2_...` for an EVM finding fixed on its twin. The record's status column names every test, and the ids
+     fixed or recorded by documentation alone, which have none.
 
    Find a test by its id. Most v1 and R tests are in `test/Security.t.sol` and `test/fork/Security.fork.t.sol`. The R
    tests that drive the λ auction directly (R04, R08, R14, R17, R19, R22) are in `test/IndexHub.rebalance.t.sol`,
@@ -389,10 +395,18 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
 - **Migration is atomic on Ethereum and trusts only clones.** `migrate` and `acceptMigration` accept only another
   HybridHub of this factory (a recorded salt). A vault token the new version holds must be covered by the old
   shares' backing of it; a vault token new to the version comes by order. `acceptMigration` checks the backing in real
-  balances, refuses while a fill is accepted or a chain is frozen, and never counts toward the mint cap.
-- **Evidence freezes the chain for every index.** A void, a slash, or a claimed order's deposit proven false freezes
-  mints on the chain at the factory, and leaves the vault paying. A vault record paying more than was sent freezes the
-  vault too.
+  balances, and refuses while a fill is accepted or a chain is frozen.
+- **Every share that rests on a vault proof enters within the mint cap,** 4% of the supply a day: an order's and a
+  migration's alike, since the old index's book rests on proofs too (MOD-2). The one exception is the seed of an empty
+  index with nothing locked, which only its creator may mint, by an order or a migration (HUB-2).
+- **Evidence freezes the chain for every index,** so no honest state may ever count as evidence. A void, a slash, or a
+  claimed order's deposit proven false freezes mints on the chain at the factory, and leaves the vault paying. A vault
+  record paying more than was sent freezes the vault too. Every evidence proof is bounded below by a deadline or a
+  freeze, since state verifiers prove old blocks: a slash's by the delivery deadline, and an empty intake is evidence
+  only on a chain where the fill recorded a delivery (HUB-1). An exited chain takes no evidence.
+- **Messages wait for the checkpoint.** A vault runs a message that moves coins or loosens a rule only from an
+  Ethereum block its checkpoint covers, so the snapshot never pays a holder whose burn it paid (VLT-3). A snapshot
+  claim reads a component only inside the hub's components array (VLT-1).
 - **A stall is only ever Ethereum's formats breaking.** Anyone can advance a vault's checkpoint while P1 and P2 work, so
   a stall (7 days without one) cannot be manufactured. Only then may the owner's emergency multisig propose a
   successor, which must prove the last checkpoint, a recent one and the last message, and wait 30 days of review with
@@ -402,9 +416,20 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   or recovery address within the speed limit, and open intakes are settled or refunded from the hub's
   `_settledIntakes`. The hub marks that in the transaction that sends each settle message; keep it that way. A hub that
   records the exit never mints on that chain again. `test_theHubLayoutIsPinned` pins the slots each side reads.
-- **Vault governance is delayed and public.** The factory sends `CAP_UPDATE` only after `LISTING_DELAY`,
+- **Vault governance is delayed and public, twice.** The factory sends `CAP_UPDATE` only after `LISTING_DELAY`,
   `FREEZER_CHANGE` only after `GUARDIAN_DELAY` (the guardian cannot cancel it, as it cannot block its own replacement),
   and `VERIFIER_ROTATION` only after `ROTATION_DELAY` (30 days). P1 and P2 must always be two different verifiers.
+  - On the vault, anything that loosens a rule then waits `GOVERNANCE_DELAY` (7 days), so P1 and P2 both broken cannot
+    loosen one at once (VLT-2):
+    - a raised cap or floor;
+    - a new freezer;
+    - new verifiers.
+  - The freezer may cancel a waiting raise or rotation, never its own replacement, and a freeze holds every waiting
+    change but that one.
+  - Only a message on both proofs moves a kind's nonce mark (VLT-4).
+  - A registered chain's new state verifier also waits `ROTATION_DELAY`, since it decides every index's mints there
+    (FAC-1).
+  - The BNB verifier trusts only a set from the last `MAX_LAG` (1 day), to name the next or to prove a block (BNB-2).
 - **Size.** The hub and the module are both near the 24KB limit; new code goes in the extension. Check
   `forge build --sizes` after any change to any of the three.
 - **The Solana vault is the EVM vault's twin.** `solana/programs/xindex-vault` keeps the same messages, digests, speed
@@ -417,12 +442,14 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
 
 - `pragma solidity 0.8.28;` in `src/` and `script/`; tests use `^0.8.24`. The compiler is pinned to 0.8.28 in
   `foundry.toml`, and CI pins Foundry v1.8.1 and eth-wake 4.22.1 in `.github/workflows/test.yml`.
-- **Wake config.** CI generates its Wake config from `foundry.toml` and adds `audit/` and `prototype/` to its excluded
-  folders: the PoC tests in `audit/` only compile inside `test/poc/` of the audited commit, and `prototype/evm` is a
-  separate Foundry project that needs via-IR, so either would stop Wake before any detector runs. The Wake VS Code extension reads `.vscode/settings.json` instead, which holds three things:
+- **Wake config.** CI generates its Wake config from `foundry.toml` and adds `audit/`, `prototype/` and `demo/` to its
+  excluded folders, since any of them would stop Wake before a detector runs: the PoC tests in `audit/` only compile
+  inside `test/poc/` of the audited commit, `prototype/evm` is a separate Foundry project that needs via-IR, and `demo/`
+  is one whose `xindex/` remapping only it knows. The Wake VS Code extension reads `.vscode/settings.json` instead,
+  which holds three things:
   - its copy of `forge remappings` (paste the new output there whenever a dependency or remapping changes);
   - the optimizer settings of `foundry.toml` (without them the factory's initcode looks too large to deploy);
-  - Wake's default excluded folders plus `audit/` and `prototype/`.
+  - Wake's default excluded folders plus `audit/`, `prototype/` and `demo/`.
 - **Prague in tests.** `src/` compiles for Cancun, but the BLS12-381 precompiles (EIP-2537) exist from Prague on,
   which Ethereum mainnet runs. A suite that calls them sets `/// forge-config: default.evm_version = "prague"` on its
   contract; `vm.setEvmVersion` inside a test does not enable them for calls already running.

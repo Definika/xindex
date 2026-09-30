@@ -33,4 +33,11 @@ pub enum VaultError {
     #[msg("the verifier accounts do not match P1 and P2")]
     WrongVerifier,
     WrongRecipient,
+    #[msg("a verifier must be a program nobody can upgrade")]
+    VerifierUpgradeable,
+    #[msg("an older governance message of this kind than the last delivered")]
+    StaleGovernance,
+    #[msg("no change of this kind with this body waits")]
+    NoPendingChange,
+    ChangeNotReady,
 }

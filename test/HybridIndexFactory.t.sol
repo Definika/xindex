@@ -12,6 +12,7 @@ import {IndexHub} from "../src/IndexHub.sol";
 import {IHybridIndexFactory} from "../src/interfaces/IHybridIndexFactory.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
+import {IXindexVault} from "../src/interfaces/IXindexVault.sol";
 import {VaultMessages} from "../src/libraries/VaultMessages.sol";
 import {MockEventVerifier} from "./mocks/MockEventVerifier.sol";
 import {MockStateVerifier} from "./mocks/MockStateVerifier.sol";
@@ -98,11 +99,17 @@ contract HybridIndexFactoryTest is HybridTest {
 
     /// @dev A registered chain keeps its vault; its state verifier rotates through the same delay, and every index
     ///      reads the new one at its next proof.
-    function test_theStateVerifierRotates() public {
+    /// @dev FAC-1: a new state verifier decides every index's mints on its chain, as new P1 and P2 decide the vault's
+    ///      payouts, so it waits as long: 30 days in public, not a listing's 2.
+    function test_FAC1_aNewStateVerifierWaitsTheRotationDelay() public {
         MockStateVerifier next = new MockStateVerifier();
         vm.prank(owner);
         factory.proposeChain(chainId, _b32(address(vault)), address(next));
-        vm.warp(block.timestamp + 2 days);
+        uint256 eta = block.timestamp + factory.ROTATION_DELAY();
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        vm.expectRevert(abi.encodeWithSelector(IHybridIndexFactory.ChainNotReady.selector, chainId, eta));
+        factory.executeChain(chainId);
+        vm.warp(eta);
         factory.executeChain(chainId);
         assertEq(factory.stateVerifier(chainId), address(next));
         assertEq(factory.chain(chainId).vault, _b32(address(vault)));
@@ -282,6 +289,29 @@ contract HybridIndexFactoryTest is HybridTest {
         factory.executeVaultProposal(id);
     }
 
+    /// @dev FAC-2 and VLT-4: an older cap update delivered after a newer one never runs, so it cannot undo it.
+    function test_FAC2_VLT4_anOlderCapUpdateDeliveredLastDoesNotUndoANewerOne() public {
+        vm.prank(owner);
+        bytes32 id = factory.proposeCap(chainId, bytes32(0), 5e24, 1e21);
+        vm.warp(block.timestamp + 2 days);
+        vm.recordLogs();
+        factory.executeVaultProposal(id);
+        Vm.Log[] memory older = vm.getRecordedLogs();
+        uint256 olderNonce = factory.messageNonce();
+        vm.prank(owner);
+        factory.proposeCap(chainId, bytes32(0), 4e24, 1e21);
+        vm.warp(block.timestamp + 2 days);
+        vm.recordLogs();
+        factory.executeVaultProposal(id);
+        Vm.Log[] memory newer = vm.getRecordedLogs();
+
+        _deliverAll(newer);
+        assertEq(vault.cap(address(0)), 4e24);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.StaleGovernance.selector, olderNonce, olderNonce + 1));
+        _deliverAll(older);
+        assertEq(vault.cap(address(0)), 4e24, "the newer cap stands");
+    }
+
     /// @dev Each proposal must be executed within PROPOSAL_WINDOW of its eta; an expired one can be replaced.
     function test_vaultProposals_expire() public {
         vm.prank(owner);
@@ -312,6 +342,8 @@ contract HybridIndexFactoryTest is HybridTest {
         vm.recordLogs();
         factory.executeVaultProposal(id);
         _deliverAll(vm.getRecordedLogs());
+        assertEq(vault.freezer(), freezer, "the vault waits a week of its own");
+        _applyChange(VaultMessages.FREEZER_CHANGE, abi.encode(_b32(next)));
         assertEq(vault.freezer(), next);
     }
 
@@ -357,6 +389,7 @@ contract HybridIndexFactoryTest is HybridTest {
         vm.recordLogs();
         factory.executeVaultProposal(id);
         _deliverAll(vm.getRecordedLogs());
+        _applyChange(VaultMessages.VERIFIER_ROTATION, abi.encode(_b32(address(n1)), _b32(address(n2))));
         assertEq(address(vault.p1()), address(n1));
         assertEq(address(vault.p2()), address(n2));
     }

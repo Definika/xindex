@@ -129,18 +129,18 @@ jobs:
           EOF
 
       # Wake reads its remappings from foundry.toml, so no second copy is committed. The generated config leaves out
-      # only Wake's default folders, so audit/ and prototype/ are added: the PoC tests in audit/ compile only inside the
-      # audited commit, and prototype/evm is a separate Foundry project that needs via-IR; Wake stops on either's
-      # errors before running a detector. `wake detect` exits non-zero on any detection; the documented inline
+      # only Wake's default folders, so audit/, prototype/ and demo/ are added: the PoC tests in audit/ compile only
+      # inside the audited commit, prototype/evm is a separate Foundry project that needs via-IR, and demo/ is one whose
+      # remapping only it knows; Wake stops on any of their errors before running a detector. `wake detect` exits non-zero on any detection; the documented inline
       # suppressions in src/ still apply.
       - name: Run the Wake detectors on src
         run: |
           set -euo pipefail
           pipx install eth-wake==4.22.1
           wake init config --force
-          perl -pi -e 's/^exclude_paths = \[/exclude_paths = ["audit", "prototype", /' wake.toml
-          if ! grep -q '^exclude_paths = \["audit", "prototype", ' wake.toml; then
-            echo "::error::the generated wake.toml changed shape, so audit/ and prototype/ are not excluded"
+          perl -pi -e 's/^exclude_paths = \[/exclude_paths = ["audit", "prototype", "demo", /' wake.toml
+          if ! grep -q '^exclude_paths = \["audit", "prototype", "demo", ' wake.toml; then
+            echo "::error::the generated wake.toml changed shape, so audit/, prototype/ and demo/ are not excluded"
             exit 1
           fi
           wake detect all src

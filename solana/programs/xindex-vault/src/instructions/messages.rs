@@ -9,7 +9,8 @@ use crate::abi::{self, Message};
 use crate::constants::*;
 use crate::error::VaultError;
 use crate::events::*;
-use crate::state::{Config, IndexState, Intake, Owed, Used};
+use crate::instructions::governance;
+use crate::state::{Config, IndexState, Intake, Owed, PendingChange, Used};
 use crate::vault;
 use crate::verify::{self, Log};
 
@@ -69,7 +70,7 @@ fn accept<'a, 'info>(
 }
 
 /// A body word that must be zero: Stage B's Solana vault holds SOL only, `address(0)` on Ethereum.
-fn check_native(word: &[u8; 32]) -> Result<()> {
+pub fn check_native(word: &[u8; 32]) -> Result<()> {
     require!(*word == [0u8; 32], VaultError::NotNative);
     Ok(())
 }
@@ -130,6 +131,11 @@ pub fn handle_deliver_burn<'info>(
         ctx.accounts.recipient.key(),
         VaultError::WrongRecipient
     );
+    // The treasury, or any account of this program, would strand the payout (SOL-9).
+    require!(
+        recipient != ctx.accounts.treasury.key() && *ctx.accounts.recipient.owner != crate::ID,
+        VaultError::WrongRecipient
+    );
 
     let accounts = ctx.accounts;
     accounts.used.bump = ctx.bumps.used;
@@ -148,11 +154,13 @@ pub fn handle_deliver_burn<'info>(
         amount,
         recipient
     });
+    let min_pay = vault::min_payout(&accounts.recipient.to_account_info())?;
     let pay = vault::pay_owed(
         &accounts.config,
         &mut accounts.index_state,
         &mut accounts.owed,
         false,
+        min_pay,
     )?;
     if pay == 0 {
         return Ok(());
@@ -321,6 +329,7 @@ pub fn handle_deliver_migrate<'info>(
         &mut accounts.index_state,
         &mut accounts.owed,
         false,
+        0,
     )?;
     if pay != 0 {
         credit_migration(
@@ -360,15 +369,12 @@ pub struct DeliverGovernance<'info> {
     pub config: Account<'info, Config>,
     #[account(init, payer = payer, space = 8 + Used::INIT_SPACE, seeds = [USED_SEED, abi::message_id(&payload).as_ref()], bump)]
     pub used: Account<'info, Used>,
-    /// CHECK: a rotation's new P1, which must be a program; absent for the other kinds.
-    pub new_p1: Option<UncheckedAccount<'info>>,
-    /// CHECK: a rotation's new P2, as the new P1.
-    pub new_p2: Option<UncheckedAccount<'info>>,
     pub system_program: Program<'info, System>,
 }
 
-/// Anyone: a governance message from the factory. A freeze, or a cap update raising neither figure, may rest on one
-/// proof; everything else needs both.
+/// Anyone: a governance message from the factory. A freeze, and a cap update raising neither figure, apply at once and
+/// may rest on one proof. A raise, a new freezer and new verifiers need both, then wait GOVERNANCE_DELAY here, where
+/// the freezer can see them and stop a raise or a rotation, however their proofs were obtained (VLT-2).
 pub fn handle_deliver_governance<'info>(
     ctx: Context<'info, DeliverGovernance<'info>>,
     payload: Vec<u8>,
@@ -384,54 +390,48 @@ pub fn handle_deliver_governance<'info>(
     let accounts = ctx.accounts;
     accounts.used.bump = ctx.bumps.used;
     let config = &mut accounts.config;
+    // The factory's nonce only rises: an older message of a kind, delivered late, cannot undo a newer one (SOL-3). Only
+    // one on both proofs moves the mark, so a single broken proof system cannot lock the factory out with a forged
+    // nonce (VLT-4). A freeze only protects, so any freeze may run.
+    if m.kind != FREEZE {
+        let last = match m.kind {
+            CAP_UPDATE => &mut config.cap_nonce,
+            FREEZER_CHANGE => &mut config.freezer_nonce,
+            _ => &mut config.rotation_nonce,
+        };
+        require!(m.nonce > *last, VaultError::StaleGovernance);
+        if both {
+            *last = m.nonce;
+        }
+    }
+    let now = vault::now()?;
     match m.kind {
         CAP_UPDATE => {
-            check_native(abi::body_word(m.body, 3, 0)?)?;
-            let cap = abi::to_u64(abi::body_word(m.body, 3, 1)?)?;
-            let floor = abi::to_u64(abi::body_word(m.body, 3, 2)?)?;
-            require!(
-                both || (cap <= config.cap && floor <= config.outflow_floor),
-                VaultError::BothProofsRequired
-            );
-            config.cap = cap;
-            config.outflow_floor = floor;
-            emit!(CapSet {
-                cap,
-                outflow_floor: floor
-            });
+            let (cap, floor) = governance::read_cap(m.body)?;
+            if cap <= config.cap && floor <= config.outflow_floor {
+                // Newer than a waiting raise, which it replaces.
+                config.pending_cap = PendingChange::default();
+                governance::set_cap(config, cap, floor);
+            } else {
+                require!(both, VaultError::BothProofsRequired);
+                governance::queue(&mut config.pending_cap, m.kind, m.body, now);
+            }
         }
         FREEZE => {
             require!(m.body.is_empty(), VaultError::BadMessage);
-            freeze_until(config, vault::now()?, Pubkey::default());
+            freeze_until(config, now, Pubkey::default());
         }
         FREEZER_CHANGE => {
             require!(both, VaultError::BothProofsRequired);
-            let freezer = Pubkey::new_from_array(*abi::body_word(m.body, 1, 0)?);
-            require!(freezer != Pubkey::default(), VaultError::ZeroAddress);
-            config.freezer = freezer;
-            emit!(FreezerChanged { freezer });
+            abi::body_word(m.body, 1, 0)?;
+            governance::queue(&mut config.pending_freezer, m.kind, m.body, now);
         }
         _ => {
             require!(both, VaultError::BothProofsRequired);
-            let p1 = Pubkey::new_from_array(*abi::body_word(m.body, 2, 0)?);
-            let p2 = Pubkey::new_from_array(*abi::body_word(m.body, 2, 1)?);
-            check_program(&accounts.new_p1, &p1)?;
-            check_program(&accounts.new_p2, &p2)?;
-            require_keys_neq!(p1, p2, VaultError::VerifiersNotDistinct);
-            config.p1 = p1;
-            config.p2 = p2;
-            emit!(VerifiersRotated { p1, p2 });
+            abi::body_word(m.body, 2, 0)?;
+            governance::queue(&mut config.pending_rotation, m.kind, m.body, now);
         }
     }
-    Ok(())
-}
-
-fn check_program(account: &Option<UncheckedAccount>, key: &Pubkey) -> Result<()> {
-    let account = account.as_ref().ok_or(VaultError::NotAContract)?;
-    require!(
-        account.key() == *key && account.executable,
-        VaultError::NotAContract
-    );
     Ok(())
 }
 

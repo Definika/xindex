@@ -25,7 +25,9 @@ contract BnbStateVerifier is IBnbStateVerifier {
     /// @inheritdoc IBnbStateVerifier
     uint256 public constant EPOCH_LENGTH = 1000;
     /// @inheritdoc IBnbStateVerifier
-    uint256 public constant MAX_SPAN = 1 hours;
+    uint256 public constant MAX_SPAN = 15 minutes;
+    /// @inheritdoc IBnbStateVerifier
+    uint256 public constant MAX_LAG = 1 days;
     /// @inheritdoc IBnbStateVerifier
     uint8 public constant NEW_KEY = type(uint8).max;
     /// @dev A vote's bitset is a uint64 on BNB Chain.
@@ -81,6 +83,10 @@ contract BnbStateVerifier is IBnbStateVerifier {
     function advance(bytes[] calldata voterKeys, EpochStep[] calldata steps) external {
         uint256 epoch = latestEpoch;
         ValidatorSet memory set = _sets[epoch];
+        // A set long superseded may have unbonded and its keys changed hands, and BNB Chain punishes a conflicting
+        // vote only for a recent target: such a set must not name the next (BNB-2). A verifier left this far behind
+        // stops for good, and the chain registry replaces it.
+        if (block.timestamp > uint256(set.time) + MAX_LAG) revert TooOld(set.time);
         bytes[] memory voters = voterKeys;
         _checkKeys(set, voters);
         for (uint256 i = 0; i < steps.length; ++i) {
@@ -204,7 +210,8 @@ contract BnbStateVerifier is IBnbStateVerifier {
     /// @dev A header is final once a quorum of the set active at its child voted with it as the source and its child
     ///      as the target. The set's window bounds the block number, and `MAX_SPAN` its timestamp: an old set stays
     ///      valid for its own window forever, so without the bound validators from long ago could forge a header
-    ///      there dated today.
+    ///      there dated today. `MAX_LAG` bounds its age, so a set from long ago cannot forge one there dated then
+    ///      either, for a reader that takes an old state, as evidence of an outflow or an exit does (BNB-2).
     function _verifyHeader(bytes memory header, uint256 epoch, Vote memory vote, bytes[] memory keys)
         private
         view
@@ -215,6 +222,7 @@ contract BnbStateVerifier is IBnbStateVerifier {
         _checkKeys(set, keys);
         (h,) = _parse(header);
         if (h.time < set.time || h.time > set.time + MAX_SPAN) revert TimeOutsideWindow(h.time, set.time);
+        if (block.timestamp > h.time + MAX_LAG) revert TooOld(h.time);
         _checkVote(h, epoch, set, vote, keys);
     }
 

@@ -95,6 +95,9 @@ interface IXindexVault {
     event SnapshotBegun(uint256 blockNumber, uint256 timestamp, bytes32 stateRoot);
     event SnapshotClaimed(address indexed index, address indexed holder, address recipient, uint256 amount, bytes32 id);
     event IntakeResolved(address indexed index, uint256 indexed intakeId, bool settled);
+    event ChangeQueued(bytes32 indexed key, uint8 kind, bytes body, uint256 readyAt);
+    event ChangeApplied(bytes32 indexed key);
+    event ChangeCancelled(bytes32 indexed key);
 
     error ZeroAddress();
     error ZeroAmount();
@@ -151,6 +154,12 @@ interface IXindexVault {
     /// @notice The holder registered `registered` as its recovery address on this chain, and is paid only there.
     error WrongRecipient(address registered);
     error BadSignature();
+    /// @notice A governance message no newer than the last of its kind the vault took.
+    error StaleGovernance(uint256 nonce, uint256 last);
+    /// @notice A message that moves coins or loosens a rule, from a block after the vault's checkpoint: advance it first.
+    error NotCheckpointed(uint256 blockNumber, uint256 checkpoint);
+    error NoPendingChange(bytes32 key);
+    error ChangeNotReady(bytes32 key, uint256 readyAt);
 
     /// @notice Largest share of an index's balance of a token that may leave in any 24 hours: 4%.
     function SPEED_LIMIT() external view returns (uint256);
@@ -173,6 +182,10 @@ interface IXindexVault {
     /// @notice How long after a stall began the snapshot exit may begin, if no successor was adopted: 180 days.
     function SNAPSHOT_EXIT_DELAY() external view returns (uint256);
 
+    /// @notice How long a raised cap or floor, a new freezer or new verifiers wait on the vault before they apply: 7 days,
+    ///         during which the freezer can cancel a raise or a rotation and watchers compare it with Ethereum.
+    function GOVERNANCE_DELAY() external view returns (uint256);
+
     /// @notice The owner's emergency multisig on this chain: it can do nothing but propose a successor in a stall.
     function RECOVERY_PROPOSER() external view returns (address);
 
@@ -193,6 +206,20 @@ interface IXindexVault {
 
     /// @notice The freezer's vetoes in the current stall, while the checkpoint it began after is unchanged.
     function vetoes() external view returns (uint256);
+
+    /// @notice The factory's nonce of the last governance message taken on both proofs for `key`: its kind shifted
+    ///         above the token's address, the token being a cap's and zero otherwise.
+    function governanceNonce(bytes32 key) external view returns (uint256);
+
+    /// @notice The hash of the change waiting under `key`, `keccak256(abi.encode(body, readyAt))`, or zero.
+    function pendingChange(bytes32 key) external view returns (bytes32);
+
+    /// @notice Anyone, from `readyAt` and, but for a freezer change, while not frozen: applies the waiting change that
+    ///         `ChangeQueued` announced.
+    function applyChange(uint8 kind, bytes calldata body, uint256 readyAt) external;
+
+    /// @notice The freezer only: drops a waiting cap raise or rotation. It cannot drop its own replacement.
+    function cancelChange(bytes32 key) external;
 
     /// @notice Whether `holder` has claimed its snapshot share of `index`.
     function snapshotClaimed(address index, address holder) external view returns (bool);

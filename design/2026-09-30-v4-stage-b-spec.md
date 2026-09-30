@@ -190,16 +190,21 @@ hour, and trusting the pool of 45). The rules, from bnb-chain/bsc v1.7.8 and che
   target hash]))` under the proof-of-possession ciphersuite; its bitset indexes the set in ascending address order.
 - **Following the chain.** The verifier starts from one epoch block its deployer names, and then takes each next epoch
   block, exactly 1,000 later, with the vote that finalized it by the set it replaces. Nothing can be skipped: each set
-  is known only through the previous one. Anyone can submit, several epochs to a transaction. If nobody does, BNB
-  deposits wait; nothing unsafe follows.
+  is known only through the previous one. Anyone can submit, several epochs to a transaction. The latest set may name
+  the next only within `MAX_LAG` (1 day) of its own epoch block (BNB-2). BNB Chain punishes a conflicting vote only for
+  a recent target, and a set long superseded may have unbonded and its keys changed hands, so an old set must not name
+  the next. A verifier left a day behind therefore stops for good: BNB deposits wait until the registry replaces it,
+  which takes `ROTATION_DELAY` (FAC-1). Holders redeem throughout.
 - **Keys.** A header carries compressed keys; the submitter adds the uncompressed ones, and each must have the same x,
   the y the sign flag names, and lie on the curve (G1ADD checks that). That makes it the key the header names, which
   BNB Chain checked for the subgroup when the validator registered it, so no subgroup check is repeated here.
 - **State.** A storage proof of block `B` names the epoch whose set signs `B + 1`; the verifier checks that the target
-  lies in that set's window and that `B`'s timestamp is after that epoch block's and at most `MAX_SPAN` (1 hour)
-  after it. Old sets stay valid for their own windows forever, so without that bound a coalition of validators from
-  long ago could forge a header in an old window with a timestamp of today. The hub must also refuse a state older
-  than one it has already accepted from the same vault.
+  lies in that set's window and that `B`'s timestamp is after that epoch block's and at most `MAX_SPAN` (15 minutes,
+  twice an epoch at 0.45 seconds a block) after it. Old sets stay valid for their own windows forever, so without that
+  bound a coalition of validators from long ago could forge a header in an old window with a timestamp of today. And
+  `B` must be at most `MAX_LAG` (1 day) old, or the same coalition could forge one dated then, which a reader that
+  takes old states, such as evidence of an outflow or of an exit, would accept (BNB-2). The hub must also refuse a
+  state older than one it has already accepted from the same vault.
 - **Carried-over keys.** About 16 of each set's 21 keys were in the set before. A step names, for each entry, either
   the index of the same key in the previous set or a new key; a carried-over key is only matched against the header's
   compressed key, since it was checked on the curve when its own set was recorded.
@@ -261,8 +266,9 @@ The order flow:
 - **Settle.** `settleOrder` proves each vault's intake digest at a block after the deadline, when deposits are final. It
   checks the digest's preimage and that each deposit covers the order. The whole deposit, surplus included, joins the
   index.
-- **Mint cap.** Settling applies the mint cap, 4% of the supply over the current hour and the 24 before it. The first
-  order of an empty index is its seed and has no cap of its own: the vault's quantity cap bounds it.
+- **Mint cap.** Settling applies the mint cap, 4% of the supply over the current hour and the 24 before it. An empty
+  index has no room: only its creator may seed it, with no cap of its own, since the vault's quantity cap bounds a real
+  seed. A stranger's seed could be dust, which 4% a day would never let grow (HUB-2).
 - **Void.** During the 24-hour lock, `voidOrder` takes any proof of the same intake, at a block after the deadline,
   showing a different digest. An intake cannot change between its deadline and the hub's message, so such a proof means
   the deposit or the proof was false. The order fails, and the hub freezes that chain's mints for 14 days.
@@ -286,7 +292,8 @@ Redeeming and claims:
 **New parameters, for the owner's review.**
 - `SETTLE_GRACE` (6 hours): how long an unsettled order stays its minter's before anyone may fail it.
 - `MAX_ORDER_LIFE` (6 hours): the design's maximum deadline.
-- The seed's exemption from the mint cap, bounded by the vault's quantity cap. It replaces the design's "launch cap".
+- The seed's exemption from the mint cap, for the index's creator only, bounded by the vault's quantity cap. It
+  replaces the design's "launch cap".
 
 **Size.** The hub is 23.9KB of the 24KB limit, so layer 2 (the rebalance with deliveries and bond) goes in a separate
 module the hub delegates to, not in the hub itself.
@@ -393,6 +400,15 @@ proposal within `PROPOSAL_WINDOW` (7 days) after its delay.
 | `proposeRotation(chainId, p1, p2)` | `VERIFIER_ROTATION` | `ROTATION_DELAY`, 30 days | owner or guardian |
 
 - **One live proposal** per chain and kind, and per token for caps. An expired one can be replaced.
+- **The vault's own delay (VLT-2).** A raised cap or floor, a new freezer and new verifiers then wait
+  `GOVERNANCE_DELAY` (7 days) on the vault itself before anyone applies them, however their proofs were obtained. So
+  even P1 and P2 both broken cannot lift the speed limit or replace the verifiers at once. The freezer may cancel a
+  waiting raise or rotation, never its own replacement, and a freeze in force holds every change but that one: a
+  freezer that froze again and again must not keep itself in place. A lowering applies at once and drops a waiting
+  raise.
+- **Order (VLT-4, FAC-2).** Every governance message but a freeze must carry a newer factory nonce than the last of its
+  kind, per token for caps, that the vault took on both proofs. Only a message on both proofs moves that mark, so one
+  broken proof system cannot lock the factory out with a forged nonce.
 - **Caps.** Every cap change waits the delay, a lowering included. The immediate protection is the freeze, which
   either proof system carries. On the vault, a message that raises the cap or the floor needs both proofs.
 - **Freezer.** A freezer change follows the guardian's own rule: the guardian cannot block its own replacement. The
@@ -409,7 +425,8 @@ proposal within `PROPOSAL_WINDOW` (7 days) after its delay.
 
 **Unchanged, for the record:** a compromised owner could rotate a vault's verifiers to ones it controls, but only after
 30 days in public, only if the guardian does not cancel, and holders can leave within those 30 days. That is design
-8.1's "owner Safe compromised" row.
+8.1's "owner Safe compromised" row. The same now holds for a registered chain's state verifier, which decides every
+index's mints there: `proposeChain` for a registered chain waits `ROTATION_DELAY`, not `LISTING_DELAY` (FAC-1).
 
 ### 5.5 Migration and evidence against a chain (built 2026-09-30)
 
@@ -429,7 +446,11 @@ another HybridHub index of the same factory in one Ethereum transaction:
 The new index's `acceptMigration` accepts only another HybridHub clone of the factory. It credits its book with the
 vault legs, pulls the rest from the holder, mints, and checks its backing in real balances, so nothing the old index
 says goes unchecked. It refuses while a fill is accepted, as mint claims do, and while any of its chains is frozen.
-Migration is not a deposit and involves no vault-chain proof, so it has no lock and no mint cap.
+Migration involves no vault-chain proof of its own and has no lock. It does count against the new index's mint cap
+(MOD-2): the old index's book rests on deposit proofs too, and an index seeded on a forged one could otherwise carry
+that book into any other index at once, past the only bound design 8.1 has on a broken deposit proof. An empty index
+is seeded by migration only by its creator, as by an order. So a new version fills at 4% of its supply a day, after
+its creator's seed; the creator can seed it large from its own holdings of the old version.
 
 **The vault side.** A `MIGRATE` is now paid like a burn: owed, released within the 4% speed limit, into the new index's
 balance, and counted in the old index's `paidTotal`. Before, it moved the whole amount at once. That meant a forged
@@ -484,6 +505,10 @@ whether full finality or the sync-committee fallback:
 - While Ethereum's formats are unchanged, anyone can end a stall, so nobody, the owner included, can manufacture one.
 - A stalled vault takes no deposit, since it may never see the message that would settle or refund it. It keeps paying
   what it already owes.
+- **Messages wait for the checkpoint (VLT-3).** A message that moves coins or loosens a rule runs only from an Ethereum
+  block at or before the vault's checkpoint; a freeze and a lowered cap need no checkpoint. So the snapshot, which is
+  the last checkpoint, never pays a holder whose burn the vault also paid. Relayers advance the checkpoint before
+  delivering, and the latency of a burn becomes that of a checkpoint.
 
 **Recovery (layer 3).** Only while stalled, `RECOVERY_PROPOSER` may propose a successor pair. That is the owner's
 emergency multisig on the vault's chain, fixed at deployment; the Safe rotates its own signers. The pair must pass a
@@ -508,9 +533,11 @@ Review and adoption:
 - **No later message.** A message from an Ethereum block after the snapshot never runs. Messages from its block or
   earlier still do, if the old verifiers can prove them.
 - **Holders claim directly.** `claimSnapshot(index, holder, recipient, component, proof, signature)` reads the hub's
-  storage at the snapshot's state root. The holder's shares at the units then in force, rounded down, plus its claim on
-  the coin (`_claimOf`) are paid to:
-  - the recovery address it registered in the hub for this chain, if any, which a contract holder must register;
+  storage at the snapshot's state root. `component` must lie inside the hub's components array, whose length the claim
+  reads too; past its end lies storage a holder could fill with "units" of its choosing (VLT-1). The holder's shares at
+  the units then in force, rounded down, plus its claim on the coin (`_claimOf`) are paid to:
+  - the recovery address it registered in the hub for this chain, if any, which a contract holder must register; a
+    value that is no address on this chain counts as none (VLT-I3);
   - otherwise the recipient it signed for with its Ethereum key (EIP-712 `SnapshotClaim(index, holder, recipient)`).
   - One claim per holder and index.
 - **Open intakes are resolved.** The hub marks an intake settled in the transaction that sends its settle message
@@ -534,9 +561,9 @@ Review and adoption:
    once, a forged snapshot root (both P1 and P2 broken before the stall) would take everything; paid within 4% a day,
    it takes what a forged burn would. The floor lets small balances out whole. Holders wait longer: a mass exit takes
    months, as a mass redemption does.
-2. **No freeze after a snapshot.** Nothing could replace the freezer then, since `FREEZER_CHANGE` would be a later
-   message, so a hostile freezer could otherwise hold the exit off for good. A freeze in force when the snapshot
-   begins still runs out.
+2. **No freeze after a snapshot,** neither the freezer's own nor the factory's message (VLT-5). Nothing could replace
+   the freezer then, since `FREEZER_CHANGE` would be a later message, so a hostile freezer could otherwise hold the exit
+   off for good. A freeze in force when the snapshot begins still runs out.
 3. **A stalled vault takes no deposit.** The design does not say. Without this rule, deposits during a stall could
    never be settled or refunded if the stall ended in a snapshot.
 4. **The hub stops minting on an exited chain, rather than detaching it.** The design has the hub "detach that chain's
@@ -606,11 +633,17 @@ limit and the same freeze. What Solana changes:
   delivery fails by construction.
 - **Initialization** only by the program's upgrade authority, so nobody can take the configuration in front of the
   deployer. In production the upgrade authority is then removed. On the devnet it stays.
+- **Verifiers nobody can upgrade (SOL-2).** P1 and P2, at initialization and at a rotation, must be programs whose
+  upgrade authority is removed, or programs of the older loaders.
+- **Governance as on the EVM vault (VLT-2, VLT-4).** A raised cap or floor, a new freezer and new verifiers wait
+  `GOVERNANCE_DELAY` (7 days) in the `config` account, applied by anyone with `apply_change` and cancelled by the freezer
+  with `cancel_change`, the freezer's own replacement excepted. Only a message on both proofs moves a kind's nonce.
 
 **As built (30 September):**
 - 6 unit tests pin the encodings against Solidity's.
-- 20 LiteSVM tests cover initialization, registration, deposits, the route, the used mark, burns under the speed limit,
-  refunds, migration, governance, the freeze and rotation.
+- 29 LiteSVM tests cover initialization, registration, deposits, the route, the used mark, burns under the speed limit,
+  refunds, migration, governance and its delay, the freeze, rotation, and the red team's findings (SOL-1 to SOL-9,
+  VLT-2, VLT-4).
 - `anchor build --no-idl`: Anchor's IDL generator cannot follow addresses derived from the payload.
 
 **Not in the hackathon build:** stall recovery and the snapshot exit (section 5.6), which follow once Solana's own state
@@ -646,3 +679,25 @@ The hackathon demonstration is unaffected: its state verifiers are stubs on ever
 Sources: the TRON VM storage note (blog.phor.net/tron-vm-storage-vulnerability) and java-tron's archive-node
 discussion; SIMD-0215 (accounts lattice hash) and the Solana light-client discussion #278 in
 solana-improvement-documents.
+
+## 9. The internal red team of Stage B (30 September 2026)
+
+Five reviewers read the EVM vault, the hub's three parts, the factory with the BNB verifier and its libraries, and the
+Solana vault with its stub. The findings, their fixes and their tests are in `audit/2026-09-30-stage-b-red-team.md`.
+What changed in the rules above:
+- the vault's own `GOVERNANCE_DELAY` for anything that loosens a rule (5.4), and nonces that only a message on both
+  proofs moves;
+- messages wait for the vault's checkpoint (5.6), and a snapshot claim reads the components array's length;
+- only an index's creator seeds it, and migration counts against the new index's mint cap (5.2, 5.5);
+- evidence of a forged delivery is proven after the delivery deadline, and an empty intake is evidence only on a chain
+  where the fill recorded a delivery (5.3);
+- the BNB verifier's `MAX_LAG` of 1 day and `MAX_SPAN` of 15 minutes (5.1);
+- a registered chain's new state verifier waits `ROTATION_DELAY` (5.4).
+
+**For the owner's review:** the last three rules each change something a holder or the owner can do:
+- migration's mint cap slows a move to a new version to 4% a day after its creator's seed;
+- a BNB verifier left a day behind stops for good;
+- a new state verifier waits 30 days, not 2, so a dead one pauses that chain's mints for longer.
+
+Each trades availability for a bound on loss.
+

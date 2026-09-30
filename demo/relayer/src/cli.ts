@@ -47,6 +47,12 @@ async function solanaInit() {
     else log("stub", p.toBase58(), await sol.initStub(p, r.publicKey, deployer));
   }
   if (await c.getAccountInfo(sol.configPda())) return log("vault already initialized");
+  // The vault takes only verifiers nobody can upgrade (SOL-2): the stubs are made final once their relayers are set.
+  for (const p of [p1, p2]) {
+    if (await sol.upgradeable(p)) {
+      return log(`stub ${p.toBase58()} can still be upgraded: run`, `solana program set-upgrade-authority ${p.toBase58()} --final --url devnet`, "then solana-init again");
+    }
+  }
   log(
     "vault",
     await sol.initVault(deployer, p1, p2, {
@@ -174,6 +180,12 @@ async function open(args: string[]) {
   const s = deployments.sepolia();
   const client = sepoliaClient();
   const w = wallet(sepolia, "SENDER_KEY");
+  // Only an index's creator may seed it (HUB-2): sepolia4 must be broadcast from SENDER_KEY's account.
+  const supply = (await read(client, index, "IHybridIndex", "totalSupply")) as bigint;
+  const creator = (await read(client, s.factory, "HybridIndexFactory", "creatorOf", [index])) as Address;
+  if (supply === 0n && creator.toLowerCase() !== w.account.address.toLowerCase()) {
+    throw new Error(`the index is empty and only its creator ${creator} may seed it; SENDER_KEY is ${w.account.address}`);
+  }
   const shares = BigInt(Math.round(Number(args[0] ?? "10") * 1e6)) * 10n ** 12n;
   const minutes = BigInt(args[1] ?? "10");
   const amounts = (await read(client, index, "IHybridIndex", "previewOrder", [shares])) as bigint[];

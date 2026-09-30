@@ -46,7 +46,7 @@ contract HybridHub is HybridHubStorage, ERC20Upgradeable, ERC20PermitUpgradeable
     /// @inheritdoc IHybridHub
     uint256 public constant SETTLE_GRACE = GRACE;
     /// @inheritdoc IHybridHub
-    uint256 public constant MINT_CAP = 0.04e18;
+    uint256 public constant MINT_CAP = MINT_LIMIT;
     /// @inheritdoc IHybridHub
     uint256 public constant FREEZE_DURATION = FREEZE_LENGTH;
     /// @inheritdoc IHybridHub
@@ -179,7 +179,7 @@ contract HybridHub is HybridHubStorage, ERC20Upgradeable, ERC20PermitUpgradeable
             _checkNotFrozen(_chains[j].chainId);
             digests[j] = _settleChain(j, intakeId, o.deadline, proofs[j], required, deposits);
         }
-        _useMintRoom(o.shares);
+        _useMintRoom(o.shares, totalSupply(), o.minter);
 
         uint256 lockEnds = block.timestamp + MINT_LOCK;
         o.status = OrderStatus.Locked;
@@ -353,19 +353,6 @@ contract HybridHub is HybridHubStorage, ERC20Upgradeable, ERC20PermitUpgradeable
     // The mint cap, recipients
     // ---------------------------------------------------------------------
 
-    /// @dev Records `shares` as claimable in the current hour, within MINT_CAP of the supply over the last 25 hourly
-    ///      buckets. The first order of an empty index, with nothing locked either, is the seed and has no cap: the
-    ///      vault's quantity cap bounds it.
-    function _useMintRoom(uint256 shares) private {
-        uint256 room = mintRoom();
-        if (shares > room) revert MintCapExceeded(shares, room);
-        uint256 hour = block.timestamp / HOUR;
-        Bucket storage b = _minted[hour % BUCKETS];
-        uint256 total = b.hour == hour ? b.amount + shares : shares;
-        b.hour = SafeCast.toUint64(hour);
-        b.amount = SafeCast.toUint192(total);
-    }
-
     function _checkRecipient(address to) private view {
         if (to == address(0)) revert ZeroAddress();
         if (_isTrap(to)) revert InvalidRecipient(to);
@@ -456,17 +443,8 @@ contract HybridHub is HybridHubStorage, ERC20Upgradeable, ERC20PermitUpgradeable
     }
 
     /// @inheritdoc IHybridHub
-    function mintRoom() public view returns (uint256) {
-        uint256 supply = totalSupply();
-        if (supply == 0 && _lockedShares == 0) return type(uint256).max;
-        uint256 hour = block.timestamp / HOUR;
-        uint256 recent = 0;
-        for (uint256 i = 0; i < BUCKETS; ++i) {
-            Bucket memory b = _minted[i];
-            if (b.hour + BUCKETS > hour) recent += b.amount;
-        }
-        uint256 limit = supply * MINT_CAP / WAD;
-        return limit > recent ? limit - recent : 0;
+    function mintRoom() external view returns (uint256) {
+        return _mintRoom(totalSupply());
     }
 
     /// @inheritdoc IHybridHub

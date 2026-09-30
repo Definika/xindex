@@ -141,7 +141,8 @@ contract BnbStateVerifierTest is Test {
         assertEq(set.firstTarget, epochs[0] + 1000, "certainly signing from its successor's epoch block");
         assertEq(verifier.windowEnd(epochs[0]), vm.parseJsonUint(json, _at(1, ".firstTarget")));
         assertEq(verifier.EPOCH_LENGTH(), 1000);
-        assertEq(verifier.MAX_SPAN(), 1 hours);
+        assertEq(verifier.MAX_SPAN(), 15 minutes);
+        assertEq(verifier.MAX_LAG(), 1 days);
     }
 
     /// @dev Every header is built before `expectRevert`, which the harness calls building it would otherwise consume.
@@ -371,9 +372,9 @@ contract BnbStateVerifierTest is Test {
         uint256 epochTime = vm.parseJsonUint(json, _at(2, ".time"));
         IBnbStateVerifier.Vote memory vote = _vote(".switch.after.vote");
         bytes[] memory keys = _keys(_at(2, ".keys"));
-        bytes memory late = _withField(header, TIME, RlpWriter.be(epochTime + 1 hours + 1));
+        bytes memory late = _withField(header, TIME, RlpWriter.be(epochTime + 15 minutes + 1));
         vm.expectRevert(
-            abi.encodeWithSelector(IBnbStateVerifier.TimeOutsideWindow.selector, epochTime + 1 hours + 1, epochTime)
+            abi.encodeWithSelector(IBnbStateVerifier.TimeOutsideWindow.selector, epochTime + 15 minutes + 1, epochTime)
         );
         verifier.verifyHeader(late, epochs[2], vote, keys);
         bytes memory early = _withField(header, TIME, RlpWriter.be(epochTime - 1));
@@ -489,5 +490,39 @@ contract BnbStateVerifierTest is Test {
         bytes memory proof = _stateProof(_keys(".state.accountProof"), new bytes[][](1));
         vm.expectRevert(IBnbStateVerifier.LengthMismatch.selector);
         verifier.verifySlots(vm.parseJsonAddress(json, ".state.account"), slots, proof);
+    }
+
+    /// @dev BNB-2: a set long superseded may have unbonded and its keys changed hands, and BNB Chain punishes a
+    ///      conflicting vote only for a recent target. So it names no next set once a day old: a verifier left that far
+    ///      behind stops for good.
+    function test_BNB2_aStaleSetDoesNotNameTheNextOne() public {
+        uint256 setTime = verifier.validatorSet(epochs[0]).time;
+        bytes[] memory keys = _keys(_at(0, ".keys"));
+        IBnbStateVerifier.EpochStep[] memory steps = _steps(1, 4);
+        vm.warp(setTime + 1 days + 1);
+        vm.expectRevert(abi.encodeWithSelector(IBnbStateVerifier.TooOld.selector, setTime));
+        verifier.advance(keys, steps);
+        vm.warp(setTime + 1 days);
+        verifier.advance(keys, steps);
+        assertEq(verifier.latestEpoch(), epochs[3]);
+    }
+
+    /// @dev BNB-2: nor does the verifier prove a block more than a day old, which an old set could have forged at no
+    ///      risk to itself, for a reader that takes an old state.
+    function test_BNB2_noBlockMoreThanADayOld() public {
+        _advanceAll();
+        bytes32[] memory slots = new bytes32[](1);
+        slots[0] = vm.parseJsonBytes32(json, ".state.slot");
+        bytes[][] memory storageProofs = new bytes[][](1);
+        storageProofs[0] = _keys(".state.storageProof");
+        bytes memory proof = _stateProof(_keys(".state.accountProof"), storageProofs);
+        address wbnb = vm.parseJsonAddress(json, ".state.account");
+        uint256 time = vm.parseJsonUint(json, ".state.block.time");
+        vm.warp(time + 1 days + 1);
+        vm.expectRevert(abi.encodeWithSelector(IBnbStateVerifier.TooOld.selector, time));
+        verifier.verifySlots(wbnb, slots, proof);
+        vm.warp(time + 1 days);
+        (, uint256 provenTime,) = verifier.verifySlots(wbnb, slots, proof);
+        assertEq(provenTime, time);
     }
 }
