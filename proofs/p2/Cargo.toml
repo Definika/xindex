@@ -1,0 +1,10 @@
+# P2 (Stage B spec, section 11): P1's statement, proofs/finality, proven by RISC Zero, a zkVM from another team with its
+# own circuits and its own Groth16 ceremony. A workspace of its own, apart from P1's, because each zkVM's accelerated
+# crates replace the same crates: SP1's patches there, RISC Zero's in the guest here.
+[workspace]
+members = ["host", "methods"]
+resolver = "2"
+
+[profile.release]
+debug = 1
+lto = true

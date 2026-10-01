@@ -3,18 +3,21 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {EthereumFinalityVerifier} from "../src/verifiers/EthereumFinalityVerifier.sol";
+import {FinalityVerifier} from "../src/verifiers/FinalityVerifier.sol";
+import {RiscZeroFinalityVerifier} from "../src/verifiers/RiscZeroFinalityVerifier.sol";
 import {IEthereumEventVerifier} from "../src/interfaces/IEthereumEventVerifier.sol";
 import {ISP1Verifier} from "../src/interfaces/ISP1Verifier.sol";
+import {IRiscZeroVerifier, Receipt as RiscZeroReceipt} from "../src/interfaces/IRiscZeroVerifier.sol";
 import {MerklePatricia} from "../src/libraries/MerklePatricia.sol";
 import {RlpReader} from "../src/libraries/RlpReader.sol";
 import {MockSP1Verifier} from "./mocks/MockSP1Verifier.sol";
+import {MockRiscZeroVerifier} from "./mocks/MockRiscZeroVerifier.sol";
 
-/// @notice P1's verifier on an EVM vault chain, against real mainnet receipts: block 26,092,387's receipts trie rebuilt
-///         and checked against its header by `test/fixtures/ethereum/generate.py`. The SP1 proof is mocked; what the
-///         verifier does with a proven statement is not.
-contract EthereumFinalityVerifierTest is Test {
-    MockSP1Verifier sp1;
-    EthereumFinalityVerifier verifier;
+/// @notice What P1's and P2's verifiers share on an EVM vault chain, against real mainnet receipts: block 26,092,387's
+///         receipts trie rebuilt and checked against its header by `test/fixtures/ethereum/generate.py`. The zkVM proof
+///         is mocked; what the verifier does with a proven statement is not. It runs once for each verifier, below.
+abstract contract FinalityVerifierTest is Test {
+    FinalityVerifier verifier;
     string json;
 
     bytes32 constant KEY = keccak256("the P1 program");
@@ -27,9 +30,17 @@ contract EthereumFinalityVerifierTest is Test {
     bytes32 stateRoot;
     bytes32 receiptsRoot;
 
+    /// @dev The verifier under test, built for program `KEY` from `ANCHOR` at `EPOCH`.
+    function _deploy() internal virtual returns (FinalityVerifier);
+
+    /// @dev The proof its mocked zkVM verifier accepts for `publicValues` from `program`.
+    function _prove(bytes32 program, bytes memory publicValues) internal view virtual returns (bytes memory);
+
+    /// @dev The error its mocked zkVM verifier raises on any other proof.
+    function _rejected() internal pure virtual returns (bytes4);
+
     function setUp() public {
-        sp1 = new MockSP1Verifier();
-        verifier = new EthereumFinalityVerifier(sp1, KEY, ANCHOR, EPOCH);
+        verifier = _deploy();
         json = vm.readFile("test/fixtures/ethereum/receipts.json");
         number = uint64(vm.parseJsonUint(json, ".number"));
         timestamp = uint64(vm.parseJsonUint(json, ".timestamp"));
@@ -69,7 +80,7 @@ contract EthereumFinalityVerifierTest is Test {
     }
 
     /// @dev A proof covering five blocks around the real one, which is the second; the others are made up.
-    function _advance() internal returns (EthereumFinalityVerifier.Header memory h) {
+    function _advance() internal returns (FinalityVerifier.Header memory h) {
         bytes32[] memory leaves = new bytes32[](5);
         for (uint256 i = 0; i < 5; ++i) {
             uint64 n = number - 1 + uint64(i);
@@ -79,7 +90,7 @@ contract EthereumFinalityVerifierTest is Test {
         }
         (bytes32 root, bytes32[] memory path) = _tree(leaves, 1);
         _update(ANCHOR, NEXT, root, number - 1, number + 3);
-        h = EthereumFinalityVerifier.Header({
+        h = FinalityVerifier.Header({
             headersRoot: root,
             number: number,
             timestamp: timestamp,
@@ -91,14 +102,14 @@ contract EthereumFinalityVerifierTest is Test {
 
     function _update(bytes32 anchorIn, bytes32 anchorOut, bytes32 root, uint64 first, uint64 last) internal {
         bytes memory publicValues = abi.encode(anchorIn, anchorOut, EPOCH + 1, root, first, last);
-        verifier.update(publicValues, sp1.prove(KEY, publicValues));
+        verifier.update(publicValues, _prove(KEY, publicValues));
     }
 
     function _receiptProof(string memory path) internal view returns (bytes[] memory) {
         return vm.parseJsonBytesArray(json, string.concat(path, ".proof"));
     }
 
-    function _event(EthereumFinalityVerifier.Header memory h, bytes[] memory proof, uint256 txIndex, uint256 logIndex)
+    function _event(FinalityVerifier.Header memory h, bytes[] memory proof, uint256 txIndex, uint256 logIndex)
         internal
         pure
         returns (bytes memory)
@@ -110,38 +121,25 @@ contract EthereumFinalityVerifierTest is Test {
     // advancing
     // ---------------------------------------------------------------------
 
-    function test_deploy() public {
-        assertEq(address(verifier.SP1_VERIFIER()), address(sp1));
-        assertEq(verifier.PROGRAM_KEY(), KEY);
-        assertEq(verifier.anchor(), ANCHOR);
-        assertEq(verifier.anchorEpoch(), EPOCH);
-        vm.expectRevert(EthereumFinalityVerifier.ZeroAddress.selector);
-        new EthereumFinalityVerifier(ISP1Verifier(address(0)), KEY, ANCHOR, EPOCH);
-        vm.expectRevert(EthereumFinalityVerifier.ZeroAddress.selector);
-        new EthereumFinalityVerifier(sp1, bytes32(0), ANCHOR, EPOCH);
-        vm.expectRevert(EthereumFinalityVerifier.ZeroAddress.selector);
-        new EthereumFinalityVerifier(sp1, KEY, bytes32(0), EPOCH);
-    }
-
     /// @dev A proof moves the anchor one step and records the blocks it covers; the same proof never runs twice, and
     ///      no proof starts anywhere but at the stored anchor.
     function test_update_followsTheAnchor() public {
         bytes32 root = keccak256("headers");
         bytes memory publicValues = abi.encode(ANCHOR, NEXT, EPOCH + 1, root, uint64(10), uint64(20));
-        bytes memory proof = sp1.prove(KEY, publicValues);
-        bytes memory anotherProgram = sp1.prove(keccak256("another program"), publicValues);
-        vm.expectRevert(MockSP1Verifier.Rejected.selector);
+        bytes memory proof = _prove(KEY, publicValues);
+        bytes memory anotherProgram = _prove(keccak256("another program"), publicValues);
+        vm.expectRevert(_rejected());
         verifier.update(publicValues, anotherProgram);
 
         vm.expectEmit(address(verifier));
-        emit EthereumFinalityVerifier.Advanced(EPOCH + 1, NEXT, root, 10, 20);
+        emit FinalityVerifier.Advanced(EPOCH + 1, NEXT, root, 10, 20);
         verifier.update(publicValues, proof);
         assertEq(verifier.anchor(), NEXT);
         assertEq(verifier.anchorEpoch(), EPOCH + 1);
         assertEq(verifier.range(root).first, 10);
         assertEq(verifier.range(root).last, 20);
 
-        vm.expectRevert(abi.encodeWithSelector(EthereumFinalityVerifier.WrongAnchor.selector, ANCHOR, NEXT));
+        vm.expectRevert(abi.encodeWithSelector(FinalityVerifier.WrongAnchor.selector, ANCHOR, NEXT));
         verifier.update(publicValues, proof);
     }
 
@@ -151,7 +149,7 @@ contract EthereumFinalityVerifierTest is Test {
 
     /// @dev Three real receipts: a one-byte key, a two-byte key (index 130) and a legacy receipt with no type byte.
     function test_verifyEvent_readsRealReceipts() public {
-        EthereumFinalityVerifier.Header memory h = _advance();
+        FinalityVerifier.Header memory h = _advance();
         for (uint256 c = 0; c < 3; ++c) {
             string memory at = string.concat(".cases[", vm.toString(c), "]");
             uint256 txIndex = vm.parseJsonUint(json, string.concat(at, ".txIndex"));
@@ -169,24 +167,24 @@ contract EthereumFinalityVerifierTest is Test {
     }
 
     function test_verifyEvent_refusals() public {
-        EthereumFinalityVerifier.Header memory h = _advance();
+        FinalityVerifier.Header memory h = _advance();
         bytes[] memory proof = _receiptProof(".cases[0]");
 
         uint256 failed = vm.parseJsonUint(json, ".failed.txIndex");
-        vm.expectRevert(abi.encodeWithSelector(EthereumFinalityVerifier.FailedTransaction.selector, failed));
+        vm.expectRevert(abi.encodeWithSelector(FinalityVerifier.FailedTransaction.selector, failed));
         verifier.verifyEvent(_event(h, _receiptProof(".failed"), failed, 0));
 
         uint256 absent = vm.parseJsonUint(json, ".absent.txIndex");
-        vm.expectRevert(abi.encodeWithSelector(EthereumFinalityVerifier.NoReceipt.selector, absent));
+        vm.expectRevert(abi.encodeWithSelector(FinalityVerifier.NoReceipt.selector, absent));
         verifier.verifyEvent(_event(h, _receiptProof(".absent"), absent, 0));
-        vm.expectRevert(abi.encodeWithSelector(EthereumFinalityVerifier.NoReceipt.selector, 1 << 16));
+        vm.expectRevert(abi.encodeWithSelector(FinalityVerifier.NoReceipt.selector, 1 << 16));
         verifier.verifyEvent(_event(h, proof, 1 << 16, 0));
 
         uint256 one = vm.parseJsonUint(json, ".oneTopic.txIndex");
         uint256 oneLog = vm.parseJsonUint(json, ".oneTopic.logIndex");
-        vm.expectRevert(abi.encodeWithSelector(EthereumFinalityVerifier.NoLog.selector, oneLog));
+        vm.expectRevert(abi.encodeWithSelector(FinalityVerifier.NoLog.selector, oneLog));
         verifier.verifyEvent(_event(h, _receiptProof(".oneTopic"), one, oneLog));
-        vm.expectRevert(abi.encodeWithSelector(EthereumFinalityVerifier.NoLog.selector, 1_000));
+        vm.expectRevert(abi.encodeWithSelector(FinalityVerifier.NoLog.selector, 1_000));
         verifier.verifyEvent(_event(h, proof, 0, 1_000));
 
         // A proof node changed by one byte no longer hashes to its reference.
@@ -201,7 +199,7 @@ contract EthereumFinalityVerifierTest is Test {
         bytes32 root = vm.parseJsonBytes32(json, ".malformed.receiptsRoot");
         bytes32 leaf = _leaf(number, timestamp, stateRoot, root);
         _update(ANCHOR, NEXT, leaf, number, number);
-        EthereumFinalityVerifier.Header memory h = EthereumFinalityVerifier.Header({
+        FinalityVerifier.Header memory h = FinalityVerifier.Header({
             headersRoot: leaf,
             number: number,
             timestamp: timestamp,
@@ -215,7 +213,7 @@ contract EthereumFinalityVerifierTest is Test {
     }
 
     function test_verifyCheckpoint_returnsACoveredBlock() public {
-        EthereumFinalityVerifier.Header memory h = _advance();
+        FinalityVerifier.Header memory h = _advance();
         IEthereumEventVerifier.Checkpoint memory c = verifier.verifyCheckpoint(abi.encode(h));
         assertEq(c.blockNumber, number);
         assertEq(c.timestamp, timestamp);
@@ -224,39 +222,39 @@ contract EthereumFinalityVerifierTest is Test {
 
     /// @dev A header proves only at its own place in a tree some proof recorded.
     function test_headers_refusals() public {
-        EthereumFinalityVerifier.Header memory h = _advance();
+        FinalityVerifier.Header memory h = _advance();
 
         // A copy: assigning a memory struct would alias it.
-        EthereumFinalityVerifier.Header memory other = abi.decode(abi.encode(h), (EthereumFinalityVerifier.Header));
+        FinalityVerifier.Header memory other = abi.decode(abi.encode(h), (FinalityVerifier.Header));
         other.headersRoot = keccak256("never proven");
-        vm.expectRevert(abi.encodeWithSelector(EthereumFinalityVerifier.UnknownHeaders.selector, other.headersRoot));
+        vm.expectRevert(abi.encodeWithSelector(FinalityVerifier.UnknownHeaders.selector, other.headersRoot));
         verifier.verifyCheckpoint(abi.encode(other));
 
         h.number = number + 4;
         vm.expectRevert(
-            abi.encodeWithSelector(EthereumFinalityVerifier.NotInRange.selector, number + 4, number - 1, number + 3)
+            abi.encodeWithSelector(FinalityVerifier.NotInRange.selector, number + 4, number - 1, number + 3)
         );
         verifier.verifyCheckpoint(abi.encode(h));
         h.number = number - 2;
         vm.expectRevert(
-            abi.encodeWithSelector(EthereumFinalityVerifier.NotInRange.selector, number - 2, number - 1, number + 3)
+            abi.encodeWithSelector(FinalityVerifier.NotInRange.selector, number - 2, number - 1, number + 3)
         );
         verifier.verifyCheckpoint(abi.encode(h));
 
         // Another number in range puts the leaf at another place.
         h.number = number + 1;
-        vm.expectRevert(EthereumFinalityVerifier.BadHeaderPath.selector);
+        vm.expectRevert(FinalityVerifier.BadHeaderPath.selector);
         verifier.verifyCheckpoint(abi.encode(h));
         h.number = number;
         h.timestamp += 1;
-        vm.expectRevert(EthereumFinalityVerifier.BadHeaderPath.selector);
+        vm.expectRevert(FinalityVerifier.BadHeaderPath.selector);
         verifier.verifyCheckpoint(abi.encode(h));
         h.timestamp -= 1;
         h.path[0] = bytes32(uint256(h.path[0]) ^ 1);
-        vm.expectRevert(EthereumFinalityVerifier.BadHeaderPath.selector);
+        vm.expectRevert(FinalityVerifier.BadHeaderPath.selector);
         verifier.verifyCheckpoint(abi.encode(h));
         h.path = new bytes32[](2);
-        vm.expectRevert(EthereumFinalityVerifier.BadHeaderPath.selector);
+        vm.expectRevert(FinalityVerifier.BadHeaderPath.selector);
         verifier.verifyCheckpoint(abi.encode(h));
     }
 
@@ -264,7 +262,7 @@ contract EthereumFinalityVerifierTest is Test {
     function test_aSingleBlockIsItsOwnRoot() public {
         bytes32 leaf = _leaf(number, timestamp, stateRoot, receiptsRoot);
         _update(ANCHOR, NEXT, leaf, number, number);
-        EthereumFinalityVerifier.Header memory h = EthereumFinalityVerifier.Header({
+        FinalityVerifier.Header memory h = FinalityVerifier.Header({
             headersRoot: leaf,
             number: number,
             timestamp: timestamp,
@@ -284,5 +282,86 @@ contract EthereumFinalityVerifierTest is Test {
         (leaves[0], leaves[1], leaves[2]) = (a, b, c);
         (bytes32 root,) = _tree(leaves, 0);
         assertEq(root, keccak256(abi.encode(keccak256(abi.encode(a, b)), keccak256(abi.encode(c, bytes32(0))))));
+    }
+}
+
+/// @notice P1: the shared suite through SP1's verifier, mocked.
+contract EthereumFinalityVerifierTest is FinalityVerifierTest {
+    MockSP1Verifier sp1;
+
+    function _deploy() internal override returns (FinalityVerifier) {
+        sp1 = new MockSP1Verifier();
+        return new EthereumFinalityVerifier(sp1, KEY, ANCHOR, EPOCH);
+    }
+
+    function _prove(bytes32 program, bytes memory publicValues) internal view override returns (bytes memory) {
+        return sp1.prove(program, publicValues);
+    }
+
+    function _rejected() internal pure override returns (bytes4) {
+        return MockSP1Verifier.Rejected.selector;
+    }
+
+    function test_deploy() public {
+        EthereumFinalityVerifier p1 = EthereumFinalityVerifier(address(verifier));
+        assertEq(address(p1.SP1_VERIFIER()), address(sp1));
+        assertEq(p1.PROGRAM_KEY(), KEY);
+        assertEq(verifier.anchor(), ANCHOR);
+        assertEq(verifier.anchorEpoch(), EPOCH);
+        vm.expectRevert(FinalityVerifier.ZeroAddress.selector);
+        new EthereumFinalityVerifier(ISP1Verifier(address(0)), KEY, ANCHOR, EPOCH);
+        vm.expectRevert(FinalityVerifier.ZeroAddress.selector);
+        new EthereumFinalityVerifier(sp1, bytes32(0), ANCHOR, EPOCH);
+        vm.expectRevert(FinalityVerifier.ZeroAddress.selector);
+        new EthereumFinalityVerifier(sp1, KEY, bytes32(0), EPOCH);
+    }
+}
+
+/// @notice P2: the shared suite through RISC Zero's verifier, mocked. The journal is P1's public values, passed to
+///         RISC Zero's verifier by its SHA-256 digest.
+contract RiscZeroFinalityVerifierTest is FinalityVerifierTest {
+    MockRiscZeroVerifier risc0;
+
+    function _deploy() internal override returns (FinalityVerifier) {
+        risc0 = new MockRiscZeroVerifier();
+        return new RiscZeroFinalityVerifier(risc0, KEY, ANCHOR, EPOCH);
+    }
+
+    function _prove(bytes32 program, bytes memory publicValues) internal view override returns (bytes memory) {
+        return risc0.prove(program, publicValues);
+    }
+
+    function _rejected() internal pure override returns (bytes4) {
+        return MockRiscZeroVerifier.Rejected.selector;
+    }
+
+    function test_deploy() public {
+        RiscZeroFinalityVerifier p2 = RiscZeroFinalityVerifier(address(verifier));
+        assertEq(address(p2.RISC_ZERO_VERIFIER()), address(risc0));
+        assertEq(p2.IMAGE_ID(), KEY);
+        assertEq(verifier.anchor(), ANCHOR);
+        assertEq(verifier.anchorEpoch(), EPOCH);
+        vm.expectRevert(FinalityVerifier.ZeroAddress.selector);
+        new RiscZeroFinalityVerifier(IRiscZeroVerifier(address(0)), KEY, ANCHOR, EPOCH);
+        vm.expectRevert(FinalityVerifier.ZeroAddress.selector);
+        new RiscZeroFinalityVerifier(risc0, bytes32(0), ANCHOR, EPOCH);
+        vm.expectRevert(FinalityVerifier.ZeroAddress.selector);
+        new RiscZeroFinalityVerifier(risc0, KEY, bytes32(0), EPOCH);
+    }
+
+    /// @dev The seal proves the journal's SHA-256 digest: a seal for the right journal under another digest, such as
+    ///      its keccak, is refused, so the verifier hashes exactly what RISC Zero's verifier expects.
+    function test_theJournalIsPassedByItsSha256() public {
+        bytes memory publicValues = abi.encode(ANCHOR, NEXT, EPOCH + 1, keccak256("headers"), uint64(10), uint64(20));
+        bytes memory keccakSeal = abi.encode(keccak256(abi.encode(KEY, keccak256(publicValues))));
+        vm.expectRevert(MockRiscZeroVerifier.Rejected.selector);
+        verifier.update(publicValues, keccakSeal);
+        verifier.update(publicValues, risc0.prove(KEY, publicValues));
+        assertEq(verifier.anchor(), NEXT);
+    }
+
+    function test_mockRefusesAnyReceipt() public {
+        vm.expectRevert(MockRiscZeroVerifier.Rejected.selector);
+        risc0.verifyIntegrity(RiscZeroReceipt({seal: "", claimDigest: bytes32(0)}));
     }
 }

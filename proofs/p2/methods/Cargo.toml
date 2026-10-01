@@ -1,0 +1,16 @@
+[package]
+name = "xindex-p2-methods"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "P2's guest, built for RISC Zero and embedded with its image id"
+
+[features]
+# Builds the guest for Sepolia, whose image id differs from mainnet's.
+sepolia = []
+
+[build-dependencies]
+risc0-build = "3.0.6"
+
+[package.metadata.risc0]
+methods = ["guest"]

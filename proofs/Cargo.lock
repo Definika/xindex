@@ -5711,6 +5711,7 @@ version = "0.1.0"
 dependencies = [
  "bls12_381",
  "ff",
+ "generic-array 0.14.7",
  "group",
  "serde",
  "serde-big-array",

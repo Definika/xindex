@@ -9,6 +9,7 @@ natively; the zkVM program only runs that library. Foundry and Wake never see th
 | `p1-program` | P1's SP1 program: reads an `Input`, runs `finality::verify`, commits the public values `EthereumFinalityVerifier` decodes. |
 | `p1-script` | P1's host, `p1`: execute mode, the program key, and Groth16 proving on a GPU or the prover network. |
 | `p1-input` | `p1-input`: builds a real input from two checkpoint states, a beacon node and an execution node, checking each piece against the root that commits to it. |
+| `p2/` | P2 (Stage B spec, section 11): the same statement proven by RISC Zero. `methods/guest` runs `finality::verify` on the input `p1-input` writes and commits P1's public values as its journal; `host` is `p2`. A workspace of its own: RISC Zero's accelerated crates replace the same crates SP1's do. |
 
 ## Toolchain
 
@@ -28,6 +29,28 @@ CARGO_BUILD_JOBS=2 nice -n 19 cargo test --release -p xindex-finality --features
 cargo fmt --all --check && cargo clippy -p xindex-finality --all-targets
 cargo clippy -p xindex-finality --all-targets --features sepolia
 ```
+
+## P2
+
+RISC Zero 3.0.6, from `rzup` (into `~/.risc0`; `rzup install` fetches its Rust toolchain, `r0vm` and the C++
+toolchain). The guest uses RISC Zero's forks of `sha2` 0.10.8, `bls12_381` 0.8.0 and `tiny-keccak` 2.0.2, the
+versions the statement uses. The statement composes its own hash to G2 (`bls::hash_to_g2`, from RFC 9380's steps)
+over the field and map functions every `bls12_381` build shares, so it is the same code under both zkVMs;
+`finality/tests/hash_to_curve.rs` checks it against the RFC's vectors.
+
+```bash
+cd p2
+export PATH="$HOME/.risc0/bin:$PATH"
+CARGO_BUILD_JOBS=2 nice -n 19 cargo build --release -p xindex-p2-host          # --features sepolia for the testnets
+./target/release/p2 execute --synthetic 1000 1 64      # validators, epochs past the anchor, execution headers
+./target/release/p2 execute input.bin                  # the same input file P1 takes
+./target/release/p2 image-id                           # the image id RiscZeroFinalityVerifier is built with
+RISC0_PROVER=bonsai BONSAI_API_KEY=... BONSAI_API_URL=... ./target/release/p2 prove input.bin proof.json
+```
+
+Execute mode checks that the journal is exactly what the statement computes natively, which is exactly what P1's
+program commits. `prove` refuses this machine's CPU, as P1's host does, and writes the journal, the seal RISC Zero's
+Solidity verifier takes (its selector, then the Groth16 seal) and the image id.
 
 ## Sepolia
 

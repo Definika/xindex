@@ -1,0 +1,24 @@
+[package]
+name = "xindex-p2-host"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "P2's host: runs the guest in execute mode, prints its image id, and proves with RISC Zero's Groth16"
+default-run = "p2"
+
+[[bin]]
+name = "p2"
+path = "src/main.rs"
+
+[features]
+# Builds and embeds the guest for Sepolia, whose image id differs from mainnet's.
+sepolia = ["xindex-finality/sepolia", "xindex-p2-methods/sepolia"]
+# Proves on an NVIDIA GPU.
+cuda = ["risc0-zkvm/cuda"]
+
+[dependencies]
+risc0-zkvm = { version = "3.0.6" }
+xindex-finality = { path = "../../finality" }
+xindex-p2-methods = { path = "../methods" }
+bincode = "1.3"
+hex = "0.4"
