@@ -455,7 +455,10 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   excluded folders, since any of them would stop Wake before a detector runs: the PoC tests in `audit/` only compile
   inside `test/poc/` of the audited commit, `prototype/evm` is a separate Foundry project that needs via-IR, and `demo/`
   is one whose `xindex/` remapping only it knows. The Wake VS Code extension reads `.vscode/settings.json` instead,
-  which holds three things:
+  which holds four things:
+  - `wake.configuration.use_toml_if_present` set to false. The extension otherwise prefers a `wake.toml` in the
+    workspace root, and a local `wake detect` or `wake init config` leaves one there, gitignored. A stale one
+    replaces the whole committed config, so the extension compiles `prototype/` and `demo/` and reports their errors;
   - its copy of `forge remappings` (paste the new output there whenever a dependency or remapping changes);
   - the optimizer settings of `foundry.toml` (without them the factory's initcode looks too large to deploy);
   - Wake's default excluded folders plus `audit/`, `prototype/` and `demo/`.

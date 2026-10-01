@@ -84,7 +84,8 @@ contract RepoTest is Test {
 
     /// @dev XA-10: CI runs every gate of the definition of done. Wake's generated config must leave out `audit/`, whose
     ///      PoC tests compile only inside the audited commit, `prototype/`, a separate Foundry project that needs via-IR,
-    ///      and `demo/`, one whose remapping only it knows: Wake stops on any of them before running a detector.
+    ///      and `demo/`, one whose remapping only it knows: Wake stops on any of them before running a detector. The
+    ///      extension must ignore a local `wake.toml`, which would otherwise replace its committed config.
     function test_XA10_ciRunsEveryGate() public view {
         string memory workflow = _read(".github/workflows/test.yml");
         assertTrue(_contains(workflow, "forge lint -D notes"), "lint fails on notes");
@@ -104,6 +105,10 @@ contract RepoTest is Test {
         assertTrue(
             _contains(settings, '"audit"') && _contains(settings, '"prototype"') && _contains(settings, '"demo"'),
             "nor does the Wake extension"
+        );
+        assertTrue(
+            _contains(settings, '"wake.configuration.use_toml_if_present": false'),
+            "and no local wake.toml replaces the extension's committed config"
         );
     }
 
