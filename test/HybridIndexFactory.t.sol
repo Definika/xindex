@@ -83,9 +83,17 @@ contract HybridIndexFactoryTest is HybridTest {
     function test_executeChain_timelock() public {
         vm.expectRevert(abi.encodeWithSelector(IHybridIndexFactory.NoPendingChain.selector, OTHER));
         factory.executeChain(OTHER);
+        (bytes32 v, address sv, uint256 at) = factory.chainProposal(OTHER);
+        assertEq(v, bytes32(0));
+        assertEq(sv, address(0));
+        assertEq(at, 0, "no proposal");
         vm.prank(owner);
         factory.proposeChain(OTHER, otherVault, address(stateVerifier));
         uint256 eta = block.timestamp + 2 days;
+        (v, sv, at) = factory.chainProposal(OTHER);
+        assertEq(v, otherVault);
+        assertEq(sv, address(stateVerifier));
+        assertEq(at, eta, "the proposal, readable");
         vm.expectRevert(abi.encodeWithSelector(IHybridIndexFactory.ChainNotReady.selector, OTHER, eta));
         factory.executeChain(OTHER);
         vm.warp(eta + 7 days + 1);
@@ -102,6 +110,8 @@ contract HybridIndexFactoryTest is HybridTest {
         assertEq(c.vault, otherVault);
         assertEq(factory.stateVerifier(OTHER), address(stateVerifier));
         assertFalse(factory.chainPending(OTHER));
+        (,, at) = factory.chainProposal(OTHER);
+        assertEq(at, 0, "executed, it is gone");
     }
 
     /// @dev A registered chain keeps its vault; its state verifier rotates through the same delay, and every index

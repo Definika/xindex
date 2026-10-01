@@ -284,6 +284,12 @@ contract HybridIndexFactory is IndexFactory, IHybridIndexFactory {
     }
 
     /// @inheritdoc IHybridIndexFactory
+    function chainProposal(uint256 chainId) external view returns (bytes32 vault, address verifier, uint256 eta) {
+        ChainProposal memory p = _chainProposals[chainId];
+        return (p.vault, p.stateVerifier, p.eta);
+    }
+
+    /// @inheritdoc IHybridIndexFactory
     function vaultProposal(bytes32 id) external view returns (VaultProposal memory) {
         return _vaultProposals[id];
     }

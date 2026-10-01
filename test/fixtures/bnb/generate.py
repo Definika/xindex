@@ -2,6 +2,11 @@
 """Builds the BNB Chain fixtures of test/BnbStateVerifier.t.sol from a public RPC, read-only.
 
     python3 test/fixtures/bnb/generate.py [rpc-url]
+    python3 test/fixtures/bnb/generate.py <rpc-url> anchor <file>
+
+The second form writes the anchor `script/DeployStateVerifier.s.sol` deploys a verifier from: the newest epoch block
+at or below the chain's finalized block, its validator set's uncompressed keys, each checked on the curve, and the
+header's RLP, checked against its hash. The deploy refuses an anchor more than an hour old.
 
 With a BNB Chain mainnet RPC (the default) it writes chain.json; with a BNB testnet one (chain id 97) it writes
 testnet.json, which the same tests run on, as the testnet deployment's verifier will follow that chain.
@@ -301,7 +306,23 @@ def chain(WBNB):
     }
 
 
+def anchor(path):
+    """The newest final epoch block and its set, for a verifier's deployment."""
+    chain_id = int(rpc("eth_chainId", []), 16)
+    final = int(rpc("eth_getBlockByNumber", ["finalized", False])["number"], 16)
+    e = final // EPOCH * EPOCH
+    entries, tl = validators(e)
+    d = dict(header(e), chainId=chain_id, source=RPC, finalized=final, turnLength=tl, count=len(entries),
+             keys=keys(entries))
+    with open(path, "w") as f:
+        json.dump(d, f, indent=1)
+        f.write("\n")
+    print(f"{path} written: epoch {e} of chain {chain_id}, {len(entries)} validators, hash {d['hash']}")
+
+
 def main():
+    if len(sys.argv) > 3 and sys.argv[2] == "anchor":
+        return anchor(sys.argv[3])
     wbnb, name = CHAINS[int(rpc("eth_chainId", []), 16)]
     fixture = chain(wbnb)
     json.dump(fixture, open(os.path.join(HERE, name), "w"), indent=1)

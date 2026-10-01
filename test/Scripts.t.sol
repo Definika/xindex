@@ -25,6 +25,15 @@ import {MockUniversalRouter} from "./mocks/MockUniversalRouter.sol";
 import {MockUniswapV3Factory, MockUniswapV3Pool} from "./mocks/MockUniswapV3.sol";
 import {MockWETH} from "./mocks/MockWETH.sol";
 import {MockUSDT} from "./mocks/MockUSDT.sol";
+import {DeployVault} from "../script/DeployVault.s.sol";
+import {ConfigureChains} from "../script/ConfigureChains.s.sol";
+import {DeployStateVerifier} from "../script/DeployStateVerifier.s.sol";
+import {BnbStateVerifier} from "../src/verifiers/BnbStateVerifier.sol";
+import {TronStateVerifier} from "../src/verifiers/TronStateVerifier.sol";
+import {ITronStateVerifier} from "../src/interfaces/ITronStateVerifier.sol";
+import {IHybridIndexFactory} from "../src/interfaces/IHybridIndexFactory.sol";
+import {MockSP1Verifier} from "./mocks/MockSP1Verifier.sol";
+import {MockRiscZeroVerifier} from "./mocks/MockRiscZeroVerifier.sol";
 
 /// @notice Stand-in for a Safe: the deploy script only reads its signature threshold and its module list.
 contract MockSafe {
@@ -173,6 +182,10 @@ contract ScriptsTest is Test {
 
     /// @dev No token named for listing or relisting.
     address[] none;
+
+    /// @dev BNB Chain's id and a vault standing for its own, for the hybrid factory's scripts.
+    uint256 constant BNB = 56;
+    bytes32 constant BNB_VAULT = bytes32(uint256(0xB5C));
 
     function setUp() public {
         deployer = new Deploy();
@@ -1468,5 +1481,780 @@ contract ScriptsTest is Test {
         vm.setEnv("MARKET_MODE", "upside-down");
         vm.expectRevert(abi.encodeWithSelector(SetupTestMarket.UnknownMode.selector, "upside-down"));
         testMarket.run();
+    }
+
+    // ---------------------------------------------------------------------
+    // DeployVault
+    // ---------------------------------------------------------------------
+
+    /// @dev A vault chain's parameters with SP1's and RISC Zero's verifiers stood in for by mocks that name themselves
+    ///      as the pinned versions do, and a recovery multisig with code.
+    function _vaultParams() internal returns (DeployVault.Params memory p) {
+        p = DeployVault.Params({
+            sourceChainId: 1,
+            factory: makeAddr("hybrid factory on Ethereum"),
+            hubImplementation: makeAddr("its HybridHub template"),
+            sp1Verifier: address(new MockSP1Verifier()),
+            riscZeroVerifier: address(new MockRiscZeroVerifier()),
+            p1ProgramKey: keccak256("P1"),
+            p2ImageId: keccak256("P2"),
+            anchor: keccak256("a finalized checkpoint"),
+            anchorEpoch: 479_000,
+            freezer: makeAddr("freezer"),
+            recoveryProposer: address(new MockSafe(3)),
+            nativeCap: 1_000e18,
+            nativeFloor: 1e18
+        });
+    }
+
+    /// @dev The vault, P1, P2 and the state reader, wired to each other and to the parameters, with their code hashes.
+    function test_deployVault() public {
+        DeployVault vaultDeployer = new DeployVault();
+        DeployVault.Params memory p = _vaultParams();
+        DeployVault.Deployment memory d = vaultDeployer.deploy(p);
+        assertEq(address(d.vault.p1()), address(d.p1));
+        assertEq(address(d.vault.p2()), address(d.p2));
+        assertEq(d.vault.SOURCE_CHAIN_ID(), 1);
+        assertEq(d.vault.FACTORY(), p.factory);
+        assertEq(d.vault.HUB_IMPLEMENTATION(), p.hubImplementation);
+        assertEq(d.vault.freezer(), p.freezer);
+        assertEq(d.vault.RECOVERY_PROPOSER(), p.recoveryProposer);
+        assertEq(d.vault.cap(address(0)), p.nativeCap);
+        assertEq(d.vault.outflowFloor(address(0)), p.nativeFloor);
+        assertEq(address(d.p1.SP1_VERIFIER()), p.sp1Verifier);
+        assertEq(d.p1.PROGRAM_KEY(), p.p1ProgramKey);
+        assertEq(address(d.p2.RISC_ZERO_VERIFIER()), p.riscZeroVerifier);
+        assertEq(d.p2.IMAGE_ID(), p.p2ImageId);
+        assertEq(d.p1.anchor(), p.anchor);
+        assertEq(d.p2.anchor(), p.anchor);
+        bytes32[4] memory codehashes = vaultDeployer.checkDeployment(d, p);
+        assertEq(codehashes[0], keccak256(address(d.vault).code));
+        assertEq(codehashes[3], keccak256(address(d.stateReader).code));
+    }
+
+    function test_deployVaultRun_readsEnvironment() public {
+        DeployVault vaultDeployer = new DeployVault();
+        DeployVault.Params memory p = _vaultParams();
+        vm.setEnv("VAULT_FACTORY", vm.toString(p.factory));
+        vm.setEnv("VAULT_HUB_TEMPLATE", vm.toString(p.hubImplementation));
+        vm.setEnv("VAULT_SP1_VERIFIER", vm.toString(p.sp1Verifier));
+        vm.setEnv("VAULT_RISC_ZERO_VERIFIER", vm.toString(p.riscZeroVerifier));
+        vm.setEnv("VAULT_P1_KEY", vm.toString(p.p1ProgramKey));
+        vm.setEnv("VAULT_P2_IMAGE_ID", vm.toString(p.p2ImageId));
+        vm.setEnv("VAULT_ANCHOR", vm.toString(p.anchor));
+        vm.setEnv("VAULT_ANCHOR_EPOCH", vm.toString(uint256(p.anchorEpoch)));
+        vm.setEnv("VAULT_FREEZER", vm.toString(p.freezer));
+        vm.setEnv("VAULT_RECOVERY", vm.toString(p.recoveryProposer));
+        vm.setEnv("VAULT_NATIVE_CAP", vm.toString(p.nativeCap));
+        vm.setEnv("VAULT_NATIVE_FLOOR", vm.toString(p.nativeFloor));
+        DeployVault.Deployment memory d = vaultDeployer.run();
+        assertEq(d.vault.SOURCE_CHAIN_ID(), 1, "the source defaults to Ethereum mainnet");
+        assertEq(d.vault.FACTORY(), p.factory);
+        assertEq(d.p2.IMAGE_ID(), p.p2ImageId);
+    }
+
+    /// @dev Every parameter the vault depends on is checked before anything is broadcast.
+    function test_deployVault_refusals() public {
+        DeployVault vaultDeployer = new DeployVault();
+        DeployVault.Params memory p = _vaultParams();
+
+        vm.chainId(1);
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.SourceChain.selector, 1));
+        vaultDeployer.check(p);
+        vm.chainId(31_337);
+        vaultDeployer.checkRoles(p.freezer, p.recoveryProposer); // a freezer key and a multisig, as the vault needs
+
+        string[6] memory names = [
+            "VAULT_FACTORY", "VAULT_HUB_TEMPLATE", "VAULT_P1_KEY", "VAULT_P2_IMAGE_ID", "VAULT_ANCHOR", "VAULT_FREEZER"
+        ];
+        for (uint256 i = 0; i < names.length; ++i) {
+            DeployVault.Params memory q = _vaultParams();
+            if (i == 0) q.factory = address(0);
+            if (i == 1) q.hubImplementation = address(0);
+            if (i == 2) q.p1ProgramKey = bytes32(0);
+            if (i == 3) q.p2ImageId = bytes32(0);
+            if (i == 4) q.anchor = bytes32(0);
+            if (i == 5) q.freezer = address(0);
+            vm.expectRevert(abi.encodeWithSelector(DeployVault.Required.selector, names[i]));
+            vaultDeployer.check(q);
+        }
+        DeployVault.Params memory r = _vaultParams();
+        r.recoveryProposer = address(0);
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.Required.selector, "VAULT_RECOVERY"));
+        vaultDeployer.check(r);
+
+        r = _vaultParams();
+        r.freezer = r.recoveryProposer;
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.SameRole.selector, r.freezer));
+        vaultDeployer.check(r);
+        r = _vaultParams();
+        r.freezer = address(this); // the broadcasting key, as this test calls the script
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.RoleIsBroadcaster.selector, "VAULT_FREEZER", address(this)));
+        vaultDeployer.check(r);
+        r = _vaultParams();
+        r.recoveryProposer = address(this);
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.RoleIsBroadcaster.selector, "VAULT_RECOVERY", address(this)));
+        vaultDeployer.check(r);
+        r = _vaultParams();
+        r.recoveryProposer = makeAddr("a key, not a multisig");
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.RecoveryMustBeContract.selector, r.recoveryProposer));
+        vaultDeployer.check(r);
+        address delegated = makeAddr("an EIP-7702 delegated key");
+        vm.etch(delegated, abi.encodePacked(hex"ef0100", address(r.factory)));
+        r.recoveryProposer = delegated;
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.RecoveryMustBeContract.selector, delegated));
+        vaultDeployer.check(r);
+
+        r = _vaultParams();
+        r.nativeFloor = r.nativeCap + 1;
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.FloorAboveCap.selector, r.nativeFloor, r.nativeCap));
+        vaultDeployer.check(r);
+    }
+
+    /// @dev Only SP1's v6.0.0 verifier for P1 and RISC Zero's 3.0.0 verifier for P2: a contract that answers neither, a
+    ///      wrong hash or selector, or a wrong version is refused, and so is an address with no code.
+    function test_deployVault_onlyThePinnedVerifiers() public {
+        DeployVault vaultDeployer = new DeployVault();
+        DeployVault.Params memory p = _vaultParams();
+        vaultDeployer.checkVerifiers(p.sp1Verifier, p.riscZeroVerifier);
+
+        address[3] memory notSp1 = [makeAddr("no code"), address(router), p.riscZeroVerifier];
+        for (uint256 i = 0; i < notSp1.length; ++i) {
+            vm.expectRevert(abi.encodeWithSelector(DeployVault.WrongVerifier.selector, "VAULT_SP1_VERIFIER", notSp1[i]));
+            vaultDeployer.checkVerifiers(notSp1[i], p.riscZeroVerifier);
+        }
+        address[3] memory notRiscZero = [makeAddr("no code either"), address(router), p.sp1Verifier];
+        for (uint256 i = 0; i < notRiscZero.length; ++i) {
+            vm.expectRevert(
+                abi.encodeWithSelector(DeployVault.WrongVerifier.selector, "VAULT_RISC_ZERO_VERIFIER", notRiscZero[i])
+            );
+            vaultDeployer.checkVerifiers(p.sp1Verifier, notRiscZero[i]);
+        }
+
+        // Each identity field alone decides: the right hash at another version, the right selector at another version.
+        vm.mockCall(p.sp1Verifier, abi.encodeWithSignature("VERSION()"), abi.encode("v5.0.0"));
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.WrongVerifier.selector, "VAULT_SP1_VERIFIER", p.sp1Verifier));
+        vaultDeployer.checkVerifiers(p.sp1Verifier, p.riscZeroVerifier);
+        vm.clearMockedCalls();
+        vm.mockCall(p.riscZeroVerifier, abi.encodeWithSignature("VERSION()"), abi.encode("2.2.0"));
+        vm.expectRevert(
+            abi.encodeWithSelector(DeployVault.WrongVerifier.selector, "VAULT_RISC_ZERO_VERIFIER", p.riscZeroVerifier)
+        );
+        vaultDeployer.checkVerifiers(p.sp1Verifier, p.riscZeroVerifier);
+        vm.clearMockedCalls();
+        vm.mockCall(p.riscZeroVerifier, abi.encodeWithSignature("SELECTOR()"), abi.encode(bytes4(0x9f39696c)));
+        vm.expectRevert(
+            abi.encodeWithSelector(DeployVault.WrongVerifier.selector, "VAULT_RISC_ZERO_VERIFIER", p.riscZeroVerifier)
+        );
+        vaultDeployer.checkVerifiers(p.sp1Verifier, p.riscZeroVerifier);
+    }
+
+    /// @dev The release check refuses a deployment that is not the one the parameters describe: another deployment's P1
+    ///      swapped in, or parameters naming another factory. Structs are copied by encoding, since assigning a memory
+    ///      struct only aliases it.
+    function test_deployVault_checkDeploymentRefusesAnother() public {
+        DeployVault vaultDeployer = new DeployVault();
+        DeployVault.Params memory p = _vaultParams();
+        DeployVault.Deployment memory d = vaultDeployer.deploy(p);
+        DeployVault.Deployment memory other = vaultDeployer.deploy(_vaultParams());
+
+        DeployVault.Deployment memory mixed = abi.decode(abi.encode(d), (DeployVault.Deployment));
+        mixed.p1 = other.p1;
+        vm.expectRevert(
+            abi.encodeWithSelector(DeployVault.WrongWiring.selector, "p1", address(other.p1), address(d.p1))
+        );
+        vaultDeployer.checkDeployment(mixed, p);
+
+        DeployVault.Params memory q = abi.decode(abi.encode(p), (DeployVault.Params));
+        q.factory = makeAddr("another factory");
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.WrongWiring.selector, "FACTORY", q.factory, p.factory));
+        vaultDeployer.checkDeployment(d, q);
+    }
+
+    /// @dev A hybrid factory owned by DEFAULT_SENDER, the key script broadcasts come from in tests, with a vault chain
+    ///      registered and its native coin listed: `vaultToken` is that coin's id on Ethereum.
+    function _hybridWithVaultToken(uint256 supply) internal returns (HybridIndexFactory factory, address vaultToken) {
+        factory = _hybridFactory(DEFAULT_SENDER);
+        _registerBnb(factory);
+        vm.prank(DEFAULT_SENDER);
+        factory.proposeVaultListing(BNB, bytes32(0), supply);
+        vaultToken = factory.vaultTokenId(BNB, bytes32(0));
+    }
+
+    /// @dev A hybrid factory owned by `owner_`, with no chain registered.
+    function _hybridFactory(address owner_) internal returns (HybridIndexFactory factory) {
+        address predicted = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 3);
+        HybridHubExtension extension = new HybridHubExtension(predicted);
+        HybridHubModule module = new HybridHubModule(predicted, address(extension));
+        HybridHub template = new HybridHub(predicted, address(module));
+        factory = new HybridIndexFactory(owner_, guardian, address(template));
+    }
+
+    /// @dev Registers BNB Chain on a factory owned by DEFAULT_SENDER; any contract stands for the state verifier.
+    function _registerBnb(HybridIndexFactory factory) internal {
+        vm.prank(DEFAULT_SENDER);
+        factory.proposeChain(BNB, BNB_VAULT, address(router));
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        factory.executeChain(BNB);
+    }
+
+    /// @dev A vault token has no code on Ethereum, so the ERC-20 checks of the whitelist policy cannot apply to it. The
+    ///      script executes its listing, includes it in the weekly batch on its supply alone, and never proposes its
+    ///      first listing, which `proposeListing` would refuse: `proposeVaultListing` lists it.
+    function test_vaultTokensRideTheWeeklyBatch() public {
+        (HybridIndexFactory factory, address bnb) = _hybridWithVaultToken(140_000_000e18);
+        ConfigureWhitelist.Entry[] memory list = new ConfigureWhitelist.Entry[](1);
+        list[0] = ConfigureWhitelist.Entry({token: bnb, referenceSupply: 140_000_000e18});
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        configure.execute(factory, list);
+        assertTrue(factory.isWhitelisted(bnb), "its listing executes as any other");
+
+        list[0].referenceSupply = 140_500_000e18; // within MAX_SUPPLY_STEP
+        configure.proposeSupplies(factory, list);
+        (, uint256 eta,,) = factory.pendingSupplies();
+        assertGt(eta, 0, "the batch names the vault token");
+        vm.warp(eta);
+        configure.executeSupplies(factory, list);
+        assertEq(factory.referenceSupply(bnb), 140_500_000e18);
+
+        // Delisted, it is not proposed again through proposeListing, even when named for relisting.
+        vm.prank(guardian);
+        factory.delist(bnb);
+        address[] memory relist = new address[](1);
+        relist[0] = bnb;
+        configure.propose(factory, list, none, relist);
+        assertEq(factory.listingEta(bnb), 0, "a vault token is never proposed through proposeListing");
+        (bytes[] memory calls,) = configure.safeCalldata(factory, list, none, relist);
+        assertEq(calls.length, 0, "nor offered to a Safe");
+
+        // An out-of-range supply is still refused for a vault token.
+        vm.warp(block.timestamp + 7 days);
+        vm.prank(DEFAULT_SENDER);
+        factory.proposeVaultListing(56, bytes32(0), 140_500_000e18);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        configure.execute(factory, list);
+        list[0].referenceSupply = 0;
+        vm.expectRevert(ConfigureWhitelist.NothingToBatch.selector);
+        configure.proposeSupplies(factory, list);
+    }
+
+    // ---------------------------------------------------------------------
+    // ConfigureChains
+    // ---------------------------------------------------------------------
+
+    function _chainEntry(uint256 id, bytes32 vault, address verifier)
+        internal
+        pure
+        returns (ConfigureChains.ChainEntry[] memory entries)
+    {
+        entries = new ConfigureChains.ChainEntry[](1);
+        entries[0] = ConfigureChains.ChainEntry({chainId: id, vault: vault, stateVerifier: verifier});
+    }
+
+    function _tokenEntry(uint256 id, bytes32 tokenId, uint256 supply)
+        internal
+        pure
+        returns (ConfigureChains.TokenEntry[] memory entries)
+    {
+        entries = new ConfigureChains.TokenEntry[](1);
+        entries[0] = ConfigureChains.TokenEntry({chainId: id, tokenId: tokenId, supply: supply});
+    }
+
+    function _chainCalls(
+        ConfigureChains script,
+        HybridIndexFactory factory,
+        ConfigureChains.ChainEntry[] memory chains,
+        ConfigureChains.TokenEntry[] memory tokens,
+        uint256[] memory rotate
+    ) internal view returns (bytes[] memory calls) {
+        (calls,) = script.safeCalldata(factory, chains, tokens, rotate);
+    }
+
+    function test_configureChains_parse() public {
+        ConfigureChains script = new ConfigureChains();
+        assertEq(script.parseChains("").length, 0);
+        assertEq(script.parseTokens("").length, 0);
+        assertEq(script.parseIds("").length, 0);
+
+        ConfigureChains.ChainEntry[] memory chains = script.parseChains(
+            string.concat(
+                "56:",
+                vm.toString(BNB_VAULT),
+                ":",
+                vm.toString(address(router)),
+                " , 728126428:0x41:",
+                vm.toString(usdc)
+            )
+        );
+        assertEq(chains.length, 2);
+        assertEq(chains[0].chainId, BNB);
+        assertEq(chains[0].vault, BNB_VAULT);
+        assertEq(chains[0].stateVerifier, address(router));
+        assertEq(chains[1].chainId, 728126428, "spaces around an entry are trimmed");
+        assertEq(chains[1].vault, bytes32(uint256(0x41)), "a short vault is left-padded");
+        assertEq(chains[1].stateVerifier, usdc);
+
+        ConfigureChains.TokenEntry[] memory tokens = script.parseTokens("56:0x0:140000000000000000000000000, 56:0x1:7");
+        assertEq(tokens.length, 2);
+        assertEq(tokens[0].chainId, BNB);
+        assertEq(tokens[0].tokenId, bytes32(0));
+        assertEq(tokens[0].supply, 140_000_000e18);
+        assertEq(tokens[1].tokenId, bytes32(uint256(1)));
+        assertEq(tokens[1].supply, 7);
+
+        uint256[] memory ids = script.parseIds("56, 728126428");
+        assertEq(ids.length, 2);
+        assertEq(ids[0], BNB);
+        assertEq(ids[1], 728126428);
+
+        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.MalformedEntry.selector, "56:0xb5c"));
+        script.parseChains("56:0xb5c");
+        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.MalformedEntry.selector, "56:0x0:1:2"));
+        script.parseTokens("56:0x0:1:2");
+        // A word in decimal would read as another word, and "0x" alone as zero.
+        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.MalformedEntry.selector, "56:2908:0x01"));
+        script.parseChains("56:2908:0x01");
+        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.MalformedEntry.selector, "56:0x:1"));
+        script.parseTokens("56:0x:1");
+        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.MalformedEntry.selector, "56:1x0:1"));
+        script.parseTokens("56:1x0:1");
+        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.MalformedEntry.selector, "56:00:1"));
+        script.parseTokens("56:00:1");
+    }
+
+    /// @dev A chain first, then its coin: the coin waits for its chain's registration, each proposal executes once due,
+    ///      a second run finds nothing to do, and the Safe's calls are exactly what an owner key proposes.
+    function test_configureChains_addsAChainThenItsCoin() public {
+        ConfigureChains script = new ConfigureChains();
+        HybridIndexFactory factory = _hybridFactory(DEFAULT_SENDER);
+        ConfigureChains.ChainEntry[] memory chains = _chainEntry(BNB, BNB_VAULT, address(router));
+        ConfigureChains.TokenEntry[] memory tokens = _tokenEntry(BNB, bytes32(0), 140_000_000e18);
+        uint256[] memory noRotation;
+        address bnb = factory.vaultTokenId(BNB, bytes32(0));
+
+        assertTrue(script.shouldProposeChain(factory, chains[0], noRotation));
+        assertFalse(script.shouldListToken(factory, tokens[0]), "the coin waits for its chain");
+        (bytes[] memory calls, string[] memory labels) = script.safeCalldata(factory, chains, tokens, noRotation);
+        assertEq(calls.length, 1, "the coin waits for its chain");
+        assertEq(calls[0], abi.encodeCall(IHybridIndexFactory.proposeChain, (BNB, BNB_VAULT, address(router))));
+        assertEq(labels[0], "proposeChain 56");
+
+        script.propose(factory, chains, tokens, noRotation);
+        (bytes32 vault, address verifier, uint256 eta) = factory.chainProposal(BNB);
+        assertEq(vault, BNB_VAULT);
+        assertEq(verifier, address(router));
+        assertEq(eta, block.timestamp + factory.LISTING_DELAY());
+        assertEq(_chainCalls(script, factory, chains, tokens, noRotation).length, 0, "already pending");
+
+        script.execute(factory, chains, tokens);
+        assertEq(factory.chain(BNB).vault, bytes32(0), "not before its delay");
+        vm.warp(eta);
+        script.execute(factory, chains, tokens);
+        assertEq(factory.chain(BNB).vault, BNB_VAULT, "registered");
+        assertEq(factory.chain(BNB).stateVerifier, address(router));
+
+        (calls, labels) = script.safeCalldata(factory, chains, tokens, noRotation);
+        assertEq(calls.length, 1, "the registered chain is not proposed again; its coin is");
+        assertEq(calls[0], abi.encodeCall(IHybridIndexFactory.proposeVaultListing, (BNB, bytes32(0), 140_000_000e18)));
+        assertEq(labels[0], string.concat("proposeVaultListing 56 ", vm.toString(bytes32(0))));
+        script.propose(factory, chains, tokens, noRotation);
+        assertEq(factory.pendingReferenceSupply(bnb), 140_000_000e18);
+        assertEq(_chainCalls(script, factory, chains, tokens, noRotation).length, 0, "already pending");
+
+        script.execute(factory, chains, tokens);
+        assertFalse(factory.isWhitelisted(bnb), "not before its delay");
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        script.execute(factory, chains, tokens);
+        assertTrue(factory.isWhitelisted(bnb), "listed");
+        assertEq(factory.referenceSupply(bnb), 140_000_000e18);
+        assertEq(_chainCalls(script, factory, chains, tokens, noRotation).length, 0, "nothing left to do");
+        script.execute(factory, chains, tokens); // and nothing to execute
+    }
+
+    /// @dev Every chain entry the factory would refuse, or that names nothing new, is skipped with its reason, so a Safe
+    ///      batch never fails on one call (CR-I38): no chain id, this chain's own id, a zero vault, a verifier with no
+    ///      code, another vault for a registered chain, the registered verifier again, and a new verifier for a chain
+    ///      the run was not told to rotate.
+    function test_configureChains_skipsAChainTheFactoryWouldRefuse() public {
+        ConfigureChains script = new ConfigureChains();
+        HybridIndexFactory factory = _hybridFactory(DEFAULT_SENDER);
+        _registerBnb(factory);
+        ConfigureChains.TokenEntry[] memory noTokens;
+        uint256[] memory rotate = new uint256[](1);
+        rotate[0] = BNB;
+
+        ConfigureChains.ChainEntry[7] memory refused = [
+            ConfigureChains.ChainEntry({chainId: 0, vault: BNB_VAULT, stateVerifier: address(router)}),
+            ConfigureChains.ChainEntry({chainId: block.chainid, vault: BNB_VAULT, stateVerifier: address(router)}),
+            ConfigureChains.ChainEntry({chainId: 43114, vault: bytes32(0), stateVerifier: address(router)}),
+            ConfigureChains.ChainEntry({chainId: 43114, vault: BNB_VAULT, stateVerifier: makeAddr("no code")}),
+            ConfigureChains.ChainEntry({chainId: BNB, vault: bytes32(uint256(1)), stateVerifier: address(router)}),
+            ConfigureChains.ChainEntry({chainId: BNB, vault: BNB_VAULT, stateVerifier: address(router)}),
+            ConfigureChains.ChainEntry({chainId: BNB, vault: BNB_VAULT, stateVerifier: usdc})
+        ];
+        for (uint256 i = 0; i < refused.length; ++i) {
+            ConfigureChains.ChainEntry[] memory one =
+                _chainEntry(refused[i].chainId, refused[i].vault, refused[i].stateVerifier);
+            // The last is refused only because ROTATE does not name it; the others whatever ROTATE says.
+            uint256[] memory named = i == refused.length - 1 ? new uint256[](0) : rotate;
+            assertEq(_chainCalls(script, factory, one, noTokens, named).length, 0, vm.toString(i));
+            script.propose(factory, one, noTokens, named);
+            assertFalse(factory.chainPending(refused[i].chainId), vm.toString(i));
+        }
+        assertEq(factory.chain(BNB).stateVerifier, address(router), "nothing changed");
+    }
+
+    /// @dev FAC-1: a new state verifier for a registered chain is proposed only when ROTATE names the chain, and waits
+    ///      ROTATION_DELAY. A different proposal pending is left alone in both modes, and an expired one is reported and
+    ///      proposed again on the next run.
+    function test_FAC1_configureChainsRotatesAVerifierOnlyWhenNamed() public {
+        ConfigureChains script = new ConfigureChains();
+        HybridIndexFactory factory = _hybridFactory(DEFAULT_SENDER);
+        _registerBnb(factory);
+        ConfigureChains.TokenEntry[] memory noTokens;
+        uint256[] memory rotate = new uint256[](2);
+        (rotate[0], rotate[1]) = (43114, BNB); // the chain need not come first
+
+        ConfigureChains.ChainEntry[] memory toUsdc = _chainEntry(BNB, BNB_VAULT, usdc);
+        script.propose(factory, toUsdc, noTokens, rotate);
+        (, address verifier, uint256 eta) = factory.chainProposal(BNB);
+        assertEq(verifier, usdc);
+        assertEq(eta, block.timestamp + factory.ROTATION_DELAY(), "a rotation waits 30 days");
+
+        ConfigureChains.ChainEntry[] memory toUsdt = _chainEntry(BNB, BNB_VAULT, usdt);
+        assertEq(_chainCalls(script, factory, toUsdt, noTokens, rotate).length, 0, "a different proposal is pending");
+        vm.warp(eta);
+        script.execute(factory, toUsdt, noTokens);
+        assertEq(factory.chain(BNB).stateVerifier, address(router), "a pending proposal unlike the entry is left");
+        vm.warp(eta - 1);
+        script.execute(factory, toUsdc, noTokens);
+        assertEq(factory.chain(BNB).stateVerifier, address(router), "not before ROTATION_DELAY");
+        vm.warp(eta + factory.PROPOSAL_WINDOW() + 1);
+        script.execute(factory, toUsdc, noTokens);
+        assertEq(factory.chain(BNB).stateVerifier, address(router), "nor after its window");
+
+        script.propose(factory, toUsdc, noTokens, rotate);
+        (,, eta) = factory.chainProposal(BNB);
+        assertEq(eta, block.timestamp + factory.ROTATION_DELAY(), "an expired proposal is proposed again");
+        vm.warp(eta);
+        script.execute(factory, toUsdc, noTokens);
+        assertEq(factory.chain(BNB).stateVerifier, usdc, "rotated");
+        assertEq(factory.chain(BNB).vault, BNB_VAULT, "the vault is fixed");
+    }
+
+    /// @dev A coin entry the factory would refuse is skipped with its reason: a supply of zero or past MAX_SUPPLY, and a
+    ///      delisted coin the live supply batch names (DA-20). A delisted coin is relisted at the supply in force,
+    ///      whatever its entry says (SA-02), and execute leaves a pending listing whose supply is not the entry's, and
+    ///      one past its window.
+    function test_configureChains_skipsACoinTheFactoryWouldRefuse() public {
+        ConfigureChains script = new ConfigureChains();
+        HybridIndexFactory factory = _hybridFactory(DEFAULT_SENDER);
+        _registerBnb(factory);
+        ConfigureChains.ChainEntry[] memory noChains;
+        uint256[] memory noRotation;
+
+        assertEq(_chainCalls(script, factory, noChains, _tokenEntry(BNB, bytes32(0), 0), noRotation).length, 0);
+        uint256 tooMuch = factory.MAX_SUPPLY() + 1;
+        assertEq(_chainCalls(script, factory, noChains, _tokenEntry(BNB, bytes32(0), tooMuch), noRotation).length, 0);
+
+        // Two coins listed, the first delisted and named by the live batch, the second delisted and not.
+        ConfigureChains.TokenEntry[] memory both = new ConfigureChains.TokenEntry[](2);
+        both[0] = ConfigureChains.TokenEntry({chainId: BNB, tokenId: bytes32(0), supply: 1_000e18});
+        both[1] = ConfigureChains.TokenEntry({chainId: BNB, tokenId: bytes32(uint256(1)), supply: 2_000e18});
+        script.propose(factory, noChains, both, noRotation);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        script.execute(factory, noChains, both);
+        address first = factory.vaultTokenId(BNB, bytes32(0));
+        address second = factory.vaultTokenId(BNB, bytes32(uint256(1)));
+        assertTrue(factory.isWhitelisted(first) && factory.isWhitelisted(second));
+        vm.startPrank(guardian);
+        factory.delist(first);
+        factory.delist(second);
+        vm.stopPrank();
+        address[] memory batch = new address[](1);
+        uint256[] memory supplies = new uint256[](1);
+        (batch[0], supplies[0]) = (first, 1_004e18);
+        vm.prank(DEFAULT_SENDER);
+        factory.proposeSupplies(batch, supplies);
+
+        both[1].supply = 3_000e18; // the entry moved, the supply in force did not
+        assertEq(script.listingSupply(factory, both[1]), 2_000e18, "a relisting proposes the supply in force");
+        bytes[] memory calls = _chainCalls(script, factory, noChains, both, noRotation);
+        assertEq(calls.length, 1, "the coin the batch names waits");
+        assertEq(
+            calls[0], abi.encodeCall(IHybridIndexFactory.proposeVaultListing, (BNB, bytes32(uint256(1)), 2_000e18))
+        );
+        script.propose(factory, noChains, both, noRotation);
+        assertEq(factory.pendingReferenceSupply(second), 2_000e18, "relisted at the supply in force");
+        assertEq(factory.listingEta(first), 0);
+
+        // The first coin's listing is proposed once the batch is gone.
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        factory.executeSupplies();
+        script.execute(factory, noChains, both);
+        assertTrue(factory.isWhitelisted(second));
+        script.propose(factory, noChains, both, noRotation);
+        assertEq(factory.pendingReferenceSupply(first), 1_004e18, "the batch's supply is the one in force");
+
+        // A first listing executes only at its entry's supply, and only inside its window.
+        ConfigureChains.TokenEntry[] memory third = _tokenEntry(BNB, bytes32(uint256(2)), 5e18);
+        address coin = factory.vaultTokenId(BNB, bytes32(uint256(2)));
+        script.propose(factory, noChains, third, noRotation);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        third[0].supply = 6e18;
+        script.execute(factory, noChains, third);
+        assertFalse(factory.isWhitelisted(coin), "the pending supply is not the entry's");
+        third[0].supply = 5e18;
+        vm.warp(block.timestamp + factory.PROPOSAL_WINDOW() + 1);
+        script.execute(factory, noChains, third);
+        assertFalse(factory.isWhitelisted(coin), "expired");
+        assertFalse(factory.isWhitelisted(first), "expired too");
+    }
+
+    /// @dev RT-24 for chains and coins: safe mode decides every entry against the same state, so an entry named twice
+    ///      would be proposed twice and the second call would revert the whole Safe batch. Both modes refuse it.
+    function test_RT24_chainsAndCoinsNamedTwiceAreRefused() public {
+        ConfigureChains script = new ConfigureChains();
+        HybridIndexFactory factory = _hybridFactory(DEFAULT_SENDER);
+        uint256[] memory noRotation;
+        ConfigureChains.TokenEntry[] memory noTokens;
+        ConfigureChains.ChainEntry[] memory noChains;
+
+        ConfigureChains.ChainEntry[] memory chains = new ConfigureChains.ChainEntry[](3);
+        chains[0] = ConfigureChains.ChainEntry({chainId: BNB, vault: BNB_VAULT, stateVerifier: address(router)});
+        chains[1] = ConfigureChains.ChainEntry({chainId: 43114, vault: BNB_VAULT, stateVerifier: address(router)});
+        chains[2] = ConfigureChains.ChainEntry({chainId: BNB, vault: bytes32(uint256(1)), stateVerifier: usdc});
+        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.DuplicateChain.selector, BNB));
+        script.safeCalldata(factory, chains, noTokens, noRotation);
+        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.DuplicateChain.selector, BNB));
+        script.propose(factory, chains, noTokens, noRotation);
+
+        ConfigureChains.TokenEntry[] memory tokens = new ConfigureChains.TokenEntry[](3);
+        tokens[0] = ConfigureChains.TokenEntry({chainId: BNB, tokenId: bytes32(0), supply: 1});
+        tokens[1] = ConfigureChains.TokenEntry({chainId: 43114, tokenId: bytes32(0), supply: 1}); // another chain's coin
+        tokens[2] = ConfigureChains.TokenEntry({chainId: BNB, tokenId: bytes32(0), supply: 2});
+        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.DuplicateToken.selector, BNB, bytes32(0)));
+        script.safeCalldata(factory, noChains, tokens, noRotation);
+        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.DuplicateToken.selector, BNB, bytes32(0)));
+        script.propose(factory, noChains, tokens, noRotation);
+
+        chains[2].chainId = 1; // three distinct chains, and two distinct coins
+        ConfigureChains.TokenEntry[] memory two = new ConfigureChains.TokenEntry[](2);
+        (two[0], two[1]) = (tokens[0], tokens[1]);
+        assertEq(_chainCalls(script, factory, chains, two, noRotation).length, 3, "every chain; no coin yet");
+    }
+
+    /// @dev XA-18 and LR-07 for chains: an owner that is a contract cannot sign, so `propose` refuses it and points to
+    ///      safe mode, while a key delegated under EIP-7702 still signs.
+    function test_configureChains_proposeNeedsAnOwnerKey() public {
+        ConfigureChains script = new ConfigureChains();
+        MockSafe safe = new MockSafe(3);
+        HybridIndexFactory factory = _hybridFactory(address(safe));
+        ConfigureChains.ChainEntry[] memory chains = _chainEntry(BNB, BNB_VAULT, address(router));
+        ConfigureChains.TokenEntry[] memory noTokens;
+        uint256[] memory noRotation;
+        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.OwnerIsContract.selector, address(safe)));
+        script.propose(factory, chains, noTokens, noRotation);
+        assertEq(_chainCalls(script, factory, chains, noTokens, noRotation).length, 1, "safe mode serves it");
+
+        HybridIndexFactory keyed = _hybridFactory(DEFAULT_SENDER);
+        vm.etch(DEFAULT_SENDER, abi.encodePacked(hex"ef0100", address(this)));
+        script.propose(keyed, chains, noTokens, noRotation);
+        assertTrue(keyed.chainPending(BNB), "the delegated key proposed");
+    }
+
+    function test_configureChainsRun_readsEnvironment() public {
+        ConfigureChains script = new ConfigureChains();
+        HybridIndexFactory factory = _hybridFactory(DEFAULT_SENDER);
+        vm.setEnv("CHAINS_FACTORY", vm.toString(address(factory)));
+        vm.setEnv("CHAINS", string.concat("56:", vm.toString(BNB_VAULT), ":", vm.toString(address(router))));
+        vm.setEnv("VAULT_TOKENS", "56:0x0:140000000000000000000000000");
+        vm.setEnv("ROTATE", "56");
+
+        vm.setEnv("CHAIN_MODE", "safe"); // logs the chain's calldata, broadcasts nothing
+        script.run();
+        assertFalse(factory.chainPending(BNB));
+        vm.setEnv("CHAIN_MODE", "propose");
+        script.run();
+        assertTrue(factory.chainPending(BNB));
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        vm.setEnv("CHAIN_MODE", "execute");
+        script.run();
+        assertEq(factory.chain(BNB).vault, BNB_VAULT);
+
+        vm.setEnv("CHAIN_MODE", "propose");
+        script.run();
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        vm.setEnv("CHAIN_MODE", "execute");
+        script.run();
+        assertTrue(factory.isWhitelisted(factory.vaultTokenId(BNB, bytes32(0))));
+
+        vm.setEnv("CHAIN_MODE", "sideways");
+        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.UnknownMode.selector, "sideways"));
+        script.run();
+    }
+}
+
+/// @notice `DeployStateVerifier` on the anchors its generators read from BNB Chain and TRON on 1 October 2026
+///         (`test/fixtures/bnb/anchor.json`, `test/fixtures/tron/anchor.json`). The BNB verifier checks keys on the
+///         curve with EIP-2537's precompiles, which exist from Prague on.
+/// forge-config: default.evm_version = "prague"
+contract StateVerifierScriptTest is Test {
+    DeployStateVerifier script;
+    string bnb;
+    string tron;
+    uint256 epoch;
+    uint256 epochTime;
+    bytes epochHeader;
+    bytes[] keys;
+    ITronStateVerifier.Producer[] list;
+    uint64 nextMaintenance;
+
+    function setUp() public {
+        script = new DeployStateVerifier();
+        bnb = vm.readFile("test/fixtures/bnb/anchor.json");
+        tron = vm.readFile("test/fixtures/tron/anchor.json");
+        epoch = vm.parseJsonUint(bnb, ".number");
+        epochTime = vm.parseJsonUint(bnb, ".time");
+        epochHeader = vm.parseJsonBytes(bnb, ".rlp");
+        keys = vm.parseJsonBytesArray(bnb, ".keys");
+        ITronStateVerifier.Producer[] memory producers = script.producers(tron);
+        for (uint256 i = 0; i < producers.length; ++i) {
+            list.push(producers[i]);
+        }
+        nextMaintenance = uint64(vm.parseJsonUint(tron, ".nextMaintenance"));
+        vm.chainId(1);
+    }
+
+    function _bnbVerifier() internal returns (BnbStateVerifier) {
+        vm.warp(epochTime + 10 minutes);
+        return script.deployBnb(epochHeader, keys);
+    }
+
+    function _tronVerifier() internal returns (TronStateVerifier) {
+        vm.warp(nextMaintenance / 1000 - 1 hours);
+        return script.deployTron(list, nextMaintenance);
+    }
+
+    function test_deployBnb_fromARealAnchor() public {
+        BnbStateVerifier verifier = _bnbVerifier();
+        assertEq(verifier.latestEpoch(), epoch);
+        assertEq(verifier.validatorSet(epoch).count, keys.length);
+        assertEq(keccak256(epochHeader), vm.parseJsonBytes32(bnb, ".hash"), "the anchor's header is its block's");
+        assertEq(script.checkBnb(address(verifier), epoch, keys), address(verifier).codehash);
+    }
+
+    function test_deployTron_fromARealAnchor() public {
+        TronStateVerifier verifier = _tronVerifier();
+        assertEq(verifier.producerList(0).count, list.length);
+        assertEq(verifier.producerList(0).end, nextMaintenance);
+        assertEq(script.checkTron(address(verifier), list, nextMaintenance), address(verifier).codehash);
+    }
+
+    /// @dev Only on Ethereum, mainnet or Sepolia, beside the hub: not on the chain the verifier reads, nor anywhere else.
+    function test_deploy_onlyOnEthereum() public {
+        vm.warp(epochTime + 10 minutes);
+        uint256[3] memory elsewhere = [uint256(56), 728126428, 31337];
+        for (uint256 i = 0; i < elsewhere.length; ++i) {
+            vm.chainId(elsewhere[i]);
+            vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.NotEthereum.selector, elsewhere[i]));
+            script.deployBnb(epochHeader, keys);
+            vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.NotEthereum.selector, elsewhere[i]));
+            script.deployTron(list, nextMaintenance);
+        }
+        vm.chainId(11155111);
+        script.deployBnb(epochHeader, keys);
+    }
+
+    /// @dev A BNB anchor more than an hour old leaves too little of MAX_LAG to advance the verifier, and one from the
+    ///      future is not a block the chain has finalized. A TRON anchor must be the period in progress.
+    function test_deploy_onlyAFreshAnchor() public {
+        vm.warp(epochTime + script.MAX_ANCHOR_AGE());
+        script.deployBnb(epochHeader, keys);
+        vm.warp(epochTime + script.MAX_ANCHOR_AGE() + 1);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.StaleAnchor.selector, epochTime, block.timestamp));
+        script.deployBnb(epochHeader, keys);
+        vm.warp(epochTime - 1);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.StaleAnchor.selector, epochTime, block.timestamp));
+        script.deployBnb(epochHeader, keys);
+
+        uint256 end = nextMaintenance / 1000;
+        vm.warp(end - 6 hours);
+        script.deployTron(list, nextMaintenance);
+        vm.warp(end);
+        vm.expectRevert(
+            abi.encodeWithSelector(DeployStateVerifier.NotThePeriodInProgress.selector, nextMaintenance, end * 1000)
+        );
+        script.deployTron(list, nextMaintenance);
+        vm.warp(end - 6 hours - 1);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                DeployStateVerifier.NotThePeriodInProgress.selector, nextMaintenance, (end - 6 hours - 1) * 1000
+            )
+        );
+        script.deployTron(list, nextMaintenance);
+    }
+
+    /// @dev The review refuses a verifier that does not run this release's code, and one that did not start from the
+    ///      anchor given: other keys, another epoch, or a set recorded before the anchor's.
+    function test_checkBnb_refusesAnotherVerifierOrAnchor() public {
+        BnbStateVerifier verifier = _bnbVerifier();
+        TronStateVerifier other = _tronVerifier();
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongCode.selector, address(other)));
+        script.checkBnb(address(other), epoch, keys);
+
+        bytes[] memory fewer = new bytes[](keys.length - 1);
+        for (uint256 i = 0; i < fewer.length; ++i) {
+            fewer[i] = keys[i];
+        }
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(verifier)));
+        script.checkBnb(address(verifier), epoch, fewer);
+        bytes[] memory swapped = keys;
+        (swapped[0], swapped[1]) = (swapped[1], swapped[0]);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(verifier)));
+        script.checkBnb(address(verifier), epoch, swapped);
+        (swapped[0], swapped[1]) = (swapped[1], swapped[0]);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(verifier)));
+        script.checkBnb(address(verifier), epoch + 1000, keys);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(verifier)));
+        script.checkBnb(address(verifier), 0, keys); // before any epoch
+
+        // A set recorded one epoch before the anchor's means the verifier started elsewhere.
+        bytes32 slot = keccak256(abi.encode(epoch - 1000, uint256(1)));
+        vm.store(address(verifier), slot, bytes32(uint256(1)));
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(verifier)));
+        script.checkBnb(address(verifier), epoch, keys);
+    }
+
+    function test_checkTron_refusesAnotherVerifierOrAnchor() public {
+        TronStateVerifier verifier = _tronVerifier();
+        BnbStateVerifier other = _bnbVerifier();
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongCode.selector, address(other)));
+        script.checkTron(address(other), list, nextMaintenance);
+
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(verifier)));
+        script.checkTron(address(verifier), list, nextMaintenance + 6 hours * 1000);
+        ITronStateVerifier.Producer[] memory changed = list;
+        changed[0].key = address(1);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(verifier)));
+        script.checkTron(address(verifier), changed, nextMaintenance);
+    }
+
+    function test_deployStateVerifierRun_readsEnvironment() public {
+        vm.setEnv("STATE_CHAIN", "bnb");
+        vm.setEnv("STATE_ANCHOR", "test/fixtures/bnb/anchor.json");
+        vm.warp(epochTime + 10 minutes);
+        address verifier = script.run();
+        assertEq(BnbStateVerifier(verifier).latestEpoch(), epoch);
+
+        vm.setEnv("STATE_CHAIN", "tron");
+        vm.setEnv("STATE_ANCHOR", "test/fixtures/tron/anchor.json");
+        vm.warp(nextMaintenance / 1000 - 1 hours);
+        verifier = script.run();
+        assertEq(TronStateVerifier(verifier).producerList(0).producersHash, keccak256(abi.encode(list)));
+
+        vm.setEnv("STATE_CHAIN", "solana");
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.UnknownChain.selector, "solana"));
+        script.run();
     }
 }

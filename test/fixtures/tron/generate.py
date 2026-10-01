@@ -2,6 +2,12 @@
 """Builds the Tron fixture of test/TronStateVerifier.t.sol from TronGrid's public API, read-only.
 
     python3 test/fixtures/tron/generate.py [api-url] [boundary-ms]
+    python3 test/fixtures/tron/generate.py <api-url> anchor <file>
+
+The second form writes the anchor `script/DeployStateVerifier.s.sol` deploys a verifier from: the period in progress,
+its end (`getnextmaintenancetime`), and its producers as their own blocks show them, each block's header checked
+against its id, its signature recovered and its parent linked, read from three rounds after the maintenance block and
+compared with the 27 witnesses `listwitnesses` marks as producing. The deploy refuses an anchor whose period has ended.
 
 Needs pycryptodome. It writes chain.json next to itself: the blocks around one 6-hour maintenance boundary (the old
 period's last 40, the maintenance block, and the new period's first round and the blocks that vouch for it), the
@@ -25,7 +31,7 @@ from Crypto.Hash import keccak as _keccak
 
 API = sys.argv[1] if len(sys.argv) > 1 else "https://api.trongrid.io"
 # The boundary of 1 October 2026 at 12:00 UTC; any maintenance time on the grid works.
-BOUNDARY = int(sys.argv[2]) if len(sys.argv) > 2 else 1790856000000
+BOUNDARY = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] != "anchor" else 1790856000000
 HERE = os.path.dirname(os.path.abspath(__file__))
 SLOT = 3000
 ROUND = 27
@@ -301,7 +307,38 @@ def proof_block(blocks, at, producers):
     raise SystemExit(f"no TriggerSmartContract transaction the verifier can write in block {num}")
 
 
+def listed(d):
+    return [{"witness": w, "key": d[w]} for w in sorted(d, key=lambda a: int(a, 16))]
+
+
+def anchor(path):
+    """The producers of the period in progress, learned from their own blocks, for a verifier's deployment."""
+    end = post("/wallet/getnextmaintenancetime", {})["num"]
+    start = end - 6 * 3600 * 1000
+    m = first_at_or_after(start)
+    span = 3 * ROUND + 1
+    head = post("/wallet/getnowblock", {})["block_header"]["raw_data"]["number"]
+    if head < m + span + QUORUM:
+        raise SystemExit(f"the period began at block {m}: wait until block {m + span + QUORUM}, about five minutes in")
+    blocks = [checked(header(n)) for n in range(m, m + span)]
+    for i in range(1, len(blocks)):
+        assert blocks[i]["parentHash"] == blocks[i - 1]["id"], "linked"
+    assert blocks[0]["timestamp"] >= start and header(m - 1)["block_header"]["raw_data"]["timestamp"] < start
+    producers = {}
+    for b in blocks[1:]:  # the maintenance block itself runs under the list before
+        assert producers.setdefault(b["witness"], b["key"]) == b["key"], "one key per producer"
+    jobs = {"0x" + w["address"][2:] for w in post("/wallet/listwitnesses", {})["witnesses"] if w.get("isJobs")}
+    assert set(producers) == jobs and len(jobs) == ROUND, "the producers are the 27 witnesses listwitnesses marks"
+    d = {"source": API, "nextMaintenance": end, "start": start, "maintenanceBlock": m, "producers": listed(producers)}
+    with open(path, "w") as f:
+        json.dump(d, f, indent=1)
+        f.write("\n")
+    print(f"{path} written: {len(producers)} producers, period {start}..{end}, maintenance block {m}")
+
+
 def main():
+    if len(sys.argv) > 3 and sys.argv[2] == "anchor":
+        return anchor(sys.argv[3])
     m = first_at_or_after(BOUNDARY)
     print("maintenance block", m)
     blocks = [checked(header(n)) for n in range(m - BEFORE, m + 3 * ROUND + 1)]
@@ -346,9 +383,6 @@ def main():
     old_proof = proof_block(blocks, 5, old)
     assert old_proof["headersEnd"] <= maint, "the old period's proof stays in its period"
     new_proof = proof_block(blocks, first + 2, new)
-
-    def listed(d):
-        return [{"witness": w, "key": d[w]} for w in sorted(d, key=lambda a: int(a, 16))]
 
     out = {
         "source": API,

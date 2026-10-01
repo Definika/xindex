@@ -31,7 +31,7 @@ forge test                   # unit + fuzz + invariant tests, no RPC needed; for
                              # there makes the fork suites run too (archive node, or FORK_BLOCK, or --no-match-path 'test/fork/*');
                              # an RPC that cannot serve the pinned block fails with that sentence, not a raw fork error
 forge coverage               # must stay at 100% for every file (lines, statements, branches, functions)
-for c in IndexFactory IndexHub IndexZap MintRequests; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
+for c in IndexFactory IndexHub IndexZap MintRequests HybridIndexFactory IHybridIndex XindexVault; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
 
 # mainnet fork tests (real tokens, Universal Router, V3 and V4 pools); skipped when the env var is unset.
 # A rate-limited RPC throttles four suites in parallel: add -j 1.
@@ -163,13 +163,13 @@ test/XindexTest.sol           state and listing helpers the factory, hub, zap an
 test/Security.t.sol           regression tests for the security review findings (see gate 6 for ids tested elsewhere)
 test/Repo.t.sol               repository facts findings rest on: pinned compiler, CI gates and toolchain, dependency lock, ABIs, no price, docs
 test/mocks/                   mock tokens, WETH, a strict Universal Router, V3 pools for the testnet script, the market fixture (+ Mocks.t.sol)
-test/fixtures/bnb/            real BNB Chain data for the Stage B verifier, mainnet's and the testnet's, and generate.py, which rebuilds either from a public RPC (py_ecc, pycryptodome)
+test/fixtures/bnb/            real BNB Chain data for the Stage B verifier, mainnet's and the testnet's, and generate.py, which rebuilds either from a public RPC (py_ecc, pycryptodome) and writes a deployment's anchor
 test/fixtures/ethereum/       a real mainnet block's receipts trie proofs for P1's verifier, and generate.py, which rebuilds them and checks the root (rlp, trie)
-test/fixtures/tron/           real Tron blocks around a maintenance boundary, with two real calls, and generate.py, which rebuilds them from TronGrid (pycryptodome)
+test/fixtures/tron/           real Tron blocks around a maintenance boundary, with two real calls, and generate.py, which rebuilds them from TronGrid (pycryptodome) and writes a deployment's anchor
 test/utils/                   test-only helpers (an RLP writer)
 test/HybridTest.sol           Stage B on one EVM: a real vault standing for another chain, a state verifier reading its storage, message delivery
 test/fork/                    test-only mainnet addresses, end-to-end fork tests, a V3 rebalance executor, fork security regressions
-script/                       Deploy, ConfigureWhitelist, MainnetAddresses (the one copy of mainnet addresses and dated reference supplies)
+script/                       Deploy, ConfigureWhitelist, DeployVault, DeployStateVerifier, ConfigureChains, MainnetAddresses (the one copy of mainnet addresses and dated reference supplies)
 script/interfaces/            the Safe, WETH and Uniswap setup calls the scripts make
 script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test market (never deploy on mainnet)
 abi/                          generated ABIs the web app decodes with; CI regenerates them and fails on a diff
@@ -552,8 +552,11 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
     (`HybridTest._fresh`), as keepers keep a live vault out of a stall.
 - **Scripts.** They keep their logic in public functions that take explicit arguments, so tests can call them without
   environment variables: `Deploy.deploy`, which deploys `HybridIndexFactory` with both templates, the zap and
-  `MintRequests`, and
-  `ConfigureWhitelist.propose`, `execute`, `proposeSupplies` and `executeSupplies`. Environment variables are process-global and tests run in parallel, so each variable name is
+  `MintRequests`; `DeployVault.deploy`, which deploys a vault chain's P1, P2, state reader and vault, refusing any
+  Groth16 verifier but the pinned SP1 and RISC Zero ones; `DeployStateVerifier.deployBnb` and `deployTron`, which
+  deploy a chain's state verifier on Ethereum from a fresh anchor; `ConfigureWhitelist.propose`, `execute`,
+  `proposeSupplies` and `executeSupplies`; and `ConfigureChains.propose` and `execute`, which add a vault chain and its
+  coins. Environment variables are process-global and tests run in parallel, so each variable name is
   set by exactly one test (see `test/Scripts.t.sol`). In tests, script broadcasts come from `DEFAULT_SENDER`.
 - **Deployment rules.**
   - Deployments never use raw private keys: `--account` keystores or `--ledger`.
