@@ -591,6 +591,73 @@ Review and adoption:
 - **The real P1 and P2**, and a successor's proof of descent, belong to the proof system the owner picks after the GPU
   run. The vault's side is fixed by the interface above.
 
+### 5.7 The Tron state verifier (built 2026-10-01)
+
+`src/verifiers/TronStateVerifier.sol` follows section 8's design and the owner's three decisions of 1 October 2026:
+the list is inferred from signatures, 19 of 27 producers must sign, and `MAX_LAG` is a day.
+
+**What a proof shows.** A top-level `attest(slots, values)` call to the vault succeeded in a Tron block that 19
+distinct producers of its period's list then built on: a solidified block (`DposService.updateSolidBlock`). That
+proves the values, because:
+- Tron's peers re-run every contract call and reject a block whose `ret[0].contractRet` differs
+  (`TransactionTrace.check`);
+- the block's transaction root hashes each whole transaction, results included.
+
+`verifySlots` returns the values with the block's number and its time in seconds. `verifyCall` proves any top-level
+call the same way, for integrators.
+
+**Written, never parsed.** The verifier writes every header and transaction it hashes itself, from typed fields, as
+Java's protobuf writes them: fields ascending, zero scalars and empty strings left out.
+- **What the verifier writes itself.** In a transaction: the contract type, the vault's address, the call data, no
+  value, and the result SUCCESS.
+- **What the prover gives.** Only the fields that change nothing about what was called: the owner, the reference
+  block, the expiry, the time, the fee limit, the permission id, the signatures, and the result's fee.
+
+So there is no parser to get wrong, and a field the verifier does not write makes a proof fail closed. Checked on
+real mainnet data:
+- every one of 122 real headers written this way hashes to its block id;
+- two real USDT transfers hash to leaves of their blocks' transaction trees.
+
+`test/fixtures/tron/generate.py` checks all of it independently in Python.
+
+**Following the list.** Every 6 hours, anyone calls `advance` with:
+- the last block of the period, and the first block at or past its end, which ran the maintenance under the old list;
+- the learning round: from the next block on, spanning 27 slots counted from the block after it, whose distinct
+  signers are exactly the new list;
+- then blocks in which 19 producers of the old list, each signing with its listed key, built on the whole round.
+
+**A subtlety found on mainnet data.** The block right after the maintenance is scheduled two slots behind its own
+time: `DposSlot.getTime` adds the two skipped slots to the slot count, and `getScheduledWitness` never takes them back.
+- Counted from that block, a round names one producer twice and misses another.
+- Counted from the block after it, the schedule is the slot modulo 27.
+
+The fixture checks both facts on the chain itself.
+
+**Other rules.**
+- The new period starts on the 6-hour grid even after a halt, as `updateNextMaintenanceTime` keeps it.
+- Each learned producer is the witness its block names, with the key that signed it, so one key cannot be learned
+  under two witnesses.
+
+**Bounds.**
+- A list proves only blocks of its own period, and none older than `MAX_LAG`.
+- The latest list names its successor only within `MAX_LAG` of its period's start. So a verifier left about 18 hours
+  behind a boundary stops for good and is rotated (30 days).
+
+**Measured** (`test_gas_realProofs`, on real mainnet blocks of 1 October 2026):
+- proving a slot: about 551k gas, with 19 headers;
+- following one period: about 1.3M gas. Four a day comes to about 5.2M gas, about $2.80 at 0.2 gwei, against the BNB
+  verifier's 89M.
+
+**Limits, for the owner.**
+- A proof's 19 headers must lie in one period, so an `attest` in the minute before a boundary is proven only by
+  sending another after it.
+- **Trust.** 19 colluding producers could forge at no cost to their stake, since Tron has no slashing.
+- **Shared keys.** Two producers sharing a permission key count twice here, as they do in Tron's own solidity rule.
+- A proposal changing the maintenance interval (6 hours since genesis) needs a new verifier.
+- **Not yet run on Tron's TVM:** the vault's Cancun bytecode, `attest`'s energy, and the deployment's
+  `consume_user_resource_percent` need Tron's Nile testnet.
+- **Messages to Tron** need P1's verifier on TVM, whose BN254 precompiles exist, and P2.
+
 ## 6. Build order
 
 1. The message library and the verifier interface. Then the EVM vault, with unit tests, an invariant suite, mock
@@ -601,7 +668,8 @@ Review and adoption:
    is the rebalance with deliveries and bond (built, section 5.3); the governance messages (section 5.4), and
    migration with the evidence against a chain (section 5.5), are built.
 4. The Ethereum-event verifiers (P1, P2), once the owner decides the proof system after the GPU run.
-5. The Solana vault program, then HyperEVM and Tron.
+5. The Solana vault program (built, section 7), then Tron (its state verifier built, section 5.7) and HyperEVM
+   (section 8).
 6. The stall recovery and snapshot exit (built, section 5.6, but for the pool look-through), then watchers, then the
    testnet rehearsals of the design's Phase 3.
 
@@ -666,7 +734,7 @@ chain's finality signs. That holds where a block commits to contract storage, an
 | Chain | Commitment to the vault's state | Path | Ethereum gas per proof | Status |
 |---|---|---|---|---|
 | BNB Chain | an Ethereum-style state root | its finality vote plus a storage proof (5.1) | about 820k for two slots, measured | built |
-| Tron | none: `accountStateRoot` covers balances only, and is off on mainnet | a transaction's result, which the transaction root commits to | about 230k, estimated | to build |
+| Tron | none: `accountStateRoot` covers balances only, and is off on mainnet | a transaction's result, which the transaction root commits to | about 551k, measured | built (5.7) |
 | Solana | none: the accounts lattice hash has no inclusion proofs | a zkVM proof of the slot's account writes, under Alpenglow | about 260k, estimated | waits on Alpenglow's mainnet launch |
 | HyperEVM | none: every header's `stateRoot` is zero | nothing public to prove against | none | waits on Hyperliquid |
 
@@ -688,10 +756,10 @@ holds a value proves that value.
   728126428, which TVM's `block.chainid` returns.
 - **Trust.** Weaker than BNB's. Tron has no slashing, so 19 colluding producers could forge at no cost to their stake,
   and its finality is a longest-chain rule. Tron's own nodes and exchanges rely on the same guarantee.
-- **For the owner:**
-  - infer the list from signatures, as proposed, or have the owner keep it behind a timelock with the guardian's veto;
-  - 19 signers, as Tron uses, or more for margin, at about 9k gas each;
-  - Tron's `MAX_LAG`.
+- **Decided by the owner on 1 October 2026:**
+  - the list is inferred from signatures, not kept by the owner;
+  - 19 signers, as Tron uses;
+  - Tron's `MAX_LAG` is 1 day, as BNB Chain's.
 - **The other direction:** TVM has BN254 precompiles but no BLS12-381 ones, so P1's Groth16 verifier works there.
 
 ### Solana: prove the slot's account writes, once Alpenglow is live

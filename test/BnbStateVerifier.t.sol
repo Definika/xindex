@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {Test, console2} from "forge-std/Test.sol";
+import {VmSafe} from "forge-std/Vm.sol";
 import {BnbStateVerifier} from "../src/verifiers/BnbStateVerifier.sol";
 import {IBnbStateVerifier} from "../src/interfaces/IBnbStateVerifier.sol";
 import {Bls12381} from "../src/libraries/Bls12381.sol";
@@ -430,8 +431,10 @@ contract BnbStateVerifierTest is Test {
         console2.log("one epoch a transaction: gas", one, "of which execution", oneExecution);
         console2.log("two epochs a transaction: gas", two, "of which execution", twoExecution);
         console2.log("per epoch, two a transaction", two / 2, "a day at 192", two / 2 * 192);
-        assertLt(one, 560_000, "one epoch a transaction");
-        assertLt(two / 2, 500_000, "an epoch two to a transaction");
+        // The bounds are the optimized build's; coverage compiles without the optimizer, so it only measures.
+        bool coverage = vm.isContext(VmSafe.ForgeContext.Coverage);
+        if (!coverage) assertLt(one, 560_000, "one epoch a transaction");
+        if (!coverage) assertLt(two / 2, 500_000, "an epoch two to a transaction");
 
         bytes32[] memory slots = new bytes32[](2);
         slots[0] = vm.parseJsonBytes32(json, ".state.slot");
@@ -445,7 +448,7 @@ contract BnbStateVerifierTest is Test {
         (uint256 read, uint256 readExecution) = _txGas(call);
         console2.log("proving two slots: gas", read, "of which execution", readExecution);
         console2.log("calldata bytes", call.length);
-        assertLt(read, 1_100_000, "a two-slot state proof");
+        if (!coverage) assertLt(read, 1_100_000, "a two-slot state proof");
     }
 
     // ---------------------------------------------------------------------

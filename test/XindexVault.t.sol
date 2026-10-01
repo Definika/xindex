@@ -247,6 +247,31 @@ contract XindexVaultTest is VaultTestBase {
         assertEq(vault.intakeTokens(index, intakeId).length, 1);
     }
 
+    /// @dev `attest` succeeds exactly when every slot holds its value: on Tron, whose blocks commit to no contract
+    ///      storage, a successful call of it is how Ethereum proves the vault's state. The slot is the one the hub
+    ///      proves for an intake.
+    function test_attest_succeedsOnlyOnTheStoredValues() public {
+        uint256 intakeId = _intake(block.timestamp + 2 hours, 1);
+        _deposit(alice, index, intakeId, 3 ether);
+        bytes32[] memory slots = new bytes32[](2);
+        bytes32[] memory values = new bytes32[](2);
+        slots[0] = keccak256(abi.encode(intakeId, keccak256(abi.encode(index, uint256(15)))));
+        values[0] = vault.intakeDigest(index, intakeId);
+        assertTrue(values[0] != 0);
+        (slots[1], values[1]) = (keccak256("a slot the vault never wrote"), bytes32(0));
+        vault.attest(slots, values);
+
+        values[0] ^= bytes32(uint256(1));
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NotAttested.selector, slots[0]));
+        vault.attest(slots, values);
+        values[0] ^= bytes32(uint256(1));
+        values[1] = bytes32(uint256(1));
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NotAttested.selector, slots[1]));
+        vault.attest(slots, values);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NotAttested.selector, bytes32(0)));
+        vault.attest(slots, new bytes32[](1));
+    }
+
     function test_deposit_refusals() public {
         uint256 intakeId = _intake(block.timestamp + 1 hours, 1);
         vm.deal(alice, 10 ether);

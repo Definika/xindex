@@ -123,7 +123,7 @@ src/IndexFactory.sol          listings, reference supplies and weekly supply bat
 src/IndexZap.sol              stateless Universal Router mint/burn router, a venue per leg, per-leg limits, nonce check
 src/MintRequests.sol          ownerless escrow of USDC/USDT-for-shares requests at the requester's own limit, filled by anyone
 src/interfaces/               IIndexHub, IIndexFactory, IIndexZap, IMintRequests, IXindexErrors (shared errors), IRebalanceExecutor, IUniversalRouter,
-                              and for Stage B IXindexVault, IEthereumEventVerifier, IVaultStateVerifier, IBnbStateVerifier, IStateReader,
+                              and for Stage B IXindexVault, IEthereumEventVerifier, IVaultStateVerifier, IBnbStateVerifier, ITronStateVerifier, IStateReader,
                               IHybridIndexFactory, IHybridHubTypes, IHybridHub, IHybridHubModule, IHybridHubExtension and
                               IHybridIndex (all three parts)
 src/libraries/PathLib.sol     V3 packed path decoding (shared with test mocks)
@@ -136,6 +136,7 @@ src/libraries/Bls12381.sol                 Stage B: BLS on the EIP-2537 precompi
 src/vault/XindexVault.sol     Stage B: the ownerless vault on an EVM chain, native coin per index, speed limit, freeze (not deployed)
 src/vault/VaultSnapshot.sol   Stage B: the vault's linked library for a holder's snapshot claim: the hub's storage it reads, and the signature
 src/verifiers/BnbStateVerifier.sol  Stage B: BNB Chain's state on Ethereum from its own finality votes, following every epoch (not deployed)
+src/verifiers/TronStateVerifier.sol Stage B: Tron's state on Ethereum from a successful vault `attest` in a solidified block, following every 6-hour list (not deployed)
 src/verifiers/EthereumFinalityVerifier.sol  Stage B: P1 on an EVM vault chain, a light client of Ethereum advanced by SP1 proofs, proving a vault message by its receipt (not deployed)
 src/verifiers/EthereumStateReader.sol Stage B: reads Ethereum storage under a trusted root, for a vault's snapshot exit (not deployed)
 src/HybridIndexFactory.sol    Stage B: IndexFactory plus the chain registry, vault-token listings, the chain freeze and the template choice (not deployed)
@@ -151,6 +152,7 @@ test/Repo.t.sol               repository facts findings rest on: pinned compiler
 test/mocks/                   mock tokens, WETH, a strict Universal Router, V3 pools for the testnet script, the market fixture (+ Mocks.t.sol)
 test/fixtures/bnb/            real BNB Chain data for the Stage B verifier, and generate.py, which rebuilds it from a public RPC (py_ecc, pycryptodome)
 test/fixtures/ethereum/       a real mainnet block's receipts trie proofs for P1's verifier, and generate.py, which rebuilds them and checks the root (rlp, trie)
+test/fixtures/tron/           real Tron blocks around a maintenance boundary, with two real calls, and generate.py, which rebuilds them from TronGrid (pycryptodome)
 test/utils/                   test-only helpers (an RLP writer)
 test/HybridTest.sol           Stage B on one EVM: a real vault standing for another chain, a state verifier reading its storage, message delivery
 test/fork/                    test-only mainnet addresses, end-to-end fork tests, a V3 rebalance executor, fork security regressions
@@ -436,6 +438,10 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   - A registered chain's new state verifier also waits `ROTATION_DELAY`, since it decides every index's mints there
     (FAC-1).
   - The BNB verifier trusts only a set from the last `MAX_LAG` (1 day), to name the next or to prove a block (BNB-2).
+- **Tron is written, never parsed.** `TronStateVerifier` writes every header and transaction it hashes from typed
+  fields, and writes the call itself: the vault, `attest`'s data, no value, and the result SUCCESS. Do not add a
+  protobuf parser. A learned producer is the witness its block names, and a list's round is counted from the second
+  block after the maintenance, which `test/fixtures/tron/generate.py` checks on mainnet (section 5.7 of the spec).
 - **Size.** The hub and the module are both near the 24KB limit; new code goes in the extension. Check
   `forge build --sizes` after any change to any of the three.
 - **The Solana vault is the EVM vault's twin.** `solana/programs/xindex-vault` keeps the same messages, digests, speed

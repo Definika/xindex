@@ -162,6 +162,8 @@ interface IXindexVault {
     error NotRecorded(bytes32 id);
     error NoPendingChange(bytes32 key);
     error ChangeNotReady(bytes32 key, uint256 readyAt);
+    /// @notice `attest` found `slot` not holding the value given, or was given a different number of each.
+    error NotAttested(bytes32 slot);
 
     /// @notice Largest share of an index's balance of a token that may leave in any 24 hours: 4%.
     function SPEED_LIMIT() external view returns (uint256);
@@ -267,6 +269,11 @@ interface IXindexVault {
 
     /// @notice The 32-byte commitment to an intake's state and deposit totals that Ethereum proves.
     function intakeDigest(address index, uint256 intakeId) external view returns (bytes32);
+
+    /// @notice Reverts unless every slot of `slots` holds the value of `values` at its place. On a chain whose blocks
+    ///         commit to no contract storage, Tron's, a successful call of it in a final block is how Ethereum proves
+    ///         the vault's state (`TronStateVerifier`).
+    function attest(bytes32[] calldata slots, bytes32[] calldata values) external view;
 
     function owed(address index, bytes32 id) external view returns (Owed memory);
     function indexTokens(address index) external view returns (address[] memory);

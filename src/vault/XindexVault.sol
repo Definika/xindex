@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
+import {StorageSlot} from "@openzeppelin/contracts/utils/StorageSlot.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IXindexVault} from "../interfaces/IXindexVault.sol";
 import {IEthereumEventVerifier} from "../interfaces/IEthereumEventVerifier.sol";
@@ -841,6 +842,14 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
     // ---------------------------------------------------------------------
     // Views
     // ---------------------------------------------------------------------
+
+    /// @inheritdoc IXindexVault
+    function attest(bytes32[] calldata slots, bytes32[] calldata values) external view {
+        if (slots.length != values.length) revert NotAttested(0);
+        for (uint256 i = 0; i < slots.length; ++i) {
+            if (StorageSlot.getBytes32Slot(slots[i]).value != values[i]) revert NotAttested(slots[i]);
+        }
+    }
 
     /// @inheritdoc IXindexVault
     function owed(address index, bytes32 id) external view returns (Owed memory) {
