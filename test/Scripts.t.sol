@@ -1660,4 +1660,61 @@ contract ScriptsTest is Test {
         vm.expectRevert(abi.encodeWithSelector(DeployVault.WrongWiring.selector, "FACTORY", q.factory, p.factory));
         vaultDeployer.checkDeployment(d, q);
     }
+
+    /// @dev A hybrid factory owned by DEFAULT_SENDER, the key script broadcasts come from in tests, with a vault chain
+    ///      registered and its native coin listed: `vaultToken` is that coin's id on Ethereum.
+    function _hybridWithVaultToken(uint256 supply) internal returns (HybridIndexFactory factory, address vaultToken) {
+        address predicted = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 3);
+        HybridHubExtension extension = new HybridHubExtension(predicted);
+        HybridHubModule module = new HybridHubModule(predicted, address(extension));
+        HybridHub template = new HybridHub(predicted, address(module));
+        factory = new HybridIndexFactory(DEFAULT_SENDER, guardian, address(template));
+        vm.prank(DEFAULT_SENDER);
+        factory.proposeChain(56, bytes32(uint256(0xB5C)), address(router)); // any contract stands for the verifier
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        factory.executeChain(56);
+        vm.prank(DEFAULT_SENDER);
+        factory.proposeVaultListing(56, bytes32(0), supply);
+        vaultToken = factory.vaultTokenId(56, bytes32(0));
+    }
+
+    /// @dev A vault token has no code on Ethereum, so the ERC-20 checks of the whitelist policy cannot apply to it. The
+    ///      script executes its listing, includes it in the weekly batch on its supply alone, and never proposes its
+    ///      first listing, which `proposeListing` would refuse: `proposeVaultListing` lists it.
+    function test_vaultTokensRideTheWeeklyBatch() public {
+        (HybridIndexFactory factory, address bnb) = _hybridWithVaultToken(140_000_000e18);
+        ConfigureWhitelist.Entry[] memory list = new ConfigureWhitelist.Entry[](1);
+        list[0] = ConfigureWhitelist.Entry({token: bnb, referenceSupply: 140_000_000e18});
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        configure.execute(factory, list);
+        assertTrue(factory.isWhitelisted(bnb), "its listing executes as any other");
+
+        list[0].referenceSupply = 140_500_000e18; // within MAX_SUPPLY_STEP
+        configure.proposeSupplies(factory, list);
+        (, uint256 eta,,) = factory.pendingSupplies();
+        assertGt(eta, 0, "the batch names the vault token");
+        vm.warp(eta);
+        configure.executeSupplies(factory, list);
+        assertEq(factory.referenceSupply(bnb), 140_500_000e18);
+
+        // Delisted, it is not proposed again through proposeListing, even when named for relisting.
+        vm.prank(guardian);
+        factory.delist(bnb);
+        address[] memory relist = new address[](1);
+        relist[0] = bnb;
+        configure.propose(factory, list, none, relist);
+        assertEq(factory.listingEta(bnb), 0, "a vault token is never proposed through proposeListing");
+        (bytes[] memory calls,) = configure.safeCalldata(factory, list, none, relist);
+        assertEq(calls.length, 0, "nor offered to a Safe");
+
+        // An out-of-range supply is still refused for a vault token.
+        vm.warp(block.timestamp + 7 days);
+        vm.prank(DEFAULT_SENDER);
+        factory.proposeVaultListing(56, bytes32(0), 140_500_000e18);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        configure.execute(factory, list);
+        list[0].referenceSupply = 0;
+        vm.expectRevert(ConfigureWhitelist.NothingToBatch.selector);
+        configure.proposeSupplies(factory, list);
+    }
 }

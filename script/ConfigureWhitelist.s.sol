@@ -6,6 +6,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
+import {IHybridIndexFactory} from "../src/interfaces/IHybridIndexFactory.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
 
@@ -314,6 +315,11 @@ contract ConfigureWhitelist is Script {
             );
             return false;
         }
+        if (_isVaultToken(factory, token)) {
+            // proposeListing refuses a token without code; a vault token is listed by its chain and id.
+            console2.log("skipped, a vault token: list it with HybridIndexFactory.proposeVaultListing", token);
+            return false;
+        }
         uint256 inForce = factory.referenceSupply(token);
         if (inForce == 0 && !_contains(firstListings, token)) {
             console2.log("skipped, never listed; name it in LIST to propose its listing", token);
@@ -518,6 +524,16 @@ contract ConfigureWhitelist is Script {
     ///      currency as a component, and a reference supply from 1 to the factory's MAX_SUPPLY. Logs the token's
     ///      symbol and the supply in whole tokens, where a decimals slip shows.
     function _followsPolicy(IIndexFactory factory, address token, uint256 referenceSupply) private view returns (bool) {
+        if (referenceSupply == 0 || referenceSupply > factory.MAX_SUPPLY()) {
+            console2.log("skipped, the reference supply must be from 1 to MAX_SUPPLY", token);
+            return false;
+        }
+        if (_isVaultToken(factory, token)) {
+            // A coin held in a vault on its own chain: an id with no code here, so no ERC-20 check applies. Its decimals
+            // are the chain's native unit's, which the reference supply is written in.
+            console2.log("vault token reference supply in its chain's smallest unit", referenceSupply);
+            return true;
+        }
         if (token == MainnetAddresses.USDC || token == MainnetAddresses.USDT) {
             console2.log("skipped, a mint currency is not a component", token);
             return false;
@@ -536,14 +552,19 @@ contract ConfigureWhitelist is Script {
             console2.log("skipped, the whitelist policy needs 6 to 18 decimals", token, decimals);
             return false;
         }
-        if (referenceSupply == 0 || referenceSupply > factory.MAX_SUPPLY()) {
-            console2.log("skipped, the reference supply must be from 1 to MAX_SUPPLY", token);
-            return false;
-        }
         console2.log(
             string.concat(_symbolOf(token), " reference supply in whole tokens"), referenceSupply / 10 ** decimals
         );
         return true;
+    }
+
+    /// @dev Whether `token` is a hybrid factory's vault token. A Stage A factory has no `vaultToken`, so the static call
+    ///      fails and the answer is no.
+    function _isVaultToken(IIndexFactory factory, address token) private view returns (bool) {
+        bytes memory query = abi.encodeCall(IHybridIndexFactory.vaultToken, (token));
+        // forge-lint: disable-next-line(low-level-calls)
+        (bool ok, bytes memory data) = address(factory).staticcall(query);
+        return ok && data.length == 64 && abi.decode(data, (uint256)) != 0;
     }
 
     /// @dev `token`'s ERC-20 symbol for the log and safe mode's labels, or "?" when it has none that decodes as a
