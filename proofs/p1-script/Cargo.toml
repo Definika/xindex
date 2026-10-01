@@ -13,6 +13,8 @@ path = "src/main.rs"
 [features]
 # Adds up the program's cycle-tracker sections in execute mode; it rebuilds SP1's executor, so it is off by default.
 profiling = ["sp1-sdk/profiling"]
+# Builds and embeds the program for Sepolia, whose key differs from mainnet's (proofs/README.md, "Sepolia").
+sepolia = ["xindex-finality/sepolia"]
 
 [dependencies]
 sp1-sdk = { version = "6.0.1", features = ["blocking"] }

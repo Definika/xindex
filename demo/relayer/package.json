@@ -1,7 +1,7 @@
 {
   "name": "xindex-demo-relayer",
   "private": true,
-  "description": "TESTNETS ONLY: carries Xindex messages between Sepolia, HyperEVM testnet and Solana devnet, signing as the stub verifiers require. Not a proof system.",
+  "description": "TESTNETS ONLY: carries Xindex messages between Sepolia, HyperEVM testnet, Solana devnet and BNB testnet. HyperEVM and Solana sign as the stub verifiers require; BNB testnet's state is proven from its own votes and Sepolia's messages by P1, with only P2 a stub.",
   "type": "module",
   "scripts": {
     "cli": "tsx src/cli.ts",
@@ -11,7 +11,8 @@
     "@noble/hashes": "^1.8.0",
     "@solana/web3.js": "^1.98.0",
     "dotenv": "^16.4.7",
-    "viem": "^2.23.0"
+    "viem": "^2.23.0",
+    "@noble/curves": "^1.9.7"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

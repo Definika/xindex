@@ -23,8 +23,13 @@ contract BnbStateVerifierTest is Test {
     uint256 constant EXTRA = 12;
     uint256 constant TIME = 11;
 
+    /// @dev The chain this suite runs on: BNB Chain mainnet here, its testnet in {BnbStateVerifierTestnetTest}.
+    function _fixture() internal pure virtual returns (string memory) {
+        return "test/fixtures/bnb/chain.json";
+    }
+
     function setUp() public {
-        json = vm.readFile("test/fixtures/bnb/chain.json");
+        json = vm.readFile(_fixture());
         h = new ProofHarness();
         for (uint256 i = 0; i < 4; ++i) {
             epochs[i] = vm.parseJsonUint(json, _at(i, ".number"));
@@ -151,17 +156,18 @@ contract BnbStateVerifierTest is Test {
         bytes memory header = _bytes(_at(0, ".rlp"));
         bytes[] memory keys = _keys(_at(0, ".keys"));
         bytes memory extra = _extra(header);
+        uint256 n = keys.length;
 
         bytes memory none = bytes.concat(extra);
         none[32] = 0x00;
         bytes memory tooMany = bytes.concat(extra);
         tooMany[32] = bytes1(uint8(65));
-        bytes memory truncated = new bytes(33 + 21 * 68 + 1 + 64); // one byte short of the seal
+        bytes memory truncated = new bytes(33 + n * 68 + 1 + 64); // one byte short of the seal
         for (uint256 i = 0; i < truncated.length; ++i) {
             truncated[i] = extra[i];
         }
         bytes memory noTurns = bytes.concat(extra);
-        noTurns[33 + 21 * 68] = 0x00;
+        noTurns[33 + n * 68] = 0x00;
         // Entries 0 and 1 swapped, with their keys: entry 1's address is now below entry 0's.
         bytes memory swapped = bytes.concat(extra);
         for (uint256 i = 0; i < 68; ++i) {
@@ -185,7 +191,7 @@ contract BnbStateVerifierTest is Test {
             new BnbStateVerifier(badLists[i], keys);
         }
         vm.expectRevert(IBnbStateVerifier.WrongKeys.selector);
-        new BnbStateVerifier(header, new bytes[](20));
+        new BnbStateVerifier(header, new bytes[](n - 1));
         vm.expectRevert(Bls12381.BadKey.selector);
         new BnbStateVerifier(header, otherKeys);
         vm.expectRevert(abi.encodeWithSelector(IBnbStateVerifier.NotAscending.selector, 1));
@@ -197,7 +203,8 @@ contract BnbStateVerifierTest is Test {
     // ---------------------------------------------------------------------
 
     /// @dev Each epoch block's set, recorded from the vote of the set it replaces, starts signing where BNB Chain's
-    ///      snapshot switches: 88 blocks after its epoch block with 21 validators and turn length 8.
+    ///      snapshot switches: (n / 2 + 1) * turnLength blocks after its epoch block, with the size and turn length of
+    ///      the set it replaces. That is 88 blocks on mainnet (21 validators, turn length 8) and 40 on the testnet (9).
     function test_advance_followsEveryEpoch() public {
         IBnbStateVerifier.EpochStep[] memory steps = _steps(1, 4);
         bytes[] memory voters = _keys(_at(0, ".keys"));
@@ -207,7 +214,7 @@ contract BnbStateVerifierTest is Test {
                 epochs[i],
                 keccak256(abi.encode(_keys(_at(i, ".keys")))),
                 vm.parseJsonUint(json, _at(i, ".firstTarget")),
-                21,
+                vm.parseJsonUint(json, _at(i, ".count")),
                 vm.parseJsonUint(json, _at(i, ".turnLength"))
             );
         }
@@ -219,7 +226,10 @@ contract BnbStateVerifierTest is Test {
             console2.log("epoch", epochs[i], "new keys", steps[i - 1].newKeys.length);
             IBnbStateVerifier.ValidatorSet memory set = verifier.validatorSet(epochs[i]);
             assertEq(set.firstTarget, vm.parseJsonUint(json, _at(i, ".firstTarget")));
-            assertEq(set.firstTarget, epochs[i] + 88);
+            uint256 replaced = vm.parseJsonUint(json, _at(i - 1, ".count"));
+            assertEq(
+                set.firstTarget, epochs[i] + (replaced / 2 + 1) * vm.parseJsonUint(json, _at(i - 1, ".turnLength"))
+            );
             assertEq(set.time, vm.parseJsonUint(json, _at(i, ".time")));
         }
     }
@@ -235,6 +245,9 @@ contract BnbStateVerifierTest is Test {
 
     function test_advance_refusesAnythingButTheNextEpochFinalized() public {
         bytes[] memory voters = _keys(_at(0, ".keys"));
+        uint256 n = voters.length;
+        // The most voters that are not a quorum: a quorum is at least two thirds of the set.
+        uint256 short = (2 * n + 2) / 3 - 1;
         vm.expectRevert(IBnbStateVerifier.WrongKeys.selector);
         verifier.advance(_keys(_at(1, ".keys")), _steps(1, 2));
 
@@ -247,22 +260,22 @@ contract BnbStateVerifierTest is Test {
         verifier.advance(voters, s);
 
         s = _steps(1, 2);
-        s[0].vote.bitset |= 1 << 21;
+        s[0].vote.bitset |= 1 << n;
         vm.expectRevert(IBnbStateVerifier.BadBitset.selector);
         verifier.advance(voters, s);
 
         s = _steps(1, 2);
         uint256 bits = s[0].vote.bitset;
         uint256 kept = 0;
-        uint256 thirteen = 0;
-        for (uint256 i = 0; i < 21 && kept < 13; ++i) {
+        uint256 fewer = 0;
+        for (uint256 i = 0; i < n && kept < short; ++i) {
             if ((bits >> i) & 1 == 1) {
-                thirteen |= 1 << i;
+                fewer |= 1 << i;
                 ++kept;
             }
         }
-        s[0].vote.bitset = thirteen;
-        vm.expectRevert(abi.encodeWithSelector(IBnbStateVerifier.NoQuorum.selector, 13, 21));
+        s[0].vote.bitset = fewer;
+        vm.expectRevert(abi.encodeWithSelector(IBnbStateVerifier.NoQuorum.selector, short, n));
         verifier.advance(voters, s);
 
         s = _steps(1, 2);
@@ -288,7 +301,7 @@ contract BnbStateVerifierTest is Test {
         verifier.advance(voters, s);
 
         s = _steps(1, 2);
-        s[0].keySources[reused] = bytes1(uint8(21)); // past the set before
+        s[0].keySources[reused] = bytes1(uint8(voters.length)); // just past the set before
         vm.expectRevert(IBnbStateVerifier.WrongKeys.selector);
         verifier.advance(voters, s);
 
@@ -527,5 +540,15 @@ contract BnbStateVerifierTest is Test {
         vm.warp(time + 1 days);
         (, uint256 provenTime,) = verifier.verifySlots(wbnb, slots, proof);
         assertEq(provenTime, time);
+    }
+}
+
+/// @notice The same suite on BNB testnet (chain id 97, `test/fixtures/bnb/testnet.json`, from `generate.py`), the chain
+///         the testnet deployment's verifier follows from Sepolia: the same epoch length, the same vote and the same
+///         switch rule, with its own validator set.
+/// forge-config: default.evm_version = "prague"
+contract BnbStateVerifierTestnetTest is BnbStateVerifierTest {
+    function _fixture() internal pure override returns (string memory) {
+        return "test/fixtures/bnb/testnet.json";
     }
 }

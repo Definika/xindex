@@ -54,6 +54,12 @@ Rules for the stubs:
 Stretch goal, only if the days allow: deploy the BNB state verifier on Sepolia and prove a live BNB testnet vote. That
 would be a real proof between chains running on testnets.
 
+**Built on 1 October, beyond the stretch goal:** a second demo index, of WETH and BNB, on real proofs both ways but
+P2's. BNB testnet's vault state reaches Sepolia through `BnbStateVerifier` from the chain's own votes, and Sepolia's
+messages reach BNB testnet through P1, built for Sepolia (`proofs/`, `--features sepolia`). Both directions were
+rehearsed against live chain data (`demo/README.md`, "Rehearsed"). Running P1 on the testnets needs a prover: Succinct's
+network or a CUDA GPU, at about 358 million prover gas a Sepolia proof.
+
 ## What the owner provides
 
 - **Keys:** a Sepolia deployer (MetaMask `--browser`, as for v3), a Solana devnet keypair, a HyperEVM testnet

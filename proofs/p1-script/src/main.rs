@@ -14,7 +14,7 @@ use sp1_sdk::{
     include_elf, Elf, HashableKey, ProvingKey, SP1Stdin,
 };
 use std::time::Instant;
-use xindex_finality::{testkit, verify, Input};
+use xindex_finality::{beacon::NETWORK, testkit, verify, Input};
 
 const ELF: Elf = include_elf!("xindex-p1-program");
 
@@ -25,6 +25,8 @@ const BALANCE: u64 = 2_048_000_000_000;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Each network's program is its own key, so every run says which one this host embeds.
+    eprintln!("P1 for {NETWORK}");
     match args.first().map(String::as_str) {
         Some("execute") => execute(&args[1..]),
         Some("vkey") => vkey(),

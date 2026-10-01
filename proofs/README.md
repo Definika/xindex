@@ -24,8 +24,26 @@ CARGO_BUILD_JOBS=2 nice -n 19 cargo build --release -p xindex-p1-script
 
 ```bash
 CARGO_BUILD_JOBS=2 nice -n 19 cargo test --release -p xindex-finality
+CARGO_BUILD_JOBS=2 nice -n 19 cargo test --release -p xindex-finality --features sepolia
 cargo fmt --all --check && cargo clippy -p xindex-finality --all-targets
+cargo clippy -p xindex-finality --all-targets --features sepolia
 ```
+
+## Sepolia
+
+The testnets' P1 is the same statement over Sepolia's chain: `--features sepolia` swaps mainnet's genesis validators
+root, genesis fork version and fork table for Sepolia's (`finality/src/beacon.rs`), read from a Sepolia beacon node.
+Signing domains depend on them, so each network's program has its own key, and a verifier contract built with one
+key accepts no proof of the other network. `finality/tests/sepolia.rs` pins Sepolia's constants with a real Sepolia
+aggregate of 56 validators, which verifies only under Sepolia's genesis and Fulu's version. Every binary says which
+network it was built for on its first line.
+
+```bash
+CARGO_BUILD_JOBS=2 nice -n 19 cargo build --release -p xindex-p1-script -p xindex-p1-input --features sepolia
+curl -H "Accept: application/octet-stream" https://checkpoint-sync.sepolia.ethpandaops.io/eth/v2/debug/beacon/states/finalized -o a.ssz
+```
+
+The binaries share `target/release` with mainnet's, so a build for one network replaces the other's.
 
 `finality/tests/vectors.py` rebuilds the independent test vectors (the consensus specs' `remerkleable` and `py_ecc`).
 
