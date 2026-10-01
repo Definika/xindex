@@ -18,8 +18,8 @@ use rpc::Nodes;
 use state::{branch, State};
 use std::time::Instant;
 use xindex_finality::beacon::{Checkpoint, STATE_DEPTH, STATE_VALIDATORS_INDEX};
+use xindex_finality::registry;
 use xindex_finality::ssz::merkleize;
-use xindex_finality::statement::UncompressedKey;
 use xindex_finality::{verify, Anchor, Input, NewKey, Root};
 
 fn main() {
@@ -161,20 +161,27 @@ fn build(
         })
         .collect::<Result<Vec<NewKey>, String>>()?;
 
-    // The uncompressed keys of the registry's signers; the statement reads no other.
-    let mut keys = vec![UncompressedKey([0u8; 96]); validators.len()];
+    // The registry as the input carries it: the y coordinate of each signer's key, the only keys the statement reads,
+    // and every validator that exited by C1 as four values.
+    let mut ys: Vec<Option<[u8; 48]>> = vec![None; validators.len()];
     for aggregate in justification.iter().chain(finalization.iter()) {
         for &i in &aggregate.signers {
             let i = i as usize;
-            if i < validators.len() && keys[i].0 == [0u8; 96] {
+            if i < validators.len() && ys[i].is_none() {
                 let point = Option::<G1Affine>::from(G1Affine::from_compressed_unchecked(
                     &validators[i].pubkey,
                 ))
                 .ok_or(format!("validator {i}'s key does not decompress"))?;
-                keys[i] = UncompressedKey(point.to_uncompressed());
+                ys[i] = Some(point.to_uncompressed()[48..].try_into().unwrap());
             }
         }
     }
+    let registry = registry::encode(&validators, c.checkpoint.epoch, |i| ys[i]);
+    println!(
+        "registry: {} bytes, {} signers' keys",
+        registry.len(),
+        ys.iter().flatten().count()
+    );
 
     // The execution headers from the anchor's block to C1's.
     let mut exec_headers = Vec::new();
@@ -184,8 +191,7 @@ fn build(
 
     let input = Input {
         anchor,
-        validators,
-        keys,
+        registry,
         new_keys,
         justification,
         finalization,

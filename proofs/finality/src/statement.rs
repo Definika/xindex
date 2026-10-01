@@ -8,8 +8,9 @@ use crate::beacon::{
     STATE_DEPTH, STATE_VALIDATORS_INDEX,
 };
 use crate::bls;
+use crate::cycles;
 use crate::execution::{keccak, keccak_root, parse_header, ExecHeader};
-use crate::registry::{validators_root, Validator};
+use crate::registry::Registry;
 use crate::ssz::is_valid_branch;
 use crate::Root;
 use bls12_381::{G1Affine, G1Projective};
@@ -60,9 +61,11 @@ pub struct Aggregate {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Input {
     pub anchor: Anchor,
-    /// The anchor's whole registry, in index order, and each key's uncompressed form.
-    pub validators: Vec<Validator>,
-    pub keys: Vec<UncompressedKey>,
+    /// The anchor's whole registry, in index order, as `registry::encode` writes it: every validator's record, with
+    /// its key's y coordinate where it signs, and as four values where it exited by C1. One string of bytes, so the
+    /// zkVM copies it in rather than decoding millions of records field by field.
+    #[serde(with = "serde_bytes")]
+    pub registry: Vec<u8>,
     /// Keys outside the anchor's registry that sign in an aggregate: validators added since the anchor. A signer index
     /// of the registry's length plus `k` names `new_keys[k]`. Each proves its possession by its deposit's signature and
     /// counts no stake.
@@ -82,9 +85,6 @@ pub struct Input {
     /// Every execution header after the anchor's, up to `C1`'s, oldest first, as RLP.
     pub exec_headers: Vec<Vec<u8>>,
 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UncompressedKey(#[serde(with = "BigArray")] pub [u8; 96]);
 
 /// A validator's key the anchor's registry does not hold, with the deposit that added it: its message and its
 /// signature, made with the key's secret.
@@ -127,7 +127,8 @@ impl Output {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     RegistryMismatch,
-    KeyCountMismatch,
+    BadRecord(u32),
+    MissingKey(u32),
     NoVotes,
     LinksDisagree,
     NotAfterAnchor,
@@ -154,12 +155,6 @@ pub enum Error {
 /// Checks the statement and returns the public values, or why it does not hold.
 pub fn verify(input: &Input) -> Result<Output, Error> {
     let anchor = &input.anchor;
-    if validators_root(&input.validators) != anchor.validators_root {
-        return Err(Error::RegistryMismatch);
-    }
-    if input.keys.len() != input.validators.len() {
-        return Err(Error::KeyCountMismatch);
-    }
 
     // The two links: one source into C1, then C1 into its direct child checkpoint.
     let (first, second) = match (input.justification.first(), input.finalization.first()) {
@@ -177,9 +172,33 @@ pub fn verify(input: &Input) -> Result<Output, Error> {
     if c2.epoch - anchor.epoch > MAX_EPOCH_GAP + 1 {
         return Err(Error::TooFarFromAnchor);
     }
+    cycles::start("new keys");
     let new_keys = new_key_points(&input.new_keys)?;
-    count_link(input, &new_keys, &input.justification, first.source, c1)?;
-    count_link(input, &new_keys, &input.finalization, c1, c2)?;
+    cycles::end("new keys");
+    cycles::start("registry");
+    let registry = Registry::read(&input.registry, c1.epoch)?;
+    if registry.root != anchor.validators_root {
+        return Err(Error::RegistryMismatch);
+    }
+    cycles::end("registry");
+    count_link(
+        &registry,
+        &new_keys,
+        anchor.epoch,
+        0,
+        &input.justification,
+        first.source,
+        c1,
+    )?;
+    count_link(
+        &registry,
+        &new_keys,
+        anchor.epoch,
+        1,
+        &input.finalization,
+        c1,
+        c2,
+    )?;
 
     // C1's block: its state holds the next registry, its body the execution block hash.
     let header = &input.header;
@@ -206,6 +225,7 @@ pub fn verify(input: &Input) -> Result<Output, Error> {
     }
 
     // The execution headers, each the parent of the next, from the anchor's block to C1's.
+    cycles::start("execution headers");
     let n = input.exec_headers.len();
     if n == 0 || n > MAX_HEADERS {
         return Err(Error::WrongHeaderCount);
@@ -223,6 +243,7 @@ pub fn verify(input: &Input) -> Result<Output, Error> {
         last = Some(h);
     }
     let last = last.expect("at least one header");
+    cycles::end("execution headers");
     if last.hash != input.block_hash {
         return Err(Error::BrokenChain(n));
     }
@@ -245,18 +266,20 @@ pub fn verify(input: &Input) -> Result<Output, Error> {
 
 /// Checks one supermajority link `source → target`: every aggregate votes for it within the target epoch and verifies
 /// under its signers' keys, and the distinct, unslashed signers active at the target epoch hold two thirds of the stake
-/// the anchor's records show active then, plus the margin.
+/// the anchor's records show active then, plus the margin. `link` is 0 where the target is C1 and 1 where it is C1's
+/// child, the two epochs the registry's stakes are read at.
 fn count_link(
-    input: &Input,
+    registry: &Registry,
     new_keys: &[G1Affine],
+    anchor_epoch: u64,
+    link: usize,
     aggregates: &[Aggregate],
     source: Checkpoint,
     target: Checkpoint,
 ) -> Result<(), Error> {
     let version = fork_version(target.epoch).ok_or(Error::UnknownFork(target.epoch))?;
     let domain = compute_domain(DOMAIN_BEACON_ATTESTER, version, &GENESIS_VALIDATORS_ROOT);
-    let validators = &input.validators;
-    let mut counted = vec![false; validators.len()];
+    let mut counted = vec![false; registry.signers.len()];
     let mut signed: u128 = 0;
     for aggregate in aggregates {
         let data = &aggregate.data;
@@ -269,23 +292,26 @@ fn count_link(
         if aggregate.signers.is_empty() {
             return Err(Error::NoVotes);
         }
+        cycles::start("signer keys");
         let mut key = G1Projective::identity();
         for &i in &aggregate.signers {
-            let Some(v) = validators.get(i as usize) else {
+            if i as usize >= registry.len {
                 // A key outside the registry signs, and counts nothing.
-                let k = i as usize - validators.len();
+                let k = i as usize - registry.len;
                 key += new_keys.get(k).ok_or(Error::BadSigner(i))?;
                 continue;
-            };
-            key +=
-                bls::registry_key(&input.keys[i as usize].0, &v.pubkey).ok_or(Error::BadKey(i))?;
-            // A key may sign in several aggregates, but its stake counts once per link.
-            if !counted[i as usize] && !v.slashed && v.is_active(target.epoch) {
-                signed += v.effective_balance as u128;
             }
-            counted[i as usize] = true;
+            let (slot, signer) = registry.signer(i as usize).ok_or(Error::MissingKey(i))?;
+            key += signer.key;
+            // A key may sign in several aggregates, but its stake counts once per link.
+            if !counted[slot] {
+                signed += signer.stake[link] as u128;
+                counted[slot] = true;
+            }
         }
         let key: G1Affine = key.to_affine();
+        cycles::end("signer keys");
+        cycles::start("signatures");
         if !bls::verify(
             &key,
             &signing_root(&data.hash_tree_root(), &domain),
@@ -293,14 +319,11 @@ fn count_link(
         ) {
             return Err(Error::BadSignature);
         }
+        cycles::end("signatures");
     }
-    let total: u128 = validators
-        .iter()
-        .filter(|v| v.is_active(target.epoch))
-        .map(|v| v.effective_balance as u128)
-        .sum();
+    let total = registry.active[link];
     // The anchor's records may be one epoch older than its epoch, so the margin counts one more.
-    let margin = MARGIN_PER_EPOCH_GWEI * (target.epoch - input.anchor.epoch + 1) as u128;
+    let margin = MARGIN_PER_EPOCH_GWEI * (target.epoch - anchor_epoch + 1) as u128;
     if 3 * signed < 2 * total + 3 * margin {
         return Err(Error::BelowThreshold {
             signed,

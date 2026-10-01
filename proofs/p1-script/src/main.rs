@@ -1,7 +1,7 @@
 //! P1's host. Usage, from `proofs/` (see its README for the toolchain):
 //!
 //! ```text
-//! p1 execute --synthetic <validators> <gap> <headers>   run the program on a synthetic chain, in execute mode
+//! p1 execute --synthetic <validators> <gap> <headers> [exited]   run the program on a synthetic chain, in execute mode
 //! p1 execute <input.bin>                                 run it on an input file (bincode of `Input`)
 //! p1 vkey                                                print the program key a verifier contract is built with
 //! p1 prove <input.bin> <out.json>                        Groth16 proof for `update`, on SP1_PROVER=network or cuda
@@ -30,7 +30,7 @@ fn main() {
         Some("vkey") => vkey(),
         Some("prove") => prove(&args[1..]),
         _ => {
-            eprintln!("usage: p1 execute --synthetic <validators> <gap> <headers> | p1 execute <input.bin> | p1 vkey | p1 prove <input.bin> <out.json>");
+            eprintln!("usage: p1 execute --synthetic <validators> <gap> <headers> [exited] | p1 execute <input.bin> | p1 vkey | p1 prove <input.bin> <out.json>");
             std::process::exit(2);
         }
     }
@@ -42,10 +42,19 @@ fn synthetic(args: &[String]) -> Input {
             .map(|a| a.parse().expect("a number"))
             .unwrap_or(default)
     };
-    let (n, gap, headers) = (arg(0, 1_000) as usize, arg(1, 1), arg(2, 64));
-    let chain = testkit::chain(n, BALANCE);
-    // Everyone signs: the most work the statement can be given for this many validators.
-    let signers: Vec<u32> = (0..n as u32).collect();
+    let (n, gap, headers, exited) = (
+        arg(0, 1_000) as usize,
+        arg(1, 1),
+        arg(2, 64),
+        arg(3, 0) as usize,
+    );
+    let mut chain = testkit::chain(n, BALANCE);
+    // The last `exited` validators left before the anchor, as most of mainnet's registry has.
+    for v in chain.validators[n - exited..].iter_mut() {
+        v.exit_epoch = E0 - 1;
+    }
+    // Everyone else signs: the most work the statement can be given for this many validators.
+    let signers: Vec<u32> = (0..(n - exited) as u32).collect();
     testkit::build(&chain, E0, gap, &signers, headers)
 }
 
@@ -81,14 +90,19 @@ fn execute(args: &[String]) {
         "the program must commit what the statement computes"
     );
     println!(
-        "validators {}, signers {} + {}, headers {}: {} instructions, {} prover gas, {seconds:.1} s",
-        input.validators.len(),
+        "registry {} bytes, signers {} + {}, headers {}: {} instructions, {} prover gas, {seconds:.1} s",
+        input.registry.len(),
         input.justification.iter().map(|a| a.signers.len()).sum::<usize>(),
         input.finalization.iter().map(|a| a.signers.len()).sum::<usize>(),
         input.exec_headers.len(),
         report.total_instruction_count(),
         report.gas().unwrap_or(0),
     );
+    let mut sections: Vec<_> = report.cycle_tracker.iter().collect();
+    sections.sort_by(|a, b| b.1.cmp(a.1));
+    for (label, instructions) in sections {
+        println!("  {label}: {instructions} instructions");
+    }
     println!("public values 0x{}", hex::encode(public_values.to_vec()));
 }
 

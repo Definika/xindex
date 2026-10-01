@@ -5,7 +5,9 @@
 sp1_zkvm::entrypoint!(main);
 
 pub fn main() {
+    xindex_finality::cycles::start("read");
     let input = sp1_zkvm::io::read::<xindex_finality::Input>();
+    xindex_finality::cycles::end("read");
     match xindex_finality::verify(&input) {
         Ok(output) => sp1_zkvm::io::commit_slice(&output.abi_encode()),
         Err(error) => panic!("the statement does not hold: {error:?}"),

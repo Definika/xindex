@@ -34,11 +34,29 @@ cargo fmt --all --check && cargo clippy -p xindex-finality --all-targets
 ```bash
 # execute mode on a synthetic chain: no proving, counts instructions and prover gas, and checks the public values
 ./target/release/p1 execute --synthetic 1000 1 64      # validators, epochs past the anchor, execution headers
+./target/release/p1 execute --synthetic 2200 1 64 1200 # the last 1,200 of them exited before the anchor
 ./target/release/p1 execute input.bin                  # an input file (bincode of finality::Input)
 ./target/release/p1 vkey                               # the program key EthereumFinalityVerifier is built with
 SP1_PROVER=network NETWORK_PRIVATE_KEY=0x... ./target/release/p1 prove input.bin proof.json
 SP1_PROVER=cuda ./target/release/p1 prove input.bin proof.json
 ```
+
+Built with `--features profiling`, which rebuilds SP1's executor, `p1 execute` also prints the instructions of each
+section the program marks (`finality::cycles`): reading the input, the registry, the signer keys, the signatures and
+the execution headers.
+
+## The input
+
+`Input` carries the anchor's registry as one string of bytes (`finality::registry`), so the zkVM copies it in rather
+than decoding 2.4 million records field by field. Each validator is a tag and then:
+- `FULL`: its 121-byte SSZ encoding;
+- `SIGNER`: the same, then its key's y coordinate, for a validator that signs in either link. The statement reads each
+  such key once, for both links, and no other key;
+- `EXITED`: for a validator that exited by C1 and does not sign, its exit and withdrawable epochs and the two subtree
+  roots its leaf needs, 80 bytes. Such a validator is active at neither target, so its key and balance never matter.
+
+The statement hashes every record into the registry's SSZ root as it reads it, so a record is only ever what the
+anchor's `validatorsRoot` commits to. An `EXITED` record for a validator still active at C1 is refused.
 
 ## Building a real input
 
@@ -60,7 +78,9 @@ whose deposit was made after the anchor is not there, so the builder says to pro
 validator can only vote about seven epochs after it joins, so a gap of a few epochs never needs one.
 
 Rehearsed on 1 October 2026 against mainnet: anchor epoch 479,099 (2,375,541 validators), C1 epoch 479,101 finalized
-by 149 and 170 real aggregates, 63 execution headers; the statement held natively in 8 seconds.
+by 149 and 170 real aggregates (172 in a rebuild after later blocks had landed), 63 execution headers. The compact
+registry came to 271 MB, and the statement held natively in under 5 seconds.
 
 `proof.json` holds the public values and the proof for `EthereumFinalityVerifier.update`. Proving refuses this
-machine's CPU: a mainnet proof is about 11 billion prover gas, the owner's run on rented GPUs or the prover network.
+machine's CPU: a mainnet proof is 36.6 billion prover gas (measured on 1 October 2026), the owner's run on rented
+GPUs or the prover network.

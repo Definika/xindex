@@ -35,5 +35,5 @@ SP1_PROVER=cuda ./target/release/slice 900000
 ```
 
 It prints the slice's prover gas (about 3B at 900,000 key additions) and the seconds it took. The network's invoice
-for the request gives the price. Scaling both to about 11B prover gas (two epochs) or 6.7B (one epoch) answers the $50
-and 60-minute thresholds.
+for the request gives the price. Scaling both to P1's 36.6B prover gas, measured on mainnet data (`proofs/`), answers the
+$50 and 60-minute thresholds.

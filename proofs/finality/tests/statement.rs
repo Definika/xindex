@@ -10,9 +10,9 @@ use xindex_finality::beacon::{
 };
 use xindex_finality::bls;
 use xindex_finality::execution::{keccak, keccak_root, parse_header};
-use xindex_finality::registry::validators_root;
+use xindex_finality::registry::{self, validators_root, Registry};
 use xindex_finality::ssz::merkleize;
-use xindex_finality::statement::{UncompressedKey, MARGIN_PER_EPOCH_GWEI, MAX_EPOCH_GAP};
+use xindex_finality::statement::{MARGIN_PER_EPOCH_GWEI, MAX_EPOCH_GAP};
 use xindex_finality::{verify, Aggregate, Anchor, Error, Input, Root};
 
 const N: usize = 300;
@@ -22,6 +22,7 @@ const E0: u64 = 411_400;
 use xindex_finality::testkit::{self, exec_header, Chain};
 
 struct Built {
+    chain: Chain,
     input: Input,
 }
 
@@ -33,10 +34,12 @@ fn build(gap: u64, signers: &[u32], headers: u64) -> Built {
 
 /// As `build`, every validator holding `balance`: a day's margin is more than 300 validators of 2,048 ETH hold.
 fn build_with(gap: u64, signers: &[u32], headers: u64, balance: u64) -> Built {
-    let chain: Chain = testkit::chain(N, balance);
-    Built {
-        input: testkit::build(&chain, E0, gap, signers, headers),
-    }
+    build_from(testkit::chain(N, balance), gap, signers, headers)
+}
+
+fn build_from(chain: Chain, gap: u64, signers: &[u32], headers: u64) -> Built {
+    let input = testkit::build(&chain, E0, gap, signers, headers);
+    Built { chain, input }
 }
 
 fn range(n: u32) -> Vec<u32> {
@@ -106,16 +109,18 @@ fn the_threshold_is_two_thirds_plus_the_margin() {
 
 #[test]
 fn only_unslashed_active_stake_counts_and_only_once() {
-    // A signer slashed, one not yet active, and one exited by the target epoch: none counts.
-    for change in 0..3 {
-        let mut b = build(1, &range(NEEDED), 1);
-        let v = &mut b.input.validators[0];
+    // A signer slashed, one not yet active, one exited by C1, and one exiting at C2, which counts for the justification
+    // but not the finalization: none of them counts on both links.
+    for change in 0..4 {
+        let mut chain = testkit::chain(N, BALANCE);
+        let v = &mut chain.validators[0];
         match change {
             0 => v.slashed = true,
             1 => v.activation_epoch = E0 + 5,
-            _ => v.exit_epoch = E0 + 1,
+            2 => v.exit_epoch = E0 + 1,
+            _ => v.exit_epoch = E0 + 2,
         }
-        b.input.anchor.validators_root = validators_root(&b.input.validators);
+        let b = build_from(chain, 1, &range(NEEDED), 1);
         assert!(
             matches!(verify(&b.input), Err(Error::BelowThreshold { .. })),
             "change {change}"
@@ -137,38 +142,167 @@ fn only_unslashed_active_stake_counts_and_only_once() {
 
 #[test]
 fn the_registry_and_its_keys_are_the_anchors() {
+    // A record changed after the anchor's root was taken.
     let mut b = build(1, &range(NEEDED), 1);
-    b.input.validators[5].effective_balance += 1;
+    b.chain.validators[5].effective_balance += 1;
+    b.input.registry = b.chain.registry(E0 + 1, &range(NEEDED));
     assert_eq!(verify(&b.input), Err(Error::RegistryMismatch));
 
+    // A signer whose record carries no key: a key left out, or a validator that exited, whose record has none.
     let mut b = build(1, &range(NEEDED), 1);
-    b.input.keys.pop();
-    assert_eq!(verify(&b.input), Err(Error::KeyCountMismatch));
+    b.input.registry = b.chain.registry(E0 + 1, &range(NEEDED - 1));
+    assert_eq!(verify(&b.input), Err(Error::MissingKey(NEEDED - 1)));
+    let mut chain = testkit::chain(N, BALANCE);
+    chain.validators[7].exit_epoch = E0;
+    let mut b = build_from(chain, 1, &range(NEEDED), 1);
+    let not_seven: Vec<u32> = range(NEEDED).into_iter().filter(|&i| i != 7).collect();
+    b.input.registry = b.chain.registry(E0 + 1, &not_seven);
+    assert_eq!(verify(&b.input), Err(Error::MissingKey(7)));
 
-    // Another point's uncompressed form, even the key's own negation, is refused.
+    // Another point's y, even the key's own negation, is refused.
     let mut b = build(1, &range(NEEDED), 1);
-    let point = Option::<G1Affine>::from(G1Affine::from_uncompressed(&b.input.keys[3].0)).unwrap();
-    b.input.keys[3] = UncompressedKey((-point).to_uncompressed());
+    let negated: [u8; 48] = (-b.chain.keys[3]).to_uncompressed()[48..]
+        .try_into()
+        .unwrap();
+    b.input.registry = with_key_y(&b.chain, 3, negated);
     assert_eq!(verify(&b.input), Err(Error::BadKey(3)));
 
     // A point off the curve with the key's x and the same sign of y compresses to the same bytes: refused, since
     // pairing on such a point is where invalid-curve attacks start.
     let mut b = build(1, &range(NEEDED), 1);
-    let mut off = b.input.keys[4].0;
+    let mut off = b.chain.keys[4].to_uncompressed();
     off[95] ^= 1;
     let point = Option::<G1Affine>::from(G1Affine::from_uncompressed_unchecked(&off)).unwrap();
     assert!(!bool::from(point.is_on_curve()));
     assert_eq!(
         point.to_compressed(),
-        b.input.validators[4].pubkey,
+        b.chain.validators[4].pubkey,
         "it compresses to the key"
     );
-    b.input.keys[4] = UncompressedKey(off);
+    b.input.registry = with_key_y(&b.chain, 4, off[48..].try_into().unwrap());
     assert_eq!(verify(&b.input), Err(Error::BadKey(4)));
 
     let mut b = build(1, &range(NEEDED), 1);
     b.input.justification[1].signers.push(N as u32);
     assert_eq!(verify(&b.input), Err(Error::BadSigner(N as u32)));
+}
+
+/// The registry with validator `i`'s key given the y coordinate `y`, every one of the first `NEEDED` signing.
+fn with_key_y(chain: &Chain, i: usize, y: [u8; 48]) -> Vec<u8> {
+    registry::encode(&chain.validators, E0 + 1, |k| {
+        (k < NEEDED as usize).then(|| if k == i { y } else { chain.key_y(k) })
+    })
+}
+
+/// The compact registry reads back to the SSZ root of the whole one, whichever records are exited, pending, slashed or
+/// signing, and it shows the stake active at C1's epoch and the next.
+#[test]
+fn the_compact_registry_has_the_registrys_root() {
+    let c1 = E0 + 3;
+    let mut chain = testkit::chain(N, BALANCE);
+    for (i, v) in chain.validators.iter_mut().enumerate() {
+        v.effective_balance = 32_000_000_000 + i as u64 * 1_000_000_000;
+        match i % 6 {
+            0 => (v.exit_epoch, v.withdrawable_epoch) = (E0 - 10 + i as u64 % 13, E0 + 300),
+            1 => v.exit_epoch = c1 + 1,
+            2 => v.activation_epoch = c1 + 1,
+            3 => v.slashed = true,
+            4 => v.activation_epoch = c1 + 2,
+            _ => {}
+        }
+    }
+    let signers: Vec<u32> = (0..N as u32).filter(|i| i % 4 == 1).collect();
+    let bytes = chain.registry(c1, &signers);
+    let r = Registry::read(&bytes, c1).expect("it reads");
+    assert_eq!(r.root, validators_root(&chain.validators));
+    assert_eq!(r.len, N);
+    for (k, epoch) in [c1, c1 + 1].into_iter().enumerate() {
+        let active: u128 = chain
+            .validators
+            .iter()
+            .filter(|v| v.is_active(epoch))
+            .map(|v| v.effective_balance as u128)
+            .sum();
+        assert_eq!(r.active[k], active, "epoch {epoch}");
+    }
+    assert_eq!(r.signers.len(), signers.len());
+    for i in 0..N {
+        let v = &chain.validators[i];
+        match r.signer(i) {
+            Some((_, s)) => {
+                assert!(signers.contains(&(i as u32)));
+                assert_eq!(s.key, chain.keys[i]);
+                for (k, epoch) in [c1, c1 + 1].into_iter().enumerate() {
+                    let counts = !v.slashed && v.is_active(epoch);
+                    assert_eq!(s.stake[k], if counts { v.effective_balance } else { 0 });
+                }
+            }
+            None => assert!(!signers.contains(&(i as u32))),
+        }
+    }
+    // Every exited non-signer went short: 81 bytes, against 122 for a full record and 170 for a signer's.
+    let exited = (0..N).filter(|&i| i % 6 == 0 && i % 4 != 1).count();
+    assert_eq!(
+        bytes.len(),
+        81 * exited + 170 * signers.len() + 122 * (N - exited - signers.len())
+    );
+}
+
+/// Each malformed record is refused by its index, before anything counts.
+#[test]
+fn a_malformed_registry_is_refused() {
+    let b = build(1, &range(NEEDED), 1);
+    let bad = |change: &dyn Fn(&mut Vec<u8>)| {
+        let mut input = b.input.clone();
+        change(&mut input.registry);
+        verify(&input)
+    };
+    // An unknown tag, and a slashed flag that is no boolean. The first record is a signer's, 170 bytes.
+    assert_eq!(bad(&|r| r[0] = 3), Err(Error::BadRecord(0)));
+    assert_eq!(bad(&|r| r[1 + 88] = 2), Err(Error::BadRecord(0)));
+    assert_eq!(bad(&|r| r[170 + 1 + 88] = 0xff), Err(Error::BadRecord(1)));
+    // A record cut short, and a tag with no record after it.
+    assert_eq!(
+        bad(&|r| {
+            r.pop();
+        }),
+        Err(Error::BadRecord(N as u32 - 1))
+    );
+    assert_eq!(bad(&|r| r.push(0)), Err(Error::BadRecord(N as u32)));
+    assert_eq!(bad(&|r| r.clear()), Err(Error::RegistryMismatch));
+
+    // An exited record for a validator still active at C1: it would hide its stake from the total.
+    let mut chain = testkit::chain(N, BALANCE);
+    chain.validators[250].exit_epoch = E0 + 2;
+    let mut b = build_from(chain, 1, &range(NEEDED), 1);
+    assert!(verify(&b.input).is_ok());
+    b.input.registry = registry::encode(&b.chain.validators, E0 + 2, |k| {
+        (k < NEEDED as usize).then(|| b.chain.key_y(k))
+    });
+    assert_eq!(verify(&b.input), Err(Error::BadRecord(250)));
+}
+
+/// Validators that exited by C1 go as four values each and count in neither the signed stake nor the total: with a
+/// third of the registry exited, two thirds of the rest, plus the margin, is the threshold.
+#[test]
+fn exited_validators_count_in_neither_side() {
+    let mut chain = testkit::chain(N, BALANCE);
+    for v in chain.validators[200..].iter_mut() {
+        v.exit_epoch = E0 - 1;
+    }
+    let short = build_from(chain, 1, &range(136), 1);
+    assert!(matches!(
+        verify(&short.input),
+        Err(Error::BelowThreshold { .. })
+    ));
+    // Two thirds of 200 is 133.3, and three validators of margin: 137.
+    let b = build_from(short.chain, 1, &range(137), 1);
+    assert!(verify(&b.input).is_ok());
+    assert_eq!(
+        b.input.registry.len(),
+        170 * 137 + 122 * 63 + 81 * 100,
+        "the exited went short"
+    );
 }
 
 #[test]
@@ -217,7 +351,6 @@ fn every_vote_is_for_the_same_link_in_its_target_epoch() {
 fn the_checkpoint_is_after_the_anchor_and_within_a_day() {
     let mut b = build(1, &range(NEEDED), 1);
     b.input.anchor.epoch = E0 + 1;
-    b.input.anchor.validators_root = validators_root(&b.input.validators);
     assert_eq!(verify(&b.input), Err(Error::NotAfterAnchor));
 
     // A day's margin is 227 epochs of 2,048 ETH: with 300 validators of 20,000 ETH, 224 must sign.

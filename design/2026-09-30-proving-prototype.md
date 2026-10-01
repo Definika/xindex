@@ -238,7 +238,7 @@ toolchain anyway.
 |---|---|
 | Verify ≤ 1M gas on BNB Chain | **passes**: 227k gas measured |
 | Verify ≤ 1.4M CU on Solana | passes on paper: about 94k CU from Solana's syscall prices, 280k published; measured with the Solana vault |
-| ≤ $50 per proof | open: about 11B prover gas (6.7B with one epoch), priced by the owner's M4 run |
+| ≤ $50 per proof | open: 36.6B prover gas, measured on mainnet data after cuts 1 and 2 (the model said 11B), priced by the owner's M4 run |
 | ≤ 60 minutes end to end | open: Ethereum's finality (about 13 min) plus the proving time from M4 |
 
 The vault → Ethereum direction for BNB Chain needs no zkVM at all (M6): about 650k gas a proof, measured.
@@ -270,12 +270,54 @@ Where the model went wrong:
 - **The input.** Its 560 MB, mostly the registry, is read into the zkVM.
 
 The cuts, in order of risk:
-1. Read each signer's key once for both links, and pass keys only for signers.
-2. Pass an exited validator's record as the few leaves the statement needs, with the rest as subtree hashes.
+1. Read each signer's key once for both links, and pass keys only for signers. **Done**, below.
+2. Pass an exited validator's record as the few leaves the statement needs, with the rest as subtree hashes. **Done**,
+   below.
 3. Replace the SSZ registry root in the anchor with a cheaper commitment kept up by the proofs, as the model assumed. That
    changes the statement's security argument and needs review.
 
 The $50 threshold now depends on the price of a billion prover gas, which M4 measures.
+
+### Cuts 1 and 2, measured (1 October 2026)
+
+`finality::cycles` marks the statement's sections for SP1's cycle tracker, so the 92.9B could be split. On 2,000
+synthetic validators the registry took 72% of the instructions, and a pair hash cost about 1,700 instructions for two
+compressions of 250 each: the streaming SHA-256 API's buffering, and SSZ's zero subtrees recomputed for every
+validator. Reading the input took 3,900 instructions a validator, since serde decoded it byte by byte.
+
+What changed, none of it in what the statement proves:
+- **Hashing.** A pair is two calls of SP1's compression, the second block, which is constant, prebuilt. The registry
+  streams into a merkleizer that keeps one node per level and hashes a zero subtree only where the padding needs one. A
+  validator's root takes 8 pair hashes, not 11.
+- **Cut 1.** The input carries a key only for a validator that signs, as its y coordinate beside the record. The
+  statement checks it once, and both links reuse the point. The stake active at C1's epoch and the next is summed in the
+  same pass, not once per link.
+- **Cut 2.** A validator that exited by C1 and does not sign comes as its exit and withdrawable epochs and two subtree
+  roots: 3 pair hashes instead of 8. It is active at neither target, so nothing else of it matters, and such a record
+  for a validator still active at C1 is refused.
+- **The input** carries the registry as one byte string, which the statement reads in place.
+
+On the same mainnet input (anchor 479,099, C1 479,101):
+
+| | Before | After |
+|---|---|---|
+| Input | 524 MB | 271 MB: 879,832 signers, 2,876 other full records, 1,492,833 exited |
+| Instructions | 68.5B | 22.1B |
+| Prover gas | 92.9B | **36.6B** |
+| Execute time, two threads | 571 s | 282 s |
+| Public values | | identical |
+
+The 22.1B instructions now go to the registry (17.5B, 79%: 13.9 million pair hashes, and each signer's key checked
+once), adding the signers' keys (3.3B), the 321 signature checks (1.2B) and reading the input (0.15B).
+
+What this means for the cuts left:
+- The registry is nearly all of it, and 13.9 million pair hashes is its floor while the anchor commits to the SSZ
+  registry root. Cut 3 is the only large cut left.
+- One-epoch finality would now save about a tenth (one link's key additions and signatures), not the 40% the model gave
+  it. That no longer pays for relying on an argument that needs expert review.
+
+Fourteen mutants of the new code (record bounds, stakes by epoch, the key's flags, the leaf order, the hashing) are
+each caught by the finality tests.
 
 ## One-epoch finality: the argument, for review
 

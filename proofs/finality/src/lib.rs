@@ -5,6 +5,7 @@
 
 pub mod beacon;
 pub mod bls;
+pub mod cycles;
 pub mod execution;
 pub mod registry;
 pub mod ssz;

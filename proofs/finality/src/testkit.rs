@@ -9,9 +9,9 @@ use crate::beacon::{
 };
 use crate::bls::DST;
 use crate::execution::keccak;
-use crate::registry::{validators_root, Validator};
+use crate::registry::{self, validators_root, Validator};
 use crate::ssz::hash_pair;
-use crate::statement::{Aggregate, Anchor, Input, NewKey, UncompressedKey};
+use crate::statement::{Aggregate, Anchor, Input, NewKey};
 use crate::Root;
 use bls12_381::hash_to_curve::{ExpandMsgXmd, HashToCurve};
 use bls12_381::{G1Affine, G2Projective, Scalar};
@@ -22,7 +22,27 @@ use sha2::Sha256;
 pub struct Chain {
     pub secrets: Vec<Scalar>,
     pub validators: Vec<Validator>,
-    pub keys: Vec<UncompressedKey>,
+    pub keys: Vec<G1Affine>,
+}
+
+impl Chain {
+    /// The y coordinate of validator `i`'s key, big-endian, as a signer's record carries it.
+    pub fn key_y(&self, i: usize) -> [u8; 48] {
+        self.keys[i].to_uncompressed()[48..].try_into().unwrap()
+    }
+
+    /// The registry as the input carries it, with C1 at `c1_epoch` and keys for `signers`.
+    pub fn registry(&self, c1_epoch: u64, signers: &[u32]) -> Vec<u8> {
+        let mut signs = vec![false; self.validators.len()];
+        for &i in signers {
+            if let Some(s) = signs.get_mut(i as usize) {
+                *s = true;
+            }
+        }
+        registry::encode(&self.validators, c1_epoch, |i| {
+            signs[i].then(|| self.key_y(i))
+        })
+    }
 }
 
 /// `n` active validators with secret keys 1,000 on, each holding `balance` Gwei.
@@ -42,7 +62,7 @@ pub fn chain(n: usize, balance: u64) -> Chain {
             exit_epoch: u64::MAX,
             withdrawable_epoch: u64::MAX,
         });
-        keys.push(UncompressedKey(point.to_uncompressed()));
+        keys.push(point);
     }
     Chain {
         secrets,
@@ -238,12 +258,9 @@ pub fn build(chain: &Chain, e0: u64, gap: u64, signers: &[u32], headers: u64) ->
     };
     let justification = votes(chain, signers, source, c1);
     let finalization = votes(chain, signers, c1, c2);
-    let keys = chain.keys.clone();
-    let validators = chain.validators.clone();
     Input {
         anchor,
-        validators,
-        keys,
+        registry: chain.registry(e1, signers),
         new_keys: Vec::new(),
         justification,
         finalization,

@@ -709,7 +709,7 @@ replaying a block.
   A failed deposit changes no account, so it cannot count.
 - **The validator set** is committed nowhere, since SIMD-0400 was closed. A small registry program records each epoch's
   stakes and BLS keys, and Ethereum accepts the next set only from a block the current set certifies.
-- **Cost.** About 0.5B to 3B prover gas, against P1's 11B, estimated. Alpenglow is on testnet and devnet since 24–25
+- **Cost.** About 0.5B to 3B prover gas, estimated, against P1's 36.6B, measured. Alpenglow is on testnet and devnet since 24–25
   September 2026, so it can be measured there now. Mainnet has no date.
 - **Its soundness argument is new and unpublished,** like the one-epoch finality argument, and must be reviewed before
   anyone relies on it.
@@ -835,10 +835,11 @@ to equal the stored one, stores the anchor out, and records the headers root. Th
 
 ### Deliberately not in P1
 
-- **The full statement's cost.** Every signer's record is proven against the SSZ registry root, which means re-hashing
-  the whole registry, about 1M validators, in every proof. That is simple and obviously sound, but about 1.6 times the
-  prototype's cost model, which assumed a cheaper flat commitment. A cheaper incremental commitment is left for a
-  reviewed later version.
+- **A cheaper commitment than the registry's.** Every record is proven against the SSZ registry root, which means
+  re-hashing the whole registry, 2.4 million validators, exited ones included, in every proof. That is simple and
+  obviously sound, and it is now nearly all of P1's cost: 36.6B prover gas on mainnet data, after the input was made
+  compact (a key only for each signer, read once for both links; an exited validator as the four values its leaf
+  needs). A commitment kept up by the proofs themselves is left for a reviewed later version.
 - **One-epoch finality.** Section "One-epoch finality" of the prototype record is not relied on; both links are
   proven.
 - **Forks.** The fork schedule is a constant of the program, so a new Ethereum fork needs a new program key, which is
