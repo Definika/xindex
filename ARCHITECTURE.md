@@ -543,7 +543,7 @@ balance-measured zap, and fixed constituents (a new list is a new index version,
 | Uniswap V4 StateView | `0x7fFE42C4a5DEeA5b0feC41C94C136Cf115597227` |
 | Uniswap V4 Quoter | `0x52F0E24D1c21C8A0cB1e5a5dD6198556BD9E1203` |
 | Uniswap QuoterV2 (V3 quotes) | `0x61fFE014bA17989E743c5F6cB21bF9697530B21e` |
-| IndexFactory / IndexZap / MintRequests | not deployed |
+| HybridIndexFactory / IndexZap / MintRequests | not deployed |
 
 Only the tokens and the Universal Router are read by anything deployed: the quoters and StateView are for apps and
 tests, and the PoolManager is reached through the router. The V3 pools the fork tests swap through are in

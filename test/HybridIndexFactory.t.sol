@@ -9,6 +9,11 @@ import {HybridHubExtension} from "../src/hybrid/HybridHubExtension.sol";
 import {HybridHubModule} from "../src/hybrid/HybridHubModule.sol";
 import {IHybridIndex} from "../src/interfaces/IHybridIndex.sol";
 import {IndexHub} from "../src/IndexHub.sol";
+import {IndexZap} from "../src/IndexZap.sol";
+import {IIndexZap} from "../src/interfaces/IIndexZap.sol";
+import {Errors} from "@openzeppelin/contracts/utils/Errors.sol";
+import {MockERC20} from "./mocks/MockERC20.sol";
+import {MockUniversalRouter} from "./mocks/MockUniversalRouter.sol";
 import {IHybridIndexFactory} from "../src/interfaces/IHybridIndexFactory.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
@@ -447,6 +452,54 @@ contract HybridIndexFactoryTest is HybridTest {
         address pure_ = factory.createIndex("BNB", "XBNB", vaultOnly, K);
         (uint256[] memory ids,) = IHybridIndex(pure_).chains();
         assertEq(ids[0], chainId);
+    }
+
+    /// @dev The zap the deploy script points at this factory mints and burns IndexHub clones only. A HybridHub is in the
+    ///      factory's registry and answers `rebalanceNonce`, but no part of it answers `componentTokens`, so a zap call
+    ///      on one reverts there with nothing moved. A hybrid index's mints are orders.
+    function test_theZapCannotMintOrBurnAHybridIndex() public {
+        IHybridIndex hub = _createHybrid();
+        IndexZap zap = new IndexZap(factory, new MockUniversalRouter(makeAddr("poolManager")));
+        MockERC20 usdc = new MockERC20("USD Coin", "USDC", 6);
+        usdc.mint(holder, 1_000e6);
+        vm.prank(holder);
+        usdc.approve(address(zap), type(uint256).max);
+
+        bytes memory mint = abi.encodeCall(
+            IndexZap.mintWithToken,
+            (IIndexZap.MintParams({
+                    index: address(hub),
+                    expectedNonce: 0,
+                    tokenIn: address(usdc),
+                    maxAmountIn: 1_000e6,
+                    shares: 1e18,
+                    legs: new IIndexZap.MintLeg[](2),
+                    to: holder,
+                    deadline: block.timestamp
+                }))
+        );
+        bytes memory burn = abi.encodeCall(
+            IndexZap.burnToToken,
+            (IIndexZap.BurnParams({
+                    index: address(hub),
+                    expectedNonce: 0,
+                    shares: 1e18,
+                    tokenOut: address(usdc),
+                    minAmountOut: 1,
+                    legs: new IIndexZap.BurnLeg[](2),
+                    to: holder,
+                    deadline: block.timestamp
+                }))
+        );
+        bytes[2] memory calls = [mint, burn];
+        for (uint256 i = 0; i < 2; ++i) {
+            vm.prank(holder);
+            (bool ok, bytes memory ret) = address(zap).call(calls[i]);
+            assertFalse(ok);
+            assertEq(ret, abi.encodeWithSelector(Errors.FailedCall.selector), "the hub's delegation finds no function");
+        }
+        assertEq(usdc.balanceOf(holder), 1_000e6);
+        assertEq(usdc.balanceOf(address(zap)), 0);
     }
 
     function _cloneCode(address implementation) internal pure returns (bytes memory) {

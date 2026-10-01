@@ -299,7 +299,8 @@ Redeeming and claims:
 module the hub delegates to, not in the hub itself.
 
 **One factory or two: decided on 2026-10-01: one.** The owner's call: v4 is one hybrid product, so it launches on this
-factory once the hybrid index is ready, and Stage A does not launch on its own. The question as it stood, deferred on
+factory once the hybrid index is ready, and Stage A does not launch on its own. `script/Deploy.s.sol` deploys this
+factory, with the `HybridHub` template built for its predicted address. The question as it stood, deferred on
 2026-09-30 once it was clear that Stage B is added beside Stage A either way: An index's tokens are fixed for good, so no Stage A index ever gains a vault token under either
 choice. Holders switch to a Stage B index when they choose, and a helper could do the Ethereum part in one transaction.
 The choice matters only when Stage A is deployed. The factory is immutable, and the Stage B factory must know the

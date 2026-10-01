@@ -492,7 +492,7 @@ least 0.1% of market cap). `ConfigureWhitelist.defaultMainnetList()` ships them 
 | Uniswap QuoterV2 (V3 quotes) | `0x61fFE014bA17989E743c5F6cB21bF9697530B21e` |
 | Uniswap V4 Quoter | `0x52F0E24D1c21C8A0cB1e5a5dD6198556BD9E1203` |
 | Uniswap V4 StateView | `0x7fFE42C4a5DEeA5b0feC41C94C136Cf115597227` |
-| IndexFactory / IndexZap / MintRequests | not deployed |
+| HybridIndexFactory / IndexZap / MintRequests | not deployed |
 
 The scripts read mainnet addresses and reference supplies from `script/MainnetAddresses.sol`, which
 `test/fork/MainnetAddresses.fork.t.sol` checks on-chain: tokens by symbol and decimals, the router and the PoolManager
@@ -533,8 +533,15 @@ source .env
 forge script script/Deploy.s.sol --rpc-url mainnet --account deployer --sender <deployer address> --broadcast --verify
 ```
 
-`Deploy` deploys the factory, which deploys the `IndexHub` implementation, the zap and `MintRequests`. `OWNER` and
-`GUARDIAN` are required and must differ. On mainnet the owner must be a contract that is not an EIP-7702 delegated account, and a Safe
+`Deploy` deploys v4's one factory, `HybridIndexFactory`, and with it both templates: the factory deploys the `IndexHub`
+implementation itself, and the `HybridHub` template, its module and its extension come first, each built for the
+factory's address, which the script predicts from the broadcaster's nonce (the factory refuses a template built for any
+other). An index of Ethereum tokens only is an `IndexHub` clone; one holding any vault token is a `HybridHub` clone. Then
+come the zap, which mints and burns `IndexHub` clones only (a hybrid index's mints are orders, and a zap call on one
+reverts with nothing moved), and `MintRequests`, which takes any index's shares. Vault chains and vault-token listings
+are proposed afterwards, through the factory's timelock.
+
+`OWNER` and `GUARDIAN` are required and must differ. On mainnet the owner must be a contract that is not an EIP-7702 delegated account, and a Safe
 must need at least three signatures (`MIN_OWNER_THRESHOLD`, the design's 3-of-5) and have no enabled module, because
 a module acts as the Safe without signatures
 (keep it that way after deployment; the script cannot see later changes). The guardian must not be the broadcasting
@@ -549,7 +556,8 @@ commit, each transaction with its init code, and the addresses. Broadcast from a
 so the recorded commit is the deployed source, commit the record with the README address table (on mainnet with `git
 add -f`: `.gitignore` keeps chain-1 records out, because fork rehearsals keep chain id 1), and verify the source on the
 explorer (`--verify` needs `ETHERSCAN_API_KEY`). The deploy log ends with the runtime code hashes of the factory, the
-implementation, the zap and `MintRequests`: record them with the addresses, and
+`IndexHub` implementation, the `HybridHub` template, its module, its extension, the zap and `MintRequests`: record them
+with the addresses, and
 `Deploy.checkDeployment(factory, zap, requests)` re-reads them later (it also refuses a zap or a `MintRequests` that
 does not point at that factory).
 
@@ -643,7 +651,7 @@ Router's encoding, not on Sepolia.
 | Uniswap QuoterV2 | `0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3` |
 | Uniswap V3 factory | `0x0227628f3F023bb0B980b67D528571c95c6DaC1c` |
 | Uniswap NonfungiblePositionManager | `0x1238536071E1c677A632429e3655c799b22cDA52` |
-| IndexFactory / IndexHub implementation / IndexZap / MintRequests (v4) | not deployed |
+| HybridIndexFactory / IndexHub implementation / HybridHub template, module, extension / IndexZap / MintRequests (v4) | not deployed |
 
 ```bash
 export SEPOLIA_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com
@@ -653,7 +661,8 @@ DEPLOYER=$(cast wallet address --account sepolia-deployer)
 MARKET_MODE=create forge script script/testnet/SetupTestMarket.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast
 MARKET_MODE=seed MARKET_TOKENS=<logged by create> forge script script/testnet/SetupTestMarket.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast
 
-# 2. the factory, the zap and MintRequests; the test market has no USDT, so USDT is any second 6-decimal test token,
+# 2. the factory with both templates, the zap and MintRequests; the test market has no USDT, so USDT is any second
+#    6-decimal test token,
 #    a FaucetToken for instance
 OWNER=<Safe> GUARDIAN=<guardian> UNIVERSAL_ROUTER=0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b \
   USDC=<tUSDC logged by create> USDT=<a second test stablecoin> \

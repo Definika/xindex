@@ -6,6 +6,10 @@ import {Deploy} from "../script/Deploy.s.sol";
 import {MainnetAddresses} from "../script/MainnetAddresses.sol";
 import {ConfigureWhitelist} from "../script/ConfigureWhitelist.s.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
+import {HybridIndexFactory} from "../src/HybridIndexFactory.sol";
+import {HybridHub} from "../src/HybridHub.sol";
+import {HybridHubModule} from "../src/hybrid/HybridHubModule.sol";
+import {HybridHubExtension} from "../src/hybrid/HybridHubExtension.sol";
 import {IndexHub} from "../src/IndexHub.sol";
 import {IndexZap} from "../src/IndexZap.sol";
 import {MintRequests} from "../src/MintRequests.sol";
@@ -366,17 +370,34 @@ contract ScriptsTest is Test {
         );
     }
 
+    /// @dev The one factory v4 launches on, with both templates and the template's parts all built for it.
     function test_deploy() public {
-        (IndexFactory factory, IndexZap zap, MintRequests requests) =
+        (HybridIndexFactory factory, IndexZap zap, MintRequests requests) =
             deployer.deploy(owner, guardian, address(router), usdc, usdt);
         assertEq(factory.owner(), owner);
         assertEq(factory.guardian(), guardian);
         assertEq(address(zap.FACTORY()), address(factory));
         assertEq(address(zap.ROUTER()), address(router));
         assertEq(IndexHub(factory.IMPLEMENTATION()).FACTORY(), address(factory));
+        HybridHub template = HybridHub(factory.HYBRID_IMPLEMENTATION());
+        HybridHubModule module = HybridHubModule(template.MODULE());
+        assertEq(template.FACTORY(), address(factory));
+        assertEq(module.FACTORY(), address(factory));
+        assertEq(HybridHubExtension(module.EXTENSION()).FACTORY(), address(factory));
         assertEq(requests.FACTORY(), address(factory));
         assertEq(requests.USDC(), usdc);
         assertEq(requests.USDT(), usdt);
+    }
+
+    /// @dev The template is built for the factory's predicted address, so a broadcaster that has sent transactions
+    ///      before deploys as well as a fresh one, and twice in a row.
+    function test_deploy_predictsTheFactoryFromTheBroadcastersNonce() public {
+        vm.setNonce(DEFAULT_SENDER, 41);
+        (HybridIndexFactory first,,) = deployer.deploy(owner, guardian, address(router), usdc, usdt);
+        assertEq(address(first), vm.computeCreateAddress(DEFAULT_SENDER, 44));
+        (HybridIndexFactory second,,) = deployer.deploy(owner, guardian, address(router), usdc, usdt);
+        assertEq(address(second), vm.computeCreateAddress(DEFAULT_SENDER, 50));
+        assertEq(HybridHub(second.HYBRID_IMPLEMENTATION()).FACTORY(), address(second));
     }
 
     function test_deployRun_readsEnvironment() public {
@@ -385,7 +406,7 @@ contract ScriptsTest is Test {
         vm.setEnv("UNIVERSAL_ROUTER", vm.toString(address(router)));
         vm.setEnv("USDC", vm.toString(usdc));
         vm.setEnv("USDT", vm.toString(usdt));
-        (IndexFactory factory, IndexZap zap, MintRequests requests) = deployer.run();
+        (HybridIndexFactory factory, IndexZap zap, MintRequests requests) = deployer.run();
         assertEq(factory.owner(), owner);
         assertEq(factory.guardian(), guardian);
         assertEq(address(zap.ROUTER()), address(router));
@@ -412,16 +433,21 @@ contract ScriptsTest is Test {
     /// @dev XA-38: the release record freezes what was deployed, and the check proves a deployment is one build.
     function test_XA38_checkDeploymentFreezesTheCodeHashes() public {
         address safeOwner = address(new MockSafe(3));
-        (IndexFactory factory, IndexZap zap, MintRequests requests) =
+        (HybridIndexFactory factory, IndexZap zap, MintRequests requests) =
             deployer.deploy(safeOwner, guardian, address(router), usdc, usdt);
 
-        bytes32[4] memory codehashes = deployer.checkDeployment(factory, zap, requests);
+        bytes32[7] memory codehashes = deployer.checkDeployment(factory, zap, requests);
+        HybridHubModule module = HybridHubModule(HybridHub(factory.HYBRID_IMPLEMENTATION()).MODULE());
         assertEq(codehashes[0], keccak256(address(factory).code));
         assertEq(codehashes[1], keccak256(factory.IMPLEMENTATION().code));
-        assertEq(codehashes[2], keccak256(address(zap).code));
-        assertEq(codehashes[3], keccak256(address(requests).code));
+        assertEq(codehashes[2], keccak256(factory.HYBRID_IMPLEMENTATION().code));
+        assertEq(codehashes[3], keccak256(address(module).code));
+        assertEq(codehashes[4], keccak256(module.EXTENSION().code));
+        assertEq(codehashes[5], keccak256(address(zap).code));
+        assertEq(codehashes[6], keccak256(address(requests).code));
 
-        (IndexFactory other, IndexZap otherZap,) = deployer.deploy(safeOwner, guardian, address(router), usdc, usdt);
+        (HybridIndexFactory other, IndexZap otherZap,) =
+            deployer.deploy(safeOwner, guardian, address(router), usdc, usdt);
         vm.expectRevert(
             abi.encodeWithSelector(Deploy.WrongWiring.selector, "IndexZap.FACTORY", address(other), address(factory))
         );

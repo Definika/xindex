@@ -533,7 +533,8 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   - A Stage B test that moves the clock past a vault's `STALL_PERIOD` brings a fresh checkpoint before any deposit
     (`HybridTest._fresh`), as keepers keep a live vault out of a stall.
 - **Scripts.** They keep their logic in public functions that take explicit arguments, so tests can call them without
-  environment variables: `Deploy.deploy`, which deploys the factory, the zap and `MintRequests`, and
+  environment variables: `Deploy.deploy`, which deploys `HybridIndexFactory` with both templates, the zap and
+  `MintRequests`, and
   `ConfigureWhitelist.propose`, `execute`, `proposeSupplies` and `executeSupplies`. Environment variables are process-global and tests run in parallel, so each variable name is
   set by exactly one test (see `test/Scripts.t.sol`). In tests, script broadcasts come from `DEFAULT_SENDER`.
 - **Deployment rules.**
@@ -582,8 +583,9 @@ records what went with them:
 - **Launch.** One hybrid product on one factory, `HybridIndexFactory`, launched once the hybrid index is ready: P2, real
   proving and the vaults' audits (the owner's call on 2026-10-01, which settles the one-or-two-factory question the
   owner deferred on 2026-09-30). Stage A does not launch on its own; an index of Ethereum tokens only is still an
-  `IndexHub` clone of that factory. `script/Deploy.s.sol` still deploys Stage A's `IndexFactory`, so mainnet needs a
-  hybrid deploy script first.
+  `IndexHub` clone of that factory. `script/Deploy.s.sol` deploys it: the `HybridHub` template's extension, module
+  and template first, each built for the factory's address predicted from the broadcaster's nonce, then the factory,
+  which deploys the `IndexHub` implementation, then the zap (for `IndexHub` clones only) and `MintRequests`.
 - **Stage B and C limits.** `SPEED_LIMIT` and `MINT_CAP` are 4% a day (the owner's call on 2026-09-30). The guardian's
   freeze expires. Ethereum verifiers rotate every 30 days. Script-only chains are out.
 
