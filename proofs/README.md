@@ -49,8 +49,14 @@ RISC0_PROVER=bonsai BONSAI_API_KEY=... BONSAI_API_URL=... ./target/release/p2 pr
 ```
 
 Execute mode checks that the journal is exactly what the statement computes natively, which is exactly what P1's
-program commits. `prove` refuses this machine's CPU, as P1's host does, and writes the journal, the seal RISC Zero's
-Solidity verifier takes (its selector, then the Groth16 seal) and the image id.
+program commits. `prove` runs on Bonsai or, in a build with `--features cuda`, on an NVIDIA GPU; it refuses this
+machine's CPU, as P1's host does, and writes the journal, the seal RISC Zero's Solidity verifier takes (its selector,
+then the Groth16 seal) and the image id. The image id depends on the build, so a mainnet image id should come from
+RISC Zero's reproducible build in its Docker image (Stage B spec, section 11).
+
+On the real Sepolia input of 1 October (1,997 validators, 64 execution blocks), `p2 execute` ran 1.84 billion RISC
+Zero cycles in 1,864 segments and committed the same 192 bytes as `p1 execute`, which ran 327 million SP1 instructions
+(358 million prover gas).
 
 ## Sepolia
 
@@ -106,9 +112,14 @@ anchor's `validatorsRoot` commits to. An `EXITED` record for a validator still a
 curl -H "Accept: application/octet-stream" https://mainnet.checkpoint.sigp.io/eth/v2/debug/beacon/states/finalized -o a.ssz
 # ... one or more epochs later
 curl -H "Accept: application/octet-stream" https://mainnet.checkpoint.sigp.io/eth/v2/debug/beacon/states/finalized -o b.ssz
-./target/release/p1-input check-state a.ssz            # its root, recomputed from all 38 fields
+./target/release/p1-input check-state a.ssz            # its root, recomputed from all 38 fields, and its anchor
 ./target/release/p1-input build <beacon-url> <execution-url> a.ssz b.ssz input.bin
 ```
+
+`check-state` also prints the anchor and epoch a verifier starting at that checkpoint is built with. A vault chain's
+deployment takes them from there, the same for P1 and P2, with P1's program key (`p1 vkey`) and P2's image id
+(`p2 image-id`): `VAULT_ANCHOR`, `VAULT_ANCHOR_EPOCH`, `VAULT_P1_KEY` and `VAULT_P2_IMAGE_ID` in
+`../script/DeployVault.s.sol`.
 
 `build` recomputes each state's root and its checkpoint block's root, reads the votes for both links from the blocks of
 C1's epoch and the next two, maps each aggregate's signers through the committees, rebuilds every execution header's RLP
@@ -120,8 +131,13 @@ validator can only vote about seven epochs after it joins, so a gap of a few epo
 
 Rehearsed on 1 October 2026 against mainnet: anchor epoch 479,099 (2,375,541 validators), C1 epoch 479,101 finalized
 by 149 and 170 real aggregates (172 in a rebuild after later blocks had landed), 63 execution headers. The compact
-registry came to 271 MB, and the statement held natively in under 5 seconds.
+registry came to 271 MB, and the statement held natively in under 5 seconds. `p1 execute` on it ran 22.1 billion
+instructions, 36.6 billion prover gas, in 282 seconds on two threads, and committed the native run's public values
+(`../design/2026-09-30-proving-prototype.md`).
 
 `proof.json` holds the public values and the proof for `EthereumFinalityVerifier.update`. Proving refuses this
 machine's CPU: a mainnet proof is 36.6 billion prover gas (measured on 1 October 2026), the owner's run on rented
 GPUs or the prover network.
+
+No Groth16 proof of P1 or P2 has been generated yet, for either network: what has run is the statement natively and
+each zkVM in execute mode. A proof's price and time are the prototype's open M4 (`../prototype/README.md`).

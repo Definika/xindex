@@ -72,3 +72,25 @@ freshly started node, or one under load, did not. A block producer slower than t
 - `attest` is a view, and TRON accepts a transaction to a view: java-tron's refusal applies only before Constantinople,
   which mainnet has on.
 - TRX has 6 decimals, so a TRON vault's caps and floor, and TRX's reference supply, are in sun.
+
+## Deploying
+
+**On TRON, not scripted yet.** `npm run build` writes the contracts a deployment sends as Tron's compiler builds them,
+the vault's link to `VaultSnapshot` marked, beside the rehearsal's test doubles. `rehearse.mjs` deploys them on the
+local chain with `consume_user_resource_percent` at 100, so callers pay all energy, as nobody owns the vault. The
+script that deploys them on a TRON network is still to write (Stage B spec, section 5.7): `script/DeployVault.s.sol`
+covers the EVM vault chains only.
+
+**On Ethereum, as for any vault chain** (the root README's deployment section has the full commands):
+1. `python3 test/fixtures/tron/generate.py https://api.trongrid.io anchor tron-anchor.json` writes the anchor: the
+   period in progress, its end, and its producers as their own blocks show them.
+2. `script/DeployStateVerifier.s.sol`, with `STATE_CHAIN=tron` and `STATE_ANCHOR=tron-anchor.json`, deploys
+   `TronStateVerifier` from it, on mainnet or Sepolia only, and refuses a period that has ended. Anyone must then
+   `advance` it to a newer list within a day of the latest one's start, first by the time the script logs, or it stops
+   for good.
+3. `script/ConfigureChains.s.sol` proposes the chain with the entry `728126428:<vault>:<verifier>` in `CHAINS`, the
+   vault being its 20-byte address without TRON's `0x41` prefix, left-padded to a word. Once the chain is registered,
+   TRX follows with `728126428:0x0:<supply in sun>` in `VAULT_TOKENS`.
+4. During the chain's listing delay, `DeployStateVerifier.checkTron` confirms that the verifier runs this release's
+   code and started from the anchor file, and the file is compared with TRON itself: `listwitnesses` and the period's
+   blocks.

@@ -14,10 +14,10 @@ import {IRiscZeroGroth16Identity} from "./interfaces/IRiscZeroGroth16Identity.so
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
 
-/// @notice Deploys Xindex on an EVM vault chain (BNB Chain, Avalanche C-Chain, HyperEVM): P1's verifier on SP1's Groth16
-///         verifier, P2's on RISC Zero's, the state reader the snapshot exit reads Ethereum with, and the vault, its
-///         `VaultSnapshot` library linked by forge. Nothing here is owned, and nothing can be changed afterwards but by
-///         the vault's own proven messages.
+/// @notice Deploys Xindex on an EVM vault chain whose state Ethereum can verify (today BNB Chain; Stage B spec,
+///         section 8): P1's verifier on SP1's Groth16 verifier, P2's on RISC Zero's, the state reader the snapshot exit
+///         reads Ethereum with, and the vault, its `VaultSnapshot` library linked by forge. Nothing here is owned, and
+///         nothing can be changed afterwards but by the vault's own proven messages.
 ///
 ///   VAULT_FACTORY=... VAULT_HUB_TEMPLATE=... VAULT_SP1_VERIFIER=... VAULT_RISC_ZERO_VERIFIER=... \
 ///   VAULT_P1_KEY=... VAULT_P2_IMAGE_ID=... VAULT_ANCHOR=... VAULT_ANCHOR_EPOCH=... \

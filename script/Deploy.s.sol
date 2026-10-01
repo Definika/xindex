@@ -44,7 +44,7 @@ contract Deploy is Script {
     error OwnerRequired();
     /// @notice On mainnet, the owner has no code or is an EIP-7702 delegated account.
     error OwnerMustBeContract(address owner);
-    /// @notice The owner is a Safe that needs fewer than two signatures.
+    /// @notice The owner is a Safe that needs fewer than MIN_OWNER_THRESHOLD signatures.
     error OwnerThresholdTooLow(address owner, uint256 threshold);
     /// @notice The owner is a Safe with `module` enabled, which could act for it without signatures.
     error OwnerHasModules(address owner, address module);
