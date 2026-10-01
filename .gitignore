@@ -25,6 +25,11 @@ docs/
 # Aderyn's default report, written by a local `aderyn .`
 /report.md
 
+# The TRON harness's build output, its local chain (data and a throwaway witness key) and its dependencies
+/tron/out/
+/tron/node/
+/tron/node_modules/
+
 # Market-data snapshots behind design/analysis (about 4 MB); the scripts and their printed figures are the record.
 /design/analysis/data/
 

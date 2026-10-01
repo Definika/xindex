@@ -178,7 +178,9 @@ audit/                        review reports, their triages, and the two retirem
 demo/                         the hackathon's testnet demonstration: STUB verifiers, deploy scripts along the timelocks, the relayer (TypeScript); its own Foundry project, never deployed to a mainnet
 solana/                       Stage B on Solana: the vault program (Anchor 1.2), P1's verifier (`ethereum-verifier`) and a STUB verifier for testnets, with LiteSVM tests (see solana/README.md)
 proofs/                       Stage B's proof systems in Rust: `finality`, the statement that an Ethereum checkpoint is final (spec section 10), tested natively against the consensus specs' libraries and mainnet data; `p1-program` and `p1-script`, P1's SP1 program and host; `p1-input`, which builds a real input from chain data; `p2/`, P2's RISC Zero guest and host, a workspace of its own (spec section 11)
-prototype/                    the proving prototype: an SP1 workspace and its own Foundry project (via-IR); the gates skip it and Wake excludes it
+prototype/                    the proving prototype: an SP1 workspace and its own Foundry project (via-IR); the gates skip it and Wake excludes it. Its `evm/src/sp1` is SP1's Groth16 verifier, vendored unchanged, which P1 calls on every vault chain
+vendor/risc0-ethereum/        RISC Zero's Groth16 verifier, vendored unchanged at v3.0.1 (SOURCE.md), which P2 calls on every vault chain; no gate analyzes it
+tron/                         TRON: the Tron-side contracts built with Tron's compiler (tron-solc 0.8.28) and run on TRON's VM, on a local single-node chain of the pinned java-tron release, every step a mined transaction under mainnet's 80 ms CPU limit (tron/README.md)
 ```
 
 ## Design rules that must not be broken
@@ -481,17 +483,18 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
 
 - `pragma solidity 0.8.28;` in `src/` and `script/`; tests use `^0.8.24`. The compiler is pinned to 0.8.28 in
   `foundry.toml`, and CI pins Foundry v1.8.1 and eth-wake 4.22.1 in `.github/workflows/test.yml`.
-- **Wake config.** CI generates its Wake config from `foundry.toml` and adds `audit/`, `prototype/` and `demo/` to its
-  excluded folders, since any of them would stop Wake before a detector runs: the PoC tests in `audit/` only compile
-  inside `test/poc/` of the audited commit, `prototype/evm` is a separate Foundry project that needs via-IR, and `demo/`
-  is one whose `xindex/` remapping only it knows. The Wake VS Code extension reads `.vscode/settings.json` instead,
+- **Wake config.** CI generates its Wake config from `foundry.toml` and adds `audit/`, `prototype/`, `demo/` and
+  `vendor/` to its excluded folders, since any of them would stop Wake before a detector runs: the PoC tests in
+  `audit/` only compile inside `test/poc/` of the audited commit, `prototype/evm` is a separate Foundry project that
+  needs via-IR, `demo/` is one whose `xindex/` remapping only it knows, and `vendor/` holds third-party verifiers with
+  their own import paths, which no gate analyzes by design. The Wake VS Code extension reads `.vscode/settings.json` instead,
   which holds four things:
   - `wake.configuration.use_toml_if_present` set to false. The extension otherwise prefers a `wake.toml` in the
     workspace root, and a local `wake detect` or `wake init config` leaves one there, gitignored. A stale one
     replaces the whole committed config, so the extension compiles `prototype/` and `demo/` and reports their errors;
   - its copy of `forge remappings` (paste the new output there whenever a dependency or remapping changes);
   - the optimizer settings of `foundry.toml` (without them the factory's initcode looks too large to deploy);
-  - Wake's default excluded folders plus `audit/`, `prototype/` and `demo/`.
+  - Wake's default excluded folders plus `audit/`, `prototype/`, `demo/` and `vendor/`.
 - **Prague in tests.** `src/` compiles for Cancun, but the BLS12-381 precompiles (EIP-2537) exist from Prague on,
   which Ethereum mainnet runs. A suite that calls them sets `/// forge-config: default.evm_version = "prague"` on its
   contract; `vm.setEvmVersion` inside a test does not enable them for calls already running.

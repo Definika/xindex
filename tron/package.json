@@ -1,0 +1,15 @@
+{
+  "name": "xindex-tron",
+  "private": true,
+  "description": "The Xindex contracts on TRON: built with Tron's compiler and run on TRON's VM, on a local single-node chain",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "node-config": "node node.mjs",
+    "rehearse": "node rehearse.mjs"
+  },
+  "dependencies": {
+    "tronweb": "^6.0.0",
+    "viem": "^2.23.0"
+  }
+}

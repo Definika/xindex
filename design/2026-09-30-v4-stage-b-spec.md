@@ -677,9 +677,21 @@ forge a proof. What remains:
 - **Trust.** 19 colluding producers could forge at no cost to their stake, since Tron has no slashing.
 - **Shared keys.** Two producers sharing a permission key count twice here, as they do in Tron's own solidity rule.
 - A proposal changing the maintenance interval (6 hours since genesis) needs a new verifier.
-- **Not yet run on Tron's TVM:** the vault's Cancun bytecode, `attest`'s energy, and the deployment's
-  `consume_user_resource_percent` need Tron's Nile testnet.
-- **Messages to Tron** need P1's verifier on TVM, whose BN254 precompiles exist, and P2.
+- **Run on TRON's VM (1 October 2026, `tron/`).** Built with Tron's compiler, tron-solc 0.8.28, and run on a local
+  single-node chain of java-tron GreatVoyage-v4.8.2.3 with mainnet's VM switches and mainnet's 80 ms CPU limit, every
+  step a mined transaction:
+  - SP1's and RISC Zero's Groth16 verifiers pass on their own real proofs, 217,950 and 222,908 energy, and refuse a
+    wrong input; P1's and P2's `verifyEvent` prove three real mainnet receipts, 51,955 to 74,606 energy;
+  - the vault deploys (Tron's compiler makes it 25,360 bytes; TRON has no 24,576-byte limit), registers an index by
+    Ethereum's CREATE2 formula, takes a TRX deposit, settles it, and pays a burn to a new account; `attest` costs 1,164
+    energy, and a transaction to that view is accepted, since Constantinople is on.
+- **The CPU limit is TRON's constraint for P1 and P2.** TRON bounds a transaction by 80 ms of elapsed CPU time, and one
+  past it fails `OUT_OF_TIME` and burns its whole fee limit. The BN254 pairing of a Groth16 check takes about 40 ms in
+  java-tron on the machine measured; every run passed at 80 ms, while at java-tron's default 50 ms a cold or loaded
+  node failed. The check runs only in `update`, one per proof system, never in a delivery. Whoever sends `update`
+  sets a fee limit near its energy, about 300,000, and the margin is measured again on Nile before mainnet.
+- **Still for the deployment:** `consume_user_resource_percent` (100, so callers pay all energy, as nobody owns the
+  vault), TRX's 6 decimals in the caps, the floor and the reference supply, and the deploy script.
 
 ## 6. Build order
 
