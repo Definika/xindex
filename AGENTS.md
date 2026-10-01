@@ -169,7 +169,7 @@ test/fixtures/tron/           real Tron blocks around a maintenance boundary, wi
 test/utils/                   test-only helpers (an RLP writer)
 test/HybridTest.sol           Stage B on one EVM: a real vault standing for another chain, a state verifier reading its storage, message delivery
 test/fork/                    test-only mainnet addresses, end-to-end fork tests, a V3 rebalance executor, fork security regressions
-script/                       Deploy, ConfigureWhitelist, MainnetAddresses (the one copy of mainnet addresses and dated reference supplies)
+script/                       Deploy, ConfigureWhitelist, DeployVault, ConfigureChains, MainnetAddresses (the one copy of mainnet addresses and dated reference supplies)
 script/interfaces/            the Safe, WETH and Uniswap setup calls the scripts make
 script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test market (never deploy on mainnet)
 abi/                          generated ABIs the web app decodes with; CI regenerates them and fails on a diff
@@ -553,8 +553,9 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
 - **Scripts.** They keep their logic in public functions that take explicit arguments, so tests can call them without
   environment variables: `Deploy.deploy`, which deploys `HybridIndexFactory` with both templates, the zap and
   `MintRequests`; `DeployVault.deploy`, which deploys a vault chain's P1, P2, state reader and vault, refusing any
-  Groth16 verifier but the pinned SP1 and RISC Zero ones; and `ConfigureWhitelist.propose`, `execute`,
-  `proposeSupplies` and `executeSupplies`. Environment variables are process-global and tests run in parallel, so each variable name is
+  Groth16 verifier but the pinned SP1 and RISC Zero ones; `ConfigureWhitelist.propose`, `execute`,
+  `proposeSupplies` and `executeSupplies`; and `ConfigureChains.propose` and `execute`, which add a vault chain and its
+  coins. Environment variables are process-global and tests run in parallel, so each variable name is
   set by exactly one test (see `test/Scripts.t.sol`). In tests, script broadcasts come from `DEFAULT_SENDER`.
 - **Deployment rules.**
   - Deployments never use raw private keys: `--account` keystores or `--ledger`.

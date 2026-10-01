@@ -567,7 +567,7 @@ with the addresses, and
 `Deploy.checkDeployment(factory, zap, requests)` re-reads them later (it also refuses a zap or a `MintRequests` that
 does not point at that factory).
 
-**A vault chain** (BNB Chain, Avalanche C-Chain, HyperEVM) is set up with `script/DeployVault.s.sol`, on that chain:
+**A vault chain** on an EVM is set up with `script/DeployVault.s.sol`, on that chain:
 P1's verifier on SP1's Groth16 verifier, P2's on RISC Zero's, the state reader and the vault, with its `VaultSnapshot`
 library. It refuses any Groth16 verifier but SP1's v6.0.0 (`VERIFIER_HASH`) and RISC Zero's 3.0.0 (`SELECTOR`
 `0x73c457ba`, its published control ids), so an owned gateway, router or emergency stop is refused; it refuses a
@@ -575,7 +575,27 @@ deployment on the indexes' own chain, a missing key or anchor, a freezer or reco
 the broadcasting key or, for the multisig, not a contract, and a floor above the cap. Its environment variables are
 listed in the script; the anchor and P1's key come from `proofs/` (`p1-input check-state`, `p1 vkey`) and P2's image
 id from `proofs/p2` (`p2 image-id`). `DeployVault.checkDeployment` re-reads the wiring and the code hashes later. TRON
-is deployed with its own tooling (`tron/`), and the chain is then proposed on Ethereum (`proposeChain`).
+is deployed with its own tooling (`tron/`). A chain holds a vault only once Ethereum can verify its state: today BNB
+Chain and TRON, whose state verifiers are built; section 8 of the Stage B spec has every other chain's status.
+
+**Adding the chain on Ethereum** goes through `script/ConfigureChains.s.sol`, or the equivalent calls through the Safe:
+`proposeChain` with the vault and the chain's state verifier, then, once the chain is registered, `proposeVaultListing`
+for each coin its vault holds, with a reference supply in the coin's smallest unit. Each waits `LISTING_DELAY` and is
+executed by anyone. The modes are `safe`, `propose` and `execute`, as for listings. The script skips, with the reason,
+anything the factory would refuse or that is already done or pending, and reverts on an entry named twice (RT-24). A
+registered chain's vault is fixed, and a new state verifier for it is a 30-day rotation (FAC-1), proposed only for a
+chain named in `ROTATE`.
+
+```bash
+# the chain, for the Safe; vaults and coin ids are hex words, left-padded
+CHAIN_MODE=safe CHAINS_FACTORY=0x... CHAINS=56:<vault>:<state verifier> forge script script/ConfigureChains.s.sol --rpc-url mainnet
+# 2 to 9 days later, from any account
+CHAIN_MODE=execute CHAINS_FACTORY=0x... CHAINS=<same> forge script script/ConfigureChains.s.sol --rpc-url mainnet --account deployer --sender <any account> --broadcast
+# then its native coin, 0x0, and its listing the same way
+CHAIN_MODE=safe CHAINS_FACTORY=0x... CHAINS=<same> VAULT_TOKENS=56:0x0:<supply> forge script script/ConfigureChains.s.sol --rpc-url mainnet
+```
+
+Once listed, a vault coin's supply is revised in the weekly batch with every other (`ConfigureWhitelist`).
 
 **Listings and supply batches** go through `script/ConfigureWhitelist.s.sol`, or the equivalent calls through the Safe:
 
@@ -711,7 +731,7 @@ test/*.t.sol                  unit, fuzz, invariant, script and repository tests
 test/Security.t.sol           regression tests for the security review findings (some ids are tested elsewhere; see AGENTS.md gate 6)
 test/mocks/                   mock tokens, a strict Universal Router, V3 pools for the testnet script, the market fixture, with their own tests
 test/fork/                    mainnet fork tests: real V3 and V4 pools, λ rebalancing and security regressions on real tokens
-script/                       Deploy, ConfigureWhitelist, MainnetAddresses, ScriptUtils, and the interfaces the scripts call
+script/                       Deploy, ConfigureWhitelist, DeployVault, ConfigureChains, MainnetAddresses, ScriptUtils, and the interfaces the scripts call
 script/testnet/               SetupTestMarket and FaucetToken for the Sepolia test market
 design/                       the v4 design (and its PDF), the Stage A spec, the PDF builder and the analysis scripts
 audit/                        the security reviews, their triage, and the two retirement records
