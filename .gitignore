@@ -14,8 +14,8 @@ out/
 # `git add -f` after checking its transactions on-chain.
 /broadcast/*/1/
 # Sepolia-fork rehearsals keep chain id 11155111 for the same reason (SetupTestMarket refuses any other), so real Sepolia
-# records are added with `git add -f` too (CR-I40). An ignore rule does not cover a file git already tracks: a rehearsal
-# still overwrites the committed run-latest.json files, so check `git status` after one and restore them with
+# records are added with `git add -f` too (CR-I40). An ignore rule does not cover a file git already tracks: once a real
+# record is committed, a rehearsal overwrites its run-latest.json, so check `git status` after one and restore it with
 # `git checkout -- broadcast/`.
 /broadcast/*/11155111/
 
