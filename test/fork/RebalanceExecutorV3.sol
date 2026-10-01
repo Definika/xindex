@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
-import {IIndexToken} from "../../src/interfaces/IIndexToken.sol";
+import {IIndexHub} from "../../src/interfaces/IIndexHub.sol";
 import {IRebalanceExecutor} from "../../src/interfaces/IRebalanceExecutor.sol";
 import {ISwapRouter02} from "../mocks/ISwapRouter02.sol";
 
@@ -46,8 +46,8 @@ contract RebalanceExecutorV3 is IRebalanceExecutor {
         IERC20(token).forceApprove(address(ROUTER), type(uint256).max);
     }
 
-    /// @notice Deployer only. Settles the auction of `index`, one of the factory's indexes, at the current multiplier.
-    function fill(IIndexToken index) external {
+    /// @notice Deployer only. Settles the auction of `index`, one of the factory's indexes, at the current λ.
+    function fill(IIndexHub index) external {
         if (msg.sender != OWNER) revert NotOwner(msg.sender);
         if (!FACTORY.isIndex(address(index))) revert NotIndex(address(index));
         _filling = address(index);
@@ -57,7 +57,7 @@ contract RebalanceExecutorV3 is IRebalanceExecutor {
 
     function onXindexRebalance(uint256[] calldata amountsOut, uint256[] calldata amountsIn, bytes calldata) external {
         if (msg.sender != _filling) revert UnexpectedCaller(msg.sender);
-        address[] memory tokens = IIndexToken(msg.sender).componentTokens();
+        address[] memory tokens = IIndexHub(msg.sender).componentTokens();
         for (uint256 i = 0; i < tokens.length; ++i) {
             if (amountsOut[i] == 0 || tokens[i] == WETH) continue;
             ROUTER.exactInput(

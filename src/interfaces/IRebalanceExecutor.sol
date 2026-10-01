@@ -2,7 +2,7 @@
 pragma solidity 0.8.28;
 
 /// @title IRebalanceExecutor
-/// @notice Callback for contracts that fill an index's rebalance auction through `IIndexToken.executeRebalance`.
+/// @notice Callback for contracts that fill an index's rebalance auction through `IIndexHub.executeRebalance`.
 interface IRebalanceExecutor {
     /// @notice Called on the `msg.sender` of `executeRebalance`, after the index has sent it `amountsOut`.
     /// @dev Before returning, the executor must send the index the whole of `amountsIn`, and the index must end up

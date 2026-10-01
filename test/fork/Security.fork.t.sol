@@ -5,19 +5,15 @@ import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IndexFactory} from "../../src/IndexFactory.sol";
-import {IndexToken} from "../../src/IndexToken.sol";
+import {IndexHub} from "../../src/IndexHub.sol";
 import {IndexZap} from "../../src/IndexZap.sol";
+import {MintRequests} from "../../src/MintRequests.sol";
+import {IMintRequests} from "../../src/interfaces/IMintRequests.sol";
 import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
-import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {IUniversalRouter} from "../../src/interfaces/IUniversalRouter.sol";
 import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
-import {ForkFeeds} from "./ForkFeeds.sol";
-import {CompositeFeed} from "../../src/CompositeFeed.sol";
-import {IAggregatorV3} from "../../src/interfaces/IAggregatorV3.sol";
-import {IIndexRule} from "../../src/interfaces/IIndexRule.sol";
-import {IIndexToken} from "../../src/interfaces/IIndexToken.sol";
-import {ConfigureWhitelist} from "../../script/ConfigureWhitelist.s.sol";
+import {IIndexHub} from "../../src/interfaces/IIndexHub.sol";
 import {Deploy} from "../../script/Deploy.s.sol";
 
 interface IWbtcAdmin {
@@ -29,10 +25,12 @@ interface IWbtcAdmin {
 interface IUsdtAdmin {
     function owner() external view returns (address);
     function setParams(uint256 newBasisPoints, uint256 newMaxFee) external;
+    function addBlackList(address user) external;
+    function removeBlackList(address user) external;
 }
 
-interface IWstETH {
-    function unwrap(uint256 wstETHAmount) external returns (uint256);
+interface IWETH9 {
+    function deposit() external payable;
 }
 
 interface ISafeProxyFactory {
@@ -87,12 +85,19 @@ interface ISafe {
 
 /// @notice Security-review regression tests against the real mainnet tokens and router.
 ///         Skips when MAINNET_RPC_URL is unset.
-contract SecurityForkTest is ForkFeeds {
+contract SecurityForkTest is Test {
     using SafeERC20 for IERC20;
 
     IndexFactory factory;
     IndexZap zap;
     address user = makeAddr("user");
+
+    // 0.0001 WBTC + 0.001 WETH + 1 LINK per index token
+    uint256 constant U_WBTC = 10_000;
+    uint256 constant U_WETH = 1e15;
+    uint256 constant U_LINK = 1e18;
+    /// @dev With each component listed at its units as its supply, this scale gives exactly those units.
+    uint256 constant K = 1e36;
 
     uint24 constant F500 = 500;
     uint24 constant F3000 = 3000;
@@ -104,6 +109,7 @@ contract SecurityForkTest is ForkFeeds {
     address constant SAFE_141 = 0x41675C099F32341bf84BFc5382aF534df5C7461a;
     uint256 constant SIGNER_A = 0xA11CE;
     uint256 constant SIGNER_B = 0xB0B;
+    uint256 constant SIGNER_C = 0xCA201;
 
     function setUp() public {
         string memory url = vm.envOr("MAINNET_RPC_URL", string(""));
@@ -127,48 +133,24 @@ contract SecurityForkTest is ForkFeeds {
         factory = new IndexFactory(address(this), address(0));
         zap = new IndexZap(factory, IUniversalRouter(A.UNIVERSAL_ROUTER));
 
-        _pinFeedsToTheBlockClock();
-        factory.proposeListing(A.WBTC, _config(address(_wbtcFeed()), A.STALENESS_24H, A.BTC_SUPPLY));
-        factory.proposeListing(A.WETH, _config(A.ETH_USD_FEED, A.STALENESS_1H, A.ETH_SUPPLY));
-        factory.proposeListing(A.LINK, _config(A.LINK_USD_FEED, A.STALENESS_1H, A.LINK_SUPPLY));
+        // Listed with their units as their supplies, so k = K gives exactly the units the suite's amounts use.
+        factory.proposeListing(A.WBTC, U_WBTC);
+        factory.proposeListing(A.WETH, U_WETH);
+        factory.proposeListing(A.LINK, U_LINK);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(A.WBTC);
         factory.executeListing(A.WETH);
         factory.executeListing(A.LINK);
     }
 
-    /// @dev A listing config whose minimum liquidity is a tenth of the pool's liquidity at the fork block, under the
-    ///      mainnet list's policy of a third so that a fixture never fails on the pool's own drift.
-    /// @dev The composite adapter for WBTC, deployed the way `Deploy` does on chain 1.
-    function _wbtcFeed() internal returns (CompositeFeed) {
-        return new CompositeFeed(
-            IAggregatorV3(A.BTC_USD_FEED), IAggregatorV3(A.WBTC_BTC_FEED), A.STALENESS_1H, A.STALENESS_24H
-        );
-    }
-
-    /// @dev A listing config naming a real Chainlink feed. WBTC has no USD feed, so the suite deploys the composite
-    ///      adapter over BTC/USD and WBTC/BTC and lists it with that.
-    function _config(address feed, uint32 maxStaleness, uint256 referenceSupply)
-        internal
-        pure
-        returns (IIndexFactory.TokenConfig memory c)
-    {
-        c.feed = feed;
-        c.maxStaleness = maxStaleness;
-        c.referenceSupply = referenceSupply;
-    }
-
-    function _create(address a, uint256 ua, address b, uint256 ub) internal returns (IndexToken idx) {
+    function _create(address a, address b) internal returns (IndexHub idx) {
         address[] memory t = new address[](2);
-        uint256[] memory u = new uint256[](2);
         t[0] = a;
         t[1] = b;
-        u[0] = ua;
-        u[1] = ub;
-        idx = IndexToken(factory.createIndex("Fork Security", "FSEC", t, u, 0));
+        idx = IndexHub(factory.createIndex("Fork Security", "FSEC", t, K));
     }
 
-    function _issue(IndexToken idx, uint256 shares) internal {
+    function _issue(IndexHub idx, uint256 shares) internal {
         address[] memory t = idx.componentTokens();
         uint256[] memory need = idx.previewIssue(shares);
         for (uint256 i = 0; i < t.length; ++i) {
@@ -183,7 +165,7 @@ contract SecurityForkTest is ForkFeeds {
     }
 
     function test_M01_realWbtcPause_redeemSkippingFreesWethAndClaimPaysLater() public {
-        IndexToken idx = _create(A.WBTC, 10_000, A.WETH, 1e15);
+        IndexHub idx = _create(A.WBTC, A.WETH);
         _issue(idx, 1e18);
         address wbtcController = IWbtcAdmin(A.WBTC).owner();
         vm.prank(wbtcController);
@@ -210,7 +192,7 @@ contract SecurityForkTest is ForkFeeds {
     }
 
     function test_I02_realUsdtFeeSwitch_zapRevertsWithTransferShortfall() public {
-        IndexToken idx = _create(A.WBTC, 10_000, A.WETH, 1e15);
+        IndexHub idx = _create(A.WBTC, A.WETH);
         _issue(idx, 1e18);
 
         vm.prank(IUsdtAdmin(A.USDT).owner());
@@ -270,7 +252,7 @@ contract SecurityForkTest is ForkFeeds {
     }
 
     function test_I03_strayRouterEthIsRefundedNotLocked() public {
-        IndexToken idx = _create(A.WBTC, 10_000, A.LINK, 1e18);
+        IndexHub idx = _create(A.WBTC, A.LINK);
         IIndexZap.MintLeg[] memory legs = new IIndexZap.MintLeg[](2);
         legs[0] = IIndexZap.MintLeg({
             v3Path: abi.encodePacked(A.WBTC, F500, A.WETH), v4Path: new PathKey[](0), maxAmountIn: 0
@@ -307,7 +289,7 @@ contract SecurityForkTest is ForkFeeds {
     }
 
     function test_FR01_strayRouterEthNoLongerBlocksBurns() public {
-        IndexToken idx = _create(A.WBTC, 10_000, A.WETH, 1e15);
+        IndexHub idx = _create(A.WBTC, A.WETH);
         _issue(idx, 1e18);
 
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](2);
@@ -344,7 +326,7 @@ contract SecurityForkTest is ForkFeeds {
         assertEq(A.UNIVERSAL_ROUTER.balance, 10 ether, "and the stray ether is untouched: nothing here wraps it");
     }
 
-    function _burnToUsdc(IndexToken idx, IIndexZap.BurnLeg[] memory legs) internal returns (uint256 out) {
+    function _burnToUsdc(IndexHub idx, IIndexZap.BurnLeg[] memory legs) internal returns (uint256 out) {
         vm.startPrank(user);
         idx.approve(address(zap), 1e18);
         out = zap.burnToToken(
@@ -368,7 +350,7 @@ contract SecurityForkTest is ForkFeeds {
     ///      through that token. What came back is now measured as the balance above what was left, and handed on with
     ///      the hop's unsold input.
     function test_FR01_CRL02_aStrayTokenInTheRouterNoLongerBlocksABurn() public {
-        IndexToken idx = _create(A.WBTC, 10_000, A.WETH, 1e15);
+        IndexHub idx = _create(A.WBTC, A.WETH);
         _issue(idx, 1e18);
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](2);
         legs[0] = IIndexZap.BurnLeg({
@@ -389,10 +371,10 @@ contract SecurityForkTest is ForkFeeds {
         assertEq(IERC20(A.WETH).balanceOf(address(zap)), 0, "and nothing stays in the zap");
     }
 
-    /// @dev FR-01, CR-L02: the same for a V4 leg, whose sweep returns the component itself. The stray is more LINK than
-    ///      the leg sells.
+    /// @dev FR-01, CR-L02: the same for a V4 leg, whose sweep returns the component itself. The stray, 3 LINK, is more
+    ///      than the leg's 1 LINK.
     function test_FR01_CRL02_aStrayComponentInTheRouterNoLongerBlocksAV4Burn() public {
-        IndexToken idx = _create(A.LINK, 2e18, A.WETH, 1e15);
+        IndexHub idx = _create(A.LINK, A.WETH);
         _issue(idx, 1e18);
         PathKey[] memory route = new PathKey[](2);
         route[0] =
@@ -414,59 +396,169 @@ contract SecurityForkTest is ForkFeeds {
         assertEq(IERC20(A.LINK).balanceOf(address(zap)), 0, "and nothing stays in the zap");
     }
 
-    /// @dev CR-M01. The rule read a token's own live supply whenever its config carried no reference supply, and
-    ///      wstETH's supply moves one for one with wrapping and unwrapping, which any holder can do inside a single
-    ///      transaction, so the targets of an index holding it, and whether a stranger could start its rebalance,
-    ///      were for sale. Every config carries a reference supply now and the rule reads nothing else: with wstETH
-    ///      listed as the script ships it, unwrapping a third of all wstETH moves neither the rule's supply nor the
-    ///      targets, and an index on its rule still cannot be made to rebalance.
-    function test_CRM01_unwrappingWstethAroundAStartMovesNothing() public {
-        ConfigureWhitelist configure = new ConfigureWhitelist();
-        ConfigureWhitelist.Entry memory entry = configure.defaultMainnetList(address(_wbtcFeed()))[1];
-        assertEq(entry.token, A.WSTETH);
-        factory.proposeListing(A.WSTETH, configure.configFor(entry));
-        vm.warp(block.timestamp + factory.LISTING_DELAY());
-        factory.executeListing(A.WSTETH);
-
-        IIndexRule rule = IIndexRule(factory.RULE());
+    /// @dev CR-M01. The v3 rule read a token's own live supply whenever its config carried no reference supply, and a
+    ///      supply that anyone can move inside one transaction put the targets, and whether a stranger could start a
+    ///      rebalance, up for sale. The hub now reads only the factory's reference supplies. WETH's own supply moves one
+    ///      for one with every deposit, so wrapping a million ether around a start is the live test: the band a start
+    ///      would take does not move by a wei, an index on its supplies still cannot be started, and after a revision
+    ///      the band the start stores is the one read before the wrap.
+    function test_CRM01_wrappingEtherAroundAStartMovesNothing() public {
         address[] memory t = new address[](3);
-        (t[0], t[1], t[2]) = (A.WSTETH, A.WETH, A.LINK);
-        IndexToken idx = IndexToken(factory.createIndex("Staked", "STK", t, rule.initialUnits(t, 0, 1_000e18), 0));
+        (t[0], t[1], t[2]) = (A.WBTC, A.WETH, A.LINK);
+        IndexHub idx = IndexHub(factory.createIndex("Wrapped", "WRP", t, K));
         _issue(idx, 10e18);
         vm.warp(block.timestamp + idx.MIN_REBALANCE_INTERVAL());
-        (uint256[] memory targets, uint256 turnover) = idx.previewTarget(0);
         address stranger = makeAddr("stranger");
         vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, turnover));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.BandTooNarrow.selector, 1e18, 1e18));
         idx.startRebalance(0);
 
-        uint256 live = IERC20(A.WSTETH).totalSupply();
-        address unwrapper = makeAddr("unwrapper");
-        deal(A.WSTETH, unwrapper, live / 3);
-        vm.prank(unwrapper);
-        IWstETH(A.WSTETH).unwrap(live / 3);
-        assertEq(IERC20(A.WSTETH).totalSupply(), live - live / 3, "a third of all wstETH is unwrapped");
-        assertEq(rule.supply(A.WSTETH), entry.referenceSupply, "the rule still reads the reference supply");
-
-        (uint256[] memory targetsAfter, uint256 turnoverAfter) = idx.previewTarget(0);
-        assertEq(targetsAfter, targets, "the targets do not move");
-        assertEq(turnoverAfter, turnover);
+        _wrap(1_000_000 ether);
         vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(IIndexToken.TurnoverTooLow.selector, turnover));
+        vm.expectRevert(abi.encodeWithSelector(IIndexHub.BandTooNarrow.selector, 1e18, 1e18));
         idx.startRebalance(0);
+
+        address[] memory revised = new address[](1);
+        uint256[] memory supplies = new uint256[](1);
+        (revised[0], supplies[0]) = (A.WETH, U_WETH + U_WETH / 200);
+        factory.proposeSupplies(revised, supplies);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        factory.executeSupplies();
+        (uint256[] memory ratios, uint256 lambdaMin, uint256 lambdaMax) = idx.previewBand(0);
+        assertGt(lambdaMax, lambdaMin, "the revision opens a band");
+
+        _wrap(1_000_000 ether);
+        (uint256[] memory ratiosAfter, uint256 minAfter, uint256 maxAfter) = idx.previewBand(0);
+        assertEq(ratiosAfter, ratios, "the wrap moves no ratio");
+        assertEq(minAfter, lambdaMin);
+        assertEq(maxAfter, lambdaMax);
+        vm.prank(stranger);
+        idx.startRebalance(0);
+        (,, uint256 storedMin, uint256 storedMax, uint256[] memory stored) = idx.pendingRebalance();
+        assertEq(stored, ratios, "the start stores the band read before the wrap");
+        assertEq(storedMin, lambdaMin);
+        assertEq(storedMax, lambdaMax);
+    }
+
+    /// @dev Wraps `amount` of fresh ether into WETH, which raises WETH's own total supply by exactly that.
+    function _wrap(uint256 amount) internal {
+        address wrapper = makeAddr("wrapper");
+        uint256 before = IERC20(A.WETH).totalSupply();
+        vm.deal(wrapper, amount);
+        vm.prank(wrapper);
+        IWETH9(A.WETH).deposit{value: amount}();
+        assertEq(IERC20(A.WETH).totalSupply(), before + amount, "WETH's live supply moves with the wrap");
+    }
+
+    /// @dev MintRequests against the real stablecoins. With Tether's fee switched on after a USDT request was made,
+    ///      the escrow still leaves in full to its requester, less the fee on the way out, and a redemption filled in
+    ///      USDT must deliver the requester's limit after the fee: a filler sending exactly the limit is refused. USDC's
+    ///      request fills as it would on any day.
+    function test_mintRequestsWithTheRealStablecoins() public {
+        MintRequests requests = new MintRequests(address(factory), A.USDC, A.USDT);
+        IndexHub idx = _create(A.WBTC, A.WETH);
+        _issue(idx, 2e18);
+        address requester = makeAddr("requester");
+
+        deal(A.USDC, requester, 500e6);
+        deal(A.USDT, requester, 1_000e6);
+        vm.startPrank(requester);
+        IERC20(A.USDC).forceApprove(address(requests), 500e6);
+        IERC20(A.USDT).forceApprove(address(requests), 1_000e6);
+        uint256 usdcId = requests.requestMint(address(idx), A.USDC, 500e6, 1e18, block.timestamp + 1 days);
+        uint256 usdtId = requests.requestMint(address(idx), A.USDT, 1_000e6, 1e18, block.timestamp + 1 days);
+        vm.stopPrank();
+        assertEq(requests.getRequest(usdtId).escrow, 1_000e6, "no fee yet, so the escrow is the whole amount");
+
+        vm.startPrank(user);
+        idx.approve(address(requests), 1e18);
+        requests.fill(usdcId, 1e18);
+        vm.stopPrank();
+        assertEq(idx.balanceOf(requester), 1e18);
+        assertEq(IERC20(A.USDC).balanceOf(user), 500e6, "the filler takes the USDC escrow");
+
+        vm.prank(IUsdtAdmin(A.USDT).owner());
+        IUsdtAdmin(A.USDT).setParams(10, 5); // Tether switches on a 0.10% transfer fee
+        vm.prank(requester);
+        requests.cancel(usdtId);
+        assertEq(IERC20(A.USDT).balanceOf(requester), 999e6, "the whole escrow left, less the fee on the way out");
+        assertEq(IERC20(A.USDT).balanceOf(address(requests)), 0, "and nothing is left short or behind");
+
+        vm.startPrank(requester);
+        idx.approve(address(requests), 1e18);
+        uint256 redeemId = requests.requestRedeem(address(idx), 1e18, A.USDT, 400e6, block.timestamp + 1 days);
+        vm.stopPrank();
+        deal(A.USDT, user, 1_000e6);
+        vm.startPrank(user);
+        IERC20(A.USDT).forceApprove(address(requests), 1_000e6);
+        vm.expectRevert(abi.encodeWithSelector(IMintRequests.BelowLimit.selector, 399.6e6, 400e6));
+        requests.fill(redeemId, 400e6);
+        requests.fill(redeemId, 400.400401e6);
+        vm.stopPrank();
+        assertGe(IERC20(A.USDT).balanceOf(requester), 999e6 + 400e6, "the limit arrived after the fee");
+        assertEq(idx.balanceOf(user), 2e18, "the filler holds the shares it sold and got back");
+    }
+
+    /// @dev SA-01 against mainnet Tether. Tether checks only the sender of a transfer and `from` of a transferFrom,
+    ///      which is what the mock copies: a requester it has blacklisted is still paid by a fill, and a MintRequests it
+    ///      has blacklisted would still take a USDT deposit it could never pay out, so a mint request refuses one.
+    function test_SA01_realTetherFreezesAsTheMockDoes() public {
+        MintRequests requests = new MintRequests(address(factory), A.USDC, A.USDT);
+        IndexHub idx = _create(A.WBTC, A.WETH);
+        _issue(idx, 1e18);
+        address requester = makeAddr("requester");
+        address tether = IUsdtAdmin(A.USDT).owner();
+
+        vm.prank(user);
+        idx.transfer(requester, 1e18);
+        vm.startPrank(requester);
+        idx.approve(address(requests), 1e18);
+        uint256 id = requests.requestRedeem(address(idx), 1e18, A.USDT, 100e6, block.timestamp + 1 days);
+        vm.stopPrank();
+        vm.prank(tether);
+        IUsdtAdmin(A.USDT).addBlackList(requester);
+        deal(A.USDT, user, 100e6);
+        vm.startPrank(user);
+        IERC20(A.USDT).forceApprove(address(requests), 100e6);
+        requests.fill(id, 100e6);
+        vm.stopPrank();
+        assertEq(IERC20(A.USDT).balanceOf(requester), 100e6, "a blacklisted recipient is still paid");
+
+        vm.prank(tether);
+        IUsdtAdmin(A.USDT).addBlackList(address(requests));
+        deal(A.USDT, requester, 0);
+        address clean = makeAddr("clean");
+        deal(A.USDT, clean, 100e6);
+        vm.startPrank(clean);
+        IERC20(A.USDT).forceApprove(address(requests), 100e6);
+        vm.expectRevert(bytes("")); // Tether's `require` carries no message
+        requests.requestMint(address(idx), A.USDT, 100e6, 1e17, block.timestamp + 1 days);
+        vm.stopPrank();
+        assertEq(IERC20(A.USDT).balanceOf(clean), 100e6, "the deposit was refused, not trapped");
+
+        vm.prank(tether);
+        IUsdtAdmin(A.USDT).removeBlackList(address(requests));
+        vm.prank(clean);
+        requests.requestMint(address(idx), A.USDT, 100e6, 1e17, block.timestamp + 1 days);
+        assertEq(IERC20(A.USDT).balanceOf(address(requests)), 100e6);
     }
 
     /// @dev XA-07, CR-I36. The module check reads the page of modules that starts at the sentinel, and the offline mock
-    ///      only learned to honour `start` in this review, so the real Safe is the proof: a 2-of-2 Safe without modules
+    ///      only learned to honour `start` in this review, so the real Safe is the proof: a 3-of-3 Safe without modules
     ///      is accepted as an owner, and the same Safe with one module enabled is refused, on 1.3.0, which answers any
-    ///      other start with an empty page, and on 1.4.1, which refuses one.
+    ///      other start with an empty page, and on 1.4.1, which refuses one. A real 2-of-3 is refused outright, since
+    ///      the owner needs at least three signatures (the owner's call on 2026-09-30).
     function test_XA07_CRI36_aRealSafeWithAModuleIsRefused() public {
         Deploy deployer = new Deploy();
         address module = makeAddr("module");
         address[2] memory factories = [SAFE_FACTORY_130, SAFE_FACTORY_141];
         address[2] memory singletons = [SAFE_130, SAFE_141];
         for (uint256 i = 0; i < factories.length; ++i) {
-            ISafe safe = _twoOfTwoSafe(factories[i], singletons[i]);
+            ISafe twoOfThree = _safe(factories[i], singletons[i], 2, 0);
+            vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerThresholdTooLow.selector, address(twoOfThree), 2));
+            deployer.checkOwner(address(twoOfThree));
+
+            ISafe safe = _safe(factories[i], singletons[i], 3, 1);
             deployer.checkOwner(address(safe));
             _enableModule(safe, module);
             vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerHasModules.selector, address(safe), module));
@@ -474,22 +566,31 @@ contract SecurityForkTest is ForkFeeds {
         }
     }
 
-    function _twoOfTwoSafe(address safeFactory, address singleton) internal returns (ISafe) {
-        address[] memory owners = new address[](2);
-        (owners[0], owners[1]) = (vm.addr(SIGNER_A), vm.addr(SIGNER_B));
-        bytes memory init =
-            abi.encodeCall(ISafe.setup, (owners, 2, address(0), "", address(0), address(0), 0, payable(address(0))));
-        return ISafe(ISafeProxyFactory(safeFactory).createProxyWithNonce(singleton, init, 0));
+    function _safe(address safeFactory, address singleton, uint256 threshold, uint256 saltNonce)
+        internal
+        returns (ISafe)
+    {
+        address[] memory owners = new address[](3);
+        (owners[0], owners[1], owners[2]) = (vm.addr(SIGNER_A), vm.addr(SIGNER_B), vm.addr(SIGNER_C));
+        bytes memory init = abi.encodeCall(
+            ISafe.setup, (owners, threshold, address(0), "", address(0), address(0), 0, payable(address(0)))
+        );
+        return ISafe(ISafeProxyFactory(safeFactory).createProxyWithNonce(singleton, init, saltNonce));
     }
 
-    /// @dev Enables `module` the way a real one is: a Safe transaction to itself, signed by both owners in the
-    ///      ascending order the Safe requires.
+    /// @dev Enables `module` the way a real one is: a Safe transaction to itself, signed by all three owners in the
+    ///      ascending order of their addresses, as the Safe requires.
     function _enableModule(ISafe safe, address module) internal {
         bytes memory data = abi.encodeCall(ISafe.enableModule, (module));
         bytes32 hash = safe.getTransactionHash(address(safe), 0, data, 0, 0, 0, 0, address(0), address(0), safe.nonce());
-        (uint256 first, uint256 second) =
-            vm.addr(SIGNER_A) < vm.addr(SIGNER_B) ? (SIGNER_A, SIGNER_B) : (SIGNER_B, SIGNER_A);
-        bytes memory signatures = abi.encodePacked(_signature(first, hash), _signature(second, hash));
+        uint256[3] memory keys = [SIGNER_A, SIGNER_B, SIGNER_C];
+        for (uint256 i = 1; i < 3; ++i) {
+            for (uint256 j = i; j > 0 && vm.addr(keys[j]) < vm.addr(keys[j - 1]); --j) {
+                (keys[j], keys[j - 1]) = (keys[j - 1], keys[j]);
+            }
+        }
+        bytes memory signatures =
+            abi.encodePacked(_signature(keys[0], hash), _signature(keys[1], hash), _signature(keys[2], hash));
         assertTrue(
             safe.execTransaction(address(safe), 0, data, 0, 0, 0, 0, address(0), payable(address(0)), signatures)
         );

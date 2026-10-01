@@ -3,7 +3,9 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {Vm} from "forge-std/Vm.sol";
-import {IndexToken} from "../src/IndexToken.sol";
+import {IndexZap} from "../src/IndexZap.sol";
+import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
+import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 
 /// @notice Repository facts that security-review findings rest on and that no contract test can reach: the pinned
@@ -80,8 +82,10 @@ contract RepoTest is Test {
         assertTrue(_contains(readme, "Known limitations"), "the README keeps its known limitations section");
     }
 
-    /// @dev XA-10: CI runs every gate of the definition of done. Wake's generated config must leave out `audit/`: its
-    ///      PoC tests compile only inside the audited commit, and Wake stops on them before running a detector.
+    /// @dev XA-10: CI runs every gate of the definition of done. Wake's generated config must leave out `audit/`, whose
+    ///      PoC tests compile only inside the audited commit, `prototype/`, a separate Foundry project that needs via-IR,
+    ///      and `demo/`, one whose remapping only it knows: Wake stops on any of them before running a detector. The
+    ///      extension must ignore a local `wake.toml`, which would otherwise replace its committed config.
     function test_XA10_ciRunsEveryGate() public view {
         string memory workflow = _read(".github/workflows/test.yml");
         assertTrue(_contains(workflow, "forge lint -D notes"), "lint fails on notes");
@@ -92,9 +96,20 @@ contract RepoTest is Test {
             "pull requests from this repository need the fork-test RPC"
         );
         assertTrue(_contains(workflow, "wake init config --force"), "Wake's config comes from foundry.toml");
-        assertTrue(_contains(workflow, 'exclude_paths = ["audit", '), "Wake does not compile the audit PoCs");
+        assertTrue(
+            _contains(workflow, 'exclude_paths = ["audit", "prototype", "demo", '),
+            "Wake compiles neither the PoCs, the prototype nor the demo"
+        );
         assertTrue(_contains(workflow, "wake detect all src"), "the Wake detectors run");
-        assertTrue(_contains(_read(".vscode/settings.json"), '"audit"'), "neither does the Wake extension");
+        string memory settings = _read(".vscode/settings.json");
+        assertTrue(
+            _contains(settings, '"audit"') && _contains(settings, '"prototype"') && _contains(settings, '"demo"'),
+            "nor does the Wake extension"
+        );
+        assertTrue(
+            _contains(settings, '"wake.configuration.use_toml_if_present": false'),
+            "and no local wake.toml replaces the extension's committed config"
+        );
     }
 
     /// @dev XA-43: mainnet-fork rehearsals keep chain id 1, so chain-1 broadcast records stay out of git unless a real
@@ -113,7 +128,7 @@ contract RepoTest is Test {
 
     /// @dev XA-44: the ABIs the web app decodes with are committed, and CI regenerates them and fails on a diff.
     function test_XA44_theAbisAreCommittedAndChecked() public view {
-        string[4] memory contracts = ["IndexFactory", "IndexToken", "IndexRule", "IndexZap"];
+        string[4] memory contracts = ["IndexFactory", "IndexHub", "IndexZap", "MintRequests"];
         for (uint256 i = 0; i < contracts.length; ++i) {
             assertTrue(
                 _contains(_read(string.concat("abi/", contracts[i], ".json")), '"type": "function"'),
@@ -122,7 +137,7 @@ contract RepoTest is Test {
         }
         string memory workflow = _read(".github/workflows/test.yml");
         assertTrue(
-            _contains(workflow, "for contract in IndexFactory IndexToken IndexRule IndexZap; do"),
+            _contains(workflow, "for contract in IndexFactory IndexHub IndexZap MintRequests; do"),
             "CI regenerates every ABI"
         );
         assertTrue(_contains(workflow, "git diff --exit-code abi/"), "a stale ABI fails CI");
@@ -135,7 +150,6 @@ contract RepoTest is Test {
     ///      covers the same need, so the field is gone from the config, the events, the rule and the listing script.
     function test_DA10_noConfigCanCarryExclusions() public view {
         assertFalse(_contains(_read("abi/IndexFactory.json"), "excluded"), "the listing ABI has no exclusion list");
-        assertFalse(_contains(_read("abi/IndexRule.json"), "excluded"), "nor the rule's");
         assertFalse(
             _contains(_read("script/ConfigureWhitelist.s.sol"), "entry.excluded"), "nor the whitelist script's entries"
         );
@@ -173,12 +187,52 @@ contract RepoTest is Test {
     function test_LR01_checksAfterAnExpectedConstructorRevertStillRun() public {
         assertTrue(_contains(_read("foundry.toml"), "\ndynamic_test_linking = false\n"), "test linking stays static");
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new IndexToken(address(0));
+        new IndexZap(IIndexFactory(address(0)), IUniversalRouter(address(0)));
         vm.expectCall(address(this), abi.encodeCall(this.reachedAfterTheRevert, ()));
         this.reachedAfterTheRevert();
     }
 
     function reachedAfterTheRevert() external {}
+
+    /// @dev v4 reads no price anywhere: no contract in `src/` and no shipped ABI names a price feed, a pool's price
+    ///      or its oracle, and the v3 price contracts are gone. A change that brought one back would have to delete
+    ///      this test to do it.
+    function test_noContractReadsAPrice() public view {
+        string[15] memory files = [
+            "src/IndexHub.sol",
+            "src/IndexFactory.sol",
+            "src/IndexZap.sol",
+            "src/MintRequests.sol",
+            "src/interfaces/IIndexHub.sol",
+            "src/interfaces/IIndexFactory.sol",
+            "src/interfaces/IIndexZap.sol",
+            "src/interfaces/IMintRequests.sol",
+            "src/interfaces/IXindexErrors.sol",
+            "src/interfaces/IRebalanceExecutor.sol",
+            "src/interfaces/IUniversalRouter.sol",
+            "abi/IndexHub.json",
+            "abi/IndexFactory.json",
+            "abi/IndexZap.json",
+            "abi/MintRequests.json"
+        ];
+        string[5] memory priceWords = ["latestRoundData", "AggregatorV3", "slot0", "observe(", "navPerToken"];
+        for (uint256 i = 0; i < files.length; ++i) {
+            string memory text = _read(files[i]);
+            for (uint256 j = 0; j < priceWords.length; ++j) {
+                assertFalse(_contains(text, priceWords[j]), string.concat(files[i], " names ", priceWords[j]));
+            }
+        }
+        string[5] memory gone = [
+            "src/IndexRule.sol",
+            "src/CompositeFeed.sol",
+            "src/interfaces/IAggregatorV3.sol",
+            "src/interfaces/IIndexRule.sol",
+            "abi/IndexRule.json"
+        ];
+        for (uint256 i = 0; i < gone.length; ++i) {
+            assertFalse(vm.exists(gone[i]), string.concat(gone[i], " is gone"));
+        }
+    }
 
     function _count(string memory haystack, string memory needle) internal pure returns (uint256 found) {
         bytes memory hay = bytes(haystack);
@@ -193,5 +247,76 @@ contract RepoTest is Test {
             }
             if (hit) ++found;
         }
+    }
+
+    /// @dev HybridHub delegates to its module on the index's own storage, so the two must agree slot for slot: every
+    ///      variable, in order, at the same slot, offset and type. Both inherit HybridHubStorage and declare nothing of
+    ///      their own; this pins it from the compiler's own layouts (`extra_output` in foundry.toml).
+    function test_theHubAndTheModuleShareOneLayout() public view {
+        string memory hub = _read("out/HybridHub.sol/HybridHub.json");
+        _sameLayout(hub, _read("out/HybridHubModule.sol/HybridHubModule.json"), "the module");
+        _sameLayout(hub, _read("out/HybridHubExtension.sol/HybridHubExtension.json"), "the extension");
+    }
+
+    /// @dev `other`'s storage variables are `hub`'s, one for one, in the same slots, offsets and types.
+    function _sameLayout(string memory hub, string memory other, string memory name) internal view {
+        uint256 i = 0;
+        for (; vm.keyExistsJson(hub, _entry(i, "")); ++i) {
+            assertTrue(vm.keyExistsJson(other, _entry(i, "")), string.concat(name, " has fewer variables"));
+            assertEq(vm.parseJsonString(hub, _entry(i, ".label")), vm.parseJsonString(other, _entry(i, ".label")));
+            assertEq(vm.parseJsonString(hub, _entry(i, ".slot")), vm.parseJsonString(other, _entry(i, ".slot")));
+            assertEq(vm.parseJsonUint(hub, _entry(i, ".offset")), vm.parseJsonUint(other, _entry(i, ".offset")));
+            // A type names its struct with the compiler's AST id, which differs between separately cached builds.
+            assertEq(
+                _withoutDigits(vm.parseJsonString(hub, _entry(i, ".type"))),
+                _withoutDigits(vm.parseJsonString(other, _entry(i, ".type")))
+            );
+        }
+        assertFalse(vm.keyExistsJson(other, _entry(i, "")), string.concat(name, " has more variables"));
+        assertGt(i, 30, "every variable of the storage base");
+    }
+
+    /// @dev The slots the vault and the hub read of each other's storage from proofs, against the compiler's layouts:
+    ///      the vault reads the hub's `_components`, `_claimOf`, `_recovery` and `_settledIntakes` for a snapshot exit,
+    ///      and the hub reads the vault's `_snapshot` to record it. A reordered variable would read the wrong slot.
+    function test_theHubLayoutIsPinned() public view {
+        string memory hub = _read("out/HybridHub.sol/HybridHub.json");
+        assertEq(_slotOf(hub, "_components"), 0);
+        assertEq(_slotOf(hub, "_claimOf"), 11);
+        assertEq(_slotOf(hub, "_recovery"), 59);
+        assertEq(_slotOf(hub, "_settledIntakes"), 60);
+        assertEq(_slotOf(hub, "_sentMessages"), 62);
+        string memory vault = _read("out/XindexVault.sol/XindexVault.json");
+        assertEq(_slotOf(vault, "indexDigest"), 14);
+        assertEq(_slotOf(vault, "intakeDigest"), 15);
+        // The snapshot is (blockNumber, timestamp) in one slot and its state root in the next.
+        assertEq(_slotOf(vault, "_snapshot") + 1, 25);
+    }
+
+    function _slotOf(string memory artifact, string memory label) internal view returns (uint256) {
+        for (uint256 i = 0; vm.keyExistsJson(artifact, _entry(i, "")); ++i) {
+            if (keccak256(bytes(vm.parseJsonString(artifact, _entry(i, ".label")))) == keccak256(bytes(label))) {
+                return vm.parseUint(vm.parseJsonString(artifact, _entry(i, ".slot")));
+            }
+        }
+        revert(string.concat("no variable ", label));
+    }
+
+    function _withoutDigits(string memory text) internal pure returns (string memory) {
+        bytes memory b = bytes(text);
+        bytes memory out = new bytes(b.length);
+        uint256 n = 0;
+        for (uint256 i = 0; i < b.length; ++i) {
+            if (b[i] >= "0" && b[i] <= "9") continue;
+            out[n++] = b[i];
+        }
+        assembly ("memory-safe") {
+            mstore(out, n)
+        }
+        return string(out);
+    }
+
+    function _entry(uint256 i, string memory field) internal pure returns (string memory) {
+        return string.concat(".storageLayout.storage[", vm.toString(i), "]", field);
     }
 }

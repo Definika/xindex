@@ -7,12 +7,12 @@ import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.so
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
-import {IndexToken} from "../src/IndexToken.sol";
+import {IndexHub} from "../src/IndexHub.sol";
 import {IndexZap} from "../src/IndexZap.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IIndexZap} from "../src/interfaces/IIndexZap.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
-import {IIndexToken} from "../src/interfaces/IIndexToken.sol";
+import {IIndexHub} from "../src/interfaces/IIndexHub.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
@@ -29,7 +29,7 @@ contract IndexZapTest is XindexTest {
     IndexZap zap;
     MockUniversalRouter router;
     address poolManager;
-    IndexToken index;
+    IndexHub index;
 
     MockERC20 wbtc; // 8
     MockERC20 weth; // 18
@@ -45,6 +45,10 @@ contract IndexZapTest is XindexTest {
     uint256 constant U_WETH = 1e16;
     uint256 constant U_LINK = 1e18;
     uint256 constant NAV_USD6 = 105e6;
+    /// @dev USDC's units in the suite's dollar indexes.
+    uint256 constant U_USDC = 50e6;
+    /// @dev With each component listed at its units as its supply, this scale gives exactly those units.
+    uint256 constant K = 1e36;
 
     uint24 constant FEE = 500;
 
@@ -75,20 +79,17 @@ contract IndexZapTest is XindexTest {
         usdc.mint(address(router.inventory()), 1_000_000_000e6);
         usdt.mint(address(router.inventory()), 1_000_000_000e6);
 
-        _list(address(wbtc));
-        _list(address(weth));
-        _list(address(link));
-        _list(address(usdc));
+        // Listed with the units the suite's indexes hold as their supplies, so k = K gives exactly those units.
+        _listWith(address(wbtc), U_WBTC);
+        _listWith(address(weth), U_WETH);
+        _listWith(address(link), U_LINK);
+        _listWith(address(usdc), U_USDC);
 
         address[] memory t = new address[](3);
-        uint256[] memory u = new uint256[](3);
         t[0] = address(wbtc);
         t[1] = address(weth);
         t[2] = address(link);
-        u[0] = U_WBTC;
-        u[1] = U_WETH;
-        u[2] = U_LINK;
-        index = IndexToken(factory.createIndex("Blue Chip", "BLUE", t, u, 0));
+        index = IndexHub(factory.createIndex("Blue Chip", "BLUE", t, K));
     }
 
     // ---------------------------------------------------------------------
@@ -212,14 +213,11 @@ contract IndexZapTest is XindexTest {
     }
 
     /// @dev 0.01 WETH + 50 USDC, so USDC is both the mint currency and a component.
-    function _mixedIndex() internal returns (IndexToken idx) {
+    function _mixedIndex() internal returns (IndexHub idx) {
         address[] memory t = new address[](2);
-        uint256[] memory u = new uint256[](2);
         t[0] = address(weth);
         t[1] = address(usdc);
-        u[0] = U_WETH;
-        u[1] = 50e6;
-        idx = IndexToken(factory.createIndex("Mixed", "MIX", t, u, 0));
+        idx = IndexHub(factory.createIndex("Mixed", "MIX", t, K));
     }
 
     function _mixedLegs() internal view returns (IIndexZap.MintLeg[] memory legs) {
@@ -336,7 +334,7 @@ contract IndexZapTest is XindexTest {
     }
 
     function test_mint_tokenInIsComponent() public {
-        IndexToken idx = _mixedIndex();
+        IndexHub idx = _mixedIndex();
         usdc.mint(alice, 100e6);
         vm.startPrank(alice);
         usdc.approve(address(zap), 100e6);
@@ -360,7 +358,7 @@ contract IndexZapTest is XindexTest {
     }
 
     function test_mint_revertsInsufficientBudget() public {
-        IndexToken idx = _mixedIndex();
+        IndexHub idx = _mixedIndex();
         usdc.mint(alice, 10e6);
         vm.startPrank(alice);
         usdc.approve(address(zap), 10e6);
@@ -370,7 +368,7 @@ contract IndexZapTest is XindexTest {
     }
 
     function test_mint_revertsTokenInComponentWithNonEmptyPath() public {
-        IndexToken idx = _mixedIndex();
+        IndexHub idx = _mixedIndex();
         IIndexZap.MintLeg[] memory legs = _mixedLegs();
         legs[1].v3Path = _path2(address(usdc), address(usdc));
         usdc.mint(alice, 100e6);
@@ -741,10 +739,10 @@ contract IndexZapTest is XindexTest {
         vm.stopPrank();
     }
 
-    /// @dev RT-21, the zap's half. The factory and the rule can never move a token on, so a burn's payout sent to either
-    ///      was lost; a mint to either already reverted in the index, and now reverts here first.
-    function test_RT21_neitherTheFactoryNorTheRuleIsAValidZapRecipient() public {
-        address[2] memory traps = [address(factory), factory.RULE()];
+    /// @dev RT-21, the zap's half. The factory can never move a token on, so a burn's payout sent to it was lost; a mint
+    ///      to it already reverted in the index, and now reverts here first. (The v3 rule, the other trap, is gone.)
+    function test_RT21_theFactoryIsNotAValidZapRecipient() public {
+        address[1] memory traps = [address(factory)];
         vm.startPrank(alice);
         for (uint256 i = 0; i < traps.length; ++i) {
             vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, traps[i]));
@@ -766,7 +764,7 @@ contract IndexZapTest is XindexTest {
         bytes[] memory nonces = new bytes[](2);
         nonces[0] = abi.encode(uint256(0));
         nonces[1] = abi.encode(uint256(1));
-        vm.mockCalls(address(index), abi.encodeWithSelector(IIndexToken.rebalanceNonce.selector), nonces);
+        vm.mockCalls(address(index), abi.encodeWithSelector(IIndexHub.rebalanceNonce.selector), nonces);
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(IIndexZap.StaleRebalanceNonce.selector, 0, 1));
         zap.mintWithToken(p);
@@ -779,10 +777,10 @@ contract IndexZapTest is XindexTest {
     ///      approvals sized for the old one and fail with an allowance error instead.
     function test_LR05_aRebalanceSettledDuringTheRefundStopsTheMint() public {
         _mintFor(alice, 1e18, 200e6);
-        market.movePrice(address(link), 1, 2); // LINK halves, so the rule has a rebalance to start
+        _revise(address(link), U_LINK + U_LINK / 200); // LINK's supply grows a step, so there is a rebalance to start
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
         index.startRebalance(0);
-        (uint256 eta,,) = index.pendingRebalance();
+        (uint256 eta,,,,) = index.pendingRebalance();
         vm.warp(eta);
 
         MockHookToken hook = new MockHookToken();
@@ -876,10 +874,8 @@ contract IndexZapTest is XindexTest {
 
     function test_burn_partialFillReturnsUnsoldComponent() public {
         address[] memory t = new address[](1);
-        uint256[] memory u = new uint256[](1);
         t[0] = address(weth);
-        u[0] = 1e18;
-        IndexToken idx = IndexToken(factory.createIndex("Ether", "ETH1", t, u, 0));
+        IndexHub idx = IndexHub(factory.createIndex("Ether", "ETH1", t, K * 1e18 / U_WETH)); // a whole WETH a token
 
         weth.mint(alice, 1e18);
         vm.startPrank(alice);
@@ -1388,9 +1384,8 @@ contract IndexZapTest is XindexTest {
     ///      only balance changes and would never pay it to anyone. The mock's partial mode halves a V4 exact input too.
     function test_CRI27_aV4BurnLegReturnsItsUnsoldInputToTheRecipient() public {
         address[] memory t = new address[](1);
-        uint256[] memory u = new uint256[](1);
-        (t[0], u[0]) = (address(weth), 1e18);
-        IndexToken idx = IndexToken(factory.createIndex("Ether", "ETH1", t, u, 0));
+        t[0] = address(weth);
+        IndexHub idx = IndexHub(factory.createIndex("Ether", "ETH1", t, K * 1e18 / U_WETH)); // a whole WETH a token
         weth.mint(alice, 1e18);
         vm.startPrank(alice);
         weth.approve(address(idx), 1e18);
@@ -1437,7 +1432,7 @@ contract IndexZapTest is XindexTest {
     /// @dev CR-I31. A leg names exactly one venue, and the pass-through leg names none. The committed tests only ever
     ///      put a V3 path on it, so dropping the V4 half of the check passed them and a V4 route was silently ignored.
     function test_CRI31_aPassThroughLegCarryingAV4RouteIsABadRoute() public {
-        IndexToken idx = _mixedIndex();
+        IndexHub idx = _mixedIndex();
         IIndexZap.MintLeg[] memory mintLegs = _mixedLegs();
         mintLegs[1].v4Path = _v4Path1(address(weth)); // USDC is the component and the currency: no swap belongs here
         usdc.mint(alice, 100e6);
@@ -1461,9 +1456,8 @@ contract IndexZapTest is XindexTest {
     ///      InsufficientBudget's "needs more than" says; a `>=` there refused it and passed every committed test.
     function test_CRI31_aBudgetExactlyCoveringThePassThroughLegIsEnough() public {
         address[] memory t = new address[](1);
-        uint256[] memory u = new uint256[](1);
-        (t[0], u[0]) = (address(usdc), 50e6);
-        IndexToken idx = IndexToken(factory.createIndex("Dollar", "USD1", t, u, 0));
+        t[0] = address(usdc);
+        IndexHub idx = IndexHub(factory.createIndex("Dollar", "USD1", t, K));
         IIndexZap.MintLeg[] memory legs = new IIndexZap.MintLeg[](1);
         legs[0] = IIndexZap.MintLeg({v3Path: "", v4Path: _noV4(), maxAmountIn: 0});
         usdc.mint(alice, 50e6);
@@ -1478,7 +1472,7 @@ contract IndexZapTest is XindexTest {
     /// @dev CR-I31: a mint that spends its whole budget owes no refund and sends none. Refunding unconditionally sent
     ///      `transfer(msg.sender, 0)`, which a currency that refuses zero transfers turns into a failed mint.
     function test_CRI31_anExactSpendMintSendsNoZeroRefund() public {
-        IndexToken idx = _mixedIndex(); // 0.01 WETH, bought for 30 USDC, and 50 USDC held as it is
+        IndexHub idx = _mixedIndex(); // 0.01 WETH, bought for 30 USDC, and 50 USDC held as it is
         usdc.mint(alice, 80e6);
         vm.startPrank(alice);
         usdc.approve(address(zap), 80e6);
@@ -1733,10 +1727,10 @@ contract PathShapeProbe {
 /// @dev Mints through the zap with a callback token and, when the zap refunds it, fills the index's auction.
 contract RebalancingMinter is ITokenReceiverHook {
     IndexZap internal immutable ZAP;
-    IndexToken internal immutable INDEX;
+    IndexHub internal immutable INDEX;
     MockRebalanceExecutor internal immutable EXECUTOR;
 
-    constructor(IndexZap zap, IndexToken index, MockRebalanceExecutor executor) {
+    constructor(IndexZap zap, IndexHub index, MockRebalanceExecutor executor) {
         ZAP = zap;
         INDEX = index;
         EXECUTOR = executor;

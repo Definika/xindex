@@ -1,862 +1,586 @@
 # Xindex Architecture
 
-Xindex turns a portfolio of on-chain tokens into a single ERC-20 index token. Anyone can create an index, anyone can
-mint it with USDC or USDT, and anyone can burn it back into USDC, USDT, WBTC, or any other token with Uniswap V3 or V4
-liquidity. Every index is fully backed, in kind, by the tokens it represents. Its constituents never change; its units
-follow an on-chain market-cap rule that anyone can trigger once a month. No admin can touch user funds, and no
-protocol key or bot is involved in rebalancing.
+Xindex turns a portfolio of tokens into a single ERC-20 index token. Anyone can create an index, anyone can mint it with
+USDC or USDT, and anyone can burn it back into USDC, USDT, WBTC or any other token with Uniswap V3 or V4 liquidity.
+Every index is fully backed, in kind, by the tokens it represents. Its constituents never change; its units follow the
+uncapped market-cap rule `units ∝ supply`, from reference supplies the owner updates weekly behind a public delay. **No
+contract reads a price**: a rebalance settles through an auction on a single number, λ, whose worst case holds at any
+prices. No admin can touch user funds, and no protocol key or bot is involved in rebalancing.
+
+This file describes **v4 Stage A as built**: the price-free part of the v4 design held on Ethereum. The multichain
+design is `design/2026-09-29-v4-hybrid-architecture.md` (the "design" below), and the contract spec for this stage is
+`design/2026-09-30-v4-stage-a-spec.md` (the "spec"). Stage A has had an internal red team
+(`audit/2026-09-30-stage-a-red-team.md`) but no external audit, and is deployed nowhere; section 10 lists what remains.
 
 ## 1. Goals and constraints
 
-| Requirement (from the product brief) | How it is met |
+| Requirement (from the product brief) | How Stage A meets it |
 |---|---|
-| Create a portfolio as one ERC-20, any name/symbol | `IndexFactory.createIndex` deploys an `IndexToken` clone with free-form name and symbol |
-| Others can mint the same index | `issue` / `mintWithToken` are permissionless |
-| Decentralized | No custody, no pause, no upgrade, no rebalancing key; listings and token data configs activate after a public 2-day delay |
-| Mint and burn | In-kind `issue` / `redeem` on the token; USDC/USDT convenience via the zap |
+| Create a portfolio as one ERC-20, any name/symbol | `IndexFactory.createIndex` deploys an `IndexHub` clone with free-form name and symbol |
+| Others can mint the same index | `issue` and `mintWithToken` are permissionless |
+| Decentralized | No custody, no pause, no upgrade, no rebalancing key; listings and supply updates take effect after a public 2-day delay with a guardian veto |
+| Mint and burn | In-kind `issue` / `redeem` on the hub; USDC/USDT convenience through the zap |
 | Trade the index into other coins | Standard ERC-20 (transferable, listable) plus `burnToToken` into any token |
-| USDC/USDT in, USDC/USDT out | Zap mints from either stable; burner chooses the payout token |
-| Rebalancing and index price (the Numbers model) | Uncapped or capped (30/20) market-cap weights computed on-chain from timelocked reference supplies and Chainlink USD prices; settlement through an auction whose amounts come from supply and units alone and whose fills are checked for value at feed prices; the index price is the basket's value in dollars |
-| Layer-1 coins | Only tokens that exist on mainnet can be components (wrapped BTC, ETH, ...) |
+| USDC/USDT in, USDC/USDT out | The zap mints from either stable; the burner chooses the payout token |
+| Rebalancing and index price (the Numbers model) | The uncapped market-cap rule, held exactly by keeping units proportional to reference supplies; a rebalance only when a supply changes, settled by the λ auction; the index price is the basket's value, computed off chain (design section 10) |
+| Layer-1 coins | Stage A: Ethereum tokens, Bitcoin as WBTC. Native coins of proof-capable chains come in vaults from Stage B (section 10) |
 
-Decisions fixed for v3: Ethereum mainnet, Chainlink USD feeds for prices, Uniswap's Universal Router (V3 and V4) for
-execution, fixed constituents with rule-rebalanced units, two methodologies, no protocol bots or hot keys, no fees,
-whitelist only. The first two supersede v2's "Uniswap V3" for both jobs; section 4 says why.
+Constraints carried from v3: in-kind backing, CREATE2 addresses that commit to their contents, fixed constituents,
+reentrancy-guarded untrusted executors, standard ERC-20s only, no admin over funds. Changed by the owner's decisions of
+2026-09-29 and 2026-09-30 (design section 13): no prices in money paths, uncapped only, weekly supply updates with a
+0.5% step, up to 100 components, v4 replaces v3; then no fee in Stage A, WBT off after its listing check, the floor
+buffer, and an owner Safe of at least three signatures (design section 13.1, `design/2026-09-30-wbt-check.md`).
 
 ## 2. Components
 
 ```
-                  createIndex(name, symbol, tokens[], units[], methodology)
-   creator ────────────────────────────────────────────────────► IndexFactory ──CREATE2 clone──► IndexToken (ERC-20)
-                                                                  │ listings + token configs      │ holds the basket
-                                                                  │ (2-day delay), guardian,      │ issue / redeem in kind
-                                                                  │ registry                      │ redeemSkipping / claim
-                                                                  └──deploys──► IndexRule ◄───────│ start / cancel /
-   anyone ── startRebalance ────────────────────────────────────────────────── (supplies,        │ executeRebalance
-   executor ── executeRebalance ◄── flash-style callback ─────────────────────── Chainlink USD   │
-                                                                                 prices,         │
-                                                                                 weights, price) │
-                                                                                      ▲          │
-                                                                              Chainlink feeds    │
-                                                                            (CompositeFeed for   │
-                                                                             WBTC = BTC x WBTC)  │
-   user ── mintWithToken(USDC) ──► IndexZap ── exactOutput swaps ──► Universal Router ─► V3 / V4  │
-        ◄─ burnToToken(USDT)  ───     │      ◄─ exactInput swaps  ──                              │
-                                      └──────── issue() / redeem() ───────────────────────────────┘
+                  createIndex(name, symbol, tokens[], k)
+   creator ─────────────────────────────────────────► IndexFactory ──CREATE2 clone──► IndexHub (ERC-20)
+                                                       │ listings, weekly supply      │ holds the basket
+                                                       │ batches (2-day delay),       │ issue / redeem in kind
+                                                       │ guardian, registry           │ redeemSkipping / claim
+                                                       │                              │
+   anyone ── startRebalance ─────────────────────────► │ referenceSupplies(tokens) ◄──│ start: the λ band
+   executor ── executeRebalance ◄── flash-style callback ─────────────────────────────│ fill at λ(t)
+                                                                                      │
+   user ── mintWithToken(USDC) ──► IndexZap ── exactOutput swaps ──► Universal Router ─► V3 / V4
+        ◄─ burnToToken(USDT)  ───     │      ◄─ exactInput swaps  ──                  │
+                                      └──────── issue() / redeem() ───────────────────┘
+
+   requester ── requestMint(USDC, minShares) ──► MintRequests ◄── fill(id) ── minter (holds or issues shares)
+             ◄─ shares, at least minShares ─────  (escrow)    ── the USDC ──►
 ```
 
-### IndexToken (`src/IndexToken.sol`)
+### IndexHub (`src/IndexHub.sol`)
 
-The index itself. An EIP-1167 clone of one implementation, using OpenZeppelin's upgradeable ERC20 and ERC20Permit
-(clones skip constructors, so name and symbol are set in `initialize`).
+The index itself, renamed from v3's `IndexToken` because Stage B extends it into the hub of a multichain index. An
+EIP-1167 clone of one implementation, using OpenZeppelin's upgradeable ERC20 and ERC20Permit (clones skip
+constructors, so name and symbol are set in `initialize`).
 
-- **State:** `Component[] {address token; uint96 units}`. The token list is fixed at `initialize`; only
-  `executeRebalance` changes units. `units_i` is the raw amount of component `i` (in that token's own decimals) backing
-  one whole index token (`1e18` shares). Open claims live in `claimOf[account][token]`, and their sum per token in
-  `totalClaims[token]`. Rebalancing adds the pending proposal (`eta`, `keepMask`), the snapshot `_targetUnits`,
-  `rebalanceNonce`, `lastRebalance`, `restartAllowedAt` and the `methodology` id.
-- **issue(shares, to):** computes `ceil(shares * units_i / 1e18)` per component, mints, emits, then pulls each component
-  from `msg.sender` and reverts unless the balance grew by at least that amount (rejects fee-on-transfer tokens).
-- **redeem(shares, to):** computes `floor(shares * units_i / 1e18)`, burns, emits, then pushes every component.
-- **redeemSkipping(shares, to, skipMask):** the same, except each component whose bit is set in `skipMask` stays in the
-  index and is recorded as a claim for `to`, the account that receives every other component of the same redemption.
-  Claims are booked before any token moves. Booking them to `msg.sender` stranded the skipped components whenever a
-  router redeemed on a holder's behalf, because only the router could ever collect them (the deep audit's DA-17,
-  2026-09-19).
+- **State:** `Component[] {address token; uint96 units}`, fixed at `initialize`; only `executeRebalance` changes units.
+  `units_i` is the raw amount of component `i` (in that token's own decimals) backing one whole index token (`1e18`
+  shares). Open claims live in `claimOf[account][token]`, their sum per token in `totalClaims[token]`. A pending
+  rebalance is `{uint40 eta; uint64 lambdaMax; uint64 lambdaMin}`, the keep mask (`uint256`) and one `uint64` ratio per
+  component; beside them `proposalCount`, `rebalanceNonce`, `lastRebalance` and `restartAllowedAt`. `FACTORY` is an
+  immutable of the implementation, set in its constructor, so every clone sees it.
+- **issue(shares, to):** computes `ceil(shares × units_i / 1e18)` per component, mints, emits, then pulls each
+  component from `msg.sender` and reverts `TransferAmountMismatch` unless the balance grew by at least that amount
+  (rejects fee-on-transfer tokens).
+- **redeem(shares, to):** computes `floor(shares × units_i / 1e18)`, burns, emits, then pushes every component.
+- **redeemSkipping(shares, to, skipMask):** the same, except each component whose bit is set stays in the index and is
+  booked as a claim for `to`, the account that receives every other component (DA-17). Claims are booked before any
+  token moves.
 - **claim(token, to):** pays `msg.sender`'s claim on `token` and clears it.
-- **startRebalance(keepMask):** anyone, once `MIN_REBALANCE_INTERVAL` (28 days) has passed since the last executed
-  rebalance or creation and no unexpired rebalance is pending. Asks `IndexRule.targetUnits` for the snapshot, requires
-  at least `MIN_TURNOVER` (0.5%) of traded value, or, for a step that trades something but less, a basket at least
-  `MIN_TURNOVER` from its rule (`IndexRule.shortfall`, RT-04), stores the targets and opens `REBALANCE_DELAY` (2 days)
-  of notice. A non-zero `keepMask`, and any start during the `REBALANCE_DELAY` cooldown that follows a cancel or an
-  auction that expired unfilled, needs the factory owner or guardian. After an expiry that cooldown runs from the
-  auction's last fillable second, `eta + AUCTION_DURATION`, so the owner and guardian have the start to themselves for
-  `REBALANCE_DELAY` less one second, against a full `REBALANCE_DELAY` after a cancel (CR-I02). `canStartRebalance()`
-  is that whole condition as one view, for apps and for anyone checking whether an index is due; it answers false on
-  an uninitialized clone, which holds no components and could never rebalance. `restartAllowedAt()` records cancels
-  only, so it is not the whole wait after an expiry (RT-08).
-- **cancelRebalance():** factory owner or guardian. Clears the proposal. Cancelling a live auction starts a
-  `REBALANCE_DELAY` cooldown from the cancel, during which only they can start a new one; cancelling an auction that
-  already expired only clears the stale proposal the views still report, and the hold-off the expiry granted stands,
-  neither shortened nor extended (VR-04).
-- **executeRebalance(data):** during the `AUCTION_DURATION` (24 hours) after the notice. The multiplier falls linearly
-  from `AUCTION_START_MULTIPLIER` (1.5) to `AUCTION_END_MULTIPLIER` (0.9), rounding up; a settlement that sends nothing
-  out, as on an empty index or one whose supply is too small to move a raw unit, is priced at 1 instead, because the
-  auction has nothing to pay for and the new units should not depend on timing. A shrinking component moves straight to
-  its target; a growing one gains its extra units times the multiplier, rounded up. Transfer amounts are the change in
-  required backing, `floor(supply * units / 1e18)` before and after, so they depend only on supply and units. In order:
-  check the auction window, apply the caller's bound on `amountsIn` for the bounded overload (`RebalanceMovedOn`), value
-  both sides at feed prices and refuse a fill worth less than `MIN_SETTLEMENT_RATIO` of what it takes
-  (`SettlementValueTooLow`, DA-05; every leg that moves is priced, so a stale feed on one stops the settlement too),
-  read what the index holds, write the new units, bump the nonce, set `lastRebalance`, clear the proposal, emit
-  `Rebalanced`, send the shrinking amounts to `msg.sender`, call `IRebalanceExecutor.onXindexRebalance` on it, and
-  revert with `RebalanceUnderfunded` unless every component then satisfies the invariant with the new units *and* the
-  index holds the whole of `amountsIn` on top of what it held before. Surplus the index already had, from rounding or a
-  donation, therefore stays with the holders instead of paying for part of the fill. A component that neither sends nor
-  receives anything is not read at all, not even for its balance: both amounts are the change in its required backing,
-  so both being zero means the requirement and the balance are unchanged and the invariant holds from before. A keep
-  mask therefore routes around a component whose `balanceOf` reverts as well as one whose `transfer` does (DA-14).
-- **executeRebalance(data, maxAmountsIn):** the same settlement, bounded. It reverts `RebalanceMovedOn` when the index
-  needs more of a component than the caller said it would deliver. The amounts are recomputed from `totalSupply()` in
-  the block that settles, and issue stays open through the notice and the auction, so anyone can enlarge a fill with a
-  dust issue between an executor's simulation and its transaction, then redeem again. An executor that sources from the
-  callback's arguments is unaffected, because `amountsOut` and `amountsIn` scale together and those arguments are the
-  authoritative figures; one that funded itself from an off-chain quote uses this overload (DA-13). The unbounded
-  `executeRebalance(data)` is unchanged.
+- **startRebalance(keepMask):** anyone, once `MIN_REBALANCE_INTERVAL` (7 days) has passed since the last settlement or
+  creation and no auction is live. A non-zero `keepMask`, and any start during the `REBALANCE_DELAY` hold-off after a
+  cancel or an unfilled auction, needs the factory owner or guardian (CR-I02, VR-04). The mask must fit the components
+  and may not keep all of them (`InvalidKeepMask`). Computes the band (section 3), refuses one narrower than `MIN_BAND`
+  (`BandTooNarrow`), stores it and opens `REBALANCE_DELAY` (2 days) of notice. `canStartRebalance()` is the whole
+  timing condition as one view, and answers false on an uninitialized clone (DA-22); `previewBand(keepMask)` is the
+  band a start would take, returned rather than refused when narrow.
+- **cancelRebalance():** factory owner or guardian. Clears the proposal. Cancelling a live auction holds strangers off
+  for `REBALANCE_DELAY` from the cancel; cancelling one that already expired only clears the stale proposal, and the
+  hold-off the expiry granted stands (VR-04).
+- **executeRebalance(data)** and **executeRebalance(data, maxAmountsIn):** during the `AUCTION_DURATION` (24 hours)
+  after the notice; the settlement of section 3.3. The bounded overload reverts `RebalanceMovedOn` when the index needs
+  more of a component than the caller will deliver, because the amounts are recomputed from `totalSupply()` in the
+  settling block and issue stays open, so anyone can enlarge a fill with a dust issue between an executor's simulation
+  and its transaction (DA-13).
 - **Views:** `components()`, `componentTokens()`, `componentCount()`, `previewIssue`, `previewRedeem`, `claimOf`,
-  `totalClaims`, `previewTarget(keepMask)`, `pendingRebalance()`, `currentMultiplier()`, `previewRebalance()`. The token
-  has no price function.
+  `totalClaims`, `previewBand(keepMask)`, `pendingRebalance()`, `currentLambda()`, `canStartRebalance()`,
+  `previewRebalance()`. There is no price function.
 - **Access:** `initialize` is callable only by `FACTORY` and only once; the implementation has initializers disabled.
-  `issue`, `redeem`, `redeemSkipping`, `startRebalance`, `cancelRebalance` and `executeRebalance` revert with
-  `NotInitialized` on anything but an initialized clone. A recipient can never be the zero address, the index itself,
-  its factory or its rule, and that includes a plain ERC-20 `transfer` or `transferFrom` of shares: shares sent to any
-  of those three could never leave, so the token refuses them with `InvalidRecipient` (CR-I01, RT-21).
-- **Reentrancy:** storage-based `ReentrancyGuard` on every function that mints, burns, pays a claim or changes a
+  `issue`, `redeem`, `redeemSkipping`, `startRebalance`, `cancelRebalance` and both `executeRebalance` overloads revert
+  `NotInitialized` on anything but an initialized clone. A recipient can never be zero, the hub itself or its factory,
+  and that includes a plain ERC-20 `transfer` or `transferFrom` of shares, since neither could ever move a share on
+  (CR-I01, RT-21).
+- **Reentrancy:** the storage-based `ReentrancyGuard` on every function that mints, burns, pays a claim or changes a
   rebalance: `issue`, `redeem`, `redeemSkipping`, `claim`, `startRebalance`, `cancelRebalance` and both
-  `executeRebalance` overloads. The ERC-20 entry points, `transfer`, `approve` and `permit`, are deliberately
-  unguarded, as section 5 says. The guard's namespaced slot reads as "not entered" when zero, so it works in a clone
-  without initialization.
-
-Invariant, for every component, forever:
-
-```
-token_i.balanceOf(index) >= floor(totalSupply * units_i / 1e18) + totalClaims[token_i]
-```
-
-Ceil-on-issue and floor-on-redeem mean rounding drift is at most one raw unit per call, always in favour of remaining
-holders. A claim is recorded only for an amount that stayed in the index, and because `floor(a) + floor(b) <= floor(a +
-b)`, burning shares always frees at least that much required backing, so claims never dilute anyone. A rebalance sends
-out exactly `floor(S * u / 1e18) - floor(S * n / 1e18)` of a shrinking component, so the invariant with the new units
-`n` holds if it held with the old units `u`, and the post-check enforces it for growing components. Nothing is computed
-from balances, so there is no share price to manipulate and no first-depositor attack. Donations only add surplus that no
-holder can redeem, and a rebalance executor cannot use it to cover part of a fill either: the settlement check asks for
-the whole of `amountsIn` on top of what the index held. That check is about backing, not value: what keeps a settlement
-from costing the holders is that the rule's targets are value-neutral at snapshot prices, which is why `IndexRule`
-rounds a share of value up into whole raw units and clamps it to that component's ceiling, so the basket a rebalance
-aims at is never worth less than the basket it replaces (DA-01, VR-03).
-
-### IndexRule (`src/IndexRule.sol`)
-
-A stateless, view-only contract the factory deploys in its constructor. It never moves funds.
-
-- **Prices:** dollars per 1e18 raw units of a token ("WAD prices", 1e18 = $1), from the Chainlink-shaped USD feed the
-  token's config names. One private `_price` is the whole path, and every caller takes it: the feed must be non-zero,
-  its answer positive, its `updatedAt` neither in the future nor older than that token's `maxStaleness`, and the feed's
-  and token's decimals at most 18. The feed's are read live on every call, so a repointed aggregator proxy is read at
-  its new scale. The token's are read live only by `checkConfig`, and `executeListing` reads them once more and records
-  them beside the config (`IIndexFactory.tokenDecimals`), bounded again on every use, so every later price uses the
-  record and the rule never calls a listed token to price it: a component whose contract stops answering is still
-  priced from its feed (RT-01). The decimals are pinned when the config is proposed, and `executeListing` refuses one
-  whose token's decimals moved since (`DecimalsChanged`), so the record changes only to what was on show during the
-  delay and the guardian's veto; `TokenDecimalsRecorded` announces each change (RT-23). The answer is scaled to WAD by
-  `answer * 10 ** (36 - feedDecimals - tokenDecimals)` and refused above `MAX_PRICE` (1e56, which puts one raw unit at
-  1e20 dollars — far past any real asset, and inside the 256-bit proof under "Overflow"). Nothing is special-cased:
-  WETH is an ordinary token with ETH/USD and ether's reference supply, and the rule reads no Uniswap contract at all.
-  A product of two feeds goes in `CompositeFeed`, not in the rule.
-- **Supplies:** a token's reference supply, and nothing else: the rule reads no supply live, and `checkConfig` refuses
-  a zero one. Zero used to mean the token's own `totalSupply`, read inside the snapshot, and the launch list gave wstETH
-  exactly that. `unwrap` burns wstETH and `wrap` mints it, and a third of its supply could be flash-borrowed for free,
-  so a stranger could unwrap around `startRebalance` and wrap back in one transaction: the snapshot saw a supply that
-  never existed, cleared `MIN_TURNOVER` on an index sitting on its rule and cut wstETH's target by a quarter, while the
-  mirror image held a due rebalance under the gate (the 2026-09-23 audit's CR-M01). The same held for any token anyone
-  can mint or burn: WETH, liquid-staking and restaking wrappers, vault shares, bridged and flash-mintable tokens, an
-  Xindex index. A config once also carried a list of excluded holders that the rule subtracted as live balances,
-  which failed the same way and went first (DA-10). A reference figure sits behind the listing timelock and the
-  guardian's veto, is refreshed through the same flow, and may move by at most `MAX_SUPPLY_CHANGE` (an order of
-  magnitude) a step (DA-18). With both figures always reference supplies, that bound has no switch of kind left to slip
-  through, where a change into or out of zero used to move the supply the rule read by any factor (CR-L03).
-- **Weights:** a market cap is `supply * price / 1e18`, floored at one wei; only ratios of caps matter, so the scale
-  cancels out. Uncapped: `cap_i / sum`. Capped (`src/libraries/Methodology.sol`, at least 5 components): market-cap
-  weights under a ceiling of 20% for every constituent but the largest, and for the largest a ceiling it earns by its
-  lead over the runner-up: 20% at a tie, rising linearly to the full 30% once its market cap is twice the second's.
-  Whatever a ceiling holds back is shared again by cap among the constituents still below theirs, one pass per
-  constituent at most; with five or more constituents the ceilings sum to at least 100% (exactly 100% at a tie), so
-  either a pass pins nothing or every weight sits on its ceiling and the whole is placed, and with four they could not,
-  which is why capped indexes need five. Both figures are ceilings, not allocations: a constituent whose market cap does
-  not reach its ceiling keeps its own weight, so five equal constituents weigh 20% each rather than
-  30/17.5/17.5/17.5/17.5 and the largest of twenty equal constituents weighs 5% rather than 30% (VR-01, 2026-09-21).
-  VR-01 left one step: in a top-heavy basket, where both leaders sit past their ceilings, a flat 30% for whichever
-  ranked first swapped ten points between two near-tied leaders on one wei of cap, and a one-basis-point price move put
-  a tenth of an on-methodology index up for auction from any address. The top ceiling now follows the lead, so at a tie
-  both leaders carry 20%, which one ranks first changes nothing, and a full ten-point shift takes a doubling of one
-  against the other (the 2026-09-23 audit's CR-L01; the owner's call the same day). A basket whose largest cap is at
-  least twice the second's — the Numbers model's, and every capped subset of the launch list, whose leaders are at least
-  4.9 times apart — is unchanged. The Numbers model writes rank 1 as a constant `0.3`, but every constituent it ships
-  sits far above it (top 1 is 64.7% of the model's basket) and its scale factor `0.7 / (1 - top1)` only makes sense
-  while the largest is being cut down, so the constant is a ceiling that always bound there rather than a decision about
-  a largest constituent below 30%; the workbook's tokens and scenario figures are illustrative, and
-  `test_VR01_theModelsWorkedExampleIsUnchanged` uses its caps only as a real top-heavy shape that both ceilings bind on.
-  Ties rank by position, which decides nothing any more: tied leaders carry the same ceiling. The Numbers model's closed
-  form gave ranks 3 and below no cap, so one of them could outweigh the first two: with caps in the ratio of WBTC, WETH,
-  LINK, UNI and tBTC in September 2026 LINK came out at about 35%, and it now pins at 20% (the audit's XA-04; the
-  owner's call on 2026-09-17). The app should show `weights(tokens, 1)` before a capped index is created.
-- **targetUnits(tokens, units, methodology, keepMask):** weights over all components; the components not kept share
-  their current value at snapshot prices by weight. A snapshot price is the same `_price` the display views take, with
-  the same checks: there is one price path and no looser display path, because nothing about a feed is
-  third-party-griefable and a looser view would only present a stale answer as if it were current. `price`,
-  `navPerToken`, `weights` and `initialUnits` therefore revert `StalePrice` during a feed outage rather than answering.
-  Kept components are not read at all under the uncapped methodology, whose weights renormalise them away; the capped
-  methodology reads them exactly like a component that trades, because a kept component's cap sits in the denominator
-  of every other component's weight, so an unread price there would reshape the targets and the turnover of the
-  components that do move (DA-06). A kept cap moves nothing while no ceiling binds, since every weight is then the
-  component's own; where one binds, it still decides which components the excess is shared with and how large the top
-  ceiling is (VR-02). Each target is clipped to
-  `[units / 2, units * 2]` (and below `MAX_TARGET_UNITS`, so the auction's premium still fits `uint96`). Each pass
-  shares the value not yet pinned among the components still free, by weight, and clips the shares: when the clips add
-  more value at the floors than they remove at the ceilings, the shares can only come down, so the components at their
-  floor are pinned there; otherwise those at their ceiling are. The rest are shared out again until a pass clips
-  nothing, at most one pass per component. A pinned component never moves again, so the result is the water-filling of
-  value by weight within the bounds: no component above its floor holds more value per unit of weight than one below its
-  ceiling. A weight that rounds to zero counts as one wei, so no clipped value is left unplaced. Every share is turned
-  back into units rounded up and clamped to that component's ceiling, so the targets buy back every wei the shrinking
-  components release and the target basket is never worth less than the basket it replaces: rounding them down left a
-  residue of up to one raw unit per component that nothing reallocated, and the index sent it out with nothing asked
-  back, because the settlement check verifies backing and not value (DA-01, VR-03). Returns the targets and the
-  turnover, the smaller of the value sold and the value bought as a share of the rebalanced value.
-- **checkConfig(token, config):** used by the factory before a listing or config change, and again by
-  `executeListing`. It requires a feed with code that answers `latestRoundData()` and `decimals()`, a `maxStaleness`
-  that is non-zero and at most `MAX_FEED_STALENESS` (2 days), a price that passes every check in `_price`, and a
-  non-zero reference supply. A feed with no code is `InvalidFeed`; one with code that is not an aggregator is refused
-  too, but with its own revert or none, since the rule cannot tell why a call into an arbitrary contract failed
-  (CR-I10). Two things it does not do. It cannot verify what a feed *is*: `description()` is a string the aggregator
-  returns, so an aggregator reporting the wrong asset, or one under someone else's control, passes every on-chain
-  check. The listing delay, the guardian's veto, the script logging each token's symbol beside its feed's
-  `description()` at propose time, and fork tests pinning both each shipped feed and which feed and staleness bound each
-  default entry names (CR-L08), are the whole defence, and a listing proposal should be read as a trust decision about
-  an address. And the supply is checked only for being non-zero and for staying within `MAX_SUPPLY_CHANGE` of the one
-  in force, so a figure stale or mistyped by less than that passes and drives its component toward its floor at the
-  next rebalance: a revised supply is worth reading again before the two days run out (DA-18). A token whose feed is
-  deprecated or stuck takes no config at all, and unlike a thin pool nothing recovers by itself — a replacement config
-  through the listing flow is the only way back. Nor does a token whose contract stops answering, since the check
-  reads its decimals; it needs none while its feed answers, because a keep mask routes around it (RT-01).
-- **navPerToken(index):** the value of one whole index token, `sum(units_i * price_i)`, as a single USD WAD. For an
-  uncapped index whose units follow the rule this equals the Numbers model's divisor price at every price; for a capped
-  index it is the basket's own value, which the divisor formula would misstate. Display only.
-- **initialUnits(tokens, methodology, startPriceUsd):** starting units that follow the rule at a chosen USD-WAD price, like the
-  model's 1,000. It reverts `StartPriceTooLow` when the price is so low that a component's units round away entirely,
-  rather than flooring that component at one raw unit and leaving the caller none the wiser (DA-09). The create flow
-  should aim well above that floor: one index token should be worth at least roughly 10,000 raw units of every
-  component, which for WBTC at 110k dollars is about 11 dollars a token and binds on nothing for an 18-decimal
-  component. The coarser the index token, the larger a share of it one raw unit of a component is.
-- **weights(tokens, methodology), weightsFromCaps(caps, methodology), price(token), supply(token):** the building blocks.
-
-### CompositeFeed (`src/CompositeFeed.sol`)
-
-An immutable, ownerless adapter that multiplies two `IAggregatorV3` feeds into one, so the rule can keep a single feed
-per token. WBTC is why it exists: there is no WBTC/USD feed, and BTC/USD times WBTC/BTC is both the price and the thing
-that prices a depeg of the wrapper against the coin it wraps. It reports
-`answer = a * b / 10 ** decimalsB`, `decimals()` of its first leg, `description()` as `"<A> * <B>"`, and `updatedAt` as
-the older of the two, with `roundId` and `answeredInRound` zero.
-
-Each leg carries **its own** staleness bound, given at construction, and a leg past it reverts `StaleLeg`. That is the
-point of the contract: the rule sees one `maxStaleness`, and that one number has to admit the slower leg, so a shared
-bound over `min(updatedAt)` would let a three-hour-stale BTC/USD pass under WBTC/BTC's 24.5-hour allowance. Reporting
-the older timestamp keeps the rule's own check meaningful on top. The adapter is deployed by `Deploy` on chain 1,
-logged as `WBTC_FEED` with its code hash, and checked by `ConfigureWhitelist` before it is proposed: its executable
-code, immutables included, must be that of an adapter the script builds in its own simulation with the policy legs
-and bounds. Reading its getters was not enough, because a proxy whose implementation was a genuine adapter answered
-every one of them and let its controller reprice WBTC afterwards (CR-L04). The comparison leaves out the compiler's
-metadata, so an adapter deployed from an earlier commit still matches when only comments changed. It is outside the
-protocol's ABI set: a config points at it, nothing calls it.
+  `executeRebalance` overloads. Its namespaced slot reads as "not entered" when zero, so it works in a clone without
+  initialization. The ERC-20 entry points are deliberately unguarded.
 
 ### IndexFactory (`src/IndexFactory.sol`)
 
-- The constructor takes the owner and the guardian, deploys the rule, then deploys the `IndexToken` implementation
-  pointing at the rule. It takes no market addresses: the rule and the factory depend on no Uniswap contract, and the
-  only reason the whole stack is new rather than upgraded is that the rule is built here and held immutably.
-- `createIndex(name, symbol, tokens, units, methodology)`: permissionless. Validates non-empty name and symbol, `1..20`
-  components, matching lengths, every token whitelisted, no duplicates, `0 < units <= 2^96-1`, a known methodology, and
-  at least 5 components for the capped methodology. Deploys the clone with CREATE2 from a salt over the creator, name,
-  symbol, tokens, units and methodology, registers it (`isIndex`, `creatorOf`, `allIndexes`), emits `IndexCreated`, then
-  initializes it, all in one transaction. Name and symbol are only required to be non-empty, so two indexes can present
-  identically in an app or a block explorer while holding different baskets; the salt commits to both, so their
-  addresses differ, and an app must identify an index by its address and `creatorOf` rather than by what it calls
-  itself (DA-23).
-- `predictIndexAddress(creator, name, symbol, tokens, units, methodology)`: the address `createIndex` will use.
-- Listings and token configs take two steps. `proposeListing(token, config)` (owner only; the token must be a contract
-  with no live proposal, and the rule must accept the config) starts `LISTING_DELAY` = 2 days; for a listed token it
-  proposes a config change. `proposeConfig(token, config)` does the same for a token that was listed before, listed or
-  delisted, but never whitelists it, so a delisted token's config can be refreshed for the indexes still holding it.
-  `executeListing(token)` is permissionless from then until `PROPOSAL_WINDOW` = 7 days later; it applies the config and,
-  for a `proposeListing` proposal, whitelists the token if needed (`pendingIsListing` tells which). A config comes into
-  force when someone executes it, not at its eta, so between the two whoever acts first decides which of two reviewed
-  configs prices a snapshot or a settlement: a stranger can execute a due config and start a rebalance in one
-  transaction, a filler can execute one and settle, and either can leave it unexecuted instead. Both configs passed the
-  delay and the veto, so the effect is bounded by how far they disagree, but it is not nothing (CR-I09): execute a
-  config change at its eta, and do not let one fall due inside the notice or auction of an index holding the token. The
-  owner and the guardian can `cancelListing` a pending or expired proposal and `delist` a token; delisting is immediate,
-  never affects existing indexes, keeps the config those indexes still rebalance with, and cancels a pending
-  `proposeListing` proposal, so relisting always takes a fresh proposal and delay. `executeListing` runs the rule's
-  `checkConfig` again on the stored config before applying it, so a feed that went stale or was deprecated during the
-  notice is not whitelisted on a check up to nine days old (DA-11). The griefing half of that finding is gone rather
-  than re-targeted: a pool could be held thin by a third party, and a live feed cannot be. A proposal also pins the
-  token's decimals (`pendingTokenDecimals`), and `executeListing` records them as `tokenDecimals`, which the rule prices
-  the token with, or reverts `DecimalsChanged` if the token reports others by then, so the record changes only to what
-  was on show during the delay; `TokenDecimalsRecorded` marks each change (RT-23).
-- A proposal that passes its `PROPOSAL_WINDOW` is dead but leaves `listingEta`, `pendingGuardian` and
-  `pendingGuardianEta` set, so those storage reads alone say "pending" forever; `listingPending(token)` and
-  `guardianChangePending()` are the views that answer whether a proposal can still be executed, and operators should
-  watch those (DA-16).
-- Guardian changes take `GUARDIAN_DELAY` = 7 days, as in v1. `isOwnerOrGuardian(account)` tells indexes who may cancel a
-  rebalance or pass a keep mask. Ownership itself moves in OpenZeppelin's two steps, `transferOwnership` and then
-  `acceptOwnership` by the new owner: it takes effect the moment the new owner accepts, and it is the one admin change
-  with no delay and no guardian veto. `renounceOwnership` always reverts.
-- Neither role can pause, upgrade, set units or prices, or touch funds held by any index.
+- The constructor takes the owner and the guardian and deploys the `IndexHub` implementation. It takes no market
+  address: the factory and the hub depend on no Uniswap contract and no price source.
+- **Reference supplies.** `referenceSupply(token)` is the supply in force, in the token's raw units: the supply of what
+  the token represents (bitcoin's for WBTC, ether's for WETH), from 1 to `MAX_SUPPLY` (`uint128.max`). Zero means never
+  listed. It stays after delisting, because existing indexes still rebalance with it. `referenceSupplies(tokens)` reads
+  several at once from storage; no call reaches a token, so no transaction can move a supply the hub reads (CR-M01).
+- **Listing.** `proposeListing(token, supply)`, owner only: the token must have code (`NotAContract`), must not be
+  listed (`AlreadyListed`), must have no live listing (`ListingPending`) and must not be in the live supply batch
+  (`TokenInBatch`). A token that carried a supply before, as a delisted one does, is relisted only at that supply
+  (`RelistChangesSupply`); a first listing is bounded only by `MAX_SUPPLY`. Relistings execute one token at a time, so
+  one that moved a supply would let a stranger split a uniform revision into halves that each open a band; a batch,
+  which delisted tokens join like any other, is the only way to revise a supply (SA-02, extending DA-18 and CR-L03). `executeListing` is permissionless from `eta =
+  now + LISTING_DELAY` (2 days) for `PROPOSAL_WINDOW` (7 days); it sets the supply and whitelists the token.
+  `cancelListing` and `delist` are owner or guardian; delisting is immediate and affects only indexes created
+  afterwards.
+- **Supply batches.** `proposeSupplies(tokens, supplies)`, owner only: 1 to `MAX_BATCH` (200) tokens in strictly
+  ascending address order (`InvalidBatch`), each already carrying a supply (`NotConfigured`) and none with a live
+  listing, each new supply from 1 to `MAX_SUPPLY` and within `MAX_SUPPLY_STEP` (0.5%) of the one in force:
+  `|new − old| ≤ ⌊old × MAX_SUPPLY_STEP / 1e18⌋` (`SupplyStepTooLarge`). One batch is live at a time
+  (`SuppliesPending`; an expired one is replaced). `executeSupplies` is permissionless from `eta` for `PROPOSAL_WINDOW`
+  and puts every supply in force at once; `cancelSupplies` is owner or guardian. The batch is atomic because a stranger
+  who could execute half of it and start a rebalance on the half would turn a uniform revision, which trades nothing,
+  into a trade. While a batch is live, nothing else can change the supplies it was checked against: a listing is
+  refused for a token in it, and it was refused for a token with a live listing.
+- **Creation.** `createIndex(name, symbol, tokens, k)`, permissionless: non-empty name and symbol, 1 to
+  `MAX_COMPONENTS` (100) whitelisted tokens with no duplicates, and `units_i = ⌊k × referenceSupply_i / K_SCALE⌋` with
+  `K_SCALE = 1e36`, each in `[MIN_RAW_UNITS, MAX_UNITS]` = `[10,000, (2^96 − 1) >> 10]` (`UnitsOutOfRange`). The floor
+  is DA-09's granularity rule: a coarser component would make one raw unit a large share of it. The ceiling leaves a
+  2^10 margin below `uint96` for units to grow through about 690 full-band rebalances. The clone is deployed with
+  CREATE2 from a salt over the creator, the name, the symbol, the tokens and the **computed units**, registered
+  (`isIndex`, `creatorOf`, `allIndexes`), announced (`IndexCreated`) and initialized in one transaction. A batch
+  executed between a preview and the creation changes the units and so the address, never the basket at an address.
+  `previewUnits(tokens, k)` and `predictIndexAddress(creator, name, symbol, tokens, k)` read the supplies in force.
+- **Guardian and ownership.** Guardian changes take `GUARDIAN_DELAY` (7 days) and expire after `PROPOSAL_WINDOW`; the
+  guardian can cancel a change that would remove the role, not one that replaces it. `isOwnerOrGuardian(account)` tells
+  hubs who may cancel or pass a keep mask. Ownership moves in OpenZeppelin's two steps and takes effect the moment the
+  new owner accepts: the one admin change with no delay and no guardian veto. `renounceOwnership` always reverts. An
+  expired proposal leaves `listingEta`, the batch's eta, `pendingGuardian` and `pendingGuardianEta` set, so
+  `listingPending(token)`, `suppliesPending()` and `guardianChangePending()` are the views that say whether one can
+  still run (DA-16).
+- Neither role can pause, upgrade, set units, or touch funds held by any index.
 
 ### IndexZap (`src/IndexZap.sol`)
 
-The user-facing convenience layer. Stateless, ownerless, holds no funds between transactions. It is the only contract
-here that knows about Uniswap.
+v3's user-facing convenience layer, unchanged but for its recipient check, which no longer names a rule. Stateless,
+ownerless, holds no funds between transactions, and the only contract here that knows about Uniswap.
 
 - `mintWithToken(MintParams{index, expectedNonce, tokenIn, maxAmountIn, shares, legs, to, deadline})` and
-  `burnToToken(BurnParams{index, expectedNonce, shares, tokenOut, minAmountOut, legs, to, deadline})` work as in v2:
-  route endpoints validated, per-leg limits, balance-measured accounting, shortfalls reverted, `issue` as the final
-  interaction of a mint. A leg's `minAmountOut` applies to its last hop's output. The leg whose component is already
-  the mint's `tokenIn` or the burn's `tokenOut` carries no swap, and it honours its own limit too, `maxAmountIn`
-  against what `issue` needs and `minAmountOut` against what `redeem` returns, so every leg means what its NatSpec says
-  (DA-15).
-- **One venue per leg.** `MintLeg {bytes v3Path; PathKey[] v4Path; uint256 maxAmountIn}` and the matching `BurnLeg`
-  carry exactly one non-empty route, or `BadRoute(i)`; both empty is valid only for the pass-through leg. There are no
-  mixed-venue legs. A V3 route is validated with `PathLib` as before. A V4 route must be hookless — `hooks` zero and
-  `hookData` empty — because a hookless key cannot carry the dynamic-fee flag either, so one equality subsumes the flag
-  bits and the fee test; only the endpoint the zap does not already imply is checked, since `currencyOut` on a mint and
-  `currencyIn` on a burn are the component. `address(0)` is native ether and may appear only as an intermediate, which
-  is how every live V4 pool for these components is paired; the zap has no `receive()`, so ether never reaches it.
-- **Every command is the zap's own.** Each swap is one `ROUTER.execute(commands, inputs)` built here and nothing a
+  `burnToToken(BurnParams{index, expectedNonce, shares, tokenOut, minAmountOut, legs, to, deadline})`: route endpoints
+  validated, per-leg limits, balance-measured accounting, shortfalls reverted, `issue` as the final interaction of a
+  mint. The leg whose component is already the mint's `tokenIn` or the burn's `tokenOut` carries no swap and honours
+  its own limit too (DA-15). `burnToTokenWithPermit(BurnParams, v, r, s)` runs the same checks before the permit.
+- **One venue per leg.** A `MintLeg` or `BurnLeg` carries exactly one non-empty route, a packed `v3Path` or a
+  `PathKey[] v4Path`, or `BadRoute(i)`; both empty is valid only for the pass-through leg. A V4 route must be hookless
+  (`hooks` zero and `hookData` empty), which also rules out the dynamic-fee flag. `address(0)` is native ether and may
+  appear only as an intermediate; the zap has no `receive()`.
+- **Every command is the zap's own.** Each swap is one `ROUTER.execute(commands, inputs)` built here, and nothing a
   caller supplied is forwarded, because the router's command set includes `TRANSFER` and `PERMIT2_TRANSFER_FROM`, which
-  move a payer's funds: passing calldata through would hand a caller the router's permissions. The four commands the
-  zap emits, with the input layout of each, are vendored in `src/libraries/UniversalRouterCommands.sol`, and the V4
-  actions in `src/libraries/UniswapV4Types.sol`, from the commit the pinned router was built against. A mint leg is
-  `V3_SWAP_EXACT_OUT, SWEEP` or `V4_SWAP, SWEEP`; a V3 burn hop is `V3_SWAP_EXACT_IN, SWEEP`; a V4 burn leg is
-  `V4_SWAP, SWEEP`. V4 legs settle and take with `OPEN_DELTA` so the leg moves exactly what the swap moved and leaves
-  the unlock nothing to revert on. The zap never emits `CONTRACT_BALANCE` or the recipient sentinels: every amount it
-  encodes is one the index asked for. Nor does it ever encode a swap amount of zero, which the pinned V4 router also
-  reads as `OPEN_DELTA`, "the full debt" on an exact output: a burn leg that redeems nothing is skipped, and a mint leg
-  always needs at least one raw unit, because every component's units stay at least one (CR-I05).
+  move a payer's funds. The commands and V4 actions are vendored, with their input layouts, in
+  `src/libraries/UniversalRouterCommands.sol` and `src/libraries/UniswapV4Types.sol` from the commits the pinned router
+  was built from. A mint leg is `V3_SWAP_EXACT_OUT, SWEEP` or `V4_SWAP, SWEEP`; a V3 burn hop `V3_SWAP_EXACT_IN,
+  SWEEP`; a V4 burn leg `V4_SWAP, SWEEP`. The zap never encodes a swap amount of zero, which the pinned V4 router reads
+  as "the full debt": a burn leg that redeems nothing is skipped, and every component's units stay at least one, so a
+  mint leg always needs at least one raw unit (CR-I05).
 - **Pre-fund and sweep, not Permit2.** The zap sends the router what a leg may spend and appends `SWEEP` back to itself
-  in the same `execute`, so the router is never left holding anything and there is no standing allowance to reset. The
-  sweep's minimum is zero, so it checks nothing and can never come up short (CR-I14): what bounds a leg is the pre-fund,
-  because the router can pay out only what it holds, and what checks it is the zap's own balance measurement, with
-  `ShortFill` on a mint. The pre-fund is the operative bound rather than a backstop. The pinned V4 router compares
-  `amountInMaximum` with the last hop it executed only, so an exact-output route that passes back through `tokenIn`
-  could otherwise spend past it (upstream v4-periphery #564, fixed after the pin); a pre-fund of exactly the leg's cap
-  is what holds it (CR-I06). Never approve the router or pre-fund more than a leg's cap. What is left outside the
-  reasoning is a `tokenIn` that calls back mid-transfer, which is unsupported alongside fee-on-transfer currencies.
-- **`ShortFill` is load-bearing.** After a mint leg the zap checks the component balance it actually gained against
-  what the index needs, because the pinned V4 periphery does not itself check that an exact-output swap delivered.
-  Without it a short fill would surface as an opaque failure inside `issue`.
-- **Burn legs differ by venue.** A V3 leg is swapped one hop at a time, so the unsold input of any hop, not only the
-  first, goes to the recipient with `ComponentReturned`, and a hop that sells nothing reverts with
-  `InsufficientOutput` rather than leaving the next hop to spend the zap's balance. A V4 leg is a single multi-hop
-  action, because inside one action an intermediate partial fill leaves an unsettled delta and the leg reverts
-  atomically, unless that hop's input is the component or `tokenOut` again: a route that revisits the component nets
-  the leftover against the leg's own debt, and `SWEEP` returns it, while leftover `tokenOut` joins the take (CR-I07).
-  So only the first hop of a route that revisits neither can leave unsold input, which `SWEEP` returns and the zap
-  forwards. Unsold `tokenOut` stays in the zap and is paid out with the rest either way. What a hop returns is measured
-  as what its sweep brought back, which includes any balance of that token the router already held: a stray larger than
-  the hop's sale used to underflow the old arithmetic, so anyone could revert a public burn by donating to the router
-  and sweeping the donation back afterwards (CR-L02). A stray now simply reaches the recipient.
+  in the same `execute`, so the router is never left holding anything and no allowance survives a call. The pre-fund
+  is the operative bound on a leg's spend, because the pinned V4 router does not hold an exact-output route that
+  revisits `tokenIn` to its `amountInMaximum` (upstream v4-periphery #564; CR-I06, CR-I14).
+- **`ShortFill` is load-bearing.** After a mint leg the zap checks the component balance it gained against what the
+  index needs, because the pinned V4 periphery does not itself check exact-output delivery.
+- **Burn legs differ by venue.** A V3 leg is swapped one hop at a time, so every hop's unsold input goes to the
+  recipient with `ComponentReturned`, and a hop that sells nothing reverts. A V4 leg is one action, where an
+  intermediate partial fill leaves an unsettled delta and the leg reverts atomically, so as a rule only its first hop
+  can leave unsold input; a route that comes back to the component can leave some from a later hop too (CR-I07). What
+  a hop returns is measured as what its sweep brought back, a stray router balance included, so a stray can never
+  revert a burn (CR-L02).
 - `expectedNonce` is the index's `rebalanceNonce` when the legs were quoted, checked on entry and again right before
-  `issue`. A rebalance in between reverts the call with `StaleRebalanceNonce` instead of buying or selling a different
-  basket.
-- `burnToTokenWithPermit(BurnParams, v, r, s)` runs the same checks before the permit.
-- The zap never calls `redeemSkipping` or `executeRebalance`.
+  `issue`, so a rebalance in between reverts the call with `StaleRebalanceNonce` instead of buying a different basket.
+- Recipients: zero, the zap, the index, the Universal Router, the PoolManager and the factory are refused (RT-21).
+- The zap never calls `redeemSkipping` (the claim would be booked to the zap) or `executeRebalance`.
 - **Swap failures arrive unwrapped.** The Universal Router wraps a command in `ExecutionFailed` only when it dispatched
-  it with a low-level call, and swaps are internal calls, so the caller sees the pool's own revert:
-  `V3TooMuchRequested`, `V4TooLittleReceived` and their neighbours. Verified against the pinned deployment on a
-  mainnet fork, which is why `IUniversalRouter` does not declare `ExecutionFailed` at all.
+  it with a low-level call, and swaps are internal calls, so the caller sees the pool's own revert, verified against
+  the pinned deployment on a fork.
 - **Pinned to Universal Router 2.0.0** (`0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af`), not the 2.1.x line, whose
-  command inputs carry an extra per-hop price array and which shipped a change its own authors later reverted. The zap
-  reads `POOL_MANAGER` from the router's own `poolManager()` rather than taking it as an argument, so the two can never
-  be wired to different deployments. Moving to a newer router means a new zap; the token, rule and factory do not
-  depend on it.
+  command inputs carry an extra per-hop price array. The zap reads `POOL_MANAGER` from the router's own
+  `poolManager()`, so the two can never be wired to different deployments.
+- **Scale.** The zap costs 265k to 430k gas per component (v3's fork measurement at 20 components, CR-I08), so
+  EIP-7825's 2^24-gas transaction cap stops it at 39 to 63 components; the app offers it up to about 35. Larger
+  indexes are minted and redeemed in kind.
+
+### MintRequests (`src/MintRequests.sol`)
+
+An ownerless escrow for people who hold a stablecoin and want shares without swapping a basket, or the reverse. A
+requester escrows USDC or USDT for at least `minShares` shares of a factory index (`requestMint`), or shares for at
+least `minOut` of a stablecoin (`requestRedeem`), fillable until a deadline at most `MAX_REQUEST_DURATION` (30 days)
+away. Anyone fills by sending the requester what they asked for, and takes the escrow; the requester cancels at any
+time, and anyone refunds the escrow to the requester after the deadline.
+
+The contract reads no price: the requester's own limit is the valuation, and the app suggests it. Three rules keep the
+escrow exact:
+- An escrow is the balance increase its request caused, so a USDT fee switched on at any time can never leave the last
+  refund short.
+- A fill must raise the requester's balance by at least the limit, measured where it lands, so a fee comes out of the
+  filler's delivery rather than the requester's limit.
+- Each request is closed before any token moves.
+
+Fillers pay requesters directly, the contract never calls `approve`, and every entry point shares one reentrancy
+guard. It has no owner and nothing to configure, so tokens sent to it outside a request stay there. The invariant suite
+(`test/MintRequests.invariant.t.sol`) drives requests, fills, cancels, refunds, donations and Tether's fee switch in any
+order. It holds the contract's balance of each token at exactly its open escrows plus donations, and no requester ever
+below their limit. `test_mintRequestsWithTheRealStablecoins` repeats the fee cases against mainnet USDT on a fork.
 
 ### PathLib (`src/libraries/PathLib.sol`)
 
 Decodes Uniswap V3 packed paths (`token(20) | fee(3) | token(20) ...`): shape check, first token, last token. V4 routes
 are typed `PathKey[]` and need no decoding.
 
-## 3. Flows
+## 3. The λ band auction
 
-**Create.** The app calls `IndexRule.initialUnits(tokens, methodology, startPrice)` so the index starts on its rule at
-the chosen price, shows `predictIndexAddress`, and calls `createIndex`. The start price should leave one index token
-worth at least roughly 10,000 raw units of every component, about 11 dollars for an index holding WBTC at 110k; below
-that a rebalance moves only a few raw units of the coarsest component, and the rounding that protects holders starts to
-cost the auction its margin. Creator-chosen units also work; the first rebalances then move them toward the rule, even
-when each step trades less than `MIN_TURNOVER` (RT-04), at most halving or doubling the target each time (a fill at
-the 1.5 opening multiplier settles a growing component at up to 2.5 times its units, plus one raw unit, because the
-growth rounds up: a component held at one raw unit can settle at three, CR-I03).
+Units proportional to supplies make prices cancel out of the weights, so a market-cap index never has to trade when
+prices move. It trades only when a reference supply changes. The auction below moves the units back to proportional,
+and its worst case is a number of the band alone, whatever prices do. Notation: `u_i` a component's units, `f_i` its
+reference supply in force, `M` the moving components (all but the kept ones), `WAD = 1e18`, `STEP = MAX_SUPPLY_STEP =
+0.005e18`.
 
-**Mint with a stablecoin.** Pick a venue per leg, quote it (`QuoterV2.quoteExactOutput` for V3, the V4 Quoter for V4),
-set per-leg and overall limits, read `rebalanceNonce()`, and call `mintWithToken`. Exact shares are minted; unspent
-stable is refunded. Neither contract nor script prefers a venue: the app decides, and V3 and V4 depth for the same pair
-move independently.
+### 3.1 Start: the band
 
-**Burn to any token.** Quote each leg the same way in the exact-input direction, set per-leg minimums and a non-zero
-overall minimum, pass `rebalanceNonce()`, and call `burnToToken` or `burnToTokenWithPermit`.
+`startRebalance(keepMask)` reads `f_i` for the moving components only (a kept component is not read at all) and
+computes, with `ρ_i = u_i / f_i` the units held per unit of supply and `a` the first moving component:
 
-**Rebalance.**
-1. After 28 days anyone calls `startRebalance(0)`; the app offers a "rebalance due" button. The index snapshots the rule's
-   targets. Nothing changes for 2 days, and holders who disagree can leave in kind. The notice is the window for it:
-   during the auction an executor can order its fill ahead of a public redeem (RT-02, under "Start above par, end
-   below").
-2. The auction runs for 24 hours. An executor contract calls `executeRebalance`, receives the shrinking components,
-   swaps them wherever it likes, and must return the growing components before its callback returns. Executors are
-   untrusted; the post-check is the only thing that matters. The callback's `amountsOut` and `amountsIn` are the
-   authoritative figures, since they are recomputed from the supply in the settling block and issue stays open
-   throughout; an executor that sizes itself from an earlier simulation should use a private relay and pass
-   `maxAmountsIn`, which turns a settlement that has outgrown its funding into an explicit `RebalanceMovedOn` rather
-   than a fill that reverts underfunded after the transfers.
-3. With competition, the fill lands near the fair multiplier, the value of the sold legs over the value of the bought legs
-   at execution prices, minus swap costs. Without competition, an executor waits until the multiplier reaches 0.9 and
-   keeps 10% of the bought value at the snapshot's own prices, plus whatever the market moved between the snapshot and
-   the fill. The band bounds the multiplier, not that drift, and up to three days lie in between; on crypto
-   constituents the drift can be the larger term by far. It cuts both ways: as often it makes the fill unattractive, and
-   then the auction simply expires.
-4. If nobody fills, the auction expires. For the next two days only the owner and guardian can start a fresh one; after
-   that anyone can again. A snapshot whose prices are distorted so that even 0.9 does not pay an executor is never
-   filled, and without that wait a griefer could win the start at every expiry and stall an index. The wait hands the
-   first restart to the owner and guardian, and the cost is that an honest restart after an expiry also waits those two
-   days unless one of them starts it. With Chainlink prices and every supply a timelocked reference figure, a stranger
-   cannot distort a snapshot in the first place, and the wait guards against a stranger restarting at a moment that
-   merely suits it, which is the half of XA-02 that survives. That claim was first made while wstETH was still weighed
-   on its live supply, which a stranger could move by unwrapping flash-borrowed wstETH around the start (CR-M01); it
-   holds since every token carries a reference supply.
+```
+R_i  = mulDiv(u_i · f_a, WAD, f_i · u_a)                     rounded down; R_i / R_j = ρ_i / ρ_j
+c    = (min R + max R) / 2                                   rounded down
+r_i  = clamp( mulDiv(R_i, WAD, c),  WAD − STEP,  WAD + STEP )   rounded down, stored as uint64
+λmax = max r,   λmin = min r
+```
 
-**Rebalance while a component is frozen.** A paused component that has to move makes the fill revert. The guardian
-cancels and starts again with that component's bit in `keepMask`: it keeps its units, the other components share their
-own value by the rule's weights, and the fill never touches the frozen token. The settlement does not read it either,
-not even for its balance, so the mask also routes around a component whose `balanceOf` reverts (DA-14). The rule is the
-narrower part: under the uncapped methodology a kept component's feed is not read at all, but under the capped
-methodology it is read like any other, because its cap scales every other component's weight. A keep mask on a capped
-index therefore routes around a token that cannot be transferred, not around one whose feed is stale (DA-06). The
-token itself is never called, since its decimals come from the listing record, so a capped keep mask also routes
-around a component whose contract stops answering altogether, as one behind a withdrawn proxy implementation (RT-01).
+Anchoring on `a` cancels `a`'s own figures exactly, and keeps the products in range: `u < 2^96` and `f ≤ 2^128`, so
+`u · f < 2^224`, and `mulDiv` works in 512 bits. The start reverts `BandTooNarrow(λmin, λmax)` when
+`λmax · WAD < λmin · (WAD + MIN_BAND)`, with `MIN_BAND = 0.001e18`: every moving component's units already follow its
+supply to within rounding. That covers no supply changing, every supply changing alike, and a single moving component.
+`MIN_BAND` is ten times the widest rounding gap between two freshly anchored components held at 10,000 raw units (one
+raw unit in 10,000), and a tenth of the widest band.
 
-**Exit while a component is frozen.** `redeemSkipping` with that component's bit set pays everything else now and records
-the frozen amount as a claim for the recipient; `claim` pays it to that same account once transfers resume. A router
-redeeming on a holder's behalf therefore leaves the claim with the holder it paid, not with itself.
+### 3.2 The auction: λ(t)
 
-**Index price.** `IndexRule.navPerToken(index)` returns the basket's value in dollars from the same feed prices a
-snapshot uses. A burn instead sells at pool prices, after rounding down and swap costs, so its proceeds can differ,
-especially while prices move fast; a feed moves in the steps it publishes, so between two rounds the two can disagree
-by up to the feed's deviation threshold before anything is wrong. It reverts `StalePrice` during a feed outage rather
-than showing a stale figure as current, so an app needs a "price unavailable" state.
+After `REBALANCE_DELAY` (2 days) of notice, from `eta` to `eta + AUCTION_DURATION` (24 hours):
 
-**Direct.** Anyone holding the components can `issue`, and any holder can `redeem`, `redeemSkipping` and `claim`, without
-the zap.
+```
+λ(t) = λmax − ⌊(λmax − λmin) · (t − eta) / AUCTION_DURATION⌋
+```
 
-**Trade.** An index is a normal ERC-20 and can be transferred or pooled on any DEX. The burn path is the guaranteed exit.
+The decrement rounds down, so λ rounds up, towards the holders. `currentLambda()` returns it, and 0 outside an auction.
 
-## 4. Key design decisions and rationale
+### 3.3 Settlement
 
-**In-kind core, swap layer on top.** Splitting custody (token) from convenience (zap) keeps the part that holds funds
-small and admin-free. The swap layer can be replaced without touching any index.
+For every moving component, at `λ = λ(t)` and `S = totalSupply()` in the settling block:
 
-**The rule runs on-chain; no key rebalances.** Market caps need supplies and prices. Supplies are reference figures, one
-per token behind the listing timelock (wrapped and bridged assets carry the supply of what they wrap, whose on-chain
-supply is only the wrapped float), because a supply read live can be moved inside the transaction that snapshots it
-(CR-M01); and Chainlink publishes prices without any operator of ours. A keeper bot would have made a hot key the thing
-that shapes every basket; here the only roles stay the owner Safe and the guardian, and the trigger is permissionless.
+```
+u'_i  = ⌈λ · u_i / r_i⌉                                      kept components keep u_i
+out_i = ⌊S·(u_i − u'_i)/1e18⌋             when u'_i < u_i    (the index pays the executor)
+in_i  = ⌈S·(u'_i − u_i)/1e18⌉             otherwise          (the executor pays the index)
+```
 
-**Value-bearing amounts stay oracle-free.** Prices choose each basket's shape and gate the settlement, and never size
-an amount. Issue, redeem, claim and the settlement itself move amounts derived from supply and units, and the
-post-check reads balances only to verify. What prices do reach inside the settlement is its value check (DA-05): both
-sides are valued at feed prices in the settling block and a fill worth less than `MIN_SETTLEMENT_RATIO` of what it
-takes is refused, so a settlement can stall on a stale feed on a leg that moves even though no amount it moves depends
-on a price. Earlier text called the whole step oracle-free, which it has not been since DA-05 (CR-I11). An uncapped
-index already on target ignores price readings altogether, because its targets are proportional to supplies; a capped
-index reacts to prices only within the per-rebalance clip.
+A component whose ratio is above λ shrinks; one below λ grows. Each leg's change in backing is rounded the holders' way
+on its own, down when it leaves and up when it comes back, so the amounts come from supply and units alone, and the
+index never pays out rounding dust or a donation. As a difference of floored backings, a shrinking leg of a sub-token
+index could release a whole raw unit for a fraction of one while no growing leg asked for any, paying an executor that
+delivered nothing (SA-07). The invariant survives the rounding, since `⌊a − b⌋ ≤ ⌊a⌋ − ⌊b⌋` and
+`⌊a + b⌋ ≤ ⌊a⌋ + ⌈b⌉`. If no `out_i` is non-zero
+at `λ(t)`, as on an empty index or one so small that every shrinking leg rounds to zero, the settlement is taken at
+`λmax` instead, where nothing shrinks, so the units never depend on timing when nothing is paid for (R14, XA-27).
 
-**The auction scales only the bought legs.** An earlier draft scaled the whole basket, which let a lone executor keep a
-share of the entire index every month. Scaling only the growing components' extra units ties the executor's take to the
-turnover: on the Numbers model's own rebalance (3.7% turnover), simulated monthly, a lone executor takes 0.37% to 0.48% of
-the index on average instead of 5%.
+In order: check the window and, for the bounded overload, `maxAmountsIn`; read what the index holds of every component
+that moves (a component with neither an `out` nor an `in` is not read at all, not even for its balance, DA-14); write
+the new units, bump `rebalanceNonce`, set `lastRebalance`, clear the proposal, emit `Rebalanced`; send each `out_i` to
+`msg.sender`; call `IRebalanceExecutor.onXindexRebalance(amountsOut, amountsIn, data)` on it; then require, for every
+moving component, a balance of at least the larger of `⌊S·u'_i/1e18⌋ + totalClaims` and what it held before, less
+`out_i`, plus the whole of `in_i`. Surplus the index already held, from rounding or a donation, therefore stays with the
+holders instead of paying for part of the fill (`RebalanceUnderfunded`).
 
-**Start above par, end below.** Starting at 1.5 means an executor first has to deliver more value than it takes, so a
-competitive fill finds the fair multiplier; a windfall needs the bought legs to lose a third of their value against the
-sold legs within three days, or a snapshot price that was already off by that much. A snapshot price read low by a
-factor f on a component the rebalance sells, or high on one it buys, sets the fair multiplier to about 1/f, so the
-snapshot itself has to be guarded: see the price checks under `targetUnits`. Ending at 0.9 covers swap costs and
-ordinary drift. Replayed on the default capped basket against 26 months of Chainlink answers and exchange prices, with
-a snapshot every hour, 0.4% to 0.5% of auctions expire unfilled, every one because the bought legs rallied more than
-about 10% against the sold legs; the settlement check below refused none of them. The 5% this paragraph used to quote
-came from a synthetic medium-volatility simulation that predates both that check and the move to feeds (the 2026-09-23
-audit's measurement, CR-I18). The band bounds the multiplier on the bought legs and nothing else. Up to three days
-separate the snapshot from the fill, two of notice and one of auction, and the settlement trades at the snapshot's
-relative prices however far the market has moved since. Settlement therefore values both sides again in its own block,
-at the same feed prices, and requires what the index receives to reach `MIN_SETTLEMENT_RATIO` (0.875) of what it pays
-out: the auction's own floor, with 2.5% for the gap between a published price and the spot an executor trades at. The
-test is a ratio between the two sides, so a market-wide move reprices both together and passes; only drift between the
-legs sold and the legs bought can fail it. It can refuse a settlement, never enlarge one: against drift it mostly moves
-a lone executor's fill earlier in the auction, to a multiplier the drift has not eaten, and what it refuses outright
-expires unfilled and comes back as a fresh snapshot (DA-05). What it bounds is the executor's take at feed prices, at
-12.5% of what the index pays out. At market prices the take moves by however far the answers sit from the market on
-the traded legs, and the deviation thresholds do not bound that: during a fast move an answer trails the market by a
-minute or two and by more than its threshold. The allowance was 5% until 2026-09-23, kept on the reasoning that a
-feed's 0.5–2% threshold bounds its distance from the market. The audit replayed the default basket and found that at
-0.85 a lone executor kept more than 15% of the traded value at market prices in about 4% of auctions, up to about 21%,
-while no ratio up to 0.9 refused a competitive fill; at 0.875 more than 15% is taken in about 0.04% (CR-L06). The
-notice period is what makes this a choice rather than a surprise, since holders who dislike the snapshot can leave in
-kind during it, and the guardian can cancel a snapshot the market has overtaken. Once the auction is live, neither is
-reliable when sent in the open: the fill can land in any block of the auction, whoever holds shares in that block pays
-its haircut, and an executor watching the mempool can order its fill ahead of a redeem or a cancel. The exiting holder
-then pays the same per-share take as every other holder, so no bound above moves, but the escape is lost; a nonce
-check cannot restore it, because it can only revert after the haircut has landed. Exits and cancels during the
-auction go through a private relay. A mint is not an escape to protect: shares issued while a rebalance is pending
-share the haircut of any fill that lands after them, however the two are ordered, and nothing but its timing avoids
-that (RT-02).
+### 3.4 Why no price is needed
 
-**Clip, then redistribute.** Each rebalance targets between half and double a component's units (a fill at the opening
-multiplier settles a growing one at up to 2.5 times, plus one raw unit of rounding, with the executor delivering the
-extra), so a wrong price, a revised supply or a misconfigured token can distort a basket's shape only gradually and
-publicly. Redistributing
-the clipped value pass by pass keeps the rebalance value-neutral; a single pass left up to 28% of value unplaced on
-random baskets. Each pass pins only the side its clips prove. An earlier version clipped once and then spread the gap
-over every component that could still move in that direction, so a component just clipped to its floor for being
-overweight was handed value back (with weights 10/50/40 and holdings 50/10/40 it returned 28/20/52 instead of
-25/20/55): value-neutral and within bounds, but slower to converge than the bounds allow (the logic review's LR-02,
-2026-09-18). Shares are compared with the bounds as values, so a price near zero next to one above `MAX_EXACT_PRICE`
-is clipped instead of overflowing (LR-09).
+At any prices `p`, the λ that leaves the moving value unchanged is
 
-**Round the targets toward the holders.** Turning a share of value into units is a division, and that division used to
-floor, so everything below one whole raw unit of a component left the target basket and was never accounted for
-anywhere. The settlement moves the change in required backing either way, and its backing check has no notion of value
-(the value check DA-05 added came later, and allows a margin far wider than a residue), so the dropped value went to
-whoever filled the auction, for nothing. On a coarse enough index the whole
-rebalance could be that residue: at BTC 110k a satoshi is worth about a tenth of a cent, so a whole turnover can vanish
-into the floor on an index token worth less than 22 cents. On one worth a fifth of a dollar the 2026-09-19 audit
-measured a certified turnover of 0.55% against a growing leg that asked back 0.0125% of NAV, and the index lost 53 basis
-points in one settlement for which the executor paid 2.05% of what it took (DA-01). Shares therefore round up into
-units, the same direction issue and redeem already round, so the basket a rebalance aims at is never worth less than the
-one it replaces. The `MIN_TURNOVER` gate counts `min(sold, bought)` over the rebalanced value for the same reason: gross
-outflow certifies that value leaves the basket, not that anything is bought back, and on that reproduction the two
-differed by the whole figure (DA-08). A step that trades something but less than the gate still starts when the basket
-sits at least `MIN_TURNOVER` from its rule, measured before the band (`IndexRule.shortfall`): the band lets a growing
-component at most double, so the traded step alone buys at most that component's own holding, and an index holding a
-tenth of what its rule wants of a small component could otherwise never start the rebalances that walk it back
-(RT-04). A step that trades nothing is refused however far the basket sits. The remaining half of the problem is the
-index's own granularity, which is why `initialUnits` refuses a start price at which a component's units round away
-entirely: with the shares rounding up, a growing component can ask for up to one raw unit per index token more than
-the rule wants, and on a coarse index that overshoot eats the auction's 10% margin and the rebalance stops clearing
-(DA-09).
+```
+λ* = Σ u_i p_i / Σ (u_i / r_i) p_i  =  Σ w_i r_i / Σ w_i,      w_i = (u_i / r_i) · p_i ≥ 0
+```
 
-**What the feed checks bound, and what they do not.** The rule asks four things of a price: a positive answer, an
-`updatedAt` that is neither in the future nor older than that token's `maxStaleness`, decimals within 18, and a result
-under `MAX_PRICE`. That is a bound on the *data*, not on a venue, and it is a much shorter list than the pool checks it
-replaces because Chainlink already does the aggregation the pool checks were approximating. What it buys: no third
-party can move a feed, so the griefing surface of the old design — twelve seconds of thin liquidity blocking a
-component for half an hour, a listing held off by keeping a pool thin — is gone outright, and so is the manipulation
-surface that made per-token liquidity floors the only real defence. What it costs: the failure mode inverts. Nobody can
-break a feed, and nobody can fix one either. A pool that had not traded could be cleared by anyone trading it; a feed
-that has stopped publishing can only be waited for. `startRebalance` and every displayed price revert `StalePrice`
-until it returns, while issue, redeem, `redeemSkipping` and `claim` keep working throughout, because they read no price
-at all.
+a weighted average of the stored ratios, so `λmin ≤ λ* ≤ λmax` at every price vector, whatever the rounding of the
+ratios. A fill at λ multiplies the moving value by `λ / λ*`, which lies in `[λ / λmax, λ / λmin]`, so holders keep at
+least `λmin / λmax` of it at the floor. Rounding units up only adds to what they keep. Prices moving between the start
+and the fill move λ*, never outside the band: this is what v3's settlement value gate (DA-05) and its ratio (CR-L06)
+used to approximate with feeds.
 
-The 24-hour feeds are where that bites: wstETH/USD, SOL/USD and the WBTC/BTC leg, where a settlement may be valued on an
-answer up to 24.5 hours old. What makes that tolerable is the deviation threshold rather than the heartbeat — a feed
-also publishes whenever the price moves past it — but a threshold is not a bound on how far an answer sits from the
-market. Between rounds an answer trails the market by up to its threshold, and during a fast move by more: a round lands
-a minute or two after the move that triggered it, and the 2026-09-23 audit measured answers several points off the
-market in crashes, which is what CR-L06 is about. wstETH/USD is also not the 0.5% market feed its label suggests:
-Chainlink lists it as a custom "Calculated" feed, STETH/USD (1% threshold, one-hour heartbeat, category medium) times
-the on-chain `stEthPerToken`, republished about a round later, so it moves in 1% steps and sits 1% to 1.5% from ether's
-price times `stEthPerToken` as a matter of routine, and prices the stETH peg on the way (CR-I17). Under the capped
-methodology a keep mask cannot route around a stale feed, because a kept component's cap scales every other weight.
+| Quantity | Bound |
+|---|---|
+| Loss per rebalance to a lone executor at the floor | `1 − λmin/λmax ≤ 1 − (1 − STEP)/(1 + STEP)` = **0.995%** of the moving value |
+| Per day, weekly cadence (a cycle takes at least 9 days: 7 between fills, then 2 of notice) | about **0.11%** |
+| Per year, if every cycle's supplies moved the full step apart and no executor ever competed | about **33%** |
+| Units per rebalance | `u'/u ∈ [λmin/λmax, λmax/λmin] ⊂ [0.990, 1.0101]`, plus one raw unit of rounding |
 
-What remains untouched by any of this is the trust question. There is no second price source, so an aggregator that
-reports a wrong answer is believed, bounded only by `MAX_PRICE` and by the guardian cancelling during the notice
-period. A feed's identity cannot be checked on-chain at all. And a feed stuck at a circuit-breaker bound — the
-LUNA/Venus failure — reads as a valid, fresh answer at runtime, because a clamped answer is positive and its timestamp
-is current, so nothing inside `_price` can see it; the fork test refuses a feed whose circuit-breaker bounds sit within
-a hundredfold of its current answer, which catches that setup before it ships rather than after. Chainlink is a trusted dependency now, in exchange for no longer trusting pool depth. Say that plainly
-wherever the old text claimed a manipulation cost.
+The band covers the whole moving value, however small the trade: a 0.5% revision of a component weighing 1% trades
+about 0.005% of the index, yet opens a 0.5% band. A price-free scalar auction cannot tell a small trade from a large
+one; competition, the notice and the guardian's cancel are the recourse (README, "Known limitations").
 
-**Fixed constituents.** Changing which tokens an index holds would need a governance decision per index. The token list
-is part of the index's address; only weights follow the rule.
+**Measured on a mainnet fork** (`test/fork/Rebalance.fork.t.sol`, WBTC, WETH, LINK and UNI at their reference
+supplies, a batch raising WBTC's 0.5%, cutting LINK's 0.5% and raising UNI's 0.3%): the band was [0.995, 1.005], and
+the break-even λ* from real Uniswap quotes was 0.99585, inside it; the settlement at the second λ(t) reaches λ* gave
+back what it took to within its rounding. A fill at the floor through real V3 pools cost the basket 0.085%, which is
+`(λ* − λmin) / λ*`. `startRebalance` used 178,672 gas at four components, and the fill with the executor's swaps
+356,357.
 
-**The notice does not freeze issue.** The two days exist for holders to decide, so issue, redeem, the zap and claims keep
-working at the old units until the fill.
+### 3.5 Why the ratios are centred, and why units anchor
 
-**The index price is the basket's value.** The Numbers model prices an index as total market cap over a divisor. That
-number equals the basket's value only for the uncapped rule; for the capped rule it prices the uncapped market, and a
-buyer paying it after the top coin doubles would pay 27% more than a burn returns.
+Unclamped, `u'_i = λ · u_i / r_i = λ · c · ρ_a · f_i`: every moving component's new units are the same constant times
+its supply. So a full fill makes units exactly proportional to supplies again, and any skew a keep mask left, any clamp
+residue and any rounding drift is corrected at the next rebalance instead of compounding
+(`testFuzz_repeatedFillsConvergeToTheSupplies`). The clamp is taken around the centre of the ratios, so however far
+supplies ran ahead of the units, a wide band narrows to exactly `[1 − STEP, 1 + STEP]` and never collapses: a start
+cannot stall because the factory's figures moved more than one step since the last fill
+(`test_R04_R17_theBandIsTheClampsHoweverManyBatchesLanded`).
 
-**Chainlink rather than pool oracles, and the Universal Router rather than SwapRouter02.** Both reverse the v1
-decision that section 4 carried until 2026-09-22 ("Uniswap V3 rather than V4": SwapRouter02's `exactOutput(path)`, the
-reference liquidity for these pairs, and V3's built-in oracle, which V4 pools do not provide). Three measurements
-changed it. First, V3 depth behind the old default list is thinning: LDO down 86%, MORPHO 55% and ONDO 54% in WETH held
-over twelve months, and LINK already had 6.6x more depth on V4. Second, V4 has **no oracle at all** — the deployed
-PoolManager carries none of `observe`, `observations` or `increaseObservationCardinalityNext`; a V4 oracle is a hook,
-and no constituent has one — so following the liquidity to V4 was not a choice between two oracles but an end to
-pricing inside Uniswap. Third, the per-token `minLiquidity` floor, which DA-03 had established as the only thing
-standing against a manipulation held across the whole window, cost $3–16k to defeat on the thin tail. Taken together,
-the venue Xindex wanted to trade on could not price, and the venue it could price on was getting cheaper to lie to.
+The clamp heals the extremes first. While one component's ratio sits more than the band away from the rest, every other
+moving component is clamped to the opposite bound and settles alike, so its own revision waits until the far one has
+converged; nothing is taken beyond the band while it does. With supplies moving at most half a percent a week (SA-04)
+and a band of up to 1% per cycle, a component stays ahead only when something else held it back, such as a keep mask
+over several cycles (SA-08).
 
-So the two jobs were separated. Prices come from Chainlink, which is an aggregation nobody here operates and no third
-party can push. Execution goes through the Universal Router, which reaches V3 **and** V4, with the venue chosen per leg
-by the caller — because committing to V4 would have been wrong for most of the list: of the seven launch components
-only LINK is deeper on V4, while WBTC (0.26x), UNI (0.66x) and AAVE (0.86x) are deeper on V3. The cost of the change is
-in the paragraph above, and in the one new dependency: the zap now depends on the Universal Router and the PoolManager,
-which the token, rule and factory do not, because the zap is the replaceable layer. `IndexToken`'s executable code
-was unchanged by the move itself; the one behavioural change it took in v3 was VR-04, merged with the verification
-review in 8fab3ba, and the 2026-09-23 audit then added the share-transfer check (CR-I01) and the tighter settlement
-ratio (CR-L06). An earlier sentence here called it byte-identical across the change, which was never true of the
-deployed bytecode, since its metadata hash moves with every NatSpec edit (CR-I20). `audit/2026-09-22-v3-retirement.md`
-records which past findings the change retired.
+The design's first draft set `u' = λ·k·s'` with the band taken from old and new supplies. After any keep-mask fill,
+units no longer equal `k·s`, so λ* could fall outside that band and a fill at the open would overpay the executor. The
+units-anchored form has neither problem (design section 6.6).
 
-**Burner chooses the exit token; whitelist only; no fees; skip-and-claim; public delays; balance-measured zap.**
-Unchanged from v1 and described above (see the zap in section 2 and section 5). Fees are still not in v3.
+### 3.6 Two bounds, neither enough alone
 
-**Creator-bound CREATE2 addresses.** The address commits to the creator, the constituents, the starting units and the
-methodology, so it can never hold a different token list or follow a different rule, and a front-runner's copy lands at
-its own address.
+The factory's step bounds each supply update: at most 0.5% per token, behind 2 days of notice and the guardian's veto,
+so a slip or a hostile figure is small and visible before it counts. It does not bound a rebalance, because several
+batches can land between two rebalances. The hub's clamp bounds each rebalance's band to `1 ± STEP` however many
+batches landed, but alone it would let one bad figure steer an index over successive rebalances. Together: no update
+moves a supply more than a step, and no rebalance exposes more than the band. `MAX_SUPPLY_STEP` is the same constant in
+both contracts, which `test_constantsAndIdleViews` asserts.
 
-## 5. Security model
+### 3.7 Keep mask
 
-- **Trust:** the factory owner (Safe), who proposes listings, token configs and guardian changes behind public delays;
-  the guardian, who can cancel listings and rebalances, delist, start a rebalance with a keep mask or before strangers
-  may, and cancel a change that would leave the factory with no guardian, but whom the owner can *replace* after
-  `GUARDIAN_DELAY` without the guardian being able to block it (an owner that wants an unchecked config change installs
-  a guardian it controls, so a `GuardianProposed` event is the earliest warning, 9 days ahead); the whitelisted tokens
-  and their issuers, which now include Lido for wstETH and Wormhole's bridge for wSOL alongside WBTC's custodian;
-  **Chainlink**, for every listed feed, with no second source behind it; and, for the zap only, Uniswap's Universal
-  Router and the V4 PoolManager. Executors and the account that starts a rebalance are untrusted. Users trust no one with custody. Two powers deserve naming on their own. The
-  guardian's `cancelRebalance` has no window and no rate limit, so a hostile or compromised guardian can cancel every
-  proposal at the last second of its auction and hold an index off the rule, with its units drifting further each
-  month, until the owner replaces it: `GUARDIAN_DELAY` of notice that the guardian cannot cancel, because it may cancel
-  only its own removal and not its replacement; that is a trust assumption of the role rather than an oversight, because the cancel
-  exists to stop a distorted snapshot in the last seconds of an auction and cannot be time-boxed without giving that
-  up, and the owner's answer is to replace the guardian after `GUARDIAN_DELAY` (DA-12). The guardian can stall without
-  a cancel too: a keep-mask rebalance that leaves a pair of components active can clear `MIN_TURNOVER` on a sliver of
-  the index, and its fill restarts `MIN_REBALANCE_INTERVAL` for everyone, so the stall can outlast the replacement by
-  up to a month. While a replacement is pending the owner cancels the outgoing guardian's keep-mask proposals, and
-  monitors watch `RebalanceStarted` with a non-zero `keepMask` (RT-07). And ownership of the factory
-  moves in two steps that take effect as soon as the new owner accepts: it is the one admin change with no delay and no
-  guardian veto, so `OwnershipTransferStarted` deserves the same watch as `GuardianProposed`.
-- **Shape versus value.** Issue, redeem and claims never read a price. What can distort a basket's shape, with targets
-  always within half to double per component per rebalance and settled units within half to 2.5 times (plus one raw unit
-  of rounding): the owner changing a feed or a reference supply, behind the 2-day delay and the guardian's cancel;
-  whoever executes a due config first, deciding which of two reviewed configs a snapshot reads (CR-I09); the caller
-  choosing the snapshot moment; under the capped methodology, the price of a component the owner or guardian keeps out
-  of the rebalance, which still decides which components a bound ceiling's excess is shared with and how large the top
-  ceiling is (VR-02); and, near a tie between an index's two largest caps, which of them the snapshot moment puts first.
-  That last one is worth what the gap is worth rather than a flat step: nothing at a tie, and at most 10 percentage
-  points, which takes a doubling of one against the other to reach. Before VR-01 the 30% was assigned outright and any
-  crossing moved 10 to 12.5 points however close the caps were; after VR-01 that still held wherever both leaders sat
-  past their ceilings, until the top ceiling began to follow the lead (CR-L01). An issuer minting supply is no longer on
-  the list: no supply is read live, so a mint, a burn, a wrap or an unwrap moves nothing the rule reads until the owner
-  records it (CR-M01). A wrong snapshot price can also move value: read low by a factor f on a sold component, it sets
-  the auction's fair multiplier to about 1/f, and below f = 2/3 the first executor takes value. Under Chainlink pricing,
-  with every supply a timelocked figure, a stranger has no way to produce that, which is what the move off pool oracles
-  and the reference supplies bought; what remains is a feed reporting a wrong answer, a feed stuck at a circuit-breaker
-  bound, or a listing that named the wrong aggregator in the first place — none of which the contracts can detect, and
-  all of which the guardian's duty is the answer to. That duty is unchanged: compare `pendingRebalance()` targets with
-  targets from independent prices and the configs in force during every notice period, and cancel a snapshot that
-  disagrees. What also remains is the **choice of moment**: a feed publishes in steps, so a caller may start a rebalance
-  at whichever published round suits it, within that feed's deviation threshold, or further during a fast move (CR-L06).
-  The owner and guardian can stall rebalancing or keep chosen components unchanged.
-- **Level:** set by the auction. A price error of δ on a traded component moves the fair multiplier by about δ. A lone
-  executor on an honest snapshot keeps `(1 - 0.9)` of the bought value at the snapshot's own prices, plus however far
-  the market moved in the up to three days between the snapshot and the fill; the band does not bound that second part,
-  and the settlement-time ratio check does, at 12.5% of what the index pays out valued at feed prices (DA-05). At
-  market prices add however far the answers in force sit from the market on the traded legs, which during a fast move
-  can exceed a feed's deviation threshold: at the earlier 15% allowance the audit measured 16% to 21% taken in about
-  4% of auctions on the default basket (CR-L06). A
-  windfall needs the fair multiplier above 1.5. When the settlement moves no raw unit at all the multiplier is parity,
-  so an empty index follows the rule exactly; when it moves a few wei, the auction still decays and a lone executor
-  picks the level of a near-empty index for free, within the half-to-2.5-times bound and without moving any holder's
-  value.
-- **Reentrancy:** `nonReentrant` on `issue`, `redeem`, `redeemSkipping`, `claim`, `startRebalance`, `cancelRebalance`,
-  both `executeRebalance` overloads, `createIndex`, `mintWithToken`, `burnToToken` and `burnToTokenWithPermit`. The
-  ERC-20 entry points are not guarded and do not need to be. Checks-effects-interactions throughout; the new units,
-  nonce and cleared proposal are written before any rebalance transfer. The executor callback cannot reach any guarded
-  function; index-token transfers stay allowed and are harmless. Only a contract can execute, and the callback always
-  goes to `msg.sender`.
-- **Read-only reentrancy:** inside `issue`, `redeem` and `executeRebalance`, supply, units and balances change at
-  different moments. Xindex's own views never read balances. Integrators must value an index from `components()` and
-  independent prices, never from `balanceOf(index)` and `totalSupply()`.
-- **Price readings:** `navPerToken` moves in the steps its feeds publish, so it lags fast moves by up to a heartbeat
-  and can sit a deviation threshold away from the market without anything being wrong. It reverts during a feed outage
-  rather than returning a stale figure. Nothing in Xindex reads it; a lending protocol that used it as a collateral
-  oracle would be inheriting every feed in the basket plus a value derived from units, so do not.
-- **Clone safety:** the implementation has initializers disabled; `initialize` is `onlyFactory` and runs in the same
+A kept component keeps its units, is not read from the factory, takes no part in the band's centre, and is neither
+transferred nor read for its balance at settlement, so the mask routes around a component that is paused, blacklists
+the hub, or whose contract no longer answers at all (DA-14, RT-01). The other moving components still need a band of
+at least `MIN_BAND` between them, and the next fill without the mask re-anchors the kept one.
+
+## 4. Accounting
+
+Invariant, for every component, forever:
+
+```
+token_i.balanceOf(index) >= floor(totalSupply × units_i / 1e18) + totalClaims[token_i]
+```
+
+Ceil-on-issue and floor-on-redeem mean rounding drift is at most one raw unit per call, always in favour of the
+remaining holders. A claim is recorded only for an amount that stayed in the index, and because `floor(a) + floor(b)
+≤ floor(a + b)`, burning shares always frees at least that much required backing, so claims never dilute anyone. A
+rebalance moves each leg's change in required backing rounded the holders' way (SA-07), and its post-check is the
+invariant with the new units plus the whole of `amountsIn` on top of what the index held. Nothing is computed from balances, so there is no share price to
+manipulate and no first-depositor attack; donations only add surplus that no holder can redeem and no executor can use.
+
+**The fee seam.** Every conversion of shares into an amount of a component goes through one private helper,
+`_backing(shares, units, rounding) = mulDiv(shares, units, 1e18, rounding)`: issue, redeem, the settlement and its
+backing check. A fee model therefore changes that helper and its callers and nothing else (spec section 7): a minter
+fee in shares changes issue and redeem; a management fee is a unit scale inside `_backing`. Neither is built; the
+choice is the owner's.
+
+## 5. Flows
+
+The README's "How the flows work" walks through each flow for an app. In short:
+
+- **Create.** `k` is the fraction of each reference supply, times 1e36, that one index token holds, so the index
+  token is worth about `k / 1e36` of the basket's total market cap. The creator previews the units and the address,
+  and creates.
+- **Mint and burn** through the zap (up to about 35 components), in kind (up to 100), or at a limit through
+  `MintRequests`, filled by anyone who holds or can issue the shares.
+- **Weekly supply update.** One batch a week from the owner Safe, 2 days of notice with the guardian's veto, then
+  executed by anyone. The week is enforced: a batch comes due no sooner than `MIN_SUPPLY_INTERVAL` (7 days) after the
+  last one executed (SA-04). At 0.5% a week an index follows a token whose supply grows up to about 30% a year faster than the
+  rest (1.005^52 − 1); monthly updates would follow only about 6.7%.
+- **Rebalance.** After the batch and the 7-day interval, anyone starts; 2 days of notice, in which holders who disagree
+  can leave and a batch executed meanwhile does not move the pending settlement (R22); a 24-hour auction. During the
+  auction an executor can order its fill ahead of a public exit (RT-02), so the notice is the window to leave.
+- **Frozen component.** `redeemSkipping` and `claim` for holders, the keep mask for rebalances.
+- **Valuation** is off chain: `value per share = Σ units_i × price_i` from the app's own prices (design section 10).
+  Nothing on chain depends on it.
+
+## 6. Key design decisions and rationale
+
+**In-kind core, swap layer on top.** Splitting custody (the hub) from convenience (the zap) keeps the part that holds
+funds small and admin-free, and lets the swap layer be replaced without touching any index.
+
+**No price anywhere.** v3 read Chainlink feeds to shape targets and to gate each settlement, which made a stale feed a
+halt, made Chainlink a trusted dependency, and could only approximate a bound at market prices (CR-L06). Units
+proportional to supplies need no price to be on the rule, and the λ band bounds a fill at every price vector. What
+takes the feed's place is data the owner maintains, the reference supplies, behind the step, the delay and the veto.
+Pricing the index moved off chain, where it can use many sources and never sizes an amount. `test/Repo.t.sol`
+(`test_noContractReadsAPrice`) asserts that `src/` and `abi/` name no price interface.
+
+**Uncapped only.** The capped 30/20 methodology trades whenever prices move, because a cap binds on value, and needs
+every price to know which cap binds; a price-free index cannot offer it, so it is retired (design section 13).
+
+**Weekly updates, a 0.5% step.** A weekly cadence follows supply growth of up to 30% a year, where monthly updates
+followed only about 6.7%, leaving tokens that unlock 10% to 40% a year persistently underweight. The step keeps each
+update small enough that a slip is bounded and reviewable.
+
+**Atomic batches, one at a time.** A batch that could execute in part would let a stranger turn a uniform revision into
+a trade; one live batch at a time keeps what the guardian reviews the whole of what can land.
+
+**The address commits to the computed units.** The salt covers the units `createIndex` computes, not `k`, so an address
+can never hold a different basket, even if a batch lands between a preview and the creation, and a front-runner's copy
+lands at its own address (LR-05).
+
+**Up to 100 components.** The in-kind paths fit EIP-7825's per-transaction cap of 2^24 gas at 100, measured with every
+account cold (`test_aHundredComponentsFitOneTransaction`, `test_createIndex_maxComponentsOk`):
+
+| Operation at 100 components | Gas |
+|---|---|
+| `createIndex` | about 4.9M |
+| `issue` | about 3.6M |
+| `startRebalance` | about 1.5M |
+| `executeRebalance`, an executor that already holds the bought tokens | about 3.4M |
+| `redeem` | about 3.7M |
+| `redeemSkipping`, one component skipped | about 1.7M |
+| `claim` | about 53k |
+
+A fill that swaps inside the call costs about 150k a leg on top (design section 9.1), so an atomic fill at 100
+components needs an executor with inventory. The zap stops near 35 components (section 2).
+
+**Unchanged from v3:** the burner chooses the exit token, whitelist only, skip-and-claim, public delays, the
+balance-measured zap, and fixed constituents (a new list is a new index version, design section 6.7).
+
+## 7. Security model
+
+- **Trust.** The factory owner (a Safe), who proposes listings, supply batches and guardian changes behind public
+  delays and hands over ownership in two steps with no delay; the guardian, who can cancel listings, batches and
+  rebalances, delist, start a rebalance with a keep mask or before strangers may, and cancel its own removal but not
+  its replacement; the whitelisted tokens and their issuers (WBTC's custodian); and, for the zap only, Uniswap's
+  Universal Router and the V4 PoolManager. No price source is trusted, because none is read. Executors and the account
+  that starts a rebalance are untrusted. Users trust no one with custody.
+- **What can move a basket's shape.** Only the reference supplies: the owner's figures, at most one step per update,
+  each behind the delay and the veto, and each rebalance at most the clamp. Nothing a stranger does inside a
+  transaction moves a supply the hub reads (`test_CRM01_wrappingEtherAroundAStartMovesNothing` wraps a million ether
+  around a start on a fork, and the band does not move by a wei). A due proposal takes effect when someone executes
+  it, so whoever acts first decides whether a start in between reads the old supplies or the new; both were reviewed.
+- **What can move value.** A fill at λ inside the band: at most `1 − λmin/λmax` of the moving value to a lone executor,
+  at any prices (section 3.4). Rounding goes the holders' way everywhere.
+- **The guardian's stalls.** `cancelRebalance` has no window and no rate limit, so a hostile or compromised guardian can
+  cancel every proposal at the last second of its auction until the owner replaces it: `GUARDIAN_DELAY` of notice that
+  the guardian cannot cancel. That is a trust assumption of the role, because the cancel exists to stop a bad
+  rebalance in its last seconds (DA-12). The guardian can also stall without a cancel: a keep-mask rebalance that
+  leaves a pair of components moving can clear `MIN_BAND` on a sliver of the index, and its fill restarts
+  `MIN_REBALANCE_INTERVAL` for everyone, so the stall can outlast the guardian's replacement by up to a week. While a
+  replacement is pending the owner cancels the outgoing guardian's keep-mask proposals, and monitors watch
+  `RebalanceStarted` with a non-zero `keepMask` (RT-07). Neither stall moves funds; holders redeem throughout.
+- **Reentrancy.** `nonReentrant` on `issue`, `redeem`, `redeemSkipping`, `claim`, `startRebalance`, `cancelRebalance`,
+  both `executeRebalance` overloads, `createIndex`, `mintWithToken`, `burnToToken` and `burnToTokenWithPermit`.
+  Checks-effects-interactions throughout: the new units, the nonce and the cleared proposal are written before any
+  rebalance transfer, and the callback goes only to `msg.sender`, which must be a contract. Wake's reentrancy detector
+  does not model the guard; its three documented suppressions are the `redeem` call in `IndexZap._burnBasket`, the
+  `permit` call in `burnToTokenWithPermit` and the executor callback in `executeRebalance`.
+- **Read-only reentrancy.** Inside `issue`, `redeem` and `executeRebalance`, supply, units and balances change at
+  different moments. Integrators must value an index from `components()` and independent prices, never from
+  `balanceOf(index)` and `totalSupply()`.
+- **Clone safety.** The implementation has initializers disabled; `initialize` is `FACTORY`-only and runs in the same
   transaction as the clone; uninitialized instances cannot issue, redeem or rebalance; `isIndex` is the only trusted
-  registry, and the zap and `navPerToken` check it.
-- **Token behaviour:** `issue` verifies received amounts. A paused or blacklisting component does not freeze the rest of
-  a basket: `redeemSkipping` exits everything else, `claim` collects the frozen part later, and a keep mask rebalances
-  around it, reading neither its balance nor, under the uncapped methodology, its feed. Policy: standard ERC-20s, 6-18
-  decimals, no fee-on-transfer, rebasing or callback tokens, a reference supply for every component, which the rule
-  enforces, and a Chainlink USD feed; stables are mint currencies, not components; pausable components and every other
-  issuer a component brings are labelled in the app. Enough execution depth to mint and burn at size is a separate
-  requirement the contracts do not check, and the app's routing is where it is met: wSOL is the thin one on the launch
-  list, with about a million dollars of Uniswap depth on Ethereum against a bridged float of about $37M, while a capped
-  index gives it the full 20% (CR-I39). Two wrappers of one asset are valued by their own configs — WBTC with
-  bitcoin's whole supply, wstETH with its own supply as a dated reference figure — so an index holding WETH and wstETH
-  counts the staked ether behind wstETH in both components' market caps; that is inherent to holding two claims on one
-  asset, is bounded by the 30% cap under the capped methodology, and is labelled. A wrapper is priced against what it
-  wraps only where a feed exists for that: WBTC's composite carries WBTC/BTC, but no feed prices Wormhole's wSOL
-  against SOL, so wSOL is valued at par whatever the bridge does. In a bridge failure a rebalance that buys wSOL would
-  take unbacked wSOL at SOL's price for real components, within the clip and past the settlement check, which values
-  both sides with the same feed; the guardian's answer is a keep mask or a cancel, then a delist (CR-L05).
-- **Zap:** stateless and ownerless; every route's endpoints are checked and a leg names exactly one venue; V4 routes
-  must be hookless and may touch native ether only as an intermediate; per-leg and overall limits apply to every leg
-  including the one that carries no swap because its component is already the mint's `tokenIn` or the burn's
-  `tokenOut`; payments and payouts are measured as balance changes inside the call (tokens already in the zap are never
-  used); a mint leg's delivery is checked against what the index needs (`ShortFill`), because the pinned V4 periphery
-  does not check it; fee-charging currencies revert with `TransferShortfall`; a V3 burn leg is swapped hop by hop so
-  every hop's unsold input goes to the recipient, while a V4 burn leg is one atomic action whose intermediate partial
-  fill reverts the leg unless that hop's input is the component or `tokenOut` again (unsold `tokenOut` is paid out
-  instead); what a hop returns is what its sweep brought back, a balance the router already held included, so a stray
-  in the router is returned rather than reverting the burn (CR-L02); the zap, the index, the Universal Router, the
-  PoolManager, the factory and the rule are rejected as recipients (RT-21); every router command is built here and nothing a caller supplied is
-  forwarded; the router is pre-funded with exactly a leg's cap and swept clean within the same `execute`, so no
-  allowance and no balance survives a call, and the pre-fund is what bounds a leg's spend on the pinned router
-  (CR-I06); the permit is tried and a front-run permit is accepted; `expectedNonce` is checked on entry and again right
-  before `issue`; and all three entry points share one reentrancy guard. It never calls `redeemSkipping` or
-  `executeRebalance`. Swap failures reach the caller unwrapped.
-- **Operations:** `OWNER` and `GUARDIAN` are required at deploy, along with `UNIVERSAL_ROUTER`, which is the deploy
-  script's only market address; on mainnet the owner must be a contract that is not an EIP-7702 delegated account, and
-  a Safe must need at least two signatures and have no enabled module (a module acts as the Safe without signatures;
-  the owner must keep none afterwards). Neither role may be a market contract: the router, the PoolManager it settles
-  against, and on chain 1 every token and feed in the address book, none of which answers `getThreshold` and any of
-  which would leave a factory nobody can administer (XA-39, narrowed to the router in v3, CR-I37). On chain 1 the
-  script also deploys WBTC's `CompositeFeed` and logs it as `WBTC_FEED` with its code hash; `ConfigureWhitelist` needs
-  it and refuses any address whose executable code is not this build's adapter (CR-L04). Every token's reference supply
-  drifts and needs periodic config changes, wstETH's included now that it carries one (CR-M01); a `WHITELIST` entry
-  must name it (CR-L03), and one that would move it past `MAX_SUPPLY_CHANGE` is skipped rather than proposed, so it
-  cannot fail a whole Safe batch (CR-I38). **Feeds need watching**: Chainlink deprecates and repoints aggregators, and
-  a replacement config takes the same 2-day listing flow, so a deprecation announcement is the moment to start one, not
-  the moment the old feed stops; and execute a config change at its eta rather than letting it fall due during an
-  auction (CR-I09). A `StalePrice` revert is not a configuration problem and not something to retry into: nobody caused
-  it and nobody can clear it, so the choice is to wait for the feed or, under the uncapped methodology, to keep that
-  component. WBTC's composite adapter raises its own `StaleLeg(feed, updatedAt)` or `NonPositiveAnswer(feed, answer)`
-  when one of its legs is the problem, which apps decode from `CompositeFeed`'s errors. Whether a proposal is still
-  executable is read from `listingPending(token)` and `guardianChangePending()`, never from `listingEta` or
-  `pendingGuardian` alone, which stay set after a proposal expires.
-- **Gas:** `MAX_COMPONENTS = 20`; the UI should suggest about 10. Measured on a mainnet fork at 20 components against
-  the real router (CR-I08): a zap mint 5.3M to 6.2M, a zap burn 5.1M with two V3 hops per leg to 8.6M with four, a V4
-  burn 4.0M to 4.8M, `startRebalance` about 1.3M with real feeds, and a fill through twenty V3 swaps about 3.5M, of
-  which the bounded settlement itself is about 1.5M. A V3 burn swaps every hop in its own router call at 90k to 140k gas
-  a hop, so a 20-component burn stays under EIP-7825's per-transaction cap of 2^24 gas only while its routes stay within
-  about eight hops a leg through shared pools, or five through pools nothing else in the call touches. Nothing on chain
-  bounds hop counts: the app should keep routes to three or four hops, and refuse or reroute through V4 any zap call
-  whose simulated gas exceeds about 14M. `redeem` and `redeemSkipping` stay under 1M at the same size.
-- **Overflow:** `units <= 2^96-1`, targets below `MAX_TARGET_UNITS`, 512-bit `mulDiv`. A WAD price is refused above
-  `MAX_PRICE` (1e56), which is under the 3.4e56 ceiling the existing 256-bit proof was derived for, so that proof and
-  every constant in it carry over unchanged: market caps are `supply * price / 1e18` floored at one
-  wei (only ratios matter), and values are `units * price`, exact while every price is at most `MAX_EXACT_PRICE` (1e46,
-  where 20 holdings of 2^96 units still fit) and divided by `1e18` above it. Ordinary baskets are unaffected to the wei,
-  and a feed reporting an absurd answer yields either a `PriceTooHigh` revert or a snapshot the guardian can cancel,
-  rather than a panic.
-- **Known limitations:** airdrops, rewards and votes that accrue to index-held tokens are unrecoverable. Rebalances
-  clear only when the bought value covers gas and swap costs many times over, so small indexes on mainnet rarely
-  rebalance. A permanently frozen component needs the guardian's keep mask at every rebalance. Under the capped
-  methodology a kept component is still priced, so a component whose feed is stale blocks rebalancing until the feed
-  returns or the config changes; under the uncapped methodology it is not read at all. A stale feed halts every price
-  and every rebalance for the indexes holding that token, which nobody can cause and nobody can clear, while issue,
-  redeem, `redeemSkipping` and `claim` keep working. Chainlink is trusted outright, with no second source, and a feed's
-  identity cannot be verified on-chain. A hooked V4 pool cannot be routed through, so a component whose only V4 depth
-  sits behind a hook is reachable on V3 only. A `tokenIn` that calls back mid-transfer is unsupported, alongside
-  fee-on-transfer currencies. The guardian can cancel a
-  rebalance every time one is started, with no window and no rate limit, so an index rebalances only while its guardian
-  lets it. Index names and symbols need only be non-empty, so two indexes can look identical while holding different
-  baskets; only the address tells them apart. wSOL is valued at par with SOL, because no feed prices Wormhole's peg
-  (CR-L05). A config due but not yet executed can be put in force by whoever acts first, so between its eta and its
-  execution the first caller decides which reviewed config prices a snapshot or a settlement (CR-I09). A zap call's gas
-  grows with its routes' hop count, and nothing on chain bounds that (CR-I08). The factory's deployment bytecode is
-  close to the EIP-3860 initcode limit. Bytecode targets Cancun.
+  registry, and the zap checks it.
+- **Token behaviour.** `issue` verifies received amounts. A paused or blacklisting component does not freeze the rest
+  of a basket: `redeemSkipping` exits everything else, `claim` collects the frozen part later, and a keep mask
+  rebalances around it. Policy: standard ERC-20s, 6-18 decimals, no fee-on-transfer, rebasing or callback tokens;
+  stables are mint currencies, not components; pausable components and their issuers are labelled in the app.
+- **Zap.** As in v3: every route's endpoints checked, one venue per leg, hookless V4 routes, native ether only as an
+  intermediate, per-leg and overall limits on every leg, balance-measured payments and payouts, `ShortFill` on mints,
+  `TransferShortfall` on fee-charging currencies, every router command built here, the router pre-funded with exactly a
+  leg's cap and swept clean within the same `execute`, `expectedNonce` checked twice, one reentrancy guard across all
+  three entry points.
+- **Arithmetic.** Units below `2^96` (`SafeCast`), and at most `MAX_UNITS` at creation; supplies at most `2^128`;
+  ratios below `2^64`; every product through 512-bit `mulDiv`. `test_XA23_theBandHoldsAtTheExtremesOfUnitsAndSupplies`
+  starts and settles an index with a component at `MAX_UNITS` and a supply of `MAX_SUPPLY` beside one at the unit
+  floor, and one with a supply of one raw unit beside a component at `MAX_UNITS`; it fails with the band's `mulDiv`
+  replaced by plain arithmetic.
+- **Operations.** `OWNER` and `GUARDIAN` are required at deploy, with `UNIVERSAL_ROUTER` the only market address; on
+  mainnet the owner must be a contract that is not an EIP-7702 delegated account, and a Safe must need at least three
+  signatures and have no enabled module; neither the guardian nor the deploying key may be one of its signers. Neither role may be a market contract: the router, the PoolManager, and on
+  chain 1 every token and mint currency in the address book (XA-39, CR-I37). The supplies need a weekly review against
+  dated sources, and a due batch should be executed at its eta.
+- **Known limitations** are listed in the README, where users read them.
 
-## 6. Verification
+## 8. Verification
 
-- Unit and fuzz tests per contract: `IndexToken.t.sol`, `IndexToken.rebalance.t.sol`, `IndexRule.t.sol` (including the
-  Numbers model's weight vector and its divisor prices), `IndexFactory.t.sol`, `IndexZap.t.sol`, and the
-  `CompositeFeed` tests beside the mocks' in `test/mocks/Mocks.t.sol` (an earlier inventory named a
-  `CompositeFeed.t.sol` that never existed, CR-I15), with 6/8/13/18-decimal mocks, settable feeds behind a market
-  fixture, a strict mock of the Universal Router that decodes against the pinned 2.0.0 command and action layouts, and
-  mock executors that fill honestly, short, not at all, or reentrantly. The mock router refuses whatever the zap is not
-  supposed to emit, and its partial-fill and under-delivery modes are what cover the paths a live pool will not
-  reproduce on demand. It decodes with the zap's own command constants and structs, though, so on its own it agrees with
-  any slip the two share: the command bytes and the V4 parameter layouts are pinned separately against upstream values
-  written out in the test itself, and on a fork against the real router (CR-I36).
-- Invariant test: random issue, redeem, redeemSkipping, claim, transfer, donate, price moves, reference-supply
-  revisions through the listing flow, rebalance starts, cancels, honest fills, short fills and staged time jumps;
-  asserts every component stays backed including open claims, supply equals the sum of holder balances, claims add up,
-  the nonce counts executed rebalances, short fills never settle, units move between half and 2.5 times per rebalance
-  (plus the raw unit a rounded-up growth can add), and targets exist exactly while a rebalance is pending.
-- A value fuzz over the rule's targets, with units bounded from one raw unit so the coarse regime is included, asserts
-  that a target basket is never worth less than the basket it replaces, allowing the wei per component that the bounds
-  and the share division still round away. The earlier water-filling fuzz bounded units to whole-token magnitudes and
-  checked only the shape, which is why it did not see DA-01.
-- Security regression tests, named after their ids: one per testable finding of the 2026-09-15 security review, the
-  2026-09-16 rebalancing design review (R01–R23), the 2026-09-16 whole-repo audit (XA ids), the 2026-09-18 logic review
-  (LR ids), the 2026-09-19 deep audit (DA ids), the 2026-09-21 verification review (VR ids), the 2026-09-23 security
-  audit (CR ids) and the 2026-09-24 red team (RT ids), plus controls. Six ids, and part of LR-07, lost their test on
-  2026-09-22 because the mechanism they lived in no longer exists; `audit/2026-09-22-v3-retirement.md` names each one,
-  the test that went and what survives elsewhere, and a retired id's test must not be restored against the new design.
-  Four more — R07, XA-13, XA-24 and XA-39 — were weakened that day under their own ids with no record, until the
-  2026-09-23 audit found them (CR-I21); their tests are whole again and the ledger lists them. The v1 and R tests are
-  in `test/Security.t.sol` and its fork counterpart, except L06 and FR05–FR06 (script tests) and I09–I11, L08 and FR04
-  (`test/Repo.t.sol`); an XA, DA, VR, CR or RT test sits in the suite of what it checks. AGENTS.md gate 6 maps each
-  one, `audit/2026-09-23-triage.md` gives the CR evidence and `audit/2026-09-24-red-team.md` the RT evidence.
-- Mainnet fork tests, against the real Universal Router 2.0.0, the real V4 PoolManager and real Chainlink feeds: the zap
-  and security cases end to end; every shipped feed checked by `description()`, `decimals()`, a positive and fresh
-  answer and its circuit-breaker bounds, with the WBTC adapter's answer required to equal BTC/USD times WBTC/BTC
-  exactly; the rule's USD prices against QuoterV2 quotes; uncapped and capped indexes rebalancing with a fork executor;
-  a guardian keep mask around a real WBTC pause; each default whitelist entry's feed and staleness bound, token by
-  token, against a table written apart from the list (CR-L08); the router's and the PoolManager's runtime code hashes
-  (CR-I35); a third of all wstETH unwrapped around a stranger's start, which moves nothing the rule reads (CR-M01); an
-  ERC-20 left on the router during a V3 and a V4 burn, which is returned rather than reverting the burn (CR-L02); the
-  deploy script's module check against real Safe 1.3.0 and 1.4.1 singletons (CR-I36); and the V4 legs — a mixed basket
-  minting and burning LINK through the native-ether-paired V4 pools while WBTC and WETH stay on V3, and a capped leg
-  reverting with the V4 router's own `V4TooMuchRequested`. The V4 legs are covered on a fork rather than only in a mock
-  on purpose: V4's flash accounting reverts inside `unlock` on an unsettled delta, which is precisely what the
-  settle/take pair exists to avoid, so a mock that agrees with the encoder would only prove the encoder agrees with
-  itself. Fork tests pass time by pinning each feed's `updatedAt` to the warped clock while keeping its real answer;
-  that technique is stated in `test/fork/ForkFeeds.sol` so it is not mistaken for a shortcut.
-- Script tests execute `Deploy`, `ConfigureWhitelist` and the Sepolia `SetupTestMarket` in-process.
-- Gates, all enforced in CI: `forge fmt --check`, `forge build`, `forge lint -D notes`, `forge test` (fork suites
-  required on pushes to `main` and on pull requests into it from this repository; a pull request from a fork gets no
-  secrets, its fork suites skip, and a maintainer runs them before merging), 100% coverage on every file, Wake detectors
-  clean on `src/`, and the submodule check against `foundry.lock`.
+- **Unit and fuzz tests per contract:** `test/IndexHub.t.sol`, `test/IndexHub.rebalance.t.sol`,
+  `test/IndexFactory.t.sol`, `test/IndexZap.t.sol`, `test/Scripts.t.sol` (the scripts in-process), `test/Repo.t.sol`
+  (the repository facts findings rest on), `test/FaucetToken.t.sol`, and the mocks' own tests in
+  `test/mocks/Mocks.t.sol`, with a strict mock of the Universal Router that decodes against the pinned 2.0.0 command
+  and action layouts, and mock executors that fill honestly, short, not at all, or reentrantly. The band's properties,
+  with prices that exist only inside the tests: `testFuzz_DA01_R08_CRI03_aFillIsBoundedByTheBandAtAnyPrice` (at prices
+  drawn per run, a fill leaves the moving value at least `λmin/λmax` and moves units within the band),
+  `testFuzz_repeatedFillsConvergeToTheSupplies`, `testFuzz_R19_CRI33_theBandGateIsExactlyMinBand` (the gate to one
+  wei), `testFuzz_lambdaFallsFromTheTopOfTheBandToTheBottom` and `testFuzz_settlementKeepsBacking`.
+- **Invariant suites.** `test/IndexHub.invariant.t.sol` runs random issue, redeem, `redeemSkipping`, claim, transfer,
+  donate, supply revisions through batches, shadow price moves, time jumps, starts, cancels, honest, bounded and short
+  fills, and asserts that every component stays backed including open claims, supply equals the sum of holder balances,
+  claims add up, the nonce counts executed rebalances, a short fill never settles, units move at most the band plus one
+  raw unit, `canStartRebalance` says when a stranger may start, a fill settles exactly the units its preview showed,
+  every stored ratio lies within the clamp and the band, and no fill ever left the moving value worth less than
+  `λ / λmax` of what it was at the shadow prices. `test/IndexFactory.invariant.t.sol` asserts that the whitelist array
+  is exactly the listed set, the supply in force is always the last executed change, no revision moved a supply more
+  than a step, batches come into force whole, nothing executes outside its window, and the guardian is the last
+  executed change.
+- **Security regression tests,** named after their ids, as `AGENTS.md` gate 6 requires. Two records say which ids lost
+  their test when a mechanism went: `audit/2026-09-22-v3-retirement.md` for the move off Uniswap pricing, and
+  `audit/2026-09-30-v4-stage-a-retirement.md` for Stage A, which retired 31 tested ids (the rule, capped, the feeds,
+  the price gate, the turnover gate and the decimals record) and re-targeted the rest, checked against the ids tested
+  at `v3.0.0`. A retired id's test is never restored against the new design.
+- **Mainnet fork tests,** four suites and 26 tests against the real Universal Router 2.0.0, the V4 PoolManager and real
+  tokens: the zap end to end on V3 and V4 legs (`IndexZap.fork`); the address book, the router's and PoolManager's code
+  hashes and the default list (`MainnetAddresses.fork`); a λ fill through real V3 pools, the break-even at real quotes
+  and a guardian keep mask around a real WBTC pause (`Rebalance.fork`); and the WBTC pause exit, USDT's fee switch,
+  stray router balances, WETH's supply moving around a start, and the deploy script's module check against real Safe
+  1.3.0 and 1.4.1 singletons (`Security.fork`).
+- **Gates,** all enforced in CI: `forge fmt --check`, `forge build`, `forge lint -D notes`, `forge test` (fork suites
+  required on pushes to `main` and on pull requests into it from this repository), 100% coverage on every file, the ABI
+  diff, the Wake detectors clean on `src/`, and the submodule check against `foundry.lock`.
 
-## 7. Mainnet addresses
+## 9. Mainnet addresses
 
 | Contract | Address |
 |---|---|
 | USDC | `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` |
 | USDT | `0xdAC17F958D2ee523a2206206994597C13D831ec7` |
 | WETH | `0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2` |
-| wstETH | `0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0` |
 | WBTC | `0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599` |
-| wSOL (Wormhole, symbol `SOL`, 9 decimals) | `0xD31a59c85aE9D8edEFeC411D448f90841571b89c` |
-| UNI | `0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984` |
 | LINK | `0x514910771AF9Ca656af840dff83E8264EcF986CA` |
-| AAVE | `0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9` |
-| Chainlink ETH / USD (1h, 0.5%) | `0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419` |
-| Chainlink wstETH / USD Calculated (24h, 0.5%; computed from STETH / USD, 1h, 1%) | `0x164b276057258d81941e97B0a900D4C7B358bCe0` |
-| Chainlink BTC / USD (1h, 0.5%) | `0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c` |
-| Chainlink WBTC / BTC (24h, 0.5%) | `0xfdFD9C85aD200c506Cf9e21F1FD8dd01932FBB23` |
-| Chainlink SOL / USD (24h, 2%) | `0x4ffC43a60e009B551865A93d232E33Fce9f01507` |
-| Chainlink UNI / USD (1h, 1%) | `0x553303d460EE0afB37EdFf9bE42922D8FF63220e` |
-| Chainlink LINK / USD (1h, 0.5%) | `0x2c1d072e956AFFC0D435Cb7AC38EF18d24d9127c` |
-| Chainlink AAVE / USD (1h, 1%) | `0x547a514d5e3769680Ce22B2361c10Ea13619e8a9` |
+| UNI | `0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984` |
 | Uniswap Universal Router 2.0.0 | `0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af` |
 | Uniswap V4 PoolManager | `0x000000000004444c5dc75cB358380D2e3dE08A90` |
 | Uniswap V4 StateView | `0x7fFE42C4a5DEeA5b0feC41C94C136Cf115597227` |
 | Uniswap V4 Quoter | `0x52F0E24D1c21C8A0cB1e5a5dD6198556BD9E1203` |
 | Uniswap QuoterV2 (V3 quotes) | `0x61fFE014bA17989E743c5F6cB21bF9697530B21e` |
-| IndexFactory / IndexRule / IndexZap / WBTC `CompositeFeed` | not deployed yet |
+| HybridIndexFactory / IndexZap / MintRequests | not deployed |
 
-Every feed is an 8-decimal aggregator proxy, with its heartbeat and deviation threshold in the table. Only the first
-group and the Universal Router are read by anything deployed: the quoters and StateView are for apps and tests, and the
-PoolManager is reached through the router. The V3 pools the fork tests swap through are in
+Only the tokens and the Universal Router are read by anything deployed: the quoters and StateView are for apps and
+tests, and the PoolManager is reached through the router. The V3 pools the fork tests swap through are in
 `test/fork/ForkAddresses.sol`; no contract reads them.
 
-## 8. Roadmap candidates
+## 10. Roadmap
 
-ETH in/out, `createAndMint`, `mintWithTokenPermit` (USDC only), creator/protocol fees attributed by `creatorOf` with
-timelocked governance, mixed-venue legs that split one leg across V3 and V4, per-pair partial-fill auctions for very
-large baskets, a permissionless backstop executor and a reminder for the monthly trigger, an aggregator or Universal
-Router 2.1 zap, V4 pools on the Sepolia market so the V4 legs get a testnet rehearsal, a second price source behind the
-Chainlink feeds, synthetic exposure for L1 coins.
+**Stage A, what remains.** The internal red team has reviewed the new surface (`audit/2026-09-30-stage-a-red-team.md`);
+what remains is an external audit, a Sepolia deployment with a smoke test, and a
+mainnet deployment through the Safe.
+
+**Proving prototype.** A full-finality Ethereum proof verified on BNB Chain and on Solana, and a BNB Chain state proof
+verified on Ethereum, with measured cost and latency against go/no-go thresholds the owner sets. It decides Stage B, or
+the design's weaker sync-committee fallback.
+
+**Stage B.** Ownerless vaults holding native BNB, SOL, TRX and HYPE on BNB Chain, Solana, Tron and HyperEVM, which pay
+out only against proofs of what happened on Ethereum; the hub gains the mirror of vault balances, orders, burns, a
+freeze that expires, migration, verifier rotation and a snapshot exit. BNB Chain goes end to end first.
+
+**Stage C.** Avalanche, NEAR, Stellar, Hedera and Cardano, one chain at a time, each only if its finality is
+deterministic, its proof cost is measured, its cap matters and its value pays for its vault, verifiers and audits.
+
+The multichain design, its failure bounds and its parameters are in `design/2026-09-29-v4-hybrid-architecture.md`;
+this file does not restate them.
+
+**Backlog.** ETH in/out, `createAndMint`, `mintWithTokenPermit` (USDC only), mixed-venue legs that split one leg
+across V3 and V4, a permissionless backstop executor and a reminder for the weekly trigger, an aggregator or Universal
+Router 2.1 zap, V4 pools on the Sepolia market, and an auction whose exposure scales with the trade rather than the
+moving value.
+
+## 11. History
+
+- **v1 and v2** (2026-09-15 and 2026-09-16): the in-kind core and the zap, then on-chain rule rebalancing from Uniswap
+  V3 pool averages, with the Numbers model's uncapped and capped methodologies.
+- **v3** (2026-09-22): prices from Chainlink USD feeds, execution through the Universal Router; the change and what it
+  retired are in `audit/2026-09-22-v3-retirement.md`. v3 is tagged `v3.0.0` and runs on Sepolia; it never launches on
+  mainnet.
+- **v4** (2026-09-29 to 2026-09-30): the hybrid multichain design, revised after an external review, and Stage A's
+  price-free contracts. Why prices left the contracts is in design sections 6.6 and 13; what that retired is in
+  `audit/2026-09-30-v4-stage-a-retirement.md`.

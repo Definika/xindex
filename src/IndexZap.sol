@@ -8,7 +8,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IIndexFactory} from "./interfaces/IIndexFactory.sol";
-import {IIndexToken} from "./interfaces/IIndexToken.sol";
+import {IIndexHub} from "./interfaces/IIndexHub.sol";
 import {IIndexZap} from "./interfaces/IIndexZap.sol";
 import {IUniversalRouter} from "./interfaces/IUniversalRouter.sol";
 import {PathLib} from "./libraries/PathLib.sol";
@@ -120,16 +120,16 @@ contract IndexZap is ReentrancyGuard, IIndexZap {
         // The swaps and the refund run outside the index's guard, so a token callback could have settled a rebalance
         // since the check on entry; issuing then would buy a basket the legs were not quoted for.
         _checkNonce(p.index, p.expectedNonce);
-        IIndexToken(p.index).issue(p.shares, p.to);
+        IIndexHub(p.index).issue(p.shares, p.to);
     }
 
     /// @dev Buys every component that is not `tokenIn`, approves the index for the whole basket and
     ///      returns the amount of `tokenIn` that the basket holds directly.
     function _buyBasket(MintParams calldata p) private returns (uint256) {
-        address[] memory tokens = IIndexToken(p.index).componentTokens();
+        address[] memory tokens = IIndexHub(p.index).componentTokens();
         uint256 n = tokens.length;
         if (p.legs.length != n) revert LegCountMismatch();
-        uint256[] memory need = IIndexToken(p.index).previewIssue(p.shares);
+        uint256[] memory need = IIndexHub(p.index).previewIssue(p.shares);
 
         uint256 reserved = 0;
         for (uint256 i = 0; i < n; ++i) {
@@ -158,7 +158,7 @@ contract IndexZap is ReentrancyGuard, IIndexZap {
     ///      anything and never has an allowance here to spend later. `amountOut` is never zero, which matters because
     ///      zero is the V4 router's open-delta sentinel in the swap-amount position too, meaning "the full debt": it
     ///      is `ceil(shares * units / 1e18)` with non-zero shares, and every component's units are at least one raw
-    ///      unit, since they start non-zero and a rebalance targets no less than half of them, rounded up (CR-I05).
+    ///      unit, since they start at MIN_RAW_UNITS or more and a rebalance rounds every new unit up (CR-I05).
     function _buy(MintParams calldata p, address component, uint256 amountOut, uint256 budget, uint256 i)
         private
         returns (uint256 amountIn)
@@ -229,19 +229,19 @@ contract IndexZap is ReentrancyGuard, IIndexZap {
     }
 
     function _burnBasket(BurnParams calldata p) private returns (uint256 amountOut) {
-        address[] memory tokens = IIndexToken(p.index).componentTokens();
+        address[] memory tokens = IIndexHub(p.index).componentTokens();
         if (p.legs.length != tokens.length) revert LegCountMismatch();
 
         IERC20 tokenOut = IERC20(p.tokenOut);
         uint256 outBefore = tokenOut.balanceOf(address(this));
         IERC20(p.index).safeTransferFrom(msg.sender, address(this), p.shares);
         // redeem() rounds down deterministically, so the preview is the exact amount received.
-        uint256[] memory got = IIndexToken(p.index).previewRedeem(p.shares);
+        uint256[] memory got = IIndexHub(p.index).previewRedeem(p.shares);
         // The basket has to be in hand before it can be sold, so this interaction cannot be the last
         // one. The function is nonReentrant and the zap keeps no state; Wake's reentrancy detector
         // does not model reentrancy guards, hence the suppression.
         // wake-disable-next-line reentrancy
-        IIndexToken(p.index).redeem(p.shares, address(this));
+        IIndexHub(p.index).redeem(p.shares, address(this));
 
         _sellBasket(p, tokens, got);
         amountOut = tokenOut.balanceOf(address(this)) - outBefore;
@@ -388,15 +388,15 @@ contract IndexZap is ReentrancyGuard, IIndexZap {
         _checkNonce(index, expectedNonce);
         if (to == address(0)) revert ZeroAddress();
         // Tokens left in the router can be swept by anyone, and anything sent to the pool manager is a donation. The
-        // factory and the rule can never move a token on either, so a burn paid to one of them is lost (RT-21).
-        if (
-            to == address(this) || to == index || to == address(ROUTER) || to == POOL_MANAGER || to == address(FACTORY)
-                || to == FACTORY.RULE()
-        ) revert InvalidRecipient(to);
+        // factory can never move a token on either, so a burn paid to it is lost (RT-21).
+        if (to == address(this) || to == index || to == address(ROUTER) || to == POOL_MANAGER || to == address(FACTORY))
+        {
+            revert InvalidRecipient(to);
+        }
     }
 
     function _checkNonce(address index, uint256 expectedNonce) private view {
-        uint256 nonce = IIndexToken(index).rebalanceNonce();
+        uint256 nonce = IIndexHub(index).rebalanceNonce();
         if (nonce != expectedNonce) revert StaleRebalanceNonce(expectedNonce, nonce);
     }
 

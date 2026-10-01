@@ -1,0 +1,10 @@
+[package]
+name = "xindex-p1-program"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "P1's zkVM program: checks proofs/finality's statement and commits its public values"
+
+[dependencies]
+sp1-zkvm = "6.0.1"
+xindex-finality = { path = "../finality" }

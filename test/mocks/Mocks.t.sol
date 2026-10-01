@@ -7,8 +7,6 @@ import {MockERC20} from "./MockERC20.sol";
 import {MockUSDT} from "./MockUSDT.sol";
 import {MockSwapRouter} from "./MockSwapRouter.sol";
 import {MockPausableToken} from "./MockPausableToken.sol";
-import {MockMarket, usdWad} from "./MockMarket.sol";
-import {TestAggregator} from "../../script/testnet/TestAggregator.sol";
 import {MockRouterInventory, MockUniversalRouter} from "./MockUniversalRouter.sol";
 import {UniversalRouterCommands as Cmd} from "../../src/libraries/UniversalRouterCommands.sol";
 import {
@@ -17,21 +15,17 @@ import {
     V4ExactInputParams,
     V4ExactOutputParams
 } from "../../src/libraries/UniswapV4Types.sol";
-import {ForkFeeds} from "../fork/ForkFeeds.sol";
-import {ForkAddresses as A} from "../fork/ForkAddresses.sol";
-import {CompositeFeed} from "../../src/CompositeFeed.sol";
-import {IAggregatorV3} from "../../src/interfaces/IAggregatorV3.sol";
 import {IXindexErrors} from "../../src/interfaces/IXindexErrors.sol";
 import {MockUniswapV3Factory, MockUniswapV3Pool} from "./MockUniswapV3.sol";
 import {MockWETH} from "./MockWETH.sol";
 import {MockPositionManager} from "./MockPositionManager.sol";
 import {INonfungiblePositionManager} from "../../script/interfaces/INonfungiblePositionManager.sol";
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
+import {MockMarket} from "./MockMarket.sol";
 import {IndexFactory} from "../../src/IndexFactory.sol";
-import {IndexRule} from "../../src/IndexRule.sol";
-import {IndexToken} from "../../src/IndexToken.sol";
+import {IndexHub} from "../../src/IndexHub.sol";
 import {RebalanceExecutorV3} from "../fork/RebalanceExecutorV3.sol";
-import {IIndexToken} from "../../src/interfaces/IIndexToken.sol";
+import {IIndexHub} from "../../src/interfaces/IIndexHub.sol";
 
 /// @notice Exercises the mocks' own guard rails so their behaviour in the real tests is trustworthy.
 contract MocksTest is Test {
@@ -139,6 +133,90 @@ contract MocksTest is Test {
         usdt.mint(alice, 5e6);
         assertEq(usdt.totalSupply(), 5e6);
         assertEq(usdt.balanceOf(alice), 5e6);
+    }
+
+    /// @dev The fee switch as on mainnet: the sender pays the value, the recipient gets it less the fee, the owner
+    ///      gets the fee, and the fee is capped at `maximumFee` whole tokens. Only the deployer can switch it.
+    function test_usdt_feeSwitch() public {
+        usdt.mint(alice, 100_000e6);
+        vm.prank(alice);
+        vm.expectRevert("USDT: owner");
+        usdt.setParams(10, 5);
+
+        usdt.setParams(10, 5); // 0.10%, at most 5 USDT
+        assertEq(usdt.owner(), address(this));
+        vm.prank(alice);
+        usdt.transfer(bob, 1_000e6);
+        assertEq(usdt.balanceOf(alice), 99_000e6, "the sender pays the value");
+        assertEq(usdt.balanceOf(bob), 999e6, "the recipient gets it less 0.10%");
+        assertEq(usdt.balanceOf(address(this)), 1e6, "and the owner the fee");
+
+        vm.prank(alice);
+        usdt.transfer(bob, 10_000e6);
+        assertEq(usdt.balanceOf(bob), 999e6 + 9_995e6, "a fee above the cap is capped at 5 USDT");
+        assertEq(usdt.maximumFee(), 5e6);
+        assertEq(usdt.basisPointsRate(), 10);
+    }
+
+    /// @dev Mainnet Tether's freezes: `transfer` checks the sender only and `transferFrom` checks `from` only, so a
+    ///      blacklisted address can still receive and a blacklisted caller can still move someone else's approved
+    ///      tokens; a pause stops both; the owner can zero a blacklisted balance.
+    function test_usdt_blacklistAndPause() public {
+        address carol = makeAddr("carol");
+        usdt.mint(alice, 10e6);
+        usdt.mint(bob, 10e6);
+        vm.prank(alice);
+        usdt.approve(bob, 10e6);
+        vm.startPrank(bob);
+        vm.expectRevert("USDT: owner");
+        usdt.addBlackList(alice);
+        vm.expectRevert("USDT: owner");
+        usdt.removeBlackList(alice);
+        vm.expectRevert("USDT: owner");
+        usdt.pause();
+        vm.expectRevert("USDT: owner");
+        usdt.unpause();
+        vm.expectRevert("USDT: owner");
+        usdt.destroyBlackFunds(alice);
+        vm.stopPrank();
+
+        usdt.addBlackList(bob);
+        assertTrue(usdt.isBlackListed(bob));
+        vm.prank(alice);
+        usdt.transfer(bob, 1e6); // the recipient is never checked
+        vm.prank(bob);
+        vm.expectRevert("USDT: blacklisted");
+        usdt.transfer(alice, 1);
+        vm.prank(bob);
+        usdt.transferFrom(alice, carol, 1e6); // nor is the caller
+        vm.prank(alice);
+        usdt.approve(address(this), 0);
+        vm.prank(bob);
+        usdt.approve(alice, 5e6);
+        vm.prank(alice);
+        vm.expectRevert("USDT: blacklisted");
+        usdt.transferFrom(bob, alice, 1);
+
+        vm.expectRevert("USDT: not blacklisted");
+        usdt.destroyBlackFunds(alice);
+        usdt.destroyBlackFunds(bob);
+        assertEq(usdt.balanceOf(bob), 0, "the owner zeroed the blacklisted balance");
+        assertEq(usdt.totalSupply(), 9e6, "and burned it from the supply");
+        usdt.removeBlackList(bob);
+        assertFalse(usdt.isBlackListed(bob));
+
+        usdt.pause();
+        assertTrue(usdt.paused());
+        vm.prank(alice);
+        vm.expectRevert("USDT: paused");
+        usdt.transfer(bob, 1);
+        vm.prank(bob);
+        vm.expectRevert("USDT: paused");
+        usdt.transferFrom(alice, bob, 1);
+        usdt.unpause();
+        vm.prank(alice);
+        usdt.transfer(bob, 1);
+        assertEq(usdt.balanceOf(bob), 1);
     }
 
     function test_usdt_approveFromNonZeroReverts() public {
@@ -519,195 +597,16 @@ contract MocksTest is Test {
     }
 
     // ---------------------------------------------------------------------
-    // MockMarket, TestAggregator and CompositeFeed
-    // ---------------------------------------------------------------------
-
-    function test_market_pricesAndConfigs() public {
-        vm.warp(30 days);
-        MockMarket m = new MockMarket();
-        address mWeth = address(m.weth());
-
-        IIndexFactory.TokenConfig memory c = m.config(mWeth, 3_000e8);
-        assertEq(c.feed, address(m.feedOf(mWeth)), "the feed is created on first use");
-        assertEq(c.maxStaleness, m.STALENESS());
-        assertEq(c.referenceSupply, m.ETH_SUPPLY());
-        assertEq(m.feedOf(mWeth).answer(), 3_000e8);
-
-        MockERC20 token = new MockERC20("T", "T", 18);
-        c = m.config(address(token), 42e8);
-        assertEq(c.referenceSupply, m.DEFAULT_SUPPLY(), "anything but WETH gets the default supply");
-        address feed = c.feed;
-
-        IIndexFactory.TokenConfig memory again = m.configWith(address(token), 7e8, 0);
-        assertEq(again.feed, feed, "the feed is created once");
-        assertEq(again.referenceSupply, 0);
-        assertEq(m.feedOf(address(token)).answer(), 7e8);
-
-        m.movePrice(address(token), 3, 2);
-        assertEq(m.feedOf(address(token)).answer(), 10.5e8);
-
-        m.setAge(address(token), 900);
-        (,,, uint256 updatedAt,) = m.feedOf(address(token)).latestRoundData();
-        assertEq(updatedAt, block.timestamp - 900);
-
-        assertEq(usdWad(1e8, 18), 1e18, "a dollar on an 18-decimal token");
-        assertEq(usdWad(30_000e8, 8), 3e32);
-    }
-
-    /// @dev The two freshness modes: one that follows the block clock, so a test can warp weeks ahead and still read a
-    ///      live feed, and one that pins a timestamp, as a real feed does between rounds.
-    function test_testAggregator_bothFreshnessModes() public {
-        vm.warp(30 days);
-        TestAggregator feed = new TestAggregator("T / USD", 8, 5e8);
-        assertEq(feed.description(), "T / USD");
-        assertEq(feed.decimals(), 8);
-        assertTrue(feed.fresh());
-
-        (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredIn) =
-            feed.latestRoundData();
-        assertEq(roundId, 1);
-        assertEq(answer, 5e8);
-        assertEq(startedAt, block.timestamp);
-        assertEq(updatedAt, block.timestamp);
-        assertEq(answeredIn, 1);
-
-        feed.setAnswer(6e8);
-        feed.setAge(60);
-        vm.warp(block.timestamp + 30 days);
-        (, answer,, updatedAt,) = feed.latestRoundData();
-        assertEq(answer, 6e8);
-        assertEq(updatedAt, block.timestamp - 60, "still on the block clock after a long warp");
-
-        feed.setUpdatedAt(1_000);
-        assertFalse(feed.fresh());
-        (,,, updatedAt,) = feed.latestRoundData();
-        assertEq(updatedAt, 1_000, "and pinned once a test says so");
-    }
-
-    function test_compositeFeed_multipliesAndBoundsEachLeg() public {
-        vm.warp(30 days);
-        TestAggregator a = new TestAggregator("BTC / USD", 8, 86_000e8);
-        TestAggregator b = new TestAggregator("WBTC / BTC", 8, 0.9995e8);
-        CompositeFeed composite = new CompositeFeed(a, b, 1 hours, 24 hours);
-
-        assertEq(composite.decimals(), 8, "the first leg's decimals");
-        assertEq(composite.description(), "BTC / USD * WBTC / BTC");
-        (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredIn) =
-            composite.latestRoundData();
-        assertEq(answer, int256(86_000e8) * 0.9995e8 / 1e8);
-        assertEq(roundId, 0, "two legs have no common round");
-        assertEq(answeredIn, 0);
-        assertEq(startedAt, updatedAt);
-
-        // The older of the two timestamps is reported, so the rule's own bound still reaches the staler leg.
-        b.setAge(600);
-        (,,, updatedAt,) = composite.latestRoundData();
-        assertEq(updatedAt, block.timestamp - 600);
-
-        // Each leg is bounded where it is read: the fast leg's hour does not stretch to the slow leg's day.
-        a.setAge(1 hours + 1);
-        vm.expectRevert(
-            abi.encodeWithSelector(CompositeFeed.StaleLeg.selector, address(a), block.timestamp - 1 hours - 1)
-        );
-        composite.latestRoundData();
-        a.setAge(0);
-        b.setAge(24 hours + 1);
-        vm.expectRevert(
-            abi.encodeWithSelector(CompositeFeed.StaleLeg.selector, address(b), block.timestamp - 24 hours - 1)
-        );
-        composite.latestRoundData();
-        b.setAge(0);
-
-        // A future timestamp is a broken feed, not a fresh one.
-        a.setUpdatedAt(block.timestamp + 1);
-        vm.expectRevert(abi.encodeWithSelector(CompositeFeed.StaleLeg.selector, address(a), block.timestamp + 1));
-        composite.latestRoundData();
-        a.setAge(0);
-
-        a.setAnswer(0);
-        vm.expectRevert(abi.encodeWithSelector(CompositeFeed.NonPositiveAnswer.selector, address(a), int256(0)));
-        composite.latestRoundData();
-        a.setAnswer(86_000e8);
-        b.setAnswer(-1);
-        vm.expectRevert(abi.encodeWithSelector(CompositeFeed.NonPositiveAnswer.selector, address(b), int256(-1)));
-        composite.latestRoundData();
-    }
-
-    function test_compositeFeed_constructorChecks() public {
-        TestAggregator a = new TestAggregator("BTC / USD", 8, 1e8);
-        TestAggregator b = new TestAggregator("WBTC / BTC", 8, 1e8);
-        uint32 tooLong = 2 days + 1;
-
-        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new CompositeFeed(IAggregatorV3(address(0)), b, 1 hours, 1 hours);
-        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new CompositeFeed(a, IAggregatorV3(address(0)), 1 hours, 1 hours);
-        vm.expectRevert(abi.encodeWithSelector(CompositeFeed.InvalidLegStaleness.selector, uint32(0)));
-        new CompositeFeed(a, b, 0, 1 hours);
-        vm.expectRevert(abi.encodeWithSelector(CompositeFeed.InvalidLegStaleness.selector, tooLong));
-        new CompositeFeed(a, b, tooLong, 1 hours);
-        vm.expectRevert(abi.encodeWithSelector(CompositeFeed.InvalidLegStaleness.selector, uint32(0)));
-        new CompositeFeed(a, b, 1 hours, 0);
-        vm.expectRevert(abi.encodeWithSelector(CompositeFeed.InvalidLegStaleness.selector, tooLong));
-        new CompositeFeed(a, b, 1 hours, tooLong);
-    }
-
-    /// @dev CR-I34. The adapter reports the older of its two timestamps, so the rule's own bound still reaches the
-    ///      staler leg. The test above only ever ages leg B, so reporting leg B's timestamp unconditionally passed it;
-    ///      here leg A is the staler one.
-    function test_CRI34_compositeFeed_reportsTheOlderLegEvenWhenThatIsLegA() public {
-        vm.warp(30 days);
-        TestAggregator a = new TestAggregator("BTC / USD", 8, 86_000e8);
-        TestAggregator b = new TestAggregator("WBTC / BTC", 8, 0.9995e8);
-        CompositeFeed composite = new CompositeFeed(a, b, 2 hours, 24 hours);
-        a.setAge(3_000);
-        b.setAge(600);
-        (,,, uint256 updatedAt,) = composite.latestRoundData();
-        assertEq(updatedAt, block.timestamp - 3_000, "leg A is the staler one, and its timestamp is the one reported");
-    }
-
-    /// @dev CR-I34. A leg exactly `maxAge` old is still served, as the rule's `_price` serves a feed exactly its
-    ///      `maxStaleness` old; the test above probes only `maxAge + 1`.
-    function test_CRI34_compositeFeed_servesALegExactlyAtItsBound() public {
-        vm.warp(30 days);
-        TestAggregator a = new TestAggregator("BTC / USD", 8, 86_000e8);
-        TestAggregator b = new TestAggregator("WBTC / BTC", 8, 0.9995e8);
-        CompositeFeed composite = new CompositeFeed(a, b, 1 hours, 24 hours);
-        a.setAge(1 hours);
-        b.setAge(24 hours);
-        (, int256 answer,, uint256 updatedAt,) = composite.latestRoundData();
-        assertEq(answer, int256(86_000e8) * 0.9995e8 / 1e8, "both legs are served at their bounds");
-        assertEq(updatedAt, block.timestamp - 24 hours);
-    }
-
-    /// @dev CR-I34. A leg bound of exactly MAX_LEG_STALENESS is accepted: the constructor refuses only what is past it,
-    ///      and the test above refuses `2 days + 1` without ever accepting `2 days`. The ceiling matches the rule's own
-    ///      MAX_FEED_STALENESS, as the adapter's NatSpec says, so no leg can be allowed more than a token could be.
-    function test_CRI34_compositeFeed_acceptsABoundOfExactlyTheCeiling() public {
-        TestAggregator a = new TestAggregator("BTC / USD", 8, 1e8);
-        TestAggregator b = new TestAggregator("WBTC / BTC", 8, 1e8);
-        CompositeFeed composite = new CompositeFeed(a, b, 1 hours, 1 hours);
-        assertEq(composite.MAX_LEG_STALENESS(), 2 days);
-        assertEq(composite.MAX_LEG_STALENESS(), new IndexRule().MAX_FEED_STALENESS(), "the rule's own ceiling");
-        assertEq(new CompositeFeed(a, b, 2 days, 1 hours).MAX_AGE_A(), 2 days);
-        assertEq(new CompositeFeed(a, b, 1 hours, 2 days).MAX_AGE_B(), 2 days);
-    }
-
-    /// @dev CR-I34. The product drops its remainder, as a Chainlink-style fixed-point product does. The test above
-    ///      multiplies answers whose product is a whole multiple of 1e8, so rounding it up passed as well.
-    function test_CRI34_compositeFeed_roundsTheProductDown() public {
-        vm.warp(30 days);
-        TestAggregator a = new TestAggregator("BTC / USD", 8, 86_123.45678901e8);
-        TestAggregator b = new TestAggregator("WBTC / BTC", 8, 0.99951234e8);
-        (, int256 answer,,,) = new CompositeFeed(a, b, 1 hours, 24 hours).latestRoundData();
-        uint256 product = uint256(86_123.45678901e8) * 0.99951234e8;
-        assertGt(product % 1e8, 0, "the product really has a remainder");
-        assertEq(answer, 8_608_145_782_407, "and it is dropped");
-    }
-
-    // ---------------------------------------------------------------------
     // RebalanceExecutorV3 (used by the fork tests), driven through the mock router
     // ---------------------------------------------------------------------
+
+    function test_market_holdsWethUsdcAndTheirSupplies() public {
+        MockMarket m = new MockMarket();
+        assertEq(m.weth().decimals(), 18);
+        assertEq(m.usdc().decimals(), 6);
+        assertEq(m.supplyOf(address(m.weth())), m.ETH_SUPPLY(), "WETH is listed with ether's supply");
+        assertEq(m.supplyOf(address(m.usdc())), m.DEFAULT_SUPPLY(), "anything else with the default");
+    }
 
     function test_rebalanceExecutorV3_sellsBuysAndSettlesThroughARouter() public {
         MockMarket m = new MockMarket();
@@ -717,18 +616,14 @@ contract MocksTest is Test {
         MockERC20 mWeth = m.weth();
         address[] memory t = new address[](3);
         (t[0], t[1], t[2]) = (address(shrinking), address(mWeth), address(growing));
-
-        // WETH and the growing token weigh ten times the shrinking one: it halves, and the other two gain 25% each.
-        f.proposeListing(t[0], m.configWith(t[0], 1e8, 12e24));
-        f.proposeListing(t[1], m.config(t[1], 1e8));
-        f.proposeListing(t[2], m.configWith(t[2], 1e8, 120e24));
+        for (uint256 i = 0; i < 3; ++i) {
+            f.proposeListing(t[i], 100e18);
+        }
         vm.warp(block.timestamp + f.LISTING_DELAY());
         for (uint256 i = 0; i < 3; ++i) {
             f.executeListing(t[i]);
         }
-        uint256[] memory u = new uint256[](3);
-        (u[0], u[1], u[2]) = (100e18, 100e18, 100e18);
-        IndexToken idx = IndexToken(f.createIndex("Executor", "EXEC", t, u, 0));
+        IndexHub idx = IndexHub(f.createIndex("Executor", "EXEC", t, 1e36)); // 100e18 units each
         shrinking.mint(address(this), 100e18);
         mWeth.mint(address(this), 100e18);
         growing.mint(address(this), 100e18);
@@ -736,6 +631,17 @@ contract MocksTest is Test {
         mWeth.approve(address(idx), 100e18);
         growing.approve(address(idx), 100e18);
         idx.issue(1e18, address(this));
+
+        // The growing component's supply rises a step and the shrinking one's falls a step: a band of about 1%.
+        address[] memory batch = new address[](2);
+        uint256[] memory supplies = new uint256[](2);
+        bool growingFirst = address(growing) < address(shrinking);
+        (batch[0], batch[1]) =
+            growingFirst ? (address(growing), address(shrinking)) : (address(shrinking), address(growing));
+        (supplies[0], supplies[1]) = growingFirst ? (100.5e18, 99.5e18) : (99.5e18, 100.5e18);
+        f.proposeSupplies(batch, supplies);
+        vm.warp(block.timestamp + f.LISTING_DELAY());
+        f.executeSupplies();
 
         MockSwapRouter r = new MockSwapRouter();
         r.setPrice(address(shrinking), 1e18);
@@ -748,19 +654,21 @@ contract MocksTest is Test {
         executor.setFee(address(shrinking), 3000);
         executor.setFee(address(growing), 3000);
         assertEq(executor.feeOf(address(growing)), 3000);
+        mWeth.mint(address(executor), 1e18); // a float for what the fill does not pay for itself
 
         vm.warp(idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL());
         idx.startRebalance(0);
-        (uint256 eta,,) = idx.pendingRebalance();
-        vm.warp(eta + idx.AUCTION_DURATION());
+        (uint256 eta,,,,) = idx.pendingRebalance();
+        vm.warp(eta + idx.AUCTION_DURATION() / 2);
+        (, uint256[] memory next, uint256[] memory amountsOut, uint256[] memory amountsIn) = idx.previewRebalance();
         executor.fill(idx);
 
         (, uint256[] memory units) = idx.components();
-        assertEq(units[0], 50e18, "the shrinking component went to target");
-        assertEq(units[1], 122.5e18, "WETH gained 90% of its extra units, delivered without a swap");
-        assertEq(units[2], 122.5e18, "the growing component was bought with WETH");
-        assertEq(mWeth.balanceOf(address(executor)), 5e18, "sold 50, spent 22.5 on the purchase and 22.5 on delivery");
-        assertEq(shrinking.balanceOf(address(r)), 50e18);
+        assertEq(units, next, "the settlement is the preview's");
+        assertLt(units[0], 100e18, "the component whose supply fell shrank");
+        assertGt(units[2], 100e18, "the one whose supply grew was bought with WETH");
+        assertEq(shrinking.balanceOf(address(r)), amountsOut[0], "what the index sent was sold through the router");
+        assertEq(growing.balanceOf(address(idx)), 100e18 + amountsIn[2], "and what it asked for was delivered");
     }
 
     function test_XA12_rebalanceExecutorV3_takesCallbacksOnlyFromTheIndexItFills() public {
@@ -774,7 +682,7 @@ contract MocksTest is Test {
         vm.etch(fake, hex"00");
         address[] memory onlyWeth = new address[](1);
         onlyWeth[0] = address(mWeth);
-        vm.mockCall(fake, abi.encodeWithSelector(IIndexToken.componentTokens.selector), abi.encode(onlyWeth));
+        vm.mockCall(fake, abi.encodeWithSelector(IIndexHub.componentTokens.selector), abi.encode(onlyWeth));
         uint256[] memory nothing = new uint256[](1);
         uint256[] memory everything = new uint256[](1);
         everything[0] = 10e18;
@@ -804,90 +712,15 @@ contract MocksTest is Test {
         address stranger = makeAddr("stranger");
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(RebalanceExecutorV3.NotOwner.selector, stranger));
-        executor.fill(IIndexToken(address(fake)));
+        executor.fill(IIndexHub(address(fake)));
 
         vm.expectRevert(abi.encodeWithSelector(RebalanceExecutorV3.NotIndex.selector, address(fake)));
-        executor.fill(IIndexToken(address(fake)));
+        executor.fill(IIndexHub(address(fake)));
         assertEq(mWeth.balanceOf(address(executor)), 10e18, "the float stays");
 
         // The fake does what the finding describes: without the two checks above, this callback emptied the float.
         vm.expectRevert(abi.encodeWithSelector(RebalanceExecutorV3.UnexpectedCaller.selector, address(fake)));
         fake.executeRebalance("");
-    }
-
-    // ---------------------------------------------------------------------
-    // Red team of 2026-09-24, mutation gaps
-    // ---------------------------------------------------------------------
-
-    /// @dev RT-14. The product keeps the first leg's decimals by dividing out the second leg's. Every other test builds
-    ///      both legs with eight decimals, where the two are the same, so dividing by the first leg's decimals, or
-    ///      reporting the second leg's, passed. Either misprices a composite whose legs differ by ten to the power of
-    ///      the difference, and the rule's `_price` would accept the result. The common shape is a TOKEN/ETH feed at 18
-    ///      decimals and ETH/USD at 8, taken here in both orders: a token worth 0.005 ETH at 4,000 dollars is 20
-    ///      dollars, in whichever leg's decimals comes first.
-    function test_RT14_compositeFeed_keepsTheFirstLegsDecimalsWhenTheLegsDiffer() public {
-        vm.warp(30 days);
-        TestAggregator ethUsd = new TestAggregator("ETH / USD", 8, 4_000e8);
-        TestAggregator tokEth = new TestAggregator("TOK / ETH", 18, 0.005e18);
-
-        CompositeFeed composite = new CompositeFeed(ethUsd, tokEth, 1 hours, 24 hours);
-        assertEq(composite.decimals(), 8, "quoted in the first leg's eight decimals");
-        (, int256 answer,,,) = composite.latestRoundData();
-        assertEq(answer, 20e8, "twenty dollars: the second leg's eighteen decimals are divided back out");
-
-        composite = new CompositeFeed(tokEth, ethUsd, 24 hours, 1 hours);
-        assertEq(composite.decimals(), 18, "quoted in the first leg's eighteen decimals");
-        (, answer,,,) = composite.latestRoundData();
-        assertEq(answer, 20e18, "twenty dollars: the second leg's eight decimals are divided back out");
-    }
-}
-
-/// @dev Poses as an index whose only component is WETH: its `executeRebalance` calls the executor back and asks for
-///      everything the executor holds.
-contract FakeIndex {
-    address internal immutable WETH;
-    address internal immutable EXECUTOR;
-
-    constructor(address weth, address executor) {
-        WETH = weth;
-        EXECUTOR = executor;
-    }
-
-    function executeRebalance(bytes calldata data) external {
-        uint256[] memory nothing = new uint256[](1);
-        uint256[] memory everything = new uint256[](1);
-        everything[0] = MockERC20(WETH).balanceOf(EXECUTOR);
-        RebalanceExecutorV3(EXECUTOR).onXindexRebalance(nothing, everything, data);
-    }
-}
-
-/// @notice Covers the fork suites' feed helper offline, the way `RebalanceExecutorV3` is covered here: CI measures
-///         coverage with the fork suites excluded, so a helper only they call would otherwise read as untested.
-contract ForkFeedsTest is ForkFeeds {
-    function test_forkFeeds_putsRealAnswersOnTheBlockClock() public {
-        vm.warp(30 days);
-        address[8] memory feeds = _shippedFeeds();
-        for (uint256 i = 0; i < feeds.length; ++i) {
-            // Stand in for the mainnet aggregators, which have no code on a local chain.
-            TestAggregator stub = new TestAggregator("X / USD", 8, int256(1_000e8 + int256(i)));
-            vm.etch(feeds[i], address(stub).code);
-            TestAggregator(feeds[i]).setAnswer(int256(1_000e8 + int256(i)));
-            TestAggregator(feeds[i]).setDecimals(8);
-            TestAggregator(feeds[i]).setUpdatedAt(block.timestamp - 10 days); // long stale, as at a fork block
-        }
-
-        _pinFeedsToTheBlockClock();
-        vm.warp(block.timestamp + 90 days);
-        for (uint256 i = 0; i < feeds.length; ++i) {
-            (, int256 answer,, uint256 updatedAt,) = TestAggregator(feeds[i]).latestRoundData();
-            assertEq(answer, int256(1_000e8 + int256(i)), "the real answer is kept");
-            assertEq(updatedAt, block.timestamp, "and follows the clock however far a test warps");
-        }
-
-        _movePinnedFeed(feeds[0], 3, 2);
-        (, int256 moved,,,) = TestAggregator(feeds[0]).latestRoundData();
-        assertEq(moved, int256(1_000e8) * 3 / 2, "a test that wants drift asks for it");
-        assertEq(A.ETH_USD_FEED, feeds[0]);
     }
 
     // ---------------------------------------------------------------------
@@ -945,5 +778,24 @@ contract ForkFeedsTest is ForkFeeds {
             hex"ccdd000000000000000000000000000000000000000000000000000000000000",
             "exactOutput encodes differently from Uniswap's IV3SwapRouter"
         );
+    }
+}
+
+/// @dev Poses as an index whose only component is WETH: its `executeRebalance` calls the executor back and asks for
+///      everything the executor holds.
+contract FakeIndex {
+    address internal immutable WETH;
+    address internal immutable EXECUTOR;
+
+    constructor(address weth, address executor) {
+        WETH = weth;
+        EXECUTOR = executor;
+    }
+
+    function executeRebalance(bytes calldata data) external {
+        uint256[] memory nothing = new uint256[](1);
+        uint256[] memory everything = new uint256[](1);
+        everything[0] = MockERC20(WETH).balanceOf(EXECUTOR);
+        RebalanceExecutorV3(EXECUTOR).onXindexRebalance(nothing, everything, data);
     }
 }

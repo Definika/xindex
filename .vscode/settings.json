@@ -1,4 +1,5 @@
 {
+    "wake.configuration.use_toml_if_present": false,
     "wake.compiler.solc.remappings": [
         "forge-std/=lib/forge-std/src/",
         "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
@@ -22,7 +23,9 @@
         "lib",
         "script",
         "test",
-        "audit"
+        "audit",
+        "prototype",
+        "demo"
     ],
     "wake.compiler.solc.optimizer.enabled": true,
     "wake.compiler.solc.optimizer.runs": 1000
