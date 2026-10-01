@@ -57,10 +57,10 @@ contract HybridHub is HybridHubStorage, ERC20Upgradeable, ERC20PermitUpgradeable
     /// @param factory The factory whose clones this template serves; it checks this when it is deployed.
     /// @param module The module built for the same factory, which the fallback delegates to.
     constructor(address factory, address module) {
-        if (factory == address(0)) revert ZeroAddress();
-        if (IHybridHub(module).FACTORY() != factory) revert WrongModule(module);
+        if (factory == address(0) || module == address(0)) revert ZeroAddress();
         FACTORY = factory;
         MODULE = module;
+        if (IHybridHub(module).FACTORY() != factory) revert WrongModule(module);
         _disableInitializers();
     }
 

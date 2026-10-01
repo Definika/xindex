@@ -3,10 +3,12 @@ pragma solidity 0.8.28;
 
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IBnbStateVerifier} from "../interfaces/IBnbStateVerifier.sol";
-import {IVaultStateVerifier} from "../interfaces/IVaultStateVerifier.sol";
 import {RlpReader} from "../libraries/RlpReader.sol";
 import {MerklePatricia} from "../libraries/MerklePatricia.sol";
 import {Bls12381} from "../libraries/Bls12381.sol";
+// Named by the `@inheritdoc` of `verifySlots`, which must name the interface that declares it.
+// aderyn-fp-next-line(unused-import)
+import {IVaultStateVerifier} from "../interfaces/IVaultStateVerifier.sol";
 
 /// @title BnbStateVerifier
 /// @notice BNB Chain's state on Ethereum from the chain's own fast-finality votes, with no zkVM and no trusted setup:

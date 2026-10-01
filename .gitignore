@@ -22,6 +22,9 @@ out/
 # Docs
 docs/
 
+# Aderyn's default report, written by a local `aderyn .`
+/report.md
+
 # Market-data snapshots behind design/analysis (about 4 MB); the scripts and their printed figures are the record.
 /design/analysis/data/
 

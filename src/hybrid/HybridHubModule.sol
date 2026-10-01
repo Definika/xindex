@@ -51,10 +51,10 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
 
     /// @param extension The extension built for the same factory, which the fallback delegates to.
     constructor(address factory, address extension) {
-        if (factory == address(0)) revert ZeroAddress();
-        if (IHybridHub(extension).FACTORY() != factory) revert WrongModule(extension);
+        if (factory == address(0) || extension == address(0)) revert ZeroAddress();
         FACTORY = factory;
         EXTENSION = extension;
+        if (IHybridHub(extension).FACTORY() != factory) revert WrongModule(extension);
         _disableInitializers();
     }
 
@@ -146,9 +146,13 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
         uint256 n = _components.length;
         if (keepMask >> n != 0 || keepMask == (1 << n) - 1) revert InvalidKeepMask(keepMask);
         if (
+            // A view on the factory, by STATICCALL: nothing it reaches can change state, so nothing re-enters.
+            // aderyn-fp-next-line(reentrancy-state-change)
             (keepMask != 0 || block.timestamp < _permissionlessAt(pendingEta))
                 && !IIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender)
-        ) revert Unauthorized(msg.sender);
+        ) {
+            revert Unauthorized(msg.sender);
+        }
 
         (uint256[] memory ratios, uint256 lambdaMin, uint256 lambdaMax) = _band(keepMask);
         if (lambdaMax * WAD < lambdaMin * (WAD + MIN_BAND)) revert BandTooNarrow(lambdaMin, lambdaMax);
@@ -178,6 +182,8 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
 
     /// @inheritdoc IHybridHubModule
     function cancelRebalance() external nonReentrant onlyInitialized {
+        // A view on the factory, by STATICCALL: nothing it reaches can change state, so nothing re-enters.
+        // aderyn-fp-next-line(reentrancy-state-change)
         if (!IIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender)) revert Unauthorized(msg.sender);
         uint256 restartAt;
         if (_fill.status == FillStatus.Accepted) {
@@ -622,7 +628,8 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
 
     /// @inheritdoc IHybridHubModule
     function fillIntakeId() external view returns (uint256) {
-        return _fill.status == FillStatus.None ? 0 : _fillIntakeIdOf(_fill);
+        StoredFill memory f = _fill;
+        return f.status == FillStatus.None ? 0 : _fillIntakeIdOf(f);
     }
 
     /// @inheritdoc IHybridHubModule

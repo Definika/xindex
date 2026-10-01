@@ -49,10 +49,11 @@ contract HybridIndexFactory is IndexFactory, IHybridIndexFactory {
     constructor(address initialOwner, address initialGuardian, address hybridImplementation)
         IndexFactory(initialOwner, initialGuardian)
     {
+        if (hybridImplementation == address(0)) revert ZeroAddress();
+        HYBRID_IMPLEMENTATION = hybridImplementation;
         if (IHybridHub(hybridImplementation).FACTORY() != address(this)) {
             revert NotFactoryTemplate(hybridImplementation);
         }
-        HYBRID_IMPLEMENTATION = hybridImplementation;
     }
 
     // ---------------------------------------------------------------------

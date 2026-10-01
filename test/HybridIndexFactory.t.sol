@@ -38,6 +38,8 @@ contract HybridIndexFactoryTest is HybridTest {
         HybridHub stranger = new HybridHub(address(this), address(new HybridHubModule(address(this), address(ext))));
         vm.expectRevert(abi.encodeWithSelector(IHybridIndexFactory.NotFactoryTemplate.selector, address(stranger)));
         new HybridIndexFactory(owner, guardian, address(stranger));
+        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
+        new HybridIndexFactory(owner, guardian, address(0));
         assertEq(factory.HYBRID_IMPLEMENTATION(), address(template));
         assertEq(factory.FREEZE_DURATION(), 14 days);
         assertEq(factory.ROTATION_DELAY(), 30 days);
