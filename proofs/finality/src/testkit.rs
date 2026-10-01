@@ -7,16 +7,14 @@ use crate::beacon::{
     BeaconBlockHeader, Checkpoint, DOMAIN_BEACON_ATTESTER, DOMAIN_DEPOSIT, GENESIS_FORK_VERSION,
     GENESIS_VALIDATORS_ROOT,
 };
-use crate::bls::DST;
+use crate::bls::{hash_to_g2, DST};
 use crate::execution::keccak;
 use crate::registry::{self, validators_root, Validator};
 use crate::ssz::hash_pair;
 use crate::statement::{Aggregate, Anchor, Input, NewKey};
 use crate::Root;
-use bls12_381::hash_to_curve::{ExpandMsgXmd, HashToCurve};
-use bls12_381::{G1Affine, G2Projective, Scalar};
+use bls12_381::{G1Affine, Scalar};
 use group::Curve;
-use sha2::Sha256;
 
 /// Validators with known secret keys, as the registry holds them.
 pub struct Chain {
@@ -87,8 +85,7 @@ pub fn sign_with(secret: Scalar, data: &AttestationData) -> [u8; 96] {
         &GENESIS_VALIDATORS_ROOT,
     );
     let message = signing_root(&data.hash_tree_root(), &domain);
-    let hashed =
-        <G2Projective as HashToCurve<ExpandMsgXmd<Sha256>>>::hash_to_curve([&message[..]], DST);
+    let hashed = hash_to_g2(&message, DST);
     (hashed * secret).to_affine().to_compressed()
 }
 
@@ -101,8 +98,7 @@ pub fn new_key(secret: Scalar, amount: u64) -> NewKey {
         &deposit_message_root(&pubkey, &withdrawal_credentials, amount),
         &domain,
     );
-    let hashed =
-        <G2Projective as HashToCurve<ExpandMsgXmd<Sha256>>>::hash_to_curve([&message[..]], DST);
+    let hashed = hash_to_g2(&message, DST);
     NewKey {
         pubkey,
         withdrawal_credentials,

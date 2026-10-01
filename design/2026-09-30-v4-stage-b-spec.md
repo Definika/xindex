@@ -590,8 +590,8 @@ Review and adoption:
   sign nor register a recovery address.
 - **A forged exit record**, possible only with a broken state verifier, freezes one index's mints on that chain for
   good. That is a delay: holders migrate once the verifier is rotated.
-- **The real P1 and P2**, and a successor's proof of descent, belong to the proof system the owner picks after the GPU
-  run. The vault's side is fixed by the interface above.
+- **A successor's proof of descent**, which recovery asks of a proposed pair, is not built. P1 and P2 are, on SP1 and
+  RISC Zero (sections 10 and 11); the vault's side is fixed by the interface above.
 
 ### 5.7 The Tron state verifier (built 2026-10-01)
 
@@ -690,7 +690,8 @@ forge a proof. What remains:
 3. The factory's chain registry, and `HybridHub` (once proposal 1 is decided). Layer 1 is built (section 5.2); layer 2
    is the rebalance with deliveries and bond (built, section 5.3); the governance messages (section 5.4), and
    migration with the evidence against a chain (section 5.5), are built.
-4. The Ethereum-event verifiers (P1, P2), once the owner decides the proof system after the GPU run.
+4. The Ethereum-event verifiers: P1 on SP1 (built, section 10) and P2 on RISC Zero (built, section 11, the owner's call
+   on 1 October 2026).
 5. The Solana vault program (built, section 7), then Tron (its state verifier built, section 5.7) and HyperEVM
    (section 8).
 6. The stall recovery and snapshot exit (built, section 5.6, but for the pool look-through), then watchers, then the
@@ -950,3 +951,56 @@ behind the vault's existing verifier interface (`xindex_vault::verify`).
   proven.
 - **Forks.** The fork schedule is a constant of the program, so a new Ethereum fork needs a new program key, which is
   a verifier rotation (30 days), proposed well ahead of the fork.
+
+## 11. P2: the same statement, proven by RISC Zero (built 1 October 2026)
+
+The design (4.4) asks for two independent systems from Ethereum to each vault chain, "from different teams and
+different proving stacks", so that one broken prover can stop coins but never move them. P1 runs on SP1, Succinct's
+zkVM. P2 runs on RISC Zero, the owner's call on 1 October 2026: another team, another RISC-V zkVM with its own
+circuits, its own STARK-to-SNARK wrapping and its own Groth16 setup.
+
+**What is shared, and what that means.** P2 proves the statement of section 10, the code in `proofs/finality`, with
+the same input and the same public values. A soundness bug in either zkVM, in its circuits or in its Groth16 wrapping
+breaks one system only, which is the failure the two-system rule exists for. A bug in the statement itself would
+break both at once. That shared risk is a known
+limitation, stated here rather than left implicit. What stands against it is what stands behind P1: the statement
+is plain Rust tested natively, its SSZ and BLS checked against the consensus specs' own libraries (`vectors.py`),
+real mainnet and Sepolia votes, mutants the tests catch, and the audits before launch. A second statement written
+apart from the first would close it, at the cost of a second program to audit.
+
+**The guest** (`proofs/p2/methods/guest`) reads the bincode of `xindex_finality::Input` that `p1-input` writes, the
+same file P1's program reads, runs `xindex_finality::verify`, and commits `Output::abi_encode()` as its journal: P1's
+public values, byte for byte. An input for which the statement does not hold panics, so no receipt exists. The
+accelerated `sha2`, `bls12_381` and `tiny-keccak` are RISC Zero's forks of the exact versions the statement uses. The
+guest is a workspace of its own, since RISC Zero's forks and SP1's replace the same crates. `--features sepolia`
+builds the testnets' guest, with its own image id, as for P1.
+
+**The host** (`p2`, `proofs/p2/host`) runs the guest in execute mode and checks its journal against the statement run
+natively, prints the image id, and proves with RISC Zero's Groth16 on Bonsai or a CUDA GPU; like P1's host, it
+refuses this machine's CPU. Before writing a proof it verifies RISC Zero's receipt against the image id and checks the
+journal again.
+
+**One statement, two zkVMs.** The statement calls no zkVM fork's own API. Its hash to G2 had used SP1's fork of
+`bls12_381`, whose `hash_to_curve` takes other arguments than zkcrypto's and RISC Zero's; `bls::hash_to_g2` now
+composes it from RFC 9380's steps (`expand_message_xmd` with SHA-256, two field elements, the map, the cofactor) over
+functions every build shares, and RFC 9380's own vectors pin it (`finality/tests/hash_to_curve.rs`). P1's output is
+unchanged on every test and on the real input below; its program key changed with its code.
+
+**Measured** (1 October 2026, execute mode, the real Sepolia input: 1,997 validators, 1,874 and 1,784 signers in the
+two links, 64 execution blocks): P2 runs 1.84 billion RISC Zero cycles in 1,864 segments, P1 327 million SP1
+instructions (358 million prover gas), and both commit the same 192 bytes, which the statement run natively computes
+too. Where RISC Zero spends its cycles is not profiled yet.
+
+**The verifier contract.** `EthereumFinalityVerifier` was split: what P1 and P2 share, the anchor, the recorded
+ranges, the headers tree and the receipt proofs, is `FinalityVerifier`, unchanged; each system adds only the check of
+its proof. `RiscZeroFinalityVerifier` calls `verify(seal, IMAGE_ID, sha256(publicValues))` on one RISC Zero Groth16
+verifier deployment, never RISC Zero's router, which has an owner: nothing outside the contract can change what P2
+accepts, as for P1, which calls one SP1 Groth16 verifier and not SP1's gateway. The verifier suite runs once through
+each, and P2's own test pins the SHA-256 digest of the journal.
+
+**Before mainnet, for the owner:**
+- RISC Zero's and SP1's Groth16 setups must each meet the design's rule: no secret setup, or one from a large public
+  ceremony. Check each against its published ceremony record.
+- The image id is reproducible only from a pinned build: RISC Zero builds a guest reproducibly in its Docker image,
+  which a mainnet image id should come from.
+- P2 on Solana, the twin of `solana/programs/ethereum-verifier`, waits with the rest of the Solana work.

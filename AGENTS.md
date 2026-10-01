@@ -131,7 +131,7 @@ src/MintRequests.sol          ownerless escrow of USDC/USDT-for-shares requests 
 src/interfaces/               IIndexHub, IIndexFactory, IIndexZap, IMintRequests, IXindexErrors (shared errors), IRebalanceExecutor, IUniversalRouter,
                               and for Stage B IXindexVault, IEthereumEventVerifier, IVaultStateVerifier, IBnbStateVerifier, ITronStateVerifier, IStateReader,
                               IHybridIndexFactory, IHybridHubTypes, IHybridHub, IHybridHubModule, IHybridHubExtension and
-                              IHybridIndex (all three parts)
+                              IHybridIndex (all three parts), and the vendored ISP1Verifier and IRiscZeroVerifier
 src/libraries/PathLib.sol     V3 packed path decoding (shared with test mocks)
 src/libraries/UniversalRouterCommands.sol  the router command bytes the zap emits, vendored with their input layouts
 src/libraries/UniswapV4Types.sol           V4 actions, PathKey and the swap params, vendored from v4-periphery (MIT)
@@ -143,7 +143,9 @@ src/vault/XindexVault.sol     Stage B: the ownerless vault on an EVM chain, nati
 src/vault/VaultSnapshot.sol   Stage B: the vault's linked library for a holder's snapshot claim: the hub's storage it reads, and the signature
 src/verifiers/BnbStateVerifier.sol  Stage B: BNB Chain's state on Ethereum from its own finality votes, following every epoch (not deployed)
 src/verifiers/TronStateVerifier.sol Stage B: Tron's state on Ethereum from a successful vault `attest` in a solidified block, following every 6-hour list (not deployed)
-src/verifiers/EthereumFinalityVerifier.sol  Stage B: P1 on an EVM vault chain, a light client of Ethereum advanced by SP1 proofs, proving a vault message by its receipt (not deployed)
+src/verifiers/FinalityVerifier.sol  Stage B: what P1 and P2 share on an EVM vault chain, a light client of Ethereum advanced by proofs of one statement, proving a vault message by its receipt
+src/verifiers/EthereumFinalityVerifier.sol  Stage B: P1 on an EVM vault chain, FinalityVerifier checked by SP1's Groth16 verifier (not deployed)
+src/verifiers/RiscZeroFinalityVerifier.sol  Stage B: P2 on an EVM vault chain, FinalityVerifier checked by RISC Zero's Groth16 verifier (not deployed)
 src/verifiers/EthereumStateReader.sol Stage B: reads Ethereum storage under a trusted root, for a vault's snapshot exit (not deployed)
 src/HybridIndexFactory.sol    Stage B: IndexFactory plus the chain registry, vault-token listings, the chain freeze and the template choice (not deployed)
 src/HybridHub.sol             Stage B: the index of tokens on Ethereum and in vaults: orders, burns, claims; delegates the rest to its module (not deployed)
@@ -170,7 +172,7 @@ design/                       the v4 design and its PDF, the Stage A and Stage B
 audit/                        review reports, their triages, and the two retirement records
 demo/                         the hackathon's testnet demonstration: STUB verifiers, deploy scripts along the timelocks, the relayer (TypeScript); its own Foundry project, never deployed to a mainnet
 solana/                       Stage B on Solana: the vault program (Anchor 1.2), P1's verifier (`ethereum-verifier`) and a STUB verifier for testnets, with LiteSVM tests (see solana/README.md)
-proofs/                       Stage B's proof systems in Rust: `finality`, P1's statement that an Ethereum checkpoint is final (spec section 10), tested natively against the consensus specs' libraries and mainnet data; `p1-program` and `p1-script`, its SP1 program and host; `p1-input`, which builds a real input from chain data
+proofs/                       Stage B's proof systems in Rust: `finality`, the statement that an Ethereum checkpoint is final (spec section 10), tested natively against the consensus specs' libraries and mainnet data; `p1-program` and `p1-script`, P1's SP1 program and host; `p1-input`, which builds a real input from chain data; `p2/`, P2's RISC Zero guest and host, a workspace of its own (spec section 11)
 prototype/                    the proving prototype: an SP1 workspace and its own Foundry project (via-IR); the gates skip it and Wake excludes it
 ```
 
@@ -465,7 +467,10 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   the zkVM only runs it. Its gates: `cargo test --release`, `cargo fmt --check` and `cargo clippy`, at low priority,
   each also with `--features sepolia`, the testnets' build: Sepolia's genesis and fork versions, a program key of its
   own, pinned by a real Sepolia vote (`tests/sepolia.rs`). `tests/vectors.py` rebuilds its independent vectors, and a
-  regression in it needs a mutant that the tests catch.
+  regression in it needs a mutant that the tests catch. The statement must stay the same code under SP1 and RISC Zero,
+  so it calls no zkVM fork's own API: its hash to G2 is composed from RFC 9380 and pinned by the RFC's vectors
+  (`tests/hash_to_curve.rs`). P2 (`proofs/p2`, RISC Zero) is built with `cargo build --release -p xindex-p2-host`, and
+  `p2 execute` on a real input must commit what `p1 execute` commits.
 
 ## Conventions
 
@@ -499,6 +504,9 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
     router was built against.
   - `ISP1Verifier` comes from succinctlabs/sp1-contracts (MIT) at `d3629729c3216eb51bd4859d027a8eb729399fa4`, the SP1
     v6 verifiers the prototype measured, with its pragma pinned.
+  - `IRiscZeroVerifier` comes from risc0/risc0-ethereum (Apache-2.0) at `365e7b2db4f620fa256580c27558d2623362b9ae`,
+    tag v3.0.1, the release that matches the zkVM P2 is built with: the interface and the `Receipt` struct it takes,
+    with its pragma pinned and the file's libraries left out, since nothing here computes a claim.
 
   A vendored struct may retype `Currency` and `IHooks` to `address`, which is ABI-identical. Change vendored code only
   to replace a dependency, never to restyle. Both router libraries record the input layout of every command and action
