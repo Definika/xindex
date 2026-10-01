@@ -237,7 +237,7 @@ toolchain anyway.
 | Threshold | Status |
 |---|---|
 | Verify ≤ 1M gas on BNB Chain | **passes**: 227k gas measured |
-| Verify ≤ 1.4M CU on Solana | passes on paper: about 94k CU from Solana's syscall prices, 280k published; measured with the Solana vault |
+| Verify ≤ 1.4M CU on Solana | **passes**: 96,910 CU measured in LiteSVM (`solana/programs/ethereum-verifier`, SP1 v6's own proof, 1 October 2026) |
 | ≤ $50 per proof | open: 36.6B prover gas, measured on mainnet data after cuts 1 and 2 (the model said 11B), priced by the owner's M4 run |
 | ≤ 60 minutes end to end | open: Ethereum's finality (about 13 min) plus the proving time from M4 |
 

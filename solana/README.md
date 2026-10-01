@@ -1,12 +1,13 @@
 # Xindex on Solana
 
-The Stage B vault on Solana (`programs/xindex-vault`), a port of the EVM vault, and a stub verifier for testnets
-(`programs/stub-verifier`). The rules are in `../design/2026-09-30-v4-stage-b-spec.md`, sections 4 and 7. The build is
-for the hackathon demonstration of `../design/2026-09-30-hackathon-plan.md`: devnet only.
+The Stage B vault on Solana (`programs/xindex-vault`), a port of the EVM vault; P1's verifier
+(`programs/ethereum-verifier`), a light client of Ethereum advanced by SP1 proofs; and a stub verifier for testnets
+(`programs/stub-verifier`). The rules are in `../design/2026-09-30-v4-stage-b-spec.md`, sections 4, 7 and 10. The vault
+was built for the hackathon demonstration of `../design/2026-09-30-hackathon-plan.md`.
 
 > **The stub verifier is not a proof system.** It accepts any Ethereum log its relayer key signed. On the devnet it
-> stands in for P1 and P2, which do not exist yet. A vault whose verifiers are stubs is only as safe as its relayer
-> keys. Never point a mainnet vault at it.
+> stands in for P1 and P2. A vault whose verifiers are stubs is only as safe as its relayer keys. Never point a mainnet
+> vault at it. P1 now exists (below); P2, the second proof system every payout also needs, does not yet.
 
 ## What the vault does
 
@@ -19,6 +20,23 @@ for the hackathon demonstration of `../design/2026-09-30-hackathon-plan.md`: dev
   deposits and payouts for 14 days.
 - Keeps two digests Ethereum proves, per index and per intake, byte for byte those of the EVM vault.
 
+## P1's verifier
+
+`programs/ethereum-verifier` is `src/verifiers/EthereumFinalityVerifier.sol` as a Solana program, behind the vault's
+verifier interface. Its instructions, by first byte:
+- `0`, `verify_event`: the vault's call.
+- `1`, `initialize`: the program key and the first anchor, once, by the upgrade authority.
+- `2`, `update`: anyone, with an SP1 proof from the stored anchor.
+- `3`, `check_proof`: checks any SP1 v6 Groth16 proof.
+
+The program's own documentation gives the layouts.
+- It checks SP1 v6's Groth16 proofs on the `alt_bn128` syscalls in 96,910 compute units, measured in LiteSVM on SP1's
+  own proof.
+- A log's proof (1.5 to 2.2 KB) is too long for a transaction. The relayer writes it into a loader buffer
+  (`solana program write-buffer`, its length as a little-endian u32 first) and passes the buffer after the range
+  account, with an empty proof.
+- Deploy it as the stub: `initialize` from its upgrade authority, then make it final.
+
 ## Build and test
 
 The toolchain: Solana CLI 4.2, Anchor 1.2, and Rust 1.98.1 (`rust-toolchain.toml`) for the host tests. Builds run at
@@ -28,8 +46,9 @@ the lowest priority on two jobs.
 cd solana
 CARGO_BUILD_JOBS=2 nice -n 19 anchor build --no-idl        # the vault
 CARGO_BUILD_JOBS=2 nice -n 19 cargo build-sbf --manifest-path programs/stub-verifier/Cargo.toml
-CARGO_BUILD_JOBS=2 nice -n 19 cargo test -p xindex-vault    # unit tests, then LiteSVM tests on the two .so files
-cargo fmt --all --check && cargo clippy -p xindex-vault -p stub-verifier
+CARGO_BUILD_JOBS=2 nice -n 19 cargo build-sbf --manifest-path programs/ethereum-verifier/Cargo.toml
+CARGO_BUILD_JOBS=2 nice -n 19 cargo test -p xindex-vault -p ethereum-verifier   # unit tests, then LiteSVM tests on the .so files
+cargo fmt --all --check && cargo clippy -p xindex-vault -p stub-verifier -p ethereum-verifier --all-targets
 ```
 
 - `--no-idl`, because the vault derives its accounts from the message itself, which Anchor's IDL generator cannot

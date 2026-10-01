@@ -163,7 +163,7 @@ abi/                          generated ABIs the web app decodes with; CI regene
 design/                       the v4 design and its PDF, the Stage A and Stage B specs, the prototype record, the PDF builder, and the analysis scripts (their data is not committed)
 audit/                        review reports, their triages, and the two retirement records
 demo/                         the hackathon's testnet demonstration: STUB verifiers, deploy scripts along the timelocks, the relayer (TypeScript); its own Foundry project, never deployed to a mainnet
-solana/                       Stage B on Solana: the vault program (Anchor 1.2) and a STUB verifier for testnets, with LiteSVM tests (see solana/README.md)
+solana/                       Stage B on Solana: the vault program (Anchor 1.2), P1's verifier (`ethereum-verifier`) and a STUB verifier for testnets, with LiteSVM tests (see solana/README.md)
 proofs/                       Stage B's proof systems in Rust: `finality`, P1's statement that an Ethereum checkpoint is final (spec section 10), tested natively against the consensus specs' libraries and mainnet data; `p1-program` and `p1-script`, its SP1 program and host; `p1-input`, which builds a real input from chain data
 prototype/                    the proving prototype: an SP1 workspace and its own Foundry project (via-IR); the gates skip it and Wake excludes it
 ```
@@ -447,8 +447,11 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
 - **The Solana vault is the EVM vault's twin.** `solana/programs/xindex-vault` keeps the same messages, digests, speed
   limit and freeze, and its `abi` tests pin every encoding against Solidity's. A change to either vault's rules or to a
   message goes into both. `solana/programs/stub-verifier` trusts a relayer key and exists for testnets only; nothing in
-  `src/` or `script/` may name it. Its gates: `anchor build --no-idl`, `cargo build-sbf` for the stub, `cargo test -p
-  xindex-vault`, `cargo fmt --check` and `cargo clippy`, at low priority.
+  `src/` or `script/` may name it. `solana/programs/ethereum-verifier` is P1 on Solana, the twin of
+  `EthereumFinalityVerifier.sol`: the same anchor, the same headers tree, the same receipt proof, and SP1 v6's Groth16
+  check on the alt_bn128 syscalls, tested on SP1's own proof and on real mainnet receipts. Its gates: `anchor build
+  --no-idl`, `cargo build-sbf` for the stub and for `ethereum-verifier`, `cargo test -p xindex-vault -p
+  ethereum-verifier`, `cargo fmt --check` and `cargo clippy`, at low priority.
 - **P1 is checked in plain Rust first.** `proofs/finality` holds the whole statement, so its logic is tested natively and
   the zkVM only runs it. Its gates: `cargo test --release`, `cargo fmt --check` and `cargo clippy`, at low priority.
   `tests/vectors.py` rebuilds its independent vectors, and a regression in it needs a mutant that the tests catch.

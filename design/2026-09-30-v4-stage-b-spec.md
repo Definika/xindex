@@ -901,6 +901,21 @@ to equal the stored one, stores the anchor out, and records the headers root. Th
   `receiptsRoot` (Merkle-Patricia, key `rlp(txIndex)`), and the log at `logIndex`. It returns what the vault needs.
 - `verifyCheckpoint(proof)`: a header leaf proven into a recorded headers root, returned as the checkpoint.
 
+**On Solana (built 1 October 2026).** `solana/programs/ethereum-verifier` is the same verifier as a Solana program,
+behind the vault's existing verifier interface (`xindex_vault::verify`).
+- **Same rules.** The same anchor, the same headers tree, the same receipt and log checks. `update` keeps the anchor in
+  a state account and each proof's covered blocks in an account at the headers root's address.
+- **Groth16.** It checks SP1 v6's Groth16 proof with the `alt_bn128` syscalls, which take Ethereum's encodings, so it
+  is a line-for-line port of the vendored Solidity verifier.
+- **Measured** in LiteSVM:
+  - verifying SP1's own v6 proof takes 96,910 compute units, under 7% of a transaction's 1.4M;
+  - proving a real mainnet log takes 9,100 to 12,500.
+- **Staged proofs.** An event proof is 1.5 to 2.2 KB, more than a transaction holds, so the relayer stages it in a
+  loader buffer first. What the buffer holds is no more trusted than instruction data.
+- **Deployment.** As the stub: the upgrade authority sets the program key and the first anchor once, then makes the
+  program immutable, which the vault requires.
+- **Not built.** `verifyCheckpoint`: the Solana vault has no checkpoints or snapshot exit yet.
+
 ### Deliberately not in P1
 
 - **A cheaper commitment than the registry's.** Every record is proven against the SSZ registry root, which means
