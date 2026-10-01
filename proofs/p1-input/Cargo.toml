@@ -9,6 +9,10 @@ description = "Builds P1's input from a beacon node and an execution node, check
 name = "p1-input"
 path = "src/main.rs"
 
+[features]
+# Sepolia's constants instead of mainnet's, for the testnets (proofs/README.md, "Sepolia").
+sepolia = ["xindex-finality/sepolia"]
+
 [dependencies]
 xindex-finality = { path = "../finality" }
 bls12_381 = { version = "0.8.0", features = ["experimental"] }

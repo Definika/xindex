@@ -12,6 +12,10 @@ within the 4%-a-day speed limit. No contract reads a price. The plan is `../desi
 >
 > Whoever holds the relayer keys can move the demo's coins. Everything else is the real code: the factory, the hub and
 > its two modules, both vaults. Nothing in this folder may be deployed to a mainnet.
+>
+> **A second index, of WETH and BNB, runs on real proofs** (see "BNB testnet: real proofs" below): BNB testnet's state
+> is proven on Sepolia from its own validators' votes, and Sepolia's messages are proven on BNB testnet by P1. Only P2,
+> which does not exist yet, is a stub there.
 
 ## What is here
 
@@ -102,9 +106,46 @@ Check Hyperliquid's documentation for the current way.
 A Solana recipient must already exist: a payout below the rent-exempt minimum to a new account fails, and the burn
 waits.
 
+## BNB testnet: real proofs
+
+The index of WETH and BNB uses the real verifiers both ways:
+- **BNB testnet → Sepolia.** `BnbStateVerifier` follows BNB testnet's validator sets from their own finality votes
+  (BLS, on Sepolia's EIP-2537 precompiles) and proves the vault's intake from its storage. Nothing is signed by a
+  relayer: the relayer only carries headers, votes and `eth_getProof` nodes.
+- **Sepolia → BNB testnet.** P1 (`../proofs`, built with `--features sepolia`) proves a finalized Sepolia checkpoint
+  and the execution blocks since the last one; `EthereumFinalityVerifier` checks it through SP1's Groth16 verifier, and
+  each message by its block's place under P1's headers root and its receipt's Merkle-Patricia proof. P2's place is
+  taken by the stub, signed by `RELAYER2_KEY`.
+
+Proving P1 needs `SP1_PROVER=network` with a funded `NETWORK_PRIVATE_KEY`, or `SP1_PROVER=cuda` on an NVIDIA GPU; this
+Mac's CPU is refused. A real Sepolia input of 1 October (1,997 validators, 64 execution blocks) costs 358 million
+prover gas, against mainnet's 36.6 billion. P1 must move within a day of its anchor, so `relay` proves hourly.
+
+| Day | Step | Chain |
+|---|---|---|
+| 0 | build `../proofs` for Sepolia; `npm run cli -- p1-anchor` (keeps P1's first anchor, prints `P1_KEY`, `P1_ANCHOR`, `P1_EPOCH`) | Sepolia |
+| 0, after `sepolia0` | `forge script script/Demo.s.sol --sig "bnb0()"` with those three, `RELAYER2`, `FREEZER`, `RECOVERY` | BNB testnet |
+| 0 | `npm run cli -- bnb-epoch`, then `forge script script/Demo.s.sol --sig "sepoliaBnb0()"`, then `npm run cli -- relay` left running from here on: `BnbStateVerifier` stops for good a day behind | Sepolia |
+| 2 to 9, after `sepolia2` | `forge script script/Demo.s.sol --sig "sepoliaBnb2()"` | Sepolia |
+| 4 to 11 | `forge script script/Demo.s.sol --sig "sepoliaBnb4()"` from `SENDER_KEY`'s account; `npm run cli -- register --bnb` | Sepolia, BNB testnet |
+| 4 on | `open 10 30 --bnb`, `deposit <order> --bnb`, after 30 minutes `settle <order> --bnb` | Sepolia, BNB testnet |
+| 5 on | `claim <order> --bnb`, then `redeem 4 <BNB testnet address> --bnb` | Sepolia, BNB testnet |
+
+`SENDER_KEY`'s account needs tBNB on BNB testnet for the deposit and the relayer's transactions there. The relayer's
+other commands for this path: `bnb-follow`, `p1-update`, `bnb-checkpoint`, and `balances --bnb`.
+
 ## Rehearsed
 
 The whole flow was rehearsed on 30 September against two local anvil chains (as Sepolia and HyperEVM, the first
 started four days back so its timelocks could be skipped) and a local Solana validator running the built programs:
 deployment, registration, an order, deposits on both chains, settlement on both stub state proofs, the claim, delivery
 of the settle messages, a redemption, and the burns paid on both chains.
+
+The BNB path's two proofs were rehearsed on 1 October with real chain data and the real contracts, spending nothing:
+- **BNB testnet → Sepolia**, on a local fork of Sepolia: the relayer's `bnb-epoch` built `BnbStateVerifier` from epoch
+  134,285,000 (9 validators), `follow` recorded epoch 134,286,000 from BNB testnet's own votes, and a storage proof at
+  block 134,286,038 read testnet WBNB's name through `verifySlots`.
+- **Sepolia → BNB testnet**, on a local chain with BNB testnet's id: `EthereumFinalityVerifier` took the public values of
+  a real Sepolia input (anchor epoch 351,927 to 351,929, blocks 11,823,123 to 11,823,186), with only the SNARK check
+  mocked, and the relayer's proofs passed `verifyEvent` for real logs at the range's first, middle and last blocks
+  and `verifyCheckpoint` at its last.

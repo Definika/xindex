@@ -3,7 +3,10 @@
 
     python3 test/fixtures/bnb/generate.py [rpc-url]
 
-Needs py_ecc and pycryptodome. It writes chain.json next to itself: four consecutive epoch blocks (BNB Chain rotates
+With a BNB Chain mainnet RPC (the default) it writes chain.json; with a BNB testnet one (chain id 97) it writes
+testnet.json, which the same tests run on, as the testnet deployment's verifier will follow that chain.
+
+Needs py_ecc and pycryptodome. It writes the file next to itself: four consecutive epoch blocks (BNB Chain rotates
 part of its validator set at every one), the votes that finalized the last three, the votes on either side of the
 block from which the third epoch's set signs, and a block at the head with the vote that finalized it and
 `eth_getProof` there for WBNB's slot 0. Public nodes serve proofs only at the head, so the file is rebuilt, not
@@ -26,7 +29,11 @@ from py_ecc.optimized_bls12_381 import normalize
 RPC = sys.argv[1] if len(sys.argv) > 1 else "https://bsc-rpc.publicnode.com"
 HERE = os.path.dirname(os.path.abspath(__file__))
 EPOCH = 1000  # since Maxwell
-WBNB = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
+# Each chain's WBNB, which stores its name, "Wrapped BNB", in slot 0 on both, and the file its fixture goes to.
+CHAINS = {
+    56: ("0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c", "chain.json"),
+    97: ("0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd", "testnet.json"),
+}
 UNUSED_SLOT = "0x" + "ab" * 32  # WBNB stores nothing there
 ABSENT = "0x" + "00" * 14 + "58696e646578"  # "Xindex": an address nothing was ever sent to
 FIELDS = [
@@ -218,7 +225,7 @@ def check_len(entries, turn_length):
 
 # --- fixtures --------------------------------------------------------------------------------------------------------
 
-def chain():
+def chain(WBNB):
     """Four consecutive epoch blocks, the votes that finalized the last three, the votes on either side of the third's
     switch, and a block at the head with its vote and a storage proof there."""
     # Taken first, at the head itself: public nodes refuse proofs even a few blocks back.
@@ -295,9 +302,10 @@ def chain():
 
 
 def main():
-    fixture = chain()
-    json.dump(fixture, open(os.path.join(HERE, "chain.json"), "w"), indent=1)
-    print("chain.json written")
+    wbnb, name = CHAINS[int(rpc("eth_chainId", []), 16)]
+    fixture = chain(wbnb)
+    json.dump(fixture, open(os.path.join(HERE, name), "w"), indent=1)
+    print(name, "written")
 
 
 if __name__ == "__main__":

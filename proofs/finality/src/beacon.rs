@@ -1,4 +1,5 @@
-//! Mainnet's beacon-chain constants and the containers a vote is made of, from Electra on.
+//! The beacon chain's constants and the containers a vote is made of, from Electra on. The network's own constants
+//! (its genesis, its fork versions) are mainnet's, or Sepolia's with the `sepolia` feature, for the testnets.
 
 use crate::ssz::{hash_pair, merkleize, u64_chunk};
 use crate::Root;
@@ -8,17 +9,51 @@ pub const SLOTS_PER_EPOCH: u64 = 32;
 pub const FAR_FUTURE_EPOCH: u64 = u64::MAX;
 pub const DOMAIN_BEACON_ATTESTER: [u8; 4] = [1, 0, 0, 0];
 pub const DOMAIN_DEPOSIT: [u8; 4] = [3, 0, 0, 0];
-pub const GENESIS_FORK_VERSION: [u8; 4] = [0, 0, 0, 0];
+pub use network::{FORKS, GENESIS_FORK_VERSION, GENESIS_VALIDATORS_ROOT, NETWORK};
 
-/// Mainnet's `genesis_validators_root`.
-pub const GENESIS_VALIDATORS_ROOT: Root = [
-    0x4b, 0x36, 0x3d, 0xb9, 0x4e, 0x28, 0x61, 0x20, 0xd7, 0x6e, 0xb9, 0x05, 0x34, 0x0f, 0xdd, 0x4e,
-    0x54, 0xbf, 0xe9, 0xf0, 0x6b, 0xf3, 0x3f, 0xf6, 0xcf, 0x5a, 0xd2, 0x7f, 0x51, 0x1b, 0xfe, 0x95,
-];
+/// Mainnet. A program built for one network computes the other's signing domains wrongly, so no vote of the other
+/// verifies in it: each network's program is its own key.
+#[cfg(not(feature = "sepolia"))]
+mod network {
+    use crate::Root;
 
-/// Mainnet's forks from Electra on, by first epoch. A later fork is a new program and a verifier rotation: until then
-/// its votes carry a domain this program does not compute, so they fail to verify, and nothing unsound follows.
-pub const FORKS: [(u64, [u8; 4]); 2] = [(364_032, [5, 0, 0, 0]), (411_392, [6, 0, 0, 0])];
+    pub const NETWORK: &str = "mainnet";
+    pub const GENESIS_FORK_VERSION: [u8; 4] = [0, 0, 0, 0];
+
+    /// Mainnet's `genesis_validators_root`.
+    pub const GENESIS_VALIDATORS_ROOT: Root = [
+        0x4b, 0x36, 0x3d, 0xb9, 0x4e, 0x28, 0x61, 0x20, 0xd7, 0x6e, 0xb9, 0x05, 0x34, 0x0f, 0xdd,
+        0x4e, 0x54, 0xbf, 0xe9, 0xf0, 0x6b, 0xf3, 0x3f, 0xf6, 0xcf, 0x5a, 0xd2, 0x7f, 0x51, 0x1b,
+        0xfe, 0x95,
+    ];
+
+    /// Mainnet's forks from Electra on, by first epoch. A later fork is a new program and a verifier rotation: until
+    /// then its votes carry a domain this program does not compute, so they fail to verify, and nothing unsound
+    /// follows.
+    pub const FORKS: [(u64, [u8; 4]); 2] = [(364_032, [5, 0, 0, 0]), (411_392, [6, 0, 0, 0])];
+}
+
+/// Sepolia, for the testnets, from its beacon node's `/eth/v1/beacon/genesis` and `/eth/v1/config/fork_schedule`.
+#[cfg(feature = "sepolia")]
+mod network {
+    use crate::Root;
+
+    pub const NETWORK: &str = "sepolia";
+    pub const GENESIS_FORK_VERSION: [u8; 4] = [0x90, 0x00, 0x00, 0x69];
+
+    /// Sepolia's `genesis_validators_root`.
+    pub const GENESIS_VALIDATORS_ROOT: Root = [
+        0xd8, 0xea, 0x17, 0x1f, 0x3c, 0x94, 0xae, 0xa2, 0x1e, 0xbc, 0x42, 0xa1, 0xed, 0x61, 0x05,
+        0x2a, 0xcf, 0x3f, 0x92, 0x09, 0xc0, 0x0e, 0x4e, 0xfb, 0xaa, 0xdd, 0xac, 0x09, 0xed, 0x9b,
+        0x80, 0x78,
+    ];
+
+    /// Sepolia's forks from Electra on, by first epoch, under the same rule as mainnet's.
+    pub const FORKS: [(u64, [u8; 4]); 2] = [
+        (222_464, [0x90, 0x00, 0x00, 0x74]),
+        (272_640, [0x90, 0x00, 0x00, 0x75]),
+    ];
+}
 
 /// The fork version in force at `epoch`, or `None` before Electra.
 pub fn fork_version(epoch: u64) -> Option<[u8; 4]> {

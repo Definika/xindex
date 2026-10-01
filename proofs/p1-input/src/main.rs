@@ -17,13 +17,15 @@ use bls12_381::G1Affine;
 use rpc::Nodes;
 use state::{branch, State};
 use std::time::Instant;
-use xindex_finality::beacon::{Checkpoint, STATE_DEPTH, STATE_VALIDATORS_INDEX};
+use xindex_finality::beacon::{Checkpoint, NETWORK, STATE_DEPTH, STATE_VALIDATORS_INDEX};
 use xindex_finality::registry;
 use xindex_finality::ssz::merkleize;
 use xindex_finality::{verify, Anchor, Input, NewKey, Root};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // An input is checked by running the statement natively, under this build's network.
+    eprintln!("P1 input for {NETWORK}");
     let result = match args.first().map(String::as_str) {
         Some("check-state") if args.len() == 2 => check_state(&args[1]),
         Some("build") if args.len() == 6 => build(&args[1], &args[2], &args[3], &args[4], &args[5]),
@@ -88,6 +90,15 @@ fn check_state(path: &str) -> Result<(), String> {
         payload.block_number,
         hex::encode(payload.block_hash)
     );
+    // What a verifier contract starting from this checkpoint is built with: its anchor and epoch.
+    let anchor = Anchor {
+        epoch: l.checkpoint.epoch,
+        validators_root: l.roots[STATE_VALIDATORS_INDEX as usize],
+        exec_hash: payload.block_hash,
+        exec_number: payload.block_number,
+    };
+    println!("validators root 0x{}", hex::encode(anchor.validators_root));
+    println!("anchor 0x{}", hex::encode(anchor.hash()));
     Ok(())
 }
 

@@ -9,12 +9,15 @@ script = "script"
 out = "out"
 cache_path = "cache"
 libs = ["../lib"]
-allow_paths = ["../src"]
+# ../prototype/evm/src/sp1 is SP1's Groth16 verifier, vendored unchanged from succinctlabs/sp1-contracts: P1's verifier
+# on BNB testnet calls it, since Succinct has no verifier deployed there.
+allow_paths = ["../src", "../prototype/evm/src/sp1"]
 remappings = [
     "forge-std/=../lib/forge-std/src/",
     "@openzeppelin/contracts/=../lib/openzeppelin-contracts/contracts/",
     "@openzeppelin/contracts-upgradeable/=../lib/openzeppelin-contracts-upgradeable/contracts/",
     "xindex/=../src/",
+    "sp1-contracts/=../prototype/evm/src/sp1/",
 ]
 solc = "0.8.28"
 evm_version = "cancun"

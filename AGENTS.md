@@ -156,7 +156,7 @@ test/XindexTest.sol           state and listing helpers the factory, hub, zap an
 test/Security.t.sol           regression tests for the security review findings (see gate 6 for ids tested elsewhere)
 test/Repo.t.sol               repository facts findings rest on: pinned compiler, CI gates and toolchain, dependency lock, ABIs, no price, docs
 test/mocks/                   mock tokens, WETH, a strict Universal Router, V3 pools for the testnet script, the market fixture (+ Mocks.t.sol)
-test/fixtures/bnb/            real BNB Chain data for the Stage B verifier, and generate.py, which rebuilds it from a public RPC (py_ecc, pycryptodome)
+test/fixtures/bnb/            real BNB Chain data for the Stage B verifier, mainnet's and the testnet's, and generate.py, which rebuilds either from a public RPC (py_ecc, pycryptodome)
 test/fixtures/ethereum/       a real mainnet block's receipts trie proofs for P1's verifier, and generate.py, which rebuilds them and checks the root (rlp, trie)
 test/fixtures/tron/           real Tron blocks around a maintenance boundary, with two real calls, and generate.py, which rebuilds them from TronGrid (pycryptodome)
 test/utils/                   test-only helpers (an RLP writer)
@@ -462,8 +462,10 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   --no-idl`, `cargo build-sbf` for the stub and for `ethereum-verifier`, `cargo test -p xindex-vault -p
   ethereum-verifier`, `cargo fmt --check` and `cargo clippy`, at low priority.
 - **P1 is checked in plain Rust first.** `proofs/finality` holds the whole statement, so its logic is tested natively and
-  the zkVM only runs it. Its gates: `cargo test --release`, `cargo fmt --check` and `cargo clippy`, at low priority.
-  `tests/vectors.py` rebuilds its independent vectors, and a regression in it needs a mutant that the tests catch.
+  the zkVM only runs it. Its gates: `cargo test --release`, `cargo fmt --check` and `cargo clippy`, at low priority,
+  each also with `--features sepolia`, the testnets' build: Sepolia's genesis and fork versions, a program key of its
+  own, pinned by a real Sepolia vote (`tests/sepolia.rs`). `tests/vectors.py` rebuilds its independent vectors, and a
+  regression in it needs a mutant that the tests catch.
 
 ## Conventions
 

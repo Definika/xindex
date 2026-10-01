@@ -5,6 +5,10 @@ edition = "2021"
 license = "MIT"
 description = "P1's zkVM program: checks proofs/finality's statement and commits its public values"
 
+[features]
+# Sepolia's constants instead of mainnet's, for the testnets (proofs/README.md, "Sepolia").
+sepolia = ["xindex-finality/sepolia"]
+
 [dependencies]
 sp1-zkvm = "6.0.1"
 xindex-finality = { path = "../finality" }

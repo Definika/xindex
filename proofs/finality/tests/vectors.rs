@@ -4,8 +4,8 @@
 use bls12_381::{G1Affine, G1Projective};
 use group::Curve;
 use xindex_finality::beacon::{
-    compute_domain, fork_version, signing_root, AttestationData, BeaconBlockHeader, Checkpoint,
-    DOMAIN_BEACON_ATTESTER, GENESIS_VALIDATORS_ROOT,
+    compute_domain, signing_root, AttestationData, BeaconBlockHeader, Checkpoint,
+    DOMAIN_BEACON_ATTESTER,
 };
 use xindex_finality::bls;
 use xindex_finality::registry::{validators_root, Validator};
@@ -20,6 +20,11 @@ fn h<const N: usize>(s: &str) -> [u8; N] {
 }
 
 const FAR: u64 = u64::MAX;
+
+/// Mainnet's `genesis_validators_root`, which `vectors.py` computed its domain with: a literal, so the comparison with the
+/// specs' libraries runs whichever network the crate is built for.
+const MAINNET_GENESIS_VALIDATORS_ROOT: &str =
+    "4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95";
 
 fn key(s: &str) -> G1Affine {
     Option::from(G1Affine::from_compressed(&h::<48>(s))).expect("a valid key")
@@ -113,7 +118,7 @@ fn ssz_and_bls_match_the_consensus_specs_libraries() {
     let domain = compute_domain(
         DOMAIN_BEACON_ATTESTER,
         [6, 0, 0, 0],
-        &GENESIS_VALIDATORS_ROOT,
+        &h(MAINNET_GENESIS_VALIDATORS_ROOT),
     );
     assert_eq!(
         domain,
@@ -159,9 +164,13 @@ fn a_real_header_hashes_to_its_root() {
 
 /// A real mainnet aggregate from the block at slot 15,331,008: nine validators across nine committees vote at slot
 /// 15,331,007, under Fulu's fork version. Their keys come from the beacon API; the signature verifies only with all
-/// nine, over this data, under this domain.
+/// nine, over this data, under this domain. It pins mainnet's constants, so it runs in mainnet's build only;
+/// `sepolia.rs` pins Sepolia's.
+#[cfg(not(feature = "sepolia"))]
 #[test]
 fn a_real_aggregate_verifies() {
+    use xindex_finality::beacon::{fork_version, GENESIS_VALIDATORS_ROOT};
+
     let data = AttestationData {
         slot: 15_331_007,
         index: 0,

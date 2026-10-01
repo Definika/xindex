@@ -1,5 +1,5 @@
 // TESTNETS ONLY: the demo's command line. `npm run cli -- <command>`; see demo/README.md for the order of play.
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PublicKey } from "@solana/web3.js";
 import { hexToBytes, pad, parseAbiItem, toHex, zeroAddress, type Address, type Hex } from "viem";
@@ -20,8 +20,14 @@ import {
 } from "./evm.js";
 import { decode, type Log } from "./messages.js";
 import * as sol from "./solana.js";
+import * as bnb from "./bnb.js";
+import * as p1 from "./p1.js";
 
 const log = (...a: unknown[]) => console.log(new Date().toISOString().slice(11, 19), ...a);
+/** The index a command acts on: the WETH, SOL and HYPE one, or with `--bnb` the WETH and BNB one, on real proofs. */
+const pick = (args: string[]) => (args.includes("--bnb") ? bnb.bnbDeployments.index() : deployments.index());
+const plain = (args: string[]) => args.filter((a) => !a.startsWith("--"));
+const BNB_TESTNET = 97n;
 const intakeBytes = (intakeId: bigint) => hexToBytes(pad(toHex(intakeId), { size: 32 }));
 
 // ---------------------------------------------------------------------
@@ -68,7 +74,12 @@ async function solanaInit() {
 }
 
 /** Registers the demo index on both vaults. */
-async function register() {
+async function register(args: string[]) {
+  if (args.includes("--bnb")) {
+    const { index, salt } = bnb.bnbDeployments.index();
+    log("BNB testnet:", await bnb.register(index, salt));
+    return;
+  }
   const { index, salt } = deployments.index();
   const h = deployments.hyperevm();
   const client = hyperClient();
@@ -82,6 +93,7 @@ async function register() {
 // ---------------------------------------------------------------------
 
 const STATE = join(DEMO, "relayer", "state");
+const exists = (name: string) => existsSync(join(DEMO, "deployments", name));
 const cursorFile = join(STATE, "cursor.json");
 
 function cursor(fallback: bigint): bigint {
@@ -122,7 +134,10 @@ async function relayOnce(from: bigint): Promise<bigint> {
       const m = decode(l.args.payload as Hex);
       const entry: Log = { blockNumber: l.blockNumber!, emitter: l.address, topic1: l.topics[1] as Hex, data: l.data };
       try {
-        if (m.destChainId === BigInt(s.hyperChainId)) {
+        if (m.destChainId === BNB_TESTNET) {
+          const outcome = await bnb.deliver({ ...entry, txHash: l.transactionHash!, logIndex: l.logIndex! });
+          log("BNB testnet", m.id.slice(0, 10), "kind", m.kind, outcome);
+        } else if (m.destChainId === BigInt(s.hyperChainId)) {
           log("HyperEVM", m.id.slice(0, 10), "kind", m.kind, await deliverHyper(entry));
         } else if (m.destChainId === BigInt(s.solanaChainId)) {
           const outcome = await sol.deliverSolana(
@@ -151,12 +166,25 @@ async function relay(args: string[]) {
   const recent = (await head()) - 5000n;
   let next = cursor(start !== undefined ? BigInt(start) : recent > 0n ? recent : 0n);
   let lastCheckpoint = 0;
+  const bnbOn = exists("sepolia-bnb.json");
   for (;;) {
     next = await relayOnce(next);
     writeFileSync(cursorFile, JSON.stringify({ next: next.toString() }));
+    if (bnbOn) {
+      // BnbStateVerifier stops for good a day behind, so it is walked forward on every pass.
+      const e = await bnb.follow().catch((err) => log("BNB follow:", String(err).split("\n")[0]));
+      if (e) log("BNB testnet followed to epoch", e);
+    }
     if (Date.now() - lastCheckpoint > 3_600_000) {
       const c = await checkpointHyper().catch((e) => log("checkpoint:", String(e).split("\n")[0]));
       if (c) log("HyperEVM checkpoint", c);
+      if (bnbOn && process.env.SP1_PROVER) {
+        // P1 must move within a day of its anchor, and the BNB vault's checkpoint with it.
+        const u = await bnb.updateP1().catch((err) => log("P1:", String(err).split("\n")[0]));
+        if (u) log("P1 on BNB testnet at Sepolia epoch", u);
+        const k = await bnb.checkpoint().catch((err) => log("BNB checkpoint:", String(err).split("\n")[0]));
+        if (k) log("BNB testnet checkpoint", k);
+      }
       lastCheckpoint = Date.now();
     }
     if (args.includes("--once")) return;
@@ -168,15 +196,15 @@ async function relay(args: string[]) {
 // the demo's mint and redeem
 // ---------------------------------------------------------------------
 
-async function components() {
-  const { index } = deployments.index();
+async function components(index: Address) {
   const [tokens] = await read(sepoliaClient(), index, "IHybridIndex", "components");
   return tokens as Address[];
 }
 
 /** Mints demo WETH to the sender, approves the index and opens an order for `shares` whole shares. */
-async function open(args: string[]) {
-  const { index } = deployments.index();
+async function open(all: string[]) {
+  const { index } = pick(all);
+  const args = plain(all);
   const s = deployments.sepolia();
   const client = sepoliaClient();
   const w = wallet(sepolia, "SENDER_KEY");
@@ -189,7 +217,7 @@ async function open(args: string[]) {
   const shares = BigInt(Math.round(Number(args[0] ?? "10") * 1e6)) * 10n ** 12n;
   const minutes = BigInt(args[1] ?? "10");
   const amounts = (await read(client, index, "IHybridIndex", "previewOrder", [shares])) as bigint[];
-  const tokens = await components();
+  const tokens = await components(index);
   const wethAt = tokens.findIndex((t) => t.toLowerCase() === s.weth.toLowerCase());
   await send(client, w, s.weth, "DemoToken", "mint", [w.account.address, amounts[wethAt]]);
   await send(client, w, s.weth, "DemoToken", "approve", [index, amounts[wethAt]]);
@@ -201,17 +229,21 @@ async function open(args: string[]) {
 }
 
 /** Deposits the order's HYPE on HyperEVM and its SOL on Solana, from the demo's wallets. */
-async function depositFor(args: string[]) {
-  const { index } = deployments.index();
+async function depositFor(all: string[]) {
+  const { index } = pick(all);
+  const args = plain(all);
   const s = deployments.sepolia();
   const orderId = BigInt(args[0]);
   const client = sepoliaClient();
   const intakeId = (await read(client, index, "IHybridIndex", "intakeIdOf", [orderId])) as bigint;
   const [amounts] = await read(client, index, "IHybridIndex", "orderAmounts", [orderId]);
-  const tokens = await components();
+  const tokens = await components(index);
   for (let i = 0; i < tokens.length; ++i) {
     const [chainId] = await read(client, s.factory, "HybridIndexFactory", "vaultToken", [tokens[i]]);
-    if (chainId === BigInt(s.hyperChainId)) {
+    if (chainId === BNB_TESTNET) {
+      const receipt = await bnb.deposit(index, intakeId, amounts[i]);
+      log("BNB testnet deposit", amounts[i], receipt.transactionHash);
+    } else if (chainId === BigInt(s.hyperChainId)) {
       const h = deployments.hyperevm();
       await send(hyperClient(), wallet(hyperevm, "SENDER_KEY"), h.vault, "XindexVault", "deposit", [index, intakeId], amounts[i]);
       log("HyperEVM deposit", amounts[i]);
@@ -222,8 +254,9 @@ async function depositFor(args: string[]) {
 }
 
 /** Proves each vault's intake to Sepolia and settles the order; run after its deadline. */
-async function settle(args: string[]) {
-  const { index } = deployments.index();
+async function settle(all: string[]) {
+  const { index } = pick(all);
+  const args = plain(all);
   const s = deployments.sepolia();
   const orderId = BigInt(args[0]);
   const client = sepoliaClient();
@@ -236,7 +269,12 @@ async function settle(args: string[]) {
     if (t <= deadline) throw new Error(`${chain}'s latest readable block (${t}) is not yet after the deadline (${deadline}): wait`);
   };
   for (const chainId of chainIds as bigint[]) {
-    if (chainId === BigInt(s.hyperChainId)) {
+    if (chainId === BNB_TESTNET) {
+      // A real proof: the vault's storage at a final BNB testnet block, shown final by its validators' vote.
+      const r = await bnb.intakeProof(index, intakeId);
+      after("BNB testnet", r.timestamp);
+      proofs.push({ proof: r.proof, tokens: r.tokens, totals: r.totals });
+    } else if (chainId === BigInt(s.hyperChainId)) {
       const r = await hyperIntake(index, intakeId);
       after("HyperEVM", r.timestamp);
       const proof = await stateProof(s.hyperStateVerifier, r.account, r.slot, r.value, r.blockNumber, r.timestamp);
@@ -253,31 +291,45 @@ async function settle(args: string[]) {
   log("settled", orderId, receipt.transactionHash, "- claimable after the 24-hour lock");
 }
 
-async function claim(args: string[]) {
-  const { index } = deployments.index();
+async function claim(all: string[]) {
+  const { index } = pick(all);
+  const args = plain(all);
   const receipt = await send(sepoliaClient(), wallet(sepolia, "SENDER_KEY"), index, "IHybridIndex", "claimOrder", [BigInt(args[0])]);
   log("claimed", args[0], receipt.transactionHash, "- the relayer carries the settle messages to the vaults");
 }
 
-/** Redeems `shares` whole shares: WETH now, HYPE and SOL burned toward the recipients on their chains. */
-async function redeem(args: string[]) {
-  const { index } = deployments.index();
+/** Redeems `shares` whole shares: WETH now, HYPE and SOL burned toward the recipients on their chains. With `--bnb`,
+ *  `redeem <shares> <BNB testnet recipient>`: WETH now, BNB burned toward the recipient. */
+async function redeem(all: string[]) {
+  const { index } = pick(all);
+  const args = plain(all);
   const s = deployments.sepolia();
   const client = sepoliaClient();
   const w = wallet(sepolia, "SENDER_KEY");
   const shares = BigInt(Math.round(Number(args[0]) * 1e6)) * 10n ** 12n;
-  const hyperRecipient = args[1] as Address;
-  const solanaRecipient = new PublicKey(args[2]);
+  const evmRecipient = args[1] as Address;
   const [chainIds] = await read(client, index, "IHybridIndex", "chains");
   const recipients = (chainIds as bigint[]).map((id) =>
-    id === BigInt(s.hyperChainId) ? pad(hyperRecipient, { size: 32 }) : toHex(solanaRecipient.toBytes()),
+    id === BigInt(s.hyperChainId) || id === BNB_TESTNET ? pad(evmRecipient, { size: 32 }) : toHex(new PublicKey(args[2]).toBytes()),
   );
   const receipt = await send(client, w, index, "IHybridIndex", "redeem", [shares, w.account.address, recipients, 0n]);
   log("redeemed", args[0], "shares", receipt.transactionHash, "- the relayer carries the burns");
 }
 
 /** The index's shares on Sepolia and its balances in both vaults: what the demo shows between steps. */
-async function balances(args: string[]) {
+async function balances(all: string[]) {
+  const args = plain(all);
+  if (all.includes("--bnb")) {
+    const { index } = bnb.bnbDeployments.index();
+    const vault = bnb.bnbDeployments.bnb().vault;
+    const holder = (args[0] as Address | undefined) ?? wallet(sepolia, "SENDER_KEY").account.address;
+    const shares = (await read(sepoliaClient(), index, "IHybridIndex", "balanceOf", [holder])) as bigint;
+    const supply = (await read(sepoliaClient(), index, "IHybridIndex", "totalSupply")) as bigint;
+    const balance = (await read(bnb.bnbClient(), vault, "XindexVault", "balance", [index, zeroAddress])) as bigint;
+    const paid = (await read(bnb.bnbClient(), vault, "XindexVault", "paidTotal", [index, zeroAddress])) as bigint;
+    console.log({ holder, shares, supply, bnbTestnet: { balance, paid } });
+    return;
+  }
   const { index } = deployments.index();
   const h = deployments.hyperevm();
   const holder = (args[0] as Address | undefined) ?? wallet(sepolia, "SENDER_KEY").account.address;
@@ -308,7 +360,25 @@ async function status() {
   });
 }
 
+/** Day 0, before `bnb0`: keeps Sepolia's latest finalized state as P1's first anchor and prints the deploy's
+ *  `P1_KEY`, `P1_ANCHOR` and `P1_EPOCH`. Needs `proofs/` built for Sepolia. */
+async function p1Anchor() {
+  for (const [k, v] of Object.entries(await p1.firstAnchor())) console.log(`${k}=${v}`);
+}
+
+/** Day 0, before `sepoliaBnb0`: writes BNB testnet's latest finalized epoch block and its keys for the verifier. */
+async function bnbEpoch() {
+  const e = await bnb.epochForDeploy();
+  writeFileSync(join(DEMO, "deployments", "bnb-epoch.json"), JSON.stringify(e, null, 1));
+  log("BNB testnet epoch", e.number, "with", e.keys.length, "validators: deployments/bnb-epoch.json");
+}
+
 const commands: Record<string, (args: string[]) => unknown> = {
+  "p1-anchor": p1Anchor,
+  "bnb-epoch": bnbEpoch,
+  "bnb-follow": async () => log("BNB testnet followed to epoch", await bnb.follow()),
+  "p1-update": async () => log("P1 on BNB testnet at Sepolia epoch", (await bnb.updateP1()) ?? "current"),
+  "bnb-checkpoint": async () => log("BNB testnet checkpoint", (await bnb.checkpoint()) ?? "current"),
   "solana-vault": solanaVault,
   "solana-init": solanaInit,
   register,
