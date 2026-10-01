@@ -7,10 +7,10 @@ uncapped market-cap rule `units ∝ supply`, from reference supplies the owner u
 contract reads a price**: a rebalance settles through an auction on a single number, λ, whose worst case holds at any
 prices. No admin can touch user funds, and no protocol key or bot is involved in rebalancing.
 
-This file describes **v4 Stage A as built** on the branch `v4-stage-a`: the Ethereum-only, price-free half of the v4
-design. The multichain design is `design/2026-09-29-v4-hybrid-architecture.md` (the "design" below), and the contract
-spec for this stage is `design/2026-09-30-v4-stage-a-spec.md` (the "spec"). Stage A has had no review of its own yet
-and is deployed nowhere; section 10 lists what remains.
+This file describes **v4 Stage A as built**: the price-free part of the v4 design held on Ethereum. The multichain
+design is `design/2026-09-29-v4-hybrid-architecture.md` (the "design" below), and the contract spec for this stage is
+`design/2026-09-30-v4-stage-a-spec.md` (the "spec"). Stage A has had an internal red team
+(`audit/2026-09-30-stage-a-red-team.md`) but no external audit, and is deployed nowhere; section 10 lists what remains.
 
 ## 1. Goals and constraints
 

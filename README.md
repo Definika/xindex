@@ -8,12 +8,16 @@ delay, and a rebalance settles through an auction on a single number, λ. **No c
 
 This repository holds the smart contracts (Foundry). The web app lives elsewhere.
 
-**Status (2026-09-30): v4 Stage A, built on the local branch `v4-stage-a`, reviewed by nobody yet, deployed nowhere.**
-Stage A is the Ethereum-only, price-free half of the v4 design (`design/2026-09-29-v4-hybrid-architecture.md`), as the
-contract spec `design/2026-09-30-v4-stage-a-spec.md` describes it, `MintRequests` included, with the owner's decisions of
-2026-09-30: no fee, WBT off after its check, and an owner Safe of at least three signatures. An internal red team has
-reviewed it (`audit/2026-09-30-stage-a-red-team.md`). Still to come: an external audit and a Sepolia deployment. v3 stays at the git
-tag `v3.0.0` and on Sepolia, and never launches on mainnet.
+**Status (2026-10-01): v4, the design that launches on mainnet; deployed nowhere yet.** v4 is one hybrid product
+(`design/2026-09-29-v4-hybrid-architecture.md`): an index token on Ethereum that holds Ethereum tokens itself and other
+chains' native coins in ownerless vaults. Stage A, the price-free part held on Ethereum, is built as
+`design/2026-09-30-v4-stage-a-spec.md` describes it, `MintRequests` included, with the owner's decisions of 2026-09-30:
+no fee, WBT off after its check, and an owner Safe of at least three signatures. Stage B, the vaults and their proofs,
+is in progress (`design/2026-09-30-v4-stage-b-spec.md`). Internal red teams have reviewed both
+(`audit/2026-09-30-stage-a-red-team.md`, `audit/2026-09-30-stage-b-red-team.md`, `audit/2026-10-01-tron-review.md`). It
+launches as one product, on `HybridIndexFactory`, once the hybrid index is ready (the owner's call on 2026-10-01). Still
+to come: the second proof system (P2), real proving, external audits and a Sepolia rehearsal. v3 stays at the git tag
+`v3.0.0` and on Sepolia, and never launches on mainnet.
 
 ## Product brief
 
