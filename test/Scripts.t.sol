@@ -27,6 +27,10 @@ import {MockWETH} from "./mocks/MockWETH.sol";
 import {MockUSDT} from "./mocks/MockUSDT.sol";
 import {DeployVault} from "../script/DeployVault.s.sol";
 import {ConfigureChains} from "../script/ConfigureChains.s.sol";
+import {DeployStateVerifier} from "../script/DeployStateVerifier.s.sol";
+import {BnbStateVerifier} from "../src/verifiers/BnbStateVerifier.sol";
+import {TronStateVerifier} from "../src/verifiers/TronStateVerifier.sol";
+import {ITronStateVerifier} from "../src/interfaces/ITronStateVerifier.sol";
 import {IHybridIndexFactory} from "../src/interfaces/IHybridIndexFactory.sol";
 import {MockSP1Verifier} from "./mocks/MockSP1Verifier.sol";
 import {MockRiscZeroVerifier} from "./mocks/MockRiscZeroVerifier.sol";
@@ -2087,6 +2091,170 @@ contract ScriptsTest is Test {
 
         vm.setEnv("CHAIN_MODE", "sideways");
         vm.expectRevert(abi.encodeWithSelector(ConfigureChains.UnknownMode.selector, "sideways"));
+        script.run();
+    }
+}
+
+/// @notice `DeployStateVerifier` on the anchors its generators read from BNB Chain and TRON on 1 October 2026
+///         (`test/fixtures/bnb/anchor.json`, `test/fixtures/tron/anchor.json`). The BNB verifier checks keys on the
+///         curve with EIP-2537's precompiles, which exist from Prague on.
+/// forge-config: default.evm_version = "prague"
+contract StateVerifierScriptTest is Test {
+    DeployStateVerifier script;
+    string bnb;
+    string tron;
+    uint256 epoch;
+    uint256 epochTime;
+    bytes epochHeader;
+    bytes[] keys;
+    ITronStateVerifier.Producer[] list;
+    uint64 nextMaintenance;
+
+    function setUp() public {
+        script = new DeployStateVerifier();
+        bnb = vm.readFile("test/fixtures/bnb/anchor.json");
+        tron = vm.readFile("test/fixtures/tron/anchor.json");
+        epoch = vm.parseJsonUint(bnb, ".number");
+        epochTime = vm.parseJsonUint(bnb, ".time");
+        epochHeader = vm.parseJsonBytes(bnb, ".rlp");
+        keys = vm.parseJsonBytesArray(bnb, ".keys");
+        ITronStateVerifier.Producer[] memory producers = script.producers(tron);
+        for (uint256 i = 0; i < producers.length; ++i) {
+            list.push(producers[i]);
+        }
+        nextMaintenance = uint64(vm.parseJsonUint(tron, ".nextMaintenance"));
+        vm.chainId(1);
+    }
+
+    function _bnbVerifier() internal returns (BnbStateVerifier) {
+        vm.warp(epochTime + 10 minutes);
+        return script.deployBnb(epochHeader, keys);
+    }
+
+    function _tronVerifier() internal returns (TronStateVerifier) {
+        vm.warp(nextMaintenance / 1000 - 1 hours);
+        return script.deployTron(list, nextMaintenance);
+    }
+
+    function test_deployBnb_fromARealAnchor() public {
+        BnbStateVerifier verifier = _bnbVerifier();
+        assertEq(verifier.latestEpoch(), epoch);
+        assertEq(verifier.validatorSet(epoch).count, keys.length);
+        assertEq(keccak256(epochHeader), vm.parseJsonBytes32(bnb, ".hash"), "the anchor's header is its block's");
+        assertEq(script.checkBnb(address(verifier), epoch, keys), address(verifier).codehash);
+    }
+
+    function test_deployTron_fromARealAnchor() public {
+        TronStateVerifier verifier = _tronVerifier();
+        assertEq(verifier.producerList(0).count, list.length);
+        assertEq(verifier.producerList(0).end, nextMaintenance);
+        assertEq(script.checkTron(address(verifier), list, nextMaintenance), address(verifier).codehash);
+    }
+
+    /// @dev Only on Ethereum, mainnet or Sepolia, beside the hub: not on the chain the verifier reads, nor anywhere else.
+    function test_deploy_onlyOnEthereum() public {
+        vm.warp(epochTime + 10 minutes);
+        uint256[3] memory elsewhere = [uint256(56), 728126428, 31337];
+        for (uint256 i = 0; i < elsewhere.length; ++i) {
+            vm.chainId(elsewhere[i]);
+            vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.NotEthereum.selector, elsewhere[i]));
+            script.deployBnb(epochHeader, keys);
+            vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.NotEthereum.selector, elsewhere[i]));
+            script.deployTron(list, nextMaintenance);
+        }
+        vm.chainId(11155111);
+        script.deployBnb(epochHeader, keys);
+    }
+
+    /// @dev A BNB anchor more than an hour old leaves too little of MAX_LAG to advance the verifier, and one from the
+    ///      future is not a block the chain has finalized. A TRON anchor must be the period in progress.
+    function test_deploy_onlyAFreshAnchor() public {
+        vm.warp(epochTime + script.MAX_ANCHOR_AGE());
+        script.deployBnb(epochHeader, keys);
+        vm.warp(epochTime + script.MAX_ANCHOR_AGE() + 1);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.StaleAnchor.selector, epochTime, block.timestamp));
+        script.deployBnb(epochHeader, keys);
+        vm.warp(epochTime - 1);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.StaleAnchor.selector, epochTime, block.timestamp));
+        script.deployBnb(epochHeader, keys);
+
+        uint256 end = nextMaintenance / 1000;
+        vm.warp(end - 6 hours);
+        script.deployTron(list, nextMaintenance);
+        vm.warp(end);
+        vm.expectRevert(
+            abi.encodeWithSelector(DeployStateVerifier.NotThePeriodInProgress.selector, nextMaintenance, end * 1000)
+        );
+        script.deployTron(list, nextMaintenance);
+        vm.warp(end - 6 hours - 1);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                DeployStateVerifier.NotThePeriodInProgress.selector, nextMaintenance, (end - 6 hours - 1) * 1000
+            )
+        );
+        script.deployTron(list, nextMaintenance);
+    }
+
+    /// @dev The review refuses a verifier that does not run this release's code, and one that did not start from the
+    ///      anchor given: other keys, another epoch, or a set recorded before the anchor's.
+    function test_checkBnb_refusesAnotherVerifierOrAnchor() public {
+        BnbStateVerifier verifier = _bnbVerifier();
+        TronStateVerifier other = _tronVerifier();
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongCode.selector, address(other)));
+        script.checkBnb(address(other), epoch, keys);
+
+        bytes[] memory fewer = new bytes[](keys.length - 1);
+        for (uint256 i = 0; i < fewer.length; ++i) {
+            fewer[i] = keys[i];
+        }
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(verifier)));
+        script.checkBnb(address(verifier), epoch, fewer);
+        bytes[] memory swapped = keys;
+        (swapped[0], swapped[1]) = (swapped[1], swapped[0]);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(verifier)));
+        script.checkBnb(address(verifier), epoch, swapped);
+        (swapped[0], swapped[1]) = (swapped[1], swapped[0]);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(verifier)));
+        script.checkBnb(address(verifier), epoch + 1000, keys);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(verifier)));
+        script.checkBnb(address(verifier), 0, keys); // before any epoch
+
+        // A set recorded one epoch before the anchor's means the verifier started elsewhere.
+        bytes32 slot = keccak256(abi.encode(epoch - 1000, uint256(1)));
+        vm.store(address(verifier), slot, bytes32(uint256(1)));
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(verifier)));
+        script.checkBnb(address(verifier), epoch, keys);
+    }
+
+    function test_checkTron_refusesAnotherVerifierOrAnchor() public {
+        TronStateVerifier verifier = _tronVerifier();
+        BnbStateVerifier other = _bnbVerifier();
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongCode.selector, address(other)));
+        script.checkTron(address(other), list, nextMaintenance);
+
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(verifier)));
+        script.checkTron(address(verifier), list, nextMaintenance + 6 hours * 1000);
+        ITronStateVerifier.Producer[] memory changed = list;
+        changed[0].key = address(1);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(verifier)));
+        script.checkTron(address(verifier), changed, nextMaintenance);
+    }
+
+    function test_deployStateVerifierRun_readsEnvironment() public {
+        vm.setEnv("STATE_CHAIN", "bnb");
+        vm.setEnv("STATE_ANCHOR", "test/fixtures/bnb/anchor.json");
+        vm.warp(epochTime + 10 minutes);
+        address verifier = script.run();
+        assertEq(BnbStateVerifier(verifier).latestEpoch(), epoch);
+
+        vm.setEnv("STATE_CHAIN", "tron");
+        vm.setEnv("STATE_ANCHOR", "test/fixtures/tron/anchor.json");
+        vm.warp(nextMaintenance / 1000 - 1 hours);
+        verifier = script.run();
+        assertEq(TronStateVerifier(verifier).producerList(0).producersHash, keccak256(abi.encode(list)));
+
+        vm.setEnv("STATE_CHAIN", "solana");
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.UnknownChain.selector, "solana"));
         script.run();
     }
 }

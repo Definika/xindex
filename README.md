@@ -578,6 +578,24 @@ id from `proofs/p2` (`p2 image-id`). `DeployVault.checkDeployment` re-reads the 
 is deployed with its own tooling (`tron/`). A chain holds a vault only once Ethereum can verify its state: today BNB
 Chain and TRON, whose state verifiers are built; section 8 of the Stage B spec has every other chain's status.
 
+**The chain's state verifier** is deployed on Ethereum with `script/DeployStateVerifier.s.sol`, from an anchor that
+the fixture generator reads off the chain: BNB Chain's newest final epoch block and its validators' keys, or TRON's
+producers of the period in progress, each checked there before it is written. The anchor is all the verifier
+trusts, since every later set or list is proven from it. The script deploys only on Ethereum (mainnet or Sepolia), and
+refuses a BNB anchor more than an hour old or a TRON period that has ended. Someone must then `advance` the verifier
+within a day of its anchor, and every day after, or it stops for good and the chain registry has to replace it.
+
+```bash
+python3 test/fixtures/bnb/generate.py https://bsc-rpc.publicnode.com anchor bnb-anchor.json
+STATE_CHAIN=bnb STATE_ANCHOR=bnb-anchor.json forge script script/DeployStateVerifier.s.sol --rpc-url mainnet --account deployer --sender <deployer> --broadcast
+# TRON: test/fixtures/tron/generate.py https://api.trongrid.io anchor tron-anchor.json, then STATE_CHAIN=tron
+```
+
+During the chain's listing delay the owner and guardian review the anchor. `DeployStateVerifier.checkBnb` and
+`checkTron` confirm that the verifier runs this release's code and started from the anchor file. The file itself is
+compared with the chain: the epoch block's hash and its validators' registered keys, or `listwitnesses` and the
+period's blocks.
+
 **Adding the chain on Ethereum** goes through `script/ConfigureChains.s.sol`, or the equivalent calls through the Safe:
 `proposeChain` with the vault and the chain's state verifier, then, once the chain is registered, `proposeVaultListing`
 for each coin its vault holds, with a reference supply in the coin's smallest unit. Each waits `LISTING_DELAY` and is
@@ -731,7 +749,7 @@ test/*.t.sol                  unit, fuzz, invariant, script and repository tests
 test/Security.t.sol           regression tests for the security review findings (some ids are tested elsewhere; see AGENTS.md gate 6)
 test/mocks/                   mock tokens, a strict Universal Router, V3 pools for the testnet script, the market fixture, with their own tests
 test/fork/                    mainnet fork tests: real V3 and V4 pools, λ rebalancing and security regressions on real tokens
-script/                       Deploy, ConfigureWhitelist, DeployVault, ConfigureChains, MainnetAddresses, ScriptUtils, and the interfaces the scripts call
+script/                       Deploy, ConfigureWhitelist, DeployVault, DeployStateVerifier, ConfigureChains, MainnetAddresses, ScriptUtils, and the interfaces the scripts call
 script/testnet/               SetupTestMarket and FaucetToken for the Sepolia test market
 design/                       the v4 design (and its PDF), the Stage A spec, the PDF builder and the analysis scripts
 audit/                        the security reviews, their triage, and the two retirement records

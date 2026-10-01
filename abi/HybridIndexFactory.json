@@ -405,7 +405,7 @@
         "internalType": "bytes32"
       },
       {
-        "name": "stateVerifier",
+        "name": "verifier",
         "type": "address",
         "internalType": "address"
       },
