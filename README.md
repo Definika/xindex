@@ -635,8 +635,7 @@ No bot runs Xindex, so these duties have owners and deadlines. Watch the events 
 ### Testnet (Sepolia)
 
 **v4 is not deployed on Sepolia.** v3 runs there, deployed on 2026-09-27 from `4b4dbe4`, the commit tagged `v3.0.0`;
-nothing in this branch can drive it, since its factory takes feed configs. The `broadcast/*/11155111/` records belong
-to that line.
+nothing on `main` can drive it, since its factory takes feed configs, and its deployment records are not kept here.
 
 `script/testnet/SetupTestMarket.s.sol` deploys stand-ins for USDC, WBTC, LINK and UNI as `FaucetToken`s, where any
 account can `drip()` a small amount once a day, each with a Uniswap V3 WETH pool at a mainnet-like price so the zap has
