@@ -25,6 +25,9 @@ import {MockUniversalRouter} from "./mocks/MockUniversalRouter.sol";
 import {MockUniswapV3Factory, MockUniswapV3Pool} from "./mocks/MockUniswapV3.sol";
 import {MockWETH} from "./mocks/MockWETH.sol";
 import {MockUSDT} from "./mocks/MockUSDT.sol";
+import {DeployVault} from "../script/DeployVault.s.sol";
+import {MockSP1Verifier} from "./mocks/MockSP1Verifier.sol";
+import {MockRiscZeroVerifier} from "./mocks/MockRiscZeroVerifier.sol";
 
 /// @notice Stand-in for a Safe: the deploy script only reads its signature threshold and its module list.
 contract MockSafe {
@@ -1468,5 +1471,193 @@ contract ScriptsTest is Test {
         vm.setEnv("MARKET_MODE", "upside-down");
         vm.expectRevert(abi.encodeWithSelector(SetupTestMarket.UnknownMode.selector, "upside-down"));
         testMarket.run();
+    }
+
+    // ---------------------------------------------------------------------
+    // DeployVault
+    // ---------------------------------------------------------------------
+
+    /// @dev A vault chain's parameters with SP1's and RISC Zero's verifiers stood in for by mocks that name themselves
+    ///      as the pinned versions do, and a recovery multisig with code.
+    function _vaultParams() internal returns (DeployVault.Params memory p) {
+        p = DeployVault.Params({
+            sourceChainId: 1,
+            factory: makeAddr("hybrid factory on Ethereum"),
+            hubImplementation: makeAddr("its HybridHub template"),
+            sp1Verifier: address(new MockSP1Verifier()),
+            riscZeroVerifier: address(new MockRiscZeroVerifier()),
+            p1ProgramKey: keccak256("P1"),
+            p2ImageId: keccak256("P2"),
+            anchor: keccak256("a finalized checkpoint"),
+            anchorEpoch: 479_000,
+            freezer: makeAddr("freezer"),
+            recoveryProposer: address(new MockSafe(3)),
+            nativeCap: 1_000e18,
+            nativeFloor: 1e18
+        });
+    }
+
+    /// @dev The vault, P1, P2 and the state reader, wired to each other and to the parameters, with their code hashes.
+    function test_deployVault() public {
+        DeployVault vaultDeployer = new DeployVault();
+        DeployVault.Params memory p = _vaultParams();
+        DeployVault.Deployment memory d = vaultDeployer.deploy(p);
+        assertEq(address(d.vault.p1()), address(d.p1));
+        assertEq(address(d.vault.p2()), address(d.p2));
+        assertEq(d.vault.SOURCE_CHAIN_ID(), 1);
+        assertEq(d.vault.FACTORY(), p.factory);
+        assertEq(d.vault.HUB_IMPLEMENTATION(), p.hubImplementation);
+        assertEq(d.vault.freezer(), p.freezer);
+        assertEq(d.vault.RECOVERY_PROPOSER(), p.recoveryProposer);
+        assertEq(d.vault.cap(address(0)), p.nativeCap);
+        assertEq(d.vault.outflowFloor(address(0)), p.nativeFloor);
+        assertEq(address(d.p1.SP1_VERIFIER()), p.sp1Verifier);
+        assertEq(d.p1.PROGRAM_KEY(), p.p1ProgramKey);
+        assertEq(address(d.p2.RISC_ZERO_VERIFIER()), p.riscZeroVerifier);
+        assertEq(d.p2.IMAGE_ID(), p.p2ImageId);
+        assertEq(d.p1.anchor(), p.anchor);
+        assertEq(d.p2.anchor(), p.anchor);
+        bytes32[4] memory codehashes = vaultDeployer.checkDeployment(d, p);
+        assertEq(codehashes[0], keccak256(address(d.vault).code));
+        assertEq(codehashes[3], keccak256(address(d.stateReader).code));
+    }
+
+    function test_deployVaultRun_readsEnvironment() public {
+        DeployVault vaultDeployer = new DeployVault();
+        DeployVault.Params memory p = _vaultParams();
+        vm.setEnv("VAULT_FACTORY", vm.toString(p.factory));
+        vm.setEnv("VAULT_HUB_TEMPLATE", vm.toString(p.hubImplementation));
+        vm.setEnv("VAULT_SP1_VERIFIER", vm.toString(p.sp1Verifier));
+        vm.setEnv("VAULT_RISC_ZERO_VERIFIER", vm.toString(p.riscZeroVerifier));
+        vm.setEnv("VAULT_P1_KEY", vm.toString(p.p1ProgramKey));
+        vm.setEnv("VAULT_P2_IMAGE_ID", vm.toString(p.p2ImageId));
+        vm.setEnv("VAULT_ANCHOR", vm.toString(p.anchor));
+        vm.setEnv("VAULT_ANCHOR_EPOCH", vm.toString(uint256(p.anchorEpoch)));
+        vm.setEnv("VAULT_FREEZER", vm.toString(p.freezer));
+        vm.setEnv("VAULT_RECOVERY", vm.toString(p.recoveryProposer));
+        vm.setEnv("VAULT_NATIVE_CAP", vm.toString(p.nativeCap));
+        vm.setEnv("VAULT_NATIVE_FLOOR", vm.toString(p.nativeFloor));
+        DeployVault.Deployment memory d = vaultDeployer.run();
+        assertEq(d.vault.SOURCE_CHAIN_ID(), 1, "the source defaults to Ethereum mainnet");
+        assertEq(d.vault.FACTORY(), p.factory);
+        assertEq(d.p2.IMAGE_ID(), p.p2ImageId);
+    }
+
+    /// @dev Every parameter the vault depends on is checked before anything is broadcast.
+    function test_deployVault_refusals() public {
+        DeployVault vaultDeployer = new DeployVault();
+        DeployVault.Params memory p = _vaultParams();
+
+        vm.chainId(1);
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.SourceChain.selector, 1));
+        vaultDeployer.check(p);
+        vm.chainId(31_337);
+        vaultDeployer.checkRoles(p.freezer, p.recoveryProposer); // a freezer key and a multisig, as the vault needs
+
+        string[6] memory names = [
+            "VAULT_FACTORY", "VAULT_HUB_TEMPLATE", "VAULT_P1_KEY", "VAULT_P2_IMAGE_ID", "VAULT_ANCHOR", "VAULT_FREEZER"
+        ];
+        for (uint256 i = 0; i < names.length; ++i) {
+            DeployVault.Params memory q = _vaultParams();
+            if (i == 0) q.factory = address(0);
+            if (i == 1) q.hubImplementation = address(0);
+            if (i == 2) q.p1ProgramKey = bytes32(0);
+            if (i == 3) q.p2ImageId = bytes32(0);
+            if (i == 4) q.anchor = bytes32(0);
+            if (i == 5) q.freezer = address(0);
+            vm.expectRevert(abi.encodeWithSelector(DeployVault.Required.selector, names[i]));
+            vaultDeployer.check(q);
+        }
+        DeployVault.Params memory r = _vaultParams();
+        r.recoveryProposer = address(0);
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.Required.selector, "VAULT_RECOVERY"));
+        vaultDeployer.check(r);
+
+        r = _vaultParams();
+        r.freezer = r.recoveryProposer;
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.SameRole.selector, r.freezer));
+        vaultDeployer.check(r);
+        r = _vaultParams();
+        r.freezer = address(this); // the broadcasting key, as this test calls the script
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.RoleIsBroadcaster.selector, "VAULT_FREEZER", address(this)));
+        vaultDeployer.check(r);
+        r = _vaultParams();
+        r.recoveryProposer = address(this);
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.RoleIsBroadcaster.selector, "VAULT_RECOVERY", address(this)));
+        vaultDeployer.check(r);
+        r = _vaultParams();
+        r.recoveryProposer = makeAddr("a key, not a multisig");
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.RecoveryMustBeContract.selector, r.recoveryProposer));
+        vaultDeployer.check(r);
+        address delegated = makeAddr("an EIP-7702 delegated key");
+        vm.etch(delegated, abi.encodePacked(hex"ef0100", address(r.factory)));
+        r.recoveryProposer = delegated;
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.RecoveryMustBeContract.selector, delegated));
+        vaultDeployer.check(r);
+
+        r = _vaultParams();
+        r.nativeFloor = r.nativeCap + 1;
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.FloorAboveCap.selector, r.nativeFloor, r.nativeCap));
+        vaultDeployer.check(r);
+    }
+
+    /// @dev Only SP1's v6.0.0 verifier for P1 and RISC Zero's 3.0.0 verifier for P2: a contract that answers neither, a
+    ///      wrong hash or selector, or a wrong version is refused, and so is an address with no code.
+    function test_deployVault_onlyThePinnedVerifiers() public {
+        DeployVault vaultDeployer = new DeployVault();
+        DeployVault.Params memory p = _vaultParams();
+        vaultDeployer.checkVerifiers(p.sp1Verifier, p.riscZeroVerifier);
+
+        address[3] memory notSp1 = [makeAddr("no code"), address(router), p.riscZeroVerifier];
+        for (uint256 i = 0; i < notSp1.length; ++i) {
+            vm.expectRevert(abi.encodeWithSelector(DeployVault.WrongVerifier.selector, "VAULT_SP1_VERIFIER", notSp1[i]));
+            vaultDeployer.checkVerifiers(notSp1[i], p.riscZeroVerifier);
+        }
+        address[3] memory notRiscZero = [makeAddr("no code either"), address(router), p.sp1Verifier];
+        for (uint256 i = 0; i < notRiscZero.length; ++i) {
+            vm.expectRevert(
+                abi.encodeWithSelector(DeployVault.WrongVerifier.selector, "VAULT_RISC_ZERO_VERIFIER", notRiscZero[i])
+            );
+            vaultDeployer.checkVerifiers(p.sp1Verifier, notRiscZero[i]);
+        }
+
+        // Each identity field alone decides: the right hash at another version, the right selector at another version.
+        vm.mockCall(p.sp1Verifier, abi.encodeWithSignature("VERSION()"), abi.encode("v5.0.0"));
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.WrongVerifier.selector, "VAULT_SP1_VERIFIER", p.sp1Verifier));
+        vaultDeployer.checkVerifiers(p.sp1Verifier, p.riscZeroVerifier);
+        vm.clearMockedCalls();
+        vm.mockCall(p.riscZeroVerifier, abi.encodeWithSignature("VERSION()"), abi.encode("2.2.0"));
+        vm.expectRevert(
+            abi.encodeWithSelector(DeployVault.WrongVerifier.selector, "VAULT_RISC_ZERO_VERIFIER", p.riscZeroVerifier)
+        );
+        vaultDeployer.checkVerifiers(p.sp1Verifier, p.riscZeroVerifier);
+        vm.clearMockedCalls();
+        vm.mockCall(p.riscZeroVerifier, abi.encodeWithSignature("SELECTOR()"), abi.encode(bytes4(0x9f39696c)));
+        vm.expectRevert(
+            abi.encodeWithSelector(DeployVault.WrongVerifier.selector, "VAULT_RISC_ZERO_VERIFIER", p.riscZeroVerifier)
+        );
+        vaultDeployer.checkVerifiers(p.sp1Verifier, p.riscZeroVerifier);
+    }
+
+    /// @dev The release check refuses a deployment that is not the one the parameters describe: another deployment's P1
+    ///      swapped in, or parameters naming another factory. Structs are copied by encoding, since assigning a memory
+    ///      struct only aliases it.
+    function test_deployVault_checkDeploymentRefusesAnother() public {
+        DeployVault vaultDeployer = new DeployVault();
+        DeployVault.Params memory p = _vaultParams();
+        DeployVault.Deployment memory d = vaultDeployer.deploy(p);
+        DeployVault.Deployment memory other = vaultDeployer.deploy(_vaultParams());
+
+        DeployVault.Deployment memory mixed = abi.decode(abi.encode(d), (DeployVault.Deployment));
+        mixed.p1 = other.p1;
+        vm.expectRevert(
+            abi.encodeWithSelector(DeployVault.WrongWiring.selector, "p1", address(other.p1), address(d.p1))
+        );
+        vaultDeployer.checkDeployment(mixed, p);
+
+        DeployVault.Params memory q = abi.decode(abi.encode(p), (DeployVault.Params));
+        q.factory = makeAddr("another factory");
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.WrongWiring.selector, "FACTORY", q.factory, p.factory));
+        vaultDeployer.checkDeployment(d, q);
     }
 }

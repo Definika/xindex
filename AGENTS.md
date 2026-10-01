@@ -552,8 +552,9 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
     (`HybridTest._fresh`), as keepers keep a live vault out of a stall.
 - **Scripts.** They keep their logic in public functions that take explicit arguments, so tests can call them without
   environment variables: `Deploy.deploy`, which deploys `HybridIndexFactory` with both templates, the zap and
-  `MintRequests`, and
-  `ConfigureWhitelist.propose`, `execute`, `proposeSupplies` and `executeSupplies`. Environment variables are process-global and tests run in parallel, so each variable name is
+  `MintRequests`; `DeployVault.deploy`, which deploys a vault chain's P1, P2, state reader and vault, refusing any
+  Groth16 verifier but the pinned SP1 and RISC Zero ones; and `ConfigureWhitelist.propose`, `execute`,
+  `proposeSupplies` and `executeSupplies`. Environment variables are process-global and tests run in parallel, so each variable name is
   set by exactly one test (see `test/Scripts.t.sol`). In tests, script broadcasts come from `DEFAULT_SENDER`.
 - **Deployment rules.**
   - Deployments never use raw private keys: `--account` keystores or `--ledger`.

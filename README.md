@@ -567,6 +567,16 @@ with the addresses, and
 `Deploy.checkDeployment(factory, zap, requests)` re-reads them later (it also refuses a zap or a `MintRequests` that
 does not point at that factory).
 
+**A vault chain** (BNB Chain, Avalanche C-Chain, HyperEVM) is set up with `script/DeployVault.s.sol`, on that chain:
+P1's verifier on SP1's Groth16 verifier, P2's on RISC Zero's, the state reader and the vault, with its `VaultSnapshot`
+library. It refuses any Groth16 verifier but SP1's v6.0.0 (`VERIFIER_HASH`) and RISC Zero's 3.0.0 (`SELECTOR`
+`0x73c457ba`, its published control ids), so an owned gateway, router or emergency stop is refused; it refuses a
+deployment on the indexes' own chain, a missing key or anchor, a freezer or recovery multisig that is unset, shared,
+the broadcasting key or, for the multisig, not a contract, and a floor above the cap. Its environment variables are
+listed in the script; the anchor and P1's key come from `proofs/` (`p1-input check-state`, `p1 vkey`) and P2's image
+id from `proofs/p2` (`p2 image-id`). `DeployVault.checkDeployment` re-reads the wiring and the code hashes later. TRON
+is deployed with its own tooling (`tron/`), and the chain is then proposed on Ethereum (`proposeChain`).
+
 **Listings and supply batches** go through `script/ConfigureWhitelist.s.sol`, or the equivalent calls through the Safe:
 
 ```bash
