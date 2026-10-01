@@ -185,8 +185,8 @@ contract Demo is Script {
     //
     // A second index, of WETH and BNB, whose messages travel on real proofs: P1 proves Sepolia's finality on BNB
     // testnet (`proofs/`, built with `--features sepolia`), and BnbStateVerifier proves the vault's state on Sepolia
-    // from BNB testnet's own validator votes. Only P2, which does not exist yet, is a stub. The steps run beside the
-    // ones above, on the same calendar, and need `sepolia0` first.
+    // from BNB testnet's own validator votes. Only P2 is a stub: the demo was built before P2 (`proofs/p2`). The steps
+    // run beside the ones above, on the same calendar, and need `sepolia0` first.
 
     /// @notice BNB testnet, day 0: SP1's Groth16 verifier, P1's verifier from a finalized Sepolia checkpoint, the stub
     ///         for P2, the state reader and the vault. Needs `P1_KEY` (`p1 vkey` of the Sepolia build), `P1_ANCHOR` and

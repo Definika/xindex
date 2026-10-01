@@ -2,17 +2,19 @@
 
 Status: **the build spec for Stage A, 2026-09-30.** It turns sections 4.1, 4.2, 4.5, 4.6 and 6.6 of
 `design/2026-09-29-v4-hybrid-architecture.md` into contracts, for an index held entirely on Ethereum. Stage B adds
-vaults, proofs and the mirror to the same hub. Everything here is price-free: no contract reads a price, a feed or a
-pool. AGENTS.md's definition of done applies to every change.
+vaults, proofs and the mirror in a second template, `HybridHub`, beside this hub, which stays as it is (Stage B spec,
+proposal 1). Everything here is price-free: no contract reads a price, a feed or a pool. AGENTS.md's definition of done
+applies to every change.
 
 **The owner's decisions of 2026-09-30:** no fee in Stage A (section 7), WBT off after its check (section 8), the floor
-buffer, and an owner Safe of at least three signatures, which `Deploy` checks.
+buffer, and an owner Safe of at least three signatures, which `Deploy` checks. **Of 2026-10-01:** Stage A does not
+launch on its own; v4 launches as one product on `HybridIndexFactory`, which extends this factory (section 6).
 
 ## 1. What changes from v3
 
 | v3 | Stage A |
 |---|---|
-| `IndexToken` | `IndexHub` (renamed; Stage B extends it) |
+| `IndexToken` | `IndexHub` (renamed; Stage B leaves it unchanged and adds `HybridHub` beside it) |
 | `IndexRule`, `CompositeFeed`, `IAggregatorV3`, `IIndexRule`, `Methodology` | Deleted: no prices, uncapped only |
 | Token config `{feed, maxStaleness, referenceSupply}` + recorded decimals | A reference supply per token, nothing else |
 | `proposeConfig` per token | Weekly supply **batches**, atomic, one live at a time |
@@ -26,9 +28,9 @@ buffer, and an owner Safe of at least three signatures, which `Deploy` checks.
 
 ## 2. IndexFactory
 
-Constants: `MAX_COMPONENTS = 100`, `LISTING_DELAY = 2 days`, `GUARDIAN_DELAY = 7 days`, `PROPOSAL_WINDOW = 7 days`,
-`MAX_SUPPLY_STEP = 0.005e18`, `MAX_SUPPLY = type(uint128).max`, `MIN_RAW_UNITS = 10_000`,
-`MAX_UNITS = type(uint96).max >> 10`, `K_SCALE = 1e36`.
+Constants: `MAX_COMPONENTS = 100`, `MAX_BATCH = 200`, `LISTING_DELAY = 2 days`, `GUARDIAN_DELAY = 7 days`,
+`PROPOSAL_WINDOW = 7 days`, `MIN_SUPPLY_INTERVAL = 7 days`, `MAX_SUPPLY_STEP = 0.005e18`,
+`MAX_SUPPLY = type(uint128).max`, `MIN_RAW_UNITS = 10_000`, `MAX_UNITS = type(uint96).max >> 10`, `K_SCALE = 1e36`.
 
 **Reference supplies.** `referenceSupply(token)` is the supply in force, in the token's raw units: the supply of what
 the token represents (Bitcoin's for WBTC, ether's for WETH). Zero means never listed. It stays after delisting, because
@@ -50,7 +52,8 @@ none to drop.
 - each new supply non-zero, at most `MAX_SUPPLY`, and within `MAX_SUPPLY_STEP` of the supply in force:
   `|new − old| ≤ ⌊old × MAX_SUPPLY_STEP / 1e18⌋`;
 - no other batch live (an expired one is replaced);
-- executable from `eta = now + LISTING_DELAY` for `PROPOSAL_WINDOW` by anyone (`executeSupplies`), all or nothing;
+- due at `eta = max(now + LISTING_DELAY, lastSupplyUpdate + MIN_SUPPLY_INTERVAL)`, so a supply moves at most a step a
+  week (SA-04); executable from `eta` for `PROPOSAL_WINDOW` by anyone (`executeSupplies`), all or nothing;
   `cancelSupplies` by owner or guardian.
 
 Atomic because a stranger who could execute half a batch and start a rebalance on the half would turn a uniform
@@ -68,6 +71,10 @@ bounds each rebalance however many batches landed in between.
 
 **Unchanged from v3:** the guardian flow, `renounceOwnership` disabled, the registry (`isIndex`, `creatorOf`,
 `allIndexes`), `Ownable2Step`, the `nonReentrant` on creation.
+
+**For Stage B:** two internal hooks, `_template` and `_initializeIndex`, which here name the `IndexHub` implementation
+as the template and initialize its clone. `HybridIndexFactory` overrides them for an index holding a vault token, and
+an index of Ethereum tokens only stays an `IndexHub` clone (Stage B spec, 5.2).
 
 ## 3. IndexHub
 
@@ -165,9 +172,11 @@ No owner, no upgrade, `nonReentrant` on every entry point, immutable `FACTORY`, 
 
 ## 6. Scripts
 
-`Deploy` deploys the factory (which deploys the hub implementation), the zap and `MintRequests`, with v3's owner and
-guardian checks. `ConfigureWhitelist` proposes and executes listings from `token:supply` entries and, in a `SUPPLIES`
-mode, the weekly batch (sorted, each within the step, entries beyond it skipped and logged), both also as Safe calldata.
+`Deploy` deploys `HybridIndexFactory`, v4's one factory (the owner's call on 2026-10-01): first the `HybridHub`
+template's extension, module and template, built for the factory's predicted address, then the factory, which deploys
+the `IndexHub` implementation, then the zap and `MintRequests`, with v3's owner and guardian checks.
+`ConfigureWhitelist` proposes and executes listings from `token:supply` entries and, in its `supplies` modes, the
+weekly batch (sorted, each within the step, entries beyond it skipped and logged), both also as Safe calldata.
 `MainnetAddresses` keeps WBTC, WETH, LINK and UNI, USDC, USDT, the Universal Router and the
 PoolManager, with dated reference supplies.
 

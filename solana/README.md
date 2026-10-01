@@ -7,7 +7,9 @@ was built for the hackathon demonstration of `../design/2026-09-30-hackathon-pla
 
 > **The stub verifier is not a proof system.** It accepts any Ethereum log its relayer key signed. On the devnet it
 > stands in for P1 and P2. A vault whose verifiers are stubs is only as safe as its relayer keys. Never point a mainnet
-> vault at it. P1 now exists (below); P2, the second proof system every payout also needs, does not yet.
+> vault at it. P1 now exists here (below). P2, the second proof system every payout also needs, is built for EVM vault
+> chains (`../proofs/p2`, `RiscZeroFinalityVerifier`), but not on Solana yet: its twin of `ethereum-verifier` waits
+> with the rest of the Solana work (Stage B spec, section 11).
 
 ## What the vault does
 
@@ -19,6 +21,10 @@ was built for the hackathon demonstration of `../design/2026-09-30-hackathon-pla
 - Pays within 4% of an index's balance in any 24 hours, or the outflow floor; the rest stays owed. A freeze stops
   deposits and payouts for 14 days.
 - Keeps two digests Ethereum proves, per index and per intake, byte for byte those of the EVM vault.
+
+Not built yet, beside P2: a verifier of the vault's state on Ethereum, which waits on Alpenglow's mainnet launch
+(Stage B spec, section 8); the stall recovery and snapshot exit, which follow it; and tokens other than SOL. On the
+devnet a relayer's stub on Sepolia (`../demo/src/StubStateVerifier.sol`) stands in for the state verifier.
 
 ## P1's verifier
 
@@ -35,7 +41,8 @@ The program's own documentation gives the layouts.
 - A log's proof (1.5 to 2.2 KB) is too long for a transaction. The relayer writes it into a loader buffer
   (`solana program write-buffer`, its length as a little-endian u32 first) and passes the buffer after the range
   account, with an empty proof.
-- Deploy it as the stub: `initialize` from its upgrade authority, then make it final.
+- Deploy it as the stub: `initialize` from its upgrade authority, then make it final. The program key is `p1 vkey`'s
+  and the anchor and epoch `p1-input check-state`'s (`../proofs/README.md`).
 
 ## Build and test
 
@@ -57,8 +64,9 @@ cargo fmt --all --check && cargo clippy -p xindex-vault -p stub-verifier -p ethe
 
 ## Program ids and keys
 
-- `target/deploy/xindex_vault-keypair.json` and `target/deploy/stub_verifier-keypair.json` hold the program keys. They
-  are git-ignored. Back them up: `cargo clean` deletes them, and a new key is a new program id.
+- `target/deploy/xindex_vault-keypair.json`, `target/deploy/stub_verifier-keypair.json` and
+  `target/deploy/ethereum_verifier-keypair.json` hold the program keys. They are git-ignored. Back them up: `cargo
+  clean` deletes them, and a new key is a new program id.
 - The stub is deployed twice, as P1 and as P2, under two further keys (`solana-keygen new -o p1.json`, then
   `solana program deploy target/deploy/stub_verifier.so --program-id p1.json`). One build serves both: the stub is a
   plain Solana program with no id of its own.
@@ -75,7 +83,9 @@ cargo fmt --all --check && cargo clippy -p xindex-vault -p stub-verifier -p ethe
 5. Initialize the vault from its upgrade authority, with Sepolia's chain id, the Solana id the factory's registry
    assigns, the factory, the hub template, the freezer, and the cap and floor in lamports. It takes each verifier's
    ProgramData account too.
-6. On Sepolia, the factory's owner proposes the chain with the vault's `config` address as its 32-byte vault.
+6. On Sepolia, the factory's owner proposes the chain with the vault's `config` address as its 32-byte vault, and a
+   state verifier: the demo's `sepolia0` names its stub. `../script/ConfigureChains.s.sol` takes the same 32-byte
+   vault, but Solana has no state verifier outside the demo.
 
 `npm run cli -- solana-init` in `demo/relayer` does steps 3 and 5, and stops between them to print step 4's commands.
 

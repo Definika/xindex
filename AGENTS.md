@@ -5,7 +5,7 @@ Guidance for coding agents and humans working in this repository. Codex reads th
 
 ## What this is
 
-Xindex smart contracts, v4 Stage A: a Foundry project where users create crypto index tokens (ERC-20) backed in kind,
+Xindex smart contracts, v4: a Foundry project where users create crypto index tokens (ERC-20) backed in kind,
 mint them with USDC/USDT, and burn them into any token through Uniswap's Universal Router, which reaches both V3 and V4
 pools. An index's constituents are fixed at creation. Its units follow its components' reference supplies, circulating
 supplies the factory owner maintains behind a timelock, so an index holds each component in proportion to its supply:
@@ -16,9 +16,24 @@ chains' native coins in ownerless vaults on their own chains (`design/2026-09-29
 stages are build order only: Stage A is the part held on Ethereum, Stage B the vaults and their proofs, Stage C more
 chains. It launches as one product, on the hybrid factory, once the hybrid index is ready (the owner's call on
 2026-10-01); Stage A does not launch on its own. v4 replaces v3, which priced through Chainlink and offered a capped
-methodology; v3 is tagged `v3.0.0` and never ships on mainnet. The web app lives in a separate repo. For more:
-- `ARCHITECTURE.md`: the design as built.
+methodology; v3 is tagged `v3.0.0` and never ships on mainnet. The web app lives in a separate repo.
+
+Where the stages stand (none of v4 is deployed):
+- Stage A is built.
+- Stage B is built in large part: the EVM vault and the Solana vault program; P1 (SP1) and P2 (RISC Zero) on EVM vault
+  chains, and P1 on Solana; BNB Chain's and TRON's state verifiers on Ethereum; and `HybridIndexFactory` with
+  `HybridHub`, its module and its extension. So BNB Chain and TRON are built in both directions. Solana lacks P2 and
+  its vault's stall recovery and snapshot exit, and its state verifier on Ethereum waits on Alpenglow's mainnet launch;
+  the rest of Solana waits while the other chains' code comes first (the owner's call on 2026-10-01).
+  HyperEVM waits on Hyperliquid, since every header's state root is zero. The Stage B spec's section 8 has each
+  chain's status, and its section 6 the build order.
+- No Stage C chain is built. Avalanche, NEAR, Stellar, Hedera and Cardano were researched on 2026-10-01
+  (`design/2026-10-01-stage-c-research.md`, summarized in the Stage B spec's section 8).
+
+For more:
+- `ARCHITECTURE.md`: the design as built, Stage A and Stage B.
 - `design/2026-09-30-v4-stage-a-spec.md`: the Stage A spec.
+- `design/2026-09-30-v4-stage-b-spec.md`: the Stage B spec.
 - `README.md`: the product brief, frontend integration notes and deployment.
 
 ## Commands
@@ -31,6 +46,7 @@ forge test                   # unit + fuzz + invariant tests, no RPC needed; for
                              # there makes the fork suites run too (archive node, or FORK_BLOCK, or --no-match-path 'test/fork/*');
                              # an RPC that cannot serve the pinned block fails with that sentence, not a raw fork error
 forge coverage               # must stay at 100% for every file (lines, statements, branches, functions)
+aderyn .                     # Aderyn on src/, configured by aderyn.toml: must report nothing; CI does not run it
 for c in IndexFactory IndexHub IndexZap MintRequests HybridIndexFactory IHybridIndex XindexVault; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
 
 # mainnet fork tests (real tokens, Universal Router, V3 and V4 pools); skipped when the env var is unset.
@@ -40,8 +56,12 @@ MAINNET_RPC_URL=https://... forge test --match-path 'test/fork/*' -vvv
 MAINNET_RPC_URL=https://ethereum-rpc.publicnode.com FORK_BLOCK=$(( $(cast block-number --rpc-url https://ethereum-rpc.publicnode.com) - 8 )) forge test --match-path 'test/fork/*'
 ```
 
-Deployment: `script/Deploy.s.sol` then `script/ConfigureWhitelist.s.sol` (see README). Sepolia first needs its test
-market from `script/testnet/SetupTestMarket.s.sol`.
+Deployment: `script/Deploy.s.sol` then `script/ConfigureWhitelist.s.sol`, which also runs the weekly supply batch,
+vault coins' supplies included (see README). A vault chain adds `script/DeployVault.s.sol` on that chain (P1, P2, the
+state reader and the vault; `tron/` builds TRON's with Tron's compiler) and `script/DeployStateVerifier.s.sol` on
+Ethereum (the chain's state verifier, from an anchor the fixture generator writes), then `script/ConfigureChains.s.sol`
+(`proposeChain`, then `proposeVaultListing` for each coin). Sepolia first needs its test market from
+`script/testnet/SetupTestMarket.s.sol`.
 
 ## Definition of done for any change
 
@@ -119,12 +139,12 @@ market from `script/testnet/SetupTestMarket.s.sol`.
    removes an id's last test adds its row to a retirement record in the same commit. Do not restore a retired id's test
    against the new design; if the property matters here, it gets a new id from the review of this surface.
 
-CI enforces items 1 to 5: fmt, build, `forge lint -D notes`, tests, 100% coverage on every file and `wake detect all
-src`. The fork suites run on every push from this repository, because the test step passes the `MAINNET_RPC_URL` secret
-unconditionally. On `main` and on pull requests into it the secret is also required, so a missing one fails the run
-rather than letting the suites skip. Check a run's test summary rather than assuming. Run everything locally before
-pushing. A pull request from a forked repository gets no secrets, so its fork suites skip, and a maintainer re-runs
-them before merging.
+CI enforces items 1 to 5, Aderyn aside: fmt, build, `forge lint -D notes`, tests, 100% coverage on every file and
+`wake detect all src`. The fork suites run on every push from this repository, because the test step passes the
+`MAINNET_RPC_URL` secret unconditionally. On `main` and on pull requests into it the secret is also required, so a
+missing one fails the run rather than letting the suites skip. Check a run's test summary rather than assuming. Run
+everything locally before pushing. A pull request from a forked repository gets no secrets, so its fork suites skip,
+and a maintainer re-runs them before merging.
 
 ## Layout
 
@@ -162,23 +182,23 @@ test/*.t.sol                  unit / fuzz / invariant / script tests
 test/XindexTest.sol           state and listing helpers the factory, hub, zap and security suites share
 test/Security.t.sol           regression tests for the security review findings (see gate 6 for ids tested elsewhere)
 test/Repo.t.sol               repository facts findings rest on: pinned compiler, CI gates and toolchain, dependency lock, ABIs, no price, docs
-test/mocks/                   mock tokens, WETH, a strict Universal Router, V3 pools for the testnet script, the market fixture (+ Mocks.t.sol)
+test/mocks/                   mock tokens, WETH, a strict Universal Router, V3 pools for the testnet script, the market fixture, Stage B's stand-ins for P1, P2, the Groth16 verifiers, a state verifier and the state reader, and harnesses for HubShares and the proof libraries (+ Mocks.t.sol)
 test/fixtures/bnb/            real BNB Chain data for the Stage B verifier, mainnet's and the testnet's, and generate.py, which rebuilds either from a public RPC (py_ecc, pycryptodome) and writes a deployment's anchor
 test/fixtures/ethereum/       a real mainnet block's receipts trie proofs for P1's verifier, and generate.py, which rebuilds them and checks the root (rlp, trie)
 test/fixtures/tron/           real Tron blocks around a maintenance boundary, with two real calls, and generate.py, which rebuilds them from TronGrid (pycryptodome) and writes a deployment's anchor
 test/utils/                   test-only helpers (an RLP writer)
 test/HybridTest.sol           Stage B on one EVM: a real vault standing for another chain, a state verifier reading its storage, message delivery
 test/fork/                    test-only mainnet addresses, end-to-end fork tests, a V3 rebalance executor, fork security regressions
-script/                       Deploy, ConfigureWhitelist, DeployVault, DeployStateVerifier, ConfigureChains, MainnetAddresses (the one copy of mainnet addresses and dated reference supplies)
-script/interfaces/            the Safe, WETH and Uniswap setup calls the scripts make
+script/                       Deploy, ConfigureWhitelist, DeployVault, DeployStateVerifier, ConfigureChains, MainnetAddresses (the one copy of mainnet addresses and dated reference supplies), ScriptUtils (what they share)
+script/interfaces/            the Safe, WETH and Uniswap setup calls the scripts make, and how SP1's and RISC Zero's Groth16 verifiers name themselves, which DeployVault checks
 script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test market (never deploy on mainnet)
 abi/                          generated ABIs the web app decodes with; CI regenerates them and fails on a diff
-design/                       the v4 design and its PDF, the Stage A and Stage B specs, the prototype record, the PDF builder, and the analysis scripts (their data is not committed)
+design/                       the v4 design and its PDF, the Stage A and Stage B specs, the prototype record, the hackathon plan, the WBT check, the Stage C research, the PDF builder, and the analysis scripts (their data is not committed)
 audit/                        review reports, their triages, and the two retirement records
-demo/                         the hackathon's testnet demonstration: STUB verifiers, deploy scripts along the timelocks, the relayer (TypeScript); its own Foundry project, never deployed to a mainnet
+demo/                         the hackathon's testnet demonstration: STUB verifiers, a WETH-BNB index on the real verifiers both ways, P2 aside, which is a stub there, deploy scripts along the timelocks, the relayer (TypeScript); its own Foundry project, never deployed to a mainnet
 solana/                       Stage B on Solana: the vault program (Anchor 1.2), P1's verifier (`ethereum-verifier`) and a STUB verifier for testnets, with LiteSVM tests (see solana/README.md)
 proofs/                       Stage B's proof systems in Rust: `finality`, the statement that an Ethereum checkpoint is final (spec section 10), tested natively against the consensus specs' libraries and mainnet data; `p1-program` and `p1-script`, P1's SP1 program and host; `p1-input`, which builds a real input from chain data; `p2/`, P2's RISC Zero guest and host, a workspace of its own (spec section 11)
-prototype/                    the proving prototype: an SP1 workspace and its own Foundry project (via-IR); the gates skip it and Wake excludes it. Its `evm/src/sp1` is SP1's Groth16 verifier, vendored unchanged, which P1 calls on every vault chain
+prototype/                    the proving prototype: an SP1 workspace and its own Foundry project (via-IR); the gates skip it and Wake excludes it. Its `evm/src/sp1` is SP1's Groth16 verifier, vendored with only an import path changed (`SOURCE.md`), which P1 calls on every vault chain
 vendor/risc0-ethereum/        RISC Zero's Groth16 verifier, vendored unchanged at v3.0.1 (SOURCE.md), which P2 calls on every vault chain; no gate analyzes it
 tron/                         TRON: the Tron-side contracts built with Tron's compiler (tron-solc 0.8.28) and run on TRON's VM, on a local single-node chain of the pinned java-tron release, every step a mined transaction under mainnet's 80 ms CPU limit (tron/README.md)
 ```
@@ -487,8 +507,8 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   `vendor/` to its excluded folders, since any of them would stop Wake before a detector runs: the PoC tests in
   `audit/` only compile inside `test/poc/` of the audited commit, `prototype/evm` is a separate Foundry project that
   needs via-IR, `demo/` is one whose `xindex/` remapping only it knows, and `vendor/` holds third-party verifiers with
-  their own import paths, which no gate analyzes by design. The Wake VS Code extension reads `.vscode/settings.json` instead,
-  which holds four things:
+  their own import paths, which no gate analyzes by design. The Wake VS Code extension reads `.vscode/settings.json`
+  instead, which holds four things:
   - `wake.configuration.use_toml_if_present` set to false. The extension otherwise prefers a `wake.toml` in the
     workspace root, and a local `wake detect` or `wake init config` leaves one there, gitignored. A stale one
     replaces the whole committed config, so the extension compiles `prototype/` and `demo/` and reports their errors;
@@ -536,8 +556,8 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   hub: plain arithmetic in place of the band's `mulDiv`, a floor in place of the ceiling on new units, no clamp, and λ
   rounded down.
 - **Tests.**
-  - One `*.t.sol` per contract; the hub's rebalancing and invariants have their own files, and so does a HybridHub's
-    migration.
+  - One `*.t.sol` per contract; both hubs' rebalancing and invariants have their own files, and so do a HybridHub's
+    migration and snapshot exit and the invariants of the factory, the vault and `MintRequests`.
   - Mocks go under `test/mocks/`. Mainnet constants live in `script/MainnetAddresses.sol`, re-exported with test-only
     ones by `test/fork/ForkAddresses.sol`.
   - New behaviour needs a unit test, and a new revert path needs a test hitting the exact error
@@ -556,8 +576,8 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   Groth16 verifier but the pinned SP1 and RISC Zero ones; `DeployStateVerifier.deployBnb` and `deployTron`, which
   deploy a chain's state verifier on Ethereum from a fresh anchor; `ConfigureWhitelist.propose`, `execute`,
   `proposeSupplies` and `executeSupplies`; and `ConfigureChains.propose` and `execute`, which add a vault chain and its
-  coins. Environment variables are process-global and tests run in parallel, so each variable name is
-  set by exactly one test (see `test/Scripts.t.sol`). In tests, script broadcasts come from `DEFAULT_SENDER`.
+  coins. Environment variables are process-global and tests run in parallel, so each variable name is set by exactly
+  one test (see `test/Scripts.t.sol`). In tests, script broadcasts come from `DEFAULT_SENDER`.
 - **Deployment rules.**
   - Deployments never use raw private keys: `--account` keystores or `--ledger`.
   - `OWNER` and `GUARDIAN` are required.
@@ -567,6 +587,13 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   - When the owner is a Safe, neither the guardian nor the broadcasting key may be one of its signers (SA-06).
   - Neither role may be a market contract: the router and its PoolManager, and on chain 1 every token and mint
     currency in `script/MainnetAddresses.sol` (CR-I37).
+  - On a vault chain, `DeployVault` refuses the indexes' own chain, a missing factory, template, P1 key, P2 image id or
+    anchor, and a floor above the cap. The freezer and the recovery proposer must be set, distinct and not the
+    broadcasting key, and the recovery proposer, the owner's emergency multisig there, must be a contract that is not
+    an EIP-7702 delegated account.
+  - `DeployStateVerifier` deploys only on mainnet or Sepolia, from a BNB anchor at most `MAX_ANCHOR_AGE` (1 hour) old
+    or the TRON period in progress. The verifier must then be advanced within `MAX_LAG` (1 day) of its anchor, and
+    every day after, or it stops for good.
 - **Mainnet addresses** are verified on-chain before being committed: tokens by symbol and decimals, and the router and
   the PoolManager by their runtime code hashes, since every Universal Router build answers `poolManager()` alike
   (CR-I35). `test/fork/MainnetAddresses.fork.t.sol` checks `script/MainnetAddresses.sol` that way. It also lists the
@@ -630,4 +657,6 @@ If a change would alter any of these, say so explicitly.
 - A backstop executor or trigger reminder.
 - An aggregator or Universal Router 2.1 zap.
 - V4 pools on Sepolia, so the V4 legs get a testnet rehearsal rather than only fork and mock coverage.
-- Everything multichain: vaults, proofs, the mirror and the rest of Stages B and C.
+- Everything multichain: vaults, proofs, the mirror and the rest of Stages B and C. Stage B is built in large part and
+  deployed nowhere, under its own section above; Stage C is researched, not built. "What this is" says where each
+  stands.

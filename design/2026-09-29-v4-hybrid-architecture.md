@@ -1,11 +1,14 @@
 # Xindex v4 (hybrid multichain): Architecture
 
-Status: **proposal, 2026-09-29, revised 2026-09-30 after an external review. Stage A is built on the branch
-`v4-stage-a`, internally reviewed, not yet externally audited or deployed; nothing beyond Stage A is implemented.**
-`ARCHITECTURE.md` describes v3 as deployed; this document describes the design that replaces it (the owner's decision of
-2026-09-30: v3 stays at tag `v3.0.0` and on Sepolia and never launches on mainnet). Measurements are dated 2026-09-29
-and must be re-taken before any parameter is fixed; `design/analysis/floor.py` reproduces every coverage, tracking and
-capacity figure from the saved snapshot.
+Status: **proposal, 2026-09-29, revised 2026-09-30 after an external review. On `main` as of 2026-10-01, Stage A is
+built, internally reviewed, not yet externally audited or deployed; most of Stage B is built too, and deployed
+nowhere; Stage C is researched only.** The Stage B spec (`design/2026-09-30-v4-stage-b-spec.md`) records what is built,
+what remains, and each deviation from this design, as a proposal for the owner or a decision the owner made; the
+Stage C record is `design/2026-10-01-stage-c-research.md`; section 14 sums up. `ARCHITECTURE.md` describes Stages A
+and B as built (it described v3 when this was written); this document describes the design that replaces v3 (the owner's
+decision of 2026-09-30: v3 stays at tag `v3.0.0` and on Sepolia and never launches on mainnet). Measurements are dated
+2026-09-29 and must be re-taken before any parameter is fixed; `design/analysis/floor.py` reproduces every coverage,
+tracking and capacity figure from the saved snapshot.
 
 The revision: two proof systems only where coins leave a vault (4.4); a 0.2% weight floor, which cuts the vault chains
 from 22 to 9 (2.1); upgrade prevention for vault chains as well as Ethereum (6.10); weekly supply updates (6.6); a
@@ -13,7 +16,8 @@ units-anchored rebalance formula that corrects the first draft's (6.6); the gap 
 speed limit and mint cap of 4% a day (8.1); funding set out as a decision (13.1); and the non-functional standard
 renamed the bounded-loss standard. The owner's decisions of 2026-09-30: no fee in Stage A, funded from outside (13.1);
 WBT stays off after its listing check (2.1); the floor buffer is adopted (6.7); and the owner Safe needs at least 3
-signatures, which deployment now checks.
+signatures, which deployment now checks. Of 2026-10-01: v4 launches as one product, on one factory, once the hybrid
+index is ready, so Stage A does not launch on its own (14).
 
 v4 lets one ERC-20 index hold the largest crypto assets **in kind, with no custodian inside the protocol**: WBTC, WETH
 and the tokens native to Ethereum sit in the index contract on Ethereum, and the native coins of smart-contract chains
@@ -54,7 +58,7 @@ Operational targets: in-kind redemption in 15–30 minutes per chain; mint settl
 
 - v3's design rules carry over except where section 13 lists a change: in-kind backing, CREATE2 addresses that commit to
   contents, fixed constituents, reentrancy-guarded untrusted executors, standard ERC-20s only on Ethereum. v3's "no
-  fees" is under review (13.1).
+  fees" was under review (13.1); the owner kept it for Stage A on 2026-09-30.
 - Owner decisions of 2026-09-29: **Bitcoin is held as WBTC only for now; the guardian may freeze a vault, and the freeze
   expires by itself; vaults survive Ethereum upgrades through a 30-day verifier rotation.** Of 2026-09-30: **weekly
   supply updates with a 0.5% step; a 4% daily speed limit and mint cap; v4 replaces v3.**
@@ -240,6 +244,10 @@ only. Tokens whose supply grows through unlocks or emissions drift as well, whic
   members are not slashable, so a bribe to 342 of them replaces a circuit bug as the way in, and "both systems broken"
   becomes a single failure. The worst case is then 0 if anyone challenges within the delay, and 11.3% × 4% ≈ **0.45% a
   day** of the index if nobody does. Payouts also wait the delay. Adopting it is the owner's call.
+- **Status, 2026-10-01:** both full-finality systems are built, P1 on SP1 and P2 on RISC Zero (Stage B spec, sections
+  10 and 11), and P1's verification passes the prototype's thresholds on an EVM and on Solana. No proof of either has
+  been generated yet: the cost and latency thresholds wait on the owner's GPU run, so the fallback is neither adopted
+  nor ruled out (`design/2026-09-30-proving-prototype.md`, "Where Phase 2 stands").
 
 ### 4.5 MintRequests (Ethereum)
 
@@ -680,6 +688,9 @@ No custody provider is needed.
 | `executeRebalance` (Ethereum-only) | Inside EIP-7825's 16.78M cap at 100 components only for an executor that already holds the bought tokens; swapping inside the call (about 150k per leg) fits about 100 legs at most |
 | Zap (Ethereum-only) | 265k–430k per token, which is why the app stops it near 35 tokens |
 
+Measured since (2026-10-01, Stage B spec 5.1 and 5.7), a state proof costs more than the `settleOrder` row assumes:
+about 820k gas for two storage slots of BNB Chain, and about 568k for one slot of Tron.
+
 ### 9.2 Latency
 
 | Operation | Time |
@@ -777,7 +788,7 @@ excluded. The method and code are public; nothing on-chain depends on this value
 | Capped 30/20 methodology | Retired: it trades on every price move and needs every price, so a price-free index cannot offer it |
 | Owner Safe of at least 2 signatures | 3-of-5 hardware wallets, because rotation reaches existing funds after 30 days |
 | Monthly rebalancing cadence | Weekly supply updates, 7-day interval (owner decision 2026-09-30) |
-| The seven-token launch whitelist (WETH, wstETH, WBTC, wSOL, UNI, LINK, AAVE) | The floor list's Ethereum tokens after the screen: WBTC, WETH, LINK, UNI, and WBT subject to its check; native SOL arrives with Stage B |
+| The seven-token launch whitelist (WETH, wstETH, WBTC, wSOL, UNI, LINK, AAVE) | The floor list's Ethereum tokens after the screen: WBTC, WETH, LINK, UNI, and WBT subject to its check (it stays off, 2.1); native SOL arrives with Stage B |
 | v3 as the product | v4 replaces v3, which stays at tag `v3.0.0` and on Sepolia (owner decision 2026-09-30) |
 | No fees | Kept for Stage A, funded from outside (13.1) |
 
@@ -813,6 +824,18 @@ Stage A audit reviews no fee code.
 | B | EVM vault (BNB Chain, HyperEVM, Tron), Solana vault, P1/P2 Ethereum verifiers on each, one state verifier per chain on Ethereum, mirror, orders, limits, freeze, migration, rotation, snapshot exit, watchers; BNB Chain end to end first | — |
 | C | Avalanche, NEAR, Stellar, Hedera, Cardano, one at a time, each only if its finality is deterministic, its proof cost is measured, its cap matters and its value pays for its vault, verifiers and audits (all of Stage C adds 1.3 points of coverage and 0.5 of tracking error) | — |
 
+**Status, 2026-10-01.** The stages are build order only: v4 launches as one product, on `HybridIndexFactory`, once the
+hybrid index is ready, and Stage A does not launch on its own (the owner's call on 2026-10-01). On `main`, deployed
+nowhere:
+- **A** is built and internally reviewed (`audit/2026-09-30-stage-a-red-team.md`).
+- **The prototype** has measured verification, which passes, and P1's prover gas on mainnet data; the cost and latency
+  thresholds wait on the owner's GPU run (`design/2026-09-30-proving-prototype.md`).
+- **B** is built in code for BNB Chain and Tron in both directions, with P1 and P2 on EVM vault chains. Solana has its
+  vault and P1, but not P2 or a state verifier on Ethereum, which waits on Alpenglow's mainnet launch. HyperEVM is
+  blocked: its headers carry no state root. Watchers and the testnet period are not done (Stage B spec, sections 6
+  and 8).
+- **C** is researched only (`design/2026-10-01-stage-c-research.md`).
+
 Verification, per component: formal proofs of sections 7.2–7.3; 100% coverage and invariant fuzzing as v3 requires;
 differential tests running P1 and P2 on the same real chain data; parser fuzzing against recorded transactions; fork
 tests on every chain; a testnet period; two independent audits; a bug bounty sized to the largest vault; regression
@@ -823,22 +846,30 @@ tests named after each finding id, as gate 6 of AGENTS.md requires.
 - **Unscheduled Ethereum proof-format break:** solved as a delay rather than a loss by section 6.9's four layers. What
   remains open is engineering: proving a chain of full-finality checkpoints for the continuity test at acceptable cost
   on each vault chain, and a change of Ethereum's signature scheme itself (a post-quantum migration), which would defeat
-  the continuity test's anchor and must be handled by Layer 1 well in advance.
+  the continuity test's anchor and must be handled by Layer 1 well in advance. (2026-10-01: the vault's side of the
+  stall recovery and the snapshot exit is built; a successor's proof of descent is not, Stage B spec 5.6.)
 - **Bitcoin:** add tBTC and a weight cap (8.3), then a Bitcoin vault; tBTC's supply (4,177 BTC on 2026-09-29) limits
   how large a split index can grow.
 - **Proving costs and times** per chain, and whether one aggregated proof per mint is practical for the 9 floor
-  chains.
+  chains. (2026-10-01: P1 runs to 36.6 billion prover gas on mainnet data, measured in execute mode; its price and time
+  wait on the owner's GPU run, `design/2026-09-30-proving-prototype.md`. BNB Chain's and Tron's state proofs need no
+  prover, 9.1.)
 - **The sync-committee fallback's parameters** (`CHALLENGE_DELAY`, the lower caps), if the prototype shows
   full-finality proofs are impractical.
 - **Cost to corrupt** each vault chain, and its validator concentration, to set 8.2's caps; chains without
   deterministic finality stay out (Ethereum Classic is excluded). **Cardano's Ouroboros finality is probabilistic**, so
   it fails this rule as written; its Stage C gate decides whether it stays on the list. Hedera's permissioned council
-  and its state-proof support get the same check.
+  and its state-proof support get the same check. (Researched on 2026-10-01, `design/2026-10-01-stage-c-research.md`:
+  Cardano fails the rule as written, Peras included; Hedera's finality passes, but its block proofs are switched off on
+  mainnet until about November 2026, and its council is a trust the owner has to accept; Avalanche's probabilistic
+  safety needs the owner's reading of the rule too. Those decisions are the owner's and not yet made.)
 - **Real supply histories:** re-run the backtest with each token's supply over time, since constant supplies
   understate tracking error (2.1). CoinGecko's API was blocked on 2026-09-29; another source is needed.
 - **A tighter auction:** the λ band exposes the whole moving value however small the trade (6.6); whether a price-free
   design can bound the exposure by the trade's size.
-- **Small indexes and the speed limit:** a floor so a 4% limit does not block small redemptions.
+- **Small indexes and the speed limit:** a floor so a 4% limit does not block small redemptions. (Decided on
+  2026-09-30: a quantity floor per token, set with its cap by `CAP_UPDATE`, below which a day's payouts are always
+  allowed; the owner adopted it as proposal 5 of the Stage B spec, and the vault enforces it.)
 - **On-chain value** for other protocols, if lending markets want the index as collateral: a time-weighted average of
   the index token's own Uniswap price, never a posted price.
 - **Issuer tokens** (WBT, LEO, OKB, BGB, GT, KCS, WLFI): which ones can freeze or mint, and whether GT, KCS and ARB are

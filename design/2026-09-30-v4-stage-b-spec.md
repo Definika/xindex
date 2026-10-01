@@ -4,10 +4,16 @@ Stage B adds the native coins of BNB Chain, HyperEVM, Tron and Solana, held in v
 whose shares live on Ethereum. The design is `design/2026-09-29-v4-hybrid-architecture.md`, sections 3 to 8. This spec
 fixes what the design leaves open, and marks each deviation from it as a proposal for the owner.
 
-**Status: draft, 2026-09-30; section 1 decided the same day.** The build starts with the parts every outcome of the proving prototype shares: the
-message format, the EVM vault, and the vault-to-Ethereum path for BNB Chain. Everything that depends on which
-Ethereum-finality proof is used (full finality, or the sync-committee fallback) sits behind one interface, and waits
-for the owner's decision after the GPU run.
+**Status: draft, 2026-09-30; section 1 decided the same day; statuses brought up to date with `main` on 1 October
+2026.** Built and gated on `main`, and deployed nowhere: the message format, the EVM vault, the factory's chain registry
+and the hub's three parts (section 5), the BNB Chain and Tron state verifiers (5.1, 5.7), P1 and P2 with their verifier
+contracts (sections 10 and 11), the Solana vault and P1 on Solana (sections 7 and 10), and the scripts that deploy a
+vault chain, deploy a state verifier and register a chain (`script/DeployVault.s.sol`,
+`script/DeployStateVerifier.s.sol`, `script/ConfigureChains.s.sol`). Section 6 lists what remains. P1 and P2 prove full
+finality, and have run only in their zkVMs' execute mode: no proof of either has been generated yet
+(`proofs/README.md`). Everything that depends on which Ethereum-finality proof is used sits behind one interface
+(section 3), so the sync-committee fallback stays open until the owner's GPU run (M4 in
+`design/2026-09-30-proving-prototype.md`) prices a proof against the prototype's $50 and 60-minute thresholds.
 
 ## 1. Proposals for the owner (deviations from the design)
 
@@ -26,7 +32,8 @@ put forward as going ahead unless the owner objected, and the owner did not. Eac
    that system is the chain's own finality vote, checked on Ethereum with the EIP-2537 precompiles, plus a
    Merkle-Patricia storage proof. The prototype measured about 650k gas (`design/2026-09-30-proving-prototype.md`).
    No circuit and no trusted setup are involved. HyperEVM and Tron get the same treatment where their consensus allows,
-   each decided when its verifier is built.
+   each decided when its verifier is built. (Since then, section 8: Tron's verifier is built, proving a vault call's
+   success rather than a storage proof, and HyperEVM has no state root to prove against.)
 3. **One state commitment per index on a vault.** The design's `VaultState` carries settled balances, paid totals
    and pending deposits (5.3). A vault instead keeps two kinds of 32-byte digest, each updated whenever what it covers
    changes:
@@ -67,8 +74,8 @@ event VaultMessage(bytes32 indexed id, bytes payload);
 | `DOMAIN` | `keccak256("xindex.v4.vault-message")` |
 | `SOURCE_CHAIN_ID` | 1 (Ethereum), or 11155111 on Sepolia |
 | `kind` | one of the kinds below |
-| `destChainId` | the vault chain's EVM chain id (Tron and Solana get fixed ids in the chain registry) |
-| `vault`, `index` | the vault's address on its chain; the Ethereum address of the hub, or of the factory for governance |
+| `destChainId` | the vault chain's EVM chain id, which an EVM vault checks against `block.chainid`: 728126428 on Tron (section 8); Solana, which has none, gets an id in the chain registry (section 7) |
+| `vault`, `index` | the vault's 32-byte id on its chain, an EVM vault's address as a word (section 7); the Ethereum address of the hub, or of the factory for governance |
 | `nonce` | unique per `(index, destChainId)` and kind, so identical burns have different ids |
 
 | Kind | Emitter | Body | Proof policy | Effect on the vault |
@@ -97,6 +104,8 @@ interface IEthereumEventVerifier {
         external view returns (address emitter, bytes32 topic0, bytes32 topic1, bytes memory data);
 }
 ```
+
+Section 5.6 adds the log's block number to what `verifyEvent` returns, and `verifyCheckpoint`.
 
 P1 and P2 each implement it, over different proofs of the same event. For "and" the vault calls both, and both must
 name the same emitter, topics and data. For "or" one suffices. Under the sync-committee fallback, a verifier
@@ -156,12 +165,13 @@ failing, so nothing expires. While frozen, nothing is paid and no deposit is tak
 
 **Not in this first step:**
 - the stall-gated recovery and the snapshot exit (design 6.9), built since (section 5.6);
-- Tron's TVM differences, audited when Tron's vault is built.
+- Tron's TVM differences, checked since by running the vault on TRON's VM (section 5.7, `tron/`): none needs a code
+  change. No audit has reviewed them yet.
 
 ## 5. Ethereum side
 
 - **The chain registry** in the factory: `proposeChain(chainId, vault, stateVerifier)` behind `LISTING_DELAY`, as the
-  design sets out (4.1). The registry also carries the chain ids assigned to Tron and Solana.
+  design sets out (4.1). The registry also carries the chain id assigned to Solana; Tron's is its own `block.chainid`.
 - **`HybridHub`** (proposal 1): Stage A's in-kind logic for Tier 1 tokens, plus:
   - the mirror per vault token (7.2);
   - mint orders with the 24-hour lock and automatic voiding (6.3);
@@ -169,9 +179,10 @@ failing, so nothing expires. While frozen, nothing is paid and no deposit is tak
   - the rebalance with deliveries, bond and settlement (6.6);
   - `MINT_CAP`, per-chain freeze flags, migration, recovery addresses.
 - **A state verifier per chain.** For BNB Chain, the prototype's vote check and storage proof, plus validator-set
-  tracking, set out in section 5.1.
+  tracking, set out in section 5.1. For Tron, a vault call proven in a solidified block (section 5.7). Section 8 has the
+  other chains.
 
-### 5.1 The BNB Chain state verifier
+### 5.1 The BNB Chain state verifier (built 2026-09-30)
 
 BNB Chain rotates 4 to 5 of its 21 active validators at every epoch block (every 1,000 blocks, 7.5 minutes), from the
 45 elected each day. The prototype record first assumed daily changes; that was wrong, and the owner chose on
@@ -301,8 +312,9 @@ module the hub delegates to, not in the hub itself.
 **One factory or two: decided on 2026-10-01: one.** The owner's call: v4 is one hybrid product, so it launches on this
 factory once the hybrid index is ready, and Stage A does not launch on its own. `script/Deploy.s.sol` deploys this
 factory, with the `HybridHub` template built for its predicted address. The question as it stood, deferred on
-2026-09-30 once it was clear that Stage B is added beside Stage A either way: An index's tokens are fixed for good, so no Stage A index ever gains a vault token under either
-choice. Holders switch to a Stage B index when they choose, and a helper could do the Ethereum part in one transaction.
+2026-09-30 once it was clear that Stage B is added beside Stage A either way: An index's tokens are fixed for good, so
+no Stage A index ever gains a vault token under either choice. Holders switch to a Stage B index when they choose, and a
+helper could do the Ethereum part in one transaction.
 The choice matters only when Stage A is deployed. The factory is immutable, and the Stage B factory must know the
 `HybridHub` template when it is deployed, so the alternatives are:
 - Stage A launches on this factory with no chains registered: one factory, one set of supplies, and Stage A's audit
@@ -332,11 +344,13 @@ path. The rarer order paths, `voidOrder`, `reconfirmOrder` and `failIntake`, mov
 component. A vault component's reference supply comes from the factory like any other.
 
 **Accepting.** An index holding vault tokens cannot settle in one transaction, so a fill has three steps.
-1. `acceptRebalance(recipients)` at the current λ, while the auction is live. It freezes λ and the settlement's units,
-   and takes three things from the executor:
+1. `acceptRebalance(recipients, maxAmountsIn)` at the current λ, while the auction is live. It freezes λ and the
+   settlement's units, and takes three things from the executor:
    - a bond of `REBALANCE_BOND` (0.1%) of the supply, in shares;
    - every bought Ethereum component, in the same transaction;
    - one recipient per vault chain, for the sold vault legs.
+
+   `maxAmountsIn`, if not empty, bounds each component's delivery.
 
    The executor then deposits every bought vault leg on its chain, under a delivery intake id,
    `(deadline << 192) | 1 << 191 | nonce`. That id cannot be an order's, whose ids stay below 2^191. The deadline is
@@ -372,7 +386,8 @@ component. A vault component's reference supply comes from the factory like any 
   rebalance whose units moved against it.
 
 **As built.**
-- **Sizes.** The hub is 23.1KB and the module 23.5KB, each under the 24KB limit.
+- **Sizes.** The hub is 23.1KB and the module 23.5KB, each under the 24KB limit. At `main` on 1 October, the hub is
+  23,371 bytes, the module 24,150 and the extension 16,025, of EIP-170's 24,576.
 - **Shares in the module.** The module does not inherit OpenZeppelin's ERC-20: `HubShares` reads the supply, moves the
   bond and burns it on the same ERC-7201 slot, as OpenZeppelin's `_update` does for each case. A harness test checks
   it against OpenZeppelin's own token.
@@ -421,9 +436,9 @@ proposal within `PROPOSAL_WINDOW` (7 days) after its delay.
   - `ROTATION_LEAD` (90 days) stays operational, not enforced. The owner proposes the next pair at least 90 days before a
     scheduled Ethereum upgrade, so a guardian's veto, the guardian's replacement (7 days) and a second 30-day rotation
     all fit before the upgrade.
-- **Evidence.** `freezeOnEvidence(chainId)` lets any of the factory's HybridHub clones freeze a chain as the owner or
-  guardian can, once it has checked evidence that the chain's records or proofs are false (section 5.5). An
-  Ethereum-only index cannot call it.
+- **Evidence.** `freezeOnEvidence(chainId, payouts)` lets any of the factory's HybridHub clones freeze a chain's mints
+  as the owner or guardian can, and with `payouts` its vault too, once it has checked evidence that the chain's records
+  or proofs are false (section 5.5). An Ethereum-only index cannot call it.
 
 **Unchanged, for the record:** a compromised owner could rotate a vault's verifiers to ones it controls, but only after
 30 days in public, only if the guardian does not cancel, and holders can leave within those 30 days. That is design
@@ -690,24 +705,36 @@ forge a proof. What remains:
   java-tron on the machine measured; every run passed at 80 ms, while at java-tron's default 50 ms a cold or loaded
   node failed. The check runs only in `update`, one per proof system, never in a delivery. Whoever sends `update`
   sets a fee limit near its energy, about 300,000, and the margin is measured again on Nile before mainnet.
-- **Still for the deployment:** `consume_user_resource_percent` (100, so callers pay all energy, as nobody owns the
-  vault), TRX's 6 decimals in the caps, the floor and the reference supply, and the deploy script.
+- **Still for the deployment:** the script that deploys the vault on a TRON network with `script/DeployVault.s.sol`'s
+  checks and `consume_user_resource_percent` at 100 (so callers pay all energy, as nobody owns the vault), as
+  `tron/rehearse.mjs` deploys it on the local chain; and TRX's 6 decimals in the caps, the floor and the reference
+  supply. The Ethereum side is scripted: `script/DeployStateVerifier.s.sol` deploys the verifier from a fresh anchor,
+  and `script/ConfigureChains.s.sol` proposes chain 728126428 and TRX's listing (`tron/README.md`).
 
 ## 6. Build order
 
+Statuses as of `main` on 1 October 2026. Nothing has been deployed but on local chains.
+
 1. The message library and the verifier interface. Then the EVM vault, with unit tests, an invariant suite, mock
-   verifiers, and 100% coverage under the repository's gates.
+   verifiers, and 100% coverage under the repository's gates. Built.
 2. The BNB Chain state verifier on Ethereum, from the prototype, with validator-set tracking and fork tests against
-   BNB Chain data.
+   BNB Chain data. Built (section 5.1), and tested on recorded BNB Chain data, mainnet's and the testnet's
+   (`test/fixtures/bnb`), rather than on a fork.
 3. The factory's chain registry, and `HybridHub` (once proposal 1 is decided). Layer 1 is built (section 5.2); layer 2
    is the rebalance with deliveries and bond (built, section 5.3); the governance messages (section 5.4), and
    migration with the evidence against a chain (section 5.5), are built.
 4. The Ethereum-event verifiers: P1 on SP1 (built, section 10) and P2 on RISC Zero (built, section 11, the owner's call
-   on 1 October 2026).
-5. The Solana vault program (built, section 7), then Tron (its state verifier built, section 5.7) and HyperEVM
-   (section 8).
-6. The stall recovery and snapshot exit (built, section 5.6, but for the pool look-through), then watchers, then the
-   testnet rehearsals of the design's Phase 3.
+   on 1 October 2026). Neither has generated a proof yet; a proof's price and time wait on the owner's GPU run.
+5. The Solana vault program (built, section 7, with P1 on Solana; P2 on Solana and a Solana state verifier are not
+   built), then Tron (its state verifier built, section 5.7, and its contracts run on TRON's VM; the vault's deploy
+   script on TRON is not written) and HyperEVM (blocked: no state root to prove against, section 8).
+6. The stall recovery and snapshot exit (built, section 5.6, but for the pool look-through and a successor's proof of
+   descent), then watchers (not built), then the testnet rehearsals of the design's Phase 3 (not run; the hackathon's
+   demonstration has been rehearsed only on local chains and local forks, with real testnet data, `demo/README.md`).
+7. The deployment scripts: a vault chain's verifiers and vault, a chain's state verifier on Ethereum, and the chain's
+   registration with its coins' listings (built: `script/DeployVault.s.sol`, `script/DeployStateVerifier.s.sol`,
+   `script/ConfigureChains.s.sol`), with the hybrid ABIs the app decodes (`abi/HybridIndexFactory.json`,
+   `abi/IHybridIndex.json`, `abi/XindexVault.json`).
 
 ## 7. The Solana vault (hackathon build, from 30 September 2026)
 
@@ -734,9 +761,11 @@ limit and the same freeze. What Solana changes:
     1,232 bytes.
   - The message id, the index, the intake and every account address are read from the payload itself, and the emitter
     the verifiers must attest is the index the message names, or the factory. A burn with both stub proofs takes
-    1,143 bytes. Real proofs need an address lookup table for the static accounts, and possibly a buffer account.
-  - A real P1 is an SP1 Groth16 verifier whose public values commit to the log (about 94,000 compute units, bounded
-    in `design/2026-09-30-proving-prototype.md`).
+    1,143 bytes. Real proofs need an address lookup table for the static accounts, and a buffer account: P1's event
+    proof is 1.5 to 2.2 KB (section 10).
+  - The real P1, built since, is `solana/programs/ethereum-verifier` (section 10): its `update` checks the SP1 Groth16
+    proof, 96,910 compute units measured in LiteSVM, and its `verify_event` proves the log by its receipt under the
+    headers root that proof recorded, 9,100 to 12,500. P2 on Solana is not built.
 - **Used messages.** Each delivered message creates an account at an address derived from its id, so a second
   delivery fails by construction.
 - **Initialization** only by the program's upgrade authority, so nobody can take the configuration in front of the
@@ -748,7 +777,7 @@ limit and the same freeze. What Solana changes:
   with `cancel_change`, the freezer's own replacement excepted. Only a message on both proofs moves a kind's nonce.
 
 **As built (30 September):**
-- 6 unit tests pin the encodings against Solidity's.
+- 7 unit tests pin the encodings against Solidity's.
 - 29 LiteSVM tests cover initialization, registration, deposits, the route, the used mark, burns under the speed limit,
   refunds, migration, governance and its delay, the freeze, rotation, and the red team's findings (SOL-1 to SOL-9,
   VLT-2, VLT-4).
@@ -850,7 +879,8 @@ proofs over BLS12-381. None of the five is built: NEAR and Stellar each need a f
 state verifier and a vault in the chain's own language, the work Solana needs, and the owner has three decisions to
 make first (the record's summary lists them).
 
-The hackathon demonstration is unaffected: its state verifiers are stubs on every chain.
+The hackathon demonstration is unaffected: none of its chains is a Stage C chain. Its state verifiers are stubs for
+Solana and HyperEVM, and the real `BnbStateVerifier` for its second index, of WETH and BNB (`demo/README.md`).
 
 ## 9. The internal red team of Stage B (30 September 2026)
 
@@ -874,11 +904,17 @@ What changed in the rules above:
 Each trades availability for a bound on loss.
 
 
-## 10. P1: the Ethereum-finality proof (design, 30 September 2026)
+## 10. P1: the Ethereum-finality proof (design, 30 September 2026; built 30 September and 1 October)
 
 P1 proves to a vault chain that an Ethereum block is final, so the vault can accept a message logged in it. It
 replaces the testnet stubs. The zkVM is SP1; its proof is wrapped as BN254 Groth16, which an EVM checks with the BN254
 precompiles (about 227k gas, measured) and Solana with its `alt_bn128` syscalls.
+
+**Built:** the statement (`proofs/finality`), SP1's program and host, the input builder, `EthereumFinalityVerifier` for
+EVM vault chains and its Solana twin (`proofs/README.md`). The program has run in SP1's execute mode on real mainnet and
+Sepolia inputs. No proof of it has been generated yet: the Groth16 checks have run on SP1's own proofs, and the rest of
+the verifiers on real public values and receipts with the SNARK check mocked (`design/2026-09-30-proving-prototype.md`,
+`demo/README.md`, `tron/README.md`).
 
 ### What each verifier keeps
 

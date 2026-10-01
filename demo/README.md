@@ -4,24 +4,28 @@ One index token on Sepolia holding demo WETH on Ethereum, SOL in the vault progr
 vault on HyperEVM testnet. It mints with coins deposited on each chain and redeems with each coin paid on its own chain,
 within the 4%-a-day speed limit. No contract reads a price. The plan is `../design/2026-09-30-hackathon-plan.md`.
 
-> **Stubs, not proofs.** Messages between the chains are vouched for by relayer keys, not by the proof systems of the
-> design (P1 and P2, and each chain's state proof), which are not built yet:
+> **Stubs, not proofs.** In the index of WETH, SOL and HYPE, messages between the chains are vouched for by relayer
+> keys, not by the proof systems of the design (P1 and P2, and each chain's state proof):
 > - `src/StubEventVerifier.sol` stands in for P1 and P2 on HyperEVM;
 > - `../solana/programs/stub-verifier` stands in for them on Solana;
 > - `src/StubStateVerifier.sol` stands in for each vault chain's state verifier on Sepolia.
 >
-> Whoever holds the relayer keys can move the demo's coins. Everything else is the real code: the factory, the hub and
-> its two modules, both vaults. Nothing in this folder may be deployed to a mainnet.
+> P1 and P2 have since been built (`../proofs`, and P1 on Solana as `../solana/programs/ethereum-verifier`), but this
+> index does not use them, and neither of its vault chains has a state verifier: HyperEVM's headers carry no state root,
+> and Solana's waits on Alpenglow's mainnet launch (Stage B spec, section 8). Whoever holds the relayer keys can move
+> the demo's coins. Everything else is the real code: the factory, the hub and its two modules, both vaults. Nothing in
+> this folder may be deployed to a mainnet.
 >
 > **A second index, of WETH and BNB, runs on real proofs** (see "BNB testnet: real proofs" below): BNB testnet's state
-> is proven on Sepolia from its own validators' votes, and Sepolia's messages are proven on BNB testnet by P1. Only P2,
-> which does not exist yet, is a stub there.
+> is proven on Sepolia from its own validators' votes, and Sepolia's messages are proven on BNB testnet by P1. Only P2
+> is a stub there: it has since been built (`../proofs/p2`, `RiscZeroFinalityVerifier`), and the demo does not deploy it
+> yet.
 
 ## What is here
 
 | Path | What |
 |---|---|
-| `src/` | the three stubs and `DemoToken`, a freely minted demo WETH |
+| `src/` | the two Solidity stubs and `DemoToken`, a freely minted demo WETH |
 | `test/DemoFlow.t.sol` | the whole flow on one EVM, signed as the relayer signs |
 | `script/Demo.s.sol` | the testnet deployment, one step per timelock |
 | `relayer/` | the relayer and the demo's command line (TypeScript) |
@@ -101,6 +105,8 @@ Check Hyperliquid's documentation for the current way.
 | `settle <order>` | after the deadline: reads both intakes, has the state relayer sign them, settles the order |
 | `claim <order>` | after the 24-hour lock: mints the shares; the relayer carries the settle messages |
 | `redeem <shares> <hyperevm> <solana>` | WETH at once; HYPE and SOL burned toward the two recipients |
+| `checkpoint` | advances the HyperEVM vault's checkpoint to Sepolia's finalized head, as `relay` does hourly |
+| `balances [holder]` | the holder's shares, the index's supply, and its balance and payouts in each vault |
 | `status` | the deployment and the Solana addresses |
 
 A Solana recipient must already exist: a payout below the rent-exempt minimum to a new account fails, and the burn
@@ -149,3 +155,6 @@ The BNB path's two proofs were rehearsed on 1 October with real chain data and t
   a real Sepolia input (anchor epoch 351,927 to 351,929, blocks 11,823,123 to 11,823,186), with only the SNARK check
   mocked, and the relayer's proofs passed `verifyEvent` for real logs at the range's first, middle and last blocks
   and `verifyCheckpoint` at its last.
+
+Neither index is recorded as deployed on a public testnet: `deployments/`, where every step writes what it deployed,
+is empty, and no P1 proof has been generated yet.
