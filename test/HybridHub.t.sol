@@ -762,6 +762,11 @@ contract HybridHubTest is HybridTest {
         new HybridHubModule(address(0), address(ownExtension));
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
         new HybridHubExtension(address(0));
+        // A zero part is refused by name, before the part is asked which factory it serves.
+        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
+        new HybridHub(address(this), address(0));
+        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
+        new HybridHubModule(address(this), address(0));
         vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.WrongModule.selector, address(module)));
         new HybridHub(address(this), address(module)); // a module built for another factory
         vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.WrongModule.selector, address(extension)));

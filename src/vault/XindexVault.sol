@@ -52,7 +52,9 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
     uint256 private constant HUB_SETTLED_INTAKES_SLOT = 60;
     uint256 private constant HUB_SENT_MESSAGES_SLOT = 62;
     /// @dev The key of a waiting freezer change, which the freezer may not cancel and a freeze does not hold.
-    bytes32 private constant FREEZER_KEY = bytes32(uint256(VaultMessages.FREEZER_CHANGE) << 160);
+    /// @dev Bits in an address, which a 32-byte word holds in its low part.
+    uint256 private constant ADDRESS_BITS = 160;
+    bytes32 private constant FREEZER_KEY = bytes32(uint256(VaultMessages.FREEZER_CHANGE) << ADDRESS_BITS);
     bytes32 private constant SNAPSHOT_CLAIM_TYPEHASH =
         keccak256("SnapshotClaim(address index,address holder,address recipient)");
 
@@ -307,7 +309,7 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
     /// @dev One mark and one waiting change per kind, and per token for a cap: the kind above the token's address.
     function _changeKey(uint8 kind, bytes memory body) private pure returns (bytes32) {
         address token = kind == VaultMessages.CAP_UPDATE ? _toAddress(abi.decode(body, (bytes32))) : address(0);
-        return bytes32(uint256(kind) << 160 | uint160(token));
+        return bytes32(uint256(kind) << ADDRESS_BITS | uint160(token));
     }
 
     /// @inheritdoc IXindexVault
@@ -421,6 +423,8 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
     }
 
     /// @inheritdoc IXindexVault
+    // The payee is the one a proven message named, never the caller's choice.
+    // aderyn-fp-next-line(eth-send-unchecked-address)
     function release(address index, bytes32 id) external nonReentrant {
         _release(index, id, true);
     }
@@ -523,6 +527,8 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
     }
 
     /// @inheritdoc IXindexVault
+    // The payee is the caller, refunded only what the caller deposited.
+    // aderyn-fp-next-line(eth-send-unchecked-address)
     function refund(address index, uint256 intakeId) external nonReentrant {
         if (intakeState[index][intakeId] != IntakeState.Failed) revert IntakeNotOpen(index, intakeId);
         _checkNotFrozen();
@@ -624,7 +630,8 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         uint256 reviewEnds = block.timestamp + RECOVERY_DELAY;
         // A timestamp 30 days ahead fits 64 bits for billions of years.
         // forge-lint: disable-next-line(unsafe-typecast)
-        _successor = Successor({p1: address(newP1), p2: address(newP2), reviewEnds: uint64(reviewEnds)});
+        uint64 ends = uint64(reviewEnds); // aderyn-fp(unsafe-casting)
+        _successor = Successor({p1: address(newP1), p2: address(newP2), reviewEnds: ends});
         emit SuccessorProposed(address(newP1), address(newP2), reviewEnds);
     }
 
@@ -823,7 +830,7 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
 
     /// @dev Native coin only in Stage B; a listed ERC-20 would come with measured deposits, as MintRequests takes them.
     function _toAddress(bytes32 value) private pure returns (address a) {
-        if (uint256(value) >> 160 != 0) revert NotAnAddress(value);
+        if (uint256(value) >> ADDRESS_BITS != 0) revert NotAnAddress(value);
         a = address(uint160(uint256(value)));
     }
 

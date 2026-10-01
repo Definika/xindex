@@ -3,8 +3,10 @@ pragma solidity 0.8.28;
 
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {ITronStateVerifier} from "../interfaces/ITronStateVerifier.sol";
-import {IVaultStateVerifier} from "../interfaces/IVaultStateVerifier.sol";
 import {IXindexVault} from "../interfaces/IXindexVault.sol";
+// Named by the `@inheritdoc` of `verifySlots`, which must name the interface that declares it.
+// aderyn-fp-next-line(unused-import)
+import {IVaultStateVerifier} from "../interfaces/IVaultStateVerifier.sol";
 
 /// @title TronStateVerifier
 /// @notice Tron's state on Ethereum, from the chain's own producers, with no zkVM and no trusted setup: SHA-256 for
@@ -302,7 +304,8 @@ contract TronStateVerifier is ITronStateVerifier {
         if (h.witness != producer.witness || h.v > 1) revert BadSignature(i);
         // Only the signer's identity matters here: a second form of the same signature proves nothing more.
         // forge-lint: disable-next-line(ecrecover)
-        if (ecrecover(hash, SafeCast.toUint8(h.v + ECRECOVER_V), h.r, h.s) != producer.key) revert BadSignature(i);
+        address signer = ecrecover(hash, SafeCast.toUint8(h.v + ECRECOVER_V), h.r, h.s); // aderyn-fp(ecrecover)
+        if (signer != producer.key) revert BadSignature(i);
     }
 
     /// @dev `BlockId`: the block number in the first 8 bytes, the header hash in the other 24.

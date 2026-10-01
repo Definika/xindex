@@ -1,0 +1,18 @@
+# Aderyn (Cyfrin's static analyzer), as `aderyn` or its VS Code extension runs it on src/. Each finding is either fixed
+# or, when it is a verified false positive, marked where it stands with `aderyn-fp-next-line(<detector>)` (or
+# `aderyn-fp(<detector>)` at the end of the line) and a one-line reason above it, as forge lint's suppressions are.
+# Do not add an exclusion below without its reason.
+version = 1
+root = "."
+src = "src/"
+
+[detectors]
+# Rules that conflict with the design rather than flag mistakes, as in foundry.toml's [lint]:
+#   costly-loop / require-revert-in-loop  a basket is processed component by component, and a component that fails
+#                                         a check fails the whole operation (forge lint excludes the same two)
+#   internal-function-used-once           a library function is the unit its own tests pin (test/Bls12381.t.sol,
+#                                         test/MerklePatricia.t.sol), whatever number of callers src/ has
+#   centralization-risk                   the owner's powers are the design's: every one is a proposal behind a public
+#                                         delay and the guardian's veto, none touches funds, and AGENTS.md ("No admin
+#                                         power over funds") lists them all
+exclude = ["costly-loop", "require-revert-in-loop", "internal-function-used-once", "centralization-risk"]

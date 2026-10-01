@@ -59,6 +59,11 @@ market from `script/testnet/SetupTestMarket.s.sol`.
    guards; the three documented suppressions are on the `redeem` call in `IndexZap._burnBasket`, the `permit` call in
    `IndexZap.burnToTokenWithPermit`, and the executor callback in `IndexHub._settle`. One more marks `IHybridIndex`,
    which only integrators and tests use, as meant to have no user in `src/`.
+   Aderyn (Cyfrin's analyzer, `aderyn .`, and its VS Code extension) reports nothing on `src/` either. `aderyn.toml`
+   excludes the rules the design rejects, each with its reason, as `foundry.toml` does for lint; a verified false
+   positive is marked where it stands with `// aderyn-fp-next-line(<detector>)` and its reason on the line above, or
+   `// aderyn-fp(<detector>)` at the end of the line when forge lint's own suppression must stay directly above it. CI
+   does not run Aderyn yet: run it before pushing.
 6. Every testable finding of the security reviews keeps its regression test passing, named after its id. A test that
    covers two findings carries both ids. The id families:
    - v1 findings: by their v1 id.

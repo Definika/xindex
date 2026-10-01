@@ -234,9 +234,13 @@ contract IndexHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, Re
         uint256 n = _components.length;
         if (keepMask >> n != 0 || keepMask == (1 << n) - 1) revert InvalidKeepMask(keepMask);
         if (
+            // A view on the factory, by STATICCALL: nothing it reaches can change state, so nothing re-enters.
+            // aderyn-fp-next-line(reentrancy-state-change)
             (keepMask != 0 || block.timestamp < _permissionlessAt(pendingEta))
                 && !IIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender)
-        ) revert Unauthorized(msg.sender);
+        ) {
+            revert Unauthorized(msg.sender);
+        }
 
         (uint256[] memory ratios, uint256 lambdaMin, uint256 lambdaMax) = _band(keepMask);
         // Nothing to trade: every moving component's units already follow its supply to within rounding, which covers
@@ -273,6 +277,8 @@ contract IndexHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, Re
     function cancelRebalance() external nonReentrant onlyInitialized {
         uint256 eta = _pending.eta;
         if (eta == 0) revert NoPendingRebalance();
+        // A view on the factory, by STATICCALL: nothing it reaches can change state, so nothing re-enters.
+        // aderyn-fp-next-line(reentrancy-state-change)
         if (!IIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender)) revert Unauthorized(msg.sender);
         // Cancelling an auction that already expired only clears the stale proposal the views still report: that
         // expiry holds strangers off until its own deadline plus REBALANCE_DELAY anyway, so re-arming the cooldown

@@ -22,6 +22,8 @@ library Bls12381 {
     uint256 internal constant COMPRESSED_G1 = 48;
     uint256 private constant FIELD = 48;
     uint256 private constant WORD = 32;
+    /// @dev SHA-256 blocks in the 256 uniform bytes `hashToG2` expands: two Fp2 elements of two 64-byte chunks each.
+    uint256 private constant XMD_BLOCKS = 8;
     uint256 private constant PAD = 16;
 
     /// @dev DST', the domain separation tag followed by its length: 43, which is the byte 0x2b.
@@ -92,7 +94,7 @@ library Bls12381 {
     /// @notice RFC 9380 `hash_to_curve` onto G2 with `expand_message_xmd` over SHA-256 and this library's DST. The
     ///         map precompile clears the cofactor of each point, and clearing is linear, so the sum is the hash.
     function hashToG2(bytes memory message) internal view returns (bytes memory) {
-        bytes32[8] memory b = _expandMessageXmd(message);
+        bytes32[XMD_BLOCKS] memory b = _expandMessageXmd(message);
         bytes memory q0 = _call(MAP_FP2_TO_G2, bytes.concat(_reduce(b[0], b[1]), _reduce(b[2], b[3])), G2_POINT);
         bytes memory q1 = _call(MAP_FP2_TO_G2, bytes.concat(_reduce(b[4], b[5]), _reduce(b[6], b[7])), G2_POINT);
         return _call(G2ADD, bytes.concat(q0, q1), G2_POINT);
@@ -100,7 +102,7 @@ library Bls12381 {
 
     /// @dev 256 uniform bytes as eight SHA-256 blocks, chained as RFC 9380 section 5.3.1 sets out: two field elements
     ///      of Fp2, each two 64-byte chunks.
-    function _expandMessageXmd(bytes memory message) private pure returns (bytes32[8] memory b) {
+    function _expandMessageXmd(bytes memory message) private pure returns (bytes32[XMD_BLOCKS] memory b) {
         // Z_pad (one SHA-256 block of zeros), the message, the output length and a zero byte, DST'.
         bytes32 b0 = sha256(bytes.concat(new bytes(2 * WORD), message, LENGTH_AND_ZERO, DST_PRIME));
         b[0] = sha256(bytes.concat(b0, ONE, DST_PRIME));

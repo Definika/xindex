@@ -58,6 +58,8 @@ abstract contract FinalityVerifier is IEthereumEventVerifier {
     /// @dev A typed receipt's first byte is its type, below every RLP list's prefix.
     uint256 private constant FIRST_LIST_PREFIX = 0xc0;
     uint256 private constant SINGLE_BYTE = 0x80;
+    /// @dev The shift that puts a byte first in a 32-byte word, where a left-aligned key starts.
+    uint256 private constant FIRST_BYTE = 248;
 
     constructor(bytes32 initialAnchor, uint64 initialEpoch) {
         if (initialAnchor == bytes32(0)) revert ZeroAddress();
@@ -161,10 +163,10 @@ abstract contract FinalityVerifier is IEthereumEventVerifier {
 
     /// @dev A receipt's key in its block's trie is `rlp(txIndex)`, left-aligned, with its length in nibbles.
     function _receiptKey(uint256 txIndex) private pure returns (bytes32 key, uint256 nibbles) {
-        if (txIndex == 0) return (bytes32(SINGLE_BYTE << 248), 2);
-        if (txIndex < SINGLE_BYTE) return (bytes32(txIndex << 248), 2);
-        if (txIndex < 1 << 8) return (bytes32((uint256(0x81) << 248) | (txIndex << 240)), 4);
-        if (txIndex < 1 << 16) return (bytes32((uint256(0x82) << 248) | (txIndex << 232)), 6);
+        if (txIndex == 0) return (bytes32(SINGLE_BYTE << FIRST_BYTE), 2);
+        if (txIndex < SINGLE_BYTE) return (bytes32(txIndex << FIRST_BYTE), 2);
+        if (txIndex < 1 << 8) return (bytes32((uint256(0x81) << FIRST_BYTE) | (txIndex << 240)), 4);
+        if (txIndex < 1 << 16) return (bytes32((uint256(0x82) << FIRST_BYTE) | (txIndex << 232)), 6);
         revert NoReceipt(txIndex);
     }
 

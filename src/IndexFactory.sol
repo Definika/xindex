@@ -41,7 +41,7 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
     uint256 public constant MAX_BATCH = 200;
     uint256 public constant MAX_SUPPLY_STEP = 0.005e18;
     uint256 public constant MAX_SUPPLY = type(uint128).max;
-    uint256 public constant MIN_RAW_UNITS = 10_000;
+    uint256 public constant MIN_RAW_UNITS = 1e4;
     uint256 public constant MAX_UNITS = type(uint96).max >> 10;
     uint256 public constant K_SCALE = 1e36;
     uint256 public constant LISTING_DELAY = 2 days;
@@ -89,6 +89,8 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
     // A zero guardian is allowed on purpose: it means the factory starts without one.
     // forge-lint: disable-next-item(missing-zero-check)
     constructor(address initialOwner, address initialGuardian) Ownable(initialOwner) {
+        // A zero guardian is allowed on purpose, as above.
+        // aderyn-fp-next-line(state-no-address-check)
         guardian = initialGuardian;
         emit GuardianSet(address(0), initialGuardian);
         IMPLEMENTATION = address(new IndexHub());
@@ -399,6 +401,8 @@ contract IndexFactory is IIndexFactory, Ownable2Step, ReentrancyGuard {
     function proposeGuardian(address newGuardian) external onlyOwner {
         if (pendingGuardianEta != 0) emit GuardianChangeCancelled(pendingGuardian);
         uint256 eta = block.timestamp + GUARDIAN_DELAY;
+        // Zero is allowed on purpose, as above.
+        // aderyn-fp-next-line(state-no-address-check)
         pendingGuardian = newGuardian;
         pendingGuardianEta = eta;
         emit GuardianProposed(newGuardian, eta);
