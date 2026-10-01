@@ -620,18 +620,28 @@ real mainnet data:
 
 `test/fixtures/tron/generate.py` checks all of it independently in Python.
 
-**Following the list.** Every 6 hours, anyone calls `advance` with:
-- the last block of the period, and the first block at or past its end, which ran the maintenance under the old list;
-- the learning round: from the next block on, spanning 27 slots counted from the block after it, whose distinct
-  signers are exactly the new list;
-- then blocks in which 19 producers of the old list, each signing with its listed key, built on the whole round.
+**Following the list.** Every 6 hours, anyone calls `advance` with a chain of blocks holding:
+- the learning round: 27 consecutive slots in one period after the latest list's, starting at least two blocks into
+  that period, whose distinct signers are exactly the new list;
+- then blocks, in any later period, in which 19 producers of the old list, each signing with its listed key, built on
+  the whole round.
+
+Any later period will do, so a halt, or producers absent for a period, delays the next list but does not stop it
+(TRN-3, TRN-9).
 
 **A subtlety found on mainnet data.** The block right after the maintenance is scheduled two slots behind its own
 time: `DposSlot.getTime` adds the two skipped slots to the slot count, and `getScheduledWitness` never takes them back.
 - Counted from that block, a round names one producer twice and misses another.
 - Counted from the block after it, the schedule is the slot modulo 27.
 
-The fixture checks both facts on the chain itself.
+The fixture checks both facts on the chain itself. So the round starts at least two blocks into its period. That
+block's producer also comes round again inside the round, so it could have signed the round with two keys, by changing
+its witness-permission key in between, and stalled the verifier (TRN-2).
+
+**What a producer writes into its own header.** Tron never checks a header's `version`, an int32 that Java writes in
+ten bytes when it is negative. It keeps any unknown field a producer adds to `BlockHeader.raw`, and hashes it. The
+verifier writes `version` sign-extended and appends a header's unknown fields as given (TRN-1). That is sound unparsed:
+every field the verifier reads comes before them and delimits itself, so the hash fixes them.
 
 **Other rules.**
 - The new period starts on the 6-hour grid even after a halt, as `updateNextMaintenanceTime` keeps it.
@@ -644,13 +654,24 @@ The fixture checks both facts on the chain itself.
   behind a boundary stops for good and is rotated (30 days).
 
 **Measured** (`test_gas_realProofs`, on real mainnet blocks of 1 October 2026):
-- proving a slot: about 551k gas, with 19 headers;
+- proving a slot: about 568k gas, with 19 headers;
 - following one period: about 1.3M gas. Four a day comes to about 5.2M gas, about $2.80 at 0.2 gwei, against the BNB
   verifier's 89M.
 
-**Limits, for the owner.**
-- A proof's 19 headers must lie in one period, so an `attest` in the minute before a boundary is proven only by
-  sending another after it.
+**Limits, for the owner.** The internal review of 1 October 2026 (`audit/2026-10-01-tron-review.md`) found no way to
+forge a proof. What remains:
+- **The vouching margin is 8.** Vouching needs 19 producers of the old list, signing with the keys it recorded.
+  - If nine of them are voted out, or change their witness-permission keys before vouching (100 TRX each), no
+    successor can be learned (TRN-3).
+  - The verifier then stops until the 30-day rotation. Mints on Tron stop with it; funds stay safe, and burns still
+    pay, since they need only Ethereum's proofs.
+  - A faster recovery path, such as an owner-proposed list behind a delay with the guardian's veto, would trade that
+    stall for trust in the owner's key. That is the owner's decision.
+- **Packing producers.** The producer that packs an `attest` can make that one transaction unprovable, since Tron's
+  peers check only `ret[0].contractRet`; the keeper sends it again (TRN-7).
+- **Rotated keys.** A key a producer rotated out stays valid in its recorded list, for the period and a day (TRN-8).
+- **One period per proof.** A proof's 19 headers must lie in one period, so an `attest` in the minute before a boundary
+  is proven only by sending another after it.
 - **Trust.** 19 colluding producers could forge at no cost to their stake, since Tron has no slashing.
 - **Shared keys.** Two producers sharing a permission key count twice here, as they do in Tron's own solidity rule.
 - A proposal changing the maintenance interval (6 hours since genesis) needs a new verifier.
@@ -734,7 +755,7 @@ chain's finality signs. That holds where a block commits to contract storage, an
 | Chain | Commitment to the vault's state | Path | Ethereum gas per proof | Status |
 |---|---|---|---|---|
 | BNB Chain | an Ethereum-style state root | its finality vote plus a storage proof (5.1) | about 820k for two slots, measured | built |
-| Tron | none: `accountStateRoot` covers balances only, and is off on mainnet | a transaction's result, which the transaction root commits to | about 551k, measured | built (5.7) |
+| Tron | none: `accountStateRoot` covers balances only, and is off on mainnet | a transaction's result, which the transaction root commits to | about 568k, measured | built (5.7) |
 | Solana | none: the accounts lattice hash has no inclusion proofs | a zkVM proof of the slot's account writes, under Alpenglow | about 260k, estimated | waits on Alpenglow's mainnet launch |
 | HyperEVM | none: every header's `stateRoot` is zero | nothing public to prove against | none | waits on Hyperliquid |
 

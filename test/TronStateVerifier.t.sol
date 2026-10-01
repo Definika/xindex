@@ -36,11 +36,12 @@ contract TronStateVerifierTest is Test {
         uint256 v;
         address key;
         bytes32 id;
+        bytes extra;
     }
 
     string constant HEADER_TYPE = "FixtureHeader(uint256 timestamp,bytes32 txTrieRoot,bytes32 parentHash,uint256 number,"
         "uint256 witnessId,address witness,uint256 version,bytes accountStateRoot,bytes32 r,bytes32 s,uint256 v,"
-        "address key,bytes32 id)";
+        "address key,bytes32 id,bytes extra)";
 
     function setUp() public {
         json = vm.readFile("test/fixtures/tron/chain.json");
@@ -81,8 +82,9 @@ contract TronStateVerifierTest is Test {
             number: uint64(f.number),
             witnessId: uint64(f.witnessId),
             witness: f.witness,
-            version: uint32(f.version),
+            version: int32(int256(f.version)),
             accountStateRoot: f.accountStateRoot,
+            extra: f.extra,
             r: f.r,
             s: f.s,
             v: uint8(f.v),
@@ -133,22 +135,28 @@ contract TronStateVerifierTest is Test {
         data = vm.parseJsonBytes(json, string.concat(q, ".data"));
     }
 
-    /// @dev The fixture's advance: from the old period's last block to where 19 old producers have vouched.
-    function _realAdvance() internal view returns (ITronStateVerifier.Header[] memory hs, uint256 vouchFrom) {
+    /// @dev The fixture's advance: from the old period's last block, through the maintenance block and the block after
+    ///      it, the round, and the blocks in which 19 old producers vouch.
+    function _realAdvance()
+        internal
+        view
+        returns (ITronStateVerifier.Header[] memory hs, uint256 learnFrom, uint256 vouchFrom)
+    {
         uint256 m = vm.parseJsonUint(json, ".maintenance");
-        uint256 from = vm.parseJsonUint(json, ".vouchFrom");
+        uint256 from = vm.parseJsonUint(json, ".learnFrom");
+        uint256 vouch = vm.parseJsonUint(json, ".vouchFrom");
         uint256 end = vm.parseJsonUint(json, ".advanceEnd");
         ITronStateVerifier.Producer[] memory oldList = _list(".oldList");
         ITronStateVerifier.Producer[] memory newList = _list(".newList");
         FixtureHeader[] memory all = _fixture();
         hs = new ITronStateVerifier.Header[](end - (m - 1));
         for (uint256 i = m - 1; i < end; ++i) {
-            // The learning round names its producers in the new list, the vouching blocks theirs in the old one.
+            // The round names its producers in the new list, the vouching blocks theirs in the old one.
             ITronStateVerifier.Producer[] memory list =
-                i > m && i < from ? newList : i >= from ? oldList : new ITronStateVerifier.Producer[](0);
+                i >= from && i < vouch ? newList : i >= vouch ? oldList : new ITronStateVerifier.Producer[](0);
             hs[i - (m - 1)] = _header(all[i], list);
         }
-        vouchFrom = from - (m - 1);
+        (learnFrom, vouchFrom) = (from - (m - 1), vouch - (m - 1));
     }
 
     function _id(ITronStateVerifier.Header memory h) internal view returns (bytes32) {
@@ -206,9 +214,9 @@ contract TronStateVerifierTest is Test {
     /// @dev The list followed across the boundary: the round after the maintenance names 27 producers, and 19 of the
     ///      list before vouch for it; a call in the new period is then proven by the new list.
     function test_advance_acrossARealBoundary() public {
-        (ITronStateVerifier.Header[] memory hs, uint256 vouchFrom) = _realAdvance();
+        (ITronStateVerifier.Header[] memory hs, uint256 learnFrom, uint256 vouchFrom) = _realAdvance();
         ITronStateVerifier.Producer[] memory newList = _list(".newList");
-        verifier.advance(_list(".oldList"), newList, hs, vouchFrom);
+        verifier.advance(_list(".oldList"), newList, hs, learnFrom, vouchFrom);
         assertEq(verifier.latestList(), 1);
         ITronStateVerifier.ProducerList memory l = verifier.producerList(1);
         assertEq(l.producersHash, keccak256(abi.encode(newList)));
@@ -228,8 +236,9 @@ contract TronStateVerifierTest is Test {
 
     /// @dev What a transaction pays, the 21,000 and its calldata included: following one period, and proving a slot.
     function test_gas_realProofs() public {
-        (ITronStateVerifier.Header[] memory hs, uint256 vouchFrom) = _realAdvance();
-        bytes memory advance = abi.encodeCall(verifier.advance, (_list(".oldList"), _list(".newList"), hs, vouchFrom));
+        (ITronStateVerifier.Header[] memory hs, uint256 learnFrom, uint256 vouchFrom) = _realAdvance();
+        bytes memory advance =
+            abi.encodeCall(verifier.advance, (_list(".oldList"), _list(".newList"), hs, learnFrom, vouchFrom));
         uint256 following = _txGas(advance);
         (ITronStateVerifier.CallProof memory p, address target, bytes memory data) =
             _realProof("newProof", 1, _list(".newList"));
@@ -270,13 +279,15 @@ contract TronStateVerifierRulesTest is Test {
     address constant VAULT = address(0x7a017);
 
     /// @dev One block to build: its producer, the secret it signs with, its index in the proof's list, the slots since
-    ///      its parent, and its transaction root.
+    ///      its parent, its transaction root, and whether its producer poisoned its header: a negative version and an
+    ///      unknown field, both of which Tron keeps and hashes.
     struct Step {
         address witness;
         uint256 pk;
         uint8 hint;
         uint256 gap;
         bytes32 txTrieRoot;
+        bool poisoned;
     }
 
     function setUp() public {
@@ -337,6 +348,7 @@ contract TronStateVerifierRulesTest is Test {
             hs[i].txTrieRoot = steps[i].txTrieRoot == 0 ? keccak256(abi.encode("txs", i)) : steps[i].txTrieRoot;
             hs[i].witness = steps[i].witness;
             hs[i].version = 38;
+            if (steps[i].poisoned) (hs[i].version, hs[i].extra) = (-1, hex"6005");
             hs[i].producer = steps[i].hint;
             _sign(hs[i], steps[i].pk);
             parent = _id(hs[i]);
@@ -348,7 +360,7 @@ contract TronStateVerifierRulesTest is Test {
         pure
         returns (Step memory)
     {
-        return Step(list[i].witness, pk, counts ? uint8(i) : NL, 1, 0);
+        return Step(list[i].witness, pk, counts ? uint8(i) : NL, 1, 0, false);
     }
 
     // ---------------------------------------------------------------------
@@ -635,6 +647,29 @@ contract TronStateVerifierRulesTest is Test {
         assertEq(d, data);
     }
 
+    /// @dev Java writes a negative int32 sign-extended to ten bytes, and unknown fields after the known ones.
+    function test_TRN1_headerHash_writesANegativeVersionAndUnknownFields() public view {
+        ITronStateVerifier.Header memory h;
+        h.timestamp = 1;
+        h.number = 2;
+        h.witness = address(0x41);
+        h.version = -1;
+        h.extra = hex"6005";
+        bytes memory raw = bytes.concat(
+            hex"0801",
+            hex"1220",
+            bytes32(0),
+            hex"1a20",
+            bytes32(0),
+            hex"3802",
+            hex"4a1541",
+            bytes20(h.witness),
+            hex"50ffffffffffffffffff01",
+            hex"6005"
+        );
+        assertEq(verifier.headerHash(h), sha256(raw));
+    }
+
     function test_headerHash_writesEveryField() public view {
         ITronStateVerifier.Header memory h;
         h.timestamp = 1;
@@ -673,40 +708,46 @@ contract TronStateVerifierRulesTest is Test {
     // ---------------------------------------------------------------------
 
     /// @dev The old period's last block, the maintenance block, the block after it (two slots late, as Tron schedules
-    ///      it), a round of 27 slots from the next block naming every producer of the next list, then producers 0 to
-    ///      18 of the old list vouching.
-    function _advanceSteps() internal pure returns (Step[] memory steps, uint256 vouchFrom) {
+    ///      it, and not learned), a round of 27 slots naming every producer of the next list, then producers 0 to 18 of
+    ///      the old list vouching.
+    function _advanceSteps() internal pure returns (Step[] memory steps, uint256 learnFrom, uint256 vouchFrom) {
         ITronStateVerifier.Producer[] memory o = _old();
         ITronStateVerifier.Producer[] memory n = _new();
         steps = new Step[](49);
         steps[0] = _step(o, 26, _oldPk(26), false);
         steps[1] = _step(o, 0, _oldPk(0), false);
-        steps[2] = Step(n[26].witness, _newPk(26), 26, 3, 0);
+        steps[2] = Step(n[24].witness, _newPk(24), NL, 3, 0, false);
         for (uint256 i = 0; i < 27; ++i) {
-            steps[3 + i] = Step(n[i].witness, _newPk(i), uint8(i), 1, 0);
+            steps[3 + i] = Step(n[i].witness, _newPk(i), uint8(i), 1, 0, false);
         }
-        vouchFrom = 30;
+        (learnFrom, vouchFrom) = (3, 30);
         for (uint256 i = 0; i < 19; ++i) {
             steps[30 + i] = _step(o, i, _oldPk(i), true);
         }
     }
 
-    function _advance(Step[] memory steps, uint256 vouchFrom, uint256 first) internal {
-        verifier.advance(_old(), _new(), _build(first, steps), vouchFrom);
+    function _advance(Step[] memory steps, uint256 learnFrom, uint256 vouchFrom, uint256 first) internal {
+        verifier.advance(_old(), _new(), _build(first, steps), learnFrom, vouchFrom);
     }
 
     /// @dev Builds the chain first, since building calls the verifier, and only then expects `err`.
-    function _refused(Step[] memory steps, uint256 vouchFrom, uint256 first, bytes memory err) internal {
+    function _refused(Step[] memory steps, uint256 learnFrom, uint256 vouchFrom, uint256 first, bytes memory err)
+        internal
+    {
         ITronStateVerifier.Header[] memory hs = _build(first, steps);
         vm.expectRevert(err);
-        verifier.advance(_old(), _new(), hs, vouchFrom);
+        verifier.advance(_old(), _new(), hs, learnFrom, vouchFrom);
+    }
+
+    function _err(bytes4 selector) internal pure returns (bytes memory) {
+        return abi.encodeWithSelector(selector);
     }
 
     function test_advance_learnsTheNextList() public {
-        (Step[] memory steps, uint256 vouchFrom) = _advanceSteps();
+        (Step[] memory steps, uint256 learnFrom, uint256 vouchFrom) = _advanceSteps();
         vm.expectEmit(address(verifier));
         emit ITronStateVerifier.ListRecorded(1, keccak256(abi.encode(_new())), E, E + INTERVAL, 27);
-        _advance(steps, vouchFrom, E - SLOT);
+        _advance(steps, learnFrom, vouchFrom, E - SLOT);
         assertEq(verifier.latestList(), 1);
         ITronStateVerifier.ProducerList memory l = verifier.producerList(1);
         assertEq(l.start, E);
@@ -717,151 +758,216 @@ contract TronStateVerifierRulesTest is Test {
     }
 
     function test_advance_theListsAreTheRecordedOnes() public {
-        (Step[] memory steps, uint256 vouchFrom) = _advanceSteps();
+        (Step[] memory steps, uint256 learnFrom, uint256 vouchFrom) = _advanceSteps();
         ITronStateVerifier.Header[] memory hs = _build(E - SLOT, steps);
         ITronStateVerifier.Producer[] memory wrong = _old();
         wrong[0].key = address(0xbad);
         vm.expectRevert(ITronStateVerifier.WrongProducers.selector);
-        verifier.advance(wrong, _new(), hs, vouchFrom);
+        verifier.advance(wrong, _new(), hs, learnFrom, vouchFrom);
 
         ITronStateVerifier.Producer[] memory short = new ITronStateVerifier.Producer[](18);
         vm.expectRevert(ITronStateVerifier.BadList.selector);
-        verifier.advance(_old(), short, hs, vouchFrom);
+        verifier.advance(_old(), short, hs, learnFrom, vouchFrom);
         ITronStateVerifier.Producer[] memory unordered = _new();
         (unordered[3], unordered[4]) = (unordered[4], unordered[3]);
         vm.expectRevert(abi.encodeWithSelector(ITronStateVerifier.NotAscending.selector, 4));
-        verifier.advance(_old(), unordered, hs, vouchFrom);
+        verifier.advance(_old(), unordered, hs, learnFrom, vouchFrom);
         ITronStateVerifier.Producer[] memory keyless = _new();
         keyless[6].key = address(0);
         vm.expectRevert(ITronStateVerifier.BadList.selector);
-        verifier.advance(_old(), keyless, hs, vouchFrom);
+        verifier.advance(_old(), keyless, hs, learnFrom, vouchFrom);
     }
 
     function test_advance_aListOlderThanADayNamesNoSuccessor() public {
-        (Step[] memory steps, uint256 vouchFrom) = _advanceSteps();
+        (Step[] memory steps, uint256 learnFrom, uint256 vouchFrom) = _advanceSteps();
         ITronStateVerifier.Header[] memory hs = _build(E - SLOT, steps);
         vm.warp((E - INTERVAL) / 1000 + 1 days + 1);
         vm.expectRevert(abi.encodeWithSelector(ITronStateVerifier.TooOld.selector, E - INTERVAL));
-        verifier.advance(_old(), _new(), hs, vouchFrom);
+        verifier.advance(_old(), _new(), hs, learnFrom, vouchFrom);
     }
 
-    function test_advance_startsAtTheMaintenance() public {
-        (Step[] memory steps, uint256 vouchFrom) = _advanceSteps();
-        // The first header already in the new period.
-        _refused(steps, vouchFrom, E, abi.encodeWithSelector(ITronStateVerifier.NotTheMaintenance.selector));
-        // The second still in the old one.
-        steps[1].gap = 0;
-        _refused(steps, vouchFrom, E - 2 * SLOT, abi.encodeWithSelector(ITronStateVerifier.NotTheMaintenance.selector));
+    /// @dev The round lies in a period after the latest list's, past its maintenance block and the block after it.
+    function test_advance_theRoundStartsTwoBlocksIntoALaterPeriod() public {
+        (Step[] memory steps, uint256 learnFrom, uint256 vouchFrom) = _advanceSteps();
+        // Counted from the block after the maintenance, which is scheduled two slots behind, a round of 27 slots can
+        // name one producer twice and miss another, as the fixture's real boundary shows.
+        _refused(steps, 2, vouchFrom, E - SLOT, _err(ITronStateVerifier.RoundTooEarly.selector));
+        // A round in the latest list's own period.
+        _refused(steps, learnFrom, vouchFrom, E - 40 * SLOT, _err(ITronStateVerifier.RoundTooEarly.selector));
+        // A round whose first block is in the next period but whose maintenance block is not shown.
+        steps[1].gap = 2;
+        _refused(steps, learnFrom, vouchFrom, E - 3 * SLOT, _err(ITronStateVerifier.RoundTooEarly.selector));
     }
 
-    function test_advance_theHeadersAreOneChainInOnePeriod() public {
-        (Step[] memory steps, uint256 vouchFrom) = _advanceSteps();
+    function test_advance_theHeadersAreOneChainAndTheRoundOnePeriod() public {
+        (Step[] memory steps, uint256 learnFrom, uint256 vouchFrom) = _advanceSteps();
         ITronStateVerifier.Header[] memory hs = _build(E - SLOT, steps);
         hs[20].parentHash = keccak256("elsewhere");
         vm.expectRevert(abi.encodeWithSelector(ITronStateVerifier.NotLinked.selector, 20));
-        verifier.advance(_old(), _new(), hs, vouchFrom);
+        verifier.advance(_old(), _new(), hs, learnFrom, vouchFrom);
 
-        // A vouching block past the new period.
-        steps[40].gap = INTERVAL / SLOT;
+        // A round running past its period.
+        steps[25].gap = INTERVAL / SLOT;
+        uint256 at = E + 9000 + 22 * SLOT + INTERVAL;
         _refused(
             steps,
+            learnFrom,
             vouchFrom,
             E - SLOT,
-            abi.encodeWithSelector(
-                ITronStateVerifier.OutsidePeriod.selector, 40, E + 9000 + 27 * SLOT + 11 * SLOT + INTERVAL - SLOT
-            )
+            abi.encodeWithSelector(ITronStateVerifier.OutsidePeriod.selector, 25, at)
         );
     }
 
     function test_advance_theRoundIsFull() public {
-        (Step[] memory steps, uint256 vouchFrom) = _advanceSteps();
-        _refused(steps, 3, E - SLOT, abi.encodeWithSelector(ITronStateVerifier.NotARound.selector));
-        _refused(steps, steps.length + 1, E - SLOT, abi.encodeWithSelector(ITronStateVerifier.NotARound.selector));
-        // A learning block that names no producer of the next list.
+        (Step[] memory steps, uint256 learnFrom, uint256 vouchFrom) = _advanceSteps();
+        _refused(steps, learnFrom, learnFrom, E - SLOT, _err(ITronStateVerifier.NotARound.selector));
+        _refused(steps, learnFrom, steps.length + 1, E - SLOT, _err(ITronStateVerifier.NotARound.selector));
+        _refused(steps, 1, vouchFrom, E - SLOT, _err(ITronStateVerifier.NotARound.selector));
+        // A round of 26 slots.
+        _refused(steps, learnFrom + 1, vouchFrom, E - SLOT, _err(ITronStateVerifier.WrongProducers.selector));
+        // A round block that names no producer of the next list.
         steps[10].hint = NL;
-        _refused(steps, vouchFrom, E - SLOT, abi.encodeWithSelector(ITronStateVerifier.BadSignature.selector, 10));
+        _refused(
+            steps, learnFrom, vouchFrom, E - SLOT, abi.encodeWithSelector(ITronStateVerifier.BadSignature.selector, 10)
+        );
         // A producer of the next list the round never shows.
-        (steps,) = _advanceSteps();
-        steps[2] = steps[3];
-        steps[2].gap = 3;
+        (steps,,) = _advanceSteps();
         steps[29] = steps[28];
-        _refused(steps, vouchFrom, E - SLOT, abi.encodeWithSelector(ITronStateVerifier.WrongProducers.selector));
-    }
-
-    /// @dev The block after the maintenance is scheduled two slots behind its time, so the 27 slots are counted from the
-    ///      block after it: a round that spans them only from the first block can repeat one producer and miss another,
-    ///      as the real boundary of the fixture shows.
-    function test_advance_theRoundIsCountedFromTheSecondBlock() public {
-        (Step[] memory steps, uint256 vouchFrom) = _advanceSteps();
-        // The block after the maintenance arrives one slot after it, and the round's last block is dropped: 27 slots
-        // from the first learned block, but only 26 from the second.
-        steps[2].gap = 1;
-        steps[2] = Step(steps[29].witness, steps[29].pk, steps[29].hint, 1, 0);
-        for (uint256 i = 29; i < 48; ++i) {
-            steps[i] = steps[i + 1];
+        _refused(steps, learnFrom, vouchFrom, E - SLOT, _err(ITronStateVerifier.WrongProducers.selector));
+        // Every producer shown, but within 26 slots: a list of 20 learned too fast is not a round.
+        ITronStateVerifier.Producer[] memory n = _new();
+        ITronStateVerifier.Producer[] memory twenty = new ITronStateVerifier.Producer[](20);
+        Step[] memory quick = new Step[](45);
+        (quick[0], quick[1], quick[2]) = (steps[0], steps[1], steps[2]);
+        for (uint256 i = 0; i < 20; ++i) {
+            twenty[i] = n[i];
+            quick[3 + i] = Step(n[i].witness, _newPk(i), uint8(i), 1, 0, false);
         }
-        ITronStateVerifier.Header[] memory hs = _build(E - SLOT, steps);
-        ITronStateVerifier.Header[] memory trimmed = new ITronStateVerifier.Header[](48);
-        for (uint256 i = 0; i < 48; ++i) {
-            trimmed[i] = hs[i];
+        for (uint256 i = 0; i < 22; ++i) {
+            quick[23 + i] = steps[30 + (i < 19 ? i : 18)];
         }
+        ITronStateVerifier.Header[] memory hs = _build(E - SLOT, quick);
         vm.expectRevert(ITronStateVerifier.NotARound.selector);
-        verifier.advance(_old(), _new(), trimmed, vouchFrom - 1);
+        verifier.advance(_old(), twenty, hs, 3, 23);
     }
 
-    /// @dev A learned producer is the witness its block names. Otherwise one key could be learned under two witnesses,
-    ///      from blocks it really produced, and count twice in every quorum after.
-    function test_advance_learnsEachKeyUnderItsOwnWitness() public {
-        (Step[] memory steps, uint256 vouchFrom) = _advanceSteps();
+    /// @dev A round one slot short: 26 producers in 26 consecutive slots. A full round of 27 slots would have shown the
+    ///      27th, or shown that it missed its slot.
+    function test_advance_aRoundIsTwentySevenSlots() public {
+        (Step[] memory steps,,) = _advanceSteps();
+        ITronStateVerifier.Producer[] memory n = _new();
+        ITronStateVerifier.Producer[] memory most = new ITronStateVerifier.Producer[](26);
+        Step[] memory short = new Step[](48);
+        (short[0], short[1], short[2]) = (steps[0], steps[1], steps[2]);
+        for (uint256 i = 0; i < 26; ++i) {
+            most[i] = n[i];
+            short[3 + i] = Step(n[i].witness, _newPk(i), uint8(i), 1, 0, false);
+        }
+        for (uint256 i = 0; i < 19; ++i) {
+            short[29 + i] = steps[30 + i];
+        }
+        ITronStateVerifier.Header[] memory hs = _build(E - SLOT, short);
+        vm.expectRevert(ITronStateVerifier.NotARound.selector);
+        verifier.advance(_old(), most, hs, 3, 29);
+        // One slot more, and the same 26 producers are a round: the 27th missed its slot.
+        short[28].gap = 2;
+        hs = _build(E - SLOT, short);
+        verifier.advance(_old(), most, hs, 3, 29);
+        assertEq(verifier.producerList(1).count, 26);
+    }
+
+    /// @dev The block after the maintenance is not learned: its producer may change its key before its turn in the
+    ///      round comes round, as a key rotation there once could have stalled the verifier for good.
+    function test_TRN2_theBlockAfterTheMaintenanceIsNotLearned() public {
+        (Step[] memory steps, uint256 learnFrom, uint256 vouchFrom) = _advanceSteps();
+        steps[2].pk = 0xD1FFE7E47;
+        _advance(steps, learnFrom, vouchFrom, E - SLOT);
+        assertEq(verifier.latestList(), 1);
+    }
+
+    /// @dev A learned producer is the witness its block names, with the key that signed it. Otherwise one key could be
+    ///      learned under two witnesses and count twice in every quorum after, or any key under a real witness.
+    function test_TRN5_learnsEachProducerWithItsOwnKey() public {
+        (Step[] memory steps, uint256 learnFrom, uint256 vouchFrom) = _advanceSteps();
         ITronStateVerifier.Producer[] memory next = _new();
-        // The last newcomer's entry carries producer 0's key, and the round's block for it is one producer 0 made.
+        // The last newcomer's entry carries producer 0's key, and its round block is one producer 0 made.
         next[26].key = next[0].key;
-        steps[29] = Step(next[0].witness, _newPk(0), 26, 1, 0);
-        steps[2] = steps[29];
-        steps[2].gap = 3;
+        steps[29] = Step(next[0].witness, _newPk(0), 26, 1, 0, false);
         ITronStateVerifier.Header[] memory hs = _build(E - SLOT, steps);
-        vm.expectRevert(abi.encodeWithSelector(ITronStateVerifier.BadSignature.selector, 2));
-        verifier.advance(_old(), next, hs, vouchFrom);
+        vm.expectRevert(abi.encodeWithSelector(ITronStateVerifier.BadSignature.selector, 29));
+        verifier.advance(_old(), next, hs, learnFrom, vouchFrom);
+        // A real witness recorded with a key that did not sign its block.
+        (steps,,) = _advanceSteps();
+        next = _new();
+        next[5].key = address(0xbad);
+        hs = _build(E - SLOT, steps);
+        vm.expectRevert(abi.encodeWithSelector(ITronStateVerifier.BadSignature.selector, 8));
+        verifier.advance(_old(), next, hs, learnFrom, vouchFrom);
     }
 
-    function test_advance_nineteenOfTheOldListVouch() public {
-        (Step[] memory steps, uint256 vouchFrom) = _advanceSteps();
+    /// @dev Only the list before vouches, each producer with its own recorded key: a round cannot vouch for itself.
+    function test_TRN4_onlyTheOldListVouches() public {
+        (Step[] memory steps, uint256 learnFrom, uint256 vouchFrom) = _advanceSteps();
         steps[48].hint = NL;
-        _refused(steps, vouchFrom, E - SLOT, abi.encodeWithSelector(ITronStateVerifier.NoQuorum.selector, 18));
-        // A newcomer cannot vouch: it is not on the old list.
-        (steps,) = _advanceSteps();
-        steps[48] = Step(_new()[26].witness, _newPk(26), 18, 1, 0);
-        _refused(steps, vouchFrom, E - SLOT, abi.encodeWithSelector(ITronStateVerifier.BadSignature.selector, 48));
+        _refused(
+            steps, learnFrom, vouchFrom, E - SLOT, abi.encodeWithSelector(ITronStateVerifier.NoQuorum.selector, 18)
+        );
+        // A newcomer, at its index in the next list, is no voucher.
+        (steps,,) = _advanceSteps();
+        steps[48] = Step(_new()[26].witness, _newPk(26), 26, 1, 0, false);
+        _refused(
+            steps, learnFrom, vouchFrom, E - SLOT, abi.encodeWithSelector(ITronStateVerifier.BadSignature.selector, 48)
+        );
     }
 
-    /// @dev A chain that halted past a boundary runs one maintenance, and the next stays on the grid.
-    function test_advance_staysOnTheGridAfterAHalt() public {
-        (Step[] memory steps, uint256 vouchFrom) = _advanceSteps();
+    /// @dev Vouchers may sign in any later period, so producers absent for a period delay the next list, not stop it.
+    function test_TRN3_vouchersMaySignLater() public {
+        (Step[] memory steps, uint256 learnFrom, uint256 vouchFrom) = _advanceSteps();
+        steps[40].gap = INTERVAL / SLOT;
+        vm.warp(E / 1000 + 8 hours);
+        _advance(steps, learnFrom, vouchFrom, E - SLOT);
+        assertEq(verifier.producerList(1).start, E, "the round's period");
+    }
+
+    /// @dev A chain that halted past a boundary runs one maintenance, the grid holds, and the period passed over has no
+    ///      list.
+    function test_TRN9_passesOverAPeriodOnTheGrid() public {
+        (Step[] memory steps, uint256 learnFrom, uint256 vouchFrom) = _advanceSteps();
         steps[1].gap = INTERVAL / SLOT + 2;
-        _advance(steps, vouchFrom, E - SLOT);
+        _advance(steps, learnFrom, vouchFrom, E - SLOT);
         ITronStateVerifier.ProducerList memory l = verifier.producerList(1);
         assertEq(l.start, E + INTERVAL);
         assertEq(l.end, E + 2 * INTERVAL);
     }
 
-    /// @dev Two periods in a row, and each list proves only its own period's blocks.
+    /// @dev A producer that writes its header so the verifier cannot, with a negative version and an unknown field,
+    ///      neither stops the list nor a proof: both are written as Tron writes them.
+    function test_TRN1_aPoisonedHeaderIsStillWritten() public {
+        (Step[] memory steps, uint256 learnFrom, uint256 vouchFrom) = _advanceSteps();
+        steps[15].poisoned = true;
+        steps[35].poisoned = true;
+        _advance(steps, learnFrom, vouchFrom, E - SLOT);
+        assertEq(verifier.latestList(), 1);
+    }
+
+    /// @dev Two periods in a row, each list learned from its own round.
     function test_advance_periodAfterPeriod() public {
-        (Step[] memory steps, uint256 vouchFrom) = _advanceSteps();
-        _advance(steps, vouchFrom, E - SLOT);
+        (Step[] memory steps, uint256 learnFrom, uint256 vouchFrom) = _advanceSteps();
+        _advance(steps, learnFrom, vouchFrom, E - SLOT);
         vm.warp((E + INTERVAL) / 1000 + 1 hours);
         // The next boundary: the new list vouches, and learns itself back.
         ITronStateVerifier.Producer[] memory n = _new();
         Step[] memory next = new Step[](49);
-        next[0] = Step(n[26].witness, _newPk(26), NL, 1, 0);
-        next[1] = Step(n[0].witness, _newPk(0), NL, 1, 0);
-        next[2] = Step(n[26].witness, _newPk(26), 26, 3, 0);
+        next[0] = Step(n[26].witness, _newPk(26), NL, 1, 0, false);
+        next[1] = Step(n[0].witness, _newPk(0), NL, 1, 0, false);
+        next[2] = Step(n[24].witness, _newPk(24), NL, 3, 0, false);
         for (uint256 i = 0; i < 27; ++i) {
-            next[3 + i] = Step(n[i].witness, _newPk(i), uint8(i), 1, 0);
+            next[3 + i] = Step(n[i].witness, _newPk(i), uint8(i), 1, 0, false);
         }
         for (uint256 i = 0; i < 19; ++i) {
-            next[30 + i] = Step(n[i + 8].witness, _newPk(i + 8), uint8(i + 8), 1, 0);
+            next[30 + i] = Step(n[i + 8].witness, _newPk(i + 8), uint8(i + 8), 1, 0, false);
         }
-        verifier.advance(n, n, _build(E + INTERVAL - SLOT, next), 30);
+        verifier.advance(n, n, _build(E + INTERVAL - SLOT, next), 3, 30);
         assertEq(verifier.latestList(), 2);
         assertEq(verifier.producerList(2).start, E + INTERVAL);
     }

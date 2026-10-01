@@ -79,6 +79,9 @@ market from `script/testnet/SetupTestMarket.s.sol`.
      named `test_VLT1_...` or `test_VLTI3_...`; the Solana program's are Rust tests named `test_sol1_...`, and
      `test_vlt2_...` for an EVM finding fixed on its twin. The record's status column names every test, and the ids
      fixed or recorded by documentation alone, which have none.
+   - The internal review of the Tron state verifier on 2026-10-01: `TRN-1`..`TRN-9`
+     (`audit/2026-10-01-tron-review.md`), a test named `test_TRN1_...`. TRN-6 to TRN-8 were recorded by documentation
+     alone and have no test.
 
    Find a test by its id. Most v1 and R tests are in `test/Security.t.sol` and `test/fork/Security.fork.t.sol`. The R
    tests that drive the λ auction directly (R04, R08, R14, R17, R19, R22) are in `test/IndexHub.rebalance.t.sol`,
@@ -440,8 +443,11 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   - The BNB verifier trusts only a set from the last `MAX_LAG` (1 day), to name the next or to prove a block (BNB-2).
 - **Tron is written, never parsed.** `TronStateVerifier` writes every header and transaction it hashes from typed
   fields, and writes the call itself: the vault, `attest`'s data, no value, and the result SUCCESS. Do not add a
-  protobuf parser. A learned producer is the witness its block names, and a list's round is counted from the second
-  block after the maintenance, which `test/fixtures/tron/generate.py` checks on mainnet (section 5.7 of the spec).
+  protobuf parser. A header's unknown fields are appended as given, after every field the verifier reads (TRN-1). A
+  learned producer is the witness its block names, with the key that signed it (TRN-5), and a list's round starts at
+  least two blocks into its period, past the block after the maintenance, which Tron schedules two slots behind
+  (TRN-2; `test/fixtures/tron/generate.py` checks it on mainnet). Only the list before vouches (TRN-4). Section 5.7 of
+  the spec has the rest.
 - **Size.** The hub and the module are both near the 24KB limit; new code goes in the extension. Check
   `forge build --sizes` after any change to any of the three.
 - **The Solana vault is the EVM vault's twin.** `solana/programs/xindex-vault` keeps the same messages, digests, speed

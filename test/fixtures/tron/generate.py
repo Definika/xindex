@@ -222,6 +222,7 @@ def checked(block):
         "witness": "0x" + witness[1:].hex(),
         "version": h.get("version", 0),
         "accountStateRoot": "0x" + h.get("accountStateRoot", ""),
+        "extra": "0x",
         "r": "0x" + sig[:32].hex(),
         "s": "0x" + sig[32:64].hex(),
         "v": sig[64],
@@ -331,14 +332,17 @@ def main():
     assert repeats and all(by_slot[s + ROUND] == by_slot[s] for s in repeats), "slot modulo 27 from the second block"
     s0 = blocks[first]["timestamp"] // SLOT
     assert by_slot[s0 + ROUND - 2] == blocks[first]["witness"], "the first block is scheduled two slots behind"
-    new = producers(blocks[first:vouch_from])
+    # The round itself starts at the block after the shifted one; the shifted block's producer comes round again in it.
+    learn_from = first + 1
+    new = producers(blocks[learn_from:vouch_from])
+    assert set(new) == set(producers(blocks[first:vouch_from])), "the shifted block's producer is in the round"
     vouched, end = set(), vouch_from
     while len(vouched) < QUORUM:
         b = blocks[end]
         if old.get(b["witness"]) == b["key"]:
             vouched.add(b["witness"])
         end += 1
-    print(f"old list {len(old)}, new list {len(new)}, round {first}..{vouch_from}, vouched by {end - vouch_from} blocks")
+    print(f"old list {len(old)}, new list {len(new)}, round {learn_from}..{vouch_from}, vouched by {end - vouch_from} blocks")
     old_proof = proof_block(blocks, 5, old)
     assert old_proof["headersEnd"] <= maint, "the old period's proof stays in its period"
     new_proof = proof_block(blocks, first + 2, new)
@@ -350,6 +354,7 @@ def main():
         "source": API,
         "boundary": BOUNDARY,
         "maintenance": maint,
+        "learnFrom": learn_from,
         "vouchFrom": vouch_from,
         "advanceEnd": end,
         "oldList": listed(old),

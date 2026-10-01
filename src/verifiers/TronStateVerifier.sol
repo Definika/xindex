@@ -38,12 +38,11 @@ contract TronStateVerifier is ITronStateVerifier {
 
     /// @dev Tron's times are in milliseconds, TVM's `block.timestamp` in seconds.
     uint256 private constant MS = 1000;
-    /// @dev In `advance`, the first header of the learning round: after the old period's last block and the
-    ///      maintenance block. The block after the maintenance is scheduled two slots behind its own time, since
-    ///      `DposSlot.getTime` adds the two skipped slots to the slot count and `getScheduledWitness` never takes them
-    ///      back: so the full round is counted from the block after it, from which the schedule is the slot modulo 27.
-    uint256 private constant FIRST_LEARNED = 2;
-    uint256 private constant FIRST_SCHEDULED = 3;
+    /// @dev How many of a period's blocks come before its learning round: the maintenance block, run under the old
+    ///      list, and the block after it, which is scheduled two slots behind its own time, since `DposSlot.getTime`
+    ///      adds the two skipped slots to the slot count and `getScheduledWitness` never takes them back. From the next
+    ///      block on, the schedule is the slot modulo 27.
+    uint256 private constant BEFORE_ROUND = 2;
     /// @dev The byte before every Tron address.
     bytes1 private constant ADDRESS_PREFIX = 0x41;
     /// @dev `ContractType.TriggerSmartContract`, and `contractResult.SUCCESS`.
@@ -98,6 +97,7 @@ contract TronStateVerifier is ITronStateVerifier {
         Producer[] calldata currentList,
         Producer[] calldata nextList,
         Header[] calldata headerList,
+        uint256 learnFrom,
         uint256 vouchFrom
     ) external {
         (Producer[] memory current, Producer[] memory next, Header[] memory headers) =
@@ -110,49 +110,60 @@ contract TronStateVerifier is ITronStateVerifier {
         if (block.timestamp > uint256(list.start) / MS + MAX_LAG) revert TooOld(list.start);
         _checkProducers(list, current);
         _checkNewList(next);
-        if (vouchFrom <= FIRST_SCHEDULED || vouchFrom > headers.length) revert NotARound();
+        if (learnFrom < BEFORE_ROUND || vouchFrom <= learnFrom || vouchFrom > headers.length) revert NotARound();
 
         bytes32[] memory hashes = _link(headers);
-        (uint256 start, uint256 end) = _nextPeriod(headers, list.end);
-        _learn(headers, hashes, next, vouchFrom);
+        (uint256 start, uint256 end) = _roundPeriod(headers, learnFrom, vouchFrom, list.end);
+        _learn(headers, hashes, next, learnFrom, vouchFrom);
         // Vouching: 19 producers of the list before, at least one of them honest, built on the whole round, and an
-        // honest producer builds only on blocks each signed by the producer the schedule names, with its key.
+        // honest producer builds only on blocks each signed by the producer the schedule names, with its key. When
+        // they do so does not matter, so a period of absent producers, or a halt, delays the next list but does not
+        // stop it.
         uint256 count = _popcount(_signers(headers, hashes, current, vouchFrom));
         if (count < QUORUM) revert NoQuorum(count);
 
         _record(id + 1, next, start, end);
     }
 
-    /// @dev The period after the one ending at `end`. The first header is the last block of that period, the second the
-    ///      first block at or past its end, which ran the maintenance under the old list: the new list produces from
-    ///      the block after it, and every later header must fall in its period. The next maintenance stays on the
-    ///      grid, as `updateNextMaintenanceTime` keeps it.
-    function _nextPeriod(Header[] memory headers, uint256 end) private pure returns (uint256 start, uint256) {
-        if (headers[0].timestamp >= end || headers[1].timestamp < end) revert NotTheMaintenance();
-        uint256 late = headers[1].timestamp - end;
-        start = end + late - late % INTERVAL;
-        for (uint256 i = FIRST_LEARNED; i < headers.length; ++i) {
-            if (headers[i].timestamp >= start + INTERVAL) revert OutsidePeriod(i, headers[i].timestamp);
+    /// @dev The period the learning round lies in, on the grid `updateNextMaintenanceTime` keeps from the latest list's
+    ///      end: one after the latest list's, and not necessarily the next, so a halt or a list that cannot be learned
+    ///      in time is passed over. The round lies within it, and the block two before the round does too, so that
+    ///      period's maintenance block and the block after it both come before the round.
+    function _roundPeriod(Header[] memory headers, uint256 learnFrom, uint256 vouchFrom, uint256 listEnd)
+        private
+        pure
+        returns (uint256 start, uint256 end)
+    {
+        uint256 first = headers[learnFrom].timestamp;
+        if (first < listEnd) revert RoundTooEarly();
+        uint256 late = first - listEnd;
+        start = listEnd + late - late % INTERVAL;
+        end = start + INTERVAL;
+        if (headers[learnFrom - BEFORE_ROUND].timestamp < start) revert RoundTooEarly();
+        for (uint256 i = learnFrom; i < vouchFrom; ++i) {
+            if (headers[i].timestamp >= end) revert OutsidePeriod(i, headers[i].timestamp);
         }
-        return (start, start + INTERVAL);
     }
 
     /// @dev The learning round's signers are exactly `next`. Over 27 consecutive slots the schedule names every active
-    ///      producer once (`DposSlot.getScheduledWitness`), so a round that spans them from `FIRST_SCHEDULED` leaves
-    ///      out only a producer that missed its slot.
-    function _learn(Header[] memory headers, bytes32[] memory hashes, Producer[] memory next, uint256 vouchFrom)
-        private
-        pure
-    {
+    ///      producer once (`DposSlot.getScheduledWitness`), so a round that spans them leaves out only a producer that
+    ///      missed its slot, and names each producer once, so a key changed mid-round cannot make it ambiguous.
+    function _learn(
+        Header[] memory headers,
+        bytes32[] memory hashes,
+        Producer[] memory next,
+        uint256 learnFrom,
+        uint256 vouchFrom
+    ) private pure {
         uint256 learned = 0;
-        for (uint256 i = FIRST_LEARNED; i < vouchFrom; ++i) {
+        for (uint256 i = learnFrom; i < vouchFrom; ++i) {
             uint256 at = headers[i].producer;
             if (at >= next.length) revert BadSignature(i);
             _checkSigner(headers[i], hashes[i], next[at], i);
             learned |= 1 << at;
         }
         if (learned != (1 << next.length) - 1) revert WrongProducers();
-        if (headers[vouchFrom - 1].timestamp < headers[FIRST_SCHEDULED].timestamp + (MAX_PRODUCERS - 1) * SLOT) {
+        if (headers[vouchFrom - 1].timestamp < headers[learnFrom].timestamp + (MAX_PRODUCERS - 1) * SLOT) {
             revert NotARound();
         }
     }
@@ -300,7 +311,8 @@ contract TronStateVerifier is ITronStateVerifier {
     }
 
     /// @dev `BlockHeader.raw`: timestamp (1), txTrieRoot (2), parentHash (3), number (7), witness_id (8), witness_address
-    ///      (9), version (10), accountStateRoot (11).
+    ///      (9), version (10), accountStateRoot (11), then any unknown fields as they are. An int64 carried as uint64
+    ///      writes the same varint; version is an int32, sign-extended to 64 bits as Java writes it.
     function _header(Header memory h) private pure returns (bytes memory) {
         bytes memory head = bytes.concat(
             _varintField(F1_VARINT, h.timestamp),
@@ -312,8 +324,11 @@ contract TronStateVerifier is ITronStateVerifier {
             head,
             _varintField(F8_VARINT, h.witnessId),
             _bytesField(F9_BYTES, _tronAddress(h.witness)),
-            _varintField(F10_VARINT, h.version),
-            _bytesField(F11_BYTES, h.accountStateRoot)
+            // Reinterpreting the sign-extended int64 as a uint64 is the point: it is the varint Java writes.
+            // forge-lint: disable-next-line(unsafe-typecast)
+            _varintField(F10_VARINT, uint64(int64(h.version))),
+            _bytesField(F11_BYTES, h.accountStateRoot),
+            h.extra
         );
     }
 

@@ -8,8 +8,8 @@ import {IVaultStateVerifier} from "./IVaultStateVerifier.sol";
 ///         block, whose transaction, result included, the block's transaction root commits to. Tron's peers re-run
 ///         every contract call and reject a block that misstates its result. A block is solidified once 19 distinct
 ///         producers of the period's list have built on it. No header names the list, which votes elect again every
-///         6 hours, so the verifier follows every period: each new list is learned from a full round of the new
-///         period, and accepted once 19 producers of the list before it have built on that round.
+///         6 hours, so the verifier follows the lists: each is learned from a full round of 27 slots in its period, and
+///         accepted once 19 producers of the list before it have built on that round.
 interface ITronStateVerifier is IVaultStateVerifier {
     /// @notice A producer: its account, the witness address its blocks name (without Tron's 0x41 prefix), and the key
     ///         that signs them, which is a separate witness-permission key for some producers.
@@ -20,7 +20,10 @@ interface ITronStateVerifier is IVaultStateVerifier {
 
     /// @notice A block header's fields, which the verifier encodes as Tron's protobuf `BlockHeader.raw` to hash, and
     ///         the producer's signature over that hash. `producer` is the index of its signer in the list the proof
-    ///         names, or `NOT_LISTED` where it counts for nothing.
+    ///         names, or `NOT_LISTED` where it counts for nothing. `extra` is whatever unknown fields the producer put
+    ///         in `raw`, which Tron keeps, writes after the known ones and hashes; it is appended as it is. Every
+    ///         field the verifier reads comes before it and delimits itself, so the hash fixes them whatever `extra`
+    ///         holds. `version` is Java's int32, which Tron never checks: a negative one is written in ten bytes.
     struct Header {
         uint64 timestamp;
         bytes32 txTrieRoot;
@@ -28,8 +31,9 @@ interface ITronStateVerifier is IVaultStateVerifier {
         uint64 number;
         uint64 witnessId;
         address witness;
-        uint32 version;
+        int32 version;
         bytes accountStateRoot;
+        bytes extra;
         bytes32 r;
         bytes32 s;
         uint8 v;
@@ -82,7 +86,7 @@ interface ITronStateVerifier is IVaultStateVerifier {
     /// @notice A list's period, or a proven block, dated `time` (Tron's milliseconds), more than MAX_LAG ago.
     error TooOld(uint256 time);
     error NotLinked(uint256 index);
-    error NotTheMaintenance();
+    error RoundTooEarly();
     error OutsidePeriod(uint256 index, uint256 time);
     error BadSignature(uint256 index);
     error NotARound();
@@ -116,15 +120,17 @@ interface ITronStateVerifier is IVaultStateVerifier {
     /// @notice List `id`; empty if it was never recorded.
     function producerList(uint256 id) external view returns (ProducerList memory);
 
-    /// @notice Anyone. Records the next period's list. `currentList` is the latest list's producers. `headerList` runs
-    ///         from the last block of the latest list's period, through the block that ran the maintenance, then the
-    ///         new period's blocks: those before `vouchFrom` are the learning round, which spans at least a full round
-    ///         of 27 slots from the second of them and whose distinct signers are exactly `nextList`, in ascending witness order; those from
-    ///         `vouchFrom` on must include 19 distinct producers of `currentList`, each signing with its listed key.
+    /// @notice Anyone. Records the list of a later period than the latest list's. `currentList` is the latest list's
+    ///         producers. `headerList` is a chain of blocks: those from `learnFrom` to before `vouchFrom` are the
+    ///         learning round, which spans at least 27 slots, lies in one period after the latest list's, starts at
+    ///         least two blocks into it (past its maintenance block and the block after it), and whose distinct signers
+    ///         are exactly `nextList`, in ascending witness order; those from `vouchFrom` on must include 19 distinct
+    ///         producers of `currentList`, each signing with its listed key, in any period.
     function advance(
         Producer[] calldata currentList,
         Producer[] calldata nextList,
         Header[] calldata headerList,
+        uint256 learnFrom,
         uint256 vouchFrom
     ) external;
 
