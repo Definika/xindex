@@ -832,6 +832,24 @@ replaying a block.
     never be recipients;
   - the vault deploys only in a big block.
 
+### Stage C: Avalanche, NEAR, Stellar, Hedera and Cardano (researched 1 October 2026)
+
+Five more read-only passes asked the same questions of the Stage C chains, and whether each passes the design's
+deterministic-finality rule. The record, with every source, is `design/2026-10-01-stage-c-research.md`.
+
+| Chain | Deterministic finality | Its state, proven on Ethereum | Status |
+|---|---|---|---|
+| Avalanche C-Chain | no as written: probabilistic safety, though accepted blocks never revert | nothing on mainnet signs the validator set's changes | waits on Ava Labs, and on the owner's reading of the rule |
+| NEAR | yes | a zkVM proof of each epoch's ed25519 approvals, then SHA-256 paths to an `attest` result | buildable; no production client exists |
+| Stellar | yes | a zkVM proof of a Tier 1 quorum's EXTERNALIZE signatures, then the `attest` call's result | buildable; Tier 1's changes have no on-chain anchor |
+| Hedera | yes, under a permissioned council | hinTS (BLS12-381) block proofs, switched off on mainnet until about November 2026 | waits on Hedera's TSS cutover, and on the owner accepting the council |
+| Cardano | no: Praos, and Peras too, are probabilistic | Mithril certifies inclusion only, under operator-held genesis keys | fails the rule as written |
+
+Every one of them can verify P1 and P2 but Cardano, which has no BN254 and would need an unaudited wrapper of both
+proofs over BLS12-381. None of the five is built: NEAR and Stellar each need a finality statement, its zk proof, a
+state verifier and a vault in the chain's own language, the work Solana needs, and the owner has three decisions to
+make first (the record's summary lists them).
+
 The hackathon demonstration is unaffected: its state verifiers are stubs on every chain.
 
 ## 9. The internal red team of Stage B (30 September 2026)
