@@ -298,8 +298,9 @@ Redeeming and claims:
 **Size.** The hub is 23.9KB of the 24KB limit, so layer 2 (the rebalance with deliveries and bond) goes in a separate
 module the hub delegates to, not in the hub itself.
 
-**One factory or two: decided later** (the owner's call on 2026-09-30, once it was clear that Stage B is added beside
-Stage A either way). An index's tokens are fixed for good, so no Stage A index ever gains a vault token under either
+**One factory or two: decided on 2026-10-01: one.** The owner's call: v4 is one hybrid product, so it launches on this
+factory once the hybrid index is ready, and Stage A does not launch on its own. The question as it stood, deferred on
+2026-09-30 once it was clear that Stage B is added beside Stage A either way: An index's tokens are fixed for good, so no Stage A index ever gains a vault token under either
 choice. Holders switch to a Stage B index when they choose, and a helper could do the Ethereum part in one transaction.
 The choice matters only when Stage A is deployed. The factory is immutable, and the Stage B factory must know the
 `HybridHub` template when it is deployed, so the alternatives are:

@@ -10,9 +10,12 @@ mint them with USDC/USDT, and burn them into any token through Uniswap's Univers
 pools. An index's constituents are fixed at creation. Its units follow its components' reference supplies, circulating
 supplies the factory owner maintains behind a timelock, so an index holds each component in proportion to its supply:
 market-cap weighting without a price. Supplies change in weekly batches of at most half a percent each. After a change,
-anyone can trigger a rebalance, which settles through a price-free λ auction. No contract reads a price. Stage A runs on
-Ethereum only. Stages B and C add native coins of other chains, held in ownerless vaults
-(`design/2026-09-29-v4-hybrid-architecture.md`). v4 replaces v3, which priced through Chainlink and offered a capped
+anyone can trigger a rebalance, which settles through a price-free λ auction. No contract reads a price. v4 is one hybrid
+product: an index token on Ethereum that holds wrapped bitcoin, ether and other Ethereum tokens itself, and other
+chains' native coins in ownerless vaults on their own chains (`design/2026-09-29-v4-hybrid-architecture.md`). The
+stages are build order only: Stage A is the part held on Ethereum, Stage B the vaults and their proofs, Stage C more
+chains. It launches as one product, on the hybrid factory, once the hybrid index is ready (the owner's call on
+2026-10-01); Stage A does not launch on its own. v4 replaces v3, which priced through Chainlink and offered a capped
 methodology; v3 is tagged `v3.0.0` and never ships on mainnet. The web app lives in a separate repo. For more:
 - `ARCHITECTURE.md`: the design as built.
 - `design/2026-09-30-v4-stage-a-spec.md`: the Stage A spec.
@@ -576,6 +579,11 @@ records what went with them:
 - **Fees.** None in Stage A: audits, the bounty and watchers are funded from outside (the owner's call on 2026-09-30,
   over a minter fee in shares or a management fee, design §13.1). A later version could add one; only `_backing` and
   its callers would change.
+- **Launch.** One hybrid product on one factory, `HybridIndexFactory`, launched once the hybrid index is ready: P2, real
+  proving and the vaults' audits (the owner's call on 2026-10-01, which settles the one-or-two-factory question the
+  owner deferred on 2026-09-30). Stage A does not launch on its own; an index of Ethereum tokens only is still an
+  `IndexHub` clone of that factory. `script/Deploy.s.sol` still deploys Stage A's `IndexFactory`, so mainnet needs a
+  hybrid deploy script first.
 - **Stage B and C limits.** `SPEED_LIMIT` and `MINT_CAP` are 4% a day (the owner's call on 2026-09-30). The guardian's
   freeze expires. Ethereum verifiers rotate every 30 days. Script-only chains are out.
 
