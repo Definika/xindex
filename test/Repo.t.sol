@@ -2,7 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
-import {Vm} from "forge-std/Vm.sol";
+import {Vm, VmSafe} from "forge-std/Vm.sol";
 import {IndexZap} from "../src/IndexZap.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
@@ -128,9 +128,12 @@ contract RepoTest is Test {
         );
     }
 
-    /// @dev XA-44: the ABIs the web app decodes with are committed, and CI regenerates them and fails on a diff.
+    /// @dev XA-44: the ABIs the web app decodes with are committed, and CI regenerates them and fails on a diff: Stage A's,
+    ///      the hybrid factory v4 launches on, a hybrid index's three parts as one interface, and the vault.
     function test_XA44_theAbisAreCommittedAndChecked() public view {
-        string[4] memory contracts = ["IndexFactory", "IndexHub", "IndexZap", "MintRequests"];
+        string[7] memory contracts = [
+            "IndexFactory", "IndexHub", "IndexZap", "MintRequests", "HybridIndexFactory", "IHybridIndex", "XindexVault"
+        ];
         for (uint256 i = 0; i < contracts.length; ++i) {
             assertTrue(
                 _contains(_read(string.concat("abi/", contracts[i], ".json")), '"type": "function"'),
@@ -139,7 +142,10 @@ contract RepoTest is Test {
         }
         string memory workflow = _read(".github/workflows/test.yml");
         assertTrue(
-            _contains(workflow, "for contract in IndexFactory IndexHub IndexZap MintRequests; do"),
+            _contains(
+                workflow,
+                "for contract in IndexFactory IndexHub IndexZap MintRequests HybridIndexFactory IHybridIndex XindexVault; do"
+            ),
             "CI regenerates every ABI"
         );
         assertTrue(_contains(workflow, "git diff --exit-code abi/"), "a stale ABI fails CI");
@@ -196,34 +202,14 @@ contract RepoTest is Test {
 
     function reachedAfterTheRevert() external {}
 
-    /// @dev v4 reads no price anywhere: no contract in `src/` and no shipped ABI names a price feed, a pool's price
-    ///      or its oracle, and the v3 price contracts are gone. A change that brought one back would have to delete
-    ///      this test to do it.
+    /// @dev v4 reads no price anywhere: no file in `src/` and no shipped ABI in `abi/` names a price feed, a pool's
+    ///      price or its oracle, and the v3 price contracts are gone. Every file of both folders is read, Stage B's
+    ///      included, so a new file is covered without being listed. A change that brought a price back would have to
+    ///      delete this test to do it.
     function test_noContractReadsAPrice() public view {
-        string[15] memory files = [
-            "src/IndexHub.sol",
-            "src/IndexFactory.sol",
-            "src/IndexZap.sol",
-            "src/MintRequests.sol",
-            "src/interfaces/IIndexHub.sol",
-            "src/interfaces/IIndexFactory.sol",
-            "src/interfaces/IIndexZap.sol",
-            "src/interfaces/IMintRequests.sol",
-            "src/interfaces/IXindexErrors.sol",
-            "src/interfaces/IRebalanceExecutor.sol",
-            "src/interfaces/IUniversalRouter.sol",
-            "abi/IndexHub.json",
-            "abi/IndexFactory.json",
-            "abi/IndexZap.json",
-            "abi/MintRequests.json"
-        ];
         string[5] memory priceWords = ["latestRoundData", "AggregatorV3", "slot0", "observe(", "navPerToken"];
-        for (uint256 i = 0; i < files.length; ++i) {
-            string memory text = _read(files[i]);
-            for (uint256 j = 0; j < priceWords.length; ++j) {
-                assertFalse(_contains(text, priceWords[j]), string.concat(files[i], " names ", priceWords[j]));
-            }
-        }
+        uint256 read = _assertNoPriceIn("src", priceWords) + _assertNoPriceIn("abi", priceWords);
+        assertGt(read, 50, "every source and ABI file is read");
         string[5] memory gone = [
             "src/IndexRule.sol",
             "src/CompositeFeed.sol",
@@ -233,6 +219,19 @@ contract RepoTest is Test {
         ];
         for (uint256 i = 0; i < gone.length; ++i) {
             assertFalse(vm.exists(gone[i]), string.concat(gone[i], " is gone"));
+        }
+    }
+
+    /// @dev Reads every file under `dir` and fails on any price word; returns how many files it read.
+    function _assertNoPriceIn(string memory dir, string[5] memory priceWords) internal view returns (uint256 read) {
+        VmSafe.DirEntry[] memory entries = vm.readDir(dir, 8);
+        for (uint256 i = 0; i < entries.length; ++i) {
+            if (entries[i].isDir) continue;
+            string memory text = vm.readFile(entries[i].path);
+            for (uint256 j = 0; j < priceWords.length; ++j) {
+                assertFalse(_contains(text, priceWords[j]), string.concat(entries[i].path, " names ", priceWords[j]));
+            }
+            ++read;
         }
     }
 
