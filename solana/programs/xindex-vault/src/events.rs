@@ -105,3 +105,54 @@ pub struct ChangeApplied {
 pub struct ChangeCancelled {
     pub kind: u8,
 }
+
+#[event]
+pub struct CheckpointAdvanced {
+    pub block: u64,
+    pub timestamp: u64,
+    pub state_root: [u8; 32],
+}
+
+#[event]
+pub struct SuccessorProposed {
+    pub p1: Pubkey,
+    pub p2: Pubkey,
+    pub review_ends: i64,
+}
+
+#[event]
+pub struct SuccessorVetoed {
+    pub vetoes: u8,
+}
+
+#[event]
+pub struct SuccessorLapsed {}
+
+#[event]
+pub struct SuccessorAdopted {
+    pub p1: Pubkey,
+    pub p2: Pubkey,
+}
+
+#[event]
+pub struct SnapshotBegun {
+    pub block: u64,
+    pub timestamp: u64,
+    pub state_root: [u8; 32],
+}
+
+#[event]
+pub struct SnapshotClaimed {
+    pub index: [u8; 20],
+    pub holder: [u8; 20],
+    pub recipient: Pubkey,
+    pub amount: u64,
+    pub id: [u8; 32],
+}
+
+#[event]
+pub struct IntakeResolved {
+    pub index: [u8; 20],
+    pub intake_id: [u8; 32],
+    pub settled: bool,
+}
