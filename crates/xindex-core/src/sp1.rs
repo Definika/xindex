@@ -1,27 +1,17 @@
-//! SP1 v6's Groth16 verifying key and the verifier's checks, as constants. Generated from sp1-contracts v6.0.0's
-//! `Groth16Verifier.sol` and `SP1VerifierGroth16.sol` (vendored in `prototype/evm/src/sp1`, MIT, at commit
+//! P1's check: SP1 v6's Groth16 proof, as `SP1VerifierGroth16.sol` and `Groth16Verifier.sol` make it. The verifying key
+//! and the verifier's checks are constants generated from sp1-contracts v6.0.0's `Groth16Verifier.sol` and
+//! `SP1VerifierGroth16.sol` (vendored in `prototype/evm/src/sp1`, MIT, at commit
 //! d3629729c3216eb51bd4859d027a8eb729399fa4): each is the Solidity constant as a 32-byte big-endian word.
 
-/// A 64-digit hex string as 32 bytes, at compile time.
-pub const fn h(s: &str) -> [u8; 32] {
-    let b = s.as_bytes();
-    assert!(b.len() == 64, "64 hex digits");
-    let mut out = [0u8; 32];
-    let mut i = 0;
-    while i < 32 {
-        out[i] = (nibble(b[2 * i]) << 4) | nibble(b[2 * i + 1]);
-        i += 1;
-    }
-    out
-}
+use alloc::vec::Vec;
 
-const fn nibble(c: u8) -> u8 {
-    match c {
-        b'0'..=b'9' => c - b'0',
-        b'a'..=b'f' => c - b'a' + 10,
-        _ => panic!("not a hex digit"),
-    }
-}
+use crate::crypto::Crypto;
+use crate::groth16::{linear_combination, pairing_is_one, ProofError};
+use crate::hex::h;
+
+/// The proof SP1 hands a verifier: the verifier's selector, the exit code, the vk root, the nonce, then the Groth16
+/// points A, B and C as eight words.
+pub const PROOF_LEN: usize = 4 + 3 * 32 + 8 * 32;
 
 pub const VERIFIER_HASH: [u8; 32] =
     h("0e78f4db7a6771a3a6a7d9c3b0de6fe73d58781368967a7fe84d87aefffec896");
@@ -66,4 +56,69 @@ pub const PUB_3_X: [u8; 32] = h("290b3cba8ec4c97f171261b17b9c90e101b65934db12f4a
 pub const PUB_3_Y: [u8; 32] = h("14914c2bf919019e575b0bd613363aa160d700bd929bcbc14de06a05e3a25eb0");
 pub const PUB_4_X: [u8; 32] = h("22474ea30b64abc35269a0c55be5972965bf920e937c3d1927da5e89e60cf916");
 pub const PUB_4_Y: [u8; 32] = h("272dd64ca95c75938da75797ef702ec5112808c36914020a4b1822fff576d334");
-pub const R: [u8; 32] = h("30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001");
+
+/// `sha256(publicValues)` with its top three bits cleared, so it lies in the scalar field: `hashPublicValues`.
+pub fn public_values_digest<C: Crypto>(c: &C, public_values: &[u8]) -> [u8; 32] {
+    let mut d = c.sha256(&[public_values]);
+    d[0] &= 0x1f;
+    d
+}
+
+/// Succeeds only if `proof` is SP1 v6's Groth16 proof that the program `program_key` committed `public_values`.
+pub fn verify<C: Crypto>(
+    c: &C,
+    program_key: &[u8; 32],
+    public_values: &[u8],
+    proof: &[u8],
+) -> Result<(), ProofError> {
+    if proof.len() != PROOF_LEN {
+        return Err(ProofError::WrongLength);
+    }
+    if proof[..4] != VERIFIER_HASH[..4] {
+        return Err(ProofError::WrongSelector);
+    }
+    let word = |i: usize| -> [u8; 32] { proof[4 + 32 * i..4 + 32 * (i + 1)].try_into().unwrap() };
+    let (exit_code, vk_root, nonce) = (word(0), word(1), word(2));
+    if exit_code != [0u8; 32] {
+        return Err(ProofError::BadExitCode);
+    }
+    if vk_root != VK_ROOT {
+        return Err(ProofError::WrongVkRoot);
+    }
+    let inputs = [
+        *program_key,
+        public_values_digest(c, public_values),
+        exit_code,
+        vk_root,
+        nonce,
+    ];
+    let points = [
+        (PUB_0_X, PUB_0_Y),
+        (PUB_1_X, PUB_1_Y),
+        (PUB_2_X, PUB_2_Y),
+        (PUB_3_X, PUB_3_Y),
+        (PUB_4_X, PUB_4_Y),
+    ];
+    let l = linear_combination(c, (CONSTANT_X, CONSTANT_Y), &points, &inputs)?;
+    // e(A, B) e(C, -delta) e(alpha, -beta) e(L, -gamma) == 1, with A, B and C as the proof encodes them.
+    let pairing: Vec<u8> = [
+        &proof[4 + 3 * 32..],
+        &DELTA_NEG_X_1,
+        &DELTA_NEG_X_0,
+        &DELTA_NEG_Y_1,
+        &DELTA_NEG_Y_0,
+        &ALPHA_X,
+        &ALPHA_Y,
+        &BETA_NEG_X_1,
+        &BETA_NEG_X_0,
+        &BETA_NEG_Y_1,
+        &BETA_NEG_Y_0,
+        &l,
+        &GAMMA_NEG_X_1,
+        &GAMMA_NEG_X_0,
+        &GAMMA_NEG_Y_1,
+        &GAMMA_NEG_Y_0,
+    ]
+    .concat();
+    pairing_is_one(c, &pairing)
+}

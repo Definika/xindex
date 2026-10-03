@@ -19,7 +19,7 @@ custom-panic = []
 [dependencies]
 anchor-lang = "1.2.0"
 ethereum-verifier = { path = "../ethereum-verifier", features = ["no-entrypoint"] }
-solana-sha256-hasher = { version = "3.1.0", features = ["sha2"] }
+xindex-core = { path = "../../../crates/xindex-core", default-features = false }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

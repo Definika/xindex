@@ -1,7 +1,9 @@
-//! What every instruction shares: the vault's identity in digests, the speed limit, and payouts.
+//! What every instruction shares: the vault's identity in digests, the speed limit, and payouts. The speed limit's
+//! arithmetic and the checkpoint rules are every chain's (`xindex_core::speed`, `xindex_core::checkpoint`).
 
 use anchor_lang::prelude::*;
 use anchor_lang::system_program::{transfer, Transfer};
+use xindex_core::{checkpoint, speed};
 
 use crate::abi;
 use crate::constants::*;
@@ -41,37 +43,19 @@ pub fn now() -> Result<i64> {
     Ok(Clock::get()?.unix_timestamp)
 }
 
-fn hour_of(now: i64) -> u64 {
-    (now / HOUR) as u64
-}
-
 /// What the index's payouts used of the speed limit over the current hour and the 24 before it.
 pub fn recent_outflow(index: &IndexState, now: i64) -> u64 {
-    let hour = hour_of(now);
-    index
-        .outflow
-        .iter()
-        .filter(|b| b.hour + BUCKETS as u64 > hour)
-        .map(|b| b.amount)
-        .sum()
+    speed::recent(index.outflow.iter().map(|b| (b.hour, b.amount)), now)
 }
 
 /// What more the index may pay out now: 4% of its balance before the recent outflow, or the floor if larger.
 pub fn available(index: &IndexState, floor: u64, now: i64) -> u64 {
-    let recent = recent_outflow(index, now);
-    let limit = ((index.balance as u128 + recent as u128) * SPEED_LIMIT_PERCENT / 100) as u64;
-    limit.max(floor).saturating_sub(recent)
+    speed::available(index.balance, recent_outflow(index, now), floor)
 }
 
 fn record_outflow(index: &mut IndexState, amount: u64, now: i64) {
-    let hour = hour_of(now);
-    let b = &mut index.outflow[(hour % BUCKETS as u64) as usize];
-    b.amount = if b.hour == hour {
-        b.amount + amount
-    } else {
-        amount
-    };
-    b.hour = hour;
+    let b = &mut index.outflow[speed::slot_of(speed::hour_of(now))];
+    (b.hour, b.amount) = speed::record((b.hour, b.amount), amount, now);
 }
 
 pub fn check_not_frozen(config: &Config, now: i64) -> Result<()> {
@@ -81,22 +65,30 @@ pub fn check_not_frozen(config: &Config, now: i64) -> Result<()> {
 
 /// When the vault stalls: STALL_PERIOD after its last checkpoint's time, or after initialization until the first.
 pub fn stall_start(config: &Config) -> i64 {
-    config.checkpoint.timestamp as i64 + STALL_PERIOD
+    checkpoint::stall_start(config.checkpoint.timestamp)
 }
 
 /// A week without a new checkpoint: P1 and P2 may have stopped working.
 pub fn stalled(config: &Config, now: i64) -> bool {
-    now > stall_start(config)
+    checkpoint::stalled(config.checkpoint.timestamp, now)
+}
+
+fn core_checkpoint(c: &Checkpoint) -> checkpoint::Checkpoint {
+    checkpoint::Checkpoint {
+        block: c.block,
+        timestamp: c.timestamp,
+        state_root: c.state_root,
+    }
 }
 
 /// A checkpoint after the last, in blocks and in time, not in the future, and with a state to read.
 pub fn check_newer(config: &Config, c: &Checkpoint, now: i64) -> Result<()> {
-    let last = &config.checkpoint;
     require!(
-        c.block > last.block
-            && c.timestamp > last.timestamp
-            && c.timestamp as i64 <= now
-            && c.state_root != [0u8; 32],
+        checkpoint::is_newer(
+            &core_checkpoint(&config.checkpoint),
+            &core_checkpoint(c),
+            now
+        ),
         VaultError::NotNewer
     );
     Ok(())
@@ -106,7 +98,7 @@ pub fn check_newer(config: &Config, c: &Checkpoint, now: i64) -> Result<()> {
 pub fn check_recent(config: &Config, c: &Checkpoint, now: i64) -> Result<()> {
     check_newer(config, c, now)?;
     require!(
-        c.timestamp as i64 + STALL_PERIOD >= now,
+        checkpoint::is_recent(&core_checkpoint(c), now),
         VaultError::NotRecent
     );
     Ok(())

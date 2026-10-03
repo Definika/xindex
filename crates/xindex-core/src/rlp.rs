@@ -57,7 +57,7 @@ pub fn to_item(data: &[u8]) -> Result<Item<'_>, BadRlp> {
 
 impl<'a> Item<'a> {
     /// The number of items in a list. Each is decoded in place and none is kept, so a list of any length reads in
-    /// constant memory: the program's heap is 32 KiB and never frees (LG-1).
+    /// constant memory: a Solana program's heap is 32 KiB and never frees (LG-1).
     pub fn count(&self) -> Result<usize, BadRlp> {
         if !self.is_list {
             return Err(BadRlp);

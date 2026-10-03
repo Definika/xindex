@@ -1269,9 +1269,11 @@ dependencies = [
  "solana-keccak-hasher",
  "solana-keypair",
  "solana-message",
+ "solana-secp256k1-recover",
  "solana-sha256-hasher",
  "solana-signer",
  "solana-transaction",
+ "xindex-core",
 ]
 
 [[package]]
@@ -2134,7 +2136,7 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "ethereum-verifier",
- "solana-sha256-hasher",
+ "xindex-core",
 ]
 
 [[package]]
@@ -4211,6 +4213,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "xindex-core"
+version = "0.1.0"
+
+[[package]]
 name = "xindex-vault"
 version = "0.1.0"
 dependencies = [
@@ -4219,13 +4225,12 @@ dependencies = [
  "litesvm",
  "serde_json",
  "solana-account",
- "solana-keccak-hasher",
  "solana-keypair",
  "solana-message",
- "solana-secp256k1-recover",
  "solana-signature",
  "solana-signer",
  "solana-transaction",
+ "xindex-core",
 ]
 
 [[package]]

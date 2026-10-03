@@ -22,10 +22,10 @@ custom-panic = []
 
 [dependencies]
 anchor-lang = { version = "1.2.0", features = ["init-if-needed"] }
-solana-keccak-hasher = { version = "3.1.0", features = ["sha3"] }
-solana-secp256k1-recover = "3.3.0"
-# P1's RLP and Merkle-Patricia walk, which read Ethereum's state at the snapshot as they read its receipts.
+# Solana's cryptography as the core's `Crypto` (`ethereum_verifier::Solana`).
 ethereum-verifier = { path = "../ethereum-verifier", features = ["no-entrypoint"] }
+# The vault's rules every chain shares: messages, digests, speed limit, checkpoints, the state reader and the snapshot.
+xindex-core = { path = "../../../crates/xindex-core", default-features = false }
 
 [dev-dependencies]
 litesvm = "0.16.0"

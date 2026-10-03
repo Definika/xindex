@@ -2,7 +2,10 @@
 //! hash from the root down, or embedded in an authenticated parent, so the value found is the one the root commits
 //! to; a proof that the key is absent returns nothing.
 
-use crate::keccak;
+use alloc::vec;
+use alloc::vec::Vec;
+
+use crate::crypto::Crypto;
 use crate::rlp::{to_item, Item};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,8 +23,11 @@ const LEAF_EVEN: u8 = 2;
 const LEAF_ODD: u8 = 3;
 
 /// The leaf value stored under the key whose first `key_nibbles` nibbles are `key`'s, if the proof shows one. In a
-/// receipts trie no key is a prefix of another, so a value is only ever a leaf's.
-pub fn get<'a>(
+/// receipts trie, and among a state or storage trie's 64-nibble keys, no key is a prefix of another, so a value is only
+/// ever a leaf's. A proof that the key is absent, an empty branch child or a short node whose path parts from the
+/// key's, returns nothing, as `MerklePatricia.sol`'s does.
+pub fn get<'a, C: Crypto>(
+    c: &C,
     root: &[u8; 32],
     key: &[u8],
     key_nibbles: usize,
@@ -39,7 +45,7 @@ pub fn get<'a>(
             Some(node) => node,
             None => {
                 let raw = *proof.get(next).ok_or(BadProof)?;
-                if keccak(&[raw]) != expected {
+                if c.keccak256(&[raw]) != expected {
                     return Err(BadProof);
                 }
                 next += 1;

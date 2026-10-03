@@ -1,0 +1,6 @@
+# The Solana workspace's pin. The crate also builds under the SBF toolchain's rustc 1.89 (`rust-version`) and for Wasm.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"

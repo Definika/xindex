@@ -6,7 +6,8 @@
 //! What P1 and P2 share is this crate's core, `process_with`, as `FinalityVerifier.sol` is what both EVM verifiers
 //! share: the anchor, the recorded ranges, the headers tree, the receipt proofs and the checkpoints. Each system adds
 //! only the check of its proof, a `ProofSystem`: P1's entrypoint passes SP1's (`SP1`), and P2, the `risc0-verifier`
-//! program, RISC Zero's.
+//! program, RISC Zero's. The rules themselves, the light client's and both Groth16 checks, are `xindex_core`'s, which
+//! every vault chain shares, run here over Solana's syscalls (`crypto::Solana`); this crate keeps the accounts.
 //!
 //! No owner and no upgrade: the deployer's upgrade authority sets the program key and the first anchor once, then
 //! makes the program immutable, which the vault requires of a verifier. Every later anchor is proven. A plain Solana
@@ -31,11 +32,7 @@
 //!
 //! Integers are little-endian. `state` is the account at the seed `"verifier"`; a range is at `"range" ++ headersRoot`.
 
-pub mod event;
-pub mod groth16;
-pub mod mpt;
-pub mod rlp;
-pub mod vk;
+pub mod crypto;
 
 use anchor_lang::prelude::SolanaSysvar;
 use anchor_lang::solana_program::account_info::AccountInfo;
@@ -47,6 +44,12 @@ use anchor_lang::solana_program::program_error::ProgramError;
 use anchor_lang::solana_program::pubkey::Pubkey;
 use anchor_lang::solana_program::rent::Rent;
 use anchor_lang::solana_program::system_instruction;
+use xindex_core::crypto::Crypto;
+use xindex_core::light_client::{self, CheckpointClaim, LogClaim};
+use xindex_core::sp1;
+
+pub use crate::crypto::Solana;
+pub use xindex_core::light_client::{PublicValues, MAX_LAG, PUBLIC_VALUES_LEN, SECONDS_PER_EPOCH};
 
 pub const STATE_SEED: &[u8] = b"verifier";
 pub const RANGE_SEED: &[u8] = b"range";
@@ -61,16 +64,8 @@ pub const VERIFY_CHECKPOINT: u8 = 4;
 pub const LOG_LEN: usize = 8 + 20 + 3 * 32;
 /// The checkpoint the vault passes: block (8), timestamp (8) and state root (32).
 pub const CHECKPOINT_LEN: usize = 8 + 8 + 32;
-/// `abi.encode(anchorIn, anchorOut, epoch, headersRoot, first, last)`, as the P1 program commits it.
-pub const PUBLIC_VALUES_LEN: usize = 6 * 32;
 /// The state: the program key, the anchor, the anchor's epoch, and the network's genesis time.
 pub const STATE_LEN: usize = 32 + 32 + 8 + 8;
-/// How long after its anchor's epoch began the verifier still takes a proof, as `FinalityVerifier.MAX_LAG`. Past it the
-/// verifier stops for good: catching up from an old anchor would trust stake that may have left since, and could sign
-/// a forged finality at no risk (LG-4).
-pub const MAX_LAG: u64 = 86_400;
-/// An epoch's length: 32 slots of 12 seconds.
-pub const SECONDS_PER_EPOCH: u64 = 384;
 /// A range: the first and last block it covers, and its address's bump.
 pub const RANGE_LEN: usize = 8 + 8 + 1;
 /// A loader buffer's data starts after its metadata: the state tag and the authority option.
@@ -106,8 +101,30 @@ impl From<VerifierError> for ProgramError {
     }
 }
 
+/// The core's refusals, under this program's codes.
+impl From<light_client::Error> for VerifierError {
+    fn from(e: light_client::Error) -> Self {
+        use light_client::Error as E;
+        match e {
+            E::WrongAnchor => VerifierError::WrongAnchor,
+            E::BadPublicValues => VerifierError::BadPublicValues,
+            E::Lagging => VerifierError::Lagging,
+            E::UnknownHeaders => VerifierError::UnknownHeaders,
+            E::NotInRange => VerifierError::NotInRange,
+            E::BadHeaderPath => VerifierError::BadHeaderPath,
+            E::BadEventProof => VerifierError::BadEventProof,
+            E::BadReceiptProof => VerifierError::BadReceiptProof,
+            E::NoReceipt => VerifierError::NoReceipt,
+            E::FailedTransaction => VerifierError::FailedTransaction,
+            E::NoLog => VerifierError::NoLog,
+            E::NotTheLog => VerifierError::NotTheLog,
+            E::NotTheCheckpoint => VerifierError::NotTheCheckpoint,
+        }
+    }
+}
+
 pub fn keccak(parts: &[&[u8]]) -> [u8; 32] {
-    solana_keccak_hasher::hashv(parts).to_bytes()
+    Solana.keccak256(parts)
 }
 
 /// What a proof system adds to the shared core: the length of its proof, and the check that `proof` proves the program
@@ -117,10 +134,10 @@ pub struct ProofSystem {
     pub verify: fn(key: &[u8; 32], public_values: &[u8], proof: &[u8]) -> bool,
 }
 
-/// P1's: SP1 v6's Groth16 proof (`groth16`).
+/// P1's: SP1 v6's Groth16 proof (`xindex_core::sp1`).
 pub const SP1: ProofSystem = ProofSystem {
-    proof_len: groth16::PROOF_LEN,
-    verify: |key, values, proof| groth16::verify(key, values, proof).is_ok(),
+    proof_len: sp1::PROOF_LEN,
+    verify: |key, values, proof| sp1::verify(&Solana, key, values, proof).is_ok(),
 };
 
 #[cfg(not(feature = "no-entrypoint"))]
@@ -175,28 +192,19 @@ fn verify_event(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> P
     if data.len() < LOG_LEN {
         return Err(VerifierError::BadInstruction.into());
     }
-    let block = u64::from_le_bytes(data[..8].try_into().unwrap());
-    let emitter: [u8; 20] = data[8..28].try_into().unwrap();
-    let topic0: [u8; 32] = data[28..60].try_into().unwrap();
-    let topic1: [u8; 32] = data[60..92].try_into().unwrap();
-    let data_hash: [u8; 32] = data[92..124].try_into().unwrap();
+    let claim = LogClaim {
+        block: u64::from_le_bytes(data[..8].try_into().unwrap()),
+        emitter: data[8..28].try_into().unwrap(),
+        topic0: data[28..60].try_into().unwrap(),
+        topic1: data[60..92].try_into().unwrap(),
+        data_hash: data[92..124].try_into().unwrap(),
+    };
     let range = accounts.first().ok_or(VerifierError::WrongAccount)?;
     with_proof(accounts, &data[LOG_LEN..], |proof| {
-        let p = event::parse(proof)?;
-        let (first, last) = read_range(program_id, range, &p.header.headers_root)?;
-        event::check_header(&p.header, first, last)?;
-        if p.header.number != block {
-            return Err(VerifierError::NotTheLog);
-        }
-        let log = event::log(&p.header.receipts_root, &p.nodes, p.tx_index, p.log_index)?;
-        if log.emitter != emitter
-            || log.topic0 != topic0
-            || log.topic1 != topic1
-            || keccak(&[log.data]) != data_hash
-        {
-            return Err(VerifierError::NotTheLog);
-        }
-        Ok(())
+        light_client::verify_event(&Solana, proof, &claim, |root| {
+            read_range(program_id, range, root)
+        })
+        .map_err(VerifierError::from)
     })
 }
 
@@ -243,18 +251,17 @@ fn verify_checkpoint(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8])
     if data.len() < CHECKPOINT_LEN {
         return Err(VerifierError::BadInstruction.into());
     }
-    let block = u64::from_le_bytes(data[..8].try_into().unwrap());
-    let timestamp = u64::from_le_bytes(data[8..16].try_into().unwrap());
-    let state_root: [u8; 32] = data[16..48].try_into().unwrap();
+    let claim = CheckpointClaim {
+        block: u64::from_le_bytes(data[..8].try_into().unwrap()),
+        timestamp: u64::from_le_bytes(data[8..16].try_into().unwrap()),
+        state_root: data[16..48].try_into().unwrap(),
+    };
     let range = accounts.first().ok_or(VerifierError::WrongAccount)?;
     with_proof(accounts, &data[CHECKPOINT_LEN..], |proof| {
-        let h = event::parse_header(proof)?;
-        let (first, last) = read_range(program_id, range, &h.headers_root)?;
-        event::check_header(&h, first, last)?;
-        if h.number != block || h.timestamp != timestamp || h.state_root != state_root {
-            return Err(VerifierError::NotTheCheckpoint);
-        }
-        Ok(())
+        light_client::verify_checkpoint(&Solana, proof, &claim, |root| {
+            read_range(program_id, range, root)
+        })
+        .map_err(VerifierError::from)
     })
 }
 
@@ -263,16 +270,17 @@ fn read_range(
     program_id: &Pubkey,
     range: &AccountInfo,
     headers_root: &[u8; 32],
-) -> Result<(u64, u64), VerifierError> {
+) -> Result<(u64, u64), light_client::Error> {
+    let unknown = light_client::Error::UnknownHeaders;
     if range.owner != program_id || range.data_len() != RANGE_LEN {
-        return Err(VerifierError::UnknownHeaders);
+        return Err(unknown);
     }
     let d = range.data.borrow();
     let expected =
         Pubkey::create_program_address(&[RANGE_SEED, headers_root, &[d[16]]], program_id)
-            .map_err(|_| VerifierError::UnknownHeaders)?;
+            .map_err(|_| unknown)?;
     if *range.key != expected {
-        return Err(VerifierError::UnknownHeaders);
+        return Err(unknown);
     }
     Ok((
         u64::from_le_bytes(d[..8].try_into().unwrap()),
@@ -358,66 +366,23 @@ fn update(
 }
 
 /// Refuses an update at `now` (unix seconds) more than `MAX_LAG` after the stored anchor's epoch began, as
-/// `FinalityVerifier.update` does: `now > genesisTime + epoch * 384 + MAX_LAG`. The statement bounds a step to 225
-/// epochs, which is one day, so an honest prover keeps up only by proving at least daily (LG-4).
+/// `FinalityVerifier.update` does (`light_client::check_lag`), the epoch and the genesis time read from the state
+/// account's data.
 pub fn check_lag(state: &[u8], now: i64) -> Result<(), VerifierError> {
     let epoch = u64::from_le_bytes(state[64..72].try_into().unwrap());
     let genesis_time = u64::from_le_bytes(state[72..80].try_into().unwrap());
-    let deadline = epoch
-        .saturating_mul(SECONDS_PER_EPOCH)
-        .saturating_add(genesis_time)
-        .saturating_add(MAX_LAG);
-    if i128::from(now) > i128::from(deadline) {
-        return Err(VerifierError::Lagging);
-    }
-    Ok(())
+    Ok(light_client::check_lag(epoch, genesis_time, now)?)
 }
 
-/// Moves the anchor in `state` (the state account's data) one proven step: the proof must start from the stored
-/// anchor. Returns the values, whose headers root and blocks the caller records.
+/// Moves the anchor in `state` (the state account's data) one proven step (`light_client::advance`): the proof must
+/// start from the stored anchor. Returns the values, whose headers root and blocks the caller records.
 pub fn apply_update(state: &mut [u8], values: &[u8]) -> Result<PublicValues, VerifierError> {
-    let v = PublicValues::decode(values)?;
-    if state[32..64] != v.anchor_in {
-        return Err(VerifierError::WrongAnchor);
-    }
-    state[32..64].copy_from_slice(&v.anchor_out);
-    state[64..72].copy_from_slice(&v.epoch.to_le_bytes());
+    let mut anchor: [u8; 32] = state[32..64].try_into().unwrap();
+    let mut epoch = u64::from_le_bytes(state[64..72].try_into().unwrap());
+    let v = light_client::advance(&mut anchor, &mut epoch, values)?;
+    state[32..64].copy_from_slice(&anchor);
+    state[64..72].copy_from_slice(&epoch.to_le_bytes());
     Ok(v)
-}
-
-/// What a P1 proof commits: the anchor in and out, the epoch of its checkpoint, and the headers root over the blocks
-/// `first` to `last`.
-pub struct PublicValues {
-    pub anchor_in: [u8; 32],
-    pub anchor_out: [u8; 32],
-    pub epoch: u64,
-    pub headers_root: [u8; 32],
-    pub first: u64,
-    pub last: u64,
-}
-
-impl PublicValues {
-    pub fn decode(values: &[u8]) -> Result<Self, VerifierError> {
-        if values.len() != PUBLIC_VALUES_LEN {
-            return Err(VerifierError::BadPublicValues);
-        }
-        let word = |i: usize| -> [u8; 32] { values[32 * i..32 * (i + 1)].try_into().unwrap() };
-        let small = |i: usize| -> Result<u64, VerifierError> {
-            let w = word(i);
-            if w[..24].iter().any(|b| *b != 0) {
-                return Err(VerifierError::BadPublicValues);
-            }
-            Ok(u64::from_be_bytes(w[24..].try_into().unwrap()))
-        };
-        Ok(PublicValues {
-            anchor_in: word(0),
-            anchor_out: word(1),
-            epoch: small(2)?,
-            headers_root: word(3),
-            first: small(4)?,
-            last: small(5)?,
-        })
-    }
 }
 
 /// Creates `account` at its program address with `len` bytes, owned by this program. Transfer, allocate and assign

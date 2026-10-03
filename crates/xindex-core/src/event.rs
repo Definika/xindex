@@ -3,9 +3,12 @@
 //! As `FinalityVerifier.verifyEvent` checks it on an EVM chain. A checkpoint is the same block's leaf alone, as
 //! `FinalityVerifier.verifyCheckpoint` checks it.
 
+use alloc::vec::Vec;
+
+use crate::crypto::Crypto;
+use crate::light_client::Error;
 use crate::mpt;
 use crate::rlp::{to_item, Item};
-use crate::{keccak, VerifierError};
 
 /// A receipt's fields: (status, cumulativeGasUsed, logsBloom, logs).
 const STATUS: usize = 0;
@@ -41,24 +44,24 @@ struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
-    fn take(&mut self, n: usize) -> Result<&'a [u8], VerifierError> {
+    fn take(&mut self, n: usize) -> Result<&'a [u8], Error> {
         if self.data.len() < n {
-            return Err(VerifierError::BadEventProof);
+            return Err(Error::BadEventProof);
         }
         let (head, rest) = self.data.split_at(n);
         self.data = rest;
         Ok(head)
     }
-    fn word(&mut self) -> Result<[u8; 32], VerifierError> {
+    fn word(&mut self) -> Result<[u8; 32], Error> {
         Ok(self.take(32)?.try_into().unwrap())
     }
-    fn u64(&mut self) -> Result<u64, VerifierError> {
+    fn u64(&mut self) -> Result<u64, Error> {
         Ok(u64::from_le_bytes(self.take(8)?.try_into().unwrap()))
     }
-    fn u32(&mut self) -> Result<u32, VerifierError> {
+    fn u32(&mut self) -> Result<u32, Error> {
         Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))
     }
-    fn u8(&mut self) -> Result<u8, VerifierError> {
+    fn u8(&mut self) -> Result<u8, Error> {
         Ok(self.take(1)?[0])
     }
 }
@@ -68,7 +71,7 @@ impl<'a> Reader<'a> {
 /// little-endian, which must be the whole of `proof`. A node's length is a u32 because a receipt has no size limit of
 /// its own: a leaf past 64 KB is valid on Ethereum (LG-1). Nodes stay where they lie in `proof`, and each list is sized
 /// once, so the heap holds at most 255 words and 255 slices.
-pub fn parse(proof: &[u8]) -> Result<EventProof<'_>, VerifierError> {
+pub fn parse(proof: &[u8]) -> Result<EventProof<'_>, Error> {
     let mut r = Reader { data: proof };
     let header = read_header(&mut r)?;
     let count = r.u8()?;
@@ -80,7 +83,7 @@ pub fn parse(proof: &[u8]) -> Result<EventProof<'_>, VerifierError> {
     let tx_index = r.u32()?;
     let log_index = r.u32()?;
     if !r.data.is_empty() {
-        return Err(VerifierError::BadEventProof);
+        return Err(Error::BadEventProof);
     }
     Ok(EventProof {
         header,
@@ -93,16 +96,16 @@ pub fn parse(proof: &[u8]) -> Result<EventProof<'_>, VerifierError> {
 /// Reads a checkpoint proof: an event proof's header part alone, `headersRoot ++ number ++ timestamp ++ stateRoot ++
 /// receiptsRoot ++ path count (u8) ++ path`, which must be the whole of `proof`. As `FinalityVerifier.verifyCheckpoint`
 /// takes `abi.encode(Header)`.
-pub fn parse_header(proof: &[u8]) -> Result<Header, VerifierError> {
+pub fn parse_header(proof: &[u8]) -> Result<Header, Error> {
     let mut r = Reader { data: proof };
     let header = read_header(&mut r)?;
     if !r.data.is_empty() {
-        return Err(VerifierError::BadEventProof);
+        return Err(Error::BadEventProof);
     }
     Ok(header)
 }
 
-fn read_header(r: &mut Reader) -> Result<Header, VerifierError> {
+fn read_header(r: &mut Reader) -> Result<Header, Error> {
     let headers_root = r.word()?;
     let number = r.u64()?;
     let timestamp = r.u64()?;
@@ -126,15 +129,15 @@ fn read_header(r: &mut Reader) -> Result<Header, VerifierError> {
 /// The header's leaf lies at its place in the tree a proof recorded over blocks `first` to `last`: `number - first`, at
 /// a depth of `ceil(log2(last - first + 1))`, a zero standing in for an odd layer's missing sibling. The leaf is
 /// `keccak256(abi.encode(uint256 number, uint256 timestamp, stateRoot, receiptsRoot))`.
-pub fn check_header(h: &Header, first: u64, last: u64) -> Result<(), VerifierError> {
+pub fn check_header<C: Crypto>(c: &C, h: &Header, first: u64, last: u64) -> Result<(), Error> {
     if h.number < first || h.number > last {
-        return Err(VerifierError::NotInRange);
+        return Err(Error::NotInRange);
     }
     let depth = (64 - (last - first).leading_zeros()) as usize;
     if h.path.len() != depth {
-        return Err(VerifierError::BadHeaderPath);
+        return Err(Error::BadHeaderPath);
     }
-    let mut node = keccak(&[
+    let mut node = c.keccak256(&[
         &word(h.number),
         &word(h.timestamp),
         &h.state_root,
@@ -143,39 +146,40 @@ pub fn check_header(h: &Header, first: u64, last: u64) -> Result<(), VerifierErr
     let index = h.number - first;
     for (i, sibling) in h.path.iter().enumerate() {
         node = if (index >> i) & 1 == 1 {
-            keccak(&[sibling, &node])
+            c.keccak256(&[sibling, &node])
         } else {
-            keccak(&[&node, sibling])
+            c.keccak256(&[&node, sibling])
         };
     }
     if node != h.headers_root {
-        return Err(VerifierError::BadHeaderPath);
+        return Err(Error::BadHeaderPath);
     }
     Ok(())
 }
 
 /// The `log_index`-th log of the receipt of transaction `tx_index`, which must have succeeded, proven under
 /// `receipts_root`. The log must carry at least two topics.
-pub fn log<'a>(
+pub fn log<'a, C: Crypto>(
+    c: &C,
     receipts_root: &[u8; 32],
     nodes: &[&'a [u8]],
     tx_index: u32,
     log_index: u32,
-) -> Result<Log<'a>, VerifierError> {
-    let (key, nibbles) = mpt::receipt_key(tx_index).ok_or(VerifierError::NoReceipt)?;
-    let value = mpt::get(receipts_root, &key, nibbles, nodes)
-        .map_err(|_| VerifierError::BadReceiptProof)?
-        .ok_or(VerifierError::NoReceipt)?;
+) -> Result<Log<'a>, Error> {
+    let (key, nibbles) = mpt::receipt_key(tx_index).ok_or(Error::NoReceipt)?;
+    let value = mpt::get(c, receipts_root, &key, nibbles, nodes)
+        .map_err(|_| Error::BadReceiptProof)?
+        .ok_or(Error::NoReceipt)?;
     // Lists are read in place, item by item, as `RlpReader.sol` reads them: a receipt of any number of logs needs no
     // heap (LG-1).
-    let bad = |_| VerifierError::BadReceiptProof;
+    let bad = |_| Error::BadReceiptProof;
     let receipt = receipt(&value)?;
     if receipt.at(STATUS).and_then(|s| s.uint()).map_err(bad)? != 1 {
-        return Err(VerifierError::FailedTransaction);
+        return Err(Error::FailedTransaction);
     }
     let logs = receipt.at(LOGS).map_err(bad)?;
     if log_index as usize >= logs.count().map_err(bad)? {
-        return Err(VerifierError::NoLog);
+        return Err(Error::NoLog);
     }
     let log = logs.at(log_index as usize).map_err(bad)?;
     let emitter: [u8; 20] = log
@@ -183,10 +187,10 @@ pub fn log<'a>(
         .and_then(|a| a.bytes())
         .ok()
         .and_then(|b| b.try_into().ok())
-        .ok_or(VerifierError::BadReceiptProof)?;
+        .ok_or(Error::BadReceiptProof)?;
     let topics = log.at(1).map_err(bad)?;
     if topics.count().map_err(bad)? < 2 {
-        return Err(VerifierError::NoLog);
+        return Err(Error::NoLog);
     }
     let topic = |i: usize| topics.at(i).and_then(|t| t.bytes32()).map_err(bad);
     Ok(Log {
@@ -199,14 +203,15 @@ pub fn log<'a>(
 
 /// A receipt is the list (status, cumulativeGasUsed, logsBloom, logs), after its type byte if it has one: a typed
 /// receipt's first byte is its type, below every RLP list's prefix.
-fn receipt<'a>(value: &Item<'a>) -> Result<Item<'a>, VerifierError> {
-    let bytes = value.bytes().map_err(|_| VerifierError::BadReceiptProof)?;
-    let first = *bytes.first().ok_or(VerifierError::BadReceiptProof)?;
+fn receipt<'a>(value: &Item<'a>) -> Result<Item<'a>, Error> {
+    let bytes = value.bytes().map_err(|_| Error::BadReceiptProof)?;
+    let first = *bytes.first().ok_or(Error::BadReceiptProof)?;
     let list = if first < 0xc0 { &bytes[1..] } else { bytes };
-    to_item(list).map_err(|_| VerifierError::BadReceiptProof)
+    to_item(list).map_err(|_| Error::BadReceiptProof)
 }
 
-fn word(x: u64) -> [u8; 32] {
+/// A number as a 32-byte big-endian word, as `abi.encode(uint256)` writes it.
+pub fn word(x: u64) -> [u8; 32] {
     let mut w = [0u8; 32];
     w[24..].copy_from_slice(&x.to_be_bytes());
     w

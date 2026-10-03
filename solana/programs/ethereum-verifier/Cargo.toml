@@ -20,7 +20,10 @@ custom-panic = []
 anchor-lang = "1.2.0"
 solana-bn254 = "3.2.1"
 solana-keccak-hasher = { version = "3.1.0", features = ["sha3"] }
+solana-secp256k1-recover = "3.3.0"
 solana-sha256-hasher = { version = "3.1.0", features = ["sha2"] }
+# Everything a vault chain's programs share, over this crate's `Solana` cryptography (`crypto`).
+xindex-core = { path = "../../../crates/xindex-core", default-features = false }
 
 [dev-dependencies]
 litesvm = "0.16.0"
