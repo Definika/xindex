@@ -1,6 +1,10 @@
 //! The harness the vault's tests share: the vault and two copies of the stub verifier (P1 and P2) in LiteSVM, a
 //! factory and hub template on "Ethereum" named by address, messages built as `VaultMessages.encode` builds them, and
 //! the accounts every instruction names.
+//!
+//! LiteSVM runs without signature verification, so that the recovery proposer, a multisig's program-derived address,
+//! can sign as its multisig program would by CPI (`send_unsigned`). Every other signer signs for real, so nothing else
+//! changes: an account is a signer by the transaction's header, as on a cluster.
 #![allow(dead_code)]
 
 use anchor_lang::{
@@ -14,9 +18,10 @@ use anchor_lang::{
 use litesvm::LiteSVM;
 use solana_keypair::Keypair;
 use solana_message::{Message, VersionedMessage};
+use solana_signature::Signature;
 use solana_signer::Signer;
 use solana_transaction::versioned::VersionedTransaction;
-use xindex_vault::{abi, constants::*, error::VaultError, state::*};
+use xindex_vault::{abi, constants::*, error::VaultError, state::*, verify::PairProofs};
 
 pub const SOURCE_CHAIN_ID: u64 = 11_155_111;
 pub const CHAIN_ID: u64 = 1_399_811_150;
@@ -39,6 +44,18 @@ pub struct Harness {
     pub config: Pubkey,
     pub treasury: Pubkey,
     pub nonce: u64,
+    /// The Ethereum block the relayer claims a message's log is in: 1 unless a test moves it.
+    pub block: u64,
+    /// The owner's emergency multisig: an address off the curve, as a Squads vault's is.
+    pub recovery: Pubkey,
+}
+
+/// A pair of stub verifiers and the relayers who sign for them: P1 and P2, or a successor pair.
+pub struct Pair {
+    pub p1: Pubkey,
+    pub p2: Pubkey,
+    pub relayer1: Keypair,
+    pub relayer2: Keypair,
 }
 
 pub fn pda(seeds: &[&[u8]]) -> Pubkey {
@@ -107,6 +124,7 @@ pub struct Outcome {
     pub ok: bool,
     pub error: Option<String>,
     pub logs: Vec<String>,
+    pub cu: u64,
 }
 
 impl Outcome {
@@ -134,11 +152,16 @@ impl Outcome {
     pub fn expect_ok(&self) {
         assert!(self.ok, "failed: {:?}\n{:#?}", self.error, self.logs);
     }
+
+    /// How many log lines contain `fragment`.
+    pub fn count(&self, fragment: &str) -> usize {
+        self.logs.iter().filter(|l| l.contains(fragment)).count()
+    }
 }
 
 impl Harness {
     pub fn new() -> Self {
-        let mut svm = LiteSVM::new();
+        let mut svm = LiteSVM::new().with_sigverify(false);
         let vault = include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../target/deploy/xindex_vault.so"
@@ -175,6 +198,8 @@ impl Harness {
             config: pda(&[CONFIG_SEED]),
             treasury: pda(&[TREASURY_SEED]),
             nonce: 0,
+            block: 1,
+            recovery: Pubkey::find_program_address(&[b"multisig"], &Pubkey::new_unique()).0,
         };
         for k in [&h.authority, &h.payer, &h.freezer, &h.relayer1, &h.relayer2] {
             h.svm.airdrop(&k.pubkey(), 1_000 * SOL).unwrap();
@@ -203,20 +228,48 @@ impl Harness {
     }
 
     pub fn send(&mut self, ixs: &[Instruction], signers: &[&Keypair]) -> Outcome {
+        self.send_unsigned(ixs, signers, &[])
+    }
+
+    /// As `send`, with `unsigned` signers no keypair is held for: a multisig's address, which its program signs for by
+    /// CPI on a cluster. Their signature slots stay empty, which LiteSVM, not verifying signatures, accepts.
+    pub fn send_unsigned(
+        &mut self,
+        ixs: &[Instruction],
+        signers: &[&Keypair],
+        unsigned: &[Pubkey],
+    ) -> Outcome {
         self.svm.expire_blockhash();
         let payer = signers[0].pubkey();
         let msg = Message::new_with_blockhash(ixs, Some(&payer), &self.svm.latest_blockhash());
-        let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), signers).unwrap();
+        let bytes = msg.serialize();
+        let required = msg.header.num_required_signatures as usize;
+        let signatures = msg.account_keys[..required]
+            .iter()
+            .map(|key| match signers.iter().find(|k| k.pubkey() == *key) {
+                Some(k) => k.sign_message(&bytes),
+                None => {
+                    assert!(unsigned.contains(key), "no signer for {key}");
+                    Signature::default()
+                }
+            })
+            .collect();
+        let tx = VersionedTransaction {
+            signatures,
+            message: VersionedMessage::Legacy(msg),
+        };
         match self.svm.send_transaction(tx) {
             Ok(meta) => Outcome {
                 ok: true,
                 error: None,
                 logs: meta.logs,
+                cu: meta.compute_units_consumed,
             },
             Err(f) => Outcome {
                 ok: false,
                 error: Some(format!("{:?}", f.err)),
                 logs: f.meta.logs,
+                cu: f.meta.compute_units_consumed,
             },
         }
     }
@@ -280,6 +333,7 @@ impl Harness {
             freezer: self.freezer.pubkey(),
             native_cap: CAP,
             native_floor: FLOOR,
+            recovery_proposer: self.recovery,
         }
     }
 
@@ -314,7 +368,8 @@ impl Harness {
         )
     }
 
-    /// The vault initialized by its deployer, with an index registered.
+    /// The vault initialized by its deployer, with an index registered, and a checkpoint at block 1,000 that covers the
+    /// tests' messages, as relayers advance one before delivering.
     pub fn ready() -> (Self, [u8; 20]) {
         let mut h = Self::new();
         let ix = h.initialize_ix(&h.authority.pubkey(), h.init_args(), h.p1, h.p2);
@@ -322,7 +377,381 @@ impl Harness {
         h.send(&[ix], &[&authority]).expect_ok();
         let (index, salt) = index_of(1);
         h.register(index, salt).expect_ok();
+        h.warp(1);
+        h.advance(1_000).expect_ok();
         (h, index)
+    }
+
+    // ---------------------------------------------------------------------
+    // checkpoints, recovery and the snapshot exit
+    // ---------------------------------------------------------------------
+
+    /// P1 and P2 in force, and their relayers.
+    pub fn pair(&self) -> Pair {
+        Pair {
+            p1: self.p1,
+            p2: self.p2,
+            relayer1: self.relayer1.insecure_clone(),
+            relayer2: self.relayer2.insecure_clone(),
+        }
+    }
+
+    /// Two new stub verifiers, made immutable as the vault requires, under relayers of their own: a successor pair.
+    pub fn new_pair(&mut self) -> Pair {
+        let stub = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../target/deploy/stub_verifier.so"
+        ));
+        let pair = Pair {
+            p1: Pubkey::new_unique(),
+            p2: Pubkey::new_unique(),
+            relayer1: Keypair::new(),
+            relayer2: Keypair::new(),
+        };
+        for (program, relayer) in [(pair.p1, &pair.relayer1), (pair.p2, &pair.relayer2)] {
+            self.svm.add_program(program, stub).unwrap();
+            self.svm.airdrop(&relayer.pubkey(), SOL).unwrap();
+            self.init_stub(program, &relayer.pubkey()).expect_ok();
+        }
+        pair
+    }
+
+    /// Each of `pair`'s verifiers, with its state and its relayer, which must sign: one claim proven by both.
+    pub fn pair_accounts(pair: &Pair, metas: &mut Vec<AccountMeta>, signers: &mut Vec<Keypair>) {
+        for (program, relayer) in [(pair.p1, &pair.relayer1), (pair.p2, &pair.relayer2)] {
+            metas.push(AccountMeta::new_readonly(program, false));
+            metas.push(AccountMeta::new_readonly(
+                Pubkey::find_program_address(&[b"verifier"], &program).0,
+                false,
+            ));
+            metas.push(AccountMeta::new_readonly(relayer.pubkey(), true));
+            signers.push(relayer.insecure_clone());
+        }
+    }
+
+    /// The stubs' proofs of one claim: no bytes, and their state and relayer as their accounts.
+    pub fn pair_proofs() -> PairProofs {
+        PairProofs {
+            proof1: Vec::new(),
+            proof2: Vec::new(),
+            accounts1: 2,
+            accounts2: 2,
+        }
+    }
+
+    pub fn checkpoint_at(block: u64, timestamp: i64) -> Checkpoint {
+        Checkpoint {
+            block,
+            timestamp: timestamp as u64,
+            state_root: abi::keccak(&[b"state root", &block.to_le_bytes()]),
+        }
+    }
+
+    /// A checkpoint at `block`, now, that P1 and P2 both prove.
+    pub fn advance(&mut self, block: u64) -> Outcome {
+        let c = Self::checkpoint_at(block, self.now());
+        self.advance_to(c)
+    }
+
+    pub fn advance_to(&mut self, c: Checkpoint) -> Outcome {
+        let pair = self.pair();
+        self.advance_by(c, &pair)
+    }
+
+    pub fn advance_by(&mut self, c: Checkpoint, pair: &Pair) -> Outcome {
+        let (mut verifiers, mut relayers) = (Vec::new(), Vec::new());
+        Self::pair_accounts(pair, &mut verifiers, &mut relayers);
+        self.advance_with(c, verifiers, &relayers)
+    }
+
+    /// `advance_checkpoint` with these verifiers' accounts, signed by these relayers.
+    pub fn advance_with(
+        &mut self,
+        c: Checkpoint,
+        verifiers: Vec<AccountMeta>,
+        relayers: &[Keypair],
+    ) -> Outcome {
+        let mut metas = xindex_vault::accounts::AdvanceCheckpoint {
+            config: self.config,
+        }
+        .to_account_metas(None);
+        metas.extend(verifiers);
+        let ix = Instruction {
+            program_id: xindex_vault::id(),
+            accounts: metas,
+            data: xindex_vault::instruction::AdvanceCheckpoint {
+                checkpoint: c,
+                proofs: Self::pair_proofs(),
+            }
+            .data(),
+        };
+        let payer = self.payer.insecure_clone();
+        let mut signers: Vec<&Keypair> = vec![&payer];
+        signers.extend(relayers.iter());
+        self.send(&[ix], &signers)
+    }
+
+    /// Keeps the vault out of a stall, as keepers do: a checkpoint one block on, now.
+    pub fn fresh(&mut self) {
+        let block = self.config().checkpoint.block + 1;
+        self.advance(block).expect_ok();
+    }
+
+    /// The continuity test for `pair`: the vault's last checkpoint, a recent one at `recent_block` now, and the last
+    /// message, when given.
+    pub fn continuity(
+        &self,
+        recent_block: u64,
+        message: Option<(Vec<u8>, u64)>,
+    ) -> xindex_vault::Continuity {
+        xindex_vault::Continuity {
+            last: Self::pair_proofs(),
+            recent: Self::checkpoint_at(recent_block, self.now()),
+            recent_proofs: Self::pair_proofs(),
+            message: message.map(|(payload, block)| xindex_vault::LastMessage {
+                payload,
+                block,
+                proofs: Self::pair_proofs(),
+            }),
+        }
+    }
+
+    /// Proposes `pair` as the successor, signed by `by`, the recovery proposer unless another key is given.
+    pub fn propose(
+        &mut self,
+        pair: &Pair,
+        continuity: xindex_vault::Continuity,
+        by: Option<&Keypair>,
+    ) -> Outcome {
+        let proposer = by.map(|k| k.pubkey()).unwrap_or(self.recovery);
+        let mut metas = xindex_vault::accounts::ProposeSuccessor {
+            proposer,
+            config: self.config,
+            new_p1: pair.p1,
+            new_p2: pair.p2,
+            new_p1_data: Some(programdata_of(&pair.p1)),
+            new_p2_data: Some(programdata_of(&pair.p2)),
+        }
+        .to_account_metas(None);
+        let mut relayers = Vec::new();
+        let calls = 2 + usize::from(continuity.message.is_some());
+        for _ in 0..calls {
+            Self::pair_accounts(pair, &mut metas, &mut relayers);
+        }
+        let ix = Instruction {
+            program_id: xindex_vault::id(),
+            accounts: metas,
+            data: xindex_vault::instruction::ProposeSuccessor { continuity }.data(),
+        };
+        let payer = self.payer.insecure_clone();
+        let mut signers: Vec<&Keypair> = vec![&payer];
+        if let Some(k) = by {
+            signers.push(k);
+        }
+        signers.extend(relayers.iter());
+        let recovery = self.recovery;
+        self.send_unsigned(&[ix], &signers, &[recovery])
+    }
+
+    pub fn veto(&mut self, by: &Keypair) -> Outcome {
+        let ix = Instruction::new_with_bytes(
+            xindex_vault::id(),
+            &xindex_vault::instruction::VetoSuccessor {}.data(),
+            xindex_vault::accounts::VetoSuccessor {
+                freezer: by.pubkey(),
+                config: self.config,
+            }
+            .to_account_metas(None),
+        );
+        let payer = self.payer.insecure_clone();
+        self.send(&[ix], &[&payer, by])
+    }
+
+    pub fn adopt(&mut self, c: Checkpoint, pair: &Pair) -> Outcome {
+        let mut metas = xindex_vault::accounts::AdoptSuccessor {
+            config: self.config,
+        }
+        .to_account_metas(None);
+        let mut relayers = Vec::new();
+        Self::pair_accounts(pair, &mut metas, &mut relayers);
+        let ix = Instruction {
+            program_id: xindex_vault::id(),
+            accounts: metas,
+            data: xindex_vault::instruction::AdoptSuccessor {
+                checkpoint: c,
+                proofs: Self::pair_proofs(),
+            }
+            .data(),
+        };
+        let payer = self.payer.insecure_clone();
+        let mut signers: Vec<&Keypair> = vec![&payer];
+        signers.extend(relayers.iter());
+        self.send(&[ix], &signers)
+    }
+
+    pub fn begin_snapshot(&mut self) -> Outcome {
+        let ix = Instruction::new_with_bytes(
+            xindex_vault::id(),
+            &xindex_vault::instruction::BeginSnapshot {}.data(),
+            xindex_vault::accounts::BeginSnapshot {
+                config: self.config,
+            }
+            .to_account_metas(None),
+        );
+        let payer = self.payer.insecure_clone();
+        self.send(&[ix], &[&payer])
+    }
+
+    /// A loader buffer holding `proof` as the vault reads a staged one: its length (u32), then its bytes.
+    pub fn buffer(&mut self, proof: &[u8]) -> Pubkey {
+        let key = Pubkey::new_unique();
+        let mut data = vec![1, 0, 0, 0, 1];
+        data.extend_from_slice(Pubkey::new_unique().as_ref());
+        data.extend_from_slice(&(proof.len() as u32).to_le_bytes());
+        data.extend_from_slice(proof);
+        let lamports = self.svm.minimum_balance_for_rent_exemption(data.len());
+        self.svm
+            .set_account(
+                key,
+                solana_account::Account {
+                    lamports,
+                    data,
+                    owner: anchor_lang::solana_program::bpf_loader_upgradeable::id(),
+                    executable: false,
+                    rent_epoch: 0,
+                },
+            )
+            .unwrap();
+        key
+    }
+
+    /// A holder's snapshot claim, its proof staged in a buffer.
+    pub fn claim_snapshot(
+        &mut self,
+        index: [u8; 20],
+        holder: [u8; 20],
+        recipient: Pubkey,
+        component: u64,
+        signature: Vec<u8>,
+        proof: &[u8],
+    ) -> Outcome {
+        let id = xindex_vault::snapshot::claim_id(&index, &holder);
+        let buffer = self.buffer(proof);
+        let mut metas = xindex_vault::accounts::ClaimSnapshot {
+            payer: self.payer.pubkey(),
+            config: self.config,
+            index_state: pda(&[INDEX_SEED, &index]),
+            owed: pda(&[OWED_SEED, &index, &id]),
+            recipient,
+            treasury: self.treasury,
+            system_program: system_program::ID,
+        }
+        .to_account_metas(None);
+        metas.push(AccountMeta::new_readonly(buffer, false));
+        let ix = Instruction {
+            program_id: xindex_vault::id(),
+            accounts: metas,
+            data: xindex_vault::instruction::ClaimSnapshot {
+                index,
+                holder,
+                component,
+                signature,
+                proof: Vec::new(),
+            }
+            .data(),
+        };
+        let payer = self.payer.insecure_clone();
+        self.send(&[ix], &[&payer])
+    }
+
+    pub fn resolve_intake(&mut self, index: [u8; 20], intake: [u8; 32], proof: &[u8]) -> Outcome {
+        let buffer = self.buffer(proof);
+        let mut metas = xindex_vault::accounts::ResolveIntake {
+            config: self.config,
+            index_state: pda(&[INDEX_SEED, &index]),
+            intake: pda(&[INTAKE_SEED, &index, &intake]),
+        }
+        .to_account_metas(None);
+        metas.push(AccountMeta::new_readonly(buffer, false));
+        let ix = Instruction {
+            program_id: xindex_vault::id(),
+            accounts: metas,
+            data: xindex_vault::instruction::ResolveIntake {
+                index,
+                intake_id: intake,
+                proof: Vec::new(),
+            }
+            .data(),
+        };
+        let payer = self.payer.insecure_clone();
+        self.send(&[ix], &[&payer])
+    }
+
+    pub fn deliver_recorded_burn(
+        &mut self,
+        index: [u8; 20],
+        payload: Vec<u8>,
+        recipient: Pubkey,
+        proof: &[u8],
+    ) -> Outcome {
+        let id = abi::keccak(&[&payload]);
+        let buffer = self.buffer(proof);
+        let mut metas = xindex_vault::accounts::DeliverBurn {
+            payer: self.payer.pubkey(),
+            config: self.config,
+            used: pda(&[USED_SEED, &id]),
+            index_state: pda(&[INDEX_SEED, &index]),
+            owed: pda(&[OWED_SEED, &index, &id]),
+            recipient,
+            treasury: self.treasury,
+            system_program: system_program::ID,
+        }
+        .to_account_metas(None);
+        metas.push(AccountMeta::new_readonly(buffer, false));
+        let ix = Instruction {
+            program_id: xindex_vault::id(),
+            accounts: metas,
+            data: xindex_vault::instruction::DeliverRecordedBurn {
+                payload,
+                proof: Vec::new(),
+            }
+            .data(),
+        };
+        let payer = self.payer.insecure_clone();
+        self.send(&[ix], &[&payer])
+    }
+
+    pub fn deliver_recorded_migrate(
+        &mut self,
+        index: [u8; 20],
+        new_index: [u8; 20],
+        payload: Vec<u8>,
+        proof: &[u8],
+    ) -> Outcome {
+        let id = abi::keccak(&[&payload]);
+        let buffer = self.buffer(proof);
+        let mut metas = xindex_vault::accounts::DeliverMigrate {
+            payer: self.payer.pubkey(),
+            config: self.config,
+            used: pda(&[USED_SEED, &id]),
+            index_state: pda(&[INDEX_SEED, &index]),
+            new_index_state: pda(&[INDEX_SEED, &new_index]),
+            owed: pda(&[OWED_SEED, &index, &id]),
+            system_program: system_program::ID,
+        }
+        .to_account_metas(None);
+        metas.push(AccountMeta::new_readonly(buffer, false));
+        let ix = Instruction {
+            program_id: xindex_vault::id(),
+            accounts: metas,
+            data: xindex_vault::instruction::DeliverRecordedMigrate {
+                payload,
+                proof: Vec::new(),
+            }
+            .data(),
+        };
+        let payer = self.payer.insecure_clone();
+        self.send(&[ix], &[&payer])
     }
 
     pub fn register(&mut self, index: [u8; 20], salt: [u8; 32]) -> Outcome {
@@ -415,7 +844,7 @@ impl Harness {
 
     pub fn proofs(&self, by: By) -> xindex_vault::Proofs {
         xindex_vault::Proofs {
-            block: 1,
+            block: self.block,
             proof1: (by != By::P2).then(Vec::new),
             proof2: (by != By::P1).then(Vec::new),
             p1_accounts: 2,

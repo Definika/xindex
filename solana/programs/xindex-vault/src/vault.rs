@@ -7,7 +7,7 @@ use crate::abi;
 use crate::constants::*;
 use crate::error::VaultError;
 use crate::events::Paid;
-use crate::state::{Config, IndexState, Intake, Owed};
+use crate::state::{Checkpoint, Config, IndexState, Intake, Owed};
 
 /// The vault's id in the digests Ethereum proves: its whole 32-byte key, as the factory's registry holds it.
 pub fn vault_id(config: &Pubkey) -> [u8; 32] {
@@ -76,6 +76,64 @@ fn record_outflow(index: &mut IndexState, amount: u64, now: i64) {
 
 pub fn check_not_frozen(config: &Config, now: i64) -> Result<()> {
     require!(now >= config.frozen_until, VaultError::VaultFrozen);
+    Ok(())
+}
+
+/// When the vault stalls: STALL_PERIOD after its last checkpoint's time, or after initialization until the first.
+pub fn stall_start(config: &Config) -> i64 {
+    config.checkpoint.timestamp as i64 + STALL_PERIOD
+}
+
+/// A week without a new checkpoint: P1 and P2 may have stopped working.
+pub fn stalled(config: &Config, now: i64) -> bool {
+    now > stall_start(config)
+}
+
+/// A checkpoint after the last, in blocks and in time, not in the future, and with a state to read.
+pub fn check_newer(config: &Config, c: &Checkpoint, now: i64) -> Result<()> {
+    let last = &config.checkpoint;
+    require!(
+        c.block > last.block
+            && c.timestamp > last.timestamp
+            && c.timestamp as i64 <= now
+            && c.state_root != [0u8; 32],
+        VaultError::NotNewer
+    );
+    Ok(())
+}
+
+/// A newer checkpoint within STALL_PERIOD of now: one that would not leave the vault stalled.
+pub fn check_recent(config: &Config, c: &Checkpoint, now: i64) -> Result<()> {
+    check_newer(config, c, now)?;
+    require!(
+        c.timestamp as i64 + STALL_PERIOD >= now,
+        VaultError::NotRecent
+    );
+    Ok(())
+}
+
+pub fn check_no_snapshot(config: &Config) -> Result<()> {
+    require!(
+        config.snapshot.state_root == [0u8; 32],
+        VaultError::SnapshotTaken
+    );
+    Ok(())
+}
+
+/// The snapshot's state root, which every read of the hub's storage is under.
+pub fn snapshot_root(config: &Config) -> Result<[u8; 32]> {
+    let root = config.snapshot.state_root;
+    require!(root != [0u8; 32], VaultError::NoSnapshot);
+    Ok(root)
+}
+
+/// A message that moves coins or loosens a rule runs only from a block the vault's checkpoint covers, so the snapshot
+/// at that checkpoint never pays a holder whose burn it paid too (VLT-3).
+pub fn check_checkpointed(config: &Config, block: u64) -> Result<()> {
+    require!(
+        block <= config.checkpoint.block,
+        VaultError::NotCheckpointed
+    );
     Ok(())
 }
 

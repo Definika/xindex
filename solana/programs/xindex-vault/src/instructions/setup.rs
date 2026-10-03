@@ -6,7 +6,7 @@ use crate::constants::*;
 use crate::error::VaultError;
 use crate::events::{CapSet, IndexRegistered};
 use crate::program::XindexVault;
-use crate::state::{Config, IndexState, PendingChange};
+use crate::state::{Checkpoint, Config, IndexState, PendingChange, Successor};
 use crate::vault;
 
 /// The vault's settings, fixed at initialization but for what governance messages change.
@@ -21,6 +21,9 @@ pub struct InitArgs {
     pub freezer: Pubkey,
     pub native_cap: u64,
     pub native_floor: u64,
+    /// The owner's emergency multisig on Solana, which proposes a successor pair in a stall: a program-derived address,
+    /// such as a Squads vault, never a key.
+    pub recovery_proposer: Pubkey,
 }
 
 #[derive(Accounts)]
@@ -51,9 +54,17 @@ pub fn handle_initialize(ctx: Context<Initialize>, args: InitArgs) -> Result<()>
     require!(
         args.factory != [0u8; 20]
             && args.hub_implementation != [0u8; 20]
-            && args.freezer != Pubkey::default(),
+            && args.freezer != Pubkey::default()
+            && args.recovery_proposer != Pubkey::default(),
         VaultError::ZeroAddress
     );
+    // The twin of `DeployVault`'s checks: the recovery proposer is a multisig, which on Solana is an address off the
+    // ed25519 curve, so no single key can sign for it; and it is not the freezer, which vetoes what it proposes.
+    require!(
+        !args.recovery_proposer.is_on_curve(),
+        VaultError::RecoveryNotMultisig
+    );
+    require_keys_neq!(args.recovery_proposer, args.freezer, VaultError::SameRole);
     require_keys_neq!(
         ctx.accounts.p1.key(),
         ctx.accounts.p2.key(),
@@ -104,6 +115,18 @@ pub fn handle_initialize(ctx: Context<Initialize>, args: InitArgs) -> Result<()>
         pending_rotation: PendingChange::default(),
         treasury_bump: ctx.bumps.treasury,
         bump: ctx.bumps.config,
+        recovery_proposer: args.recovery_proposer,
+        // Its first week's grace: a stall is a week without a new checkpoint, counted from initialization until the
+        // first.
+        checkpoint: Checkpoint {
+            block: 0,
+            timestamp: vault::now()? as u64,
+            state_root: [0u8; 32],
+        },
+        snapshot: Checkpoint::default(),
+        successor: Successor::default(),
+        last_message: [0u8; 32],
+        vetoes: 0,
     });
     emit!(CapSet {
         cap: args.native_cap,

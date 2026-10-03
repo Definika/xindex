@@ -4215,10 +4215,15 @@ name = "xindex-vault"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
+ "ethereum-verifier",
  "litesvm",
+ "serde_json",
+ "solana-account",
  "solana-keccak-hasher",
  "solana-keypair",
  "solana-message",
+ "solana-secp256k1-recover",
+ "solana-signature",
  "solana-signer",
  "solana-transaction",
 ]

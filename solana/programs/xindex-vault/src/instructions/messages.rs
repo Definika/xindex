@@ -1,7 +1,8 @@
 //! Messages from Ethereum, one instruction per kind, each naming only the accounts its kind touches. Every one runs
-//! the checks of the EVM vault's `deliver`: the canonical encoding, the route, the emitter, the proofs, and a used
-//! mark created at an address the message id derives, so a message runs at most once. The id, the index and every
-//! account address come from the payload itself, which keeps a message within one transaction.
+//! the checks of the EVM vault's `deliver`: after a snapshot, no block past it; the canonical encoding, the route, the
+//! emitter, the proofs; for a message that moves coins or loosens a rule, both proofs and a checkpoint covering its
+//! block (VLT-3); and a used mark created at an address the message id derives, so a message runs at most once. The id,
+//! the index and every account address come from the payload itself, which keeps a message within one transaction.
 
 use anchor_lang::prelude::*;
 
@@ -25,23 +26,26 @@ pub struct Proofs {
 }
 
 /// Checks the message and its proofs; returns it decoded, its id, and whether both proofs carried it. The log's
-/// emitter the verifiers must attest is the index the message names, or the factory for a governance kind.
+/// emitter the verifiers must attest is the index the message names, or the factory for a governance kind. Only a
+/// message on both proofs becomes the last message a successor must prove again: one broken proof system could forge
+/// a one-proof freeze, which no honest successor could prove (LG-3).
 fn accept<'a, 'info>(
-    config: &Account<'info, Config>,
+    config: &mut Account<'info, Config>,
     payload: &'a [u8],
     proofs: &Proofs,
     remaining: &[AccountInfo<'info>],
     kinds: &[u8],
 ) -> Result<(Message<'a>, [u8; 32], bool)> {
+    // After a snapshot exit, only what Ethereum sent by its checkpoint may run: the holders at it are paid directly.
+    let snapshot = config.snapshot.block;
+    require!(
+        snapshot == 0 || proofs.block <= snapshot,
+        VaultError::IssuedAfterSnapshot
+    );
     let id = abi::message_id(payload);
     let m = abi::decode_message(payload)?;
     require!(kinds.contains(&m.kind), VaultError::UnknownKind);
-    require!(
-        m.source_chain_id == config.source_chain_id
-            && m.dest_chain_id == config.chain_id
-            && m.vault == config.key().to_bytes(),
-        VaultError::WrongRoute
-    );
+    check_route(config, &m)?;
     // Any Ethereum contract can emit a message naming itself; a governance kind is the factory's alone.
     require!(
         m.kind < CAP_UPDATE || m.index == config.factory,
@@ -61,12 +65,32 @@ fn accept<'a, 'info>(
         &proofs.proof2,
         proofs.p1_accounts,
     )?;
+    if both {
+        config.last_message = id;
+    }
     emit!(MessageDelivered {
         id,
         kind: m.kind,
         index: m.index
     });
     Ok((m, id, both))
+}
+
+/// The message is Ethereum's, for this chain and this vault.
+pub fn check_route(config: &Account<Config>, m: &Message) -> Result<()> {
+    require!(
+        m.source_chain_id == config.source_chain_id
+            && m.dest_chain_id == config.chain_id
+            && m.vault == config.key().to_bytes(),
+        VaultError::WrongRoute
+    );
+    Ok(())
+}
+
+/// A message that moves coins or loosens a rule: on both proofs, from a block the checkpoint covers (VLT-3).
+fn check_loosening(config: &Config, both: bool, block: u64) -> Result<()> {
+    require!(both, VaultError::BothProofsRequired);
+    vault::check_checkpointed(config, block)
 }
 
 /// A body word that must be zero: Stage B's Solana vault holds SOL only, `address(0)` on Ethereum.
@@ -113,13 +137,24 @@ pub fn handle_deliver_burn<'info>(
     proofs: Proofs,
 ) -> Result<()> {
     let (m, id, both) = accept(
-        &ctx.accounts.config,
+        &mut ctx.accounts.config,
         &payload,
         &proofs,
         ctx.remaining_accounts,
         &[BURN],
     )?;
-    require!(both, VaultError::BothProofsRequired);
+    check_loosening(&ctx.accounts.config, both, proofs.block)?;
+    burn(ctx.accounts, ctx.bumps.used, ctx.bumps.owed, &m, id)
+}
+
+/// Runs a burn accepted from Ethereum, delivered or recorded.
+pub fn burn(
+    accounts: &mut DeliverBurn,
+    used_bump: u8,
+    owed_bump: u8,
+    m: &Message,
+    id: [u8; 32],
+) -> Result<()> {
     let index = m.index;
     check_native(abi::body_word(m.body, 3, 0)?)?;
     let amount = abi::to_u64(abi::body_word(m.body, 3, 1)?)?;
@@ -128,17 +163,16 @@ pub fn handle_deliver_burn<'info>(
     require!(recipient != Pubkey::default(), VaultError::ZeroAddress);
     require_keys_eq!(
         recipient,
-        ctx.accounts.recipient.key(),
+        accounts.recipient.key(),
         VaultError::WrongRecipient
     );
     // The treasury, or any account of this program, would strand the payout (SOL-9).
     require!(
-        recipient != ctx.accounts.treasury.key() && *ctx.accounts.recipient.owner != crate::ID,
+        recipient != accounts.treasury.key() && *accounts.recipient.owner != crate::ID,
         VaultError::WrongRecipient
     );
 
-    let accounts = ctx.accounts;
-    accounts.used.bump = ctx.bumps.used;
+    accounts.used.bump = used_bump;
     accounts.owed.set_inner(Owed {
         index,
         id,
@@ -146,7 +180,7 @@ pub fn handle_deliver_burn<'info>(
         recipient,
         new_index: [0u8; 20],
         remaining: amount,
-        bump: ctx.bumps.owed,
+        bump: owed_bump,
     });
     emit!(BurnAccepted {
         index,
@@ -154,28 +188,40 @@ pub fn handle_deliver_burn<'info>(
         amount,
         recipient
     });
-    let min_pay = vault::min_payout(&accounts.recipient.to_account_info())?;
-    let pay = vault::pay_owed(
-        &accounts.config,
+    pay_recipient(
+        &mut accounts.config,
         &mut accounts.index_state,
         &mut accounts.owed,
-        false,
-        min_pay,
-    )?;
+        &accounts.recipient,
+        &accounts.treasury,
+        &accounts.system_program,
+    )
+}
+
+/// Pays what the speed limit allows now of `owed`, to its recipient, and leaves the rest owed.
+pub fn pay_recipient<'info>(
+    config: &mut Account<'info, Config>,
+    index_state: &mut Account<'info, IndexState>,
+    owed: &mut Account<'info, Owed>,
+    recipient: &UncheckedAccount<'info>,
+    treasury: &SystemAccount<'info>,
+    system_program: &Program<'info, System>,
+) -> Result<()> {
+    let min_pay = vault::min_payout(&recipient.to_account_info())?;
+    let pay = vault::pay_owed(config, index_state, owed, false, min_pay)?;
     if pay == 0 {
         return Ok(());
     }
-    let config = &mut accounts.config;
     config.held -= pay;
     vault::refresh_index(
-        &mut accounts.index_state,
+        index_state,
         config.chain_id,
         &vault::vault_id(&config.key()),
     );
     vault::send(
-        &accounts.treasury.to_account_info(),
-        &accounts.recipient.to_account_info(),
-        &accounts.system_program.to_account_info(),
+        &treasury.to_account_info(),
+        &recipient.to_account_info(),
+        &system_program.to_account_info(),
         config.treasury_bump,
         pay,
     )
@@ -190,7 +236,7 @@ pub fn handle_deliver_burn<'info>(
 pub struct DeliverIntake<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
-    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, Config>,
     #[account(init, payer = payer, space = 8 + Used::INIT_SPACE, seeds = [USED_SEED, abi::message_id(&payload).as_ref()], bump)]
     pub used: Account<'info, Used>,
@@ -214,13 +260,13 @@ pub fn handle_deliver_intake<'info>(
     proofs: Proofs,
 ) -> Result<()> {
     let (m, _, both) = accept(
-        &ctx.accounts.config,
+        &mut ctx.accounts.config,
         &payload,
         &proofs,
         ctx.remaining_accounts,
         &[INTAKE_SETTLED, INTAKE_FAILED],
     )?;
-    require!(both, VaultError::BothProofsRequired);
+    check_loosening(&ctx.accounts.config, both, proofs.block)?;
     let index = m.index;
     let intake_id = *abi::body_word(m.body, 1, 0)?;
 
@@ -236,15 +282,31 @@ pub fn handle_deliver_intake<'info>(
         INTAKE_OPEN => {}
         _ => return err!(VaultError::IntakeNotOpen),
     }
-    let vault_id = vault::vault_id(&accounts.config.key());
-    let chain_id = accounts.config.chain_id;
-    if m.kind == INTAKE_SETTLED {
+    resolve(
+        &accounts.config,
+        &mut accounts.index_state,
+        intake,
+        m.kind == INTAKE_SETTLED,
+    );
+    Ok(())
+}
+
+/// Settles an open intake, whose deposits join the index, or fails it, so its depositors can take them back.
+pub fn resolve(
+    config: &Account<Config>,
+    index_state: &mut IndexState,
+    intake: &mut Intake,
+    settle: bool,
+) {
+    let vault_id = vault::vault_id(&config.key());
+    let chain_id = config.chain_id;
+    let (index, intake_id) = (intake.index, intake.intake_id);
+    if settle {
         intake.state = INTAKE_SETTLED_STATE;
         if intake.has_native {
-            let state = &mut accounts.index_state;
-            state.balance += intake.total;
-            state.has_native = true;
-            vault::refresh_index(state, chain_id, &vault_id);
+            index_state.balance += intake.total;
+            index_state.has_native = true;
+            vault::refresh_index(index_state, chain_id, &vault_id);
         }
         vault::refresh_intake(intake, chain_id, &vault_id);
         emit!(IntakeSettled { index, intake_id });
@@ -253,7 +315,6 @@ pub fn handle_deliver_intake<'info>(
         vault::refresh_intake(intake, chain_id, &vault_id);
         emit!(IntakeFailed { index, intake_id });
     }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------
@@ -265,7 +326,7 @@ pub fn handle_deliver_intake<'info>(
 pub struct DeliverMigrate<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
-    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, Config>,
     #[account(init, payer = payer, space = 8 + Used::INIT_SPACE, seeds = [USED_SEED, abi::message_id(&payload).as_ref()], bump)]
     pub used: Account<'info, Used>,
@@ -293,13 +354,24 @@ pub fn handle_deliver_migrate<'info>(
     proofs: Proofs,
 ) -> Result<()> {
     let (m, id, both) = accept(
-        &ctx.accounts.config,
+        &mut ctx.accounts.config,
         &payload,
         &proofs,
         ctx.remaining_accounts,
         &[MIGRATE],
     )?;
-    require!(both, VaultError::BothProofsRequired);
+    check_loosening(&ctx.accounts.config, both, proofs.block)?;
+    migrate(ctx.accounts, ctx.bumps.used, ctx.bumps.owed, &m, id)
+}
+
+/// Runs a migration accepted from Ethereum, delivered or recorded.
+pub fn migrate(
+    accounts: &mut DeliverMigrate,
+    used_bump: u8,
+    owed_bump: u8,
+    m: &Message,
+    id: [u8; 32],
+) -> Result<()> {
     let index = m.index;
     let new_index = abi::to_address(abi::body_word(m.body, 3, 0)?)?;
     require!(new_index != index, VaultError::NotAnIndex);
@@ -307,8 +379,7 @@ pub fn handle_deliver_migrate<'info>(
     let amount = abi::to_u64(abi::body_word(m.body, 3, 2)?)?;
     require!(amount != 0, VaultError::ZeroAmount);
 
-    let accounts = ctx.accounts;
-    accounts.used.bump = ctx.bumps.used;
+    accounts.used.bump = used_bump;
     accounts.owed.set_inner(Owed {
         index,
         id,
@@ -316,7 +387,7 @@ pub fn handle_deliver_migrate<'info>(
         recipient: Pubkey::default(),
         new_index,
         remaining: amount,
-        bump: ctx.bumps.owed,
+        bump: owed_bump,
     });
     emit!(MigrationAccepted {
         index,
@@ -381,12 +452,13 @@ pub fn handle_deliver_governance<'info>(
     proofs: Proofs,
 ) -> Result<()> {
     let (m, _, both) = accept(
-        &ctx.accounts.config,
+        &mut ctx.accounts.config,
         &payload,
         &proofs,
         ctx.remaining_accounts,
         &[CAP_UPDATE, FREEZE, FREEZER_CHANGE, VERIFIER_ROTATION],
     )?;
+    let block = proofs.block;
     let accounts = ctx.accounts;
     accounts.used.bump = ctx.bumps.used;
     let config = &mut accounts.config;
@@ -413,21 +485,23 @@ pub fn handle_deliver_governance<'info>(
                 config.pending_cap = PendingChange::default();
                 governance::set_cap(config, cap, floor);
             } else {
-                require!(both, VaultError::BothProofsRequired);
+                check_loosening(config, both, block)?;
                 governance::queue(&mut config.pending_cap, m.kind, m.body, now);
             }
         }
         FREEZE => {
             require!(m.body.is_empty(), VaultError::BadMessage);
+            // Nothing could replace the freezer after a snapshot, and nothing may hold the exit off (VLT-5).
+            vault::check_no_snapshot(config)?;
             freeze_until(config, now, Pubkey::default());
         }
         FREEZER_CHANGE => {
-            require!(both, VaultError::BothProofsRequired);
+            check_loosening(config, both, block)?;
             abi::body_word(m.body, 1, 0)?;
             governance::queue(&mut config.pending_freezer, m.kind, m.body, now);
         }
         _ => {
-            require!(both, VaultError::BothProofsRequired);
+            check_loosening(config, both, block)?;
             abi::body_word(m.body, 2, 0)?;
             governance::queue(&mut config.pending_rotation, m.kind, m.body, now);
         }

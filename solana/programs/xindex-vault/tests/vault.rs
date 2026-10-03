@@ -683,6 +683,8 @@ fn test_sol2_an_upgradeable_verifier_is_refused() {
     h.set_upgrade_authority(h.p1, None);
     let ix = h.initialize_ix(&authority.pubkey(), h.init_args(), h.p1, h.p2);
     h.send(&[ix], &[&authority]).expect_ok();
+    h.warp(1);
+    h.advance(1_000).expect_ok();
 
     let (n1, n2) = (fresh_stub(&mut h), fresh_stub(&mut h));
     let (r1, r2) = (Keypair::new(), Keypair::new());

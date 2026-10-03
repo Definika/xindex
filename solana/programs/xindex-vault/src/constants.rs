@@ -17,6 +17,14 @@ pub const FREEZE_DURATION: i64 = 14 * 24 * 3600;
 pub const GOVERNANCE_DELAY: i64 = 7 * 24 * 3600;
 /// How far ahead a first deposit may set an intake's deadline: 7 days.
 pub const MAX_INTAKE_LIFE: i64 = 7 * 24 * 3600;
+/// How long the vault goes without a new checkpoint before it is stalled: 7 days.
+pub const STALL_PERIOD: i64 = 7 * 24 * 3600;
+/// How long a proposed successor pair is under review before anyone may adopt it: 30 days.
+pub const RECOVERY_DELAY: i64 = 30 * 24 * 3600;
+/// How many successors the freezer may veto in one stall.
+pub const MAX_RECOVERY_VETOES: u8 = 2;
+/// How long after a stall began its last checkpoint becomes the snapshot: 180 days.
+pub const SNAPSHOT_EXIT_DELAY: i64 = 180 * 24 * 3600;
 /// The current hour and the 24 before it: every real 24-hour span lies inside them.
 pub const BUCKETS: usize = 25;
 pub const HOUR: i64 = 3600;
@@ -49,6 +57,40 @@ pub const INDEX_DIGEST_DOMAIN: [u8; 32] =
 /// `keccak256("xindex.v4.vault.intake-digest")`.
 pub const INTAKE_DIGEST_DOMAIN: [u8; 32] =
     hex32("73bc63cbb2438f9ca78af51ef010ac754ee98b02f528cf72c876da9a84dd01f9");
+
+/// The hub's storage the snapshot exit reads (`HybridHubStorage`, and OpenZeppelin's ERC-20 namespace), as the EVM
+/// vault and `VaultSnapshot` read it, pinned by `test_theHubLayoutIsPinned` against the compiler's layout: the shares'
+/// balances, `_components` (slot 0, each `(units << 160) | token`), `_claimOf` (11), `_recovery` (59),
+/// `_settledIntakes` (60) and `_sentMessages` (62).
+pub const HUB_SHARES: [u8; 32] =
+    hex32("52c63247e1f47db19d5ce0460030c497f067ca4cebf71ba98eeadabe20bace00");
+pub const HUB_COMPONENTS_SLOT: u64 = 0;
+pub const HUB_CLAIMS_SLOT: u64 = 11;
+pub const HUB_RECOVERY_SLOT: u64 = 59;
+pub const HUB_SETTLED_INTAKES_SLOT: u64 = 60;
+pub const HUB_SENT_MESSAGES_SLOT: u64 = 62;
+/// `keccak256("xindex.v4.vault-token")`: the factory's id of a vault token on Ethereum is
+/// `address(keccak256(abi.encode(VAULT_TOKEN_DOMAIN, chainId, tokenId)))`, SOL's token id being zero.
+pub const VAULT_TOKEN_DOMAIN: [u8; 32] =
+    hex32("9c6182ca3811bf08fa6c8fe76161124b51b1412ab279edac54be466cd03b37fa");
+/// EIP-712, for a holder's signature on its snapshot claim. Solana has no address for the vault, so the domain carries
+/// the vault's 32-byte id as its salt, and the claim names a 32-byte recipient.
+/// `keccak256("EIP712Domain(string name,string version,uint256 chainId,bytes32 salt)")`.
+pub const EIP712_DOMAIN_TYPEHASH: [u8; 32] =
+    hex32("a604fff5a27d5951f334ccda7abff3286a8af29caeeb196a6f2b40a1dce7612b");
+/// `keccak256("SnapshotClaim(address index,address holder,bytes32 recipient)")`.
+pub const SNAPSHOT_CLAIM_TYPEHASH: [u8; 32] =
+    hex32("38c8d6ebb6da097d454f26a5f932a2412f5d91b63e745031c7f4bb55076a86db");
+/// `keccak256("Xindex vault")` and `keccak256("1")`: the domain's name and version.
+pub const EIP712_NAME_HASH: [u8; 32] =
+    hex32("534199b67bed380a48670849464c9b396d7a4dc97416a65fc52258f0afe3b9d4");
+pub const EIP712_VERSION_HASH: [u8; 32] =
+    hex32("c89efdaa54c0f20c7adf612882df0950f5a951637e0307cdcb4c672f298b8bc6");
+/// Half the secp256k1 group order: OpenZeppelin's `ECDSA` refuses a signature whose `s` lies above it.
+pub const SECP256K1_HALF_ORDER: [u8; 32] =
+    hex32("7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0");
+/// 10^18, the hub's unit scale.
+pub const WAD: u64 = 1_000_000_000_000_000_000;
 
 /// The EIP-1167 clone's creation code around its implementation, as OpenZeppelin's `Clones` deploys it.
 pub const CLONE_PREFIX: [u8; 20] = hex20("3d602d80600a3d3981f3363d3d373d3d3d363d73");
