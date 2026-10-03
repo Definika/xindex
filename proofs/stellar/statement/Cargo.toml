@@ -1,0 +1,20 @@
+[package]
+name = "xindex-stellar"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "The Stellar statement: a vault's successful attest in a ledger a pinned quorum set externalized"
+
+[dependencies]
+stellar-xdr = { version = "28.0.1", default-features = false, features = ["std"] }
+ed25519-dalek = { version = "2.1", default-features = false, features = ["alloc"] }
+sha2 = "0.10.9"
+tiny-keccak = { version = "2.0.2", features = ["keccak"] }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
+hex = "0.4"
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rand = "0.8"
+stellar-xdr = { version = "28.0.1", features = ["base64"] }
