@@ -45,6 +45,15 @@ pub fn to_u64(w: &[u8; 32]) -> Result<u64, AbiError> {
     Ok(u64::from_be_bytes(w[24..].try_into().unwrap()))
 }
 
+/// A 256-bit big-endian word that must fit 128 bits: an amount on a chain whose coin needs more than 64 bits, as
+/// NEAR's yoctoNEAR does.
+pub fn to_u128(w: &[u8; 32]) -> Result<u128, AbiError> {
+    if !w[..16].iter().all(|b| *b == 0) {
+        return Err(AbiError::Overflow);
+    }
+    Ok(u128::from_be_bytes(w[16..].try_into().unwrap()))
+}
+
 /// A word holding an address: its 12 high bytes must be zero, as Solidity's decoder requires.
 pub fn to_address(w: &[u8; 32]) -> Result<[u8; 20], AbiError> {
     if !w[..12].iter().all(|b| *b == 0) {
@@ -62,8 +71,13 @@ fn to_u8(w: &[u8; 32]) -> Result<u8, AbiError> {
 
 /// A number as a 32-byte big-endian word, as `abi.encode(uint256)` writes it.
 pub fn u256(x: u64) -> [u8; 32] {
+    u256_wide(x as u128)
+}
+
+/// A 128-bit number as a 32-byte big-endian word, as `abi.encode(uint256)` writes it.
+pub fn u256_wide(x: u128) -> [u8; 32] {
     let mut w = [0u8; 32];
-    w[24..].copy_from_slice(&x.to_be_bytes());
+    w[16..].copy_from_slice(&x.to_be_bytes());
     w
 }
 
@@ -166,6 +180,27 @@ pub fn index_digest<C: Crypto>(
     balance: u64,
     paid: u64,
 ) -> [u8; 32] {
+    index_digest_wide(
+        c,
+        chain_id,
+        vault,
+        index,
+        has,
+        balance as u128,
+        paid as u128,
+    )
+}
+
+/// `index_digest`, for a chain whose amounts need 128 bits, as NEAR's yoctoNEAR do.
+pub fn index_digest_wide<C: Crypto>(
+    c: &C,
+    chain_id: u64,
+    vault: &[u8; 32],
+    index: &[u8; 20],
+    has: bool,
+    balance: u128,
+    paid: u128,
+) -> [u8; 32] {
     let n = has as u64;
     let tokens = 7 * WORD as u64;
     let balances = tokens + WORD as u64 * (1 + n);
@@ -185,11 +220,11 @@ pub fn index_digest<C: Crypto>(
     }
     parts.push(u256(n));
     if has {
-        parts.push(u256(balance));
+        parts.push(u256_wide(balance));
     }
     parts.push(u256(n));
     if has {
-        parts.push(u256(paid));
+        parts.push(u256_wide(paid));
     }
     let refs: Vec<&[u8]> = parts.iter().map(|w| w.as_slice()).collect();
     c.keccak256(&refs)
@@ -207,6 +242,30 @@ pub fn intake_digest<C: Crypto>(
     state: u8,
     has: bool,
     total: u64,
+) -> [u8; 32] {
+    intake_digest_wide(
+        c,
+        chain_id,
+        vault,
+        index,
+        intake_id,
+        state,
+        has,
+        total as u128,
+    )
+}
+
+/// `intake_digest`, for a chain whose amounts need 128 bits, as NEAR's yoctoNEAR do.
+#[allow(clippy::too_many_arguments)]
+pub fn intake_digest_wide<C: Crypto>(
+    c: &C,
+    chain_id: u64,
+    vault: &[u8; 32],
+    index: &[u8; 20],
+    intake_id: &[u8; 32],
+    state: u8,
+    has: bool,
+    total: u128,
 ) -> [u8; 32] {
     let n = has as u64;
     let tokens = 8 * WORD as u64;
@@ -227,7 +286,7 @@ pub fn intake_digest<C: Crypto>(
     }
     parts.push(u256(n));
     if has {
-        parts.push(u256(total));
+        parts.push(u256_wide(total));
     }
     let refs: Vec<&[u8]> = parts.iter().map(|w| w.as_slice()).collect();
     c.keccak256(&refs)

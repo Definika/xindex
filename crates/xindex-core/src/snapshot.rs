@@ -106,6 +106,58 @@ pub fn share<C: Crypto>(
     component: u64,
     chain_id: u64,
 ) -> Result<(u64, Option<[u8; 32]>), SnapshotError> {
+    let v = claim_values(c, values, component, chain_id)?;
+    let backing = v
+        .shares
+        .checked_mul(v.units)
+        .ok_or(SnapshotError::Overflow)?
+        / WAD as u128;
+    let amount = backing
+        .checked_add(v.claim)
+        .ok_or(SnapshotError::Overflow)?;
+    let amount = u64::try_from(amount).map_err(|_| SnapshotError::Overflow)?;
+    if amount == 0 {
+        return Err(SnapshotError::ZeroAmount);
+    }
+    Ok((amount, v.recovery))
+}
+
+/// `share`, for a chain whose amounts need 128 bits, as NEAR's yoctoNEAR do. The hub's `shares * units / 1e18` is
+/// computed in 256 bits, as Solidity computes it: on such a chain a share's units alone can pass 2^80, so the product
+/// can pass 2^128 while the share itself fits. The share must fit 128 bits.
+pub fn share_wide<C: Crypto>(
+    c: &C,
+    values: &[[u8; 32]],
+    component: u64,
+    chain_id: u64,
+) -> Result<(u128, Option<[u8; 32]>), SnapshotError> {
+    let v = claim_values(c, values, component, chain_id)?;
+    let backing = mul_div_wad(v.shares, v.units).ok_or(SnapshotError::Overflow)?;
+    let amount = backing
+        .checked_add(v.claim)
+        .ok_or(SnapshotError::Overflow)?;
+    if amount == 0 {
+        return Err(SnapshotError::ZeroAmount);
+    }
+    Ok((amount, v.recovery))
+}
+
+/// What a claim reads of the hub, decoded.
+struct ClaimValues {
+    shares: u128,
+    units: u128,
+    claim: u128,
+    recovery: Option<[u8; 32]>,
+}
+
+/// The holder's shares, the component's units, the holder's claim of the coin and its recovery key, from the values its
+/// claim read, once the component is shown inside the array and this chain's coin (VLT-1).
+fn claim_values<C: Crypto>(
+    c: &C,
+    values: &[[u8; 32]],
+    component: u64,
+    chain_id: u64,
+) -> Result<ClaimValues, SnapshotError> {
     let [shares, packed, claim, recovery, length] = values else {
         return Err(SnapshotError::BadStateProof);
     };
@@ -118,18 +170,41 @@ pub fn share<C: Crypto>(
     let mut units = [0u8; 16];
     units[4..].copy_from_slice(&packed[..12]);
     let units = u128::from_be_bytes(units);
-    let backing = to_u128(shares)?
-        .checked_mul(units)
-        .ok_or(SnapshotError::Overflow)?
-        / WAD as u128;
-    let amount = backing
-        .checked_add(to_u128(claim)?)
-        .ok_or(SnapshotError::Overflow)?;
-    let amount = u64::try_from(amount).map_err(|_| SnapshotError::Overflow)?;
-    if amount == 0 {
-        return Err(SnapshotError::ZeroAmount);
+    Ok(ClaimValues {
+        shares: to_u128(shares)?,
+        units,
+        claim: to_u128(claim)?,
+        recovery: (*recovery != [0u8; 32]).then_some(*recovery),
+    })
+}
+
+/// `a * b / 1e18`, rounded down, with the product in 256 bits; none if the quotient passes 128 bits.
+pub fn mul_div_wad(a: u128, b: u128) -> Option<u128> {
+    // The product as four 64-bit limbs, most significant first.
+    let (a1, a0) = ((a >> 64) as u64, a as u64);
+    let (b1, b0) = ((b >> 64) as u64, b as u64);
+    let p00 = a0 as u128 * b0 as u128;
+    let p01 = a0 as u128 * b1 as u128;
+    let p10 = a1 as u128 * b0 as u128;
+    let p11 = a1 as u128 * b1 as u128;
+    let mid = (p00 >> 64) + (p01 as u64 as u128) + (p10 as u64 as u128);
+    let limb0 = p00 as u64;
+    let limb1 = mid as u64;
+    let high = p11 + (p01 >> 64) + (p10 >> 64) + (mid >> 64);
+    let limbs = [(high >> 64) as u64, high as u64, limb1, limb0];
+    // Long division by 1e18, which fits 64 bits, limb by limb.
+    let d = WAD as u128;
+    let mut rem: u128 = 0;
+    let mut q = [0u64; 4];
+    for (i, limb) in limbs.iter().enumerate() {
+        let cur = (rem << 64) | *limb as u128;
+        q[i] = (cur / d) as u64;
+        rem = cur % d;
     }
-    Ok((amount, (*recovery != [0u8; 32]).then_some(*recovery)))
+    if q[0] != 0 || q[1] != 0 {
+        return None;
+    }
+    Some(((q[2] as u128) << 64) | q[3] as u128)
 }
 
 /// The id of `holder`'s claim on `index`, by which a vault lets each holder claim once.

@@ -1,0 +1,6 @@
+# The toolchain the other Rust workspaces pin, with NEAR's Wasm target.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"

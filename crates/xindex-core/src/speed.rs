@@ -39,3 +39,28 @@ pub fn record(bucket: (u64, u64), amount: u64, now: i64) -> (u64, u64) {
     let (h, held) = bucket;
     (hour, if h == hour { held + amount } else { amount })
 }
+
+/// `recent`, for a chain whose amounts need 128 bits, as NEAR's yoctoNEAR do. The buckets hold at most what the vault
+/// ever held, so their sum never overflows.
+pub fn recent_wide(buckets: impl IntoIterator<Item = (u64, u128)>, now: i64) -> u128 {
+    let hour = hour_of(now);
+    buckets
+        .into_iter()
+        .filter(|(h, _)| h + BUCKETS as u64 > hour)
+        .map(|(_, amount)| amount)
+        .sum()
+}
+
+/// `available`, for a chain whose amounts need 128 bits. `balance + recent` is at most what the vault ever held, so 4% of
+/// it never overflows for a coin whose supply fits `u128::MAX / 4`, NEAR's in yocto (about 1.2e33) included.
+pub fn available_wide(balance: u128, recent: u128, floor: u128) -> u128 {
+    let limit = (balance + recent) * SPEED_LIMIT_PERCENT / 100;
+    limit.max(floor).saturating_sub(recent)
+}
+
+/// `record`, for a chain whose amounts need 128 bits.
+pub fn record_wide(bucket: (u64, u128), amount: u128, now: i64) -> (u64, u128) {
+    let hour = hour_of(now);
+    let (h, held) = bucket;
+    (hour, if h == hour { held + amount } else { amount })
+}
