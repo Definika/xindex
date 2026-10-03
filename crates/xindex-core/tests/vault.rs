@@ -346,6 +346,110 @@ fn the_speed_limit() {
     assert_eq!(speed::recent(buckets, now), 30);
 }
 
+/// The 128-bit variants a chain whose coin needs more than 64 bits runs, NEAR's yoctoNEAR: digests against Solidity's
+/// encoder with amounts past 2^64 and NEAR's registry id, the 64-bit functions unchanged where both apply, the speed
+/// limit, and the snapshot's 256-bit `shares * units / 1e18`.
+#[test]
+fn wide_amounts_match_solidity() {
+    const NEAR: u64 = 339_552_387_624_818_629;
+    let v = h32s("9f1cb2a7e3c34a8d1e6f0b5a2c7d9e1f3a5b7c9d0e2f4a6b8c0d1e3f5a7b9c1d");
+    let i = h20s(INDEX);
+    let id = h32s("0000000066000000000000000000000000000000000000000000000000000007");
+    let (supply, paid, total) = (
+        1_200_000_000 * 10u128.pow(24),
+        3 * 10u128.pow(24),
+        25 * 10u128.pow(24),
+    );
+    assert_eq!(
+        index_digest_wide(&C, NEAR, &v, &i, true, supply, paid),
+        h32s("3c4c52e76aaddd56a8b0e88928a5d73dd0976991a9108da0bcf9a1698224374e")
+    );
+    assert_eq!(
+        intake_digest_wide(&C, NEAR, &v, &i, &id, 1, true, total),
+        h32s("1b69281771199b2e1df05943449a731aa2f7fd811b1e21a107a3526345efdf80")
+    );
+    assert_eq!(
+        index_digest_wide(&C, 900, &v, &i, true, 5000, 70),
+        index_digest(&C, 900, &v, &i, true, 5000, 70)
+    );
+    assert_eq!(
+        intake_digest_wide(&C, 900, &v, &i, &id, 1, true, 1_400_000_000),
+        intake_digest(&C, 900, &v, &i, &id, 1, true, 1_400_000_000)
+    );
+    assert_eq!(u256_wide(supply)[16..], supply.to_be_bytes());
+    assert_eq!(to_u128(&u256_wide(u128::MAX)), Ok(u128::MAX));
+    let mut past = [0u8; 32];
+    past[15] = 1;
+    assert_eq!(to_u128(&past), Err(AbiError::Overflow));
+
+    let now = 1_800_000_000i64;
+    let hour = speed::hour_of(now);
+    assert_eq!(speed::available_wide(supply, 0, 1), supply / 25);
+    assert_eq!(speed::available_wide(100, 500, 400), 0);
+    assert_eq!(
+        speed::record_wide((hour, 7), supply, now),
+        (hour, supply + 7)
+    );
+    let buckets = [(hour, supply), (hour - 25, supply)];
+    assert_eq!(speed::recent_wide(buckets, now), supply);
+
+    // A million shares at 7.7e25 yocto a share: the product passes 2^128, the share does not.
+    let (shares, units) = (10u128.pow(24), 77 * 10u128.pow(24));
+    assert!(shares.checked_mul(units).is_none());
+    assert_eq!(
+        snapshot::mul_div_wad(shares, units),
+        Some(77 * 10u128.pow(30))
+    );
+    assert_eq!(
+        snapshot::mul_div_wad(1 << 100, 1 << 90),
+        None,
+        "a quotient past 2^128"
+    );
+    for (a, b) in [
+        (0, 5),
+        (1, 1),
+        (999, 10u128.pow(18) + 1),
+        (u64::MAX as u128, u64::MAX as u128),
+    ] {
+        assert_eq!(snapshot::mul_div_wad(a, b), Some(a * b / 10u128.pow(18)));
+    }
+}
+
+/// `share_wide` reads the same claim as `share`, and pays where `share`'s 128-bit product would overflow: the fixture's
+/// holder A, and the same claim with its shares scaled past where `share` overflows.
+#[test]
+fn a_wide_share_is_the_same_share() {
+    let f = fixture();
+    let chain = f["chain_id"].as_u64().unwrap();
+    let values = |case: &Value| -> Vec<[u8; 32]> {
+        case["values"].as_array().unwrap().iter().map(h32).collect()
+    };
+    for c in 0..3 {
+        let v = values(&f["holder_a"]["claims"][c]);
+        let narrow = snapshot::share(&C, &v, c as u64, chain);
+        let wide = snapshot::share_wide(&C, &v, c as u64, chain);
+        assert_eq!(narrow.map(|(a, r)| (a as u128, r)), wide);
+    }
+    let coin = (0..3)
+        .find(|c| {
+            snapshot::share(&C, &values(&f["holder_a"]["claims"][*c]), *c as u64, chain).is_ok()
+        })
+        .unwrap();
+    let mut v = values(&f["holder_a"]["claims"][coin]);
+    // Shares of 2^100 at the component's units: past `share`'s 128-bit product, inside `share_wide`'s.
+    v[0] = u256_wide(1 << 100);
+    v[2] = [0u8; 32];
+    assert_eq!(
+        snapshot::share(&C, &v, coin as u64, chain),
+        Err(SnapshotError::Overflow)
+    );
+    let mut units = [0u8; 16];
+    units[4..].copy_from_slice(&v[1][..12]);
+    let units = u128::from_be_bytes(units);
+    let (amount, _) = snapshot::share_wide(&C, &v, coin as u64, chain).unwrap();
+    assert_eq!(Some(amount), snapshot::mul_div_wad(1 << 100, units));
+}
+
 #[test]
 fn checkpoints_are_newer_and_recent() {
     let last = Checkpoint {
