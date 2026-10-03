@@ -6,6 +6,10 @@ use crate::mpt;
 use crate::rlp::{to_item, Item};
 use crate::{keccak, VerifierError};
 
+/// A receipt's fields: (status, cumulativeGasUsed, logsBloom, logs).
+const STATUS: usize = 0;
+const LOGS: usize = 3;
+
 /// A block covered by a proof: its leaf's fields, and the leaf's path to the headers root that proof recorded.
 pub struct Header {
     pub headers_root: [u8; 32],
@@ -53,17 +57,16 @@ impl<'a> Reader<'a> {
     fn u32(&mut self) -> Result<u32, VerifierError> {
         Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))
     }
-    fn u16(&mut self) -> Result<u16, VerifierError> {
-        Ok(u16::from_le_bytes(self.take(2)?.try_into().unwrap()))
-    }
     fn u8(&mut self) -> Result<u8, VerifierError> {
         Ok(self.take(1)?[0])
     }
 }
 
 /// Reads `headersRoot (32) ++ number (u64) ++ timestamp (u64) ++ stateRoot (32) ++ receiptsRoot (32) ++ path count
-/// (u8) ++ path ++ node count (u8) ++ each node's length (u16) and bytes ++ txIndex (u32) ++ logIndex (u32)`, integers
-/// little-endian, which must be the whole of `proof`.
+/// (u8) ++ path ++ node count (u8) ++ each node's length (u32) and bytes ++ txIndex (u32) ++ logIndex (u32)`, integers
+/// little-endian, which must be the whole of `proof`. A node's length is a u32 because a receipt has no size limit of
+/// its own: a leaf past 64 KB is valid on Ethereum (LG-1). Nodes stay where they lie in `proof`, and each list is sized
+/// once, so the heap holds at most 255 words and 255 slices.
 pub fn parse(proof: &[u8]) -> Result<EventProof<'_>, VerifierError> {
     let mut r = Reader { data: proof };
     let headers_root = r.word()?;
@@ -71,12 +74,15 @@ pub fn parse(proof: &[u8]) -> Result<EventProof<'_>, VerifierError> {
     let timestamp = r.u64()?;
     let state_root = r.word()?;
     let receipts_root = r.word()?;
-    let path = (0..r.u8()?)
-        .map(|_| r.word())
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut nodes = Vec::new();
-    for _ in 0..r.u8()? {
-        let len = r.u16()? as usize;
+    let depth = r.u8()?;
+    let mut path = Vec::with_capacity(depth.into());
+    for _ in 0..depth {
+        path.push(r.word()?);
+    }
+    let count = r.u8()?;
+    let mut nodes = Vec::with_capacity(count.into());
+    for _ in 0..count {
+        let len = r.u32()? as usize;
         nodes.push(r.take(len)?);
     }
     let tx_index = r.u32()?;
@@ -142,47 +148,34 @@ pub fn log<'a>(
     let value = mpt::get(receipts_root, &key, nibbles, nodes)
         .map_err(|_| VerifierError::BadReceiptProof)?
         .ok_or(VerifierError::NoReceipt)?;
+    // Lists are read in place, item by item, as `RlpReader.sol` reads them: a receipt of any number of logs needs no
+    // heap (LG-1).
+    let bad = |_| VerifierError::BadReceiptProof;
     let receipt = receipt(&value)?;
-    let fields = receipt
-        .items()
-        .map_err(|_| VerifierError::BadReceiptProof)?;
-    if fields.len() < 4 {
-        return Err(VerifierError::BadReceiptProof);
-    }
-    if fields[0]
-        .uint()
-        .map_err(|_| VerifierError::BadReceiptProof)?
-        != 1
-    {
+    if receipt.at(STATUS).and_then(|s| s.uint()).map_err(bad)? != 1 {
         return Err(VerifierError::FailedTransaction);
     }
-    let logs = fields[3]
-        .items()
-        .map_err(|_| VerifierError::BadReceiptProof)?;
-    let log = logs.get(log_index as usize).ok_or(VerifierError::NoLog)?;
-    let parts = log.items().map_err(|_| VerifierError::BadReceiptProof)?;
-    if parts.len() < 3 {
-        return Err(VerifierError::BadReceiptProof);
+    let logs = receipt.at(LOGS).map_err(bad)?;
+    if log_index as usize >= logs.count().map_err(bad)? {
+        return Err(VerifierError::NoLog);
     }
-    let emitter: [u8; 20] = parts[0]
-        .bytes()
+    let log = logs.at(log_index as usize).map_err(bad)?;
+    let emitter: [u8; 20] = log
+        .at(0)
+        .and_then(|a| a.bytes())
         .ok()
         .and_then(|b| b.try_into().ok())
         .ok_or(VerifierError::BadReceiptProof)?;
-    let topics = parts[1]
-        .items()
-        .map_err(|_| VerifierError::BadReceiptProof)?;
-    if topics.len() < 2 {
+    let topics = log.at(1).map_err(bad)?;
+    if topics.count().map_err(bad)? < 2 {
         return Err(VerifierError::NoLog);
     }
-    let topic = |t: &Item| t.bytes32().map_err(|_| VerifierError::BadReceiptProof);
+    let topic = |i: usize| topics.at(i).and_then(|t| t.bytes32()).map_err(bad);
     Ok(Log {
         emitter,
-        topic0: topic(&topics[0])?,
-        topic1: topic(&topics[1])?,
-        data: parts[2]
-            .bytes()
-            .map_err(|_| VerifierError::BadReceiptProof)?,
+        topic0: topic(0)?,
+        topic1: topic(1)?,
+        data: log.at(2).and_then(|d| d.bytes()).map_err(bad)?,
     })
 }
 

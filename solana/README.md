@@ -40,9 +40,19 @@ The program's own documentation gives the layouts.
   own proof.
 - A log's proof (1.5 to 2.2 KB) is too long for a transaction. The relayer writes it into a loader buffer
   (`solana program write-buffer`, its length as a little-endian u32 first) and passes the buffer after the range
-  account, with an empty proof.
-- Deploy it as the stub: `initialize` from its upgrade authority, then make it final. The program key is `p1 vkey`'s
-  and the anchor and epoch `p1-input check-state`'s (`../proofs/README.md`).
+  account, with an empty proof. Each trie node's length in the proof is a u32 too, since a receipt has no size limit
+  of its own.
+- It reads every RLP list in place and keeps none of its items, so the heap never bounds a receipt (LG-1). The
+  transaction's 1.4M compute units do: a real receipt takes 7,600 to 9,500, one of 513 logs 41,600, and the most that
+  verifies is about 19,600 logs before the message's, or 2.8 MB of log data (`lg1_limits_of_a_receipt`, the verifier
+  alone: through the vault, the vault's own work and P2's share the budget). A message whose transaction was shaped
+  past that is emitted again by its hub or the factory, in a transaction of its own.
+- It takes a proof only until a day after the stored anchor's epoch began (`now > genesisTime + epoch * 384 + 86400`
+  is refused, LG-4), as the EVM verifier does: the statement's step is 225 epochs, one day, so it must be proven at
+  least daily, and once it falls behind it stops for good rather than trusting stake that may have left since.
+- Deploy it as the stub: `initialize` from its upgrade authority, then make it final. The program key is `p1 vkey`'s,
+  the anchor and epoch `p1-input check-state`'s (`../proofs/README.md`), and the genesis time the beacon chain's:
+  1606824023 on mainnet, 1655733600 on Sepolia.
 
 ## Build and test
 

@@ -46,13 +46,12 @@ pub fn get<'a>(
                 to_item(raw)?
             }
         };
-        let items = node.items()?;
-        let child = match items.len() {
+        let child = match node.count()? {
             BRANCH_ITEMS => {
                 if nibble >= key_nibbles {
                     return Err(BadProof);
                 }
-                let child = items[nibble_at(key, nibble) as usize];
+                let child = node.at(nibble_at(key, nibble) as usize)?;
                 nibble += 1;
                 if !child.is_list && child.payload.is_empty() {
                     return Ok(None);
@@ -60,7 +59,8 @@ pub fn get<'a>(
                 child
             }
             SHORT_NODE_ITEMS => {
-                let (length, is_leaf, matches) = match_path(&items[0], key, nibble, key_nibbles)?;
+                let (length, is_leaf, matches) =
+                    match_path(&node.at(0)?, key, nibble, key_nibbles)?;
                 if !matches {
                     return Ok(None);
                 }
@@ -69,9 +69,9 @@ pub fn get<'a>(
                     if nibble != key_nibbles {
                         return Err(BadProof);
                     }
-                    return Ok(Some(items[1]));
+                    return Ok(Some(node.at(1)?));
                 }
-                items[1]
+                node.at(1)?
             }
             _ => return Err(BadProof),
         };

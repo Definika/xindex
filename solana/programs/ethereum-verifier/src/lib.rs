@@ -11,11 +11,12 @@
 //! - `0`, verify_event: the vault's call. Data `block (u64) ++ emitter (20) ++ topic0 ++ topic1 ++ keccak256(data)
 //!   ++ proof`, accounts `[range]`, or `[range, buffer]` with an empty proof, read then from the buffer. Succeeds only
 //!   if the proof shows that log, of a successful transaction, in a block a recorded proof covered.
-//! - `1`, initialize: data `programKey ++ anchor ++ epoch (u64)`, accounts `[state, authority (signer), system program,
-//!   program data]`; once, and only by the program's upgrade authority.
+//! - `1`, initialize: data `programKey ++ anchor ++ epoch (u64) ++ genesisTime (u64)`, accounts `[state, authority
+//!   (signer), system program, program data]`; once, and only by the program's upgrade authority. `genesisTime` is the
+//!   beacon chain's: 1606824023 on mainnet, 1655733600 on Sepolia.
 //! - `2`, update: data `publicValues (192) ++ proof (356)`, accounts `[state, range, payer (signer), system program]`.
-//!   Anyone. Accepts an SP1 proof of the statement from the stored anchor, and records the blocks it covers in the
-//!   range account of their headers root.
+//!   Anyone, until a day after the stored anchor's epoch began. Accepts an SP1 proof of the statement from the stored
+//!   anchor, and records the blocks it covers in the range account of their headers root.
 //! - `3`, check_proof: data `programKey ++ proof (356) ++ publicValues`, no accounts. Succeeds only if the proof is
 //!   SP1 v6's Groth16 proof that the program committed those values.
 //!
@@ -27,8 +28,10 @@ pub mod mpt;
 pub mod rlp;
 pub mod vk;
 
+use anchor_lang::prelude::SolanaSysvar;
 use anchor_lang::solana_program::account_info::AccountInfo;
 use anchor_lang::solana_program::bpf_loader_upgradeable;
+use anchor_lang::solana_program::clock::Clock;
 use anchor_lang::solana_program::entrypoint::ProgramResult;
 use anchor_lang::solana_program::program::{invoke, invoke_signed};
 use anchor_lang::solana_program::program_error::ProgramError;
@@ -48,8 +51,14 @@ pub const CHECK_PROOF: u8 = 3;
 pub const LOG_LEN: usize = 8 + 20 + 3 * 32;
 /// `abi.encode(anchorIn, anchorOut, epoch, headersRoot, first, last)`, as the P1 program commits it.
 pub const PUBLIC_VALUES_LEN: usize = 6 * 32;
-/// The state: the program key, the anchor, and the anchor's epoch.
-pub const STATE_LEN: usize = 32 + 32 + 8;
+/// The state: the program key, the anchor, the anchor's epoch, and the network's genesis time.
+pub const STATE_LEN: usize = 32 + 32 + 8 + 8;
+/// How long after its anchor's epoch began the verifier still takes a proof, as `FinalityVerifier.MAX_LAG`. Past it the
+/// verifier stops for good: catching up from an old anchor would trust stake that may have left since, and could sign
+/// a forged finality at no risk (LG-4).
+pub const MAX_LAG: u64 = 86_400;
+/// An epoch's length: 32 slots of 12 seconds.
+pub const SECONDS_PER_EPOCH: u64 = 384;
 /// A range: the first and last block it covers, and its address's bump.
 pub const RANGE_LEN: usize = 8 + 8 + 1;
 /// A loader buffer's data starts after its metadata: the state tag and the authority option.
@@ -75,6 +84,7 @@ pub enum VerifierError {
     FailedTransaction,
     NoLog,
     NotTheLog,
+    Lagging,
 }
 
 impl From<VerifierError> for ProgramError {
@@ -205,7 +215,8 @@ fn initialize(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Pro
     let (key, rest) = split::<32>(data)?;
     let (anchor, rest) = split::<32>(rest)?;
     let (epoch, rest) = split::<8>(rest)?;
-    if !rest.is_empty() || key == [0u8; 32] || anchor == [0u8; 32] {
+    let (genesis_time, rest) = split::<8>(rest)?;
+    if !rest.is_empty() || key == [0u8; 32] || anchor == [0u8; 32] || genesis_time == [0u8; 8] {
         return Err(VerifierError::BadInstruction.into());
     }
     let [state, payer, system, program_data] = accounts else {
@@ -230,7 +241,7 @@ fn initialize(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Pro
     state
         .data
         .borrow_mut()
-        .copy_from_slice(&[&key[..], &anchor, &epoch].concat());
+        .copy_from_slice(&[&key[..], &anchor, &epoch, &genesis_time].concat());
     Ok(())
 }
 
@@ -246,6 +257,7 @@ fn update(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Program
     if *state.key != state_key || state.owner != program_id || state.data_len() != STATE_LEN {
         return Err(VerifierError::WrongAccount.into());
     }
+    check_lag(&state.data.borrow(), Clock::get()?.unix_timestamp)?;
     let key: [u8; 32] = state.data.borrow()[..32].try_into().unwrap();
     groth16::verify(&key, values, proof).map_err(|_| VerifierError::InvalidProof)?;
     let v = apply_update(&mut state.data.borrow_mut(), values)?;
@@ -262,6 +274,22 @@ fn update(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Program
         .data
         .borrow_mut()
         .copy_from_slice(&[&v.first.to_le_bytes()[..], &v.last.to_le_bytes(), &[bump]].concat());
+    Ok(())
+}
+
+/// Refuses an update at `now` (unix seconds) more than `MAX_LAG` after the stored anchor's epoch began, as
+/// `FinalityVerifier.update` does: `now > genesisTime + epoch * 384 + MAX_LAG`. The statement bounds a step to 225
+/// epochs, which is one day, so an honest prover keeps up only by proving at least daily (LG-4).
+pub fn check_lag(state: &[u8], now: i64) -> Result<(), VerifierError> {
+    let epoch = u64::from_le_bytes(state[64..72].try_into().unwrap());
+    let genesis_time = u64::from_le_bytes(state[72..80].try_into().unwrap());
+    let deadline = epoch
+        .saturating_mul(SECONDS_PER_EPOCH)
+        .saturating_add(genesis_time)
+        .saturating_add(MAX_LAG);
+    if i128::from(now) > i128::from(deadline) {
+        return Err(VerifierError::Lagging);
+    }
     Ok(())
 }
 
@@ -402,6 +430,31 @@ mod tests {
             Err(VerifierError::WrongAnchor)
         ));
         assert!(apply_update(&mut state, &values(0xbb, 0xcc, 7, 164, 200)).is_ok());
+    }
+
+    /// LG-4: an update is taken until exactly a day after the anchor's epoch began, and refused a second later.
+    #[test]
+    fn test_lg4_an_update_comes_at_most_a_day_after_its_anchor() {
+        let (genesis, epoch) = (1_606_824_023u64, 400_000u64);
+        let state = [
+            &[0x11u8; 32][..],
+            &[0xaa; 32],
+            &epoch.to_le_bytes(),
+            &genesis.to_le_bytes(),
+        ]
+        .concat();
+        let bound = (genesis + epoch * 384 + 86_400) as i64;
+        assert_eq!(check_lag(&state, bound), Ok(()));
+        assert_eq!(check_lag(&state, bound + 1), Err(VerifierError::Lagging));
+        assert_eq!(check_lag(&state, 0), Ok(()), "a clock before the bound");
+        // A year-old anchor, which the statement alone would still let a prover step forward from.
+        assert_eq!(
+            check_lag(&state, bound + 365 * 86_400),
+            Err(VerifierError::Lagging)
+        );
+        let mut far = state.clone();
+        far[64..72].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert_eq!(check_lag(&far, i64::MAX), Ok(()), "saturates, never wraps");
     }
 
     #[test]

@@ -56,19 +56,31 @@ pub fn to_item(data: &[u8]) -> Result<Item<'_>, BadRlp> {
 }
 
 impl<'a> Item<'a> {
-    /// The items of a list.
-    pub fn items(&self) -> Result<Vec<Item<'a>>, BadRlp> {
+    /// The number of items in a list. Each is decoded in place and none is kept, so a list of any length reads in
+    /// constant memory: the program's heap is 32 KiB and never frees (LG-1).
+    pub fn count(&self) -> Result<usize, BadRlp> {
         if !self.is_list {
             return Err(BadRlp);
         }
-        let mut out = Vec::new();
+        let mut n = 0;
         let mut rest = self.payload;
         while !rest.is_empty() {
-            let (item, next) = decode(rest)?;
-            out.push(item);
-            rest = next;
+            rest = decode(rest)?.1;
+            n += 1;
         }
-        Ok(out)
+        Ok(n)
+    }
+
+    /// The `index`-th item of a list, after skipping the items before it in place.
+    pub fn at(&self, index: usize) -> Result<Item<'a>, BadRlp> {
+        if !self.is_list {
+            return Err(BadRlp);
+        }
+        let mut rest = self.payload;
+        for _ in 0..index {
+            rest = decode(rest)?.1;
+        }
+        Ok(decode(rest)?.0)
     }
 
     /// A string's bytes.
@@ -118,11 +130,12 @@ mod tests {
         let long = [&[0xb8, 56][..], &[7u8; 56]].concat();
         assert_eq!(to_item(&long).unwrap().payload.len(), 56);
         let list = to_item(&[0xc3, 0x01, 0x81, 0x80]).unwrap();
-        let items = list.items().unwrap();
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[1].uint().unwrap(), 0x80);
+        assert_eq!(list.count().unwrap(), 2);
+        assert_eq!(list.at(0).unwrap().uint().unwrap(), 1);
+        assert_eq!(list.at(1).unwrap().uint().unwrap(), 0x80);
         let long_list = [&[0xf8, 56][..], &[0x01; 56]].concat();
-        assert_eq!(to_item(&long_list).unwrap().items().unwrap().len(), 56);
+        assert_eq!(to_item(&long_list).unwrap().count().unwrap(), 56);
+        assert_eq!(to_item(&[0xc0]).unwrap().count().unwrap(), 0);
         assert_eq!(to_item(&[0x80]).unwrap().uint().unwrap(), 0);
     }
 
@@ -131,17 +144,24 @@ mod tests {
         assert_eq!(to_item(&[]), Err(BadRlp));
         assert_eq!(to_item(&[0x82, 1]), Err(BadRlp));
         assert_eq!(to_item(&[0xb9, 0x01]), Err(BadRlp));
-        assert_eq!(to_item(&[0xc2, 0x82, 1]).unwrap().items(), Err(BadRlp));
+        assert_eq!(to_item(&[0xc2, 0x82, 1]).unwrap().count(), Err(BadRlp));
+        assert_eq!(to_item(&[0xc2, 0x82, 1]).unwrap().at(0), Err(BadRlp));
+        assert_eq!(
+            to_item(&[0xc3, 0x01, 0x81, 0x80]).unwrap().at(2),
+            Err(BadRlp),
+            "past the last item"
+        );
         assert_eq!(to_item(&[0x01, 0x02]), Err(BadRlp), "trailing bytes");
         assert_eq!(
             to_item(&[0xbf, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
             Err(BadRlp)
         );
         assert_eq!(
-            to_item(&[0x81, 0x01]).unwrap().items(),
+            to_item(&[0x81, 0x01]).unwrap().count(),
             Err(BadRlp),
             "a string is no list"
         );
+        assert_eq!(to_item(&[0x81, 0x01]).unwrap().at(0), Err(BadRlp));
         assert_eq!(
             to_item(&[0xc0]).unwrap().bytes(),
             Err(BadRlp),

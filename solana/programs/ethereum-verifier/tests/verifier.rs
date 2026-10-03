@@ -5,6 +5,7 @@
 
 use anchor_lang::solana_program::{
     bpf_loader_upgradeable,
+    clock::Clock,
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
     system_program,
@@ -22,6 +23,8 @@ use solana_signer::Signer;
 use solana_transaction::versioned::VersionedTransaction;
 
 const SOL: u64 = 1_000_000_000;
+/// Mainnet's beacon genesis time.
+const GENESIS: u64 = 1_606_824_023;
 
 struct H {
     svm: LiteSVM,
@@ -104,7 +107,25 @@ impl H {
         anchor: [u8; 32],
         epoch: u64,
     ) -> Instruction {
-        let data = [&[INITIALIZE][..], &key, &anchor, &epoch.to_le_bytes()].concat();
+        self.initialize_at(by, key, anchor, epoch, GENESIS)
+    }
+
+    fn initialize_at(
+        &self,
+        by: &Pubkey,
+        key: [u8; 32],
+        anchor: [u8; 32],
+        epoch: u64,
+        genesis: u64,
+    ) -> Instruction {
+        let data = [
+            &[INITIALIZE][..],
+            &key,
+            &anchor,
+            &epoch.to_le_bytes(),
+            &genesis.to_le_bytes(),
+        ]
+        .concat();
         self.ix(
             data,
             vec![
@@ -114,6 +135,12 @@ impl H {
                 AccountMeta::new_readonly(self.programdata(), false),
             ],
         )
+    }
+
+    fn set_time(&mut self, unix_timestamp: i64) {
+        let mut clock: Clock = self.svm.get_sysvar();
+        clock.unix_timestamp = unix_timestamp;
+        self.svm.set_sysvar(&clock);
     }
 
     /// The range account a proof over blocks `first` to `last` with `headers_root` would have recorded.
@@ -208,6 +235,10 @@ fn only_the_upgrade_authority_initializes_once() {
         &[h.initialize_ix(&me, [0; 32], [2; 32], 7)],
         VerifierError::BadInstruction,
     );
+    h.refused(
+        &[h.initialize_at(&me, [1; 32], [2; 32], 7, 0)],
+        VerifierError::BadInstruction,
+    );
     h.send(&[h.initialize_ix(&me, [1; 32], [2; 32], 7)])
         .unwrap();
     let state = h.svm.get_account(&h.state()).unwrap();
@@ -215,12 +246,32 @@ fn only_the_upgrade_authority_initializes_once() {
     assert_eq!(state.data.len(), STATE_LEN);
     assert_eq!(
         state.data,
-        [&[1u8; 32][..], &[2u8; 32], &7u64.to_le_bytes()].concat()
+        [
+            &[1u8; 32][..],
+            &[2u8; 32],
+            &7u64.to_le_bytes(),
+            &GENESIS.to_le_bytes()
+        ]
+        .concat()
     );
     h.refused(
         &[h.initialize_ix(&me, [3; 32], [4; 32], 8)],
         VerifierError::AlreadyInitialized,
     );
+}
+
+impl H {
+    fn update_ix(&self, range: Pubkey, values: &[u8], proof: &[u8]) -> Instruction {
+        self.ix(
+            [&[UPDATE][..], values, proof].concat(),
+            vec![
+                AccountMeta::new(self.state(), false),
+                AccountMeta::new(range, false),
+                AccountMeta::new(self.authority.pubkey(), true),
+                AccountMeta::new_readonly(system_program::id(), false),
+            ],
+        )
+    }
 }
 
 #[test]
@@ -229,29 +280,57 @@ fn an_update_needs_a_valid_proof_of_the_program() {
     let (key, _, proof) = sp1_fixture();
     let range = Pubkey::new_unique();
     let me = h.authority.pubkey();
-    let update = |h: &H, values: &[u8], proof: &[u8]| {
-        h.ix(
-            [&[UPDATE][..], values, proof].concat(),
-            vec![
-                AccountMeta::new(h.state(), false),
-                AccountMeta::new(range, false),
-                AccountMeta::new(me, true),
-                AccountMeta::new_readonly(system_program::id(), false),
-            ],
-        )
-    };
     let values = vec![0x11u8; 192];
-    h.refused(&[update(&h, &values, &proof)], VerifierError::WrongAccount);
-    h.send(&[h.initialize_ix(&me, key, [2; 32], 7)]).unwrap();
     h.refused(
-        &[update(&h, &values[..191], &proof)],
+        &[h.update_ix(range, &values, &proof)],
+        VerifierError::WrongAccount,
+    );
+    h.send(&[h.initialize_ix(&me, key, [2; 32], 7)]).unwrap();
+    h.set_time((GENESIS + 7 * 384) as i64);
+    h.refused(
+        &[h.update_ix(range, &values[..191], &proof)],
         VerifierError::BadInstruction,
     );
     // SP1's fixture is a proof of other values: refused, and nothing moves.
-    h.refused(&[update(&h, &values, &proof)], VerifierError::InvalidProof);
+    h.refused(
+        &[h.update_ix(range, &values, &proof)],
+        VerifierError::InvalidProof,
+    );
     assert_eq!(
         h.svm.get_account(&h.state()).unwrap().data[32..64],
         [2u8; 32]
+    );
+}
+
+/// LG-4: the verifier takes a proof until a day after its anchor's epoch began, then stops for good, as
+/// `FinalityVerifier.update` does. Before the bound an update reaches the proof's check (SP1's fixture proves other
+/// values, so `InvalidProof`); a second past it, the update is refused before the proof is read.
+#[test]
+fn test_lg4_an_update_comes_at_most_a_day_after_its_anchor() {
+    let mut h = H::new();
+    let (key, _, proof) = sp1_fixture();
+    let range = Pubkey::new_unique();
+    let me = h.authority.pubkey();
+    let epoch = 400_000u64;
+    h.send(&[h.initialize_ix(&me, key, [2; 32], epoch)])
+        .unwrap();
+    let bound = (GENESIS + epoch * 384 + 86_400) as i64;
+    let values = vec![0x11u8; 192];
+    h.set_time(bound);
+    h.refused(
+        &[h.update_ix(range, &values, &proof)],
+        VerifierError::InvalidProof,
+    );
+    h.set_time(bound + 1);
+    h.refused(
+        &[h.update_ix(range, &values, &proof)],
+        VerifierError::Lagging,
+    );
+    // A year late is as late: no catching up through old checkpoints.
+    h.set_time(bound + 365 * 86_400);
+    h.refused(
+        &[h.update_ix(range, &values, &proof)],
+        VerifierError::Lagging,
     );
 }
 
@@ -345,7 +424,7 @@ fn encode(
     path.iter().for_each(|p| out.extend_from_slice(p));
     out.push(nodes.len() as u8);
     for n in nodes {
-        out.extend_from_slice(&(n.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(n.len() as u32).to_le_bytes());
         out.extend_from_slice(n);
     }
     out.extend_from_slice(&tx.to_le_bytes());
@@ -698,4 +777,198 @@ fn verify_event_refuses_failed_absent_and_malformed_receipts() {
         vec![AccountMeta::new_readonly(range, false)],
     );
     e.h.refused(&[ix], VerifierError::BadReceiptProof);
+}
+
+// ---------------------------------------------------------------------
+// LG-1: receipts of any shape Ethereum accepts
+// ---------------------------------------------------------------------
+
+fn rlp_str(b: &[u8]) -> Vec<u8> {
+    if b.len() == 1 && b[0] < 0x80 {
+        return b.to_vec();
+    }
+    [rlp_prefix(0x80, b.len()), b.to_vec()].concat()
+}
+
+fn rlp_list(items: &[Vec<u8>]) -> Vec<u8> {
+    let body = items.concat();
+    [rlp_prefix(0xc0, body.len()), body].concat()
+}
+
+fn rlp_prefix(base: u8, len: usize) -> Vec<u8> {
+    if len < 56 {
+        return vec![base + len as u8];
+    }
+    let be = (len as u64).to_be_bytes();
+    let n = &be[be.iter().take_while(|b| **b == 0).count()..];
+    [vec![base + 55 + n.len() as u8], n.to_vec()].concat()
+}
+
+const EMITTER: [u8; 20] = [0xab; 20];
+const TOPIC0: [u8; 32] = [0x11; 32];
+const TOPIC1: [u8; 32] = [0x22; 32];
+const DATA: [u8; 96] = [0x33; 96];
+
+/// A successful typed receipt as a contract wrapping a permissionless hub call shapes it: `before` empty logs, the vault
+/// message's log, then one log carrying `junk` bytes of data if `junk` is not zero. The message's log is at `before`.
+fn shaped_receipt(before: usize, junk: usize) -> Vec<u8> {
+    let empty = rlp_list(&[rlp_str(&[0xee; 20]), rlp_list(&[]), rlp_str(&[])]);
+    let mut logs = vec![empty; before];
+    logs.push(rlp_list(&[
+        rlp_str(&EMITTER),
+        rlp_list(&[rlp_str(&TOPIC0), rlp_str(&TOPIC1)]),
+        rlp_str(&DATA),
+    ]));
+    if junk > 0 {
+        logs.push(rlp_list(&[
+            rlp_str(&[0xee; 20]),
+            rlp_list(&[]),
+            rlp_str(&vec![0u8; junk]),
+        ]));
+    }
+    let body = rlp_list(&[
+        rlp_str(&[1]),
+        rlp_str(&[0x01, 0x00, 0x00]),
+        rlp_str(&[0u8; 256]),
+        rlp_list(&logs),
+    ]);
+    [vec![0x02], body].concat()
+}
+
+impl H {
+    /// Stages `proof` in a loader buffer, as the relayer does with `solana program write-buffer`.
+    fn stage(&mut self, proof: &[u8]) -> Pubkey {
+        let buffer = Pubkey::new_unique();
+        let mut data = vec![1, 0, 0, 0, 1];
+        data.extend_from_slice(self.authority.pubkey().as_ref());
+        data.extend_from_slice(&(proof.len() as u32).to_le_bytes());
+        data.extend_from_slice(proof);
+        let account = Account {
+            lamports: SOL,
+            data,
+            owner: bpf_loader_upgradeable::id(),
+            executable: false,
+            rent_epoch: 0,
+        };
+        self.svm.set_account(buffer, account).unwrap();
+        buffer
+    }
+
+    /// Verifies the message's log in `receipt`, transaction 0 of a one-block range, staged in a buffer, with the
+    /// transaction's whole compute budget and the default heap: the compute units used, or the error.
+    fn verify_shaped(&mut self, receipt: &[u8], log_index: u32) -> Result<u64, String> {
+        // A receipts trie of transaction 0 alone: its root is a leaf at key rlp(0) = 0x80.
+        let node = rlp_list(&[rlp_str(&[0x20, 0x80]), rlp_str(receipt)]);
+        let receipts_root = keccak(&[&node]);
+        let (number, timestamp, state_root) = (100u64, 1_700_000_000u64, [0x44u8; 32]);
+        let root = leaf(number, timestamp, &state_root, &receipts_root);
+        let mut proof = [
+            &root[..],
+            &number.to_le_bytes(),
+            &timestamp.to_le_bytes(),
+            &state_root,
+            &receipts_root,
+        ]
+        .concat();
+        proof.extend_from_slice(&[0, 1]);
+        proof.extend_from_slice(&(node.len() as u32).to_le_bytes());
+        proof.extend_from_slice(&node);
+        proof.extend_from_slice(&0u32.to_le_bytes());
+        proof.extend_from_slice(&log_index.to_le_bytes());
+        let range = self.record_range(&root, number, number);
+        let buffer = self.stage(&proof);
+        let data = [
+            &[VERIFY_EVENT][..],
+            &number.to_le_bytes(),
+            &EMITTER,
+            &TOPIC0,
+            &TOPIC1,
+            &keccak(&[&DATA]),
+        ]
+        .concat();
+        let ix = self.ix(
+            data,
+            vec![
+                AccountMeta::new_readonly(range, false),
+                AccountMeta::new_readonly(buffer, false),
+            ],
+        );
+        let budget: Pubkey = "ComputeBudget111111111111111111111111111111"
+            .parse()
+            .unwrap();
+        let limit = Instruction::new_with_bytes(
+            budget,
+            &[&[2u8][..], &1_400_000u32.to_le_bytes()].concat(),
+            vec![],
+        );
+        self.send(&[limit, ix])
+    }
+}
+
+/// LG-1: a receipt of 513 logs, the message's last, verifies within the default 32 KiB heap. The verifier collected
+/// every list's items into a vector the bump allocator never frees, so from 512 logs on it ran out of memory, and anyone
+/// could make a hub message undeliverable here by sending it from a transaction that also emits 512 empty logs.
+#[test]
+fn test_lg1_a_receipt_of_513_logs_verifies() {
+    let mut h = H::new();
+    let cu = h
+        .verify_shaped(&shaped_receipt(512, 0), 512)
+        .expect("513 logs verify");
+    println!("513 logs, the message's last: {cu} compute units");
+    let cu = h
+        .verify_shaped(&shaped_receipt(2_000, 0), 2_000)
+        .expect("2,001 logs verify");
+    println!("2,001 logs, the message's last: {cu} compute units");
+    // The walk still stops at the receipt's end.
+    let err = h.verify_shaped(&shaped_receipt(512, 0), 513).unwrap_err();
+    assert!(
+        err.contains(&format!("Custom({})", VerifierError::NoLog as u32)),
+        "{err}"
+    );
+}
+
+/// LG-1: a receipt leaf past 64 KB verifies. The proof carried a node's length in 16 bits, so no such proof could be
+/// written, though Ethereum's receipts have no size limit of their own and the EVM verifier accepts them.
+#[test]
+fn test_lg1_a_receipt_leaf_past_64kb_verifies() {
+    let mut h = H::new();
+    let receipt = shaped_receipt(0, 70_000);
+    assert!(receipt.len() > usize::from(u16::MAX));
+    let cu = h.verify_shaped(&receipt, 0).expect("a 70 KB leaf verifies");
+    println!(
+        "a {}-byte receipt leaf: {cu} compute units",
+        receipt.len() + 6
+    );
+}
+
+/// LG-1: what bounds a receipt here now is the transaction's 1.4M compute units, not memory, and every limit is far
+/// past a clean transaction's receipt. The hub and the factory can emit a recorded message again in a transaction of
+/// its own, so a receipt past these limits delays a message, never strands it. Prints the limits; `--nocapture`.
+#[test]
+fn lg1_limits_of_a_receipt() {
+    let mut h = H::new();
+    let logs = ceiling(&mut h, 2_000, 200_000, |n| (shaped_receipt(n, 0), n as u32));
+    println!("empty logs before the message, at most: {logs}");
+    let bytes = ceiling(&mut h, 70_000, 9_000_000, |n| (shaped_receipt(0, n), 0));
+    println!("bytes of one log's data after the message, at most: {bytes}");
+    assert!(logs > 2_000 && bytes > 70_000);
+}
+
+/// The largest `n` in `[lo, hi)` whose receipt `make(n)` still verifies, `lo`'s verifying.
+fn ceiling(
+    h: &mut H,
+    mut lo: usize,
+    mut hi: usize,
+    make: impl Fn(usize) -> (Vec<u8>, u32),
+) -> usize {
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2;
+        let (receipt, at) = make(mid);
+        if h.verify_shaped(&receipt, at).is_ok() {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
 }
