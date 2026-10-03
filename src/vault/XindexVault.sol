@@ -126,8 +126,6 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
     bytes32 public lastMessage;
     /// @inheritdoc IXindexVault
     uint256 public vetoes;
-    /// @dev The checkpoint whose stall `vetoes` counts, by its block: a new checkpoint begins a new count.
-    uint256 private _vetoStall;
     /// @inheritdoc IXindexVault
     mapping(address index => mapping(address holder => bool)) public snapshotClaimed;
     /// @inheritdoc IXindexVault
@@ -232,7 +230,9 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         }
         if (used[id]) revert AlreadyDelivered(id);
         used[id] = true;
-        lastMessage = id;
+        // Only a message on both proofs: one broken proof system could forge a one-proof freeze, which no honest
+        // successor could prove again (LG-3).
+        if (both) lastMessage = id;
         emit MessageDelivered(id, m.kind, m.index);
 
         if (m.kind < VaultMessages.CAP_UPDATE) _indexMessage(m, id);
@@ -589,7 +589,11 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         _checkNewer(c);
         _checkpoint = c;
         emit CheckpointAdvanced(c.blockNumber, c.timestamp, c.stateRoot);
-        // The pair in force works again: whatever stall a successor was proposed for is over.
+        // A stale checkpoint, newer but still a stall's, only lets what was sent before the break run (VLT-3): the
+        // stall goes on, and so do its successor's review and the freezer's count (LG-2).
+        if (stalled()) return;
+        // A recent one ends the stall: the pair in force works again.
+        vetoes = 0;
         if (_successor.reviewEnds != 0) {
             delete _successor;
             emit SuccessorLapsed();
@@ -639,10 +643,9 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
     function vetoSuccessor() external {
         if (msg.sender != freezer) revert NotFreezer(msg.sender);
         if (_successor.reviewEnds == 0) revert NoSuccessor();
-        uint256 stall = _checkpoint.blockNumber;
-        uint256 count = _vetoStall == stall ? vetoes : 0;
+        uint256 count = vetoes;
         if (count >= MAX_RECOVERY_VETOES) revert VetoesExhausted();
-        (vetoes, _vetoStall) = (count + 1, stall);
+        vetoes = count + 1;
         delete _successor;
         emit SuccessorVetoed(count + 1);
     }
@@ -650,13 +653,15 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
     /// @inheritdoc IXindexVault
     function adoptSuccessor(bytes calldata proof1, bytes calldata proof2) external {
         Successor memory s = _successor;
-        // A snapshot clears any successor, and a new checkpoint lapses it, so a pending one is still in its stall.
+        // A snapshot clears any successor, and a checkpoint that ends the stall lapses it, so a pending one is still in
+        // its stall.
         if (s.reviewEnds == 0) revert NoSuccessor();
         if (block.timestamp < s.reviewEnds) revert ReviewNotOver(s.reviewEnds);
         IEthereumEventVerifier.Checkpoint memory c =
             _agreed(IEthereumEventVerifier(s.p1), IEthereumEventVerifier(s.p2), proof1, proof2);
         _checkRecent(c);
         delete _successor;
+        vetoes = 0;
         p1 = IEthereumEventVerifier(s.p1);
         p2 = IEthereumEventVerifier(s.p2);
         _checkpoint = c;

@@ -129,7 +129,8 @@ abstract contract HybridTest is Test {
         return abi.encode(time, false, bytes32(0));
     }
 
-    /// @dev A state proof claiming a block at `time` that reports `value` whatever the vault holds.
+    /// @dev A state proof claiming a block at `time` that reports `value` at the slot it is asked for, whatever the
+    ///      vault holds there; a second slot, the snapshot root an evidence proof also reads, comes as the vault holds it.
     function _forged(uint256 time, bytes32 value) internal pure returns (bytes memory) {
         return abi.encode(time, true, value);
     }
@@ -186,6 +187,14 @@ abstract contract HybridTest is Test {
         uint256 readyAt = block.timestamp + vault.GOVERNANCE_DELAY();
         vm.warp(readyAt);
         vault.applyChange(kind, body, readyAt);
+    }
+
+    /// @dev The id and payload of the first VaultMessage in `logs`; zero and empty if there is none.
+    function _sent(Vm.Log[] memory logs) internal pure returns (bytes32 id, bytes memory payload) {
+        for (uint256 i = 0; i < logs.length; ++i) {
+            if (logs[i].topics.length == 0 || logs[i].topics[0] != VaultMessages.EVENT_TOPIC) continue;
+            return (logs[i].topics[1], abi.decode(logs[i].data, (bytes)));
+        }
     }
 
     /// @dev The first VaultMessage in `logs`, decoded; an empty message, of kind zero, if there is none.

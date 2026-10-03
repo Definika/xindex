@@ -43,6 +43,8 @@ contract HybridIndexFactory is IndexFactory, IHybridIndexFactory {
     mapping(address index => bytes32 salt) public indexSalt;
     /// @notice The nonce of the factory's last message to a vault.
     uint256 public messageNonce;
+    /// @inheritdoc IHybridIndexFactory
+    mapping(bytes32 id => bool) public messageSent;
     mapping(bytes32 id => VaultProposal) private _vaultProposals;
 
     /// @param hybridImplementation A `HybridHub` deployed for this factory: its FACTORY must be this contract.
@@ -143,7 +145,16 @@ contract HybridIndexFactory is IndexFactory, IHybridIndexFactory {
                 body: body
             })
         );
-        emit VaultMessages.VaultMessage(keccak256(payload), payload);
+        bytes32 id = keccak256(payload);
+        messageSent[id] = true;
+        emit VaultMessages.VaultMessage(id, payload);
+    }
+
+    /// @inheritdoc IHybridIndexFactory
+    function resendMessage(bytes calldata payload) external {
+        bytes32 id = keccak256(payload);
+        if (!messageSent[id]) revert IHybridHubTypes.NotSent(id);
+        emit VaultMessages.VaultMessage(id, payload);
     }
 
     // ---------------------------------------------------------------------

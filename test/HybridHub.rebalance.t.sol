@@ -417,6 +417,26 @@ contract HybridHubRebalanceTest is HybridTest {
         hub.slashRebalance(chainId, 0, never);
     }
 
+    /// @dev LG-5: a vault in its snapshot exit fails a delivery intake the hub never marked settled, honestly: no
+    ///      evidence, so no bond burns and nothing freezes. The vault's snapshot root is set directly here, in the slot
+    ///      the evidence proof reads, as a vault that began its exit holds it.
+    function test_LG5_noSlashOnAVaultInItsExit() public {
+        _liveAuction(true);
+        uint256[] memory deliveries = _accept();
+        _deliver(deliveries[1]);
+        hub.settleRebalance(_proofOf(deliveries[1]));
+        uint256 intakeId = hub.fillIntakeId();
+        vm.warp(hub.fill().deadline + 1);
+        vm.store(address(vault), bytes32(uint256(25)), keccak256("the snapshot's state root"));
+        assertEq(vault.snapshot().stateRoot, keccak256("the snapshot's state root"));
+        IHybridHubTypes.ChainProof memory failed = _proofOf(deliveries[1])[0];
+        failed.proof = _forged(block.timestamp, _digestOf(intakeId, 3, deliveries[1]));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.ChainExited.selector, chainId));
+        hub.slashRebalance(chainId, 3, failed);
+        assertEq(uint256(hub.fill().status), uint256(IHybridHubTypes.FillStatus.Settled), "the bond is still held");
+        assertEq(factory.chainFreeze(chainId).start, 0);
+    }
+
     function test_slash_notAfterTheHold() public {
         _liveAuction(true);
         uint256[] memory deliveries = _accept();

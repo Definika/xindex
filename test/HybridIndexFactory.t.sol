@@ -15,6 +15,7 @@ import {Errors} from "@openzeppelin/contracts/utils/Errors.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockUniversalRouter} from "./mocks/MockUniversalRouter.sol";
 import {IHybridIndexFactory} from "../src/interfaces/IHybridIndexFactory.sol";
+import {IHybridHubTypes} from "../src/interfaces/IHybridHubTypes.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {IXindexVault} from "../src/interfaces/IXindexVault.sol";
@@ -304,6 +305,45 @@ contract HybridIndexFactoryTest is HybridTest {
         assertEq(vault.outflowFloor(address(0)), 1e21);
         vm.expectRevert(abi.encodeWithSelector(IHybridIndexFactory.NoVaultProposal.selector, id));
         factory.executeVaultProposal(id);
+    }
+
+    /// @dev LG-1: the factory marks every message it sends, a governance change and an evidence freeze alike, and
+    ///      anyone may emit one again, unchanged, in a transaction of their own, should the one that sent it have made a
+    ///      receipt too large for a vault chain's verifier. The vault runs it once.
+    function test_LG1_anyoneSendsAFactoryMessageAgain() public {
+        vm.prank(owner);
+        bytes32 proposal = factory.proposeCap(chainId, bytes32(0), 5e24, 1e21);
+        vm.warp(block.timestamp + 2 days);
+        vm.recordLogs();
+        factory.executeVaultProposal(proposal); // its receipt is the one no verifier takes
+        (bytes32 id, bytes memory payload) = _sent(vm.getRecordedLogs());
+        assertTrue(factory.messageSent(id));
+
+        vm.recordLogs();
+        vm.prank(makeAddr("anyone"));
+        factory.resendMessage(payload);
+        Vm.Log[] memory again = vm.getRecordedLogs();
+        assertEq(again.length, 1, "the message alone");
+        assertEq(again[0].emitter, address(factory));
+        (bytes32 resentId, bytes memory resent) = _sent(again);
+        assertEq(resentId, id);
+        assertEq(resent, payload);
+        _deliverAll(again);
+        assertEq(vault.cap(address(0)), 5e24, "a lower cap applies at once");
+        bytes memory proof = abi.encode(address(factory), VaultMessages.EVENT_TOPIC, id, abi.encode(payload));
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.AlreadyDelivered.selector, id));
+        vault.deliver(proof, proof);
+
+        vm.recordLogs();
+        vm.prank(guardian);
+        factory.freezeChain(chainId);
+        (bytes32 freeze, bytes memory freezePayload) = _sent(vm.getRecordedLogs());
+        assertTrue(factory.messageSent(freeze));
+        factory.resendMessage(freezePayload);
+
+        bytes memory never = abi.encodePacked(payload, bytes1(0));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.NotSent.selector, keccak256(never)));
+        factory.resendMessage(never);
     }
 
     /// @dev FAC-2 and VLT-4: an older cap update delivered after a newer one never runs, so it cannot undo it.

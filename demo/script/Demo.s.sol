@@ -26,6 +26,8 @@ import {DemoToken} from "../src/DemoToken.sol";
 ///         keystore or `--browser` wallet; the broadcaster is the factory's owner on the testnet.
 contract Demo is Script {
     uint256 constant SEPOLIA = 11_155_111;
+    /// @dev Sepolia's beacon genesis time, which P1 dates its anchor's epoch from.
+    uint256 constant SEPOLIA_GENESIS_TIME = 1_655_733_600;
     uint256 constant HYPEREVM_TESTNET = 998;
     uint256 constant BNB_TESTNET = 97;
     /// @notice The id the demo's registry gives Solana's devnet; any id no EVM chain of the index uses.
@@ -201,7 +203,8 @@ contract Demo is Script {
             ISP1Verifier(address(sp1)),
             vm.envBytes32("P1_KEY"),
             vm.envBytes32("P1_ANCHOR"),
-            uint64(vm.envUint("P1_EPOCH"))
+            uint64(vm.envUint("P1_EPOCH")),
+            SEPOLIA_GENESIS_TIME
         );
         StubEventVerifier p2 = new StubEventVerifier(vm.envAddress("RELAYER2"));
         XindexVault vault = new XindexVault(

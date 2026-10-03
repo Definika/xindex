@@ -1,6 +1,7 @@
 //! The validator registry as `BeaconState.validators` holds it, its SSZ root, and the compact form P1's input carries
 //! it in, which the statement reads in one pass.
 
+use crate::beacon::FAR_FUTURE_EPOCH;
 use crate::bls;
 use crate::ssz::{hash_pair, mix_in_length, root_of_eight, u64_chunk, Merkleizer};
 use crate::statement::Error;
@@ -161,8 +162,13 @@ pub struct Signer {
 pub struct Registry {
     pub root: Root,
     pub len: usize,
-    /// The stake the records show active at C1's epoch and at the next.
-    pub active: [u128; 2],
+    /// The stake the threshold is two thirds of, at C1's epoch and at the next: what the records show active then,
+    /// plus every validator the records show not yet given an activation epoch (LG-6). Electra puts its churn on
+    /// deposits entering the registry, not on activations: once finality returns it activates every validator queued
+    /// in the registry at once, however long the queue grew while finality stalled, so stake queued at the anchor can
+    /// be active at C1 although no record says so. It counts here, and never as signed stake. Stake that enters the
+    /// registry after the anchor comes through the deposit churn, which the margin covers.
+    pub total: [u128; 2],
     pub signers: Vec<Signer>,
     /// Each validator's position in `signers`, or `NO_KEY` where its record carries no key.
     slots: Vec<u32>,
@@ -175,7 +181,7 @@ impl Registry {
     /// `EXITED` while active at C1's epoch, is `BadRecord`; a signer whose key is not its record's is `BadKey`.
     pub fn read(bytes: &[u8], c1_epoch: u64) -> Result<Registry, Error> {
         let mut tree = Merkleizer::new(REGISTRY_DEPTH);
-        let mut active = [0u128; 2];
+        let mut total = [0u128; 2];
         let mut signers = Vec::new();
         let mut slots = Vec::new();
         let mut at = 0;
@@ -209,10 +215,13 @@ impl Registry {
             let mut stake = [0u64; 2];
             for (k, epoch) in [c1_epoch, c1_epoch + 1].into_iter().enumerate() {
                 if v.is_active(epoch) {
-                    active[k] += v.effective_balance as u128;
+                    total[k] += v.effective_balance as u128;
                     if !v.slashed {
                         stake[k] = v.effective_balance;
                     }
+                } else if v.activation_epoch == FAR_FUTURE_EPOCH {
+                    // Queued, or still to be queued: it may be active at C1 in fact, so it counts in the total only.
+                    total[k] += v.effective_balance as u128;
                 }
             }
             if tag == FULL {
@@ -231,7 +240,7 @@ impl Registry {
         Ok(Registry {
             root: mix_in_length(&tree.root(), slots.len() as u64),
             len: slots.len(),
-            active,
+            total,
             signers,
             slots,
         })

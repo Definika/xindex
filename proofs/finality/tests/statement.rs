@@ -6,7 +6,7 @@ use bls12_381::{G1Affine, G1Projective, Scalar};
 use group::Curve;
 use xindex_finality::beacon::{
     compute_domain, fork_version, signing_root, Checkpoint, DOMAIN_BEACON_ATTESTER,
-    GENESIS_VALIDATORS_ROOT,
+    FAR_FUTURE_EPOCH, GENESIS_VALIDATORS_ROOT,
 };
 use xindex_finality::bls;
 use xindex_finality::execution::{keccak, keccak_root, parse_header};
@@ -195,7 +195,7 @@ fn with_key_y(chain: &Chain, i: usize, y: [u8; 48]) -> Vec<u8> {
 }
 
 /// The compact registry reads back to the SSZ root of the whole one, whichever records are exited, pending, slashed or
-/// signing, and it shows the stake active at C1's epoch and the next.
+/// signing, and it shows the stake active at C1's epoch and the next, plus the stake not yet given an activation epoch.
 #[test]
 fn the_compact_registry_has_the_registrys_root() {
     let c1 = E0 + 3;
@@ -208,6 +208,9 @@ fn the_compact_registry_has_the_registrys_root() {
             2 => v.activation_epoch = c1 + 1,
             3 => v.slashed = true,
             4 => v.activation_epoch = c1 + 2,
+            _ if i % 12 == 5 => {
+                (v.activation_eligibility_epoch, v.activation_epoch) = (E0 - 1, FAR_FUTURE_EPOCH)
+            }
             _ => {}
         }
     }
@@ -217,13 +220,13 @@ fn the_compact_registry_has_the_registrys_root() {
     assert_eq!(r.root, validators_root(&chain.validators));
     assert_eq!(r.len, N);
     for (k, epoch) in [c1, c1 + 1].into_iter().enumerate() {
-        let active: u128 = chain
+        let total: u128 = chain
             .validators
             .iter()
-            .filter(|v| v.is_active(epoch))
+            .filter(|v| v.is_active(epoch) || v.activation_epoch == FAR_FUTURE_EPOCH)
             .map(|v| v.effective_balance as u128)
             .sum();
-        assert_eq!(r.active[k], active, "epoch {epoch}");
+        assert_eq!(r.total[k], total, "epoch {epoch}");
     }
     assert_eq!(r.signers.len(), signers.len());
     for i in 0..N {
@@ -538,6 +541,105 @@ fn a_rogue_key_cannot_forge_the_honest_stake() {
     ));
     // The statement refuses it at the rogue key's missing proof of possession.
     assert_eq!(verify(&input), Err(Error::BadNewKey(0)));
+}
+
+/// LG-6: validators queued in the anchor's registry but not yet given an activation epoch count in the total and never
+/// as signed stake. Electra activates the whole queue at once when finality returns, so after a long stall they can be
+/// active at C1 although no record says so: counted nowhere, a third of the registry queued would have let 137 of the
+/// 200 active validators pass for two thirds.
+#[test]
+fn test_lg6_validators_queued_at_the_anchor_count_in_the_total() {
+    let mut chain = testkit::chain(N, BALANCE);
+    for v in chain.validators[200..].iter_mut() {
+        (v.activation_eligibility_epoch, v.activation_epoch) = (E0 - 1, FAR_FUTURE_EPOCH);
+    }
+    match verify(&build_from(chain, 1, &range(137), 1).input) {
+        Err(Error::BelowThreshold { signed, total, .. }) => {
+            assert_eq!(signed, 137 * BALANCE as u128);
+            assert_eq!(
+                total,
+                N as u128 * BALANCE as u128,
+                "the queued count in the total"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    // They count no stake when they sign, even before they are queued: all 300 signing are the 200 active.
+    let mut chain = testkit::chain(N, BALANCE);
+    for v in chain.validators[200..].iter_mut() {
+        (v.activation_eligibility_epoch, v.activation_epoch) = (FAR_FUTURE_EPOCH, FAR_FUTURE_EPOCH);
+    }
+    match verify(&build_from(chain, 1, &range(N as u32), 1).input) {
+        Err(Error::BelowThreshold { signed, total, .. }) => {
+            assert_eq!(signed, 200 * BALANCE as u128, "the queued sign for nothing");
+            assert_eq!(total, N as u128 * BALANCE as u128);
+        }
+        other => panic!("{other:?}"),
+    }
+    // One whose activation epoch is set is counted exactly: from that epoch on, and not before.
+    let mut chain = testkit::chain(N, BALANCE);
+    for v in chain.validators[200..].iter_mut() {
+        v.activation_epoch = E0 + 50;
+    }
+    assert!(verify(&build_from(chain, 1, &range(137), 1).input).is_ok());
+}
+
+/// Moves C1's block to `slot`, and re-signs both links, by every validator, for the block's new root.
+fn checkpoint_block_at(chain: &Chain, input: &mut Input, slot: u64) {
+    let source = input.justification[0].data.source;
+    let epoch = input.justification[0].data.target.epoch;
+    let c2 = input.finalization[0].data.target;
+    input.header.slot = slot;
+    let c1 = Checkpoint {
+        epoch,
+        root: input.header.hash_tree_root(),
+    };
+    input.justification = testkit::votes(chain, &range(N as u32), source, c1);
+    input.finalization = testkit::votes(chain, &range(N as u32), c1, c2);
+}
+
+/// LG-6: C1's block may be one epoch older than C1, where C1's first slot was missed, which the margin's extra epoch
+/// covers; an older block would leave the next anchor's records staler than its margin counts, and is refused.
+#[test]
+fn test_lg6_a_checkpoint_block_two_epochs_old_is_refused() {
+    let gap = 12;
+    let e1 = E0 + gap;
+    for (slot, ok) in [
+        (e1 * 32, true),
+        (e1 * 32 - 1, true),
+        ((e1 - 1) * 32, true),
+        ((e1 - 1) * 32 - 1, false),
+        ((e1 - 10) * 32, false),
+    ] {
+        let mut b = build(gap, &range(N as u32), 1);
+        checkpoint_block_at(&b.chain, &mut b.input, slot);
+        let r = verify(&b.input);
+        if ok {
+            assert_eq!(r.map(|o| o.epoch), Ok(e1), "slot {slot}");
+        } else {
+            assert_eq!(r, Err(Error::StaleCheckpointBlock), "slot {slot}");
+        }
+    }
+}
+
+/// LG-I2: the justification's source comes before C1, as every honest vote's does.
+#[test]
+fn test_lgi2_the_justifications_source_comes_before_c1() {
+    for (shift, ok) in [(-1i64, true), (0, false), (7, false)] {
+        let mut b = build(1, &range(NEEDED), 1);
+        let c1 = b.input.justification[0].data.target;
+        let source = Checkpoint {
+            epoch: c1.epoch.checked_add_signed(shift).unwrap(),
+            root: [0xee; 32],
+        };
+        b.input.justification = testkit::votes(&b.chain, &range(NEEDED), source, c1);
+        let r = verify(&b.input);
+        if ok {
+            assert!(r.is_ok(), "source {shift} from C1");
+        } else {
+            assert_eq!(r, Err(Error::LinksDisagree), "source {shift} from C1");
+        }
+    }
 }
 
 /// The pieces the contracts recompute: the anchor's hash, the header leaf and the keccak tree, pinned against `cast`.

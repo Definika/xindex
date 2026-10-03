@@ -133,7 +133,10 @@ fn prove(args: &[String]) {
     receipt
         .verify(XINDEX_P2_GUEST_ID)
         .expect("the receipt verifies");
-    assert_eq!(receipt.journal.bytes, expected, "the journal is the statement's");
+    assert_eq!(
+        receipt.journal.bytes, expected,
+        "the journal is the statement's"
+    );
     let groth16 = receipt.inner.groth16().expect("a Groth16 receipt");
     // What RISC Zero's Solidity verifier takes: the selector of its parameters, then the seal.
     let mut seal = groth16.verifier_parameters.as_bytes()[..4].to_vec();

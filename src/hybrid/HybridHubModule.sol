@@ -75,7 +75,7 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
     function voidOrder(uint256 orderId, uint256 chainId, bytes calldata proof) external nonReentrant onlyInitialized {
         StoredOrder storage o = _openOrder(orderId, OrderStatus.Locked);
         uint256 j = _slotIndex(chainId);
-        bytes32 proven = _provenIntake(j, _intakeIdOf(orderId, o.deadline), o.deadline, proof);
+        bytes32 proven = _provenIntake(j, _intakeIdOf(orderId, o.deadline), o.deadline, true, proof);
         bytes32 recorded = _digests[orderId][j];
         // After the deadline an intake's deposits are final, and it stays open until the hub settles or fails it, so a
         // proof showing anything else means the deposit or the proof that settled the order was false.
@@ -101,7 +101,7 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
             if (f.start < o.settledAt) continue;
             if (block.timestamp < f.until) revert ChainIsFrozen(chainId, f.until);
             // A proof from after the freeze ended: whatever the vault did while frozen is behind it.
-            bytes32 proven = _provenIntake(j, intakeId, f.until, proofs[j]);
+            bytes32 proven = _provenIntake(j, intakeId, f.until, false, proofs[j]);
             bytes32 recorded = _digests[orderId][j];
             if (proven != recorded) revert DigestMismatch(chainId, proven, recorded);
         }
@@ -380,7 +380,7 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
         if (!any) return;
         bytes32 digest = _intakeDigest(j, intakeId, INTAKE_OPEN, p.tokens, p.totals);
         // Deliveries only grow until the deadline, so a proof from before it is as good as one after.
-        bytes32 proven = _provenIntake(j, intakeId, 0, p.proof);
+        bytes32 proven = _provenIntake(j, intakeId, 0, false, p.proof);
         if (proven != digest) revert DigestMismatch(_chains[j].chainId, proven, digest);
         for (uint256 i = 0; i < n; ++i) {
             if (_slotOf[i] != j + 1) continue;
@@ -452,7 +452,7 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
         uint256 intakeId = _fillIntakeIdOf(f);
         // From after the delivery deadline: an older state is honestly short, and state verifiers prove old blocks
         // (MOD-1).
-        bytes32 proven = _provenIntake(j, intakeId, f.deadline, proof.proof);
+        bytes32 proven = _provenIntake(j, intakeId, f.deadline, true, proof.proof);
         if (!_isForged(j, intakeId, proven, state, proof)) revert NotAContradiction(chainId);
 
         delete _fill;

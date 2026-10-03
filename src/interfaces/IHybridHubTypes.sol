@@ -193,8 +193,11 @@ interface IHybridHubTypes is IXindexErrors {
 
     /// @notice `index` is not another HybridHub index of this factory.
     error NotAVersion(address index);
-    /// @notice `chainId`'s snapshot exit is already recorded.
+    /// @notice `chainId`'s vault has begun its snapshot exit: recorded here, or shown by the state proven.
     error ChainExited(uint256 chainId);
+    /// @notice No vault message with id `id` was sent from here, so none can be sent again. The factory raises it
+    ///         too, for its own messages.
+    error NotSent(bytes32 id);
     /// @notice `chainId` has not exited.
     error ChainNotExited(uint256 chainId);
     /// @notice `required` of `token` is needed for the new shares and only `available` comes from the old ones.

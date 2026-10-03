@@ -1395,6 +1395,19 @@
   },
   {
     "type": "function",
+    "name": "resendMessage",
+    "inputs": [
+      {
+        "name": "payload",
+        "type": "bytes",
+        "internalType": "bytes"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "restartAllowedAt",
     "inputs": [],
     "outputs": [
@@ -2825,6 +2838,17 @@
     "type": "error",
     "name": "NotInitialized",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotSent",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
   },
   {
     "type": "error",

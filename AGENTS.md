@@ -110,6 +110,9 @@ Ethereum (the chain's state verifier, from an anchor the fixture generator write
    - The internal review of the Tron state verifier on 2026-10-01: `TRN-1`..`TRN-9`
      (`audit/2026-10-01-tron-review.md`), a test named `test_TRN1_...`. TRN-6 to TRN-8 were recorded by documentation
      alone and have no test.
+   - The logic review of 2026-10-02: `LG-1`..`LG-6` and `LG-I1`..`LG-I4` (`audit/2026-10-02-logic-review.md`), a test
+     named `test_LG1_...`, and in Rust `test_lg1_...`. The record's status column names every test; the informational
+     ids have none.
 
    Find a test by its id. Most v1 and R tests are in `test/Security.t.sol` and `test/fork/Security.fork.t.sol`. The R
    tests that drive the λ auction directly (R04, R08, R14, R17, R19, R22) are in `test/IndexHub.rebalance.t.sol`,
@@ -444,7 +447,9 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   claimed order's deposit proven false freezes mints on the chain at the factory, and leaves the vault paying. A vault
   record paying more than was sent freezes the vault too. Every evidence proof is bounded below by a deadline or a
   freeze, since state verifiers prove old blocks: a slash's by the delivery deadline, and an empty intake is evidence
-  only on a chain where the fill recorded a delivery (HUB-1). An exited chain takes no evidence.
+  only on a chain where the fill recorded a delivery (HUB-1). An exited chain takes no evidence: every evidence proof
+  also reads the vault's snapshot root, in the same state proof, and is refused once it is set, recorded or not
+  (LG-5).
 - **Messages wait for the checkpoint.** A vault runs a message that moves coins or loosens a rule only from an
   Ethereum block its checkpoint covers, so the snapshot never pays a holder whose burn it paid (VLT-3). A snapshot
   claim reads a component only inside the hub's components array (VLT-1).
@@ -452,13 +457,22 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   a stall (7 days without one) cannot be manufactured. Only then may the owner's emergency multisig propose a
   successor, which must prove the last checkpoint, a recent one and the last message, and wait 30 days of review with
   at most 2 vetoes. A stalled vault takes no deposit.
+  - Only a checkpoint that ends the stall lapses the successor and restarts the vetoes. A stale one, which the old pair
+    can still prove, keeps both, so nobody can throw the review away a block at a time (LG-2).
+  - The last message is the last on both proofs: a one-proof freeze could be forged by one broken system (LG-3).
+  - P1 and P2 stop for good a day behind: `update` refuses a proof once `MAX_LAG` has passed since the anchor's epoch
+    began, dated from the beacon genesis time fixed at deployment, on EVM chains and on Solana (LG-4).
 - **The snapshot exit is final and speed-limited.** 180 days into a stall, the last checkpoint becomes the snapshot:
   no message from a later block runs, the freezer can no longer freeze, holders at it claim their share by signature
   or recovery address within the speed limit, and open intakes are settled or refunded from the hub's
   `_settledIntakes`. The hub marks that in the transaction that sends each settle message; keep it that way. It also
-  marks every `BURN` and `MIGRATE` it sends in `_sentMessages`, in the same transaction, and the vault's
-  `deliverRecorded` pays one still in flight at the snapshot from that mark. A hub that records the exit never mints on
-  that chain again. `test_theHubLayoutIsPinned` pins the slots each side reads.
+  marks every message it sends in `_sentMessages`, in the same transaction, and the vault's `deliverRecorded` pays a
+  burn or migration still in flight at the snapshot from that mark. A hub that records the exit never mints on that
+  chain again. `test_theHubLayoutIsPinned` pins the slots each side reads.
+- **Any message can be sent again.** Whoever sends a transaction shapes its receipt, and every verifier has a ceiling.
+  So the hub and the factory mark every message they send, and anyone may emit a marked one again, unchanged, with
+  `resendMessage(payload)`; the vault runs a message once by its id (LG-1). Keep every `VaultMessage` going through
+  that mark: the hub's `_post`, the factory's `_sendVault`.
 - **Vault governance is delayed and public, twice.** The factory sends `CAP_UPDATE` only after `LISTING_DELAY`,
   `FREEZER_CHANGE` only after `GUARDIAN_DELAY` (the guardian cannot cancel it, as it cannot block its own replacement),
   and `VERIFIER_ROTATION` only after `ROTATION_DELAY` (30 days). P1 and P2 must always be two different verifiers.

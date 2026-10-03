@@ -40,7 +40,8 @@ interface IHybridHubExtension is IHybridHubTypes {
     ) external;
 
     /// @notice Anyone. Proves `chainId`'s vault records for this index, `record`, and shows that it paid out more of a
-    ///         token than this index ever sent out. Freezes the chain, for every index and on the vault.
+    ///         token than this index ever sent out. Freezes the chain, for every index and on the vault. Refused on an
+    ///         exited chain, as `voidOrder` is: a vault in its exit pays holders this index never sent anything.
     function reportOutflow(uint256 chainId, IndexRecord calldata record, bytes calldata proof) external;
 
     /// @notice The holder, for itself. Where `chainId`'s vault pays it on a snapshot exit, if it cannot sign there, as a
@@ -65,12 +66,19 @@ interface IHybridHubExtension is IHybridHubTypes {
     /// @notice When `chainId`'s snapshot exit was recorded here; zero if it was not.
     function exitedAt(uint256 chainId) external view returns (uint256);
 
-    /// @notice Whether this index sent the BURN or MIGRATE with id `id`. A vault reads it at its snapshot to pay a
-    ///         message still in flight then.
+    /// @notice Whether this index sent the vault message with id `id`. A vault reads it at its snapshot to pay a burn
+    ///         or migration still in flight then.
     function messageSent(bytes32 id) external view returns (bool);
+
+    /// @notice Anyone. Emits a message this index sent again, unchanged, in a transaction of the caller's own. Whoever
+    ///         sends a transaction shapes its receipt, and a receipt can be made too large for a vault chain's verifier
+    ///         to prove; the copy's receipt is the caller's. A vault runs a message once, by its id, so a second copy
+    ///         changes nothing (LG-1). Reverts `NotSent` for any payload this index never sent.
+    function resendMessage(bytes calldata payload) external;
 
     /// @notice Anyone. Proves that claimed order `orderId`'s intake on `chainId` is, after its deadline, neither the
     ///         deposits the order was claimed on (`proof.tokens`, `proof.totals`) still open nor the same deposits
-    ///         settled. Freezes the chain, for every index and on the vault.
+    ///         settled. Freezes the chain's mints, for every index; the vault keeps paying. Refused on an exited
+    ///         chain, as `voidOrder` is.
     function reportForgedDeposit(uint256 orderId, uint256 chainId, ChainProof calldata proof) external;
 }

@@ -536,8 +536,8 @@ For an index holding vault coins (Stage B, not deployed; the Stage B spec has th
   verifier, a 30-day rotation (FAC-1); funds stay safe, and burns still pay, since they need only Ethereum's proofs.
   TRON's also stops if nine of the producers its list recorded are voted out or change keys before vouching for the
   next list (TRN-3). P1's and P2's verifiers on a vault chain keep the same pace: a proof covers at most 225 epochs, a
-  day, past the verifier's anchor, so one left further behind stops for good and must be replaced (Stage B spec,
-  section 10).
+  day, past the verifier's anchor, and `update` refuses any proof once a day has passed since the anchor's epoch began
+  (`lagEnds()`), so one left further behind stops for good and must be replaced (LG-4; Stage B spec, section 10).
 - **TRON's state rests on 19 of its 27 producers,** who could forge a proof at no cost to their stake, since TRON has
   no slashing.
 - **TRON's 80 ms CPU limit leaves a proof check little room.** TRON fails a transaction past 80 ms of CPU time and burns its whole fee limit;
@@ -546,6 +546,10 @@ For an index holding vault coins (Stage B, not deployed; the Stage B spec has th
   network, before mainnet (`tron/README.md`).
 - **P1 and P2 prove one statement.** Two zkVMs from two teams, with two Groth16 setups, guard against a broken prover,
   but a bug in the statement they share (`proofs/finality`) would break both at once (Stage B spec, section 11).
+- **A mass slashing between two proofs lowers what a forger risks.** The statement counts each signer by the anchor's
+  records, up to a day old, with a margin for the churn since. A validator slashed after the anchor still counts there
+  as unslashed, and can no longer be slashed for signing a forgery; no churn limits how many are slashed. Such a
+  slashing would be a public attack on Ethereum itself (LG-I1; Stage B spec, section 10).
 
 ## Mainnet addresses
 
@@ -754,8 +758,8 @@ No bot runs Xindex, so these duties have owners and deadlines. Watch the events 
 | Watch guardian changes | `GuardianProposed` | `eta` (7 days) | owner signers, guardian, app | a security alert: once executed, the new guardian's veto replaces the old one. `guardianChangePending()` says whether it is still executable |
 | Hand over factory ownership | `OwnershipTransferStarted` | none: it takes effect as soon as the new owner accepts | owner signers, then the new owner | the one admin change with no delay and no veto; announce it first, and the new owner has to meet the rules the deploy script checks |
 | Advance each chain's state verifier (Stage B) | its anchor, then each BNB Chain epoch or TRON 6-hour list | `MAX_LAG` (1 day), or it stops for good | anyone | `advance`; `DeployStateVerifier` logs the first deadline |
-| Advance P1 and P2 on each vault chain, and the vault's checkpoint (Stage B) | each verifier's last anchor | 225 epochs (a day) for P1 and P2, or they stop for good; `STALL_PERIOD` (7 days) for the vault, which then takes no deposit | anyone | a proof from each system (`proofs/README.md`) to each verifier's `update`, then the vault's `advanceCheckpoint` |
-| Deliver each message to its vault (Stage B) | `VaultMessage` from an index or the factory | none, but a burn is paid only once delivered | anyone | the vault's `deliver` with P1's and P2's proofs of it, then `release` for any part the speed limit held back |
+| Advance P1 and P2 on each vault chain, and the vault's checkpoint (Stage B) | each verifier's last anchor | `lagEnds()`, a day after the anchor's epoch began, for P1 and P2, or they stop for good; `STALL_PERIOD` (7 days) for the vault, which then takes no deposit | anyone | a proof from each system (`proofs/README.md`) to each verifier's `update`, then the vault's `advanceCheckpoint` |
+| Deliver each message to its vault (Stage B) | `VaultMessage` from an index or the factory | none, but a burn is paid only once delivered | anyone | the vault's `deliver` with P1's and P2's proofs of it, then `release` for any part the speed limit held back. A message whose transaction's receipt is too large to prove there is first sent again in a transaction of its own, with the index's or the factory's `resendMessage(payload)` (LG-1) |
 
 ### Testnet (Sepolia)
 

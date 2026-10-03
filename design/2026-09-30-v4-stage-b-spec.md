@@ -94,6 +94,15 @@ A vault accepts a message only if:
 - the emitter the proof names is the index, or the factory for governance kinds;
 - its id was never used. Each id is marked used before any coin moves.
 
+**Sending again (LG-1).** A proof covers a log inside its transaction's receipt, and whoever sends a transaction shapes
+that receipt: a permissionless call that emits a message, wrapped in a transaction of hundreds of other logs or a
+receipt past 64 KB, could exceed what a vault chain's verifier can take, and nothing would emit the message again. So
+the index and the factory each mark every message they send (`_sentMessages` in the hub, `messageSent` in the
+factory), in the transaction that sends it, and anyone may call `resendMessage(payload)` to emit a marked message again,
+unchanged, in a transaction of their own. The copy carries the same id, so the vault runs it at most once, and a stale
+governance message is still refused by its nonce mark. Every verifier has some ceiling (P1 on Solana's is about 19,600
+logs, by compute), so this, not the ceiling, is what keeps a message deliverable.
+
 ## 3. The Ethereum-event verifier interface
 
 ```solidity
@@ -484,6 +493,12 @@ balance, and counted in the old index's `paidTotal`. Before, it moved the whole 
 Both freeze the chain at the factory, for every index: the state verifier is shared by all of them. Voids and slashes
 now do the same, where layer 1 froze only the index that found the contradiction.
 
+**An exited chain takes no evidence (LG-5).** A vault in its snapshot exit honestly fails every intake the hub had not
+marked settled at its checkpoint, and pays holders what the index never sent. So every evidence proof, a void's and a
+slash's included, also reads the vault's snapshot root (`VAULT_SNAPSHOT_ROOT_SLOT`) in the same state proof and is
+refused (`ChainExited`) when it is set, whether or not anyone has called `recordExit` on this index; and none is taken
+once the exit is recorded. The vault's snapshot is permanent, so no honest state after it can count as evidence.
+
 **Proposals for the owner (deviations from the design):**
 1. **A vault token new to a version comes by order, not by migration.** The design's migration mints "against those
    coins plus fresh deposits for the tokens only the new version holds". Fresh vault deposits need an order's deadline,
@@ -533,16 +548,22 @@ continuity test:
 - **(a)** both prove exactly the last checkpoint the vault accepted;
 - **(b)** both prove a recent checkpoint, newer and within `STALL_PERIOD` of now, which their proof shows descends from
   (a) by validator signatures;
-- **(c)** both prove again the last message the vault delivered, its id recorded at each delivery. This is a fixed
-  sample the proposer cannot choose.
+- **(c)** both prove again the last message the vault delivered on both proofs, its id recorded at each such delivery.
+  This is a fixed sample the proposer cannot choose. A message carried on one proof, a freeze or a lowered cap, is not
+  recorded: with one proof system broken, a forged one-proof freeze would otherwise be the last message, which no
+  honest successor could prove again (LG-3).
 
 Review and adoption:
-- **Review** lasts `RECOVERY_DELAY` (30 days). The freezer may veto `MAX_RECOVERY_VETOES` (2) successors per stall; a
-  stall is identified by the checkpoint it began after.
+- **Review** lasts `RECOVERY_DELAY` (30 days). The freezer may veto `MAX_RECOVERY_VETOES` (2) successors per stall. A
+  stall ends only with a checkpoint recent enough to end it, by an advance or an adoption, and that starts the count
+  again (LG-2).
 - **Adoption** by anyone after the review needs a checkpoint the successor proves, recent at that moment. The vault
   leaves its stall.
-- **Lapse.** A checkpoint from the pair in force at any time lapses the successor: the old pair works, so there is
-  nothing to recover.
+- **Lapse.** A checkpoint from the pair in force that ends the stall lapses the successor: the old pair works, so there
+  is nothing to recover. A stale one does not. During a stall the old pair can still prove blocks up to where it
+  broke, newer than the checkpoint but not recent, and an advance to one only lets messages sent before the break run
+  (VLT-3). Before LG-2, such an advance lapsed the successor and reset the vetoes, so anyone could throw the review away
+  one block at a time until the snapshot.
 - **Worst case, as the design states:** 37 days of delay without vetoes, 97 with two.
 
 **The snapshot exit (layer 4).** From `SNAPSHOT_EXIT_DELAY` (180 days) after the stall began, anyone calls
@@ -590,7 +611,9 @@ Review and adoption:
 5. **Gas.** The settled mark is one more storage write, about 22,000 gas, on each order claim and each fill settlement.
 6. **Burns in flight are paid from the hub's record (built 30 September, the owner's call).** The hub marks every
    `BURN` and `MIGRATE` it sends in `_sentMessages`, in the transaction that sends it: one more storage write, about
-   22,000 gas, per vault leg of every redemption, migration and sold fill leg. After the snapshot, anyone calls the
+   22,000 gas, per vault leg of every redemption, migration and sold fill leg. Since LG-1 it marks every other message
+   too, an intake's settle or failure once per vault chain, so that anyone can send any of them again. After the
+   snapshot, anyone calls the
    vault's `deliverRecorded(payload, proof)`, which reads that mark under the snapshot's state root and runs the message
    as a delivered one would: owed, within the speed limit, once. So a burn issued before the break and never delivered
    is paid, not lost, and the holder's snapshot share no longer counts the burned shares, so nothing is paid twice. The
@@ -958,17 +981,39 @@ signature of the deposit that added it, which only the holder of its secret coul
   ETH an epoch, so a day holds at most about 1,800 new keys: about 7 billion prover gas at worst, far less than proving
   every few epochs to keep the registry current would cost.
 
-**The margin.** Records at `e0` go stale by `e1`. A validator that exits or consolidates away after `e0` still counts
-by them, and its key might then sign at no risk to itself. The protocol limits both per epoch:
-- exits and activations by `MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT` (256 ETH);
-- consolidations by the rest of the balance churn, about 263 ETH at today's stake.
+**The margin.** Records at `e0` go stale by `e1`, both ways, and the protocol limits each per epoch:
+- exits take the activation-exit churn, `min(256 ETH, balance churn)`, and consolidations the rest of the balance
+  churn, `max(128 ETH, total active balance / 65,536)`; stake that leaves this way still counts by the records;
+- deposits, top-ups included, take a churn of their own, 256 ETH an epoch, before they enter the registry, so stake
+  that joins after `e0` is bounded the same way; a key added since the anchor signs for nothing;
+- activations take no churn in Electra: when finality returns, every validator queued in the registry activates at
+  once, however long the queue grew while finality stalled. So the statement counts every record not yet given an
+  activation epoch in the total, and never as signed stake (LG-6).
 
-Together that is the whole balance churn, `max(128 ETH, total active balance / 65,536)`: about 519 ETH an epoch at
-34M ETH staked, and about 760 ETH at 50M. So the threshold adds 2,048 ETH for every epoch since `e0`, over twice the
-churn at any stake below about 67M ETH. `e1 − e0` is at most 225 epochs, a day, as the BNB verifier's `MAX_LAG` is. So
-the margin is at most 460,800 ETH, about 1.4% of today's stake, and honest participation near 99% clears 66.7% plus
-that easily. Slashed validators exit through the same churn. A day
-behind, a verifier stops for good and is rotated, as the BNB one is.
+So the records drift by at most the balance churn plus 256 ETH an epoch: about 775 ETH at 34M ETH staked, and about
+1,020 ETH at 50M. The threshold adds 2,048 ETH for every epoch since `e0`, over twice that drift at any stake below
+about 50M ETH (LG-I1). `e1 − e0` is at most 225 epochs, a day, as the BNB verifier's `MAX_LAG` is, so the margin is at
+most 460,800 ETH, about 1.4% of today's stake, and honest participation near 99% clears 66.7% plus that easily.
+
+The records are those of `C1`'s block's state, which the next proof reads. A checkpoint's block is the one at its
+epoch's first slot, or the last before it where that slot was missed, so its state is at most one epoch older than the
+checkpoint, and the margin counts that epoch too. The statement refuses an older block (`StaleCheckpointBlock`, LG-6):
+that needs every slot from the previous epoch's first to the checkpoint's own to be missed, and a later checkpoint
+serves instead.
+
+**What the margin does not bound.** The margin bounds churn, and an exit is not what frees a key within its window: a
+validator that exits after `e0` stays slashable until its withdrawable epoch, at least 256 epochs (about 27 hours)
+after its exit, past any proof's day. What frees a key is a slashing. A slashed validator cannot be slashed again,
+while the records at `e0` still show it unslashed and active, and no churn limits how many are slashed. A mass
+slashing between two proofs would lower, by the slashed stake, the stake a forger must put at risk. The statement does
+not bound that: it is a known limitation, and such a slashing would be a public attack on Ethereum itself (LG-I1).
+
+The verifier holds that day by the clock as well (LG-4). The statement bounds each step in epochs only, so without a
+clock an honest prover could walk a verifier left behind forward through old checkpoints, and validators who had since
+exited, and could no longer be slashed, could sign one of those at no risk. So `update` refuses a proof once
+`MAX_LAG` (1 day) has passed since the stored anchor's epoch began, dated from the network's beacon genesis time fixed
+at deployment (`GENESIS_TIME`; `DeployVault` takes mainnet's or Sepolia's from the indexes' chain and refuses an anchor
+already past it). A day behind, a verifier stops for good and is rotated, as the BNB one is.
 
 **The new anchor.** `C1`'s block header hashes to `r1`. Two SSZ proofs from its state root give the new
 `validatorsRoot` (field 11) and the block hash of the execution payload the block carried: the state's
@@ -1002,8 +1047,15 @@ behind the vault's existing verifier interface (`xindex_vault::verify`).
   - proving a real mainnet log takes 9,100 to 12,500.
 - **Staged proofs.** An event proof is 1.5 to 2.2 KB, more than a transaction holds, so the relayer stages it in a
   loader buffer first. What the buffer holds is no more trusted than instruction data.
-- **Deployment.** As the stub: the upgrade authority sets the program key and the first anchor once, then makes the
-  program immutable, which the vault requires.
+- **Deployment.** As the stub: the upgrade authority sets the program key, the first anchor and the network's beacon
+  genesis time once, then makes the program immutable, which the vault requires.
+- **Any receipt (LG-1).** It reads RLP lists in place, as `RlpReader.sol` does, and carries a node's length in 32 bits,
+  so neither a receipt's number of logs nor a leaf past 64 KB exhausts its 32 KiB heap. Only compute bounds a receipt:
+  513 logs take 41,633 units, and about 19,600 logs or 2.8 MB of log data fit, below the about 44,700 empty logs a
+  2^24-gas transaction can hold. That residual ceiling is why messages can be sent again (section 2).
+- **A day's lag (LG-4).** `update` refuses a proof more than a day after the stored anchor's epoch began, as the EVM
+  verifier does. With no stall recovery on the Solana vault yet (SOL-7), a P1 left a day behind there cannot be
+  rotated out on its own: a `VERIFIER_ROTATION` needs both proofs, P1's included (LG-I4).
 - **Not built.** `verifyCheckpoint`: the Solana vault has no checkpoints or snapshot exit yet.
 
 ### Deliberately not in P1

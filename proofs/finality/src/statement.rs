@@ -20,8 +20,10 @@ use serde_big_array::BigArray;
 
 /// The most epochs a proof may cover past its anchor: a day. A verifier left further behind stops for good.
 pub const MAX_EPOCH_GAP: u64 = 225;
-/// The stake the anchor's records may overstate, per epoch since the anchor, in Gwei: over twice the balance churn at
-/// any stake below about 67M ETH, which bounds what exits and consolidations can move.
+/// The stake the anchor's records may misstate, per epoch since the anchor, in Gwei. Exits and consolidations share
+/// the balance churn, `max(128 ETH, total active balance / 65,536)`, and deposits have 256 ETH an epoch of their own,
+/// so the records drift by at most the balance churn plus 256 ETH an epoch: the margin is over twice that at any stake
+/// below about 50M ETH (LG-I1).
 pub const MARGIN_PER_EPOCH_GWEI: u128 = 2_048 * 1_000_000_000;
 /// The most execution headers one proof carries: a day of blocks, with room.
 pub const MAX_HEADERS: usize = 8_192;
@@ -133,6 +135,7 @@ pub enum Error {
     LinksDisagree,
     NotAfterAnchor,
     TooFarFromAnchor,
+    StaleCheckpointBlock,
     SlotOutsideTarget,
     UnknownFork(u64),
     BadSigner(u32),
@@ -163,7 +166,9 @@ pub fn verify(input: &Input) -> Result<Output, Error> {
     };
     let c1 = first.target;
     let c2 = second.target;
-    if second.source != c1 || c2.epoch != c1.epoch + 1 {
+    // The justification's source comes before C1, as every honest vote's does (LG-I2): two thirds voting for C1 and
+    // the link from C1 to C2 already suffice, so this is hardening, not soundness.
+    if second.source != c1 || c2.epoch != c1.epoch + 1 || first.source.epoch >= c1.epoch {
         return Err(Error::LinksDisagree);
     }
     if c1.epoch <= anchor.epoch {
@@ -204,6 +209,14 @@ pub fn verify(input: &Input) -> Result<Output, Error> {
     let header = &input.header;
     if header.hash_tree_root() != c1.root {
         return Err(Error::HeaderMismatch);
+    }
+    // The next proof counts against this block's registry, with a margin that lets it be one epoch older than C1
+    // (LG-6). A checkpoint's block is the one at its epoch's first slot, or, where that slot was missed, the last one
+    // before it: one epoch older at most, unless every slot from the previous epoch's first to C1's own was missed. A
+    // block older than that would leave the next anchor's records more epochs stale than its margin counts, so the
+    // proof waits for a later checkpoint, whose block a live chain has.
+    if header.slot / SLOTS_PER_EPOCH + 1 < c1.epoch {
+        return Err(Error::StaleCheckpointBlock);
     }
     if !is_valid_branch(
         &input.new_validators_root,
@@ -266,8 +279,8 @@ pub fn verify(input: &Input) -> Result<Output, Error> {
 
 /// Checks one supermajority link `source → target`: every aggregate votes for it within the target epoch and verifies
 /// under its signers' keys, and the distinct, unslashed signers active at the target epoch hold two thirds of the stake
-/// the anchor's records show active then, plus the margin. `link` is 0 where the target is C1 and 1 where it is C1's
-/// child, the two epochs the registry's stakes are read at.
+/// the anchor's records show active then or not yet activated, plus the margin. `link` is 0 where the target is C1 and
+/// 1 where it is C1's child, the two epochs the registry's stakes are read at.
 fn count_link(
     registry: &Registry,
     new_keys: &[G1Affine],
@@ -321,8 +334,9 @@ fn count_link(
         }
         cycles::end("signatures");
     }
-    let total = registry.active[link];
-    // The anchor's records may be one epoch older than its epoch, so the margin counts one more.
+    let total = registry.total[link];
+    // The anchor's records may be one epoch older than its epoch, and no more (`StaleCheckpointBlock`), so the margin
+    // counts one more.
     let margin = MARGIN_PER_EPOCH_GWEI * (target.epoch - anchor_epoch + 1) as u128;
     if 3 * signed < 2 * total + 3 * margin {
         return Err(Error::BelowThreshold {

@@ -716,7 +716,13 @@ which pays it out only on messages the hub sends. Integrators call it through `I
   sent (`sentOut`), which only P1 and P2 both broken allow; it freezes the chain's mints and the vault.
   `reportForgedDeposit` proves a claimed order's intake, after its deadline, neither open with the deposits it was
   claimed on nor settled with them; it freezes the chain's mints. A void and a slash freeze mints the same way. Every
-  such freeze is the factory's, for every index on that chain.
+  such freeze is the factory's, for every index on that chain. An exited chain takes no evidence: every evidence proof
+  also reads the vault's snapshot root and is refused once it is set, recorded here or not, since a vault in its exit
+  honestly fails what was never settled and pays holders what the index never sent (LG-5).
+- **Sending again.** The index marks every message it sends (`_sentMessages`), and anyone may emit a marked one again,
+  unchanged, with `resendMessage(payload)`; the factory does the same for its own. Whoever sends a transaction shapes
+  its receipt, which could otherwise be made too large for a vault chain's verifier; the copy's receipt is the
+  caller's, and the vault runs a message once by its id (LG-1).
 - **The exit.** `setRecoveryAddress(chainId, recipient)` names where a holder that cannot sign on a vault chain, such
   as a contract, is paid at a snapshot exit. `recordExit(chainId, proof)` proves through the state verifier that the
   vault began one; the index then never mints on that chain again. `failHeldOrder` fails a locked order: anyone's
@@ -767,8 +773,10 @@ balance per index, takes coins only as deposits to an intake, and lets them out 
 - **Stall and snapshot exit.** Anyone advances the vault's checkpoint (`advanceCheckpoint`) to a final Ethereum block
   both P1 and P2 prove. A vault with no new checkpoint for `STALL_PERIOD` (7 days) is stalled and takes no deposit.
   Only then may `RECOVERY_PROPOSER`, the owner's emergency multisig on that chain, propose a successor pair, which must
-  prove the last checkpoint, a recent one and the last message delivered, and waits `RECOVERY_DELAY` (30 days) with
-  at most `MAX_RECOVERY_VETOES` (2) vetoes by the freezer. `SNAPSHOT_EXIT_DELAY` (180 days) into a stall,
+  prove the last checkpoint, a recent one and the last message delivered on both proofs (LG-3), and waits
+  `RECOVERY_DELAY` (30 days) with at most `MAX_RECOVERY_VETOES` (2) vetoes by the freezer in the stall. Only a
+  checkpoint that ends the stall lapses the successor and restarts the count; a stale one, which the old pair can still
+  prove, leaves both (LG-2). `SNAPSHOT_EXIT_DELAY` (180 days) into a stall,
   `beginSnapshot` takes the last checkpoint as the snapshot for good. Holders then claim their share directly
   (`claimSnapshot`), at the recovery address they registered on the hub or one they signed for (EIP-712), within the
   speed limit; open intakes are settled or refunded from the hub's settled marks (`resolveIntake`); and a burn or
@@ -791,19 +799,25 @@ implement it over the same statement, so that one broken prover can stop coins b
 
 - **The statement** (`proofs/finality`, plain Rust tested natively): given the verifier's anchor, a checkpoint is
   finalized by Casper's two links, each signed by two thirds of the stake that the anchor's validator registry shows
-  active, plus a margin for the churn since the anchor, which is at most a day old. Every signer counts by its record
+  active, plus a margin for the churn since the anchor, which is at most a day old. Validators the registry holds
+  queued for activation count in that stake too, never as signers, since Electra activates a whole queue at once
+  (LG-6). Every signer counts by its record
   in that registry, proven against the anchor's root. The proof also commits to a root over every execution block
   since the last anchor, so a message in any of them can be proven.
 - **`FinalityVerifier`** is what both share on an EVM vault chain: a light client of Ethereum with no owner, which
   anyone advances with `update(publicValues, proof)` from the stored anchor only, and which proves a message by its
   receipt, a Merkle-Patricia proof against the receipts root of a block a proof covered. The first anchor comes from
-  the deployer and is checked during the chain's registration delay.
+  the deployer and is checked during the chain's registration delay. `update` refuses a proof once `MAX_LAG` (1 day)
+  has passed since the anchor's epoch began, dated from the beacon genesis time fixed at deployment, so a verifier left
+  behind stops for good rather than take a past checkpoint from validators who have since exited (LG-4).
 - **P1**, `EthereumFinalityVerifier`, checks an SP1 Groth16 proof on one SP1 verifier deployment, never SP1's
   gateway, which has an owner; `PROGRAM_KEY` fixes the program. **P2**, `RiscZeroFinalityVerifier`, checks a RISC Zero
   Groth16 proof of the same statement with the same public values, as `verify(seal, IMAGE_ID,
   sha256(publicValues))` on one RISC Zero verifier deployment, never its router. `script/DeployVault.s.sol` refuses any
   Groth16 verifier but SP1's v6.0.0 and RISC Zero's 3.0.0.
-- **On Solana**, `solana/programs/ethereum-verifier` is P1, the same verifier as a program. P2 on Solana is not built.
+- **On Solana**, `solana/programs/ethereum-verifier` is P1, the same verifier as a program, with the same day's lag. It
+  reads RLP in place, so only compute bounds a receipt, at about 19,600 logs (LG-1). P2 on Solana is not built, and
+  with no stall recovery there yet, a P1 left a day behind cannot be rotated out (LG-I4).
 - **Shared risk.** A bug in either zkVM breaks one system only; a bug in the statement breaks both. That is a known
   limitation (Stage B spec, section 11).
 - **Measured.** SP1's Groth16 check costs about 227k gas on an EVM and 96,910 compute units on Solana. P1's statement

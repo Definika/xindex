@@ -15,9 +15,13 @@ contract RiscZeroFinalityVerifier is FinalityVerifier {
     IRiscZeroVerifier public immutable RISC_ZERO_VERIFIER;
     bytes32 public immutable IMAGE_ID;
 
-    constructor(IRiscZeroVerifier riscZeroVerifier, bytes32 imageId, bytes32 initialAnchor, uint64 initialEpoch)
-        FinalityVerifier(initialAnchor, initialEpoch)
-    {
+    constructor(
+        IRiscZeroVerifier riscZeroVerifier,
+        bytes32 imageId,
+        bytes32 initialAnchor,
+        uint64 initialEpoch,
+        uint256 genesisTime
+    ) FinalityVerifier(initialAnchor, initialEpoch, genesisTime) {
         if (address(riscZeroVerifier) == address(0) || imageId == bytes32(0)) revert ZeroAddress();
         RISC_ZERO_VERIFIER = riscZeroVerifier;
         IMAGE_ID = imageId;

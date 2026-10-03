@@ -1527,6 +1527,9 @@ contract ScriptsTest is Test {
         assertEq(d.p2.IMAGE_ID(), p.p2ImageId);
         assertEq(d.p1.anchor(), p.anchor);
         assertEq(d.p2.anchor(), p.anchor);
+        assertEq(d.p1.GENESIS_TIME(), vaultDeployer.MAINNET_GENESIS_TIME());
+        assertEq(d.p2.GENESIS_TIME(), vaultDeployer.MAINNET_GENESIS_TIME());
+        assertEq(d.p1.MAX_LAG(), vaultDeployer.VERIFIER_MAX_LAG());
         bytes32[4] memory codehashes = vaultDeployer.checkDeployment(d, p);
         assertEq(codehashes[0], keccak256(address(d.vault).code));
         assertEq(codehashes[3], keccak256(address(d.stateReader).code));
@@ -1551,6 +1554,28 @@ contract ScriptsTest is Test {
         assertEq(d.vault.SOURCE_CHAIN_ID(), 1, "the source defaults to Ethereum mainnet");
         assertEq(d.vault.FACTORY(), p.factory);
         assertEq(d.p2.IMAGE_ID(), p.p2ImageId);
+    }
+
+    /// @dev LG-4: P1 and P2 date their anchor from the indexes' chain's beacon genesis, mainnet's or Sepolia's and no
+    ///      other, and the script refuses an anchor they could never advance from, a day after its epoch began.
+    function test_LG4_deployVaultRefusesAnAnchorTheVerifiersCannotAdvance() public {
+        DeployVault vaultDeployer = new DeployVault();
+        DeployVault.Params memory p = _vaultParams();
+        assertEq(vaultDeployer.genesisTime(1), 1_606_824_023);
+        assertEq(vaultDeployer.genesisTime(11_155_111), 1_655_733_600);
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.UnknownSource.selector, 17_000));
+        vaultDeployer.genesisTime(17_000);
+        p.sourceChainId = 17_000;
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.UnknownSource.selector, 17_000));
+        vaultDeployer.check(p);
+
+        p = _vaultParams();
+        uint256 lagEnds = 1_606_824_023 + uint256(p.anchorEpoch) * 384 + 1 days;
+        vm.warp(lagEnds);
+        vaultDeployer.check(p);
+        vm.warp(lagEnds + 1);
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.AnchorTooOld.selector, p.anchorEpoch, lagEnds));
+        vaultDeployer.check(p);
     }
 
     /// @dev Every parameter the vault depends on is checked before anything is broadcast.

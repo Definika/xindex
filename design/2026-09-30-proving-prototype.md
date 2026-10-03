@@ -336,7 +336,10 @@ cheaper statement proves only the second: two thirds of the stake signed attesta
    over: a conflicting finalized checkpoint still needs a third of the stake to be slashable.
 
 The one step not checked cryptographically is step 2, honest behaviour. It fails only if every signer of the link is
-faulty, which means two thirds faulty, and then the full rule fails as well.
+faulty, which means two thirds faulty. The full rule does not fail the same way then: with two thirds faulty, the
+one-epoch rule lets that coalition forge a finality at the cost of an epoch's rewards, while the full rule forces it
+into a double or surround vote, which is slashable. That difference is why P1 proves both links and does not rely on
+this argument (corrected 3 October 2026, LG-I3).
 
 **What to check before relying on it:**
 - The argument, by someone who knows Casper's safety proof.

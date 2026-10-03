@@ -13,9 +13,9 @@ import {RlpReader} from "../libraries/RlpReader.sol";
 ///         `_verifyProof`, which each implements.
 /// @dev No owner, no upgrade. The first anchor comes from the deployer, checked during the vault's listing delay as the
 ///      BNB verifier's first set is; every later one is proven. A proof that starts from any other anchor is refused,
-///      so the verifier follows Ethereum one proven step at a time, each at most a day past the last. The program fixes
-///      the statement and Ethereum's fork schedule: a new fork needs a new verifier, rotated in behind
-///      `ROTATION_DELAY`.
+///      so the verifier follows Ethereum one proven step at a time, each at most a day past the last. A verifier left
+///      more than `MAX_LAG` behind Ethereum's clock stops for good, as the BNB one does. The program fixes the statement
+///      and Ethereum's fork schedule: a new fork needs a new verifier, rotated in behind `ROTATION_DELAY`.
 abstract contract FinalityVerifier is IEthereumEventVerifier {
     using RlpReader for RlpReader.Item;
 
@@ -36,6 +36,13 @@ abstract contract FinalityVerifier is IEthereumEventVerifier {
         bytes32[] path;
     }
 
+    /// @notice How long after its epoch began an anchor may still be advanced from. The statement bounds each step in
+    ///         epochs; this bounds the anchor in time, so validators who have since exited, and can no longer be
+    ///         slashed, cannot sign a past checkpoint into a verifier left behind (LG-4).
+    uint256 public constant MAX_LAG = 1 days;
+    /// @notice When the network's beacon chain began, which dates every epoch.
+    uint256 public immutable GENESIS_TIME;
+
     /// @notice `keccak256(abi.encode(epoch, validatorsRoot, execHash, execNumber))` of the last checkpoint accepted.
     bytes32 public anchor;
     uint64 public anchorEpoch;
@@ -51,6 +58,8 @@ abstract contract FinalityVerifier is IEthereumEventVerifier {
     error NoReceipt(uint256 txIndex);
     error FailedTransaction(uint256 txIndex);
     error NoLog(uint256 logIndex);
+    /// @notice The anchor's epoch began more than MAX_LAG ago.
+    error TooOld(uint64 epoch);
 
     uint256 private constant ADDRESS_BYTES = 20;
     uint256 private constant STATUS = 0;
@@ -60,16 +69,22 @@ abstract contract FinalityVerifier is IEthereumEventVerifier {
     uint256 private constant SINGLE_BYTE = 0x80;
     /// @dev The shift that puts a byte first in a 32-byte word, where a left-aligned key starts.
     uint256 private constant FIRST_BYTE = 248;
+    /// @dev An epoch's 32 slots of 12 seconds.
+    uint256 private constant EPOCH_SECONDS = 384;
 
-    constructor(bytes32 initialAnchor, uint64 initialEpoch) {
-        if (initialAnchor == bytes32(0)) revert ZeroAddress();
+    /// @param genesisTime The network's beacon genesis time, which the program's network fixes.
+    constructor(bytes32 initialAnchor, uint64 initialEpoch, uint256 genesisTime) {
+        if (initialAnchor == bytes32(0) || genesisTime == 0) revert ZeroAddress();
         anchor = initialAnchor;
         anchorEpoch = initialEpoch;
+        GENESIS_TIME = genesisTime;
     }
 
-    /// @notice Anyone. Accepts a proof of the statement from the stored anchor, and records the blocks it covers.
+    /// @notice Anyone, within MAX_LAG of the anchor's epoch. Accepts a proof of the statement from the stored anchor,
+    ///         and records the blocks it covers.
     /// @param publicValues `abi.encode(anchorIn, anchorOut, epoch, headersRoot, first, last)`, as the program commits.
     function update(bytes calldata publicValues, bytes calldata proof) external {
+        if (block.timestamp > lagEnds()) revert TooOld(anchorEpoch);
         _verifyProof(publicValues, proof);
         (bytes32 anchorIn, bytes32 anchorOut, uint64 epoch, bytes32 headersRoot, uint64 first, uint64 last) =
             abi.decode(publicValues, (bytes32, bytes32, uint64, bytes32, uint64, uint64));
@@ -80,6 +95,11 @@ abstract contract FinalityVerifier is IEthereumEventVerifier {
         // The call before this is the zkVM verifier's view.
         // forge-lint: disable-next-line(reentrancy-events)
         emit Advanced(epoch, anchorOut, headersRoot, first, last);
+    }
+
+    /// @notice The last second the anchor may be advanced from: MAX_LAG after its epoch began.
+    function lagEnds() public view returns (uint256) {
+        return GENESIS_TIME + uint256(anchorEpoch) * EPOCH_SECONDS + MAX_LAG;
     }
 
     /// @notice The blocks the proof that recorded `headersRoot` covered; zero if none did.

@@ -168,4 +168,13 @@ interface IHybridIndexFactory is IIndexFactory {
 
     /// @notice Anyone, from the proposal's eta until PROPOSAL_WINDOW after it. Sends its message to the vault.
     function executeVaultProposal(bytes32 id) external;
+
+    /// @notice Whether the factory sent the vault message with id `id`.
+    function messageSent(bytes32 id) external view returns (bool);
+
+    /// @notice Anyone. Emits a message the factory sent again, unchanged, in a transaction of the caller's own, as an
+    ///         index's `resendMessage` does: a receipt made too large for a vault chain's verifier cannot keep a
+    ///         message from it (LG-1). Reverts `IHybridHubTypes.NotSent` for any payload the factory
+    ///         never sent.
+    function resendMessage(bytes calldata payload) external;
 }

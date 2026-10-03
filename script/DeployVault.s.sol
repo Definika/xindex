@@ -25,7 +25,8 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///   forge script script/DeployVault.s.sol --rpc-url <vault chain> --account deployer --sender <address> --broadcast --verify
 ///
 /// Env:
-///   VAULT_SOURCE_CHAIN_ID     The chain the indexes live on. Defaults to 1, Ethereum mainnet; never this chain.
+///   VAULT_SOURCE_CHAIN_ID     The chain the indexes live on: 1, Ethereum mainnet, the default, or Sepolia; never
+///                             this chain. It fixes the genesis time P1 and P2 date epochs from.
 ///   VAULT_FACTORY             The HybridIndexFactory on that chain, whose clones the vault serves.
 ///   VAULT_HUB_TEMPLATE        That factory's HYBRID_IMPLEMENTATION, which `registerIndex` computes clones from.
 ///   VAULT_SP1_VERIFIER        SP1's Groth16 verifier v6.0.0 on this chain: a bare verifier, never SP1's gateway.
@@ -34,7 +35,8 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///   VAULT_P1_KEY              P1's program key (`p1 vkey`, proofs/README.md).
 ///   VAULT_P2_IMAGE_ID         P2's image id (`p2 image-id`), from a reproducible build.
 ///   VAULT_ANCHOR, VAULT_ANCHOR_EPOCH  The finalized checkpoint P1 and P2 start from (`p1-input check-state`), the
-///                             same for both, checked during the chain's listing delay.
+///                             same for both, checked during the chain's listing delay. Each verifier stops for good
+///                             a day after its anchor's epoch, so both must be advanced daily from deployment on.
 ///   VAULT_FREEZER             The guardian's freeze address on this chain: it can only freeze.
 ///   VAULT_RECOVERY            The owner's emergency multisig on this chain, which proposes a successor pair after
 ///                             a stall: a contract.
@@ -47,6 +49,14 @@ contract DeployVault is Script {
     ///         selector (risc0-ethereum's deployment.toml at v3.0.1).
     bytes4 public constant RISC_ZERO_SELECTOR = 0x73c457ba;
     string public constant RISC_ZERO_VERSION = "3.0.0";
+    /// @notice The beacon chain's genesis time on Ethereum mainnet and on Sepolia, which date P1's and P2's epochs.
+    uint256 public constant MAINNET_GENESIS_TIME = 1_606_824_023;
+    uint256 public constant SEPOLIA_GENESIS_TIME = 1_655_733_600;
+    uint256 private constant SEPOLIA = 11_155_111;
+    /// @notice `FinalityVerifier.MAX_LAG`: how long after its epoch began P1 and P2 still advance from an anchor.
+    uint256 public constant VERIFIER_MAX_LAG = 1 days;
+    /// @dev An epoch's 32 slots of 12 seconds.
+    uint256 private constant EPOCH_SECONDS = 384;
 
     struct Params {
         uint256 sourceChainId;
@@ -87,6 +97,10 @@ contract DeployVault is Script {
     error FloorAboveCap(uint256 floor, uint256 cap);
     /// @notice `name` points at `actual` instead of `expected`, so these contracts are not one deployment.
     error WrongWiring(string name, address expected, address actual);
+    /// @notice The indexes' chain is neither Ethereum mainnet nor Sepolia, whose genesis times the script knows.
+    error UnknownSource(uint256 chainId);
+    /// @notice P1 and P2 could never advance from this anchor: its epoch began more than their MAX_LAG ago.
+    error AnchorTooOld(uint64 epoch, uint256 lagEnded);
 
     /// @notice Reads the parameters from the environment and calls {deploy}.
     function run() external returns (Deployment memory) {
@@ -116,8 +130,12 @@ contract DeployVault is Script {
     function deploy(Params memory p) public returns (Deployment memory d) {
         check(p);
         vm.startBroadcast();
-        d.p1 = new EthereumFinalityVerifier(ISP1Verifier(p.sp1Verifier), p.p1ProgramKey, p.anchor, p.anchorEpoch);
-        d.p2 = new RiscZeroFinalityVerifier(IRiscZeroVerifier(p.riscZeroVerifier), p.p2ImageId, p.anchor, p.anchorEpoch);
+        uint256 genesis = genesisTime(p.sourceChainId);
+        d.p1 =
+            new EthereumFinalityVerifier(ISP1Verifier(p.sp1Verifier), p.p1ProgramKey, p.anchor, p.anchorEpoch, genesis);
+        d.p2 = new RiscZeroFinalityVerifier(
+            IRiscZeroVerifier(p.riscZeroVerifier), p.p2ImageId, p.anchor, p.anchorEpoch, genesis
+        );
         d.stateReader = new EthereumStateReader();
         d.vault = new XindexVault(
             IXindexVault.Config({
@@ -146,8 +164,9 @@ contract DeployVault is Script {
         console2.log("EthereumStateReader hash:", vm.toString(codehashes[3]));
     }
 
-    /// @notice Refuses a deployment on the indexes' own chain, a missing address or key, a verifier that is not the
-    ///         pinned SP1 or RISC Zero one, and roles that are not what the vault assumes.
+    /// @notice Refuses a deployment on the indexes' own chain, a missing address or key, an anchor P1 and P2 could no
+    ///         longer advance from, a verifier that is not the pinned SP1 or RISC Zero one, and roles that are not what
+    ///         the vault assumes.
     function check(Params memory p) public view {
         if (block.chainid == p.sourceChainId) revert SourceChain(block.chainid);
         if (p.factory == address(0)) revert Required("VAULT_FACTORY");
@@ -155,9 +174,18 @@ contract DeployVault is Script {
         if (p.p1ProgramKey == bytes32(0)) revert Required("VAULT_P1_KEY");
         if (p.p2ImageId == bytes32(0)) revert Required("VAULT_P2_IMAGE_ID");
         if (p.anchor == bytes32(0)) revert Required("VAULT_ANCHOR");
+        uint256 lagEnds = genesisTime(p.sourceChainId) + uint256(p.anchorEpoch) * EPOCH_SECONDS + VERIFIER_MAX_LAG;
+        if (block.timestamp > lagEnds) revert AnchorTooOld(p.anchorEpoch, lagEnds);
         checkVerifiers(p.sp1Verifier, p.riscZeroVerifier);
         checkRoles(p.freezer, p.recoveryProposer);
         if (p.nativeFloor > p.nativeCap) revert FloorAboveCap(p.nativeFloor, p.nativeCap);
+    }
+
+    /// @notice The beacon genesis time of the indexes' chain, which P1 and P2 date their anchor's epoch from.
+    function genesisTime(uint256 sourceChainId) public pure returns (uint256) {
+        if (sourceChainId == 1) return MAINNET_GENESIS_TIME;
+        if (sourceChainId == SEPOLIA) return SEPOLIA_GENESIS_TIME;
+        revert UnknownSource(sourceChainId);
     }
 
     /// @notice Requires P1's Groth16 verifier to name itself SP1's v6.0.0 and P2's RISC Zero's 3.0.0 with its published

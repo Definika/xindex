@@ -9,17 +9,58 @@ its review, without changing it:
 - the finality statement both zkVMs prove (`proofs/finality`), the P1 and P2 guests, and the one-epoch argument.
 
 Each finding below has a concrete failure scenario. None lets anyone take coins: the worst is a message made
-permanently undeliverable on one chain. Their tests are in `audit/poc/2026-10-02/`. **Status: all open, none fixed.**
+permanently undeliverable on one chain. Their proof-of-concept tests are in `audit/poc/2026-10-02/`; each fix's
+regression test is named after its id and fails on the code before it.
 
-| Id | Severity | Status | Where |
-|---|---|---|---|
-| LG-1 | High | open | `solana/programs/ethereum-verifier` (`rlp.rs`, `event.rs`, `mpt.rs`) |
-| LG-2 | Medium | open | `XindexVault.advanceCheckpoint`, `vetoSuccessor` |
-| LG-3 | Low | open | `XindexVault.deliver` (`lastMessage`) |
-| LG-4 | Low | open | `FinalityVerifier.update` |
-| LG-5 | Low | open | `HybridHubModule.voidOrder`, `slashRebalance`; `HybridHubExtension.reportOutflow`, `reportForgedDeposit` |
-| LG-6 | Low | open | `proofs/finality/src/statement.rs`, `registry.rs` |
-| LG-I1 to LG-I4 | Info | open | documentation and an optional hardening |
+| Id | Severity | Status | Where | Regression tests |
+|---|---|---|---|---|
+| LG-1 | High | fixed (2026-10-03) | `solana/programs/ethereum-verifier` (`rlp.rs`, `event.rs`, `mpt.rs`); `resendMessage` on the hub and the factory | `test_lg1_a_receipt_of_513_logs_verifies`, `test_lg1_a_receipt_leaf_past_64kb_verifies` (Solana); `test_LG1_anyoneSendsAMessageAgain`, `test_LG1_anyoneSendsAFactoryMessageAgain` |
+| LG-2 | Medium | fixed (2026-10-03) | `XindexVault.advanceCheckpoint`, `vetoSuccessor`, `adoptSuccessor` | `test_LG2_aStaleCheckpointKeepsTheSuccessorAndTheVetoes` |
+| LG-3 | Low | fixed (2026-10-03) | `XindexVault.deliver` (`lastMessage`) | `test_LG3_aOneProofMessageIsNotTheLastMessage` |
+| LG-4 | Low | fixed (2026-10-03), and on Solana | `FinalityVerifier.update`, `DeployVault.check`; Solana `ethereum-verifier` `update` | `test_LG4_aVerifierLeftADayBehindStopsForGood`, `test_LG4_deployVaultRefusesAnAnchorTheVerifiersCannotAdvance`, `test_lg4_an_update_comes_at_most_a_day_after_its_anchor` (Solana, unit and LiteSVM) |
+| LG-5 | Low | fixed (2026-10-03) | `HybridHubStorage._provenSlot`, so `voidOrder`, `slashRebalance`, `reportOutflow`, `reportForgedDeposit` | `test_LG5_anExitedVaultsHonestStateIsNoEvidence`, `test_LG5_noSlashOnAVaultInItsExit` |
+| LG-6 | Low | fixed (2026-10-03) | `proofs/finality/src/statement.rs`, `registry.rs` | `test_lg6_validators_queued_at_the_anchor_count_in_the_total`, `test_lg6_a_checkpoint_block_two_epochs_old_is_refused` |
+| LG-I1 | Info | fixed by documentation (2026-10-03) | Stage B spec section 10, `MARGIN_PER_EPOCH_GWEI`'s comment | none |
+| LG-I2 | Info | fixed (2026-10-03) | `proofs/finality/src/statement.rs` | `test_lgi2_the_justifications_source_comes_before_c1` |
+| LG-I3 | Info | fixed by documentation (2026-10-03) | `design/2026-09-30-proving-prototype.md` | none |
+| LG-I4 | Info | fixed by documentation (2026-10-03) | Stage B spec section 10, ARCHITECTURE.md | none |
+
+**How each was fixed (2026-10-03):**
+- **LG-1.** The Solana verifier reads every RLP list in place, as `RlpReader.sol` does, and carries a node's length as a
+  `u32`. Only compute now bounds a receipt there: 513 logs take 41,633 units, and about 19,600 logs or 2.8 MB of log
+  data verify, below the about 44,700 empty logs a 2^24-gas transaction holds. So the Ethereum side carries the
+  backstop for any verifier's ceiling: the hub (`_post`) and the factory (`messageSent`) mark every message they send,
+  in the sending transaction, and anyone calls `resendMessage(payload)` to emit a marked message again, unchanged, in a
+  transaction of their own. The vault's used mark runs it once, and a stale governance message is still refused by its
+  nonce mark. Each settle or failure message now costs one more storage write per vault chain, about 22,000 gas. TRON's
+  ceiling (transaction size, 80 ms of CPU) was not measured; the resend covers it as it covers every other.
+- **LG-2.** `advanceCheckpoint` lapses the successor and resets the vetoes only when the new checkpoint ends the stall.
+  The count is the stall's, reset by such an advance and by `adoptSuccessor`; `_vetoStall` is gone. Stale advances stay
+  allowed, since they deliver burns sent just before the break (VLT-3).
+- **LG-3.** `deliver` sets `lastMessage` only for a message on both proofs.
+- **LG-4.** `FinalityVerifier` takes the network's beacon genesis time at construction (`GENESIS_TIME`) and refuses
+  `update` once `GENESIS_TIME + anchorEpoch * 384 + MAX_LAG` has passed, `MAX_LAG` being a day, checked before the
+  proof (`lagEnds()`). `DeployVault` takes mainnet's or Sepolia's genesis from the indexes' chain and refuses an anchor
+  already past it. The Solana twin had the same gap and takes the same rule (`check_lag`, `Lagging`), its genesis time
+  stored at `initialize`.
+- **LG-5.** Every evidence proof reads the vault's snapshot root in the same `verifySlots` call and is refused
+  (`ChainExited`) when it is set, and none is taken once the exit is recorded here. Reads that are not evidence (a
+  settlement, a re-confirmation, `recordExit` itself) take one slot as before.
+- **LG-6.** Both cases, with the public values unchanged, so no verifier changes; the program key and image id change
+  with the code. Every record not yet given an activation epoch counts in the total the threshold is two thirds of, and
+  never as signed stake: Electra puts its churn on deposits entering the registry, not on activations, so a queue grown
+  during a stall activates at once. Stake entering the registry after the anchor comes through the deposit churn, which
+  the margin covers. And `C1`'s block must lie in `C1`'s epoch or the one before (`StaleCheckpointBlock`), the one
+  epoch of staleness the next proof's margin counts; an honest checkpoint misses it only after 33 missed slots in a row,
+  and a later one serves. `p1 execute` and `p2 execute` on the real Sepolia input of 1 October still commit identical
+  public values.
+- **LG-I1.** Section 10 now gives the drift as the balance churn plus the deposits' 256 ETH an epoch, over twice covered
+  below about 50M ETH staked, and states the slashing after the anchor, which no churn limits, as a known limitation.
+- **LG-I2.** The justification's source must come before `C1` (`LinksDisagree` otherwise).
+- **LG-I3.** The prototype record's closing sentence is corrected: with two thirds faulty, the one-epoch rule lets the
+  coalition forge for an epoch's rewards, while the full rule forces a slashable vote.
+- **LG-I4.** The Stage B spec (section 10, on Solana) and ARCHITECTURE.md no longer say P1 there stops and is rotated:
+  with no stall recovery on the Solana vault, a P1 left a day behind there cannot be rotated out.
 
 ## LG-1 (High, confirmed): a message the EVM twin accepts can be made undeliverable on Solana, by anyone
 
