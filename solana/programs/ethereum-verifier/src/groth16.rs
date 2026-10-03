@@ -55,10 +55,6 @@ pub fn verify(
         vk_root,
         nonce,
     ];
-    // Multiplication does not reduce its scalar, so an input past the field would pass as its remainder.
-    if inputs.iter().any(|s| *s >= R) {
-        return Err(ProofError::NotInField);
-    }
     let points = [
         (PUB_0_X, PUB_0_Y),
         (PUB_1_X, PUB_1_Y),
@@ -66,13 +62,7 @@ pub fn verify(
         (PUB_3_X, PUB_3_Y),
         (PUB_4_X, PUB_4_Y),
     ];
-    // The public inputs' combination: CONSTANT + sum of input_i * PUB_i.
-    let mut l = [CONSTANT_X, CONSTANT_Y].concat();
-    for (s, (x, y)) in inputs.iter().zip(points) {
-        let term = alt_bn128_g1_multiplication_be(&[x, y, *s].concat())
-            .map_err(|_| ProofError::Invalid)?;
-        l = alt_bn128_g1_addition_be(&[l, term].concat()).map_err(|_| ProofError::Invalid)?;
-    }
+    let l = linear_combination((CONSTANT_X, CONSTANT_Y), &points, &inputs)?;
     // e(A, B) e(C, -delta) e(alpha, -beta) e(L, -gamma) == 1, with A, B and C as the proof encodes them.
     let pairing = [
         &proof[4 + 3 * 32..],
@@ -93,7 +83,36 @@ pub fn verify(
         &GAMMA_NEG_Y_0,
     ]
     .concat();
-    let result = alt_bn128_pairing_be(&pairing).map_err(|_| ProofError::Invalid)?;
+    pairing_is_one(&pairing)
+}
+
+/// The public inputs' combination on G1, `base + sum of inputs[i] * points[i]`, as a Groth16 verifier computes it, in
+/// Ethereum's encoding. Every input must lie in the scalar field: multiplication does not reduce its scalar, so an
+/// input past the field would pass as its remainder. Shared by P1's check and P2's (`risc0-verifier`).
+pub fn linear_combination(
+    base: ([u8; 32], [u8; 32]),
+    points: &[([u8; 32], [u8; 32])],
+    inputs: &[[u8; 32]],
+) -> Result<Vec<u8>, ProofError> {
+    if points.len() != inputs.len() {
+        return Err(ProofError::WrongLength);
+    }
+    if inputs.iter().any(|s| *s >= R) {
+        return Err(ProofError::NotInField);
+    }
+    let mut l = [base.0, base.1].concat();
+    for (s, (x, y)) in inputs.iter().zip(points) {
+        let term = alt_bn128_g1_multiplication_be(&[*x, *y, *s].concat())
+            .map_err(|_| ProofError::Invalid)?;
+        l = alt_bn128_g1_addition_be(&[l, term].concat()).map_err(|_| ProofError::Invalid)?;
+    }
+    Ok(l)
+}
+
+/// Succeeds only if the product of the pairings `input` lists, each a G1 point then a G2 point in Ethereum's encoding
+/// (EIP-197), is one.
+pub fn pairing_is_one(input: &[u8]) -> Result<(), ProofError> {
+    let result = alt_bn128_pairing_be(input).map_err(|_| ProofError::Invalid)?;
     let mut one = [0u8; 32];
     one[31] = 1;
     if result[..] != one {

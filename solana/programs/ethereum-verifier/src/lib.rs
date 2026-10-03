@@ -3,6 +3,11 @@
 //! any execution block those proofs covered. The twin of `EthereumFinalityVerifier.sol`, behind the vault's verifier
 //! interface (`xindex_vault::verify`).
 //!
+//! What P1 and P2 share is this crate's core, `process_with`, as `FinalityVerifier.sol` is what both EVM verifiers
+//! share: the anchor, the recorded ranges, the headers tree, the receipt proofs and the checkpoints. Each system adds
+//! only the check of its proof, a `ProofSystem`: P1's entrypoint passes SP1's (`SP1`), and P2, the `risc0-verifier`
+//! program, RISC Zero's.
+//!
 //! No owner and no upgrade: the deployer's upgrade authority sets the program key and the first anchor once, then
 //! makes the program immutable, which the vault requires of a verifier. Every later anchor is proven. A plain Solana
 //! program, with no program id of its own, so one build can serve one vault's P1 under any key.
@@ -14,11 +19,15 @@
 //! - `1`, initialize: data `programKey ++ anchor ++ epoch (u64) ++ genesisTime (u64)`, accounts `[state, authority
 //!   (signer), system program, program data]`; once, and only by the program's upgrade authority. `genesisTime` is the
 //!   beacon chain's: 1606824023 on mainnet, 1655733600 on Sepolia.
-//! - `2`, update: data `publicValues (192) ++ proof (356)`, accounts `[state, range, payer (signer), system program]`.
-//!   Anyone, until a day after the stored anchor's epoch began. Accepts an SP1 proof of the statement from the stored
-//!   anchor, and records the blocks it covers in the range account of their headers root.
-//! - `3`, check_proof: data `programKey ++ proof (356) ++ publicValues`, no accounts. Succeeds only if the proof is
-//!   SP1 v6's Groth16 proof that the program committed those values.
+//! - `2`, update: data `publicValues (192) ++ proof`, accounts `[state, range, payer (signer), system program]`.
+//!   Anyone, until a day after the stored anchor's epoch began. Accepts a proof of the statement from the stored
+//!   anchor, and records the blocks it covers in the range account of their headers root. P1's proof is 356 bytes.
+//! - `3`, check_proof: data `programKey ++ proof ++ publicValues`, no accounts. Succeeds only if the proof is the
+//!   system's Groth16 proof that the program committed those values: SP1 v6's, for P1.
+//! - `4`, verify_checkpoint: the vault's call. Data `block (u64) ++ timestamp (u64) ++ stateRoot (32) ++ proof`,
+//!   accounts `[range]`, or `[range, buffer]` with an empty proof, read then from the buffer. The proof is an event
+//!   proof's header part. Succeeds only if that block, with that timestamp and state root, lies at its place under a
+//!   recorded headers root, as `FinalityVerifier.verifyCheckpoint` returns it.
 //!
 //! Integers are little-endian. `state` is the account at the seed `"verifier"`; a range is at `"range" ++ headersRoot`.
 
@@ -46,9 +55,12 @@ pub const VERIFY_EVENT: u8 = 0;
 pub const INITIALIZE: u8 = 1;
 pub const UPDATE: u8 = 2;
 pub const CHECK_PROOF: u8 = 3;
+pub const VERIFY_CHECKPOINT: u8 = 4;
 
 /// The log the vault passes: block (8), emitter (20), topic0, topic1 and the data's hash (32 each).
 pub const LOG_LEN: usize = 8 + 20 + 3 * 32;
+/// The checkpoint the vault passes: block (8), timestamp (8) and state root (32).
+pub const CHECKPOINT_LEN: usize = 8 + 8 + 32;
 /// `abi.encode(anchorIn, anchorOut, epoch, headersRoot, first, last)`, as the P1 program commits it.
 pub const PUBLIC_VALUES_LEN: usize = 6 * 32;
 /// The state: the program key, the anchor, the anchor's epoch, and the network's genesis time.
@@ -85,6 +97,7 @@ pub enum VerifierError {
     NoLog,
     NotTheLog,
     Lagging,
+    NotTheCheckpoint,
 }
 
 impl From<VerifierError> for ProgramError {
@@ -97,24 +110,51 @@ pub fn keccak(parts: &[&[u8]]) -> [u8; 32] {
     solana_keccak_hasher::hashv(parts).to_bytes()
 }
 
+/// What a proof system adds to the shared core: the length of its proof, and the check that `proof` proves the program
+/// `key` committed `public_values`, as each EVM verifier's `_verifyProof`.
+pub struct ProofSystem {
+    pub proof_len: usize,
+    pub verify: fn(key: &[u8; 32], public_values: &[u8], proof: &[u8]) -> bool,
+}
+
+/// P1's: SP1 v6's Groth16 proof (`groth16`).
+pub const SP1: ProofSystem = ProofSystem {
+    proof_len: groth16::PROOF_LEN,
+    verify: |key, values, proof| groth16::verify(key, values, proof).is_ok(),
+};
+
 #[cfg(not(feature = "no-entrypoint"))]
 anchor_lang::solana_program::entrypoint!(process);
 
+/// P1's entrypoint: the shared core with SP1's check.
 pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
+    process_with(program_id, accounts, data, &SP1)
+}
+
+/// The shared core of P1 and P2: every instruction, with `system` checking each proof.
+pub fn process_with(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    data: &[u8],
+    system: &ProofSystem,
+) -> ProgramResult {
     let (tag, rest) = data.split_first().ok_or(VerifierError::BadInstruction)?;
     match *tag {
         VERIFY_EVENT => verify_event(program_id, accounts, rest),
         INITIALIZE => initialize(program_id, accounts, rest),
-        UPDATE => update(program_id, accounts, rest),
+        UPDATE => update(program_id, accounts, rest, system),
         CHECK_PROOF => {
             let (key, rest) = split::<32>(rest)?;
-            if rest.len() < groth16::PROOF_LEN {
+            if rest.len() < system.proof_len {
                 return Err(VerifierError::BadInstruction.into());
             }
-            let (proof, values) = rest.split_at(groth16::PROOF_LEN);
-            groth16::verify(&key, values, proof).map_err(|_| VerifierError::InvalidProof)?;
+            let (proof, values) = rest.split_at(system.proof_len);
+            if !(system.verify)(&key, values, proof) {
+                return Err(VerifierError::InvalidProof.into());
+            }
             Ok(())
         }
+        VERIFY_CHECKPOINT => verify_checkpoint(program_id, accounts, rest),
         _ => Err(VerifierError::BadInstruction.into()),
     }
 }
@@ -140,49 +180,82 @@ fn verify_event(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> P
     let topic0: [u8; 32] = data[28..60].try_into().unwrap();
     let topic1: [u8; 32] = data[60..92].try_into().unwrap();
     let data_hash: [u8; 32] = data[92..124].try_into().unwrap();
-    let inline = &data[LOG_LEN..];
     let range = accounts.first().ok_or(VerifierError::WrongAccount)?;
-
-    // A proof too long for a transaction is staged in a loader buffer: its length (u32), then its bytes. What the
-    // buffer holds is no more trusted than instruction data, so whose buffer it is does not matter.
-    let staged;
-    let proof: &[u8] = if inline.is_empty() {
-        let buffer = accounts.get(1).ok_or(VerifierError::WrongAccount)?;
-        if *buffer.owner != bpf_loader_upgradeable::id() {
-            return Err(VerifierError::WrongAccount.into());
+    with_proof(accounts, &data[LOG_LEN..], |proof| {
+        let p = event::parse(proof)?;
+        let (first, last) = read_range(program_id, range, &p.header.headers_root)?;
+        event::check_header(&p.header, first, last)?;
+        if p.header.number != block {
+            return Err(VerifierError::NotTheLog);
         }
-        staged = buffer.data.borrow();
-        if staged.len() < BUFFER_METADATA + 4 || staged[..4] != BUFFER_TAG {
-            return Err(VerifierError::WrongAccount.into());
+        let log = event::log(&p.header.receipts_root, &p.nodes, p.tx_index, p.log_index)?;
+        if log.emitter != emitter
+            || log.topic0 != topic0
+            || log.topic1 != topic1
+            || keccak(&[log.data]) != data_hash
+        {
+            return Err(VerifierError::NotTheLog);
         }
-        let len = u32::from_le_bytes(
-            staged[BUFFER_METADATA..BUFFER_METADATA + 4]
-                .try_into()
-                .unwrap(),
-        ) as usize;
-        let start = BUFFER_METADATA + 4;
-        staged
-            .get(start..start + len)
-            .ok_or(VerifierError::BadEventProof)?
-    } else {
-        inline
-    };
+        Ok(())
+    })
+}
 
-    let p = event::parse(proof)?;
-    let (first, last) = read_range(program_id, range, &p.header.headers_root)?;
-    event::check_header(&p.header, first, last)?;
-    if p.header.number != block {
-        return Err(VerifierError::NotTheLog.into());
+/// Runs `check` on the proof: `inline` when it is not empty, else the one staged in the loader buffer that follows the
+/// range among `accounts`, as its length (u32) then its bytes. A proof too long for a transaction is staged so. What
+/// the buffer holds is no more trusted than instruction data, so whose buffer it is does not matter; it is read in
+/// place, never copied, so a receipt of megabytes needs no heap.
+fn with_proof(
+    accounts: &[AccountInfo],
+    inline: &[u8],
+    check: impl FnOnce(&[u8]) -> Result<(), VerifierError>,
+) -> ProgramResult {
+    if !inline.is_empty() {
+        return Ok(check(inline)?);
     }
-    let log = event::log(&p.header.receipts_root, &p.nodes, p.tx_index, p.log_index)?;
-    if log.emitter != emitter
-        || log.topic0 != topic0
-        || log.topic1 != topic1
-        || keccak(&[log.data]) != data_hash
-    {
-        return Err(VerifierError::NotTheLog.into());
+    let buffer = accounts.get(1).ok_or(VerifierError::WrongAccount)?;
+    if *buffer.owner != bpf_loader_upgradeable::id() {
+        return Err(VerifierError::WrongAccount.into());
     }
-    Ok(())
+    let staged = buffer.data.borrow();
+    if staged.len() < BUFFER_METADATA + 4 || staged[..4] != BUFFER_TAG {
+        return Err(VerifierError::WrongAccount.into());
+    }
+    let len = u32::from_le_bytes(
+        staged[BUFFER_METADATA..BUFFER_METADATA + 4]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    let start = BUFFER_METADATA + 4;
+    let proof = staged
+        .get(start..start + len)
+        .ok_or(VerifierError::BadEventProof)?;
+    Ok(check(proof)?)
+}
+
+// ---------------------------------------------------------------------
+// verify_checkpoint
+// ---------------------------------------------------------------------
+
+/// The vault's checkpoint: the block, its timestamp and its state root, claimed by the caller and attested only if a
+/// header proof places that very leaf under a recorded headers root, as `FinalityVerifier.verifyCheckpoint` returns
+/// it on an EVM chain.
+fn verify_checkpoint(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
+    if data.len() < CHECKPOINT_LEN {
+        return Err(VerifierError::BadInstruction.into());
+    }
+    let block = u64::from_le_bytes(data[..8].try_into().unwrap());
+    let timestamp = u64::from_le_bytes(data[8..16].try_into().unwrap());
+    let state_root: [u8; 32] = data[16..48].try_into().unwrap();
+    let range = accounts.first().ok_or(VerifierError::WrongAccount)?;
+    with_proof(accounts, &data[CHECKPOINT_LEN..], |proof| {
+        let h = event::parse_header(proof)?;
+        let (first, last) = read_range(program_id, range, &h.headers_root)?;
+        event::check_header(&h, first, last)?;
+        if h.number != block || h.timestamp != timestamp || h.state_root != state_root {
+            return Err(VerifierError::NotTheCheckpoint);
+        }
+        Ok(())
+    })
 }
 
 /// The blocks the proof that recorded `headers_root` covered: its range account, this program's, at its address.
@@ -245,8 +318,13 @@ fn initialize(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Pro
     Ok(())
 }
 
-fn update(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
-    if data.len() != PUBLIC_VALUES_LEN + groth16::PROOF_LEN {
+fn update(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    data: &[u8],
+    proofs: &ProofSystem,
+) -> ProgramResult {
+    if data.len() != PUBLIC_VALUES_LEN + proofs.proof_len {
         return Err(VerifierError::BadInstruction.into());
     }
     let (values, proof) = data.split_at(PUBLIC_VALUES_LEN);
@@ -259,7 +337,9 @@ fn update(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Program
     }
     check_lag(&state.data.borrow(), Clock::get()?.unix_timestamp)?;
     let key: [u8; 32] = state.data.borrow()[..32].try_into().unwrap();
-    groth16::verify(&key, values, proof).map_err(|_| VerifierError::InvalidProof)?;
+    if !(proofs.verify)(&key, values, proof) {
+        return Err(VerifierError::InvalidProof.into());
+    }
     let v = apply_update(&mut state.data.borrow_mut(), values)?;
     let (range_key, bump) =
         Pubkey::find_program_address(&[RANGE_SEED, &v.headers_root], program_id);

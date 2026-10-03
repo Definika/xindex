@@ -3,7 +3,7 @@
 //! d3629729c3216eb51bd4859d027a8eb729399fa4): each is the Solidity constant as a 32-byte big-endian word.
 
 /// A 64-digit hex string as 32 bytes, at compile time.
-const fn h(s: &str) -> [u8; 32] {
+pub const fn h(s: &str) -> [u8; 32] {
     let b = s.as_bytes();
     assert!(b.len() == 64, "64 hex digits");
     let mut out = [0u8; 32];

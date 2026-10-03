@@ -1,6 +1,7 @@
-//! A vault message's log, shown in a block a P1 proof covered: the block's leaf at its place in the headers tree the
-//! proof recorded, then the receipt under the block's receipts root, which must have succeeded, and the log in it. As
-//! `EthereumFinalityVerifier.verifyEvent` checks it on an EVM chain.
+//! A vault message's log, shown in a block a P1 or P2 proof covered: the block's leaf at its place in the headers tree
+//! the proof recorded, then the receipt under the block's receipts root, which must have succeeded, and the log in it.
+//! As `FinalityVerifier.verifyEvent` checks it on an EVM chain. A checkpoint is the same block's leaf alone, as
+//! `FinalityVerifier.verifyCheckpoint` checks it.
 
 use crate::mpt;
 use crate::rlp::{to_item, Item};
@@ -69,16 +70,7 @@ impl<'a> Reader<'a> {
 /// once, so the heap holds at most 255 words and 255 slices.
 pub fn parse(proof: &[u8]) -> Result<EventProof<'_>, VerifierError> {
     let mut r = Reader { data: proof };
-    let headers_root = r.word()?;
-    let number = r.u64()?;
-    let timestamp = r.u64()?;
-    let state_root = r.word()?;
-    let receipts_root = r.word()?;
-    let depth = r.u8()?;
-    let mut path = Vec::with_capacity(depth.into());
-    for _ in 0..depth {
-        path.push(r.word()?);
-    }
+    let header = read_header(&mut r)?;
     let count = r.u8()?;
     let mut nodes = Vec::with_capacity(count.into());
     for _ in 0..count {
@@ -91,17 +83,43 @@ pub fn parse(proof: &[u8]) -> Result<EventProof<'_>, VerifierError> {
         return Err(VerifierError::BadEventProof);
     }
     Ok(EventProof {
-        header: Header {
-            headers_root,
-            number,
-            timestamp,
-            state_root,
-            receipts_root,
-            path,
-        },
+        header,
         nodes,
         tx_index,
         log_index,
+    })
+}
+
+/// Reads a checkpoint proof: an event proof's header part alone, `headersRoot ++ number ++ timestamp ++ stateRoot ++
+/// receiptsRoot ++ path count (u8) ++ path`, which must be the whole of `proof`. As `FinalityVerifier.verifyCheckpoint`
+/// takes `abi.encode(Header)`.
+pub fn parse_header(proof: &[u8]) -> Result<Header, VerifierError> {
+    let mut r = Reader { data: proof };
+    let header = read_header(&mut r)?;
+    if !r.data.is_empty() {
+        return Err(VerifierError::BadEventProof);
+    }
+    Ok(header)
+}
+
+fn read_header(r: &mut Reader) -> Result<Header, VerifierError> {
+    let headers_root = r.word()?;
+    let number = r.u64()?;
+    let timestamp = r.u64()?;
+    let state_root = r.word()?;
+    let receipts_root = r.word()?;
+    let depth = r.u8()?;
+    let mut path = Vec::with_capacity(depth.into());
+    for _ in 0..depth {
+        path.push(r.word()?);
+    }
+    Ok(Header {
+        headers_root,
+        number,
+        timestamp,
+        state_root,
+        receipts_root,
+        path,
     })
 }
 
