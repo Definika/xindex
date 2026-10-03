@@ -1,0 +1,16 @@
+[package]
+name = "p2-verifier"
+version = "0.1.0"
+description = "Xindex v4 Stage B: P2 on Stellar, a light client of Ethereum advanced by RISC Zero proofs, proving a vault message by its receipt"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk = { workspace = true }
+xindex-core = { workspace = true }
+xindex-soroban = { workspace = true }
