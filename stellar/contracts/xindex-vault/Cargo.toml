@@ -1,0 +1,21 @@
+[package]
+name = "xindex-vault"
+version = "0.1.0"
+description = "Xindex v4 Stage B: the vault on Stellar, a Soroban twin of XindexVault, holding XLM for every index on Ethereum"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk = { workspace = true }
+xindex-core = { workspace = true }
+xindex-soroban = { workspace = true }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+xindex-core = { path = "../../../crates/xindex-core" }
+serde_json = "1"
