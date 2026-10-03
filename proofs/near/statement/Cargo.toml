@@ -1,0 +1,18 @@
+[package]
+name = "xindex-near-finality"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "NEAR's state verifier's statement: a chain of NEAR light-client blocks, final under the producers of each epoch"
+
+[dependencies]
+sha2 = "0.10.8"
+# The version nearcore verifies approvals with (its workspace pins 2.2.0, non-strict `verify`).
+ed25519-dalek = { version = "2.2.0", default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+serde-big-array = "0.5"
+
+[dev-dependencies]
+serde_json = "1"
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["rand_core"] }
+rand = "0.8"
