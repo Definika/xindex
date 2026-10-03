@@ -4,7 +4,8 @@
 //
 //   1. SP1's and RISC Zero's Groth16 verifiers on their own real proofs: the BN254 pairing at the core of P1 and P2.
 //   2. P1's and P2's verifiers proving three real mainnet receipts (test/fixtures/ethereum/receipts.json) under a
-//      recorded headers root; the SNARK check there is the repository's mock, which accepts exactly those values.
+//      recorded headers root; the SNARK check there is the repository's mock, which accepts exactly those values. A
+//      verifier whose anchor is more than a day old refuses the same proof (LG-4).
 //   3. The vault end to end: register an index by Ethereum's CREATE2 formula, deposit TRX, attest the intake, settle it,
 //      and pay a burn to a new account. Its two proofs are MockEventVerifier, so what is measured is the vault.
 import { createRequire } from 'node:module';
@@ -146,6 +147,9 @@ async function warm(label, addr, sig, params) {
     const mock = await deploy(mockName);
     const v = await deploy(verifierName, encodeAbiParameters(parseAbiParameters('address, bytes32, bytes32, uint64, uint256'), [evmOf(mock), KEY, ANCHOR, EPOCH, GENESIS]));
     const proof = await seal(await tw.contract(art(mockName).abi, mock));
+    // LG-4: the same proof, to a verifier whose anchor's epoch began more than a day ago (300 epochs, 32 hours): refused.
+    const stale = await deploy(verifierName, encodeAbiParameters(parseAbiParameters('address, bytes32, bytes32, uint64, uint256'), [evmOf(mock), KEY, ANCHOR, EPOCH - 300n, GENESIS]));
+    await send(`${label} update, anchor a day old (LG-4)`, stale, 'update(bytes,bytes)', [b(pv), b(proof)], { expect: 'REVERT' });
     await send(`${label} update (SNARK mocked)`, v, 'update(bytes,bytes)', [b(pv), b(proof)]);
     for (const [k, c] of f.cases.entries()) {
       const ev = encodeAbiParameters(parseAbiParameters('(bytes32, uint64, uint64, bytes32, bytes32, bytes32[]), bytes[], uint256, uint256'), [header, c.proof, BigInt(c.txIndex), BigInt(c.logIndex)]);
