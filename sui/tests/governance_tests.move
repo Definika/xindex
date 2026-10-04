@@ -7,6 +7,7 @@ use sui::hash::keccak256;
 use xindex_vault::abi;
 use xindex_vault::bytes;
 use xindex_vault::harness::{Self, T};
+use xindex_vault::light_client;
 use xindex_vault::vault;
 
 const ONE: u64 = 1_000_000_000;
@@ -16,6 +17,7 @@ const FREEZER_CHANGE: u8 = 7;
 const VERIFIER_ROTATION: u8 = 8;
 const GOVERNANCE_DELAY: u64 = 7 * 86_400;
 const FREEZE_DURATION: u64 = 14 * 86_400;
+const MAINNET_GENESIS: u64 = 1_606_824_023;
 
 fun cap_of(t: &mut T): (u64, u64) {
     let v = t.take(harness::relayer());
@@ -58,14 +60,16 @@ fun a_freeze_and_a_lower_cap_need_one_proof() {
     t.govern(CAP_UPDATE, harness::cap_body(500 * ONE, ONE / 2), 1, false, true);
     let (cap, floor) = cap_of(&mut t);
     assert!(cap == 500 * ONE && floor == ONE / 2);
-    t.govern(FREEZE, vector[], 2, true, false);
-    assert!(frozen_until(&mut t) == t.now() + FREEZE_DURATION);
+    let until = t.now() + FREEZE_DURATION;
+    t.govern(FREEZE, harness::freeze_body(until), 2, true, false);
+    assert!(frozen_until(&mut t) == until);
     t.warp(100);
     freeze_by(&mut t, harness::freezer());
-    assert!(frozen_until(&mut t) == t.now() + FREEZE_DURATION);
-    // A factory freeze of an earlier time leaves the later one.
-    t.govern(FREEZE, vector[], 3, true, true);
-    assert!(frozen_until(&mut t) == t.now() + FREEZE_DURATION);
+    let later = t.now() + FREEZE_DURATION;
+    assert!(frozen_until(&mut t) == later);
+    // A factory freeze that ends earlier leaves the later one.
+    t.govern(FREEZE, harness::freeze_body(until), 3, true, true);
+    assert!(frozen_until(&mut t) == later);
     t.end();
 }
 
@@ -76,10 +80,55 @@ fun only_the_freezer_freezes() {
     t.end();
 }
 
-#[test, expected_failure(abort_code = vault::EBadMessage)]
-fun a_freeze_has_no_body() {
+/// A3-03: a freeze carries the end of the factory's freeze. Delivered once that end has passed, however late, it freezes
+/// nothing, though it is used up; delivered while the factory's freeze runs, it freezes the vault until that end, not
+/// FREEZE_DURATION from its delivery.
+#[test]
+fun test_a303_a_late_freeze_ends_with_the_factorys_freeze() {
     let mut t = harness::new();
-    t.govern(FREEZE, bytes::zero32(), 1, true, true);
+    let until = t.now() + FREEZE_DURATION;
+    let factory = xindex_vault::fixtures::hub_factory();
+    let vault_id = t.vault_id();
+    let stale = harness::message(harness::sepolia(), FREEZE, &factory, &harness::freeze_body(until), 1, harness::sui_testnet(), &vault_id);
+    // Nobody delivers it while the factory's freeze runs; once it is over, a stranger does.
+    t.set_now(until);
+    t.deliver_by(&factory, stale, true, false);
+    assert!(frozen_until(&mut t) == 0);
+    let v = t.take(harness::relayer());
+    assert!(vault::used(&v, keccak256(&stale)));
+    harness::put(v);
+    // One the factory sent 11 days ago, delivered now, freezes for the 3 days its freeze has left.
+    let ends = t.now() + 3 * 86_400;
+    t.govern(FREEZE, harness::freeze_body(ends), 2, true, false);
+    assert!(frozen_until(&mut t) == ends);
+    t.end();
+}
+
+/// A3-03: whatever end a freeze carries, it freezes for at most FREEZE_DURATION from its delivery; an end past 64 bits
+/// saturates.
+#[test]
+fun test_a303_a_freeze_lasts_at_most_freeze_duration() {
+    let mut t = harness::new();
+    t.govern(FREEZE, bytes::word(0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff), 1, true, false);
+    assert!(frozen_until(&mut t) == t.now() + FREEZE_DURATION);
+    t.end();
+}
+
+/// B4-04: a freeze's body is one word, the end of the factory's freeze; an empty one is refused.
+#[test, expected_failure(abort_code = vault::EBadMessage)]
+fun test_b404_a_freeze_body_is_one_word() {
+    let mut t = harness::new();
+    t.govern(FREEZE, vector[], 1, true, true);
+    t.end();
+}
+
+/// B4-04: and so is a longer one.
+#[test, expected_failure(abort_code = vault::EBadMessage)]
+fun test_b404_a_freeze_body_of_two_words_is_refused() {
+    let mut t = harness::new();
+    let mut body = harness::freeze_body(t.now() + FREEZE_DURATION);
+    body.append(bytes::zero32());
+    t.govern(FREEZE, body, 1, true, true);
     t.end();
 }
 
@@ -100,13 +149,19 @@ fun a_cap_update_names_the_native_coin() {
     t.end();
 }
 
-#[test, expected_failure(abort_code = abi::EOverflow)]
-fun a_cap_past_64_bits_is_refused() {
+/// B1-05: the factory proposes a cap in 256 bits, knowing no chain's width. Past 64 bits it means `u64::MAX` here, a
+/// raise like any other: both proofs, the delay, then it applies. Refused, it could never be delivered.
+#[test]
+fun test_b105_a_cap_wider_than_the_native_type_saturates() {
     let mut t = harness::new();
     let mut body = bytes::zero32();
-    body.append(bytes::word(1 << 64));
-    body.append(bytes::word64(1));
+    body.append(bytes::word(1 << 70));
+    body.append(bytes::word64(ONE));
     t.govern(CAP_UPDATE, body, 1, true, true);
+    t.warp(GOVERNANCE_DELAY);
+    apply(&mut t, CAP_UPDATE, body);
+    let (cap, floor) = cap_of(&mut t);
+    assert!(cap == 0xffffffffffffffff && floor == ONE);
     t.end();
 }
 
@@ -354,7 +409,7 @@ fun test_a302_a_cut_on_both_proofs_is_used_up() {
 #[test, expected_failure(abort_code = vault::EAlreadyDelivered)]
 fun test_a302_a_freeze_on_one_proof_is_used_up() {
     let mut t = harness::new();
-    let freeze = t.govern(FREEZE, vector[], 2, true, false);
+    let freeze = t.govern_freeze(2, true, false);
     t.deliver_by(&xindex_vault::fixtures::hub_factory(), freeze, true, false);
     t.end();
 }
@@ -371,7 +426,14 @@ fun test_vlt4_the_same_nonce_is_stale() {
 // Rotations
 // ---------------------------------------------------------------------
 
+/// Applies the rotation to `a` and `b`, kept alive to now as their provers would keep them.
 fun rotate(t: &mut T, body: vector<u8>, a: ID, b: ID) {
+    t.keep_alive(a);
+    t.keep_alive(b);
+    rotate_as_is(t, body, a, b);
+}
+
+fun rotate_as_is(t: &mut T, body: vector<u8>, a: ID, b: ID) {
     let mut v = t.take(harness::relayer());
     let (c1, c2) = (t.client(a), t.client(b));
     vault::apply_rotation(&mut v, body, &c1, &c2, t.clock());
@@ -482,6 +544,58 @@ fun a_freeze_holds_a_rotation() {
     freeze_by(&mut t, harness::freezer());
     t.warp(GOVERNANCE_DELAY);
     rotate(&mut t, body, a, b);
+    t.end();
+}
+
+/// B4-03: a rotated pair passes `create`'s checks of a pair. P1 must be the SP1 client and P2 the RISC Zero one.
+#[test, expected_failure(abort_code = vault::EWrongVerifier)]
+fun test_b403_a_rotation_takes_p1_as_sp1_and_p2_as_risc_zero() {
+    let mut t = harness::new();
+    let (a, b) = t.new_pair(11);
+    let body = harness::pair_body(b, a);
+    t.govern(VERIFIER_ROTATION, body, 1, true, true);
+    t.warp(GOVERNANCE_DELAY);
+    rotate(&mut t, body, b, a);
+    t.end();
+}
+
+/// B4-03: both must follow the source chain's beacon genesis: Ethereum mainnet's clients cannot prove Sepolia.
+#[test, expected_failure(abort_code = vault::EWrongVerifier)]
+fun test_b403_a_rotation_to_another_networks_clients_is_refused() {
+    let mut t = harness::new();
+    let a = t.client_with(light_client::sp1(), MAINNET_GENESIS);
+    let b = t.client_with(light_client::risc_zero(), MAINNET_GENESIS);
+    let body = harness::pair_body(a, b);
+    t.govern(VERIFIER_ROTATION, body, 1, true, true);
+    t.warp(GOVERNANCE_DELAY);
+    rotate(&mut t, body, a, b);
+    t.end();
+}
+
+/// B4-03: both must still be within their lag when the rotation applies: a pair nobody advanced through the delay can
+/// never prove anything again, and the vault would stall on it.
+#[test, expected_failure(abort_code = vault::EAnchorTooOld)]
+fun test_b403_a_rotation_to_clients_past_their_lag_is_refused() {
+    let mut t = harness::new();
+    let (a, b) = t.new_pair(11);
+    let body = harness::pair_body(a, b);
+    t.govern(VERIFIER_ROTATION, body, 1, true, true);
+    t.warp(GOVERNANCE_DELAY);
+    rotate_as_is(&mut t, body, a, b);
+    t.end();
+}
+
+/// B4-02, B4-03: and both must be anchored in an epoch that has begun, or they would not lag until their first update.
+#[test, expected_failure(abort_code = vault::EAnchorNotBegun)]
+fun test_b402_b403_a_rotation_to_clients_of_a_later_epoch_is_refused() {
+    let mut t = harness::new();
+    let later = harness::epoch_at(t.now() + GOVERNANCE_DELAY) + 2;
+    let a = t.client_at(light_client::sp1(), 11, later);
+    let b = t.client_at(light_client::risc_zero(), 12, later);
+    let body = harness::pair_body(a, b);
+    t.govern(VERIFIER_ROTATION, body, 1, true, true);
+    t.warp(GOVERNANCE_DELAY);
+    rotate_as_is(&mut t, body, a, b);
     t.end();
 }
 

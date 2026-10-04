@@ -170,6 +170,14 @@ public fun lag_ends(lc: &LightClient): u64 {
     if (ends > 0xffffffffffffffff) { 0xffffffffffffffff } else { ends as u64 }
 }
 
+/// When the anchor's epoch began: `genesisTime + epoch * 384`, saturating. Its creator declares the first epoch, so a
+/// vault takes a light client only once that epoch has begun: one anchored in a later epoch would not lag until its
+/// first update (B4-02).
+public fun epoch_start(lc: &LightClient): u64 {
+    let start = (lc.genesis_time as u128) + (lc.epoch as u128) * (SECONDS_PER_EPOCH as u128);
+    if (start > 0xffffffffffffffff) { 0xffffffffffffffff } else { start as u64 }
+}
+
 /// Aborts unless `proof` shows the log of `emitter` with topics `topic0` and `topic1` and data `data`, of a successful
 /// transaction, in Ethereum block `block`, at its place under a headers root this light client recorded.
 public fun verify_event(

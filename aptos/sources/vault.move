@@ -12,9 +12,10 @@
 ///   module reads. The vault id is the object's address. P1 and P2 are `light_client` objects of this package, named by
 ///   their addresses.
 /// - Time is `timestamp::now_seconds()` for every rule, and `now_microseconds()` in `attest`'s record.
-/// - Amounts are APT in octas, `u64`; one from Ethereum that does not fit is refused. APT is the fungible asset whose
-///   metadata is `0xa`. The coins sit in a fungible store at an object the vault owns, which only this module withdraws
-///   from, so `held` equals its balance but for what someone deposits there directly, which counts nowhere.
+/// - Amounts are APT in octas, `u64`; one from Ethereum that does not fit is refused, but for a cap or floor, which
+///   means `u64::MAX` (B1-05). APT is the fungible asset whose metadata is `0xa`. The coins sit in a fungible store at
+///   an object the vault owns, which only this module withdraws from, so `held` equals its balance but for what
+///   someone deposits there directly, which counts nowhere.
 /// - A recipient is a 32-byte Aptos address. A payout is APT deposited to its primary store, which never fails but for a
 ///   store frozen by the asset's issuer, and then the payout waits, owed, as on the EVM.
 /// - No owner, no upgrade, no capability: the package is published with `upgrade_policy = "immutable"`, and every role
@@ -99,10 +100,12 @@ module xindex_vault::vault {
     // 51 is Sui's `EVerifiersRequired`: on Aptos a rotation names addresses, so `apply_change` applies it.
     /// An argument of the wrong length: an index, salt, intake id or slot.
     const EBadLength: u64 = 52;
-    /// A freeze's body is not empty.
+    /// A freeze's body is not one word, the end of the factory's freeze (A3-03, B4-04).
     const EBadMessage: u64 = 53;
     /// No vault lives at the address.
     const ENoVault: u64 = 54;
+    /// A light client anchored in an epoch that has not begun: it would not lag until its first update (B4-02).
+    const EAnchorNotBegun: u64 = 55;
 
     // ---------------------------------------------------------------------
     // The rules, as the EVM vault's
@@ -412,11 +415,10 @@ module xindex_vault::vault {
     /// Creates a vault at `object::create_object_address(creator, b"xindex.v4.vault")` and returns that address, the
     /// vault id Ethereum's registry names. It refuses what `DeployVault` refuses where Move can see it: a source chain
     /// other than Ethereum or Sepolia, a chain id not Aptos's for it, a missing factory or template, light clients that
-    /// are not one SP1 and one RISC Zero client of this package and of the source chain's beacon genesis, still within
-    /// their lag, roles that are unset, the same or the creating key, and a floor above the cap. That the recovery
-    /// proposer is the owner's emergency multisig, and the freezer the guardian's key, is the deployment's to check
-    /// (README). Its first week's grace: a stall is a week without a new checkpoint, counted from creation until the
-    /// first.
+    /// are not a pair (`check_pair`), roles that are unset, the same or the creating key, and a floor above the cap.
+    /// That the recovery proposer is the owner's emergency multisig, and the freezer the guardian's key, is the
+    /// deployment's to check (README). Its first week's grace: a stall is a week without a new checkpoint, counted from
+    /// creation until the first, before which it takes no deposit (B1-04).
     public fun create(
         creator: &signer,
         source_chain_id: u64,
@@ -440,12 +442,8 @@ module xindex_vault::vault {
         };
         assert!(factory.length() == 20 && hub_implementation.length() == 20, EBadLength);
         assert!(!bytes::is_zero(&factory) && !bytes::is_zero(&hub_implementation), EZeroAddress);
-        assert!(light_client::is_client(p1) && light_client::is_client(p2), EWrongVerifier);
-        assert!(light_client::system(p1) == light_client::sp1(), EWrongVerifier);
-        assert!(light_client::system(p2) == light_client::risc_zero(), EWrongVerifier);
-        assert!(light_client::genesis_time(p1) == genesis && light_client::genesis_time(p2) == genesis, EWrongVerifier);
         let now = timestamp::now_seconds();
-        assert!(now <= light_client::lag_ends(p1) && now <= light_client::lag_ends(p2), EAnchorTooOld);
+        check_pair(p1, p2, genesis, now);
         assert!(freezer != @0x0 && recovery_proposer != @0x0, EZeroAddress);
         assert!(freezer != recovery_proposer, ESameRole);
         let creator_address = signer::address_of(creator);
@@ -555,9 +553,9 @@ module xindex_vault::vault {
         refresh_index(v, vault, &index);
     }
 
-    /// Anyone, while neither frozen nor stalled: deposits `amount` octas of APT from its primary store into intake
-    /// `intake_id` of `index`. The intake's deadline is its id's top 64 bits: nobody can open another's intake with
-    /// another deadline, and deposits close at it for all.
+    /// Anyone, from the first checkpoint on, while neither frozen nor stalled: deposits `amount` octas of APT from its
+    /// primary store into intake `intake_id` of `index`. The intake's deadline is its id's top 64 bits: nobody can open
+    /// another's intake with another deadline, and deposits close at it for all.
     public entry fun deposit(
         depositor: &signer,
         vault: address,
@@ -582,6 +580,8 @@ module xindex_vault::vault {
         check_not_frozen(v);
         // A stalled vault may never again see the message that would settle or fail an intake.
         assert!(!stalled_of(v), EVaultStalled);
+        // Nor may one without a checkpoint, from which no successor and no snapshot could follow either (B1-04).
+        assert!(!bytes::is_zero(&v.checkpoint.state_root), ENoCheckpoint);
         assert!(fungible_asset::metadata_from_asset(&fa) == apt(), ENotNative);
         let amount = fungible_asset::amount(&fa);
         assert!(amount != 0, EZeroAmount);
@@ -701,12 +701,13 @@ module xindex_vault::vault {
         let v = borrow_mut(vault);
         assert!(signer::address_of(freezer) == v.freezer, ENotFreezer);
         check_no_snapshot(v);
-        freeze_now(v, vault, false);
+        freeze_to(v, vault, timestamp::now_seconds() + FREEZE_DURATION, false);
     }
 
     /// Anyone, from its ready time: applies the waiting cap update, freezer change or rotation whose body its
-    /// `ChangeQueued` event announced. A freeze in force holds every change but the freezer's replacement: a freezer
-    /// that froze again and again must not be able to keep itself in place.
+    /// `ChangeQueued` event announced, a rotation's light clients a pair as `create` takes one (`check_pair`, B4-03). A
+    /// freeze in force holds every change but the freezer's replacement: a freezer that froze again and again must not
+    /// be able to keep itself in place.
     public entry fun apply_change(vault: address, kind: u8, body: vector<u8>) acquires Vault {
         let v = borrow_mut(vault);
         take_pending(v, kind, &body);
@@ -783,8 +784,8 @@ module xindex_vault::vault {
     }
 
     /// The recovery proposer only, while stalled, before a snapshot exit, with none under review: proposes the light
-    /// clients at `p1` and `p2`, one SP1 and one RISC Zero, which must prove the last checkpoint, a recent one and the
-    /// last message delivered on both proofs.
+    /// clients at `p1` and `p2`, a pair as `create` takes one (`check_pair`, B4-03), which must prove the last
+    /// checkpoint, a recent one and the last message delivered on both proofs.
     public fun propose_successor(
         proposer: &signer,
         vault: address,
@@ -797,7 +798,7 @@ module xindex_vault::vault {
         check_no_snapshot(v);
         assert!(stalled_of(v), ENotStalled);
         assert!(v.successor.review_ends == 0, ESuccessorPending);
-        check_pair(p1, p2);
+        check_pair(p1, p2, genesis_of(v), timestamp::now_seconds());
         // (a) The last checkpoint the pair in force accepted.
         let last = v.checkpoint;
         proven_by_both(p1, p2, &last, &proofs.last1, &proofs.last2);
@@ -910,9 +911,9 @@ module xindex_vault::vault {
 
     /// Anyone after the snapshot: pays `holder`'s share of APT in `index` at the snapshot, read from the hub's storage
     /// there, to `recipient`: the recovery address it registered in the hub for this chain, if any, which a contract
-    /// holder must register; otherwise the recipient it signed for with its Ethereum key (EIP-712, the domain's salt
-    /// this vault's id). Within the speed limit, as any payout: a snapshot of a forged checkpoint takes no more than a
-    /// forged burn. Once per holder and index.
+    /// holder must register; otherwise the recipient it signed for with its Ethereum key (EIP-712, the domain's chain id
+    /// Ethereum's and its salt this vault's id, B1-06). Within the speed limit, as any payout: a snapshot of a forged
+    /// checkpoint takes no more than a forged burn. Once per holder and index.
     public entry fun claim_snapshot(
         vault: address,
         index: vector<u8>,
@@ -936,7 +937,7 @@ module xindex_vault::vault {
             // A holder that registered a recovery address, such as a contract, is paid there and nowhere else.
             assert!(registered.destroy_some() == bcs::to_bytes(&recipient), EWrongRecipient);
         } else {
-            let message = snapshot::claim_message(&bcs::to_bytes(&vault), v.chain_id, &index, &holder, &bcs::to_bytes(&recipient));
+            let message = snapshot::claim_message(&bcs::to_bytes(&vault), v.source_chain_id, &index, &holder, &bcs::to_bytes(&recipient));
             snapshot::check_signature(&message, &signature, &holder);
         };
         let id = snapshot::claim_id(&index, &holder);
@@ -1070,11 +1071,25 @@ module xindex_vault::vault {
         assert!(c.timestamp + STALL_PERIOD >= timestamp::now_seconds(), ENotRecent);
     }
 
-    /// Two light clients of this package and of two different proof systems: a successor or rotated pair.
-    fun check_pair(p1: address, p2: address) {
+    /// A pair the vault can stand on, checked alike for the first pair, a rotated one and a successor (B4-03): two light
+    /// clients of this package and of two different proof systems, P1 an SP1 one and P2 a RISC Zero one, both of the
+    /// source chain's beacon genesis, both anchored in an epoch that has begun (B4-02) and can still be advanced from.
+    fun check_pair(p1: address, p2: address, genesis: u64, now: u64) {
         assert!(light_client::is_client(p1) && light_client::is_client(p2), EWrongVerifier);
         assert!(p1 != p2, EVerifiersNotDistinct);
         assert!(light_client::system(p1) != light_client::system(p2), EVerifiersNotDistinct);
+        assert!(
+            light_client::system(p1) == light_client::sp1() && light_client::system(p2) == light_client::risc_zero(),
+            EWrongVerifier,
+        );
+        assert!(light_client::genesis_time(p1) == genesis && light_client::genesis_time(p2) == genesis, EWrongVerifier);
+        assert!(light_client::epoch_start(p1) <= now && light_client::epoch_start(p2) <= now, EAnchorNotBegun);
+        assert!(now <= light_client::lag_ends(p1) && now <= light_client::lag_ends(p2), EAnchorTooOld);
+    }
+
+    /// The beacon genesis time of the vault's source chain, which `create` checked is Ethereum or Sepolia.
+    fun genesis_of(v: &Vault): u64 {
+        if (v.source_chain_id == ETHEREUM) ETHEREUM_GENESIS else SEPOLIA_GENESIS
     }
 
     /// Both light clients of a pair prove checkpoint `c`, as `_agreed` requires: the same block, timestamp and root.
@@ -1109,10 +1124,12 @@ module xindex_vault::vault {
         true
     }
 
-    /// A cap update's body: the native coin's id, which must be zero, then its cap and floor.
+    /// A cap update's body: the native coin's id, which must be zero, then its cap and floor. The factory proposes them
+    /// in 256 bits, knowing no chain's width; past 64 bits, a figure means `u64::MAX` here, never a refused message
+    /// (B1-05).
     fun read_cap(body: &vector<u8>): (u64, u64) {
         check_native(&abi::body_word(body, 3, 0));
-        (abi::amount(&abi::body_word(body, 3, 1)), abi::amount(&abi::body_word(body, 3, 2)))
+        (abi::saturating(&abi::body_word(body, 3, 1)), abi::saturating(&abi::body_word(body, 3, 2)))
     }
 
     /// A body word that must be zero: the vault holds APT only, `address(0)` on Ethereum.
@@ -1282,10 +1299,14 @@ module xindex_vault::vault {
         let kind = abi::kind(m);
         let body = abi::body(m);
         if (kind == FREEZE) {
-            assert!(body.is_empty(), EBadMessage);
+            // One word: when the factory's freeze ends, in Unix seconds (A3-03, B4-04).
+            assert!(body.length() == 32, EBadMessage);
             // Nothing could replace the freezer after a snapshot, and nothing may hold the exit off (VLT-5).
             check_no_snapshot(v);
-            freeze_now(v, vault, true);
+            // A freeze already over on Ethereum freezes nothing, however late it is delivered; one still running freezes
+            // to its end, and never past FREEZE_DURATION from now.
+            let (until, now) = (abi::saturating(&body), timestamp::now_seconds());
+            if (until > now) freeze_to(v, vault, min(until, now + FREEZE_DURATION), true);
             return
         };
         let nonce = abi::nonce(m);
@@ -1349,7 +1370,7 @@ module xindex_vault::vault {
             // Two light clients of this package, one SP1 and one RISC Zero, named by their objects' addresses.
             let p1 = from_bcs::to_address(abi::body_word(body, 2, 0));
             let p2 = from_bcs::to_address(abi::body_word(body, 2, 1));
-            check_pair(p1, p2);
+            check_pair(p1, p2, genesis_of(v), timestamp::now_seconds());
             v.p1 = p1;
             v.p2 = p2;
             event::emit(VerifiersRotated { vault, p1, p2 });
@@ -1363,9 +1384,8 @@ module xindex_vault::vault {
         &mut v.pending_rotation
     }
 
-    /// Freezes the vault for FREEZE_DURATION from now; a later freeze extends it, and none shortens it.
-    fun freeze_now(v: &mut Vault, vault: address, by_factory: bool) {
-        let until = timestamp::now_seconds() + FREEZE_DURATION;
+    /// Freezes the vault until `until`; a later freeze extends it, and none shortens it.
+    fun freeze_to(v: &mut Vault, vault: address, until: u64, by_factory: bool) {
         if (until > v.frozen_until) v.frozen_until = until;
         event::emit(Frozen { vault, until: v.frozen_until, by_factory });
     }

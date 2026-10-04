@@ -193,7 +193,7 @@ module xindex_vault::messages_tests {
     /// A governance kind is the factory's alone.
     fun a_freeze_from_an_index_is_refused() {
         let t = harness::new();
-        t.deliver(FREEZE, vector[]);
+        t.deliver(FREEZE, harness::freeze_body(harness::now() + 86_400));
     }
 
     #[test, expected_failure(abort_code = vault::EUnknownKind, location = vault)]

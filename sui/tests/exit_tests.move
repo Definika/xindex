@@ -159,6 +159,23 @@ fun a_recorded_burn_runs_once() {
     t.end();
 }
 
+/// B1-06: the claim's EIP-712 domain names the vault's source chain, Ethereum's (Sepolia here), where the holder's wallet
+/// is: wallets refuse a domain whose chain id is not the network they are on, and no EVM network carries the registry's
+/// id for Sui. The holder signed that domain's digest (`cast wallet sign`), and the vault pays on it.
+#[test]
+fun test_b106_the_claim_domain_names_ethereum() {
+    let ethereum = snapshot::claim_message(&f::hub_vault(), harness::sepolia(), &f::hub_index(), &f::holder_a(), &f::holder_a_recipient());
+    assert!(keccak256(&ethereum) == f::holder_a_digest());
+    let registry = snapshot::claim_message(&f::hub_vault(), harness::sui_testnet(), &f::hub_index(), &f::holder_a(), &f::holder_a_recipient());
+    assert!(keccak256(&registry) != f::holder_a_digest());
+    let mut t = settled();
+    claim_a(&mut t, recipient_a(), 1, f::holder_a_signature());
+    let id = snapshot::claim_id(&f::hub_index(), &f::holder_a());
+    assert!(t.received(recipient_a()) == 10 * UNIT * 4 / 100);
+    assert!(t.owed_remaining(id) == 5 * UNIT - 10 * UNIT * 4 / 100);
+    t.end();
+}
+
 #[test, expected_failure(abort_code = vault::EAlreadyClaimed)]
 fun a_holder_claims_once() {
     let mut t = settled();
@@ -277,7 +294,7 @@ fun the_malleable_signature_recovers_the_holder() {
     let mut raw = bytes::slice(&sig, 0, 32);
     raw.append(bytes::word(n - s));
     raw.push_back(if (sig[64] == 27) 1 else 0);
-    let message = snapshot::claim_message(&f::hub_vault(), harness::sui_testnet(), &f::hub_index(), &f::holder_a(), &f::holder_a_recipient());
+    let message = snapshot::claim_message(&f::hub_vault(), harness::sepolia(), &f::hub_index(), &f::holder_a(), &f::holder_a_recipient());
     let key = sui::ecdsa_k1::decompress_pubkey(&sui::ecdsa_k1::secp256k1_ecrecover(&raw, &message, 0));
     assert!(bytes::slice(&keccak256(&bytes::slice(&key, 1, 64)), 12, 20) == f::holder_a());
 }
@@ -466,7 +483,7 @@ fun the_reads_and_the_digest_are_soliditys() {
     assert!(state_reader::read_slots(&root, &index, &vector[f::settled_intake_slot()], &f::settled_intake_proof()) == vector[f::settled_intake_mark()]);
     assert!(state_reader::read_slots(&root, &index, &vector[f::open_intake_slot()], &f::open_intake_proof()) == vector[bytes::zero32()]);
     assert!(state_reader::read_slots(&root, &index, &vector[f::unsent_burn_slot()], &f::unsent_burn_proof()) == vector[bytes::zero32()]);
-    let message = snapshot::claim_message(&f::hub_vault(), harness::sui_testnet(), &index, &f::holder_a(), &f::holder_a_recipient());
+    let message = snapshot::claim_message(&f::hub_vault(), harness::sepolia(), &index, &f::holder_a(), &f::holder_a_recipient());
     assert!(keccak256(&message) == f::holder_a_digest());
     snapshot::check_signature(&message, &f::holder_a_signature(), &f::holder_a());
     // The shares, as the hub holds them: four at 7.5 SUI, plus a claim of 7.5; three to a recovery address.

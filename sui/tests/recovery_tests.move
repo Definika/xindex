@@ -338,6 +338,45 @@ fun a_successor_of_one_system_is_refused() {
     t.end();
 }
 
+/// B4-03: a successor passes `create`'s checks of a pair. P1 must be the SP1 client and P2 the RISC Zero one.
+#[test, expected_failure(abort_code = vault::EWrongVerifier)]
+fun test_b403_a_successor_takes_p1_as_sp1_and_p2_as_risc_zero() {
+    let mut t = harness::new();
+    let (settle, block, pair) = continuity_setup(&mut t);
+    let swapped = harness::pair_of(pair.second(), pair.first());
+    let c = t.continuity(swapped, 9_000, settle, block);
+    t.propose(harness::recovery(), swapped, c);
+    t.end();
+}
+
+/// B4-03: both must follow the source chain's beacon genesis: Ethereum mainnet's clients cannot prove Sepolia.
+#[test, expected_failure(abort_code = vault::EWrongVerifier)]
+fun test_b403_a_successor_of_another_network_is_refused() {
+    let mut t = harness::new();
+    let (settle, block, _) = continuity_setup(&mut t);
+    let a = t.client_with(light_client::sp1(), 1_606_824_023);
+    let b = t.client_with(light_client::risc_zero(), 1_606_824_023);
+    let pair = harness::pair_of(a, b);
+    let c = t.continuity(pair, 9_000, settle, block);
+    t.propose(harness::recovery(), pair, c);
+    t.end();
+}
+
+/// B4-02, B4-03: both must be anchored in an epoch that has begun, or they would not lag until their first update.
+#[test, expected_failure(abort_code = vault::EAnchorNotBegun)]
+fun test_b402_b403_a_successor_of_a_later_epoch_is_refused() {
+    let mut t = harness::new();
+    t.warp(STALL_PERIOD + 1);
+    let later = harness::epoch_at(t.now()) + 2;
+    let a = t.client_at(light_client::sp1(), 41, later);
+    let b = t.client_at(light_client::risc_zero(), 42, later);
+    let pair = harness::pair_of(a, b);
+    // Refused before any proof is read: a later epoch's clients could not prove the continuity test anyway.
+    let none = vault::continuity(vector[], vector[], 0, 0, vector[], vector[], vector[], vector[], 0, vector[], vector[]);
+    t.propose(harness::recovery(), pair, none);
+    t.end();
+}
+
 // ---------------------------------------------------------------------
 // Vetoes and lapse (LG-2)
 // ---------------------------------------------------------------------
@@ -476,11 +515,11 @@ fun test_lg3_a_one_proof_message_is_not_the_last_message() {
     let mut t = harness::new();
     let (settle, block, _) = continuity_setup(&mut t);
     let real = keccak256(&settle);
-    let forged = t.govern(FREEZE, vector[], 1, true, false);
+    let forged = t.govern_freeze(1, true, false);
     let v = t.take(harness::relayer());
     assert!(vault::used(&v, keccak256(&forged)) && vault::frozen_until(&v) > 0);
     harness::put(v);
-    t.govern(FREEZE, vector[], 2, false, true);
+    t.govern_freeze(2, false, true);
     assert!(t.last_message() == real);
     t.warp(STALL_PERIOD + 1);
     let pair = t.successor_pair(80);
@@ -497,7 +536,7 @@ fun test_lg3_a_one_proof_message_is_not_the_last_message() {
 fun a_two_proof_freeze_is_the_last_message() {
     let mut t = harness::new();
     let (settle, block, _) = continuity_setup(&mut t);
-    t.govern(FREEZE, vector[], 1, true, true);
+    t.govern_freeze(1, true, true);
     t.warp(STALL_PERIOD + 1);
     let pair = t.successor_pair(80);
     let c = t.continuity(pair, 9_000, settle, block);
@@ -546,7 +585,7 @@ fun the_snapshot_waits_180_days_into_the_stall() {
 /// Without a checkpoint there is no state to pay from.
 #[test, expected_failure(abort_code = vault::ENoCheckpoint)]
 fun no_snapshot_without_a_checkpoint() {
-    let mut t = harness::new();
+    let mut t = harness::created();
     let start = t.stall_start();
     t.set_now(start + SNAPSHOT_EXIT_DELAY);
     t.begin_snapshot();
@@ -602,7 +641,7 @@ fun test_vlt5_the_factory_cannot_freeze_after_the_snapshot() {
     t.advance(1_000);
     let factory = xindex_vault::fixtures::hub_factory();
     let vault_id = t.vault_id();
-    let freeze = harness::message(harness::sepolia(), FREEZE, &factory, &vector[], 1, harness::sui_testnet(), &vault_id);
+    let freeze = harness::message(harness::sepolia(), FREEZE, &factory, &harness::freeze_body(t.now() + 14 * 86_400), 1, harness::sui_testnet(), &vault_id);
     let proof = t.proof_for(&factory, &freeze, 900);
     let start = t.stall_start();
     t.set_now(start + SNAPSHOT_EXIT_DELAY);
@@ -617,7 +656,7 @@ fun test_vlt5_no_message_from_after_the_snapshot() {
     let mut t = snapshotted();
     let factory = xindex_vault::fixtures::hub_factory();
     let vault_id = t.vault_id();
-    let freeze = harness::message(harness::sepolia(), FREEZE, &factory, &vector[], 1, harness::sui_testnet(), &vault_id);
+    let freeze = harness::message(harness::sepolia(), FREEZE, &factory, &harness::freeze_body(t.now() + 14 * 86_400), 1, harness::sui_testnet(), &vault_id);
     let proof = t.proof_for(&factory, &freeze, 1_001);
     t.deliver_raw(freeze, 1_001, proof, proof);
     t.end();

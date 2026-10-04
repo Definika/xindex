@@ -94,9 +94,20 @@ public fun bare(now: u64): T {
     T { s, clock, vault: object::id_from_address(@0x0), p1: id1, p2: id2, block: 1_000, nonce: 0, index: f::hub_index() }
 }
 
-/// The vault created a little before the fixture's settled intake's deadline, with its index registered.
+/// The vault created a little before the fixture's settled intake's deadline, with its index registered and its first
+/// checkpoint landed, a second after its creation: a vault takes no deposit before one (B1-04).
 public fun new(): T {
-    let now = f::settled_intake_deadline() - 600;
+    let mut t = created();
+    let now = t.now() + 1;
+    t.set_now(now);
+    t.advance_to(1, now, keccak256(&b"first"));
+    t
+}
+
+/// The vault as `create` leaves it, with its index registered: its checkpoint the genesis one, with no state, dated a
+/// second before `new`'s.
+public fun created(): T {
+    let now = f::settled_intake_deadline() - 601;
     let mut t = bare(now);
     t.s.next_tx(CREATOR);
     let p1 = t.s.take_shared_by_id<LightClient>(t.p1);
@@ -152,6 +163,16 @@ public fun client_with(t: &mut T, system: u8, genesis: u64): ID {
     t.s.next_tx(RELAYER);
     let now = t.now();
     let lc = light_client::new(system, vector::tabulate!(32, |_| 5u8), vector::tabulate!(32, |_| 6u8), (now - genesis) / 384, genesis, t.s.ctx());
+    let id = object::id(&lc);
+    light_client::share(lc);
+    id
+}
+
+/// Shares a light client of `system`, seeded `seed`, of Sepolia's genesis, anchored at `epoch`, which may not have
+/// begun.
+public fun client_at(t: &mut T, system: u8, seed: u8, epoch: u64): ID {
+    t.s.next_tx(RELAYER);
+    let lc = light_client(system, seed, epoch, t.s.ctx());
     let id = object::id(&lc);
     light_client::share(lc);
     id
@@ -420,6 +441,11 @@ public fun burn_body(amount: u64, recipient: address): vector<u8> {
     out
 }
 
+/// A freeze's body: when the factory's freeze ends, in Unix seconds.
+public fun freeze_body(until: u64): vector<u8> {
+    bytes::word64(until)
+}
+
 public fun cap_body(cap: u64, floor: u64): vector<u8> {
     let mut out = bytes::zero32();
     out.append(bytes::word64(cap));
@@ -522,6 +548,12 @@ public fun govern(t: &mut T, kind: u8, body: vector<u8>, nonce: u64, p1: bool, p
     let payload = message(SEPOLIA, kind, &factory, &body, nonce, SUI_TESTNET, &vault);
     t.deliver_by(&factory, payload, p1, p2);
     payload
+}
+
+/// The factory's freeze with `nonce`, sent now: it ends FREEZE_DURATION from now, as `_freezeChain` records it.
+public fun govern_freeze(t: &mut T, nonce: u64, p1: bool, p2: bool): vector<u8> {
+    let body = freeze_body(t.now() + 14 * 86_400);
+    t.govern(6, body, nonce, p1, p2)
 }
 
 /// The next block for a message: one the vault's checkpoint already covers.
@@ -670,9 +702,12 @@ public fun successor_pair(t: &mut T, seed: u8): Pair {
 }
 
 /// The continuity test the clients `pair` pass: the vault's last checkpoint, a recent one at `recent_block`, and, when
-/// `payload` is not empty, the last message, `payload` in `block`, each proven by both.
+/// `payload` is not empty, the last message, `payload` in `block`, each proven by both, the pair kept alive to now as
+/// its provers would keep it.
 public fun continuity(t: &mut T, pair: Pair, recent_block: u64, payload: vector<u8>, block: u64): vault::Continuity {
     let (a, b) = (pair.a, pair.b);
+    t.keep_alive(a);
+    t.keep_alive(b);
     let (last_block, last_ts, last_root) = t.checkpoint();
     let last = t.checkpoint_proof(last_block, last_ts, &last_root, a, b);
     let mut pre = b"recent";
@@ -773,6 +808,23 @@ public fun new_pair(t: &mut T, seed: u8): (ID, ID) {
     light_client::share(a);
     light_client::share(b);
     (ida, idb)
+}
+
+/// Advances the light client `id` one step to the epoch now in progress, as its provers keep it alive: a rotated or
+/// successor pair must still be within its lag when it is taken (B4-03).
+public fun keep_alive(t: &mut T, id: ID) {
+    t.s.next_tx(RELAYER);
+    let mut lc = t.s.take_shared_by_id<LightClient>(id);
+    let anchor = light_client::anchor(&lc);
+    let epoch = (t.now() - light_client::genesis_time(&lc)) / 384;
+    let mut values = anchor;
+    values.append(keccak256(&anchor));
+    values.append(bytes::word64(epoch));
+    values.append(keccak256(&bytes::word64(epoch)));
+    values.append(bytes::word64(0));
+    values.append(bytes::word64(0));
+    light_client::advance_at_for_testing(&mut lc, values, t.now());
+    ts::return_shared(lc);
 }
 
 /// The SP1 and RISC Zero fixtures' clients: SP1's program key and RISC Zero's image id, anchored now.

@@ -127,8 +127,8 @@ module xindex_vault::recovery_tests {
     fun recovery_by_the_entry_function() {
         let t = harness::new();
         t.advance(1_000);
-        let pair = t.successor_pair(30);
         harness::warp(STALL_PERIOD + 1);
+        let pair = t.successor_pair(30);
         let (a, b) = (pair.first(), pair.second());
         let (last_block, last_ts, last_root) = t.checkpoint();
         let last = harness::checkpoint_proof(last_block, last_ts, &last_root, a, b);
@@ -356,6 +356,42 @@ module xindex_vault::recovery_tests {
     }
 
     #[test, expected_failure(abort_code = vault::EWrongVerifier, location = vault)]
+    /// B4-03: a successor passes `create`'s checks of a pair. P1 must be the SP1 client and P2 the RISC Zero one.
+    fun test_b403_a_successor_takes_p1_as_sp1_and_p2_as_risc_zero() {
+        let t = harness::new();
+        let (settle, block, pair) = continuity_setup(&mut t);
+        let swapped = harness::pair_of(pair.second(), pair.first());
+        let c = t.continuity(swapped, 9_000, settle, block);
+        t.propose(harness::recovery(), swapped, c);
+    }
+
+    #[test, expected_failure(abort_code = vault::EWrongVerifier, location = vault)]
+    /// B4-03: both must follow the source chain's beacon genesis: Ethereum mainnet's clients cannot prove Sepolia.
+    fun test_b403_a_successor_of_another_network_is_refused() {
+        let t = harness::new();
+        let (settle, block, _) = continuity_setup(&mut t);
+        let a = t.client_with(light_client::sp1(), 1_606_824_023);
+        let b = t.client_with(light_client::risc_zero(), 1_606_824_023);
+        let pair = harness::pair_of(a, b);
+        let c = t.continuity(pair, 9_000, settle, block);
+        t.propose(harness::recovery(), pair, c);
+    }
+
+    #[test, expected_failure(abort_code = vault::EAnchorNotBegun, location = vault)]
+    /// B4-02, B4-03: both must be anchored in an epoch that has begun, or they would not lag until their first update.
+    fun test_b402_b403_a_successor_of_a_later_epoch_is_refused() {
+        let t = harness::new();
+        harness::warp(STALL_PERIOD + 1);
+        let later = harness::epoch_at(harness::now()) + 2;
+        let a = t.client_at(light_client::sp1(), 41, later);
+        let b = t.client_at(light_client::risc_zero(), 42, later);
+        let pair = harness::pair_of(a, b);
+        // Refused before any proof is read: a later epoch's clients could not prove the continuity test anyway.
+        let none = vault::continuity(vector[], vector[], 0, 0, vector[], vector[], vector[], vector[], 0, vector[], vector[]);
+        t.propose(harness::recovery(), pair, none);
+    }
+
+    #[test, expected_failure(abort_code = vault::EWrongVerifier, location = vault)]
     /// A successor must be light clients of this package.
     fun a_successor_must_be_light_clients() {
         let t = harness::new();
@@ -497,9 +533,9 @@ module xindex_vault::recovery_tests {
         let t = harness::new();
         let (settle, block, _) = continuity_setup(&mut t);
         let real = keccak256(settle);
-        let forged = t.govern(FREEZE, vector[], 1, true, false);
+        let forged = t.govern_freeze(1, true, false);
         assert!(vault::used(t.vault(), keccak256(forged)) && vault::frozen_until(t.vault()) > 0);
-        t.govern(FREEZE, vector[], 2, false, true);
+        t.govern_freeze(2, false, true);
         assert!(t.last_message() == real);
         harness::warp(STALL_PERIOD + 1);
         let pair = t.successor_pair(80);
@@ -514,7 +550,7 @@ module xindex_vault::recovery_tests {
     fun a_two_proof_freeze_is_the_last_message() {
         let t = harness::new();
         let (settle, block, _) = continuity_setup(&mut t);
-        t.govern(FREEZE, vector[], 1, true, true);
+        t.govern_freeze(1, true, true);
         harness::warp(STALL_PERIOD + 1);
         let pair = t.successor_pair(80);
         let c = t.continuity(pair, 9_000, settle, block);
@@ -558,7 +594,7 @@ module xindex_vault::recovery_tests {
     #[test, expected_failure(abort_code = vault::ENoCheckpoint, location = vault)]
     /// Without a checkpoint there is no state to pay from.
     fun no_snapshot_without_a_checkpoint() {
-        let t = harness::new();
+        let t = harness::created();
         let start = t.stall_start();
         harness::set_now(start + SNAPSHOT_EXIT_DELAY);
         t.begin_snapshot();
@@ -606,7 +642,7 @@ module xindex_vault::recovery_tests {
         t.advance(1_000);
         let factory = f::hub_factory();
         let vault_id = t.vault_id();
-        let freeze = harness::message(harness::sepolia(), FREEZE, &factory, &vector[], 1, harness::aptos_testnet(), &vault_id);
+        let freeze = harness::message(harness::sepolia(), FREEZE, &factory, &harness::freeze_body(harness::now() + 14 * 86_400), 1, harness::aptos_testnet(), &vault_id);
         let proof = t.proof_for(&factory, &freeze, 900);
         let start = t.stall_start();
         harness::set_now(start + SNAPSHOT_EXIT_DELAY);
@@ -620,7 +656,7 @@ module xindex_vault::recovery_tests {
         let t = snapshotted();
         let factory = f::hub_factory();
         let vault_id = t.vault_id();
-        let freeze = harness::message(harness::sepolia(), FREEZE, &factory, &vector[], 1, harness::aptos_testnet(), &vault_id);
+        let freeze = harness::message(harness::sepolia(), FREEZE, &factory, &harness::freeze_body(harness::now() + 14 * 86_400), 1, harness::aptos_testnet(), &vault_id);
         let proof = t.proof_for(&factory, &freeze, 1_001);
         t.deliver_raw(freeze, 1_001, proof, proof);
     }

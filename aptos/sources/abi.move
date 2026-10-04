@@ -121,6 +121,13 @@ module xindex_vault::abi {
         (x as u64)
     }
 
+    /// A word holding a limit or a time, which saturates at 64 bits: no amount of octas and no second here reaches past
+    /// them, so a larger figure means the same as `u64::MAX` (B1-05, A3-03).
+    public fun saturating(w: &vector<u8>): u64 {
+        let x = bytes::to_u256(w);
+        if (x > MAX_U64) { (MAX_U64 as u64) } else { (x as u64) }
+    }
+
     /// A word holding an address: its 12 high bytes must be zero.
     public fun to_address(w: &vector<u8>): vector<u8> {
         assert!(w.length() == WORD, EBadMessage);

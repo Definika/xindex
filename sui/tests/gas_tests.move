@@ -13,6 +13,18 @@ use xindex_vault::vault;
 
 const ONE: u64 = 1_000_000_000;
 
+/// `harness::new`'s vault, its first checkpoint landed without proofs: a deposit needs one (B1-04), and Sui prices a
+/// test's instructions in tiers, so proving it would raise what every call after it measures.
+fun fresh(): T {
+    let mut t = harness::created();
+    let now = t.now() + 1;
+    t.set_now(now);
+    let mut v = t.take(harness::relayer());
+    vault::checkpoint_for_testing(&mut v, 1, now, sui::hash::keccak256(&b"first"));
+    harness::put(v);
+    t
+}
+
 fun take_all(t: &mut T) {
     let v = t.take(harness::relayer());
     let (c1, c2) = (t.client(vault::p1(&v)), t.client(vault::p2(&v)));
@@ -33,7 +45,7 @@ fun the_precomputed_proofs_are_the_harnesss() {
 
 #[test]
 fun gas_deposit_baseline() {
-    let mut t = harness::new();
+    let mut t = fresh();
     let v = t.take(harness::alice());
     let coin = sui::coin::mint_for_testing<sui::sui::SUI>(ONE, t.ctx());
     sui::coin::burn_for_testing(coin);
@@ -43,14 +55,14 @@ fun gas_deposit_baseline() {
 
 #[test]
 fun gas_deposit() {
-    let mut t = harness::new();
+    let mut t = fresh();
     t.deposit(harness::alice(), f::gas_intake(), ONE);
     t.end();
 }
 
 /// The vault with 4 SUI in the gas intake, its settle's block recorded by both clients and checkpointed.
 fun settle_setup(amount: u64): T {
-    let mut t = harness::new();
+    let mut t = fresh();
     t.deposit(harness::alice(), f::gas_intake(), amount);
     let (p1, p2) = t.pair();
     t.record_for(p1, f::gas_settle_root(), 1_001);
@@ -76,7 +88,7 @@ fun gas_deliver_settle() {
 
 /// The index funded with 1,000 SUI, credited directly so the setup stays cheap, and the burn's block recorded.
 fun burn_setup(): T {
-    let mut t = harness::new();
+    let mut t = fresh();
     let mut v = t.take(harness::relayer());
     let coin = sui::coin::mint_for_testing<sui::sui::SUI>(1_000 * ONE, t.ctx());
     vault::credit_for_testing(&mut v, f::hub_index(), coin);
@@ -105,7 +117,7 @@ fun gas_deliver_burn() {
 }
 
 fun attest_setup(): T {
-    let mut t = harness::new();
+    let mut t = fresh();
     t.deposit(harness::alice(), f::attest_intake_id(), 3 * ONE);
     t.set_ms(f::attest_timestamp_ms());
     t

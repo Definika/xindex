@@ -147,6 +147,22 @@ module xindex_vault::exit_tests {
         recorded(&t, f::burn_payload(), f::burn_proof());
     }
 
+    #[test]
+    /// B1-06: the claim's EIP-712 domain names the vault's source chain, Ethereum's (Sepolia here), where the holder's
+    /// wallet is: wallets refuse a domain whose chain id is not the network they are on, and no EVM network carries the
+    /// registry's id for Aptos. The holder signed that domain's digest (`cast wallet sign`), and the vault pays on it.
+    fun test_b106_the_claim_domain_names_ethereum() {
+        let ethereum = snapshot::claim_message(&f::hub_vault(), harness::sepolia(), &f::hub_index(), &f::holder_a(), &f::holder_a_recipient());
+        assert!(keccak256(ethereum) == f::holder_a_digest());
+        let registry = snapshot::claim_message(&f::hub_vault(), harness::aptos_testnet(), &f::hub_index(), &f::holder_a(), &f::holder_a_recipient());
+        assert!(keccak256(registry) != f::holder_a_digest());
+        let t = settled();
+        claim_a(&t, recipient_a(), 1, f::holder_a_signature());
+        let id = snapshot::claim_id(&f::hub_index(), &f::holder_a());
+        assert!(t.received(recipient_a()) == 10 * UNIT * 4 / 100);
+        assert!(t.owed_remaining(id) == 5 * UNIT - 10 * UNIT * 4 / 100);
+    }
+
     #[test, expected_failure(abort_code = vault::EAlreadyClaimed, location = vault)]
     fun a_holder_claims_once() {
         let t = settled();
@@ -254,7 +270,7 @@ module xindex_vault::exit_tests {
         let raw = bytes::slice(&sig, 0, 32);
         raw.append(bytes::word(n - s));
         let id = if (sig[64] == 27) 1 else 0;
-        let message = snapshot::claim_message(&f::hub_vault(), harness::aptos_testnet(), &f::hub_index(), &f::holder_a(), &f::holder_a_recipient());
+        let message = snapshot::claim_message(&f::hub_vault(), harness::sepolia(), &f::hub_index(), &f::holder_a(), &f::holder_a_recipient());
         let key = secp256k1::ecdsa_recover(keccak256(message), id, &secp256k1::ecdsa_signature_from_bytes(raw));
         let key = secp256k1::ecdsa_raw_public_key_to_bytes(&key.destroy_some());
         assert!(bytes::slice(&keccak256(key), 12, 20) == f::holder_a());
@@ -263,7 +279,7 @@ module xindex_vault::exit_tests {
     #[test, expected_failure(abort_code = snapshot::EBadSignature, location = snapshot)]
     /// An `r` that is no point's x-coordinate recovers no key: refused, here, with the rule's own code.
     fun an_r_off_the_curve_is_refused() {
-        let message = snapshot::claim_message(&f::hub_vault(), harness::aptos_testnet(), &f::hub_index(), &f::holder_a(), &f::holder_a_recipient());
+        let message = snapshot::claim_message(&f::hub_vault(), harness::sepolia(), &f::hub_index(), &f::holder_a(), &f::holder_a_recipient());
         // x = 5 has no point on secp256k1 (5^3 + 7 = 132 is no square mod p).
         let sig = bytes::word(5);
         sig.append(bytes::word(1));
@@ -273,7 +289,7 @@ module xindex_vault::exit_tests {
 
     #[test, expected_failure(abort_code = snapshot::EBadSignature, location = snapshot)]
     fun an_r_of_zero_is_refused() {
-        let message = snapshot::claim_message(&f::hub_vault(), harness::aptos_testnet(), &f::hub_index(), &f::holder_a(), &f::holder_a_recipient());
+        let message = snapshot::claim_message(&f::hub_vault(), harness::sepolia(), &f::hub_index(), &f::holder_a(), &f::holder_a_recipient());
         let sig = bytes::zero32();
         sig.append(bytes::word(1));
         sig.push_back(27);
@@ -473,7 +489,7 @@ module xindex_vault::exit_tests {
         assert!(state_reader::read_slots(&root, &index, &vector[f::settled_intake_slot()], &f::settled_intake_proof()) == vector[f::settled_intake_mark()]);
         assert!(state_reader::read_slots(&root, &index, &vector[f::open_intake_slot()], &f::open_intake_proof()) == vector[bytes::zero32()]);
         assert!(state_reader::read_slots(&root, &index, &vector[f::unsent_burn_slot()], &f::unsent_burn_proof()) == vector[bytes::zero32()]);
-        let message = snapshot::claim_message(&f::hub_vault(), harness::aptos_testnet(), &index, &f::holder_a(), &f::holder_a_recipient());
+        let message = snapshot::claim_message(&f::hub_vault(), harness::sepolia(), &index, &f::holder_a(), &f::holder_a_recipient());
         assert!(keccak256(message) == f::holder_a_digest());
         snapshot::check_signature(&message, &f::holder_a_signature(), &f::holder_a());
         // The shares, as the hub holds them: four at 15 APT, plus a claim of 15; three to a recovery address.

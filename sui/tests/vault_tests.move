@@ -29,7 +29,7 @@ fun create(t: &mut T, source: u64, chain: u64, freezer: address, recovery: addre
 
 #[test]
 fun a_vault_is_created_with_its_settings() {
-    let mut t = harness::new();
+    let mut t = harness::created();
     let v = t.take(harness::relayer());
     assert!(vault::source_chain_id(&v) == harness::sepolia() && vault::chain_id(&v) == harness::sui_testnet());
     assert!(vault::factory(&v) == f::hub_factory() && vault::hub_implementation(&v) == f::hub_implementation());
@@ -142,10 +142,46 @@ fun the_recovery_proposer_is_not_the_creating_key() {
     t.end();
 }
 
+/// B2-02: a floor above the cap would let the speed limit pay out more than 4% a day: refused, as `DeployVault` refuses
+/// it.
 #[test, expected_failure(abort_code = vault::EFloorAboveCap)]
-fun a_floor_above_the_cap_is_refused() {
+fun test_b202_a_floor_above_the_cap_is_refused() {
     let mut t = bare();
     create(&mut t, harness::sepolia(), harness::sui_testnet(), harness::freezer(), harness::recovery(), 10, 11);
+    t.end();
+}
+
+/// B2-02: messages come from Ethereum, never from the vault's own chain: Sui's id is no source.
+#[test, expected_failure(abort_code = vault::EUnknownSource)]
+fun test_b202_the_vaults_own_chain_is_no_source() {
+    let mut t = bare();
+    create(&mut t, harness::sui_testnet(), harness::sui_testnet(), harness::freezer(), harness::recovery(), 10, 1);
+    t.end();
+}
+
+/// B4-02: a light client's first epoch is its creator's word. One anchored in an epoch that has not begun would not
+/// lag until its first update, so the vault refuses it.
+#[test, expected_failure(abort_code = vault::EAnchorNotBegun)]
+fun test_b402_a_client_of_a_later_epoch_is_refused() {
+    let mut t = bare();
+    let next = harness::epoch_at(t.now()) + 1;
+    let p1 = t.client_at(light_client::sp1(), 9, next);
+    let p2 = t.p2_id();
+    t.create_with(harness::creator(), harness::sepolia(), harness::sui_testnet(), f::hub_factory(), p1, p2, harness::freezer(), harness::recovery(), 10, 1);
+    t.end();
+}
+
+/// B4-02: one whose epoch began this very second is taken.
+#[test]
+fun test_b402_a_client_whose_epoch_begins_now_is_taken() {
+    let epoch = harness::epoch_at(f::settled_intake_deadline());
+    let mut t = harness::bare(harness::sepolia_genesis() + epoch * 384);
+    let (p1, p2) = (t.p1_id(), t.p2_id());
+    t.scenario().next_tx(harness::relayer());
+    let c1 = t.client(p1);
+    assert!(light_client::epoch_start(&c1) == t.now());
+    harness::put_client(c1);
+    t.create_with(harness::creator(), harness::sepolia(), harness::sui_testnet(), f::hub_factory(), p1, p2, harness::freezer(), harness::recovery(), 10, 1);
     t.end();
 }
 
@@ -318,6 +354,27 @@ fun test_stall_a_week_without_a_checkpoint() {
     assert!(t.stalled());
     t.advance(10);
     assert!(!t.stalled());
+    t.end();
+}
+
+/// B1-04: before its first checkpoint the vault takes no deposit: no message could settle or fail the intake, and no
+/// successor or snapshot could follow if none ever came.
+#[test, expected_failure(abort_code = vault::ENoCheckpoint)]
+fun test_b104_no_deposit_before_the_first_checkpoint() {
+    let mut t = harness::created();
+    let intake = harness::intake_id(t.now() + 3600, 1);
+    t.deposit(harness::alice(), intake, ONE);
+    t.end();
+}
+
+/// B1-04: from the first checkpoint on, it does.
+#[test]
+fun test_b104_a_deposit_after_the_first_checkpoint_is_taken() {
+    let mut t = harness::created();
+    let intake = harness::intake_id(t.now() + 3600, 1);
+    t.advance(1);
+    t.deposit(harness::alice(), intake, ONE);
+    assert!(t.held() == ONE);
     t.end();
 }
 

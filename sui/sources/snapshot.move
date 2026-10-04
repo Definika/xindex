@@ -2,7 +2,7 @@
 /// `VaultSnapshot.sol` and of `crates/xindex-core/src/snapshot.rs`, for a vault chain without a 20-byte address for its
 /// vault. The chain is named by the id the factory's registry gives it; a recovery address is a whole 32-byte Sui
 /// address, so only zero counts as none; and the signed claim names a 32-byte recipient, under a domain whose salt is
-/// the vault's 32-byte id.
+/// the vault's 32-byte id and whose chain id is Ethereum's, where the holder's wallet already is (B1-06).
 module xindex_vault::snapshot;
 
 use sui::ecdsa_k1;
@@ -132,11 +132,14 @@ public fun claim_id(index: &vector<u8>, holder: &vector<u8>): vector<u8> {
     keccak256(&pre)
 }
 
-/// What `holder` signs to have the vault `vault_id` on chain `chain_id` pay its share of `index` to `recipient`: the
-/// EIP-712 message `0x1901 ++ domainSeparator ++ structHash`, whose keccak256 is the digest signed.
+/// What `holder` signs to have the vault `vault_id`, whose messages come from chain `source_chain_id`, pay its share of
+/// `index` to `recipient`: the EIP-712 message `0x1901 ++ domainSeparator ++ structHash`, whose keccak256 is the digest
+/// signed. The domain's chain id is Ethereum's (1, or Sepolia's 11155111), the network the holder's wallet is on:
+/// wallets refuse to sign for a chain id that is not the active network's, and no EVM network carries the registry's id
+/// for Sui. The salt, the vault's id, keeps the domain this vault's alone (B1-06).
 public fun claim_message(
     vault_id: &vector<u8>,
-    chain_id: u64,
+    source_chain_id: u64,
     index: &vector<u8>,
     holder: &vector<u8>,
     recipient: &vector<u8>,
@@ -144,7 +147,7 @@ public fun claim_message(
     let mut domain = EIP712_DOMAIN_TYPEHASH;
     domain.append(EIP712_NAME_HASH);
     domain.append(EIP712_VERSION_HASH);
-    domain.append(bytes::word64(chain_id));
+    domain.append(bytes::word64(source_chain_id));
     domain.append(*vault_id);
     let mut claim = SNAPSHOT_CLAIM_TYPEHASH;
     claim.append(bytes::address_word(index));

@@ -10,8 +10,9 @@
 /// - The vault is a shared object; its 32-byte id is that object's id. P1 and P2 are `light_client::LightClient` shared
 ///   objects of this package, named by their object ids, which every call that proves something passes in.
 /// - Time is the `Clock` (0x6), in seconds for every rule, and in milliseconds in `attest`'s record.
-/// - Amounts are SUI in MIST, `u64`; one from Ethereum that does not fit is refused. The coins sit in the vault's own
-///   `Balance<SUI>`, which only this module can split, so `held` always equals it.
+/// - Amounts are SUI in MIST, `u64`; one from Ethereum that does not fit is refused, but for a cap or floor, which means
+///   `u64::MAX` (B1-05). The coins sit in the vault's own `Balance<SUI>`, which only this module can split, so `held`
+///   always equals it.
 /// - A recipient is a 32-byte Sui address. A payout is a `Coin<SUI>` transferred to it, which never fails.
 /// - No owner, no upgrade, no capability: the package is made immutable in its publishing transaction, and every role
 ///   is an address fixed in the vault's state (README, "Ownerless and immutable").
@@ -91,8 +92,11 @@ const EAnchorTooOld: u64 = 50;
 const EVerifiersRequired: u64 = 51;
 /// An argument of the wrong length: an index, salt, intake id or slot.
 const EBadLength: u64 = 52;
-/// A freeze's body is not empty.
+/// A freeze's body is not one word, the end of the factory's freeze (A3-03, B4-04).
 const EBadMessage: u64 = 53;
+// 54 is Aptos's `ENoVault`: on Sui the vault is an object passed in.
+/// A light client anchored in an epoch that has not begun: it would not lag until its first update (B4-02).
+const EAnchorNotBegun: u64 = 55;
 
 // ---------------------------------------------------------------------
 // The rules, as the EVM vault's
@@ -347,11 +351,11 @@ public struct SnapshotClaimed has copy, drop {
 // ---------------------------------------------------------------------
 
 /// Creates and shares a vault, refusing what `DeployVault` refuses where Move can see it: a source chain other than
-/// Ethereum or Sepolia, a chain id not Sui's for it, a missing factory or template, light clients that are not one SP1
-/// and one RISC Zero client of the source chain's beacon genesis, still within their lag, roles that are unset, the same
-/// or the creating key, and a floor above the cap. That the recovery proposer is the owner's emergency multisig, and
-/// the freezer the guardian's key, is the deployment's to check (README). Its first week's grace: a stall is a week
-/// without a new checkpoint, counted from creation until the first.
+/// Ethereum or Sepolia, a chain id not Sui's for it, a missing factory or template, light clients that are not a pair
+/// (`check_pair`), roles that are unset, the same or the creating key, and a floor above the cap. That the recovery
+/// proposer is the owner's emergency multisig, and the freezer the guardian's key, is the deployment's to check
+/// (README). Its first week's grace: a stall is a week without a new checkpoint, counted from creation until the first,
+/// before which it takes no deposit (B1-04).
 public fun create(
     source_chain_id: u64,
     chain_id: u64,
@@ -376,11 +380,8 @@ public fun create(
     };
     assert!(factory.length() == 20 && hub_implementation.length() == 20, EBadLength);
     assert!(!bytes::is_zero(&factory) && !bytes::is_zero(&hub_implementation), EZeroAddress);
-    assert!(light_client::system(p1) == light_client::sp1(), EWrongVerifier);
-    assert!(light_client::system(p2) == light_client::risc_zero(), EWrongVerifier);
-    assert!(light_client::genesis_time(p1) == genesis && light_client::genesis_time(p2) == genesis, EWrongVerifier);
     let now = now(clock);
-    assert!(now <= light_client::lag_ends(p1) && now <= light_client::lag_ends(p2), EAnchorTooOld);
+    check_pair(p1, p2, genesis, now);
     assert!(freezer != @0x0 && recovery_proposer != @0x0, EZeroAddress);
     assert!(freezer != recovery_proposer, ESameRole);
     assert!(freezer != ctx.sender() && recovery_proposer != ctx.sender(), ERoleIsCreator);
@@ -442,8 +443,9 @@ public fun register_index(vault: &mut Vault, index: vector<u8>, salt: vector<u8>
     refresh_index(vault, &index);
 }
 
-/// Anyone, while neither frozen nor stalled: deposits `coin` into intake `intake_id` of `index`. The intake's deadline
-/// is its id's top 64 bits: nobody can open another's intake with another deadline, and deposits close at it for all.
+/// Anyone, from the first checkpoint on, while neither frozen nor stalled: deposits `coin` into intake `intake_id` of
+/// `index`. The intake's deadline is its id's top 64 bits: nobody can open another's intake with another deadline, and
+/// deposits close at it for all.
 public fun deposit(
     vault: &mut Vault,
     index: vector<u8>,
@@ -456,6 +458,8 @@ public fun deposit(
     check_not_frozen(vault, clock);
     // A stalled vault may never again see the message that would settle or fail an intake.
     assert!(!stalled(vault, clock), EVaultStalled);
+    // Nor may one without a checkpoint, from which no successor and no snapshot could follow either (B1-04).
+    assert!(!bytes::is_zero(&vault.checkpoint.state_root), ENoCheckpoint);
     let amount = coin.value();
     assert!(amount != 0, EZeroAmount);
     assert!(intake_id.length() == 32, EBadLength);
@@ -581,7 +585,7 @@ public fun release(vault: &mut Vault, index: vector<u8>, id: vector<u8>, clock: 
 public fun freeze_vault(vault: &mut Vault, clock: &Clock, ctx: &TxContext) {
     assert!(ctx.sender() == vault.freezer, ENotFreezer);
     check_no_snapshot(vault);
-    freeze_now(vault, false, clock);
+    freeze_to(vault, now(clock) + FREEZE_DURATION, false);
 }
 
 /// Anyone, from its ready time: applies the waiting cap update or freezer change whose body its `ChangeQueued` event
@@ -595,12 +599,13 @@ public fun apply_change(vault: &mut Vault, kind: u8, body: vector<u8>, clock: &C
 }
 
 /// Anyone, from its ready time: applies a waiting rotation to the light clients its body names, which must be passed
-/// in and be one SP1 and one RISC Zero client. Held by a freeze, as every change but the freezer's replacement.
+/// in and be a pair as `create` takes one (`check_pair`, B4-03). Held by a freeze, as every change but the freezer's
+/// replacement.
 public fun apply_rotation(vault: &mut Vault, body: vector<u8>, p1: &LightClient, p2: &LightClient, clock: &Clock) {
     take_pending(vault, VERIFIER_ROTATION, &body, clock);
     let (a, b) = (abi::body_word(&body, 2, 0), abi::body_word(&body, 2, 1));
     assert!(object::id(p1).to_bytes() == a && object::id(p2).to_bytes() == b, EWrongVerifier);
-    check_pair(p1, p2);
+    check_pair(p1, p2, genesis_of(vault), now(clock));
     vault.p1 = object::id(p1);
     vault.p2 = object::id(p2);
     event::emit(VerifiersRotated { p1: vault.p1, p2: vault.p2 });
@@ -677,8 +682,8 @@ public fun continuity(
 }
 
 /// The recovery proposer only, while stalled, before a snapshot exit, with none under review: proposes the light
-/// clients `p1` and `p2`, one SP1 and one RISC Zero, which must prove the last checkpoint, a recent one and the last
-/// message delivered on both proofs.
+/// clients `p1` and `p2`, a pair as `create` takes one (`check_pair`, B4-03), which must prove the last checkpoint, a
+/// recent one and the last message delivered on both proofs.
 public fun propose_successor(
     vault: &mut Vault,
     p1: &LightClient,
@@ -691,7 +696,7 @@ public fun propose_successor(
     check_no_snapshot(vault);
     assert!(stalled(vault, clock), ENotStalled);
     assert!(vault.successor.review_ends == 0, ESuccessorPending);
-    check_pair(p1, p2);
+    check_pair(p1, p2, genesis_of(vault), now(clock));
     // (a) The last checkpoint the pair in force accepted.
     let last = vault.checkpoint;
     proven_by_both(p1, p2, &last, &proofs.last1, &proofs.last2);
@@ -771,9 +776,9 @@ public fun begin_snapshot(vault: &mut Vault, clock: &Clock) {
 
 /// Anyone after the snapshot: pays `holder`'s share of SUI in `index` at the snapshot, read from the hub's storage
 /// there, to `recipient`: the recovery address it registered in the hub for this chain, if any, which a contract
-/// holder must register; otherwise the recipient it signed for with its Ethereum key (EIP-712, the domain's salt this
-/// vault's id). Within the speed limit, as any payout: a snapshot of a forged checkpoint takes no more than a forged
-/// burn. Once per holder and index.
+/// holder must register; otherwise the recipient it signed for with its Ethereum key (EIP-712, the domain's chain id
+/// Ethereum's and its salt this vault's id, B1-06). Within the speed limit, as any payout: a snapshot of a forged
+/// checkpoint takes no more than a forged burn. Once per holder and index.
 public fun claim_snapshot(
     vault: &mut Vault,
     index: vector<u8>,
@@ -798,7 +803,7 @@ public fun claim_snapshot(
         // A holder that registered a recovery address, such as a contract, is paid there and nowhere else.
         assert!(registered.destroy_some() == sui::address::to_bytes(recipient), EWrongRecipient);
     } else {
-        let message = snapshot::claim_message(&vault_id(vault), vault.chain_id, &index, &holder, &sui::address::to_bytes(recipient));
+        let message = snapshot::claim_message(&vault_id(vault), vault.source_chain_id, &index, &holder, &sui::address::to_bytes(recipient));
         snapshot::check_signature(&message, &signature, &holder);
     };
     let id = snapshot::claim_id(&index, &holder);
@@ -924,10 +929,24 @@ fun check_recent(vault: &Vault, c: &Checkpoint, clock: &Clock) {
     assert!(c.timestamp + STALL_PERIOD >= now(clock), ENotRecent);
 }
 
-/// Two light clients of two different proof systems: a successor or rotated pair.
-fun check_pair(p1: &LightClient, p2: &LightClient) {
+/// A pair the vault can stand on, checked alike for the first pair, a rotated one and a successor (B4-03): two light
+/// clients of two different proof systems, P1 an SP1 one and P2 a RISC Zero one, both of the source chain's beacon
+/// genesis, both anchored in an epoch that has begun (B4-02) and can still be advanced from.
+fun check_pair(p1: &LightClient, p2: &LightClient, genesis: u64, now: u64) {
     assert!(object::id(p1) != object::id(p2), EVerifiersNotDistinct);
     assert!(light_client::system(p1) != light_client::system(p2), EVerifiersNotDistinct);
+    assert!(
+        light_client::system(p1) == light_client::sp1() && light_client::system(p2) == light_client::risc_zero(),
+        EWrongVerifier,
+    );
+    assert!(light_client::genesis_time(p1) == genesis && light_client::genesis_time(p2) == genesis, EWrongVerifier);
+    assert!(light_client::epoch_start(p1) <= now && light_client::epoch_start(p2) <= now, EAnchorNotBegun);
+    assert!(now <= light_client::lag_ends(p1) && now <= light_client::lag_ends(p2), EAnchorTooOld);
+}
+
+/// The beacon genesis time of the vault's source chain, which `create` checked is Ethereum or Sepolia.
+fun genesis_of(vault: &Vault): u64 {
+    if (vault.source_chain_id == ETHEREUM) ETHEREUM_GENESIS else SEPOLIA_GENESIS
 }
 
 /// Both light clients of a pair prove checkpoint `c`, as `_agreed` requires: the same block, timestamp and root.
@@ -957,10 +976,11 @@ fun needs_both(vault: &Vault, m: &Message): bool {
     true
 }
 
-/// A cap update's body: the native coin's id, which must be zero, then its cap and floor.
+/// A cap update's body: the native coin's id, which must be zero, then its cap and floor. The factory proposes them in
+/// 256 bits, knowing no chain's width; past 64 bits, a figure means `u64::MAX` here, never a refused message (B1-05).
 fun read_cap(body: &vector<u8>): (u64, u64) {
     check_native(&abi::body_word(body, 3, 0));
-    (abi::amount(&abi::body_word(body, 3, 1)), abi::amount(&abi::body_word(body, 3, 2)))
+    (abi::saturating(&abi::body_word(body, 3, 1)), abi::saturating(&abi::body_word(body, 3, 2)))
 }
 
 /// A body word that must be zero: the vault holds SUI only, `address(0)` on Ethereum.
@@ -1119,10 +1139,14 @@ fun governance_message(vault: &mut Vault, m: &Message, loosening: bool, both: bo
     let kind = m.kind();
     let body = m.body();
     if (kind == FREEZE) {
-        assert!(body.is_empty(), EBadMessage);
+        // One word: when the factory's freeze ends, in Unix seconds (A3-03, B4-04).
+        assert!(body.length() == 32, EBadMessage);
         // Nothing could replace the freezer after a snapshot, and nothing may hold the exit off (VLT-5).
         check_no_snapshot(vault);
-        freeze_now(vault, true, clock);
+        // A freeze already over on Ethereum freezes nothing, however late it is delivered; one still running freezes to
+        // its end, and never past FREEZE_DURATION from now.
+        let (until, now) = (abi::saturating(&body), now(clock));
+        if (until > now) freeze_to(vault, min(until, now + FREEZE_DURATION), true);
         return
     };
     let last = if (kind == CAP_UPDATE) {
@@ -1191,9 +1215,8 @@ fun pending_mut(vault: &mut Vault, kind: u8): &mut PendingChange {
     &mut vault.pending_rotation
 }
 
-/// Freezes the vault for FREEZE_DURATION from now; a later freeze extends it, and none shortens it.
-fun freeze_now(vault: &mut Vault, by_factory: bool, clock: &Clock) {
-    let until = now(clock) + FREEZE_DURATION;
+/// Freezes the vault until `until`; a later freeze extends it, and none shortens it.
+fun freeze_to(vault: &mut Vault, until: u64, by_factory: bool) {
     if (until > vault.frozen_until) vault.frozen_until = until;
     event::emit(Frozen { until: vault.frozen_until, by_factory });
 }
@@ -1352,6 +1375,13 @@ public fun stall_start(vault: &Vault): u64 {
 
 /// An attestation's record.
 public fun record(a: &Attestation): vector<u8> { a.record }
+
+/// Lands checkpoint `(block, timestamp, state_root)` as a proven one would: for gas tests whose call needs a first
+/// checkpoint (B1-04) and whose measure must not carry the cost of proving it.
+#[test_only]
+public fun checkpoint_for_testing(vault: &mut Vault, block: u64, timestamp: u64, state_root: vector<u8>) {
+    vault.checkpoint = Checkpoint { block, timestamp, state_root };
+}
 
 /// Credits `coin` to `index` as a settled intake would: for gas tests that need a funded index without a delivery.
 #[test_only]

@@ -33,6 +33,6 @@ fun the_vaults_life_needs_no_capability() {
     t.fund(1_000 * ONE);
     t.deliver(1, harness::burn_body(10 * ONE, @0xbeef));
     assert!(t.received(@0xbeef) == 10 * ONE);
-    t.govern(6, vector[], 1, true, false);
+    t.govern_freeze(1, true, false);
     t.end();
 }

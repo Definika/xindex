@@ -168,7 +168,8 @@ fun a_message_to_another_vault_is_refused() {
 #[test, expected_failure(abort_code = vault::EWrongEmitter)]
 fun a_freeze_from_an_index_is_refused() {
     let mut t = harness::new();
-    t.deliver(FREEZE, vector[]);
+    let body = harness::freeze_body(t.now() + 86_400);
+    t.deliver(FREEZE, body);
     t.end();
 }
 

@@ -21,7 +21,7 @@ create or use keys. The CLI fetches the framework from GitHub at the commit `Mov
 cd aptos
 aptos move compile --dev                               # the tests' address, 0xc0de
 aptos move compile --named-addresses xindex_vault=0x... --fail-on-warning --included-artifacts none   # as published
-aptos move test --dev                                  # 403 tests
+aptos move test --dev                                  # 425 tests
 aptos move test --dev --coverage && aptos move coverage summary --dev
 python3 tests/fixtures/gas.py                          # the gas table below (needs the CLI as `aptos` or in APTOS)
 ```
@@ -65,19 +65,19 @@ light client are named by their objects' addresses.
 | `light_client::update(client, public_values, proof)` | Advances it with a proof from its anchor, until a day after the anchor's epoch began (LG-4). |
 | `vault::create(creator, source, chain, factory, template, p1, p2, freezer, recovery, cap, floor)`, `create_vault` | Creates the vault at `object::create_object_address(creator, b"xindex.v4.vault")`; returns that address, the vault id Ethereum's registry names. |
 | `register_index(vault, index, salt)` | Registers a clone of the factory's `HybridHub` template, checked by the CREATE2 formula. |
-| `deposit(depositor, vault, index, intake_id, amount)` | Deposits APT from the depositor's primary store. The deadline is the id's top 64 bits; within `MAX_INTAKE_LIFE`; refused over the cap, frozen or stalled. |
+| `deposit(depositor, vault, index, intake_id, amount)` | Deposits APT from the depositor's primary store. The deadline is the id's top 64 bits; within `MAX_INTAKE_LIFE`; refused before the first checkpoint (B1-04), over the cap, frozen or stalled. |
 | `deposit_asset(depositor, vault, index, intake_id, fa)` | The same with APT withdrawn elsewhere, as a `FungibleAsset`, which must be APT. |
 | `refund(depositor, vault, index, intake_id)` | The depositor takes back its deposit to a failed intake, to its primary store. |
-| `deliver(vault, payload, block, proof1, proof2)` | Runs a `VaultMessage` on P1's proof, P2's or both; an empty proof is none. |
+| `deliver(vault, payload, block, proof1, proof2)` | Runs a `VaultMessage` on P1's proof, P2's or both; an empty proof is none. A factory `FREEZE` carries one word, when the factory's freeze ends: it freezes until then, at most 14 days from delivery, and not at all once that end has passed (A3-03). |
 | `release(vault, index, id)` | Pays what the speed limit now allows of an owed burn, claim or migration. |
 | `freeze_vault(freezer, vault)` | Freezer only, before a snapshot: 14 days. (`freeze` is a builtin in Move.) |
-| `apply_change(vault, kind, body)` | Applies a waiting cap raise, freezer change or rotation. |
+| `apply_change(vault, kind, body)` | Applies a waiting cap raise, freezer change or rotation, a rotation's clients a pair as `create` takes one (B4-03). |
 | `cancel_change(freezer, vault, kind)` | Freezer only: drops a waiting raise or rotation, never its own replacement. |
 | `advance_checkpoint(vault, block, timestamp, state_root, proof1, proof2)` | A final Ethereum block both prove, newer than the last. |
-| `continuity(...)` + `propose_successor(proposer, vault, p1, p2, continuity)`, `propose_successor_entry` | Recovery proposer only, while stalled. |
+| `continuity(...)` + `propose_successor(proposer, vault, p1, p2, continuity)`, `propose_successor_entry` | Recovery proposer only, while stalled; the pair as `create` takes one (B4-03). |
 | `veto_successor(freezer, vault)`, `adopt_successor(vault, block, timestamp, state_root, proof1, proof2)` | The freezer's two vetoes a stall; adoption after 30 days. |
 | `begin_snapshot(vault)` | 180 days into a stall: the last checkpoint becomes the snapshot; its root goes to slot 25. |
-| `claim_snapshot(vault, index, holder, component, recipient, signature, proof)` | A holder's share at the snapshot, to its registered recovery address or the recipient its EIP-712 signature names. |
+| `claim_snapshot(vault, index, holder, component, recipient, signature, proof)` | A holder's share at the snapshot, to its registered recovery address or the recipient its EIP-712 signature names (the domain below). |
 | `resolve_intake(vault, index, intake_id, proof)`, `deliver_recorded(vault, payload, proof)` | After the snapshot, from the hub's `_settledIntakes` and `_sentMessages`. |
 | `attest(vault, slots, values)` | Entry only. Aborts unless every slot holds its value; then emits one `Attested` with the record. |
 | Views (`#[view]`) | `vault_address`, `vault_id`, `store`, `coins`, `checkpoint`, `exit_snapshot`, `successor`, `index_state`, `intake`, `deposited`, `owed`, `used`, `slot`, `stalled`, `stall_start`, `pending`, `nonces`, and the settings. |
@@ -152,13 +152,25 @@ The publication flow, for a deployment script (nothing here has been run):
    floor)`. It refuses what `DeployVault` refuses where Move can see it: a source chain other than Ethereum (1) or
    Sepolia, a chain id not Aptos's for it (`aptos:1` for Ethereum, `aptos:2` for Sepolia), a missing factory or
    template, P1 not an SP1 client or P2 not a RISC Zero one of this package, either not of the source chain's beacon
-   genesis or past its lag, a missing, equal or creating-key freezer or recovery proposer, and a floor above the cap.
-   Its address, the vault id, is `vault::vault_address(deployer)`.
+   genesis, anchored in an epoch that has not begun (B4-02) or past its lag, a missing, equal or creating-key freezer or
+   recovery proposer, and a floor above the cap (B2-02); a source chain is never Aptos's own. A rotated pair and a
+   successor pass the same checks of a pair, from the same function (B4-03). The vault takes no deposit until its
+   first checkpoint (B1-04). Its address, the vault id, is `vault::vault_address(deployer)`.
 5. Check off chain what Move cannot see: that the recovery proposer is the owner's emergency multisig (at least three of
    five; an Aptos multisig is either `0x1::multisig_account`, which a view would show, or a multi-key account, whose
    address is a hash of its keys), that the freezer is the guardian's key, and that P1's key is `p1 vkey`'s program key
    and P2's `p2 image-id`'s.
-6. Register on Ethereum: the factory's `proposeChain(aptos:1, vaultId, AptosStateVerifier)`, the verifier built for
+6. Measure the gas of P1's and P2's `update` before anything is registered (B4-05). The figures under "Gas" are
+   estimates: the unit-test runner meters nothing, and an `update` the chain cannot run would stop P1 or P2 for good a
+   day later (LG-4) and stall the vault. P1 and P2 must be advanced within a day of their anchor anyway, so their first
+   `update`s on mainnet, each with a real proof (SP1's Groth16 for P1, RISC Zero's for P2) from the anchor of step 3,
+   are the measurement; rehearse them on testnet first, and a `deliver` of a burn on both proofs with them. Read each
+   committed transaction's `gas_used` from a full node (`GET /v1/transactions/by_hash/{hash}`) and the execution limit
+   from the gas schedule then in force (`0x1::gas_schedule::GasScheduleV2`, `txn.max_execution_gas`). The vault is
+   listed only if every figure fits well under that limit. Record the transactions' hashes, their `gas_used` and the
+   gas schedule's feature version in the listing proposal's notes, and in the table under "Gas" in place of the
+   estimates.
+7. Register on Ethereum: the factory's `proposeChain(aptos:1, vaultId, AptosStateVerifier)`, the verifier built for
    `PACKAGE = <deployer>` and `VAULT_ID = <vault id>`.
 
 Aptos's validators can still change any state or the framework by governance; no contract can remove that power.
@@ -167,8 +179,10 @@ Aptos's validators can still change any state or the framework by governance; no
 
 - **P1 and P2 are objects of this package.** Each light client is a `LightClient` at its object's address, which the
   vault names, as the EVM vault names a verifier by its address; the vault reads them by address, so no call passes
-  them in. A `VERIFIER_ROTATION` names two addresses, which must hold one SP1 and one RISC Zero client of this package;
-  `apply_change` applies it as the other kinds (Sui's twin needs `apply_rotation` for its objects). Their code is this
+  them in. A `VERIFIER_ROTATION` names two addresses, which must hold a pair of this package as `create` takes one: P1
+  the SP1 client and P2 the RISC Zero one, of the source chain's beacon genesis, anchored in an epoch that has begun and
+  still within their lag (B4-03); `apply_change` applies it as the other kinds (Sui's twin needs `apply_rotation` for its
+  objects). Their code is this
   package's, which nobody can upgrade, so SOL-2 (an upgradable verifier) cannot arise.
 - **Groth16 on Aptos's native BN254.** `proofs` checks `e(A, B) e(C, -delta) e(alpha, -beta) e(L, -gamma) = 1` with one
   four-pair `multi_pairing`, `L` a six-point `multi_scalar_mul`. Points are read uncompressed (arkworks' form, which
@@ -181,7 +195,9 @@ Aptos's validators can still change any state or the framework by governance; no
 - **Time is `timestamp::now_seconds()`** for every rule, and `now_microseconds()` in the record. Aptos's time is the
   block's, which validators bound (SOL-10's drift question is Aptos's consensus's, as on Sui).
 - **Amounts are APT in octas, `u64`**; an amount from Ethereum past 64 bits is refused (`abi::EOverflow`), as on Solana
-  and Sui. A snapshot share takes `shares × units` in 256 bits, as Solidity does.
+  and Sui, but a `CAP_UPDATE`'s cap or floor past 64 bits means `u64::MAX`, since the factory proposes them in 256 bits
+  knowing no chain's width (B1-05), and so does a `FREEZE`'s end. A snapshot share takes `shares × units` in 256 bits,
+  as Solidity does.
 - **APT is the fungible asset at `0xa`**, the form current on mainnet (`COIN_TO_FUNGIBLE_ASSET_MIGRATION` and
   `NEW_ACCOUNTS_DEFAULT_TO_FA_STORE` on; accounts hold APT in primary fungible stores). `deposit` withdraws from the
   depositor's primary store; `deposit_asset` takes APT however withdrawn (an account still holding a `CoinStore` can
@@ -195,10 +211,16 @@ Aptos's validators can still change any state or the framework by governance; no
   object (SOL-9): APT sent there would be stranded.
 - **The freezer and the recovery proposer are addresses**, checked against the signer. A freezer change's body is a
   32-byte Aptos address.
+- **The snapshot claim's signature.** A holder with no recovery address signs `SnapshotClaim(address index,address
+  holder,bytes32 recipient)` under `EIP712Domain(string name,string version,uint256 chainId,bytes32 salt)`: name `Xindex
+  vault`, version `1`, `chainId` the vault's source chain, Ethereum's (1, or 11155111 for a Sepolia vault), the network
+  the holder's wallet is on, and `salt` the vault's 32-byte id, which keeps the domain this vault's alone (B1-06).
+  Wallets refuse to sign a domain whose chain id is not the active network's, and no EVM network carries Aptos's
+  registry id. The recipient is a 32-byte Aptos address.
 - **`attest` is entry-only**, so a record is a state between transactions (above), where Sui's and NEAR's may be read
   between two calls of one transaction.
 - **One vault per creating account**, at a named object's address, which a deployment can compute before it creates.
-- **Refusals are abort codes**, each module numbering its own as Sui's twin does: `vault` 1 to 54 (51, Sui's
+- **Refusals are abort codes**, each module numbering its own as Sui's twin does: `vault` 1 to 55 (51, Sui's
   `EVerifiersRequired`, unused; 54 no vault at the address), `bytes` 1 and 2, `rlp` 101, `mpt` 111, `ethereum` 121 to
   127, `light_client` 131 to 139 (139 no client at the address), `state_reader` 141, `proofs` 151 to 157 (157 a point
   off the curve), `snapshot` 161 to 165, `abi` 201 and 202. A signature whose `r` is no point's x-coordinate recovers no
@@ -208,7 +230,7 @@ Aptos's validators can still change any state or the framework by governance; no
 
 ## Tests
 
-`aptos move test --dev` runs 403 tests; instruction coverage is 97.0% (`aptos move coverage summary`), the rest being
+`aptos move test --dev` runs 425 tests; instruction coverage is 97.0% (`aptos move coverage summary`), the rest being
 short-circuited halves of bounds checks no caller reaches, a successful `update` (no real proof's public values are this
 statement's, as on Sui) and an already-untransferable store. They run on:
 
@@ -223,8 +245,9 @@ statement's, as on Sui) and an already-untransferable store. They run on:
   Ethereum key and one with a recovery address on Aptos, a settled and an open intake, a burn and a migration in flight,
   and storage past the components array filled as an attacker would (VLT-1).
 - **Solidity's encodings.** Messages, log data, digests, slot keys, the vault token's id, CREATE2 and `attest`'s record,
-  against `cast abi-encode` and `cast keccak` (`vectors.py`); and the `Attested` event against `AptosStateVerifier`'s
-  statement (above).
+  against `cast abi-encode` and `cast keccak` (`vectors.py`); every kind's body but a burn's, decoded from
+  `test/fixtures/vault-messages.json`, which `test/VaultMessages.fixture.t.sol` pins against `VaultMessages.encode`
+  (C1-02); and the `Attested` event against `AptosStateVerifier`'s statement (above).
 - **Aptos's objects.** Nobody owns the vault or can move it, the creator cannot withdraw its coins, one vault per
   creator, another fungible asset is no APT, APT sent to the store counts nowhere.
 
@@ -242,6 +265,15 @@ Tests named after findings:
 | `test_lg3_a_one_proof_message_is_not_the_last_message` | A one-proof message cannot keep an honest successor out. |
 | `test_lg4_*` (five) | The lag ends a day after the anchor's epoch; SP1's and RISC Zero's real proofs are checked at its last second and refused a second later. |
 | `test_sol9_the_vault_is_no_recipient`, `test_sol9_the_store_is_no_recipient`, `test_sol9_a_claim_never_pays_the_vault`, `test_sol9_a_claim_never_pays_the_store` | Neither a burn nor a claim pays the vault's object or its store's. |
+| `test_a303_a_late_freeze_ends_with_the_factorys_freeze`, `test_a303_a_freeze_lasts_at_most_freeze_duration` | A `FREEZE` delivered after the factory's freeze ended freezes nothing; one delivered during it freezes until its end, never past 14 days. |
+| `test_b404_a_freeze_body_is_one_word`, `test_b404_a_freeze_body_of_two_words_is_refused` | A `FREEZE`'s body is exactly one word. |
+| `test_b104_no_deposit_before_the_first_checkpoint`, `test_b104_a_deposit_after_the_first_checkpoint_is_taken` | No deposit before the first checkpoint. |
+| `test_b105_a_cap_wider_than_the_native_type_saturates` | A cap past 64 bits is `u64::MAX`, a raise like any other. |
+| `test_b106_the_claim_domain_names_ethereum` | The claim's EIP-712 domain names the source chain, Ethereum's, and the vault pays on that signature. |
+| `test_b202_a_floor_above_the_cap_is_refused`, `test_b202_the_vaults_own_chain_is_no_source` | `create` refuses what `DeployVault` refuses. |
+| `test_b402_a_client_of_a_later_epoch_is_refused`, `test_b402_a_client_whose_epoch_begins_now_is_taken` | A light client is taken only once its anchor's epoch has begun. |
+| `test_b403_*` (five), `test_b402_b403_*` (two) | A rotated pair and a successor pass `create`'s checks of a pair: the roles, the genesis, the epoch and the lag. |
+| `test_c102_the_message_bodies_are_soliditys` | Every kind's body, as Solidity encodes it, decodes to its fields. |
 
 Each finding's guard, and the main rules, were checked by a mutant the tests kill (`mutants` below): VLT-1 (both
 checks), VLT-2 (the delay, the freezer's own replacement, the freeze's hold both ways), VLT-3, VLT-4 (the mark and the
@@ -252,8 +284,10 @@ frozen payout, both proofs for burns, migrations and failures, the cap's floor i
 coordinate order, SP1's digest mask, the pairing's verdict, the intake's deadline and life, the log's emitter, the
 headers range, the anchor, the receipt's status, the route's vault, the index digest's fields, `held`, the stall's hold
 on deposits, the hub's sent and settled marks, APT only, the vault's owner and its untransferability, a rotation's pair,
-a governance kind's emitter, the claim signature's signer and low `s`, a registered recovery address, a claim once, and
-the native slice and comparison: 61 mutants, all killed (`tests/fixtures/mutants.py`).
+a governance kind's emitter, the claim signature's signer and low `s`, a registered recovery address, a claim once, the
+native slice and comparison, and the 2026-10-04 audit's guards: A3-03 (the end that passed and the 14-day bound), B4-04,
+B1-04, B1-05, B1-06, B2-02 (the floor and the source), B4-02 (the check and its boundary) and B4-03 (the roles, the
+genesis and a successor's pair): 74 mutants, all killed (`tests/fixtures/mutants.py`).
 
 ## Gas
 
@@ -264,7 +298,8 @@ figures below are estimates (`tests/fixtures/gas.py`): each pair of `tests/gas_t
 priced by opcode from the disassembly at mainnet's schedule (feature version 53, `gas-schedule-mainnet.json`), the
 framework's at this call's own mix (low without calls, high with them), natives by the schedule's formulas (BN254's
 multi-scalar multiplication, which the schedule does not price, as six scalar multiplications, an upper bound), and the
-storage reads, writes and new slots each call makes by hand. Real figures need a simulation.
+storage reads, writes and new slots each call makes by hand. Real figures need a simulation, and P1's and P2's
+`update` must be measured on chain before the vault is listed (B4-05; the publication flow's step 6).
 
 | Call | Gas units, estimated | Storage deposit (new slots) |
 |---|---|---|
@@ -300,6 +335,8 @@ a hundred units.
   but not stranded: the hub and the factory mark every message they send, and anyone may emit a marked one again,
   unchanged, with `resendMessage` in a transaction of their own (LG-1). The vault delivers that copy, whose receipt holds
   only the message, and runs the message once by its id.
-- **Execution is at most 9,200 gas units a transaction** on mainnet; the costliest call, an update, needs about 2,000.
+- **Execution is at most 9,200 gas units a transaction** on mainnet; the costliest call, an update, needs about 2,000 by
+  the estimate above, a margin of about 4.6 that nothing has measured yet: the deployer measures it before listing
+  (B4-05, the publication flow's step 6) and records the figures here.
 - **What the vault cannot see.** As on every chain: the recovery proposer's multisig and the light clients' keys are
   the deployment's to check (above).

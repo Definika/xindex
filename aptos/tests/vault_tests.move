@@ -31,7 +31,7 @@ module xindex_vault::vault_tests {
 
     #[test]
     fun a_vault_is_created_with_its_settings() {
-        let t = harness::new();
+        let t = harness::created();
         let v = t.vault();
         assert!(vault::source_chain_id(v) == harness::sepolia() && vault::chain_id(v) == harness::aptos_testnet());
         assert!(vault::factory(v) == f::hub_factory() && vault::hub_implementation(v) == f::hub_implementation());
@@ -191,9 +191,38 @@ module xindex_vault::vault_tests {
     }
 
     #[test, expected_failure(abort_code = vault::EFloorAboveCap, location = vault)]
-    fun a_floor_above_the_cap_is_refused() {
+    /// B2-02: a floor above the cap would let the speed limit pay out more than 4% a day: refused, as `DeployVault`
+    /// refuses it.
+    fun test_b202_a_floor_above_the_cap_is_refused() {
         let t = bare();
         create(&mut t, harness::sepolia(), harness::aptos_testnet(), harness::freezer(), harness::recovery(), 10, 11);
+    }
+
+    #[test, expected_failure(abort_code = vault::EUnknownSource, location = vault)]
+    /// B2-02: messages come from Ethereum, never from the vault's own chain: Aptos's id is no source.
+    fun test_b202_the_vaults_own_chain_is_no_source() {
+        let t = bare();
+        create(&mut t, harness::aptos_testnet(), harness::aptos_testnet(), harness::freezer(), harness::recovery(), 10, 1);
+    }
+
+    #[test, expected_failure(abort_code = vault::EAnchorNotBegun, location = vault)]
+    /// B4-02: a light client's first epoch is its creator's word. One anchored in an epoch that has not begun would not
+    /// lag until its first update, so the vault refuses it.
+    fun test_b402_a_client_of_a_later_epoch_is_refused() {
+        let t = bare();
+        let p1 = t.client_at(light_client::sp1(), 9, harness::epoch_at(harness::now()) + 1);
+        let p2 = t.p2_id();
+        t.create_with(harness::creator(), harness::sepolia(), harness::aptos_testnet(), f::hub_factory(), p1, p2, harness::freezer(), harness::recovery(), 10, 1);
+    }
+
+    #[test]
+    /// B4-02: one whose epoch began this very second is taken.
+    fun test_b402_a_client_whose_epoch_begins_now_is_taken() {
+        let epoch = harness::epoch_at(f::settled_intake_deadline());
+        let t = harness::bare(harness::sepolia_genesis() + epoch * 384);
+        let (p1, p2) = (t.p1_id(), t.p2_id());
+        assert!(light_client::epoch_start(p1) == harness::now());
+        t.create_with(harness::creator(), harness::sepolia(), harness::aptos_testnet(), f::hub_factory(), p1, p2, harness::freezer(), harness::recovery(), 10, 1);
     }
 
     #[test, expected_failure(abort_code = vault::ENoVault, location = vault)]
@@ -371,6 +400,25 @@ module xindex_vault::vault_tests {
         assert!(t.stalled());
         t.advance(10);
         assert!(!t.stalled());
+    }
+
+    #[test, expected_failure(abort_code = vault::ENoCheckpoint, location = vault)]
+    /// B1-04: before its first checkpoint the vault takes no deposit: no message could settle or fail the intake, and no
+    /// successor or snapshot could follow if none ever came.
+    fun test_b104_no_deposit_before_the_first_checkpoint() {
+        let t = harness::created();
+        let intake = harness::intake_id(harness::now() + 3600, 1);
+        t.deposit(harness::alice(), intake, ONE);
+    }
+
+    #[test]
+    /// B1-04: from the first checkpoint on, it does.
+    fun test_b104_a_deposit_after_the_first_checkpoint_is_taken() {
+        let t = harness::created();
+        let intake = harness::intake_id(harness::now() + 3600, 1);
+        t.advance(1);
+        t.deposit(harness::alice(), intake, ONE);
+        assert!(t.held() == ONE);
     }
 
     #[test, expected_failure(abort_code = vault::EVaultStalled, location = vault)]
@@ -601,8 +649,9 @@ module xindex_vault::vault_tests {
         vault::attest_for_testing(t.p1_id(), vector[], vector[]);
     }
 
-    #[test, expected_failure(abort_code = vault::EWrongVerifier, location = vault)]
-    /// Two SP1 clients are no pair either: P2 must be a RISC Zero one.
+    #[test, expected_failure(abort_code = vault::EVerifiersNotDistinct, location = vault)]
+    /// Two SP1 clients are no pair either: P2 must be a RISC Zero one. Refused as a rotation or a successor of one
+    /// system is, since the three take a pair through the same check (B4-03).
     fun p2_must_be_risc_zero() {
         let t = bare();
         let p1 = t.p1_id();

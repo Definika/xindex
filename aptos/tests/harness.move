@@ -117,10 +117,21 @@ module xindex_vault::harness {
         }
     }
 
-    /// The vault created a little before the fixture's settled intake's deadline, with its index registered: the
-    /// vault the fixtures name, at `object::create_object_address(CREATOR, b"xindex.v4.vault")`.
+    /// The vault created a little before the fixture's settled intake's deadline, with its index registered and its
+    /// first checkpoint landed, a second after its creation: a vault takes no deposit before one (B1-04). The vault the
+    /// fixtures name, at `object::create_object_address(CREATOR, b"xindex.v4.vault")`.
     public fun new(): T {
-        let now = f::settled_intake_deadline() - 600;
+        let t = created();
+        let now = now() + 1;
+        set_now(now);
+        advance_to(&t, 1, now, keccak256(b"first"));
+        t
+    }
+
+    /// The vault as `create` leaves it, with its index registered: its checkpoint the genesis one, with no state, dated
+    /// a second before `new`'s.
+    public fun created(): T {
+        let now = f::settled_intake_deadline() - 601;
         let t = bare(now);
         t.vault = vault::create(
             &signer_of(CREATOR),
@@ -445,6 +456,11 @@ module xindex_vault::harness {
         out
     }
 
+    /// A freeze's body: when the factory's freeze ends, in Unix seconds.
+    public fun freeze_body(until: u64): vector<u8> {
+        bytes::word64(until)
+    }
+
     public fun cap_body(cap: u64, floor: u64): vector<u8> {
         let out = bytes::zero32();
         out.append(bytes::word64(cap));
@@ -531,6 +547,11 @@ module xindex_vault::harness {
         let payload = message(SEPOLIA, kind, &factory, &body, nonce, APTOS_TESTNET, &vault_id(self));
         deliver_by(self, &factory, payload, p1, p2);
         payload
+    }
+
+    /// The factory's freeze with `nonce`, sent now: it ends FREEZE_DURATION from now, as `_freezeChain` records it.
+    public fun govern_freeze(self: &mut T, nonce: u64, p1: bool, p2: bool): vector<u8> {
+        govern(self, 6, freeze_body(now() + 14 * 86_400), nonce, p1, p2)
     }
 
     /// The next block for a message: one the vault's checkpoint already covers.
@@ -654,9 +675,12 @@ module xindex_vault::harness {
     }
 
     /// The continuity test the clients `pair` pass: the vault's last checkpoint, a recent one at `recent_block`, and,
-    /// when `payload` is not empty, the last message, `payload` in `block`, each proven by both.
+    /// when `payload` is not empty, the last message, `payload` in `block`, each proven by both, the pair kept alive to
+    /// now as its provers would keep it.
     public fun continuity(self: &T, pair: Pair, recent_block: u64, payload: vector<u8>, block: u64): vault::Continuity {
         let (a, b) = (pair.a, pair.b);
+        keep_alive(a);
+        keep_alive(b);
         let (last_block, last_ts, last_root) = checkpoint(self);
         let last = checkpoint_proof(last_block, last_ts, &last_root, a, b);
         let pre = b"recent";
@@ -725,6 +749,30 @@ module xindex_vault::harness {
         let a = light_client(RELAYER, s1, light_client::sp1(), seed, epoch);
         let b = light_client(RELAYER, s2, light_client::risc_zero(), seed + 1, epoch);
         (a, b)
+    }
+
+    /// A light client of `system`, keys seeded by `seed`, of Sepolia's genesis, anchored at `epoch`, which may not have
+    /// begun.
+    public fun client_at(self: &mut T, system: u8, seed: u8, epoch: u64): address {
+        self.clients += 1;
+        let s = b"at";
+        s.append(bcs::to_bytes(&self.clients));
+        light_client(RELAYER, s, system, seed, epoch)
+    }
+
+    /// Advances the light client `client` one step to the epoch now in progress, as its provers keep it alive: a rotated
+    /// or successor pair must still be within its lag when it is taken (B4-03). An address holding none is left as is.
+    public fun keep_alive(client: address) {
+        if (!light_client::is_client(client)) return;
+        let anchor = light_client::anchor(client);
+        let epoch = (now() - light_client::genesis_time(client)) / 384;
+        let values = anchor;
+        values.append(keccak256(anchor));
+        values.append(bytes::word64(epoch));
+        values.append(keccak256(bytes::word64(epoch)));
+        values.append(bytes::word64(0));
+        values.append(bytes::word64(0));
+        light_client::advance_at_for_testing(client, values, now());
     }
 
     /// The SP1 and RISC Zero fixtures' clients: SP1's program key and RISC Zero's image id, anchored now.

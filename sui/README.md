@@ -19,7 +19,7 @@ key. The CLI fetches the Sui framework from GitHub at the revision `Move.lock` p
 ```bash
 cd sui
 sui move build                 # no warnings; one lint is allowed, with its reason (`refund`'s transfer to its caller)
-sui move test                  # 326 tests
+sui move test                  # 348 tests
 sui move test --coverage && sui move coverage summary
 sui move test gas_ --statistics   # the gas pairs below
 ```
@@ -62,18 +62,18 @@ ones (the freezer, the recovery proposer), which check the transaction's sender.
 | `light_client::update(lc, public_values, proof, clock)` | Advances it with a proof from its anchor, until a day after the anchor's epoch began (LG-4). |
 | `vault::create(source, chain, factory, template, p1, p2, freezer, recovery, cap, floor, clock)` | Creates and shares a vault; returns its id, the vault id Ethereum's registry names. |
 | `register_index(index, salt)` | Registers a clone of the factory's `HybridHub` template, checked by the CREATE2 formula. |
-| `deposit(index, intake_id, coin, clock)` | Deposits a `Coin<SUI>`. The deadline is the id's top 64 bits; within `MAX_INTAKE_LIFE`; refused over the cap, frozen or stalled. |
+| `deposit(index, intake_id, coin, clock)` | Deposits a `Coin<SUI>`. The deadline is the id's top 64 bits; within `MAX_INTAKE_LIFE`; refused before the first checkpoint (B1-04), over the cap, frozen or stalled. |
 | `refund(index, intake_id, clock)` | The depositor takes back its deposit to a failed intake, as a coin. |
-| `deliver(p1, p2, payload, block, proof1, proof2, clock)` | Runs a `VaultMessage` on P1's proof, P2's or both; an empty proof is none. |
+| `deliver(p1, p2, payload, block, proof1, proof2, clock)` | Runs a `VaultMessage` on P1's proof, P2's or both; an empty proof is none. A factory `FREEZE` carries one word, when the factory's freeze ends: it freezes until then, at most 14 days from delivery, and not at all once that end has passed (A3-03). |
 | `release(index, id, clock)` | Pays what the speed limit now allows of an owed burn, claim or migration. |
 | `freeze_vault(clock)` | Freezer only, before a snapshot: 14 days. (`freeze` is reserved in Move.) |
-| `apply_change(kind, body, clock)`, `apply_rotation(body, p1, p2, clock)` | Applies a waiting cap raise or freezer change, or a rotation with the two light clients it names. |
+| `apply_change(kind, body, clock)`, `apply_rotation(body, p1, p2, clock)` | Applies a waiting cap raise or freezer change, or a rotation with the two light clients it names, which must be a pair as `create` takes one (B4-03). |
 | `cancel_change(kind)` | Freezer only: drops a waiting raise or rotation, never its own replacement. |
 | `advance_checkpoint(p1, p2, block, timestamp, state_root, proof1, proof2, clock)` | A final Ethereum block both prove, newer than the last. |
-| `continuity(...)` + `propose_successor(p1, p2, continuity, clock)` | Recovery proposer only, while stalled. |
+| `continuity(...)` + `propose_successor(p1, p2, continuity, clock)` | Recovery proposer only, while stalled; the pair as `create` takes one (B4-03). |
 | `veto_successor()`, `adopt_successor(p1, p2, block, timestamp, state_root, proof1, proof2, clock)` | The freezer's two vetoes a stall; adoption after 30 days. |
 | `begin_snapshot(clock)` | 180 days into a stall: the last checkpoint becomes the snapshot; its root goes to slot 25. |
-| `claim_snapshot(index, holder, component, recipient, signature, proof, clock)` | A holder's share at the snapshot, to its registered recovery address or the recipient its EIP-712 signature names. |
+| `claim_snapshot(index, holder, component, recipient, signature, proof, clock)` | A holder's share at the snapshot, to its registered recovery address or the recipient its EIP-712 signature names (the domain below). |
 | `resolve_intake(index, intake_id, proof)`, `deliver_recorded(payload, proof, clock)` | After the snapshot, from the hub's `_settledIntakes` and `_sentMessages`. |
 | `attest(slots, values, clock)` | Aborts unless every slot holds its value; then freezes an `Attestation` with the record. |
 | Views | `vault_id`, `checkpoint`, `exit_snapshot`, `successor`, `index_state`, `intake`, `deposited`, `owed`, `used`, `slot`, `stalled`, `stall_start`, `pending`, `nonces`, and the settings. |
@@ -102,7 +102,25 @@ given (deposits are proven only after their deadline, any different proof of an 
 
 - **Publish and make immutable in one transaction.** The publish command returns the package's `UpgradeCap`; the same
   programmable transaction passes it to `sui::package::make_immutable`, which destroys it. Nobody can upgrade the code
-  after that. Check on chain that the package's `UpgradeCap` is gone (`tests/immutable_tests.move` runs that flow).
+  after that (`tests/immutable_tests.move` runs that flow).
+- **A mandatory check before registration (B4-01).** Nothing on chain enforces that step, and Ethereum cannot see it:
+  a type keeps the id of the package that first defined it through every upgrade, so a vault upgraded under a surviving
+  `UpgradeCap` would still write `<PACKAGE_ID>::vault::Attestation` objects that `SuiStateVerifier` accepts unchanged,
+  and the vault would no longer be ownerless. So a Sui vault may be registered (`proposeChain`) only after the owner
+  and the guardian have each checked the publishing transaction themselves, from its digest, on a Sui full node's
+  `sui_getTransactionBlock` (with `showInput`, `showEffects` and `showObjectChanges`) or an explorer that shows the same
+  fields:
+  1. its programmable transaction has exactly two commands: `Publish` of this package's modules, then `MoveCall`
+     `0x2::package::make_immutable` taking the `Publish` command's result, and its status is success;
+  2. its object changes list the package as published, at the id `SuiStateVerifier.PACKAGE_ID` names, and no
+     `0x2::package::UpgradeCap` among the objects it created or left owned by anyone: a cap kept would appear there,
+     owned by the publisher;
+  3. the package's modules are byte for byte the local build of this commit (`sui move build`), and the vault and its
+     light clients are objects of that package (`<PACKAGE_ID>::vault::Vault`, `<PACKAGE_ID>::light_client::LightClient`)
+     created after it.
+
+  The listing proposal's notes record the publishing transaction's digest, its checkpoint, the package id and the
+  commit built. If any check fails, the vault is not registered: a new package is published instead.
 - **No capability.** The package has no `init`, no capability type, no one-time witness and no `Publisher`: nothing is
   created at publication. `Vault`, `LightClient` and `Attestation` have `key` only, so nothing outside this package
   can wrap or transfer them, and none can be deleted.
@@ -110,7 +128,10 @@ given (deposits are proven only after their deadline, any different proof of an 
   (`vault::create`), which refuses what `DeployVault` refuses where Move can see it: a source chain other than Ethereum
   (1) or Sepolia, a chain id not Sui's for it (`sui:mainnet` for Ethereum, `sui:testnet` for Sepolia), a missing
   factory or template, P1 not an SP1 client or P2 not a RISC Zero one, either not of the source chain's beacon genesis,
-  either past its lag, a missing, equal or creating-key freezer or recovery proposer, and a floor above the cap.
+  either anchored in an epoch that has not begun (B4-02) or past its lag, a missing, equal or creating-key freezer or
+  recovery proposer, and a floor above the cap (B2-02); a source chain is never Sui's own. A rotated pair and a
+  successor pass the same checks of a pair, from the same function (B4-03). The vault takes no deposit until its first
+  checkpoint (B1-04).
 - **What Move cannot check.** That the recovery proposer is the owner's emergency multisig: a Sui multisig address is
   the hash of its keys and threshold, indistinguishable from one key's. Before Ethereum's registry names the vault,
   check off chain that the recovery proposer address is derived from the published multisig (at least three of five)
@@ -122,9 +143,10 @@ given (deposits are proven only after their deadline, any different proof of an 
 
 - **P1 and P2 are objects of this package.** Each light client is a shared `LightClient`, named by its object id, as
   the EVM vault names a verifier by its address; every call that proves something passes both in, and the vault checks
-  their ids. A `VERIFIER_ROTATION` names two object ids; `apply_rotation` takes the two objects, which must be one SP1
-  and one RISC Zero client. Their code is this package's, which nobody can upgrade, so SOL-2 (an upgradable verifier)
-  cannot arise.
+  their ids. A `VERIFIER_ROTATION` names two object ids; `apply_rotation` takes the two objects, which must be a pair as
+  `create` takes one: P1 the SP1 client and P2 the RISC Zero one, of the source chain's beacon genesis, anchored in an
+  epoch that has begun and still within their lag (B4-03). Their code is this package's, which nobody can upgrade once
+  the `UpgradeCap` is destroyed (above), so SOL-2 (an upgradable verifier) cannot arise.
 - **Groth16 on Sui's native BN254.** `sui::groth16` checks `e(A, B) = e(alpha, beta) e(L, gamma) e(C, delta)` on
   arkworks' compressed encodings. `proofs` compresses the EVM's points (x, then y's sign) and negates SP1's negated
   key back. The prepared keys are constants, which the tests rebuild from the Solidity verifiers' own constants. A
@@ -133,8 +155,10 @@ given (deposits are proven only after their deadline, any different proof of an 
   keys on a proof's bytes.
 - **Time is the `Clock`**, in seconds for every rule (rounded down, as the verifier rounds the record's milliseconds),
   and in milliseconds in the record. Sui's clock is the consensus commit's time, with no drift to bound (SOL-10).
-- **Amounts are MIST, `u64`**; an amount from Ethereum past 64 bits is refused (`abi::EOverflow`), as on Solana. A
-  snapshot share takes `shares × units` in 256 bits, as Solidity does.
+- **Amounts are MIST, `u64`**; an amount from Ethereum past 64 bits is refused (`abi::EOverflow`), as on Solana, but a
+  `CAP_UPDATE`'s cap or floor past 64 bits means `u64::MAX`, since the factory proposes them in 256 bits knowing no
+  chain's width (B1-05), and so does a `FREEZE`'s end. A snapshot share takes `shares × units` in 256 bits, as Solidity
+  does.
 - **Coins are a `Balance<SUI>` in the vault**, which only this module splits, so `held` always equals it (the tests
   check it after every step). SUI sent to the vault's address as a coin or to its address balance is stranded: nothing
   here receives it, and it counts nowhere.
@@ -143,7 +167,14 @@ given (deposits are proven only after their deadline, any different proof of an 
   own object (SOL-9): a coin sent there would be stranded.
 - **The freezer and the recovery proposer are addresses**, checked against the transaction's sender. A freezer change's
   body is a 32-byte Sui address.
-- **Refusals are abort codes**, each module numbering its own from a base: `vault` 1 to 53, `bytes` 1 and 2, `rlp` 101,
+- **The snapshot claim's signature.** A holder with no recovery address signs `SnapshotClaim(address index,address
+  holder,bytes32 recipient)` under `EIP712Domain(string name,string version,uint256 chainId,bytes32 salt)`: name `Xindex
+  vault`, version `1`, `chainId` the vault's source chain, Ethereum's (1, or 11155111 for a Sepolia vault), the network
+  the holder's wallet is on, and `salt` the vault's 32-byte id, which keeps the domain this vault's alone (B1-06).
+  Wallets refuse to sign a domain whose chain id is not the active network's, and no EVM network carries Sui's registry
+  id. The recipient is a 32-byte Sui address.
+- **Refusals are abort codes**, each module numbering its own from a base: `vault` 1 to 55 (54, Aptos's `ENoVault`,
+  unused), `bytes` 1 and 2, `rlp` 101,
   `mpt` 111, `ethereum` 121 to 127, `light_client` 131 to 138, `state_reader` 141, `proofs` 151 to 156, `snapshot` 161
   to 165, `abi` 201 and 202. A malformed proof aborts where it is found malformed (an RLP item, a node, a receipt), as
   the EVM's do, rather than under one name. A signature whose `r` is no point's x-coordinate aborts in
@@ -153,7 +184,7 @@ given (deposits are proven only after their deadline, any different proof of an 
 
 ## Tests
 
-`sui move test` runs 326 tests; instruction coverage is 95% (`sui move coverage summary`), the rest being abort
+`sui move test` runs 348 tests; instruction coverage is 95% (`sui move coverage summary`), the rest being abort
 branches of bounds checks no caller reaches and views. They run on:
 
 - **Real proofs.** SP1 v6's own Groth16 fixture and RISC Zero v3.0's own receipt, both verified by `sui::groth16`;
@@ -167,7 +198,9 @@ branches of bounds checks no caller reaches and views. They run on:
   signing its claim with its Ethereum key and one with a recovery address on Sui, a settled and an open intake, a burn
   and a migration in flight, and storage past the components array filled as an attacker would (VLT-1).
 - **Solidity's encodings.** Messages, log data, digests, slot keys, the vault token's id, CREATE2 and `attest`'s
-  record, against `cast abi-encode` and `cast keccak` (`vectors.py`).
+  record, against `cast abi-encode` and `cast keccak` (`vectors.py`); and every kind's body but a burn's, decoded from
+  `test/fixtures/vault-messages.json`, which `test/VaultMessages.fixture.t.sol` pins against `VaultMessages.encode`
+  (C1-02).
 
 Tests named after findings:
 
@@ -183,6 +216,15 @@ Tests named after findings:
 | `test_lg3_a_one_proof_message_is_not_the_last_message` | A one-proof message cannot keep an honest successor out. |
 | `test_lg4_*` (five) | The lag ends a day after the anchor's epoch; SP1's and RISC Zero's real proofs are checked at its last second and refused a second later. |
 | `test_sol9_the_vault_is_no_recipient`, `test_sol9_a_claim_never_pays_the_vault` | Neither a burn nor a claim pays the vault's own object. |
+| `test_a303_a_late_freeze_ends_with_the_factorys_freeze`, `test_a303_a_freeze_lasts_at_most_freeze_duration` | A `FREEZE` delivered after the factory's freeze ended freezes nothing; one delivered during it freezes until its end, never past 14 days. |
+| `test_b404_a_freeze_body_is_one_word`, `test_b404_a_freeze_body_of_two_words_is_refused` | A `FREEZE`'s body is exactly one word. |
+| `test_b104_no_deposit_before_the_first_checkpoint`, `test_b104_a_deposit_after_the_first_checkpoint_is_taken` | No deposit before the first checkpoint. |
+| `test_b105_a_cap_wider_than_the_native_type_saturates` | A cap past 64 bits is `u64::MAX`, a raise like any other. |
+| `test_b106_the_claim_domain_names_ethereum` | The claim's EIP-712 domain names the source chain, Ethereum's, and the vault pays on that signature. |
+| `test_b202_a_floor_above_the_cap_is_refused`, `test_b202_the_vaults_own_chain_is_no_source` | `create` refuses what `DeployVault` refuses. |
+| `test_b402_a_client_of_a_later_epoch_is_refused`, `test_b402_a_client_whose_epoch_begins_now_is_taken` | A light client is taken only once its anchor's epoch has begun. |
+| `test_b403_*` (five), `test_b402_b403_*` (two) | A rotated pair and a successor pass `create`'s checks of a pair: the roles, the genesis, the epoch and the lag. |
+| `test_c102_the_message_bodies_are_soliditys` | Every kind's body, as Solidity encodes it, decodes to its fields. |
 
 Each finding's guard, and the main rules, were checked by a mutant the tests kill: VLT-1 (both checks), VLT-2 (the
 delay, the freezer's own replacement, the freeze's hold), VLT-3, VLT-4, VLT-5 (the freezer's and the factory's), the
@@ -190,21 +232,25 @@ snapshot's block bound, LG-2, LG-3, LG-4 (the lag and its last second), SOL-9 (b
 and its 24-hour window, a frozen payout, both proofs for coins, the cap's floor in `needs_both`, `attest`'s check, the
 hub's sent mark, the recovery proposer, continuity (c), the G2 coordinate order and the G1 sign flag, the intake's
 deadline and life, the log's emitter, the route's vault, the index digest's fields, `held`, and the stall's hold on
-deposits: 34 mutants, all killed.
+deposits: 34 mutants, all killed. The 2026-10-04 audit's guards were checked the same way: A3-03 (the end that passed
+and the 14-day bound), B4-04, B1-04, B1-05, B1-06, B2-02 (the floor and the source), B4-02 (the check and its
+boundary), B4-03 (the old pair check on rotations and successors, and the roles, the genesis and the lag), and the
+C1-02 decoder (the source chain's word, the saturation): 17 mutants, all killed.
 
 ## Gas
 
 Measured with `sui move test --statistics` as the difference between a test making the call and its baseline
 (`tests/gas_tests.move`), in the unit-test runner's gas units. Sui prices instructions in tiers by how many a
 transaction has already run, and a unit test is one transaction, so the setups are kept small (the proofs are
-precomputed); the figures are the runner's, not a mainnet receipt's.
+precomputed, and the first checkpoint a deposit needs is landed without proofs); the figures are the runner's, not a
+mainnet receipt's.
 
 | Call | Gas units |
 |---|---|
-| `deposit` | 171 |
-| `deliver` of an intake settle, both proofs | 5,990 |
-| `deliver` of a burn, both proofs, 40 SUI paid as a coin and 60 owed | 5,661 |
-| `attest`, three slots | 187 |
+| `deposit` | 174 |
+| `deliver` of an intake settle, both proofs | 6,026 |
+| `deliver` of a burn, both proofs, 40 SUI paid as a coin and 60 owed | 5,694 |
+| `attest`, three slots | 191 |
 | P1's proof check (SP1 v6 Groth16) / P2's (RISC Zero v3.0) | 261 / 297 |
 | the rest of `update` after the check | 27 |
 | one event proof, its receipt bloated by 2 / 8 / 16 / 32 KB of other logs (LG-1) | 933 / 5,971 / 45,267 / 178,276 |
