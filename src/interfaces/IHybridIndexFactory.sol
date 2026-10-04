@@ -83,6 +83,8 @@ interface IHybridIndexFactory is IIndexFactory {
     error VerifiersNotDistinct();
     /// @notice `caller` is not a HybridHub index of this factory.
     error NotAHybridIndex(address caller);
+    /// @notice A cap proposal's outflow floor above its cap, which would let any payout through the vault's speed limit.
+    error FloorAboveCap(uint256 floor, uint256 cap);
 
     /// @notice How long a freeze lasts: 14 days, as on the vault.
     function FREEZE_DURATION() external view returns (uint256);
@@ -147,7 +149,8 @@ interface IHybridIndexFactory is IIndexFactory {
     function proposeVaultListing(uint256 chainId, bytes32 tokenId, uint256 supply) external;
 
     /// @notice Owner or guardian. Freezes `chainId` for FREEZE_DURATION from now: every index's mints on it stop, and a
-    ///         `FREEZE` message, which either Ethereum-side proof carries, stops the vault's payouts and deposits.
+    ///         `FREEZE` message, which either Ethereum-side proof carries, stops the vault's payouts and deposits until
+    ///         the same end, which it carries.
     function freezeChain(uint256 chainId) external;
 
     /// @notice A HybridHub index of this factory only, on evidence it has checked that `chainId`'s records or proofs
@@ -156,8 +159,9 @@ interface IHybridIndexFactory is IIndexFactory {
     ///         mints; evidence of a payout Ethereum never sent stops the vault as well.
     function freezeOnEvidence(uint256 chainId, bool payouts) external;
 
-    /// @notice Owner only. Proposes `CAP_UPDATE` for `token` on `chainId`'s vault: its quantity cap and outflow floor.
-    ///         Executable after LISTING_DELAY; the vault takes it on both proofs if it raises either figure, else on one.
+    /// @notice Owner only. Proposes `CAP_UPDATE` for `token` on `chainId`'s vault: its quantity cap and outflow floor,
+    ///         at most the cap. Executable after LISTING_DELAY; the vault takes it on both proofs if it raises either
+    ///         figure, else on one.
     function proposeCap(uint256 chainId, bytes32 token, uint256 cap, uint256 floor) external returns (bytes32 id);
 
     /// @notice Owner only. Proposes `FREEZER_CHANGE` on `chainId`'s vault. Executable after GUARDIAN_DELAY, like a

@@ -45,9 +45,9 @@ contract NearStateVerifier is INearStateVerifier {
     uint256 private constant BYTE_BITS = 8;
     uint256 private constant BYTE_MASK = 0xff;
 
-    /// @notice SP1's Groth16 verifier v6.0.0, a bare deployment, never SP1's gateway, which has an owner.
+    /// @inheritdoc INearStateVerifier
     ISP1Verifier public immutable SP1_VERIFIER;
-    /// @notice The program's key: `near vkey` of `proofs/near`.
+    /// @inheritdoc INearStateVerifier
     bytes32 public immutable PROGRAM_KEY;
     /// @inheritdoc INearStateVerifier
     uint256 public immutable CHAIN_ID;

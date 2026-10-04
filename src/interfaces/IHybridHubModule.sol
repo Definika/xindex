@@ -56,7 +56,8 @@ interface IHybridHubModule is IHybridHubTypes {
     function acceptRebalance(bytes32[] calldata recipients, uint256[] calldata maxAmountsIn) external;
 
     /// @notice Anyone, while a fill is accepted. Settles it with a proof of each vault chain's delivery intake; a chain
-    ///         with no bought leg takes an empty proof.
+    ///         with no bought leg takes an empty proof. The sold Ethereum legs are booked as the executor's claims,
+    ///         never sent, so a paused component cannot block the settlement (A2-01).
     function settleRebalance(ChainProof[] calldata proofs) external;
 
     /// @notice The executor at any time before settlement, or anyone SETTLE_GRACE after the delivery deadline: the

@@ -492,9 +492,9 @@ contract IndexZapTest is XindexTest {
 
     function test_mint_revertsZeroAmounts() public {
         vm.startPrank(alice);
-        vm.expectRevert(IIndexZap.ZeroAmount.selector);
+        vm.expectRevert(IXindexErrors.ZeroAmount.selector);
         zap.mintWithToken(_mintParams(address(index), address(usdc), 100e6, 0, _mintLegs(address(usdc)), alice));
-        vm.expectRevert(IIndexZap.ZeroAmount.selector);
+        vm.expectRevert(IXindexErrors.ZeroAmount.selector);
         zap.mintWithToken(_mintParams(address(index), address(usdc), 0, 1e18, _mintLegs(address(usdc)), alice));
         vm.stopPrank();
     }
@@ -806,9 +806,9 @@ contract IndexZapTest is XindexTest {
 
     function test_burn_revertsZeroAmounts() public {
         vm.startPrank(alice);
-        vm.expectRevert(IIndexZap.ZeroAmount.selector);
+        vm.expectRevert(IXindexErrors.ZeroAmount.selector);
         zap.burnToToken(_burnParams(address(index), 0, address(usdc), 1, _burnLegs(address(usdc)), alice));
-        vm.expectRevert(IIndexZap.ZeroAmount.selector);
+        vm.expectRevert(IXindexErrors.ZeroAmount.selector);
         zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 0, _burnLegs(address(usdc)), alice));
         vm.stopPrank();
     }

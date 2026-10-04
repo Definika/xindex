@@ -2620,6 +2620,17 @@
   },
   {
     "type": "error",
+    "name": "HoldOver",
+    "inputs": [
+      {
+        "name": "bondRelease",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "IntakeAlreadyFailed",
     "inputs": [
       {
@@ -3047,6 +3058,11 @@
   {
     "type": "error",
     "name": "ZeroAddress",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroAmount",
     "inputs": []
   },
   {

@@ -125,14 +125,15 @@ contract HybridIndexFactory is IndexFactory, IHybridIndexFactory {
         _freezeChain(chainId, payouts);
     }
 
-    /// @dev Freezes every index's mints on `chainId`, and with `payouts` the vault too, through a `FREEZE` message.
+    /// @dev Freezes every index's mints on `chainId`, and with `payouts` the vault too, through a `FREEZE` message that
+    ///      carries the freeze's end, so a late delivery never freezes the vault past it (A3-03).
     function _freezeChain(uint256 chainId, bool payouts) private {
         bytes32 vault = _chains[chainId].vault;
         if (vault == bytes32(0)) revert UnknownChain(chainId);
         uint256 until = block.timestamp + FREEZE_DURATION;
         _freezes[chainId] = Freeze({start: SafeCast.toUint64(block.timestamp), until: SafeCast.toUint64(until)});
         emit ChainFrozen(chainId, until, msg.sender);
-        if (payouts) _sendVault(chainId, vault, VaultMessages.FREEZE, "");
+        if (payouts) _sendVault(chainId, vault, VaultMessages.FREEZE, abi.encode(until));
     }
 
     /// @dev Emits a message to `chainId`'s vault, which P1, P2 or both prove final there, as its kind requires.
@@ -170,6 +171,8 @@ contract HybridIndexFactory is IndexFactory, IHybridIndexFactory {
         onlyOwner
         returns (bytes32 id)
     {
+        // A floor above the cap would let any payout through the vault's speed limit (B2-02).
+        if (floor > cap) revert FloorAboveCap(floor, cap);
         return _proposeVault(chainId, VaultMessages.CAP_UPDATE, token, abi.encode(token, cap, floor), LISTING_DELAY);
     }
 

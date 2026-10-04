@@ -44,13 +44,14 @@ import {PathKey, UniswapV4Types as V4, V4ExactInputParams, V4ExactOutputParams} 
 ///        spend the whole tolerance on one thin pool. A zero leg limit means "overall limit only". The overall burn
 ///        limit must be non-zero.
 ///      - What the user pays and receives is measured as balance changes inside the call, so tokens already sitting in
-///        the zap are never used, and the router's own reports are never the accounting. A fee-on-transfer currency
-///        reverts with `TransferShortfall`. Anything the router did not spend comes back through the sweep and reaches
-///        the recipient rather than being stranded. A balance the router happened to be holding comes back with it:
-///        on a mint it enlarges the refund, and on a burn it is returned with the unsold input. Neither side may treat
-///        it as a shortfall. A burn hop therefore measures what the sweep brought back, not what the swap sold, which a
-///        stray larger than the sale used to underflow: anyone could revert a public burn by donating to the router and
-///        sweeping the donation back (CR-L02).
+///        the zap are never used, and the router's own reports are never the accounting. The one amount taken as given
+///        is the redeemed basket, exact for the standard ERC-20s the whitelist admits (`_burnBasket`). A
+///        fee-on-transfer currency reverts with `TransferShortfall`. Anything the router did not spend comes back
+///        through the sweep and reaches the recipient rather than being stranded. A balance the router happened to be
+///        holding comes back with it: on a mint it enlarges the refund, and on a burn it is returned with the unsold
+///        input. Neither side may treat it as a shortfall. A burn hop therefore measures what the sweep brought back,
+///        not what the swap sold, which a stray larger than the sale used to underflow: anyone could revert a public
+///        burn by donating to the router and sweeping the donation back (CR-L02).
 ///      - A V3 burn leg is swapped one hop at a time, because a V3 pool can stop at its price limit and a multi-hop
 ///        call would leave the unsold middle in the router. A V4 burn leg is one swap: an intermediate hop that fills
 ///        short leaves the pool manager unsettled and reverts the whole leg, unless its input is the component or
@@ -228,6 +229,11 @@ contract IndexZap is ReentrancyGuard, IIndexZap {
         return _burnBasket(p);
     }
 
+    /// @dev Redeems the shares into this contract and sells the basket. It sells `previewRedeem`'s amounts rather than
+    ///      measuring what `redeem` delivered: they are exact because every component is a standard ERC-20, a
+    ///      fee-on-transfer one being refused at issue. A component that began charging a fee or rounding transfers
+    ///      down would arrive short, and its sale would draw the difference from a stray balance of it in the zap, or
+    ///      revert when there is none (A1a-05).
     function _burnBasket(BurnParams calldata p) private returns (uint256 amountOut) {
         address[] memory tokens = IIndexHub(p.index).componentTokens();
         if (p.legs.length != tokens.length) revert LegCountMismatch();

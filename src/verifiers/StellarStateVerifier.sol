@@ -19,10 +19,13 @@ import {IVaultStateVerifier} from "../interfaces/IVaultStateVerifier.sol";
 ///      `M` and one value; the value opens to ledger `M`'s transaction set, which names header `M-1`; headers link back
 ///      to ledger `N`; `N`'s result set holds a successful `InvokeHostFunction` whose success preimage holds the event
 ///      the vault's `attest` emits for the record. This contract checks what the statement takes as given: the
-///      network, the quorum set, the vault, the record's slots and values, and the ledger's age.
+///      network, the quorum set, the vault, the record's slots and values, and the ledger's close time, neither older
+///      than MAX_LAG nor ahead of Ethereum.
 contract StellarStateVerifier is IStellarStateVerifier {
     /// @inheritdoc IStellarStateVerifier
     uint256 public constant MAX_LAG = 1 days;
+    /// @dev `PublicValues`: six words.
+    uint256 private constant PUBLIC_VALUES_LENGTH = 6 * 32;
     /// @inheritdoc IStellarStateVerifier
     bytes32 public constant ATTEST_DOMAIN = keccak256("xindex.v4.vault-attest");
 
@@ -72,6 +75,9 @@ contract StellarStateVerifier is IStellarStateVerifier {
         SlotsProof memory p = abi.decode(proof, (SlotsProof));
         if (p.values.length != slots.length) revert LengthMismatch();
         SP1_VERIFIER.verifyProof(PROGRAM_KEY, p.publicValues, p.proof);
+        // Exactly the statement's words, as Aptos's and NEAR's verifiers take theirs: `abi.decode` ignores a trailing
+        // one, which a changed program could add unseen (A6-03).
+        if (p.publicValues.length != PUBLIC_VALUES_LENGTH) revert BadPublicValues();
         PublicValues memory v = abi.decode(p.publicValues, (PublicValues));
         if (v.networkId != NETWORK_ID) revert WrongNetwork(v.networkId);
         if (v.quorumSetHash != QUORUM_SET_HASH) revert WrongQuorumSet(v.quorumSetHash);
@@ -81,6 +87,8 @@ contract StellarStateVerifier is IStellarStateVerifier {
         // registered. Nothing ties the set to Ethereum's clock, so a Tier 1 change calls for a rotation at once, and
         // the old keys stay trusted for the factory's ROTATION_DELAY.
         if (block.timestamp > uint256(v.closeTime) + MAX_LAG) revert TooOld(v.closeTime);
+        // The signers write the close time: never after now, so a ledger is never dated ahead of Ethereum (A6-03).
+        if (v.closeTime > block.timestamp) revert InTheFuture(v.closeTime);
         // The record the vault emitted, written here from the requested slots and the given values: equal only if the
         // vault attested exactly these slots, in this order, with exactly these values.
         if (keccak256(abi.encode(ATTEST_DOMAIN, CHAIN_ID, VAULT_ID, slots, p.values)) != v.recordHash) {

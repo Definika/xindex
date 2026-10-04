@@ -225,8 +225,9 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
         if (_fill.status == FillStatus.Settled) _releaseBond();
         if (_fill.status != FillStatus.None) revert WrongFillStatus(_fill.status);
         uint256 supply = _shareSupply();
-        // An empty index posts no bond and owes no delivery: a fill there would only hold or reprice a locked seed (A2-02).
-        if (supply == 0 && _lockedShares != 0) revert ZeroShares();
+        // An index below one share, where only its creator seeds, posts next to no bond and owes next to no delivery: a
+        // fill there would only hold or reprice a locked seed (A2-02, A2-05).
+        if (supply < ONE_SHARE && _lockedShares != 0) revert ZeroShares();
         (uint256 lambda, uint256[] memory units,, uint256[] memory amountsIn) = _previewRebalance(supply);
         _checkBounds(amountsIn, maxAmountsIn);
         _checkMovingChains(units);
@@ -252,6 +253,8 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
         _clearPending();
         uint256 n = units.length;
         for (uint256 i = 0; i < n; ++i) {
+            // Narrowed here as settlement narrows them, so units past their type fail before anything is delivered.
+            SafeCast.toUint96(units[i]);
             if (_slotOf[i] == 0) _escrowed[_components[i].token] += amountsIn[i];
         }
         // The calls before this are views: the factory's supplies and freeze records.
@@ -328,9 +331,6 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
         _sendSold(f.executor, out);
         _settledIntakes[intakeId] = true;
         _sendAll(VaultMessages.INTAKE_SETTLED, abi.encode(intakeId));
-        for (uint256 i = 0; i < n; ++i) {
-            if (out[i] != 0 && _slotOf[i] == 0) IERC20(_components[i].token).safeTransfer(f.executor, out[i]);
-        }
         // Only a leg that sends or receives is read, so a kept component whose token no longer answers cannot block
         // the settlement (DA-14, RT-01, MOD-3).
         for (uint256 i = 0; i < n; ++i) {
@@ -339,13 +339,15 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
     }
 
     /// @dev Burns each sold vault leg toward the fill's recipient on its chain, or books it as the executor's claim where
-    ///      that is zero, as `redeem` does, since a vault can pay no burn to nobody (MOD-4).
+    ///      that is zero, as `redeem` does, since a vault can pay no burn to nobody (MOD-4). A sold Ethereum leg is
+    ///      booked too, never sent, as `_unwind` books the deliveries: a component paused after acceptance cannot keep
+    ///      the fill from settling and cost its executor the bond (A2-01).
     function _sendSold(address executor, uint256[] memory out) private {
         uint256 n = out.length;
         for (uint256 i = 0; i < n; ++i) {
+            if (out[i] == 0) continue;
             uint256 slot = _slotOf[i];
-            if (out[i] == 0 || slot == 0) continue;
-            bytes32 recipient = _fillRecipients[slot - 1];
+            bytes32 recipient = slot == 0 ? bytes32(0) : _fillRecipients[slot - 1];
             if (recipient == bytes32(0)) _bookClaim(executor, _components[i].token, out[i]);
             else _sendBurn(i, out[i], recipient);
         }
@@ -449,7 +451,7 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
     {
         StoredFill memory f = _fill;
         if (f.status != FillStatus.Settled) revert WrongFillStatus(f.status);
-        if (block.timestamp >= f.bondRelease) revert NotYet(f.bondRelease);
+        if (block.timestamp >= f.bondRelease) revert HoldOver(f.bondRelease);
         uint256 j = _slotIndex(chainId);
         uint256 intakeId = _fillIntakeIdOf(f);
         // From after the delivery deadline: an older state is honestly short, and state verifiers prove old blocks
@@ -586,7 +588,9 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
 
     /// @dev ρ_i / ρ_a in WAD for every moving component, where ρ = units / supply and a is the first moving component,
     ///      which cancels a's own figures exactly; with the smallest and largest of them. Units are below 2^96 and
-    ///      supplies below 2^128, so the products fit.
+    ///      supplies below 2^128, so the products fit. Unlike Stage A's, it asks the factory for every component's
+    ///      supply, a kept one's included, and uses none of the kept ones: a read of the factory's storage, never a
+    ///      call to the component. `testFuzz_A1b02_bothHubsAgreeOnTheBandAndTheSettlement` holds the two copies equal.
     function _relatives(uint256 keepMask) private view returns (uint256[] memory relative, uint256 low, uint256 high) {
         uint256 n = _components.length;
         address[] memory tokens = new address[](n);

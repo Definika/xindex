@@ -176,6 +176,13 @@ contract NearStateVerifierTest is Test {
         new NearStateVerifier(sp1, KEY, 1, "a", e, e, 0);
     }
 
+    /// @dev An integrator or a deployment check written against the interface reads the program it trusts (A6-06).
+    function test_A606_theInterfaceNamesTheProgram() public {
+        INearStateVerifier v = _deploy("xindex-vault.near");
+        assertEq(address(v.SP1_VERIFIER()), address(sp1));
+        assertEq(v.PROGRAM_KEY(), KEY);
+    }
+
     // ---------------------------------------------------------------------
     // following NEAR
     // ---------------------------------------------------------------------

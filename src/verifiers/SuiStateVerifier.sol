@@ -37,6 +37,9 @@ import {IVaultStateVerifier} from "../interfaces/IVaultStateVerifier.sol";
 ///        `SuiBcs`.
 ///      The verifier writes every byte it hashes or checks a signature over from typed fields, and parses none; a
 ///      format it cannot write needs a new verifier, rotated in through the chain registry.
+///      Only the epoch in force proves a state. Once anyone records the next committee, a proof of the epoch before
+///      reverts `WrongEpoch`, one in flight included: its prover attests again and proves under the new committee.
+///      That costs a re-proof near an epoch's end, never a state (A6-05).
 contract SuiStateVerifier is ISuiStateVerifier {
     /// @inheritdoc ISuiStateVerifier
     uint256 public constant MAX_LAG = 2 days;

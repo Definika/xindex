@@ -17,7 +17,7 @@ interface IXindexVault {
     }
 
     /// @notice A vault's settings, fixed at deployment but for what governance messages change.
-    /// @param sourceChainId Ethereum's chain id, which every message must name.
+    /// @param sourceChainId Ethereum's chain id, which every message must name: never the vault's own chain's.
     /// @param factory The factory on Ethereum.
     /// @param hubImplementation The hub template on Ethereum that every index is a clone of.
     /// @param verifier1 P1, the first Ethereum-event verifier on this chain.
@@ -27,7 +27,7 @@ interface IXindexVault {
     ///        verifiers only while the vault is stalled.
     /// @param stateReader Reads Ethereum's state under a checkpoint's root, for a snapshot exit.
     /// @param nativeCap The quantity cap on the native coin across all indexes.
-    /// @param nativeFloor The native coin's outflow floor (section 1, proposal 5 of the Stage B spec).
+    /// @param nativeFloor The native coin's outflow floor (section 1, proposal 5 of the Stage B spec), at most the cap.
     struct Config {
         uint256 sourceChainId;
         address factory;
@@ -164,11 +164,16 @@ interface IXindexVault {
     error ChangeNotReady(bytes32 key, uint256 readyAt);
     /// @notice `attest` found `slot` not holding the value given, or was given a different number of each.
     error NotAttested(bytes32 slot);
+    /// @notice A message whose body is not its kind's: a FREEZE carries exactly one word, the end of the factory's freeze.
+    error BadMessage();
+    /// @notice An outflow floor above the cap would let any payout through the speed limit.
+    error FloorAboveCap(uint256 floor, uint256 cap);
 
     /// @notice Largest share of an index's balance of a token that may leave in any 24 hours: 4%.
     function SPEED_LIMIT() external view returns (uint256);
 
-    /// @notice How long a freeze lasts: 14 days.
+    /// @notice How long a freeze lasts: 14 days. A FREEZE message from the factory lasts until the end it carries, the
+    ///         factory's own freeze's, and never longer than this from its delivery.
     function FREEZE_DURATION() external view returns (uint256);
 
     /// @notice How far ahead a first deposit may set an intake's deadline: 7 days.
@@ -292,9 +297,9 @@ interface IXindexVault {
     ///         template under `salt`. Only a registered index takes deposits.
     function registerIndex(address index, bytes32 salt) external;
 
-    /// @notice Anyone, while the vault is neither frozen nor stalled, into a registered index, within the cap and before
-    ///         the intake's deadline, which a new intake may set at most MAX_INTAKE_LIFE away. Deposits the native coin
-    ///         sent into intake `intakeId` of `index`.
+    /// @notice Anyone, while the vault is neither frozen nor stalled and once it has a first checkpoint, into a
+    ///         registered index, within the cap and before the intake's deadline, which a new intake may set at most
+    ///         MAX_INTAKE_LIFE away. Deposits the native coin sent into intake `intakeId` of `index`.
     function deposit(address index, uint256 intakeId) external payable;
 
     /// @notice Anyone. Runs one message proven final on Ethereum by P1 (`proof1`), P2 (`proof2`) or both.

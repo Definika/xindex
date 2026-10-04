@@ -17,7 +17,8 @@ import {PathKey} from "../libraries/UniswapV4Types.sol";
 ///
 ///      Of the shared errors, the zap raises NotIndex for an index the factory did not deploy, ZeroAddress for a zero
 ///      factory, router, recipient, `tokenIn` or `tokenOut`, and InvalidRecipient for a recipient that is the zap, the
-///      index, the router, the PoolManager or the factory (RT-21).
+///      index, the router, the PoolManager or the factory (RT-21). It raises ZeroAmount for zero shares or a zero
+///      overall limit.
 interface IIndexZap is IXindexErrors {
     /// @param v3Path Exact-output Uniswap V3 path from the component back to `tokenIn`. Empty for a V4 leg and for
     ///        the pass-through leg whose component is `tokenIn` itself.
@@ -123,8 +124,6 @@ interface IIndexZap is IXindexErrors {
     error StaleRebalanceNonce(uint256 expected, uint256 actual);
     /// @notice The deadline has passed.
     error Expired();
-    /// @notice Zero shares, or a zero overall limit.
-    error ZeroAmount();
     /// @notice `legs` does not have one entry per component.
     error LegCountMismatch();
     /// @notice Leg `i` has a malformed path, one with the wrong endpoints, or a path where none belongs.

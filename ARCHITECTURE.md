@@ -636,7 +636,7 @@ the governance messages to vaults. Stage A's flow is unchanged.
 
 | Proposal | Message | Delay | Cancelled by |
 |---|---|---|---|
-| `proposeCap(chainId, token, cap, floor)` | `CAP_UPDATE`: a quantity cap and an outflow floor | `LISTING_DELAY`, 2 days | owner or guardian |
+| `proposeCap(chainId, token, cap, floor)` | `CAP_UPDATE`: a quantity cap and an outflow floor, at most the cap (B2-02) | `LISTING_DELAY`, 2 days | owner or guardian |
 | `proposeFreezer(chainId, freezer)` | `FREEZER_CHANGE` | `GUARDIAN_DELAY`, 7 days | owner only: the guardian cannot block its own replacement |
 | `proposeRotation(chainId, p1, p2)` | `VERIFIER_ROTATION`, to two different verifiers | `ROTATION_DELAY`, 30 days | owner or guardian |
 
@@ -668,8 +668,8 @@ which pays it out only on messages the hub sends. Integrators call it through `I
     vault component on its chain under that id.
   - `settleOrder(orderId, proofs)`, anyone: each vault's intake digest, proven through the chain's state verifier at a
     block after the deadline, when deposits are final, must cover the order. Settling applies `MINT_CAP`: at most 4% of
-    the supply may become claimable over the current hour and the 24 before it. An empty index has no room, and only
-    its creator may seed it, by an order or a migration (HUB-2).
+    the supply may become claimable over the current hour and the 24 before it. An index below one share has next to no
+    room, and only its creator may seed it, by an order or a migration (HUB-2, A2-05).
   - `MINT_LOCK` (24 hours) follows. In it, `voidOrder` takes any proof of the same intake, after the deadline, showing
     a different digest: the order fails and the chain's mints freeze for every index. A freeze that began at or after
     the settlement holds the order until `reconfirmOrder` proves the intake unchanged from after the freeze.
@@ -693,8 +693,9 @@ which pays it out only on messages the hub sends. Integrators call it through `I
      transaction, and names one recipient per vault chain for the sold vault legs. It then deposits the bought vault
      legs under the fill's intake id, `(deadline << 192) | 1 << 191 | nonce`, within `DELIVERY_WINDOW` (6 hours).
   2. `settleRebalance(proofs)`, anyone, on a proof of each delivery intake. The settlement is recomputed at the supply
-     of the settling block; it writes the new units, pays the sold Ethereum legs, burns the sold vault legs toward the
-     executor's recipients and sends `INTAKE_SETTLED`.
+     of the settling block; it writes the new units, books the sold Ethereum legs as the executor's claims (never
+     sent, so a paused component cannot block it; A2-01), burns the sold vault legs toward the executor's recipients
+     and sends `INTAKE_SETTLED`.
   3. The bond is held `BOND_HOLD` (24 hours), then `releaseBond` returns it. During the hold, `slashRebalance` takes a
      proof from after the delivery deadline that a delivery intake is neither open nor settled, or holds less than the
      fill recorded (an empty one only on a chain where the fill recorded a delivery; HUB-1, MOD-1): the bond is burned
@@ -751,8 +752,8 @@ balance per index, takes coins only as deposits to an intake, and lets them out 
 | `INTAKE_SETTLED`, `INTAKE_FAILED` | the index | P1 and P2 | the deposits join the index's balance, or become refundable (`refund`) |
 | `MIGRATE` | the old index | P1 and P2 | pays into the new index's balance, as a burn pays |
 | `CAP_UPDATE` | the factory | both to raise the cap or the floor, either to lower them | sets the coin's cap and outflow floor |
-| `FREEZE` | the factory | either | freezes the vault for `FREEZE_DURATION` (14 days) |
-| `FREEZER_CHANGE`, `VERIFIER_ROTATION` | the factory | P1 and P2 | a new freezer; a new pair of verifiers, which must differ |
+| `FREEZE` | the factory | either | freezes the vault until its body's `until`, the end of the factory's freeze, and for at most `FREEZE_DURATION` (14 days); delivered after `until`, nothing (A3-03) |
+| `FREEZER_CHANGE`, `VERIFIER_ROTATION` | the factory | P1 and P2 | a new freezer; a new pair of verifiers, of two different proof systems (B5-03) |
 
 - **What waits.** A message that moves coins or loosens a rule runs only from an Ethereum block the vault's checkpoint
   covers (VLT-3). A raised cap or floor, a new freezer and new verifiers then wait `GOVERNANCE_DELAY` (7 days) on the
@@ -764,15 +765,16 @@ balance per index, takes coins only as deposits to an intake, and lets them out 
   larger, so outflow in any 24 hours is at most 4% exactly. What the limit holds back stays owed, and `release` pays it
   later; nothing expires. `paidTotal` counts every payout. Before a snapshot exit it can never exceed what the index
   sent; after one, snapshot claims add to it (VLT-I6).
-- **Freeze.** The freezer, the guardian's freeze address on that chain, can `freeze()` for 14 days, as a `FREEZE`
-  message can. A frozen vault takes no deposit and pays nothing; accepted burns stay owed. Nothing freezes a vault
-  after its snapshot (VLT-5).
+- **Freeze.** The freezer, the guardian's freeze address on that chain, can `freeze()` for 14 days; a `FREEZE`
+  message freezes it until the end of the factory's freeze, which it carries. A frozen vault takes no deposit and pays
+  nothing; accepted burns stay owed. Nothing freezes a vault after its snapshot (VLT-5).
 - **Digests.** The vault keeps two 32-byte digests for Ethereum to prove, updated whenever what they cover changes: per
   index, its balances and paid totals (`indexDigest`); per intake, its state and deposit totals (`intakeDigest`).
   `attest(slots, values)` reverts unless the slots hold the values: on TRON, whose blocks commit to no contract
   storage, a successful call of it in a final block is the proof.
 - **Stall and snapshot exit.** Anyone advances the vault's checkpoint (`advanceCheckpoint`) to a final Ethereum block
-  both P1 and P2 prove. A vault with no new checkpoint for `STALL_PERIOD` (7 days) is stalled and takes no deposit.
+  both P1 and P2 prove. A vault with no new checkpoint for `STALL_PERIOD` (7 days) is stalled and takes no deposit,
+  and so does one before its first checkpoint (B1-04).
   Only then may `RECOVERY_PROPOSER`, the owner's emergency multisig on that chain, propose a successor pair, which must
   prove the last checkpoint, a recent one and the last message delivered on both proofs (LG-3), and waits
   `RECOVERY_DELAY` (30 days) with at most `MAX_RECOVERY_VETOES` (2) vetoes by the freezer in the stall. Only a
@@ -792,7 +794,7 @@ balance per index, takes coins only as deposits to an intake, and lets them out 
   BURN, both digests, the clone address, the hub's storage reads and the claim's EIP-712 digest against Solidity's
   (`crates/xindex-core/tests/vault.rs`). It keeps checkpoints, stalls, recovers and exits as the EVM vault does (SOL-7,
   closed 2026-10-03), its holders signing their snapshot claim with an EIP-712 domain that names the vault's 32-byte id
-  as `salt` and its registry chain id, for a `bytes32` recipient.
+  as `salt` and the source chain's id, Ethereum's, where the holder's wallet is (B1-06), for a `bytes32` recipient.
   `solana/programs/stub-verifier` trusts a relayer key and serves testnets only; nothing in `src/` or `script/` names
   it.
 - **On NEAR** (`near/`) the vault is a near-sdk contract with P1 and P2 compiled in, since NEAR's cross-contract calls
@@ -843,7 +845,8 @@ implement it over the same statement, so that one broken prover can stop coins b
   `FinalityVerifier` with the same anchor, headers tree, receipt proof and lag, checking SP1's and RISC Zero's proofs on
   `sui::groth16`; about 290 and 320 gas units an update, in the unit-test runner's units. **On Aptos** they are
   light-client objects in the vault's package (`aptos/`), checking both proofs with one BN254 multi-pairing of
-  `crypto_algebra`, every point checked on the curve and in its subgroup; about 2,000 gas units an update, estimated.
+  `crypto_algebra`, every point checked on the curve and in its subgroup; about 2,000 gas units an update, estimated,
+  which the deployer measures on a real update before the chain is listed (`aptos/README.md`, B4-05).
 - **Shared risk.** A bug in either zkVM breaks one system only; a bug in the statement breaks both. That is a known
   limitation (Stage B spec, section 11).
 - **Measured.** SP1's Groth16 check costs about 227k gas on an EVM and 96,910 compute units on Solana. P1's statement

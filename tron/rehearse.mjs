@@ -180,6 +180,13 @@ async function warm(label, addr, sig, params) {
   const addr = (a) => ({ type: 'address', value: '41' + a.slice(2) });
   await send('vault registerIndex (Ethereum CREATE2)', vault, 'registerIndex(address,bytes32)', [addr(index), b32(salt)]);
 
+  // A vault takes no deposit before its first checkpoint (B1-04): the mocked P1 and P2 agree on one, dated by the chain's
+  // latest block, which is past the deployment's.
+  const head = await tw.trx.getCurrentBlock();
+  const now = BigInt(Math.floor(head.block_header.raw_data.timestamp / 1000));
+  const cp = encodeAbiParameters(parseAbiParameters('(uint64, uint64, bytes32)'), [[1n, now, keccak256(toHex('tron state root'))]]);
+  await send('vault advanceCheckpoint (P1 and P2 mocked)', vault, 'advanceCheckpoint(bytes,bytes)', [b(cp), b(cp)]);
+
   const intakeId = ((BigInt(Math.floor(Date.now() / 1000)) + 3600n) << 192n) | 1n;
   await send('vault deposit 10 TRX', vault, 'deposit(address,uint256)', [addr(index), { type: 'uint256', value: intakeId.toString() }], { value: 10_000_000 });
   const v = await tw.contract(art('XindexVault').abi, vault);

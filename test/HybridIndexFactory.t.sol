@@ -243,6 +243,21 @@ contract HybridIndexFactoryTest is HybridTest {
         assertEq(vault.frozenUntil(), block.timestamp + 14 days);
     }
 
+    /// @dev A3-03: the factory's FREEZE carries the end of the freeze it records, so a vault that gets it late freezes
+    ///      only what is left of that, and one that gets it after the end freezes nothing.
+    function test_A303_theFactorysFreezeCarriesItsEnd() public {
+        vm.recordLogs();
+        vm.prank(guardian);
+        factory.freezeChain(chainId);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        uint256 until = factory.chainFreeze(chainId).until;
+        assertEq(until, block.timestamp + 14 days);
+        assertEq(_message(logs).body, abi.encode(until));
+        vm.warp(until);
+        _deliverAll(logs);
+        assertEq(vault.frozenUntil(), 0, "the factory's freeze is over: nothing left to freeze");
+    }
+
     /// @dev Only the factory's own HybridHub clones may freeze a chain on evidence; an Ethereum-only index may not.
     function test_freezeOnEvidence_onlyAHybridIndex() public {
         vm.expectRevert(abi.encodeWithSelector(IHybridIndexFactory.NotAHybridIndex.selector, address(this)));
@@ -326,6 +341,17 @@ contract HybridIndexFactoryTest is HybridTest {
         assertEq(vault.outflowFloor(address(0)), 1e21);
         vm.expectRevert(abi.encodeWithSelector(IHybridIndexFactory.NoVaultProposal.selector, id));
         factory.executeVaultProposal(id);
+    }
+
+    /// @dev B2-02: a cap whose outflow floor lies above it would let any payout through the vault's speed limit, so the
+    ///      factory never proposes one; a floor at the cap is a floor.
+    function test_B202_aCapProposalRefusesAFloorAboveTheCap() public {
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(IHybridIndexFactory.FloorAboveCap.selector, 5e24 + 1, 5e24));
+        factory.proposeCap(chainId, bytes32(0), 5e24, 5e24 + 1);
+        vm.prank(owner);
+        bytes32 id = factory.proposeCap(chainId, bytes32(0), 5e24, 5e24);
+        assertEq(factory.vaultProposal(id).body, abi.encode(bytes32(0), uint256(5e24), uint256(5e24)));
     }
 
     /// @dev LG-1: the factory marks every message it sends, a governance change and an evidence freeze alike, and

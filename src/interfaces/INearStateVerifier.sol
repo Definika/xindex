@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {IVaultStateVerifier} from "./IVaultStateVerifier.sol";
+import {ISP1Verifier} from "./ISP1Verifier.sol";
 
 /// @notice NEAR's state on Ethereum (`design/2026-10-03-near-stellar-interfaces.md`). No NEAR header commits to a
 ///         contract's storage in a form Ethereum can read cheaply, so a slot is proven by a successful `attest` of the
@@ -89,6 +90,12 @@ interface INearStateVerifier is IVaultStateVerifier {
 
     /// @notice `keccak256("xindex.v4.vault-attest")`, the first word of every `attest` record.
     function ATTEST_DOMAIN() external view returns (bytes32);
+
+    /// @notice SP1's Groth16 verifier v6.0.0, a bare deployment, never SP1's gateway, which has an owner.
+    function SP1_VERIFIER() external view returns (ISP1Verifier);
+
+    /// @notice The program's key: `near vkey` of `proofs/near`.
+    function PROGRAM_KEY() external view returns (bytes32);
 
     /// @notice The factory's registry id of the chain (`near:mainnet` or `near:testnet` hashed).
     function CHAIN_ID() external view returns (uint256);

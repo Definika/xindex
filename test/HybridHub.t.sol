@@ -303,6 +303,40 @@ contract HybridHubTest is HybridTest {
         assertEq(hub.mintRoom(), 0);
     }
 
+    /// @dev A2-05: an index emptied but for dust is as mint-dead as an empty one, since 4% of dust a day never grows to
+    ///      a share, so its creator may seed it as it may an empty one. A stranger still may not.
+    function test_A205_theCreatorReseedsAnIndexBelowOneShare() public {
+        _mint(hub, minter, 100e18);
+        address stranger = makeAddr("stranger");
+        vm.prank(minter);
+        hub.transfer(stranger, 1); // a wei nobody redeems
+        bytes32[] memory recipients = new bytes32[](1);
+        recipients[0] = _b32(minter);
+        vm.prank(minter);
+        hub.redeem(100e18 - 1, minter, recipients, 0);
+        assertEq(hub.totalSupply(), 1);
+        vm.warp(block.timestamp + 25 hours); // the seed's own window is over
+        assertEq(hub.mintRoom(), 0);
+
+        uint256 dust = 1e15;
+        uint256[] memory amounts = hub.previewOrder(dust);
+        weth.mint(stranger, amounts[0]);
+        vm.startPrank(stranger);
+        weth.approve(address(hub), amounts[0]);
+        (uint256 orderId, uint256 intakeId) = hub.openOrder(dust, block.timestamp + 1 hours);
+        vm.deal(stranger, amounts[1]);
+        _fresh();
+        vault.deposit{value: amounts[1]}(address(hub), intakeId);
+        vm.stopPrank();
+        vm.warp(block.timestamp + 1 hours + 1);
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.MintCapExceeded.selector, dust, 0));
+        hub.settleOrder(orderId, _chainProof(block.timestamp, amounts[1]));
+
+        _mint(hub, minter, 10e18);
+        assertEq(hub.totalSupply(), 10e18 + 1);
+        assertEq(hub.balanceOf(stranger), 1, "the dust is untouched");
+    }
+
     /// @dev HUB-2: a stranger cannot seed an empty index. Its dust would be the whole supply, and 4% of dust a day would
     ///      never let the index grow.
     function test_HUB2_onlyTheCreatorSeedsAnEmptyIndex() public {

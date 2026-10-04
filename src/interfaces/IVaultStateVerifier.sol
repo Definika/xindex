@@ -7,8 +7,10 @@ interface IVaultStateVerifier {
     /// @notice The values of `slots` in `account`'s storage at the block `proof` shows final; reverts on any proof that
     ///         does not show it.
     /// @return blockNumber The block's number on its chain.
-    /// @return timestamp The block's timestamp, in seconds. A caller comparing it with a deadline must also refuse a
-    ///         state older than one it already accepted.
+    /// @return timestamp The block's timestamp, in seconds. A caller bounds it below by its own deadline or freeze, as
+    ///         the hub does on every read; nothing refuses a state older than one already accepted (A2-04). Every
+    ///         verifier's MAX_LAG is inclusive at its edge by design: exactly MAX_LAG after the time it counts from, a
+    ///         proof still passes (A6-07).
     /// @return values The slots' values, in the order of `slots`; zero for a slot or an account the proof shows absent.
     function verifySlots(address account, bytes32[] calldata slots, bytes calldata proof)
         external

@@ -7,9 +7,11 @@ import {IEthereumEventVerifier} from "../../src/interfaces/IEthereumEventVerifie
 ///         data)`, and a proof of a checkpoint is the checkpoint, `abi.encode(Checkpoint)`, both accepted as final
 ///         unless the verifier is set to refuse, as a real one refuses a proof it cannot verify. A log's block is the
 ///         one set with `setEventBlock`, zero until one is: a log older than any checkpoint, which a vault takes.
+///         Each mock is a proof system of its own, unless `setProofSystem` makes two share one.
 contract MockEventVerifier is IEthereumEventVerifier {
     bool public refuse;
     uint256 public eventBlock;
+    bytes32 public PROOF_SYSTEM = keccak256(abi.encode("mock", address(this)));
 
     error Refused();
 
@@ -19,6 +21,10 @@ contract MockEventVerifier is IEthereumEventVerifier {
 
     function setEventBlock(uint256 blockNumber) external {
         eventBlock = blockNumber;
+    }
+
+    function setProofSystem(bytes32 system) external {
+        PROOF_SYSTEM = system;
     }
 
     function verifyEvent(bytes calldata proof)

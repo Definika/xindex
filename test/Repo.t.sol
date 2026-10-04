@@ -189,6 +189,24 @@ contract RepoTest is Test {
         );
     }
 
+    /// @dev A1a-04: an error more than one contract raises is declared once, in IXindexErrors, and never again in an
+    ///      interface that extends it, so the shared selectors cannot drift apart. The zap's and the requests'
+    ///      `ZeroAmount` were each declared twice.
+    function test_A1a04_sharedErrorsAreDeclaredOnce() public view {
+        string[6] memory shared =
+            ["ZeroAddress", "LengthMismatch", "Unauthorized", "NotIndex", "InvalidRecipient", "ZeroAmount"];
+        string[4] memory extending = ["IIndexFactory", "IIndexZap", "IMintRequests", "IHybridHubTypes"];
+        string memory base = _read("src/interfaces/IXindexErrors.sol");
+        for (uint256 i = 0; i < shared.length; ++i) {
+            string memory declaration = string.concat("error ", shared[i], "(");
+            assertTrue(_contains(base, declaration), shared[i]);
+            for (uint256 j = 0; j < extending.length; ++j) {
+                string memory source = _read(string.concat("src/interfaces/", extending[j], ".sol"));
+                assertFalse(_contains(source, declaration), string.concat(extending[j], " declares ", shared[i]));
+            }
+        }
+    }
+
     /// @dev XA-46: the agent instructions have one copy; CLAUDE.md only imports AGENTS.md.
     function test_XA46_claudeMdOnlyImportsAgentsMd() public view {
         string memory claude = _read("CLAUDE.md");

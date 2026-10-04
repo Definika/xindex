@@ -362,7 +362,7 @@ contract SecurityRegressionTest is XindexTest {
         _issueBlue(alice, 1e18);
         vm.startPrank(alice);
         index.approve(address(zap), 1e18);
-        vm.expectRevert(IIndexZap.ZeroAmount.selector);
+        vm.expectRevert(IXindexErrors.ZeroAmount.selector);
         zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 0, _burnLegs(address(usdc)), alice));
         vm.stopPrank();
     }

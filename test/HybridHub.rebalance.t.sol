@@ -4,8 +4,10 @@ pragma solidity ^0.8.24;
 import {Vm, stdError} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IHybridHubTypes} from "../src/interfaces/IHybridHubTypes.sol";
 import {IHybridIndex} from "../src/interfaces/IHybridIndex.sol";
+import {IIndexHub} from "../src/interfaces/IIndexHub.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {VaultMessages} from "../src/libraries/VaultMessages.sol";
 import {HybridTest} from "./HybridTest.sol";
@@ -93,8 +95,8 @@ contract HybridHubRebalanceTest is HybridTest {
     // the fill
     // ---------------------------------------------------------------------
 
-    /// @dev A vault leg bought: the executor delivers on the vault chain, is paid WETH on Ethereum once the delivery is
-    ///      proven, and gets its bond back after the hold.
+    /// @dev A vault leg bought: the executor delivers on the vault chain, is booked the sold WETH as its claim on
+    ///      Ethereum once the delivery is proven, and gets its bond back after the hold.
     function test_fill_buysAVaultLeg() public {
         _liveAuction(true);
         (, uint256[] memory unitsBefore,,) = hub.components();
@@ -120,7 +122,7 @@ contract HybridHubRebalanceTest is HybridTest {
         (, uint256[] memory unitsAfter,,) = hub.components();
         assertLt(unitsAfter[0], unitsBefore[0]);
         assertGt(unitsAfter[1], unitsBefore[1]);
-        assertGt(weth.balanceOf(executor), 0, "paid the sold WETH");
+        assertGt(hub.claimOf(executor, address(weth)), 0, "the sold WETH, booked as the executor's claim");
         assertEq(hub.vaultBacking(native), 140e18 + deliveries[1]);
         assertEq(vault.balance(address(hub), address(0)), hub.vaultBacking(native), "the vault agrees with the book");
         assertEq(hub.rebalanceNonce(), 1);
@@ -439,7 +441,9 @@ contract HybridHubRebalanceTest is HybridTest {
         assertEq(factory.chainFreeze(chainId).start, 0);
     }
 
-    function test_slash_notAfterTheHold() public {
+    /// @dev Once the hold is over, a slash is refused with an error that says so, never the one that means too early
+    ///      (A2-10).
+    function test_A210_slash_notAfterTheHold() public {
         _liveAuction(true);
         uint256[] memory deliveries = _accept();
         _deliver(deliveries[1]);
@@ -448,7 +452,7 @@ contract HybridHubRebalanceTest is HybridTest {
         vm.warp(release);
         IHybridHubTypes.ChainProof memory never = _proofOf(0)[0];
         never.proof = _forged(block.timestamp, bytes32(0));
-        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.NotYet.selector, release));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.HoldOver.selector, release));
         hub.slashRebalance(chainId, 0, never);
         vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.NotAVaultChain.selector, 9));
         vm.warp(release - 1);
@@ -661,6 +665,23 @@ contract HybridHubRebalanceTest is HybridTest {
         hub.acceptRebalance(r, new uint256[](0));
     }
 
+    /// @dev A2-05 with A2-02: an index below one share whose creator's new seed is locked takes no fill either, since
+    ///      its bond, a thousandth of the dust, is as good as none.
+    function test_A205_A202_aDustIndexTakesNoFillWhileItsSeedIsLocked() public {
+        vm.prank(minter);
+        hub.redeem(99e18, minter, new bytes32[](1), 0);
+        vm.prank(executor);
+        hub.redeem(1e18 - 1, executor, new bytes32[](1), 0);
+        _liveAuction(true);
+        _settledOrder(hub, minter, 50e18);
+        assertEq(hub.totalSupply(), 1);
+        bytes32[] memory r = new bytes32[](1);
+        r[0] = execRecipient;
+        vm.prank(executor);
+        vm.expectRevert(IHybridHubTypes.ZeroShares.selector);
+        hub.acceptRebalance(r, new uint256[](0));
+    }
+
     /// @dev Three revisions of one supply open a band wider than the step (two leave the centred ratio at 1.004988,
     ///      inside it): it is clamped to [1 − STEP, 1 + STEP].
     function test_aWideBandIsClamped() public {
@@ -773,6 +794,189 @@ contract HybridHubRebalanceTest is HybridTest {
         assertEq(three.rebalanceNonce(), 1);
     }
 
+    /// @dev A2-01: a sold Ethereum leg is booked as the executor's claim, never sent at settlement, so a component
+    ///      paused after acceptance cannot keep the fill from settling, which would cost its executor the bond. The
+    ///      executor collects once transfers resume.
+    function test_A201_aPausedSoldLegStillSettles() public {
+        MockPausableToken wbtc = new MockPausableToken("Wrapped BTC", "WBTC", 8);
+        IHybridIndex idx = _indexWith(address(wbtc), 1e27);
+        _revise(native, BNB_SUPPLY); // native bought, WBTC sold
+        vm.warp(block.timestamp + 7 days);
+        idx.startRebalance(0);
+        vm.warp(block.timestamp + 2 days + 12 hours);
+        (,, uint256[] memory amountsOut, uint256[] memory amountsIn) = idx.previewRebalance();
+        assertGt(amountsOut[0], 0, "WBTC is sold");
+        vm.startPrank(executor);
+        idx.acceptRebalance(new bytes32[](1), new uint256[](0));
+        vm.deal(executor, amountsIn[1]);
+        _fresh();
+        vault.deposit{value: amountsIn[1]}(address(idx), idx.fillIntakeId());
+        vm.stopPrank();
+        uint256 held = wbtc.balanceOf(address(idx));
+
+        wbtc.setPaused(true);
+        idx.settleRebalance(_proofOf(amountsIn[1]));
+        assertEq(uint256(idx.fill().status), uint256(IHybridHubTypes.FillStatus.Settled));
+        assertEq(idx.claimOf(executor, address(wbtc)), amountsOut[0], "booked, not sent");
+        assertEq(idx.totalClaims(address(wbtc)), amountsOut[0]);
+        assertEq(wbtc.balanceOf(address(idx)), held, "nothing left the index");
+
+        wbtc.setPaused(false);
+        vm.prank(executor);
+        idx.claim(address(wbtc), executor);
+        assertEq(wbtc.balanceOf(executor), amountsOut[0]);
+        assertEq(idx.totalClaims(address(wbtc)), 0);
+    }
+
+    /// @dev A2-11: new units past their type are refused when the fill is accepted, before anything is delivered, not
+    ///      only at settlement, where every attempt would revert until anyone could fail the fill and burn the bond.
+    function test_A211_unitsPastTheirTypeAreRefusedAtAcceptance() public {
+        // Both components' units at the type's ceiling, in their ratio, as only about 690 full-band raises bring them.
+        uint256 base = uint256(keccak256(abi.encode(uint256(0)))); // `_components`, slot 0
+        uint256 nativeUnits = type(uint96).max;
+        vm.store(address(hub), bytes32(base), bytes32(nativeUnits * 6 / 7 << 160 | uint160(address(weth))));
+        vm.store(address(hub), bytes32(base + 1), bytes32(nativeUnits << 160 | uint160(native)));
+        _liveAuction(true); // native bought: its units rise past the ceiling
+        (, uint256[] memory units,,) = hub.previewRebalance();
+        assertGt(units[1], type(uint96).max);
+        bytes32[] memory r = new bytes32[](1);
+        vm.expectRevert(abi.encodeWithSelector(SafeCast.SafeCastOverflowedUintDowncast.selector, 96, units[1]));
+        vm.prank(executor);
+        hub.acceptRebalance(r, new uint256[](0));
+    }
+
+    /// @dev A1b-02: the band and the settlement exist twice, in Stage A's IndexHub and in the hybrid module, with
+    ///      nothing else tying them together. One index of three Ethereum tokens, an IndexHub clone, and one of the
+    ///      same three and the vault's coin, a HybridHub, start from the same units and supply. For any supply batches
+    ///      and keep mask, the coin always kept on the hybrid side, both give the same band and, at the same moment of
+    ///      the auction, the same λ, and the same units and amounts on every Ethereum leg.
+    function testFuzz_A1b02_bothHubsAgreeOnTheBandAndTheSettlement(int8[6] memory steps, uint8 keep, uint32 into)
+        public
+    {
+        (IIndexHub stageA, IHybridIndex hybrid, address[] memory eth) = _twins();
+        // Two weekly batches of the three supplies, each moving each by at most the step, in hundredths of a percent:
+        // a spread of up to 2%, so the clamp binds as well.
+        for (uint256 b = 0; b < 2; ++b) {
+            uint256[] memory supplies = factory.referenceSupplies(eth);
+            for (uint256 i = 0; i < 3; ++i) {
+                int256 bps = int256(steps[3 * b + i]) % 51;
+                supplies[i] = uint256(int256(supplies[i]) + int256(supplies[i]) * bps / 10_000);
+            }
+            _batch(eth, supplies);
+            vm.warp(block.timestamp + 7 days);
+        }
+
+        uint256 mask = keep % 7; // never all three kept
+        if (!_sameBand(stageA, hybrid, mask)) return; // too narrow for both
+        vm.startPrank(guardian);
+        stageA.startRebalance(mask);
+        hybrid.startRebalance(mask | 8);
+        vm.stopPrank();
+        vm.warp(block.timestamp + 2 days + into % (24 hours + 1));
+        _sameSettlement(stageA, hybrid);
+    }
+
+    /// @dev An IndexHub index of WETH and two more Ethereum tokens, and a HybridHub index of the same three and the
+    ///      vault's coin, 10 shares of each, with the same units.
+    function _twins() internal returns (IIndexHub stageA, IHybridIndex hybrid, address[] memory eth) {
+        eth = new address[](3);
+        eth[0] = address(weth);
+        eth[1] = _listed("Token A", 1e27);
+        eth[2] = _listed("Token B", 5e25);
+        address[] memory withCoin = new address[](4);
+        (withCoin[0], withCoin[1], withCoin[2], withCoin[3]) = (eth[0], eth[1], eth[2], native);
+        vm.prank(minter);
+        stageA = IIndexHub(factory.createIndex("Ethereum", "ETH3", eth, K));
+        vm.prank(minter);
+        hybrid = IHybridIndex(factory.createIndex("Hybrid", "HYB4", withCoin, K));
+        vault.registerIndex(address(hybrid), factory.indexSalt(address(hybrid)));
+        _issueBoth(stageA, hybrid, eth, 10e18);
+        (, uint256[] memory unitsA) = stageA.components();
+        (, uint256[] memory unitsB,,) = hybrid.components();
+        for (uint256 i = 0; i < 3; ++i) {
+            assertEq(unitsA[i], unitsB[i], "the same units");
+        }
+    }
+
+    /// @dev Both hubs' bands for `mask`, the coin kept on the hybrid side, agree; true if they are wide enough to
+    ///      start.
+    function _sameBand(IIndexHub stageA, IHybridIndex hybrid, uint256 mask) internal view returns (bool) {
+        (uint256[] memory ratiosA, uint256 minA, uint256 maxA) = stageA.previewBand(mask);
+        (uint256[] memory ratiosB, uint256 minB, uint256 maxB) = hybrid.previewBand(mask | 8);
+        assertEq(minA, minB, "lambda min");
+        assertEq(maxA, maxB, "lambda max");
+        for (uint256 i = 0; i < 3; ++i) {
+            assertEq(ratiosA[i], ratiosB[i], "ratio");
+        }
+        return maxA * 1e18 >= minA * (1e18 + hub.MIN_BAND());
+    }
+
+    /// @dev Both hubs' settlements now agree on λ and on every Ethereum leg, and the hybrid keeps the coin's units.
+    function _sameSettlement(IIndexHub stageA, IHybridIndex hybrid) internal view {
+        (uint256 lambdaA, uint256[] memory unitsA, uint256[] memory outA, uint256[] memory inA) =
+            stageA.previewRebalance();
+        (uint256 lambdaB, uint256[] memory unitsB, uint256[] memory outB, uint256[] memory inB) =
+            hybrid.previewRebalance();
+        assertEq(lambdaA, lambdaB, "lambda");
+        for (uint256 i = 0; i < 3; ++i) {
+            assertEq(unitsA[i], unitsB[i], "units");
+            assertEq(outA[i], outB[i], "out");
+            assertEq(inA[i], inB[i], "in");
+        }
+        (, uint256[] memory before,,) = hybrid.components();
+        assertEq(unitsB[3], before[3], "the coin is kept");
+    }
+
+    /// @dev A new MockERC20 listed at `supply`.
+    function _listed(string memory name, uint256 supply) internal returns (address token) {
+        token = address(new MockERC20(name, name, 18));
+        vm.prank(owner);
+        factory.proposeListing(token, supply);
+        vm.warp(block.timestamp + 2 days);
+        factory.executeListing(token);
+    }
+
+    /// @dev `shares` of each index, the Stage A one issued and the hybrid one seeded by its creator.
+    function _issueBoth(IIndexHub stageA, IHybridIndex hybrid, address[] memory eth, uint256 shares) internal {
+        uint256[] memory amountsA = stageA.previewIssue(shares);
+        uint256[] memory amountsB = hybrid.previewOrder(shares);
+        vm.startPrank(minter);
+        for (uint256 i = 0; i < 3; ++i) {
+            MockERC20(eth[i]).mint(minter, amountsA[i] + amountsB[i]);
+            MockERC20(eth[i]).approve(address(stageA), amountsA[i]);
+            MockERC20(eth[i]).approve(address(hybrid), amountsB[i]);
+        }
+        stageA.issue(shares, minter);
+        (uint256 orderId, uint256 intakeId) = hybrid.openOrder(shares, block.timestamp + 1 hours);
+        vm.deal(minter, amountsB[3]);
+        _fresh();
+        vault.deposit{value: amountsB[3]}(address(hybrid), intakeId);
+        vm.stopPrank();
+        vm.warp(block.timestamp + 1 hours + 1);
+        hybrid.settleOrder(orderId, _chainProof(block.timestamp, amountsB[3]));
+        vm.warp(block.timestamp + hybrid.MINT_LOCK());
+        hybrid.claimOrder(orderId);
+        assertEq(IERC20(address(stageA)).totalSupply(), hybrid.totalSupply(), "the same supply");
+    }
+
+    /// @dev One supply batch of `tokens`, in ascending address order as the factory takes them.
+    function _batch(address[] memory tokens, uint256[] memory supplies) internal {
+        uint256 n = tokens.length;
+        address[] memory sorted = new address[](n);
+        uint256[] memory sortedSupplies = new uint256[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            uint256 rank = 0;
+            for (uint256 j = 0; j < n; ++j) {
+                if (tokens[j] < tokens[i]) ++rank;
+            }
+            (sorted[rank], sortedSupplies[rank]) = (tokens[i], supplies[i]);
+        }
+        vm.prank(owner);
+        factory.proposeSupplies(sorted, sortedSupplies);
+        vm.warp(block.timestamp + 2 days);
+        factory.executeSupplies();
+    }
+
     /// @dev An Ethereum delivery must arrive whole: a component that starts taking a fee refuses the fill.
     function test_accept_refusesAFeeOnTheDelivery() public {
         (MockUSDT usdt, IHybridIndex idx) = _usdtIndex();
@@ -817,19 +1021,26 @@ contract HybridHubRebalanceTest is HybridTest {
     /// @dev An index of Tether and the vault's native coin, seeded with 10 shares, 1 of them the executor's.
     function _usdtIndex() internal returns (MockUSDT usdt, IHybridIndex idx) {
         usdt = new MockUSDT();
+        idx = _indexWith(address(usdt), 1e17);
+    }
+
+    /// @dev An index of `token`, listed at `supply`, and the vault's native coin, seeded with 10 shares, 1 of them the
+    ///      executor's. `token` mints as the mocks do, and is called through MockUSDT's interface, whose `approve`
+    ///      returns nothing, so a token returning a bool works too.
+    function _indexWith(address token, uint256 supply) internal returns (IHybridIndex idx) {
         vm.prank(owner);
-        factory.proposeListing(address(usdt), 1e17);
+        factory.proposeListing(token, supply);
         vm.warp(block.timestamp + 2 days);
-        factory.executeListing(address(usdt));
+        factory.executeListing(token);
         address[] memory tokens = new address[](2);
-        (tokens[0], tokens[1]) = (address(usdt), native);
+        (tokens[0], tokens[1]) = (token, native);
         vm.prank(minter);
-        idx = IHybridIndex(factory.createIndex("Tether", "XUSD", tokens, K));
+        idx = IHybridIndex(factory.createIndex("Two", "TWO", tokens, K));
         vault.registerIndex(address(idx), factory.indexSalt(address(idx)));
         uint256[] memory amounts = idx.previewOrder(10e18);
-        usdt.mint(minter, amounts[0]);
+        MockUSDT(token).mint(minter, amounts[0]);
         vm.startPrank(minter);
-        usdt.approve(address(idx), amounts[0]);
+        MockUSDT(token).approve(address(idx), amounts[0]);
         (uint256 orderId, uint256 intakeId) = idx.openOrder(10e18, block.timestamp + 1 hours);
         vm.deal(minter, amounts[1]);
         _fresh();

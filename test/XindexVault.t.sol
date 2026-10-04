@@ -97,6 +97,11 @@ abstract contract VaultTestBase is Test {
         );
     }
 
+    /// @dev The body of a FREEZE the factory sends now: the end of the freeze it records, FREEZE_DURATION away.
+    function _freezeBody() internal view returns (bytes memory) {
+        return abi.encode(block.timestamp + 14 days);
+    }
+
     function _proof(address emitter, bytes memory payload) internal pure returns (bytes memory) {
         return abi.encode(emitter, VaultMessages.EVENT_TOPIC, keccak256(payload), abi.encode(payload));
     }
@@ -145,9 +150,12 @@ contract XindexVaultTest is VaultTestBase {
     address index;
 
     function setUp() public {
-        vm.warp(1_700_000_000);
+        vm.warp(1_700_000_000 - 1);
         _deployVault();
         index = _registered(keccak256("index-1"));
+        // P1 and P2 prove a first checkpoint, a second after deployment, before anyone deposits (B1-04).
+        vm.warp(1_700_000_000);
+        _fresh();
     }
 
     // ---------------------------------------------------------------------
@@ -169,7 +177,9 @@ contract XindexVaultTest is VaultTestBase {
 
         assertEq(vault.RECOVERY_PROPOSER(), recoveryProposer);
         assertEq(address(vault.STATE_READER()), address(reader));
-        assertEq(vault.checkpoint().timestamp, block.timestamp, "a week's grace from deployment");
+        XindexVault bare = new XindexVault(_config());
+        assertEq(bare.checkpoint().timestamp, block.timestamp, "a week's grace from deployment");
+        assertEq(bare.checkpoint().stateRoot, bytes32(0), "and no checkpoint yet");
 
         IXindexVault.Config memory c = _config();
         c.factory = address(0);
@@ -207,6 +217,50 @@ contract XindexVaultTest is VaultTestBase {
     function _refuse(IXindexVault.Config memory c, bytes memory reason) internal {
         vm.expectRevert(reason);
         new XindexVault(c);
+    }
+
+    /// @dev B2-02: the vault refuses at construction what `DeployVault` refuses: a floor above the cap, which would
+    ///      lift the speed limit, and messages from its own chain.
+    function test_B202_theVaultRefusesAFloorAboveTheCapOrItsOwnChain() public {
+        IXindexVault.Config memory c = _config();
+        c.nativeFloor = CAP + 1;
+        _refuse(c, abi.encodeWithSelector(IXindexVault.FloorAboveCap.selector, CAP + 1, CAP));
+        c = _config();
+        c.sourceChainId = block.chainid;
+        _refuse(c, abi.encodeWithSelector(IXindexVault.WrongRoute.selector));
+        c = _config();
+        c.nativeFloor = CAP; // a floor at the cap is a floor
+        assertEq(new XindexVault(c).outflowFloor(address(0)), CAP);
+    }
+
+    /// @dev B5-03: P1 and P2 must be verifiers of two proof systems, not only two addresses: at deployment, in a
+    ///      rotation and in a successor. Two of one system would let that system, broken, prove alone.
+    function test_B503_P1AndP2AreTwoProofSystems() public {
+        MockEventVerifier twin = new MockEventVerifier();
+        twin.setProofSystem(v1.PROOF_SYSTEM());
+        IXindexVault.Config memory c = _config();
+        c.verifier2 = twin;
+        _refuse(c, abi.encodeWithSelector(IXindexVault.VerifiersNotDistinct.selector));
+
+        MockEventVerifier n1 = new MockEventVerifier();
+        MockEventVerifier n2 = new MockEventVerifier();
+        n2.setProofSystem(n1.PROOF_SYSTEM());
+        _checkRotationRefused(
+            abi.encode(_b32(address(n1)), _b32(address(n2))),
+            abi.encodeWithSelector(IXindexVault.VerifiersNotDistinct.selector)
+        );
+        assertEq(address(vault.p2()), address(v2), "nothing rotated");
+
+        _advance(100);
+        vm.warp(block.timestamp + 7 days + 1);
+        IXindexVault.Continuity memory cont = _continuity(200, lastDelivered);
+        vm.prank(recoveryProposer);
+        vm.expectRevert(IXindexVault.VerifiersNotDistinct.selector);
+        vault.proposeSuccessor(n1, n2, cont);
+        n2.setProofSystem(keccak256("another system"));
+        vm.prank(recoveryProposer);
+        vault.proposeSuccessor(n1, n2, cont);
+        assertEq(vault.successor().p2, address(n2));
     }
 
     /// @dev An index is legitimate when its address is the factory's clone of the hub template under some salt: anyone
@@ -301,6 +355,23 @@ contract XindexVaultTest is VaultTestBase {
         vault.deposit{value: 1}(index, intakeId);
     }
 
+    /// @dev B1-04: before P1 and P2 prove a first checkpoint, no message could settle or fail an intake, and neither a
+    ///      successor nor a snapshot could follow, so a deposit then could be lost for good: the vault takes none.
+    function test_B104_noDepositBeforeTheFirstCheckpoint() public {
+        _deployVault();
+        index = _registered(keccak256("index-1"));
+        assertEq(vault.checkpoint().stateRoot, bytes32(0));
+        uint256 intakeId = _intake(block.timestamp + 1 hours, 1);
+        vm.deal(alice, 1 ether);
+        vm.prank(alice);
+        vm.expectRevert(IXindexVault.NoCheckpoint.selector);
+        vault.deposit{value: 1 ether}(index, intakeId);
+        vm.warp(block.timestamp + 1);
+        _fresh();
+        _deposit(alice, index, intakeId, 1 ether);
+        assertEq(vault.held(address(0)), 1 ether);
+    }
+
     // ---------------------------------------------------------------------
     // delivery: proofs, routes, emitters, policy
     // ---------------------------------------------------------------------
@@ -375,9 +446,9 @@ contract XindexVaultTest is VaultTestBase {
         vm.expectRevert(abi.encodeWithSelector(IXindexVault.WrongEmitter.selector, alice));
         _deliver(alice, _burnPayload(index, 1 ether, bob));
         vm.expectRevert(abi.encodeWithSelector(IXindexVault.WrongEmitter.selector, index));
-        _deliver(index, _payload(VaultMessages.FREEZE, factory, ""));
+        _deliver(index, _payload(VaultMessages.FREEZE, factory, _freezeBody()));
         vm.expectRevert(abi.encodeWithSelector(IXindexVault.WrongEmitter.selector, factory));
-        _deliver(factory, _payload(VaultMessages.FREEZE, index, ""));
+        _deliver(factory, _payload(VaultMessages.FREEZE, index, _freezeBody()));
     }
 
     /// @dev A kind the vault does not know is refused before dispatch, which would otherwise treat it as the last one.
@@ -721,7 +792,8 @@ contract XindexVaultTest is VaultTestBase {
         vm.prank(freezerKey);
         vault.freeze(); // a new act extends it
         assertEq(vault.frozenUntil(), block.timestamp + 14 days);
-        _deliver(factory, _payload(VaultMessages.FREEZE, factory, "")); // a proven freeze never shortens it
+        // A proven freeze never shortens it.
+        _deliver(factory, _payload(VaultMessages.FREEZE, factory, abi.encode(block.timestamp + 1 days)));
         assertEq(vault.frozenUntil(), block.timestamp + 14 days);
 
         vm.warp(vault.frozenUntil());
@@ -735,10 +807,56 @@ contract XindexVaultTest is VaultTestBase {
         uint256 intakeId = _intake(block.timestamp + 1 hours, 1);
         _deposit(alice, index, intakeId, 1 ether);
         _deliver(index, _payload(VaultMessages.INTAKE_FAILED, index, abi.encode(intakeId)));
-        vault.deliver(_proof(factory, _payload(VaultMessages.FREEZE, factory, "")), ""); // one proof suffices
+        vault.deliver(_proof(factory, _payload(VaultMessages.FREEZE, factory, _freezeBody())), ""); // one proof suffices
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(IXindexVault.VaultFrozen.selector, vault.frozenUntil()));
         vault.refund(index, intakeId);
+    }
+
+    /// @dev A3-03: a FREEZE carries the end of the factory's freeze. Delivered after that end, months late, it runs and
+    ///      is used up but freezes nothing; delivered during it, it freezes only what is left of it; and no FREEZE
+    ///      freezes for longer than FREEZE_DURATION from its delivery.
+    function test_A303_aLateFreezeEndsWithTheFactorysFreeze() public {
+        uint256 sent = block.timestamp;
+        bytes memory late = _payload(VaultMessages.FREEZE, factory, abi.encode(sent + 14 days));
+        vm.warp(sent + 300 days);
+        _fresh();
+        vault.deliver(_proof(factory, late), "");
+        assertTrue(vault.used(keccak256(late)), "it ran");
+        assertEq(vault.frozenUntil(), 0, "and froze nothing");
+        _deposit(alice, index, _intake(block.timestamp + 1 hours, 1), 1 ether);
+        bytes memory atItsEnd = _payload(VaultMessages.FREEZE, factory, abi.encode(block.timestamp));
+        vault.deliver(_proof(factory, atItsEnd), "");
+        assertEq(vault.frozenUntil(), 0, "nor at the end's very second");
+
+        sent = block.timestamp;
+        bytes memory meanwhile = _payload(VaultMessages.FREEZE, factory, abi.encode(sent + 14 days));
+        vm.warp(sent + 10 days);
+        vm.expectEmit(address(vault));
+        emit IXindexVault.Frozen(sent + 14 days, factory);
+        _deliver(factory, meanwhile);
+        assertEq(vault.frozenUntil(), sent + 14 days, "four days, not fourteen");
+
+        vm.warp(vault.frozenUntil());
+        _deliver(factory, _payload(VaultMessages.FREEZE, factory, abi.encode(block.timestamp + 365 days)));
+        assertEq(vault.frozenUntil(), block.timestamp + 14 days, "never longer than FREEZE_DURATION");
+    }
+
+    /// @dev B4-04: a FREEZE's body is exactly one word, its end, as on every twin; any other is refused, whatever the
+    ///      proofs, and freezes nothing.
+    function test_B404_aFreezeBodyIsOneWord() public {
+        uint256 until = block.timestamp + 14 days;
+        bytes[4] memory bodies =
+            [bytes(""), abi.encodePacked(uint248(until)), abi.encodePacked(until, uint8(0)), abi.encode(until, until)];
+        for (uint256 i = 0; i < bodies.length; ++i) {
+            bytes memory payload = _payload(VaultMessages.FREEZE, factory, bodies[i]);
+            vm.expectRevert(IXindexVault.BadMessage.selector);
+            vault.deliver(_proof(factory, payload), "");
+            vm.expectRevert(IXindexVault.BadMessage.selector);
+            _deliver(factory, payload);
+            assertFalse(vault.used(keccak256(payload)));
+        }
+        assertEq(vault.frozenUntil(), 0);
     }
 
     function test_governance_freezerAndVerifiers() public {
@@ -889,7 +1007,7 @@ contract XindexVaultTest is VaultTestBase {
         assertEq(vault.cap(address(0)), CAP, "the factory's next message still runs");
 
         // A freeze is never stale.
-        _deliver(factory, _payload(VaultMessages.FREEZE, factory, ""));
+        _deliver(factory, _payload(VaultMessages.FREEZE, factory, _freezeBody()));
         assertGt(vault.frozenUntil(), block.timestamp);
     }
 
@@ -922,7 +1040,7 @@ contract XindexVaultTest is VaultTestBase {
         vm.expectRevert(abi.encodeWithSelector(IXindexVault.AlreadyDelivered.selector, keccak256(newerCut)));
         vault.deliver(_proof(factory, newerCut), "");
         // A freeze on one proof is still used up at once: delivered again, it would re-arm the freeze.
-        bytes memory freeze = _payload(VaultMessages.FREEZE, factory, "");
+        bytes memory freeze = _payload(VaultMessages.FREEZE, factory, _freezeBody());
         vault.deliver(_proof(factory, freeze), "");
         vm.expectRevert(abi.encodeWithSelector(IXindexVault.AlreadyDelivered.selector, keccak256(freeze)));
         vault.deliver(_proof(factory, freeze), "");
@@ -1260,11 +1378,11 @@ contract XindexVaultTest is VaultTestBase {
         bytes32 realId = vault.lastMessage();
         assertTrue(realId != bytes32(0));
 
-        bytes memory forged = _payload(VaultMessages.FREEZE, factory, "");
+        bytes memory forged = _payload(VaultMessages.FREEZE, factory, _freezeBody());
         vault.deliver(_proof(factory, forged), "");
         assertTrue(vault.used(keccak256(forged)), "delivered: the vault is frozen");
         assertGt(vault.frozenUntil(), block.timestamp);
-        bytes memory forged2 = _payload(VaultMessages.FREEZE, factory, "");
+        bytes memory forged2 = _payload(VaultMessages.FREEZE, factory, _freezeBody());
         vault.deliver("", _proof(factory, forged2));
         assertTrue(vault.used(keccak256(forged2)));
         assertEq(vault.lastMessage(), realId, "neither one-proof message counts");
@@ -1293,9 +1411,10 @@ contract XindexVaultTest is VaultTestBase {
     }
 
     function test_beginSnapshot_onlyAfter180DaysOfStall() public {
-        vm.warp(vault.stallStart() + 180 days);
+        XindexVault bare = new XindexVault(_config());
+        vm.warp(bare.stallStart() + 180 days);
         vm.expectRevert(IXindexVault.NoCheckpoint.selector);
-        vault.beginSnapshot();
+        bare.beginSnapshot();
         _advance(1000);
         IEthereumEventVerifier.Checkpoint memory last = vault.checkpoint();
         uint256 due = vault.stallStart() + 180 days;
@@ -1441,7 +1560,7 @@ contract XindexVaultTest is VaultTestBase {
         _deliver(index, payload);
         _deliver(factory, _payload(VaultMessages.CAP_UPDATE, factory, abi.encode(bytes32(0), CAP / 2, FLOOR)));
         assertEq(vault.cap(address(0)), CAP / 2);
-        _deliver(factory, _payload(VaultMessages.FREEZE, factory, ""));
+        _deliver(factory, _payload(VaultMessages.FREEZE, factory, _freezeBody()));
         vm.warp(vault.frozenUntil());
         _advance(101);
         _deliver(index, payload);
@@ -1453,9 +1572,9 @@ contract XindexVaultTest is VaultTestBase {
         _fund(index, 10 ether);
         _snapshot();
         vm.expectRevert(IXindexVault.SnapshotTaken.selector);
-        _deliver(factory, _payload(VaultMessages.FREEZE, factory, ""));
+        _deliver(factory, _payload(VaultMessages.FREEZE, factory, _freezeBody()));
         vm.expectRevert(IXindexVault.SnapshotTaken.selector);
-        vault.deliver(_proof(factory, _payload(VaultMessages.FREEZE, factory, "")), "");
+        vault.deliver(_proof(factory, _payload(VaultMessages.FREEZE, factory, _freezeBody())), "");
         assertEq(vault.frozenUntil(), 0);
     }
 

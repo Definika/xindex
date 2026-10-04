@@ -12,6 +12,8 @@ import {FinalityVerifier} from "./FinalityVerifier.sol";
 ///      outside this contract can change what it accepts. `IMAGE_ID` fixes the program, and with it Ethereum's network
 ///      and fork schedule.
 contract RiscZeroFinalityVerifier is FinalityVerifier {
+    /// @notice RISC Zero: a vault pairs this verifier only with one of another proof system.
+    bytes32 public constant PROOF_SYSTEM = keccak256("RISC0");
     IRiscZeroVerifier public immutable RISC_ZERO_VERIFIER;
     bytes32 public immutable IMAGE_ID;
 
@@ -22,7 +24,8 @@ contract RiscZeroFinalityVerifier is FinalityVerifier {
         uint64 initialEpoch,
         uint256 genesisTime
     ) FinalityVerifier(initialAnchor, initialEpoch, genesisTime) {
-        if (address(riscZeroVerifier) == address(0) || imageId == bytes32(0)) revert ZeroAddress();
+        if (address(riscZeroVerifier) == address(0)) revert ZeroAddress();
+        if (imageId == bytes32(0)) revert ZeroValue();
         RISC_ZERO_VERIFIER = riscZeroVerifier;
         IMAGE_ID = imageId;
     }

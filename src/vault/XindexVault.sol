@@ -143,6 +143,9 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         ) revert ZeroAddress();
         _checkPair(address(config.verifier1), address(config.verifier2));
         if (address(config.stateReader).code.length == 0) revert NotAContract(address(config.stateReader));
+        // Messages come from the indexes' chain, never this one; a floor above the cap would lift the speed limit.
+        if (config.sourceChainId == block.chainid) revert WrongRoute();
+        if (config.nativeFloor > config.nativeCap) revert FloorAboveCap(config.nativeFloor, config.nativeCap);
         SOURCE_CHAIN_ID = config.sourceChainId;
         FACTORY = config.factory;
         HUB_IMPLEMENTATION = config.hubImplementation;
@@ -177,8 +180,10 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
     function deposit(address index, uint256 intakeId) external payable nonReentrant {
         if (!isIndex[index]) revert NotAnIndex(index);
         _checkNotFrozen();
-        // A stalled vault may never again see the message that would settle or fail an intake.
+        // A stalled vault may never again see the message that would settle or fail an intake, and one without a
+        // checkpoint may never see the first: neither a successor nor a snapshot could follow it (B1-04).
         if (stalled()) revert VaultStalled(stallStart());
+        if (_checkpoint.stateRoot == bytes32(0)) revert NoCheckpoint();
         uint256 amount = msg.value;
         if (amount == 0) revert ZeroAmount();
         uint256 deadline = intakeId >> 192; // an intake id is `(deadline << 192) | nonce` (VaultMessages)
@@ -288,15 +293,18 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
     }
 
     /// @dev A freeze runs at once, always, but not after a snapshot: nothing could then replace the freezer, and nothing
-    ///      may hold the exit off (VLT-5). Every other governance message must be newer than the last of its key taken on
-    ///      both proofs, and only one taken on both proofs moves that mark, so one broken proof system cannot lock the
-    ///      factory out with a forged nonce (VLT-4). A message that loosens nothing applies at once. One that loosens
-    ///      waits GOVERNANCE_DELAY here, on the vault, where the freezer can see it and stop it however its proofs were
-    ///      obtained (VLT-2).
+    ///      may hold the exit off (VLT-5). It ends with the factory's freeze, whose end it carries, so one delivered late
+    ///      freezes only what is left of that, or nothing (A3-03). Every other governance message must be newer than the
+    ///      last of its key taken on both proofs, and only one taken on both proofs moves that mark, so one broken proof
+    ///      system cannot lock the factory out with a forged nonce (VLT-4). A message that loosens nothing applies at
+    ///      once. One that loosens waits GOVERNANCE_DELAY here, on the vault, where the freezer can see it and stop it
+    ///      however its proofs were obtained (VLT-2).
     function _governanceMessage(VaultMessages.Message memory m, bool loosening, bool both) private {
         if (m.kind == VaultMessages.FREEZE) {
             _checkNoSnapshot();
-            _freeze(FACTORY);
+            if (m.body.length != 32) revert BadMessage();
+            uint256 until = abi.decode(m.body, (uint256));
+            if (until > block.timestamp) _freeze(FACTORY, until);
             return;
         }
         bytes32 key = _changeKey(m.kind, m.body);
@@ -573,11 +581,13 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         if (msg.sender != freezer) revert NotFreezer(msg.sender);
         // Nothing could replace the freezer after a snapshot, so it must not be able to hold the exit off for good.
         _checkNoSnapshot();
-        _freeze(msg.sender);
+        _freeze(msg.sender, block.timestamp + FREEZE_DURATION);
     }
 
-    function _freeze(address by) private {
-        uint256 until = block.timestamp + FREEZE_DURATION;
+    /// @dev Freezes until `until`, at most FREEZE_DURATION from now, and never shortens a freeze in force.
+    function _freeze(address by, uint256 until) private {
+        uint256 longest = block.timestamp + FREEZE_DURATION;
+        if (until > longest) until = longest;
         if (until > frozenUntil) frozenUntil = until;
         emit Frozen(frozenUntil, by);
     }
@@ -775,10 +785,13 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         if (uint256(c.timestamp) + STALL_PERIOD < block.timestamp) revert NotRecent(c.timestamp);
     }
 
+    /// @dev Two verifiers of two proof systems, so that one broken system cannot prove what needs both (B5-03).
     function _checkPair(address a, address b) private view {
         if (a.code.length == 0) revert NotAContract(a);
         if (b.code.length == 0) revert NotAContract(b);
-        if (a == b) revert VerifiersNotDistinct();
+        if (a == b || IEthereumEventVerifier(a).PROOF_SYSTEM() == IEthereumEventVerifier(b).PROOF_SYSTEM()) {
+            revert VerifiersNotDistinct();
+        }
     }
 
     function _checkNoSnapshot() private view {

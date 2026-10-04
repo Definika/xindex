@@ -85,7 +85,7 @@ event VaultMessage(bytes32 indexed id, bytes payload);
 | `INTAKE_FAILED` | the index | `(intakeId)` | P1 **and** P2 | each depositor can take their deposit back |
 | `MIGRATE` | the old index | `(newIndex, token, amount)` | P1 **and** P2 | moves coins from the old index's balance to the new one's, within the speed limit, else owes the rest (6.7, section 5.5) |
 | `CAP_UPDATE` | the factory | `(token, cap, floor)` | raise either: **and**; lower both: **or** | sets a quantity cap and an outflow floor |
-| `FREEZE` | the factory | `()` | P1 **or** P2 | freezes the vault for `FREEZE_DURATION` |
+| `FREEZE` | the factory | `(until)` | P1 **or** P2 | freezes the vault until `until`, the end of the factory's freeze, and for at most `FREEZE_DURATION`; delivered after `until`, it freezes nothing (A3-03). Any other body is refused (B4-04) |
 | `FREEZER_CHANGE` | the factory | `(freezer)` | P1 **and** P2 | replaces the guardian's freeze address |
 | `VERIFIER_ROTATION` | the factory | `(p1, p2)` | P1 **and** P2 | replaces the verifiers (the 30-day delay runs on Ethereum) |
 
@@ -144,7 +144,9 @@ One vault per chain, shared by every index, with no owner and no upgrade. Its im
 Tokens are the native coin (`address(0)`) in Stage B. ERC-20 deposits are measured as balance increases, as
 `MintRequests` does, when a chain's listed tokens need them.
 
-**Deposits.** `deposit(index, intakeId)` is payable, and works while not frozen and within the native coin's cap.
+**Deposits.** `deposit(index, intakeId)` is payable, and works while not frozen, once P1 and P2 have proven the
+vault's first checkpoint, and within the native coin's cap. Before that checkpoint no message could settle or fail an
+intake, and neither a successor nor a snapshot could follow, so a deposit could be lost for good (B1-04).
 - It adds to the depositor's share of an open intake.
 - An intake id carries its deposit deadline in its top 64 bits, `(deadline << 192) | nonce`. So nobody can open
   someone else's intake with a different deadline, and deposits close at the deadline for everyone.
@@ -223,8 +225,9 @@ hour, and trusting the pool of 45). The rules, from bnb-chain/bsc v1.7.8 and che
   twice an epoch at 0.45 seconds a block) after it. Old sets stay valid for their own windows forever, so without that
   bound a coalition of validators from long ago could forge a header in an old window with a timestamp of today. And
   `B` must be at most `MAX_LAG` (1 day) old, or the same coalition could forge one dated then, which a reader that
-  takes old states, such as evidence of an outflow or of an exit, would accept (BNB-2). The hub must also refuse a
-  state older than one it has already accepted from the same vault.
+  takes old states, such as evidence of an outflow or of an exit, would accept (BNB-2). The hub does not refuse a
+  state older than one it has already accepted: every state it reads is bounded below by its own deadline or freeze
+  instead, so a forgery needs two thirds of any set from the last day, not only of the current one (A2-04).
 - **Carried-over keys.** About 16 of each set's 21 keys were in the set before. A step names, for each entry, either
   the index of the same key in the previous set or a new key; a carried-over key is only matched against the header's
   compressed key, since it was checked on the curve when its own set was recorded.
@@ -265,7 +268,9 @@ byte-identical: an index of Ethereum tokens only is still an `IndexHub` clone.
   id, a hash of the chain and the token id that no contract holds. From its proposal on it runs Stage A's flow
   unchanged: executeListing, delist, and weekly supply batches.
 - **Freeze.** `freezeChain(chainId)`, by the owner or guardian, freezes every index's mints on that chain for 14 days.
-  It also emits a `FREEZE` message, which the vault accepts on either proof.
+  It also emits a `FREEZE` message carrying that freeze's end, which the vault accepts on either proof. So a `FREEZE`
+  delivered late freezes the vault only for what is left of the factory's freeze, and one delivered after it nothing:
+  an undelivered one is not a pause anyone can fire later (A3-03).
 - **Templates.** An index holding any vault token is a `HybridHub` clone. The factory records its CREATE2 salt, which
   the vault's `registerIndex` needs. The `HybridHub` template is deployed first, for the factory's predicted address,
   and the factory's constructor refuses a template built for another factory: with both templates, its own initcode
@@ -287,9 +292,10 @@ The order flow:
 - **Settle.** `settleOrder` proves each vault's intake digest at a block after the deadline, when deposits are final. It
   checks the digest's preimage and that each deposit covers the order. The whole deposit, surplus included, joins the
   index.
-- **Mint cap.** Settling applies the mint cap, 4% of the supply over the current hour and the 24 before it. An empty
-  index has no room: only its creator may seed it, with no cap of its own, since the vault's quantity cap bounds a real
-  seed. A stranger's seed could be dust, which 4% a day would never let grow (HUB-2).
+- **Mint cap.** Settling applies the mint cap, 4% of the supply over the current hour and the 24 before it. An index
+  below one share, empty or left with dust, has next to no room: only its creator may seed it, with no cap of its own,
+  since the vault's quantity cap bounds a real seed. A stranger's seed could be dust, which 4% a day would never let
+  grow (HUB-2, A2-05).
 - **Void.** While an order is locked, during the 24-hour lock or after it until it is claimed, `voidOrder` takes any
   proof of the same intake, at a block after the deadline, showing a different digest. An intake cannot change between
   its deadline and the hub's message, so such a proof means the deposit or the proof was false. The order fails, and the hub freezes that chain's mints for 14 days.
@@ -313,8 +319,8 @@ Redeeming and claims:
 **New parameters, for the owner's review.**
 - `SETTLE_GRACE` (6 hours): how long an unsettled order stays its minter's before anyone may fail it.
 - `MAX_ORDER_LIFE` (6 hours): the design's maximum deadline.
-- The seed's exemption from the mint cap, for the index's creator only, bounded by the vault's quantity cap. It
-  replaces the design's "launch cap".
+- The seed's exemption from the mint cap, for the index's creator only, below one share, bounded by the vault's
+  quantity cap. It replaces the design's "launch cap".
 
 **Size.** The hub is 23.9KB of the 24KB limit, so layer 2 (the rebalance with deliveries and bond) goes in a separate
 module the hub delegates to, not in the hub itself.
@@ -369,7 +375,9 @@ component. A vault component's reference supply comes from the factory like any 
    settlement's.
    - The settlement is recomputed at the supply of the settling block. Redemptions during the window can only lower
      it, and any excess delivered stays with the holders.
-   - It writes the new units and pays the sold Ethereum legs to the executor.
+   - It writes the new units and books the sold Ethereum legs as the executor's claims, which it collects with
+     `claim`. Nothing is sent, so a component paused during the window cannot keep the fill from settling and cost
+     the executor its bond (A2-01).
    - It burns the sold vault legs toward the executor's recipients, and tells each vault that the deliveries joined
      the index.
    - A proof may come from before the delivery deadline, since deposits only grow until then.
@@ -438,11 +446,16 @@ proposal within `PROPOSAL_WINDOW` (7 days) after its delay.
   kind, per token for caps, that the vault took on both proofs. Only a message on both proofs moves that mark, so one
   broken proof system cannot lock the factory out with a forged nonce.
 - **Caps.** Every cap change waits the delay, a lowering included. The immediate protection is the freeze, which
-  either proof system carries. On the vault, a message that raises the cap or the floor needs both proofs.
+  either proof system carries. On the vault, a message that raises the cap or the floor needs both proofs. The factory
+  proposes no floor above its cap, and a vault is deployed with none, since such a floor would lift the speed limit
+  (B2-02); the vault's constructor also refuses its own chain as the source.
 - **Freezer.** A freezer change follows the guardian's own rule: the guardian cannot block its own replacement. The
   vault refuses a zero freezer, so the role can never be removed.
 - **Rotation.** A rotation must name two different, non-zero verifiers. The vault checks the same, and its constructor
-  refuses one verifier used twice, since "P1 and P2" would then be a single proof.
+  refuses one verifier used twice, since "P1 and P2" would then be a single proof. On the vault, each verifier names its
+  proof system (`PROOF_SYSTEM`: SP1's, RISC Zero's), and the constructor, a rotation and a successor refuse two of one
+  system (B5-03). The tag is self-reported, so it catches a mistaken pair; the delays and reviews guard against a
+  dishonest one.
   - The 30 days are public: holders who object can leave, and the guardian can cancel.
   - `ROTATION_LEAD` (90 days) stays operational, not enforced. The owner proposes the next pair at least 90 days before a
     scheduled Ethereum upgrade, so a guardian's veto, the guardian's replacement (7 days) and a second 30-day rotation

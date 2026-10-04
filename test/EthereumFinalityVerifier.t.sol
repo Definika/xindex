@@ -354,13 +354,17 @@ contract EthereumFinalityVerifierTest is FinalityVerifierTest {
         assertEq(verifier.anchorEpoch(), EPOCH);
         vm.expectRevert(FinalityVerifier.ZeroAddress.selector);
         new EthereumFinalityVerifier(ISP1Verifier(address(0)), KEY, ANCHOR, EPOCH, GENESIS);
-        vm.expectRevert(FinalityVerifier.ZeroAddress.selector);
-        new EthereumFinalityVerifier(sp1, bytes32(0), ANCHOR, EPOCH, GENESIS);
-        vm.expectRevert(FinalityVerifier.ZeroAddress.selector);
-        new EthereumFinalityVerifier(sp1, KEY, bytes32(0), EPOCH, GENESIS);
-        vm.expectRevert(FinalityVerifier.ZeroAddress.selector);
-        new EthereumFinalityVerifier(sp1, KEY, ANCHOR, EPOCH, 0);
         assertEq(verifier.GENESIS_TIME(), GENESIS);
+    }
+
+    /// @dev A4-07: a zero key, anchor or genesis time is a zero value, not a zero address.
+    function test_A407_aZeroKeyAnchorOrGenesisIsAZeroValue() public {
+        vm.expectRevert(FinalityVerifier.ZeroValue.selector);
+        new EthereumFinalityVerifier(sp1, bytes32(0), ANCHOR, EPOCH, GENESIS);
+        vm.expectRevert(FinalityVerifier.ZeroValue.selector);
+        new EthereumFinalityVerifier(sp1, KEY, bytes32(0), EPOCH, GENESIS);
+        vm.expectRevert(FinalityVerifier.ZeroValue.selector);
+        new EthereumFinalityVerifier(sp1, KEY, ANCHOR, EPOCH, 0);
     }
 }
 
@@ -390,13 +394,24 @@ contract RiscZeroFinalityVerifierTest is FinalityVerifierTest {
         assertEq(verifier.anchorEpoch(), EPOCH);
         vm.expectRevert(FinalityVerifier.ZeroAddress.selector);
         new RiscZeroFinalityVerifier(IRiscZeroVerifier(address(0)), KEY, ANCHOR, EPOCH, GENESIS);
-        vm.expectRevert(FinalityVerifier.ZeroAddress.selector);
-        new RiscZeroFinalityVerifier(risc0, bytes32(0), ANCHOR, EPOCH, GENESIS);
-        vm.expectRevert(FinalityVerifier.ZeroAddress.selector);
-        new RiscZeroFinalityVerifier(risc0, KEY, bytes32(0), EPOCH, GENESIS);
-        vm.expectRevert(FinalityVerifier.ZeroAddress.selector);
-        new RiscZeroFinalityVerifier(risc0, KEY, ANCHOR, EPOCH, 0);
         assertEq(verifier.GENESIS_TIME(), GENESIS);
+    }
+
+    /// @dev A4-07: a zero image id, anchor or genesis time is a zero value, not a zero address.
+    function test_A407_aZeroImageAnchorOrGenesisIsAZeroValue() public {
+        vm.expectRevert(FinalityVerifier.ZeroValue.selector);
+        new RiscZeroFinalityVerifier(risc0, bytes32(0), ANCHOR, EPOCH, GENESIS);
+        vm.expectRevert(FinalityVerifier.ZeroValue.selector);
+        new RiscZeroFinalityVerifier(risc0, KEY, bytes32(0), EPOCH, GENESIS);
+        vm.expectRevert(FinalityVerifier.ZeroValue.selector);
+        new RiscZeroFinalityVerifier(risc0, KEY, ANCHOR, EPOCH, 0);
+    }
+
+    /// @dev B5-03: P1 and P2 name two different proof systems, as a vault requires of its pair.
+    function test_B503_P1AndP2NameTwoProofSystems() public {
+        EthereumFinalityVerifier p1 = new EthereumFinalityVerifier(new MockSP1Verifier(), KEY, ANCHOR, EPOCH, GENESIS);
+        assertEq(p1.PROOF_SYSTEM(), keccak256("SP1"));
+        assertEq(verifier.PROOF_SYSTEM(), keccak256("RISC0"));
     }
 
     /// @dev The seal proves the journal's SHA-256 digest: a seal for the right journal under another digest, such as

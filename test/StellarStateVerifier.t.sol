@@ -172,6 +172,29 @@ contract StellarStateVerifierTest is Test {
         );
     }
 
+    /// @dev A6-03: the public values are exactly the statement's six words, as Aptos's and NEAR's are: a trailing word,
+    ///      which `abi.decode` would ignore, or a missing one is refused.
+    function test_A603_thePublicValuesAreExactlySixWords() public {
+        vm.expectRevert(IStellarStateVerifier.BadPublicValues.selector);
+        verifier.verifySlots(_vault(), slots, _proof(bytes.concat(publicValues, bytes32(0)), values));
+        bytes memory short = new bytes(5 * 32);
+        for (uint256 i = 0; i < short.length; ++i) {
+            short[i] = publicValues[i];
+        }
+        vm.expectRevert(IStellarStateVerifier.BadPublicValues.selector);
+        verifier.verifySlots(_vault(), slots, _proof(short, values));
+    }
+
+    /// @dev A6-03: a ledger is never dated ahead of Ethereum, as Sui's, Aptos's and NEAR's states are not.
+    function test_A603_aCloseTimeAheadOfEthereumIsRefused() public {
+        vm.warp(closeTime - 1);
+        vm.expectRevert(abi.encodeWithSelector(IStellarStateVerifier.InTheFuture.selector, closeTime));
+        verifier.verifySlots(_vault(), slots, _proof(publicValues, values));
+        vm.warp(closeTime);
+        (, uint256 t,) = verifier.verifySlots(_vault(), slots, _proof(publicValues, values));
+        assertEq(t, closeTime);
+    }
+
     /// @dev A ledger that closed a day ago is the oldest a proof may show.
     function test_verifySlots_aDayOldAtMost() public {
         vm.warp(uint256(closeTime) + 1 days);

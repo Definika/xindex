@@ -203,13 +203,13 @@ contract MintRequestsTest is XindexTest {
         vm.expectRevert(abi.encodeWithSelector(IMintRequests.NotAStable.selector, address(index)));
         requests.requestRedeem(address(index), 1e18, address(index), 1e6, deadline);
 
-        vm.expectRevert(IMintRequests.ZeroAmount.selector);
+        vm.expectRevert(IXindexErrors.ZeroAmount.selector);
         requests.requestMint(address(index), address(usdc), 0, 1e18, deadline);
-        vm.expectRevert(IMintRequests.ZeroAmount.selector);
+        vm.expectRevert(IXindexErrors.ZeroAmount.selector);
         requests.requestMint(address(index), address(usdc), 100e6, 0, deadline);
-        vm.expectRevert(IMintRequests.ZeroAmount.selector);
+        vm.expectRevert(IXindexErrors.ZeroAmount.selector);
         requests.requestRedeem(address(index), 0, address(usdc), 1e6, deadline);
-        vm.expectRevert(IMintRequests.ZeroAmount.selector);
+        vm.expectRevert(IXindexErrors.ZeroAmount.selector);
         requests.requestRedeem(address(index), 1e18, address(usdc), 0, deadline);
 
         vm.expectRevert(abi.encodeWithSelector(IMintRequests.InvalidDeadline.selector, block.timestamp));

@@ -178,7 +178,7 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
     /// @dev The factory: each of the three contracts keeps it as an immutable of its own.
     function _factory() internal view virtual returns (address);
 
-    function _checkInitialized() internal view {
+    function _checkInitialized() private view {
         if (_getInitializedVersion() != 1) revert NotInitialized();
     }
 
@@ -293,11 +293,15 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
 
     /// @dev Records `shares` as claimable in the current hour, within the mint room. Every share that rests on a vault
     ///      proof enters at most MINT_LIMIT a day, a migration's included, since the old index's book rests on proofs
-    ///      too (MOD-2). The one exception is the seed: on an empty index with nothing locked, its creator, and only its
-    ///      creator, may mint any amount, by an order the vaults' quantity caps bound or by migrating its own shares. A
-    ///      stranger's seed could be dust, which the cap would never let grow (HUB-2).
+    ///      too (MOD-2). The one exception is the seed: on an index below one share with nothing locked, its creator,
+    ///      and only its creator, may mint any amount, by an order the vaults' quantity caps bound or by migrating its
+    ///      own shares. A stranger's seed could be dust, which the cap would never let grow (HUB-2), and so could what
+    ///      is left of an index its holders left, which the creator may therefore seed again (A2-05).
     function _useMintRoom(uint256 shares, uint256 supply, address minter) internal {
-        if (supply != 0 || _lockedShares != 0 || minter != IHybridIndexFactory(_factory()).creatorOf(address(this))) {
+        if (
+            supply >= ONE_SHARE || _lockedShares != 0
+                || minter != IHybridIndexFactory(_factory()).creatorOf(address(this))
+        ) {
             uint256 room = _mintRoom(supply);
             if (shares > room) revert MintCapExceeded(shares, room);
         }

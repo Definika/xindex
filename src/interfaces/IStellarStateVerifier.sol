@@ -40,6 +40,10 @@ interface IStellarStateVerifier is IVaultStateVerifier {
     error WrongAccount(address account);
     /// @notice The proven ledger closed more than MAX_LAG ago.
     error TooOld(uint256 closeTime);
+    /// @notice The proven ledger closed after this block.
+    error InTheFuture(uint256 closeTime);
+    /// @notice The public values are not exactly the statement's six words.
+    error BadPublicValues();
     /// @notice The vault attested other slots or values than the ones requested and given.
     error NotAttested(bytes32 recordHash);
     error LengthMismatch();

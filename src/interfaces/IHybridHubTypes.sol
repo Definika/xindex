@@ -70,6 +70,8 @@ interface IHybridHubTypes is IXindexErrors {
     error BadDeadline(uint256 deadline);
     error WrongStatus(uint256 orderId, OrderStatus status);
     error NotYet(uint256 until);
+    /// @notice A settled fill's bond hold ended at `bondRelease`: nothing can slash it any more.
+    error HoldOver(uint256 bondRelease);
     error ChainIsFrozen(uint256 chainId, uint256 until);
     /// @notice Settling `shares` would make more than MINT_CAP of the supply claimable in 24 hours; `room` is left.
     error MintCapExceeded(uint256 shares, uint256 room);
@@ -138,7 +140,8 @@ interface IHybridHubTypes is IXindexErrors {
     );
     event RebalanceFailed(uint256 indexed nonce, address indexed by, bool bondBurned);
     event BondReleased(uint256 indexed nonce, address indexed executor, uint256 bond);
-    /// @notice A proof showed a delivery on `chainId` short of what the fill recorded: the bond is burned.
+    /// @notice A proof showed a delivery on `chainId` forged: short of what the fill recorded, in an intake neither
+    ///         open nor settled, or never made on a chain where the fill recorded one. The bond is burned.
     event RebalanceSlashed(uint256 indexed nonce, uint256 indexed chainId, uint256 bond);
 
     error RebalanceTooSoon(uint256 earliest);

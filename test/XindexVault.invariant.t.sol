@@ -314,6 +314,14 @@ contract XindexVaultInvariantTest is Test {
                 nativeFloor: 1 ether
             })
         );
+        // P1 and P2 prove a first checkpoint, a second after deployment, before anyone deposits (B1-04).
+        vm.warp(block.timestamp + 1);
+        bytes memory first = abi.encode(
+            IEthereumEventVerifier.Checkpoint({
+                blockNumber: 1, timestamp: uint64(block.timestamp), stateRoot: keccak256("state root")
+            })
+        );
+        vault.advanceCheckpoint(first, first);
         for (uint256 i = 0; i < 2; ++i) {
             bytes32 salt = keccak256(abi.encode("index", i));
             indexes[i] = Clones.predictDeterministicAddress(hubImplementation, salt, factory);

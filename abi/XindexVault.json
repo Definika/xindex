@@ -1836,6 +1836,11 @@
   },
   {
     "type": "error",
+    "name": "BadMessage",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "BadSignature",
     "inputs": []
   },
@@ -1891,6 +1896,22 @@
     "type": "error",
     "name": "Discontinuous",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "FloorAboveCap",
+    "inputs": [
+      {
+        "name": "floor",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "cap",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
   },
   {
     "type": "error",

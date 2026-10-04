@@ -292,7 +292,7 @@ contract HybridHubExtension is HybridHubStorage, HubShares, ReentrancyGuard, IHy
         if (_exitedAt[chainId] != 0) revert ChainExited(chainId);
         // The vault's own state shows its snapshot: this direction of proof still works when Ethereum's does not.
         bytes32 root = _provenSlot(j, bytes32(VAULT_SNAPSHOT_ROOT_SLOT), 0, false, proof);
-        if (root == bytes32(0)) revert NotAContradiction(chainId);
+        if (root == bytes32(0)) revert ChainNotExited(chainId);
         _exitedAt[chainId] = block.timestamp;
         // The call before this is a view of a state verifier.
         // forge-lint: disable-next-line(reentrancy-events)

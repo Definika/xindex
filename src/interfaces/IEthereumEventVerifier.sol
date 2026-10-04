@@ -13,6 +13,11 @@ interface IEthereumEventVerifier {
         bytes32 stateRoot;
     }
 
+    /// @notice The proof system whose proofs this verifier checks, as a fixed tag. A vault refuses P1 and P2 of one
+    ///         system, so that one broken system cannot prove a message twice. Self-reported: it catches a mistaken
+    ///         pair, while the delays and reviews of a rotation or a successor guard against a dishonest one (B5-03).
+    function PROOF_SYSTEM() external view returns (bytes32);
+
     /// @notice Verifies `proof` and returns the log it proves. Reverts for a proof it cannot verify, including one in a
     ///         format it does not know, so an unknown fork fails closed.
     /// @return blockNumber The number of the Ethereum block the log is in.

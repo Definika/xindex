@@ -423,8 +423,8 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   shares' backing of it; a vault token new to the version comes by order. `acceptMigration` checks the backing in real
   balances, and refuses while a fill is accepted or a chain is frozen.
 - **Every share that rests on a vault proof enters within the mint cap,** 4% of the supply a day: an order's and a
-  migration's alike, since the old index's book rests on proofs too (MOD-2). The one exception is the seed of an empty
-  index with nothing locked, which only its creator may mint, by an order or a migration (HUB-2).
+  migration's alike, since the old index's book rests on proofs too (MOD-2). The one exception is the seed of an index
+  below one share with nothing locked, which only its creator may mint, by an order or a migration (HUB-2, A2-05).
 - **Evidence freezes the chain for every index,** so no honest state may ever count as evidence. A void, a slash, or a
   claimed order's deposit proven false freezes mints on the chain at the factory, and leaves the vault paying. A vault
   record paying more than was sent freezes the vault too. Every evidence proof is bounded below by a deadline or a
@@ -441,7 +441,7 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   in which nobody lands one still stops them for good (LG-4), so provers independent of the owner must update both
   daily. Only in a stall (7 days without a checkpoint) may the owner's emergency multisig propose a
   successor, which must prove the last checkpoint, a recent one and the last message, and wait 30 days of review with
-  at most 2 vetoes. A stalled vault takes no deposit.
+  at most 2 vetoes. A stalled vault takes no deposit, nor does one before its first checkpoint (B1-04).
   - Only a checkpoint that ends the stall lapses the successor and restarts the vetoes. A stale one, which the old pair
     can still prove, keeps both, so nobody can throw the review away a block at a time (LG-2).
   - The last message is the last on both proofs: a one-proof freeze could be forged by one broken system (LG-3).
@@ -462,7 +462,8 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   that mark: the hub's `_post`, the factory's `_sendVault`.
 - **Vault governance is delayed and public, twice.** The factory sends `CAP_UPDATE` only after `LISTING_DELAY`,
   `FREEZER_CHANGE` only after `GUARDIAN_DELAY` (the guardian cannot cancel it, as it cannot block its own replacement),
-  and `VERIFIER_ROTATION` only after `ROTATION_DELAY` (30 days). P1 and P2 must always be two different verifiers.
+  and `VERIFIER_ROTATION` only after `ROTATION_DELAY` (30 days). P1 and P2 must always be two different verifiers,
+  of two proof systems (`PROOF_SYSTEM`, B5-03).
   - On the vault, anything that loosens a rule then waits `GOVERNANCE_DELAY` (7 days), so P1 and P2 both broken cannot
     loosen one at once (VLT-2):
     - a raised cap or floor;
@@ -583,7 +584,7 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   they name, from `Dispatcher.sol` and `Actions.sol` at those commits, because that layout is what the zap encodes
   against.
 - Custom errors, not revert strings. An error that more than one contract raises is declared once, in
-  `src/interfaces/IXindexErrors.sol`, which the factory, hub and zap interfaces extend. Tests name it
+  `src/interfaces/IXindexErrors.sol`, which the factory, hub, zap and request interfaces extend. Tests name it
   `IXindexErrors.<Error>.selector`, because Solidity does not resolve an inherited error through
   `IIndexFactory.<Error>`. Immutables in SCREAMING_SNAKE_CASE. Loop counters initialised explicitly (`uint256 i = 0`).
   Modifier logic lives in a private function.

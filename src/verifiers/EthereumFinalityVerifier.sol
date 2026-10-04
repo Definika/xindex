@@ -11,6 +11,8 @@ import {FinalityVerifier} from "./FinalityVerifier.sol";
 ///      contract can change what it accepts. `PROGRAM_KEY` fixes the program, and with it Ethereum's network and fork
 ///      schedule.
 contract EthereumFinalityVerifier is FinalityVerifier {
+    /// @notice SP1: a vault pairs this verifier only with one of another proof system.
+    bytes32 public constant PROOF_SYSTEM = keccak256("SP1");
     ISP1Verifier public immutable SP1_VERIFIER;
     bytes32 public immutable PROGRAM_KEY;
 
@@ -21,7 +23,8 @@ contract EthereumFinalityVerifier is FinalityVerifier {
         uint64 initialEpoch,
         uint256 genesisTime
     ) FinalityVerifier(initialAnchor, initialEpoch, genesisTime) {
-        if (address(sp1Verifier) == address(0) || programKey == bytes32(0)) revert ZeroAddress();
+        if (address(sp1Verifier) == address(0)) revert ZeroAddress();
+        if (programKey == bytes32(0)) revert ZeroValue();
         SP1_VERIFIER = sp1Verifier;
         PROGRAM_KEY = programKey;
     }

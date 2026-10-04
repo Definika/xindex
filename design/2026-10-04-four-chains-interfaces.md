@@ -39,7 +39,8 @@ as a `u64`.
   - **VeChain transactions are not Ethereum's** (clauses, `blockRef`, VTHO gas), so `forge script` cannot broadcast
     there. Its deployment is a script of its own, as TRON's `tron/deploy.mjs` is, with `DeployVault`'s checks.
 - **Sui.** The vault is a Move package made immutable at publication (`package::make_immutable` in the publishing
-  transaction). Its 32-byte id is the id of its shared state object. A recipient is a 32-byte Sui address. The coin is
+  transaction). Ethereum cannot verify that, since the package id survives an upgrade: the registry review checks the
+  publishing transaction before `proposeChain` (`sui/README.md`, B4-01). Its 32-byte id is the id of its shared state object. A recipient is a 32-byte Sui address. The coin is
   SUI in MIST (`u64`).
 - **Aptos.** The vault is a Move package published with `upgrade_policy = "immutable"`. Its state lives at an object
   whose `ExtendRef` only the vault's code holds, so no account can sign for it; the vault id is that object's address.

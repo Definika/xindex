@@ -17,11 +17,14 @@ contract StubEventVerifier is IEthereumEventVerifier {
     bytes32 public constant CHECKPOINT_TYPEHASH = keccak256("xindex.demo.stub-checkpoint");
     /// @notice The key whose signature is the whole "proof".
     address public immutable RELAYER;
+    /// @notice No proof system: a tag of the relayer's key, so a vault takes two stubs only with two keys.
+    bytes32 public immutable PROOF_SYSTEM;
 
     error NotRelayer(address signer);
 
     constructor(address relayer) {
         RELAYER = relayer;
+        PROOF_SYSTEM = keccak256(abi.encode(EVENT_TYPEHASH, relayer));
     }
 
     /// @param proof `abi.encode(blockNumber, emitter, topic0, topic1, data, signature)`.

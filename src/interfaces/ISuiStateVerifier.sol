@@ -123,7 +123,9 @@ interface ISuiStateVerifier is IVaultStateVerifier {
     /// @notice The vault's 32-byte id: the id of its shared state object.
     function VAULT_ID() external view returns (bytes32);
 
-    /// @notice The vault's package, whose `vault::Attestation` objects the verifier proves.
+    /// @notice The vault's package, whose `vault::Attestation` objects the verifier proves. It is the type-origin id,
+    ///         which an upgrade would keep, so nothing here can tell an immutable package from an upgradable one: the
+    ///         registry review checks the publishing transaction made it immutable (`sui/README.md`, B4-01).
     function PACKAGE_ID() external view returns (bytes32);
 
     /// @notice The epoch whose committee certifies the checkpoints the verifier takes, the hash of that committee

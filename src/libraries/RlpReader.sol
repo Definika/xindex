@@ -3,7 +3,9 @@ pragma solidity 0.8.28;
 
 /// @notice Reads RLP in place: an item is where its payload lies in memory and how long it is, never a copy. Every
 ///         item is checked to lie inside the item that contains it, so a malformed encoding reverts rather than being
-///         read past its end.
+///         read past its end. It does not enforce canonical encoding: a byte below 0x80 may come as a one-byte string,
+///         and a long form may carry a short length or leading zeros. So it reads only bytes a hash of exactly those
+///         bytes authenticates, as every caller's are: headers, trie nodes and receipts (A5-04).
 // Assembly only loads from memory at a position inside an item this library bounds-checked; Solidity cannot read
 // memory at an address without it.
 // forge-lint: disable-next-item(inline-assembly)

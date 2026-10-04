@@ -73,11 +73,16 @@ abstract contract HybridTest is Test {
         native = factory.vaultTokenId(chainId, bytes32(0));
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(native);
+        _fresh(); // P1 and P2 prove a first checkpoint before anyone deposits (B1-04)
     }
 
-    /// @dev A vault for this chain, with the test's verifiers, freezer and a state reader of live storage.
-    function _newVault() internal returns (XindexVault) {
-        return new XindexVault(
+    /// @dev A vault for this chain, with the test's verifiers, freezer and a state reader of live storage. A vault refuses
+    ///      messages from its own chain (B2-02), so it is built while the EVM names another chain; back on this one, the
+    ///      test chain's id is both ends of its routes.
+    function _newVault() internal returns (XindexVault v) {
+        uint256 here = block.chainid;
+        vm.chainId(here + 1);
+        v = new XindexVault(
             IXindexVault.Config({
                 sourceChainId: chainId,
                 factory: address(factory),
@@ -91,6 +96,7 @@ abstract contract HybridTest is Test {
                 nativeFloor: 1e30
             })
         );
+        vm.chainId(here);
     }
 
     /// @dev Keeps `v` out of a stall, as keepers do: a checkpoint at the current time that both verifiers prove.

@@ -26,7 +26,8 @@ library VaultMessages {
     uint8 internal constant MIGRATE = 4;
     /// @notice Sets a token's quantity cap and outflow floor: body `(bytes32 token, uint256 cap, uint256 floor)`.
     uint8 internal constant CAP_UPDATE = 5;
-    /// @notice Freezes the vault: empty body.
+    /// @notice Freezes the vault until the factory's freeze ends, and never more than its FREEZE_DURATION from delivery:
+    ///         body `(uint256 until)`, that end in Unix seconds. One delivered after it freezes nothing.
     uint8 internal constant FREEZE = 6;
     /// @notice Replaces the guardian's freeze address: body `(bytes32 freezer)`.
     uint8 internal constant FREEZER_CHANGE = 7;

@@ -20,4 +20,7 @@ interface IXindexErrors {
 
     /// @notice `to` cannot receive here: tokens sent to it would be stuck or would reach the wrong party.
     error InvalidRecipient(address to);
+
+    /// @notice An amount or a limit is zero: zero shares, or a zero overall limit on a zap call or a request.
+    error ZeroAmount();
 }

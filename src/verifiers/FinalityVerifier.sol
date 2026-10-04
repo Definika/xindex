@@ -55,9 +55,10 @@ abstract contract FinalityVerifier is IEthereumEventVerifier {
 
     event Advanced(uint64 indexed epoch, bytes32 anchor, bytes32 headersRoot, uint64 first, uint64 last);
 
-    /// @notice A constructor was given a zero value: this one's anchor or genesis time, or a subclass's verifier, key
-    ///         or image id.
+    /// @notice A subclass's constructor was given no Groth16 verifier.
     error ZeroAddress();
+    /// @notice A constructor was given a zero value: this one's anchor or genesis time, or a subclass's key or image id.
+    error ZeroValue();
     error WrongAnchor(bytes32 given, bytes32 held);
     error UnknownHeaders(bytes32 root);
     error NotInRange(uint64 number, uint64 first, uint64 last);
@@ -83,7 +84,7 @@ abstract contract FinalityVerifier is IEthereumEventVerifier {
 
     /// @param genesisTime The network's beacon genesis time, which the program's network fixes.
     constructor(bytes32 initialAnchor, uint64 initialEpoch, uint256 genesisTime) {
-        if (initialAnchor == bytes32(0) || genesisTime == 0) revert ZeroAddress();
+        if (initialAnchor == bytes32(0) || genesisTime == 0) revert ZeroValue();
         anchor = initialAnchor;
         anchorEpoch = initialEpoch;
         GENESIS_TIME = genesisTime;

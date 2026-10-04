@@ -59,9 +59,13 @@ contract DemoFlowTest is Test {
 
         p1 = new StubEventVerifier(relayer1.addr);
         p2 = new StubEventVerifier(relayer2.addr);
+        // A vault refuses messages from its own chain, so it is built while the EVM names another; back on this one,
+        // the test chain's id is both ends of its routes.
+        uint256 here = block.chainid;
+        vm.chainId(here + 1);
         vault = new XindexVault(
             IXindexVault.Config({
-                sourceChainId: block.chainid,
+                sourceChainId: here,
                 factory: address(factory),
                 hubImplementation: address(template),
                 verifier1: p1,
@@ -73,6 +77,7 @@ contract DemoFlowTest is Test {
                 nativeFloor: 1e18
             })
         );
+        vm.chainId(here);
         hyperState = new StubStateVerifier(stateRelayer.addr, block.chainid);
         solanaState = new StubStateVerifier(stateRelayer.addr, SOLANA);
         weth = new DemoToken("Wrapped Ether", "WETH");

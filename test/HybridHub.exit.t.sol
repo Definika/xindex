@@ -82,6 +82,13 @@ contract HybridHubExitTest is HybridTest {
         assertEq(hub.recoveryAddress(safe, chainId), bytes32(0));
     }
 
+    /// @dev A vault that has not begun its snapshot exit cannot have one recorded, and the refusal says so rather than
+    ///      raising the evidence paths' error (A3-07).
+    function test_A307_noSnapshotRevertsChainNotExited() public {
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.ChainNotExited.selector, chainId));
+        hub.recordExit(chainId, _honest(block.timestamp));
+    }
+
     /// @dev The hub marks an intake settled in the transaction that sends its settle message, and never otherwise.
     function test_intakeSettled_marksWhatWasSent() public {
         _mint(hub, minter, 1e18);
@@ -219,7 +226,7 @@ contract HybridHubExitTest is HybridTest {
         uint256 locked = _settledOrder(hub, minter, 0.02e18);
         _checkpointAt(SNAPSHOT_BLOCK);
 
-        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.NotAContradiction.selector, chainId));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.ChainNotExited.selector, chainId));
         hub.recordExit(chainId, _honest(block.timestamp));
         _snapshot();
 
