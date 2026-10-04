@@ -45,7 +45,8 @@ impl BankHashPreimage {
 }
 
 /// One account the slot wrote: its address, its state before (none if it did not exist) and after (none if
-/// deleted). A zero-lamport state and a missing one hash alike, to the identity.
+/// deleted). A zero-lamport state and a missing one hash alike, to the identity, so a zero-lamport state is a missing
+/// one by definition: it is written `None`, and [`apply_writes`] refuses a `Some` with no lamports (B6-02).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Write {
     pub pubkey: [u8; 32],
@@ -57,6 +58,9 @@ pub struct Write {
 pub enum DeltaError {
     /// An address listed twice: each account has one state before the slot and one after.
     Duplicate([u8; 32]),
+    /// An `old` or `new` state with no lamports: it hashes to the identity whatever its data and owner, so the delta
+    /// would not notice if it were made up. A missing account is `None`.
+    ZeroLamport([u8; 32]),
     /// The parent's lattice hash with these writes is not the slot's.
     Mismatch,
     /// The parent preimage does not open the slot's parent bank hash.
@@ -66,6 +70,8 @@ pub enum DeltaError {
 /// The slot's lattice hash from its parent's and every account it wrote: the parent's, each old state mixed out and
 /// each new one mixed in. The caller compares it with the lattice hash the slot's bank hash opens to; if they agree,
 /// LtHash's collision resistance makes `writes` the slot's writes, and each new state the account's state after it.
+/// That holds for a state with lamports only: a zero-lamport one adds nothing to the sum, so it is refused rather than
+/// proven.
 pub fn apply_writes(parent: &LtHash, writes: &[Write]) -> Result<LtHash, DeltaError> {
     let mut seen: Vec<[u8; 32]> = writes.iter().map(|w| w.pubkey).collect();
     seen.sort_unstable();
@@ -74,6 +80,13 @@ pub fn apply_writes(parent: &LtHash, writes: &[Write]) -> Result<LtHash, DeltaEr
     }
     let mut out = parent.clone();
     for w in writes {
+        if [&w.old, &w.new]
+            .into_iter()
+            .flatten()
+            .any(|a| a.lamports == 0)
+        {
+            return Err(DeltaError::ZeroLamport(w.pubkey));
+        }
         if let Some(old) = &w.old {
             out.mix_out(&account_lt_hash(old, &w.pubkey));
         }
@@ -85,7 +98,8 @@ pub fn apply_writes(parent: &LtHash, writes: &[Write]) -> Result<LtHash, DeltaEr
 }
 
 /// The statement's core: `slot` opens a finalized bank hash, `parent` opens the parent bank hash `slot` names, and
-/// the parent's lattice hash with `writes` is the slot's. Returns the state `pubkey` was written to, if it was.
+/// the parent's lattice hash with `writes` is the slot's. Returns the state `pubkey` was written to, if it was: `None`
+/// when the slot did not write it, and also when it deleted it, the one state a zero-lamport account can have.
 pub fn written_state<'a>(
     slot: &BankHashPreimage,
     parent: &BankHashPreimage,

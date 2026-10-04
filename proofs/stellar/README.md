@@ -42,7 +42,7 @@ quorum set's hash: when Tier 1 changes, a new verifier with the new hash replace
 
 ## Build and test
 
-Rust stable (`rust-toolchain`) and SP1's toolchain (`sp1up`), as `../`.
+Rust 1.98.1 (`rust-toolchain`) and SP1's toolchain (`sp1up`), as `../`.
 
 ```bash
 cd proofs/stellar

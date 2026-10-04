@@ -13,8 +13,11 @@ natively; the zkVM program only runs that library. Foundry and Wake never see th
 
 ## Toolchain
 
-SP1 6.8.1 (`sp1up`, into `~/.sp1`) and `protoc`, which `sp1-sdk`'s build needs. Build gently: the program compiles
-for SP1's RISC-V target, and the host links the SP1 SDK, which is large.
+Rust 1.98.1 (`rust-toolchain`, here and in each chain's workspace), the vault workspaces' own pin. It sets the compiler
+of the host crates and the native tests: SP1 builds its guests with its own `succinct` toolchain, and RISC Zero's local
+build runs its own rustc (a mainnet image id comes from its Docker build, below), so no key or image id is recorded yet
+that the pin could move. SP1 6.8.1 (`sp1up`, into `~/.sp1`) and `protoc`, which `sp1-sdk`'s build needs. Build gently:
+the program compiles for SP1's RISC-V target, and the host links the SP1 SDK, which is large.
 
 ```bash
 export PATH="$HOME/.sp1/bin:$PATH" PROTOC=/path/to/protoc

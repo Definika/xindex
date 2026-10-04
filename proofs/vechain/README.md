@@ -52,6 +52,16 @@ Each starts with a chain of headers, each the parent of the next, all after the 
 with secp256k1 from the header's blake2b signing hash (a high-`s` signature normalized, as libsecp256k1 accepts it), and
 every id recomputed, `number ++ blake2b(signingHash ++ signer)[4:]`.
 
+**The chain is not linked to the trusted block** (B6-09). "After the trusted block" is a comparison of numbers: the first
+header's number must exceed the one in `trustedId`, and its parent id is compared with nothing, since the chain may begin
+many blocks later. Nor is the genesis id tied to the headers beyond the transactions' chain tag (one byte) and the
+trusted table's signer keys. What makes the chain VeChain's is the vouching alone: the signers of the blocks after an
+attested block hold more than two thirds of the trusted table's weight, so an honest one of them executed that block
+(`attested` in `statement/src/lib.rs`). The soundness argument is that quorum, with honest validators executing every
+block they build on, and nothing in the statement checks a link back to the trusted block. A change that vouched from
+another slice of the chain, or that counted the attesting block's own signers, would not be caught by any link check, so
+it must keep the quorum over exactly the blocks after the attested one.
+
 - **update**: a new table, attested in its block by a successful `attest(table)` call of `VeChainStakerAttester`, and
   vouched for by the trusted table: the signers of the blocks after it hold more than two thirds of the trusted weight.
   The verifier then trusts the new table, keyed by its block's id and dated by its block's time.
@@ -99,7 +109,7 @@ age, that no block is dated after its own, the vault, and the slots and values t
 
 ## Build and test
 
-Rust stable (`rust-toolchain`), SP1's toolchain (`sp1up`, SP1 6.8.1) and `protoc`, as `../README.md`. Gently:
+Rust 1.98.1 (`rust-toolchain`), SP1's toolchain (`sp1up`, SP1 6.8.1) and `protoc`, as `../README.md`. Gently:
 
 ```bash
 cd proofs/vechain

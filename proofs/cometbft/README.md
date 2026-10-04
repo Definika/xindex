@@ -82,7 +82,7 @@ network or a GPU (`SP1_PROVER=network` or `cuda`); the host refuses this machine
 
 ## Build and test
 
-Rust stable (`rust-toolchain`), SP1's toolchain (`sp1up`, SP1 6.8.1) and `protoc`, as `../README.md`. Gently:
+Rust 1.98.1 (`rust-toolchain`), SP1's toolchain (`sp1up`, SP1 6.8.1) and `protoc`, as `../README.md`. Gently:
 
 ```bash
 cd proofs/cometbft

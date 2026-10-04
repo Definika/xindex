@@ -111,7 +111,11 @@ member of the next epoch's set, with exactly the BLS key and node key the snapsh
 - **Nodes:** `sha256("\x01SOLANA_MERKLE_SHREDS_NODE" ++ left[..20] ++ right[..20])`, an odd layer's last node joined
   with itself (`ledger/src/shred/merkle_tree.rs:18`, `:111`).
 - **A shred's leaf:** `sha256("\x00SOLANA_MERKLE_SHREDS_LEAF" ++ its signed bytes)`.
-- Nodes are 20 bytes, so a second preimage costs 2^160.
+- Nodes are 20 bytes, so a second preimage costs 2^160. A collision is cheaper: a node binds each child only through its
+  first 20 bytes, so a leader who chooses the last FEC set's contents can search for two sets whose roots share their
+  first 20 bytes, about 2^80 work, after which one block id (one certificate) opens to two footers and so to two bank
+  hashes, and the prover may present whichever suits. The state proof inherits that bound from Agave's own shred Merkle
+  design (B6-06).
 
 **The footer** (`entry/src/block_component.rs:241`, `BlockFooterV1`):
 - It is the block's last component. It carries the block's own **bank hash**, filled in after the bank freezes
@@ -134,6 +138,12 @@ member of the next epoch's set, with exactly the BLS key and node key the snapsh
 - An account's LtHash is BLAKE3's XOF, 2,048 bytes read as little-endian `u16`s, over
   `lamports (u64 LE) ++ data ++ executable (u8) ++ owner ++ pubkey`. A zero-lamport account's is the identity
   (`accounts-db/src/accounts_db.rs:3429`).
+- **A consequence of the identity rule (B6-02).** A state with no lamports adds nothing to the sum, whatever its data and
+  owner, so a write that names one for an address the slot never wrote leaves the slot's lattice hash as the real writes
+  made it. The delta would then pass, and the "proven" state would be the prover's bytes. The statement therefore takes
+  a zero-lamport state to be a missing account, written `None`, and refuses a write whose old or new state is `Some`
+  with no lamports (`DeltaError::ZeroLamport` in the prototype). The vault always holds rent-exempt lamports, so this
+  costs nothing.
 - At freeze, the bank mixes each written account's old state out and its new state in
   (`runtime/src/bank/accounts_lt_hash.rs:359`).
 - Freeze also writes sysvars, fees and the incinerator (`bank.rs:3244`), and Alpenglow's footer processing writes vote
@@ -199,16 +209,30 @@ probably a ledger-tool subcommand or a Geyser plugin, that emits for a chosen sl
    - **The chain of sets:** a set is anchored at deployment, as the BNB verifier's first set is. Each next set is
      accepted only from blocks the current set finalized: the registry's write slot, and the epoch's first slot.
 3. **Block id to footer.**
-   - The shred and double-Merkle paths give 160-bit second-preimage security.
+   - The shred and double-Merkle paths give 160-bit second-preimage security, but only 80-bit collision security: a
+     leader who chooses the last FEC set can search for two 20-byte truncated roots that agree, about 2^80 work (see
+     section 2), and the state proof inherits that bound from Agave (B6-06).
    - **Open:** exactly which bytes of the last FEC set are the footer. The footer is the final `BlockMarker`
      component, with the last data shred flagged `LAST_SHRED_IN_SLOT`. The framing of components across data shreds
      must be written down from `ledger/src/shred` and tested on real shreds before the statement relies on it, so that
      no footer-shaped bytes inside a transaction can pass for the footer.
+   - **Also open (B6-07):** `block_id::block_id`'s composition (the leaf layout, the byte order, the double Merkle tree)
+     is checked only against a vector the prototype's own generator composed from reading Agave's source. Devnet's real
+     certificate verifies, but no real block's id has been recomputed from its shreds.
 4. **The bank hash.** SHA-256 over the whole lattice hash; the hard-fork count is supplied and checked against a
    hard-fork list the verifier holds.
+   - **Open (B6-07):** `BankHashPreimage::hash` is checked only against vectors the generator composed with hashlib
+     from reading `hash_internal_state`, since devnet's probes for a real bank hash returned errors. A wrong byte order
+     or a missing hard-fork rule would pass every test and fail on first contact with the chain.
+     The lattice hash itself is checked against Agave's own vectors and crate.
+   - **Before the statement is written**, one real finalized block's shreds go in as a fixture (devnet or mainnet), its
+     block id recomputed with `block_id::block_id` and compared with the id its certificate signs, and one real bank hash
+     (from a validator's log or a snapshot manifest) compared with `BankHashPreimage::hash`. Until then `bank.rs` and
+     `block_id.rs` are unvalidated against chain data.
 5. **The delta.**
    - The write list is the prover's. Soundness rests on LtHash's collision resistance: no list other than the real
-     one, with each address once, gives the same difference.
+     one, with each address once, gives the same difference. That holds for states with lamports: a zero-lamport state
+     is the identity whatever it holds, so it is refused rather than proven (section 2, B6-02).
    - That is a k-sum problem over (Z/2^16)^1024: Lewi et al., "Securing Update Propagation with Homomorphic Hashing"
      (2019), the construction SIMD-0215 adopted. Generalized-birthday attacks are far out of reach at this size.
    - This composition, "the delta of a finalized bank hash proves an account's write", is **new and unpublished** and
@@ -275,6 +299,8 @@ requested slot key from its preimage and returns the values in request order.
 ## 7. Risks
 
 - **No slashing:** a 60% coalition forges for free (section 4.1). It needs labelling, as TRON's 19 producers are.
+- **Truncated roots:** a leader equivocating on a block id needs a 2^80 collision of two 20-byte roots, not a 2^160
+  second preimage (section 2, B6-06). Inherited from Agave, and a trust assumption of the whole Solana state proof.
 - **Formats move:** Alpenglow is weeks old on devnet, and 4.4 is a beta. The vote payload, the footer and the VAT rule
   could change before or after mainnet. Each change is a new zkVM program, so a rotation (30 days).
 - **Data availability:** proving depends on running and keeping a node. If the extraction falls behind, the
@@ -308,4 +334,6 @@ The prototype's tests (`cargo test` in `proofs/solana-state`):
   4.3.0 crate;
 - `the_bank_hash_is_agaves_formula`;
 - `the_slot_proves_the_intake_it_wrote` and `the_slot_proves_nothing_else`;
+- `test_b602_a_zero_lamport_write_is_refused`: a made-up zero-lamport state, as a new or an old state, is refused, and
+  so is one that replaces a real write's;
 - `the_block_id`.

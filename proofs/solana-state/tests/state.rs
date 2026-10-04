@@ -156,7 +156,7 @@ fn slot() -> (BankHashPreimage, BankHashPreimage, Vec<Write>) {
         Write {
             pubkey: [0xc3; 32],
             old: Some(account(2_039_280, &[5; 165], 0x12)),
-            new: Some(account(0, &[], 0x00)),
+            new: None,
         },
     ];
     let lt = apply_writes(&parent.accounts_lt_hash, &writes).unwrap();
@@ -237,6 +237,60 @@ fn the_slot_proves_nothing_else() {
     assert_eq!(
         written_state(&slot, &other_parent, &writes, &[0xa1; 32]),
         Err(DeltaError::WrongParent)
+    );
+}
+
+/// B6-02: a zero-lamport state hashes to the identity whatever its data and owner, so a forged one for an address the
+/// slot never wrote leaves the slot's lattice hash as it was, and would pass the delta as the slot's write. The delta
+/// refuses it, as a `new` or as an `old`, and a deletion is `None`, which the slot above already is.
+#[test]
+fn test_b602_a_zero_lamport_write_is_refused() {
+    let (slot, parent, writes) = slot();
+    let vault = [0xee; 32];
+    let forged = account(0, b"intake: sealed, 3,000 SOL", 0x77);
+
+    // The forgery changes nothing the lattice hash sees: the real writes alone already make the slot's.
+    let mut with_new = writes.clone();
+    with_new.push(Write {
+        pubkey: vault,
+        old: None,
+        new: Some(forged.clone()),
+    });
+    assert_eq!(
+        apply_writes(&parent.accounts_lt_hash, &writes).unwrap(),
+        slot.accounts_lt_hash
+    );
+    assert_eq!(
+        written_state(&slot, &parent, &with_new, &vault).map(|s| s.cloned()),
+        Err(DeltaError::ZeroLamport(vault)),
+        "a made-up zero-lamport new state is not proven"
+    );
+
+    let mut with_old = writes.clone();
+    with_old.push(Write {
+        pubkey: vault,
+        old: Some(forged.clone()),
+        new: None,
+    });
+    assert_eq!(
+        written_state(&slot, &parent, &with_old, &vault).map(|s| s.cloned()),
+        Err(DeltaError::ZeroLamport(vault)),
+        "nor a made-up zero-lamport old state"
+    );
+
+    // Nor on an address the slot really wrote: the intake's own entry cannot be swapped for a zero-lamport state.
+    let mut swapped = writes.clone();
+    swapped[0].new = Some(account(0, b"intake: sealed, 3,000 SOL", 0x77));
+    assert_eq!(
+        written_state(&slot, &parent, &swapped, &[0xa1; 32]).map(|s| s.cloned()),
+        Err(DeltaError::ZeroLamport([0xa1; 32]))
+    );
+
+    // A deletion is `None`, and a deleted account has no state after the slot.
+    assert_eq!(
+        written_state(&slot, &parent, &writes, &[0xc3; 32]),
+        Ok(None),
+        "a deleted account has no state after the slot"
     );
 }
 

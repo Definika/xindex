@@ -6,12 +6,30 @@ use xindex_aptos::json::{self, hex};
 use xindex_aptos::testkit::{self, Claim};
 use xindex_aptos::{
     bcs, check, follow, prove_event, set_hash, verify, EpochState, Error, Included, Input, Output,
-    Signed, TransactionInfo, Word,
+    Signed, TransactionInfo, Word, ATTEST_DOMAIN, SLOTS, UPDATE,
 };
 
 fn fixture(name: &str) -> Value {
     let path = format!("{}/../fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
     serde_json::from_str(&std::fs::read_to_string(path).expect("the fixture")).expect("JSON")
+}
+
+// ---------------------------------------------------------------------------
+// constants
+// ---------------------------------------------------------------------------
+
+/// B6-03: the three domain words are hex literals in the statement, parsed by a `const fn` that reads the first 64
+/// digits, so nothing but this test ties each to its name. They tell the two claims apart (`UPDATE`, `SLOTS`) and give
+/// the record its domain (`ATTEST_DOMAIN`, the one the vault's `Attested` event and every other vault's attest carry).
+#[test]
+fn test_b603_the_domain_words_are_the_keccaks_of_their_names() {
+    assert_eq!(UPDATE, bcs::keccak(&[b"xindex.v4.aptos.update"]));
+    assert_eq!(SLOTS, bcs::keccak(&[b"xindex.v4.aptos.slots"]));
+    assert_eq!(ATTEST_DOMAIN, bcs::keccak(&[b"xindex.v4.vault-attest"]));
+    // Three different words: a claim of one kind is never read as the other's.
+    assert_ne!(UPDATE, SLOTS);
+    assert_ne!(UPDATE, ATTEST_DOMAIN);
+    assert_ne!(SLOTS, ATTEST_DOMAIN);
 }
 
 // ---------------------------------------------------------------------------

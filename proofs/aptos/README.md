@@ -41,7 +41,14 @@ prefix where its variant puts it (a type tag's BCS is prefix-free). Only the vau
 `attest` is an entry function, so a successful transaction holds at most one.
 
 Every preimage is written from typed fields (`statement/src/bcs.rs`); the tests check that what it writes is mainnet's
-own BCS byte for byte.
+own BCS byte for byte, with one exception (B6-08): `TransactionInfo::V1`. The mainnet fixture's transaction info is a
+`V0`, so `V0` is checked against chain bytes, but no real `V1` has come out of Aptos Labs' backups yet, and
+`a_v1_transaction_info_is_written_too` only proves the encoder agrees with itself (the test kit re-hashes with the same
+writer). `V1`'s field order and arity are the source's as read, untested against chain data. If they are wrong, every
+`attest` proof for a transaction Aptos stores as `V1` fails with `NotInAccumulator`: a loss of liveness for Aptos exits
+and slot proofs that fails closed, never a forgery. The first backup that holds a `V1` goes in as a mainnet fixture
+(`fixtures/generate.py`), with a test that `bcs::transaction_info` reproduces its BCS byte for byte, as
+`mainnet_bcs_round_trips` does for `V0`.
 
 ## The statement
 
@@ -106,7 +113,7 @@ the same with aptos-core's own types; it is not built here.
 
 ## Build and test
 
-Rust stable (`rust-toolchain`), SP1's toolchain (`sp1up`, SP1 6.8.1) and `protoc`, as `../README.md`. Gently:
+Rust 1.98.1 (`rust-toolchain`), SP1's toolchain (`sp1up`, SP1 6.8.1) and `protoc`, as `../README.md`. Gently:
 
 ```bash
 cd proofs/aptos

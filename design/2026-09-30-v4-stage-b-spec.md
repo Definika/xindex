@@ -787,8 +787,11 @@ limit and the same freeze. What Solana changes:
 - **One instruction per message kind.** `deliver_burn`, `deliver_intake` (settled or failed), `deliver_migrate` and
   `deliver_governance` each take the message and its proofs and name only the accounts that kind touches.
 - **Verifiers are programs.** P1 and P2 are two different program ids. The vault calls each one's
-  `verify_event(block, emitter, topic0, topic1, data_hash, proof)`, which must succeed, with the verifier's state
-  account at a fixed address of its own.
+  `verify_event(block, emitter, topic0, topic1, data_hash, proof)`, which must succeed, with the verifier's own
+  accounts: for P1 and P2 the range account `["range", headersRoot]` that the proof's headers root names (a different
+  account for each update's headers, not one fixed address), then a loader buffer when the proof is staged; for the
+  testnet stub its state at `["verifier"]` and its relayer (B1-08). A relayer builds the account list from the proof it
+  delivers, so it must not assume one address per verifier.
   - The vault passes the log's data by its hash, so the message travels once, not three times. A transaction is at most
     1,232 bytes.
   - The message id, the index, the intake and every account address are read from the payload itself, and the emitter
@@ -907,6 +910,10 @@ replaying a block.
   September 2026, so it can be measured there now. Mainnet has no date.
 - **Its soundness argument is new and unpublished,** like the one-epoch finality argument, and must be reviewed before
   anyone relies on it.
+- **Truncated Merkle roots.** A block id binds each FEC set through the first 20 bytes of its root, so a leader who
+  chooses the last FEC set can equivocate on a block id with a collision of about 2^80 work, not the 2^160 a second
+  preimage would cost. The state proof inherits that bound from Agave's own shred design
+  (`design/2026-10-03-solana-state-proof.md`, section 2).
 
 ### HyperEVM: nothing to prove against yet
 
@@ -1049,12 +1056,25 @@ signature of the deposit that added it, which only the holder of its secret coul
   that joins after `e0` is bounded the same way; a key added since the anchor signs for nothing;
 - activations take no churn in Electra: when finality returns, every validator queued in the registry activates at
   once, however long the queue grew while finality stalled. So the statement counts every record not yet given an
-  activation epoch in the total, and never as signed stake (LG-6).
+  activation epoch in the total, and never as signed stake (LG-6);
+- consolidations also add stake to their targets, and later than they take their churn: a request takes its share of
+  the balance churn when it is made, but the source's balance reaches the target only when the source becomes
+  withdrawable, `MIN_VALIDATOR_WITHDRAWABILITY_DELAY` (256 epochs) after its exit (`process_pending_consolidations`,
+  then `process_effective_balance_updates`). So a day can see the targets of requests made before it grow by up to the
+  consolidation churn an epoch, the balance churn less 256 ETH, with no churn taken at that moment and no record
+  showing it (B5-02). Rewards raise effective balances too, a few ETH an epoch across the network, likewise uncounted.
 
-So the records drift by at most the balance churn plus 256 ETH an epoch: about 775 ETH at 34M ETH staked, and about
-1,020 ETH at 50M. The threshold adds 2,048 ETH for every epoch since `e0`, over twice that drift at any stake below
-about 50M ETH (LG-I1). `e1 − e0` is at most 225 epochs, a day, as the BNB verifier's `MAX_LAG` is, so the margin is at
-most 460,800 ETH, about 1.4% of today's stake, and honest participation near 99% clears 66.7% plus that easily.
+So the records drift by at most about twice the balance churn an epoch: the exits and deposits above, the balance churn
+plus 256 ETH, and those consolidations' completions, the balance churn less 256 ETH. That is about 1,040 ETH at 34M ETH
+staked and about 1,530 ETH at 50M. The threshold adds 2,048 ETH for every epoch since `e0`, which is 1.97 times that
+drift at 34M ETH, not over twice, and covers it up to about 67M ETH staked. It is the margin's constant,
+`MARGIN_PER_EPOCH_GWEI`, that would have to rise, or scale with the recorded total (for example `2 · max(128 ETH, total
+/ 65,536) + 256 ETH`, with headroom), before the stake nears that. It is a constant of the statement, so changing it
+changes P1's program key and P2's image id, and needs the owner's approval of a re-key. The comment on the constant in
+`proofs/finality/src/statement.rs` still carries the earlier claim for the same reason. No soundness break at today's
+stake; the safety factor is the one stated here (LG-I1, refined by B5-02). `e1 − e0` is at most 225 epochs, a day, as
+the BNB verifier's `MAX_LAG` is, so the margin is at most 460,800 ETH, about 1.4% of today's stake, and honest
+participation near 99% clears 66.7% plus that easily.
 
 The records are those of `C1`'s block's state, which the next proof reads. A checkpoint's block is the one at its
 epoch's first slot, or the last before it where that slot was missed, so its state is at most one epoch older than the
