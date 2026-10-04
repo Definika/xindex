@@ -433,5 +433,9 @@
    "242825783432521"
   ]
  ],
- "named_by_version": 7480602614
+ "named_by_version": 7480602614,
+ "deployment": "package, vaultId and programKey are test values: no vault is published on Aptos yet. The operator writes the package's address, the vault's state object address and the program's key here; the rest is generate.py's output.",
+ "package": "0x5555555555555555555555555555555555555555555555555555555555555555",
+ "vaultId": "0x6666666666666666666666666666666666666666666666666666666666666666",
+ "programKey": "0x0063df3e528b89a7e9987115ded82f46077285f69702c1c8185a08bef9f8761f"
 }

@@ -35,6 +35,7 @@ import {StellarStateVerifier} from "../src/verifiers/StellarStateVerifier.sol";
 import {SuiStateVerifier} from "../src/verifiers/SuiStateVerifier.sol";
 import {CometBftStateVerifier} from "../src/verifiers/CometBftStateVerifier.sol";
 import {VeChainStateVerifier} from "../src/verifiers/VeChainStateVerifier.sol";
+import {AptosStateVerifier} from "../src/verifiers/AptosStateVerifier.sol";
 import {ISP1Verifier} from "../src/interfaces/ISP1Verifier.sol";
 import {ITronStateVerifier} from "../src/interfaces/ITronStateVerifier.sol";
 import {IHybridIndexFactory} from "../src/interfaces/IHybridIndexFactory.sol";
@@ -2423,6 +2424,12 @@ contract StateVerifierScriptTest is Test {
         verifier = script.run();
         assertEq(VeChainStateVerifier(verifier).latestId(), vm.parseJsonBytes32(vechain, ".id"));
 
+        vm.setEnv("STATE_CHAIN", "aptos");
+        vm.setEnv("STATE_ANCHOR", "test/fixtures/aptos/anchor.json");
+        vm.warp(_aptosNamed() + 10 minutes);
+        verifier = script.run();
+        assertEq(AptosStateVerifier(verifier).latestEpoch(), vm.parseJsonUint(aptos, ".epoch"));
+
         vm.setEnv("STATE_CHAIN", "solana");
         vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.UnknownChain.selector, "solana"));
         script.run();
@@ -2435,6 +2442,77 @@ contract StateVerifierScriptTest is Test {
     string sui = vm.readFile("test/fixtures/sui/anchor.json");
     string injective = vm.readFile("test/fixtures/injective/anchor.json");
     string vechain = vm.readFile("test/fixtures/vechain/anchor.json");
+    string aptos = vm.readFile("test/fixtures/aptos/anchor.json");
+
+    function _aptosNamed() internal view returns (uint256) {
+        return vm.parseJsonUint(aptos, ".time") / 1e6;
+    }
+
+    function _deployAptos(ISP1Verifier sp1, uint256 chainId) internal returns (AptosStateVerifier) {
+        bytes32 key = vm.parseJsonBytes32(aptos, ".programKey");
+        bytes32 package = vm.parseJsonBytes32(aptos, ".package");
+        bytes32 vaultId = vm.parseJsonBytes32(aptos, ".vaultId");
+        uint64 aptosEpoch = uint64(vm.parseJsonUint(aptos, ".epoch"));
+        bytes32 set = vm.parseJsonBytes32(aptos, ".set");
+        uint64 time = uint64(vm.parseJsonUint(aptos, ".time"));
+        return script.deployAptos(sp1, key, chainId, package, vaultId, aptosEpoch, set, time);
+    }
+
+    /// @dev Aptos's verifier, from a real mainnet epoch's validator set, named by the epoch before's last ledger info.
+    function test_deployAptos_fromARealSet() public {
+        ISP1Verifier sp1 = new MockSP1Verifier();
+        vm.warp(_aptosNamed() + 10 minutes);
+        AptosStateVerifier verifier = _deployAptos(sp1, script.APTOS_MAINNET());
+        uint64 aptosEpoch = uint64(vm.parseJsonUint(aptos, ".epoch"));
+        assertEq(verifier.latestEpoch(), aptosEpoch);
+        assertEq(verifier.trusted(aptosEpoch).set, vm.parseJsonBytes32(aptos, ".set"));
+        assertEq(verifier.trusted(aptosEpoch).time, vm.parseJsonUint(aptos, ".time"));
+        assertEq(script.APTOS_MAINNET(), uint64(bytes8(keccak256("aptos:1"))));
+        assertEq(script.APTOS_TESTNET(), uint64(bytes8(keccak256("aptos:2"))));
+    }
+
+    /// @dev Only SP1's pinned verifier, only the network that pairs with this one, a set named within the age, never
+    ///      in the future; and the review refuses another anchor.
+    function test_deployAptos_refusalsAndReview() public {
+        ISP1Verifier sp1 = new MockSP1Verifier();
+        ISP1Verifier other = ISP1Verifier(address(new MockRiscZeroVerifier()));
+        uint256 named = _aptosNamed();
+        uint256 main = script.APTOS_MAINNET();
+        uint256 test = script.APTOS_TESTNET();
+        vm.warp(named + 10 minutes);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.NotSp1Verifier.selector, address(other)));
+        _deployAptos(other, main);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongNetwork.selector, test));
+        _deployAptos(sp1, test);
+        vm.chainId(11_155_111);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongNetwork.selector, main));
+        _deployAptos(sp1, main);
+        _deployAptos(sp1, test);
+        vm.chainId(31_337);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.NotEthereum.selector, 31_337));
+        _deployAptos(sp1, main);
+        vm.chainId(1);
+
+        uint256 maxAge = script.MAX_APTOS_ANCHOR_AGE();
+        vm.warp(named + maxAge);
+        AptosStateVerifier verifier = _deployAptos(sp1, main);
+        vm.warp(named + maxAge + 1);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.StaleAnchor.selector, named, block.timestamp));
+        _deployAptos(sp1, main);
+        vm.warp(named - 1);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.StaleAnchor.selector, named, block.timestamp));
+        _deployAptos(sp1, main);
+
+        uint64 aptosEpoch = uint64(vm.parseJsonUint(aptos, ".epoch"));
+        bytes32 set = vm.parseJsonBytes32(aptos, ".set");
+        uint64 time = uint64(vm.parseJsonUint(aptos, ".time"));
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(verifier)));
+        script.checkAptos(address(verifier), aptosEpoch + 1, set, time);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(verifier)));
+        script.checkAptos(address(verifier), aptosEpoch, keccak256("another set"), time);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(verifier)));
+        script.checkAptos(address(verifier), aptosEpoch, set, time + 1);
+    }
 
     function _suiStart() internal view returns (uint256) {
         return vm.parseJsonUint(sui, ".startMs") / 1000;
@@ -2448,15 +2526,15 @@ contract StateVerifierScriptTest is Test {
         }
     }
 
-    function _deploySui(uint256 chainId, bytes memory keys, bytes[] memory compressed, uint64[] memory powers)
+    function _deploySui(uint256 chainId, bytes memory suiKeys, bytes[] memory compressed, uint64[] memory powers)
         internal
         returns (SuiStateVerifier)
     {
         bytes32 vaultId = vm.parseJsonBytes32(sui, ".vaultId");
         bytes32 packageId = vm.parseJsonBytes32(sui, ".packageId");
-        uint64 epoch = uint64(vm.parseJsonUint(sui, ".epoch"));
+        uint64 suiEpoch = uint64(vm.parseJsonUint(sui, ".epoch"));
         uint64 startMs = uint64(vm.parseJsonUint(sui, ".startMs"));
-        return script.deploySui(chainId, vaultId, packageId, epoch, keys, compressed, powers, startMs);
+        return script.deploySui(chainId, vaultId, packageId, suiEpoch, suiKeys, compressed, powers, startMs);
     }
 
     function _deploySui(uint256 chainId) internal returns (SuiStateVerifier) {
@@ -2491,9 +2569,9 @@ contract StateVerifierScriptTest is Test {
     function test_deploySui_fromARealCommittee() public {
         vm.warp(_suiStart() + 10 minutes);
         SuiStateVerifier verifier = _deploySui(script.SUI_MAINNET());
-        bytes memory keys = vm.parseJsonBytes(sui, ".keys");
-        assertEq(keys.length, 127 * 256);
-        assertEq(verifier.committeeHash(), verifier.hashCommittee(keys, _suiPowers()));
+        bytes memory suiKeys = vm.parseJsonBytes(sui, ".keys");
+        assertEq(suiKeys.length, 127 * 256);
+        assertEq(verifier.committeeHash(), verifier.hashCommittee(suiKeys, _suiPowers()));
         assertEq(verifier.epoch(), vm.parseJsonUint(sui, ".epoch"));
         assertEq(verifier.epochStartMs(), vm.parseJsonUint(sui, ".startMs"));
         assertEq(verifier.CHAIN_ID(), 13_762_264_207_064_992_463, "keccak256('sui:mainnet')'s first 8 bytes");
@@ -2526,7 +2604,7 @@ contract StateVerifierScriptTest is Test {
         vm.warp(start + 10 minutes);
         uint256 main = script.SUI_MAINNET();
         uint256 test = script.SUI_TESTNET();
-        bytes memory keys = vm.parseJsonBytes(sui, ".keys");
+        bytes memory suiKeys = vm.parseJsonBytes(sui, ".keys");
         bytes[] memory compressed = vm.parseJsonBytesArray(sui, ".compressed");
         uint64[] memory powers = _suiPowers();
 
@@ -2560,27 +2638,27 @@ contract StateVerifierScriptTest is Test {
             short[i] = compressed[i];
         }
         vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.BadCommittee.selector, powers.length));
-        _deploySui(main, keys, short, powers);
+        _deploySui(main, suiKeys, short, powers);
         // A compressed key that is not its uncompressed key's.
         bytes[] memory wrong = _copy(compressed);
         wrong[5] = compressed[6];
         vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.BadCommittee.selector, 5));
-        _deploySui(main, keys, wrong, powers);
+        _deploySui(main, suiKeys, wrong, powers);
         // Two members swapped: each key still matches, but the order is not Sui's.
         bytes[] memory swapped = _copy(compressed);
         (swapped[3], swapped[4]) = (compressed[4], compressed[3]);
-        bytes memory swappedKeys = bytes.concat(keys);
+        bytes memory swappedKeys = bytes.concat(suiKeys);
         for (uint256 b = 0; b < 256; ++b) {
-            (swappedKeys[3 * 256 + b], swappedKeys[4 * 256 + b]) = (keys[4 * 256 + b], keys[3 * 256 + b]);
+            (swappedKeys[3 * 256 + b], swappedKeys[4 * 256 + b]) = (suiKeys[4 * 256 + b], suiKeys[3 * 256 + b]);
         }
         vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.BadCommittee.selector, 4));
         _deploySui(main, swappedKeys, swapped, powers);
         // A member named twice: each key matches, but equal is not ascending.
         bytes[] memory twice = _copy(compressed);
         twice[8] = compressed[7];
-        bytes memory twiceKeys = bytes.concat(keys);
+        bytes memory twiceKeys = bytes.concat(suiKeys);
         for (uint256 b = 0; b < 256; ++b) {
-            twiceKeys[8 * 256 + b] = keys[7 * 256 + b];
+            twiceKeys[8 * 256 + b] = suiKeys[7 * 256 + b];
         }
         vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.BadCommittee.selector, 8));
         _deploySui(main, twiceKeys, twice, powers);
@@ -2591,7 +2669,7 @@ contract StateVerifierScriptTest is Test {
         }
         more[0] += 1;
         vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.BadCommittee.selector, powers.length));
-        _deploySui(main, keys, compressed, more);
+        _deploySui(main, suiKeys, compressed, more);
     }
 
     /// @dev Only SP1's pinned verifier, only the networks that pair with this one, a fresh anchor, a real block.
@@ -2663,15 +2741,15 @@ contract StateVerifierScriptTest is Test {
         ISP1Verifier sp1 = new MockSP1Verifier();
         vm.warp(_suiStart() + 10 minutes);
         SuiStateVerifier s = _deploySui(script.SUI_MAINNET());
-        uint64 epoch = s.epoch();
+        uint64 suiEpoch = s.epoch();
         bytes32 committee = s.committeeHash();
         uint64 startMs = s.epochStartMs();
         vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(s)));
-        script.checkSui(address(s), epoch + 1, committee, startMs);
+        script.checkSui(address(s), suiEpoch + 1, committee, startMs);
         vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(s)));
-        script.checkSui(address(s), epoch, keccak256("another committee"), startMs);
+        script.checkSui(address(s), suiEpoch, keccak256("another committee"), startMs);
         vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(s)));
-        script.checkSui(address(s), epoch, committee, startMs + 1);
+        script.checkSui(address(s), suiEpoch, committee, startMs + 1);
 
         vm.warp(vm.parseJsonUint(injective, ".time") + 10 minutes);
         CometBftStateVerifier inj = _deployInjective(sp1, script.INJECTIVE_MAINNET(), "injective-1");
@@ -2698,10 +2776,10 @@ contract StateVerifierScriptTest is Test {
         script.checkVeChain(address(vet), id, vetTime + 1, table);
     }
 
-    function _copy(bytes[] memory list) internal pure returns (bytes[] memory out) {
-        out = new bytes[](list.length);
-        for (uint256 i = 0; i < list.length; ++i) {
-            out[i] = list[i];
+    function _copy(bytes[] memory items) internal pure returns (bytes[] memory out) {
+        out = new bytes[](items.length);
+        for (uint256 i = 0; i < items.length; ++i) {
+            out[i] = items[i];
         }
     }
 }
