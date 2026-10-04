@@ -127,13 +127,9 @@ contract HybridHubExtension is HybridHubStorage, HubShares, ReentrancyGuard, IHy
         _vaultBacking[token] -= amount;
         _sentOut[token] += amount;
         bytes memory payload = _payload(j, VaultMessages.MIGRATE, abi.encode(newIndex, _vaultTokenOf[i], amount));
-        bytes32 id = keccak256(payload);
-        _sentMessages[id] = true;
-        // `_payload` only encodes; the lint reads its internal library call as an external one.
+        _post(payload);
         // forge-lint: disable-next-line(reentrancy-events)
-        emit VaultMessages.VaultMessage(id, payload);
-        // forge-lint: disable-next-line(reentrancy-events)
-        emit MigrateSent(token, _chains[j].chainId, newIndex, amount, id);
+        emit MigrateSent(token, _chains[j].chainId, newIndex, amount, keccak256(payload));
     }
 
     /// @inheritdoc IHybridHubExtension
@@ -219,7 +215,7 @@ contract HybridHubExtension is HybridHubStorage, HubShares, ReentrancyGuard, IHy
         }
         bytes32 slot = keccak256(abi.encode(address(this), VAULT_INDEX_DIGEST_SLOT));
         // Paid totals only grow, and so does what this index sent: a proof from any height will do.
-        bytes32 proven = _provenSlot(j, slot, 0, proof);
+        bytes32 proven = _provenSlot(j, slot, 0, true, proof);
         bytes32 digest = keccak256(
             abi.encode(
                 INDEX_DIGEST_DOMAIN,
@@ -267,7 +263,7 @@ contract HybridHubExtension is HybridHubStorage, HubShares, ReentrancyGuard, IHy
         if (open != recorded) revert DigestMismatch(chainId, open, recorded);
         // After its deadline an intake's deposits are final, and a claimed order's is only ever settled, so it can be
         // open or settled with those deposits, and nothing else.
-        bytes32 proven = _provenIntake(j, intakeId, o.deadline, proof.proof);
+        bytes32 proven = _provenIntake(j, intakeId, o.deadline, true, proof.proof);
         if (proven == recorded || proven == _intakeDigest(j, intakeId, INTAKE_SETTLED, proof.tokens, proof.totals)) {
             revert NotAContradiction(chainId);
         }
@@ -295,7 +291,7 @@ contract HybridHubExtension is HybridHubStorage, HubShares, ReentrancyGuard, IHy
         uint256 j = _slotIndex(chainId);
         if (_exitedAt[chainId] != 0) revert ChainExited(chainId);
         // The vault's own state shows its snapshot: this direction of proof still works when Ethereum's does not.
-        bytes32 root = _provenSlot(j, bytes32(VAULT_SNAPSHOT_ROOT_SLOT), 0, proof);
+        bytes32 root = _provenSlot(j, bytes32(VAULT_SNAPSHOT_ROOT_SLOT), 0, false, proof);
         if (root == bytes32(0)) revert NotAContradiction(chainId);
         _exitedAt[chainId] = block.timestamp;
         // The call before this is a view of a state verifier.
@@ -342,6 +338,13 @@ contract HybridHubExtension is HybridHubStorage, HubShares, ReentrancyGuard, IHy
     /// @inheritdoc IHybridHubExtension
     function messageSent(bytes32 id) external view returns (bool) {
         return _sentMessages[id];
+    }
+
+    /// @inheritdoc IHybridHubExtension
+    function resendMessage(bytes calldata payload) external {
+        bytes32 id = keccak256(payload);
+        if (!_sentMessages[id]) revert NotSent(id);
+        emit VaultMessages.VaultMessage(id, payload);
     }
 
     /// @inheritdoc IHybridHubExtension

@@ -1,0 +1,27 @@
+# Xindex v4 Stage B on Stellar: the vault and P1 and P2 as Soroban contracts, on the vault chains' shared Rust
+# (`crates/xindex-core`). A workspace of its own, as Solana's is: Foundry owns the repository's root.
+[workspace]
+resolver = "2"
+members = ["contracts/*", "crates/*"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.89.0"
+license = "MIT"
+
+[workspace.dependencies]
+# Protocol 25's BN254 host functions (CAP-0074) and protocol 26's MSM (CAP-0080) are in every SDK from 25 on; mainnet
+# runs protocol 29.
+soroban-sdk = { version = "28.0.0", features = ["alloc", "hazmat"] }
+xindex-core = { path = "../crates/xindex-core", default-features = false }
+xindex-soroban = { path = "crates/xindex-soroban" }
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true

@@ -205,10 +205,12 @@ interface IXindexVault {
     /// @notice The successor pair under review, if any.
     function successor() external view returns (Successor memory);
 
-    /// @notice The id of the last message delivered, which a successor must prove again.
+    /// @notice The id of the last message delivered on both proofs, which a successor must prove again. A message
+    ///         carried on one proof, a freeze or a lowered cap, does not count: one broken proof system could forge it.
     function lastMessage() external view returns (bytes32);
 
-    /// @notice The freezer's vetoes in the current stall, while the checkpoint it began after is unchanged.
+    /// @notice The freezer's vetoes in the current stall. A checkpoint that ends the stall, by an advance or an
+    ///         adoption, starts the count again; a stale one does not.
     function vetoes() external view returns (uint256);
 
     /// @notice The factory's nonce of the last governance message taken on both proofs for `key`: its kind shifted
@@ -310,7 +312,8 @@ interface IXindexVault {
     function freeze() external;
 
     /// @notice Anyone, before a snapshot exit. Records a final Ethereum block both P1 and P2 prove, newer than the last:
-    ///         what keeps the vault out of a stall. Lapses any successor under review.
+    ///         what keeps the vault out of a stall. One recent enough to end a stall also lapses any successor under
+    ///         review and starts the freezer's count again; a stale one leaves the stall, its successor and its count.
     function advanceCheckpoint(bytes calldata proof1, bytes calldata proof2) external;
 
     /// @notice RECOVERY_PROPOSER only, while stalled, before a snapshot exit, with none under review. Proposes a

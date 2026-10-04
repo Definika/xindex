@@ -1,13 +1,15 @@
-//! What every instruction shares: the vault's identity in digests, the speed limit, and payouts.
+//! What every instruction shares: the vault's identity in digests, the speed limit, and payouts. The speed limit's
+//! arithmetic and the checkpoint rules are every chain's (`xindex_core::speed`, `xindex_core::checkpoint`).
 
 use anchor_lang::prelude::*;
 use anchor_lang::system_program::{transfer, Transfer};
+use xindex_core::{checkpoint, speed};
 
 use crate::abi;
 use crate::constants::*;
 use crate::error::VaultError;
 use crate::events::Paid;
-use crate::state::{Config, IndexState, Intake, Owed};
+use crate::state::{Checkpoint, Config, IndexState, Intake, Owed};
 
 /// The vault's id in the digests Ethereum proves: its whole 32-byte key, as the factory's registry holds it.
 pub fn vault_id(config: &Pubkey) -> [u8; 32] {
@@ -41,41 +43,89 @@ pub fn now() -> Result<i64> {
     Ok(Clock::get()?.unix_timestamp)
 }
 
-fn hour_of(now: i64) -> u64 {
-    (now / HOUR) as u64
-}
-
 /// What the index's payouts used of the speed limit over the current hour and the 24 before it.
 pub fn recent_outflow(index: &IndexState, now: i64) -> u64 {
-    let hour = hour_of(now);
-    index
-        .outflow
-        .iter()
-        .filter(|b| b.hour + BUCKETS as u64 > hour)
-        .map(|b| b.amount)
-        .sum()
+    speed::recent(index.outflow.iter().map(|b| (b.hour, b.amount)), now)
 }
 
 /// What more the index may pay out now: 4% of its balance before the recent outflow, or the floor if larger.
 pub fn available(index: &IndexState, floor: u64, now: i64) -> u64 {
-    let recent = recent_outflow(index, now);
-    let limit = ((index.balance as u128 + recent as u128) * SPEED_LIMIT_PERCENT / 100) as u64;
-    limit.max(floor).saturating_sub(recent)
+    speed::available(index.balance, recent_outflow(index, now), floor)
 }
 
 fn record_outflow(index: &mut IndexState, amount: u64, now: i64) {
-    let hour = hour_of(now);
-    let b = &mut index.outflow[(hour % BUCKETS as u64) as usize];
-    b.amount = if b.hour == hour {
-        b.amount + amount
-    } else {
-        amount
-    };
-    b.hour = hour;
+    let b = &mut index.outflow[speed::slot_of(speed::hour_of(now))];
+    (b.hour, b.amount) = speed::record((b.hour, b.amount), amount, now);
 }
 
 pub fn check_not_frozen(config: &Config, now: i64) -> Result<()> {
     require!(now >= config.frozen_until, VaultError::VaultFrozen);
+    Ok(())
+}
+
+/// When the vault stalls: STALL_PERIOD after its last checkpoint's time, or after initialization until the first.
+pub fn stall_start(config: &Config) -> i64 {
+    checkpoint::stall_start(config.checkpoint.timestamp)
+}
+
+/// A week without a new checkpoint: P1 and P2 may have stopped working.
+pub fn stalled(config: &Config, now: i64) -> bool {
+    checkpoint::stalled(config.checkpoint.timestamp, now)
+}
+
+fn core_checkpoint(c: &Checkpoint) -> checkpoint::Checkpoint {
+    checkpoint::Checkpoint {
+        block: c.block,
+        timestamp: c.timestamp,
+        state_root: c.state_root,
+    }
+}
+
+/// A checkpoint after the last, in blocks and in time, not in the future, and with a state to read.
+pub fn check_newer(config: &Config, c: &Checkpoint, now: i64) -> Result<()> {
+    require!(
+        checkpoint::is_newer(
+            &core_checkpoint(&config.checkpoint),
+            &core_checkpoint(c),
+            now
+        ),
+        VaultError::NotNewer
+    );
+    Ok(())
+}
+
+/// A newer checkpoint within STALL_PERIOD of now: one that would not leave the vault stalled.
+pub fn check_recent(config: &Config, c: &Checkpoint, now: i64) -> Result<()> {
+    check_newer(config, c, now)?;
+    require!(
+        checkpoint::is_recent(&core_checkpoint(c), now),
+        VaultError::NotRecent
+    );
+    Ok(())
+}
+
+pub fn check_no_snapshot(config: &Config) -> Result<()> {
+    require!(
+        config.snapshot.state_root == [0u8; 32],
+        VaultError::SnapshotTaken
+    );
+    Ok(())
+}
+
+/// The snapshot's state root, which every read of the hub's storage is under.
+pub fn snapshot_root(config: &Config) -> Result<[u8; 32]> {
+    let root = config.snapshot.state_root;
+    require!(root != [0u8; 32], VaultError::NoSnapshot);
+    Ok(root)
+}
+
+/// A message that moves coins or loosens a rule runs only from a block the vault's checkpoint covers, so the snapshot
+/// at that checkpoint never pays a holder whose burn it paid too (VLT-3).
+pub fn check_checkpointed(config: &Config, block: u64) -> Result<()> {
+    require!(
+        block <= config.checkpoint.block,
+        VaultError::NotCheckpointed
+    );
     Ok(())
 }
 

@@ -1,0 +1,16 @@
+[package]
+name = "xindex-soroban"
+version = "0.1.0"
+description = "Xindex v4 Stage B on Stellar: the vault chains' shared Rust over Soroban's host functions, and the light client P1 and P2 share"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+soroban-sdk = { workspace = true }
+xindex-core = { workspace = true }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+xindex-core = { path = "../../../crates/xindex-core" }

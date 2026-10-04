@@ -10,6 +10,8 @@
 //! - `1`, initialize: accounts `[state, payer, system_program, program_data]`, data the relayer's key; once, and only
 //!   by this program's upgrade authority, so nobody can set the key in front of its deployer. The deployer then makes
 //!   the program immutable, which the vault requires of a verifier.
+//! - `4`, verify_checkpoint: accounts `[state, relayer]`, data `block (u64) ++ timestamp (u64) ++ stateRoot (32) ++
+//!   proof`; as verify_event, it succeeds only if `relayer` is the key `state` holds and signed, whatever the checkpoint.
 //!
 //! `state` is this program's account at the seed `"verifier"`.
 
@@ -26,8 +28,11 @@ use anchor_lang::solana_program::system_instruction;
 pub const STATE_SEED: &[u8] = b"verifier";
 pub const VERIFY_EVENT: u8 = 0;
 pub const INITIALIZE: u8 = 1;
+pub const VERIFY_CHECKPOINT: u8 = 4;
 /// The log the vault passes: block (8), emitter (20), topic0, topic1 and the data's hash (32 each).
 const LOG_LEN: usize = 8 + 20 + 3 * 32;
+/// The checkpoint the vault passes: block (8), timestamp (8) and state root (32).
+const CHECKPOINT_LEN: usize = 8 + 8 + 32;
 
 #[cfg(not(feature = "no-entrypoint"))]
 anchor_lang::solana_program::entrypoint!(process);
@@ -43,17 +48,25 @@ pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Pr
     }
     match *tag {
         VERIFY_EVENT => {
-            let relayer = accounts.get(1).ok_or(ProgramError::NotEnoughAccountKeys)?;
-            if state.owner != program_id || state.data_len() != 32 {
-                return Err(ProgramError::UninitializedAccount);
-            }
-            if !relayer.is_signer || relayer.key.as_ref() != &state.data.borrow()[..] {
-                return Err(ProgramError::MissingRequiredSignature);
-            }
+            check_relayer(program_id, state, accounts.get(1))?;
             if rest.len() < LOG_LEN {
                 return Err(ProgramError::InvalidInstructionData);
             }
             msg!("STUB verifier: log accepted on the relayer's signature alone");
+            Ok(())
+        }
+        VERIFY_CHECKPOINT => {
+            check_relayer(program_id, state, accounts.get(1))?;
+            if rest.len() < CHECKPOINT_LEN {
+                return Err(ProgramError::InvalidInstructionData);
+            }
+            let block = u64::from_le_bytes(rest[..8].try_into().unwrap());
+            let timestamp = u64::from_le_bytes(rest[8..16].try_into().unwrap());
+            msg!(
+                "STUB verifier: checkpoint {} at {} accepted on the relayer's signature alone",
+                block,
+                timestamp
+            );
             Ok(())
         }
         INITIALIZE => {
@@ -92,6 +105,22 @@ pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Pr
         }
         _ => Err(ProgramError::InvalidInstructionData),
     }
+}
+
+/// `relayer` is the key `state` holds, and signed.
+fn check_relayer(
+    program_id: &Pubkey,
+    state: &AccountInfo,
+    relayer: Option<&AccountInfo>,
+) -> ProgramResult {
+    let relayer = relayer.ok_or(ProgramError::NotEnoughAccountKeys)?;
+    if state.owner != program_id || state.data_len() != 32 {
+        return Err(ProgramError::UninitializedAccount);
+    }
+    if !relayer.is_signer || relayer.key.as_ref() != &state.data.borrow()[..] {
+        return Err(ProgramError::MissingRequiredSignature);
+    }
+    Ok(())
 }
 
 /// `program_data` is this program's ProgramData account, and `payer` its upgrade authority, signing.

@@ -39,8 +39,9 @@ pub struct Deposit<'info> {
     pub system_program: Program<'info, System>,
 }
 
-/// Anyone, while not frozen: deposits `amount` lamports into intake `intake_id` of `index`. The intake's deadline is its
-/// id's top 64 bits: nobody can open another's intake with another deadline, and deposits close at it for everyone.
+/// Anyone, while neither frozen nor stalled: deposits `amount` lamports into intake `intake_id` of `index`. The intake's
+/// deadline is its id's top 64 bits: nobody can open another's intake with another deadline, and deposits close at it
+/// for everyone.
 pub fn handle_deposit(
     ctx: Context<Deposit>,
     index: [u8; 20],
@@ -49,6 +50,11 @@ pub fn handle_deposit(
 ) -> Result<()> {
     let now = vault::now()?;
     vault::check_not_frozen(&ctx.accounts.config, now)?;
+    // A stalled vault may never again see the message that would settle or fail an intake.
+    require!(
+        !vault::stalled(&ctx.accounts.config, now),
+        VaultError::VaultStalled
+    );
     require!(amount != 0, VaultError::ZeroAmount);
     let deadline = abi::deadline_of(&intake_id);
     require!(now as u64 <= deadline, VaultError::IntakeClosed);

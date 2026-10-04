@@ -5,6 +5,9 @@ import {Script, console2} from "forge-std/Script.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {BnbStateVerifier} from "../src/verifiers/BnbStateVerifier.sol";
 import {TronStateVerifier} from "../src/verifiers/TronStateVerifier.sol";
+import {NearStateVerifier} from "../src/verifiers/NearStateVerifier.sol";
+import {StellarStateVerifier} from "../src/verifiers/StellarStateVerifier.sol";
+import {ISP1Verifier} from "../src/interfaces/ISP1Verifier.sol";
 import {IBnbStateVerifier} from "../src/interfaces/IBnbStateVerifier.sol";
 import {ITronStateVerifier} from "../src/interfaces/ITronStateVerifier.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
@@ -20,13 +23,18 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///     STATE_CHAIN=bnb STATE_ANCHOR=bnb-anchor.json forge script script/DeployStateVerifier.s.sol --rpc-url mainnet \
 ///       --account deployer --sender <deployer> --broadcast
 ///
-///   TRON's is the same with `tron` and `test/fixtures/tron/generate.py <TronGrid URL> anchor`. The chain is then
-///   added with `ConfigureChains`, naming the verifier. Forge simulates the whole run first, so a check that fails
-///   broadcasts nothing.
+///   TRON's is the same with `tron` and `test/fixtures/tron/generate.py <TronGrid URL> anchor`. NEAR's and Stellar's
+///   verifiers check SP1 proofs of their chain's finality, so they also take the program's key and SP1's Groth16
+///   verifier: NEAR's from an epoch and its producers (`proofs/near`), Stellar's from the network and the pinned Tier 1
+///   quorum set (`proofs/stellar`), each for one vault. The chain is then added with `ConfigureChains`, naming the
+///   verifier. Forge simulates the whole run first, so a check that fails broadcasts nothing.
 ///
 /// Env:
-///   STATE_CHAIN   `bnb` or `tron`.
-///   STATE_ANCHOR  The anchor file the generator wrote.
+///   STATE_CHAIN         `bnb`, `tron`, `near` or `stellar`.
+///   STATE_ANCHOR        The anchor file: the generator's for BNB Chain and TRON; for NEAR `epochId`, `producersHash`,
+///                       `namedAt` (nanoseconds), `account` and `chainId`; for Stellar `networkId`, `quorumSet` (its
+///                       XDR), `chainId` and `vaultId`; for both, `programKey`.
+///   STATE_SP1_VERIFIER  NEAR and Stellar: SP1's Groth16 verifier v6.0.0 on Ethereum, a bare verifier.
 contract DeployStateVerifier is Script {
     /// @notice The oldest BNB Chain anchor deployed, which leaves the rest of MAX_LAG to advance the verifier.
     uint256 public constant MAX_ANCHOR_AGE = 1 hours;
@@ -38,11 +46,33 @@ contract DeployStateVerifier is Script {
     uint256 private constant SEPOLIA = 11_155_111;
     string private constant PRODUCER = "Producer(address witness,address key)";
 
+    /// @notice The registry ids of NEAR's and Stellar's networks: the first 8 bytes of `keccak256` of their CAIP-2 names
+    ///         (`design/2026-10-03-near-stellar-interfaces.md`).
+    uint256 public constant NEAR_MAINNET = 339_552_387_624_818_629;
+    uint256 public constant NEAR_TESTNET = 4_078_699_518_750_379_172;
+    uint256 public constant STELLAR_PUBNET = 839_718_837_228_939_926;
+    uint256 public constant STELLAR_TESTNET = 17_667_989_177_921_016_935;
+    /// @notice Stellar's network ids: SHA-256 of each network's passphrase, which every validator's signature covers.
+    bytes32 public constant STELLAR_PUBNET_ID = 0x7ac33997544e3175d266bd022439b22cdb16508c01163f26e5cb2a3e1045a979;
+    bytes32 public constant STELLAR_TESTNET_ID = 0xcee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472;
+    /// @notice The oldest NEAR anchor deployed. A set of producers is named an epoch, about 7.2 hours, before it serves,
+    ///         so the anchor of the epoch in force is up to two epochs old; this leaves 8 hours of MAX_LAG to advance it.
+    uint256 public constant MAX_NEAR_ANCHOR_AGE = 16 hours;
+    /// @dev NEAR's times are in nanoseconds.
+    uint256 private constant NS = 1e9;
+
     /// @notice A verifier of a chain's state belongs on Ethereum, beside the hub, and the BNB verifier needs Ethereum's
     ///         BLS12-381 precompiles: mainnet or Sepolia only.
     error NotEthereum(uint256 chainId);
-    /// @notice STATE_CHAIN is neither `bnb` nor `tron`.
+    /// @notice STATE_CHAIN is none of `bnb`, `tron`, `near` and `stellar`.
     error UnknownChain(string chain);
+    /// @notice `chainId` is not the registry id of the chain's network that pairs with this Ethereum network: mainnet's
+    ///         on mainnet, the testnet's on Sepolia.
+    error WrongNetwork(uint256 chainId);
+    /// @notice `networkId` is not the hash of the Stellar network's passphrase.
+    error WrongNetworkId(bytes32 networkId);
+    /// @notice `verifier` does not name itself SP1's Groth16 verifier v6.0.0.
+    error NotSp1Verifier(address verifier);
     /// @notice The BNB anchor's epoch block, dated `time`, is in the future or more than MAX_ANCHOR_AGE old.
     error StaleAnchor(uint256 time, uint256 timestamp);
     /// @notice The TRON anchor's period, ending at `nextMaintenance` (milliseconds), is not the one in progress.
@@ -64,6 +94,31 @@ contract DeployStateVerifier is Script {
         if (ScriptUtils.same(chain, "tron")) {
             uint64 nextMaintenance = SafeCast.toUint64(vm.parseJsonUint(json, ".nextMaintenance"));
             return address(deployTron(producers(json), nextMaintenance));
+        }
+        if (ScriptUtils.same(chain, "near")) {
+            return address(
+                deployNear(
+                    ISP1Verifier(vm.envAddress("STATE_SP1_VERIFIER")),
+                    vm.parseJsonBytes32(json, ".programKey"),
+                    vm.parseJsonUint(json, ".chainId"),
+                    vm.parseJsonString(json, ".account"),
+                    vm.parseJsonBytes32(json, ".epochId"),
+                    vm.parseJsonBytes32(json, ".producersHash"),
+                    SafeCast.toUint64(vm.parseJsonUint(json, ".namedAt"))
+                )
+            );
+        }
+        if (ScriptUtils.same(chain, "stellar")) {
+            return address(
+                deployStellar(
+                    ISP1Verifier(vm.envAddress("STATE_SP1_VERIFIER")),
+                    vm.parseJsonBytes32(json, ".programKey"),
+                    vm.parseJsonBytes32(json, ".networkId"),
+                    vm.parseJsonBytes(json, ".quorumSet"),
+                    vm.parseJsonUint(json, ".chainId"),
+                    vm.parseJsonBytes32(json, ".vaultId")
+                )
+            );
         }
         revert UnknownChain(chain);
     }
@@ -116,6 +171,60 @@ contract DeployStateVerifier is Script {
         console2.log("  producers:        ", recorded.count);
         console2.log("  period ends (ms): ", recorded.end);
         console2.log("  advance before:   ", uint256(recorded.start) / MS + verifier.MAX_LAG());
+    }
+
+    /// @notice Deploys NEAR's verifier for the vault at `account`, from epoch `epoch` and the hash of its ordered block
+    ///         producers, named at `named` (nanoseconds) by a block of the epoch before (`proofs/near`'s generator). It
+    ///         checks SP1's verifier, the network the registry id names against this one, and the anchor's age: named
+    ///         within MAX_NEAR_ANCHOR_AGE, and never in the future.
+    function deployNear(
+        ISP1Verifier sp1,
+        bytes32 programKey,
+        uint256 chainId,
+        string memory account,
+        bytes32 epoch,
+        bytes32 producers,
+        uint64 named
+    ) public returns (NearStateVerifier verifier) {
+        _requireEthereum();
+        if (chainId != (block.chainid == SEPOLIA ? NEAR_TESTNET : NEAR_MAINNET)) revert WrongNetwork(chainId);
+        if (!ScriptUtils.isSp1Verifier(address(sp1))) revert NotSp1Verifier(address(sp1));
+        uint256 namedAt = uint256(named) / NS;
+        if (namedAt > block.timestamp || block.timestamp - namedAt > MAX_NEAR_ANCHOR_AGE) {
+            revert StaleAnchor(namedAt, block.timestamp);
+        }
+        vm.startBroadcast();
+        verifier = new NearStateVerifier(sp1, programKey, chainId, account, epoch, producers, named);
+        vm.stopBroadcast();
+        console2.log("NearStateVerifier:", address(verifier));
+        console2.log("  code hash:       ", vm.toString(address(verifier).codehash));
+        console2.log("  vault id:        ", vm.toString(verifier.VAULT_ID()));
+        console2.log("  advance before:  ", namedAt + verifier.MAX_LAG());
+    }
+
+    /// @notice Deploys Stellar's verifier for the vault `vaultId`, from the network's id and the pinned quorum set's XDR
+    ///         (Tier 1's, as its validators commit to it). A new Tier 1 is a new verifier, rotated in by the factory's
+    ///         ROTATION_DELAY. It checks SP1's verifier, the network the registry id names against this one, and the
+    ///         network id against that network's passphrase.
+    function deployStellar(
+        ISP1Verifier sp1,
+        bytes32 programKey,
+        bytes32 networkId,
+        bytes memory quorumSet,
+        uint256 chainId,
+        bytes32 vaultId
+    ) public returns (StellarStateVerifier verifier) {
+        _requireEthereum();
+        bool testnet = block.chainid == SEPOLIA;
+        if (chainId != (testnet ? STELLAR_TESTNET : STELLAR_PUBNET)) revert WrongNetwork(chainId);
+        if (networkId != (testnet ? STELLAR_TESTNET_ID : STELLAR_PUBNET_ID)) revert WrongNetworkId(networkId);
+        if (!ScriptUtils.isSp1Verifier(address(sp1))) revert NotSp1Verifier(address(sp1));
+        vm.startBroadcast();
+        verifier = new StellarStateVerifier(sp1, programKey, networkId, sha256(quorumSet), chainId, vaultId);
+        vm.stopBroadcast();
+        console2.log("StellarStateVerifier:", address(verifier));
+        console2.log("  code hash:          ", vm.toString(address(verifier).codehash));
+        console2.log("  quorum set hash:    ", vm.toString(sha256(quorumSet)));
     }
 
     /// @notice The review of a deployed BNB verifier: it runs this release's code, and its first set is the one

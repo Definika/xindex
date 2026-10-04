@@ -7,7 +7,8 @@ import {IVaultStateVerifier} from "../../src/interfaces/IVaultStateVerifier.sol"
 /// @notice Stands in for a chain's state verifier in tests where the vault runs on the same EVM as the hub: it reads the
 ///         vault's real storage, so a hub's slot arithmetic and digests are checked against an actual vault. A proof is
 ///         `abi.encode(time, forge, value)`: the block time it claims, and, when `forge` is set, a value to report in
-///         place of the storage, as an unsound verifier or a forged state would.
+///         place of the first slot's storage, as an unsound verifier or a forged state would. Any further slot, such as
+///         the snapshot root an evidence proof also reads, is the vault's own.
 contract MockStateVerifier is IVaultStateVerifier {
     Vm private constant VM = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
@@ -19,7 +20,7 @@ contract MockStateVerifier is IVaultStateVerifier {
         (uint256 time, bool forge, bytes32 value) = abi.decode(proof, (uint256, bool, bytes32));
         values = new bytes32[](slots.length);
         for (uint256 i = 0; i < slots.length; ++i) {
-            values[i] = forge ? value : VM.load(account, slots[i]);
+            values[i] = forge && i == 0 ? value : VM.load(account, slots[i]);
         }
         return (block.number, time, values);
     }

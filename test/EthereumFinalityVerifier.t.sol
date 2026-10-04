@@ -24,6 +24,8 @@ abstract contract FinalityVerifierTest is Test {
     bytes32 constant ANCHOR = keccak256("the deployer's anchor");
     bytes32 constant NEXT = keccak256("the next anchor");
     uint64 constant EPOCH = 479_000;
+    /// @dev Ethereum mainnet's beacon genesis time.
+    uint256 constant GENESIS = 1_606_824_023;
 
     uint64 number;
     uint64 timestamp;
@@ -141,6 +143,32 @@ abstract contract FinalityVerifierTest is Test {
 
         vm.expectRevert(abi.encodeWithSelector(FinalityVerifier.WrongAnchor.selector, ANCHOR, NEXT));
         verifier.update(publicValues, proof);
+    }
+
+    /// @dev LG-4: a verifier takes a proof only within MAX_LAG of its anchor's epoch, by the wall clock, so a verifier
+    ///      left behind stops for good rather than taking a past checkpoint signed by validators who have since exited.
+    ///      Each step moves the bound with the anchor.
+    function test_LG4_aVerifierLeftADayBehindStopsForGood() public {
+        uint256 ends = GENESIS + uint256(EPOCH) * 384 + 1 days;
+        assertEq(verifier.lagEnds(), ends);
+        assertEq(verifier.MAX_LAG(), 1 days);
+        bytes memory publicValues = abi.encode(ANCHOR, NEXT, EPOCH + 225, keccak256("headers"), uint64(10), uint64(20));
+        bytes memory proof = _prove(KEY, publicValues);
+
+        vm.warp(ends + 1);
+        vm.expectRevert(abi.encodeWithSelector(FinalityVerifier.TooOld.selector, EPOCH));
+        verifier.update(publicValues, proof);
+        vm.warp(ends);
+        verifier.update(publicValues, proof);
+        assertEq(verifier.anchorEpoch(), EPOCH + 225);
+        assertEq(verifier.lagEnds(), ends + 225 * 384);
+
+        // A year on, the anchor is far behind: nothing advances it again.
+        vm.warp(ends + 365 days);
+        bytes memory later = abi.encode(NEXT, ANCHOR, EPOCH + 226, keccak256("later"), uint64(21), uint64(30));
+        bytes memory laterProof = _prove(KEY, later);
+        vm.expectRevert(abi.encodeWithSelector(FinalityVerifier.TooOld.selector, EPOCH + 225));
+        verifier.update(later, laterProof);
     }
 
     // ---------------------------------------------------------------------
@@ -291,7 +319,7 @@ contract EthereumFinalityVerifierTest is FinalityVerifierTest {
 
     function _deploy() internal override returns (FinalityVerifier) {
         sp1 = new MockSP1Verifier();
-        return new EthereumFinalityVerifier(sp1, KEY, ANCHOR, EPOCH);
+        return new EthereumFinalityVerifier(sp1, KEY, ANCHOR, EPOCH, GENESIS);
     }
 
     function _prove(bytes32 program, bytes memory publicValues) internal view override returns (bytes memory) {
@@ -309,11 +337,14 @@ contract EthereumFinalityVerifierTest is FinalityVerifierTest {
         assertEq(verifier.anchor(), ANCHOR);
         assertEq(verifier.anchorEpoch(), EPOCH);
         vm.expectRevert(FinalityVerifier.ZeroAddress.selector);
-        new EthereumFinalityVerifier(ISP1Verifier(address(0)), KEY, ANCHOR, EPOCH);
+        new EthereumFinalityVerifier(ISP1Verifier(address(0)), KEY, ANCHOR, EPOCH, GENESIS);
         vm.expectRevert(FinalityVerifier.ZeroAddress.selector);
-        new EthereumFinalityVerifier(sp1, bytes32(0), ANCHOR, EPOCH);
+        new EthereumFinalityVerifier(sp1, bytes32(0), ANCHOR, EPOCH, GENESIS);
         vm.expectRevert(FinalityVerifier.ZeroAddress.selector);
-        new EthereumFinalityVerifier(sp1, KEY, bytes32(0), EPOCH);
+        new EthereumFinalityVerifier(sp1, KEY, bytes32(0), EPOCH, GENESIS);
+        vm.expectRevert(FinalityVerifier.ZeroAddress.selector);
+        new EthereumFinalityVerifier(sp1, KEY, ANCHOR, EPOCH, 0);
+        assertEq(verifier.GENESIS_TIME(), GENESIS);
     }
 }
 
@@ -324,7 +355,7 @@ contract RiscZeroFinalityVerifierTest is FinalityVerifierTest {
 
     function _deploy() internal override returns (FinalityVerifier) {
         risc0 = new MockRiscZeroVerifier();
-        return new RiscZeroFinalityVerifier(risc0, KEY, ANCHOR, EPOCH);
+        return new RiscZeroFinalityVerifier(risc0, KEY, ANCHOR, EPOCH, GENESIS);
     }
 
     function _prove(bytes32 program, bytes memory publicValues) internal view override returns (bytes memory) {
@@ -342,11 +373,14 @@ contract RiscZeroFinalityVerifierTest is FinalityVerifierTest {
         assertEq(verifier.anchor(), ANCHOR);
         assertEq(verifier.anchorEpoch(), EPOCH);
         vm.expectRevert(FinalityVerifier.ZeroAddress.selector);
-        new RiscZeroFinalityVerifier(IRiscZeroVerifier(address(0)), KEY, ANCHOR, EPOCH);
+        new RiscZeroFinalityVerifier(IRiscZeroVerifier(address(0)), KEY, ANCHOR, EPOCH, GENESIS);
         vm.expectRevert(FinalityVerifier.ZeroAddress.selector);
-        new RiscZeroFinalityVerifier(risc0, bytes32(0), ANCHOR, EPOCH);
+        new RiscZeroFinalityVerifier(risc0, bytes32(0), ANCHOR, EPOCH, GENESIS);
         vm.expectRevert(FinalityVerifier.ZeroAddress.selector);
-        new RiscZeroFinalityVerifier(risc0, KEY, bytes32(0), EPOCH);
+        new RiscZeroFinalityVerifier(risc0, KEY, bytes32(0), EPOCH, GENESIS);
+        vm.expectRevert(FinalityVerifier.ZeroAddress.selector);
+        new RiscZeroFinalityVerifier(risc0, KEY, ANCHOR, EPOCH, 0);
+        assertEq(verifier.GENESIS_TIME(), GENESIS);
     }
 
     /// @dev The seal proves the journal's SHA-256 digest: a seal for the right journal under another digest, such as

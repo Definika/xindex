@@ -103,13 +103,15 @@ pub struct Freeze<'info> {
     pub config: Account<'info, Config>,
 }
 
-/// The guardian's freeze key only: freezes the vault for FREEZE_DURATION from now.
+/// The guardian's freeze key only, before any snapshot exit: freezes the vault for FREEZE_DURATION from now. Nothing
+/// could replace the freezer after a snapshot, so it must not be able to hold the exit off for good (VLT-5).
 pub fn handle_freeze(ctx: Context<Freeze>) -> Result<()> {
     require_keys_eq!(
         ctx.accounts.freezer.key(),
         ctx.accounts.config.freezer,
         VaultError::NotFreezer
     );
+    vault::check_no_snapshot(&ctx.accounts.config)?;
     freeze_until(
         &mut ctx.accounts.config,
         vault::now()?,

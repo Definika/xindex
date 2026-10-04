@@ -1150,6 +1150,7 @@ contract XindexVaultTest is VaultTestBase {
         emit IXindexVault.SuccessorLapsed();
         _advance(220);
         assertEq(vault.successor().reviewEnds, 0);
+        assertEq(vault.vetoes(), 0);
         // A new stall, a new count.
         vm.warp(block.timestamp + 7 days + 1);
         IXindexVault.Continuity memory next = _continuity(230, "");
@@ -1158,6 +1159,89 @@ contract XindexVaultTest is VaultTestBase {
         vm.prank(freezerKey);
         vault.vetoSuccessor();
         assertEq(vault.vetoes(), 1);
+    }
+
+    /// @dev LG-2: during a stall the pair in force can still prove blocks up to where it broke, newer than the last
+    ///      checkpoint but stale. Such an advance lets burns sent before the break run (VLT-3), and leaves the stall as
+    ///      it was: the successor under review stays, and so does the freezer's count, so nobody can lapse the review
+    ///      or win the freezer new vetoes one stale block at a time. Adoption ends the stall and the count.
+    function test_LG2_aStaleCheckpointKeepsTheSuccessorAndTheVetoes() public {
+        _advance(100);
+        IEthereumEventVerifier.Checkpoint memory last = vault.checkpoint();
+        vm.warp(block.timestamp + 8 days);
+        MockEventVerifier n1 = new MockEventVerifier();
+        MockEventVerifier n2 = new MockEventVerifier();
+        IXindexVault.Continuity memory c = _continuity(9_000, "");
+        vm.prank(recoveryProposer);
+        vault.proposeSuccessor(n1, n2, c);
+        vm.prank(freezerKey);
+        vault.vetoSuccessor();
+        c = _continuity(9_001, "");
+        vm.prank(recoveryProposer);
+        vault.proposeSuccessor(n1, n2, c);
+        uint256 reviewEnds = vault.successor().reviewEnds;
+
+        // A day before the review ends, a stranger advances by one stale block.
+        vm.warp(reviewEnds - 1 days);
+        bytes memory stale = _checkpointProof(101, last.timestamp + 12, keccak256("stale"));
+        vm.recordLogs();
+        vm.prank(alice);
+        vault.advanceCheckpoint(stale, stale);
+        assertEq(vm.getRecordedLogs().length, 1, "CheckpointAdvanced alone: no SuccessorLapsed");
+        assertEq(vault.checkpoint().blockNumber, 101);
+        assertTrue(vault.stalled());
+        assertEq(vault.successor().reviewEnds, reviewEnds, "the review goes on");
+        assertEq(vault.vetoes(), 1, "the count goes on");
+
+        // The freezer's second veto is its last in this stall, stale advances or not.
+        vm.prank(freezerKey);
+        vault.vetoSuccessor();
+        bytes memory stale2 = _checkpointProof(102, last.timestamp + 24, keccak256("stale 2"));
+        vault.advanceCheckpoint(stale2, stale2);
+        c = _continuity(9_002, "");
+        vm.prank(recoveryProposer);
+        vault.proposeSuccessor(n1, n2, c);
+        bytes memory stale3 = _checkpointProof(103, last.timestamp + 36, keccak256("stale 3"));
+        vault.advanceCheckpoint(stale3, stale3);
+        vm.prank(freezerKey);
+        vm.expectRevert(IXindexVault.VetoesExhausted.selector);
+        vault.vetoSuccessor();
+
+        // The review runs its course and the successor is adopted, which ends the stall and the count.
+        vm.warp(vault.successor().reviewEnds);
+        bytes memory fresh = _checkpointProof(9_100, block.timestamp, keccak256("fresh"));
+        vault.adoptSuccessor(fresh, fresh);
+        assertEq(address(vault.p1()), address(n1));
+        assertFalse(vault.stalled());
+        assertEq(vault.vetoes(), 0);
+    }
+
+    /// @dev LG-3: only a message on both proofs becomes the last message a successor must prove again. With one proof
+    ///      system broken, a forged one-proof freeze still freezes, but it cannot keep an honest successor out.
+    function test_LG3_aOneProofMessageIsNotTheLastMessage() public {
+        _advance(100);
+        _fund(index, 10 ether);
+        bytes memory realLast = lastDelivered;
+        bytes32 realId = vault.lastMessage();
+        assertTrue(realId != bytes32(0));
+
+        bytes memory forged = _payload(VaultMessages.FREEZE, factory, "");
+        vault.deliver(_proof(factory, forged), "");
+        assertTrue(vault.used(keccak256(forged)), "delivered: the vault is frozen");
+        assertGt(vault.frozenUntil(), block.timestamp);
+        bytes memory forged2 = _payload(VaultMessages.FREEZE, factory, "");
+        vault.deliver("", _proof(factory, forged2));
+        assertTrue(vault.used(keccak256(forged2)));
+        assertEq(vault.lastMessage(), realId, "neither one-proof message counts");
+
+        vm.warp(block.timestamp + 15 days);
+        assertTrue(vault.stalled());
+        MockEventVerifier n1 = new MockEventVerifier();
+        MockEventVerifier n2 = new MockEventVerifier();
+        IXindexVault.Continuity memory c = _continuity(200, realLast);
+        vm.prank(recoveryProposer);
+        vault.proposeSuccessor(n1, n2, c);
+        assertEq(vault.successor().p1, address(n1));
     }
 
     // ---------------------------------------------------------------------

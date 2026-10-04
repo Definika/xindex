@@ -97,15 +97,16 @@ Check Hyperliquid's documentation for the current way.
 | Command | What it does |
 |---|---|
 | `solana-vault` | prints the Solana vault's 32-byte id for `sepolia0` |
-| `solana-init` | sets both Solana stubs' relayer keys; once they are final, initializes the vault (from its upgrade authority) |
+| `solana-init` | sets both Solana stubs' relayer keys; once they are final, initializes the vault (from its upgrade authority), with `SOLANA_RECOVERY` as its recovery proposer, or else an address nobody can sign for |
 | `register` | registers the index on both vaults with its CREATE2 salt |
-| `relay [--once]` | carries every message the factory and its indexes emit, from Sepolia's finalized head, to its vault; advances the HyperEVM vault's checkpoint first where a message needs it, and hourly |
+| `relay [--once]` | carries every message the factory and its indexes emit, from Sepolia's finalized head, to its vault; advances the HyperEVM and Solana vaults' checkpoints first where a message needs it, and hourly |
 | `open <shares> <minutes>` | mints demo WETH, approves, and opens an order with its deposit deadline |
 | `deposit <order>` | deposits the order's HYPE and SOL from the demo wallets |
 | `settle <order>` | after the deadline: reads both intakes, has the state relayer sign them, settles the order |
 | `claim <order>` | after the 24-hour lock: mints the shares; the relayer carries the settle messages |
 | `redeem <shares> <hyperevm> <solana>` | WETH at once; HYPE and SOL burned toward the two recipients |
 | `checkpoint` | advances the HyperEVM vault's checkpoint to Sepolia's finalized head, as `relay` does hourly |
+| `solana-checkpoint` | advances the Solana vault's checkpoint to Sepolia's finalized head, as `relay` does hourly: a week without one stalls the vault, which then takes no deposit |
 | `balances [holder]` | the holder's shares, the index's supply, and its balance and payouts in each vault |
 | `status` | the deployment and the Solana addresses |
 

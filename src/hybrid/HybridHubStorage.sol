@@ -239,33 +239,39 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
         if (block.timestamp < until) revert ChainIsFrozen(chainId, until);
     }
 
-    /// @dev The `j`-th chain's intake digest for `intakeId`, proven by the chain's state verifier, which the factory
-    ///      names and can rotate, at a block whose timestamp is after `notBefore`.
-    function _provenIntake(uint256 j, uint256 intakeId, uint256 notBefore, bytes calldata proof)
+    /// @dev The `j`-th chain's intake digest for `intakeId`, proven as `_provenSlot` proves a slot.
+    function _provenIntake(uint256 j, uint256 intakeId, uint256 notBefore, bool evidence, bytes calldata proof)
         internal
         view
         returns (bytes32)
     {
         bytes32 slot = keccak256(abi.encode(intakeId, keccak256(abi.encode(address(this), VAULT_INTAKE_DIGEST_SLOT))));
-        return _provenSlot(j, slot, notBefore, proof);
+        return _provenSlot(j, slot, notBefore, evidence, proof);
     }
 
-    /// @dev One storage slot of the `j`-th chain's vault, proven as `_provenIntake` proves an intake's.
-    function _provenSlot(uint256 j, bytes32 slot, uint256 notBefore, bytes calldata proof)
+    /// @dev One storage slot of the `j`-th chain's vault, proven by the chain's state verifier, which the factory names
+    ///      and can rotate, at a block whose timestamp is after `notBefore`. As `evidence` against the chain, the same
+    ///      proof must show the vault short of its snapshot exit: a vault in its exit honestly fails every intake this
+    ///      index had not marked settled and pays holders what it never sent, so its state then is no evidence, whether
+    ///      or not anyone has recorded the exit here (LG-5).
+    function _provenSlot(uint256 j, bytes32 slot, uint256 notBefore, bool evidence, bytes calldata proof)
         internal
         view
         returns (bytes32)
     {
         VaultChain memory c = _chains[j];
-        bytes32[] memory slots = new bytes32[](1);
+        if (evidence && _exitedAt[c.chainId] != 0) revert ChainExited(c.chainId);
+        bytes32[] memory slots = new bytes32[](evidence ? 2 : 1);
         slots[0] = slot;
+        if (evidence) slots[1] = bytes32(VAULT_SNAPSHOT_ROOT_SLOT);
         address verifier = IHybridIndexFactory(_factory()).stateVerifier(c.chainId);
         uint256 time;
         bytes32[] memory values;
-        // The block number is not needed: the timestamp bounds the proof, and the value is the whole claim.
+        // The block number is not needed: the timestamp bounds the proof, and the values are the whole claim.
         // forge-lint: disable-next-line(unused-return)
         (, time, values) = IVaultStateVerifier(verifier).verifySlots(_vaultAddress(c.vault), slots, proof);
         if (time <= notBefore) revert ProofTooEarly(c.chainId, time, notBefore);
+        if (evidence && values[1] != bytes32(0)) revert ChainExited(c.chainId);
         return values[0];
     }
 
@@ -334,10 +340,17 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
 
     /// @dev Emits a message to the `j`-th chain's vault: an event on Ethereum, which P1 and P2 prove final there.
     function _send(uint256 j, uint8 kind, bytes memory body) internal {
-        bytes memory payload = _payload(j, kind, body);
+        _post(_payload(j, kind, body));
+    }
+
+    /// @dev Marks `payload` sent and emits it. The mark, in the same transaction, lets anyone emit it again
+    ///      (`resendMessage`), and a vault at its snapshot read that a burn or migration was sent.
+    function _post(bytes memory payload) internal {
+        bytes32 id = keccak256(payload);
+        _sentMessages[id] = true;
         // `_payload` only encodes; the lint reads its internal library call as an external one.
         // forge-lint: disable-next-line(reentrancy-events)
-        emit VaultMessages.VaultMessage(keccak256(payload), payload);
+        emit VaultMessages.VaultMessage(id, payload);
     }
 
     /// @dev Sends every vault of this index the same message.
@@ -372,13 +385,9 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
         _vaultBacking[token] -= amount;
         _sentOut[token] += amount;
         bytes memory payload = _payload(j, VaultMessages.BURN, abi.encode(_vaultTokenOf[i], amount, recipient));
-        bytes32 id = keccak256(payload);
-        _sentMessages[id] = true;
-        // `_payload` only encodes; the lint reads its internal library call as an external one.
+        _post(payload);
         // forge-lint: disable-next-line(reentrancy-events)
-        emit VaultMessages.VaultMessage(id, payload);
-        // forge-lint: disable-next-line(reentrancy-events)
-        emit BurnSent(token, _chains[j].chainId, recipient, amount, id);
+        emit BurnSent(token, _chains[j].chainId, recipient, amount, keccak256(payload));
     }
 
     function _bookClaim(address account, address token, uint256 amount) internal {

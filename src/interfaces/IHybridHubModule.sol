@@ -27,7 +27,9 @@ interface IHybridHubModule is IHybridHubTypes {
     function EXTENSION() external view returns (address);
 
     /// @notice Anyone, during a locked order's lock. `proof` shows `chainId`'s intake at a block after the deadline
-    ///         other than the order rests on: the order fails and the chain's mints freeze.
+    ///         other than the order rests on: the order fails and the chain's mints freeze. As all evidence, `proof`
+    ///         covers two slots, the claim's and the vault's snapshot root, and is refused (`ChainExited`) once the
+    ///         vault has begun its snapshot exit, which honestly fails what was never settled.
     function voidOrder(uint256 orderId, uint256 chainId, bytes calldata proof) external;
 
     /// @notice Anyone. For a locked order whose chain froze at or after it settled: proofs from after each such freeze
@@ -64,7 +66,7 @@ interface IHybridHubModule is IHybridHubTypes {
 
     /// @notice Anyone, while a settled fill's bond is held. `proof` of `chainId`'s delivery intake, with its preimage
     ///         `state`, tokens and totals, shows it neither open nor settled, or below what the fill recorded: the bond
-    ///         is burned and the chain's mints freeze.
+    ///         is burned and the chain's mints freeze. Refused on an exited chain, as `voidOrder` is.
     function slashRebalance(uint256 chainId, uint8 state, ChainProof calldata proof) external;
 
     function fill() external view returns (Fill memory);

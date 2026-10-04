@@ -14,9 +14,13 @@ contract EthereumFinalityVerifier is FinalityVerifier {
     ISP1Verifier public immutable SP1_VERIFIER;
     bytes32 public immutable PROGRAM_KEY;
 
-    constructor(ISP1Verifier sp1Verifier, bytes32 programKey, bytes32 initialAnchor, uint64 initialEpoch)
-        FinalityVerifier(initialAnchor, initialEpoch)
-    {
+    constructor(
+        ISP1Verifier sp1Verifier,
+        bytes32 programKey,
+        bytes32 initialAnchor,
+        uint64 initialEpoch,
+        uint256 genesisTime
+    ) FinalityVerifier(initialAnchor, initialEpoch, genesisTime) {
         if (address(sp1Verifier) == address(0) || programKey == bytes32(0)) revert ZeroAddress();
         SP1_VERIFIER = sp1Verifier;
         PROGRAM_KEY = programKey;

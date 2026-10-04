@@ -40,4 +40,41 @@ pub enum VaultError {
     #[msg("no change of this kind with this body waits")]
     NoPendingChange,
     ChangeNotReady,
+    #[msg("a stalled vault takes no deposit")]
+    VaultStalled,
+    #[msg("a checkpoint must be newer than the last, in blocks and in time, not in the future, with a state")]
+    NotNewer,
+    #[msg("a successor's checkpoint must be recent: within STALL_PERIOD of now")]
+    NotRecent,
+    NotStalled,
+    NotRecoveryProposer,
+    SuccessorPending,
+    NoSuccessor,
+    #[msg("the successor does not prove the last checkpoint and the last message")]
+    Discontinuous,
+    VetoesExhausted,
+    ReviewNotOver,
+    SnapshotTaken,
+    NoSnapshot,
+    SnapshotNotDue,
+    NoCheckpoint,
+    #[msg("after the snapshot, a message from a later Ethereum block never runs")]
+    IssuedAfterSnapshot,
+    #[msg(
+        "a message that moves coins or loosens a rule waits for a checkpoint covering its block"
+    )]
+    NotCheckpointed,
+    #[msg("the index's storage at the snapshot does not mark this message sent")]
+    NotRecorded,
+    #[msg("the component must lie inside the hub's components array and be this chain's coin")]
+    WrongComponent,
+    BadSignature,
+    #[msg("a state proof that does not prove the hub's storage under the root")]
+    BadStateProof,
+    #[msg(
+        "the recovery proposer must be a multisig: an address off the ed25519 curve, never a key"
+    )]
+    RecoveryNotMultisig,
+    #[msg("the freezer and the recovery proposer must be two accounts")]
+    SameRole,
 }

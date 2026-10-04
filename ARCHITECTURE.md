@@ -716,7 +716,13 @@ which pays it out only on messages the hub sends. Integrators call it through `I
   sent (`sentOut`), which only P1 and P2 both broken allow; it freezes the chain's mints and the vault.
   `reportForgedDeposit` proves a claimed order's intake, after its deadline, neither open with the deposits it was
   claimed on nor settled with them; it freezes the chain's mints. A void and a slash freeze mints the same way. Every
-  such freeze is the factory's, for every index on that chain.
+  such freeze is the factory's, for every index on that chain. An exited chain takes no evidence: every evidence proof
+  also reads the vault's snapshot root and is refused once it is set, recorded here or not, since a vault in its exit
+  honestly fails what was never settled and pays holders what the index never sent (LG-5).
+- **Sending again.** The index marks every message it sends (`_sentMessages`), and anyone may emit a marked one again,
+  unchanged, with `resendMessage(payload)`; the factory does the same for its own. Whoever sends a transaction shapes
+  its receipt, which could otherwise be made too large for a vault chain's verifier; the copy's receipt is the
+  caller's, and the vault runs a message once by its id (LG-1).
 - **The exit.** `setRecoveryAddress(chainId, recipient)` names where a holder that cannot sign on a vault chain, such
   as a contract, is paid at a snapshot exit. `recordExit(chainId, proof)` proves through the state verifier that the
   vault began one; the index then never mints on that chain again. `failHeldOrder` fails a locked order: anyone's
@@ -767,8 +773,10 @@ balance per index, takes coins only as deposits to an intake, and lets them out 
 - **Stall and snapshot exit.** Anyone advances the vault's checkpoint (`advanceCheckpoint`) to a final Ethereum block
   both P1 and P2 prove. A vault with no new checkpoint for `STALL_PERIOD` (7 days) is stalled and takes no deposit.
   Only then may `RECOVERY_PROPOSER`, the owner's emergency multisig on that chain, propose a successor pair, which must
-  prove the last checkpoint, a recent one and the last message delivered, and waits `RECOVERY_DELAY` (30 days) with
-  at most `MAX_RECOVERY_VETOES` (2) vetoes by the freezer. `SNAPSHOT_EXIT_DELAY` (180 days) into a stall,
+  prove the last checkpoint, a recent one and the last message delivered on both proofs (LG-3), and waits
+  `RECOVERY_DELAY` (30 days) with at most `MAX_RECOVERY_VETOES` (2) vetoes by the freezer in the stall. Only a
+  checkpoint that ends the stall lapses the successor and restarts the count; a stale one, which the old pair can still
+  prove, leaves both (LG-2). `SNAPSHOT_EXIT_DELAY` (180 days) into a stall,
   `beginSnapshot` takes the last checkpoint as the snapshot for good. Holders then claim their share directly
   (`claimSnapshot`), at the recovery address they registered on the hub or one they signed for (EIP-712), within the
   speed limit; open intakes are settled or refunded from the hub's settled marks (`resolveIntake`); and a burn or
@@ -779,9 +787,24 @@ balance per index, takes coins only as deposits to an intake, and lets them out 
   node under mainnet's VM switches and 80 ms CPU limit (`tron/`; Stage B spec, section 5.7).
 - **On Solana** the vault is a twin program, `solana/programs/xindex-vault` (Anchor 1.2), with the same messages,
   digests, speed limit, freeze and governance delay, one instruction per message kind, and SOL held by a treasury
-  account the program signs for. Its `abi` tests pin every encoding against Solidity's. It has no checkpoint, stall
-  recovery or snapshot exit yet. `solana/programs/stub-verifier` trusts a relayer key and serves testnets only;
-  nothing in `src/` or `script/` names it.
+  account the program signs for. Its `abi` tests pin every encoding against Solidity's. It keeps checkpoints, stalls,
+  recovers and exits as the EVM vault does (SOL-7, closed 2026-10-03), its holders signing their snapshot claim with an
+  EIP-712 domain that names the vault's 32-byte id as `salt` and its registry chain id, for a `bytes32` recipient.
+  `solana/programs/stub-verifier` trusts a relayer key and serves testnets only; nothing in `src/` or `script/` names
+  it.
+- **On NEAR** (`near/`) the vault is a near-sdk contract with P1 and P2 compiled in, since NEAR's cross-contract calls
+  are asynchronous. It is published once as a global contract by its code hash and runs at a keyless NEP-616 account
+  derived from its initial state, so no key and no method can change its code. It keeps yoctoNEAR in 128 bits, a book
+  it never checks against its balance, pays only implicit accounts (which a transfer creates), and charges callers the
+  storage they create.
+- **On Stellar** (`stellar/`) the vault, P1 and P2 are three Soroban contracts with plain Wasm executables and no admin
+  or upgrade path; the vault pins both verifiers' code by hash. It holds XLM through the native asset's contract, pays
+  only `G…` accounts, extends every entry's TTL as it writes it, and runs within Soroban's 400M-instruction and 132 KB
+  limits.
+- **Both** prove their state to Ethereum by `attest`, which succeeds only if every slot the hub asks about holds its
+  value (`design/2026-10-03-near-stellar-interfaces.md`), and build on `crates/xindex-core`, the vault chains' shared
+  Rust: the light client, both Groth16 checks, receipt and state proofs, the message format, digests, speed limit,
+  checkpoints and snapshot, over a `Crypto` trait each chain implements on its host functions.
 
 ### 10.4 From Ethereum to a vault chain: P1 and P2
 
@@ -791,19 +814,28 @@ implement it over the same statement, so that one broken prover can stop coins b
 
 - **The statement** (`proofs/finality`, plain Rust tested natively): given the verifier's anchor, a checkpoint is
   finalized by Casper's two links, each signed by two thirds of the stake that the anchor's validator registry shows
-  active, plus a margin for the churn since the anchor, which is at most a day old. Every signer counts by its record
+  active, plus a margin for the churn since the anchor, which is at most a day old. Validators the registry holds
+  queued for activation count in that stake too, never as signers, since Electra activates a whole queue at once
+  (LG-6). Every signer counts by its record
   in that registry, proven against the anchor's root. The proof also commits to a root over every execution block
   since the last anchor, so a message in any of them can be proven.
 - **`FinalityVerifier`** is what both share on an EVM vault chain: a light client of Ethereum with no owner, which
   anyone advances with `update(publicValues, proof)` from the stored anchor only, and which proves a message by its
   receipt, a Merkle-Patricia proof against the receipts root of a block a proof covered. The first anchor comes from
-  the deployer and is checked during the chain's registration delay.
+  the deployer and is checked during the chain's registration delay. `update` refuses a proof once `MAX_LAG` (1 day)
+  has passed since the anchor's epoch began, dated from the beacon genesis time fixed at deployment, so a verifier left
+  behind stops for good rather than take a past checkpoint from validators who have since exited (LG-4).
 - **P1**, `EthereumFinalityVerifier`, checks an SP1 Groth16 proof on one SP1 verifier deployment, never SP1's
   gateway, which has an owner; `PROGRAM_KEY` fixes the program. **P2**, `RiscZeroFinalityVerifier`, checks a RISC Zero
   Groth16 proof of the same statement with the same public values, as `verify(seal, IMAGE_ID,
   sha256(publicValues))` on one RISC Zero verifier deployment, never its router. `script/DeployVault.s.sol` refuses any
   Groth16 verifier but SP1's v6.0.0 and RISC Zero's 3.0.0.
-- **On Solana**, `solana/programs/ethereum-verifier` is P1, the same verifier as a program. P2 on Solana is not built.
+- **On Solana**, `solana/programs/ethereum-verifier` is P1, the same verifier as a program, with the same day's lag. It
+  reads RLP in place, so only compute bounds a receipt, at about 19,600 logs (LG-1). P2 is
+  `solana/programs/risc0-verifier`, the same core with RISC Zero's check; both answer `verify_checkpoint`.
+- **On NEAR and Stellar** both run `crates/xindex-core`'s light client and Groth16 checks over the chain's BN254 host
+  functions: inside the NEAR vault, about 37 Tgas for an update of both; as two Soroban contracts, about 31M
+  instructions a proof.
 - **Shared risk.** A bug in either zkVM breaks one system only; a bug in the statement breaks both. That is a known
   limitation (Stage B spec, section 11).
 - **Measured.** SP1's Groth16 check costs about 227k gas on an EVM and 96,910 compute units on Solana. P1's statement
@@ -832,8 +864,18 @@ registration delay, and proves every later step.
 - **Liveness.** A verifier not advanced in time (a day behind on BNB Chain, about 18 hours past a period boundary on
   TRON) stops for good, and the registry replaces it by a 30-day rotation. Mints on that chain wait; burns still pay,
   since they need only Ethereum's proofs.
-- **Other chains.** Solana's needs a zkVM proof of a slot's account writes and waits on Alpenglow's mainnet launch;
-  HyperEVM's headers carry no state root, so nothing there can be proven yet (Stage B spec, section 8).
+- **`NearStateVerifier`** advances an anchor (an epoch and its block producers' hash) with an SP1 proof of NEAR's own
+  light-client rule (`proofs/near`): every approval an ed25519 signature over the next block, more than two thirds of
+  the epoch's producer stake, one epoch at a time, about 7.8M prover gas a hop. It then proves a vault's `attest` by
+  its outcome, SHA-256 Merkle paths up to a recorded head's block Merkle root, the outcome's Borsh written from typed
+  fields; the record carries the run's own height and time. About 300k gas an update, 40k to 60k a proof.
+- **`StellarStateVerifier`** checks one SP1 proof per call (`proofs/stellar`): validators satisfying the pinned Tier 1
+  quorum set (7 of 10 organisations, 2 of 3 validators each) externalized a ledger whose header chain reaches the
+  ledger of a successful vault `attest`, its event rebuilt from typed fields. About 12M prover gas, 240k gas a call. A
+  ledger more than a day old is refused, and a new Tier 1 is a new verifier.
+- **Other chains.** Solana's needs a zkVM proof of a slot's account writes and waits on Alpenglow's mainnet launch
+  (`design/2026-10-03-solana-state-proof.md`); HyperEVM's headers carry no state root, so nothing there can be proven
+  yet (Stage B spec, section 8).
 
 ### 10.6 Security model
 
@@ -898,7 +940,8 @@ registration delay, and proves every later step.
 - TRON's deployment settings and its deployment script (Stage B spec, section 5.7);
 - external audits, a Sepolia rehearsal, and the mainnet deployment through the Safe.
 
-**Stage B, not built.** P2 on Solana, a Solana state verifier, and the Solana vault's checkpoints and snapshot exit; a
+**Stage B, not built.** A Solana state verifier, which waits on Alpenglow's mainnet launch; NEAR's and Stellar's
+vault deploy tooling on their chains; a
 vault on HyperEVM, until Hyperliquid publishes a state root; a successor's proof of descent, which stall recovery asks
 for; look-through for an official pool's LPs at a snapshot; and watchers.
 

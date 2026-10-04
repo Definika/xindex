@@ -6,7 +6,9 @@
   "scripts": {
     "build": "node build.mjs",
     "node-config": "node node.mjs",
-    "rehearse": "node rehearse.mjs"
+    "rehearse": "node rehearse.mjs",
+    "deploy": "node deploy.mjs",
+    "deploy-test": "node deploy-test.mjs"
   },
   "dependencies": {
     "tronweb": "^6.0.0",

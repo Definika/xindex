@@ -565,6 +565,47 @@ contract HybridHubTest is HybridTest {
         hub.failIntake(chainId, (block.timestamp - 2) << 192);
     }
 
+    /// @dev LG-1: whoever sends a transaction shapes its receipt, and a receipt can be made too large for a vault
+    ///      chain's verifier to prove. So every message an index sends is marked sent, from the hub and from its module
+    ///      alike, and anyone may emit it again, unchanged, in a transaction of their own. The vault runs it once.
+    function test_LG1_anyoneSendsAMessageAgain() public {
+        uint256 orderId = _settledOrder(hub, minter, 1e18);
+        vm.warp(hub.order(orderId).lockEnds);
+        vm.recordLogs();
+        hub.claimOrder(orderId); // its settle message never reaches the vault
+        (bytes32 id, bytes memory payload) = _sent(vm.getRecordedLogs());
+        assertTrue(hub.messageSent(id));
+
+        vm.recordLogs();
+        vm.prank(holder);
+        hub.resendMessage(payload);
+        Vm.Log[] memory again = vm.getRecordedLogs();
+        assertEq(again.length, 1, "the message alone");
+        assertEq(again[0].emitter, address(hub));
+        (bytes32 resentId, bytes memory resent) = _sent(again);
+        assertEq(resentId, id);
+        assertEq(resent, payload);
+        assertEq(_deliverAll(again), 1);
+        assertEq(vault.balance(address(hub), address(0)), 1.4e18);
+        bytes memory proof = abi.encode(address(hub), VaultMessages.EVENT_TOPIC, id, abi.encode(payload));
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.AlreadyDelivered.selector, id));
+        vault.deliver(proof, proof);
+
+        // The module's messages are marked too.
+        uint256 stray = ((block.timestamp + 1 hours) << 192) | 99;
+        vm.warp(block.timestamp + 1 hours + 1);
+        vm.recordLogs();
+        hub.failIntake(chainId, stray);
+        (bytes32 failed, bytes memory failure) = _sent(vm.getRecordedLogs());
+        assertEq(VaultMessages.decode(failure).kind, VaultMessages.INTAKE_FAILED);
+        assertTrue(hub.messageSent(failed));
+        hub.resendMessage(failure);
+
+        bytes memory never = abi.encodePacked(payload, bytes1(0));
+        vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.NotSent.selector, keccak256(never)));
+        hub.resendMessage(never);
+    }
+
     // ---------------------------------------------------------------------
     // redeem and claims
     // ---------------------------------------------------------------------

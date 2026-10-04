@@ -204,7 +204,7 @@ contract HybridHub is HybridHubStorage, ERC20Upgradeable, ERC20PermitUpgradeable
         uint256[] memory deposits
     ) private view returns (bytes32 digest) {
         digest = _intakeDigest(j, intakeId, INTAKE_OPEN, p.tokens, p.totals);
-        bytes32 proven = _provenIntake(j, intakeId, deadline, p.proof);
+        bytes32 proven = _provenIntake(j, intakeId, deadline, false, p.proof);
         if (proven != digest) revert DigestMismatch(_chains[j].chainId, proven, digest);
         uint256 n = required.length;
         for (uint256 i = 0; i < n; ++i) {

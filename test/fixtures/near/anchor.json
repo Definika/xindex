@@ -1,0 +1,9 @@
+{
+  "note": "Test anchor for DeployStateVerifier.deployNear: NEAR mainnet's epoch, producers and naming time from proofs/near/fixtures/mainnet.json; the account and program key are the tests'.",
+  "epochId": "0x5b96f2e2cd8bdaae43dec45a1bc003f1d9f89f7230fe074578db2711edee74a2",
+  "producersHash": "0x48eb992763ffd99291f9ddfc1cb136856b74e4d3832309cac6e635c3e23e88fc",
+  "namedAt": 1791003309498409670,
+  "account": "0s5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c",
+  "chainId": 339552387624818629,
+  "programKey": "0x00ca13cd99e27b4d1bdc9831a4ddfb6810462b2b709ec5540aeafd260d38f26b"
+}

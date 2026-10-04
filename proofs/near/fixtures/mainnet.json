@@ -1,0 +1,2040 @@
+{
+ "source": "https://rpc.mainnet.near.org",
+ "anchor": {
+  "epoch_id": "0x5b96f2e2cd8bdaae43dec45a1bc003f1d9f89f7230fe074578db2711edee74a2",
+  "producers": [
+   {
+    "account_id": "astro-stakers.poolv1.near",
+    "public_key": "0x1a7c308abd0a4197512b9c06be92eddca33ce2c52bae8c2a76929f5cac85364d",
+    "stake": "31603380670491406475640461021009"
+   },
+   {
+    "account_id": "figment.poolv1.near",
+    "public_key": "0x5f7ca7150148f789c25259d3c4c7a77e32dc9596cb22eb26e893672f5ff0103e",
+    "stake": "28522704877924210215434125800488"
+   },
+   {
+    "account_id": "ledgerbyfigment.poolv1.near",
+    "public_key": "0xe7d838a854ce3568eed94f6b034df9812d7080f600bf3e5370d3d6a68a9d89fb",
+    "stake": "22435433666926486299173539238265"
+   },
+   {
+    "account_id": "bitwise_1.poolv1.near",
+    "public_key": "0xae7ffc26101a893f827eec05386df2d9661e8774136448d6c45c676c6c0cb275",
+    "stake": "20956791904613954075341038902991"
+   },
+   {
+    "account_id": "binancenode1.poolv1.near",
+    "public_key": "0x9d526c1577d7a157d0e6a3fcad9a5ae458a514b07156ce82de8494b2979a2fb7",
+    "stake": "20316357847145365476568619189322"
+   },
+   {
+    "account_id": "staked.poolv1.near",
+    "public_key": "0x82991c333f385bd2a17ab55e87dd0a37abda8f64df64faa66976a70bb9b4d316",
+    "stake": "19407161693335415482225464597238"
+   },
+   {
+    "account_id": "sumerian.poolv1.near",
+    "public_key": "0x99af42771c0b93dc66d118092be0f193bc43b21d26282eba30aa816241c29ebe",
+    "stake": "18707385647391524014403575640622"
+   },
+   {
+    "account_id": "zavodil.poolv1.near",
+    "public_key": "0xf1def18f6b0d1e1a0dddea91e446ab4fb346c9774e0590995e5d6f79536bdca3",
+    "stake": "18563859577275964322460446645137"
+   },
+   {
+    "account_id": "liver.pool.near",
+    "public_key": "0x08a2e2431f6e9f6ce95a8bb2c6bcded078d0f664dc2eac0c66cba7c08788e6f5",
+    "stake": "16850060317631442549904708164482"
+   },
+   {
+    "account_id": "kiln-1.poolv1.near",
+    "public_key": "0x704d15aac42cb87c0b5aef598688472e80ef20777092d969a3dfe0aa370504d6",
+    "stake": "13220470512120072985057174922982"
+   },
+   {
+    "account_id": "svrn-ai.poolv1.near",
+    "public_key": "0x5ffffcccff268db579c9f968b0eeb15168825e54a8a6cf52b599a62d123f4409",
+    "stake": "11892403071453958547879577286250"
+   },
+   {
+    "account_id": "svrn.pool.near",
+    "public_key": "0x97498635f716c98b159cf0391caf991a1e6e1fc106774e4a7a212e3afa7f24fc",
+    "stake": "11888730241226799455799144969182"
+   },
+   {
+    "account_id": "epic.poolv1.near",
+    "public_key": "0x4c27dd137dc829e91aaf5e76f85bdc7115f33deea898e4f590339d168842fb58",
+    "stake": "11863798171487222907450147663342"
+   },
+   {
+    "account_id": "bitwise_2.poolv1.near",
+    "public_key": "0xe6bb6c9f003c343f7ca9257d75cbeaff3928362f4c6a56e622a1f32a7873e1f1",
+    "stake": "11279391137653858408859485556833"
+   },
+   {
+    "account_id": "svrn-luganodes.pool.near",
+    "public_key": "0x57f400a33356bef2a49127bf7aa9f730e7d428491f706f828765c49128da520b",
+    "stake": "11261267514676811166363001542293"
+   },
+   {
+    "account_id": "nearvana.poolv1.near",
+    "public_key": "0x4fa7a3cd62fa7e23a1f27549a561fad8f3e4f0c6baecbebcdf115eb19e117f1c",
+    "stake": "10398559612519529217818376083881"
+   },
+   {
+    "account_id": "svrn_bitwise.poolv1.near",
+    "public_key": "0xcd11e24ccfa7e889c6151f3e2f70fc0361137e4980250dc9174e724955d426e6",
+    "stake": "10363428490109576040077988302508"
+   },
+   {
+    "account_id": "stake1.poolv1.near",
+    "public_key": "0x5ca9980ea2c110f7e3b5d82e7de98f3ddd55ff7e285b2b0a78e81d2525801d60",
+    "stake": "10354910680007819659755337655054"
+   },
+   {
+    "account_id": "p2p-org.poolv1.near",
+    "public_key": "0xfd5ed2a09cde75c5ef94e81946244fc72b41b7da31875065afbfa623d673305d",
+    "stake": "8172858531109927224559616706779"
+   },
+   {
+    "account_id": "dragonfly.poolv1.near",
+    "public_key": "0x4e51c7971f29de1536c1d4ad8d4f5d2645214d940979b0e16658d3c900df74fa",
+    "stake": "7515495022820625543432502124448"
+   },
+   {
+    "account_id": "metapool01.pool.near",
+    "public_key": "0x8247fe70ae46d20da913b4dfb84646332742d89a77ca437bf41067a88c5dabc1",
+    "stake": "7472235925410083905912791178706"
+   },
+   {
+    "account_id": "allnodes.poolv1.near",
+    "public_key": "0x89a05584eafae3fad564afa6a4e92b243b2794d933aeaa6458fdea69a13949ff",
+    "stake": "7278201829081189387998819593058"
+   },
+   {
+    "account_id": "macrodatarefinement.poolv1.near",
+    "public_key": "0xf91b958b63c591f52e1f07f8a1f8cbb0e56a416acd8ea52e606e4f23109e93cd",
+    "stake": "6608780643244820261164157944743"
+   },
+   {
+    "account_id": "solsticestaking.poolv1.near",
+    "public_key": "0xc0042fee4df7be7ba78db9b87fbdf463a38a292b50bd87372e3ec6396419f916",
+    "stake": "6399949026128508875728764449447"
+   },
+   {
+    "account_id": "aca87218e28c41f5a693dee3dff12238.poolv1.near",
+    "public_key": "0x3213b575aecb8f865e2102fc9f2b1b9daaa949e5a10d6622ddf2b8fa33816f52",
+    "stake": "6348959183069035821449563483746"
+   },
+   {
+    "account_id": "silentnodes.pool.near",
+    "public_key": "0x3f09fceca07a9ab980825e696a46eebe542f86e09147bd7377c24e5b30cb1b85",
+    "stake": "6060724447441987646404818931531"
+   },
+   {
+    "account_id": "svrn-twinstake.poolv1.near",
+    "public_key": "0x0e63ce03351fba4b383e53d3d9a90e31bae38dec6fac3a401d3fc85b476981aa",
+    "stake": "5989401043073489641410925038924"
+   },
+   {
+    "account_id": "d1.poolv1.near",
+    "public_key": "0x61865578d21f0531845f722c7ac4fd0d6784ad7e6845ffbe26592f725589cb53",
+    "stake": "5987246020284238981048300767537"
+   },
+   {
+    "account_id": "stakin.poolv1.near",
+    "public_key": "0x6926f74d3650b4e133d6135a540ec8b748bf4ddb498011b2553fb73aac8ea93d",
+    "stake": "5607984301796239889557843086821"
+   },
+   {
+    "account_id": "bisontrails.poolv1.near",
+    "public_key": "0xcc9e38be807372a56b313a2bbed6f3281613d17ad70e99b1bdce57ff599a28e3",
+    "stake": "5447990591556058071520348196404"
+   },
+   {
+    "account_id": "lst-pool.near",
+    "public_key": "0x1b7dfc3e2c12a1770afbeee10cbf5cbe1eaee7808e42f81e718fe2d5aeaf89e0",
+    "stake": "5202477155671045490701727995637"
+   },
+   {
+    "account_id": "legends.poolv1.near",
+    "public_key": "0xb7c1da5ee0b4df4319d67e9ee00812638fc61ac9525555225dbf421e7932b438",
+    "stake": "4924479146434956122660549371486"
+   },
+   {
+    "account_id": "northernlights.poolv1.near",
+    "public_key": "0x5d621e09311356596e924d6d605fcbae0feff30f0ad47714519b8588dbaac6ba",
+    "stake": "4562784253914341948077261934296"
+   },
+   {
+    "account_id": "republic.poolv1.near",
+    "public_key": "0x485b4d7eb974ae75b878ef38c18b8067baf551ebdc2722cf84e3e2ce7d73e411",
+    "stake": "4297869969416063281187929734202"
+   },
+   {
+    "account_id": "rekt.poolv1.near",
+    "public_key": "0xdbd729c3562f9eaafd610895568b901c0eaa07548255955c611fb029b74d2d4b",
+    "stake": "4027567977348623302833779910085"
+   },
+   {
+    "account_id": "ni.poolv1.near",
+    "public_key": "0x74ec2cf0a59d1f245d37354d2ca5bfcb37f6f2ba0f29c378db940b9e2902dca1",
+    "stake": "3452098077980293287961898160187"
+   },
+   {
+    "account_id": "everstake.poolv1.near",
+    "public_key": "0x3104782f5d324849d18fceb128e7d078728dd36b9e4783d3f5a487d0752f921d",
+    "stake": "3361166195305908769514604368216"
+   },
+   {
+    "account_id": "nearone.pool.near",
+    "public_key": "0xf5c79a937d1318c12b5514f046fb4807af184dd0d7926662446841b82d24526a",
+    "stake": "3228033313523398416322965671307"
+   },
+   {
+    "account_id": "gtnode-0.poolv1.near",
+    "public_key": "0xc7b3d18d05703df6bc5ba8d4525cf055457af5ac559303967723feaa505f6676",
+    "stake": "3207567901373259377660903683502"
+   },
+   {
+    "account_id": "okx-earn.poolv1.near",
+    "public_key": "0x947aeb15acf9b0fdcec39721aaf0b0f1d0f57da7b7b7c58a3c910d39f0391e4c",
+    "stake": "3204511140268104098298097943254"
+   },
+   {
+    "account_id": "nearfans.poolv1.near",
+    "public_key": "0xe407e0cad34baa9b99b02c8d7d4e49877ca40808ac1daaeac3a44a8bc20c8282",
+    "stake": "3173486008210045239090994684202"
+   },
+   {
+    "account_id": "here.poolv1.near",
+    "public_key": "0x329cacd858f4878ab527cfbd6d317a8740c5714c9e571a73e89d261855f99f11",
+    "stake": "3027887444054772722899305208229"
+   },
+   {
+    "account_id": "x.poolv1.near",
+    "public_key": "0xc3e496c399f77ae83dd620f877c90f1b06ea97bec9e011d360abd774b23eb860",
+    "stake": "2607896768948998979472710145231"
+   },
+   {
+    "account_id": "bitcoinsuisse.poolv1.near",
+    "public_key": "0xb1cb32da4fb70cf669d7149ef532e7c24d773c0e0ec20c79a56008796c27ccf4",
+    "stake": "2327554232196072754045142138085"
+   },
+   {
+    "account_id": "twinstake.poolv1.near",
+    "public_key": "0xf6e37bd89b3467ede091d8cbbc1b731a0ea5bc1b1887da2c2c89a276a14b49c1",
+    "stake": "2304667386580954976006048769315"
+   },
+   {
+    "account_id": "falcon.pool.near",
+    "public_key": "0x8fdf5daed3aec4ee2845ba0f2a0ecc4f48015d63825b45b8eecd84fb03e67804",
+    "stake": "2259244380186113711719674624807"
+   },
+   {
+    "account_id": "anonymous.poolv1.near",
+    "public_key": "0xf9b3523695ef7c8fe97ff9667f434d1572d69445970a32f2b88a70ed64424a1b",
+    "stake": "2253243021104243603800629608833"
+   },
+   {
+    "account_id": "erm.poolv1.near",
+    "public_key": "0x6a00a3e228258e4ee40376df56dc39a81b2d79b478303163f5dbbe90f8c2ef3a",
+    "stake": "2240933130976590353589548222260"
+   },
+   {
+    "account_id": "baziliknear.poolv1.near",
+    "public_key": "0xc202575c4fa0b042afb81d27d3ff71111f4f0b1560608075da18244751002dc9",
+    "stake": "2187415059749437223576326454220"
+   },
+   {
+    "account_id": "lux.poolv1.near",
+    "public_key": "0xfc72cbe55b5cd0da612f205e7cd21b0f29131ae53ecc9111efb45526de977101",
+    "stake": "2170281314421947950425528712811"
+   },
+   {
+    "account_id": "staking4all.poolv1.near",
+    "public_key": "0x33840501bae02ef6a137627cd06a254d32607680491032845627ba28f7274584",
+    "stake": "2135706594338507536524624883837"
+   },
+   {
+    "account_id": "dsrvlabs.poolv1.near",
+    "public_key": "0x7d4f6b36d0f5e1e7f94893f58b2d64e5fb975dd0b9982e93313bf402c608a27f",
+    "stake": "2131523812889312721022434374944"
+   },
+   {
+    "account_id": "blockdaemon.poolv1.near",
+    "public_key": "0x21a71cb90c0fef940105eb5eaef5c2ae5cd936144488509d6e8a4578fe4d975b",
+    "stake": "2012991225513512459053263960003"
+   },
+   {
+    "account_id": "sofarsonear.poolv1.near",
+    "public_key": "0x9613da67f2818f0b2ffc525b36361b6efe93e8c6bc225a0fdea747ec3e77106b",
+    "stake": "1991696710784908832320103839255"
+   },
+   {
+    "account_id": "moonlet.poolv1.near",
+    "public_key": "0xe9f1eb4ceecb07bc5e8be86ed72fd0d9dae6082c0bfb1515a1426c10b51717f6",
+    "stake": "1987908448730447119272928402389"
+   },
+   {
+    "account_id": "cryptium.poolv1.near",
+    "public_key": "0x43699687585941d745ff33e72e9c52441d458da236a0771e7f47f31428b2fd45",
+    "stake": "1948968145427669533927650421009"
+   },
+   {
+    "account_id": "buildlinks.poolv1.near",
+    "public_key": "0xf6f6fa2a4ba86f396ee260af5944ed052d33f527f25ddd49d6e01154f6d1e691",
+    "stake": "1948085790560751665713423756699"
+   },
+   {
+    "account_id": "npro.poolv1.near",
+    "public_key": "0x949d073ec88e2ad040550c77efe81eec1f529d85b2d520af4c9a577d27d4f37f",
+    "stake": "1926366757991041695244586265130"
+   },
+   {
+    "account_id": "chorusone.poolv1.near",
+    "public_key": "0x8e29293031ae6e8e3da83c21a5eacd63326eaf7a26962b4cabfc9519f48ccf8a",
+    "stake": "1924838244635347742551221465660"
+   },
+   {
+    "account_id": "stakesabai.poolv1.near",
+    "public_key": "0x52e5b4c8e546a67d15cbb456437ccc53d364995dcd98089bb42f1a0ec2bc28dc",
+    "stake": "1825908969187675599429461584036"
+   },
+   {
+    "account_id": "trust-nodes.poolv1.near",
+    "public_key": "0xa1a337e3d9b9697983e124f6a6ecd799f9fccfac48eb9ea29b25e2e772164abb",
+    "stake": "1638481861299669254354892628151"
+   },
+   {
+    "account_id": "autostake.poolv1.near",
+    "public_key": "0xfcc990a4b1595845f0078aadca7e1e9f8735cee39029f201aabf32648d568ebe",
+    "stake": "1617624295338907355922816475610"
+   },
+   {
+    "account_id": "lunanova.poolv1.near",
+    "public_key": "0x0c7d3f4fbf5a3a9bf14fbeaab8fbdbe89418b48136dd91f33ff7580e0d4a3a0d",
+    "stake": "1582637048598685422818817587743"
+   },
+   {
+    "account_id": "meteor.poolv1.near",
+    "public_key": "0xcfa4af6dc45a4bcad93da57ec1196dc38aac38f269121266a6d2554e2d45302f",
+    "stake": "1574361251850760957524469092352"
+   },
+   {
+    "account_id": "openshards.poolv1.near",
+    "public_key": "0x34745a9187778a5c24c7f8084c3b70557c78435c08bf53834dd0530de7187a46",
+    "stake": "1545051835559372758442226654278"
+   },
+   {
+    "account_id": "stakely_io.poolv1.near",
+    "public_key": "0xf55e234034358b1b2e2c67c7d6dc5211c78aeb9232b4c3b7589d54fa42c85042",
+    "stake": "1519241506662506495159579895199"
+   },
+   {
+    "account_id": "kiln.poolv1.near",
+    "public_key": "0xe158358cc98e3728f9f2e2d1f26095af41e2cf8031555d4dea5673da70139c18",
+    "stake": "1508966842879998076591442464517"
+   },
+   {
+    "account_id": "luganodes.pool.near",
+    "public_key": "0x4ed5b3e278226b4a2146efb3c82b0b904de0cbc390a49816c6c1a57ced17a50d",
+    "stake": "1424750880471214862076487713910"
+   },
+   {
+    "account_id": "hb436_pool.poolv1.near",
+    "public_key": "0x650d6e12a1e2ba54ae42e43f5fa20e8cc19d22c488e40314c4cff6009c5f487f",
+    "stake": "1377441946024194765736738542991"
+   },
+   {
+    "account_id": "qbit.poolv1.near",
+    "public_key": "0x3eb89f25e7b81d62377a2e9f3c62f21dfdd5225353cfd5719ab52543832c6aa5",
+    "stake": "1317885270940251524230847119765"
+   },
+   {
+    "account_id": "eno-blockdaemon0.pool.near",
+    "public_key": "0x0487bf79e11f609ad90daa4b6cd23c5d61b6d671d24de6d1f6197ccadbe8fec9",
+    "stake": "1255256079356887330859871533950"
+   },
+   {
+    "account_id": "brea.poolv1.near",
+    "public_key": "0x716303bd21d5b06eb12fb7d9aab1575e45195c40a7d6099e224d61e3beabe148",
+    "stake": "1193360993984936221095492352711"
+   },
+   {
+    "account_id": "masternode24.poolv1.near",
+    "public_key": "0x43e14e842536da53cb620ec724375540715f46ab21e9b651b31dd0c574affb47",
+    "stake": "1191191397471106298025511422948"
+   },
+   {
+    "account_id": "bisontrails2.poolv1.near",
+    "public_key": "0xa138acc36dba303006e8625be268f710e7b637551e4d6169f5546f71f7ce44af",
+    "stake": "1157234285217724024665311271692"
+   },
+   {
+    "account_id": "stardust.poolv1.near",
+    "public_key": "0x57164dac1e16bcaca82200fa4fcc7fc67d785509840805ecd6cfdd14da9342b0",
+    "stake": "1154702385864322468203002327785"
+   },
+   {
+    "account_id": "lavenderfive.poolv1.near",
+    "public_key": "0xf5992762574129d7ebcc98607e4104a2a48169873f9e6a0b28789cc924a583ea",
+    "stake": "1153873758563875253216403994558"
+   },
+   {
+    "account_id": "northstakenear.poolv1.near",
+    "public_key": "0xbd4dddbef29e0c30f15f88ea29772b6aac9cea27fcfab03246d3d4062a1b0e1c",
+    "stake": "1106366501289028877772448898613"
+   },
+   {
+    "account_id": "pandateam.poolv1.near",
+    "public_key": "0xb0cab8294bebec43093dc1aa13cbc84f1bee12c66a93f41f5c45355182b99525",
+    "stake": "1081925748724379380122873745680"
+   },
+   {
+    "account_id": "hapi.poolv1.near",
+    "public_key": "0xee6bc1c28edbdece0650406330399dc2f861eb701997289226030da226c23787",
+    "stake": "1035926470951791034632691271481"
+   },
+   {
+    "account_id": "avado.poolv1.near",
+    "public_key": "0xd9529782fb87d1f07e5921350c5be25bc64d934a4c71307127401ebdac3f8d97",
+    "stake": "1022712903182323838007870487817"
+   },
+   {
+    "account_id": "01node.poolv1.near",
+    "public_key": "0x49c6438ba40e3aac837cd6b74d728355d3cd998ee7b96270af89e63c1155ad07",
+    "stake": "998905797006036081968027562812"
+   },
+   {
+    "account_id": "dexagon.poolv1.near",
+    "public_key": "0x8bb0b37640ebdbe3483211af88877954586f7ae9b69e1d533f0e11508188a454",
+    "stake": "987832015462118368455420412916"
+   },
+   {
+    "account_id": "optimusvalidatornetwork.poolv1.near",
+    "public_key": "0xa4007e691397cc1d399ecc638fe1d472d8f7e6ad2f76817355cf39c47a1d27fd",
+    "stake": "979836149287208473145386297441"
+   },
+   {
+    "account_id": "near-prime-public.poolv1.near",
+    "public_key": "0xe2daede49f0627a8143c8c221db911c79225a066c66a525bc65783a36deb28b8",
+    "stake": "960763184704236036420663818166"
+   },
+   {
+    "account_id": "nodeasy.poolv1.near",
+    "public_key": "0x7377978f3b1738413cfc96cd0d5b6077e2014fc9d7750eb59f4d3f61f1d51636",
+    "stake": "957782505561321792023734386194"
+   },
+   {
+    "account_id": "atomic-nodes.poolv1.near",
+    "public_key": "0xaf9ab1e009f23d492ed56927fc2682a415147a7574d5296b2cb5e169c52b2441",
+    "stake": "939892854705559974874094024741"
+   },
+   {
+    "account_id": "colossus.poolv1.near",
+    "public_key": "0x48c7102943c79ca4f1b1f2197461c51cee17516fb4480c8177c21a8a1520b42a",
+    "stake": "906657224049704470126138972761"
+   },
+   {
+    "account_id": "namdokmai.poolv1.near",
+    "public_key": "0x3ec67bfed85f40642e251fd3a4ff9e4d5180aa008301c0e8b9dece30ddbd5e0a",
+    "stake": "859811378170741728895563602771"
+   },
+   {
+    "account_id": "polkachu.poolv1.near",
+    "public_key": "0xa9ca872c1451d50f809f40eac259be2ca050a4ccd35f47a3952108b7f69e3853",
+    "stake": "855571848693304692254287778415"
+   },
+   {
+    "account_id": "near-prime.poolv1.near",
+    "public_key": "0xd0d8eb7851a984d02078fc56fc8ed0f3c9a71b98e705b594d7805cd80eb17137",
+    "stake": "832349226825934584266404423570"
+   },
+   {
+    "account_id": "smart-stake.poolv1.near",
+    "public_key": "0x873f13407a5c377e076c6151a0fe80f277a5b9194cd9d07dce11448f05a18183",
+    "stake": "828090811071152784275127611594"
+   },
+   {
+    "account_id": "fresh.poolv1.near",
+    "public_key": "0x524de964c235c8d7a082c89b489da77f8851e524aded4d7d59e7826a42883d96",
+    "stake": "826797371518223365770405298657"
+   },
+   {
+    "account_id": "pangdao.poolv1.near",
+    "public_key": "0xa3f9150223ee55bbe112b15069577090e8f4f4f6214434fbfe8b0b425370d222",
+    "stake": "804866170610217966628964974210"
+   },
+   {
+    "account_id": "hashquark.poolv1.near",
+    "public_key": "0x25b6aa02bde3898aec6e53bffcad0bfaa2e6bada2cc5962cba35def6cc65d17e",
+    "stake": "797823044136496755915814164741"
+   },
+   {
+    "account_id": "nearai.pool.near",
+    "public_key": "0x2b0284b50c12651e0535767e89a25567b63709b1256ff41477ad1b64035ef4f9",
+    "stake": "708092893372467820773838894072"
+   },
+   {
+    "account_id": "link.poolv1.near",
+    "public_key": "0xba9407562966ef3ba108e0286116319f8790d57e677a7c6d11d5932c8c1eb9e8",
+    "stake": "681555591244325220346801374933"
+   },
+   {
+    "account_id": "rhea-validator.poolv1.near",
+    "public_key": "0x34e4e87dcc5a6398f0b54f4a99ef52dc2bedc8dd2e148a4ac17d30833faa2835",
+    "stake": "672458514521096667935425127240"
+   },
+   {
+    "account_id": "p2pstaking.poolv1.near",
+    "public_key": "0x4858e4bb371641f0eb79c4f6a2ad05ce9b9b17a8f09816eff01c4145012ad9a8",
+    "stake": "611426200559000563755881807911"
+   },
+   {
+    "account_id": "delightlabs.pool.near",
+    "public_key": "0x1a2335d4f58ceab320dc50460259a99c5c89f0e35c4a0494b6c162f909b1b13c",
+    "stake": "599931752480263082620123485003"
+   },
+   {
+    "account_id": "shurik.poolv1.near",
+    "public_key": "0x2e7c8972bb18bc958bb975c9a98c80a1b654963ccc63b4c5ffb1b09a31e036a3",
+    "stake": "591118385867994087916730167961"
+   }
+  ],
+  "producers_hash": "0x48eb992763ffd99291f9ddfc1cb136856b74e4d3832309cac6e635c3e23e88fc",
+  "named_at": 1791003309498409670,
+  "named_by_height": 218303634
+ },
+ "blocks": [
+  {
+   "prev_block_hash": "0x0a8ca34cf98bbfa7ba2b655c0f3525fed820b3800265cfe2d0d73adb1b421dbf",
+   "next_block_inner_hash": "0xae41d7651a70ac3350f9691aa562ab7fbbf9fc0ea241771ac482905729791048",
+   "inner_lite": {
+    "height": 218389931,
+    "epoch_id": "0x5b96f2e2cd8bdaae43dec45a1bc003f1d9f89f7230fe074578db2711edee74a2",
+    "next_epoch_id": "0x4098e546b9fa21f7b49c823dcb03443c2dd20c434b961457a5138c8f1948a38b",
+    "prev_state_root": "0x15825bc96e3831db0be6540fee64858909cd60f13d23b3dd4394e3cbe95a98e5",
+    "outcome_root": "0x5a87c3576f9ead97dddcbcf93595f83e8a60b9ef59b34ea28c109c91f78b362e",
+    "timestamp": 1791053977576878384,
+    "next_bp_hash": "0x9ab4bd6d29f9f85f4835a11ba7030ab85d28fd6f099e5e2fb2b36f06ddcc27fe",
+    "block_merkle_root": "0x4f2e14dc765f92a05bd878b2517f45b5d03abe2da15c18c38279a5a5987524b3"
+   },
+   "inner_rest_hash": "0xe1a1d6d9c4aaf381905c6420d5ba41068f6f8fadc7b6fe6eafd18fe7ca60a0f6",
+   "next_bps": [
+    {
+     "account_id": "astro-stakers.poolv1.near",
+     "public_key": "0x1a7c308abd0a4197512b9c06be92eddca33ce2c52bae8c2a76929f5cac85364d",
+     "stake": "31975169737803560565828912261835"
+    },
+    {
+     "account_id": "figment.poolv1.near",
+     "public_key": "0x5f7ca7150148f789c25259d3c4c7a77e32dc9596cb22eb26e893672f5ff0103e",
+     "stake": "28533938740001266121838575524830"
+    },
+    {
+     "account_id": "ledgerbyfigment.poolv1.near",
+     "public_key": "0xe7d838a854ce3568eed94f6b034df9812d7080f600bf3e5370d3d6a68a9d89fb",
+     "stake": "22441800825980647955334365544549"
+    },
+    {
+     "account_id": "bitwise_1.poolv1.near",
+     "public_key": "0xae7ffc26101a893f827eec05386df2d9661e8774136448d6c45c676c6c0cb275",
+     "stake": "20960598282527140879256360537851"
+    },
+    {
+     "account_id": "binancenode1.poolv1.near",
+     "public_key": "0x9d526c1577d7a157d0e6a3fcad9a5ae458a514b07156ce82de8494b2979a2fb7",
+     "stake": "20317236526449071007449660291734"
+    },
+    {
+     "account_id": "staked.poolv1.near",
+     "public_key": "0x82991c333f385bd2a17ab55e87dd0a37abda8f64df64faa66976a70bb9b4d316",
+     "stake": "19513572474585496395213015829435"
+    },
+    {
+     "account_id": "sumerian.poolv1.near",
+     "public_key": "0x99af42771c0b93dc66d118092be0f193bc43b21d26282eba30aa816241c29ebe",
+     "stake": "18708194738887771598119997041331"
+    },
+    {
+     "account_id": "zavodil.poolv1.near",
+     "public_key": "0xf1def18f6b0d1e1a0dddea91e446ab4fb346c9774e0590995e5d6f79536bdca3",
+     "stake": "18564730366891479964609143789200"
+    },
+    {
+     "account_id": "liver.pool.near",
+     "public_key": "0x08a2e2431f6e9f6ce95a8bb2c6bcded078d0f664dc2eac0c66cba7c08788e6f5",
+     "stake": "16850618675554121842075397000923"
+    },
+    {
+     "account_id": "kiln-1.poolv1.near",
+     "public_key": "0x704d15aac42cb87c0b5aef598688472e80ef20777092d969a3dfe0aa370504d6",
+     "stake": "13230310904184248025798618997397"
+    },
+    {
+     "account_id": "svrn-ai.poolv1.near",
+     "public_key": "0x5ffffcccff268db579c9f968b0eeb15168825e54a8a6cf52b599a62d123f4409",
+     "stake": "11892917416078798546114017421239"
+    },
+    {
+     "account_id": "svrn.pool.near",
+     "public_key": "0x97498635f716c98b159cf0391caf991a1e6e1fc106774e4a7a212e3afa7f24fc",
+     "stake": "11889244427013448499668982745161"
+    },
+    {
+     "account_id": "epic.poolv1.near",
+     "public_key": "0x4c27dd137dc829e91aaf5e76f85bdc7115f33deea898e4f590339d168842fb58",
+     "stake": "11864267401454503939338807751268"
+    },
+    {
+     "account_id": "bitwise_2.poolv1.near",
+     "public_key": "0xe6bb6c9f003c343f7ca9257d75cbeaff3928362f4c6a56e622a1f32a7873e1f1",
+     "stake": "11279878972320649573266052322594"
+    },
+    {
+     "account_id": "svrn-luganodes.pool.near",
+     "public_key": "0x57f400a33356bef2a49127bf7aa9f730e7d428491f706f828765c49128da520b",
+     "stake": "11261754562819722459713609273227"
+    },
+    {
+     "account_id": "nearvana.poolv1.near",
+     "public_key": "0x4fa7a3cd62fa7e23a1f27549a561fad8f3e4f0c6baecbebcdf115eb19e117f1c",
+     "stake": "10399009348641035123916113068962"
+    },
+    {
+     "account_id": "svrn_bitwise.poolv1.near",
+     "public_key": "0xcd11e24ccfa7e889c6151f3e2f70fc0361137e4980250dc9174e724955d426e6",
+     "stake": "10363876706844516738691790856074"
+    },
+    {
+     "account_id": "stake1.poolv1.near",
+     "public_key": "0x5ca9980ea2c110f7e3b5d82e7de98f3ddd55ff7e285b2b0a78e81d2525801d60",
+     "stake": "10355358528373136605398225217990"
+    },
+    {
+     "account_id": "p2p-org.poolv1.near",
+     "public_key": "0xfd5ed2a09cde75c5ef94e81946244fc72b41b7da31875065afbfa623d673305d",
+     "stake": "8173212006876095843919568912442"
+    },
+    {
+     "account_id": "dragonfly.poolv1.near",
+     "public_key": "0x4e51c7971f29de1536c1d4ad8d4f5d2645214d940979b0e16658d3c900df74fa",
+     "stake": "7515820066897955864071129091545"
+    },
+    {
+     "account_id": "metapool01.pool.near",
+     "public_key": "0x8247fe70ae46d20da913b4dfb84646332742d89a77ca437bf41067a88c5dabc1",
+     "stake": "7472299228594791188030585296716"
+    },
+    {
+     "account_id": "allnodes.poolv1.near",
+     "public_key": "0x89a05584eafae3fad564afa6a4e92b243b2794d933aeaa6458fdea69a13949ff",
+     "stake": "7277605524765942036137457995929"
+    },
+    {
+     "account_id": "macrodatarefinement.poolv1.near",
+     "public_key": "0xf91b958b63c591f52e1f07f8a1f8cbb0e56a416acd8ea52e606e4f23109e93cd",
+     "stake": "6609066472034683092993118669453"
+    },
+    {
+     "account_id": "solsticestaking.poolv1.near",
+     "public_key": "0xc0042fee4df7be7ba78db9b87fbdf463a38a292b50bd87372e3ec6396419f916",
+     "stake": "6400225823019576455815166847863"
+    },
+    {
+     "account_id": "aca87218e28c41f5a693dee3dff12238.poolv1.near",
+     "public_key": "0x3213b575aecb8f865e2102fc9f2b1b9daaa949e5a10d6622ddf2b8fa33816f52",
+     "stake": "6349233774638012025347092787802"
+    },
+    {
+     "account_id": "silentnodes.pool.near",
+     "public_key": "0x3f09fceca07a9ab980825e696a46eebe542f86e09147bd7377c24e5b30cb1b85",
+     "stake": "6060986572913800834190522887873"
+    },
+    {
+     "account_id": "svrn-twinstake.poolv1.near",
+     "public_key": "0x0e63ce03351fba4b383e53d3d9a90e31bae38dec6fac3a401d3fc85b476981aa",
+     "stake": "5989660083808108364021095258658"
+    },
+    {
+     "account_id": "d1.poolv1.near",
+     "public_key": "0x61865578d21f0531845f722c7ac4fd0d6784ad7e6845ffbe26592f725589cb53",
+     "stake": "5987504967830691375225893410992"
+    },
+    {
+     "account_id": "stakin.poolv1.near",
+     "public_key": "0x6926f74d3650b4e133d6135a540ec8b748bf4ddb498011b2553fb73aac8ea93d",
+     "stake": "5608226846413178872966152508688"
+    },
+    {
+     "account_id": "bisontrails.poolv1.near",
+     "public_key": "0xcc9e38be807372a56b313a2bbed6f3281613d17ad70e99b1bdce57ff599a28e3",
+     "stake": "5448126216387743071630281791121"
+    },
+    {
+     "account_id": "lst-pool.near",
+     "public_key": "0x1b7dfc3e2c12a1770afbeee10cbf5cbe1eaee7808e42f81e718fe2d5aeaf89e0",
+     "stake": "5177793520980116038445611860032"
+    },
+    {
+     "account_id": "legends.poolv1.near",
+     "public_key": "0xb7c1da5ee0b4df4319d67e9ee00812638fc61ac9525555225dbf421e7932b438",
+     "stake": "4924692129437322061411460693308"
+    },
+    {
+     "account_id": "northernlights.poolv1.near",
+     "public_key": "0x5d621e09311356596e924d6d605fcbae0feff30f0ad47714519b8588dbaac6ba",
+     "stake": "4562981593704743479158881116202"
+    },
+    {
+     "account_id": "republic.poolv1.near",
+     "public_key": "0x485b4d7eb974ae75b878ef38c18b8067baf551ebdc2722cf84e3e2ce7d73e411",
+     "stake": "4298055851690049500214207777742"
+    },
+    {
+     "account_id": "rekt.poolv1.near",
+     "public_key": "0xdbd729c3562f9eaafd610895568b901c0eaa07548255955c611fb029b74d2d4b",
+     "stake": "3995828506393212043771184156120"
+    },
+    {
+     "account_id": "ni.poolv1.near",
+     "public_key": "0x74ec2cf0a59d1f245d37354d2ca5bfcb37f6f2ba0f29c378db940b9e2902dca1",
+     "stake": "3452247380843406690499708638387"
+    },
+    {
+     "account_id": "everstake.poolv1.near",
+     "public_key": "0x3104782f5d324849d18fceb128e7d078728dd36b9e4783d3f5a487d0752f921d",
+     "stake": "3361311565326198623524100810323"
+    },
+    {
+     "account_id": "nearone.pool.near",
+     "public_key": "0xf5c79a937d1318c12b5514f046fb4807af184dd0d7926662446841b82d24526a",
+     "stake": "3228172925521958395950185433985"
+    },
+    {
+     "account_id": "gtnode-0.poolv1.near",
+     "public_key": "0xc7b3d18d05703df6bc5ba8d4525cf055457af5ac559303967723feaa505f6676",
+     "stake": "3207706628293295173263005017733"
+    },
+    {
+     "account_id": "okx-earn.poolv1.near",
+     "public_key": "0x947aeb15acf9b0fdcec39721aaf0b0f1d0f57da7b7b7c58a3c910d39f0391e4c",
+     "stake": "3204661209873942998694280634607"
+    },
+    {
+     "account_id": "nearfans.poolv1.near",
+     "public_key": "0xe407e0cad34baa9b99b02c8d7d4e49877ca40808ac1daaeac3a44a8bc20c8282",
+     "stake": "3173623253529885196869606784069"
+    },
+    {
+     "account_id": "here.poolv1.near",
+     "public_key": "0x329cacd858f4878ab527cfbd6d317a8740c5714c9e571a73e89d261855f99f11",
+     "stake": "3027284669210128554014507817425"
+    },
+    {
+     "account_id": "x.poolv1.near",
+     "public_key": "0xc3e496c399f77ae83dd620f877c90f1b06ea97bec9e011d360abd774b23eb860",
+     "stake": "2608009560180281457545797354618"
+    },
+    {
+     "account_id": "bitcoinsuisse.poolv1.near",
+     "public_key": "0xb1cb32da4fb70cf669d7149ef532e7c24d773c0e0ec20c79a56008796c27ccf4",
+     "stake": "2327654898662404545568947767868"
+    },
+    {
+     "account_id": "twinstake.poolv1.near",
+     "public_key": "0xf6e37bd89b3467ede091d8cbbc1b731a0ea5bc1b1887da2c2c89a276a14b49c1",
+     "stake": "2304767063181339775737541315062"
+    },
+    {
+     "account_id": "falcon.pool.near",
+     "public_key": "0x8fdf5daed3aec4ee2845ba0f2a0ecc4f48015d63825b45b8eecd84fb03e67804",
+     "stake": "2259342092296097829595853615904"
+    },
+    {
+     "account_id": "anonymous.poolv1.near",
+     "public_key": "0xf9b3523695ef7c8fe97ff9667f434d1572d69445970a32f2b88a70ed64424a1b",
+     "stake": "2253340473621790105863649964328"
+    },
+    {
+     "account_id": "erm.poolv1.near",
+     "public_key": "0x6a00a3e228258e4ee40376df56dc39a81b2d79b478303163f5dbbe90f8c2ef3a",
+     "stake": "2241030051061315560193755147795"
+    },
+    {
+     "account_id": "baziliknear.poolv1.near",
+     "public_key": "0xc202575c4fa0b042afb81d27d3ff71111f4f0b1560608075da18244751002dc9",
+     "stake": "2187509665186820866882158696007"
+    },
+    {
+     "account_id": "lux.poolv1.near",
+     "public_key": "0xfc72cbe55b5cd0da612f205e7cd21b0f29131ae53ecc9111efb45526de977101",
+     "stake": "2170375178844738459128106457994"
+    },
+    {
+     "account_id": "staking4all.poolv1.near",
+     "public_key": "0x33840501bae02ef6a137627cd06a254d32607680491032845627ba28f7274584",
+     "stake": "2135798861989740015107420212953"
+    },
+    {
+     "account_id": "dsrvlabs.poolv1.near",
+     "public_key": "0x7d4f6b36d0f5e1e7f94893f58b2d64e5fb975dd0b9982e93313bf402c608a27f",
+     "stake": "2131616001022017220731324190230"
+    },
+    {
+     "account_id": "blockdaemon.poolv1.near",
+     "public_key": "0x21a71cb90c0fef940105eb5eaef5c2ae5cd936144488509d6e8a4578fe4d975b",
+     "stake": "2012916587202340361647225335652"
+    },
+    {
+     "account_id": "sofarsonear.poolv1.near",
+     "public_key": "0x9613da67f2818f0b2ffc525b36361b6efe93e8c6bc225a0fdea747ec3e77106b",
+     "stake": "1991782851451003594979470399967"
+    },
+    {
+     "account_id": "moonlet.poolv1.near",
+     "public_key": "0xe9f1eb4ceecb07bc5e8be86ed72fd0d9dae6082c0bfb1515a1426c10b51717f6",
+     "stake": "1987994425592674325791631436091"
+    },
+    {
+     "account_id": "cryptium.poolv1.near",
+     "public_key": "0x43699687585941d745ff33e72e9c52441d458da236a0771e7f47f31428b2fd45",
+     "stake": "1949052438092996910529932051865"
+    },
+    {
+     "account_id": "buildlinks.poolv1.near",
+     "public_key": "0xf6f6fa2a4ba86f396ee260af5944ed052d33f527f25ddd49d6e01154f6d1e691",
+     "stake": "1948170045064646143417415227056"
+    },
+    {
+     "account_id": "npro.poolv1.near",
+     "public_key": "0x949d073ec88e2ad040550c77efe81eec1f529d85b2d520af4c9a577d27d4f37f",
+     "stake": "1926502857449177121944912246400"
+    },
+    {
+     "account_id": "chorusone.poolv1.near",
+     "public_key": "0x8e29293031ae6e8e3da83c21a5eacd63326eaf7a26962b4cabfc9519f48ccf8a",
+     "stake": "1924921493667483068513403240628"
+    },
+    {
+     "account_id": "stakesabai.poolv1.near",
+     "public_key": "0x52e5b4c8e546a67d15cbb456437ccc53d364995dcd98089bb42f1a0ec2bc28dc",
+     "stake": "1825987939614745134358074555535"
+    },
+    {
+     "account_id": "trust-nodes.poolv1.near",
+     "public_key": "0xa1a337e3d9b9697983e124f6a6ecd799f9fccfac48eb9ea29b25e2e772164abb",
+     "stake": "1636980261214524665908706692210"
+    },
+    {
+     "account_id": "autostake.poolv1.near",
+     "public_key": "0xfcc990a4b1595845f0078aadca7e1e9f8735cee39029f201aabf32648d568ebe",
+     "stake": "1621039540401890609370353048641"
+    },
+    {
+     "account_id": "lunanova.poolv1.near",
+     "public_key": "0x0c7d3f4fbf5a3a9bf14fbeaab8fbdbe89418b48136dd91f33ff7580e0d4a3a0d",
+     "stake": "1582705497466672026338610661718"
+    },
+    {
+     "account_id": "meteor.poolv1.near",
+     "public_key": "0xcfa4af6dc45a4bcad93da57ec1196dc38aac38f269121266a6d2554e2d45302f",
+     "stake": "1569698240860825026369326328311"
+    },
+    {
+     "account_id": "openshards.poolv1.near",
+     "public_key": "0x34745a9187778a5c24c7f8084c3b70557c78435c08bf53834dd0530de7187a46",
+     "stake": "1545118660890521333490727061919"
+    },
+    {
+     "account_id": "stakely_io.poolv1.near",
+     "public_key": "0xf55e234034358b1b2e2c67c7d6dc5211c78aeb9232b4c3b7589d54fa42c85042",
+     "stake": "1519302328479100234815967161363"
+    },
+    {
+     "account_id": "kiln.poolv1.near",
+     "public_key": "0xe158358cc98e3728f9f2e2d1f26095af41e2cf8031555d4dea5673da70139c18",
+     "stake": "1509032105569865456908413215280"
+    },
+    {
+     "account_id": "luganodes.pool.near",
+     "public_key": "0x4ed5b3e278226b4a2146efb3c82b0b904de0cbc390a49816c6c1a57ced17a50d",
+     "stake": "1424812500852394467131504493158"
+    },
+    {
+     "account_id": "hb436_pool.poolv1.near",
+     "public_key": "0x650d6e12a1e2ba54ae42e43f5fa20e8cc19d22c488e40314c4cff6009c5f487f",
+     "stake": "1377501520297444592269815929363"
+    },
+    {
+     "account_id": "qbit.poolv1.near",
+     "public_key": "0x3eb89f25e7b81d62377a2e9f3c62f21dfdd5225353cfd5719ab52543832c6aa5",
+     "stake": "1317942269354300882142896081466"
+    },
+    {
+     "account_id": "eno-blockdaemon0.pool.near",
+     "public_key": "0x0487bf79e11f609ad90daa4b6cd23c5d61b6d671d24de6d1f6197ccadbe8fec9",
+     "stake": "1255310369075602339356888830043"
+    },
+    {
+     "account_id": "brea.poolv1.near",
+     "public_key": "0x716303bd21d5b06eb12fb7d9aab1575e45195c40a7d6099e224d61e3beabe148",
+     "stake": "1193412606744082657000205240282"
+    },
+    {
+     "account_id": "masternode24.poolv1.near",
+     "public_key": "0x43e14e842536da53cb620ec724375540715f46ab21e9b651b31dd0c574affb47",
+     "stake": "1191242916413171645352834731035"
+    },
+    {
+     "account_id": "bisontrails2.poolv1.near",
+     "public_key": "0xa138acc36dba303006e8625be268f710e7b637551e4d6169f5546f71f7ce44af",
+     "stake": "1157284335518686654243104812477"
+    },
+    {
+     "account_id": "stardust.poolv1.near",
+     "public_key": "0x57164dac1e16bcaca82200fa4fcc7fc67d785509840805ecd6cfdd14da9342b0",
+     "stake": "1154752326698552089745871598214"
+    },
+    {
+     "account_id": "lavenderfive.poolv1.near",
+     "public_key": "0xf5992762574129d7ebcc98607e4104a2a48169873f9e6a0b28789cc924a583ea",
+     "stake": "1153923663613595042683081064163"
+    },
+    {
+     "account_id": "northstakenear.poolv1.near",
+     "public_key": "0xbd4dddbef29e0c30f15f88ea29772b6aac9cea27fcfab03246d3d4062a1b0e1c",
+     "stake": "1106414351569455323843114698706"
+    },
+    {
+     "account_id": "pandateam.poolv1.near",
+     "public_key": "0xb0cab8294bebec43093dc1aa13cbc84f1bee12c66a93f41f5c45355182b99525",
+     "stake": "1081972541957898174716530064374"
+    },
+    {
+     "account_id": "hapi.poolv1.near",
+     "public_key": "0xee6bc1c28edbdece0650406330399dc2f861eb701997289226030da226c23787",
+     "stake": "1035971274745955894210339784249"
+    },
+    {
+     "account_id": "avado.poolv1.near",
+     "public_key": "0xd9529782fb87d1f07e5921350c5be25bc64d934a4c71307127401ebdac3f8d97",
+     "stake": "1022757135456133439484482670522"
+    },
+    {
+     "account_id": "01node.poolv1.near",
+     "public_key": "0x49c6438ba40e3aac837cd6b74d728355d3cd998ee7b96270af89e63c1155ad07",
+     "stake": "998948999661339290146847146941"
+    },
+    {
+     "account_id": "dexagon.poolv1.near",
+     "public_key": "0x8bb0b37640ebdbe3483211af88877954586f7ae9b69e1d533f0e11508188a454",
+     "stake": "987874739178436335443891603999"
+    },
+    {
+     "account_id": "optimusvalidatornetwork.poolv1.near",
+     "public_key": "0xa4007e691397cc1d399ecc638fe1d472d8f7e6ad2f76817355cf39c47a1d27fd",
+     "stake": "979878527225941477131089783877"
+    },
+    {
+     "account_id": "near-prime-public.poolv1.near",
+     "public_key": "0xe2daede49f0627a8143c8c221db911c79225a066c66a525bc65783a36deb28b8",
+     "stake": "960804636227626117949765988880"
+    },
+    {
+     "account_id": "nodeasy.poolv1.near",
+     "public_key": "0x7377978f3b1738413cfc96cd0d5b6077e2014fc9d7750eb59f4d3f61f1d51636",
+     "stake": "959943929741799388666612377048"
+    },
+    {
+     "account_id": "atomic-nodes.poolv1.near",
+     "public_key": "0xaf9ab1e009f23d492ed56927fc2682a415147a7574d5296b2cb5e169c52b2441",
+     "stake": "939978504630645054613248521613"
+    },
+    {
+     "account_id": "colossus.poolv1.near",
+     "public_key": "0x48c7102943c79ca4f1b1f2197461c51cee17516fb4480c8177c21a8a1520b42a",
+     "stake": "906696437039484678573252231263"
+    },
+    {
+     "account_id": "namdokmai.poolv1.near",
+     "public_key": "0x3ec67bfed85f40642e251fd3a4ff9e4d5180aa008301c0e8b9dece30ddbd5e0a",
+     "stake": "859848565002509458668602230957"
+    },
+    {
+     "account_id": "polkachu.poolv1.near",
+     "public_key": "0xa9ca872c1451d50f809f40eac259be2ca050a4ccd35f47a3952108b7f69e3853",
+     "stake": "855608750759316358711555994177"
+    },
+    {
+     "account_id": "near-prime.poolv1.near",
+     "public_key": "0xd0d8eb7851a984d02078fc56fc8ed0f3c9a71b98e705b594d7805cd80eb17137",
+     "stake": "832385225910073249948745016312"
+    },
+    {
+     "account_id": "smart-stake.poolv1.near",
+     "public_key": "0x873f13407a5c377e076c6151a0fe80f277a5b9194cd9d07dce11448f05a18183",
+     "stake": "828126626109656742280273911574"
+    },
+    {
+     "account_id": "fresh.poolv1.near",
+     "public_key": "0x524de964c235c8d7a082c89b489da77f8851e524aded4d7d59e7826a42883d96",
+     "stake": "825591731334841496724049096063"
+    },
+    {
+     "account_id": "pangdao.poolv1.near",
+     "public_key": "0xa3f9150223ee55bbe112b15069577090e8f4f4f6214434fbfe8b0b425370d222",
+     "stake": "804900981065622212547348353633"
+    },
+    {
+     "account_id": "hashquark.poolv1.near",
+     "public_key": "0x25b6aa02bde3898aec6e53bffcad0bfaa2e6bada2cc5962cba35def6cc65d17e",
+     "stake": "797857549995566001527266794402"
+    },
+    {
+     "account_id": "nearai.pool.near",
+     "public_key": "0x2b0284b50c12651e0535767e89a25567b63709b1256ff41477ad1b64035ef4f9",
+     "stake": "720263518410348668303925365557"
+    },
+    {
+     "account_id": "rhea-validator.poolv1.near",
+     "public_key": "0x34e4e87dcc5a6398f0b54f4a99ef52dc2bedc8dd2e148a4ac17d30833faa2835",
+     "stake": "672487598349176038827882995759"
+    },
+    {
+     "account_id": "link.poolv1.near",
+     "public_key": "0xba9407562966ef3ba108e0286116319f8790d57e677a7c6d11d5932c8c1eb9e8",
+     "stake": "660996365346131813621213130486"
+    },
+    {
+     "account_id": "p2pstaking.poolv1.near",
+     "public_key": "0x4858e4bb371641f0eb79c4f6a2ad05ce9b9b17a8f09816eff01c4145012ad9a8",
+     "stake": "611452644781851228534334363812"
+    },
+    {
+     "account_id": "delightlabs.pool.near",
+     "public_key": "0x1a2335d4f58ceab320dc50460259a99c5c89f0e35c4a0494b6c162f909b1b13c",
+     "stake": "599957699546712907353862607778"
+    },
+    {
+     "account_id": "shurik.poolv1.near",
+     "public_key": "0x2e7c8972bb18bc958bb975c9a98c80a1b654963ccc63b4c5ffb1b09a31e036a3",
+     "stake": "591143951799597146006069474783"
+    }
+   ],
+   "approvals_after_next": [
+    null,
+    "0x2487f557794df930e6086c6a9be371b85a29508e40499370bade83bb5be225f2357520158010b7470bddf33523bfe7f45e21e1fe696c0e239d0850be06f14503",
+    "0x2abe9772edf958fb98404514af0be97f94df0f4421b998c338a016edbe7917275590a0462b8a115b8f60e9c6016053b107f150860dd78bc126c6dbf8f5b5a401",
+    "0x29da70b775473530bf247592e60cd1fade81d7ac1b30f3d8d50c042e2c924a7644b05581f54c9e2c4c91a5b78a769686b7b082c4847f490d34526d49e939ce02",
+    "0xb8f6bb1ff8e6c639a1300b6324aa636b12e40706bedf696e14f63d7ec8aebeefebc87f8eb0f8b8dc425f7b280715fb609074ce37f51b61e91d060b38722ffc0f",
+    "0xee627894f0efda4a616d81f4b54cd8725347dd0655f81152e744f2806649a35cd64209f1447f836f7b25ebf221745bad355cca692087c30f400e9a4c54441503",
+    null,
+    "0x9fc5a4f60e3f344dd7e628ce3ec7d386dddebdfeabdbada7321181eda6c764af64cfc487d55f7c756e1868b0fcac42ae4bc142fd0de3596fbfca6a0886ab610b",
+    "0x901901be45144fef0b923579451be3b903ada0e2e46351b6a29bf38022e89f90ac3abb243bf220f4669c11b3230069ba3aec24b3898b3af74ef4b28c1cb9420d",
+    "0x9805b6b271eaf18fb5f8949e36253a84d8813ea2a6deac1824c5b86b9ecde606ba3253570a61ba98841199d69da764358bf87f18ecdb198fd83c18a9cffd1103",
+    "0xd2f737ba298810892d9e848e8178120277017f2db3fd95b8a407010dbcb4a9b002113dd16444d4ab5beadd326d27354d7fa6c4b430b1a524b0ff21f7215c960c",
+    "0x6217cc09630516563e7c921350148ee8ef9b3a8489873a3a8b7ee0544e32fb078fb3e6f694d96f243fab04cab05620ca86a9ddcdfc4f866cb14210a864e00805",
+    "0x457e33a180f26e0a13a83f66216f55adfe55c83c808ba911348c6983ce23909b33369bb2bb9a7c9d701d3550dbcb7fe8192a71edb80b6dcce5d5793c38bd4e03",
+    "0x8d1240ca2333f9b4f54a92f73b263f4fb3811815fd223435e7659790b6039b846f3b7d681ec2f1ae1bd34846a7cc210e22498f31e7590af594d81286c579d30b",
+    null,
+    "0x0f55dd67763eac35f6253a95f6f20035545980081f0c5e0864ad3cc27af9cc375b56c9e9c2d7014ed7228c0a9bf3170fcdfb9c4aa05384af2035c0665753bc08",
+    "0x18fcdcf1c7e710ff48457b2774a6ac3e4d5bf3de85ed9d02235bb4a7f7ddde71e53c288095cc257dcc793aad4e4437ff8d30d6fa0aeb9d2b81a46d3410404907",
+    "0x341acad72cbb8ee83b35da853e7fa5ddf79cc85c7ea8224945870cdb1150ba18a8bbccdfb34ad70e439be646f2f4bafa7f6bee498b25de075bab7d8dee6dae02",
+    null,
+    "0xdf2db795718b2a4e1f6818331773cb438c5931151c7ff01ea83a83320d0d5560746243a4e5b631e515018e01b9e5712e912005d7e5c376bdcb56b26b2ebd5d01",
+    null,
+    "0x139624a65c68c6395a1507b63c999c2fecf706d7c356b189f66d99bd28b99e2e9bf0bd44e22c64f032c04f8914c1aa86f07ed1ad1e0b4ab1ead97337b74fa507",
+    "0x65dbd334e0cf5147f2c23885a90ac71c135168302e8a52615ee78b7e14e2331bd745015b7d722cab722e27655bb9286ff53274d733b8407bb708fa7e86fbab0a",
+    "0xb1e256b41f2b2df744b0b6da4a6ca25c4265a16bd1db4e7b024f9a2f50022652885514ef818201b476baef64fcbe90f0a524ed6c828301f4553f4afa2656ee0b",
+    null,
+    null,
+    "0xb48d3832982f450ec9913ab2e7f1bb5f6728f532321de796cb0df3665ce6170accf5b461e75f767e6b614e3915ac4382a655ae578d970e745201c5848384a10c",
+    "0x250afec0d69740c45d34f0fb20aa1aeaa5001b961ebdd533f1b59a62e9b3f2c0a798eb69402c69f74b0d476dbb05e9800c45571b31ad3028b55381c3c3abd105",
+    null,
+    "0xbe65ab3209e433feada70d77b0f80072feb35823ab4990f77f6c379c75b09fa369062b43894eacc4e0932b538ac288b166ca249c46e7650b1ab30771441efa07",
+    null,
+    null,
+    "0xada082c76bb7fa0859c9e1aa75c6325ec7f5478aad017fcbc1f7702a805ab24f8b2fe3a52600183ef0b4e1cba37036bcf2f0fcbcaa774bf17d6322554239a402",
+    null,
+    null,
+    null,
+    "0x6bca29c439b37abc383bf9ea158233ad8a64108a1174038716b9de7486f9ed87adb0c8b3e7b7c6f0bda47d70636f175d098d4b261a37997e3b591af3c860620c",
+    null,
+    null,
+    null,
+    "0x5fc79dec5b1794725e9624426113c341b4d8a29de54ab097c618814aa67e6f15ae9a9b9abda4613badad2343747843ba4fb8e2ce74578d6b8f1678863d71ae0e",
+    null,
+    "0xc9cf8b56e4f61ea85f5130447d3f667f019e399a6efc7073143e0da411d13edbc99478b5344889a0fe14a16bbe6838a7f3e4148cf8de52c55fb10ed89d121a06",
+    "0xe8834b0a001d8def199084d49078e3704c031f7c3c35c56ffea017ec3097dde5e8c0bc733ec118a364b1ef59ea934f4405bdb663e1ad2958cda17d0080543606",
+    "0xe8a372f95cf530cd01abde8934979fb93dd6d57b8b0397b081c5cc093d5d42d3dd5d98d9c249000a1dc5c28151ca0dd50c5396208e4dac44ef4ad67b4f8a5300",
+    null,
+    "0x08fbb7f87490ef3976976fffa8003647c38b14ca5c418cbc74105104cbbd690fcf6bd36b7255215ffed8d7e0628a0703c7ab9b910082e882eff97c891962560a",
+    null,
+    "0xdb4c3b13bc8a92952382208979d3e4638d3664ead37b5065790a5b5df8b61fe94b6b370918629de63eb09683f93f6240d7d37468505b2f969bd40f648ebcab04",
+    "0xd4df94410cd526bed3840a2259659832beb88c2621f64f8dc05c0f1635779e576caae424c7df9b508bc898cb2738d065b2da91fe8dd38961a5b4f478db85190c",
+    "0x4dc40c81036fe4cee91273d02ea2b58b4c5dab1402801ffc80f92fd78a92e5ad069ea322caa4621c1ef784d2d2e3453e03111d7d0063f055ccdbe947abd8cd0a",
+    "0x6df415d809b4909dae6b58b63a1c6786c6a3b8832fdda69a28393cb8082dcaa64bba5f6fa4c39308fb0b3b7fb2935512557ddb669c95e19be6db3df94c3c000f",
+    "0x052f89d5c5d38bb983fdc1dae9ad33bc94d8a72146228a0f79a5002c32a45555752dfb40e07d558ae67b4b762b4a4fddb649b161386f705ed6548261500de50f",
+    null,
+    "0x0cb6b60c7aa9e271fa1671b4fd17ec561600e2a8ae35e7edbed5d6afaae08acc7aa4ae0273e599343d92eed6988164aa3defd720f6d187aa78d2c3a50d9a9a03",
+    "0xe61fae913e95c3a41afb64c2dfaaf7b4c4f9e5b5334699148993f6c1db3ac00abdcd494c2a333e64f8e5569dde326fcf5f55dd2c783679ddfe549264037f3c06",
+    "0x3e30326fa117ef0c3c8ba6a9e52bdb757c5bb5e3727843649a327ca866cd240b94a47991aff35594865f1024d2bfd4fcc1c3e263a5b8c76bbab5dcd75f25160d",
+    null,
+    "0x6b738be6299a69bba5603bd1b8c6dd5e34fb63fc05a11489740ddfc6ddff78c951585dec6b66d5556417d3e81d0e023292586d3e18a97d01bb18fe64a4df700f",
+    "0x591237a6bc633d104d867ebd664d043f0bb6721ae56b07953ec35e2b345e46251f1902d10d6ab717a39f169bb6c88a266979a66b4255620a8510717f3b47ff01",
+    "0x6d1aab4534229f292e84031f405677c5f4ca615f4debbd82328ff90920422bd0f53a5e8574edb00960a0dccbd6444d9890a1504f8cae27ebda7a98cfe7d10703",
+    null,
+    "0x676fd2e44540c1399fc0e0e402bc574a6551b28e5bf21c4dfbd5f4d4b69cd45af50f83dd68f83042908da095c1bd34da2ad693740f5a1555d312dd696b3a360b",
+    "0x44ee3836818b4ed7f17983e1f412f41f3100ce4620de9f00d1c4db15a10f8300f2fd33fd2ab27f06eac750ad9c9fc270c06c03124bf3a422b7f4ff035dad4b02",
+    "0x4f070ae5e14d7b4af5525c672cc4b68408fad435cc92c15ed7f5ae63d749e501fc146764129df8247d981e541902e281544e3cf2e2af75af0695a93b7d5c3002",
+    "0x3e43b910e0c864295a3d4c2473cd43856658ea3ef03fcc29572e518eaabde3e4cde732a81f896bd441302612f157c7c7a70c40f5ee184251243886bf7e817704",
+    "0x16a1b3c47a63a4ce3770c364436b5b7f0c95406b63f7331efcd0f9e107d4a472d8a728bfbd86cf9e9f1b0b64a3172d74f42ba08fc762be90458aec97a509cb01",
+    "0xaa85f59b5e90adc9878819be2722380bad5ad1690425193fb920a57279d88f50adcdf0cfb0cfd85885fdf5dd088d645b1f5fdd152bd2985ed70952c5e2f8eb00",
+    "0x63a34f271480d0a221c579f6d2ce11aacdbff435a952f56cb48f30e28dc3372df990d65d00e7d38bc5dafd23e6f42c4b26247877651a7d61f402e288b6138903",
+    null,
+    "0xa174a5546ce2638808858687cbf6b062a2cc889ad30f05315986c292b58968f6a9c2a03f4420101c90df181de8acc054eac8ecfb9325d9db1b25f09db4fb3001",
+    "0xf9c9883e2bbd7307ae8647df6bf1266818c472cf1e063a61de75b834e33a9ccec5121d595d3cb32dd2d80d0e1b8ad0214f382ec0263d3349ca67f927ea6c6a00",
+    null,
+    null,
+    "0x3a9d49bd01bae74db54666300a1223f807df20ac7963c283baae2b96383eae418d0f2133bb6188233d8837f835000760805162a69faf8d798b376b4840105900",
+    null,
+    null,
+    "0xe9c7a91bf5a542619f4969df787b0d5549a16f1096cd32c15ec45123ab090504556c8dafd93f5a9851eaef463410bdacf084605018c7c63e22a09ff923ebba0e",
+    null,
+    "0xc87c8bbbca039cf8e1c6b4876424c8b26d8ec0d86d9394bdb9267db055c832def7317b5a50b4f4050fcb48620dcaad9a1cec9d3f66d24d4658979cfa8755e308",
+    "0xa0f3d85e44eab8b9d9a279da772c1232adccaf298a4d2a66b0dc48c3eb8e74ae57a6a7b7bccdc7bcac9aecae986a85cd77946e6bc86cc9b194d77ce1ebd8a40b",
+    "0xfeab2cbc3c4dd3f319a4ba4bdb3bbab728174ac83852d7cf94a4b293ea8127df9833b86e1a409e362d7518c468403fb2e8d3e5c27a13abe781001db017abaf05",
+    null,
+    "0x895093aebad227e412fb1c65d141ab24780bed82c738001d28274d2103f77937e32ae31275b5d21017f4ca54d56975058c05655f01444be89db60d8c45109f0d",
+    "0x4abbbe4b7cc3df1a9f0bec69764f8f5130f154511b7ca6d6d77d259e61e61f1030799c65b9f9d4f33cf733c5ca68347bb367457d7a912e729b3494b17046ab08",
+    "0x31f7c8ce16e9939b615793faf501c5a299f31f9c622e7d20ae4c79d68149ed6ba08edca8946e499655c963fabafec04a8a571c56b31f06e8c0a3003760c30d0a",
+    "0xdb17a7084368cecf192c13380b5c2146550a8175dda878d7cecca6b99fc8f759ad7ac7db11406c3e57992b4bbcf11e39ab013d37870490357669be33fa6d3b0a",
+    "0xf3e40888c9dcec670b88b6ed94b8bdbac2b19a2d60e31f099ca8c95cd1313620bdb7f3a7a40b241ae1ae3ad8ad37594ac7dc7a13eef74fbd8d1ed9a1969ce202",
+    null,
+    "0x9c3b2d36b34c091811df0453813b12e3ff77d34b8385956c7b15f73b25a583d1c9c68ec8b1b8db064fc274fd9d4127d34cbea6d54b2d7273e38b68e7ee0c5309",
+    "0x9999e4a25b7ca7a6f9c9491b2cccc033ea0672723349d84e95119e78515deb8113fd56f9bccd32d624f58a304228a697323cd2e838651dc335cfc128f8588704",
+    "0xfad11674cc9ff31fd758b81126e37496b8ca687f2d48f26c7ea383d46dff23098cefed3b50cc7ccb6a26d75d113cdc7748c27c3eab0eee7aa2539b1a190cfe09",
+    "0xb09c38dd1b1724bd7106a8e033c61ee0dfe4a8de100ae780f1318e9b7778883bcf98b027554d94f1ede446b09ea82213e8bac38dc05c7542e0dd44904d86c701",
+    null,
+    "0x40dfedc76230841081cb373629d364316eb4b33258335ff86fbd263f7bba7568170c309a1b395b926b72ca951c1a688a218d23d2803a300e3cfb913abc8c0002",
+    "0x3a6d9473b0408d1caefdf13363dd155dde4fca73a2d541827ec1e6a57a82aea58ee19a4e4974824d59a0ebea7b4becfd15f59f5e179df817dd8ff97490148305",
+    "0xb3f9192979d3cc7bdc39560e43d3106bc33e4e25a568491a9013235c86072e3f0d32aafad34e6de0bfa8b6649f343b17ee6090318d6a9d5c66d887eba1bfc904",
+    "0xb0a00e53783661d0aff6723caff708e4750b9892c58311e76f7f57636e78cdce501c4d236e6bdb3fdc734a18ebab48459c28c528ae6e222b7ff6b7ae6d9d5607",
+    "0x8c79bc36ffc46fac5baebc6bc82d2a99f7c8a1a890529971ab12665693789e72b3daef0749aae72f73792d40d4fd45c3a0433d60814a7b824fd116fb617e9e05",
+    "0xead3d1a161d4ae8e5b71ac079ae21991ffa8dca3fd4027277f0f1263aaa4725eefdbd9c1c8b6cf153efbcbe1b118d4bfde453f01f002ac78d86bd0b861efd003"
+   ]
+  },
+  {
+   "prev_block_hash": "0x68b4be1c25bcec298b120939447365d5b4ac5e8cf52142834cf55033a45047c3",
+   "next_block_inner_hash": "0x49ea231b331911ca90f52da8a2333887d261f4db0fef2c18fab9ed05f3a3c551",
+   "inner_lite": {
+    "height": 218394743,
+    "epoch_id": "0x4098e546b9fa21f7b49c823dcb03443c2dd20c434b961457a5138c8f1948a38b",
+    "next_epoch_id": "0x6ff7faf052993d5804499f5f41811511340ce20375f052965f6a1c50260d614b",
+    "prev_state_root": "0x1bd905d9632c261faebcacb12dc09d0b2451bbba98be46104e2a80d5e7a69573",
+    "outcome_root": "0x64ac38afd7de03875df7d841beefe38605cd14c5c504c1425ce4d7fefa1520bd",
+    "timestamp": 1791056798758891059,
+    "next_bp_hash": "0xd5513698dc6ba42dc407ced3c72de4b8009da1b8675a5fe797aa08d81cb4877e",
+    "block_merkle_root": "0x56176b4d9a3d9678c5444f3029671337b2f9600e5743fd20aea8e138e8a69f07"
+   },
+   "inner_rest_hash": "0x366724c32c554c928e550c58c7621946c4d6f0a4e140b96972fa4bc4990b6356",
+   "next_bps": [
+    {
+     "account_id": "astro-stakers.poolv1.near",
+     "public_key": "0x1a7c308abd0a4197512b9c06be92eddca33ce2c52bae8c2a76929f5cac85364d",
+     "stake": "31982110300573830263713084865891"
+    },
+    {
+     "account_id": "figment.poolv1.near",
+     "public_key": "0x5f7ca7150148f789c25259d3c4c7a77e32dc9596cb22eb26e893672f5ff0103e",
+     "stake": "28535065596003144618031832309280"
+    },
+    {
+     "account_id": "ledgerbyfigment.poolv1.near",
+     "public_key": "0xe7d838a854ce3568eed94f6b034df9812d7080f600bf3e5370d3d6a68a9d89fb",
+     "stake": "22443288543665669883523018642205"
+    },
+    {
+     "account_id": "bitwise_1.poolv1.near",
+     "public_key": "0xae7ffc26101a893f827eec05386df2d9661e8774136448d6c45c676c6c0cb275",
+     "stake": "20961509594521778046782257529946"
+    },
+    {
+     "account_id": "binancenode1.poolv1.near",
+     "public_key": "0x9d526c1577d7a157d0e6a3fcad9a5ae458a514b07156ce82de8494b2979a2fb7",
+     "stake": "20318119988817574143634727573716"
+    },
+    {
+     "account_id": "staked.poolv1.near",
+     "public_key": "0x82991c333f385bd2a17ab55e87dd0a37abda8f64df64faa66976a70bb9b4d316",
+     "stake": "19510311736994391086319609345249"
+    },
+    {
+     "account_id": "sumerian.poolv1.near",
+     "public_key": "0x99af42771c0b93dc66d118092be0f193bc43b21d26282eba30aa816241c29ebe",
+     "stake": "18709008234666435288453914522438"
+    },
+    {
+     "account_id": "zavodil.poolv1.near",
+     "public_key": "0xf1def18f6b0d1e1a0dddea91e446ab4fb346c9774e0590995e5d6f79536bdca3",
+     "stake": "18631400183196402429096860983976"
+    },
+    {
+     "account_id": "liver.pool.near",
+     "public_key": "0x08a2e2431f6e9f6ce95a8bb2c6bcded078d0f664dc2eac0c66cba7c08788e6f5",
+     "stake": "16851351405250472888109925115049"
+    },
+    {
+     "account_id": "kiln-1.poolv1.near",
+     "public_key": "0x704d15aac42cb87c0b5aef598688472e80ef20777092d969a3dfe0aa370504d6",
+     "stake": "13239016536212428131562301920597"
+    },
+    {
+     "account_id": "svrn-ai.poolv1.near",
+     "public_key": "0x5ffffcccff268db579c9f968b0eeb15168825e54a8a6cf52b599a62d123f4409",
+     "stake": "11893434560538802541457923502867"
+    },
+    {
+     "account_id": "svrn.pool.near",
+     "public_key": "0x97498635f716c98b159cf0391caf991a1e6e1fc106774e4a7a212e3afa7f24fc",
+     "stake": "11889761411754897365229413800515"
+    },
+    {
+     "account_id": "epic.poolv1.near",
+     "public_key": "0x4c27dd137dc829e91aaf5e76f85bdc7115f33deea898e4f590339d168842fb58",
+     "stake": "11864783302122513144892607646725"
+    },
+    {
+     "account_id": "bitwise_2.poolv1.near",
+     "public_key": "0xe6bb6c9f003c343f7ca9257d75cbeaff3928362f4c6a56e622a1f32a7873e1f1",
+     "stake": "11280369459762703460208061467031"
+    },
+    {
+     "account_id": "svrn-luganodes.pool.near",
+     "public_key": "0x57f400a33356bef2a49127bf7aa9f730e7d428491f706f828765c49128da520b",
+     "stake": "11262244262194352374023511170895"
+    },
+    {
+     "account_id": "nearvana.poolv1.near",
+     "public_key": "0x4fa7a3cd62fa7e23a1f27549a561fad8f3e4f0c6baecbebcdf115eb19e117f1c",
+     "stake": "10399461532871424027153875493346"
+    },
+    {
+     "account_id": "svrn_bitwise.poolv1.near",
+     "public_key": "0xcd11e24ccfa7e889c6151f3e2f70fc0361137e4980250dc9174e724955d426e6",
+     "stake": "10364327363433615937463197905543"
+    },
+    {
+     "account_id": "stake1.poolv1.near",
+     "public_key": "0x5ca9980ea2c110f7e3b5d82e7de98f3ddd55ff7e285b2b0a78e81d2525801d60",
+     "stake": "10355808814587285785766951901784"
+    },
+    {
+     "account_id": "p2p-org.poolv1.near",
+     "public_key": "0xfd5ed2a09cde75c5ef94e81946244fc72b41b7da31875065afbfa623d673305d",
+     "stake": "8173567405985848299694273974012"
+    },
+    {
+     "account_id": "dragonfly.poolv1.near",
+     "public_key": "0x4e51c7971f29de1536c1d4ad8d4f5d2645214d940979b0e16658d3c900df74fa",
+     "stake": "7516146880399133336950134278212"
+    },
+    {
+     "account_id": "metapool01.pool.near",
+     "public_key": "0x8247fe70ae46d20da913b4dfb84646332742d89a77ca437bf41067a88c5dabc1",
+     "stake": "7472624161009483646233463789400"
+    },
+    {
+     "account_id": "allnodes.poolv1.near",
+     "public_key": "0x89a05584eafae3fad564afa6a4e92b243b2794d933aeaa6458fdea69a13949ff",
+     "stake": "7282298934031044520461235067223"
+    },
+    {
+     "account_id": "macrodatarefinement.poolv1.near",
+     "public_key": "0xf91b958b63c591f52e1f07f8a1f8cbb0e56a416acd8ea52e606e4f23109e93cd",
+     "stake": "6609353856724789322249811168490"
+    },
+    {
+     "account_id": "solsticestaking.poolv1.near",
+     "public_key": "0xc0042fee4df7be7ba78db9b87fbdf463a38a292b50bd87372e3ec6396419f916",
+     "stake": "6400504126682176318465957631844"
+    },
+    {
+     "account_id": "aca87218e28c41f5a693dee3dff12238.poolv1.near",
+     "public_key": "0x3213b575aecb8f865e2102fc9f2b1b9daaa949e5a10d6622ddf2b8fa33816f52",
+     "stake": "6349509860937668791330965861568"
+    },
+    {
+     "account_id": "silentnodes.pool.near",
+     "public_key": "0x3f09fceca07a9ab980825e696a46eebe542f86e09147bd7377c24e5b30cb1b85",
+     "stake": "6061250125257407514058283928075"
+    },
+    {
+     "account_id": "svrn-twinstake.poolv1.near",
+     "public_key": "0x0e63ce03351fba4b383e53d3d9a90e31bae38dec6fac3a401d3fc85b476981aa",
+     "stake": "5989920534622908095432068965065"
+    },
+    {
+     "account_id": "d1.poolv1.near",
+     "public_key": "0x61865578d21f0531845f722c7ac4fd0d6784ad7e6845ffbe26592f725589cb53",
+     "stake": "5987765324954880819787036268583"
+    },
+    {
+     "account_id": "stakin.poolv1.near",
+     "public_key": "0x6926f74d3650b4e133d6135a540ec8b748bf4ddb498011b2553fb73aac8ea93d",
+     "stake": "5609226617220994152916210290560"
+    },
+    {
+     "account_id": "bisontrails.poolv1.near",
+     "public_key": "0xcc9e38be807372a56b313a2bbed6f3281613d17ad70e99b1bdce57ff599a28e3",
+     "stake": "5448363123916143371760193804791"
+    },
+    {
+     "account_id": "lst-pool.near",
+     "public_key": "0x1b7dfc3e2c12a1770afbeee10cbf5cbe1eaee7808e42f81e718fe2d5aeaf89e0",
+     "stake": "5185324191105635719898475926565"
+    },
+    {
+     "account_id": "legends.poolv1.near",
+     "public_key": "0xb7c1da5ee0b4df4319d67e9ee00812638fc61ac9525555225dbf421e7932b438",
+     "stake": "4924906271806102791738715859245"
+    },
+    {
+     "account_id": "northernlights.poolv1.near",
+     "public_key": "0x5d621e09311356596e924d6d605fcbae0feff30f0ad47714519b8588dbaac6ba",
+     "stake": "4563180007708014633506453466392"
+    },
+    {
+     "account_id": "republic.poolv1.near",
+     "public_key": "0x485b4d7eb974ae75b878ef38c18b8067baf551ebdc2722cf84e3e2ce7d73e411",
+     "stake": "4298242745808319267023155125789"
+    },
+    {
+     "account_id": "rekt.poolv1.near",
+     "public_key": "0xdbd729c3562f9eaafd610895568b901c0eaa07548255955c611fb029b74d2d4b",
+     "stake": "3996003646580684053692359704159"
+    },
+    {
+     "account_id": "ni.poolv1.near",
+     "public_key": "0x74ec2cf0a59d1f245d37354d2ca5bfcb37f6f2ba0f29c378db940b9e2902dca1",
+     "stake": "3452397496395520761519943746558"
+    },
+    {
+     "account_id": "everstake.poolv1.near",
+     "public_key": "0x3104782f5d324849d18fceb128e7d078728dd36b9e4783d3f5a487d0752f921d",
+     "stake": "3361457726663311024958776387240"
+    },
+    {
+     "account_id": "nearone.pool.near",
+     "public_key": "0xf5c79a937d1318c12b5514f046fb4807af184dd0d7926662446841b82d24526a",
+     "stake": "3228313297493968244490524271653"
+    },
+    {
+     "account_id": "gtnode-0.poolv1.near",
+     "public_key": "0xc7b3d18d05703df6bc5ba8d4525cf055457af5ac559303967723feaa505f6676",
+     "stake": "3207846110368643449812972617140"
+    },
+    {
+     "account_id": "okx-earn.poolv1.near",
+     "public_key": "0x947aeb15acf9b0fdcec39721aaf0b0f1d0f57da7b7b7c58a3c910d39f0391e4c",
+     "stake": "3199895980060589592329941198769"
+    },
+    {
+     "account_id": "nearfans.poolv1.near",
+     "public_key": "0xe407e0cad34baa9b99b02c8d7d4e49877ca40808ac1daaeac3a44a8bc20c8282",
+     "stake": "3173761253528207340335109478049"
+    },
+    {
+     "account_id": "here.poolv1.near",
+     "public_key": "0x329cacd858f4878ab527cfbd6d317a8740c5714c9e571a73e89d261855f99f11",
+     "stake": "3026762578922134906200991732160"
+    },
+    {
+     "account_id": "x.poolv1.near",
+     "public_key": "0xc3e496c399f77ae83dd620f877c90f1b06ea97bec9e011d360abd774b23eb860",
+     "stake": "2608122965417319683895266327803"
+    },
+    {
+     "account_id": "bitcoinsuisse.poolv1.near",
+     "public_key": "0xb1cb32da4fb70cf669d7149ef532e7c24d773c0e0ec20c79a56008796c27ccf4",
+     "stake": "2327756113103078001342470574692"
+    },
+    {
+     "account_id": "twinstake.poolv1.near",
+     "public_key": "0xf6e37bd89b3467ede091d8cbbc1b731a0ea5bc1b1887da2c2c89a276a14b49c1",
+     "stake": "2304867282367824188016567777220"
+    },
+    {
+     "account_id": "falcon.pool.near",
+     "public_key": "0x8fdf5daed3aec4ee2845ba0f2a0ecc4f48015d63825b45b8eecd84fb03e67804",
+     "stake": "2259440336298303780081333899507"
+    },
+    {
+     "account_id": "anonymous.poolv1.near",
+     "public_key": "0xf9b3523695ef7c8fe97ff9667f434d1572d69445970a32f2b88a70ed64424a1b",
+     "stake": "2253438456618646765544277377156"
+    },
+    {
+     "account_id": "erm.poolv1.near",
+     "public_key": "0x6a00a3e228258e4ee40376df56dc39a81b2d79b478303163f5dbbe90f8c2ef3a",
+     "stake": "2241127498727244722295049748803"
+    },
+    {
+     "account_id": "baziliknear.poolv1.near",
+     "public_key": "0xc202575c4fa0b042afb81d27d3ff71111f4f0b1560608075da18244751002dc9",
+     "stake": "2187604785605687664349937799638"
+    },
+    {
+     "account_id": "lux.poolv1.near",
+     "public_key": "0xfc72cbe55b5cd0da612f205e7cd21b0f29131ae53ecc9111efb45526de977101",
+     "stake": "2170469554281296476754525397913"
+    },
+    {
+     "account_id": "staking4all.poolv1.near",
+     "public_key": "0x33840501bae02ef6a137627cd06a254d32607680491032845627ba28f7274584",
+     "stake": "2135891733922422508271656316476"
+    },
+    {
+     "account_id": "dsrvlabs.poolv1.near",
+     "public_key": "0x7d4f6b36d0f5e1e7f94893f58b2d64e5fb975dd0b9982e93313bf402c608a27f",
+     "stake": "2131708690977768387461218510480"
+    },
+    {
+     "account_id": "blockdaemon.poolv1.near",
+     "public_key": "0x21a71cb90c0fef940105eb5eaef5c2ae5cd936144488509d6e8a4578fe4d975b",
+     "stake": "2013004122968448555797871147743"
+    },
+    {
+     "account_id": "sofarsonear.poolv1.near",
+     "public_key": "0x9613da67f2818f0b2ffc525b36361b6efe93e8c6bc225a0fdea747ec3e77106b",
+     "stake": "1991869461020763414037611574839"
+    },
+    {
+     "account_id": "moonlet.poolv1.near",
+     "public_key": "0xe9f1eb4ceecb07bc5e8be86ed72fd0d9dae6082c0bfb1515a1426c10b51717f6",
+     "stake": "1988063841102320100201108727132"
+    },
+    {
+     "account_id": "cryptium.poolv1.near",
+     "public_key": "0x43699687585941d745ff33e72e9c52441d458da236a0771e7f47f31428b2fd45",
+     "stake": "1949137189602426491136379210219"
+    },
+    {
+     "account_id": "buildlinks.poolv1.near",
+     "public_key": "0xf6f6fa2a4ba86f396ee260af5944ed052d33f527f25ddd49d6e01154f6d1e691",
+     "stake": "1948254758204908104613928385959"
+    },
+    {
+     "account_id": "npro.poolv1.near",
+     "public_key": "0x949d073ec88e2ad040550c77efe81eec1f529d85b2d520af4c9a577d27d4f37f",
+     "stake": "1926935399354141288790155352356"
+    },
+    {
+     "account_id": "chorusone.poolv1.near",
+     "public_key": "0x8e29293031ae6e8e3da83c21a5eacd63326eaf7a26962b4cabfc9519f48ccf8a",
+     "stake": "1925005195862837414419368210420"
+    },
+    {
+     "account_id": "stakesabai.poolv1.near",
+     "public_key": "0x52e5b4c8e546a67d15cbb456437ccc53d364995dcd98089bb42f1a0ec2bc28dc",
+     "stake": "1825684732904199203480824787407"
+    },
+    {
+     "account_id": "trust-nodes.poolv1.near",
+     "public_key": "0xa1a337e3d9b9697983e124f6a6ecd799f9fccfac48eb9ea29b25e2e772164abb",
+     "stake": "1637631430762090874832647288918"
+    },
+    {
+     "account_id": "autostake.poolv1.near",
+     "public_key": "0xfcc990a4b1595845f0078aadca7e1e9f8735cee39029f201aabf32648d568ebe",
+     "stake": "1621577884038158237340507662660"
+    },
+    {
+     "account_id": "lunanova.poolv1.near",
+     "public_key": "0x0c7d3f4fbf5a3a9bf14fbeaab8fbdbe89418b48136dd91f33ff7580e0d4a3a0d",
+     "stake": "1582774318933714715034960424246"
+    },
+    {
+     "account_id": "meteor.poolv1.near",
+     "public_key": "0xcfa4af6dc45a4bcad93da57ec1196dc38aac38f269121266a6d2554e2d45302f",
+     "stake": "1570293489171706512235694079945"
+    },
+    {
+     "account_id": "openshards.poolv1.near",
+     "public_key": "0x34745a9187778a5c24c7f8084c3b70557c78435c08bf53834dd0530de7187a46",
+     "stake": "1545185848009128256399748231950"
+    },
+    {
+     "account_id": "stakely_io.poolv1.near",
+     "public_key": "0xf55e234034358b1b2e2c67c7d6dc5211c78aeb9232b4c3b7589d54fa42c85042",
+     "stake": "1520190393323432158911997570186"
+    },
+    {
+     "account_id": "kiln.poolv1.near",
+     "public_key": "0xe158358cc98e3728f9f2e2d1f26095af41e2cf8031555d4dea5673da70139c18",
+     "stake": "1509097723499146802759191214251"
+    },
+    {
+     "account_id": "luganodes.pool.near",
+     "public_key": "0x4ed5b3e278226b4a2146efb3c82b0b904de0cbc390a49816c6c1a57ced17a50d",
+     "stake": "1424874456661591550669941586563"
+    },
+    {
+     "account_id": "hb436_pool.poolv1.near",
+     "public_key": "0x650d6e12a1e2ba54ae42e43f5fa20e8cc19d22c488e40314c4cff6009c5f487f",
+     "stake": "1377561418860812146640963222892"
+    },
+    {
+     "account_id": "qbit.poolv1.near",
+     "public_key": "0x3eb89f25e7b81d62377a2e9f3c62f21dfdd5225353cfd5719ab52543832c6aa5",
+     "stake": "1317999578037077984613248721306"
+    },
+    {
+     "account_id": "eno-blockdaemon0.pool.near",
+     "public_key": "0x0487bf79e11f609ad90daa4b6cd23c5d61b6d671d24de6d1f6197ccadbe8fec9",
+     "stake": "1255364954318313946125584941694"
+    },
+    {
+     "account_id": "brea.poolv1.near",
+     "public_key": "0x716303bd21d5b06eb12fb7d9aab1575e45195c40a7d6099e224d61e3beabe148",
+     "stake": "1193464500455303217416211697538"
+    },
+    {
+     "account_id": "masternode24.poolv1.near",
+     "public_key": "0x43e14e842536da53cb620ec724375540715f46ab21e9b651b31dd0c574affb47",
+     "stake": "1191294715814198139998237854528"
+    },
+    {
+     "account_id": "bisontrails2.poolv1.near",
+     "public_key": "0xa138acc36dba303006e8625be268f710e7b637551e4d6169f5546f71f7ce44af",
+     "stake": "1157334658401332070646397373239"
+    },
+    {
+     "account_id": "stardust.poolv1.near",
+     "public_key": "0x57164dac1e16bcaca82200fa4fcc7fc67d785509840805ecd6cfdd14da9342b0",
+     "stake": "1154802539383527701741044132726"
+    },
+    {
+     "account_id": "lavenderfive.poolv1.near",
+     "public_key": "0xf5992762574129d7ebcc98607e4104a2a48169873f9e6a0b28789cc924a583ea",
+     "stake": "1153884155031950735391606325915"
+    },
+    {
+     "account_id": "northstakenear.poolv1.near",
+     "public_key": "0xbd4dddbef29e0c30f15f88ea29772b6aac9cea27fcfab03246d3d4062a1b0e1c",
+     "stake": "1106462462320919128731373065949"
+    },
+    {
+     "account_id": "pandateam.poolv1.near",
+     "public_key": "0xb0cab8294bebec43093dc1aa13cbc84f1bee12c66a93f41f5c45355182b99525",
+     "stake": "1082019589913161196797001479445"
+    },
+    {
+     "account_id": "hapi.poolv1.near",
+     "public_key": "0xee6bc1c28edbdece0650406330399dc2f861eb701997289226030da226c23787",
+     "stake": "1036516322468063116060430103378"
+    },
+    {
+     "account_id": "avado.poolv1.near",
+     "public_key": "0xd9529782fb87d1f07e5921350c5be25bc64d934a4c71307127401ebdac3f8d97",
+     "stake": "1022801608506482607021325743056"
+    },
+    {
+     "account_id": "01node.poolv1.near",
+     "public_key": "0x49c6438ba40e3aac837cd6b74d728355d3cd998ee7b96270af89e63c1155ad07",
+     "stake": "998894451710807820367768241675"
+    },
+    {
+     "account_id": "dexagon.poolv1.near",
+     "public_key": "0x8bb0b37640ebdbe3483211af88877954586f7ae9b69e1d533f0e11508188a454",
+     "stake": "987917695459320551093381984633"
+    },
+    {
+     "account_id": "optimusvalidatornetwork.poolv1.near",
+     "public_key": "0xa4007e691397cc1d399ecc638fe1d472d8f7e6ad2f76817355cf39c47a1d27fd",
+     "stake": "979921135805820241569529604822"
+    },
+    {
+     "account_id": "near-prime-public.poolv1.near",
+     "public_key": "0xe2daede49f0627a8143c8c221db911c79225a066c66a525bc65783a36deb28b8",
+     "stake": "960846415379845803676225573817"
+    },
+    {
+     "account_id": "nodeasy.poolv1.near",
+     "public_key": "0x7377978f3b1738413cfc96cd0d5b6077e2014fc9d7750eb59f4d3f61f1d51636",
+     "stake": "959985579561234987151605998120"
+    },
+    {
+     "account_id": "atomic-nodes.poolv1.near",
+     "public_key": "0xaf9ab1e009f23d492ed56927fc2682a415147a7574d5296b2cb5e169c52b2441",
+     "stake": "940129976411251275041799742181"
+    },
+    {
+     "account_id": "colossus.poolv1.near",
+     "public_key": "0x48c7102943c79ca4f1b1f2197461c51cee17516fb4480c8177c21a8a1520b42a",
+     "stake": "906735863411879024352702630378"
+    },
+    {
+     "account_id": "namdokmai.poolv1.near",
+     "public_key": "0x3ec67bfed85f40642e251fd3a4ff9e4d5180aa008301c0e8b9dece30ddbd5e0a",
+     "stake": "859885954259038229561335474724"
+    },
+    {
+     "account_id": "polkachu.poolv1.near",
+     "public_key": "0xa9ca872c1451d50f809f40eac259be2ca050a4ccd35f47a3952108b7f69e3853",
+     "stake": "855645955671519190113768083027"
+    },
+    {
+     "account_id": "near-prime.poolv1.near",
+     "public_key": "0xd0d8eb7851a984d02078fc56fc8ed0f3c9a71b98e705b594d7805cd80eb17137",
+     "stake": "832421420992838268855351997510"
+    },
+    {
+     "account_id": "smart-stake.poolv1.near",
+     "public_key": "0x873f13407a5c377e076c6151a0fe80f277a5b9194cd9d07dce11448f05a18183",
+     "stake": "828162635967314221801346360287"
+    },
+    {
+     "account_id": "fresh.poolv1.near",
+     "public_key": "0x524de964c235c8d7a082c89b489da77f8851e524aded4d7d59e7826a42883d96",
+     "stake": "825627685057964512707955580909"
+    },
+    {
+     "account_id": "pangdao.poolv1.near",
+     "public_key": "0xa3f9150223ee55bbe112b15069577090e8f4f4f6214434fbfe8b0b425370d222",
+     "stake": "804935981010071393482837511870"
+    },
+    {
+     "account_id": "hashquark.poolv1.near",
+     "public_key": "0x25b6aa02bde3898aec6e53bffcad0bfaa2e6bada2cc5962cba35def6cc65d17e",
+     "stake": "797892243685513685494694545341"
+    },
+    {
+     "account_id": "nearai.pool.near",
+     "public_key": "0x2b0284b50c12651e0535767e89a25567b63709b1256ff41477ad1b64035ef4f9",
+     "stake": "720300310219954910145635474058"
+    },
+    {
+     "account_id": "rhea-validator.poolv1.near",
+     "public_key": "0x34e4e87dcc5a6398f0b54f4a99ef52dc2bedc8dd2e148a4ac17d30833faa2835",
+     "stake": "672516840493652046315509834029"
+    },
+    {
+     "account_id": "link.poolv1.near",
+     "public_key": "0xba9407562966ef3ba108e0286116319f8790d57e677a7c6d11d5932c8c1eb9e8",
+     "stake": "661026003174012504889885792062"
+    },
+    {
+     "account_id": "p2pstaking.poolv1.near",
+     "public_key": "0x4858e4bb371641f0eb79c4f6a2ad05ce9b9b17a8f09816eff01c4145012ad9a8",
+     "stake": "611479232952329432748533938159"
+    },
+    {
+     "account_id": "delightlabs.pool.near",
+     "public_key": "0x1a2335d4f58ceab320dc50460259a99c5c89f0e35c4a0494b6c162f909b1b13c",
+     "stake": "599983787854638582825043337486"
+    },
+    {
+     "account_id": "shurik.poolv1.near",
+     "public_key": "0x2e7c8972bb18bc958bb975c9a98c80a1b654963ccc63b4c5ffb1b09a31e036a3",
+     "stake": "591169656882130969309636396923"
+    }
+   ],
+   "approvals_after_next": [
+    null,
+    "0x3725aa86846db9bde4e264938c1af2fe3e21b4741f5c51f40912471d1d85e39e22e0c6aec0e8c47b6207f02dd6530c4376b7b457f5e1f687e43e0a28a30fb70d",
+    "0x30a7e447a0361c740e926b4f2e7b1b5c30e3f39cabef96c1559aa48e587880c67241b982aa989c3a8c6b0f2c484b10445ecc67a9d2efa003bba92f1521f44b04",
+    "0x1170d775daeb2b0c3a3b42bdcfc897ceba619f1574b1a97229aa987668a9f68ed8b2d1ab08e6b7134ab057c14c308e18bec84d32814bda7af6b82fbcbf521808",
+    "0xfd41caf9aec26336a30de3308ade7006eee4e83b98956805368c7fa9c7825883cf2ca286ccb8a91cf2f6ff346bbe71eaba7d307dedf36e747c6abd45a94a6a0b",
+    "0xea21e96f2c5c9d7e415820303a0c567549ffe92073ad8ce6267d68b8f8df6e2c9798620fb502b8213a31d0317c6e412b99d24d4c55be0dee484c3ff7d977aa06",
+    "0x47469580e79c16b9d5da82a1e487e8a8b2f09046dc454e152abec4cbb6dc7f10d7584d9f22cd28dc8893447d6dd6692a36651f6e01050412bdfff0ee88beb203",
+    "0xa93d6ba0e802bd5d7a139b7cd5d2d7ab5aa4769dc59442b5199dfce77920d73b0ba8521735c15d5391d783b02ced7d076a3af912c4141bf28e192a56f7772703",
+    "0xa26aa84876e7b1df060e4c38161db905fe663b40e87227ebaff0710520f15d14d3900ed015297a517f71a2591214c5e231f8d92ce58361729a6dd006da470603",
+    "0x950c3185758604656aca9af5624bf98874d867b514c8df78bac23153ad0729c4ef2459f5d2ca3110877549c5e8d18299593427df2be8ec0194f06d7b3375720e",
+    "0xf8a8a3160ca90d421d785d24d211044b4044e33f3447e114ca70027110d2e20742758e469e438b9e442161141dfc8e2af9ea3f6f841f69757ea307941ed4290c",
+    "0xd29a08e5851d6835166c39e0d06d526aa0cbeecf5cc9024729c339f4cae02cbf22cce3744b544e7580d5cd520b70990f76b1d0491c31e54fa39babcc2626080a",
+    "0x0071c586df441ed6a53b97ce57d8e2b2ea563652b8a31330162a735b0bc7f8d756b0021dd51170f67d8d04befc093ad9db5f6a454a7c89eaa594f09f69ca140a",
+    "0xd322e0b8c69444fd61babf53496c707032b1830354fc6e9648a1ae94c650eb1bfeefec4f2ea23203c2c877deb1572d916284b0c6ebba861fbf7741bd2d101b0f",
+    "0x2bc88d81e1196ac1bc59dc95307862de90a695226429e8131ac92bec9d004f28ece568c04ca44205b1e814121d507a91224e60677cddfe6f736627e0f162c80b",
+    "0x7d3758f359289984889eac986fc774fb8654b33a958f21f5b91a77d546811eb317b04d8f20c51c31a24229e378af4060798a76e23166a84a184dd09acffb350b",
+    "0x5f67482fc48a0e417b7a52db6312314a9aa715c84797caeb72b8d9bd11e184f9fdebcfcea4661ec6e38ea72b813fba5f8d8e4cf7a54a245e415b492c195c5209",
+    "0x693c18821ab104fd0a6d1cfd8e33bad4758063e8538ff735c57cc53a9be8b80d7d6f82a08230090df30fab931b28671f6989040b312a31a0d83b22a1f1bb2400",
+    "0x3e316370242b0fc4bd475e868a07e3699e0567a316a0e5ef05e0b6e34889893ebe3ecbd75e8d5f554c041b3796b4d75c0da842b05721db6da46dd9a28bab2709",
+    null,
+    null,
+    "0x4d2e77e56ef8c9ba17abae8a9641b824176f22db867cb63585c29287668603bba8980197817383c6b4d75121f9f50f9d956be5a303649b9daa5537eccf3de200",
+    null,
+    "0x74c11350f06d20eb427bd12529498726cc3d8937bbdf47b39185379287195f7c9ec760e391a88b6aaaf2f68c8a0c1e08f0669fcb442b30c78197023c43359d04",
+    "0x8104f374866cee04698bf1c9296aaca87a94a9f1ebfdc638cded62b6b4638566769aedb2b672914e7a64fef70654c066a58dbdaa6340d23ce0eea1ac96b5d007",
+    null,
+    "0x22de5daa37606606ca57e598dfc9d174abbf971261389f53af055f081c045795bbc22ac3a6d4c08375eb809bfd6acdffe9f2240269cc0f221f2ad193b13de60c",
+    "0xb2faa29d5badb4fe4fe8968471263fec32ba7024a10cc2c39aeea6eed7e3dba89b6966dd5ff59ab248f19704fb413867a6ffe16cd07fcb40ad8d1c7cc18a8b07",
+    "0x5c185599c4e54ebe4f108b47619112297aa6cb8d99db22a1257e46dcfc1bb990e18c99863f126ddb6cc00f0b1bc6eabaa25f9d17617cf2f0ced13a34fc941b09",
+    "0x08752b1f10fd720b234d9fb7c939223f9231c2b37b6111d18758b9f5fb7b413f11396af92341b85b84a6d70047dbdd8b306735259153303eb47a66b8a775a906",
+    "0xedab63c501c3737b11739cfe578dc094b6dfbeef0863271102224109ab453e3593b310f657d8f68b16ca22b0c60510d5d592a7e4d0a006739d6fa6640218be03",
+    null,
+    "0x0b6df5fbfd6a72a6cd7a3e15e4ee8ff90dfe229dba427cabe5db9743302d2daf5b19fa3ab0efb287bffa07d1946c695421dcef4feb4559156d20186025d37f07",
+    "0xece97184b2d10a189515fbdcf5a2824dca778f77ba5495750beb7423d69ebb9f47a117fbf3c46ecf0c9335b514af6a5ff90820d2ad376927f5860fa3d225ad0e",
+    "0x9fc91abc942687689175636454b17d087410312741a02e5f004ed984e36d3b195cfff39b99595e7865126b2a9d45facc5b68059e6b5f0ff6de3e9d6da59d9e07",
+    "0x6629ee73baae30ef262cf7bc5b11ba3935533cc14dd4526e6d1862d2298546d1c8bd9a5b44c2c81f5b5199aae1688d935a7348ff9e410ca4c19d66b33c95ef08",
+    "0x10d5f65ea7c9cbf9410b39cc2bb8097d583905bb0b87c7eaf915c8c8c3bbb6a72e132c3492f5055a6be6ddc582926fa49d5baec8ff88bb07ba00f758ee05aa06",
+    "0xf756abc775c0e11f7dff55c0a15a95d0675ec6ccc355a55858f9131f73ff50fc74df45a3b343ae7ba975a213d5fd2a45ea38220a2e22a29e3f94d28b03364105",
+    "0x86d51aa2d693d600e84566973a7df2078b53b597e31a018866ce3e331cd9eb4fa83db53758967517df972e572836d6df11438beee45b6ced1e3581732100e908",
+    "0xe169a9fbf6775d433692ad7e37aaca41e529db9c5855db267a9e81c02e902801e108f58cfd394a505f0430fcec67c227db1067a864f857ec8a1dae2bbce17f00",
+    null,
+    "0x29a156ff60f9b92a40d16686ad1c132b0a51682eeddb927bba8cfbeee46d7b0a7c9476b5706995cc8e8cb3eba06e3cefdf274067be440ff350d1a16172628404",
+    "0x2f2ac736cb276990eef9496a3372065a1cbda1fb7d8b28f56fe4558ec7e2cd90e68c9cca320ebc3370bfd92a1291180fb6281f75a7dd42e7688a9bf3d87ec50c",
+    "0x06b7ff2be19ee94b9bc23b73b617d4ac2c3118912897ae9e34f7dcbcb160cdc8cfb06a750dfbbf6847fa5ab409520c8d7a7ff72113c6a7134ec4a0994aa88c0b",
+    "0x4d842a6ce5b6857ae2d0a540bbc0c6f48a2b4aec410c032ab9deb5b61e9ebb3526a966ec575d031f5b749d7d01b8957a296b58cb571d69f5eb0a61122932bb08",
+    "0x9ed2c905477b64bda860f283e5fd1fb7a1cea492f653f98a25fd50a6b4b425a1494d2a124a215240ad72db66fd0ec32ab1a99d033cf5bf81fa0a41dbbecee10e",
+    "0xcf492777e94f60151616f3f0f1be3dd9455386be30621f4c918bae68da0234192d50793b56c0be9834f82c844b5111397ff996376c44ad8db6922f47ae3f7e06",
+    "0x8a165f5d6ab075d888448ece88fa70ff0e6afc17417b3223c5ab5939b354e100108e4579c090e477ca7b2d3dc47b7cb3a967aae247f2a5fd1ae3ad6a37be0209",
+    "0x0a20ff016610e80fd350664949667e91c09f1e21dcb7089d84cd407473d27508d53257f53a804330f343991e40211e985026de06670a30112045ec2db78d490b",
+    null,
+    "0x60c5545d34eae9c9bbcb2d98d35e0ea850f397f8db279376e77c5fc097dbf468e1086c62d99dcf74d2851c58d72941355fbd619067e802f58f9a3237553e130c",
+    "0x5f22ff0f0646c999312aaf27df8a1a764818ad40b0effe755781f40e58a4bf6670fe8761e70efeaa7933ddb31fcccb5c72abbe21163bd9abf13a161814aa7700",
+    "0xc08211b7cd209cf28744d40ad7b957b594a784737640d7ce92234bff982fbadef0d40201e60bcff972f922b5f810033d9ee1aece5df4d7793039d2eff4460d0b",
+    null,
+    "0x5be2d063827fc2eb46b2181b10946ba646fc8dd22f1ab92846738c013a12fb066f7975a48302bf9555a9bce1937f90b142079b3aa885962ca9c3a1451b1b5405",
+    "0x9222a0b2e60634dff1acf13cd65a51fc5809489110fa5955d0e75562cb51c9ea22f59286a10e43690ca3b77fc193cff28a3ba5f50df0a6d59a7b7e54f9201e0a",
+    null,
+    "0x656879c24ddb964f3780df42bc6fd4489dfc9d8b94d8343da0c3e6cd16635bc7267cfd8528687d644dc4fabdfd1af46fb32bd80db55f43ba397f047cb23c7303",
+    "0xe4f2d48bfb2a541f2b25d9189c0427d1c8849e19d0b4ccb9fae1f403b99056e4c6232a26044d1322dfc8b60b2a62ce9f218f4f71ff8bd92e24c87b53eca2cf04",
+    "0x3df22cb8a5fcba5debb83bf76f354e7530e6d079be55ff5a7604c3118c3231beaee25426c5b98507abe8c03b520bf93e1067c11d5edd91db12c1a09cfebb8e06",
+    "0xb61a72476f512fc84915237a60390fa0b86903ddd42f77bb398c7c9ad8bb05cebd12df5853df9a7e912f6f89bb4bfa66a3ce69cb45cc8f2e8fd2744bebcbf40a",
+    "0x751a4fcb28184f2ca214997e7fccaecb6765eb8d101f66554221e161f42395c857d1b18f179666902f51d0d402728c0786d4ba17b48e141be0d7b1984bf54808",
+    null,
+    "0x2f78cb0e9b69fa48282e6ac971573eb9e66378c46dc7fdefd2becd8ea2d5fa163cb0f9ffdea8f190d21f3b26bdd7279a0dae0290dbf406a00211a76601674806",
+    "0xda288c407de663d7703a27e9d3f561a91f3186123c9aeee7e9ad3b0828c10ddf1c5e385694fc356400939d8e4344f13c58f17ebb3117689b2b177ea3a2002c0b",
+    "0x903e179bc501d307d75d600e8b3564c1f1ee3b6a453f74c3c5f97903796d926077b8b281f80986a2ab5746267c55982ce7c140c626244be1f2cc52279dc80f05",
+    "0x358c68a130cae5e2a081ed48381b3048b1b6c591494b610ba5468dde2c35c797d6b5d53560d3b8002a0379d92adac8c968d1059d82bc9ab672ab1d141dc46a0a",
+    "0x72db11a84e0753451be7634b9051e994d5aa80153547e1f74cbf0bbd42bfc12744dd73c8b10f9009cca9242582a4d57bfeca9055e67b1eeb741fce96e8ae2e09",
+    null,
+    "0xf4361206428a82a52faf9aa5369b2c49018171a3a98e12ffa2959eb511a8be950c70b99d86e530bc15c958c80b04844a84a6071a29c1165fe2a54eeceebc010c",
+    "0xda23f55731a403fc35101f32a9a25a04138af82d23dd9fe720e47b4518413769aecc24fb0accd0bf51829d955980cd38346fbdaf0c777ef56e49a42fd3844009",
+    "0x8db8ee0875d0953c5b9a03c6845b4f64920d9c33d3c680ba7d4fec53f538f36d6348761ae0500d09aec7d4d4295af41cd5049ead1ee06cd232b5b7a69cd44504",
+    "0x43ac0a0972cae5aa75ef729dc5cb5ba2924559be91afc64e4404e0c465944f609b82c62712cc1cb912875b8a550ce0dd73deab021b9fd1d4cc9453ead4389503",
+    "0x31881dade706425f6cad99b35e9db89ed413ac92fa5e1ebb6f42362cd91c6c6d737073f08bfe55e38551f74e33523900baa6a52ed52a5068fd4f33059f38f60d",
+    "0xd8965080b44b7945f397cf7e4513e08427f6ae792d69f646b84de1529fd0cb78720bd8ba1a6bf6bac06a77be61b553151735f11810b757ba9ad64bdae6da030e",
+    null,
+    "0xe1e84a4ef12388e2b4460a34b3eb999c1ba44a6aaad32bb6c3536bb96a8287a0c053af27b3d08e20877f5824f046952749815cdeb0a021148f0119f6e2b2f40c",
+    "0xa220ca7727bcda8f375dde8a8fd65a3375978017abe199f2ef595af11b026f1e09850463b5eb81eac80982d9cbdc50aacac523fa9bfb59624bc7f3cb78969d02",
+    "0xf1e0b33add6b3f6e4704874235c140ded6891a22cb93dd9a349c6a9b378a22373f2b58a173fc1856f312558f645b1eb7c5390fba8e3b77e4d7b3433a9c959908",
+    "0xd2a3989abe0574f2af958a5a4c4b088998e89ffe172c2a75269603d69d15056f532edab23bd022ddd52bdaafa67bea2310f57fe42db7243288d006507ef79f0e",
+    "0x3ad22824937527987940add82bed2838a8200bfcb7dbd6189871b762fa8cd8db5fe69f2106d895c114c5b97456c45a6378d36e65ce1ad8447d0dd69e19413403",
+    "0xc9044b03f16addfa7586770af63e7a5fd9ce31c4328fc74becd6206d09554fec8a7a568389ab11fea32650bae18eb6a89b9aaa177e4666e4df4bd7ead7656a0b",
+    "0xbc1196ff4e620fa11e24a82179ac7548539d07431ba6ea93a523787426b8ab4ee83e4c4a9b43dda962bd0845baae75fefec68e8f9678be8bc12e52434780bd0e",
+    "0x10bcb4a8140546f271092e42323d65791639f348a35ba370a6bf4e76fdb9248d9e4c6b503d40c0213b570002c8e5d6ac00d5031f10d77211ce5f0cdf39f11f09",
+    "0x1ed36d159ba7a0b0fa78b0d3c8ae302863066a19d0562ec6807c889c37949fdad3834213b148ac34c6f21b5848a4a04891a399128b236bcd8224fccd31d9e80a",
+    "0xd7eb6fa540707f029d06f69b8d9d90ed146d2bc183ba7996ec3dc8161e932790fe1e104317a29914f148f48e7656bf8836e27b6160ae5535d4600eaa5027af03",
+    "0x93cfaa6132a8cfc33c4d2ae04e08ac85f6d9dd13c4515704632c5728fca946e25743ffc8a0f89f60fffefab259ccffd8240662aaeecb3a17fada201c2fed220c",
+    "0x049ea3899d873de802a49a6c2886c89b6889b158a75e9c0c1179fbdcfd58b1b2136bc5921ac337ad36f36bda7694c9d36486af1ba5ee1b918abe5f63ae6a9f04",
+    "0xa1183beee4b209e3d3505baf37ca1e687d123ec81f7b4debc635b8a9232d3bf0ec639bd8d1d45bae2355f94e4c97f78db94042a5d2cfb7ceeefec855bb0e9c04",
+    "0x5feb5dd56e337afe118b51560c3d77c575ab1a1e3ecad780636106aae5946cb6084be1d92afdb027c48a3e98acefc88380b4cc07d70e60a2ca90434e5fc8f90b",
+    null,
+    "0xed2cbf551c41ffafcefa14e5561ecef1214824d87d41d87570636ce42f0ed0f0cb70e4f7277c776dd987450ba05e1dff3e03befe2d48b5725265ff5d426da200",
+    "0x8b0112278ae328632a91e53e31920cc232f0010e5e3dd41073d6ef743b0ecced5a488548c3a1c4e2dd5a5fc5d148b559c8bd86b105d6a9d67f6dfc128ba3dc01",
+    "0x532e4cf1a149934a42d2c6c0e4e26cb63b817b6bd17c6c82e8f624fa44aeb021ba9f2961b0edd3b68b55d3dfe59f2dc15d2de3d3b8c35d7eaa7863bb106f2802",
+    "0x756b570918288ea39c6d6449c06db6e1712a1685ed1ee89c5137c0fa31b6cfc3f9dfe7dbdf3011cde0ffd15b3f1cc6c84f5d78e586a3ebee4b0d219aa145c804",
+    "0xfc872a2f68caa6fbecc457a0aa6b6ef35fdac36be93d4673ccf364913cd6fa644c9622973935c60a1742d87b0861869da35a5a33d96b755e784b047d49d4b403",
+    "0x0183f520828c84d5535bc804920df99076275d568a54cedf82e15baff0789d0318753494fd28054f5a1fc2d91d55bc6dd5de0ac055a834d221e392cd335b890a",
+    null,
+    null,
+    null
+   ]
+  }
+ ],
+ "public_values": "0x5b96f2e2cd8bdaae43dec45a1bc003f1d9f89f7230fe074578db2711edee74a248eb992763ffd99291f9ddfc1cb136856b74e4d3832309cac6e635c3e23e88fc6ff7faf052993d5804499f5f41811511340ce20375f052965f6a1c50260d614bd5513698dc6ba42dc407ced3c72de4b8009da1b8675a5fe797aa08d81cb4877e00000000000000000000000000000000000000000000000018db1cab46926e33000000000000000000000000000000000000000000000000000000000d04707700000000000000000000000000000000000000000000000018db1cab46926e3356176b4d9a3d9678c5444f3029671337b2f9600e5743fd20aea8e138e8a69f07",
+ "head_hash": "0xff4fdb30097e07b7deb905260dc5a5fb58af921db0956af716ec921f7bc6aece",
+ "outcome": {
+  "receipt_id": "0xfac911e4fd3cc66bca00bf52de7c17773ab4e34337d0170403bb20282f839e34",
+  "receipt_ids": [
+   "0xe01f149dc4e01d26cd55341cd8bb8b5481907e8105bf86f1f289c7c080dea053"
+  ],
+  "gas_burnt": 3858257443241,
+  "tokens_burnt": "385825744324100000000",
+  "executor": "intents.near",
+  "value": "0x223022",
+  "logs": [
+   "0x4556454e545f4a534f4e3a7b227374616e64617264223a226e6570323435222c2276657273696f6e223a22312e302e30222c226576656e74223a226d745f6d696e74222c2264617461223a5b7b226f776e65725f6964223a2239613664383161313632646466353831356235363165643739616239373961643839353931633731336365363961623964663033336236343635636361653837222c22746f6b656e5f696473223a5b226e65703134313a646f67652e6f6d66742e6e656172225d2c22616d6f756e7473223a5b22313339353539383439373034225d2c226d656d6f223a226465706f736974227d5d7d"
+  ],
+  "outcome_path": [
+   {
+    "hash": "0x6f4d9dd4548498887bc90cee43a57152b02efc1357316297c7975a726d0b8fb8",
+    "left": true
+   },
+   {
+    "hash": "0xa5cde21dfb20a5600dae0140b5e5a3b33d9ec25b37acf46259e269eb8118aee8",
+    "left": false
+   },
+   {
+    "hash": "0x87b6a004b5951ca451fd4e4b32b1c4ff1b9abdc42c64227fb443bfb600df2253",
+    "left": false
+   }
+  ],
+  "outcome_root_path": [
+   {
+    "hash": "0x99a38db5165022471e314adb61184bd44c15ef8a07998afa47555104416016d4",
+    "left": false
+   },
+   {
+    "hash": "0x85b08bf4cb410db267573519f99b66cb82fdadeab3a33b21b9abb6211c7eae80",
+    "left": true
+   },
+   {
+    "hash": "0x93f77ca3c555ab5809147f4ba16941d0767a6744ad3351a46a61739c544142cc",
+    "left": true
+   },
+   {
+    "hash": "0xff98d890740cc9f6a2f30be6a82cbaffd00b52454e15caf9e1b0731db2324c32",
+    "left": false
+   }
+  ],
+  "block": {
+   "inner_lite": {
+    "height": 218394708,
+    "epoch_id": "0x4098e546b9fa21f7b49c823dcb03443c2dd20c434b961457a5138c8f1948a38b",
+    "next_epoch_id": "0x6ff7faf052993d5804499f5f41811511340ce20375f052965f6a1c50260d614b",
+    "prev_state_root": "0x424d64b518e4776a542195a8ad333826a184ca594be8d1daf2434e3947180d7e",
+    "outcome_root": "0x2f065c01e98c3e55ffa5e91675668f1a5c5a3bcce229900920577fab4fa44f7a",
+    "timestamp": 1791056777875458539,
+    "next_bp_hash": "0xd5513698dc6ba42dc407ced3c72de4b8009da1b8675a5fe797aa08d81cb4877e",
+    "block_merkle_root": "0x9ef35488ec833a721e0dc831bd1ecd6abab14ce159c6ba8db9799391f5028369"
+   },
+   "inner_rest_hash": "0xb582046524083fd69d5a0e895ce24fffb5c3f9395eacec0cf8a13c4ba603c7b7",
+   "prev_block_hash": "0xeed851b9eab4e08634bc2c562ffd6d33f44e71f87226d6250289e061b7c90125"
+  },
+  "block_path": [
+   {
+    "hash": "0xeed851b9eab4e08634bc2c562ffd6d33f44e71f87226d6250289e061b7c90125",
+    "left": true
+   },
+   {
+    "hash": "0xa4db33289afc5ceef72bcb13552d15b277c822b3d401c255add805726f33125f",
+    "left": false
+   },
+   {
+    "hash": "0x359c5219355657c3d510671a9eac7f6678a4a26911f9f7b3464fa5771bd2245f",
+    "left": true
+   },
+   {
+    "hash": "0xcf61d55fa1d7a7a7c30b48a97362dfd722528d465313f9927d53de4ebe56eab9",
+    "left": false
+   },
+   {
+    "hash": "0x2491455806ed04da12e01753711d3933f79a585e1aa81ba69d709466a9a81ae6",
+    "left": true
+   },
+   {
+    "hash": "0xe9d5deeba76ce1497b5d0f9531729a546960b469a79c43699c9838b2c8f49638",
+    "left": false
+   },
+   {
+    "hash": "0xd34ec4a53cb704de159c2f45693f7807da3c7d9634c9181cfdd21b43d7320a05",
+    "left": true
+   },
+   {
+    "hash": "0x54aaa9cbc761efc1a396ed6942b394516dc77166b04b119d356cca3f2f9a7201",
+    "left": true
+   },
+   {
+    "hash": "0xe2057f0f6b12fbe45052f65369268f1dcf4a904ec7019b8bebe6fa5e83cc02e8",
+    "left": true
+   },
+   {
+    "hash": "0x3a7ebbadf9a4e776d9e89253ca7d456a392581d8e229c6255f83a9d4ef56baf6",
+    "left": true
+   },
+   {
+    "hash": "0xf9eafddb363afa74a322155bf4d8e60e145662ebf798d0cc3bee512d31862d39",
+    "left": true
+   },
+   {
+    "hash": "0xb1c13d1b2590a6bb0c8c784b9cd27543e7a0332de9ed21a26e7a52ce2013787b",
+    "left": true
+   },
+   {
+    "hash": "0x6c7cdc2f10d3e87b95dbe009f47033deeddee22a6834807cc767271af1cdec49",
+    "left": true
+   },
+   {
+    "hash": "0x8e413019cdb1f6caa7c5ce0204fb6145a712774da74e8556a201f0a2203993da",
+    "left": true
+   },
+   {
+    "hash": "0x086b1ba6bb066bfa954a6a7e9672b48e9a6c3162e0a8d58209072652bedd9437",
+    "left": true
+   },
+   {
+    "hash": "0xc7ada75e65388ca0c690719dddacab1955dba76a911e288000275688bcbfeec1",
+    "left": true
+   },
+   {
+    "hash": "0x1f61b735e88c7e9f311b14cc83469aba49bbeba16e163d3e7c405dca944e7a9e",
+    "left": true
+   },
+   {
+    "hash": "0x5006331f45f13f1c22609285ad99a830d957c94e0358af4369df6dd35f26c0b0",
+    "left": true
+   },
+   {
+    "hash": "0x5d67020f766048d76c1d9a9c583e4878d0d745aafa27f2b9cb4e5543bd1b9670",
+    "left": true
+   }
+  ],
+  "executed_in": {
+   "hash": "0xeed851b9eab4e08634bc2c562ffd6d33f44e71f87226d6250289e061b7c90125",
+   "height": 218394707,
+   "timestamp": 1791056777168245431
+  },
+  "outcome_path_hashes": [
+   "0x6f4d9dd4548498887bc90cee43a57152b02efc1357316297c7975a726d0b8fb8",
+   "0xa5cde21dfb20a5600dae0140b5e5a3b33d9ec25b37acf46259e269eb8118aee8",
+   "0x87b6a004b5951ca451fd4e4b32b1c4ff1b9abdc42c64227fb443bfb600df2253"
+  ],
+  "outcome_path_left": [
+   true,
+   false,
+   false
+  ],
+  "outcome_root_path_hashes": [
+   "0x99a38db5165022471e314adb61184bd44c15ef8a07998afa47555104416016d4",
+   "0x85b08bf4cb410db267573519f99b66cb82fdadeab3a33b21b9abb6211c7eae80",
+   "0x93f77ca3c555ab5809147f4ba16941d0767a6744ad3351a46a61739c544142cc",
+   "0xff98d890740cc9f6a2f30be6a82cbaffd00b52454e15caf9e1b0731db2324c32"
+  ],
+  "outcome_root_path_left": [
+   false,
+   true,
+   true,
+   false
+  ],
+  "block_path_hashes": [
+   "0xeed851b9eab4e08634bc2c562ffd6d33f44e71f87226d6250289e061b7c90125",
+   "0xa4db33289afc5ceef72bcb13552d15b277c822b3d401c255add805726f33125f",
+   "0x359c5219355657c3d510671a9eac7f6678a4a26911f9f7b3464fa5771bd2245f",
+   "0xcf61d55fa1d7a7a7c30b48a97362dfd722528d465313f9927d53de4ebe56eab9",
+   "0x2491455806ed04da12e01753711d3933f79a585e1aa81ba69d709466a9a81ae6",
+   "0xe9d5deeba76ce1497b5d0f9531729a546960b469a79c43699c9838b2c8f49638",
+   "0xd34ec4a53cb704de159c2f45693f7807da3c7d9634c9181cfdd21b43d7320a05",
+   "0x54aaa9cbc761efc1a396ed6942b394516dc77166b04b119d356cca3f2f9a7201",
+   "0xe2057f0f6b12fbe45052f65369268f1dcf4a904ec7019b8bebe6fa5e83cc02e8",
+   "0x3a7ebbadf9a4e776d9e89253ca7d456a392581d8e229c6255f83a9d4ef56baf6",
+   "0xf9eafddb363afa74a322155bf4d8e60e145662ebf798d0cc3bee512d31862d39",
+   "0xb1c13d1b2590a6bb0c8c784b9cd27543e7a0332de9ed21a26e7a52ce2013787b",
+   "0x6c7cdc2f10d3e87b95dbe009f47033deeddee22a6834807cc767271af1cdec49",
+   "0x8e413019cdb1f6caa7c5ce0204fb6145a712774da74e8556a201f0a2203993da",
+   "0x086b1ba6bb066bfa954a6a7e9672b48e9a6c3162e0a8d58209072652bedd9437",
+   "0xc7ada75e65388ca0c690719dddacab1955dba76a911e288000275688bcbfeec1",
+   "0x1f61b735e88c7e9f311b14cc83469aba49bbeba16e163d3e7c405dca944e7a9e",
+   "0x5006331f45f13f1c22609285ad99a830d957c94e0358af4369df6dd35f26c0b0",
+   "0x5d67020f766048d76c1d9a9c583e4878d0d745aafa27f2b9cb4e5543bd1b9670"
+  ],
+  "block_path_left": [
+   true,
+   false,
+   true,
+   false,
+   true,
+   false,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true
+  ]
+ },
+ "synthetic": {
+  "account": "xindex-vault.near",
+  "vault_id": "0x2054096417f0ef100150b6facd0da13b630b927ca39773703aa7c8fee4ca1452",
+  "chain_id": 339552387624818629,
+  "slots": [
+   "0x1111111111111111111111111111111111111111111111111111111111111111",
+   "0x0000000000000000000000000000000000000000000000000000000000000019"
+  ],
+  "values": [
+   "0x2222222222222222222222222222222222222222222222222222222222222222",
+   "0x0000000000000000000000000000000000000000000000000000000000000000"
+  ],
+  "height": 218000001,
+  "timestamp": 1791000000123456789,
+  "record": "0xb0ec2b25fdd79b42b523d5b0e641474599bbba254460db808de33f7bc0c25d5c00000000000000000000000000000000000000000000000004b65518f70357c52054096417f0ef100150b6facd0da13b630b927ca39773703aa7c8fee4ca1452000000000000000000000000000000000000000000000000000000000cfe6a8100000000000000000000000000000000000000000000000018dae902d0154d1500000000000000000000000000000000000000000000000000000000000000e00000000000000000000000000000000000000000000000000000000000000140000000000000000000000000000000000000000000000000000000000000000211111111111111111111111111111111111111111111111111111111111111110000000000000000000000000000000000000000000000000000000000000019000000000000000000000000000000000000000000000000000000000000000222222222222222222222222222222222222222222222222222222222222222220000000000000000000000000000000000000000000000000000000000000000",
+  "receipt_id": "0x019dd5f1692d0ae6bd8913b504a30c4706ef8c8c53cf75462156e2b5029943de",
+  "gas_burnt": 2428000000000,
+  "tokens_burnt": "242800000000000000000",
+  "outcome_path": [
+   {
+    "hash": "0xb2f56b4dc43c4f8b828569a2691f73bfac660048efb34142e50217d8a132afe7",
+    "left": true
+   }
+  ],
+  "outcome_root_path": [
+   {
+    "hash": "0x119dae570dd241f7f4cfbfe3a8d21524cc5eec05bd683bb172e183917c5577bd",
+    "left": false
+   }
+  ],
+  "block": {
+   "inner_lite": {
+    "height": 218000002,
+    "epoch_id": "0x5b96f2e2cd8bdaae43dec45a1bc003f1d9f89f7230fe074578db2711edee74a2",
+    "next_epoch_id": "0x4098e546b9fa21f7b49c823dcb03443c2dd20c434b961457a5138c8f1948a38b",
+    "prev_state_root": "0x4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e",
+    "outcome_root": "0x5cd9ebbd105c4b606a810153d27cc98455aba3724a4782a34628a63def3307a8",
+    "timestamp": 1791000000723456789,
+    "next_bp_hash": "0x48eb992763ffd99291f9ddfc1cb136856b74e4d3832309cac6e635c3e23e88fc",
+    "block_merkle_root": "0x01440155cc3122b4741e5890c530154ded0b71abf0009eef7dbea410d7269544"
+   },
+   "inner_rest_hash": "0xdbe6ce4e557c25b5cdcfcb9a5f64ed841701532090d2a95914b48669642619bb",
+   "prev_block_hash": "0xafdf4d7129e8406130cc6856ed2aeb7b4b7b2d9761ffee422785c8f9664a660f"
+  },
+  "block_path": [
+   {
+    "hash": "0x2af7909ca08f18facc556624b02e1a5c683bb0f557137b1ef7e0028fc457715c",
+    "left": true
+   },
+   {
+    "hash": "0xa4781a098e6c0c2f52a15916ef2dd45a39c488e47ed8eab672ceecadbb74e9f1",
+    "left": false
+   }
+  ],
+  "head": {
+   "height": 218000010,
+   "timestamp": 1791000006123456789,
+   "block_merkle_root": "0x86cbf4197a5ba7c4b271408c142dcd2ea35567c06545c46acbdc7f2f0e6e6497"
+  },
+  "public_values": "0x5b96f2e2cd8bdaae43dec45a1bc003f1d9f89f7230fe074578db2711edee74a248eb992763ffd99291f9ddfc1cb136856b74e4d3832309cac6e635c3e23e88fc5b96f2e2cd8bdaae43dec45a1bc003f1d9f89f7230fe074578db2711edee74a248eb992763ffd99291f9ddfc1cb136856b74e4d3832309cac6e635c3e23e88fc0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000cfe6a8a00000000000000000000000000000000000000000000000018dae90435b6091586cbf4197a5ba7c4b271408c142dcd2ea35567c06545c46acbdc7f2f0e6e6497",
+  "outcome_path_hashes": [
+   "0xb2f56b4dc43c4f8b828569a2691f73bfac660048efb34142e50217d8a132afe7"
+  ],
+  "outcome_path_left": [
+   true
+  ],
+  "outcome_root_path_hashes": [
+   "0x119dae570dd241f7f4cfbfe3a8d21524cc5eec05bd683bb172e183917c5577bd"
+  ],
+  "outcome_root_path_left": [
+   false
+  ],
+  "block_path_hashes": [
+   "0x2af7909ca08f18facc556624b02e1a5c683bb0f557137b1ef7e0028fc457715c",
+   "0xa4781a098e6c0c2f52a15916ef2dd45a39c488e47ed8eab672ceecadbb74e9f1"
+  ],
+  "block_path_left": [
+   true,
+   false
+  ]
+ }
+}

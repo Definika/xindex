@@ -103,6 +103,8 @@ export interface InitArgs {
   freezer: PublicKey;
   nativeCap: bigint;
   nativeFloor: bigint;
+  /** The owner's emergency multisig, which proposes a successor in a stall: a program-derived address, never a key. */
+  recoveryProposer: PublicKey;
 }
 
 /** Initializes the vault, from its upgrade authority. P1 and P2 must be programs nobody can upgrade (SOL-2). */
@@ -117,6 +119,7 @@ export async function initVault(authority: Keypair, p1: PublicKey, p2: PublicKey
     args.freezer.toBytes(),
     u64(args.nativeCap),
     u64(args.nativeFloor),
+    args.recoveryProposer.toBytes(),
   );
   const ix = new TransactionInstruction({
     programId: program,
@@ -199,7 +202,7 @@ export async function deliverSolana(m: Message, block: bigint, relayer1: Keypair
     name = "deliver_intake";
     keys = [
       payer,
-      meta(configPda(), false),
+      meta(configPda(), true),
       meta(usedPda(m.id), true),
       meta(indexPda(m.index), true),
       meta(intakePda(m.index, body.slice(0, 32)), true),
@@ -210,7 +213,7 @@ export async function deliverSolana(m: Message, block: bigint, relayer1: Keypair
     name = "deliver_migrate";
     keys = [
       payer,
-      meta(configPda(), false),
+      meta(configPda(), true),
       meta(usedPda(m.id), true),
       meta(indexPda(m.index), true),
       meta(indexPda(newIndex), true),
@@ -234,6 +237,56 @@ export async function deliverSolana(m: Message, block: bigint, relayer1: Keypair
   const ix = new TransactionInstruction({ programId: vaultProgram(), keys, data: Buffer.from(data) });
   await sendAndConfirmTransaction(c, new Transaction().add(ix), [relayer1, relayer2]);
   return "delivered";
+}
+
+// ---------------------------------------------------------------------
+// checkpoints
+// ---------------------------------------------------------------------
+
+/** Where `Config.checkpoint` starts in the vault's `config` account: Anchor's 8-byte discriminator, then the fields
+ *  before it in `state.rs`, Borsh-encoded (chain ids 16, factory and template 40, P1, P2 and the freezer 96, the freeze
+ *  and six integers 56, three pending changes 120, two bumps 2, the recovery proposer 32). The vault's test
+ *  `the_relayers_checkpoint_offset` pins it. */
+export const CHECKPOINT_OFFSET = 8 + 16 + 40 + 96 + 56 + 120 + 2 + 32;
+
+/** The block of the vault's checkpoint: a message that moves coins runs only from a block at or before it (VLT-3). */
+export async function checkpointBlock() {
+  const d = (await connection().getAccountInfo(configPda()))?.data;
+  if (!d) return 0n;
+  return new DataView(d.buffer, d.byteOffset, d.byteLength).getBigUint64(CHECKPOINT_OFFSET, true);
+}
+
+/** Advances the vault's checkpoint to a final Sepolia block, both stubs vouching through their relayers' signatures.
+ *  `PairProofs { proof1: [], proof2: [], accounts1: 2, accounts2: 2 }`: each stub takes its state and its relayer. */
+export async function advanceCheckpoint(
+  block: bigint,
+  timestamp: bigint,
+  stateRoot: Hex,
+  relayer1: Keypair,
+  relayer2: Keypair,
+  p1: PublicKey,
+  p2: PublicKey,
+) {
+  const data = concat(
+    discriminator("advance_checkpoint"),
+    u64(block),
+    u64(timestamp),
+    hexToBytes(stateRoot),
+    vec(new Uint8Array()),
+    vec(new Uint8Array()),
+    new Uint8Array([2, 2]),
+  );
+  const keys = [
+    meta(configPda(), true),
+    meta(p1, false),
+    meta(stubState(p1), false),
+    meta(relayer1.publicKey, false, true),
+    meta(p2, false),
+    meta(stubState(p2), false),
+    meta(relayer2.publicKey, false, true),
+  ];
+  const ix = new TransactionInstruction({ programId: vaultProgram(), keys, data: Buffer.from(data) });
+  return sendAndConfirmTransaction(connection(), new Transaction().add(ix), [relayer1, relayer2]);
 }
 
 // ---------------------------------------------------------------------

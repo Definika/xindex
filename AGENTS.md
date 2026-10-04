@@ -21,14 +21,18 @@ methodology; v3 is tagged `v3.0.0` and never ships on mainnet. The web app lives
 Where the stages stand (none of v4 is deployed):
 - Stage A is built.
 - Stage B is built in large part: the EVM vault and the Solana vault program; P1 (SP1) and P2 (RISC Zero) on EVM vault
-  chains, and P1 on Solana; BNB Chain's and TRON's state verifiers on Ethereum; and `HybridIndexFactory` with
-  `HybridHub`, its module and its extension. So BNB Chain and TRON are built in both directions. Solana lacks P2 and
-  its vault's stall recovery and snapshot exit, and its state verifier on Ethereum waits on Alpenglow's mainnet launch;
-  the rest of Solana waits while the other chains' code comes first (the owner's call on 2026-10-01).
+  chains and on Solana; BNB Chain's and TRON's state verifiers on Ethereum; and `HybridIndexFactory` with
+  `HybridHub`, its module and its extension. So BNB Chain and TRON are built in both directions, and NEAR and Stellar
+  too (2026-10-04): their vaults (`near/`, `stellar/`) with P1 and P2 on the shared Rust core `crates/xindex-core`,
+  and their state verifiers on Ethereum (`NearStateVerifier`, `StellarStateVerifier`, proven by `proofs/near` and
+  `proofs/stellar`), to the interfaces of `design/2026-10-03-near-stellar-interfaces.md`. Solana is built from
+  Ethereum to its vault, the vault's checkpoints, stall recovery and snapshot exit included (2026-10-03); its state
+  verifier on Ethereum is not built, and can ship only once Alpenglow reaches mainnet
+  (`design/2026-10-03-solana-state-proof.md` has the researched plan and a native prototype in `proofs/solana-state`).
   HyperEVM waits on Hyperliquid, since every header's state root is zero. The Stage B spec's section 8 has each
   chain's status, and its section 6 the build order.
-- No Stage C chain is built. Avalanche, NEAR, Stellar, Hedera and Cardano were researched on 2026-10-01
-  (`design/2026-10-01-stage-c-research.md`, summarized in the Stage B spec's section 8).
+- Of Stage C, NEAR and Stellar are built (above). Avalanche, Hedera and Cardano were researched on 2026-10-01
+  (`design/2026-10-01-stage-c-research.md`, summarized in the Stage B spec's section 8) and wait on the owner's calls.
 
 For more:
 - `ARCHITECTURE.md`: the design as built, Stage A and Stage B.
@@ -58,8 +62,10 @@ MAINNET_RPC_URL=https://ethereum-rpc.publicnode.com FORK_BLOCK=$(( $(cast block-
 
 Deployment: `script/Deploy.s.sol` then `script/ConfigureWhitelist.s.sol`, which also runs the weekly supply batch,
 vault coins' supplies included (see README). A vault chain adds `script/DeployVault.s.sol` on that chain (P1, P2, the
-state reader and the vault; `tron/` builds TRON's with Tron's compiler) and `script/DeployStateVerifier.s.sol` on
-Ethereum (the chain's state verifier, from an anchor the fixture generator writes), then `script/ConfigureChains.s.sol`
+state reader and the vault; `tron/deploy.mjs` deploys TRON's, built with Tron's compiler, and NEAR's and Stellar's go
+up with their chains' own tools, as `near/` and `stellar/` say) and `script/DeployStateVerifier.s.sol` on Ethereum (the
+chain's state verifier, from an anchor the fixture generator writes, or for NEAR and Stellar one assembled from
+their proofs' generators), then `script/ConfigureChains.s.sol`
 (`proposeChain`, then `proposeVaultListing` for each coin). Sepolia first needs its test market from
 `script/testnet/SetupTestMarket.s.sol`.
 
@@ -110,6 +116,9 @@ Ethereum (the chain's state verifier, from an anchor the fixture generator write
    - The internal review of the Tron state verifier on 2026-10-01: `TRN-1`..`TRN-9`
      (`audit/2026-10-01-tron-review.md`), a test named `test_TRN1_...`. TRN-6 to TRN-8 were recorded by documentation
      alone and have no test.
+   - The logic review of 2026-10-02: `LG-1`..`LG-6` and `LG-I1`..`LG-I4` (`audit/2026-10-02-logic-review.md`), a test
+     named `test_LG1_...`, and in Rust `test_lg1_...`. The record's status column names every test; the informational
+     ids have none.
 
    Find a test by its id. Most v1 and R tests are in `test/Security.t.sol` and `test/fork/Security.fork.t.sol`. The R
    tests that drive the λ auction directly (R04, R08, R14, R17, R19, R22) are in `test/IndexHub.rebalance.t.sol`,
@@ -148,60 +157,9 @@ and a maintainer re-runs them before merging.
 
 ## Layout
 
-```
-src/IndexHub.sol              index implementation (ERC20 + permit + in-kind issue, redeem, redeemSkipping, claim, the λ rebalance auction), cloned
-src/IndexFactory.sol          listings, reference supplies and weekly supply batches, guardian, registry, CREATE2 clone deployer with units from k
-src/IndexZap.sol              stateless Universal Router mint/burn router, a venue per leg, per-leg limits, nonce check
-src/MintRequests.sol          ownerless escrow of USDC/USDT-for-shares requests at the requester's own limit, filled by anyone
-src/interfaces/               IIndexHub, IIndexFactory, IIndexZap, IMintRequests, IXindexErrors (shared errors), IRebalanceExecutor, IUniversalRouter,
-                              and for Stage B IXindexVault, IEthereumEventVerifier, IVaultStateVerifier, IBnbStateVerifier, ITronStateVerifier, IStateReader,
-                              IHybridIndexFactory, IHybridHubTypes, IHybridHub, IHybridHubModule, IHybridHubExtension and
-                              IHybridIndex (all three parts), and the vendored ISP1Verifier and IRiscZeroVerifier
-src/libraries/PathLib.sol     V3 packed path decoding (shared with test mocks)
-src/libraries/UniversalRouterCommands.sol  the router command bytes the zap emits, vendored with their input layouts
-src/libraries/UniswapV4Types.sol           V4 actions, PathKey and the swap params, vendored from v4-periphery (MIT)
-src/libraries/VaultMessages.sol            Stage B: the one encoding of the messages Ethereum sends a vault
-src/libraries/RlpReader.sol                Stage B: RLP read in place, the one library in src/ with assembly (bounds-checked)
-src/libraries/MerklePatricia.sol           Stage B: storage proofs from a state root (`eth_getProof` node lists)
-src/libraries/Bls12381.sol                 Stage B: BLS on the EIP-2537 precompiles, BNB Chain's vote ciphersuite
-src/vault/XindexVault.sol     Stage B: the ownerless vault on an EVM chain, native coin per index, speed limit, freeze (not deployed)
-src/vault/VaultSnapshot.sol   Stage B: the vault's linked library for a holder's snapshot claim: the hub's storage it reads, and the signature
-src/verifiers/BnbStateVerifier.sol  Stage B: BNB Chain's state on Ethereum from its own finality votes, following every epoch (not deployed)
-src/verifiers/TronStateVerifier.sol Stage B: Tron's state on Ethereum from a successful vault `attest` in a solidified block, following every 6-hour list (not deployed)
-src/verifiers/FinalityVerifier.sol  Stage B: what P1 and P2 share on an EVM vault chain, a light client of Ethereum advanced by proofs of one statement, proving a vault message by its receipt
-src/verifiers/EthereumFinalityVerifier.sol  Stage B: P1 on an EVM vault chain, FinalityVerifier checked by SP1's Groth16 verifier (not deployed)
-src/verifiers/RiscZeroFinalityVerifier.sol  Stage B: P2 on an EVM vault chain, FinalityVerifier checked by RISC Zero's Groth16 verifier (not deployed)
-src/verifiers/EthereumStateReader.sol Stage B: reads Ethereum storage under a trusted root, for a vault's snapshot exit (not deployed)
-src/HybridIndexFactory.sol    Stage B: IndexFactory plus the chain registry, vault-token listings, the chain freeze and the template choice (not deployed)
-src/HybridHub.sol             Stage B: the index of tokens on Ethereum and in vaults: orders, burns, claims; delegates the rest to its module (not deployed)
-src/hybrid/HybridHubModule.sol  Stage B: the hub's second part, by DELEGATECALL: voids, re-confirmations, stray intakes, the rebalance with deliveries
-src/hybrid/HybridHubExtension.sol Stage B: the third part, by DELEGATECALL from the module: migration between versions, evidence against a chain
-src/hybrid/HybridHubStorage.sol Stage B: every state variable the three parts share, and their common helpers
-src/hybrid/HubShares.sol      Stage B: share operations on OpenZeppelin's ERC-20 slot for the module and extension (supply, mint, move, burn)
-test/*.t.sol                  unit / fuzz / invariant / script tests
-test/XindexTest.sol           state and listing helpers the factory, hub, zap and security suites share
-test/Security.t.sol           regression tests for the security review findings (see gate 6 for ids tested elsewhere)
-test/Repo.t.sol               repository facts findings rest on: pinned compiler, CI gates and toolchain, dependency lock, ABIs, no price, docs
-test/mocks/                   mock tokens, WETH, a strict Universal Router, V3 pools for the testnet script, the market fixture, Stage B's stand-ins for P1, P2, the Groth16 verifiers, a state verifier and the state reader, and harnesses for HubShares and the proof libraries (+ Mocks.t.sol)
-test/fixtures/bnb/            real BNB Chain data for the Stage B verifier, mainnet's and the testnet's, and generate.py, which rebuilds either from a public RPC (py_ecc, pycryptodome) and writes a deployment's anchor
-test/fixtures/ethereum/       a real mainnet block's receipts trie proofs for P1's verifier, and generate.py, which rebuilds them and checks the root (rlp, trie)
-test/fixtures/tron/           real Tron blocks around a maintenance boundary, with two real calls, and generate.py, which rebuilds them from TronGrid (pycryptodome) and writes a deployment's anchor
-test/utils/                   test-only helpers (an RLP writer)
-test/HybridTest.sol           Stage B on one EVM: a real vault standing for another chain, a state verifier reading its storage, message delivery
-test/fork/                    test-only mainnet addresses, end-to-end fork tests, a V3 rebalance executor, fork security regressions
-script/                       Deploy, ConfigureWhitelist, DeployVault, DeployStateVerifier, ConfigureChains, MainnetAddresses (the one copy of mainnet addresses and dated reference supplies), ScriptUtils (what they share)
-script/interfaces/            the Safe, WETH and Uniswap setup calls the scripts make, and how SP1's and RISC Zero's Groth16 verifiers name themselves, which DeployVault checks
-script/testnet/               SetupTestMarket and FaucetToken: the Sepolia test market (never deploy on mainnet)
-abi/                          generated ABIs the web app decodes with; CI regenerates them and fails on a diff
-design/                       the v4 design and its PDF, the Stage A and Stage B specs, the prototype record, the hackathon plan, the WBT check, the Stage C research, the PDF builder, and the analysis scripts (their data is not committed)
-audit/                        review reports, their triages, and the two retirement records
-demo/                         the hackathon's testnet demonstration: STUB verifiers, a WETH-BNB index on the real verifiers both ways, P2 aside, which is a stub there, deploy scripts along the timelocks, the relayer (TypeScript); its own Foundry project, never deployed to a mainnet
-solana/                       Stage B on Solana: the vault program (Anchor 1.2), P1's verifier (`ethereum-verifier`) and a STUB verifier for testnets, with LiteSVM tests (see solana/README.md)
-proofs/                       Stage B's proof systems in Rust: `finality`, the statement that an Ethereum checkpoint is final (spec section 10), tested natively against the consensus specs' libraries and mainnet data; `p1-program` and `p1-script`, P1's SP1 program and host; `p1-input`, which builds a real input from chain data; `p2/`, P2's RISC Zero guest and host, a workspace of its own (spec section 11)
-prototype/                    the proving prototype: an SP1 workspace and its own Foundry project (via-IR); the gates skip it and Wake excludes it. Its `evm/src/sp1` is SP1's Groth16 verifier, vendored with only an import path changed (`SOURCE.md`), which P1 calls on every vault chain
-vendor/risc0-ethereum/        RISC Zero's Groth16 verifier, vendored unchanged at v3.0.1 (SOURCE.md), which P2 calls on every vault chain; no gate analyzes it
-tron/                         TRON: the Tron-side contracts built with Tron's compiler (tron-solc 0.8.28) and run on TRON's VM, on a local single-node chain of the pinned java-tron release, every step a mined transaction under mainnet's 80 ms CPU limit (tron/README.md)
-```
+`ls` and each file's header comments show what lives where, and README.md's Layout section gives the tour. Two things
+the tree does not say: `script/testnet/` (the Sepolia test market) and `demo/` (the hackathon demonstration, its own
+Foundry project) never deploy to a mainnet.
 
 ## Design rules that must not be broken
 
@@ -444,7 +402,9 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   claimed order's deposit proven false freezes mints on the chain at the factory, and leaves the vault paying. A vault
   record paying more than was sent freezes the vault too. Every evidence proof is bounded below by a deadline or a
   freeze, since state verifiers prove old blocks: a slash's by the delivery deadline, and an empty intake is evidence
-  only on a chain where the fill recorded a delivery (HUB-1). An exited chain takes no evidence.
+  only on a chain where the fill recorded a delivery (HUB-1). An exited chain takes no evidence: every evidence proof
+  also reads the vault's snapshot root, in the same state proof, and is refused once it is set, recorded or not
+  (LG-5).
 - **Messages wait for the checkpoint.** A vault runs a message that moves coins or loosens a rule only from an
   Ethereum block its checkpoint covers, so the snapshot never pays a holder whose burn it paid (VLT-3). A snapshot
   claim reads a component only inside the hub's components array (VLT-1).
@@ -452,13 +412,22 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   a stall (7 days without one) cannot be manufactured. Only then may the owner's emergency multisig propose a
   successor, which must prove the last checkpoint, a recent one and the last message, and wait 30 days of review with
   at most 2 vetoes. A stalled vault takes no deposit.
+  - Only a checkpoint that ends the stall lapses the successor and restarts the vetoes. A stale one, which the old pair
+    can still prove, keeps both, so nobody can throw the review away a block at a time (LG-2).
+  - The last message is the last on both proofs: a one-proof freeze could be forged by one broken system (LG-3).
+  - P1 and P2 stop for good a day behind: `update` refuses a proof once `MAX_LAG` has passed since the anchor's epoch
+    began, dated from the beacon genesis time fixed at deployment, on EVM chains and on Solana (LG-4).
 - **The snapshot exit is final and speed-limited.** 180 days into a stall, the last checkpoint becomes the snapshot:
   no message from a later block runs, the freezer can no longer freeze, holders at it claim their share by signature
   or recovery address within the speed limit, and open intakes are settled or refunded from the hub's
   `_settledIntakes`. The hub marks that in the transaction that sends each settle message; keep it that way. It also
-  marks every `BURN` and `MIGRATE` it sends in `_sentMessages`, in the same transaction, and the vault's
-  `deliverRecorded` pays one still in flight at the snapshot from that mark. A hub that records the exit never mints on
-  that chain again. `test_theHubLayoutIsPinned` pins the slots each side reads.
+  marks every message it sends in `_sentMessages`, in the same transaction, and the vault's `deliverRecorded` pays a
+  burn or migration still in flight at the snapshot from that mark. A hub that records the exit never mints on that
+  chain again. `test_theHubLayoutIsPinned` pins the slots each side reads.
+- **Any message can be sent again.** Whoever sends a transaction shapes its receipt, and every verifier has a ceiling.
+  So the hub and the factory mark every message they send, and anyone may emit a marked one again, unchanged, with
+  `resendMessage(payload)`; the vault runs a message once by its id (LG-1). Keep every `VaultMessage` going through
+  that mark: the hub's `_post`, the factory's `_sendVault`.
 - **Vault governance is delayed and public, twice.** The factory sends `CAP_UPDATE` only after `LISTING_DELAY`,
   `FREEZER_CHANGE` only after `GUARDIAN_DELAY` (the guardian cannot cancel it, as it cannot block its own replacement),
   and `VERIFIER_ROTATION` only after `ROTATION_DELAY` (30 days). P1 and P2 must always be two different verifiers.
@@ -487,9 +456,26 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   message goes into both. `solana/programs/stub-verifier` trusts a relayer key and exists for testnets only; nothing in
   `src/` or `script/` may name it. `solana/programs/ethereum-verifier` is P1 on Solana, the twin of
   `EthereumFinalityVerifier.sol`: the same anchor, the same headers tree, the same receipt proof, and SP1 v6's Groth16
-  check on the alt_bn128 syscalls, tested on SP1's own proof and on real mainnet receipts. Its gates: `anchor build
-  --no-idl`, `cargo build-sbf` for the stub and for `ethereum-verifier`, `cargo test -p xindex-vault -p
-  ethereum-verifier`, `cargo fmt --check` and `cargo clippy`, at low priority.
+  check on the alt_bn128 syscalls, tested on SP1's own proof and on real mainnet receipts. `solana/programs/
+  risc0-verifier` is P2, the same core (`process_with`) with RISC Zero v3.0's check, tested on RISC Zero's own receipt;
+  as on the EVM, only the proof's check may differ between them. The vault keeps checkpoints, stalls, recovers and
+  exits as `XindexVault` does, reading the hub's storage at its snapshot, which `tests/fixtures/generate.py` captures
+  from a real hub on anvil. Its gates: `anchor build --no-idl`, `cargo build-sbf` for the stub, `ethereum-verifier`
+  and `risc0-verifier`, `cargo test -p xindex-vault -p ethereum-verifier -p risc0-verifier`, `cargo fmt --check` and
+  `cargo clippy`, at low priority.
+- **NEAR and Stellar are twins too.** `near/` and `stellar/` keep the EVM vault's rules, as Solana's program does, on
+  `crates/xindex-core`, the vault chains' shared Rust (no_std, over a `Crypto` trait each chain implements; Solana's
+  programs build on it through `ethereum_verifier::Solana`). A change to a vault's rule or a message goes into all four
+  vaults, and into the core where the rule lives. Each proves its state by `attest`, as TRON's does: NEAR's return value
+  carries the run's own height and time, since an outcome lands in a later block. Stellar's transaction holds 132 KB,
+  so a message whose receipt proof is larger is delivered from its `resendMessage` copy. NEAR's Wasm needs `--cfg near`
+  (`near/.cargo/config.toml`), or near-sdk's refusals trap without their names. Gates, each at low priority on one
+  build job: the core's `cargo test`, `cargo fmt --check`, `cargo clippy --all-targets` and `cargo build --target
+  wasm32-unknown-unknown --no-default-features`; NEAR's `cargo build -p xindex-vault-near --target
+  wasm32-unknown-unknown --release`, then `cargo test -p xindex-vault-near -- --test-threads=1` (the sandbox runs the
+  built Wasm), fmt and `cargo clippy --all-targets -- -D warnings`; Stellar's `stellar contract build`, then `cargo
+  test`, fmt and `cargo clippy --all-targets -- -D warnings`; `proofs/near`'s `cargo test -p xindex-near-finality` and
+  `proofs/stellar`'s `cargo test --release -p xindex-stellar`, each with fmt and clippy.
 - **P1 is checked in plain Rust first.** `proofs/finality` holds the whole statement, so its logic is tested natively and
   the zkVM only runs it. Its gates: `cargo test --release`, `cargo fmt --check` and `cargo clippy`, at low priority,
   each also with `--features sepolia`, the testnets' build: Sepolia's genesis and fork versions, a program key of its

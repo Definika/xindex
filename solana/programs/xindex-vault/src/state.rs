@@ -38,6 +38,38 @@ pub struct Config {
     pub pending_rotation: PendingChange,
     pub treasury_bump: u8,
     pub bump: u8,
+    /// The owner's emergency multisig on Solana, fixed at initialization: it alone proposes a successor pair, and only
+    /// while the vault is stalled.
+    pub recovery_proposer: Pubkey,
+    /// The last final Ethereum block both P1 and P2 proved. A message that moves coins or loosens a rule runs only from
+    /// a block it covers (VLT-3), and a week without a new one is a stall.
+    pub checkpoint: Checkpoint,
+    /// The checkpoint the snapshot exit took, for good; all zero before it.
+    pub snapshot: Checkpoint,
+    /// A successor pair under review, all zero when none is.
+    pub successor: Successor,
+    /// The id of the last message delivered on both proofs, which a successor must prove again (LG-3).
+    pub last_message: [u8; 32],
+    /// The freezer's vetoes in the current stall; a checkpoint that ends it starts the count again (LG-2).
+    pub vetoes: u8,
+}
+
+/// A final Ethereum block: its number, its timestamp and its state root.
+#[derive(
+    AnchorSerialize, AnchorDeserialize, Clone, Copy, Default, InitSpace, PartialEq, Eq, Debug,
+)]
+pub struct Checkpoint {
+    pub block: u64,
+    pub timestamp: u64,
+    pub state_root: [u8; 32],
+}
+
+/// A successor pair of verifiers under review, and when the review ends.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Default, InitSpace)]
+pub struct Successor {
+    pub p1: Pubkey,
+    pub p2: Pubkey,
+    pub review_ends: i64,
 }
 
 /// A governance change waiting: the hash of its message body and when it may apply, all zero when none waits.

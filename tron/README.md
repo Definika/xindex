@@ -1,8 +1,9 @@
 # Xindex on TRON
 
 TRON holds a vault like any EVM chain, with differences that only TRON's own compiler and VM show. This folder builds
-the contracts a TRON deployment uses with Tron's compiler and runs them on TRON's VM, on a local single-node chain of
-the pinned java-tron release. Nothing here talks to a TRON network. Stage B spec, section 5.7, records the results.
+the contracts a TRON deployment uses with Tron's compiler, runs them on TRON's VM on a local single-node chain of the
+pinned java-tron release, and deploys them to a TRON network (`deploy.mjs`). Only `deploy.mjs` talks to a TRON
+network, and only when told which. Stage B spec, section 5.7, records the results.
 
 ## What a TRON deployment runs
 
@@ -18,7 +19,11 @@ the pinned java-tron release. Nothing here talks to a TRON network. Stage B spec
   github.com/tronprotocol/solidity/releases, into `~/.local/tron-solc/0.8.28/` (or set `TRON_SOLC`). `build.mjs`
   checks its SHA-256 against the release's.
 - **java-tron GreatVoyage-v4.8.2.3**, `FullNode-aarch64.jar` (or `FullNode.jar` on x86), and a **JDK 17**: from
-  github.com/tronprotocol/java-tron/releases and adoptium.net.
+  github.com/tronprotocol/java-tron/releases and adoptium.net. Check each against its publisher's SHA-256: the release
+  lists `FullNode-aarch64.jar` as `a3f0d01fb20d456dcaf1b361638f046ba8396fa2f4e8e494b3a07c5d6f7d4819`, and Adoptium
+  Temurin 17.0.20.1+1 for macOS aarch64 as `196d13ba5f10414bef7f6a05a9b3f00edacb18ebacef2b99485db9e2ee18f0e8`. Neither
+  needs root: the JDK unpacks anywhere, and the jar runs from `node/`.
+- **Foundry's `cast`**, for `deploy-test.mjs`, which writes the deployer's keystore as `cast wallet import` would.
 
 ```bash
 npm install
@@ -26,6 +31,7 @@ npm run build              # out/<Contract>.json, built by tron-solc
 npm run node-config        # node/private.conf and a throwaway witness key, node/witness.json (git-ignored)
 cd node && java -Xmx3g -jar FullNode-aarch64.jar --witness -c private.conf &   # a local chain, blocks every 3 s
 cd .. && npm run rehearse  # every step below, as mined transactions; exits non-zero on any failure
+npm run deploy-test        # deploy.mjs on the same chain: every refusal, then a whole deployment from a keystore
 ```
 
 The node config is java-tron's own `config.conf` at the pinned release, with one witness, no peers
@@ -33,22 +39,27 @@ The node config is java-tron's own `config.conf` at the pinned release, with one
 (read from mainnet's `getchainparameters` on 1 October 2026), and a 90-second maintenance. The rehearsal first raises
 the chain's CPU limit from java-tron's default of 50 ms to mainnet's 80 ms, by a proposal its one witness approves.
 
-## What the rehearsal shows (1 October 2026, Apple Silicon)
+## What the rehearsal shows (3 October 2026, Apple Silicon)
+
+Run again on the code with the logic review's fixes (LG-1 to LG-6): P1 and P2 take the beacon genesis time and refuse a
+proof a day past their anchor (LG-4), and the vault's recovery and last-message rules changed (LG-2, LG-3).
 
 | Step, as a mined transaction | Energy |
 |---|---:|
 | SP1's Groth16 verifier on SP1's own proof (a wrong input reverts) | 217,950 |
 | RISC Zero's Groth16 verifier on RISC Zero's v3.0 receipt (a wrong journal reverts) | 222,908 |
-| P1's or P2's `update` (the SNARK check mocked) | about 50,800 |
+| P1's or P2's `update` from an anchor a day old: refused before the proof is read (LG-4) | about 1,250 |
+| P1's or P2's `update` (the SNARK check mocked) | about 36,100 |
 | P1's or P2's `verifyEvent` on a real mainnet receipt | 51,955 to 74,606 |
 | The vault: `registerIndex`, by Ethereum's CREATE2 formula | 43,847 |
 | The vault: a 10 TRX deposit | 163,556 |
 | The vault: `attest` of the intake (a wrong value reverts) | 1,164 |
-| The vault: `INTAKE_SETTLED` | 152,905 |
-| The vault: a `BURN` paying 1 TRX to a new account | 211,956 |
+| The vault: `INTAKE_SETTLED` | 152,931 |
+| The vault: a `BURN` paying 1 TRX to a new account | 211,982 |
 
-Every step passes within mainnet's 80 ms. So a P1 or P2 `update` costs about 270,000 energy, and a delivery, with
-both `verifyEvent`s, about 330,000 to 360,000.
+Every step passes within mainnet's 80 ms. So a P1 or P2 `update` costs about 255,000 energy, and a delivery, with
+both `verifyEvent`s, about 330,000 to 360,000. An `update` costs less than on 1 October (about 50,800 mocked), where the
+rehearsal's anchor epoch was zero and the first update wrote a fresh slot.
 
 **The CPU limit is the constraint, not energy.** TRON bounds each transaction by elapsed CPU time, 80 ms on mainnet
 (chain parameter 13), and a transaction past it fails `OUT_OF_TIME` and burns its whole fee limit. The BN254 pairing
@@ -60,7 +71,7 @@ freshly started node, or one under load, did not. A block producer slower than t
 - the margin is measured again on Nile, TRON's test network, before mainnet.
 
 **Other differences that matter, none of which needs a code change:**
-- Tron's compiler makes the vault 25,360 bytes, past Ethereum's 24,576. TRON has no such limit: java-tron charges 200
+- Tron's compiler makes the vault 26,593 bytes, past Ethereum's 24,576. TRON has no such limit: java-tron charges 200
   energy a byte to store code and checks nothing else (`VMActuator`, `Program.createContract`).
 - Cancun, Shanghai, London and Istanbul are on, so the vault's Cancun bytecode runs as compiled.
 - `block.chainid` is the last 4 bytes of the genesis block id: 728126428 on mainnet. A message to TRON names it.
@@ -75,11 +86,53 @@ freshly started node, or one under load, did not. A block producer slower than t
 
 ## Deploying
 
-**On TRON, not scripted yet.** `npm run build` writes the contracts a deployment sends as Tron's compiler builds them,
-the vault's link to `VaultSnapshot` marked, beside the rehearsal's test doubles. `rehearse.mjs` deploys them on the
-local chain with `consume_user_resource_percent` at 100, so callers pay all energy, as nobody owns the vault. The
-script that deploys them on a TRON network is still to write (Stage B spec, section 5.7): `script/DeployVault.s.sol`
-covers the EVM vault chains only.
+**On TRON: `deploy.mjs`,** the twin of `script/DeployVault.s.sol`, which covers the EVM vault chains. After `npm run
+build`, it deploys P1 (`EthereumFinalityVerifier`), P2 (`RiscZeroFinalityVerifier`), `EthereumStateReader`,
+`VaultSnapshot` and `XindexVault` linked to it, each with `consume_user_resource_percent` at 100, so callers pay all
+energy, as nobody owns the vault.
+
+```bash
+VAULT_FACTORY=0x... VAULT_HUB_TEMPLATE=0x... VAULT_P1_KEY=0x... VAULT_P2_IMAGE_ID=0x... \
+VAULT_ANCHOR=0x... VAULT_ANCHOR_EPOCH=... VAULT_FREEZER=T... VAULT_RECOVERY=T... \
+VAULT_NATIVE_CAP=<sun> VAULT_NATIVE_FLOOR=<sun> \
+node deploy.mjs --network nile --keystore ~/.foundry/keystores/deployer [--dry-run]
+```
+
+- **The parameters** are DeployVault's, by the same names (the file's header lists them). TRON addresses may be base58
+  or hex; the factory and the hub template are Ethereum addresses.
+- **The key** never appears on the command line or in the environment. It is an Ethereum V3 keystore, the format `cast
+  wallet import` writes, since a TRON key is the same secp256k1 key, unlocked by a password typed at the prompt or read
+  from `--password-file`. `--dry-run --from <address>` checks everything without the keystore and sends nothing.
+- **The network** is named, never defaulted: `nile`, `mainnet` or `local`. The script reads the node's genesis block and
+  refuses a node that is not that network (chain ids 3448148188 and 728126428). `--host` points at another node.
+- **Before sending anything** it makes every check `DeployVault.check` makes, adapted to TRON:
+  - the indexes' chain is mainnet Ethereum or Sepolia, and not this one;
+  - the factory, the hub template, P1's key, P2's image id and the anchor are set;
+  - P1 and P2 could still advance from the anchor: TRON's clock is within a day of its epoch's start (LG-4);
+  - a given SP1 or RISC Zero verifier names itself the pinned version (`VERIFIER_HASH` and `VERSION` "v6.0.0";
+    `SELECTOR` 0x73c457ba and `VERSION` "3.0.0");
+  - the freezer and the recovery proposer are set, distinct, and not the deployer;
+  - the recovery proposer is the owner's multisig: a contract, or an account that is TRON's own multisig, whose owner
+    permission and every active permission able to call a contract need at least two of their keys;
+  - the floor is not above the cap.
+- **The Groth16 verifiers.** Left unset, `VAULT_SP1_VERIFIER` and `VAULT_RISC_ZERO_VERIFIER` make the script deploy the
+  vendored ones itself (RISC Zero's with its published control ids) and check them the same way. A release should do
+  that: a version is a name, and a contract can name itself anything, as the repository's own mocks do.
+- **After deploying** it reads the wiring back, as `checkDeployment` does, and more: the vault's P1, P2, state reader,
+  factory, hub template, recovery proposer, freezer, source chain, cap and floor; P1's and P2's Groth16 verifiers, keys,
+  anchor, epoch and genesis time. Then it prints every address, base58 and hex, and each contract's runtime code hash
+  for the release record.
+- **Cost.** The whole deployment uses about 12.2 million energy on the local chain, the vault 5.2 million of it: about
+  1,220 TRX at mainnet's energy fee of 100 sun, unless the deployer has staked for energy. Each transaction's fee
+  limit is 1,000 TRX unless `--fee-limit` (in sun) says otherwise.
+- **What the deployer keeps.** On TRON a contract's deployer, its origin, can still change who pays its energy
+  (`UpdateSetting`, `UpdateEnergyLimit`) and clear its stored ABI. None of that reaches the vault's coins or rules, and
+  at 100% callers pay their own energy whatever it is set to; a deployer that set it lower would pay others' energy
+  itself.
+
+`deploy-test.mjs` runs it on the local chain: each refusal above, then a whole deployment from a keystore `cast` wrote,
+through the command line, with TRON's own 2-of-3 multisig as recovery proposer, and the wiring read back, including
+against other parameters and with P1 and P2 swapped, which it refuses.
 
 **On Ethereum, as for any vault chain** (the root README's deployment section has the full commands):
 1. `python3 test/fixtures/tron/generate.py https://api.trongrid.io anchor tron-anchor.json` writes the anchor: the

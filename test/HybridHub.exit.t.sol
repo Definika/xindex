@@ -135,6 +135,70 @@ contract HybridHubExitTest is HybridTest {
         hub.reportForgedDeposit(claimed, chainId, p);
     }
 
+    /// @dev The vault's record of the index, as `reportOutflow` takes it.
+    function _indexRecord() internal view returns (IHybridHubTypes.IndexRecord memory r) {
+        r.tokens = vault.indexTokens(address(hub));
+        uint256 n = r.tokens.length;
+        r.balances = new uint256[](n);
+        r.paid = new uint256[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            r.balances[i] = vault.balance(address(hub), r.tokens[i]);
+            r.paid[i] = vault.paidTotal(address(hub), r.tokens[i]);
+        }
+    }
+
+    /// @dev LG-5: a vault in its snapshot exit honestly fails every intake the hub had not marked settled at its
+    ///      checkpoint, and pays holders what the index never sent. Its state from then on is no evidence, whether or
+    ///      not anyone has recorded the exit here, since each evidence proof also reads the vault's snapshot root.
+    ///      Nothing voids, nothing freezes at the factory.
+    function test_LG5_anExitedVaultsHonestStateIsNoEvidence() public {
+        _mint(hub, minter, 1e18); // the creator's seed
+        uint256 locked = _settledOrder(hub, minter, 0.02e18); // locked when the verifiers stop
+        _checkpointAt(SNAPSHOT_BLOCK);
+        // Settled and claimed after the checkpoint: its settle message can never run there.
+        vm.roll(SNAPSHOT_BLOCK + 1);
+        uint256 claimed = _settledOrder(hub, minter, 0.01e18);
+        vm.warp(block.timestamp + hub.MINT_LOCK());
+        hub.claimOrder(claimed);
+        _snapshot();
+
+        // The vault fails both intakes, honestly. The state reader stands in for the checkpoint's state with the hub's
+        // live storage, so the claimed order's mark, set after the checkpoint, is hidden while the vault reads it.
+        vault.resolveIntake(address(hub), hub.intakeIdOf(locked), "");
+        bytes32 mark = keccak256(abi.encode(hub.intakeIdOf(claimed), uint256(60)));
+        vm.store(address(hub), mark, bytes32(0));
+        vault.resolveIntake(address(hub), hub.intakeIdOf(claimed), "");
+        vm.store(address(hub), mark, bytes32(uint256(1)));
+        // A holder at the checkpoint is paid directly: more than the index ever sent the vault.
+        (, uint256 minterKey) = makeAddrAndKey("minter");
+        bytes memory signature = _sign(minterKey, minter, minter);
+        vault.claimSnapshot(address(hub), minter, minter, 1, "", signature);
+        IHybridHubTypes.IndexRecord memory record = _indexRecord();
+        assertGt(record.paid[0], 0);
+
+        vm.warp(block.timestamp + 1);
+        bytes memory proof = _honest(block.timestamp);
+        IHybridHubTypes.ChainProof memory deposit;
+        deposit.proof = proof;
+        deposit.tokens = new address[](1);
+        deposit.totals = new uint256[](1);
+        (uint256[] memory amounts,) = hub.orderAmounts(claimed);
+        deposit.totals[0] = amounts[1];
+        bytes memory exited = abi.encodeWithSelector(IHybridHubTypes.ChainExited.selector, chainId);
+        for (uint256 recorded = 0; recorded < 2; ++recorded) {
+            // Before anyone records the exit here, and after.
+            if (recorded == 1) hub.recordExit(chainId, proof);
+            vm.expectRevert(exited);
+            hub.voidOrder(locked, chainId, proof);
+            vm.expectRevert(exited);
+            hub.reportForgedDeposit(claimed, chainId, deposit);
+            vm.expectRevert(exited);
+            hub.reportOutflow(chainId, record, proof);
+        }
+        assertEq(factory.chainFreeze(chainId).start, 0, "nothing froze at the factory");
+        assertEq(uint256(hub.order(locked).status), uint256(IHybridHubTypes.OrderStatus.Locked));
+    }
+
     /// @dev The whole exit. At the last checkpoint an EOA and a safe hold shares, one order is claimed but its settle
     ///      message never reached the vault, and another is locked. 187 days later the vault pays each holder from the
     ///      hub's storage at the checkpoint, settles the claimed order's intake and refunds the locked one's; the hub
