@@ -12,9 +12,15 @@ pub struct Checkpoint {
     pub state_root: [u8; 32],
 }
 
+/// A timestamp as signed seconds, saturating: one past `i64::MAX` is later than any now, as it is to `XindexVault`'s
+/// `uint256` comparisons, never wrapped into the past (B1-01).
+fn seconds(timestamp: u64) -> i64 {
+    i64::try_from(timestamp).unwrap_or(i64::MAX)
+}
+
 /// When a vault whose last checkpoint is dated `timestamp` stalls: STALL_PERIOD after it.
 pub fn stall_start(timestamp: u64) -> i64 {
-    timestamp as i64 + STALL_PERIOD
+    seconds(timestamp).saturating_add(STALL_PERIOD)
 }
 
 /// A week without a new checkpoint: P1 and P2 may have stopped working.
@@ -26,13 +32,13 @@ pub fn stalled(timestamp: u64, now: i64) -> bool {
 pub fn is_newer(last: &Checkpoint, c: &Checkpoint, now: i64) -> bool {
     c.block > last.block
         && c.timestamp > last.timestamp
-        && c.timestamp as i64 <= now
+        && seconds(c.timestamp) <= now
         && c.state_root != [0u8; 32]
 }
 
 /// `c` is within STALL_PERIOD of now: a checkpoint that would not leave the vault stalled.
 pub fn is_recent(c: &Checkpoint, now: i64) -> bool {
-    c.timestamp as i64 + STALL_PERIOD >= now
+    stall_start(c.timestamp) >= now
 }
 
 /// Whether a message of `kind` moves coins or loosens a rule, and so needs both proofs and a checkpoint covering its

@@ -505,6 +505,40 @@ fn checkpoints_are_newer_and_recent() {
     }
 }
 
+/// B1-01: a timestamp is a `u64`, and one past `i64::MAX` is later than any now, as it is to `XindexVault`'s `uint256`
+/// comparisons. Cast with `as i64` it wrapped into the past: a forged checkpoint dated 2^63 passed `is_newer`, stalled
+/// the vault at once and made the snapshot exit due at once.
+#[test]
+fn test_b101_a_timestamp_past_i64_is_in_the_future() {
+    let now = 1_790_000_000;
+    let last = Checkpoint {
+        block: 100,
+        timestamp: 1_000,
+        state_root: [1; 32],
+    };
+    for timestamp in [i64::MAX as u64 + 1, 1u64 << 63 | 12, u64::MAX] {
+        let forged = Checkpoint {
+            block: 101,
+            timestamp,
+            state_root: [2; 32],
+        };
+        assert!(!checkpoint::is_newer(&last, &forged, now), "{timestamp}");
+        assert!(!checkpoint::stalled(timestamp, now), "{timestamp}");
+        assert_eq!(checkpoint::stall_start(timestamp), i64::MAX, "{timestamp}");
+        // As `XindexVault` reads it, such a checkpoint is no older than a week; `is_newer` is what refuses it.
+        assert!(checkpoint::is_recent(&forged, now), "{timestamp}");
+    }
+    // The largest timestamp that fits is still compared exactly.
+    let edge = Checkpoint {
+        block: 101,
+        timestamp: i64::MAX as u64,
+        state_root: [2; 32],
+    };
+    assert!(checkpoint::is_newer(&last, &edge, i64::MAX));
+    assert!(!checkpoint::is_newer(&last, &edge, i64::MAX - 1));
+    assert_eq!(checkpoint::stall_start(i64::MAX as u64), i64::MAX);
+}
+
 #[test]
 fn an_array_slot_adds_with_carry() {
     let mut a = [0u8; 32];

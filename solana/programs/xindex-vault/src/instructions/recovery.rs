@@ -238,7 +238,7 @@ pub struct BeginSnapshot<'info> {
 pub fn handle_begin_snapshot(ctx: Context<BeginSnapshot>) -> Result<()> {
     let config = &mut ctx.accounts.config;
     vault::check_no_snapshot(config)?;
-    let due = vault::stall_start(config) + SNAPSHOT_EXIT_DELAY;
+    let due = vault::stall_start(config).saturating_add(SNAPSHOT_EXIT_DELAY);
     require!(vault::now()? >= due, VaultError::SnapshotNotDue);
     let last = config.checkpoint;
     // Without a checkpoint there is no state to pay from, and no index could have been minted into here.

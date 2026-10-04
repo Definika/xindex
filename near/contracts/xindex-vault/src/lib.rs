@@ -610,7 +610,8 @@ impl Vault {
     /// on no message from a later Ethereum block runs, and holders at it claim directly.
     pub fn begin_snapshot(&mut self) {
         self.check_no_snapshot();
-        let due = checkpoint::stall_start(self.checkpoint.timestamp) + SNAPSHOT_EXIT_DELAY;
+        let due =
+            checkpoint::stall_start(self.checkpoint.timestamp).saturating_add(SNAPSHOT_EXIT_DELAY);
         check(now() as i64 >= due, Error::SnapshotNotDue);
         let last = self.checkpoint;
         // Without a checkpoint there is no state to pay from, and no index could have been minted into here.
