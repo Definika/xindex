@@ -25,6 +25,14 @@ library ScriptUtils {
         return keccak256(bytes(a)) == keccak256(bytes(b));
     }
 
+    /// @notice Whether `a` comes strictly after `b`, byte by byte, both of `a`'s length; equal is not after.
+    function above(bytes memory a, bytes memory b) internal pure returns (bool) {
+        for (uint256 i = 0; i < a.length; ++i) {
+            if (a[i] != b[i]) return a[i] > b[i];
+        }
+        return false;
+    }
+
     /// @notice Whether `target` answers `query` with exactly `expected`. A static call, compared byte for byte, so a
     ///         missing function, a fallback or a short answer is a no rather than a revert.
     function answers(address target, bytes memory query, bytes memory expected) internal view returns (bool) {

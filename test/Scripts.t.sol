@@ -32,6 +32,9 @@ import {BnbStateVerifier} from "../src/verifiers/BnbStateVerifier.sol";
 import {TronStateVerifier} from "../src/verifiers/TronStateVerifier.sol";
 import {NearStateVerifier} from "../src/verifiers/NearStateVerifier.sol";
 import {StellarStateVerifier} from "../src/verifiers/StellarStateVerifier.sol";
+import {SuiStateVerifier} from "../src/verifiers/SuiStateVerifier.sol";
+import {CometBftStateVerifier} from "../src/verifiers/CometBftStateVerifier.sol";
+import {VeChainStateVerifier} from "../src/verifiers/VeChainStateVerifier.sol";
 import {ISP1Verifier} from "../src/interfaces/ISP1Verifier.sol";
 import {ITronStateVerifier} from "../src/interfaces/ITronStateVerifier.sol";
 import {IHybridIndexFactory} from "../src/interfaces/IHybridIndexFactory.sol";
@@ -2402,8 +2405,303 @@ contract StateVerifierScriptTest is Test {
         verifier = script.run();
         assertEq(StellarStateVerifier(verifier).QUORUM_SET_HASH(), sha256(vm.parseJsonBytes(stellar, ".quorumSet")));
 
+        vm.setEnv("STATE_CHAIN", "sui");
+        vm.setEnv("STATE_ANCHOR", "test/fixtures/sui/anchor.json");
+        vm.warp(_suiStart() + 10 minutes);
+        verifier = script.run();
+        assertEq(SuiStateVerifier(verifier).epoch(), vm.parseJsonUint(sui, ".epoch"));
+
+        vm.setEnv("STATE_CHAIN", "injective");
+        vm.setEnv("STATE_ANCHOR", "test/fixtures/injective/anchor.json");
+        vm.warp(vm.parseJsonUint(injective, ".time") + 10 minutes);
+        verifier = script.run();
+        assertEq(CometBftStateVerifier(verifier).latestHash(), vm.parseJsonBytes32(injective, ".hash"));
+
+        vm.setEnv("STATE_CHAIN", "vechain");
+        vm.setEnv("STATE_ANCHOR", "test/fixtures/vechain/anchor.json");
+        vm.warp(vm.parseJsonUint(vechain, ".time") + 10 minutes);
+        verifier = script.run();
+        assertEq(VeChainStateVerifier(verifier).latestId(), vm.parseJsonBytes32(vechain, ".id"));
+
         vm.setEnv("STATE_CHAIN", "solana");
         vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.UnknownChain.selector, "solana"));
         script.run();
+    }
+
+    // ---------------------------------------------------------------------
+    // Sui, Injective and VeChain
+    // ---------------------------------------------------------------------
+
+    string sui = vm.readFile("test/fixtures/sui/anchor.json");
+    string injective = vm.readFile("test/fixtures/injective/anchor.json");
+    string vechain = vm.readFile("test/fixtures/vechain/anchor.json");
+
+    function _suiStart() internal view returns (uint256) {
+        return vm.parseJsonUint(sui, ".startMs") / 1000;
+    }
+
+    function _suiPowers() internal view returns (uint64[] memory powers) {
+        uint256[] memory read = vm.parseJsonUintArray(sui, ".powers");
+        powers = new uint64[](read.length);
+        for (uint256 i = 0; i < read.length; ++i) {
+            powers[i] = uint64(read[i]);
+        }
+    }
+
+    function _deploySui(uint256 chainId, bytes memory keys, bytes[] memory compressed, uint64[] memory powers)
+        internal
+        returns (SuiStateVerifier)
+    {
+        bytes32 vaultId = vm.parseJsonBytes32(sui, ".vaultId");
+        bytes32 packageId = vm.parseJsonBytes32(sui, ".packageId");
+        uint64 epoch = uint64(vm.parseJsonUint(sui, ".epoch"));
+        uint64 startMs = uint64(vm.parseJsonUint(sui, ".startMs"));
+        return script.deploySui(chainId, vaultId, packageId, epoch, keys, compressed, powers, startMs);
+    }
+
+    function _deploySui(uint256 chainId) internal returns (SuiStateVerifier) {
+        return
+            _deploySui(
+                chainId, vm.parseJsonBytes(sui, ".keys"), vm.parseJsonBytesArray(sui, ".compressed"), _suiPowers()
+            );
+    }
+
+    function _deployInjective(ISP1Verifier sp1, uint256 chainId, string memory name)
+        internal
+        returns (CometBftStateVerifier)
+    {
+        bytes32 key = vm.parseJsonBytes32(injective, ".programKey");
+        address vault = vm.parseJsonAddress(injective, ".vault");
+        uint64 height = uint64(vm.parseJsonUint(injective, ".height"));
+        bytes32 hash = vm.parseJsonBytes32(injective, ".hash");
+        uint64 time = uint64(vm.parseJsonUint(injective, ".time"));
+        return script.deployInjective(sp1, key, chainId, name, vault, height, hash, time);
+    }
+
+    function _deployVeChain(ISP1Verifier sp1, uint256 chainId, bytes32 id) internal returns (VeChainStateVerifier) {
+        bytes32 key = vm.parseJsonBytes32(vechain, ".programKey");
+        address vault = vm.parseJsonAddress(vechain, ".vault");
+        address attester = vm.parseJsonAddress(vechain, ".attester");
+        uint64 time = uint64(vm.parseJsonUint(vechain, ".time"));
+        bytes32 table = vm.parseJsonBytes32(vechain, ".table");
+        return script.deployVeChain(sp1, key, chainId, vault, attester, id, time, table);
+    }
+
+    /// @dev Sui's verifier, from a real mainnet epoch and its 127-member committee, by the hash of its keys and powers.
+    function test_deploySui_fromARealCommittee() public {
+        vm.warp(_suiStart() + 10 minutes);
+        SuiStateVerifier verifier = _deploySui(script.SUI_MAINNET());
+        bytes memory keys = vm.parseJsonBytes(sui, ".keys");
+        assertEq(keys.length, 127 * 256);
+        assertEq(verifier.committeeHash(), verifier.hashCommittee(keys, _suiPowers()));
+        assertEq(verifier.epoch(), vm.parseJsonUint(sui, ".epoch"));
+        assertEq(verifier.epochStartMs(), vm.parseJsonUint(sui, ".startMs"));
+        assertEq(verifier.CHAIN_ID(), 13_762_264_207_064_992_463, "keccak256('sui:mainnet')'s first 8 bytes");
+        assertEq(verifier.VAULT_ID(), vm.parseJsonBytes32(sui, ".vaultId"));
+        assertEq(verifier.PACKAGE_ID(), vm.parseJsonBytes32(sui, ".packageId"));
+        assertEq(script.SUI_MAINNET(), uint64(bytes8(keccak256("sui:mainnet"))));
+        assertEq(script.SUI_TESTNET(), uint64(bytes8(keccak256("sui:testnet"))));
+    }
+
+    /// @dev Injective's verifier, from a real mainnet header, and VeChain's, from a real staker table.
+    function test_deployInjectiveAndVeChain_fromRealAnchors() public {
+        ISP1Verifier sp1 = new MockSP1Verifier();
+        vm.warp(vm.parseJsonUint(injective, ".time") + 10 minutes);
+        CometBftStateVerifier inj = _deployInjective(sp1, script.INJECTIVE_MAINNET(), "injective-1");
+        assertEq(inj.latestHash(), vm.parseJsonBytes32(injective, ".hash"));
+        assertEq(inj.trusted(inj.latestHash()).height, vm.parseJsonUint(injective, ".height"));
+
+        vm.warp(vm.parseJsonUint(vechain, ".time") + 10 minutes);
+        bytes32 id = vm.parseJsonBytes32(vechain, ".id");
+        VeChainStateVerifier vet = _deployVeChain(sp1, script.VECHAIN_MAINNET(), id);
+        assertEq(vet.latestId(), id);
+        assertEq(vet.trusted(id).table, vm.parseJsonBytes32(vechain, ".table"));
+        assertEq(script.VECHAIN_MAINNET(), uint256(vm.parseJsonBytes32(vechain, ".chainId")), "the genesis id");
+        assertEq(uint32(bytes4(id)), vm.parseJsonUint(vechain, ".number"), "a VeChain id begins with its number");
+    }
+
+    /// @dev Only Ethereum, only the networks that pair with it, only a fresh anchor, and a committee as Sui requires.
+    function test_deploySui_refusals() public {
+        uint256 start = _suiStart();
+        vm.warp(start + 10 minutes);
+        uint256 main = script.SUI_MAINNET();
+        uint256 test = script.SUI_TESTNET();
+        bytes memory keys = vm.parseJsonBytes(sui, ".keys");
+        bytes[] memory compressed = vm.parseJsonBytesArray(sui, ".compressed");
+        uint64[] memory powers = _suiPowers();
+
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongNetwork.selector, test));
+        _deploySui(test);
+        vm.chainId(11_155_111);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongNetwork.selector, main));
+        _deploySui(main);
+        _deploySui(test);
+        vm.chainId(31_337);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.NotEthereum.selector, 31_337));
+        _deploySui(main);
+        vm.chainId(1);
+
+        uint256 maxAge = script.MAX_SUI_ANCHOR_AGE();
+        vm.warp(start + maxAge);
+        _deploySui(main);
+        vm.warp(start + maxAge + 1);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.StaleAnchor.selector, start, block.timestamp));
+        _deploySui(main);
+        vm.warp(start - 1);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.StaleAnchor.selector, start, block.timestamp));
+        _deploySui(main);
+        vm.warp(start + 10 minutes);
+
+        // The lengths must agree, and there must be members.
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.BadCommittee.selector, 0));
+        _deploySui(main, "", new bytes[](0), new uint64[](0));
+        bytes[] memory short = new bytes[](compressed.length - 1);
+        for (uint256 i = 0; i < short.length; ++i) {
+            short[i] = compressed[i];
+        }
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.BadCommittee.selector, powers.length));
+        _deploySui(main, keys, short, powers);
+        // A compressed key that is not its uncompressed key's.
+        bytes[] memory wrong = _copy(compressed);
+        wrong[5] = compressed[6];
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.BadCommittee.selector, 5));
+        _deploySui(main, keys, wrong, powers);
+        // Two members swapped: each key still matches, but the order is not Sui's.
+        bytes[] memory swapped = _copy(compressed);
+        (swapped[3], swapped[4]) = (compressed[4], compressed[3]);
+        bytes memory swappedKeys = bytes.concat(keys);
+        for (uint256 b = 0; b < 256; ++b) {
+            (swappedKeys[3 * 256 + b], swappedKeys[4 * 256 + b]) = (keys[4 * 256 + b], keys[3 * 256 + b]);
+        }
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.BadCommittee.selector, 4));
+        _deploySui(main, swappedKeys, swapped, powers);
+        // A member named twice: each key matches, but equal is not ascending.
+        bytes[] memory twice = _copy(compressed);
+        twice[8] = compressed[7];
+        bytes memory twiceKeys = bytes.concat(keys);
+        for (uint256 b = 0; b < 256; ++b) {
+            twiceKeys[8 * 256 + b] = keys[7 * 256 + b];
+        }
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.BadCommittee.selector, 8));
+        _deploySui(main, twiceKeys, twice, powers);
+        // Powers that do not total 10,000.
+        uint64[] memory more = new uint64[](powers.length);
+        for (uint256 i = 0; i < powers.length; ++i) {
+            more[i] = powers[i];
+        }
+        more[0] += 1;
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.BadCommittee.selector, powers.length));
+        _deploySui(main, keys, compressed, more);
+    }
+
+    /// @dev Only SP1's pinned verifier, only the networks that pair with this one, a fresh anchor, a real block.
+    function test_deployInjectiveAndVeChain_refusals() public {
+        ISP1Verifier sp1 = new MockSP1Verifier();
+        ISP1Verifier other = ISP1Verifier(address(new MockRiscZeroVerifier()));
+        uint256 injTime = vm.parseJsonUint(injective, ".time");
+        uint256 vetTime = vm.parseJsonUint(vechain, ".time");
+        bytes32 id = vm.parseJsonBytes32(vechain, ".id");
+        uint256 injMain = script.INJECTIVE_MAINNET();
+        uint256 injTest = script.INJECTIVE_TESTNET();
+        uint256 vetMain = script.VECHAIN_MAINNET();
+        uint256 vetTest = script.VECHAIN_TESTNET();
+
+        vm.warp(injTime + 10 minutes);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.NotSp1Verifier.selector, address(other)));
+        _deployInjective(other, injMain, "injective-1");
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongNetwork.selector, injTest));
+        _deployInjective(sp1, injTest, "injective-1");
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongCosmosChain.selector, "injective-888"));
+        _deployInjective(sp1, injMain, "injective-888");
+        uint256 maxAge = script.MAX_ANCHOR_AGE();
+        vm.warp(injTime + maxAge + 1);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.StaleAnchor.selector, injTime, block.timestamp));
+        _deployInjective(sp1, injMain, "injective-1");
+        vm.warp(injTime - 1);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.StaleAnchor.selector, injTime, block.timestamp));
+        _deployInjective(sp1, injMain, "injective-1");
+
+        vm.warp(vetTime + 10 minutes);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.NotSp1Verifier.selector, address(other)));
+        _deployVeChain(other, vetMain, id);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongNetwork.selector, vetTest));
+        _deployVeChain(sp1, vetTest, id);
+        bytes32 zero = id & bytes32(uint256(type(uint224).max));
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.BadBlockId.selector, zero));
+        _deployVeChain(sp1, vetMain, zero);
+        uint256 vetAge = script.MAX_VECHAIN_ANCHOR_AGE();
+        vm.warp(vetTime + vetAge);
+        _deployVeChain(sp1, vetMain, id);
+        vm.warp(vetTime + vetAge + 1);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.StaleAnchor.selector, vetTime, block.timestamp));
+        _deployVeChain(sp1, vetMain, id);
+        vm.warp(vetTime - 1);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.StaleAnchor.selector, vetTime, block.timestamp));
+        _deployVeChain(sp1, vetMain, id);
+
+        // On Sepolia the testnets pair with it, and the mainnets do not; nowhere but Ethereum.
+        vm.chainId(11_155_111);
+        vm.warp(injTime + 10 minutes);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongNetwork.selector, injMain));
+        _deployInjective(sp1, injMain, "injective-1");
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongCosmosChain.selector, "injective-1"));
+        _deployInjective(sp1, injTest, "injective-1");
+        _deployInjective(sp1, injTest, "injective-888");
+        vm.warp(vetTime + 10 minutes);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongNetwork.selector, vetMain));
+        _deployVeChain(sp1, vetMain, id);
+        _deployVeChain(sp1, vetTest, id);
+        vm.chainId(31_337);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.NotEthereum.selector, 31_337));
+        _deployInjective(sp1, injMain, "injective-1");
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.NotEthereum.selector, 31_337));
+        _deployVeChain(sp1, vetMain, id);
+    }
+
+    /// @dev The reviews refuse a verifier that holds another anchor than the file's.
+    function test_checkSuiInjectiveAndVeChain_refuseAnotherAnchor() public {
+        ISP1Verifier sp1 = new MockSP1Verifier();
+        vm.warp(_suiStart() + 10 minutes);
+        SuiStateVerifier s = _deploySui(script.SUI_MAINNET());
+        uint64 epoch = s.epoch();
+        bytes32 committee = s.committeeHash();
+        uint64 startMs = s.epochStartMs();
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(s)));
+        script.checkSui(address(s), epoch + 1, committee, startMs);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(s)));
+        script.checkSui(address(s), epoch, keccak256("another committee"), startMs);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(s)));
+        script.checkSui(address(s), epoch, committee, startMs + 1);
+
+        vm.warp(vm.parseJsonUint(injective, ".time") + 10 minutes);
+        CometBftStateVerifier inj = _deployInjective(sp1, script.INJECTIVE_MAINNET(), "injective-1");
+        uint64 height = uint64(vm.parseJsonUint(injective, ".height"));
+        bytes32 hash = vm.parseJsonBytes32(injective, ".hash");
+        uint64 time = uint64(vm.parseJsonUint(injective, ".time"));
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(inj)));
+        script.checkInjective(address(inj), height, keccak256("another header"), time);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(inj)));
+        script.checkInjective(address(inj), height + 1, hash, time);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(inj)));
+        script.checkInjective(address(inj), height, hash, time + 1);
+
+        vm.warp(vm.parseJsonUint(vechain, ".time") + 10 minutes);
+        bytes32 id = vm.parseJsonBytes32(vechain, ".id");
+        VeChainStateVerifier vet = _deployVeChain(sp1, script.VECHAIN_MAINNET(), id);
+        uint64 vetTime = uint64(vm.parseJsonUint(vechain, ".time"));
+        bytes32 table = vm.parseJsonBytes32(vechain, ".table");
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(vet)));
+        script.checkVeChain(address(vet), keccak256("another block"), vetTime, table);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(vet)));
+        script.checkVeChain(address(vet), id, vetTime, keccak256("another table"));
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(vet)));
+        script.checkVeChain(address(vet), id, vetTime + 1, table);
+    }
+
+    function _copy(bytes[] memory list) internal pure returns (bytes[] memory out) {
+        out = new bytes[](list.length);
+        for (uint256 i = 0; i < list.length; ++i) {
+            out[i] = list[i];
+        }
     }
 }

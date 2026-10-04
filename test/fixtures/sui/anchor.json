@@ -263,5 +263,8 @@
  "epoch": 1270,
  "startMs": 1791072341761,
  "namedBy": 329976959,
- "namedByDigest": "0x69423b729882ee2572c18f53a8794da8f0aa4f23190350813fa9ad60355d0469"
+ "namedByDigest": "0x69423b729882ee2572c18f53a8794da8f0aa4f23190350813fa9ad60355d0469",
+ "deployment": "vaultId and packageId are test values: no vault is published on Sui yet. The operator writes the vault's shared state object id and its package id here; the rest is generate.py's output.",
+ "vaultId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+ "packageId": "0x2222222222222222222222222222222222222222222222222222222222222222"
 }

@@ -412,5 +412,9 @@
    "0x10d614252dfe8d6e5f8b2846d7d277f1f5275828",
    "0x00000000000000000000000000000000000000000029667fefc7f70eed400000"
   ]
- ]
+ ],
+ "deployment": "vault, attester and programKey are test values: no vault or attester is deployed on VeChain yet. The operator writes the deployed addresses and the program's key here; the rest is generate.py's output.",
+ "vault": "0x3333333333333333333333333333333333333333",
+ "attester": "0x4444444444444444444444444444444444444444",
+ "programKey": "0x001e4a5f0000000000000000000000000000000000000000000000000000beef"
 }
