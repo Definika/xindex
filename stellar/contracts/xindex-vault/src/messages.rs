@@ -434,6 +434,7 @@ pub fn freeze_until(env: &Env, cfg: &mut Config) {
 /// force holds every change but the freezer's replacement: a freezer that froze again and again must not be able to
 /// keep itself in place.
 pub fn apply_change(env: &Env, kind: u32, body: &Bytes) {
+    let kind = narrow(env, kind);
     let mut cfg = vault::config(env);
     let waiting = pending(env, &mut cfg, kind).clone();
     require(
@@ -446,12 +447,12 @@ pub fn apply_change(env: &Env, kind: u32, body: &Bytes) {
         vault::now(env) >= waiting.ready_at,
         VaultError::ChangeNotReady,
     );
-    if kind != FREEZER_CHANGE as u32 {
+    if kind != FREEZER_CHANGE {
         vault::check_not_frozen(env, &cfg);
     }
     *pending(env, &mut cfg, kind) = none(env);
     let b = body.to_alloc_vec();
-    match kind as u8 {
+    match kind {
         CAP_UPDATE => {
             let (cap, floor) = read_cap(env, &b);
             set_cap(env, &mut cfg, cap, floor);
@@ -479,7 +480,7 @@ pub fn apply_change(env: &Env, kind: u32, body: &Bytes) {
             cfg.p2 = p2;
         }
     }
-    ChangeApplied { kind }.publish(env);
+    ChangeApplied { kind: kind.into() }.publish(env);
     vault::set_config(env, &cfg);
 }
 
@@ -487,16 +488,23 @@ pub fn apply_change(env: &Env, kind: u32, body: &Bytes) {
 pub fn cancel_change(env: &Env, kind: u32) {
     let mut cfg = vault::config(env);
     cfg.freezer.require_auth();
-    require(env, kind != FREEZER_CHANGE as u32, VaultError::NotFreezer);
+    let kind = narrow(env, kind);
+    require(env, kind != FREEZER_CHANGE, VaultError::NotFreezer);
     let waiting = pending(env, &mut cfg, kind);
     require(env, waiting.ready_at != 0, VaultError::NoPendingChange);
     *waiting = none(env);
-    ChangeCancelled { kind }.publish(env);
+    ChangeCancelled { kind: kind.into() }.publish(env);
     vault::set_config(env, &cfg);
 }
 
-fn pending<'a>(env: &Env, cfg: &'a mut Config, kind: u32) -> &'a mut PendingChange {
-    match kind as u8 {
+/// A change's kind is one byte. A wider word names no change: narrowing it with `as u8` let `cancel_change(263)` past
+/// the freezer's guard and onto its own replacement (B3-01).
+fn narrow(env: &Env, kind: u32) -> u8 {
+    u8::try_from(kind).unwrap_or_else(|_| fail(env, VaultError::NoPendingChange))
+}
+
+fn pending<'a>(env: &Env, cfg: &'a mut Config, kind: u8) -> &'a mut PendingChange {
+    match kind {
         CAP_UPDATE => &mut cfg.pending_cap,
         FREEZER_CHANGE => &mut cfg.pending_freezer,
         VERIFIER_ROTATION => &mut cfg.pending_rotation,

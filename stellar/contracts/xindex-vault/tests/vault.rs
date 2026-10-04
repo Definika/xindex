@@ -579,6 +579,52 @@ fn test_vlt2_the_freezers_replacement_cannot_be_held() {
     assert_eq!(h.config().cap, CAP * 2);
 }
 
+/// B3-01: a kind is one byte, so a wider one names no change. Before, `cancel_change(263)` passed the guard on the full
+/// word, then reached the freezer's own replacement through `kind as u8` and dropped it.
+#[test]
+fn test_b301_a_wide_kind_names_no_change() {
+    let mut h = H::ready();
+    let new_key = key_of("new freezer");
+    let body = bytes(&h.env, &new_key);
+    let p = h.payload(FREEZER_CHANGE, FACTORY, &new_key);
+    h.deliver(&p, By::Both);
+    for wide in [
+        FREEZER_CHANGE as u32 + 256,
+        FREEZER_CHANGE as u32 + 512,
+        u32::MAX,
+    ] {
+        assert_eq!(
+            h.v().try_cancel_change(&wide),
+            Err(Ok(code(VaultError::NoPendingChange)))
+        );
+    }
+    h.v().freeze();
+    h.warp(GOVERNANCE_DELAY as u64);
+    assert_eq!(
+        h.v()
+            .try_apply_change(&(FREEZER_CHANGE as u32 + 256), &body),
+        Err(Ok(code(VaultError::NoPendingChange)))
+    );
+    // The replacement is still waiting, and applies under its own kind while the vault is frozen.
+    h.v().apply_change(&(FREEZER_CHANGE as u32), &body);
+    assert_eq!(h.config().freezer, account_of(&h.env, &new_key));
+    // Nor does a wide kind reach a waiting raise.
+    let raise = cap_body(CAP * 2, FLOOR);
+    h.set_time(h.config().frozen_until);
+    h.fresh();
+    let q = h.payload(CAP_UPDATE, FACTORY, &raise);
+    h.deliver(&q, By::Both);
+    h.warp(GOVERNANCE_DELAY as u64);
+    assert_eq!(
+        h.v()
+            .try_apply_change(&(CAP_UPDATE as u32 + 256), &bytes(&h.env, &raise)),
+        Err(Ok(code(VaultError::NoPendingChange)))
+    );
+    h.v()
+        .apply_change(&(CAP_UPDATE as u32), &bytes(&h.env, &raise));
+    assert_eq!(h.config().cap, CAP * 2);
+}
+
 /// The twin of SOL-3: an older freezer change delivered after a newer one never runs, so it cannot undo it.
 #[test]
 fn test_sol3_an_older_freezer_change_cannot_undo_a_newer_one() {
