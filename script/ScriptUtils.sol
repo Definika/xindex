@@ -2,12 +2,28 @@
 pragma solidity 0.8.28;
 
 import {ISP1Groth16Identity} from "./interfaces/ISP1Groth16Identity.sol";
+import {ISafeThreshold} from "./interfaces/ISafeThreshold.sol";
 
 /// @notice Constants and helpers the deploy, listing and test-market scripts share.
 library ScriptUtils {
     /// @notice SP1's Groth16 verifier v6.0.0 names itself by this hash, the circuit its proofs come from.
     bytes32 internal constant SP1_VERIFIER_HASH = 0x0e78f4db7a6771a3a6a7d9c3b0de6fe73d58781368967a7fe84d87aefffec896;
     string internal constant SP1_VERSION = "v6.0.0";
+
+    /// @notice Fewest signatures a Safe may need to hold a role that must not rest on one key: the design's 3-of-5 hardware
+    ///         wallets held by separate people (the owner's call on 2026-09-30).
+    uint256 internal constant MIN_MULTISIG_THRESHOLD = 3;
+    /// @notice Start of a Safe's module list.
+    address internal constant SENTINEL_MODULES = address(0x1);
+
+    /// @notice What {reviewSafe} found of an account that must be a Safe holding no module.
+    enum SafeFinding {
+        Ok,
+        NotASafe,
+        ThresholdTooLow,
+        HasModules,
+        ModulesUnknown
+    }
 
     /// @notice Uniswap V3 fee tiers the listed WETH pools use.
     uint24 internal constant POOL_FEE_LOW = 500;
@@ -46,5 +62,48 @@ library ScriptUtils {
     function isSp1Verifier(address verifier) internal view returns (bool) {
         return answers(verifier, abi.encodeCall(ISP1Groth16Identity.VERIFIER_HASH, ()), abi.encode(SP1_VERIFIER_HASH))
             && answers(verifier, abi.encodeCall(ISP1Groth16Identity.VERSION, ()), abi.encode(SP1_VERSION));
+    }
+
+    /// @notice Reviews `account` as a Safe that must need at least `minThreshold` signatures and have no enabled module,
+    ///         which would act as the Safe without any: the owner's rule, shared by every role that is meant to be a
+    ///         multisig (A7-09). Every read is a static call whose answer is checked before it is decoded, so a contract
+    ///         that is not a Safe, a missing function or a call that reverted with a word that looks like an answer
+    ///         is a finding, never a revert or an answer (CR-I36).
+    /// @param account The role's account.
+    /// @param minThreshold Fewest signatures it may need.
+    /// @return finding What is wrong with it, or `Ok`.
+    /// @return threshold Its signature threshold, for `ThresholdTooLow`.
+    /// @return module The first enabled module, for `HasModules`.
+    function reviewSafe(address account, uint256 minThreshold)
+        internal
+        view
+        returns (SafeFinding finding, uint256 threshold, address module)
+    {
+        // A Safe answers getThreshold with one word. A static call is used because a typed try/catch would revert on an
+        // empty answer from a fallback.
+        // forge-lint: disable-next-line(low-level-calls)
+        (bool ok, bytes memory data) = account.staticcall(abi.encodeCall(ISafeThreshold.getThreshold, ()));
+        if (!ok || data.length != 32) return (SafeFinding.NotASafe, 0, address(0));
+        threshold = abi.decode(data, (uint256));
+        if (threshold < minThreshold) return (SafeFinding.ThresholdTooLow, threshold, address(0));
+        // The first page of the Safe's module list. A multisig that cannot show one is rejected rather than trusted, and
+        // so is any enabled module.
+        // forge-lint: disable-next-line(low-level-calls)
+        (ok, data) = account.staticcall(abi.encodeCall(ISafeThreshold.getModulesPaginated, (SENTINEL_MODULES, 1)));
+        // A well-formed answer holds at least the array offset, the next cursor and the array length.
+        if (!ok || data.length < 96) return (SafeFinding.ModulesUnknown, threshold, address(0));
+        (address[] memory modules,) = abi.decode(data, (address[], address));
+        if (modules.length != 0) return (SafeFinding.HasModules, threshold, modules[0]);
+        return (SafeFinding.Ok, threshold, address(0));
+    }
+
+    /// @notice The signers of `account` when it is a Safe, and none otherwise: a key, or a contract that answers no signer
+    ///         list, has none to name.
+    function signersOf(address account) internal view returns (address[] memory signers) {
+        // forge-lint: disable-next-line(low-level-calls)
+        (bool ok, bytes memory data) = account.staticcall(abi.encodeCall(ISafeThreshold.getOwners, ()));
+        // A well-formed answer holds at least the array offset and its length.
+        if (!ok || data.length < 64) return signers;
+        return abi.decode(data, (address[]));
     }
 }

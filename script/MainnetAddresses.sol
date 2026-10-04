@@ -42,8 +42,11 @@ library MainnetAddresses {
     // bitcoin's and ether's supply, because their on-chain supply is only the wrapped float. Revised weekly through a
     // supply batch (`ConfigureWhitelist` supplies mode), each within 0.5% of the figure in force.
     // ---------------------------------------------------------------------
-    uint256 internal constant BTC_SUPPLY = 20_087_871e8;
-    uint256 internal constant ETH_SUPPLY = 122_070_499e18;
-    uint256 internal constant LINK_SUPPLY = 748_099_970e18;
-    uint256 internal constant UNI_SUPPLY = 620_716_422e18;
+    // A launch listing carries these figures and a first figure moves by at most half a percent a week, so they are
+    // refreshed from their sources the day before it is proposed, with `test_CRL08_theDefaultListIsTheReleaseRecord`
+    // (README, "Deploy", A7-20).
+    uint256 internal constant BTC_SUPPLY = 20_087_871e8; // CoinGecko circulating supply of bitcoin, 2026-09-22
+    uint256 internal constant ETH_SUPPLY = 122_070_499e18; // CoinGecko circulating supply of ether, 2026-09-22
+    uint256 internal constant LINK_SUPPLY = 748_099_970e18; // CoinGecko circulating supply of LINK, 2026-09-22
+    uint256 internal constant UNI_SUPPLY = 620_716_422e18; // CoinGecko circulating supply of UNI, 2026-09-22
 }

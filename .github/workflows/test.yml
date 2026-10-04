@@ -66,8 +66,9 @@ jobs:
       - name: Run Forge fmt
         run: forge fmt --check
 
+      # Warnings are errors: the definition of done wants a clean compile, and `forge build` alone succeeds with them.
       - name: Run Forge build
-        run: forge build --sizes
+        run: forge build --sizes --deny warnings
 
       # `forge build` prints lint findings but still succeeds, so lint runs on its own and fails on notes too.
       - name: Run Forge lint
@@ -145,3 +146,135 @@ jobs:
             exit 1
           fi
           wake detect all src
+
+  # The Rust and Move gates of the vault chains, which AGENTS.md lists: the shared core, NEAR's and Stellar's vaults and
+  # Aptos's. Each pins its toolchain and its tools by version, and the downloaded CLIs by SHA-256. Solana's programs
+  # (platform tools), Sui (a 1 GB release), the proof statements and the TRON and VeChain deploy tools are not run here
+  # yet; their gates are in their READMEs.
+  core:
+    name: Rust core
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: crates/xindex-core
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # rustup does not install a toolchain file's channel by itself, so the pin is installed by version.
+      - name: Install Rust 1.98.1
+        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy --target wasm32-unknown-unknown
+
+      - name: Test
+        run: cargo test --locked --release
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Lint
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Build for Wasm without the native crypto
+        run: cargo build --locked --target wasm32-unknown-unknown --no-default-features
+
+  near:
+    name: NEAR vault
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: near
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.98.1
+        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy --target wasm32-unknown-unknown
+
+      # The sandbox tests download a NEAR node and run the built Wasm; the library tests run the vault natively.
+      - name: Test
+        run: cargo test --locked -p xindex-vault-near --lib
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Lint
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Build the Wasm
+        run: cargo build --locked -p xindex-vault-near --target wasm32-unknown-unknown --release
+
+  stellar:
+    name: Stellar vault
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: stellar
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.98.1
+        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy --target wasm32v1-none
+
+      - name: Install the Stellar CLI 28.1.0
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/stellar.tar.gz" https://github.com/stellar/stellar-cli/releases/download/v28.1.0/stellar-cli-28.1.0-x86_64-unknown-linux-gnu.tar.gz
+          echo "c1680deee94301d33ada7a17f98411e642a4248c727afbd2e43050d345746462  $RUNNER_TEMP/stellar.tar.gz" | sha256sum -c -
+          mkdir -p "$HOME/.local/bin"
+          tar xzf "$RUNNER_TEMP/stellar.tar.gz" -C "$HOME/.local/bin" stellar
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # The tests run the contracts' built Wasm, which `stellar contract build` writes.
+      - name: Build the contracts
+        run: stellar contract build
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Lint
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+  aptos:
+    name: Aptos vault
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: aptos
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # Only `move compile` and `move test` run: the CLI's `init`, `account`, `key`, `publish`, `run` and `node` create
+      # keys or reach a network.
+      - name: Install the Aptos CLI 9.6.0
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/aptos.zip" https://github.com/aptos-labs/aptos-core/releases/download/aptos-cli-v9.6.0/aptos-cli-9.6.0-Ubuntu-22.04-x86_64.zip
+          echo "f8494d72e3e537479143e70251363f69e8364ac2a9cd3b92d636c928482f29ba  $RUNNER_TEMP/aptos.zip" | sha256sum -c -
+          mkdir -p "$HOME/.local/bin"
+          unzip -o "$RUNNER_TEMP/aptos.zip" -d "$HOME/.local/bin"
+          chmod +x "$HOME/.local/bin/aptos"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/aptos" --version
+
+      - name: Compile without warnings
+        run: aptos move compile --dev --fail-on-warning
+
+      - name: Test
+        run: aptos move test --dev

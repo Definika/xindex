@@ -44,6 +44,8 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///                 reason, which keeps a listing the guardian cancelled cancelled (RT-06). Leave it unset on a routine
 ///                 run.
 ///   RELIST        Optional. Comma-separated delisted tokens that propose and safe mode may list again.
+///   USDC, USDT    Optional. The deployment's mint currencies, as `Deploy` takes them: never listed as components, with
+///                 mainnet's, which are excluded everywhere. Set them off mainnet, where they are the testnet's own.
 contract ConfigureWhitelist is Script {
     /// @notice A token and its reference supply.
     /// @param token Token to list, or whose supply to revise.
@@ -340,6 +342,17 @@ contract ConfigureWhitelist is Script {
         return true;
     }
 
+    /// @notice The stablecoins the deployment mints and burns in, which are never components: USDC and USDT from the
+    ///         environment, as `Deploy` reads them, and mainnet's when unset. Mainnet's stay excluded wherever this runs,
+    ///         but off mainnet the mint currencies are the deployment's own (a testnet's tUSDC), which a mainnet-only
+    ///         comparison would let a WHITELIST list as a component (A7-22).
+    /// @return usdc The deployment's USDC.
+    /// @return usdt The deployment's USDT.
+    function mintCurrencies() public view returns (address usdc, address usdt) {
+        usdc = vm.envOr("USDC", MainnetAddresses.USDC);
+        usdt = vm.envOr("USDT", MainnetAddresses.USDT);
+    }
+
     /// @notice The supply a listing of `entry` proposes: the entry's for a first listing, and the one in force for a
     ///         relisting, which the factory requires; a batch then revises it (SA-02).
     /// @param factory The deployed factory.
@@ -534,7 +547,8 @@ contract ConfigureWhitelist is Script {
             console2.log("vault token reference supply in its chain's smallest unit", referenceSupply);
             return true;
         }
-        if (token == MainnetAddresses.USDC || token == MainnetAddresses.USDT) {
+        (address usdc, address usdt) = mintCurrencies();
+        if (token == usdc || token == usdt || token == MainnetAddresses.USDC || token == MainnetAddresses.USDT) {
             console2.log("skipped, a mint currency is not a component", token);
             return false;
         }

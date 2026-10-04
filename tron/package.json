@@ -11,7 +11,7 @@
     "deploy-test": "node deploy-test.mjs"
   },
   "dependencies": {
-    "tronweb": "^6.0.0",
-    "viem": "^2.23.0"
+    "tronweb": "6.5.1",
+    "viem": "2.57.2"
   }
 }

@@ -6,8 +6,13 @@
 // script clears each one (`Prototype.setMaster(contract, 0)`) and checks that it reads zero. Nothing deployed is then
 // owned, and nothing can be changed afterwards but by the vault's own proven messages.
 //
-//   node deploy.mjs --network mainnet|testnet|solo --keystore <file> [--password-file <file>] [--host <url>]
+//   node deploy.mjs --network mainnet|testnet|solo --keystore <file> [--password-file <file>] [--host <url>] [--allow-dirty]
 //   node deploy.mjs --network mainnet --dry-run --from <address>
+//
+// Before anything is sent the tool refuses a working tree that differs from its commit, and any build output that was
+// compiled from other sources than the ones on disk (`npm run build` makes them), and it records the commit and the
+// compiler beside the addresses. `--allow-dirty` lets a rehearsal on a testnet or solo node go ahead from a tree that
+// differs, and says so in the record; a deployment on mainnet never does.
 //
 // The parameters come from the environment, named as DeployVault names them:
 //   VAULT_SOURCE_CHAIN_ID     The chain the indexes live on: 1, Ethereum mainnet, the default, or Sepolia (11155111). It
@@ -19,18 +24,23 @@
 //   VAULT_RISC_ZERO_VERIFIER  RISC Zero's Groth16 verifier 3.0.0 on VeChain, never its router or emergency stop. Unset: this
 //                             script deploys the vendored one (`vendor/risc0-ethereum`) with its published control ids.
 //   VAULT_P1_KEY, VAULT_P2_IMAGE_ID   P1's program key (`p1 vkey`) and P2's image id (`p2 image-id`).
-//   VAULT_ANCHOR, VAULT_ANCHOR_EPOCH  The finalized checkpoint P1 and P2 start from (`p1-input check-state`). Each stops
-//                             for good a day after its anchor's epoch began, so both are advanced daily from deployment on.
+//   VAULT_ANCHOR, VAULT_ANCHOR_EPOCH  The finalized checkpoint P1 and P2 start from (`p1-input check-state`), both
+//                             required. Each stops for good a day after its anchor's epoch began, so both are advanced daily
+//                             from deployment on, and an anchor with less than 12 hours of that day left is refused.
 //   VAULT_FREEZER             The guardian's freeze address on VeChain: it can only freeze.
-//   VAULT_RECOVERY            The owner's emergency multisig on VeChain: a contract.
-//   VAULT_NATIVE_CAP, VAULT_NATIVE_FLOOR  VET's quantity cap and speed-limit floor, in wei.
+//   VAULT_RECOVERY            The owner's emergency multisig on VeChain: a Safe that needs at least three signatures, has
+//                             no enabled module and counts neither the freezer nor the deployer among its signers.
+//   VAULT_RECOVERY_IS_NOT_A_SAFE_ACK  Optional, `true` to accept a recovery multisig that is not a Safe, on a chain that has
+//                             none: the operator's word that it needs at least three keys.
+//   VAULT_NATIVE_CAP, VAULT_NATIVE_FLOOR  VET's quantity cap, above zero, and speed-limit floor, in wei; both required.
 //
 // The deployer's key is never on the command line or in the environment: it comes from an encrypted keystore, Ethereum's
 // V3 format, which `cast wallet import` writes (a VeChain key is the same secp256k1 key), unlocked by a password typed at
 // the prompt or read from `--password-file`. `--dry-run` runs every check, then the whole deployment in the node's
 // read-only call simulation from the deployer's address, and sends nothing.
+import { execFileSync } from 'node:child_process';
 import { createDecipheriv, pbkdf2Sync, randomBytes, scryptSync } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
@@ -58,6 +68,11 @@ export const MAINNET_GENESIS_TIME = 1_606_824_023n;
 export const SEPOLIA_GENESIS_TIME = 1_655_733_600n;
 export const SEPOLIA = 11_155_111n;
 export const VERIFIER_MAX_LAG = 86_400n;
+/** How much of P1's and P2's day an anchor must still have left (DeployVault's MIN_ANCHOR_SLACK): the first advance
+ *  needs two proofs of finality, which take hours, and a verifier that stops first is an immutable of the vault. */
+export const MIN_ANCHOR_SLACK = 43_200n;
+/** Fewest signatures the recovery multisig may need, the factory owner's. */
+export const MIN_RECOVERY_THRESHOLD = 3n;
 const EPOCH_SECONDS = 384n;
 /** A builtin contract's address: its name in ASCII, left-padded to 20 bytes (`thor.BytesToAddress`). */
 const builtin = (name) => '0x' + Buffer.from(name).toString('hex').padStart(40, '0');
@@ -95,9 +110,18 @@ export function evmAddress(a) {
   return a.toLowerCase();
 }
 
-/** The parameters, from the environment, as DeployVault's `run` reads them. */
-export function paramsFromEnv(env = process.env) {
+/** The parameters, from the environment, as DeployVault's `run` reads them: the epoch, the cap and the floor are
+ *  required, as `vm.envUint` requires them there, since an unset cap would deploy a vault that refuses every deposit.
+ *  `simulate.mjs` measures a deployment with placeholders, and passes `lenient` to read any of them as zero. */
+export function paramsFromEnv(env = process.env, lenient = false) {
   const bytes32 = (k) => (env[k] ? word(env[k]) : ZERO32);
+  const need = (k) => {
+    if (env[k] === undefined || env[k] === '') {
+      if (lenient) return 0n;
+      throw new Refused('Required', k);
+    }
+    return BigInt(env[k]);
+  };
   return {
     sourceChainId: BigInt(env.VAULT_SOURCE_CHAIN_ID ?? '1'),
     factory: evmAddress(env.VAULT_FACTORY),
@@ -107,11 +131,12 @@ export function paramsFromEnv(env = process.env) {
     p1ProgramKey: bytes32('VAULT_P1_KEY'),
     p2ImageId: bytes32('VAULT_P2_IMAGE_ID'),
     anchor: bytes32('VAULT_ANCHOR'),
-    anchorEpoch: BigInt(env.VAULT_ANCHOR_EPOCH ?? '0'),
+    anchorEpoch: need('VAULT_ANCHOR_EPOCH'),
     freezer: evmAddress(env.VAULT_FREEZER),
     recoveryProposer: evmAddress(env.VAULT_RECOVERY),
-    nativeCap: BigInt(env.VAULT_NATIVE_CAP ?? '0'),
-    nativeFloor: BigInt(env.VAULT_NATIVE_FLOOR ?? '0'),
+    recoveryIsNotASafe: env.VAULT_RECOVERY_IS_NOT_A_SAFE_ACK === 'true',
+    nativeCap: need('VAULT_NATIVE_CAP'),
+    nativeFloor: need('VAULT_NATIVE_FLOOR'),
   };
 }
 
@@ -172,9 +197,10 @@ export function genesisTime(sourceChainId) {
   throw new Refused('UnknownSource', String(sourceChainId));
 }
 
-/** DeployVault's `check`: refuses the indexes' own chain, a missing address or key, an anchor P1 and P2 could no longer
- *  advance from, verifiers that are not the pinned SP1 and RISC Zero ones (when given), roles that are not what the
- *  vault assumes, and a floor above the cap. `deployer` is the address that would send the deployment. */
+/** DeployVault's `check`: refuses the indexes' own chain, a missing address or key, an anchor P1 and P2 could not be
+ *  advanced from in time, verifiers that are not the pinned SP1 and RISC Zero ones (when given), roles that are not what
+ *  the vault assumes, a native cap of zero and a floor above the cap. `deployer` is the address that would send the
+ *  deployment. */
 export async function check(p, chain, deployer) {
   if (p.sourceChainId === chain.chainId) throw new Refused('SourceChain', String(chain.chainId));
   const required = (name, a) => {
@@ -185,12 +211,14 @@ export async function check(p, chain, deployer) {
   if (p.p1ProgramKey === ZERO32) throw new Refused('Required', 'VAULT_P1_KEY');
   if (p.p2ImageId === ZERO32) throw new Refused('Required', 'VAULT_P2_IMAGE_ID');
   if (p.anchor === ZERO32) throw new Refused('Required', 'VAULT_ANCHOR');
-  // LG-4: P1 and P2 refuse any proof a day after their anchor's epoch began, by VeChain's clock as by Ethereum's.
+  // LG-4: P1 and P2 refuse any proof a day after their anchor's epoch began, by VeChain's clock as by Ethereum's, and
+  // the first advance needs time (A7-07).
   const lagEnds = genesisTime(p.sourceChainId) + p.anchorEpoch * EPOCH_SECONDS + VERIFIER_MAX_LAG;
-  if ((await chain.now()) > lagEnds) throw new Refused('AnchorTooOld', `epoch ${p.anchorEpoch}, past ${lagEnds}`);
+  if ((await chain.now()) + MIN_ANCHOR_SLACK > lagEnds) throw new Refused('AnchorTooOld', `epoch ${p.anchorEpoch}, past ${lagEnds}`);
   if (p.sp1Verifier) await checkSp1(chain, p.sp1Verifier);
   if (p.riscZeroVerifier) await checkRiscZero(chain, p.riscZeroVerifier);
-  await checkRoles(chain, p.freezer, p.recoveryProposer, deployer);
+  await checkRoles(chain, p.freezer, p.recoveryProposer, deployer, p.recoveryIsNotASafe);
+  if (p.nativeCap === 0n) throw new Refused('Required', 'VAULT_NATIVE_CAP');
   if (p.nativeFloor > p.nativeCap) throw new Refused('FloorAboveCap', `${p.nativeFloor} > ${p.nativeCap}`);
 }
 
@@ -217,9 +245,22 @@ export async function checkRiscZero(chain, a) {
   }
 }
 
+/** The addresses of an ABI-encoded `address[]` (or of a tuple that starts with one), from a view's answer; empty when the
+ *  answer is shorter than an array's offset and length. */
+function addressArray(data) {
+  const hex = data.slice(2);
+  if (hex.length < 128) return [];
+  const at = Number(BigInt('0x' + hex.slice(0, 64))) * 2;
+  const n = Number(BigInt('0x' + hex.slice(at, at + 64)));
+  return Array.from({ length: n }, (_, i) => '0x' + hex.slice(at + 64 + 64 * i + 24, at + 64 + 64 * (i + 1)).toLowerCase());
+}
+
 /** DeployVault's `checkRoles`: a freezer and a recovery proposer that are set, distinct and not the deploying key, and a
- *  recovery proposer that is the owner's multisig: a contract, and not an EIP-7702 delegated key. */
-export async function checkRoles(chain, freezer, recovery, deployer) {
+ *  recovery proposer that is the owner's multisig held to the factory owner's rule: a contract that is not an EIP-7702
+ *  delegated key and is a Safe needing at least three signatures, with no enabled module, counting neither the freezer
+ *  nor the deployer among its signers (A7-09). A contract that is not a Safe is accepted only when `recoveryIsNotASafe`
+ *  says the operator vouches for it. */
+export async function checkRoles(chain, freezer, recovery, deployer, recoveryIsNotASafe = false) {
   if (!freezer) throw new Refused('Required', 'VAULT_FREEZER');
   if (!recovery) throw new Refused('Required', 'VAULT_RECOVERY');
   if (freezer === recovery) throw new Refused('SameRole', freezer);
@@ -227,6 +268,60 @@ export async function checkRoles(chain, freezer, recovery, deployer) {
   if (recovery === deployer) throw new Refused('RoleIsBroadcaster', `VAULT_RECOVERY ${recovery}`);
   const code = (await chain.code(recovery)).toLowerCase();
   if (code === '0x' || code.startsWith('0xef0100')) throw new Refused('RecoveryMustBeContract', recovery);
+  // A Safe answers getThreshold with one word; anything else, a revert included, shows nothing of how many keys hold it.
+  const threshold = await chain.view(recovery, call('getThreshold() view returns (uint256)'));
+  if (threshold === undefined || threshold.length !== 66) {
+    if (!recoveryIsNotASafe) throw new Refused('RecoveryNotASafe', recovery);
+    return;
+  }
+  if (BigInt(threshold) < MIN_RECOVERY_THRESHOLD) throw new Refused('RecoveryThresholdTooLow', `${recovery}: ${BigInt(threshold)}`);
+  const modules = await chain.view(recovery, call('getModulesPaginated(address,uint256) view returns (address[],address)', ['0x' + '00'.repeat(19) + '01', 1n]));
+  // A well-formed answer holds at least the array offset, the next cursor and the array length.
+  if (modules === undefined || modules.length < 2 + 96 * 2) throw new Refused('RecoveryModulesUnknown', recovery);
+  const [module] = addressArray(modules);
+  if (module !== undefined) throw new Refused('RecoveryHasModules', `${recovery}: ${module}`);
+  const signers = addressArray((await chain.view(recovery, call('getOwners() view returns (address[])'))) ?? '0x');
+  for (const [role, account] of [['VAULT_FREEZER', freezer], ['deployer', deployer]]) {
+    if (signers.includes(account.toLowerCase())) throw new Refused('RecoverySignedByRole', `${role} ${account}`);
+  }
+}
+
+// ---------------------------------------------------------------------
+// the source, before anything is sent
+// ---------------------------------------------------------------------
+
+/** The commit the deployment is made from and whether the working tree differs from it (an untracked file that git does
+ *  not ignore counts). `run` is `git`, so a test can say what it answers. */
+export function sourceRecord(run = (args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })) {
+  try {
+    return { commit: run(['rev-parse', 'HEAD']).trim(), dirty: run(['status', '--porcelain']).trim() !== '' };
+  } catch {
+    throw new Refused('NoGit', 'the deployment is made from a git checkout, whose commit the record names');
+  }
+}
+
+/** Refuses to send from a working tree that differs from its commit, unless `--allow-dirty` says it is a rehearsal, which
+ *  a mainnet deployment never is. */
+export function requireCleanTree(a, tree) {
+  if (a.allowDirty && a.network === 'mainnet') throw new Refused('DirtyTree', '--allow-dirty is never accepted on mainnet');
+  if (tree.dirty && !a.allowDirty) throw new Refused('DirtyTree', `${tree.commit} has uncommitted changes: commit them${a.network === 'mainnet' ? '' : ', or pass --allow-dirty for a rehearsal'}`);
+}
+
+/** The sources a build output was compiled from that no longer have the hash it recorded: forge's artifact lists every
+ *  source's keccak256 in its metadata. An artifact that records none counts as stale, so nothing is deployed that cannot
+ *  be tied to the files on disk (A7-10). */
+export function staleSources(artifact, read = (p) => readFileSync(join(root, p))) {
+  const sources = artifact.metadata?.sources;
+  if (!sources || Object.keys(sources).length === 0) return ['(the artifact records no sources)'];
+  return Object.entries(sources)
+    .filter(([path, source]) => {
+      try {
+        return Keccak256.of(read(path)).toString().toLowerCase() !== source.keccak256.toLowerCase();
+      } catch {
+        return true;
+      }
+    })
+    .map(([path]) => path);
 }
 
 // ---------------------------------------------------------------------
@@ -257,6 +352,19 @@ export function creationCode(name, links = {}, read = (p) => readFileSync(join(r
   }
   if (hex.includes('__$')) throw new Error(`${name}: a placeholder is left`);
   return '0x' + hex;
+}
+
+/** Refuses any artifact `names` lists that was compiled from other sources than the ones on disk, and returns the
+ *  compiler they were built with, for the record. */
+export function assertFresh(names, read = (p) => readFileSync(join(root, p), 'utf8'), readSource) {
+  const compilers = new Set();
+  for (const name of names) {
+    const artifact = JSON.parse(read(ARTIFACTS[name]));
+    const stale = staleSources(artifact, readSource);
+    if (stale.length) throw new Refused('StaleBuild', `${name} was built from other sources than the ones here (${stale.slice(0, 3).join(', ')}): run npm run build`);
+    compilers.add(artifact.metadata.compiler.version);
+  }
+  return [...compilers].join(', ');
 }
 
 /** RISC Zero's published control ids, from the vendored `ControlID.sol`. */
@@ -371,6 +479,12 @@ export function unlock(keystore, password) {
 
 /** The address a key signs for. */
 export const addressOf = (key) => Address.ofPublicKey(Secp256k1.derivePublicKey(key, false)).toString().toLowerCase();
+
+/** Refuses a password file that group or others can read: it holds the keystore's password, which makes the keystore a raw
+ *  key in effect (A7-21). */
+export function checkPasswordFile(path, stat = statSync) {
+  if ((stat(path).mode & 0o077) !== 0) throw new Refused('PasswordFileReadable', `${path} must be readable by its owner alone: chmod 600 it`);
+}
 
 /** A password typed at the terminal, not echoed. */
 async function prompt(question) {
@@ -501,10 +615,11 @@ export async function checkDeployment(d, p, chain) {
 // ---------------------------------------------------------------------
 
 function argsOf(argv) {
-  const a = { dryRun: false };
+  const a = { dryRun: false, allowDirty: false };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     if (k === '--dry-run') a.dryRun = true;
+    else if (k === '--allow-dirty') a.allowDirty = true;
     else if (['--network', '--keystore', '--password-file', '--host', '--from'].includes(k)) a[k.slice(2)] = argv[++i];
     else throw new Refused('BadArgument', k);
   }
@@ -512,10 +627,21 @@ function argsOf(argv) {
   return a;
 }
 
-export async function main(argv = process.argv.slice(2), env = process.env, fetchImpl = globalThis.fetch, log = console.log) {
+export async function main(argv = process.argv.slice(2), env = process.env, fetchImpl = globalThis.fetch, log = console.log, source = sourceRecord) {
   const a = argsOf(argv);
   const chain = await connect(a.network, a.host, fetchImpl);
   const p = paramsFromEnv(env);
+  // A deployment is made from a committed tree, so its record names the commit it deployed (A7-10). A dry run only says.
+  let tree;
+  try {
+    tree = source();
+  } catch (e) {
+    // Without a git checkout nothing can be said of the source: a dry run goes on, and a deployment does not.
+    if (!a.dryRun) throw e;
+    tree = { commit: 'unknown', dirty: true };
+    log(`warning: ${e.message}`);
+  }
+  if (tree.dirty) log(`warning: the working tree differs from ${tree.commit}`);
   let key;
   let deployer;
   if (a.dryRun) {
@@ -523,6 +649,8 @@ export async function main(argv = process.argv.slice(2), env = process.env, fetc
     deployer = evmAddress(a.from);
   } else {
     if (!a.keystore) throw new Refused('Required', '--keystore');
+    requireCleanTree(a, tree);
+    if (a['password-file']) checkPasswordFile(a['password-file']);
     const keystore = JSON.parse(readFileSync(a.keystore, 'utf8'));
     const password = a['password-file'] ? readFileSync(a['password-file'], 'utf8').replace(/\r?\n$/, '') : await prompt('keystore password: ');
     key = unlock(keystore, password);
@@ -531,6 +659,9 @@ export async function main(argv = process.argv.slice(2), env = process.env, fetc
   log(`VeChain ${a.network} (genesis ${chain.genesis}) at ${chain.url}, deployer ${deployer}`);
   await check(p, chain, deployer);
   log('every check passed');
+  // What is deployed is what is on disk: every artifact the plan uses was compiled from these sources.
+  const compiler = assertFresh([...new Set(plan(p, () => '0x').map((step) => step.name))]);
+  log(`build output is current; compiled with solc ${compiler}`);
   const { report } = await simulate(p, chain, deployer);
   let total = 0n;
   for (const r of report) {
@@ -552,7 +683,7 @@ export async function main(argv = process.argv.slice(2), env = process.env, fetc
   const d = await deploy(p, chain, key, { log });
   const hashes = await checkDeployment(d, p, chain);
   const record = Object.fromEntries(Object.entries(d).map(([k, x]) => [k, { address: x, codehash: hashes[k] }]));
-  log(JSON.stringify({ network: a.network, chainId: chain.genesis, deployment: record }, null, 2));
+  log(JSON.stringify({ network: a.network, chainId: chain.genesis, commit: tree.commit, dirty: tree.dirty, compiler, deployment: record }, null, 2));
   return d;
 }
 

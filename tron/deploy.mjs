@@ -5,6 +5,13 @@
 // vault's own proven messages.
 //
 //   node deploy.mjs --network nile|mainnet|local --keystore <file> [--password-file <file>] [--dry-run] [--fee-limit <sun>]
+//                   [--allow-dirty]
+//
+// Before anything is sent the tool refuses a working tree that differs from its commit, and any build output that was
+// compiled from other sources than the ones on disk (`build.mjs` makes them), and it records the commit and the compiler
+// beside the addresses. `--allow-dirty` lets a rehearsal on Nile or a local chain go ahead from a tree that differs, and
+// says so in the record; a deployment on mainnet never does. A `--password-file` that group or others can read is refused:
+// it holds the keystore's password, which makes the keystore a raw key in effect.
 //
 // The parameters come from the environment, named as DeployVault names them:
 //   VAULT_SOURCE_CHAIN_ID     The chain the indexes live on: 1, Ethereum mainnet, the default, or Sepolia (11155111). It
@@ -16,19 +23,22 @@
 //   VAULT_RISC_ZERO_VERIFIER  RISC Zero's Groth16 verifier 3.0.0 on TRON, never its router or emergency stop. Unset: this
 //                             script deploys the vendored one (`vendor/risc0-ethereum`) with its published control ids.
 //   VAULT_P1_KEY, VAULT_P2_IMAGE_ID   P1's program key (`p1 vkey`) and P2's image id (`p2 image-id`).
-//   VAULT_ANCHOR, VAULT_ANCHOR_EPOCH  The finalized checkpoint P1 and P2 start from (`p1-input check-state`). Each stops
-//                             for good a day after its anchor's epoch began, so both are advanced daily from deployment on.
+//   VAULT_ANCHOR, VAULT_ANCHOR_EPOCH  The finalized checkpoint P1 and P2 start from (`p1-input check-state`), both
+//                             required. Each stops for good a day after its anchor's epoch began, so both are advanced daily
+//                             from deployment on, and an anchor with less than 12 hours of that day left is refused.
 //   VAULT_FREEZER             The guardian's freeze address on TRON: it can only freeze.
 //   VAULT_RECOVERY            The owner's emergency multisig on TRON: a contract, or an account whose every permission able
-//                             to call a contract needs at least two of its keys (TRON's own multisig).
-//   VAULT_NATIVE_CAP, VAULT_NATIVE_FLOOR  TRX's quantity cap and speed-limit floor, in sun.
+//                             to call a contract needs at least three of its keys (TRON's own multisig), as the factory
+//                             owner's Safe needs three signatures.
+//   VAULT_NATIVE_CAP, VAULT_NATIVE_FLOOR  TRX's quantity cap, above zero, and speed-limit floor, in sun; both required.
 //
 // The deployer's key is never on the command line or in the environment: it comes from an encrypted keystore, Ethereum's
 // V3 format, which `cast wallet import` writes (a TRON key is the same secp256k1 key), unlocked by a password typed at the
 // prompt or read from `--password-file`. `--dry-run` runs every check and prints the plan, and sends nothing.
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { createDecipheriv, pbkdf2Sync, scryptSync } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
@@ -59,6 +69,11 @@ export const MAINNET_GENESIS_TIME = 1_606_824_023n;
 export const SEPOLIA_GENESIS_TIME = 1_655_733_600n;
 export const SEPOLIA = 11_155_111n;
 export const VERIFIER_MAX_LAG = 86_400n;
+/** How much of P1's and P2's day an anchor must still have left (DeployVault's MIN_ANCHOR_SLACK): the first advance needs
+ *  two proofs of finality, which take hours, and a verifier that stops first is an immutable of the vault. */
+export const MIN_ANCHOR_SLACK = 43_200n;
+/** Fewest keys of a TRON multisig that must sign, as the factory owner's Safe needs three signatures. */
+export const MIN_MULTISIG_KEYS = 3;
 const EPOCH_SECONDS = 384n;
 /** `AccountPermissionUpdate`'s contract type for calling a contract, whose bit a permission's operations must hold. */
 const TRIGGER_SMART_CONTRACT = 31;
@@ -87,9 +102,14 @@ const base58 = (hex) => TronWeb.address.fromHex(hex);
 const evm = (hex) => '0x' + hex.slice(2);
 const ZERO32 = '0x' + '00'.repeat(32);
 
-/** The parameters, from the environment, as DeployVault's `run` reads them. */
+/** The parameters, from the environment, as DeployVault's `run` reads them: the epoch, the cap and the floor are
+ *  required, as `vm.envUint` requires them there, since an unset cap would deploy a vault that refuses every deposit. */
 export function paramsFromEnv(env = process.env) {
   const bytes32 = (k) => (env[k] ? toHex(BigInt(env[k]), { size: 32 }) : ZERO32);
+  const need = (k) => {
+    if (env[k] === undefined || env[k] === '') throw new Refused('Required', k);
+    return BigInt(env[k]);
+  };
   return {
     sourceChainId: BigInt(env.VAULT_SOURCE_CHAIN_ID ?? '1'),
     factory: (env.VAULT_FACTORY ?? '').toLowerCase(),
@@ -99,11 +119,11 @@ export function paramsFromEnv(env = process.env) {
     p1ProgramKey: bytes32('VAULT_P1_KEY'),
     p2ImageId: bytes32('VAULT_P2_IMAGE_ID'),
     anchor: bytes32('VAULT_ANCHOR'),
-    anchorEpoch: BigInt(env.VAULT_ANCHOR_EPOCH ?? '0'),
+    anchorEpoch: need('VAULT_ANCHOR_EPOCH'),
     freezer: tronHex(env.VAULT_FREEZER),
     recoveryProposer: tronHex(env.VAULT_RECOVERY),
-    nativeCap: BigInt(env.VAULT_NATIVE_CAP ?? '0'),
-    nativeFloor: BigInt(env.VAULT_NATIVE_FLOOR ?? '0'),
+    nativeCap: need('VAULT_NATIVE_CAP'),
+    nativeFloor: need('VAULT_NATIVE_FLOOR'),
   };
 }
 
@@ -154,9 +174,10 @@ export function genesisTime(sourceChainId) {
   throw new Refused('UnknownSource', String(sourceChainId));
 }
 
-/** DeployVault's `check`: refuses the indexes' own chain, a missing address or key, an anchor P1 and P2 could no longer
- *  advance from, verifiers that are not the pinned SP1 and RISC Zero ones (when given), roles that are not what the
- *  vault assumes, and a floor above the cap. `deployer` is the 21-byte hex address that would send the deployment. */
+/** DeployVault's `check`: refuses the indexes' own chain, a missing address or key, an anchor P1 and P2 could not be
+ *  advanced from in time, verifiers that are not the pinned SP1 and RISC Zero ones (when given), roles that are not what
+ *  the vault assumes, a native cap of zero and a floor above the cap. `deployer` is the 21-byte hex address that would
+ *  send the deployment. */
 export async function check(p, chain, deployer) {
   if (p.sourceChainId === chain.chainId) throw new Refused('SourceChain', String(chain.chainId));
   const ethAddress = (name, a) => {
@@ -167,12 +188,14 @@ export async function check(p, chain, deployer) {
   if (p.p1ProgramKey === ZERO32) throw new Refused('Required', 'VAULT_P1_KEY');
   if (p.p2ImageId === ZERO32) throw new Refused('Required', 'VAULT_P2_IMAGE_ID');
   if (p.anchor === ZERO32) throw new Refused('Required', 'VAULT_ANCHOR');
-  // LG-4: P1 and P2 refuse any proof a day after their anchor's epoch began, by TRON's clock as by Ethereum's.
+  // LG-4: P1 and P2 refuse any proof a day after their anchor's epoch began, by TRON's clock as by Ethereum's, and the
+  // first advance needs time (A7-07).
   const lagEnds = genesisTime(p.sourceChainId) + p.anchorEpoch * EPOCH_SECONDS + VERIFIER_MAX_LAG;
-  if ((await chain.now()) > lagEnds) throw new Refused('AnchorTooOld', `epoch ${p.anchorEpoch}, past ${lagEnds}`);
+  if ((await chain.now()) + MIN_ANCHOR_SLACK > lagEnds) throw new Refused('AnchorTooOld', `epoch ${p.anchorEpoch}, past ${lagEnds}`);
   if (p.sp1Verifier) await checkSp1(chain, p.sp1Verifier);
   if (p.riscZeroVerifier) await checkRiscZero(chain, p.riscZeroVerifier);
   await checkRoles(chain, p.freezer, p.recoveryProposer, deployer);
+  if (p.nativeCap === 0n) throw new Refused('Required', 'VAULT_NATIVE_CAP');
   if (p.nativeFloor > p.nativeCap) throw new Refused('FloorAboveCap', `${p.nativeFloor} > ${p.nativeCap}`);
 }
 
@@ -201,18 +224,23 @@ export async function checkRiscZero(chain, a) {
 }
 
 /** Whether a TRON account is its own multisig: its owner permission, and every active permission that may call a
- *  contract, need at least two of their keys, no one key's weight reaching the threshold. An account that never set
- *  permissions has one key of weight 1 against a threshold of 1. */
+ *  contract, need at least MIN_MULTISIG_KEYS of their keys, so that no two keys, the two heaviest, reach the threshold.
+ *  An account that never set permissions has one key of weight 1 against a threshold of 1. */
 export function isMultisig(account) {
   const allows = (ops, type) => ops && (parseInt(ops.slice(2 * (type >> 3), 2 * (type >> 3) + 2), 16) >> (type & 7)) & 1;
   const owner = account.owner_permission;
   if (!owner) return false;
   const perms = [owner, ...(account.active_permission ?? []).filter((p) => allows(p.operations, TRIGGER_SMART_CONTRACT))];
-  return perms.every((p) => (p.keys ?? []).length >= 2 && p.keys.every((k) => (k.weight ?? 1) < (p.threshold ?? 1)));
+  return perms.every((p) => {
+    const weights = (p.keys ?? []).map((k) => k.weight ?? 1).sort((x, y) => y - x);
+    const heaviest = weights.slice(0, MIN_MULTISIG_KEYS - 1).reduce((sum, w) => sum + w, 0);
+    return weights.length >= MIN_MULTISIG_KEYS && heaviest < (p.threshold ?? 1);
+  });
 }
 
 /** DeployVault's `checkRoles`: a freezer and a recovery proposer that are set, distinct and not the deploying key, and a
- *  recovery proposer that is the owner's multisig, not a key: a contract, or an account that is TRON's own multisig. */
+ *  recovery proposer that is the owner's multisig, not a key: a contract, or an account that is TRON's own multisig of at
+ *  least three keys (A7-09). */
 export async function checkRoles(chain, freezer, recovery, deployer) {
   if (!freezer) throw new Refused('Required', 'VAULT_FREEZER');
   if (!recovery) throw new Refused('Required', 'VAULT_RECOVERY');
@@ -244,6 +272,12 @@ export function unlock(keystore, password) {
   return Buffer.concat([d.update(ciphertext), d.final()]).toString('hex');
 }
 
+/** Refuses a password file that group or others can read: it holds the keystore's password, which makes the keystore a raw
+ *  key in effect (A7-21). */
+export function checkPasswordFile(path, stat = statSync) {
+  if ((stat(path).mode & 0o077) !== 0) throw new Refused('PasswordFileReadable', `${path} must be readable by its owner alone: chmod 600 it`);
+}
+
 /** A password typed at the terminal, not echoed. */
 async function prompt(question) {
   if (!process.stdin.isTTY) throw new Refused('NoPassword', 'no terminal to type it at: pass --password-file');
@@ -256,10 +290,62 @@ async function prompt(question) {
 }
 
 // ---------------------------------------------------------------------
+// the source, before anything is sent
+// ---------------------------------------------------------------------
+
+/** The commit the deployment is made from and whether the working tree differs from it (an untracked file that git does
+ *  not ignore counts). `run` is `git`, so a test can say what it answers. */
+export function sourceRecord(run = (args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })) {
+  try {
+    return { commit: run(['rev-parse', 'HEAD']).trim(), dirty: run(['status', '--porcelain']).trim() !== '' };
+  } catch {
+    throw new Refused('NoGit', 'the deployment is made from a git checkout, whose commit the record names');
+  }
+}
+
+/** Refuses to send from a working tree that differs from its commit, unless `--allow-dirty` says it is a rehearsal, which
+ *  a mainnet deployment never is. */
+export function requireCleanTree(a, tree) {
+  if (a.allowDirty && a.network === 'mainnet') throw new Refused('DirtyTree', '--allow-dirty is never accepted on mainnet');
+  if (tree.dirty && !a.allowDirty) throw new Refused('DirtyTree', `${tree.commit} has uncommitted changes: commit them${a.network === 'mainnet' ? '' : ', or pass --allow-dirty for a rehearsal'}`);
+}
+
+/** The sources a build output was compiled from that no longer have the hash `build.mjs` recorded for them in it. An
+ *  artifact that records none counts as stale, so nothing is deployed that cannot be tied to the files on disk (A7-10). */
+export function staleSources(artifact, read = (p) => readFileSync(join(root, p))) {
+  const sources = artifact.sources;
+  if (!sources || Object.keys(sources).length === 0) return ['(the artifact records no sources)'];
+  return Object.entries(sources)
+    .filter(([path, hash]) => {
+      try {
+        return keccak256(read(path)).toLowerCase() !== hash.toLowerCase();
+      } catch {
+        return true;
+      }
+    })
+    .map(([path]) => path);
+}
+
+/** Refuses any artifact `names` lists that was compiled from other sources than the ones on disk, and returns the
+ *  compiler they were built with, for the record. */
+export function assertFresh(names, read = (n) => art(n), readSource) {
+  const compilers = new Set();
+  for (const name of names) {
+    const artifact = read(name);
+    const stale = staleSources(artifact, readSource);
+    if (stale.length) throw new Refused('StaleBuild', `${name} was built from other sources than the ones here (${stale.slice(0, 3).join(', ')}): run node build.mjs`);
+    compilers.add(artifact.compiler);
+  }
+  return [...compilers].join(', ');
+}
+
+// ---------------------------------------------------------------------
 // deploying
 // ---------------------------------------------------------------------
 
-const art = (name) => JSON.parse(readFileSync(join(here, 'out', `${name}.json`), 'utf8'));
+function art(name) {
+  return JSON.parse(readFileSync(join(here, 'out', `${name}.json`), 'utf8'));
+}
 
 /** Deploys every contract, in DeployVault's order, from `key`, and returns their 21-byte hex addresses. Callers pay all
  *  energy (`consume_user_resource_percent` 100): nobody owns these contracts. Each waits for its solidified block. */
@@ -278,7 +364,8 @@ export async function deploy(p, chain, key, { feeLimit = 1_000_000_000, log = co
     for (let i = 0; i < 60; i++) {
       const r = await tw.trx.getTransactionInfo(sent.txid);
       if (r && r.id) {
-        if ((r.receipt?.result ?? 'SUCCESS') !== 'SUCCESS') throw new Error(`deploy ${name}: ${r.receipt?.result}`);
+        // A receipt that names no result is no success: only SUCCESS is (A7-10).
+        if (r.receipt?.result !== 'SUCCESS') throw new Error(`deploy ${name}: ${r.receipt?.result}`);
         const address = r.contract_address.toLowerCase();
         log(`${name.padEnd(26)} ${base58(address)}  ${evm(address)}  energy ${r.receipt.energy_usage_total ?? 0}`);
         return address;
@@ -371,10 +458,11 @@ export async function checkDeployment(d, p, chain) {
 // ---------------------------------------------------------------------
 
 function argsOf(argv) {
-  const a = { dryRun: false };
+  const a = { dryRun: false, allowDirty: false };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     if (k === '--dry-run') a.dryRun = true;
+    else if (k === '--allow-dirty') a.allowDirty = true;
     else if (['--network', '--keystore', '--password-file', '--fee-limit', '--host', '--solidity-host', '--from'].includes(k)) a[k.slice(2)] = argv[++i];
     else throw new Refused('BadArgument', k);
   }
@@ -382,15 +470,28 @@ function argsOf(argv) {
   return a;
 }
 
-export async function main(argv = process.argv.slice(2), env = process.env) {
+export async function main(argv = process.argv.slice(2), env = process.env, source = sourceRecord) {
   const a = argsOf(argv);
   const chain = await connect(a.network, a.host, a['solidity-host']);
   const p = paramsFromEnv(env);
+  // A deployment is made from a committed tree, so its record names the commit it deployed (A7-10). A dry run only says.
+  let tree;
+  try {
+    tree = source();
+  } catch (e) {
+    // Without a git checkout nothing can be said of the source: a dry run goes on, and a deployment does not.
+    if (!a.dryRun) throw e;
+    tree = { commit: 'unknown', dirty: true };
+    console.log(`warning: ${e.message}`);
+  }
+  if (tree.dirty) console.log(`warning: the working tree differs from ${tree.commit}`);
   let key;
   let deployer;
   if (a.dryRun && a.from) deployer = tronHex(a.from);
   else {
     if (!a.keystore) throw new Refused('Required', '--keystore');
+    if (!a.dryRun) requireCleanTree(a, tree);
+    if (a['password-file']) checkPasswordFile(a['password-file']);
     const keystore = JSON.parse(readFileSync(a.keystore, 'utf8'));
     const password = a['password-file'] ? readFileSync(a['password-file'], 'utf8').replace(/\r?\n$/, '') : await prompt('keystore password: ');
     key = unlock(keystore, password);
@@ -399,6 +500,11 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   console.log(`TRON ${a.network} (chain ${chain.chainId}) at ${chain.url}, deployer ${base58(deployer)}`);
   await check(p, chain, deployer);
   console.log('every check passed');
+  // What is deployed is what is on disk: every artifact the deployment uses was compiled from these sources.
+  const names = [...(p.sp1Verifier ? [] : ['SP1Verifier']), ...(p.riscZeroVerifier ? [] : ['RiscZeroGroth16Verifier']),
+    'EthereumFinalityVerifier', 'RiscZeroFinalityVerifier', 'EthereumStateReader', 'VaultSnapshot', 'XindexVault'];
+  const compiler = assertFresh(names);
+  console.log(`build output is current; compiled with solc ${compiler}`);
   if (a.dryRun) {
     console.log('dry run: would deploy',
       [!p.sp1Verifier && 'SP1Verifier (vendored)', !p.riscZeroVerifier && 'RiscZeroGroth16Verifier (vendored)',
@@ -409,7 +515,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   const d = await deploy(p, chain, key, a['fee-limit'] ? { feeLimit: Number(a['fee-limit']) } : {});
   const hashes = await checkDeployment(d, p, chain);
   const record = Object.fromEntries(Object.entries(d).map(([k, v]) => [k, { base58: base58(v), hex: evm(v), codehash: hashes[k] }]));
-  console.log(JSON.stringify({ network: a.network, chainId: String(chain.chainId), deployment: record }, null, 2));
+  console.log(JSON.stringify({ network: a.network, chainId: String(chain.chainId), commit: tree.commit, dirty: tree.dirty, compiler, deployment: record }, null, 2));
   return d;
 }
 

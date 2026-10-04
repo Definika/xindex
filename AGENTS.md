@@ -171,8 +171,11 @@ verifier, from an anchor the fixture generator writes, with the deployment's own
    removes an id's last test adds its row to a retirement record in the same commit. Do not restore a retired id's test
    against the new design; if the property matters here, it gets a new id from the review of this surface.
 
-CI enforces items 1 to 5, Aderyn aside: fmt, build, `forge lint -D notes`, tests, 100% coverage on every file and
-`wake detect all src`. The fork suites run on every push from this repository, because the test step passes the
+CI enforces items 1 to 5, Aderyn aside: fmt, build with warnings denied (`--deny warnings`), `forge lint -D notes`,
+tests, 100% coverage on every file and `wake detect all src`. It also runs the Rust and Move gates of the shared core,
+the NEAR and Stellar vaults and the Aptos vault, each on its pinned toolchain and checksum-pinned CLI (C1-04). Solana's
+programs, the Sui vault, the proof crates and the TRON and VeChain deploy tools are not in CI yet: run their gates
+locally. The fork suites run on every push from this repository, because the test step passes the
 `MAINNET_RPC_URL` secret unconditionally. On `main` and on pull requests into it the secret is also required, so a
 missing one fails the run rather than letting the suites skip. Check a run's test summary rather than assuming. Run
 everything locally before pushing. A pull request from a forked repository gets no secrets, so its fork suites skip,
@@ -616,9 +619,10 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   `MintRequests`; `DeployVault.deploy`, which deploys a vault chain's P1, P2, state reader and vault, refusing any
   Groth16 verifier but the pinned SP1 and RISC Zero ones; `DeployStateVerifier.deployBnb`, `deployTron`, `deployNear`,
   `deployStellar`, `deploySui`, `deployInjective`, `deployVeChain` and `deployAptos`, which deploy a chain's state
-  verifier on Ethereum from a fresh anchor, and its `checkBnb`, `checkTron`, `checkSui`, `checkInjective`,
-  `checkVeChain` and `checkAptos`, which the owner and guardian review it with (NEAR's and Stellar's verifiers hold
-  their anchors in public fields and have no helper); `ConfigureWhitelist.propose`, `execute`,
+  verifier on Ethereum from a fresh anchor, and its `checkBnb`, `checkTron`, `checkNear`, `checkStellar`, `checkSui`,
+  `checkInjective`, `checkVeChain` and `checkAptos`, which the owner and guardian review it with: each takes the
+  verifier's constructor arguments, compares every trusted value and the anchor, and compares the runtime code with a
+  reference built from the same arguments (A7-02); `ConfigureWhitelist.propose`, `execute`,
   `proposeSupplies` and `executeSupplies`; and `ConfigureChains.propose` and `execute`, which add a vault chain and its
   coins. Environment variables are process-global and tests run in parallel, so each variable name is set by exactly
   one test (see `test/Scripts.t.sol`). In tests, script broadcasts come from `DEFAULT_SENDER`.
@@ -627,14 +631,21 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   - `OWNER` and `GUARDIAN` are required.
   - On mainnet the owner must be a contract that is not an EIP-7702 delegated account. A Safe owner must need at least
     `MIN_OWNER_THRESHOLD` (3) signatures, the design's 3-of-5 (the owner's call on 2026-09-30), and have no enabled
-    module.
+    module. Any other contract needs the operator's explicit `OWNER_IS_NOT_A_SAFE_ACK`, else `OwnerNotASafe` (A7-08).
+  - The role checks name the broadcasting key Foundry signs with, passed explicitly, never `msg.sender` (A7-19).
   - When the owner is a Safe, neither the guardian nor the broadcasting key may be one of its signers (SA-06).
   - Neither role may be a market contract: the router and its PoolManager, and on chain 1 every token and mint
     currency in `script/MainnetAddresses.sol` (CR-I37).
   - On a vault chain, `DeployVault` refuses the indexes' own chain, a missing factory, template, P1 key, P2 image id or
-    anchor, and a floor above the cap. The freezer and the recovery proposer must be set, distinct and not the
-    broadcasting key, and the recovery proposer, the owner's emergency multisig there, must be a contract that is not
-    an EIP-7702 delegated account.
+    anchor, a cap of zero, a floor above the cap, and an anchor with less than `MIN_ANCHOR_SLACK` (12 hours) of P1's and
+    P2's lag left (A7-07). The freezer and the recovery proposer must be set, distinct and not the broadcasting key, and
+    the recovery proposer, the owner's emergency multisig there, must be a contract that is not an EIP-7702 delegated
+    account, held to the owner's Safe rules (at least 3 signers, no module, neither the freezer nor the broadcasting key
+    among them) unless the operator sets `VAULT_RECOVERY_IS_NOT_A_SAFE_ACK` (A7-09). `checkDeployment` reads every
+    parameter back (A7-06). `tron/deploy.mjs` and `vechain/deploy.mjs` apply the same rules, and refuse a dirty tree
+    or stale build output on mainnet (A7-10).
+  - `foundry.toml`'s `fs_permissions` lists what tests and scripts read, and nothing else: `.env`, `.git`, `broadcast/`
+    and `audit/` are out of reach (A7-18). `DeployStateVerifier` reads its anchor file from `anchors/`.
   - `DeployStateVerifier` deploys only on mainnet or Sepolia, from an anchor no older than its chain's limit: a BNB
     Chain or Injective anchor at most `MAX_ANCHOR_AGE` (1 hour) old, and `MAX_NEAR_ANCHOR_AGE`, `MAX_SUI_ANCHOR_AGE`,
     `MAX_VECHAIN_ANCHOR_AGE` and `MAX_APTOS_ANCHOR_AGE` for the others; TRON's must be the period in progress, and

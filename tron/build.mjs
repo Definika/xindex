@@ -1,6 +1,8 @@
 // Builds the contracts a TRON vault deployment uses with Tron's own compiler, tron-solc 0.8.28 (`tv_0.8.28`), which is
 // what TRON runs: the vault and its linked VaultSnapshot, the state reader, P1's and P2's verifiers, SP1's and RISC
-// Zero's Groth16 verifiers, and the test doubles the rehearsal uses. Writes out/<Contract>.json ({ abi, bin }).
+// Zero's Groth16 verifiers, and the test doubles the rehearsal uses. Writes out/<Contract>.json ({ abi, bin, links, compiler,
+// sources }): the compiler's version and the keccak256 of every source the contract was built from, which `deploy.mjs`
+// checks against the files on disk, so a stale `out/` is never deployed (A7-10).
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -39,9 +41,10 @@ const out = execFileSync(
     'openzeppelin/=lib/openzeppelin-contracts/',
     '--base-path', '.', '--allow-paths', '.,lib',
     '--optimize', '--optimize-runs', '1000', '--evm-version', 'cancun',
-    '--combined-json', 'abi,bin', ...SOURCES,
+    '--combined-json', 'abi,bin,metadata', ...SOURCES,
   ],
-  { cwd: root, encoding: 'utf8', maxBuffer: 1 << 28, stdio: ['ignore', 'pipe', 'ignore'] },
+  // The compiler's own errors reach the terminal: a failed build is no silent success that leaves the last `out/` in place.
+  { cwd: root, encoding: 'utf8', maxBuffer: 1 << 28, stdio: ['ignore', 'pipe', 'inherit'] },
 );
 const contracts = JSON.parse(out).contracts;
 mkdirSync(join(here, 'out'), { recursive: true });
@@ -51,6 +54,9 @@ for (const [key, c] of Object.entries(contracts)) {
   const abi = typeof c.abi === 'string' ? JSON.parse(c.abi) : c.abi;
   // A linked library's place in the bytecode: `__$<34 hex>$__`, one per library it calls.
   const links = [...new Set(c.bin.match(/__\$[0-9a-f]{34}\$__/g) ?? [])];
-  writeFileSync(join(here, 'out', `${name}.json`), JSON.stringify({ source: key, abi, bin: c.bin, links }));
+  // The metadata names every source the contract was built from, by path from the repository root, with its keccak256.
+  const metadata = typeof c.metadata === 'string' ? JSON.parse(c.metadata) : c.metadata;
+  const sources = Object.fromEntries(Object.entries(metadata.sources).map(([path, s]) => [path, s.keccak256]));
+  writeFileSync(join(here, 'out', `${name}.json`), JSON.stringify({ source: key, abi, bin: c.bin, links, compiler: metadata.compiler.version, sources }));
   console.log(`${name.padEnd(26)} ${String(c.bin.length / 2).padStart(6)} bytes${links.length ? ' (links VaultSnapshot)' : ''}`);
 }

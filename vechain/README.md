@@ -53,7 +53,7 @@ deployment is about 16.4 million gas: about 164 VTHO at that base fee.
 ## Deploying
 
 ```bash
-npm install                # @vechain/sdk-core 2.1.0, exactly, from the lockfile
+npm ci --ignore-scripts    # @vechain/sdk-core 2.1.0, exactly, from the lockfile, running no install script
 npm run build              # forge build, and the two vendored Groth16 verifiers into vechain/out/
 npm run simulate           # the whole deployment, simulated read-only on mainnet; or `node simulate.mjs testnet`
 npm run deploy-test        # deploy.mjs against a node faked in-process: every refusal, a dry run, a whole deployment
@@ -73,12 +73,22 @@ node deploy.mjs --network testnet --keystore ~/.foundry/keystores/deployer [--dr
 - **Before sending anything** it makes every check `DeployVault.check` makes:
   - the indexes' chain is mainnet Ethereum or Sepolia, and not this one;
   - the factory, the hub template, P1's key, P2's image id and the anchor are set;
-  - P1 and P2 could still advance from the anchor: VeChain's clock is within a day of its epoch's start (LG-4);
+  - P1 and P2 could still be advanced from the anchor: VeChain's clock is within 12 hours of a day after its epoch's start
+    (LG-4, A7-07), so the first advance, which needs two proofs of Ethereum's finality, still has time;
   - a given SP1 or RISC Zero verifier names itself the pinned version (`VERIFIER_HASH` and `VERSION` "v6.0.0";
     `SELECTOR` 0x73c457ba and `VERSION` "3.0.0");
   - the freezer and the recovery proposer are set, distinct, and not the deployer;
-  - the recovery proposer is a contract, and not an EIP-7702 delegated key: the owner's multisig;
-  - the floor is not above the cap.
+  - the recovery proposer is the owner's multisig, held to the factory owner's rule: a contract that is not an EIP-7702
+    delegated key and is a Safe needing at least three signatures, with no enabled module, counting neither the freezer
+    nor the deployer among its signers (A7-09); a contract that is not a Safe is accepted only with
+    `VAULT_RECOVERY_IS_NOT_A_SAFE_ACK=true`, the operator's word that it needs at least three keys;
+  - the epoch, the cap and the floor are all given (A7-23), the cap above zero, and the floor not above the cap.
+
+  It also refuses a working tree that differs from its commit and any build output (`out/`, `vechain/out/`) whose
+  recorded sources, which forge's artifacts list with their keccak256, differ from the files on disk, and prints the commit
+  and the compiler beside the addresses (A7-10). `--allow-dirty` lets a rehearsal on testnet or a solo node go ahead from a
+  tree that differs, and the record says `"dirty": true`; mainnet never does. A `--password-file` must be readable by its
+  owner alone (A7-21).
 
   Then it runs the whole deployment, masters cleared, in the node's read-only simulation from the deployer's address,
   and refuses any step that reverts, needs more than 16,777,216 gas or leaves a master set; and, unless a dry run,

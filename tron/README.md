@@ -26,7 +26,7 @@ network, and only when told which. Stage B spec, section 5.7, records the result
 - **Foundry's `cast`**, for `deploy-test.mjs`, which writes the deployer's keystore as `cast wallet import` would.
 
 ```bash
-npm install
+npm ci --ignore-scripts    # tronweb 6.5.1 and viem 2.57.2, exactly, from the lockfile, running no install script
 npm run build              # out/<Contract>.json, built by tron-solc
 npm run node-config        # node/private.conf and a throwaway witness key, node/witness.json (git-ignored)
 cd node && java -Xmx3g -jar FullNode-aarch64.jar --witness -c private.conf &   # a local chain, blocks every 3 s
@@ -102,19 +102,29 @@ node deploy.mjs --network nile --keystore ~/.foundry/keystores/deployer [--dry-r
   or hex; the factory and the hub template are Ethereum addresses.
 - **The key** never appears on the command line or in the environment. It is an Ethereum V3 keystore, the format `cast
   wallet import` writes, since a TRON key is the same secp256k1 key, unlocked by a password typed at the prompt or read
-  from `--password-file`. `--dry-run --from <address>` checks everything without the keystore and sends nothing.
+  from `--password-file`, which must be readable by its owner alone (`chmod 600`): a file holding the password beside
+  the keystore is a raw key in effect, and one that group or others can read is refused (A7-21). Install with `npm ci
+  --ignore-scripts`, never `npm install`, on the machine that unlocks the keystore: the lockfile's integrity hashes then
+  hold, and no package runs a script. `--dry-run --from <address>` checks everything without the keystore and sends nothing.
 - **The network** is named, never defaulted: `nile`, `mainnet` or `local`. The script reads the node's genesis block and
   refuses a node that is not that network (chain ids 3448148188 and 728126428). `--host` points at another node.
 - **Before sending anything** it makes every check `DeployVault.check` makes, adapted to TRON:
   - the indexes' chain is mainnet Ethereum or Sepolia, and not this one;
   - the factory, the hub template, P1's key, P2's image id and the anchor are set;
-  - P1 and P2 could still advance from the anchor: TRON's clock is within a day of its epoch's start (LG-4);
+  - P1 and P2 could still be advanced from the anchor: TRON's clock is within 12 hours of a day after its epoch's start
+    (LG-4, A7-07), so the first advance, which needs two proofs of Ethereum's finality, still has time;
   - a given SP1 or RISC Zero verifier names itself the pinned version (`VERIFIER_HASH` and `VERSION` "v6.0.0";
     `SELECTOR` 0x73c457ba and `VERSION` "3.0.0");
   - the freezer and the recovery proposer are set, distinct, and not the deployer;
   - the recovery proposer is the owner's multisig: a contract, or an account that is TRON's own multisig, whose owner
-    permission and every active permission able to call a contract need at least two of their keys;
-  - the floor is not above the cap.
+    permission and every active permission able to call a contract need at least three of their keys, as the factory
+    owner's Safe needs three signatures (A7-09);
+  - the epoch, the cap and the floor are all given, the cap above zero, and the floor not above the cap (A7-23).
+- **The source.** Before it sends anything the tool refuses a working tree that differs from its commit, and any
+  `out/<Contract>.json` whose recorded sources (the compiler's keccak256 of each file, which `build.mjs` writes) differ from
+  the files on disk, and it prints the commit and the compiler beside the addresses (A7-10). `--allow-dirty` lets a rehearsal
+  on Nile or a local chain go ahead from a tree that differs, and the record says `"dirty": true`; mainnet never does. A
+  receipt that names no result is no success, and a failed `build.mjs` shows the compiler's errors.
 - **The Groth16 verifiers.** Left unset, `VAULT_SP1_VERIFIER` and `VAULT_RISC_ZERO_VERIFIER` make the script deploy the
   vendored ones itself (RISC Zero's with its published control ids) and check them the same way. A release should do
   that: a version is a name, and a contract can name itself anything, as the repository's own mocks do.
@@ -135,9 +145,9 @@ through the command line, with TRON's own 2-of-3 multisig as recovery proposer, 
 against other parameters and with P1 and P2 swapped, which it refuses.
 
 **On Ethereum, as for any vault chain** (the root README's deployment section has the full commands):
-1. `python3 test/fixtures/tron/generate.py https://api.trongrid.io anchor tron-anchor.json` writes the anchor: the
+1. `python3 test/fixtures/tron/generate.py https://api.trongrid.io anchor anchors/tron-anchor.json` writes the anchor: the
    period in progress, its end, and its producers as their own blocks show them.
-2. `script/DeployStateVerifier.s.sol`, with `STATE_CHAIN=tron` and `STATE_ANCHOR=tron-anchor.json`, deploys
+2. `script/DeployStateVerifier.s.sol`, with `STATE_CHAIN=tron` and `STATE_ANCHOR=anchors/tron-anchor.json`, deploys
    `TronStateVerifier` from it, on mainnet or Sepolia only, and refuses a period that has ended. Anyone must then
    `advance` it to a newer list within a day of the latest one's start, first by the time the script logs, or it stops
    for good.

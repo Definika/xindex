@@ -9,7 +9,6 @@ import {HybridHubExtension} from "../src/hybrid/HybridHubExtension.sol";
 import {IndexZap} from "../src/IndexZap.sol";
 import {MintRequests} from "../src/MintRequests.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
-import {ISafeThreshold} from "./interfaces/ISafeThreshold.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
 
@@ -22,7 +21,13 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///
 /// Env:
 ///   OWNER               Required. Factory owner. On mainnet it must be a contract that is not an EIP-7702 delegated
-///                       account, and a Safe must require at least three signatures and have no enabled module.
+///                       account, and a Safe must require at least three signatures and have no enabled module. A
+///                       contract that answers no `getThreshold` is refused (OwnerNotASafe), since nothing then shows
+///                       how many keys control it, unless OWNER_IS_NOT_A_SAFE_ACK says it is a multisig of another
+///                       kind.
+///   OWNER_IS_NOT_A_SAFE_ACK  Optional, `true` to accept an owner that is not a Safe, such as a timelock, on mainnet: the
+///                       operator's word that it needs at least three keys. The deploy log prints the owner's code hash
+///                       either way, to review.
 ///   GUARDIAN            Required. Can cancel pending listings, supply batches and rebalances, start a rebalance
 ///                       that leaves a paused component untouched, and delist tokens; on vault chains, cancel a pending
 ///                       chain and any vault proposal but a freezer change, and freeze a chain for 14 days. Must differ
@@ -36,14 +41,17 @@ contract Deploy is Script {
     address public constant MAINNET_UNIVERSAL_ROUTER = MainnetAddresses.UNIVERSAL_ROUTER;
     /// @notice Fewest signatures a Safe owner may need on mainnet: the design's 3-of-5 hardware wallets held by
     ///         separate people (the owner's call on 2026-09-30).
-    uint256 public constant MIN_OWNER_THRESHOLD = 3;
+    uint256 public constant MIN_OWNER_THRESHOLD = ScriptUtils.MIN_MULTISIG_THRESHOLD;
     /// @notice Start of a Safe's module list.
-    address public constant SENTINEL_MODULES = address(0x1);
+    address public constant SENTINEL_MODULES = ScriptUtils.SENTINEL_MODULES;
 
     /// @notice OWNER is zero or Foundry's default sender.
     error OwnerRequired();
     /// @notice On mainnet, the owner has no code or is an EIP-7702 delegated account.
     error OwnerMustBeContract(address owner);
+    /// @notice On mainnet, the owner answers no Safe `getThreshold`, so nothing shows how many keys control it, and
+    ///         OWNER_IS_NOT_A_SAFE_ACK does not acknowledge it (A7-08).
+    error OwnerNotASafe(address owner);
     /// @notice The owner is a Safe that needs fewer than MIN_OWNER_THRESHOLD signatures.
     error OwnerThresholdTooLow(address owner, uint256 threshold);
     /// @notice The owner is a Safe with `module` enabled, which could act for it without signatures.
@@ -69,14 +77,16 @@ contract Deploy is Script {
     /// @notice `name` points at `actual` instead of `expected`, so these contracts are not one deployment.
     error WrongWiring(string name, address expected, address actual);
 
-    /// @notice Reads OWNER, GUARDIAN and the optional market addresses from the environment and calls {deploy}.
+    /// @notice Reads OWNER, GUARDIAN, OWNER_IS_NOT_A_SAFE_ACK and the optional market addresses from the environment and
+    ///         calls {deploy}.
     function run() external returns (HybridIndexFactory factory, IndexZap zap, MintRequests requests) {
         return deploy(
             vm.envAddress("OWNER"),
             vm.envAddress("GUARDIAN"),
             vm.envOr("UNIVERSAL_ROUTER", address(0)),
             vm.envOr("USDC", address(0)),
-            vm.envOr("USDT", address(0))
+            vm.envOr("USDT", address(0)),
+            vm.envOr("OWNER_IS_NOT_A_SAFE_ACK", false)
         );
     }
 
@@ -88,43 +98,45 @@ contract Deploy is Script {
     /// @param router Uniswap's Universal Router, through which the zap swaps; see {resolveRouter}.
     /// @param usdc USDC for MintRequests; see {resolveStable}.
     /// @param usdt USDT for MintRequests; see {resolveStable}.
+    /// @param ownerIsNotASafe Whether the operator acknowledges an owner that is not a Safe; see {checkOwner}.
     /// @return factory The deployed factory.
     /// @return zap The deployed zap.
     /// @return requests The deployed MintRequests.
-    function deploy(address owner, address guardian, address router, address usdc, address usdt)
+    function deploy(address owner, address guardian, address router, address usdc, address usdt, bool ownerIsNotASafe)
         public
         returns (HybridIndexFactory factory, IndexZap zap, MintRequests requests)
     {
-        checkOwner(owner);
-        checkGuardian(owner, guardian);
-        router = resolveRouter(router);
-        usdc = resolveStable("USDC", usdc, MainnetAddresses.USDC);
-        usdt = resolveStable("USDT", usdt, MainnetAddresses.USDT);
-        checkRolesAreNotMarket(owner, guardian, router);
+        {
+            // The key that sends the deployment, read once for every check that names it and for the factory's address.
+            address broadcaster = _broadcaster();
+            checkOwner(owner, ownerIsNotASafe);
+            checkGuardian(owner, guardian, broadcaster);
+            router = resolveRouter(router);
+            usdc = resolveStable("USDC", usdc, MainnetAddresses.USDC);
+            usdt = resolveStable("USDT", usdt, MainnetAddresses.USDT);
+            checkRolesAreNotMarket(owner, guardian, router);
 
-        vm.startBroadcast();
-        // Each part of the template names the factory, and the factory's constructor refuses a template built for
-        // another, so the three are deployed first for the address the factory's CREATE will take: the broadcaster's
-        // fourth transaction from here.
-        // Only the broadcaster is needed, not the caller mode or tx.origin; the script's own msg.sender differs in tests.
-        // forge-lint: disable-next-line(unused-return)
-        (, address broadcaster,) = vm.readCallers();
-        address predicted = vm.computeCreateAddress(broadcaster, vm.getNonce(broadcaster) + 3);
-        HybridHubExtension extension = new HybridHubExtension(predicted);
-        HybridHubModule module = new HybridHubModule(predicted, address(extension));
-        HybridHub template = new HybridHub(predicted, address(module));
-        factory = new HybridIndexFactory(owner, guardian, address(template));
-        zap = new IndexZap(factory, IUniversalRouter(router));
-        requests = new MintRequests(address(factory), usdc, usdt);
-        vm.stopBroadcast();
+            // Each part of the template names the factory, and the factory's constructor refuses a template built for
+            // another, so the three are deployed first for the address the factory's CREATE will take: the
+            // broadcaster's fourth transaction from here.
+            address predicted = vm.computeCreateAddress(broadcaster, vm.getNonce(broadcaster) + 3);
+            vm.startBroadcast();
+            factory = _deployHybridFactory(owner, guardian, predicted);
+            zap = new IndexZap(factory, IUniversalRouter(router));
+            requests = new MintRequests(address(factory), usdc, usdt);
+            vm.stopBroadcast();
+        }
 
+        address template = factory.HYBRID_IMPLEMENTATION();
+        address module = HybridHub(template).MODULE();
         console2.log("HybridIndexFactory:      ", address(factory));
         console2.log("IndexHub impl:           ", factory.IMPLEMENTATION());
-        console2.log("HybridHub template:      ", address(template));
-        console2.log("HybridHubModule:         ", address(module));
-        console2.log("HybridHubExtension:      ", address(extension));
+        console2.log("HybridHub template:      ", template);
+        console2.log("HybridHubModule:         ", module);
+        console2.log("HybridHubExtension:      ", HybridHubModule(module).EXTENSION());
         console2.log("IndexZap:                ", address(zap));
         console2.log("Factory owner:           ", owner);
+        console2.log("Factory owner code hash: ", vm.toString(owner.codehash));
         console2.log("Guardian:                ", guardian);
         console2.log("Universal Router:        ", router);
         console2.log("PoolManager:             ", zap.POOL_MANAGER());
@@ -183,56 +195,44 @@ contract Deploy is Script {
     ///         an EIP-7702 delegated account, and a Safe must need at least MIN_OWNER_THRESHOLD (3) signatures, the
     ///         owner's call on 2026-09-30 to match the design's 3-of-5, and have no enabled module,
     ///         because a module acts as the Safe without signatures. Modules or guards added later are not checked, so
-    ///         the Safe must keep none.
+    ///         the Safe must keep none. A contract that is not a Safe, one that answers no `getThreshold` or whose call
+    ///         reverts, shows nothing of how many keys control it, so it is refused unless the operator acknowledges
+    ///         it: a smart account of one key or a forwarder to a hot key would otherwise pass as the design's 3-of-5
+    ///         (A7-08).
     /// @param owner The intended factory owner.
-    function checkOwner(address owner) public view {
+    /// @param ownerIsNotASafe Whether the operator acknowledges an owner that is a multisig of another kind than a Safe,
+    ///        such as a timelock (OWNER_IS_NOT_A_SAFE_ACK). It waives only the question of whether the owner is a Safe: a
+    ///        Safe is held to its threshold and its modules whatever it says.
+    function checkOwner(address owner, bool ownerIsNotASafe) public view {
         if (owner == address(0) || owner == DEFAULT_SENDER) revert OwnerRequired();
         if (block.chainid != 1) return;
 
         bytes memory code = owner.code;
         if (code.length == 0 || ScriptUtils.isDelegatedAccount(code)) revert OwnerMustBeContract(owner);
-        // A Safe answers getThreshold with one word. A contract that does not, such as a timelock, is accepted as it
-        // is. A static call is used because a typed try/catch would revert on an empty answer from a fallback.
-        // forge-lint: disable-next-line(low-level-calls)
-        (bool ok, bytes memory data) = owner.staticcall(abi.encodeCall(ISafeThreshold.getThreshold, ()));
-        if (ok && data.length == 32) {
-            uint256 threshold = abi.decode(data, (uint256));
-            if (threshold < MIN_OWNER_THRESHOLD) revert OwnerThresholdTooLow(owner, threshold);
-            _checkNoModules(owner);
-        }
-    }
-
-    /// @dev Reads the first page of the Safe's module list. A multisig that cannot show one is rejected rather than
-    ///      trusted, and so is any enabled module.
-    function _checkNoModules(address owner) private view {
-        bytes memory query = abi.encodeCall(ISafeThreshold.getModulesPaginated, (SENTINEL_MODULES, 1));
-        // A static call keeps a missing function or a short answer from reverting without a named error.
-        // forge-lint: disable-next-line(low-level-calls)
-        (bool ok, bytes memory data) = owner.staticcall(query);
-        // A well-formed answer holds at least the array offset, the next cursor and the array length.
-        if (!ok || data.length < 96) revert OwnerModulesUnknown(owner);
-        (address[] memory modules,) = abi.decode(data, (address[], address));
-        if (modules.length != 0) revert OwnerHasModules(owner, modules[0]);
+        (ScriptUtils.SafeFinding finding, uint256 threshold, address module) =
+            ScriptUtils.reviewSafe(owner, MIN_OWNER_THRESHOLD);
+        if (finding == ScriptUtils.SafeFinding.NotASafe && !ownerIsNotASafe) revert OwnerNotASafe(owner);
+        if (finding == ScriptUtils.SafeFinding.ThresholdTooLow) revert OwnerThresholdTooLow(owner, threshold);
+        if (finding == ScriptUtils.SafeFinding.HasModules) revert OwnerHasModules(owner, module);
+        if (finding == ScriptUtils.SafeFinding.ModulesUnknown) revert OwnerModulesUnknown(owner);
     }
 
     /// @notice Requires a guardian that is set, is not Foundry's default sender, is not the owner, and is not the key
-    ///         broadcasting the deployment (the script's msg.sender), which must hold no role in the factory. When the
-    ///         owner is a Safe, neither the guardian nor the broadcasting key may be one of its signers: the guardian is
-    ///         the owner's veto, and a key that signs for both weakens both (SA-06).
+    ///         broadcasting the deployment, which must hold no role in the factory. When the owner is a Safe, neither the
+    ///         guardian nor the broadcasting key may be one of its signers: the guardian is the owner's veto, and a key
+    ///         that signs for both weakens both (SA-06).
     /// @param owner The intended factory owner.
     /// @param guardian The intended guardian.
-    function checkGuardian(address owner, address guardian) public view {
+    /// @param broadcaster The key that sends the deployment, as {deploy} reads it from Foundry: passed in, since the
+    ///        script's own `msg.sender` is not always the account that signs (A7-19).
+    function checkGuardian(address owner, address guardian, address broadcaster) public view {
         if (guardian == address(0) || guardian == DEFAULT_SENDER || guardian == owner) revert GuardianRequired();
-        if (guardian == msg.sender) revert GuardianIsBroadcaster(guardian);
-        // A static call, as for the threshold: an owner that is a key or a contract other than a Safe answers nothing.
-        // forge-lint: disable-next-line(low-level-calls)
-        (bool ok, bytes memory data) = owner.staticcall(abi.encodeCall(ISafeThreshold.getOwners, ()));
-        // A well-formed answer holds at least the array offset and its length.
-        if (!ok || data.length < 64) return;
-        address[] memory signers = abi.decode(data, (address[]));
+        if (guardian == broadcaster) revert GuardianIsBroadcaster(guardian);
+        // An owner that is a key or a contract other than a Safe answers no signer list.
+        address[] memory signers = ScriptUtils.signersOf(owner);
         for (uint256 i = 0; i < signers.length; ++i) {
             if (signers[i] == guardian) revert GuardianSignsForOwner(guardian);
-            if (signers[i] == msg.sender) revert BroadcasterSignsForOwner(msg.sender);
+            if (signers[i] == broadcaster) revert BroadcasterSignsForOwner(broadcaster);
         }
     }
 
@@ -289,6 +289,29 @@ contract Deploy is Script {
     /// @return The resolved stablecoin.
     function resolveStable(string memory name, address given, address mainnetDefault) public view returns (address) {
         return _resolve(name, given, mainnetDefault);
+    }
+
+    /// @dev The template's extension, module and `HybridHub`, each built for the factory that `predicted` names, then that
+    ///      factory, which the broadcaster's CREATE puts at `predicted`: its fourth transaction from the first part.
+    function _deployHybridFactory(address owner, address guardian, address predicted)
+        private
+        returns (HybridIndexFactory)
+    {
+        HybridHubExtension extension = new HybridHubExtension(predicted);
+        HybridHubModule module = new HybridHubModule(predicted, address(extension));
+        HybridHub template = new HybridHub(predicted, address(module));
+        return new HybridIndexFactory(owner, guardian, address(template));
+    }
+
+    /// @dev The account Foundry sends the deployment from (`--account`, `--ledger` or `--sender`). A broadcast is opened
+    ///      and closed without sending anything just to read it: Foundry reports the signer there, where the script's own
+    ///      `msg.sender` can be another account (A7-19).
+    function _broadcaster() private returns (address broadcaster) {
+        vm.startBroadcast();
+        // Only the broadcaster is needed, not the caller mode or tx.origin.
+        // forge-lint: disable-next-line(unused-return)
+        (, broadcaster,) = vm.readCallers();
+        vm.stopBroadcast();
     }
 
     function _resolve(string memory name, address given, address mainnetDefault) private view returns (address) {

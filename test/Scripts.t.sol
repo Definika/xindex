@@ -186,6 +186,8 @@ contract ScriptsTest is Test {
     address usdt;
     address owner = makeAddr("owner");
     address guardian = makeAddr("guardian");
+    /// @dev The key a script's broadcasts come from in tests, which `deploy` reads from Foundry (A7-19).
+    address broadcaster = DEFAULT_SENDER;
 
     /// @dev No token named for listing or relisting.
     address[] none;
@@ -273,31 +275,65 @@ contract ScriptsTest is Test {
 
     function test_L06_checkOwner() public {
         vm.expectRevert(Deploy.OwnerRequired.selector);
-        deployer.checkOwner(address(0));
+        deployer.checkOwner(address(0), false);
         vm.expectRevert(Deploy.OwnerRequired.selector);
-        deployer.checkOwner(DEFAULT_SENDER);
-        deployer.checkOwner(owner); // any account is accepted off mainnet
+        deployer.checkOwner(DEFAULT_SENDER, false);
+        deployer.checkOwner(owner, false); // any account is accepted off mainnet
 
         vm.chainId(1);
         vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerMustBeContract.selector, owner));
-        deployer.checkOwner(owner);
+        deployer.checkOwner(owner, false);
 
         address delegated = makeAddr("delegated");
         vm.etch(delegated, abi.encodePacked(hex"ef0100", address(router))); // EIP-7702 delegated account
         vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerMustBeContract.selector, delegated));
-        deployer.checkOwner(delegated);
+        deployer.checkOwner(delegated, false);
 
         MockSafe singleSigner = new MockSafe(1);
         vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerThresholdTooLow.selector, address(singleSigner), 1));
-        deployer.checkOwner(address(singleSigner));
+        deployer.checkOwner(address(singleSigner), false);
 
         MockSafe twoOfN = new MockSafe(2);
         vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerThresholdTooLow.selector, address(twoOfN), 2));
-        deployer.checkOwner(address(twoOfN)); // two signatures no longer suffice (the owner's call on 2026-09-30)
+        deployer.checkOwner(address(twoOfN), false); // two signatures no longer suffice (the owner's call on 2026-09-30)
         assertEq(deployer.MIN_OWNER_THRESHOLD(), 3);
-        deployer.checkOwner(address(new MockSafe(3))); // a real multisig, as the design's 3-of-5
-        deployer.checkOwner(address(router)); // a contract without getThreshold, such as a timelock
-        deployer.checkOwner(address(new SilentFallback())); // an empty answer is not a threshold
+        deployer.checkOwner(address(new MockSafe(3)), false); // a real multisig, as the design's 3-of-5
+        // A contract that is not a Safe, such as a timelock, shows nothing of how many keys control it: it needs the
+        // operator's word (A7-08).
+        deployer.checkOwner(address(router), true);
+        deployer.checkOwner(address(new SilentFallback()), true); // an empty answer is not a threshold
+    }
+
+    /// @dev A7-08. On mainnet an owner that answers no Safe threshold, a 1-of-1 smart account, a forwarder to a hot key or
+    ///      a Safe whose `getThreshold` reverts, is refused unless the operator acknowledges it, and the acknowledgement
+    ///      waives only whether it is a Safe: a Safe stays held to its threshold and its modules.
+    function test_A708_aNonSafeOwnerNeedsTheOperatorsWord() public {
+        deployer.checkOwner(address(router), false); // off mainnet nothing is checked
+        vm.chainId(1);
+        address[3] memory notSafes = [address(router), address(new SilentFallback()), address(new RevertsOneWord())];
+        for (uint256 i = 0; i < notSafes.length; ++i) {
+            vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerNotASafe.selector, notSafes[i]));
+            deployer.checkOwner(notSafes[i], false);
+            deployer.checkOwner(notSafes[i], true);
+        }
+        MockSafe singleSigner = new MockSafe(1);
+        vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerThresholdTooLow.selector, address(singleSigner), 1));
+        deployer.checkOwner(address(singleSigner), true);
+        MockSafe withModule = new MockSafe(3);
+        withModule.enableModule(makeAddr("module"));
+        vm.expectRevert(
+            abi.encodeWithSelector(Deploy.OwnerHasModules.selector, address(withModule), makeAddr("module"))
+        );
+        deployer.checkOwner(address(withModule), true);
+        // `deploy` carries the acknowledgement to the check.
+        vm.etch(MAINNET_UNIVERSAL_ROUTER, address(new MockUniversalRouter(MainnetAddresses.POOL_MANAGER)).code);
+        vm.etch(MainnetAddresses.USDC, hex"00");
+        vm.etch(MainnetAddresses.USDT, hex"00");
+        address timelock = address(new SilentFallback());
+        vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerNotASafe.selector, timelock));
+        deployer.deploy(timelock, guardian, address(0), address(0), address(0), false);
+        (HybridIndexFactory factory,,) = deployer.deploy(timelock, guardian, address(0), address(0), address(0), true);
+        assertEq(factory.owner(), timelock);
     }
 
     function test_XA07_checkOwnerRejectsASafeWithModules() public {
@@ -306,25 +342,25 @@ contract ScriptsTest is Test {
         address module = makeAddr("module");
         withModule.enableModule(module);
         vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerHasModules.selector, address(withModule), module));
-        deployer.checkOwner(address(withModule));
+        deployer.checkOwner(address(withModule), false);
 
         address unknown = address(new ThresholdOnly(3));
         vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerModulesUnknown.selector, unknown));
-        deployer.checkOwner(unknown);
+        deployer.checkOwner(unknown, false);
         MockSafe malformed = new MockSafe(3);
         malformed.setMalformedModules(true);
         vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerModulesUnknown.selector, address(malformed)));
-        deployer.checkOwner(address(malformed));
+        deployer.checkOwner(address(malformed), false);
     }
 
     function test_FR06_checkGuardian() public {
         vm.expectRevert(Deploy.GuardianRequired.selector);
-        deployer.checkGuardian(owner, address(0));
+        deployer.checkGuardian(owner, address(0), broadcaster);
         vm.expectRevert(Deploy.GuardianRequired.selector);
-        deployer.checkGuardian(owner, DEFAULT_SENDER);
+        deployer.checkGuardian(owner, DEFAULT_SENDER, broadcaster);
         vm.expectRevert(Deploy.GuardianRequired.selector);
-        deployer.checkGuardian(owner, owner);
-        deployer.checkGuardian(owner, guardian);
+        deployer.checkGuardian(owner, owner, broadcaster);
+        deployer.checkGuardian(owner, guardian, broadcaster);
     }
 
     function test_resolveRouter() public {
@@ -341,9 +377,8 @@ contract ScriptsTest is Test {
     }
 
     function test_XA25_guardianCannotBeTheBroadcastingKey() public {
-        vm.prank(guardian);
         vm.expectRevert(abi.encodeWithSelector(Deploy.GuardianIsBroadcaster.selector, guardian));
-        deployer.checkGuardian(owner, guardian);
+        deployer.checkGuardian(owner, guardian, guardian);
     }
 
     /// @dev SA-06. The guardian is the owner's veto, so a guardian that also signs for the owner Safe leaves one key
@@ -352,21 +387,38 @@ contract ScriptsTest is Test {
     function test_SA06_neitherTheGuardianNorTheBroadcasterSignsForTheOwner() public {
         MockSafe safe = new MockSafe(3);
         safe.addOwner(makeAddr("signer"));
-        deployer.checkGuardian(address(safe), guardian);
+        deployer.checkGuardian(address(safe), guardian, broadcaster);
 
         safe.addOwner(guardian);
         vm.expectRevert(abi.encodeWithSelector(Deploy.GuardianSignsForOwner.selector, guardian));
-        deployer.checkGuardian(address(safe), guardian);
+        deployer.checkGuardian(address(safe), guardian, broadcaster);
         vm.expectRevert(abi.encodeWithSelector(Deploy.GuardianSignsForOwner.selector, guardian));
-        deployer.deploy(address(safe), guardian, address(router), usdc, usdt);
+        deployer.deploy(address(safe), guardian, address(router), usdc, usdt, false);
 
         MockSafe other = new MockSafe(3);
-        other.addOwner(address(this)); // the account calling the script, as the broadcasting key does
-        vm.expectRevert(abi.encodeWithSelector(Deploy.BroadcasterSignsForOwner.selector, address(this)));
-        deployer.checkGuardian(address(other), guardian);
+        other.addOwner(broadcaster);
+        vm.expectRevert(abi.encodeWithSelector(Deploy.BroadcasterSignsForOwner.selector, broadcaster));
+        deployer.checkGuardian(address(other), guardian, broadcaster);
 
-        deployer.checkGuardian(owner, guardian); // a key answers no signer list
-        deployer.checkGuardian(address(new SilentFallback()), guardian); // nor does a contract that is not a Safe
+        deployer.checkGuardian(owner, guardian, broadcaster); // a key answers no signer list
+        // nor does a contract that is not a Safe
+        deployer.checkGuardian(address(new SilentFallback()), guardian, broadcaster);
+    }
+
+    /// @dev A7-19. The role checks compare against the key Foundry broadcasts from, which `deploy` reads once, and not
+    ///      against the script's own `msg.sender`, which is the test contract here and can differ from the signer in a
+    ///      run: a Safe signer that is the broadcaster is caught through `deploy` whoever calls it.
+    function test_A719_theRoleChecksNameTheBroadcasterNotMsgSender() public {
+        MockSafe safe = new MockSafe(3);
+        safe.addOwner(DEFAULT_SENDER); // the key a broadcast comes from in tests
+        assertTrue(DEFAULT_SENDER != address(this), "the caller is not the signer");
+        vm.expectRevert(abi.encodeWithSelector(Deploy.BroadcasterSignsForOwner.selector, DEFAULT_SENDER));
+        deployer.deploy(address(safe), guardian, address(router), usdc, usdt, false);
+
+        // And the account that merely calls the script is not the broadcaster, so it is no role.
+        MockSafe other = new MockSafe(3);
+        other.addOwner(address(this));
+        deployer.deploy(address(other), guardian, address(router), usdc, usdt, false);
     }
 
     function test_XA39_rolesCannotBeMarketContracts() public {
@@ -374,9 +426,9 @@ contract ScriptsTest is Test {
         vm.expectRevert(abi.encodeWithSelector(Deploy.RoleIsMarketContract.selector, address(router)));
         deployer.checkRolesAreNotMarket(owner, address(router), address(router));
         vm.expectRevert(abi.encodeWithSelector(Deploy.RoleIsMarketContract.selector, address(router)));
-        deployer.deploy(address(router), guardian, address(router), usdc, usdt); // the router pasted as OWNER
+        deployer.deploy(address(router), guardian, address(router), usdc, usdt, false); // the router pasted as OWNER
         vm.expectRevert(abi.encodeWithSelector(Deploy.RoleIsMarketContract.selector, address(router)));
-        deployer.deploy(owner, address(router), address(router), usdc, usdt);
+        deployer.deploy(owner, address(router), address(router), usdc, usdt, false);
     }
 
     function test_XA47_mainnetMarketCannotBeOverridden() public {
@@ -393,7 +445,7 @@ contract ScriptsTest is Test {
     /// @dev The one factory v4 launches on, with both templates and the template's parts all built for it.
     function test_deploy() public {
         (HybridIndexFactory factory, IndexZap zap, MintRequests requests) =
-            deployer.deploy(owner, guardian, address(router), usdc, usdt);
+            deployer.deploy(owner, guardian, address(router), usdc, usdt, false);
         assertEq(factory.owner(), owner);
         assertEq(factory.guardian(), guardian);
         assertEq(address(zap.FACTORY()), address(factory));
@@ -413,9 +465,9 @@ contract ScriptsTest is Test {
     ///      before deploys as well as a fresh one, and twice in a row.
     function test_deploy_predictsTheFactoryFromTheBroadcastersNonce() public {
         vm.setNonce(DEFAULT_SENDER, 41);
-        (HybridIndexFactory first,,) = deployer.deploy(owner, guardian, address(router), usdc, usdt);
+        (HybridIndexFactory first,,) = deployer.deploy(owner, guardian, address(router), usdc, usdt, false);
         assertEq(address(first), vm.computeCreateAddress(DEFAULT_SENDER, 44));
-        (HybridIndexFactory second,,) = deployer.deploy(owner, guardian, address(router), usdc, usdt);
+        (HybridIndexFactory second,,) = deployer.deploy(owner, guardian, address(router), usdc, usdt, false);
         assertEq(address(second), vm.computeCreateAddress(DEFAULT_SENDER, 50));
         assertEq(HybridHub(second.HYBRID_IMPLEMENTATION()).FACTORY(), address(second));
     }
@@ -432,6 +484,39 @@ contract ScriptsTest is Test {
         assertEq(address(zap.ROUTER()), address(router));
         assertEq(requests.USDC(), usdc);
         assertEq(requests.USDT(), usdt);
+        // A7-22: the listing script reads the same two variables for the mint currencies it never lists. Off mainnet they
+        // are the deployment's own (a testnet's tUSDC), so a WHITELIST naming one is skipped as a mint currency, not listed
+        // as a component, while any other token with the same shape is listed. Mainnet's stay excluded whatever they are.
+        (address envUsdc, address envUsdt) = configure.mintCurrencies();
+        assertEq(envUsdc, usdc);
+        assertEq(envUsdt, usdt);
+        IndexFactory listing = _factory(DEFAULT_SENDER, guardian);
+        ConfigureWhitelist.Entry[] memory one = new ConfigureWhitelist.Entry[](1);
+        one[0] = _tokenAt(makeAddr("an ordinary token"), 6);
+        assertEq(_actionFor(listing, one[0], none), "List", "control: a token of this shape is listable");
+        address[3] memory currencies = [usdc, usdt, MainnetAddresses.USDC];
+        for (uint256 i = 0; i < currencies.length; ++i) {
+            one[0] = _tokenAt(currencies[i], 6);
+            assertEq(_actionFor(listing, one[0], none), "Skip", "a mint currency is never a component");
+            configure.propose(listing, one, _tokens(one), none);
+            assertEq(listing.listingEta(currencies[i]), 0, "nor does a broadcast propose it");
+        }
+
+        // A7-08: on mainnet an owner that is not a Safe is deployed only when OWNER_IS_NOT_A_SAFE_ACK says so.
+        vm.chainId(1);
+        vm.etch(MAINNET_UNIVERSAL_ROUTER, address(new MockUniversalRouter(MainnetAddresses.POOL_MANAGER)).code);
+        vm.etch(MainnetAddresses.USDC, hex"00");
+        vm.etch(MainnetAddresses.USDT, hex"00");
+        vm.setEnv("UNIVERSAL_ROUTER", vm.toString(MAINNET_UNIVERSAL_ROUTER));
+        vm.setEnv("USDC", vm.toString(MainnetAddresses.USDC));
+        vm.setEnv("USDT", vm.toString(MainnetAddresses.USDT));
+        address timelock = address(new SilentFallback());
+        vm.setEnv("OWNER", vm.toString(timelock));
+        vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerNotASafe.selector, timelock));
+        deployer.run();
+        vm.setEnv("OWNER_IS_NOT_A_SAFE_ACK", "true");
+        (factory,,) = deployer.run();
+        assertEq(factory.owner(), timelock);
     }
 
     /// @dev The stablecoins MintRequests escrows resolve like the router: required off mainnet, mainnet's own on chain
@@ -454,7 +539,7 @@ contract ScriptsTest is Test {
     function test_XA38_checkDeploymentFreezesTheCodeHashes() public {
         address safeOwner = address(new MockSafe(3));
         (HybridIndexFactory factory, IndexZap zap, MintRequests requests) =
-            deployer.deploy(safeOwner, guardian, address(router), usdc, usdt);
+            deployer.deploy(safeOwner, guardian, address(router), usdc, usdt, false);
 
         bytes32[7] memory codehashes = deployer.checkDeployment(factory, zap, requests);
         HybridHubModule module = HybridHubModule(HybridHub(factory.HYBRID_IMPLEMENTATION()).MODULE());
@@ -467,7 +552,7 @@ contract ScriptsTest is Test {
         assertEq(codehashes[6], keccak256(address(requests).code));
 
         (HybridIndexFactory other, IndexZap otherZap,) =
-            deployer.deploy(safeOwner, guardian, address(router), usdc, usdt);
+            deployer.deploy(safeOwner, guardian, address(router), usdc, usdt, false);
         vm.expectRevert(
             abi.encodeWithSelector(Deploy.WrongWiring.selector, "IndexZap.FACTORY", address(other), address(factory))
         );
@@ -483,32 +568,36 @@ contract ScriptsTest is Test {
     /// @dev CR-I36. `deploy` itself runs every owner and guardian gate.
     function test_CRI36_deployItselfRefusesABadOwnerOrGuardian() public {
         vm.expectRevert(Deploy.OwnerRequired.selector);
-        deployer.deploy(address(0), guardian, address(router), usdc, usdt);
+        deployer.deploy(address(0), guardian, address(router), usdc, usdt, false);
         vm.expectRevert(Deploy.OwnerRequired.selector);
-        deployer.deploy(DEFAULT_SENDER, guardian, address(router), usdc, usdt);
+        deployer.deploy(DEFAULT_SENDER, guardian, address(router), usdc, usdt, false);
         vm.expectRevert(Deploy.GuardianRequired.selector);
-        deployer.deploy(owner, owner, address(router), usdc, usdt);
+        deployer.deploy(owner, owner, address(router), usdc, usdt, false);
         vm.expectRevert(Deploy.GuardianRequired.selector);
-        deployer.deploy(owner, address(0), address(router), usdc, usdt);
-        vm.prank(guardian);
+        deployer.deploy(owner, address(0), address(router), usdc, usdt, false);
+        // The key broadcasting is the guardian: through `checkGuardian`, which `deploy` hands the key it read.
         vm.expectRevert(abi.encodeWithSelector(Deploy.GuardianIsBroadcaster.selector, guardian));
-        deployer.deploy(owner, guardian, address(router), usdc, usdt);
+        deployer.checkGuardian(owner, guardian, guardian);
 
         vm.chainId(1);
         vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerMustBeContract.selector, owner));
-        deployer.deploy(owner, guardian, address(0), address(0), address(0));
+        deployer.deploy(owner, guardian, address(0), address(0), address(0), false);
         MockSafe singleSigner = new MockSafe(1);
         vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerThresholdTooLow.selector, address(singleSigner), 1));
-        deployer.deploy(address(singleSigner), guardian, address(0), address(0), address(0));
+        deployer.deploy(address(singleSigner), guardian, address(0), address(0), address(0), false);
     }
 
     /// @dev CR-I36: a call that failed is not an answer.
     function test_CRI36_aFailedSafeCallIsNeverReadAsAnAnswer() public {
         vm.chainId(1);
-        deployer.checkOwner(address(new RevertsOneWord())); // not a Safe, so accepted as a contract owner
+        // A call that reverted with a word is no threshold: refused as no Safe unless acknowledged (A7-08).
+        address reverting = address(new RevertsOneWord());
+        vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerNotASafe.selector, reverting));
+        deployer.checkOwner(reverting, false);
+        deployer.checkOwner(reverting, true);
         address unreadable = address(new ModuleListReverts());
         vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerModulesUnknown.selector, unreadable));
-        deployer.checkOwner(unreadable);
+        deployer.checkOwner(unreadable, false);
     }
 
     /// @dev CR-I36. The module check pages from Safe's sentinel, as 1.3.0 answers.
@@ -526,7 +615,7 @@ contract ScriptsTest is Test {
 
         vm.chainId(1);
         vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerHasModules.selector, address(safe), module));
-        deployer.checkOwner(address(safe));
+        deployer.checkOwner(address(safe), false);
     }
 
     /// @dev CR-I36: only code starting 0xef01 marks a delegated key.
@@ -535,7 +624,7 @@ contract ScriptsTest is Test {
         address multisig = makeAddr("push-one multisig");
         vm.etch(multisig, hex"600160005260206000f3"); // PUSH1 1 PUSH1 0 MSTORE PUSH1 32 PUSH1 0 RETURN
         vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerThresholdTooLow.selector, multisig, 1));
-        deployer.checkOwner(multisig);
+        deployer.checkOwner(multisig, false);
     }
 
     /// @dev XA-39 and CR-I37: no market contract can hold a role: the router and its PoolManager anywhere, and on chain
@@ -573,12 +662,13 @@ contract ScriptsTest is Test {
             deployer.checkRolesAreNotMarket(owner, expected[i], MAINNET_UNIVERSAL_ROUTER);
         }
 
-        // Through `deploy` itself: WETH pasted as OWNER, a contract that answers no getThreshold.
+        // Through `deploy` itself: WETH pasted as OWNER, a contract that answers no getThreshold, which the operator's
+        // acknowledgement lets through to this check.
         vm.etch(MainnetAddresses.WETH, address(new SilentFallback()).code);
         vm.etch(MainnetAddresses.USDC, hex"00");
         vm.etch(MainnetAddresses.USDT, hex"00");
         vm.expectRevert(abi.encodeWithSelector(Deploy.RoleIsMarketContract.selector, MainnetAddresses.WETH));
-        deployer.deploy(MainnetAddresses.WETH, guardian, address(0), address(0), address(0));
+        deployer.deploy(MainnetAddresses.WETH, guardian, address(0), address(0), address(0), true);
     }
 
     // ---------------------------------------------------------------------
@@ -1510,7 +1600,8 @@ contract ScriptsTest is Test {
             freezer: makeAddr("freezer"),
             recoveryProposer: address(new MockSafe(3)),
             nativeCap: 1_000e18,
-            nativeFloor: 1e18
+            nativeFloor: 1e18,
+            recoveryIsNotASafe: false
         });
     }
 
@@ -1561,10 +1652,21 @@ contract ScriptsTest is Test {
         assertEq(d.vault.SOURCE_CHAIN_ID(), 1, "the source defaults to Ethereum mainnet");
         assertEq(d.vault.FACTORY(), p.factory);
         assertEq(d.p2.IMAGE_ID(), p.p2ImageId);
+
+        // A7-09: a recovery multisig that is not a Safe is deployed only when the operator says so.
+        address notASafe = address(new SilentFallback());
+        vm.setEnv("VAULT_RECOVERY", vm.toString(notASafe));
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.RecoveryNotASafe.selector, notASafe));
+        vaultDeployer.run();
+        vm.setEnv("VAULT_RECOVERY_IS_NOT_A_SAFE_ACK", "true");
+        d = vaultDeployer.run();
+        assertEq(d.vault.RECOVERY_PROPOSER(), notASafe);
     }
 
     /// @dev LG-4: P1 and P2 date their anchor from the indexes' chain's beacon genesis, mainnet's or Sepolia's and no
-    ///      other, and the script refuses an anchor they could never advance from, a day after its epoch began.
+    ///      other, and the script refuses an anchor they could never advance from, a day after its epoch began. A7-07: and
+    ///      one with less than MIN_ANCHOR_SLACK of that day left, since the first advance needs two proofs of finality and
+    ///      a transaction here, and verifiers that stop first are immutables of the vault.
     function test_LG4_deployVaultRefusesAnAnchorTheVerifiersCannotAdvance() public {
         DeployVault vaultDeployer = new DeployVault();
         DeployVault.Params memory p = _vaultParams();
@@ -1574,15 +1676,32 @@ contract ScriptsTest is Test {
         vaultDeployer.genesisTime(17_000);
         p.sourceChainId = 17_000;
         vm.expectRevert(abi.encodeWithSelector(DeployVault.UnknownSource.selector, 17_000));
-        vaultDeployer.check(p);
+        vaultDeployer.check(p, broadcaster);
 
         p = _vaultParams();
         uint256 lagEnds = 1_606_824_023 + uint256(p.anchorEpoch) * 384 + 1 days;
-        vm.warp(lagEnds);
-        vaultDeployer.check(p);
+        assertEq(vaultDeployer.MIN_ANCHOR_SLACK(), 12 hours);
+        vm.warp(lagEnds - 12 hours);
+        vaultDeployer.check(p, broadcaster);
+        vm.warp(lagEnds - 12 hours + 1);
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.AnchorTooOld.selector, p.anchorEpoch, lagEnds));
+        vaultDeployer.check(p, broadcaster);
         vm.warp(lagEnds + 1);
         vm.expectRevert(abi.encodeWithSelector(DeployVault.AnchorTooOld.selector, p.anchorEpoch, lagEnds));
-        vaultDeployer.check(p);
+        vaultDeployer.check(p, broadcaster);
+    }
+
+    function test_A707_anAnchorWithMinutesLeftIsRefusedAndOneWithHoursIsNot() public {
+        DeployVault vaultDeployer = new DeployVault();
+        DeployVault.Params memory p = _vaultParams();
+        uint256 lagEnds = 1_606_824_023 + uint256(p.anchorEpoch) * 384 + 1 days;
+        vm.warp(lagEnds - 5 minutes); // before the change this passed, and the verifiers died before anyone could advance them
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.AnchorTooOld.selector, p.anchorEpoch, lagEnds));
+        vaultDeployer.check(p, broadcaster);
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.AnchorTooOld.selector, p.anchorEpoch, lagEnds));
+        vaultDeployer.deploy(p);
+        vm.warp(lagEnds - 13 hours);
+        vaultDeployer.check(p, broadcaster);
     }
 
     /// @dev Every parameter the vault depends on is checked before anything is broadcast.
@@ -1592,9 +1711,9 @@ contract ScriptsTest is Test {
 
         vm.chainId(1);
         vm.expectRevert(abi.encodeWithSelector(DeployVault.SourceChain.selector, 1));
-        vaultDeployer.check(p);
+        vaultDeployer.check(p, broadcaster);
         vm.chainId(31_337);
-        vaultDeployer.checkRoles(p.freezer, p.recoveryProposer); // a freezer key and a multisig, as the vault needs
+        vaultDeployer.checkRoles(p.freezer, p.recoveryProposer, broadcaster, false); // a freezer key and a Safe, as the vault needs
 
         string[6] memory names = [
             "VAULT_FACTORY", "VAULT_HUB_TEMPLATE", "VAULT_P1_KEY", "VAULT_P2_IMAGE_ID", "VAULT_ANCHOR", "VAULT_FREEZER"
@@ -1608,39 +1727,103 @@ contract ScriptsTest is Test {
             if (i == 4) q.anchor = bytes32(0);
             if (i == 5) q.freezer = address(0);
             vm.expectRevert(abi.encodeWithSelector(DeployVault.Required.selector, names[i]));
-            vaultDeployer.check(q);
+            vaultDeployer.check(q, broadcaster);
         }
         DeployVault.Params memory r = _vaultParams();
         r.recoveryProposer = address(0);
         vm.expectRevert(abi.encodeWithSelector(DeployVault.Required.selector, "VAULT_RECOVERY"));
-        vaultDeployer.check(r);
+        vaultDeployer.check(r, broadcaster);
 
         r = _vaultParams();
         r.freezer = r.recoveryProposer;
         vm.expectRevert(abi.encodeWithSelector(DeployVault.SameRole.selector, r.freezer));
-        vaultDeployer.check(r);
+        vaultDeployer.check(r, broadcaster);
         r = _vaultParams();
-        r.freezer = address(this); // the broadcasting key, as this test calls the script
-        vm.expectRevert(abi.encodeWithSelector(DeployVault.RoleIsBroadcaster.selector, "VAULT_FREEZER", address(this)));
-        vaultDeployer.check(r);
+        r.freezer = broadcaster;
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.RoleIsBroadcaster.selector, "VAULT_FREEZER", broadcaster));
+        vaultDeployer.check(r, broadcaster);
         r = _vaultParams();
-        r.recoveryProposer = address(this);
-        vm.expectRevert(abi.encodeWithSelector(DeployVault.RoleIsBroadcaster.selector, "VAULT_RECOVERY", address(this)));
-        vaultDeployer.check(r);
+        r.recoveryProposer = broadcaster;
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.RoleIsBroadcaster.selector, "VAULT_RECOVERY", broadcaster));
+        vaultDeployer.check(r, broadcaster);
         r = _vaultParams();
         r.recoveryProposer = makeAddr("a key, not a multisig");
         vm.expectRevert(abi.encodeWithSelector(DeployVault.RecoveryMustBeContract.selector, r.recoveryProposer));
-        vaultDeployer.check(r);
+        vaultDeployer.check(r, broadcaster);
         address delegated = makeAddr("an EIP-7702 delegated key");
         vm.etch(delegated, abi.encodePacked(hex"ef0100", address(r.factory)));
         r.recoveryProposer = delegated;
         vm.expectRevert(abi.encodeWithSelector(DeployVault.RecoveryMustBeContract.selector, delegated));
-        vaultDeployer.check(r);
+        vaultDeployer.check(r, broadcaster);
 
         r = _vaultParams();
         r.nativeFloor = r.nativeCap + 1;
         vm.expectRevert(abi.encodeWithSelector(DeployVault.FloorAboveCap.selector, r.nativeFloor, r.nativeCap));
-        vaultDeployer.check(r);
+        vaultDeployer.check(r, broadcaster);
+        // A7-23: a vault with no native cap refuses every deposit until a CAP_UPDATE, so no cap is a missing parameter.
+        r = _vaultParams();
+        r.nativeCap = 0;
+        r.nativeFloor = 0;
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.Required.selector, "VAULT_NATIVE_CAP"));
+        vaultDeployer.check(r, broadcaster);
+    }
+
+    /// @dev A7-09. The recovery multisig is held to the factory owner's rule, shared through `ScriptUtils`: a Safe that
+    ///      needs at least three signatures, has no enabled module and counts neither the freezer nor the broadcasting key
+    ///      among its signers. A contract that is not a Safe needs the operator's word, and the word waives only that.
+    function test_A709_theRecoveryMultisigIsHeldToTheOwnersRule() public {
+        DeployVault vaultDeployer = new DeployVault();
+        assertEq(vaultDeployer.MIN_RECOVERY_THRESHOLD(), 3);
+        address freezer = makeAddr("freezer");
+
+        MockSafe oneOfOne = new MockSafe(1);
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.RecoveryThresholdTooLow.selector, address(oneOfOne), 1));
+        vaultDeployer.checkRoles(freezer, address(oneOfOne), broadcaster, false);
+        MockSafe twoOfN = new MockSafe(2);
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.RecoveryThresholdTooLow.selector, address(twoOfN), 2));
+        vaultDeployer.checkRoles(freezer, address(twoOfN), broadcaster, true);
+
+        MockSafe withModule = new MockSafe(3);
+        withModule.enableModule(makeAddr("module"));
+        vm.expectRevert(
+            abi.encodeWithSelector(DeployVault.RecoveryHasModules.selector, address(withModule), makeAddr("module"))
+        );
+        vaultDeployer.checkRoles(freezer, address(withModule), broadcaster, false);
+        address unknown = address(new ThresholdOnly(3));
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.RecoveryModulesUnknown.selector, unknown));
+        vaultDeployer.checkRoles(freezer, unknown, broadcaster, false);
+
+        MockSafe signedByFreezer = new MockSafe(3);
+        signedByFreezer.addOwner(freezer);
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.RecoverySignedByRole.selector, "VAULT_FREEZER", freezer));
+        vaultDeployer.checkRoles(freezer, address(signedByFreezer), broadcaster, false);
+        MockSafe signedByDeployer = new MockSafe(3);
+        signedByDeployer.addOwner(makeAddr("another signer"));
+        signedByDeployer.addOwner(broadcaster);
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.RecoverySignedByRole.selector, "deployer", broadcaster));
+        vaultDeployer.checkRoles(freezer, address(signedByDeployer), broadcaster, false);
+
+        MockSafe fine = new MockSafe(3);
+        fine.addOwner(makeAddr("one signer"));
+        vaultDeployer.checkRoles(freezer, address(fine), broadcaster, false);
+
+        // A contract that is not a Safe shows nothing of how many keys control it: refused unless acknowledged.
+        address[2] memory notSafes = [address(new SilentFallback()), address(new RevertsOneWord())];
+        for (uint256 i = 0; i < notSafes.length; ++i) {
+            vm.expectRevert(abi.encodeWithSelector(DeployVault.RecoveryNotASafe.selector, notSafes[i]));
+            vaultDeployer.checkRoles(freezer, notSafes[i], broadcaster, false);
+            vaultDeployer.checkRoles(freezer, notSafes[i], broadcaster, true);
+        }
+        // The acknowledgement waives only that: a key or a delegated key is no contract at all.
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.RecoveryMustBeContract.selector, makeAddr("a key")));
+        vaultDeployer.checkRoles(freezer, makeAddr("a key"), broadcaster, true);
+        // And `check` carries the parameter's word to it.
+        DeployVault.Params memory p = _vaultParams();
+        p.recoveryProposer = notSafes[0];
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.RecoveryNotASafe.selector, notSafes[0]));
+        vaultDeployer.check(p, broadcaster);
+        p.recoveryIsNotASafe = true;
+        vaultDeployer.check(p, broadcaster);
     }
 
     /// @dev Only SP1's v6.0.0 verifier for P1 and RISC Zero's 3.0.0 verifier for P2: a contract that answers neither, a
@@ -1701,6 +1884,85 @@ contract ScriptsTest is Test {
         q.factory = makeAddr("another factory");
         vm.expectRevert(abi.encodeWithSelector(DeployVault.WrongWiring.selector, "FACTORY", q.factory, p.factory));
         vaultDeployer.checkDeployment(d, q);
+    }
+
+    /// @dev A7-06. The release check reads back what the owner and guardian approve before `proposeChain`, not only the
+    ///      wiring: the freezer, the source chain, P1's program key, P2's image id, both anchors and their epochs, both
+    ///      genesis times, and the native cap and floor. Each is changed alone in the parameters, as a reviewer holding the
+    ///      wrong figure would, or, where the vault pins the verifier's address and the parameters name one value for
+    ///      both, in what the verifier answers.
+    function test_A706_checkDeploymentReadsBackTheKeysTheAnchorTheFreezerAndTheLimits() public {
+        DeployVault vaultDeployer = new DeployVault();
+        DeployVault.Params memory p = _vaultParams();
+        DeployVault.Deployment memory d = vaultDeployer.deploy(p);
+        vaultDeployer.checkDeployment(d, p); // the parameters it was made with
+
+        DeployVault.Params memory q = abi.decode(abi.encode(p), (DeployVault.Params));
+        q.freezer = makeAddr("another freezer");
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.WrongWiring.selector, "freezer", q.freezer, p.freezer));
+        vaultDeployer.checkDeployment(d, q);
+
+        string[7] memory names =
+            ["SOURCE_CHAIN_ID", "PROGRAM_KEY", "IMAGE_ID", "p1 anchor", "p1 anchorEpoch", "native cap", "native floor"];
+        bytes32[7] memory expected = [
+            bytes32(uint256(11_155_111)),
+            keccak256("P1'"),
+            keccak256("P2'"),
+            keccak256("another anchor"),
+            bytes32(uint256(p.anchorEpoch + 1)),
+            bytes32(p.nativeCap + 1),
+            bytes32(p.nativeFloor + 1)
+        ];
+        bytes32[7] memory actual = [
+            bytes32(uint256(1)),
+            p.p1ProgramKey,
+            p.p2ImageId,
+            p.anchor,
+            bytes32(uint256(p.anchorEpoch)),
+            bytes32(p.nativeCap),
+            bytes32(p.nativeFloor)
+        ];
+        for (uint256 i = 0; i < names.length; ++i) {
+            q = abi.decode(abi.encode(p), (DeployVault.Params));
+            if (i == 0) q.sourceChainId = 11_155_111;
+            if (i == 1) q.p1ProgramKey = expected[i];
+            if (i == 2) q.p2ImageId = expected[i];
+            if (i == 3) q.anchor = expected[i];
+            if (i == 4) q.anchorEpoch = p.anchorEpoch + 1;
+            if (i == 5) q.nativeCap = p.nativeCap + 1;
+            if (i == 6) q.nativeFloor = p.nativeFloor + 1;
+            vm.expectRevert(abi.encodeWithSelector(DeployVault.WrongValue.selector, names[i], expected[i], actual[i]));
+            vaultDeployer.checkDeployment(d, q);
+        }
+
+        // What each verifier answers is read too: P2's anchor and epoch, and both genesis times.
+        bytes32 other = keccak256("what the verifier holds");
+        vm.mockCall(address(d.p2), abi.encodeWithSignature("anchor()"), abi.encode(other));
+        vm.expectRevert(abi.encodeWithSelector(DeployVault.WrongValue.selector, "p2 anchor", p.anchor, other));
+        vaultDeployer.checkDeployment(d, p);
+        vm.clearMockedCalls();
+        vm.mockCall(address(d.p2), abi.encodeWithSignature("anchorEpoch()"), abi.encode(uint64(7)));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                DeployVault.WrongValue.selector, "p2 anchorEpoch", bytes32(uint256(p.anchorEpoch)), bytes32(uint256(7))
+            )
+        );
+        vaultDeployer.checkDeployment(d, p);
+        vm.clearMockedCalls();
+        for (uint256 i = 0; i < 2; ++i) {
+            address verifier = i == 0 ? address(d.p1) : address(d.p2);
+            vm.mockCall(verifier, abi.encodeWithSignature("GENESIS_TIME()"), abi.encode(uint256(1_655_733_600)));
+            vm.expectRevert(
+                abi.encodeWithSelector(
+                    DeployVault.WrongValue.selector,
+                    i == 0 ? "p1 GENESIS_TIME" : "p2 GENESIS_TIME",
+                    bytes32(uint256(1_606_824_023)),
+                    bytes32(uint256(1_655_733_600))
+                )
+            );
+            vaultDeployer.checkDeployment(d, p);
+            vm.clearMockedCalls();
+        }
     }
 
     /// @dev A hybrid factory owned by DEFAULT_SENDER, the key script broadcasts come from in tests, with a vault chain
@@ -1783,13 +2045,13 @@ contract ScriptsTest is Test {
         entries[0] = ConfigureChains.ChainEntry({chainId: id, vault: vault, stateVerifier: verifier});
     }
 
-    function _tokenEntry(uint256 id, bytes32 tokenId, uint256 supply)
+    function _tokenEntry(uint256 id, bytes32 tokenId, uint256 supply, uint8 decimals)
         internal
         pure
         returns (ConfigureChains.TokenEntry[] memory entries)
     {
         entries = new ConfigureChains.TokenEntry[](1);
-        entries[0] = ConfigureChains.TokenEntry({chainId: id, tokenId: tokenId, supply: supply});
+        entries[0] = ConfigureChains.TokenEntry({chainId: id, tokenId: tokenId, supply: supply, decimals: decimals});
     }
 
     function _chainCalls(
@@ -1797,9 +2059,32 @@ contract ScriptsTest is Test {
         HybridIndexFactory factory,
         ConfigureChains.ChainEntry[] memory chains,
         ConfigureChains.TokenEntry[] memory tokens,
-        uint256[] memory rotate
+        ConfigureChains.Named memory named
     ) internal view returns (bytes[] memory calls) {
-        (calls,) = script.safeCalldata(factory, chains, tokens, rotate);
+        (calls,) = script.safeCalldata(factory, chains, tokens, named);
+    }
+
+    /// @dev Nothing named: what a routine run passes (RT-06).
+    function _nothingNamed() internal pure returns (ConfigureChains.Named memory named) {}
+
+    /// @dev Every chain and every coin of the entries named for a first proposal, a relisting and a listing, and `rotate`
+    ///      for rotation: what `LIST_CHAINS=all LIST_COINS=all` and a RELIST_COINS naming each coin make of a run.
+    function _named(
+        ConfigureChains.ChainEntry[] memory chains,
+        ConfigureChains.TokenEntry[] memory tokens,
+        uint256[] memory rotate
+    ) internal pure returns (ConfigureChains.Named memory named) {
+        named.rotate = rotate;
+        named.listChains = new uint256[](chains.length);
+        for (uint256 i = 0; i < chains.length; ++i) {
+            named.listChains[i] = chains[i].chainId;
+        }
+        named.listCoins = new ConfigureChains.CoinKey[](tokens.length);
+        named.relistCoins = new ConfigureChains.CoinKey[](tokens.length);
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            named.listCoins[i] = ConfigureChains.CoinKey({chainId: tokens[i].chainId, tokenId: tokens[i].tokenId});
+            named.relistCoins[i] = named.listCoins[i];
+        }
     }
 
     function test_configureChains_parse() public {
@@ -1807,51 +2092,119 @@ contract ScriptsTest is Test {
         assertEq(script.parseChains("").length, 0);
         assertEq(script.parseTokens("").length, 0);
         assertEq(script.parseIds("").length, 0);
+        assertEq(script.parseCoins("").length, 0);
 
+        address tronVault = makeAddr("a TRON vault"); // 20 bytes, without TRON's 0x41 prefix
         ConfigureChains.ChainEntry[] memory chains = script.parseChains(
             string.concat(
                 "56:",
-                vm.toString(BNB_VAULT),
+                vm.toString(address(uint160(uint256(BNB_VAULT)))),
                 ":",
                 vm.toString(address(router)),
-                " , 728126428:0x41:",
-                vm.toString(usdc)
+                " , 728126428:",
+                vm.toString(tronVault),
+                ":",
+                vm.toString(usdc),
+                ", 1:",
+                vm.toString(bytes32(uint256(0xAB))),
+                ":",
+                vm.toString(usdt)
             )
         );
-        assertEq(chains.length, 2);
+        assertEq(chains.length, 3);
         assertEq(chains[0].chainId, BNB);
         assertEq(chains[0].vault, BNB_VAULT);
         assertEq(chains[0].stateVerifier, address(router));
         assertEq(chains[1].chainId, 728126428, "spaces around an entry are trimmed");
-        assertEq(chains[1].vault, bytes32(uint256(0x41)), "a short vault is left-padded");
+        assertEq(chains[1].vault, bytes32(uint256(uint160(tronVault))), "an address is left-padded to a word");
         assertEq(chains[1].stateVerifier, usdc);
+        assertEq(chains[2].vault, bytes32(uint256(0xAB)), "a 32-byte word is taken as it is");
 
-        ConfigureChains.TokenEntry[] memory tokens = script.parseTokens("56:0x0:140000000000000000000000000, 56:0x1:7");
+        ConfigureChains.TokenEntry[] memory tokens =
+            script.parseTokens("56:0x0:140000000000000000000000000:18, 56:0x1:7:0");
         assertEq(tokens.length, 2);
         assertEq(tokens[0].chainId, BNB);
         assertEq(tokens[0].tokenId, bytes32(0));
         assertEq(tokens[0].supply, 140_000_000e18);
+        assertEq(tokens[0].decimals, 18);
         assertEq(tokens[1].tokenId, bytes32(uint256(1)));
         assertEq(tokens[1].supply, 7);
+        assertEq(tokens[1].decimals, 0);
 
         uint256[] memory ids = script.parseIds("56, 728126428");
         assertEq(ids.length, 2);
         assertEq(ids[0], BNB);
         assertEq(ids[1], 728126428);
 
+        ConfigureChains.CoinKey[] memory coins = script.parseCoins("56:0x0, 728126428:0x5");
+        assertEq(coins.length, 2);
+        assertEq(coins[1].chainId, 728126428);
+        assertEq(coins[1].tokenId, bytes32(uint256(5)));
+        // `all` names every entry; anything else is read as a list, and empty names none.
+        assertEq(script.resolveListChains("all", chains).length, 3);
+        assertEq(script.resolveListChains("all", chains)[2], 1);
+        assertEq(script.resolveListChains("56", chains)[0], BNB);
+        assertEq(script.resolveListChains("", chains).length, 0);
+        assertEq(script.resolveListCoins("all", tokens).length, 2);
+        assertEq(script.resolveListCoins("all", tokens)[1].tokenId, bytes32(uint256(1)));
+        assertEq(script.resolveListCoins("56:0x0", tokens).length, 1);
+        assertEq(script.resolveListCoins("", tokens).length, 0);
+
         vm.expectRevert(abi.encodeWithSelector(ConfigureChains.MalformedEntry.selector, "56:0xb5c"));
         script.parseChains("56:0xb5c");
-        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.MalformedEntry.selector, "56:0x0:1:2"));
-        script.parseTokens("56:0x0:1:2");
+        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.MalformedEntry.selector, "56:0x0:1:2:3"));
+        script.parseTokens("56:0x0:1:2:3");
+        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.MalformedEntry.selector, "56:0x0:1"));
+        script.parseTokens("56:0x0:1"); // the decimals are required (A7-05)
+        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.MalformedEntry.selector, "56:0x0:1:37"));
+        script.parseTokens("56:0x0:1:37");
+        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.MalformedEntry.selector, "56:0x0:5"));
+        script.parseCoins("56:0x0:5");
         // A word in decimal would read as another word, and "0x" alone as zero.
         vm.expectRevert(abi.encodeWithSelector(ConfigureChains.MalformedEntry.selector, "56:2908:0x01"));
         script.parseChains("56:2908:0x01");
-        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.MalformedEntry.selector, "56:0x:1"));
-        script.parseTokens("56:0x:1");
-        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.MalformedEntry.selector, "56:1x0:1"));
-        script.parseTokens("56:1x0:1");
-        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.MalformedEntry.selector, "56:00:1"));
-        script.parseTokens("56:00:1");
+        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.MalformedEntry.selector, "56:0x:1:6"));
+        script.parseTokens("56:0x:1:6");
+        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.MalformedEntry.selector, "56:1x0:1:6"));
+        script.parseTokens("56:1x0:1:6");
+        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.MalformedEntry.selector, "56:00:1:6"));
+        script.parseTokens("56:00:1:6");
+    }
+
+    /// @dev A7-04. A vault is exactly an address or a 32-byte word, never any length between: a registered chain's vault
+    ///      is fixed, so one that was mistyped, TRON's 21-byte hex address with its 0x41 prefix, a truncated address or a
+    ///      short slip, would burn the chain id once executed, and was accepted as a left-padded word before.
+    function test_A704_aVaultWordOfAnyOtherLengthIsRefused() public {
+        ConfigureChains script = new ConfigureChains();
+        string memory verifier = vm.toString(address(router));
+        string memory tron = string.concat("0x41", _hexOf(makeAddr("tron vault"))); // 21 bytes: 42 digits
+        string[6] memory slips = [
+            "0x41", // the old test's 3-digit vault
+            "0xb5c",
+            tron,
+            string.concat("0x", _hexOf(makeAddr("a vault"))), // a 40-digit address is fine: below, not here
+            "0x",
+            string.concat("0x00", _hexOf(makeAddr("a vault")), "0") // 43 digits
+        ];
+        for (uint256 i = 0; i < slips.length; ++i) {
+            if (i == 3) {
+                assertEq(script.parseChains(string.concat("56:", slips[i], ":", verifier)).length, 1);
+                continue;
+            }
+            string memory entry = string.concat("56:", slips[i], ":", verifier);
+            vm.expectRevert(abi.encodeWithSelector(ConfigureChains.MalformedEntry.selector, entry));
+            script.parseChains(entry);
+        }
+        // A coin id may be as short as 0x0: only a vault's length is pinned.
+        assertEq(script.parseTokens("56:0x0:1000000:0")[0].tokenId, bytes32(0));
+        // 32 bytes of digits are a word, in full.
+        string memory word = vm.toString(bytes32(uint256(0xAB)));
+        assertEq(script.parseChains(string.concat("56:", word, ":", verifier))[0].vault, bytes32(uint256(0xAB)));
+    }
+
+    /// @dev An address's hex digits without `0x`.
+    function _hexOf(address a) internal pure returns (string memory) {
+        return vm.replace(vm.toString(a), "0x", "");
     }
 
     /// @dev A chain first, then its coin: the coin waits for its chain's registration, each proposal executes once due,
@@ -1860,23 +2213,23 @@ contract ScriptsTest is Test {
         ConfigureChains script = new ConfigureChains();
         HybridIndexFactory factory = _hybridFactory(DEFAULT_SENDER);
         ConfigureChains.ChainEntry[] memory chains = _chainEntry(BNB, BNB_VAULT, address(router));
-        ConfigureChains.TokenEntry[] memory tokens = _tokenEntry(BNB, bytes32(0), 140_000_000e18);
-        uint256[] memory noRotation;
+        ConfigureChains.TokenEntry[] memory tokens = _tokenEntry(BNB, bytes32(0), 140_000_000e18, 18);
+        ConfigureChains.Named memory named = _named(chains, tokens, new uint256[](0));
         address bnb = factory.vaultTokenId(BNB, bytes32(0));
 
-        assertTrue(script.shouldProposeChain(factory, chains[0], noRotation));
-        assertFalse(script.shouldListToken(factory, tokens[0]), "the coin waits for its chain");
-        (bytes[] memory calls, string[] memory labels) = script.safeCalldata(factory, chains, tokens, noRotation);
+        assertTrue(script.shouldProposeChain(factory, chains[0], named));
+        assertFalse(script.shouldListToken(factory, tokens[0], named), "the coin waits for its chain");
+        (bytes[] memory calls, string[] memory labels) = script.safeCalldata(factory, chains, tokens, named);
         assertEq(calls.length, 1, "the coin waits for its chain");
         assertEq(calls[0], abi.encodeCall(IHybridIndexFactory.proposeChain, (BNB, BNB_VAULT, address(router))));
         assertEq(labels[0], "proposeChain 56");
 
-        script.propose(factory, chains, tokens, noRotation);
+        script.propose(factory, chains, tokens, named);
         (bytes32 vault, address verifier, uint256 eta) = factory.chainProposal(BNB);
         assertEq(vault, BNB_VAULT);
         assertEq(verifier, address(router));
         assertEq(eta, block.timestamp + factory.LISTING_DELAY());
-        assertEq(_chainCalls(script, factory, chains, tokens, noRotation).length, 0, "already pending");
+        assertEq(_chainCalls(script, factory, chains, tokens, named).length, 0, "already pending");
 
         script.execute(factory, chains, tokens);
         assertEq(factory.chain(BNB).vault, bytes32(0), "not before its delay");
@@ -1885,13 +2238,17 @@ contract ScriptsTest is Test {
         assertEq(factory.chain(BNB).vault, BNB_VAULT, "registered");
         assertEq(factory.chain(BNB).stateVerifier, address(router));
 
-        (calls, labels) = script.safeCalldata(factory, chains, tokens, noRotation);
+        (calls, labels) = script.safeCalldata(factory, chains, tokens, named);
         assertEq(calls.length, 1, "the registered chain is not proposed again; its coin is");
         assertEq(calls[0], abi.encodeCall(IHybridIndexFactory.proposeVaultListing, (BNB, bytes32(0), 140_000_000e18)));
-        assertEq(labels[0], string.concat("proposeVaultListing 56 ", vm.toString(bytes32(0))));
-        script.propose(factory, chains, tokens, noRotation);
+        assertEq(
+            labels[0],
+            string.concat("proposeVaultListing 56 ", vm.toString(bytes32(0)), ", 140000000 whole units"),
+            "the label shows the supply in whole units, where a decimals slip shows"
+        );
+        script.propose(factory, chains, tokens, named);
         assertEq(factory.pendingReferenceSupply(bnb), 140_000_000e18);
-        assertEq(_chainCalls(script, factory, chains, tokens, noRotation).length, 0, "already pending");
+        assertEq(_chainCalls(script, factory, chains, tokens, named).length, 0, "already pending");
 
         script.execute(factory, chains, tokens);
         assertFalse(factory.isWhitelisted(bnb), "not before its delay");
@@ -1899,7 +2256,7 @@ contract ScriptsTest is Test {
         script.execute(factory, chains, tokens);
         assertTrue(factory.isWhitelisted(bnb), "listed");
         assertEq(factory.referenceSupply(bnb), 140_000_000e18);
-        assertEq(_chainCalls(script, factory, chains, tokens, noRotation).length, 0, "nothing left to do");
+        assertEq(_chainCalls(script, factory, chains, tokens, named).length, 0, "nothing left to do");
         script.execute(factory, chains, tokens); // and nothing to execute
     }
 
@@ -1928,7 +2285,8 @@ contract ScriptsTest is Test {
             ConfigureChains.ChainEntry[] memory one =
                 _chainEntry(refused[i].chainId, refused[i].vault, refused[i].stateVerifier);
             // The last is refused only because ROTATE does not name it; the others whatever ROTATE says.
-            uint256[] memory named = i == refused.length - 1 ? new uint256[](0) : rotate;
+            ConfigureChains.Named memory named =
+                _named(one, noTokens, i == refused.length - 1 ? new uint256[](0) : rotate);
             assertEq(_chainCalls(script, factory, one, noTokens, named).length, 0, vm.toString(i));
             script.propose(factory, one, noTokens, named);
             assertFalse(factory.chainPending(refused[i].chainId), vm.toString(i));
@@ -1944,17 +2302,22 @@ contract ScriptsTest is Test {
         HybridIndexFactory factory = _hybridFactory(DEFAULT_SENDER);
         _registerBnb(factory);
         ConfigureChains.TokenEntry[] memory noTokens;
-        uint256[] memory rotate = new uint256[](2);
-        (rotate[0], rotate[1]) = (43114, BNB); // the chain need not come first
+        uint256[] memory ids = new uint256[](2);
+        (ids[0], ids[1]) = (43114, BNB); // the chain need not come first
 
         ConfigureChains.ChainEntry[] memory toUsdc = _chainEntry(BNB, BNB_VAULT, usdc);
+        ConfigureChains.Named memory rotate = _named(toUsdc, noTokens, ids);
         script.propose(factory, toUsdc, noTokens, rotate);
         (, address verifier, uint256 eta) = factory.chainProposal(BNB);
         assertEq(verifier, usdc);
         assertEq(eta, block.timestamp + factory.ROTATION_DELAY(), "a rotation waits 30 days");
 
         ConfigureChains.ChainEntry[] memory toUsdt = _chainEntry(BNB, BNB_VAULT, usdt);
-        assertEq(_chainCalls(script, factory, toUsdt, noTokens, rotate).length, 0, "a different proposal is pending");
+        assertEq(
+            _chainCalls(script, factory, toUsdt, noTokens, _named(toUsdt, noTokens, ids)).length,
+            0,
+            "a different proposal is pending"
+        );
         vm.warp(eta);
         script.execute(factory, toUsdt, noTokens);
         assertEq(factory.chain(BNB).stateVerifier, address(router), "a pending proposal unlike the entry is left");
@@ -1985,15 +2348,19 @@ contract ScriptsTest is Test {
         ConfigureChains.ChainEntry[] memory noChains;
         uint256[] memory noRotation;
 
-        assertEq(_chainCalls(script, factory, noChains, _tokenEntry(BNB, bytes32(0), 0), noRotation).length, 0);
+        ConfigureChains.TokenEntry[] memory zero = _tokenEntry(BNB, bytes32(0), 0, 18);
+        assertEq(_chainCalls(script, factory, noChains, zero, _named(noChains, zero, noRotation)).length, 0);
         uint256 tooMuch = factory.MAX_SUPPLY() + 1;
-        assertEq(_chainCalls(script, factory, noChains, _tokenEntry(BNB, bytes32(0), tooMuch), noRotation).length, 0);
+        ConfigureChains.TokenEntry[] memory big = _tokenEntry(BNB, bytes32(0), tooMuch, 18);
+        assertEq(_chainCalls(script, factory, noChains, big, _named(noChains, big, noRotation)).length, 0);
 
         // Two coins listed, the first delisted and named by the live batch, the second delisted and not.
         ConfigureChains.TokenEntry[] memory both = new ConfigureChains.TokenEntry[](2);
-        both[0] = ConfigureChains.TokenEntry({chainId: BNB, tokenId: bytes32(0), supply: 1_000e18});
-        both[1] = ConfigureChains.TokenEntry({chainId: BNB, tokenId: bytes32(uint256(1)), supply: 2_000e18});
-        script.propose(factory, noChains, both, noRotation);
+        both[0] = ConfigureChains.TokenEntry({chainId: BNB, tokenId: bytes32(0), supply: 1_000e18, decimals: 12});
+        both[1] =
+            ConfigureChains.TokenEntry({chainId: BNB, tokenId: bytes32(uint256(1)), supply: 2_000e18, decimals: 12});
+        ConfigureChains.Named memory named = _named(noChains, both, noRotation);
+        script.propose(factory, noChains, both, named);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         script.execute(factory, noChains, both);
         address first = factory.vaultTokenId(BNB, bytes32(0));
@@ -2011,12 +2378,12 @@ contract ScriptsTest is Test {
 
         both[1].supply = 3_000e18; // the entry moved, the supply in force did not
         assertEq(script.listingSupply(factory, both[1]), 2_000e18, "a relisting proposes the supply in force");
-        bytes[] memory calls = _chainCalls(script, factory, noChains, both, noRotation);
+        bytes[] memory calls = _chainCalls(script, factory, noChains, both, named);
         assertEq(calls.length, 1, "the coin the batch names waits");
         assertEq(
             calls[0], abi.encodeCall(IHybridIndexFactory.proposeVaultListing, (BNB, bytes32(uint256(1)), 2_000e18))
         );
-        script.propose(factory, noChains, both, noRotation);
+        script.propose(factory, noChains, both, named);
         assertEq(factory.pendingReferenceSupply(second), 2_000e18, "relisted at the supply in force");
         assertEq(factory.listingEta(first), 0);
 
@@ -2025,13 +2392,23 @@ contract ScriptsTest is Test {
         factory.executeSupplies();
         script.execute(factory, noChains, both);
         assertTrue(factory.isWhitelisted(second));
-        script.propose(factory, noChains, both, noRotation);
+        script.propose(factory, noChains, both, named);
         assertEq(factory.pendingReferenceSupply(first), 1_004e18, "the batch's supply is the one in force");
 
-        // A first listing executes only at its entry's supply, and only inside its window.
-        ConfigureChains.TokenEntry[] memory third = _tokenEntry(BNB, bytes32(uint256(2)), 5e18);
+        _aFirstListingExecutesOnlyAtItsEntrysSupplyAndInItsWindow(script, factory, first);
+    }
+
+    /// @dev A first listing executes only at its entry's supply, and only inside its window; `first`'s, proposed after
+    ///      the batch was gone, expires with it.
+    function _aFirstListingExecutesOnlyAtItsEntrysSupplyAndInItsWindow(
+        ConfigureChains script,
+        HybridIndexFactory factory,
+        address first
+    ) internal {
+        ConfigureChains.ChainEntry[] memory noChains;
+        ConfigureChains.TokenEntry[] memory third = _tokenEntry(BNB, bytes32(uint256(2)), 5e18, 12);
         address coin = factory.vaultTokenId(BNB, bytes32(uint256(2)));
-        script.propose(factory, noChains, third, noRotation);
+        script.propose(factory, noChains, third, _named(noChains, third, new uint256[](0)));
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         third[0].supply = 6e18;
         script.execute(factory, noChains, third);
@@ -2051,29 +2428,196 @@ contract ScriptsTest is Test {
         uint256[] memory noRotation;
         ConfigureChains.TokenEntry[] memory noTokens;
         ConfigureChains.ChainEntry[] memory noChains;
+        ConfigureChains.Named memory nothing = _nothingNamed();
 
         ConfigureChains.ChainEntry[] memory chains = new ConfigureChains.ChainEntry[](3);
         chains[0] = ConfigureChains.ChainEntry({chainId: BNB, vault: BNB_VAULT, stateVerifier: address(router)});
         chains[1] = ConfigureChains.ChainEntry({chainId: 43114, vault: BNB_VAULT, stateVerifier: address(router)});
         chains[2] = ConfigureChains.ChainEntry({chainId: BNB, vault: bytes32(uint256(1)), stateVerifier: usdc});
         vm.expectRevert(abi.encodeWithSelector(ConfigureChains.DuplicateChain.selector, BNB));
-        script.safeCalldata(factory, chains, noTokens, noRotation);
+        script.safeCalldata(factory, chains, noTokens, nothing);
         vm.expectRevert(abi.encodeWithSelector(ConfigureChains.DuplicateChain.selector, BNB));
-        script.propose(factory, chains, noTokens, noRotation);
+        script.propose(factory, chains, noTokens, nothing);
 
         ConfigureChains.TokenEntry[] memory tokens = new ConfigureChains.TokenEntry[](3);
-        tokens[0] = ConfigureChains.TokenEntry({chainId: BNB, tokenId: bytes32(0), supply: 1});
-        tokens[1] = ConfigureChains.TokenEntry({chainId: 43114, tokenId: bytes32(0), supply: 1}); // another chain's coin
-        tokens[2] = ConfigureChains.TokenEntry({chainId: BNB, tokenId: bytes32(0), supply: 2});
+        tokens[0] = ConfigureChains.TokenEntry({chainId: BNB, tokenId: bytes32(0), supply: 1, decimals: 0});
+        tokens[1] = ConfigureChains.TokenEntry({chainId: 43114, tokenId: bytes32(0), supply: 1, decimals: 0}); // another chain's coin
+        tokens[2] = ConfigureChains.TokenEntry({chainId: BNB, tokenId: bytes32(0), supply: 2, decimals: 0});
         vm.expectRevert(abi.encodeWithSelector(ConfigureChains.DuplicateToken.selector, BNB, bytes32(0)));
-        script.safeCalldata(factory, noChains, tokens, noRotation);
+        script.safeCalldata(factory, noChains, tokens, nothing);
         vm.expectRevert(abi.encodeWithSelector(ConfigureChains.DuplicateToken.selector, BNB, bytes32(0)));
-        script.propose(factory, noChains, tokens, noRotation);
+        script.propose(factory, noChains, tokens, nothing);
 
         chains[2].chainId = 1; // three distinct chains, and two distinct coins
         ConfigureChains.TokenEntry[] memory two = new ConfigureChains.TokenEntry[](2);
         (two[0], two[1]) = (tokens[0], tokens[1]);
-        assertEq(_chainCalls(script, factory, chains, two, noRotation).length, 3, "every chain; no coin yet");
+        assertEq(
+            _chainCalls(script, factory, chains, two, _named(chains, two, noRotation)).length,
+            3,
+            "every chain; no coin yet"
+        );
+    }
+
+    /// @dev A7-03, RT-06 for chains: nothing on chain records that the guardian cancelled a chain proposal, so a routine
+    ///      run, which names nothing, proposes none that was never registered, and the chain is proposed only when
+    ///      LIST_CHAINS names it. `ROTATE` is not a name for it.
+    function test_A703_aVetoedChainProposalIsNotProposedAgainByARoutineRun() public {
+        ConfigureChains script = new ConfigureChains();
+        HybridIndexFactory factory = _hybridFactory(DEFAULT_SENDER);
+        ConfigureChains.ChainEntry[] memory chains = _chainEntry(BNB, BNB_VAULT, address(router));
+        ConfigureChains.TokenEntry[] memory noTokens;
+        ConfigureChains.Named memory everything = _named(chains, noTokens, new uint256[](0));
+
+        assertEq(
+            _chainCalls(script, factory, chains, noTokens, _nothingNamed()).length, 0, "nothing named, nothing proposed"
+        );
+        script.propose(factory, chains, noTokens, _nothingNamed());
+        assertFalse(factory.chainPending(BNB), "a broadcasting routine run proposes nothing either");
+        ConfigureChains.Named memory rotateOnly = _nothingNamed();
+        rotateOnly.rotate = new uint256[](1);
+        rotateOnly.rotate[0] = BNB;
+        assertEq(_chainCalls(script, factory, chains, noTokens, rotateOnly).length, 0, "ROTATE is not LIST_CHAINS");
+        ConfigureChains.Named memory another = _nothingNamed();
+        another.listChains = new uint256[](1);
+        another.listChains[0] = 43114;
+        assertEq(_chainCalls(script, factory, chains, noTokens, another).length, 0, "another chain's name is no name");
+
+        bytes[] memory calls = _chainCalls(script, factory, chains, noTokens, everything);
+        assertEq(calls.length, 1, "named, it is proposed");
+        assertEq(calls[0], abi.encodeCall(IHybridIndexFactory.proposeChain, (BNB, BNB_VAULT, address(router))));
+        script.propose(factory, chains, noTokens, everything);
+        assertTrue(factory.chainPending(BNB));
+
+        vm.prank(guardian);
+        factory.cancelChain(BNB);
+        vm.warp(block.timestamp + 30 days);
+        assertEq(_chainCalls(script, factory, chains, noTokens, _nothingNamed()).length, 0, "the veto holds");
+        script.propose(factory, chains, noTokens, _nothingNamed());
+        assertFalse(factory.chainPending(BNB), "and a routine run does not undo it");
+        ConfigureChains.Named memory again = _nothingNamed();
+        again.listChains = new uint256[](1);
+        again.listChains[0] = BNB;
+        assertEq(
+            _chainCalls(script, factory, chains, noTokens, again).length,
+            1,
+            "only the operator's word proposes it again"
+        );
+    }
+
+    /// @dev A7-03, RT-06 and XA-11 for coins: a coin never listed is proposed only when LIST_COINS names it, so a first
+    ///      listing the guardian cancelled stays cancelled, and a delisted coin, which a relisting would put back at the
+    ///      supply in force, only when RELIST_COINS names it, and LIST_COINS is not that name.
+    function test_A703_aVetoedFirstListingOrADelistingIsNotProposedAgainByARoutineRun() public {
+        ConfigureChains script = new ConfigureChains();
+        HybridIndexFactory factory = _hybridFactory(DEFAULT_SENDER);
+        _registerBnb(factory);
+        ConfigureChains.ChainEntry[] memory noChains;
+        ConfigureChains.TokenEntry[] memory both = new ConfigureChains.TokenEntry[](2);
+        both[0] = ConfigureChains.TokenEntry({chainId: BNB, tokenId: bytes32(0), supply: 140_000_000e18, decimals: 18});
+        both[1] = ConfigureChains.TokenEntry({chainId: BNB, tokenId: bytes32(uint256(1)), supply: 3e9, decimals: 0});
+        address first = factory.vaultTokenId(BNB, bytes32(0));
+        address second = factory.vaultTokenId(BNB, bytes32(uint256(1)));
+        ConfigureChains.Named memory nothing = _nothingNamed();
+        ConfigureChains.Named memory everything = _named(noChains, both, new uint256[](0));
+
+        assertEq(_chainCalls(script, factory, noChains, both, nothing).length, 0, "a routine run lists nothing");
+        ConfigureChains.Named memory justTheSecond = _nothingNamed();
+        justTheSecond.listCoins = new ConfigureChains.CoinKey[](1);
+        justTheSecond.listCoins[0] = ConfigureChains.CoinKey({chainId: BNB, tokenId: bytes32(uint256(1))});
+        bytes[] memory calls = _chainCalls(script, factory, noChains, both, justTheSecond);
+        assertEq(calls.length, 1, "only the coin named is listed");
+        assertEq(calls[0], abi.encodeCall(IHybridIndexFactory.proposeVaultListing, (BNB, bytes32(uint256(1)), 3e9)));
+
+        // Both proposed, the first cancelled by the guardian: a routine run after the veto does not propose it again.
+        script.propose(factory, noChains, both, everything);
+        vm.prank(guardian);
+        factory.cancelListing(first);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        script.execute(factory, noChains, both);
+        assertFalse(factory.isWhitelisted(first), "the veto holds at launch");
+        assertTrue(factory.isWhitelisted(second));
+        vm.warp(block.timestamp + 30 days);
+        assertEq(
+            _chainCalls(script, factory, noChains, both, nothing).length, 0, "a routine run does not list it again"
+        );
+        script.propose(factory, noChains, both, nothing);
+        assertEq(factory.listingEta(first), 0);
+        assertEq(
+            _chainCalls(script, factory, noChains, both, _named(noChains, both, new uint256[](0))).length,
+            1,
+            "naming a first listing proposes it"
+        );
+
+        // The second coin, delisted: its relisting needs RELIST_COINS, and LIST_COINS is not that.
+        vm.prank(guardian);
+        factory.delist(second);
+        ConfigureChains.Named memory listOnly = _nothingNamed();
+        listOnly.listCoins = everything.listCoins;
+        assertEq(
+            _chainCalls(script, factory, noChains, _only(both, 1), listOnly).length, 0, "LIST_COINS is not RELIST_COINS"
+        );
+        ConfigureChains.Named memory relistOnly = _nothingNamed();
+        relistOnly.relistCoins = everything.relistCoins;
+        calls = _chainCalls(script, factory, noChains, _only(both, 1), relistOnly);
+        assertEq(calls.length, 1, "named for relisting, it is listed again, at the supply in force");
+        assertEq(calls[0], abi.encodeCall(IHybridIndexFactory.proposeVaultListing, (BNB, bytes32(uint256(1)), 3e9)));
+        assertEq(second, factory.vaultTokenId(BNB, bytes32(uint256(1))));
+    }
+
+    /// @dev The entries of `all` from `index`, one of them.
+    function _only(ConfigureChains.TokenEntry[] memory all, uint256 index)
+        internal
+        pure
+        returns (ConfigureChains.TokenEntry[] memory one)
+    {
+        one = new ConfigureChains.TokenEntry[](1);
+        one[0] = all[index];
+    }
+
+    /// @dev A7-05. A first listing shows its supply in whole units and is skipped outside a million to a trillion of them,
+    ///      so a decimals slip, which the Safe batch would not show, cannot list a figure a thousand times too large or
+    ///      small. Coins' decimals run from 6 (TRX) to 24 (NEAR), and a supply 1000x off is near-permanent: a weekly batch
+    ///      moves it half a percent.
+    function test_A705_aFirstListingOutsideAPlausibleCountOfWholeUnitsIsSkipped() public {
+        ConfigureChains script = new ConfigureChains();
+        HybridIndexFactory factory = _hybridFactory(DEFAULT_SENDER);
+        _registerBnb(factory);
+        ConfigureChains.ChainEntry[] memory noChains;
+        assertEq(script.MIN_WHOLE_SUPPLY(), 1e6);
+        assertEq(script.MAX_WHOLE_SUPPLY(), 1e12);
+
+        // BNB: about 140 million coins at 18 decimals; the same raw figure read as 24 decimals is a tenth of a coin.
+        ConfigureChains.TokenEntry memory bnb =
+            ConfigureChains.TokenEntry({chainId: BNB, tokenId: bytes32(0), supply: 140_000_000e18, decimals: 18});
+        assertEq(script.wholeUnits(bnb, bnb.supply), 140_000_000);
+        ConfigureChains.TokenEntry[] memory one = new ConfigureChains.TokenEntry[](1);
+        one[0] = bnb;
+        assertEq(_chainCalls(script, factory, noChains, one, _named(noChains, one, new uint256[](0))).length, 1);
+
+        uint8[5] memory slips = [24, 6, 0, 36, 12]; // 140, 1.4e14, 1.4e26, ~0, 1.4e14 whole units
+        for (uint256 i = 0; i < slips.length; ++i) {
+            one[0].decimals = slips[i];
+            uint256 whole = script.wholeUnits(one[0], one[0].supply);
+            assertTrue(whole < 1e6 || whole > 1e12, "the slip lands outside the band");
+            assertEq(
+                _chainCalls(script, factory, noChains, one, _named(noChains, one, new uint256[](0))).length,
+                0,
+                vm.toString(slips[i])
+            );
+            script.propose(factory, noChains, one, _named(noChains, one, new uint256[](0)));
+            assertEq(factory.listingEta(factory.vaultTokenId(BNB, bytes32(0))), 0, "and a broadcast skips it too");
+        }
+
+        // The band's own edges are inside it: a million whole units to a trillion.
+        one[0].decimals = 6;
+        one[0].supply = 1e6 * 1e6;
+        assertEq(_chainCalls(script, factory, noChains, one, _named(noChains, one, new uint256[](0))).length, 1);
+        one[0].supply = 1e6 * 1e6 - 1;
+        assertEq(_chainCalls(script, factory, noChains, one, _named(noChains, one, new uint256[](0))).length, 0);
+        one[0].supply = 1e12 * 1e6;
+        assertEq(_chainCalls(script, factory, noChains, one, _named(noChains, one, new uint256[](0))).length, 1);
+        one[0].supply = 1e12 * 1e6 + 1e6;
+        assertEq(_chainCalls(script, factory, noChains, one, _named(noChains, one, new uint256[](0))).length, 0);
     }
 
     /// @dev XA-18 and LR-07 for chains: an owner that is a contract cannot sign, so `propose` refuses it and points to
@@ -2084,25 +2628,37 @@ contract ScriptsTest is Test {
         HybridIndexFactory factory = _hybridFactory(address(safe));
         ConfigureChains.ChainEntry[] memory chains = _chainEntry(BNB, BNB_VAULT, address(router));
         ConfigureChains.TokenEntry[] memory noTokens;
-        uint256[] memory noRotation;
+        ConfigureChains.Named memory named = _named(chains, noTokens, new uint256[](0));
         vm.expectRevert(abi.encodeWithSelector(ConfigureChains.OwnerIsContract.selector, address(safe)));
-        script.propose(factory, chains, noTokens, noRotation);
-        assertEq(_chainCalls(script, factory, chains, noTokens, noRotation).length, 1, "safe mode serves it");
+        script.propose(factory, chains, noTokens, named);
+        assertEq(_chainCalls(script, factory, chains, noTokens, named).length, 1, "safe mode serves it");
 
         HybridIndexFactory keyed = _hybridFactory(DEFAULT_SENDER);
         vm.etch(DEFAULT_SENDER, abi.encodePacked(hex"ef0100", address(this)));
-        script.propose(keyed, chains, noTokens, noRotation);
+        script.propose(keyed, chains, noTokens, named);
         assertTrue(keyed.chainPending(BNB), "the delegated key proposed");
     }
 
     function test_configureChainsRun_readsEnvironment() public {
         ConfigureChains script = new ConfigureChains();
         HybridIndexFactory factory = _hybridFactory(DEFAULT_SENDER);
+        address bnb = factory.vaultTokenId(BNB, bytes32(0));
         vm.setEnv("CHAINS_FACTORY", vm.toString(address(factory)));
-        vm.setEnv("CHAINS", string.concat("56:", vm.toString(BNB_VAULT), ":", vm.toString(address(router))));
-        vm.setEnv("VAULT_TOKENS", "56:0x0:140000000000000000000000000");
+        vm.setEnv(
+            "CHAINS",
+            string.concat("56:", vm.toString(address(uint160(uint256(BNB_VAULT)))), ":", vm.toString(address(router)))
+        );
+        vm.setEnv("VAULT_TOKENS", "56:0x0:140000000000000000000000000:18");
         vm.setEnv("ROTATE", "56");
+        // A7-03: what a routine run names, nothing.
+        vm.setEnv("LIST_CHAINS", "");
+        vm.setEnv("LIST_COINS", "");
+        vm.setEnv("RELIST_COINS", "");
 
+        vm.setEnv("CHAIN_MODE", "propose");
+        script.run();
+        assertFalse(factory.chainPending(BNB), "an unnamed chain is not proposed");
+        vm.setEnv("LIST_CHAINS", "all");
         vm.setEnv("CHAIN_MODE", "safe"); // logs the chain's calldata, broadcasts nothing
         script.run();
         assertFalse(factory.chainPending(BNB));
@@ -2116,10 +2672,23 @@ contract ScriptsTest is Test {
 
         vm.setEnv("CHAIN_MODE", "propose");
         script.run();
+        assertEq(factory.listingEta(bnb), 0, "an unnamed coin is not proposed");
+        vm.setEnv("LIST_COINS", "56:0x0");
+        script.run();
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         vm.setEnv("CHAIN_MODE", "execute");
         script.run();
-        assertTrue(factory.isWhitelisted(factory.vaultTokenId(BNB, bytes32(0))));
+        assertTrue(factory.isWhitelisted(bnb));
+
+        // Delisted, the coin is relisted only when RELIST_COINS names it.
+        vm.prank(guardian);
+        factory.delist(bnb);
+        vm.setEnv("CHAIN_MODE", "propose");
+        script.run();
+        assertEq(factory.listingEta(bnb), 0, "LIST_COINS is not RELIST_COINS");
+        vm.setEnv("RELIST_COINS", "56:0x0");
+        script.run();
+        assertGt(factory.listingEta(bnb), 0, "RELIST_COINS names it");
 
         vm.setEnv("CHAIN_MODE", "sideways");
         vm.expectRevert(abi.encodeWithSelector(ConfigureChains.UnknownMode.selector, "sideways"));
@@ -2472,7 +3041,7 @@ contract StateVerifierScriptTest is Test {
     }
 
     /// @dev Only SP1's pinned verifier, only the network that pairs with this one, a set named within the age, never
-    ///      in the future; and the review refuses another anchor.
+    ///      in the future.
     function test_deployAptos_refusalsAndReview() public {
         ISP1Verifier sp1 = new MockSP1Verifier();
         ISP1Verifier other = ISP1Verifier(address(new MockRiscZeroVerifier()));
@@ -2503,15 +3072,7 @@ contract StateVerifierScriptTest is Test {
         vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.StaleAnchor.selector, named, block.timestamp));
         _deployAptos(sp1, main);
 
-        uint64 aptosEpoch = uint64(vm.parseJsonUint(aptos, ".epoch"));
-        bytes32 set = vm.parseJsonBytes32(aptos, ".set");
-        uint64 time = uint64(vm.parseJsonUint(aptos, ".time"));
-        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(verifier)));
-        script.checkAptos(address(verifier), aptosEpoch + 1, set, time);
-        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(verifier)));
-        script.checkAptos(address(verifier), aptosEpoch, keccak256("another set"), time);
-        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(verifier)));
-        script.checkAptos(address(verifier), aptosEpoch, set, time + 1);
+        assertTrue(address(verifier) != address(0), "deployed at the oldest age");
     }
 
     function _suiStart() internal view returns (uint256) {
@@ -2736,44 +3297,368 @@ contract StateVerifierScriptTest is Test {
         _deployVeChain(sp1, vetMain, id);
     }
 
-    /// @dev The reviews refuse a verifier that holds another anchor than the file's.
-    function test_checkSuiInjectiveAndVeChain_refuseAnotherAnchor() public {
+    // ---------------------------------------------------------------------
+    // The reviews (A7-02)
+    // ---------------------------------------------------------------------
+
+    /// @dev A verifier whose code is its own plus a trailing byte: every value it trusts reads the same, and its code hash
+    ///      does not.
+    function _tampered(address verifier) internal {
+        vm.etch(verifier, bytes.concat(verifier.code, hex"00"));
+    }
+
+    function _refusesParameter(address verifier, string memory name) internal {
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongParameter.selector, verifier, name));
+    }
+
+    function _refusesAnchor(address verifier) internal {
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, verifier));
+    }
+
+    function _refusesCode(address verifier) internal {
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongCode.selector, verifier));
+    }
+
+    struct NearArgs {
+        ISP1Verifier sp1;
+        bytes32 key;
+        uint256 chainId;
+        string account;
+        bytes32 epochId;
+        bytes32 producers;
+        uint64 named;
+    }
+
+    function _nearArgs(ISP1Verifier sp1) internal view returns (NearArgs memory a) {
+        a.sp1 = sp1;
+        a.key = vm.parseJsonBytes32(near, ".programKey");
+        a.chainId = script.NEAR_MAINNET();
+        a.account = vm.parseJsonString(near, ".account");
+        a.epochId = vm.parseJsonBytes32(near, ".epochId");
+        a.producers = vm.parseJsonBytes32(near, ".producersHash");
+        a.named = uint64(vm.parseJsonUint(near, ".namedAt"));
+    }
+
+    function _checkNear(address v, NearArgs memory a) internal returns (bytes32) {
+        return script.checkNear(v, a.sp1, a.key, a.chainId, a.account, a.epochId, a.producers, a.named);
+    }
+
+    /// @dev A7-02: the NEAR review has no helper before, and compares every value the verifier trusts, its anchor and its
+    ///      code. A verifier built with another SP1 verifier, program key, network or vault account, or with other code,
+    ///      is refused though it holds the real anchor.
+    function test_A702_checkNearReadsEveryValueTheVerifierTrustsAndItsCode() public {
         ISP1Verifier sp1 = new MockSP1Verifier();
+        vm.warp(_namedAt() + 10 minutes);
+        NearStateVerifier v = _deployNear(sp1, script.NEAR_MAINNET());
+        NearArgs memory good = _nearArgs(sp1);
+        assertEq(_checkNear(address(v), good), address(v).codehash, "the review returns the code hash for the record");
+
+        string[4] memory names = ["SP1_VERIFIER", "PROGRAM_KEY", "CHAIN_ID", "VAULT_ID"];
+        for (uint256 i = 0; i < 7; ++i) {
+            NearArgs memory m = _nearArgs(sp1);
+            if (i == 0) m.sp1 = ISP1Verifier(address(new MockSP1Verifier()));
+            if (i == 1) m.key = ~m.key;
+            if (i == 2) m.chainId = script.NEAR_TESTNET();
+            if (i == 3) m.account = "another.near";
+            if (i == 4) m.epochId = ~m.epochId;
+            if (i == 5) m.producers = ~m.producers;
+            if (i == 6) m.named += 1;
+            if (i < names.length) _refusesParameter(address(v), names[i]);
+            else _refusesAnchor(address(v));
+            _checkNear(address(v), m);
+        }
+        // The account's bytes are read too, not only their hash.
+        vm.mockCall(address(v), abi.encodeWithSignature("vaultAccount()"), abi.encode(bytes("another.near")));
+        _refusesParameter(address(v), "vaultAccount");
+        _checkNear(address(v), good);
+        vm.clearMockedCalls();
+
+        _tampered(address(v));
+        _refusesCode(address(v));
+        _checkNear(address(v), good);
+    }
+
+    struct StellarArgs {
+        ISP1Verifier sp1;
+        bytes32 key;
+        bytes32 networkId;
+        bytes quorumSet;
+        uint256 chainId;
+        bytes32 vaultId;
+    }
+
+    function _stellarArgs(ISP1Verifier sp1) internal view returns (StellarArgs memory a) {
+        a.sp1 = sp1;
+        a.key = vm.parseJsonBytes32(stellar, ".programKey");
+        a.networkId = script.STELLAR_PUBNET_ID();
+        a.quorumSet = vm.parseJsonBytes(stellar, ".quorumSet");
+        a.chainId = script.STELLAR_PUBNET();
+        a.vaultId = vm.parseJsonBytes32(stellar, ".vaultId");
+    }
+
+    function _checkStellar(address v, StellarArgs memory a) internal returns (bytes32) {
+        return script.checkStellar(v, a.sp1, a.key, a.networkId, a.quorumSet, a.chainId, a.vaultId);
+    }
+
+    /// @dev A7-02: Stellar's review, as NEAR's: its SP1 verifier, program key, network, quorum set, registry id and vault,
+    ///      and its code.
+    function test_A702_checkStellarReadsEveryValueTheVerifierTrustsAndItsCode() public {
+        ISP1Verifier sp1 = new MockSP1Verifier();
+        StellarStateVerifier v = _deployStellar(sp1, script.STELLAR_PUBNET_ID(), script.STELLAR_PUBNET());
+        StellarArgs memory good = _stellarArgs(sp1);
+        assertEq(_checkStellar(address(v), good), address(v).codehash);
+
+        string[6] memory names =
+            ["SP1_VERIFIER", "PROGRAM_KEY", "NETWORK_ID", "QUORUM_SET_HASH", "CHAIN_ID", "VAULT_ID"];
+        for (uint256 i = 0; i < names.length; ++i) {
+            StellarArgs memory m = _stellarArgs(sp1);
+            if (i == 0) m.sp1 = ISP1Verifier(address(new MockSP1Verifier()));
+            if (i == 1) m.key = ~m.key;
+            if (i == 2) m.networkId = script.STELLAR_TESTNET_ID();
+            if (i == 3) m.quorumSet = bytes.concat(m.quorumSet, hex"00");
+            if (i == 4) m.chainId = script.STELLAR_TESTNET();
+            if (i == 5) m.vaultId = ~m.vaultId;
+            _refusesParameter(address(v), names[i]);
+            _checkStellar(address(v), m);
+        }
+        _tampered(address(v));
+        _refusesCode(address(v));
+        _checkStellar(address(v), good);
+    }
+
+    struct AptosArgs {
+        ISP1Verifier sp1;
+        bytes32 key;
+        uint256 chainId;
+        bytes32 package;
+        bytes32 vaultId;
+        uint64 epoch;
+        bytes32 set;
+        uint64 time;
+    }
+
+    function _aptosArgs(ISP1Verifier sp1) internal view returns (AptosArgs memory a) {
+        a.sp1 = sp1;
+        a.key = vm.parseJsonBytes32(aptos, ".programKey");
+        a.chainId = script.APTOS_MAINNET();
+        a.package = vm.parseJsonBytes32(aptos, ".package");
+        a.vaultId = vm.parseJsonBytes32(aptos, ".vaultId");
+        a.epoch = uint64(vm.parseJsonUint(aptos, ".epoch"));
+        a.set = vm.parseJsonBytes32(aptos, ".set");
+        a.time = uint64(vm.parseJsonUint(aptos, ".time"));
+    }
+
+    function _checkAptos(address v, AptosArgs memory a) internal returns (bytes32) {
+        return script.checkAptos(v, a.sp1, a.key, a.chainId, a.package, a.vaultId, a.epoch, a.set, a.time);
+    }
+
+    /// @dev The Aptos review compares the five values the verifier trusts, the anchor it holds, and its code.
+    function test_A702_checkAptosReadsEveryValueTheVerifierTrustsItsAnchorAndItsCode() public {
+        ISP1Verifier sp1 = new MockSP1Verifier();
+        vm.warp(_aptosNamed() + 10 minutes);
+        AptosStateVerifier v = _deployAptos(sp1, script.APTOS_MAINNET());
+        AptosArgs memory good = _aptosArgs(sp1);
+        assertEq(_checkAptos(address(v), good), address(v).codehash);
+
+        string[5] memory names = ["SP1_VERIFIER", "PROGRAM_KEY", "CHAIN_ID", "PACKAGE", "VAULT_ID"];
+        for (uint256 i = 0; i < 8; ++i) {
+            AptosArgs memory m = _aptosArgs(sp1);
+            if (i == 0) m.sp1 = ISP1Verifier(address(new MockSP1Verifier()));
+            if (i == 1) m.key = ~m.key;
+            if (i == 2) m.chainId = script.APTOS_TESTNET();
+            if (i == 3) m.package = ~m.package;
+            if (i == 4) m.vaultId = ~m.vaultId;
+            if (i == 5) m.epoch += 1;
+            if (i == 6) m.set = keccak256("another set");
+            if (i == 7) m.time += 1;
+            if (i < names.length) _refusesParameter(address(v), names[i]);
+            else _refusesAnchor(address(v));
+            _checkAptos(address(v), m);
+        }
+        _tampered(address(v));
+        _refusesCode(address(v));
+        _checkAptos(address(v), good);
+    }
+
+    struct SuiArgs {
+        uint256 chainId;
+        bytes32 vaultId;
+        bytes32 packageId;
+        uint64 epoch;
+        bytes32 committee;
+        uint64 startMs;
+    }
+
+    function _suiArgs(SuiStateVerifier v) internal view returns (SuiArgs memory a) {
+        a.chainId = script.SUI_MAINNET();
+        a.vaultId = vm.parseJsonBytes32(sui, ".vaultId");
+        a.packageId = vm.parseJsonBytes32(sui, ".packageId");
+        (a.epoch, a.committee, a.startMs) = (v.epoch(), v.committeeHash(), v.epochStartMs());
+    }
+
+    function _checkSui(address v, SuiArgs memory a) internal returns (bytes32) {
+        return script.checkSui(v, a.chainId, a.vaultId, a.packageId, a.epoch, a.committee, a.startMs);
+    }
+
+    /// @dev The Sui review compares the network, the vault and package it trusts, the committee it holds, and its code.
+    function test_A702_checkSuiReadsEveryValueTheVerifierTrustsItsAnchorAndItsCode() public {
         vm.warp(_suiStart() + 10 minutes);
-        SuiStateVerifier s = _deploySui(script.SUI_MAINNET());
-        uint64 suiEpoch = s.epoch();
-        bytes32 committee = s.committeeHash();
-        uint64 startMs = s.epochStartMs();
-        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(s)));
-        script.checkSui(address(s), suiEpoch + 1, committee, startMs);
-        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(s)));
-        script.checkSui(address(s), suiEpoch, keccak256("another committee"), startMs);
-        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(s)));
-        script.checkSui(address(s), suiEpoch, committee, startMs + 1);
+        SuiStateVerifier v = _deploySui(script.SUI_MAINNET());
+        SuiArgs memory good = _suiArgs(v);
+        assertEq(_checkSui(address(v), good), address(v).codehash);
 
+        string[3] memory names = ["CHAIN_ID", "VAULT_ID", "PACKAGE_ID"];
+        for (uint256 i = 0; i < 6; ++i) {
+            SuiArgs memory m = _suiArgs(v);
+            if (i == 0) m.chainId = script.SUI_TESTNET();
+            if (i == 1) m.vaultId = ~m.vaultId;
+            if (i == 2) m.packageId = ~m.packageId;
+            if (i == 3) m.epoch += 1;
+            if (i == 4) m.committee = keccak256("another committee");
+            if (i == 5) m.startMs += 1;
+            if (i < names.length) _refusesParameter(address(v), names[i]);
+            else _refusesAnchor(address(v));
+            _checkSui(address(v), m);
+        }
+        _tampered(address(v));
+        _refusesCode(address(v));
+        _checkSui(address(v), good);
+    }
+
+    struct InjectiveArgs {
+        ISP1Verifier sp1;
+        bytes32 key;
+        uint256 chainId;
+        string cosmos;
+        address vault;
+        uint64 height;
+        bytes32 hash;
+        uint64 time;
+    }
+
+    function _injectiveArgs(ISP1Verifier sp1) internal view returns (InjectiveArgs memory a) {
+        a.sp1 = sp1;
+        a.key = vm.parseJsonBytes32(injective, ".programKey");
+        a.chainId = script.INJECTIVE_MAINNET();
+        a.cosmos = "injective-1";
+        a.vault = vm.parseJsonAddress(injective, ".vault");
+        a.height = uint64(vm.parseJsonUint(injective, ".height"));
+        a.hash = vm.parseJsonBytes32(injective, ".hash");
+        a.time = uint64(vm.parseJsonUint(injective, ".time"));
+    }
+
+    function _checkInjective(address v, InjectiveArgs memory a) internal returns (bytes32) {
+        return script.checkInjective(v, a.sp1, a.key, a.chainId, a.cosmos, a.vault, a.height, a.hash, a.time);
+    }
+
+    /// @dev The Injective review compares the SP1 verifier, program key, both network ids and the vault it trusts, the
+    ///      header it holds, and its code.
+    function test_A702_checkInjectiveReadsEveryValueTheVerifierTrustsItsAnchorAndItsCode() public {
+        ISP1Verifier sp1 = new MockSP1Verifier();
         vm.warp(vm.parseJsonUint(injective, ".time") + 10 minutes);
-        CometBftStateVerifier inj = _deployInjective(sp1, script.INJECTIVE_MAINNET(), "injective-1");
-        uint64 height = uint64(vm.parseJsonUint(injective, ".height"));
-        bytes32 hash = vm.parseJsonBytes32(injective, ".hash");
-        uint64 time = uint64(vm.parseJsonUint(injective, ".time"));
-        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(inj)));
-        script.checkInjective(address(inj), height, keccak256("another header"), time);
-        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(inj)));
-        script.checkInjective(address(inj), height + 1, hash, time);
-        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(inj)));
-        script.checkInjective(address(inj), height, hash, time + 1);
+        CometBftStateVerifier v = _deployInjective(sp1, script.INJECTIVE_MAINNET(), "injective-1");
+        InjectiveArgs memory good = _injectiveArgs(sp1);
+        assertEq(_checkInjective(address(v), good), address(v).codehash);
 
+        string[5] memory names = ["SP1_VERIFIER", "PROGRAM_KEY", "CHAIN_ID", "COSMOS_CHAIN_ID_HASH", "VAULT"];
+        for (uint256 i = 0; i < 8; ++i) {
+            InjectiveArgs memory m = _injectiveArgs(sp1);
+            if (i == 0) m.sp1 = ISP1Verifier(address(new MockSP1Verifier()));
+            if (i == 1) m.key = ~m.key;
+            if (i == 2) m.chainId = script.INJECTIVE_TESTNET();
+            if (i == 3) m.cosmos = "injective-888";
+            if (i == 4) m.vault = makeAddr("another vault");
+            if (i == 5) m.height += 1;
+            if (i == 6) m.hash = keccak256("another header");
+            if (i == 7) m.time += 1;
+            if (i < names.length) _refusesParameter(address(v), names[i]);
+            else _refusesAnchor(address(v));
+            _checkInjective(address(v), m);
+        }
+        _tampered(address(v));
+        _refusesCode(address(v));
+        _checkInjective(address(v), good);
+    }
+
+    struct VeChainArgs {
+        ISP1Verifier sp1;
+        bytes32 key;
+        uint256 chainId;
+        address vault;
+        address attester;
+        bytes32 id;
+        uint64 time;
+        bytes32 table;
+    }
+
+    function _vechainArgs(ISP1Verifier sp1) internal view returns (VeChainArgs memory a) {
+        a.sp1 = sp1;
+        a.key = vm.parseJsonBytes32(vechain, ".programKey");
+        a.chainId = script.VECHAIN_MAINNET();
+        a.vault = vm.parseJsonAddress(vechain, ".vault");
+        a.attester = vm.parseJsonAddress(vechain, ".attester");
+        a.id = vm.parseJsonBytes32(vechain, ".id");
+        a.time = uint64(vm.parseJsonUint(vechain, ".time"));
+        a.table = vm.parseJsonBytes32(vechain, ".table");
+    }
+
+    function _checkVeChain(address v, VeChainArgs memory a) internal returns (bytes32) {
+        return script.checkVeChain(v, a.sp1, a.key, a.chainId, a.vault, a.attester, a.id, a.time, a.table);
+    }
+
+    /// @dev The VeChain review compares the SP1 verifier, program key, network, vault and attester it trusts, the table it
+    ///      holds, and its code.
+    function test_A702_checkVeChainReadsEveryValueTheVerifierTrustsItsAnchorAndItsCode() public {
+        ISP1Verifier sp1 = new MockSP1Verifier();
         vm.warp(vm.parseJsonUint(vechain, ".time") + 10 minutes);
-        bytes32 id = vm.parseJsonBytes32(vechain, ".id");
-        VeChainStateVerifier vet = _deployVeChain(sp1, script.VECHAIN_MAINNET(), id);
-        uint64 vetTime = uint64(vm.parseJsonUint(vechain, ".time"));
-        bytes32 table = vm.parseJsonBytes32(vechain, ".table");
-        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(vet)));
-        script.checkVeChain(address(vet), keccak256("another block"), vetTime, table);
-        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(vet)));
-        script.checkVeChain(address(vet), id, vetTime, keccak256("another table"));
-        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongAnchor.selector, address(vet)));
-        script.checkVeChain(address(vet), id, vetTime + 1, table);
+        VeChainStateVerifier v = _deployVeChain(sp1, script.VECHAIN_MAINNET(), vm.parseJsonBytes32(vechain, ".id"));
+        VeChainArgs memory good = _vechainArgs(sp1);
+        assertEq(_checkVeChain(address(v), good), address(v).codehash);
+
+        string[5] memory names = ["SP1_VERIFIER", "PROGRAM_KEY", "CHAIN_ID", "VAULT", "ATTESTER"];
+        for (uint256 i = 0; i < 8; ++i) {
+            VeChainArgs memory m = _vechainArgs(sp1);
+            if (i == 0) m.sp1 = ISP1Verifier(address(new MockSP1Verifier()));
+            if (i == 1) m.key = ~m.key;
+            if (i == 2) m.chainId = script.VECHAIN_TESTNET();
+            if (i == 3) m.vault = makeAddr("another vault");
+            if (i == 4) m.attester = makeAddr("another attester");
+            if (i == 5) m.id = keccak256("another block");
+            if (i == 6) m.time += 1;
+            if (i == 7) m.table = keccak256("another table");
+            if (i < names.length) _refusesParameter(address(v), names[i]);
+            else _refusesAnchor(address(v));
+            _checkVeChain(address(v), m);
+        }
+        _tampered(address(v));
+        _refusesCode(address(v));
+        _checkVeChain(address(v), good);
+    }
+
+    /// @dev A7-16: the registry ids and network ids the script pins are re-derived, not compared with a copy of themselves:
+    ///      the first 8 bytes of `keccak256` of each chain's CAIP-2 name, Stellar's network ids as SHA-256 of their
+    ///      passphrases, and the EVM-style ids of Injective and VeChain, which the anchor files carry as well. Only the
+    ///      NEAR and Stellar testnets, Sui's and Aptos's were checked this way before; mainnet's NEAR and Stellar ids
+    ///      were compared with a bare literal.
+    function test_A716_theRegistryIdsAreRederivedFromTheirNames() public view {
+        assertEq(script.NEAR_MAINNET(), uint64(bytes8(keccak256("near:mainnet"))));
+        assertEq(script.NEAR_TESTNET(), uint64(bytes8(keccak256("near:testnet"))));
+        assertEq(script.STELLAR_PUBNET(), uint64(bytes8(keccak256("stellar:pubnet"))));
+        assertEq(script.STELLAR_TESTNET(), uint64(bytes8(keccak256("stellar:testnet"))));
+        assertEq(script.SUI_MAINNET(), uint64(bytes8(keccak256("sui:mainnet"))));
+        assertEq(script.SUI_TESTNET(), uint64(bytes8(keccak256("sui:testnet"))));
+        assertEq(script.APTOS_MAINNET(), uint64(bytes8(keccak256("aptos:1"))));
+        assertEq(script.APTOS_TESTNET(), uint64(bytes8(keccak256("aptos:2"))));
+        assertEq(script.STELLAR_PUBNET_ID(), sha256("Public Global Stellar Network ; September 2015"));
+        assertEq(script.STELLAR_TESTNET_ID(), sha256("Test SDF Network ; September 2015"));
+        // The anchor files the generators wrote carry the same ids, for the mainnets they were read from.
+        assertEq(vm.parseJsonUint(near, ".chainId"), script.NEAR_MAINNET());
+        assertEq(vm.parseJsonUint(stellar, ".chainId"), script.STELLAR_PUBNET());
+        assertEq(vm.parseJsonBytes32(stellar, ".networkId"), script.STELLAR_PUBNET_ID());
+        assertEq(vm.parseUint(vm.parseJsonString(sui, ".chainId")), script.SUI_MAINNET());
+        assertEq(vm.parseUint(vm.parseJsonString(aptos, ".chainId")), script.APTOS_MAINNET());
+        assertEq(vm.parseJsonUint(injective, ".chainId"), script.INJECTIVE_MAINNET());
+        assertEq(uint256(vm.parseJsonBytes32(vechain, ".chainId")), script.VECHAIN_MAINNET());
     }
 
     function _copy(bytes[] memory items) internal pure returns (bytes[] memory out) {

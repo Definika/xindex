@@ -556,13 +556,13 @@ contract SecurityForkTest is Test {
         for (uint256 i = 0; i < factories.length; ++i) {
             ISafe twoOfThree = _safe(factories[i], singletons[i], 2, 0);
             vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerThresholdTooLow.selector, address(twoOfThree), 2));
-            deployer.checkOwner(address(twoOfThree));
+            deployer.checkOwner(address(twoOfThree), false);
 
             ISafe safe = _safe(factories[i], singletons[i], 3, 1);
-            deployer.checkOwner(address(safe));
+            deployer.checkOwner(address(safe), false);
             _enableModule(safe, module);
             vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerHasModules.selector, address(safe), module));
-            deployer.checkOwner(address(safe));
+            deployer.checkOwner(address(safe), false);
         }
     }
 

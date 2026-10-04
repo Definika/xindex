@@ -7,10 +7,11 @@
 // the Web3 Secret Storage definition's published test vector: no key or keystore of anyone's is read or written.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { HexUInt, Transaction } from '@vechain/sdk-core';
+import { HexUInt, Keccak256, Transaction } from '@vechain/sdk-core';
 import {
-  NETWORKS, PROTOTYPE, STAKER, MAX_TX_GAS, MAINNET_GENESIS_TIME, Refused, addressOf, call, check, checkDeployment,
-  connect, contractAddress, deploy, encode, intrinsicGas, main, paramsFromEnv, plan, unlock,
+  NETWORKS, PROTOTYPE, STAKER, MAX_TX_GAS, MAINNET_GENESIS_TIME, MIN_ANCHOR_SLACK, Refused, addressOf, assertFresh, call, check,
+  checkDeployment, checkPasswordFile, checkRoles, connect, contractAddress, deploy, encode, intrinsicGas, main, paramsFromEnv, plan, sourceRecord,
+  staleSources, unlock,
 } from './deploy.mjs';
 
 const GENESIS = NETWORKS.mainnet.genesis;
@@ -27,6 +28,15 @@ const R0_ANSWERS = {
   [call('SELECTOR() view returns (bytes4)')]: encode('bytes4', ['0x73c457ba']),
   [call('VERSION() view returns (string)')]: encode('string', ['3.0.0']),
 };
+const MODULES = 'getModulesPaginated(address,uint256) view returns (address[],address)';
+const SENTINEL = addr(1);
+/** What a Safe answers: its threshold, an empty first page of modules (the cursor is the sentinel, the array empty), and
+ *  its signers. */
+const safeAnswers = ({ threshold = 3, modules = [], owners = [addr(0xa11)] } = {}) => ({
+  [call('getThreshold() view returns (uint256)')]: word(threshold),
+  [call(MODULES, [SENTINEL, 1n])]: '0x' + word(0x40).slice(2) + word(1).slice(2) + word(modules.length).slice(2) + modules.map((m) => word(m).slice(2)).join(''),
+  [call('getOwners() view returns (address[])')]: '0x' + word(0x20).slice(2) + word(owners.length).slice(2) + owners.map((m) => word(m).slice(2)).join(''),
+});
 
 /** A VeChain node in this process: its genesis, clock, accounts' code, views by address and calldata, and every
  *  transaction it is sent, decoded. Creations succeed in its simulation; a sent creation's contract lands at
@@ -103,7 +113,7 @@ function goodParams(extra = {}) {
 function nodeWithVerifiers(extra = {}) {
   return fakeNode({
     codes: { [addr(0x4ec)]: '0x6080604052' },
-    views: { [addr(0x5b1)]: SP1_ANSWERS, [addr(0x4c0)]: R0_ANSWERS },
+    views: { [addr(0x5b1)]: SP1_ANSWERS, [addr(0x4c0)]: R0_ANSWERS, [addr(0x4ec)]: safeAnswers() },
     ...extra,
   });
 }
@@ -140,7 +150,8 @@ test("every refusal DeployVault's check makes", async () => {
     await variant('Required', { [k]: '' });
   }
   await variant('Required', { VAULT_FACTORY: addr(0) });
-  await variant('AnchorTooOld', { VAULT_ANCHOR_EPOCH: String((NOW - MAINNET_GENESIS_TIME - 86_400n) / 384n - 1n) });
+  // A7-07: an epoch more than 12 hours old has less than 12 hours of its day left, and is refused.
+  await variant('AnchorTooOld', { VAULT_ANCHOR_EPOCH: String((NOW - MAINNET_GENESIS_TIME - 43_200n) / 384n - 1n) });
   await variant('WrongVerifier', { VAULT_SP1_VERIFIER: addr(0x4c0) });
   await variant('WrongVerifier', { VAULT_RISC_ZERO_VERIFIER: addr(0x5b1) });
   await variant('SameRole', { VAULT_FREEZER: addr(0x4ec) });
@@ -150,7 +161,119 @@ test("every refusal DeployVault's check makes", async () => {
   const delegated = nodeWithVerifiers({ codes: { [addr(0x4ec)]: '0xef0100' + '11'.repeat(20) } });
   await variant('RecoveryMustBeContract', {}, DEPLOYER, delegated);
   await variant('FloorAboveCap', { VAULT_NATIVE_FLOOR: '1001' });
+  await variant('Required', { VAULT_NATIVE_CAP: '0', VAULT_NATIVE_FLOOR: '0' });
   assert.throws(() => paramsFromEnv({ VAULT_FACTORY: 'T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb' }), Refused);
+});
+
+test('A7-07: an anchor needs 12 hours of its day left, to the second', async () => {
+  const chain = await connect('mainnet', undefined, nodeWithVerifiers().fetchImpl);
+  const epoch = (NOW - MAINNET_GENESIS_TIME) / 384n - 100n;
+  const lagEnds = MAINNET_GENESIS_TIME + epoch * 384n + 86_400n;
+  assert.equal(MIN_ANCHOR_SLACK, 43_200n);
+  // The fake node's clock is NOW: an epoch whose day ends exactly 12 hours from now passes, one second less does not.
+  const slack = lagEnds - NOW;
+  assert.ok(slack > 0n);
+  const at = async (now) => check(goodParams({ VAULT_ANCHOR_EPOCH: String(epoch) }).p, await connect('mainnet', undefined, nodeWithVerifiers({ now }).fetchImpl), DEPLOYER);
+  await at(lagEnds - MIN_ANCHOR_SLACK);
+  await refuses('AnchorTooOld', () => at(lagEnds - MIN_ANCHOR_SLACK + 1n));
+  await refuses('AnchorTooOld', () => at(lagEnds + 1n));
+  assert.equal(chain.chainId, BigInt(GENESIS));
+});
+
+test('A7-23: the epoch, the cap and the floor are required, as DeployVault requires them', () => {
+  const { env } = goodParams();
+  paramsFromEnv(env);
+  for (const k of ['VAULT_ANCHOR_EPOCH', 'VAULT_NATIVE_CAP', 'VAULT_NATIVE_FLOOR']) {
+    const without = { ...env };
+    delete without[k];
+    assert.throws(() => paramsFromEnv(without), (e) => e.code === 'Required' && e.message.includes(k), k);
+    assert.throws(() => paramsFromEnv({ ...env, [k]: '' }), (e) => e.code === 'Required', `${k} empty`);
+  }
+  // `simulate.mjs` measures with placeholders, and reads any of them as zero.
+  assert.equal(paramsFromEnv({}, true).nativeCap, 0n);
+});
+
+test('A7-21: a password file that group or others can read is refused', () => {
+  checkPasswordFile('x', () => ({ mode: 0o100600 }));
+  for (const mode of [0o100640, 0o100644, 0o100604, 0o100660]) {
+    assert.throws(() => checkPasswordFile('x', () => ({ mode })), (e) => e.code === 'PasswordFileReadable', mode.toString(8));
+  }
+});
+
+test('A7-09: the recovery multisig is held to the factory owner\'s rule', async () => {
+  const chainOf = async (extra) => connect('mainnet', undefined, nodeWithVerifiers(extra).fetchImpl);
+  const freezer = addr(0xf4e);
+  const recovery = addr(0x4ec);
+  const roles = async (views, ack = false, deployer = DEPLOYER) => checkRoles(await chainOf({ views: { [recovery]: views } }), freezer, recovery, deployer, ack);
+  await roles(safeAnswers());
+  await refuses('RecoveryThresholdTooLow', () => roles(safeAnswers({ threshold: 1 })));
+  await refuses('RecoveryThresholdTooLow', () => roles(safeAnswers({ threshold: 2 }), true));
+  await refuses('RecoveryHasModules', () => roles(safeAnswers({ modules: [addr(0x30d)] })));
+  await refuses('RecoverySignedByRole', () => roles(safeAnswers({ owners: [addr(0xa11), freezer] })));
+  await refuses('RecoverySignedByRole', () => roles(safeAnswers({ owners: [DEPLOYER] })));
+  // A module list that cannot be read is refused, not trusted.
+  await refuses('RecoveryModulesUnknown', () => roles({ ...safeAnswers(), [call(MODULES, [SENTINEL, 1n])]: '0x01' }));
+  const noModules = safeAnswers();
+  delete noModules[call(MODULES, [SENTINEL, 1n])];
+  await refuses('RecoveryModulesUnknown', () => roles(noModules));
+  // A contract that is not a Safe shows nothing of how many keys hold it: refused unless the operator vouches for it.
+  await refuses('RecoveryNotASafe', () => roles({}));
+  await refuses('RecoveryNotASafe', () => roles({ [call('getThreshold() view returns (uint256)')]: '0x01' }));
+  await roles({}, true);
+  // The word waives only that: no code is no multisig at all.
+  await refuses('RecoveryMustBeContract', async () => checkRoles(await chainOf(), freezer, addr(0xeee), DEPLOYER, true));
+  // And through `check`, the parameter's word reaches it.
+  const bare = await chainOf({ views: { [addr(0x5b1)]: SP1_ANSWERS, [addr(0x4c0)]: R0_ANSWERS } });
+  await refuses('RecoveryNotASafe', () => check(goodParams().p, bare, DEPLOYER));
+  await check(goodParams({ VAULT_RECOVERY_IS_NOT_A_SAFE_ACK: 'true' }).p, bare, DEPLOYER);
+});
+
+test('A7-10: a working tree that differs, or a build from other sources, is refused before anything is sent', async () => {
+  // The commit and whether the tree differs, from what git answers.
+  const git = (answers) => (args) => answers[args.join(' ')];
+  assert.deepEqual(sourceRecord(git({ 'rev-parse HEAD': 'abc123\n', 'status --porcelain': '' })), { commit: 'abc123', dirty: false });
+  assert.deepEqual(sourceRecord(git({ 'rev-parse HEAD': 'abc123\n', 'status --porcelain': ' M src/vault/XindexVault.sol\n' })), { commit: 'abc123', dirty: true });
+
+  // Without a git checkout nothing can be said of the source: a deployment is refused, and a dry run goes on and says so.
+  assert.throws(() => sourceRecord(() => { throw new Error('not a git repository'); }), (e) => e.code === 'NoGit');
+  const nogit = () => { throw new Refused('NoGit', 'no checkout'); };
+  const said = [];
+  await main(['--network', 'mainnet', '--dry-run', '--from', DEPLOYER], goodParams().env, nodeWithVerifiers().fetchImpl, (l) => said.push(l), nogit);
+  assert.ok(said.some((l) => l.startsWith('warning: NoGit')));
+  await refuses('NoGit', () => main(['--network', 'mainnet', '--keystore', '/nonexistent'], goodParams().env, nodeWithVerifiers().fetchImpl, () => {}, nogit));
+
+  // A real deployment from a tree that differs is refused before the keystore is read, and on mainnet whatever is passed.
+  const node = nodeWithVerifiers();
+  const { env } = goodParams();
+  const dirty = () => ({ commit: 'abc123', dirty: true });
+  const clean = () => ({ commit: 'abc123', dirty: false });
+  await refuses('DirtyTree', () => main(['--network', 'mainnet', '--keystore', '/nonexistent'], env, node.fetchImpl, () => {}, dirty));
+  await refuses('DirtyTree', () => main(['--network', 'mainnet', '--keystore', '/nonexistent', '--allow-dirty'], env, node.fetchImpl, () => {}, dirty));
+  await refuses('DirtyTree', () => main(['--network', 'mainnet', '--keystore', '/nonexistent', '--allow-dirty'], env, node.fetchImpl, () => {}, clean));
+  // On a rehearsal network it needs --allow-dirty, and then goes on to the keystore.
+  const testnet = nodeWithVerifiers({ genesis: NETWORKS.testnet.genesis });
+  await refuses('DirtyTree', () => main(['--network', 'testnet', '--keystore', '/nonexistent'], env, testnet.fetchImpl, () => {}, dirty));
+  await assert.rejects(() => main(['--network', 'testnet', '--keystore', '/nonexistent', '--allow-dirty'], env, testnet.fetchImpl, () => {}, dirty), /ENOENT/);
+  // A dry run only says.
+  const lines = [];
+  await main(['--network', 'mainnet', '--dry-run', '--from', DEPLOYER], env, node.fetchImpl, (l) => lines.push(l), dirty);
+  assert.ok(lines.some((l) => l.startsWith('warning: the working tree differs from abc123')));
+  assert.ok(lines.some((l) => l.startsWith('build output is current')), 'and the build is checked');
+
+  // forge's artifact lists every source's hash; one that changed, or an artifact that lists none, is stale.
+  const artifact = { metadata: { compiler: { version: '0.8.28+commit.7893614a' }, sources: { 'src/A.sol': { keccak256: Keccak256.of(Buffer.from('a')).toString() }, 'src/B.sol': { keccak256: '0x00' } } } };
+  const disk = { 'src/A.sol': 'a', 'src/B.sol': 'b' };
+  const read = (p) => { if (!(p in disk)) throw new Error('gone'); return Buffer.from(disk[p]); };
+  assert.deepEqual(staleSources(artifact, read), ['src/B.sol'], 'B differs');
+  assert.deepEqual(staleSources({ metadata: { sources: {} } }, read), ['(the artifact records no sources)']);
+  assert.deepEqual(staleSources({}, read), ['(the artifact records no sources)']);
+  delete disk['src/A.sol'];
+  assert.deepEqual(staleSources(artifact, read), ['src/A.sol', 'src/B.sol'], 'a source that is gone is stale');
+  // assertFresh names the artifact and its sources, and returns the compiler of a fresh build.
+  const fresh = { metadata: { compiler: { version: '0.8.28+commit.7893614a' }, sources: { 'src/A.sol': { keccak256: Keccak256.of(Buffer.from('a')).toString() } } } };
+  disk['src/A.sol'] = 'a';
+  assert.equal(assertFresh(['XindexVault'], () => JSON.stringify(fresh), read), '0.8.28+commit.7893614a');
+  assert.throws(() => assertFresh(['XindexVault'], () => JSON.stringify(artifact), read), (e) => e.code === 'StaleBuild' && e.message.includes('XindexVault') && e.message.includes('src/B.sol'));
 });
 
 test('a dry run checks, simulates the whole deployment, and sends nothing', async () => {

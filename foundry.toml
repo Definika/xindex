@@ -20,9 +20,39 @@ dynamic_test_linking = false
 # slot for slot. It changes no bytecode.
 extra_output = ["storageLayout"]
 
-# Read-only access for test/Repo.t.sol, which checks the repository files review findings rest on: the pinned compiler,
-# the CI gates and toolchain, the dependency lock against .gitmodules, the ABIs and the docs.
-fs_permissions = [{ access = "read", path = "./" }]
+# Read-only access, to what the tests and scripts read and nothing else. test/Repo.t.sol checks the repository files
+# review findings rest on: the pinned compiler, the CI gates and toolchain, the dependency lock against .gitmodules, the
+# ABIs, the docs, and the sources of the other vaults and tools whose constants it compares with Solidity's. The other
+# suites read fixtures, and DeployStateVerifier reads the one anchor file it is given, which belongs in `anchors/`. The
+# whole project root (`./`) also reached `.env`, which holds the RPC URL and the Etherscan key, and the gitignored
+# broadcast records, for every script and test, a dependency's included (A7-18).
+fs_permissions = [
+    { access = "read", path = "./abi" },
+    { access = "read", path = "./anchors" },
+    { access = "read", path = "./aptos" },
+    { access = "read", path = "./crates" },
+    { access = "read", path = "./near" },
+    { access = "read", path = "./out" },
+    { access = "read", path = "./proofs" },
+    { access = "read", path = "./prototype" },
+    { access = "read", path = "./script" },
+    { access = "read", path = "./src" },
+    { access = "read", path = "./stellar" },
+    { access = "read", path = "./sui" },
+    { access = "read", path = "./test" },
+    { access = "read", path = "./tron" },
+    { access = "read", path = "./vechain" },
+    { access = "read", path = "./vendor" },
+    { access = "read", path = "./.github" },
+    { access = "read", path = "./.vscode" },
+    { access = "read", path = "./.env.example" },
+    { access = "read", path = "./.gitignore" },
+    { access = "read", path = "./.gitmodules" },
+    { access = "read", path = "./CLAUDE.md" },
+    { access = "read", path = "./README.md" },
+    { access = "read", path = "./foundry.lock" },
+    { access = "read", path = "./foundry.toml" },
+]
 
 [lint]
 # Tests are exercised by `forge test`, not linted: rules like unused-return on `approve` or

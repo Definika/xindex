@@ -627,16 +627,20 @@ MAINNET_RPC_URL=https://... forge test --match-path 'test/fork/*' -vvv
 MAINNET_RPC_URL=https://... FORK_BLOCK=<recent block> forge test --match-path 'test/fork/*'
 ```
 
-CI (`.github/workflows/test.yml`) checks that every submodule commit matches `foundry.lock`, then runs fmt, build,
-`forge lint -D notes`, tests, 100% coverage on every file (offline suites), the ABI diff and the Wake detectors on
-`src/`, with pinned Foundry and Wake versions. Pushes to `main` and pull requests into it from this repository fail
+CI (`.github/workflows/test.yml`) checks that every submodule commit matches `foundry.lock`, then runs fmt, build (with
+warnings denied), `forge lint -D notes`, tests, 100% coverage on every file (offline suites), the ABI diff and the Wake
+detectors on `src/`, with pinned Foundry and Wake versions. Four more jobs run the Rust and Move gates of the shared core
+(`crates/xindex-core`) and of NEAR's, Stellar's and Aptos's vaults (tests, formatting, clippy with warnings denied, the
+Wasm builds), on Rust 1.98.1 and the Stellar and Aptos CLIs pinned by version and SHA-256. Pushes to `main` and pull requests into it from this repository fail
 until a `MAINNET_RPC_URL` repository secret exists, so the fork tests always run there; it needs an archive node for the
 pinned fork block. Pull requests from forks get no secrets and skip the fork suites, so re-run them before merging. A
 keyed RPC may throttle four fork suites run in parallel; run them with `-j 1` when a revert appears next to an HTTP 429.
-CI does not run Aderyn yet, so run it before pushing. Nor does it build the Rust and TRON parts: their builds, tests
-and rehearsal are in `crates/xindex-core/README.md`, `solana/README.md`, `near/README.md`, `stellar/README.md`,
-`sui/README.md`, `aptos/README.md`, `vechain/README.md`, `proofs/README.md` (with `proofs/near`, `proofs/stellar`,
-`proofs/cometbft`, `proofs/vechain` and `proofs/aptos`) and `tron/README.md`.
+CI does not run Aderyn yet, so run it before pushing. Nor does it run Solana's programs (they need the SBF platform
+tools), Sui's vault (a 1 GB release), the proof statements or the TRON and VeChain deploy tools: their builds, tests and
+rehearsals are in `solana/README.md`, `sui/README.md`, `proofs/README.md` (with `proofs/near`, `proofs/stellar`,
+`proofs/cometbft`, `proofs/vechain` and `proofs/aptos`), `vechain/README.md` and `tron/README.md`, and each sits beside
+the gates of the ones CI does run in `crates/xindex-core/README.md`, `near/README.md`, `stellar/README.md` and
+`aptos/README.md`.
 
 ### Deploy
 
@@ -661,8 +665,14 @@ are proposed afterwards, through the factory's timelock.
 `OWNER` and `GUARDIAN` are required and must differ. On mainnet the owner must be a contract that is not an EIP-7702 delegated account, and a Safe
 must need at least three signatures (`MIN_OWNER_THRESHOLD`, the design's 3-of-5) and have no enabled module, because
 a module acts as the Safe without signatures
-(keep it that way after deployment; the script cannot see later changes). The guardian must not be the broadcasting
-key, which must hold no role; when the owner is a Safe, neither the guardian nor the broadcasting key may be one of
+(keep it that way after deployment; the script cannot see later changes). A contract that answers no Safe
+`getThreshold`, such as a smart account of one key, a forwarder to a hot key or a Safe whose call reverts, shows nothing
+of how many keys control it and is refused (`OwnerNotASafe`); `OWNER_IS_NOT_A_SAFE_ACK=true` accepts one that is a
+multisig of another kind, such as a timelock over a multisig, on the operator's word (a Safe stays held to its
+threshold and modules whatever is said), and the deploy log prints the owner's code hash either way, to review (A7-08).
+The guardian must not be the broadcasting
+key, which must hold no role; the role checks name the key Foundry sends from (`--account`, `--ledger`, `--sender`), which
+`deploy` reads once, and not the script's own `msg.sender` (A7-19); when the owner is a Safe, neither the guardian nor the broadcasting key may be one of
 its signers, since the guardian is the owner's veto (SA-06); and neither role may be a market contract: the router and its PoolManager everywhere, and
 on chain 1 also every token and mint currency in `script/MainnetAddresses.sol` (CR-I37). `UNIVERSAL_ROUTER`, `USDC`
 and `USDT` default to mainnet's on chain 1, where any other value is rejected, and are required anywhere else; they are
@@ -680,14 +690,37 @@ does not point at that factory).
 
 **A vault chain** on an EVM is set up with `script/DeployVault.s.sol`, on that chain:
 P1's verifier on SP1's Groth16 verifier, P2's on RISC Zero's, the state reader and the vault, with its `VaultSnapshot`
-library. It refuses any Groth16 verifier but SP1's v6.0.0 (`VERIFIER_HASH`) and RISC Zero's 3.0.0 (`SELECTOR`
-`0x73c457ba`, its published control ids), so an owned gateway, router or emergency stop is refused; it refuses a
-deployment on the indexes' own chain, a missing address, key or anchor, a freezer or recovery multisig that is unset,
-shared, the broadcasting key or, for the multisig, not a contract, and a floor above the cap. Its environment variables
+library. It refuses any Groth16 verifier that does not name itself SP1's v6.0.0 (`VERIFIER_HASH`) or RISC Zero's 3.0.0
+(`SELECTOR` `0x73c457ba`, its published control ids), so an owned gateway, router or emergency stop, which answers neither, is
+refused; it refuses a deployment on the indexes' own chain, a missing address, key or anchor, an anchor with less than 12
+hours (`MIN_ANCHOR_SLACK`) of P1's and P2's day left, since the first advance needs two proofs of Ethereum's finality
+and a transaction there, a native cap of zero, a floor above the cap, and roles that are not what the vault assumes: a
+freezer or recovery multisig that is unset, shared, or the broadcasting key, and a recovery multisig that is not held to
+the factory owner's rule, a Safe that needs at least three signatures, has no enabled module and counts neither the
+freezer nor the broadcasting key among its signers (A7-09). It is the last line under a stall, since it proposes the
+successor pair that only the freezer's two vetoes can stop. A recovery multisig that is not a Safe, on a chain that has
+none, needs `VAULT_RECOVERY_IS_NOT_A_SAFE_ACK=true`. Its environment variables
 are listed in the script; the anchor and P1's key come from `proofs/` (`p1-input check-state`, `p1 vkey`) and P2's
-image id from `proofs/p2` (`p2 image-id`). `DeployVault.checkDeployment` re-reads the wiring and the code hashes later.
+image id from `proofs/p2` (`p2 image-id`). `DeployVault.checkDeployment` re-reads, against the parameters the owner and
+guardian approved, everything they approve before `proposeChain`: the wiring, the freezer, the source chain, P1's program
+key and P2's image id, both anchors with their epochs and genesis time, and the native cap and floor, and returns the
+code hashes for the release record (A7-06).
+
+**The Groth16 verifiers are named, not proven, by the script.** `VERIFIER_HASH`/`VERSION` and `SELECTOR`/`VERSION` are
+answers to view calls: they catch a wrong address, but an owned proxy over a real verifier forwards them and passes, and
+so does any contract that answers them, as the repository's mocks do by design (`DeployVault`, `DeployStateVerifier`'s
+NEAR, Stellar, Injective, VeChain and Aptos deployments and both JS tools take the same check). The release step that
+closes the gap is the runtime code hash: before running `DeployVault` or `DeployStateVerifier`, compare `cast codehash
+<address>` of each verifier with the official deployment's, or with the vendored build's (`prototype/evm/src/sp1`,
+`vendor/risc0-ethereum` built as `vechain/build.mjs` builds them), and read the EIP-1967 admin and implementation slots of
+the address to see that it is no proxy; record the two hashes in the release record with the others. The script cannot
+pin them yet, since the official deployments' addresses and code differ by chain and none exists on some, such as
+VeChain: where a chain has none, leave `VAULT_SP1_VERIFIER` and `VAULT_RISC_ZERO_VERIFIER` unset and let the TRON and
+VeChain tools deploy the vendored ones themselves, which is the only path whose code the release builds (A7-01).
+
 TRON's is deployed with `tron/deploy.mjs`, DeployVault's twin under Tron's compiler, with the same checks
-(`tron/README.md`). Injective runs `DeployVault` unchanged, once SP1's and RISC Zero's Groth16 verifiers are deployed
+(`tron/README.md`); it and `vechain/deploy.mjs` refuse a working tree that differs from its commit and any build output
+compiled from other sources than the ones on disk, and record the commit and the compiler beside the addresses (A7-10). Injective runs `DeployVault` unchanged, once SP1's and RISC Zero's Groth16 verifiers are deployed
 there from their own repositories; VeChain's goes up with `vechain/deploy.mjs`, which also deploys
 `VeChainStakerAttester` and clears every contract's Prototype master (`vechain/README.md`). NEAR's, Stellar's, Sui's
 and Aptos's vaults are deployed with their chains' own tools, which no script here drives yet: NEAR's vault, with P1
@@ -737,20 +770,25 @@ For every chain the script refuses a registry id that does not pair with the Eth
 the testnet's on Sepolia.
 
 ```bash
-python3 test/fixtures/bnb/generate.py https://bsc-rpc.publicnode.com anchor bnb-anchor.json
-STATE_CHAIN=bnb STATE_ANCHOR=bnb-anchor.json forge script script/DeployStateVerifier.s.sol --rpc-url mainnet --account deployer --sender <deployer> --broadcast
-# TRON: test/fixtures/tron/generate.py https://api.trongrid.io anchor tron-anchor.json, then STATE_CHAIN=tron
+mkdir -p anchors   # the one place the scripts may read an anchor file from (foundry.toml's fs_permissions, A7-18)
+python3 test/fixtures/bnb/generate.py https://bsc-rpc.publicnode.com anchor anchors/bnb-anchor.json
+STATE_CHAIN=bnb STATE_ANCHOR=anchors/bnb-anchor.json forge script script/DeployStateVerifier.s.sol --rpc-url mainnet --account deployer --sender <deployer> --broadcast
+# TRON: test/fixtures/tron/generate.py https://api.trongrid.io anchor anchors/tron-anchor.json, then STATE_CHAIN=tron
 # NEAR, Stellar, Injective, VeChain and Aptos: STATE_CHAIN=<chain>, STATE_ANCHOR=<the file above>, STATE_SP1_VERIFIER=0x...
 # Sui: STATE_CHAIN=sui, STATE_ANCHOR=<the file above>; it checks its committee's signatures itself
 ```
 
-During the chain's listing delay the owner and guardian review the anchor. `DeployStateVerifier.checkBnb` and
-`checkTron` confirm that the verifier runs this release's code and started from the anchor file. The file itself is
-compared with the chain: the epoch block's hash and its validators' registered keys, or `listwitnesses` and the
-period's blocks. NEAR's and Stellar's verifiers hold their anchors in public fields, compared directly: the epoch, the
-producers' hash and the vault account against NEAR's RPC, or the quorum set's hash against Tier 1's published
-validators. `checkSui`, `checkInjective`, `checkVeChain` and `checkAptos` confirm the four newer verifiers hold their
-anchor files' anchors; their code cannot be compared by hash, since their immutables are in it.
+During the chain's listing delay the owner and guardian review the verifier, whoever deployed it, since it is the trust
+root for every index's mints on that chain. `DeployStateVerifier.checkBnb` and `checkTron` confirm that the verifier runs
+this release's code and started from the anchor file. `checkNear`, `checkStellar`, `checkSui`, `checkInjective`,
+`checkVeChain` and `checkAptos` take the arguments the verifier was built with and compare each value it trusts, its
+SP1 verifier, program key, network, vault and the rest, and the anchor it holds, with them (`WrongParameter`,
+`WrongAnchor`); then they compare its runtime code with a reference they build in the same run from those arguments, since
+the immutables are in the code and the compiler's output cannot be compared (`WrongCode`). A verifier built from other
+source, or from this source with another SP1 verifier or key, is refused though it holds the real anchor, and each helper
+returns the code hash for the release record (A7-02). The anchor file itself is compared with the chain: the epoch
+block's hash and its validators' registered keys, or `listwitnesses` and the period's blocks, NEAR's epoch, producers'
+hash and vault account against its RPC, Stellar's quorum set's hash against Tier 1's published validators.
 
 **Adding the chain on Ethereum** goes through `script/ConfigureChains.s.sol`, or the equivalent calls through the Safe:
 `proposeChain` with the vault and the chain's state verifier, then, once the chain is registered, `proposeVaultListing`
@@ -758,20 +796,37 @@ for each coin its vault holds, with a reference supply in the coin's smallest un
 executed by anyone. The modes are `safe`, `propose` and `execute`, as for listings. The script skips, with the reason,
 anything the factory would refuse or that is already done or pending, and reverts on an entry named twice (RT-24). A
 registered chain's vault is fixed, and a new state verifier for it is a 30-day rotation (FAC-1), proposed only for a
-chain named in `ROTATE`.
+chain named in `ROTATE`. Nothing on chain records that the guardian cancelled a chain proposal or a first listing, or
+delisted a coin, so, as `ConfigureWhitelist` does (RT-06, XA-11), a routine run proposes none of them unasked: a chain
+never registered only when `LIST_CHAINS` names it (`all` for every entry), a coin never listed only when `LIST_COINS`
+names it (`chainId:tokenId` pairs, or `all`), and a delisted coin, which would come back at the supply in force, only when
+`RELIST_COINS` names it (A7-03). A vault is exactly an address, 40 hex digits, or a 32-byte id, 64: a registered chain's
+vault is fixed, so any other length, such as TRON's 21-byte form with its `0x41` prefix, would burn the chain id (A7-04). A
+coin's entry is `chainId:tokenId:supply:decimals`; its listing is skipped unless the supply, shown in whole units in the log
+and in the Safe's labels, is between a million and a trillion, because coins' decimals run from 6 to 24 and a first figure a
+thousand times too large takes about 460 weekly batches to undo (A7-05).
 
 ```bash
 # the chain, for the Safe; vaults and coin ids are hex words, left-padded
-CHAIN_MODE=safe CHAINS_FACTORY=0x... CHAINS=56:<vault>:<state verifier> forge script script/ConfigureChains.s.sol --rpc-url mainnet
+CHAIN_MODE=safe CHAINS_FACTORY=0x... CHAINS=56:<vault>:<state verifier> LIST_CHAINS=all forge script script/ConfigureChains.s.sol --rpc-url mainnet
 # 2 to 9 days later, from any account
 CHAIN_MODE=execute CHAINS_FACTORY=0x... CHAINS=<same> forge script script/ConfigureChains.s.sol --rpc-url mainnet --account deployer --sender <any account> --broadcast
 # then its native coin, 0x0, and its listing the same way
-CHAIN_MODE=safe CHAINS_FACTORY=0x... CHAINS=<same> VAULT_TOKENS=56:0x0:<supply> forge script script/ConfigureChains.s.sol --rpc-url mainnet
+CHAIN_MODE=safe CHAINS_FACTORY=0x... CHAINS=<same> VAULT_TOKENS=56:0x0:<supply>:<decimals> LIST_COINS=all forge script script/ConfigureChains.s.sol --rpc-url mainnet
 ```
 
 Once listed, a vault coin's supply is revised in the weekly batch with every other (`ConfigureWhitelist`), its entry
-naming it by its Ethereum-side id, the factory's `vaultTokenId(chainId, tokenId)`. The script checks only its supply's
+naming it by its Ethereum-side id, the factory's `vaultTokenId(chainId, tokenId)`. That script checks only its supply's
 range, since it has no code on Ethereum, and its listing modes skip it, since `proposeVaultListing` lists it.
+
+**Before the launch listing, refresh the reference supplies.** The first listing sets each component's supply from
+`defaultMainnetList()`, whose four figures in `script/MainnetAddresses.sol` are CoinGecko's circulating supplies of
+2026-09-22, each dated beside it, and a first figure can afterwards move by at most half a percent a week. The day
+before `LISTING_MODE=safe ... WHITELIST=default LIST=all` is run, read each figure again from its source (LINK's and UNI's
+circulating supplies move with unlocks, bitcoin's about 0.8% a year), rewrite the four constants with their new date and
+source, and update `test_CRL08_theDefaultListIsTheReleaseRecord`, which pins them, then check each figure again while
+the proposal can still be cancelled (A7-20). A launch run weeks after the dates lists stale
+figures, and nothing in the contracts can tell.
 
 **Listings and supply batches** go through `script/ConfigureWhitelist.s.sol`, or the equivalent calls through the Safe:
 
@@ -798,7 +853,9 @@ names a token twice reverts `DuplicateEntry` in every mode (RT-24).
   reason logged: a token never listed unless `LIST` names it (`LIST=all` for every entry), a delisted token unless
   `RELIST` names it, a token the live supply
   batch names (the factory would refuse it with `TokenInBatch`, DA-20), and any entry outside the policy the script can
-  check (a token with code and 6 to 18 decimals, no USDC or USDT, a supply from 1 to `MAX_SUPPLY`). Safe mode applies
+  check (a token with code and 6 to 18 decimals, no mint currency, which is the deployment's own USDC and USDT, read from the
+  same `USDC` and `USDT` environment variables `Deploy` takes, and mainnet's wherever it runs (A7-22), a supply from 1 to
+  `MAX_SUPPLY`). Safe mode applies
   the same checks, because a Safe batch sends every proposal in one transaction and one the factory refuses takes the
   rest down with it (CR-I38). Nothing on chain records that the guardian cancelled a first listing, so leave `LIST`
   unset on a routine run and a cancelled listing stays cancelled until the operator names it again (RT-06). Each
@@ -888,8 +945,9 @@ OWNER=<Safe> GUARDIAN=<guardian> UNIVERSAL_ROUTER=0x3A9D48AB9751398BbFa63ad67599
   USDC=<tUSDC logged by create> USDT=<a second test stablecoin> \
   forge script script/Deploy.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast
 
-# 3. print the listing proposals and sign them as one batch in the Safe app
-LISTING_MODE=safe FACTORY=<factory> WHITELIST=<logged by create> LIST=all forge script script/ConfigureWhitelist.s.sol --rpc-url sepolia
+# 3. print the listing proposals and sign them as one batch in the Safe app; USDC and USDT are the deployment's mint
+#    currencies, which the script then never lists as components (A7-22)
+USDC=<tUSDC logged by create> USDT=<a second test stablecoin> LISTING_MODE=safe FACTORY=<factory> WHITELIST=<logged by create> LIST=all forge script script/ConfigureWhitelist.s.sol --rpc-url sepolia
 
 # 4. 2 to 9 days later, from any account
 LISTING_MODE=execute FACTORY=<factory> WHITELIST=<same> forge script script/ConfigureWhitelist.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast

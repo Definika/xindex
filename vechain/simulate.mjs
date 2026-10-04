@@ -35,7 +35,7 @@ function constant(path, name) {
 
 /** DeployVault's parameters from the environment, placeholders for any unset. */
 function parameters(env, now) {
-  const p = paramsFromEnv(env);
+  const p = paramsFromEnv(env, true);
   p.factory ||= placeholder(0xfac);
   p.hubImplementation ||= placeholder(0x7e3);
   if (p.p1ProgramKey === ZERO32) p.p1ProgramKey = word(1);

@@ -25,12 +25,15 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///         producers of the period in progress. The anchor is the one thing a verifier trusts; every later set or list
 ///         is proven from it. So it must be fresh; the verifier must be advanced within MAX_LAG (1 day) of it, and
 ///         every day after, or it stops for good; and the owner and guardian check it against the chain itself during
-///         the chain's listing delay, with `checkBnb`, `checkTron`, `checkSui`, `checkInjective`, `checkVeChain` or
-///         `checkAptos`. NEAR's and Stellar's verifiers have no check helper: they hold their anchors in public fields,
-///         which are compared with the chain directly.
+///         the chain's listing delay, with `checkBnb`, `checkTron`, `checkNear`, `checkStellar`, `checkSui`,
+///         `checkInjective`, `checkVeChain` or `checkAptos`. Each compares every value the verifier trusts (its SP1
+///         verifier, program key, network, vault and anchor) with the arguments, and its runtime code with a reference
+///         built in the same run from those arguments, so a verifier deployed by anyone else is reviewed as one deployed
+///         here (A7-02).
 ///
-///     python3 test/fixtures/bnb/generate.py <BNB Chain RPC> anchor bnb-anchor.json
-///     STATE_CHAIN=bnb STATE_ANCHOR=bnb-anchor.json forge script script/DeployStateVerifier.s.sol --rpc-url mainnet \
+///     mkdir -p anchors   # the one place the script may read an anchor from (foundry.toml's fs_permissions)
+///     python3 test/fixtures/bnb/generate.py <BNB Chain RPC> anchor anchors/bnb-anchor.json
+///     STATE_CHAIN=bnb STATE_ANCHOR=anchors/bnb-anchor.json forge script script/DeployStateVerifier.s.sol --rpc-url mainnet \
 ///       --account deployer --sender <deployer> --broadcast
 ///
 ///   TRON's is the same with `tron` and `test/fixtures/tron/generate.py <TronGrid URL> anchor`. NEAR's and Stellar's
@@ -45,7 +48,7 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///
 /// Env:
 ///   STATE_CHAIN         `bnb`, `tron`, `near`, `stellar`, `sui`, `injective`, `vechain` or `aptos`.
-///   STATE_ANCHOR        The anchor file: the generator's for BNB Chain and TRON; for NEAR `epochId`, `producersHash`,
+///   STATE_ANCHOR        The anchor file, under `anchors/`: the generator's for BNB Chain and TRON; for NEAR `epochId`, `producersHash`,
 ///                       `namedAt` (nanoseconds), `account` and `chainId`; for Stellar `networkId`, `quorumSet` (its
 ///                       XDR), `chainId` and `vaultId`; for both, `programKey`. For Sui the generator's `chainId`,
 ///                       `epoch`, `startMs`, `keys`, `compressed` and `powers`, with the vault's `vaultId` and
@@ -136,6 +139,8 @@ contract DeployStateVerifier is Script {
     error WrongCode(address verifier);
     /// @notice `verifier` did not start from the anchor given.
     error WrongAnchor(address verifier);
+    /// @notice `verifier` trusts another `name` than the one given: its SP1 verifier, program key, network or vault.
+    error WrongParameter(address verifier, string name);
 
     /// @notice Reads the chain and its anchor from the environment and deploys its verifier.
     function run() external returns (address verifier) {
@@ -316,6 +321,7 @@ contract DeployStateVerifier is Script {
         vm.startBroadcast();
         verifier = new NearStateVerifier(sp1, programKey, chainId, account, epoch, producersHash, named);
         vm.stopBroadcast();
+        checkNear(address(verifier), sp1, programKey, chainId, account, epoch, producersHash, named);
         console2.log("NearStateVerifier:", address(verifier));
         console2.log("  code hash:       ", vm.toString(address(verifier).codehash));
         console2.log("  vault id:        ", vm.toString(verifier.VAULT_ID()));
@@ -342,6 +348,7 @@ contract DeployStateVerifier is Script {
         vm.startBroadcast();
         verifier = new StellarStateVerifier(sp1, programKey, networkId, sha256(quorumSet), chainId, vaultId);
         vm.stopBroadcast();
+        checkStellar(address(verifier), sp1, programKey, networkId, quorumSet, chainId, vaultId);
         console2.log("StellarStateVerifier:", address(verifier));
         console2.log("  code hash:          ", vm.toString(address(verifier).codehash));
         console2.log("  quorum set hash:    ", vm.toString(sha256(quorumSet)));
@@ -374,7 +381,7 @@ contract DeployStateVerifier is Script {
         vm.startBroadcast();
         verifier = new SuiStateVerifier(chainId, vaultId, packageId, epoch, committee, startMs);
         vm.stopBroadcast();
-        checkSui(address(verifier), epoch, committee, startMs);
+        checkSui(address(verifier), chainId, vaultId, packageId, epoch, committee, startMs);
         console2.log("SuiStateVerifier:", address(verifier));
         console2.log("  epoch:           ", uint256(epoch));
         console2.log("  committee hash:  ", vm.toString(committee));
@@ -423,7 +430,7 @@ contract DeployStateVerifier is Script {
         vm.startBroadcast();
         verifier = new CometBftStateVerifier(sp1, programKey, chainId, cosmosChainId, vault, height, hash, time);
         vm.stopBroadcast();
-        checkInjective(address(verifier), height, hash, time);
+        checkInjective(address(verifier), sp1, programKey, chainId, cosmosChainId, vault, height, hash, time);
         console2.log("CometBftStateVerifier:", address(verifier));
         console2.log("  update before:      ", uint256(time) + verifier.MAX_LAG());
     }
@@ -454,7 +461,7 @@ contract DeployStateVerifier is Script {
         vm.startBroadcast();
         verifier = new VeChainStateVerifier(sp1, programKey, chainId, vault, attester, id, time, table);
         vm.stopBroadcast();
-        checkVeChain(address(verifier), id, time, table);
+        checkVeChain(address(verifier), sp1, programKey, chainId, vault, attester, id, time, table);
         console2.log("VeChainStateVerifier:", address(verifier));
         console2.log("  update before:     ", uint256(time) + verifier.MAX_LAG());
     }
@@ -484,47 +491,198 @@ contract DeployStateVerifier is Script {
         vm.startBroadcast();
         verifier = new AptosStateVerifier(sp1, programKey, chainId, package, vaultId, epoch, set, time);
         vm.stopBroadcast();
-        checkAptos(address(verifier), epoch, set, time);
+        checkAptos(address(verifier), sp1, programKey, chainId, package, vaultId, epoch, set, time);
         console2.log("AptosStateVerifier:", address(verifier));
         console2.log("  update before:   ", named + verifier.MAX_LAG());
     }
 
-    /// @notice The review of a deployed Aptos verifier: its latest trusted epoch is `epoch`, with the set whose hash is
-    ///         `set`, named at `time`. The reviewer recomputes the set from Aptos's own `ValidatorSet` with
-    ///         `generate.py anchor`, which also checks it against the epoch-ending ledger info.
-    function checkAptos(address verifier, uint64 epoch, bytes32 set, uint64 time) public view {
-        AptosStateVerifier v = AptosStateVerifier(verifier);
-        IAptosStateVerifier.Trusted memory t = v.trusted(epoch);
-        if (v.latestEpoch() != epoch || t.set != set || t.time != time) revert WrongAnchor(verifier);
+    /// @notice The review of a deployed NEAR verifier: it trusts SP1's verifier `sp1`, the program `programKey`, the
+    ///         network `chainId` and the vault at `account`, holds the anchor (`epoch`, `producersHash`, named at `named`),
+    ///         and runs the code this release builds from those arguments. The reviewer compares the anchor with NEAR's
+    ///         own RPC.
+    /// @return codehash The verifier's runtime code hash, for the release record.
+    function checkNear(
+        address verifier,
+        ISP1Verifier sp1,
+        bytes32 programKey,
+        uint256 chainId,
+        string memory account,
+        bytes32 epoch,
+        bytes32 producersHash,
+        uint64 named
+    ) public returns (bytes32 codehash) {
+        NearStateVerifier v = NearStateVerifier(verifier);
+        _same(verifier, "SP1_VERIFIER", _word(address(v.SP1_VERIFIER())), _word(address(sp1)));
+        _same(verifier, "PROGRAM_KEY", v.PROGRAM_KEY(), programKey);
+        _same(verifier, "CHAIN_ID", bytes32(v.CHAIN_ID()), bytes32(chainId));
+        _same(verifier, "VAULT_ID", v.VAULT_ID(), keccak256(bytes(account)));
+        _same(verifier, "vaultAccount", keccak256(v.vaultAccount()), keccak256(bytes(account)));
+        if (v.epochId() != epoch || v.producersHash() != producersHash || v.namedAt() != named) {
+            revert WrongAnchor(verifier);
+        }
+        return _sameCode(
+            verifier, address(new NearStateVerifier(sp1, programKey, chainId, account, epoch, producersHash, named))
+        );
     }
 
-    /// @notice The review of a deployed Sui verifier: it follows from epoch `epoch`, begun at `startMs`, with the
-    ///         committee whose hash is `committee`. The reviewer compares the anchor file with Sui's own record of that
-    ///         epoch (its committee and the checkpoint that named it). A codehash cannot be compared: the verifier's
-    ///         immutables are in its code.
-    function checkSui(address verifier, uint64 epoch, bytes32 committee, uint64 startMs) public view {
+    /// @notice The review of a deployed Stellar verifier: it trusts SP1's verifier `sp1`, the program `programKey`, the
+    ///         network `networkId`, the quorum set `quorumSet`'s hash, the registry id `chainId` and the vault `vaultId`,
+    ///         and runs the code this release builds from those arguments. It holds nothing that moves, so there is no
+    ///         anchor beyond the quorum set, which the reviewer compares with Tier 1's published validators.
+    /// @return codehash The verifier's runtime code hash, for the release record.
+    function checkStellar(
+        address verifier,
+        ISP1Verifier sp1,
+        bytes32 programKey,
+        bytes32 networkId,
+        bytes memory quorumSet,
+        uint256 chainId,
+        bytes32 vaultId
+    ) public returns (bytes32 codehash) {
+        StellarStateVerifier v = StellarStateVerifier(verifier);
+        _same(verifier, "SP1_VERIFIER", _word(address(v.SP1_VERIFIER())), _word(address(sp1)));
+        _same(verifier, "PROGRAM_KEY", v.PROGRAM_KEY(), programKey);
+        _same(verifier, "NETWORK_ID", v.NETWORK_ID(), networkId);
+        _same(verifier, "QUORUM_SET_HASH", v.QUORUM_SET_HASH(), sha256(quorumSet));
+        _same(verifier, "CHAIN_ID", bytes32(v.CHAIN_ID()), bytes32(chainId));
+        _same(verifier, "VAULT_ID", v.VAULT_ID(), vaultId);
+        return _sameCode(
+            verifier, address(new StellarStateVerifier(sp1, programKey, networkId, sha256(quorumSet), chainId, vaultId))
+        );
+    }
+
+    /// @notice The review of a deployed Aptos verifier: it trusts SP1's verifier `sp1`, the program `programKey`, the
+    ///         network `chainId` and the vault `vaultId` of package `package`, its latest trusted epoch is `epoch`, with the
+    ///         set whose hash is `set`, named at `time`, and it runs the code this release builds from those arguments.
+    ///         The reviewer recomputes the set from Aptos's own `ValidatorSet` with `generate.py anchor`, which also
+    ///         checks it against the epoch-ending ledger info.
+    /// @return codehash The verifier's runtime code hash, for the release record.
+    function checkAptos(
+        address verifier,
+        ISP1Verifier sp1,
+        bytes32 programKey,
+        uint256 chainId,
+        bytes32 package,
+        bytes32 vaultId,
+        uint64 epoch,
+        bytes32 set,
+        uint64 time
+    ) public returns (bytes32 codehash) {
+        AptosStateVerifier v = AptosStateVerifier(verifier);
+        _same(verifier, "SP1_VERIFIER", _word(address(v.SP1_VERIFIER())), _word(address(sp1)));
+        _same(verifier, "PROGRAM_KEY", v.PROGRAM_KEY(), programKey);
+        _same(verifier, "CHAIN_ID", bytes32(v.CHAIN_ID()), bytes32(chainId));
+        _same(verifier, "PACKAGE", v.PACKAGE(), package);
+        _same(verifier, "VAULT_ID", v.VAULT_ID(), vaultId);
+        IAptosStateVerifier.Trusted memory t = v.trusted(epoch);
+        if (v.latestEpoch() != epoch || t.set != set || t.time != time) revert WrongAnchor(verifier);
+        return _sameCode(
+            verifier, address(new AptosStateVerifier(sp1, programKey, chainId, package, vaultId, epoch, set, time))
+        );
+    }
+
+    /// @notice The review of a deployed Sui verifier: it trusts the network `chainId` and the vault `vaultId` of package
+    ///         `packageId`, it follows from epoch `epoch`, begun at `startMs`, with the committee whose hash is
+    ///         `committee`, and it runs the code this release builds from those arguments. The reviewer compares the
+    ///         anchor file with Sui's own record of that epoch (its committee and the checkpoint that named it).
+    /// @return codehash The verifier's runtime code hash, for the release record.
+    function checkSui(
+        address verifier,
+        uint256 chainId,
+        bytes32 vaultId,
+        bytes32 packageId,
+        uint64 epoch,
+        bytes32 committee,
+        uint64 startMs
+    ) public returns (bytes32 codehash) {
         SuiStateVerifier v = SuiStateVerifier(verifier);
+        _same(verifier, "CHAIN_ID", bytes32(v.CHAIN_ID()), bytes32(chainId));
+        _same(verifier, "VAULT_ID", v.VAULT_ID(), vaultId);
+        _same(verifier, "PACKAGE_ID", v.PACKAGE_ID(), packageId);
         if (v.epoch() != epoch || v.committeeHash() != committee || v.epochStartMs() != startMs) {
             revert WrongAnchor(verifier);
         }
+        return
+            _sameCode(verifier, address(new SuiStateVerifier(chainId, vaultId, packageId, epoch, committee, startMs)));
     }
 
-    /// @notice The review of a deployed Injective verifier: its latest trusted header is `height`, `hash`, dated
-    ///         `time`. The reviewer compares those with Injective's own `/commit?height=` (the block id's hash, the time's
-    ///         whole seconds).
-    function checkInjective(address verifier, uint64 height, bytes32 hash, uint64 time) public view {
+    /// @notice The review of a deployed Injective verifier: it trusts SP1's verifier `sp1`, the program `programKey`, the
+    ///         network `chainId` and `cosmosChainId` and the vault `vault`, its latest trusted header is `height`, `hash`,
+    ///         dated `time`, and it runs the code this release builds from those arguments. The reviewer compares the
+    ///         header with Injective's own `/commit?height=` (the block id's hash, the time's whole seconds).
+    /// @return codehash The verifier's runtime code hash, for the release record.
+    function checkInjective(
+        address verifier,
+        ISP1Verifier sp1,
+        bytes32 programKey,
+        uint256 chainId,
+        string memory cosmosChainId,
+        address vault,
+        uint64 height,
+        bytes32 hash,
+        uint64 time
+    ) public returns (bytes32 codehash) {
         CometBftStateVerifier v = CometBftStateVerifier(verifier);
+        _same(verifier, "SP1_VERIFIER", _word(address(v.SP1_VERIFIER())), _word(address(sp1)));
+        _same(verifier, "PROGRAM_KEY", v.PROGRAM_KEY(), programKey);
+        _same(verifier, "CHAIN_ID", bytes32(v.CHAIN_ID()), bytes32(chainId));
+        _same(verifier, "COSMOS_CHAIN_ID_HASH", v.COSMOS_CHAIN_ID_HASH(), keccak256(bytes(cosmosChainId)));
+        _same(verifier, "VAULT", _word(v.VAULT()), _word(vault));
         ICometBftStateVerifier.Trusted memory t = v.trusted(hash);
         if (v.latestHash() != hash || t.height != height || t.time != time) revert WrongAnchor(verifier);
+        return _sameCode(
+            verifier,
+            address(new CometBftStateVerifier(sp1, programKey, chainId, cosmosChainId, vault, height, hash, time))
+        );
     }
 
-    /// @notice The review of a deployed VeChain verifier: its latest trusted table is `table`, read at block `id`,
-    ///         dated `time`. The reviewer recomputes the table at that block with `generate.py anchor`, and checks that
-    ///         the vault's and the attester's masters read zero.
-    function checkVeChain(address verifier, bytes32 id, uint64 time, bytes32 table) public view {
+    /// @notice The review of a deployed VeChain verifier: it trusts SP1's verifier `sp1`, the program `programKey`, the
+    ///         network `chainId`, the vault `vault` and its weights' attester `attester`, its latest trusted table is
+    ///         `table`, read at block `id`, dated `time`, and it runs the code this release builds from those arguments.
+    ///         The reviewer recomputes the table at that block with `generate.py anchor`, and checks that the vault's and
+    ///         the attester's masters read zero.
+    /// @return codehash The verifier's runtime code hash, for the release record.
+    function checkVeChain(
+        address verifier,
+        ISP1Verifier sp1,
+        bytes32 programKey,
+        uint256 chainId,
+        address vault,
+        address attester,
+        bytes32 id,
+        uint64 time,
+        bytes32 table
+    ) public returns (bytes32 codehash) {
         VeChainStateVerifier v = VeChainStateVerifier(verifier);
+        _same(verifier, "SP1_VERIFIER", _word(address(v.SP1_VERIFIER())), _word(address(sp1)));
+        _same(verifier, "PROGRAM_KEY", v.PROGRAM_KEY(), programKey);
+        _same(verifier, "CHAIN_ID", bytes32(v.CHAIN_ID()), bytes32(chainId));
+        _same(verifier, "VAULT", _word(v.VAULT()), _word(vault));
+        _same(verifier, "ATTESTER", _word(v.ATTESTER()), _word(attester));
         IVeChainStateVerifier.Trusted memory t = v.trusted(id);
         if (v.latestId() != id || t.table != table || t.time != time) revert WrongAnchor(verifier);
+        return _sameCode(
+            verifier, address(new VeChainStateVerifier(sp1, programKey, chainId, vault, attester, id, time, table))
+        );
+    }
+
+    /// @dev Requires `held` to be `expected`, the trust-bearing value `name` of `verifier`.
+    function _same(address verifier, string memory name, bytes32 held, bytes32 expected) private pure {
+        if (held != expected) revert WrongParameter(verifier, name);
+    }
+
+    /// @dev An address as a word, to compare it with the others.
+    function _word(address a) private pure returns (bytes32) {
+        return bytes32(uint256(uint160(a)));
+    }
+
+    /// @dev `verifier`'s runtime code hash, which must be `built`'s, a verifier built here from the same arguments (the
+    ///      reference).
+    ///      A verifier's immutables are in its code, so its code cannot be compared with the compiler's output: the
+    ///      reference carries the same ones, and equal hashes then mean the same code (A7-02).
+    function _sameCode(address verifier, address built) private view returns (bytes32 codehash) {
+        codehash = verifier.codehash;
+        if (codehash != built.codehash) revert WrongCode(verifier);
     }
 
     /// @notice The review of a deployed BNB verifier: it runs this release's code, and its first set is the one
