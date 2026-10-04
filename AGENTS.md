@@ -22,14 +22,17 @@ Where the stages stand (none of v4 is deployed):
 - Stage A is built.
 - Stage B is built in large part: the EVM vault and the Solana vault program; P1 (SP1) and P2 (RISC Zero) on EVM vault
   chains and on Solana; BNB Chain's and TRON's state verifiers on Ethereum; and `HybridIndexFactory` with
-  `HybridHub`, its module and its extension. So BNB Chain and TRON are built in both directions. Solana is built from
+  `HybridHub`, its module and its extension. So BNB Chain and TRON are built in both directions, and NEAR and Stellar
+  too (2026-10-04): their vaults (`near/`, `stellar/`) with P1 and P2 on the shared Rust core `crates/xindex-core`,
+  and their state verifiers on Ethereum (`NearStateVerifier`, `StellarStateVerifier`, proven by `proofs/near` and
+  `proofs/stellar`), to the interfaces of `design/2026-10-03-near-stellar-interfaces.md`. Solana is built from
   Ethereum to its vault, the vault's checkpoints, stall recovery and snapshot exit included (2026-10-03); its state
   verifier on Ethereum is not built, and can ship only once Alpenglow reaches mainnet
   (`design/2026-10-03-solana-state-proof.md` has the researched plan and a native prototype in `proofs/solana-state`).
   HyperEVM waits on Hyperliquid, since every header's state root is zero. The Stage B spec's section 8 has each
   chain's status, and its section 6 the build order.
-- No Stage C chain is built. Avalanche, NEAR, Stellar, Hedera and Cardano were researched on 2026-10-01
-  (`design/2026-10-01-stage-c-research.md`, summarized in the Stage B spec's section 8).
+- Of Stage C, NEAR and Stellar are built (above). Avalanche, Hedera and Cardano were researched on 2026-10-01
+  (`design/2026-10-01-stage-c-research.md`, summarized in the Stage B spec's section 8) and wait on the owner's calls.
 
 For more:
 - `ARCHITECTURE.md`: the design as built, Stage A and Stage B.
@@ -59,8 +62,10 @@ MAINNET_RPC_URL=https://ethereum-rpc.publicnode.com FORK_BLOCK=$(( $(cast block-
 
 Deployment: `script/Deploy.s.sol` then `script/ConfigureWhitelist.s.sol`, which also runs the weekly supply batch,
 vault coins' supplies included (see README). A vault chain adds `script/DeployVault.s.sol` on that chain (P1, P2, the
-state reader and the vault; `tron/` builds TRON's with Tron's compiler) and `script/DeployStateVerifier.s.sol` on
-Ethereum (the chain's state verifier, from an anchor the fixture generator writes), then `script/ConfigureChains.s.sol`
+state reader and the vault; `tron/deploy.mjs` deploys TRON's, built with Tron's compiler, and NEAR's and Stellar's go
+up with their chains' own tools, as `near/` and `stellar/` say) and `script/DeployStateVerifier.s.sol` on Ethereum (the
+chain's state verifier, from an anchor the fixture generator writes, or for NEAR and Stellar one assembled from
+their proofs' generators), then `script/ConfigureChains.s.sol`
 (`proposeChain`, then `proposeVaultListing` for each coin). Sepolia first needs its test market from
 `script/testnet/SetupTestMarket.s.sol`.
 
@@ -458,6 +463,19 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   from a real hub on anvil. Its gates: `anchor build --no-idl`, `cargo build-sbf` for the stub, `ethereum-verifier`
   and `risc0-verifier`, `cargo test -p xindex-vault -p ethereum-verifier -p risc0-verifier`, `cargo fmt --check` and
   `cargo clippy`, at low priority.
+- **NEAR and Stellar are twins too.** `near/` and `stellar/` keep the EVM vault's rules, as Solana's program does, on
+  `crates/xindex-core`, the vault chains' shared Rust (no_std, over a `Crypto` trait each chain implements; Solana's
+  programs build on it through `ethereum_verifier::Solana`). A change to a vault's rule or a message goes into all four
+  vaults, and into the core where the rule lives. Each proves its state by `attest`, as TRON's does: NEAR's return value
+  carries the run's own height and time, since an outcome lands in a later block. Stellar's transaction holds 132 KB,
+  so a message whose receipt proof is larger is delivered from its `resendMessage` copy. NEAR's Wasm needs `--cfg near`
+  (`near/.cargo/config.toml`), or near-sdk's refusals trap without their names. Gates, each at low priority on one
+  build job: the core's `cargo test`, `cargo fmt --check`, `cargo clippy --all-targets` and `cargo build --target
+  wasm32-unknown-unknown --no-default-features`; NEAR's `cargo build -p xindex-vault-near --target
+  wasm32-unknown-unknown --release`, then `cargo test -p xindex-vault-near -- --test-threads=1` (the sandbox runs the
+  built Wasm), fmt and `cargo clippy --all-targets -- -D warnings`; Stellar's `stellar contract build`, then `cargo
+  test`, fmt and `cargo clippy --all-targets -- -D warnings`; `proofs/near`'s `cargo test -p xindex-near-finality` and
+  `proofs/stellar`'s `cargo test --release -p xindex-stellar`, each with fmt and clippy.
 - **P1 is checked in plain Rust first.** `proofs/finality` holds the whole statement, so its logic is tested natively and
   the zkVM only runs it. Its gates: `cargo test --release`, `cargo fmt --check` and `cargo clippy`, at low priority,
   each also with `--features sepolia`, the testnets' build: Sepolia's genesis and fork versions, a program key of its

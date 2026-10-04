@@ -9,7 +9,6 @@ import {RiscZeroFinalityVerifier} from "../src/verifiers/RiscZeroFinalityVerifie
 import {EthereumStateReader} from "../src/verifiers/EthereumStateReader.sol";
 import {ISP1Verifier} from "../src/interfaces/ISP1Verifier.sol";
 import {IRiscZeroVerifier} from "../src/interfaces/IRiscZeroVerifier.sol";
-import {ISP1Groth16Identity} from "./interfaces/ISP1Groth16Identity.sol";
 import {IRiscZeroGroth16Identity} from "./interfaces/IRiscZeroGroth16Identity.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
@@ -43,8 +42,8 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///   VAULT_NATIVE_CAP, VAULT_NATIVE_FLOOR  The native coin's quantity cap and speed-limit floor, in its smallest unit.
 contract DeployVault is Script {
     /// @notice SP1's Groth16 verifier v6.0.0 names itself by this hash, the circuit its proofs come from.
-    bytes32 public constant SP1_VERIFIER_HASH = 0x0e78f4db7a6771a3a6a7d9c3b0de6fe73d58781368967a7fe84d87aefffec896;
-    string public constant SP1_VERSION = "v6.0.0";
+    bytes32 public constant SP1_VERIFIER_HASH = ScriptUtils.SP1_VERIFIER_HASH;
+    string public constant SP1_VERSION = ScriptUtils.SP1_VERSION;
     /// @notice RISC Zero's Groth16 verifier 3.0.0, deployed with its published control ids, names itself by this
     ///         selector (risc0-ethereum's deployment.toml at v3.0.1).
     bytes4 public constant RISC_ZERO_SELECTOR = 0x73c457ba;
@@ -191,24 +190,15 @@ contract DeployVault is Script {
     /// @notice Requires P1's Groth16 verifier to name itself SP1's v6.0.0 and P2's RISC Zero's 3.0.0 with its published
     ///         control ids. An owned gateway, router or emergency stop answers neither, so it is refused too.
     function checkVerifiers(address sp1, address riscZero) public view {
+        if (!ScriptUtils.isSp1Verifier(sp1)) revert WrongVerifier("VAULT_SP1_VERIFIER", sp1);
         if (
-            !_answers(sp1, abi.encodeCall(ISP1Groth16Identity.VERIFIER_HASH, ()), abi.encode(SP1_VERIFIER_HASH))
-                || !_answers(sp1, abi.encodeCall(ISP1Groth16Identity.VERSION, ()), abi.encode(SP1_VERSION))
-        ) revert WrongVerifier("VAULT_SP1_VERIFIER", sp1);
-        if (
-            !_answers(riscZero, abi.encodeCall(IRiscZeroGroth16Identity.SELECTOR, ()), abi.encode(RISC_ZERO_SELECTOR))
-                || !_answers(
+            !ScriptUtils.answers(
+                    riscZero, abi.encodeCall(IRiscZeroGroth16Identity.SELECTOR, ()), abi.encode(RISC_ZERO_SELECTOR)
+                )
+                || !ScriptUtils.answers(
                     riscZero, abi.encodeCall(IRiscZeroGroth16Identity.VERSION, ()), abi.encode(RISC_ZERO_VERSION)
                 )
         ) revert WrongVerifier("VAULT_RISC_ZERO_VERIFIER", riscZero);
-    }
-
-    /// @dev Whether `target` answers `query` with exactly `expected`. A static call, compared byte for byte, so a
-    ///      missing function, a fallback or a short answer is a no rather than a revert.
-    function _answers(address target, bytes memory query, bytes memory expected) private view returns (bool) {
-        // forge-lint: disable-next-line(low-level-calls)
-        (bool ok, bytes memory answer) = target.staticcall(query);
-        return ok && keccak256(answer) == keccak256(expected);
     }
 
     /// @notice Requires a freezer and a recovery proposer that are set, distinct, not the broadcasting key, and a

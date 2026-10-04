@@ -30,6 +30,9 @@ import {ConfigureChains} from "../script/ConfigureChains.s.sol";
 import {DeployStateVerifier} from "../script/DeployStateVerifier.s.sol";
 import {BnbStateVerifier} from "../src/verifiers/BnbStateVerifier.sol";
 import {TronStateVerifier} from "../src/verifiers/TronStateVerifier.sol";
+import {NearStateVerifier} from "../src/verifiers/NearStateVerifier.sol";
+import {StellarStateVerifier} from "../src/verifiers/StellarStateVerifier.sol";
+import {ISP1Verifier} from "../src/interfaces/ISP1Verifier.sol";
 import {ITronStateVerifier} from "../src/interfaces/ITronStateVerifier.sol";
 import {IHybridIndexFactory} from "../src/interfaces/IHybridIndexFactory.sol";
 import {MockSP1Verifier} from "./mocks/MockSP1Verifier.sol";
@@ -2265,6 +2268,115 @@ contract StateVerifierScriptTest is Test {
         script.checkTron(address(verifier), changed, nextMaintenance);
     }
 
+    // ---------------------------------------------------------------------
+    // NEAR and Stellar
+    // ---------------------------------------------------------------------
+
+    string near = vm.readFile("test/fixtures/near/anchor.json");
+    string stellar = vm.readFile("test/fixtures/stellar/anchor.json");
+
+    function _deployNear(ISP1Verifier sp1, uint256 chainId) internal returns (NearStateVerifier) {
+        bytes32 key = vm.parseJsonBytes32(near, ".programKey");
+        string memory account = vm.parseJsonString(near, ".account");
+        bytes32 epochId = vm.parseJsonBytes32(near, ".epochId");
+        bytes32 producersHash = vm.parseJsonBytes32(near, ".producersHash");
+        uint64 named = uint64(vm.parseJsonUint(near, ".namedAt"));
+        return script.deployNear(sp1, key, chainId, account, epochId, producersHash, named);
+    }
+
+    function _deployStellar(ISP1Verifier sp1, bytes32 networkId, uint256 chainId)
+        internal
+        returns (StellarStateVerifier)
+    {
+        bytes32 key = vm.parseJsonBytes32(stellar, ".programKey");
+        bytes memory quorumSet = vm.parseJsonBytes(stellar, ".quorumSet");
+        bytes32 vaultId = vm.parseJsonBytes32(stellar, ".vaultId");
+        return script.deployStellar(sp1, key, networkId, quorumSet, chainId, vaultId);
+    }
+
+    function _namedAt() internal view returns (uint256) {
+        return vm.parseJsonUint(near, ".namedAt") / 1e9;
+    }
+
+    /// @dev NEAR's verifier, from a real mainnet epoch and its producers, for one vault: its id is the keccak of the
+    ///      vault's account id (`design/2026-10-03-near-stellar-interfaces.md`), and it must be advanced within a day.
+    function test_deployNear_fromARealAnchor() public {
+        ISP1Verifier sp1 = new MockSP1Verifier();
+        vm.warp(_namedAt() + 10 minutes);
+        NearStateVerifier verifier = _deployNear(sp1, script.NEAR_MAINNET());
+        assertEq(verifier.epochId(), vm.parseJsonBytes32(near, ".epochId"));
+        assertEq(verifier.producersHash(), vm.parseJsonBytes32(near, ".producersHash"));
+        assertEq(verifier.namedAt(), vm.parseJsonUint(near, ".namedAt"));
+        assertEq(verifier.VAULT_ID(), keccak256(bytes(vm.parseJsonString(near, ".account"))));
+        assertEq(verifier.CHAIN_ID(), 339_552_387_624_818_629, "keccak256('near:mainnet')'s first 8 bytes");
+    }
+
+    /// @dev Stellar's verifier pins the network and Tier 1's quorum set, by the hash its validators sign.
+    function test_deployStellar_fromARealQuorumSet() public {
+        ISP1Verifier sp1 = new MockSP1Verifier();
+        StellarStateVerifier verifier = _deployStellar(sp1, script.STELLAR_PUBNET_ID(), script.STELLAR_PUBNET());
+        assertEq(verifier.QUORUM_SET_HASH(), 0x040355b75766e6799d1ef69ce03f114530a06d922dd64b5e885da907a453841d);
+        assertEq(verifier.NETWORK_ID(), sha256("Public Global Stellar Network ; September 2015"));
+        assertEq(verifier.CHAIN_ID(), 839_718_837_228_939_926, "keccak256('stellar:pubnet')'s first 8 bytes");
+        assertEq(verifier.VAULT_ID(), vm.parseJsonBytes32(stellar, ".vaultId"));
+        assertEq(script.STELLAR_TESTNET_ID(), sha256("Test SDF Network ; September 2015"));
+        assertEq(script.NEAR_TESTNET(), uint64(bytes8(keccak256("near:testnet"))));
+        assertEq(script.STELLAR_TESTNET(), uint64(bytes8(keccak256("stellar:testnet"))));
+    }
+
+    /// @dev Only SP1's pinned verifier, only the chain's network that pairs with this one, Stellar's network by its
+    ///      passphrase, a fresh NEAR anchor, and only on Ethereum.
+    function test_deployNearAndStellar_refusals() public {
+        ISP1Verifier sp1 = new MockSP1Verifier();
+        ISP1Verifier other = ISP1Verifier(address(new MockRiscZeroVerifier()));
+        uint256 named = _namedAt();
+        vm.warp(named + 10 minutes);
+        uint256 nearMain = script.NEAR_MAINNET();
+        uint256 nearTest = script.NEAR_TESTNET();
+        uint256 pubnet = script.STELLAR_PUBNET();
+        uint256 testnet = script.STELLAR_TESTNET();
+        bytes32 pubnetId = script.STELLAR_PUBNET_ID();
+        bytes32 testnetId = script.STELLAR_TESTNET_ID();
+
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.NotSp1Verifier.selector, address(other)));
+        _deployNear(other, nearMain);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.NotSp1Verifier.selector, address(other)));
+        _deployStellar(other, pubnetId, pubnet);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongNetwork.selector, nearTest));
+        _deployNear(sp1, nearTest);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongNetwork.selector, testnet));
+        _deployStellar(sp1, testnetId, testnet);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongNetworkId.selector, testnetId));
+        _deployStellar(sp1, testnetId, pubnet);
+
+        // On Sepolia, the testnets pair with it, and the mainnets do not.
+        vm.chainId(11_155_111);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongNetwork.selector, nearMain));
+        _deployNear(sp1, nearMain);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.WrongNetwork.selector, pubnet));
+        _deployStellar(sp1, pubnetId, pubnet);
+        _deployNear(sp1, nearTest);
+        _deployStellar(sp1, testnetId, testnet);
+
+        vm.chainId(31_337);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.NotEthereum.selector, 31_337));
+        _deployNear(sp1, nearMain);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.NotEthereum.selector, 31_337));
+        _deployStellar(sp1, pubnetId, pubnet);
+        vm.chainId(1);
+
+        // A NEAR anchor named up to MAX_NEAR_ANCHOR_AGE ago, never later, never in the future.
+        uint256 maxAge = script.MAX_NEAR_ANCHOR_AGE();
+        vm.warp(named + maxAge);
+        _deployNear(sp1, nearMain);
+        vm.warp(named + maxAge + 1);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.StaleAnchor.selector, named, block.timestamp));
+        _deployNear(sp1, nearMain);
+        vm.warp(named - 1);
+        vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.StaleAnchor.selector, named, block.timestamp));
+        _deployNear(sp1, nearMain);
+    }
+
     function test_deployStateVerifierRun_readsEnvironment() public {
         vm.setEnv("STATE_CHAIN", "bnb");
         vm.setEnv("STATE_ANCHOR", "test/fixtures/bnb/anchor.json");
@@ -2277,6 +2389,18 @@ contract StateVerifierScriptTest is Test {
         vm.warp(nextMaintenance / 1000 - 1 hours);
         verifier = script.run();
         assertEq(TronStateVerifier(verifier).producerList(0).producersHash, keccak256(abi.encode(list)));
+
+        vm.setEnv("STATE_SP1_VERIFIER", vm.toString(address(new MockSP1Verifier())));
+        vm.setEnv("STATE_CHAIN", "near");
+        vm.setEnv("STATE_ANCHOR", "test/fixtures/near/anchor.json");
+        vm.warp(_namedAt() + 10 minutes);
+        verifier = script.run();
+        assertEq(NearStateVerifier(verifier).producersHash(), vm.parseJsonBytes32(near, ".producersHash"));
+
+        vm.setEnv("STATE_CHAIN", "stellar");
+        vm.setEnv("STATE_ANCHOR", "test/fixtures/stellar/anchor.json");
+        verifier = script.run();
+        assertEq(StellarStateVerifier(verifier).QUORUM_SET_HASH(), sha256(vm.parseJsonBytes(stellar, ".quorumSet")));
 
         vm.setEnv("STATE_CHAIN", "solana");
         vm.expectRevert(abi.encodeWithSelector(DeployStateVerifier.UnknownChain.selector, "solana"));

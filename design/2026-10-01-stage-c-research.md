@@ -26,6 +26,9 @@ Section 8 of the Stage B spec (`design/2026-09-30-v4-stage-b-spec.md`) carries t
 4. **NEAR and Stellar** pass the rule. Each needs a new zk light client, and Stellar's quorum set has no on-chain
    anchor, so its rotations would rest on a rule of Xindex's own design.
 
+**Built since (4 October 2026):** NEAR and Stellar, both directions (`design/2026-10-03-near-stellar-interfaces.md`;
+the Stage B spec's section 8).
+
 **Order of work, if the owner keeps the list.** NEAR and Stellar can be built now and need the same three pieces as
 Solana: a finality statement in plain Rust, tested natively and then proven in a zkVM; a state verifier on Ethereum; and
 a vault in the chain's own language. Hedera follows its TSS cutover; Avalanche follows a P-Chain release that signs

@@ -917,7 +917,19 @@ replaying a block.
     never be recipients;
   - the vault deploys only in a big block.
 
-### Stage C: Avalanche, NEAR, Stellar, Hedera and Cardano (researched 1 October 2026)
+### Stage C: Avalanche, NEAR, Stellar, Hedera and Cardano
+
+> **NEAR and Stellar built, 4 October 2026.** Both directions, to `design/2026-10-03-near-stellar-interfaces.md`:
+> - **NEAR:** the vault at a keyless NEP-616 account with P1 and P2 compiled in (`near/`); `NearStateVerifier`,
+>   advanced by an SP1 proof of NEAR's light-client rule, one epoch a hop at about 7.8M prover gas (`proofs/near`), and
+>   proving a vault `attest` by its outcome. The attest record carries the run's own height and time, since an
+>   outcome's root lands one or more blocks later.
+> - **Stellar:** the vault, P1 and P2 as Soroban contracts (`stellar/`); `StellarStateVerifier`, one SP1 proof per
+>   call that Tier 1's pinned quorum set externalized a ledger reaching a successful vault `attest` (`proofs/stellar`,
+>   about 12M prover gas). A Stellar transaction holds 132 KB, so an oversized message's receipt is delivered from its
+>   `resendMessage` copy; a new Tier 1 is a new verifier through `ROTATION_DELAY`.
+> - **Shared:** `crates/xindex-core`, the vault chains' Rust, which Solana's programs now run too.
+> - **Not yet:** each vault's deploy tooling on its own chain, and a real proof of any SP1 program. (researched 1 October 2026)
 
 Five more read-only passes asked the same questions of the Stage C chains, and whether each passes the design's
 deterministic-finality rule. The record, with every source, is `design/2026-10-01-stage-c-research.md`.
