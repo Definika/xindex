@@ -378,6 +378,72 @@ contract BnbStateVerifierTest is Test {
         verifier.verifyHeader(forged, epochs[2], _vote(".switch.after.vote"), _keys(_at(2, ".keys")));
     }
 
+    /// @dev BLS-1, end to end: a header nobody signed, here with another state root, came with a 640-byte "signature"
+    ///      `O ‖ aggregate ‖ −H(vote)` whose extra pair cancels the real one, and the verifier accepted it. The
+    ///      signature's length is now exact, so the forgery is refused before the pairing.
+    function test_BLS1_aLongSignatureCannotForgeAHeader() public {
+        _advanceAll();
+        bytes memory forged = _withField(_bytes(".switch.after.rlp"), 3, abi.encodePacked(keccak256("another state")));
+        IBnbStateVerifier.Vote memory vote = _vote(".switch.after.vote");
+        bytes[] memory keys = _keys(_at(2, ".keys"));
+        bytes memory aggregate;
+        for (uint256 i = 0; i < keys.length; ++i) {
+            if ((vote.bitset >> i) & 1 == 1) aggregate = aggregate.length == 0 ? keys[i] : h.add(aggregate, keys[i]);
+        }
+        uint256 number = vm.parseJsonUint(json, ".switch.firstTarget") - 1;
+        bytes memory message = abi.encodePacked(_voteHash(number, keccak256(forged), vote.targetHash));
+        vote.signature = bytes.concat(new bytes(256), aggregate, _negateG2(h.hashToG2(message)));
+        vm.expectRevert(abi.encodeWithSelector(Bls12381.BadSignatureLength.selector, 640));
+        verifier.verifyHeader(forged, epochs[2], vote, keys);
+    }
+
+    /// @dev The vote data's hash, written here independently of the verifier: RLP of (source number, source hash,
+    ///      target number, target hash), the target being the source's child.
+    function _voteHash(uint256 number, bytes32 hash, bytes32 targetHash) internal pure returns (bytes32) {
+        bytes memory source = _rlpNumber(number);
+        bytes memory target = _rlpNumber(number + 1);
+        return keccak256(
+            bytes.concat(
+                bytes1(0xf8),
+                bytes1(uint8(source.length + target.length + 66)),
+                source,
+                bytes1(0xa0),
+                hash,
+                target,
+                bytes1(0xa0),
+                targetHash
+            )
+        );
+    }
+
+    function _rlpNumber(uint256 value) internal pure returns (bytes memory out) {
+        uint256 len = 0;
+        for (uint256 v = value; v != 0; v >>= 8) {
+            ++len;
+        }
+        out = new bytes(len + 1);
+        out[0] = bytes1(uint8(0x80 + len));
+        for (uint256 i = 0; i < len; ++i) {
+            out[len - i] = bytes1(uint8(value >> (8 * i)));
+        }
+    }
+
+    /// @dev A G2 point's negation: x unchanged, each of y's two coordinates subtracted from p.
+    function _negateG2(bytes memory point) internal pure returns (bytes memory) {
+        uint256 pHi = 0x1a0111ea397fe69a4b1ba7b6434bacd7;
+        uint256 pLo = 0x64774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaab;
+        uint256[8] memory w = abi.decode(point, (uint256[8]));
+        for (uint256 i = 4; i < 8; i += 2) {
+            if (w[i] | w[i + 1] == 0) continue;
+            uint256 borrow = w[i + 1] > pLo ? 1 : 0;
+            unchecked {
+                w[i + 1] = pLo - w[i + 1];
+            }
+            w[i] = pHi - w[i] - borrow;
+        }
+        return abi.encode(w);
+    }
+
     /// @dev A proven block must be dated within `MAX_SPAN` after its set's epoch block, never before it: an old set
     ///      cannot sign a header dated today.
     function test_verifyHeader_theTimeIsBounded() public {

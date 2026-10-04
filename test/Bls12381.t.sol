@@ -128,6 +128,24 @@ contract Bls12381Test is Test {
         h.verify(keys[0], badSignature, abi.encodePacked(voteHash));
     }
 
+    /// @dev BLS-1: the pairing precompile reads 384-byte pairs, so a 640-byte "signature" `O ‖ key ‖ −H(m)` added a pair
+    ///      that cancelled `e(key, H(m))`, and any message verified under any key. Every length but the exact one is
+    ///      refused before the precompile runs.
+    function test_BLS1_aKeyOrSignatureOfAnyOtherLengthIsRefused() public {
+        bytes memory message = "a message no validator signed";
+        bytes memory forged = bytes.concat(new bytes(256), keys[0], _negateG2(h.hashToG2(message)));
+        vm.expectRevert(abi.encodeWithSelector(Bls12381.BadSignatureLength.selector, 640));
+        h.verify(keys[0], forged, message);
+        vm.expectRevert(abi.encodeWithSelector(Bls12381.BadSignatureLength.selector, 255));
+        h.verify(keys[0], _slice(signature, 255), abi.encodePacked(voteHash));
+        vm.expectRevert(abi.encodeWithSelector(Bls12381.BadSignatureLength.selector, 257));
+        h.verify(keys[0], bytes.concat(signature, hex"00"), abi.encodePacked(voteHash));
+        vm.expectRevert(Bls12381.BadKey.selector);
+        h.verify(bytes.concat(keys[0], hex"00"), signature, abi.encodePacked(voteHash));
+        vm.expectRevert(Bls12381.BadKey.selector);
+        h.verify(_slice(keys[0], 127), signature, abi.encodePacked(voteHash));
+    }
+
     function test_hashToG2IsAPointOfG2() public view {
         bytes memory point = h.hashToG2("xindex");
         assertEq(point.length, 256);
@@ -143,5 +161,30 @@ contract Bls12381Test is Test {
             lo = P_LO - yLo;
         }
         return abi.encode(xHi, xLo, P_HI - yHi - borrow, lo);
+    }
+
+    /// @dev A G2 point's negation: x unchanged, each of y's two coordinates subtracted from p.
+    function _negateG2(bytes memory point) internal pure returns (bytes memory) {
+        uint256[8] memory w = abi.decode(point, (uint256[8]));
+        (w[4], w[5]) = _negateFp(w[4], w[5]);
+        (w[6], w[7]) = _negateFp(w[6], w[7]);
+        return abi.encode(w);
+    }
+
+    function _negateFp(uint256 hi, uint256 lo) internal pure returns (uint256, uint256) {
+        if (hi | lo == 0) return (0, 0);
+        uint256 borrow = lo > P_LO ? 1 : 0;
+        uint256 l;
+        unchecked {
+            l = P_LO - lo;
+        }
+        return (P_HI - hi - borrow, l);
+    }
+
+    function _slice(bytes memory data, uint256 length) internal pure returns (bytes memory out) {
+        out = new bytes(length);
+        for (uint256 i = 0; i < length; ++i) {
+            out[i] = data[i];
+        }
     }
 }
