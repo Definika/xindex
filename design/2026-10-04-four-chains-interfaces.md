@@ -77,6 +77,17 @@ for two slots, the claim's and `bytes32(25)`, from one state.
     It returns the timestamp in seconds and the transaction's version.
 - A failed `attest` records nothing, so a proof always proves a successful one, never mere inclusion.
 
+**Addition, 4 October 2026: VeChain's staker attester.** VIP-220 counts votes by each validator's stake weight, and
+since Hayabusa those weights live only in the builtin Staker's storage. Neither VeChain's API nor its peer protocol
+serves a proof of storage, and the weights change at each round's first block in housekeeping that logs nothing, so no
+light client can read them from signed data. VeChain's build therefore adds `VeChainStakerAttester`
+(`src/vault/VeChainStakerAttester.sol`), deployed on VeChain beside the vault with its Prototype master cleared: no
+owner, no state, no funds. Its view `attest(table)` reverts unless the Staker's total weight and its active validators
+with their weights hash to `table`. A transaction calling it that did not revert proves that round's weights, as the
+vault's own `attest` proves its slots. A table becomes trusted once blocks after its attesting call are signed by more
+than 2/3 of an already trusted table's weight: the rule TRON's verifier applies to a new producer list (TRN-4), and the
+same trust. A keeper sends one such transaction per round a proof needs, about 7.3 VTHO each.
+
 ## The state verifiers on Ethereum
 
 One contract per chain, implementing `IVaultStateVerifier.verifySlots(account, slots, proof)` for one vault, as
@@ -86,7 +97,7 @@ proven slots are the requested ones, in order; it returns their values, the time
 | Chain | Verifier | How it follows the chain | Lag |
 |---|---|---|---|
 | Injective | `CometBftStateVerifier` | an SP1 statement of CometBFT light-client hops on tendermint-rs, then the ICS-23 path, over the audited crates IBC's SP1 Tendermint client uses; **every hop needs more than 2/3 of the trusted set's power**, as the BNB verifier's does, not ibc-go's third | `MAX_LAG` of 1 day from the trusted header's time |
-| VeChain | `VeChainStateVerifier` | an SP1 statement of VIP-220 finality over the stake-weighted set, the proposers' secp256k1 signatures, and the transactions and receipts tries (blake2b) | 1 day |
+| VeChain | `VeChainStateVerifier` | an SP1 statement of VIP-220 finality over the stake-weighted set, its weights attested as above, the proposers' secp256k1 signatures, and the transactions and receipts tries (blake2b) | 1 day |
 | Sui | `SuiStateVerifier` | **in Solidity, no zkVM:** BLS12-381 min-sig (signatures in G1, keys in G2, tag `BLS_SIG_BLS12381G1_XMD:SHA-256_SSWU_RO_NUL_`) on EIP-2537, Blake2b on EIP-152; the next committee from each end-of-epoch checkpoint the current one certifies | **2 days from the current committee's epoch start**, a trusted time: Sui's epochs last 24 hours, so a 1-day lag would lapse before the next committee exists. A signed time in the future is refused |
 | Aptos | `AptosStateVerifier` | an SP1 statement of signed epoch changes (BLS12-381 min-pk with `Bls12381.sol`'s ciphersuite) and SHA3-256 accumulator and event paths | 1 day; one proof may chain several 2-hour epochs |
 
