@@ -127,6 +127,8 @@ their proofs' generators), then `script/ConfigureChains.s.sol`
    - The logic review of 2026-10-02: `LG-1`..`LG-6` and `LG-I1`..`LG-I4` (`audit/2026-10-02-logic-review.md`), a test
      named `test_LG1_...`, and in Rust `test_lg1_...`. The record's status column names every test; the informational
      ids have none.
+   - The BLS signature-length finding of 2026-10-04: `BLS-1` (`audit/2026-10-04-bls-signature-length.md`), tested by
+     `test_BLS1_...` in `test/Bls12381.t.sol` and `test/BnbStateVerifier.t.sol`.
 
    Find a test by its id. Most v1 and R tests are in `test/Security.t.sol` and `test/fork/Security.fork.t.sol`. The R
    tests that drive the λ auction directly (R04, R08, R14, R17, R19, R22) are in `test/IndexHub.rebalance.t.sol`,

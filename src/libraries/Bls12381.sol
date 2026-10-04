@@ -10,6 +10,8 @@ library Bls12381 {
     error PrecompileFailed(address precompile);
     error BadKey();
     error IdentityKey();
+    /// @notice A signature is not one uncompressed G2 point, EIP-2537's 256 bytes.
+    error BadSignatureLength(uint256 length);
 
     address private constant MODEXP = address(0x05);
     address private constant G1ADD = address(0x0b);
@@ -85,7 +87,12 @@ library Bls12381 {
     /// @notice Whether `signature` is the signature of `key`, a single or aggregate key other than the identity, on
     ///         `message`: `e(key, H(message)) == e(g1, signature)`. The pairing precompile checks that the signature
     ///         is a point of the subgroup.
+    /// @dev The precompile reads its input as 384-byte pairs, so a key or signature of any other length would shift
+    ///      the pairs or add some of the caller's choosing: `O ‖ key ‖ −H(message)` as a signature cancels the first
+    ///      pair and verifies any message (BLS-1). Both lengths are exact.
     function verify(bytes memory key, bytes memory signature, bytes memory message) internal view returns (bool) {
+        if (key.length != G1_POINT) revert BadKey();
+        if (signature.length != G2_POINT) revert BadSignatureLength(signature.length);
         if (keccak256(key) == keccak256(new bytes(G1_POINT))) revert IdentityKey();
         bytes memory result = _call(PAIRING, bytes.concat(key, hashToG2(message), NEG_G1, signature), WORD);
         return abi.decode(result, (uint256)) == 1;
