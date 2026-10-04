@@ -27,12 +27,20 @@ Where the stages stand (none of v4 is deployed):
   and their state verifiers on Ethereum (`NearStateVerifier`, `StellarStateVerifier`, proven by `proofs/near` and
   `proofs/stellar`), to the interfaces of `design/2026-10-03-near-stellar-interfaces.md`. Solana is built from
   Ethereum to its vault, the vault's checkpoints, stall recovery and snapshot exit included (2026-10-03); its state
-  verifier on Ethereum is not built, and can ship only once Alpenglow reaches mainnet
-  (`design/2026-10-03-solana-state-proof.md` has the researched plan and a native prototype in `proofs/solana-state`).
+  verifier on Ethereum is not built, and can ship only once Alpenglow reaches mainnet. Its build waits for that (the
+  owner's call on 2026-10-04; `design/2026-10-03-solana-state-proof.md` has the researched plan, a native prototype in
+  `proofs/solana-state`, and a real devnet certificate verified on Ethereum).
   HyperEVM waits on Hyperliquid, since every header's state root is zero. The Stage B spec's section 8 has each
   chain's status, and its section 6 the build order.
 - Of Stage C, NEAR and Stellar are built (above). Avalanche, Hedera and Cardano were researched on 2026-10-01
   (`design/2026-10-01-stage-c-research.md`, summarized in the Stage B spec's section 8) and wait on the owner's calls.
+- Ethereum's L2s were researched on 2026-10-04 (`design/2026-10-04-l2-research.md`): their own tokens are about 0.6% of
+  the holdable universe, none investable for the flagship, and no optimistic rollup is final on Ethereum within the
+  hub's 6-hour `GRACE`. The record recommends building nothing for them.
+- Eleven more chains with a top-100 coin were researched on 2026-10-04 (`design/2026-10-04-chain-research.md`;
+  memecoin chains are out, the owner's call). None reaches the 0.2% floor. Sui, Injective, Aptos and VeChain pass the
+  rule and are buildable; Cronos, ICP and TON pass it but wait on the owner's calls; Algorand needs a ruling on the
+  rule; Bittensor and Filecoin wait on their chains; Ethereum Classic fails.
 
 For more:
 - `ARCHITECTURE.md`: the design as built, Stage A and Stage B.

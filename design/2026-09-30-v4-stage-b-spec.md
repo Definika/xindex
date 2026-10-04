@@ -937,15 +937,19 @@ deterministic-finality rule. The record, with every source, is `design/2026-10-0
 | Chain | Deterministic finality | Its state, proven on Ethereum | Status |
 |---|---|---|---|
 | Avalanche C-Chain | no as written: probabilistic safety, though accepted blocks never revert | nothing on mainnet signs the validator set's changes | waits on Ava Labs, and on the owner's reading of the rule |
-| NEAR | yes | a zkVM proof of each epoch's ed25519 approvals, then SHA-256 paths to an `attest` result | buildable; no production client exists |
-| Stellar | yes | a zkVM proof of a Tier 1 quorum's EXTERNALIZE signatures, then the `attest` call's result | buildable; Tier 1's changes have no on-chain anchor |
+| NEAR | yes | a zkVM proof of each epoch's ed25519 approvals, then SHA-256 paths to an `attest` result | built (4 October 2026) |
+| Stellar | yes | a zkVM proof of a Tier 1 quorum's EXTERNALIZE signatures, then the `attest` call's result | built (4 October 2026); Tier 1's changes have no on-chain anchor |
 | Hedera | yes, under a permissioned council | hinTS (BLS12-381) block proofs, switched off on mainnet until about November 2026 | waits on Hedera's TSS cutover, and on the owner accepting the council |
 | Cardano | no: Praos, and Peras too, are probabilistic | Mithril certifies inclusion only, under operator-held genesis keys | fails the rule as written |
 
 Every one of them can verify P1 and P2 but Cardano, which has no BN254 and would need an unaudited wrapper of both
-proofs over BLS12-381. None of the five is built: NEAR and Stellar each need a finality statement, its zk proof, a
-state verifier and a vault in the chain's own language, the work Solana needs, and the owner has three decisions to
-make first (the record's summary lists them).
+proofs over BLS12-381. NEAR and Stellar are built, each with a finality statement, its zk proof, a state verifier and
+a vault in the chain's own language (the note above). The other three wait on the owner's decisions, which the record's
+summary lists.
+
+**More chains, 4 October 2026.** Ethereum's L2s (`design/2026-10-04-l2-research.md`: build nothing) and eleven more
+chains with a top-100 coin (`design/2026-10-04-chain-research.md`: Sui, Injective, Aptos and VeChain pass and are
+buildable, none reaches the floor) were researched to the same rule.
 
 The hackathon demonstration is unaffected: none of its chains is a Stage C chain. Its state verifiers are stubs for
 Solana and HyperEVM, and the real `BnbStateVerifier` for its second index, of WETH and BNB (`demo/README.md`).

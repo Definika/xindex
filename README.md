@@ -878,7 +878,8 @@ test/Security.t.sol           regression tests for the security review findings 
 test/mocks/                   mock tokens, a strict Universal Router, mock verifiers, V3 pools for the testnet script, the
                               market fixture, with their own tests
 test/fixtures/                real BNB Chain, Ethereum and TRON data for the Stage B verifiers, each with the generate.py that rebuilds it,
-                              and NEAR's and Stellar's test anchors for DeployStateVerifier (their chains' data is under proofs/)
+                              NEAR's and Stellar's test anchors for DeployStateVerifier (their chains' data is under proofs/), and
+                              Solana devnet's Alpenglow certificate for EIP-2537 (proofs/solana-state's eip2537_fixture)
 test/fork/                    mainnet fork tests: real V3 and V4 pools, λ rebalancing and security regressions on real tokens
 script/                       Deploy, ConfigureWhitelist, DeployVault, DeployStateVerifier, ConfigureChains, MainnetAddresses, ScriptUtils
 script/interfaces/            the Safe, WETH, Uniswap and Groth16-verifier calls the scripts make
@@ -896,7 +897,8 @@ prototype/                    the proving prototype, with SP1's Groth16 verifier
 vendor/risc0-ethereum/        RISC Zero's Groth16 verifier, vendored unchanged at v3.0.1
 demo/                         the hackathon's testnet demonstration, with stub verifiers for some or all of the proofs; never for a mainnet
 design/                       the v4 design (its PDF and the builder), the Stage A and B specs, the proving prototype,
-                              the WBT check, the hackathon plan, the Stage C research, and the analysis scripts
+                              the WBT check, the hackathon plan, the Stage C, Solana, L2 and other chains'
+                              research, and the analysis scripts
 audit/                        the security reviews and their PoCs, their triage, and the two retirement records
 aderyn.toml                   Aderyn's configuration: the rules the design rejects, each with its reason
 ```
