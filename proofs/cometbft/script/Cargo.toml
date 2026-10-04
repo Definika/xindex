@@ -1,0 +1,20 @@
+[package]
+name = "xindex-cometbft-script"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "The CometBFT state verifier's host: runs the program in execute mode on a real input, prints its key, and proves on a GPU or the prover network"
+default-run = "cometbft"
+
+[[bin]]
+name = "cometbft"
+path = "src/main.rs"
+
+[dependencies]
+sp1-sdk = { version = "6.0.1", features = ["blocking"] }
+xindex-cometbft = { path = "../statement", features = ["json"] }
+serde_json = "1"
+hex = "0.4"
+
+[build-dependencies]
+sp1-build = "6.0.1"
