@@ -202,7 +202,8 @@ contract HybridHubTest is HybridTest {
         vm.warp(deadline + 1);
         IHybridHubTypes.ChainProof[] memory lying = _chainProof(block.timestamp, amounts[1]);
         bytes32 honest = vault.intakeDigest(address(hub), intakeId);
-        vm.expectRevert(); // the preimage claims the full amount: its hash is not the vault's
+        // The preimage claims the full amount: its hash is not the vault's (C1-06: the very error, no other).
+        vm.expectPartialRevert(IHybridHubTypes.DigestMismatch.selector);
         hub.settleOrder(orderId, lying);
         IHybridHubTypes.ChainProof[] memory ragged = _chainProof(block.timestamp, amounts[1] - 1);
         ragged[0].totals = new uint256[](2);

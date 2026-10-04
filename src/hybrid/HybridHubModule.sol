@@ -225,6 +225,8 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
         if (_fill.status == FillStatus.Settled) _releaseBond();
         if (_fill.status != FillStatus.None) revert WrongFillStatus(_fill.status);
         uint256 supply = _shareSupply();
+        // An empty index posts no bond and owes no delivery: a fill there would only hold or reprice a locked seed (A2-02).
+        if (supply == 0 && _lockedShares != 0) revert ZeroShares();
         (uint256 lambda, uint256[] memory units,, uint256[] memory amountsIn) = _previewRebalance(supply);
         _checkBounds(amountsIn, maxAmountsIn);
         _checkMovingChains(units);

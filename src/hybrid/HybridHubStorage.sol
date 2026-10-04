@@ -215,7 +215,9 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
         revert NotAVaultChain(chainId);
     }
 
-    /// @dev An EVM vault chain's address in its 32-byte form; Stage B's vaults all run on EVM chains.
+    /// @dev The low 20 bytes of a 32-byte id: an EVM vault's address, or a vault token's, which the factory refuses
+    ///      any wider (A3-04). A 32-byte vault id elsewhere (NEAR, Stellar, Sui, Aptos, Solana) is passed so too, and
+    ///      each chain's state verifier compares it with the low 20 bytes of the vault it was built for.
     function _vaultAddress(bytes32 value) internal pure returns (address) {
         return address(uint160(uint256(value)));
     }

@@ -194,6 +194,27 @@ contract HybridIndexFactoryTest is HybridTest {
         assertEq(factory.referenceSupply(native), supplies[0]);
     }
 
+    /// @dev A3-04: every vault's digests carry a token as 20 bytes, and the hub reads a token id's low 20 bytes, so an id
+    ///      any wider is refused at listing. Before, `bytes32(1 << 160)` listed beside the native coin's id 0 named the
+    ///      same vault token twice: one deposit counted for both components, and the second one's burns never paid.
+    function test_A304_aVaultTokenIdIsTwentyBytes() public {
+        vm.startPrank(owner);
+        for (uint256 bit = 160; bit < 256; bit += 19) {
+            bytes32 wide = bytes32(uint256(1) << bit);
+            vm.expectRevert(abi.encodeWithSelector(IHybridIndexFactory.InvalidTokenId.selector, wide));
+            factory.proposeVaultListing(chainId, wide, 1e24);
+        }
+        bytes32 widest = bytes32(type(uint256).max);
+        vm.expectRevert(abi.encodeWithSelector(IHybridIndexFactory.InvalidTokenId.selector, widest));
+        factory.proposeVaultListing(chainId, widest, 1e24);
+        bytes32 twenty = bytes32(uint256(type(uint160).max));
+        factory.proposeVaultListing(chainId, twenty, 1e24);
+        (uint256 c, bytes32 id) = factory.vaultToken(factory.vaultTokenId(chainId, twenty));
+        assertEq(c, chainId);
+        assertEq(id, twenty);
+        vm.stopPrank();
+    }
+
     // ---------------------------------------------------------------------
     // freeze
     // ---------------------------------------------------------------------

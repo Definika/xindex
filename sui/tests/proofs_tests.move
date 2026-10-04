@@ -103,7 +103,7 @@ fun sp1_refuses_another_program() {
     proofs::verify_sp1(&flip(f::sp1_program_key(), 31), &f::sp1_public_values(), &f::sp1_proof());
 }
 
-#[test, expected_failure]
+#[test, expected_failure(abort_code = proofs::EInvalidProof)]
 fun sp1_refuses_another_point() {
     proofs::verify_sp1(&f::sp1_program_key(), &f::sp1_public_values(), &flip(f::sp1_proof(), 4 + 96 + 10));
 }
@@ -170,12 +170,12 @@ fun risc0_refuses_a_long_seal() {
     proofs::verify_risc0(&f::risc0_image_id(), &f::risc0_journal(), &s);
 }
 
-#[test, expected_failure]
+#[test, expected_failure(abort_code = proofs::EInvalidProof)]
 fun risc0_refuses_another_c() {
     proofs::verify_risc0(&f::risc0_image_id(), &f::risc0_journal(), &flip(f::risc0_seal(), 200));
 }
 
-#[test, expected_failure]
+#[test, expected_failure(abort_code = proofs::EInvalidProof)]
 fun risc0_refuses_another_b() {
     proofs::verify_risc0(&f::risc0_image_id(), &f::risc0_journal(), &flip(f::risc0_seal(), 100));
 }

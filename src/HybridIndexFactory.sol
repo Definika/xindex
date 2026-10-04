@@ -27,6 +27,7 @@ contract HybridIndexFactory is IndexFactory, IHybridIndexFactory {
     address public immutable HYBRID_IMPLEMENTATION;
 
     bytes32 private constant VAULT_TOKEN_DOMAIN = keccak256("xindex.v4.vault-token");
+    uint256 private constant ADDRESS_BITS = 160;
 
     struct ChainProposal {
         bytes32 vault;
@@ -101,6 +102,8 @@ contract HybridIndexFactory is IndexFactory, IHybridIndexFactory {
     /// @inheritdoc IHybridIndexFactory
     function proposeVaultListing(uint256 chainId, bytes32 tokenId, uint256 supply) external onlyOwner {
         if (_chains[chainId].vault == bytes32(0)) revert UnknownChain(chainId);
+        // Every vault's digests carry a token as 20 bytes, and the hub reads an id's low 20 (A3-04).
+        if (uint256(tokenId) >> ADDRESS_BITS != 0) revert InvalidTokenId(tokenId);
         address token = vaultTokenId(chainId, tokenId);
         if (_tokenChain[token] == 0) {
             _tokenChain[token] = chainId;

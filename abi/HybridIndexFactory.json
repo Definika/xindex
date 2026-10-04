@@ -1996,6 +1996,17 @@
   },
   {
     "type": "error",
+    "name": "InvalidTokenId",
+    "inputs": [
+      {
+        "name": "tokenId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "LengthMismatch",
     "inputs": []
   },

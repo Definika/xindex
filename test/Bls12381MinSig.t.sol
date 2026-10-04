@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {Bls12381MinSig} from "../src/libraries/Bls12381MinSig.sol";
 import {SuiProofHarness} from "./mocks/SuiProofHarness.sol";
 import {SuiWriter} from "./utils/SuiWriter.sol";
@@ -49,7 +50,7 @@ contract Bls12381MinSigTest is SuiWriter {
     }
 
     function test_hashToG1_theTagIsAtMost255Bytes() public {
-        vm.expectRevert();
+        vm.expectRevert(abi.encodeWithSelector(SafeCast.SafeCastOverflowedUintDowncast.selector, 8, 256));
         h.hashToG1("abc", new bytes(256));
         h.hashToG1("abc", new bytes(255));
     }

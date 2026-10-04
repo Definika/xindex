@@ -66,6 +66,9 @@ interface IHybridIndexFactory is IIndexFactory {
     error VaultFixed(uint256 chainId, bytes32 vault);
     /// @notice `chainId` is not registered.
     error UnknownChain(uint256 chainId);
+    /// @notice A vault token id wider than 20 bytes: every vault's digests carry a token as an address, and the hub
+    ///         reads an id's low 20 bytes, so a wider one would name the same token as another (A3-04).
+    error InvalidTokenId(bytes32 tokenId);
     /// @notice `implementation` is not a HybridHub built for this factory.
     error NotFactoryTemplate(address implementation);
     /// @notice The proposal `id`, executable from `eta`, is still pending or executable.

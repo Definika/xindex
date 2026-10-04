@@ -283,7 +283,8 @@ contract HybridHubRebalanceTest is HybridTest {
             abi.encodeWithSelector(IHybridHubTypes.DeliveryShort.selector, native, deliveries[1] - 1, deliveries[1])
         );
         hub.settleRebalance(_proofOf(deliveries[1] - 1));
-        vm.expectRevert(); // a preimage claiming the full delivery does not hash to the vault's digest
+        // A preimage claiming the full delivery does not hash to the vault's digest (C1-06: the very error, no other).
+        vm.expectPartialRevert(IHybridHubTypes.DigestMismatch.selector);
         hub.settleRebalance(_proofOf(deliveries[1]));
     }
 
@@ -380,7 +381,8 @@ contract HybridHubRebalanceTest is HybridTest {
         IHybridHubTypes.ChainProof memory honest = _proofOf(deliveries[1])[0];
         vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.NotAContradiction.selector, chainId));
         hub.slashRebalance(chainId, 2, honest);
-        vm.expectRevert(); // an open intake's preimage does not hash to the settled digest
+        // An open intake's preimage does not hash to the settled digest (C1-06: the very error, no other).
+        vm.expectPartialRevert(IHybridHubTypes.DigestMismatch.selector);
         hub.slashRebalance(chainId, 1, honest);
 
         // A forged state: the same intake, settled, a wei short.
@@ -639,6 +641,24 @@ contract HybridHubRebalanceTest is HybridTest {
         assertEq(hub.fill().bond, 0);
         hub.settleRebalance(_oneEmpty());
         assertEq(hub.rebalanceNonce(), 1);
+    }
+
+    /// @dev A2-02: an empty index whose creator's seed is locked takes no fill. There a fill posts no bond and owes no
+    ///      delivery, so a stranger could take one for free and hold the seed's claim behind it, or move the units the
+    ///      seed was priced at. Once the seed is claimed, the index is no longer empty and fills as any other.
+    function test_A202_anEmptyIndexTakesNoFillWhileItsSeedIsLocked() public {
+        vm.prank(minter);
+        hub.redeem(99e18, minter, new bytes32[](1), 0);
+        vm.prank(executor);
+        hub.redeem(1e18, executor, new bytes32[](1), 0);
+        _liveAuction(true);
+        _settledOrder(hub, minter, 50e18);
+        assertEq(hub.totalSupply(), 0);
+        bytes32[] memory r = new bytes32[](1);
+        r[0] = execRecipient;
+        vm.prank(executor);
+        vm.expectRevert(IHybridHubTypes.ZeroShares.selector);
+        hub.acceptRebalance(r, new uint256[](0));
     }
 
     /// @dev Three revisions of one supply open a band wider than the step (two leave the centred ratio at 1.004988,
