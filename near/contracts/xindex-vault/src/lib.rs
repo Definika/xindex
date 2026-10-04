@@ -372,7 +372,12 @@ impl Vault {
             // snapshot at that checkpoint never pays twice what such a message already paid (VLT-3).
             check(block <= self.checkpoint.block, Error::NotCheckpointed);
         }
-        check(self.used.insert(id), Error::AlreadyDelivered);
+        check(!self.used.contains(&id), Error::AlreadyDelivered);
+        // A cut taken on one proof moves no mark (VLT-4), so it stays deliverable on both, which moves the mark past an
+        // older raise; until then a replay on one proof only applies it again (A3-02). A freeze is used up at once.
+        if both || m.kind == FREEZE {
+            self.used.insert(id);
+        }
         // Only a message on both proofs: one broken proof system could forge a one-proof freeze, which no honest
         // successor could prove again (LG-3).
         if both {

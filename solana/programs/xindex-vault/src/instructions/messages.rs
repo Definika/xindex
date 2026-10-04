@@ -438,7 +438,8 @@ pub struct DeliverGovernance<'info> {
     pub payer: Signer<'info>,
     #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, Config>,
-    #[account(init, payer = payer, space = 8 + Used::INIT_SPACE, seeds = [USED_SEED, abi::message_id(&payload).as_ref()], bump)]
+    /// Taken if needed: a cut first taken on one proof may come again (A3-02); the handler refuses everything else.
+    #[account(init_if_needed, payer = payer, space = 8 + Used::INIT_SPACE, seeds = [USED_SEED, abi::message_id(&payload).as_ref()], bump)]
     pub used: Account<'info, Used>,
     pub system_program: Program<'info, System>,
 }
@@ -460,7 +461,14 @@ pub fn handle_deliver_governance<'info>(
     )?;
     let block = proofs.block;
     let accounts = ctx.accounts;
-    accounts.used.bump = ctx.bumps.used;
+    // A message runs once. A cut taken on one proof moves no mark (VLT-4), so it stays deliverable on both, which moves
+    // the mark past an older raise; until then a replay on one proof only applies it again (A3-02). A freeze is used up
+    // at once.
+    let used = &mut accounts.used;
+    require!(!used.taken || used.open, VaultError::AlreadyDelivered);
+    used.bump = ctx.bumps.used;
+    used.taken = true;
+    used.open = !both && m.kind != FREEZE;
     let config = &mut accounts.config;
     // The factory's nonce only rises: an older message of a kind, delivered late, cannot undo a newer one (SOL-3). Only
     // one on both proofs moves the mark, so a single broken proof system cannot lock the factory out with a forged

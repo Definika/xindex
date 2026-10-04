@@ -560,7 +560,9 @@ public fun deliver(
         assert!(block <= vault.checkpoint.block, ENotCheckpointed);
     };
     assert!(!vault.used.contains(id), EAlreadyDelivered);
-    vault.used.add(id, true);
+    // A cut taken on one proof moves no mark (VLT-4), so it stays deliverable on both, which moves the mark past an
+    // older raise; until then a replay on one proof only applies it again (A3-02). A freeze is used up at once.
+    if (both || kind == FREEZE) vault.used.add(id, true);
     // Only a message on both proofs: one broken proof system could forge a one-proof freeze, which no honest successor
     // could prove again (LG-3).
     if (both) vault.last_message = id;

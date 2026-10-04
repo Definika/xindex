@@ -316,6 +316,49 @@ fun test_sol3_an_older_freezer_change_cannot_undo_a_newer_one() {
     t.end();
 }
 
+fun pending_cap(t: &mut T): u64 {
+    let v = t.take(harness::relayer());
+    let (_, ready_at) = vault::pending(&v, CAP_UPDATE);
+    harness::put(v);
+    ready_at
+}
+
+/// A3-02, A4-03: a cut taken first on one proof moves no mark, so it stays deliverable on both, which moves the mark
+/// and drops an older raise waiting under its key. Before, the one-proof delivery used up the id, and the older raise,
+/// queued behind it, undid the newer cut a week later.
+#[test]
+fun test_a302_a403_a_cut_on_one_proof_still_moves_the_mark_on_both() {
+    let mut t = harness::new();
+    let cut = t.govern(CAP_UPDATE, harness::cap_body(500_000 * ONE, ONE), 11, true, false);
+    assert!(nonces(&mut t) == vector[0, 0, 0]);
+    t.govern(CAP_UPDATE, harness::cap_body(2_000_000 * ONE, 10 * ONE), 10, true, true);
+    assert!(pending_cap(&mut t) != 0);
+    t.deliver_by(&xindex_vault::fixtures::hub_factory(), cut, true, true);
+    assert!(nonces(&mut t) == vector[11, 0, 0]);
+    assert!(pending_cap(&mut t) == 0);
+    let (cap, _) = cap_of(&mut t);
+    assert!(cap == 500_000 * ONE);
+    t.end();
+}
+
+/// Once on both proofs, the cut is used up.
+#[test, expected_failure(abort_code = vault::EAlreadyDelivered)]
+fun test_a302_a_cut_on_both_proofs_is_used_up() {
+    let mut t = harness::new();
+    let cut = t.govern(CAP_UPDATE, harness::cap_body(500_000 * ONE, ONE), 11, true, true);
+    t.deliver_by(&xindex_vault::fixtures::hub_factory(), cut, true, false);
+    t.end();
+}
+
+/// A freeze on one proof is used up at once: delivered again, it would re-arm the freeze.
+#[test, expected_failure(abort_code = vault::EAlreadyDelivered)]
+fun test_a302_a_freeze_on_one_proof_is_used_up() {
+    let mut t = harness::new();
+    let freeze = t.govern(FREEZE, vector[], 2, true, false);
+    t.deliver_by(&xindex_vault::fixtures::hub_factory(), freeze, true, false);
+    t.end();
+}
+
 #[test, expected_failure(abort_code = vault::EStaleGovernance)]
 fun test_vlt4_the_same_nonce_is_stale() {
     let mut t = harness::new();

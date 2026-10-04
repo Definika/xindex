@@ -543,6 +543,45 @@ fn test_vlt4_only_both_proofs_move_the_nonce() {
     assert_eq!(h.config().cap, CAP / 3);
 }
 
+/// A3-02, A4-03 (B3-03 here): a cut taken first on one proof moves no mark, so it stays deliverable on both, which
+/// moves the mark and drops an older raise waiting under its key. Before, the one-proof delivery used up the id, and
+/// the older raise, queued behind it, undid the newer cut a week later.
+#[test]
+fn test_a302_a403_a_cut_on_one_proof_still_moves_the_mark_on_both() {
+    let mut h = H::ready();
+    let raise = cap_body(CAP * 2, FLOOR * 10);
+    let older_raise = payload_with(CAP_UPDATE, FACTORY, 10, &raise);
+    let newer_cut = payload_with(CAP_UPDATE, FACTORY, 11, &cap_body(CAP / 2, FLOOR));
+    h.deliver(&newer_cut, By::P1);
+    assert_eq!(h.config().cap, CAP / 2);
+    assert_eq!(h.config().cap_nonce, 0, "one proof moves no mark");
+    h.deliver(&older_raise, By::Both);
+    assert_ne!(h.config().pending_cap.ready_at, 0, "the older raise waits");
+    h.deliver(&newer_cut, By::Both);
+    assert_eq!(h.config().cap_nonce, 11);
+    assert_eq!(h.config().pending_cap.ready_at, 0, "and is dropped");
+    h.warp(GOVERNANCE_DELAY as u64);
+    assert_eq!(
+        h.v()
+            .try_apply_change(&(CAP_UPDATE as u32), &bytes(&h.env, &raise)),
+        Err(Ok(code(VaultError::NoPendingChange)))
+    );
+    assert_eq!(h.config().cap, CAP / 2);
+    // Once on both proofs, the cut is used up, on either path.
+    err(
+        h.try_deliver(&newer_cut, By::Both),
+        VaultError::AlreadyDelivered,
+    );
+    err(
+        h.try_deliver(&newer_cut, By::P1),
+        VaultError::AlreadyDelivered,
+    );
+    // A freeze on one proof is used up at once: delivered again, it would re-arm the freeze.
+    let freeze = h.payload(FREEZE, FACTORY, &[]);
+    h.deliver(&freeze, By::P1);
+    err(h.try_deliver(&freeze, By::P1), VaultError::AlreadyDelivered);
+}
+
 /// VLT-2: a new freezer waits a week too, and the freezer cannot cancel its own replacement; a freeze holds every
 /// waiting change but that one.
 #[test]

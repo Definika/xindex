@@ -136,9 +136,14 @@ pub struct Owed {
     pub bump: u8,
 }
 
-/// A delivered message: its existence at the address its id derives is the mark.
+/// A delivered message: its existence at the address its id derives is the mark, but for a governance cut taken on
+/// one proof only, which moved no nonce mark and so stays `open` to come again, on both (A3-02).
 #[account]
 #[derive(InitSpace)]
 pub struct Used {
     pub bump: u8,
+    /// Whether a governance message ran here; every other kind's mark is created with the message.
+    pub taken: bool,
+    /// A cut taken on one proof only, which may still run again.
+    pub open: bool,
 }

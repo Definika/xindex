@@ -821,6 +821,35 @@ fn test_vlt2_a_loosening_waits_and_the_freezer_can_stop_it() {
     assert_eq!(h.config().outflow_floor, 50 * SOL);
 }
 
+/// A3-02, A4-03: a cut taken first on one proof moves no mark, so it stays deliverable on both, which moves the mark
+/// and drops an older raise waiting under its key. Before, the one-proof delivery created the used mark, and the older
+/// raise, queued behind the cut, undid it a week later. Once on both proofs the cut is used up; a freeze, at once.
+#[test]
+fn test_a302_a403_a_cut_on_one_proof_still_moves_the_mark_on_both() {
+    let (mut h, _) = Harness::ready();
+    let older_raise = h.payload(CAP_UPDATE, FACTORY, &cap_body(CAP * 2, FLOOR * 10));
+    let newer_cut = h.payload(CAP_UPDATE, FACTORY, &cap_body(CAP / 2, FLOOR));
+    let mark = h.config().cap_nonce;
+    h.deliver_governance(newer_cut.clone(), By::P1).expect_ok();
+    assert_eq!(h.config().cap, CAP / 2);
+    assert_eq!(h.config().cap_nonce, mark, "one proof moves no mark");
+    h.deliver_governance(older_raise, By::Both).expect_ok();
+    assert_ne!(h.config().pending_cap.ready_at, 0, "the older raise waits");
+    h.deliver_governance(newer_cut.clone(), By::Both)
+        .expect_ok();
+    assert_eq!(h.config().cap_nonce, h.nonce);
+    assert_eq!(h.config().pending_cap.ready_at, 0, "and is dropped");
+    assert_eq!(h.config().cap, CAP / 2);
+    h.deliver_governance(newer_cut.clone(), By::Both)
+        .expect_code(VaultError::AlreadyDelivered);
+    h.deliver_governance(newer_cut, By::P1)
+        .expect_code(VaultError::AlreadyDelivered);
+    let freeze = h.payload(FREEZE, FACTORY, &[]);
+    h.deliver_governance(freeze.clone(), By::P1).expect_ok();
+    h.deliver_governance(freeze, By::P1)
+        .expect_code(VaultError::AlreadyDelivered);
+}
+
 /// VLT-4: only a message on both proofs moves the mark. One proof, even with a nonce far ahead, may lower the cap but
 /// cannot lock the factory's later messages out.
 #[test]

@@ -279,6 +279,41 @@ module xindex_vault::governance_tests {
         t.govern(FREEZER_CHANGE, address_body(@0x5c5c), 4, true, true);
     }
 
+    #[test]
+    /// A3-02, A4-03: a cut taken first on one proof moves no mark, so it stays deliverable on both, which moves the
+    /// mark and drops an older raise waiting under its key. Before, the one-proof delivery used up the id, and the older
+    /// raise, queued behind it, undid the newer cut a week later.
+    fun test_a302_a403_a_cut_on_one_proof_still_moves_the_mark_on_both() {
+        let t = harness::new();
+        let cut = t.govern(CAP_UPDATE, harness::cap_body(500_000 * ONE, ONE), 11, true, false);
+        assert!(vault::nonces(t.vault()) == vector[0, 0, 0]);
+        t.govern(CAP_UPDATE, harness::cap_body(2_000_000 * ONE, 10 * ONE), 10, true, true);
+        let (_, ready_at) = vault::pending(t.vault(), CAP_UPDATE);
+        assert!(ready_at != 0);
+        t.deliver_by(&xindex_vault::fixtures::hub_factory(), cut, true, true);
+        assert!(vault::nonces(t.vault()) == vector[11, 0, 0]);
+        let (_, ready_at) = vault::pending(t.vault(), CAP_UPDATE);
+        assert!(ready_at == 0);
+        let (cap, _) = cap_of(&t);
+        assert!(cap == 500_000 * ONE);
+    }
+
+    #[test, expected_failure(abort_code = vault::EAlreadyDelivered, location = vault)]
+    /// Once on both proofs, the cut is used up.
+    fun test_a302_a_cut_on_both_proofs_is_used_up() {
+        let t = harness::new();
+        let cut = t.govern(CAP_UPDATE, harness::cap_body(500_000 * ONE, ONE), 11, true, true);
+        t.deliver_by(&xindex_vault::fixtures::hub_factory(), cut, true, false);
+    }
+
+    #[test, expected_failure(abort_code = vault::EAlreadyDelivered, location = vault)]
+    /// A freeze on one proof is used up at once: delivered again, it would re-arm the freeze.
+    fun test_a302_a_freeze_on_one_proof_is_used_up() {
+        let t = harness::new();
+        let freeze = t.govern(FREEZE, vector[], 2, true, false);
+        t.deliver_by(&xindex_vault::fixtures::hub_factory(), freeze, true, false);
+    }
+
     #[test, expected_failure(abort_code = vault::EStaleGovernance, location = vault)]
     fun test_vlt4_the_same_nonce_is_stale() {
         let t = harness::new();

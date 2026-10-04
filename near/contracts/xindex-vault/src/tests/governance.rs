@@ -103,6 +103,52 @@ fn test_vlt2_a_loosening_change_waits_and_the_freezer_may_drop_it() {
     });
 }
 
+/// A3-02, A4-03: a cut taken first on one proof moves no mark, so it stays deliverable on both, which moves the mark
+/// and drops an older raise waiting under its key. Before, the one-proof delivery used up the id, and the older raise,
+/// queued behind it, undid the newer cut a week later. Once on both proofs the cut is used up; a freeze, at once.
+#[test]
+fn test_a302_a403_a_cut_on_one_proof_still_moves_the_mark_on_both() {
+    let mut t = T::new();
+    let factory = h20(&t.f["factory"]);
+    let older_raise = T::payload_with(
+        CAP_UPDATE,
+        &factory,
+        &cap_body(2_000_000 * ONE, 10 * ONE),
+        10,
+        NEAR_TESTNET,
+    );
+    let newer_cut = T::payload_with(
+        CAP_UPDATE,
+        &factory,
+        &cap_body(500_000 * ONE, ONE),
+        11,
+        NEAR_TESTNET,
+    );
+    t.deliver_by(&factory, &newer_cut, true, false);
+    assert_eq!(t.v.config().nonces, [0, 0, 0], "one proof moves no mark");
+    t.deliver_by(&factory, &older_raise, true, true);
+    assert_ne!(
+        t.v.config().pending_cap.ready_at,
+        0,
+        "the older raise waits"
+    );
+    t.deliver_by(&factory, &newer_cut, true, true);
+    let c = t.v.config();
+    assert_eq!(c.nonces[0], 11);
+    assert_eq!(c.pending_cap.ready_at, 0, "and is dropped");
+    assert_eq!(c.cap.0, 500_000 * ONE);
+    fails("AlreadyDelivered", || {
+        t.deliver_by(&factory, &newer_cut, true, true)
+    });
+    fails("AlreadyDelivered", || {
+        t.deliver_by(&factory, &newer_cut, true, false)
+    });
+    let freeze = t.govern(FREEZE, &[], true, false);
+    fails("AlreadyDelivered", || {
+        t.deliver_by(&factory, &freeze, true, false)
+    });
+}
+
 /// VLT-4 and SOL-3: a governance message must be newer than the last of its kind taken on both proofs, so an older
 /// message delivered late cannot undo a newer one; and only one on both proofs moves that mark, so one broken proof
 /// system cannot lock the factory out with a forged nonce.

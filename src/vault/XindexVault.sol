@@ -228,8 +228,7 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         if (loosening && blockNumber > _checkpoint.blockNumber) {
             revert NotCheckpointed(blockNumber, _checkpoint.blockNumber);
         }
-        if (used[id]) revert AlreadyDelivered(id);
-        used[id] = true;
+        _use(id, both, m.kind);
         // Only a message on both proofs: one broken proof system could forge a one-proof freeze, which no honest
         // successor could prove again (LG-3).
         if (both) lastMessage = id;
@@ -258,6 +257,14 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         // forge-lint: disable-next-line(reentrancy-events)
         emit MessageDelivered(id, m.kind, m.index);
         _indexMessage(m, id);
+    }
+
+    /// @dev A message runs once. A cut taken on one proof moves no mark (VLT-4), so it stays deliverable on both, which
+    ///      moves the mark past an older raise; until then a replay on one proof only applies it again (A3-02). A freeze
+    ///      is used up at once.
+    function _use(bytes32 id, bool both, uint8 kind) private {
+        if (used[id]) revert AlreadyDelivered(id);
+        if (both || kind == VaultMessages.FREEZE) used[id] = true;
     }
 
     function _checkRoute(VaultMessages.Message memory m) private view {

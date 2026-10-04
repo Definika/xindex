@@ -678,7 +678,9 @@ module xindex_vault::vault {
             assert!(block <= v.checkpoint.block, ENotCheckpointed);
         };
         assert!(!v.used.contains(id), EAlreadyDelivered);
-        v.used.add(id, true);
+        // A cut taken on one proof moves no mark (VLT-4), so it stays deliverable on both, which moves the mark past an
+        // older raise; until then a replay on one proof only applies it again (A3-02). A freeze is used up at once.
+        if (both || kind == FREEZE) v.used.add(id, true);
         // Only a message on both proofs: one broken proof system could forge a one-proof freeze, which no honest
         // successor could prove again (LG-3).
         if (both) v.last_message = id;

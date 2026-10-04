@@ -77,4 +77,8 @@ pub enum VaultError {
     RecoveryNotMultisig,
     #[msg("the freezer and the recovery proposer must be two accounts")]
     SameRole,
+    #[msg(
+        "the message already ran: only a cut taken on one proof may come again, on both (A3-02)"
+    )]
+    AlreadyDelivered,
 }

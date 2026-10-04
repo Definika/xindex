@@ -893,6 +893,41 @@ contract XindexVaultTest is VaultTestBase {
         assertGt(vault.frozenUntil(), block.timestamp);
     }
 
+    /// @dev A3-02, A4-03: a cut taken first on one proof moves no mark, so it must stay deliverable on both, which moves
+    ///      the mark and drops an older raise waiting under its key. Before, the one-proof delivery used up the id, the
+    ///      older raise delivered afterwards on both proofs was queued, and a week later it undid the newer cut.
+    function test_A302_A403_aCutOnOneProofStillMovesTheMarkOnBoth() public {
+        bytes32 capKey = bytes32(uint256(VaultMessages.CAP_UPDATE) << 160);
+        bytes memory raiseBody = abi.encode(bytes32(0), CAP * 2, FLOOR * 10);
+        bytes memory olderRaise = _payload(VaultMessages.CAP_UPDATE, factory, raiseBody);
+        bytes memory newerCut = _payload(VaultMessages.CAP_UPDATE, factory, abi.encode(bytes32(0), CAP / 2, FLOOR));
+        vault.deliver(_proof(factory, newerCut), "");
+        assertEq(vault.cap(address(0)), CAP / 2);
+        assertEq(vault.governanceNonce(capKey), 0, "one proof moves no mark");
+        // The older raise, still undelivered when the cut landed, is queued behind it ...
+        uint256 readyAt = block.timestamp + vault.GOVERNANCE_DELAY();
+        _deliver(factory, olderRaise);
+        assertTrue(vault.pendingChange(capKey) != bytes32(0));
+        // ... until the cut comes again on both proofs: the mark moves past the raise, and the raise is dropped.
+        _deliver(factory, newerCut);
+        assertEq(vault.governanceNonce(capKey), nonce);
+        assertEq(vault.pendingChange(capKey), bytes32(0));
+        vm.warp(readyAt);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NoPendingChange.selector, capKey));
+        vault.applyChange(VaultMessages.CAP_UPDATE, raiseBody, readyAt);
+        assertEq(vault.cap(address(0)), CAP / 2);
+        // Once on both proofs, the cut is used up: it comes neither again nor again on one proof.
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.AlreadyDelivered.selector, keccak256(newerCut)));
+        _deliver(factory, newerCut);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.AlreadyDelivered.selector, keccak256(newerCut)));
+        vault.deliver(_proof(factory, newerCut), "");
+        // A freeze on one proof is still used up at once: delivered again, it would re-arm the freeze.
+        bytes memory freeze = _payload(VaultMessages.FREEZE, factory, "");
+        vault.deliver(_proof(factory, freeze), "");
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.AlreadyDelivered.selector, keccak256(freeze)));
+        vault.deliver(_proof(factory, freeze), "");
+    }
+
     // ---------------------------------------------------------------------
     // digests
     // ---------------------------------------------------------------------

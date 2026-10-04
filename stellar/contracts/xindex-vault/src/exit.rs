@@ -155,7 +155,7 @@ pub fn deliver_recorded(env: &Env, payload: &Bytes, proof: &Bytes) {
     let slot = snapshot::sent_slot(&c, &id);
     let mark = read_hub(env, &cfg, &m.index, &[slot], proof)[0];
     require(env, mark != [0u8; 32], VaultError::NotRecorded);
-    messages::mark_used(env, &id);
+    messages::mark_used(env, &id, true);
     let id = BytesN::from_array(env, &id);
     MessageDelivered {
         id: id.clone(),

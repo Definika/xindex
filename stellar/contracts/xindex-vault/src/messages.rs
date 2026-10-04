@@ -62,15 +62,17 @@ pub fn read_cap(env: &Env, body: &[u8]) -> (u64, u64) {
     )
 }
 
-/// Marks the message used, so it never runs again.
-pub fn mark_used(env: &Env, id: &[u8; 32]) {
+/// Refuses a message already used, then marks it used when `keep`, so it never runs again.
+pub fn mark_used(env: &Env, id: &[u8; 32], keep: bool) {
     let key = DataKey::Used(BytesN::from_array(env, id));
     require(
         env,
         !env.storage().persistent().has(&key),
         VaultError::AlreadyDelivered,
     );
-    vault::put(env, &key, &true);
+    if keep {
+        vault::put(env, &key, &true);
+    }
 }
 
 /// Anyone: runs one `VaultMessage` the factory or an index emitted on Ethereum, which P1, P2 or both prove from
@@ -133,7 +135,9 @@ pub fn deliver(
     );
     let log = Log::of(env, &p, m.index, block);
     let id = log.id;
-    mark_used(env, &id);
+    // A cut taken on one proof moves no mark (VLT-4), so it stays deliverable on both, which moves the mark past an
+    // older raise; until then a replay on one proof only applies it again (A3-02). A freeze is used up at once.
+    mark_used(env, &id, both || m.kind == FREEZE);
     if let Some(proof) = proof1 {
         vault::verify_event(env, &cfg.p1, &log, proof);
     }
