@@ -47,7 +47,8 @@ Where the stages stand (none of v4 is deployed):
   - **Injective** and **VeChain** run `XindexVault` unchanged. Their state verifiers on Ethereum are built:
     `CometBftStateVerifier` (`proofs/cometbft`) and `VeChainStateVerifier` (`proofs/vechain`), the latter with
     `VeChainStakerAttester` on VeChain and its own deployment script (`vechain/`).
-  - **Aptos** is in progress: its Move vault and `AptosStateVerifier`.
+  - **Aptos** is built in both directions: the vault with P1 and P2 in Move (`aptos/`), and `AptosStateVerifier`
+    (`proofs/aptos`), whose inputs come from Aptos Labs' public database backups.
 
 For more:
 - `ARCHITECTURE.md`: the design as built, Stage A and Stage B.
@@ -494,13 +495,19 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   built Wasm), fmt and `cargo clippy --all-targets -- -D warnings`; Stellar's `stellar contract build`, then `cargo
   test`, fmt and `cargo clippy --all-targets -- -D warnings`; `proofs/near`'s `cargo test -p xindex-near-finality` and
   `proofs/stellar`'s `cargo test --release -p xindex-stellar`, each with fmt and clippy.
-- **Sui, Injective and VeChain.** The twin rule spans the EVM vault, Solana's, NEAR's, Stellar's and Sui's (and Aptos's
-  once built): a change to a vault's rule or a message goes into each.
+- **Sui, Aptos, Injective and VeChain.** The twin rule spans the EVM vault, Solana's, NEAR's, Stellar's, Sui's and
+  Aptos's: a change to a vault's rule or a message goes into each.
   - `sui/` is the Move twin. Its `Attestation` object's bytes are pinned against `SuiStateVerifier`'s
     (`test/SuiStateVerifier.vault.t.sol`). Its gates: `sui move build` (no warnings; one lint suppressed with its reason)
     and `sui move test`, with `SUI_CONFIG_DIR` set to a throwaway directory holding a keyless `client.yaml` (an empty
     keystore, no active address, one environment). Never run `sui client`, `sui keytool` or `sui start`: the CLI
     creates a key when it finds no configuration.
+  - `aptos/` is the other Move twin. Its `Attested` event is pinned against `AptosStateVerifier`'s statement
+    (`proofs/aptos/fixtures/synthetic.json`). Its gates: `aptos move compile --dev --fail-on-warning` and
+    `aptos move test --dev`. Never run the Aptos CLI's `init`, `account`, `key`, `publish`, `run` or `node`: they
+    create keys or touch a network. The vault object belongs to `0x0`, since any owner up an object's chain could
+    withdraw from its fungible store, and `attest` is an entry function only, so a transaction holds at most one
+    `Attested`.
   - `SuiStateVerifier`'s lag is 2 days from its committee's epoch start, since Sui's epochs last a day; `Bls12381MinSig`
     is `Bls12381`'s min-sig twin, and checks every length (BLS-1).
   - `CometBftStateVerifier` takes a hop only when more than 2/3 of the trusted set signs it, never ibc-go's third.

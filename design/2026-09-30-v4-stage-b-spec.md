@@ -948,8 +948,15 @@ a vault in the chain's own language (the note above). The other three wait on th
 summary lists.
 
 **More chains, 4 October 2026.** Ethereum's L2s (`design/2026-10-04-l2-research.md`: build nothing) and eleven more
-chains with a top-100 coin (`design/2026-10-04-chain-research.md`: Sui, Injective, Aptos and VeChain pass and are
-buildable, none reaches the floor) were researched to the same rule.
+chains with a top-100 coin (`design/2026-10-04-chain-research.md`: Sui, Injective, Aptos and VeChain pass, none
+reaches the floor) were researched to the same rule. The owner added the four that pass, built the same day to
+`design/2026-10-04-four-chains-interfaces.md`:
+- **Sui:** a Move vault with P1 and P2 inside it (`sui/`), and `SuiStateVerifier`, which checks the committee's BLS
+  certificates in Solidity, with no zkVM.
+- **Injective and VeChain:** `XindexVault` unchanged; `CometBftStateVerifier` and `VeChainStateVerifier`, each on an
+  SP1 statement. VeChain's weights are attested by `VeChainStakerAttester` on VeChain, since nothing public proves the
+  Staker's storage.
+- **Aptos:** `AptosStateVerifier`, on an SP1 statement over Aptos Labs' public backups, and a Move vault.
 
 The hackathon demonstration is unaffected: none of its chains is a Stage C chain. Its state verifiers are stubs for
 Solana and HyperEVM, and the real `BnbStateVerifier` for its second index, of WETH and BNB (`demo/README.md`).
