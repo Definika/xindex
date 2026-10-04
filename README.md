@@ -23,6 +23,13 @@ vault chain and for Solana, and the state verifiers of BNB Chain and TRON on Eth
   P1 and P2, on the shared Rust core `crates/xindex-core`, and their state verifiers on Ethereum, `NearStateVerifier`
   and `StellarStateVerifier`, proven by SP1 programs (`proofs/near`, `proofs/stellar`). Their vaults' deploy tooling
   on their own chains is not written yet.
+- **Sui** is complete in code in both directions (2026-10-04): its Move vault with P1 and P2 inside it (`sui/`), and
+  `SuiStateVerifier`, which checks Sui's committee certificates on Ethereum in Solidity, with no zkVM.
+- **Injective and VeChain** run `XindexVault` unchanged, and their state verifiers on Ethereum are built
+  (2026-10-04): `CometBftStateVerifier` and `VeChainStateVerifier`, proven by SP1 programs (`proofs/cometbft`,
+  `proofs/vechain`). VeChain adds `VeChainStakerAttester` on VeChain, and its own deployment script (`vechain/`).
+- **Aptos** is complete in code in both directions (2026-10-04): its Move vault with P1 and P2 inside it (`aptos/`),
+  and `AptosStateVerifier`, proven by an SP1 program (`proofs/aptos`) over Aptos Labs' public database backups.
 - **Solana** is complete from Ethereum to its vault: P1, P2, and the vault's checkpoints, stall recovery and snapshot
   exit. Its state verifier on Ethereum is not built, and can ship only once Alpenglow reaches mainnet.
 - **HyperEVM** cannot hold a vault while its headers' state root is zero (Stage B spec, section 8).
@@ -558,6 +565,19 @@ For an index holding vault coins (Stage B, not deployed; the Stage B spec has th
   the 24-hour lock and the mint cap. A new Tier 1 means a new Stellar verifier, through the 30-day rotation.
 - **A Stellar transaction holds 132 KB.** A message whose receipt proof is larger, which anyone can force by wrapping a
   permissionless call in a transaction of large logs, is delivered from the copy `resendMessage` emits in a clean one.
+  Sui's 128 KB transactions are handled the same way.
+- **Sui, Injective, VeChain and Aptos rest on unslashed stake too.** None of the four slashes a validator's principal
+  for signing a fork: Sui's 127 validators, Injective's 45 (both its slashing fractions read 0), VeChain's 101 and
+  Aptos's 85 are trusted as TRON's and Stellar's are, by more than two thirds of their stake, bounded by each coin's
+  cap, the 24-hour lock and the mint cap. Each chain also keeps powers over contracts: Sui's validators can deny
+  transactions to an object, as they did against the Cetus exploiter in 2025, and a stake vote once moved coins;
+  VeChain's 4-of-5 Executor sets consensus parameters; Aptos's and Injective's governance can upgrade their chains.
+- **VeChain's weights are attested, not proven.** Nothing public proves the Staker's storage, so a keeper sends
+  `VeChainStakerAttester.attest` each round a proof needs, and a new table is trusted once more than two thirds of the
+  trusted one's weight sign blocks after it, TRON's vouching rule.
+- **Aptos's inputs come from Aptos Labs' backups.** Signed ledger infos and accumulator proofs are not on Aptos's
+  public API, only in Aptos Labs' public database backups, every byte checked against signatures. If the backups stop,
+  a prover needs its own full node; a state is provable two to four hours after its `attest`.
 - **A mass slashing between two proofs lowers what a forger risks.** The statement counts each signer by the anchor's
   records, up to a day old, with a margin for the churn since. A validator slashed after the anchor still counts there
   as unslashed, and can no longer be slashed for signing a forgery; no churn limits how many are slashed. Such a
@@ -610,7 +630,8 @@ pinned fork block. Pull requests from forks get no secrets and skip the fork sui
 keyed RPC may throttle four fork suites run in parallel; run them with `-j 1` when a revert appears next to an HTTP 429.
 CI does not run Aderyn yet, so run it before pushing. Nor does it build the Rust and TRON parts: their builds, tests
 and rehearsal are in `crates/xindex-core/README.md`, `solana/README.md`, `near/README.md`, `stellar/README.md`,
-`proofs/README.md` (with `proofs/near` and `proofs/stellar`) and `tron/README.md`.
+`sui/README.md`, `aptos/README.md`, `vechain/README.md`, `proofs/README.md` (with `proofs/near`, `proofs/stellar`,
+`proofs/cometbft`, `proofs/vechain` and `proofs/aptos`) and `tron/README.md`.
 
 ### Deploy
 
@@ -661,14 +682,19 @@ shared, the broadcasting key or, for the multisig, not a contract, and a floor a
 are listed in the script; the anchor and P1's key come from `proofs/` (`p1-input check-state`, `p1 vkey`) and P2's
 image id from `proofs/p2` (`p2 image-id`). `DeployVault.checkDeployment` re-reads the wiring and the code hashes later.
 TRON's is deployed with `tron/deploy.mjs`, DeployVault's twin under Tron's compiler, with the same checks
-(`tron/README.md`). NEAR's and Stellar's vaults are Rust contracts deployed with their chains' own tools, which no
-script here drives yet: NEAR's vault, with P1 and P2 compiled in, goes to a keyless account fixed by its code and its
-initial state (NEP-616, `near/README.md`), and Stellar's P1, P2 and vault deploy as plain Wasm, every setting fixed in
-their constructors (`stellar/README.md`). On Ethereum each chain is added as below by its registry id: TRON's is
-728126428, and NEAR's and Stellar's are the first 8 bytes of `keccak256` of their CAIP-2 names
-(`design/2026-10-03-near-stellar-interfaces.md`). A chain holds a vault only once Ethereum can verify its state: today
-BNB Chain, TRON, NEAR and Stellar, whose state verifiers are built; section 8 of the Stage B spec has every other
-chain's status.
+(`tron/README.md`). Injective runs `DeployVault` unchanged, once SP1's and RISC Zero's Groth16 verifiers are deployed
+there from their own repositories; VeChain's goes up with `vechain/deploy.mjs`, which also deploys
+`VeChainStakerAttester` and clears every contract's Prototype master (`vechain/README.md`). NEAR's, Stellar's, Sui's
+and Aptos's vaults are deployed with their chains' own tools, which no script here drives yet: NEAR's vault, with P1
+and P2 compiled in, goes to a keyless account fixed by its code and its initial state (NEP-616, `near/README.md`);
+Stellar's P1, P2 and vault deploy as plain Wasm, every setting fixed in their constructors (`stellar/README.md`); Sui's
+package is published and made immutable in one transaction (`sui/README.md`), and Aptos's is published with an
+immutable upgrade policy (`aptos/README.md`). On Ethereum each chain is added as below by its registry id: TRON's is
+728126428, Injective's 1776 and VeChain's its genesis id, and NEAR's, Stellar's, Sui's and Aptos's are the first 8 bytes
+of `keccak256` of their CAIP-2 names (`design/2026-10-03-near-stellar-interfaces.md`,
+`design/2026-10-04-four-chains-interfaces.md`). A chain holds a vault only once Ethereum can verify its state: today
+BNB Chain, TRON, NEAR, Stellar, Sui, Injective, VeChain and Aptos, whose state verifiers are built; section 8 of the
+Stage B spec has every other chain's status.
 
 **The chain's state verifier** is deployed on Ethereum with `script/DeployStateVerifier.s.sol`, from an anchor that
 the fixture generator reads off the chain: BNB Chain's newest final epoch block and its validators' keys, or TRON's
@@ -689,14 +715,28 @@ assembled by hand from their generators' output and the program's key (`near vke
   network's passphrase. Nothing advances it: each proof carries its own ledger, at most a day old, and a new Tier 1 is
   a new verifier through the 30-day rotation.
 
-For both, the script refuses a registry id that does not pair with the Ethereum network: mainnet's on mainnet, the
-testnet's on Sepolia.
+The four chains of 4 October follow the same pattern, each anchor carrying the generator's chain data and the
+deployment's own ids (`design/2026-10-04-four-chains-interfaces.md`):
+- **Sui's** (`test/fixtures/sui/generate.py anchor`) is an epoch, its committee's keys and powers, and its start, with
+  the vault's object id and package id. The script refuses a committee Sui's `Committee::new` would refuse (a key not
+  the uncompressed form of its compressed one, keys out of order or named twice, powers not totalling 10,000) and an
+  epoch begun more than 20 hours ago; the verifier then stops two days after that start unless updated.
+- **Injective's** (`proofs/cometbft/fixtures/generate.py anchor`) is a header, refused when more than an hour old or on
+  the wrong network (`injective-1` with 1776, `injective-888` with 1439).
+- **VeChain's** (`proofs/vechain/fixtures/generate.py anchor`) is a staker table read at a finalized block, chosen after
+  the vault and the attester are deployed, refused when more than 6 hours old.
+- **Aptos's** (`proofs/aptos/fixtures/generate.py anchor`) is an epoch's validator set, refused when named more than 3
+  hours ago.
+
+For every chain the script refuses a registry id that does not pair with the Ethereum network: mainnet's on mainnet,
+the testnet's on Sepolia.
 
 ```bash
 python3 test/fixtures/bnb/generate.py https://bsc-rpc.publicnode.com anchor bnb-anchor.json
 STATE_CHAIN=bnb STATE_ANCHOR=bnb-anchor.json forge script script/DeployStateVerifier.s.sol --rpc-url mainnet --account deployer --sender <deployer> --broadcast
 # TRON: test/fixtures/tron/generate.py https://api.trongrid.io anchor tron-anchor.json, then STATE_CHAIN=tron
-# NEAR and Stellar: STATE_CHAIN=near or stellar, STATE_ANCHOR=<the file above>, STATE_SP1_VERIFIER=0x...
+# NEAR, Stellar, Injective, VeChain and Aptos: STATE_CHAIN=<chain>, STATE_ANCHOR=<the file above>, STATE_SP1_VERIFIER=0x...
+# Sui: STATE_CHAIN=sui, STATE_ANCHOR=<the file above>; it checks its committee's signatures itself
 ```
 
 During the chain's listing delay the owner and guardian review the anchor. `DeployStateVerifier.checkBnb` and
@@ -704,7 +744,8 @@ During the chain's listing delay the owner and guardian review the anchor. `Depl
 compared with the chain: the epoch block's hash and its validators' registered keys, or `listwitnesses` and the
 period's blocks. NEAR's and Stellar's verifiers hold their anchors in public fields, compared directly: the epoch, the
 producers' hash and the vault account against NEAR's RPC, or the quorum set's hash against Tier 1's published
-validators.
+validators. `checkSui`, `checkInjective`, `checkVeChain` and `checkAptos` confirm the four newer verifiers hold their
+anchor files' anchors; their code cannot be compared by hash, since their immutables are in it.
 
 **Adding the chain on Ethereum** goes through `script/ConfigureChains.s.sol`, or the equivalent calls through the Safe:
 `proposeChain` with the vault and the chain's state verifier, then, once the chain is registered, `proposeVaultListing`
@@ -866,19 +907,22 @@ src/MintRequests.sol          ownerless escrow of USDC/USDT-for-shares requests 
 src/HybridIndexFactory.sol    Stage B: IndexFactory plus the chain registry, vault-coin listings, the chain freeze and the template choice
 src/HybridHub.sol             Stage B: an index of Ethereum tokens and vault coins: orders, burns, claims; delegates the rest to its module
 src/hybrid/                   Stage B: the hub's module and extension (by DELEGATECALL), the storage all three share, share operations
-src/vault/                    Stage B: XindexVault, the ownerless vault on an EVM chain, and VaultSnapshot, its snapshot-exit library
+src/vault/                    Stage B: XindexVault, the ownerless vault on an EVM chain, VaultSnapshot, its snapshot-exit library,
+                              and VeChainStakerAttester, which attests VeChain's stake weights
 src/verifiers/                Stage B: P1 (SP1) and P2 (RISC Zero) on an EVM vault chain, the state reader, and on
-                              Ethereum the state of BNB Chain, TRON, NEAR and Stellar
+                              Ethereum the state of BNB Chain, TRON, NEAR, Stellar, Sui, Injective (CometBFT), VeChain and Aptos
 src/interfaces/               every contract's interface, the shared errors (IXindexErrors), and the vendored
                               IUniversalRouter, ISP1Verifier and IRiscZeroVerifier
 src/libraries/                PathLib, UniversalRouterCommands and UniswapV4Types (vendored), and Stage B's VaultMessages,
-                              RlpReader, MerklePatricia and Bls12381
+                              RlpReader, MerklePatricia, Bls12381, and for Sui Bls12381MinSig, Blake2b and SuiBcs
 test/*.t.sol                  unit, fuzz, invariant, script and repository tests
 test/Security.t.sol           regression tests for the security review findings (some ids are tested elsewhere; see AGENTS.md gate 6)
 test/mocks/                   mock tokens, a strict Universal Router, mock verifiers, V3 pools for the testnet script, the
                               market fixture, with their own tests
 test/fixtures/                real BNB Chain, Ethereum and TRON data for the Stage B verifiers, each with the generate.py that rebuilds it,
-                              and NEAR's and Stellar's test anchors for DeployStateVerifier (their chains' data is under proofs/)
+                              Sui's chain data, the test anchors of NEAR, Stellar, Sui, Injective, VeChain and Aptos for
+                              DeployStateVerifier (the other chains' data is under proofs/), and
+                              Solana devnet's Alpenglow certificate for EIP-2537 (proofs/solana-state's eip2537_fixture)
 test/fork/                    mainnet fork tests: real V3 and V4 pools, λ rebalancing and security regressions on real tokens
 script/                       Deploy, ConfigureWhitelist, DeployVault, DeployStateVerifier, ConfigureChains, MainnetAddresses, ScriptUtils
 script/interfaces/            the Safe, WETH, Uniswap and Groth16-verifier calls the scripts make
@@ -887,16 +931,21 @@ abi/                          the ABIs the web app decodes with; CI regenerates 
 solana/                       Stage B on Solana: the vault program, P1 and P2, and a stub verifier for testnets only (solana/README.md)
 near/                         NEAR's vault, with P1 and P2 compiled in, for a keyless NEP-616 account (near/README.md)
 stellar/                      Stellar's vault, P1 and P2 as Soroban contracts (stellar/README.md)
+sui/                          Sui's vault, with P1 and P2 as light-client objects, in one Move package (sui/README.md)
+aptos/                        Aptos's vault, with P1 and P2, in one Move package (aptos/README.md)
+vechain/                      VeChain's deployment script, DeployVault's twin, with the staker attester (vechain/README.md)
 crates/xindex-core/           the Rust every vault chain shares (no_std): Ethereum's proofs, P1's and P2's checks, the vault's rules
 proofs/                       P1's statement in plain Rust, its SP1 program, host and input builder, P2 on RISC Zero
-                              in p2/, NEAR's and Stellar's state proofs in near/ and stellar/, and Solana's researched
-                              prototype in solana-state/ (proofs/README.md)
+                              in p2/, the state proofs of NEAR, Stellar, Injective, VeChain and Aptos in near/,
+                              stellar/, cometbft/, vechain/ and aptos/, and Solana's researched prototype in
+                              solana-state/ (proofs/README.md)
 tron/                         the TRON build: the contracts under Tron's compiler, their deployment, and a rehearsal on java-tron (tron/README.md)
 prototype/                    the proving prototype, with SP1's Groth16 verifier vendored unchanged in evm/src/sp1
 vendor/risc0-ethereum/        RISC Zero's Groth16 verifier, vendored unchanged at v3.0.1
 demo/                         the hackathon's testnet demonstration, with stub verifiers for some or all of the proofs; never for a mainnet
 design/                       the v4 design (its PDF and the builder), the Stage A and B specs, the proving prototype,
-                              the WBT check, the hackathon plan, the Stage C research, and the analysis scripts
+                              the WBT check, the hackathon plan, the Stage C, Solana, L2 and other chains'
+                              research, and the analysis scripts
 audit/                        the security reviews and their PoCs, their triage, and the two retirement records
 aderyn.toml                   Aderyn's configuration: the rules the design rejects, each with its reason
 ```

@@ -1,0 +1,25 @@
+[package]
+name = "xindex-vechain"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "VeChain's state verifier's statement: VIP-220 finality over the Staker's weights, each table attested on chain and vouched for by the trusted one, and a successful `attest` call proven through a block's transactions and receipts tries"
+
+[features]
+# Reading fixtures (JSON) into the statement's input: for the host and the tests, never the program.
+json = ["dep:serde_json"]
+# Synthetic chains signed with test keys: for the host's `synthetic` fixture and the tests, never the program.
+testkit = ["k256/ecdsa"]
+
+[dependencies]
+# secp256k1 recovery, as go-ethereum's `crypto.SigToPub` recovers a block's signer.
+k256 = { version = "=0.13.4", default-features = false, features = ["ecdsa"] }
+# blake2b-256, `thor.Blake2b`.
+blake2 = { version = "=0.10.6", default-features = false }
+tiny-keccak = { version = "2.0.2", features = ["keccak"] }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1", optional = true }
+
+[dev-dependencies]
+xindex-vechain = { path = ".", features = ["json", "testkit"] }
+serde_json = "1"

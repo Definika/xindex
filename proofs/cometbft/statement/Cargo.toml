@@ -1,0 +1,27 @@
+[package]
+name = "xindex-cometbft"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "The CometBFT state verifier's statement: light-client hops from a trusted header, each signed by more than two thirds of the trusted set, then ICS-23 proofs of an EVM vault's slots"
+
+[features]
+# Reading fixtures and RPC replies (JSON) into the statement's input: for the host and the tests, never the program.
+json = ["dep:serde_json"]
+
+# The crates IBC's SP1 Tendermint light client builds on (cosmos/solidity-ibc-eureka), at their latest releases, pinned
+# exactly: tendermint-rs 0.40.4 and ics23 0.12.0.
+[dependencies]
+tendermint = { version = "=0.40.4", default-features = false, features = ["rust-crypto"] }
+tendermint-proto = { version = "=0.40.4", default-features = false }
+tendermint-light-client-verifier = { version = "=0.40.4", default-features = false, features = ["rust-crypto"] }
+ics23 = { version = "=0.12.0", default-features = false, features = ["host-functions"] }
+prost = { version = "0.13", default-features = false }
+tiny-keccak = { version = "2.0.2", features = ["keccak"] }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1", optional = true }
+
+[dev-dependencies]
+xindex-cometbft = { path = ".", features = ["json"] }
+serde_json = "1"
+tendermint-testgen = "=0.40.4"

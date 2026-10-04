@@ -16,11 +16,20 @@ prototype is `proofs/solana-state` (plain Rust, tested natively, no zkVM yet).
 - **It is buildable now against devnet**, which runs Agave 4.4.0-beta.0 with Alpenglow since slot 504,148,999 (25
   September). Mainnet waits for Agave 4.3, targeted for October 2026 with no date. The formats that matter are the same
   in 4.3.0 and 4.4.0-beta.0: the diffs between them are refactors.
+- **Update, 4 October 2026.**
+  - **Ethereum checks the certificate itself.** `test/SolanaCertificate.t.sol` verifies devnet's genesis certificate
+    with `src/libraries/Bls12381.sol` on the EIP-2537 precompiles, BNB Chain's library unchanged, in about 208,000 gas
+    for the hash to G2 and the pairing. Another slot, cluster, vote kind or block, or one signer fewer, fails.
+    `examples/eip2537_fixture.rs` writes the fixture.
+  - **Mainnet is not live yet.** Agave 4.3.0 runs on 83.8% of mainnet's stake. The rest, 16%, runs builds with other
+    version numbers, unidentified here. Alpenglow's feature account (`A1pengvuM6JEcyNuTnMqepBKhwHE3N6PmUrdATGawhJS`)
+    does not exist on mainnet, so activation is not scheduled. On devnet it activated at slot 504,144,000.
 - **It is weaker than the BNB verifier.** Forging a finalization takes 60% of the epoch's stake, and Alpenglow has no
   slashing, so such a coalition loses nothing. That is TRON's kind of trust, with Solana's larger set. On devnet the set
   is 19 keys.
 - **Effort:** about three to four weeks of engineering, plus a node, plus an outside review of a new soundness argument.
   It is not a hackathon item. The spec's section 8 holds with the five corrections in "Where section 8 changes".
+- **Decision (the owner's call on 2026-10-04):** the build waits for Alpenglow on mainnet. Until then SOL is not held.
 
 ## Sources
 

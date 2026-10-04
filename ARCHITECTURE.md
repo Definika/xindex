@@ -836,6 +836,11 @@ implement it over the same statement, so that one broken prover can stop coins b
 - **On NEAR and Stellar** both run `crates/xindex-core`'s light client and Groth16 checks over the chain's BN254 host
   functions: inside the NEAR vault, about 37 Tgas for an update of both; as two Soroban contracts, about 31M
   instructions a proof.
+- **On Sui** P1 and P2 are shared light-client objects in the vault's Move package (`sui/`), twins of
+  `FinalityVerifier` with the same anchor, headers tree, receipt proof and lag, checking SP1's and RISC Zero's proofs on
+  `sui::groth16`; about 290 and 320 gas units an update, in the unit-test runner's units. **On Aptos** they are
+  light-client objects in the vault's package (`aptos/`), checking both proofs with one BN254 multi-pairing of
+  `crypto_algebra`, every point checked on the curve and in its subgroup; about 2,000 gas units an update, estimated.
 - **Shared risk.** A bug in either zkVM breaks one system only; a bug in the statement breaks both. That is a known
   limitation (Stage B spec, section 11).
 - **Measured.** SP1's Groth16 check costs about 227k gas on an EVM and 96,910 compute units on Solana. P1's statement
@@ -873,6 +878,25 @@ registration delay, and proves every later step.
   quorum set (7 of 10 organisations, 2 of 3 validators each) externalized a ledger whose header chain reaches the
   ledger of a successful vault `attest`, its event rebuilt from typed fields. About 12M prover gas, 240k gas a call. A
   ledger more than a day old is refused, and a new Tier 1 is a new verifier.
+- **`SuiStateVerifier`** checks Sui's committee certificates in Solidity, with no zkVM: BLS12-381 min-sig aggregates
+  on EIP-2537 (`Bls12381MinSig`, which checks every length, BLS-1) and Blake2b on EIP-152 (`Blake2b`). It writes every
+  byte it hashes or checks a signature over from typed fields (`SuiBcs`), follows each end-of-epoch checkpoint's next
+  committee, and proves a vault's `attest` by the immutable `Attestation` object it wrote, a leaf of its checkpoint's
+  artifacts tree. Sui's epochs last a day, so its lag is two days from its committee's epoch start. Measured at
+  mainnet's 127 members: 1.35M gas an update, 1.16M a proof of two slots.
+- **`CometBftStateVerifier`** (Injective) checks one SP1 proof per call (`proofs/cometbft`, on the audited tendermint-rs
+  and ics23 crates): light-client hops each signed by more than two thirds of the trusted set's power, never ibc-go's
+  third, then ICS-23 proofs of the vault's slots in the `evm` store under the next header's AppHash. About 7M prover gas,
+  and 42k to 63k gas besides the Groth16 check.
+- **`VeChainStateVerifier`** checks one SP1 proof per call (`proofs/vechain`): VIP-220 finality over stake weights that
+  `VeChainStakerAttester` attests on VeChain, each new table vouched for by more than two thirds of the trusted one's
+  weight, then the vault's successful `attest` transaction through the block's transactions and receipts tries. About
+  34M prover gas.
+- **`AptosStateVerifier`** checks one SP1 proof per call (`proofs/aptos`): epoch-change ledger infos signed by more
+  than two thirds of the trusted set (BLS12-381 min-pk, `Bls12381`'s ciphersuite), then the vault's transaction in the
+  SHA3 accumulator with a success status and its one `Attested` event. The inputs come from Aptos Labs' public database
+  backups, every byte checked against signatures, so a state is provable two to four hours after its `attest`. About
+  10M to 13M prover gas.
 - **Other chains.** Solana's needs a zkVM proof of a slot's account writes and waits on Alpenglow's mainnet launch
   (`design/2026-10-03-solana-state-proof.md`); HyperEVM's headers carry no state root, so nothing there can be proven
   yet (Stage B spec, section 8).

@@ -7,6 +7,14 @@ import {BnbStateVerifier} from "../src/verifiers/BnbStateVerifier.sol";
 import {TronStateVerifier} from "../src/verifiers/TronStateVerifier.sol";
 import {NearStateVerifier} from "../src/verifiers/NearStateVerifier.sol";
 import {StellarStateVerifier} from "../src/verifiers/StellarStateVerifier.sol";
+import {SuiStateVerifier} from "../src/verifiers/SuiStateVerifier.sol";
+import {CometBftStateVerifier} from "../src/verifiers/CometBftStateVerifier.sol";
+import {VeChainStateVerifier} from "../src/verifiers/VeChainStateVerifier.sol";
+import {AptosStateVerifier} from "../src/verifiers/AptosStateVerifier.sol";
+import {Bls12381MinSig} from "../src/libraries/Bls12381MinSig.sol";
+import {ICometBftStateVerifier} from "../src/interfaces/ICometBftStateVerifier.sol";
+import {IVeChainStateVerifier} from "../src/interfaces/IVeChainStateVerifier.sol";
+import {IAptosStateVerifier} from "../src/interfaces/IAptosStateVerifier.sol";
 import {ISP1Verifier} from "../src/interfaces/ISP1Verifier.sol";
 import {IBnbStateVerifier} from "../src/interfaces/IBnbStateVerifier.sol";
 import {ITronStateVerifier} from "../src/interfaces/ITronStateVerifier.sol";
@@ -26,15 +34,25 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///   TRON's is the same with `tron` and `test/fixtures/tron/generate.py <TronGrid URL> anchor`. NEAR's and Stellar's
 ///   verifiers check SP1 proofs of their chain's finality, so they also take the program's key and SP1's Groth16
 ///   verifier: NEAR's from an epoch and its producers (`proofs/near`), Stellar's from the network and the pinned Tier 1
-///   quorum set (`proofs/stellar`), each for one vault. The chain is then added with `ConfigureChains`, naming the
-///   verifier. Forge simulates the whole run first, so a check that fails broadcasts nothing.
+///   quorum set (`proofs/stellar`), each for one vault. Sui's checks its committee's BLS signatures itself, from an
+///   epoch and its committee (`test/fixtures/sui/generate.py`); Injective's (`proofs/cometbft`) and VeChain's
+///   (`proofs/vechain`) and Aptos's (`proofs/aptos`) check SP1 proofs, from a header, a staker table or an epoch's
+///   validator set (`design/2026-10-04-four-chains-interfaces.md`).
+///   The chain is then added with `ConfigureChains`, naming the verifier. Forge simulates the whole run first, so a
+///   check that fails broadcasts nothing.
 ///
 /// Env:
-///   STATE_CHAIN         `bnb`, `tron`, `near` or `stellar`.
+///   STATE_CHAIN         `bnb`, `tron`, `near`, `stellar`, `sui`, `injective`, `vechain` or `aptos`.
 ///   STATE_ANCHOR        The anchor file: the generator's for BNB Chain and TRON; for NEAR `epochId`, `producersHash`,
 ///                       `namedAt` (nanoseconds), `account` and `chainId`; for Stellar `networkId`, `quorumSet` (its
-///                       XDR), `chainId` and `vaultId`; for both, `programKey`.
-///   STATE_SP1_VERIFIER  NEAR and Stellar: SP1's Groth16 verifier v6.0.0 on Ethereum, a bare verifier.
+///                       XDR), `chainId` and `vaultId`; for both, `programKey`. For Sui the generator's `chainId`,
+///                       `epoch`, `startMs`, `keys`, `compressed` and `powers`, with the vault's `vaultId` and
+///                       `packageId`; for Injective the generator's `chainId`, `cosmosChainId`, `height`, `hash` and
+///                       `time`; for VeChain its `chainId`, `id`, `time` and `table`; for both, the `vault` and
+///                       `programKey`, and VeChain's `attester`. For Aptos the generator's `chainId`, `epoch`, `set` and
+///                       `time` (microseconds), with the vault's `package`, `vaultId` and the `programKey`.
+///   STATE_SP1_VERIFIER  NEAR, Stellar, Injective, VeChain and Aptos: SP1's Groth16 verifier v6.0.0 on Ethereum, a
+///                       bare verifier.
 contract DeployStateVerifier is Script {
     /// @notice The oldest BNB Chain anchor deployed, which leaves the rest of MAX_LAG to advance the verifier.
     uint256 public constant MAX_ANCHOR_AGE = 1 hours;
@@ -61,6 +79,34 @@ contract DeployStateVerifier is Script {
     /// @dev NEAR's times are in nanoseconds.
     uint256 private constant NS = 1e9;
 
+    /// @notice Sui's registry ids, `sui:mainnet` and `sui:testnet` hashed as NEAR's are; Injective's and VeChain's are
+    ///         their EVM chain ids, VeChain's being its genesis block's id (`design/2026-10-04-four-chains-interfaces.md`).
+    uint256 public constant SUI_MAINNET = 13_762_264_207_064_992_463;
+    uint256 public constant SUI_TESTNET = 10_803_649_406_359_875_205;
+    uint256 public constant INJECTIVE_MAINNET = 1776;
+    uint256 public constant INJECTIVE_TESTNET = 1439;
+    bytes32 private constant VECHAIN_MAINNET_GENESIS =
+        hex"00000000851caf3cfdb6e899cf5958bfb1ac3413d346d43539627e6be7ec1b4a";
+    uint256 public constant VECHAIN_MAINNET = uint256(VECHAIN_MAINNET_GENESIS);
+    bytes32 private constant VECHAIN_TESTNET_GENESIS =
+        hex"000000000b2bce3c70bc649a02749e8687721b09ed2e15997f466536b20bb127";
+    uint256 public constant VECHAIN_TESTNET = uint256(VECHAIN_TESTNET_GENESIS);
+    /// @notice The oldest Sui anchor deployed: the verifier stops two days after its committee's epoch began, and an
+    ///         epoch lasts a day, so this leaves at least a day and four hours for the first update.
+    uint256 public constant MAX_SUI_ANCHOR_AGE = 20 hours;
+    /// @notice The oldest VeChain anchor deployed, a table read at a finalized block: it leaves 18 hours of MAX_LAG.
+    uint256 public constant MAX_VECHAIN_ANCHOR_AGE = 6 hours;
+    /// @notice Aptos's registry ids, `aptos:1` and `aptos:2` hashed as NEAR's are.
+    uint256 public constant APTOS_MAINNET = 549_304_973_309_166_888;
+    uint256 public constant APTOS_TESTNET = 10_134_113_455_198_361_380;
+    /// @notice The oldest Aptos anchor deployed: a set named at most three hours ago, two epochs of mainnet's, leaves 21
+    ///         hours of MAX_LAG for the first update.
+    uint256 public constant MAX_APTOS_ANCHOR_AGE = 3 hours;
+    /// @dev Aptos's times are in microseconds.
+    uint256 private constant MICROS = 1e6;
+    /// @dev Sui's committees hold 10,000 units of voting power in all.
+    uint256 private constant SUI_TOTAL_POWER = 1e4;
+
     /// @notice A verifier of a chain's state belongs on Ethereum, beside the hub, and the BNB verifier needs Ethereum's
     ///         BLS12-381 precompiles: mainnet or Sepolia only.
     error NotEthereum(uint256 chainId);
@@ -71,6 +117,13 @@ contract DeployStateVerifier is Script {
     error WrongNetwork(uint256 chainId);
     /// @notice `networkId` is not the hash of the Stellar network's passphrase.
     error WrongNetworkId(bytes32 networkId);
+    /// @notice `name` is not the Cosmos chain id of the Injective network the registry id names.
+    error WrongCosmosChain(string name);
+    /// @notice The Sui anchor's committee is malformed: the lengths disagree, a key is not the uncompressed form of its
+    ///         compressed one, the compressed keys do not ascend, or the powers do not total 10,000.
+    error BadCommittee(uint256 index);
+    /// @notice The VeChain anchor's block id names block zero, which no table is read at.
+    error BadBlockId(bytes32 id);
     /// @notice `verifier` does not name itself SP1's Groth16 verifier v6.0.0.
     error NotSp1Verifier(address verifier);
     /// @notice The BNB anchor's epoch block, dated `time`, is in the future or more than MAX_ANCHOR_AGE old.
@@ -120,7 +173,72 @@ contract DeployStateVerifier is Script {
                 )
             );
         }
+        if (ScriptUtils.same(chain, "sui")) return address(_deploySuiFrom(json));
+        if (ScriptUtils.same(chain, "injective")) {
+            return address(
+                deployInjective(
+                    ISP1Verifier(vm.envAddress("STATE_SP1_VERIFIER")),
+                    vm.parseJsonBytes32(json, ".programKey"),
+                    vm.parseJsonUint(json, ".chainId"),
+                    vm.parseJsonString(json, ".cosmosChainId"),
+                    vm.parseJsonAddress(json, ".vault"),
+                    SafeCast.toUint64(vm.parseJsonUint(json, ".height")),
+                    vm.parseJsonBytes32(json, ".hash"),
+                    SafeCast.toUint64(vm.parseJsonUint(json, ".time"))
+                )
+            );
+        }
+        if (ScriptUtils.same(chain, "vechain")) {
+            return address(
+                deployVeChain(
+                    ISP1Verifier(vm.envAddress("STATE_SP1_VERIFIER")),
+                    vm.parseJsonBytes32(json, ".programKey"),
+                    // The genesis id, a 32-byte hex string.
+                    uint256(vm.parseJsonBytes32(json, ".chainId")),
+                    vm.parseJsonAddress(json, ".vault"),
+                    vm.parseJsonAddress(json, ".attester"),
+                    vm.parseJsonBytes32(json, ".id"),
+                    SafeCast.toUint64(vm.parseJsonUint(json, ".time")),
+                    vm.parseJsonBytes32(json, ".table")
+                )
+            );
+        }
+        if (ScriptUtils.same(chain, "aptos")) {
+            return address(
+                deployAptos(
+                    ISP1Verifier(vm.envAddress("STATE_SP1_VERIFIER")),
+                    vm.parseJsonBytes32(json, ".programKey"),
+                    // A decimal string, as Sui's: JSON numbers lose digits this large.
+                    vm.parseUint(vm.parseJsonString(json, ".chainId")),
+                    vm.parseJsonBytes32(json, ".package"),
+                    vm.parseJsonBytes32(json, ".vaultId"),
+                    SafeCast.toUint64(vm.parseJsonUint(json, ".epoch")),
+                    vm.parseJsonBytes32(json, ".set"),
+                    SafeCast.toUint64(vm.parseJsonUint(json, ".time"))
+                )
+            );
+        }
         revert UnknownChain(chain);
+    }
+
+    /// @dev Sui's anchor, read from its file: the generator writes the chain id as a decimal string, since it passes
+    ///      2^63.
+    function _deploySuiFrom(string memory json) private returns (SuiStateVerifier) {
+        uint256[] memory read = vm.parseJsonUintArray(json, ".powers");
+        uint64[] memory powers = new uint64[](read.length);
+        for (uint256 i = 0; i < read.length; ++i) {
+            powers[i] = SafeCast.toUint64(read[i]);
+        }
+        return deploySui(
+            vm.parseUint(vm.parseJsonString(json, ".chainId")),
+            vm.parseJsonBytes32(json, ".vaultId"),
+            vm.parseJsonBytes32(json, ".packageId"),
+            SafeCast.toUint64(vm.parseJsonUint(json, ".epoch")),
+            vm.parseJsonBytes(json, ".keys"),
+            vm.parseJsonBytesArray(json, ".compressed"),
+            powers,
+            SafeCast.toUint64(vm.parseJsonUint(json, ".startMs"))
+        );
     }
 
     /// @notice The producers a TRON anchor file lists.
@@ -183,7 +301,7 @@ contract DeployStateVerifier is Script {
         uint256 chainId,
         string memory account,
         bytes32 epoch,
-        bytes32 producers,
+        bytes32 producersHash,
         uint64 named
     ) public returns (NearStateVerifier verifier) {
         _requireEthereum();
@@ -194,7 +312,7 @@ contract DeployStateVerifier is Script {
             revert StaleAnchor(namedAt, block.timestamp);
         }
         vm.startBroadcast();
-        verifier = new NearStateVerifier(sp1, programKey, chainId, account, epoch, producers, named);
+        verifier = new NearStateVerifier(sp1, programKey, chainId, account, epoch, producersHash, named);
         vm.stopBroadcast();
         console2.log("NearStateVerifier:", address(verifier));
         console2.log("  code hash:       ", vm.toString(address(verifier).codehash));
@@ -225,6 +343,186 @@ contract DeployStateVerifier is Script {
         console2.log("StellarStateVerifier:", address(verifier));
         console2.log("  code hash:          ", vm.toString(address(verifier).codehash));
         console2.log("  quorum set hash:    ", vm.toString(sha256(quorumSet)));
+    }
+
+    /// @notice Deploys Sui's verifier for the vault `vaultId` of package `packageId`, from epoch `epoch`, its committee
+    ///         (`keys` uncompressed and packed, `compressed` as the end-of-epoch checkpoint names them, `powers`) and its
+    ///         start `startMs`, the time of the checkpoint that named it (`test/fixtures/sui/generate.py anchor`). It
+    ///         checks the network the registry id names against this one, the anchor's age (begun within
+    ///         MAX_SUI_ANCHOR_AGE, never in the future), and the committee as `Committee::new` requires it: each key the
+    ///         uncompressed form of its compressed one, the compressed keys strictly ascending, 10,000 units in all.
+    function deploySui(
+        uint256 chainId,
+        bytes32 vaultId,
+        bytes32 packageId,
+        uint64 epoch,
+        bytes memory keys,
+        bytes[] memory compressed,
+        uint64[] memory powers,
+        uint64 startMs
+    ) public returns (SuiStateVerifier verifier) {
+        _requireEthereum();
+        if (chainId != (block.chainid == SEPOLIA ? SUI_TESTNET : SUI_MAINNET)) revert WrongNetwork(chainId);
+        uint256 start = uint256(startMs) / MS;
+        if (start > block.timestamp || block.timestamp - start > MAX_SUI_ANCHOR_AGE) {
+            revert StaleAnchor(start, block.timestamp);
+        }
+        _checkSuiCommittee(keys, compressed, powers);
+        bytes32 committee = keccak256(abi.encode(keys, powers));
+        vm.startBroadcast();
+        verifier = new SuiStateVerifier(chainId, vaultId, packageId, epoch, committee, startMs);
+        vm.stopBroadcast();
+        checkSui(address(verifier), epoch, committee, startMs);
+        console2.log("SuiStateVerifier:", address(verifier));
+        console2.log("  epoch:           ", uint256(epoch));
+        console2.log("  committee hash:  ", vm.toString(committee));
+        console2.log("  update before:   ", start + verifier.MAX_LAG());
+    }
+
+    function _checkSuiCommittee(bytes memory keys, bytes[] memory compressed, uint64[] memory powers) private pure {
+        uint256 count = powers.length;
+        if (count == 0 || compressed.length != count || keys.length != count * Bls12381MinSig.G2_POINT) {
+            revert BadCommittee(count);
+        }
+        uint256 total = 0;
+        for (uint256 i = 0; i < count; ++i) {
+            (bytes32 w0, bytes32 w1, bytes32 w2) = Bls12381MinSig.compressKey(keys, i);
+            if (keccak256(abi.encodePacked(w0, w1, w2)) != keccak256(compressed[i])) revert BadCommittee(i);
+            if (i != 0 && !ScriptUtils.above(compressed[i], compressed[i - 1])) revert BadCommittee(i);
+            total += powers[i];
+        }
+        if (total != SUI_TOTAL_POWER) revert BadCommittee(count);
+    }
+
+    /// @notice Deploys Injective's verifier for `vault`, from header `height` (`hash`, dated `time`), read off the
+    ///         chain by `proofs/cometbft/fixtures/generate.py anchor`. It checks SP1's verifier, the network both ids
+    ///         name against this one, and the anchor's age (within MAX_ANCHOR_AGE, never in the future), then reads the
+    ///         anchor back.
+    function deployInjective(
+        ISP1Verifier sp1,
+        bytes32 programKey,
+        uint256 chainId,
+        string memory cosmosChainId,
+        address vault,
+        uint64 height,
+        bytes32 hash,
+        uint64 time
+    ) public returns (CometBftStateVerifier verifier) {
+        _requireEthereum();
+        bool testnet = block.chainid == SEPOLIA;
+        if (chainId != (testnet ? INJECTIVE_TESTNET : INJECTIVE_MAINNET)) revert WrongNetwork(chainId);
+        if (!ScriptUtils.same(cosmosChainId, testnet ? "injective-888" : "injective-1")) {
+            revert WrongCosmosChain(cosmosChainId);
+        }
+        if (!ScriptUtils.isSp1Verifier(address(sp1))) revert NotSp1Verifier(address(sp1));
+        if (time > block.timestamp || block.timestamp - time > MAX_ANCHOR_AGE) {
+            revert StaleAnchor(time, block.timestamp);
+        }
+        vm.startBroadcast();
+        verifier = new CometBftStateVerifier(sp1, programKey, chainId, cosmosChainId, vault, height, hash, time);
+        vm.stopBroadcast();
+        checkInjective(address(verifier), height, hash, time);
+        console2.log("CometBftStateVerifier:", address(verifier));
+        console2.log("  update before:      ", uint256(time) + verifier.MAX_LAG());
+    }
+
+    /// @notice Deploys VeChain's verifier for `vault`, its weights attested by `attester`, from the staker table
+    ///         `table` read at the finalized block `id`, dated `time` (`proofs/vechain/fixtures/generate.py anchor`,
+    ///         after the vault and the attester are deployed: the verifier proves only later blocks). It checks SP1's
+    ///         verifier, the network the genesis id names against this one, the block, and the anchor's age (within
+    ///         MAX_VECHAIN_ANCHOR_AGE, never in the future), then reads the anchor back.
+    function deployVeChain(
+        ISP1Verifier sp1,
+        bytes32 programKey,
+        uint256 chainId,
+        address vault,
+        address attester,
+        bytes32 id,
+        uint64 time,
+        bytes32 table
+    ) public returns (VeChainStateVerifier verifier) {
+        _requireEthereum();
+        if (chainId != (block.chainid == SEPOLIA ? VECHAIN_TESTNET : VECHAIN_MAINNET)) revert WrongNetwork(chainId);
+        if (!ScriptUtils.isSp1Verifier(address(sp1))) revert NotSp1Verifier(address(sp1));
+        // A VeChain block id begins with the block's number.
+        if (uint256(id) >> 224 == 0) revert BadBlockId(id);
+        if (time > block.timestamp || block.timestamp - time > MAX_VECHAIN_ANCHOR_AGE) {
+            revert StaleAnchor(time, block.timestamp);
+        }
+        vm.startBroadcast();
+        verifier = new VeChainStateVerifier(sp1, programKey, chainId, vault, attester, id, time, table);
+        vm.stopBroadcast();
+        checkVeChain(address(verifier), id, time, table);
+        console2.log("VeChainStateVerifier:", address(verifier));
+        console2.log("  update before:     ", uint256(time) + verifier.MAX_LAG());
+    }
+
+    /// @notice Deploys Aptos's verifier for the vault `vaultId` of package `package`, from epoch `epoch`'s validator set
+    ///         (`set`, the hash of its BCS), named at `time` (microseconds) by the ledger info that ended the epoch
+    ///         before (`proofs/aptos/fixtures/generate.py anchor`). It checks SP1's verifier, the network the registry id
+    ///         names against this one, and the anchor's age (named within MAX_APTOS_ANCHOR_AGE, never in the future),
+    ///         then reads the anchor back.
+    function deployAptos(
+        ISP1Verifier sp1,
+        bytes32 programKey,
+        uint256 chainId,
+        bytes32 package,
+        bytes32 vaultId,
+        uint64 epoch,
+        bytes32 set,
+        uint64 time
+    ) public returns (AptosStateVerifier verifier) {
+        _requireEthereum();
+        if (chainId != (block.chainid == SEPOLIA ? APTOS_TESTNET : APTOS_MAINNET)) revert WrongNetwork(chainId);
+        if (!ScriptUtils.isSp1Verifier(address(sp1))) revert NotSp1Verifier(address(sp1));
+        uint256 named = uint256(time) / MICROS;
+        if (named > block.timestamp || block.timestamp - named > MAX_APTOS_ANCHOR_AGE) {
+            revert StaleAnchor(named, block.timestamp);
+        }
+        vm.startBroadcast();
+        verifier = new AptosStateVerifier(sp1, programKey, chainId, package, vaultId, epoch, set, time);
+        vm.stopBroadcast();
+        checkAptos(address(verifier), epoch, set, time);
+        console2.log("AptosStateVerifier:", address(verifier));
+        console2.log("  update before:   ", named + verifier.MAX_LAG());
+    }
+
+    /// @notice The review of a deployed Aptos verifier: its latest trusted epoch is `epoch`, with the set whose hash is
+    ///         `set`, named at `time`. The reviewer recomputes the set from Aptos's own `ValidatorSet` with
+    ///         `generate.py anchor`, which also checks it against the epoch-ending ledger info.
+    function checkAptos(address verifier, uint64 epoch, bytes32 set, uint64 time) public view {
+        AptosStateVerifier v = AptosStateVerifier(verifier);
+        IAptosStateVerifier.Trusted memory t = v.trusted(epoch);
+        if (v.latestEpoch() != epoch || t.set != set || t.time != time) revert WrongAnchor(verifier);
+    }
+
+    /// @notice The review of a deployed Sui verifier: it follows from epoch `epoch`, begun at `startMs`, with the
+    ///         committee whose hash is `committee`. The reviewer compares the anchor file with Sui's own record of that
+    ///         epoch (its committee and the checkpoint that named it). A codehash cannot be compared: the verifier's
+    ///         immutables are in its code.
+    function checkSui(address verifier, uint64 epoch, bytes32 committee, uint64 startMs) public view {
+        SuiStateVerifier v = SuiStateVerifier(verifier);
+        if (v.epoch() != epoch || v.committeeHash() != committee || v.epochStartMs() != startMs) {
+            revert WrongAnchor(verifier);
+        }
+    }
+
+    /// @notice The review of a deployed Injective verifier: its latest trusted header is `height`, `hash`, dated
+    ///         `time`. The reviewer compares those with Injective's own `/commit?height=` (the block id's hash, the time's
+    ///         whole seconds).
+    function checkInjective(address verifier, uint64 height, bytes32 hash, uint64 time) public view {
+        CometBftStateVerifier v = CometBftStateVerifier(verifier);
+        ICometBftStateVerifier.Trusted memory t = v.trusted(hash);
+        if (v.latestHash() != hash || t.height != height || t.time != time) revert WrongAnchor(verifier);
+    }
+
+    /// @notice The review of a deployed VeChain verifier: its latest trusted table is `table`, read at block `id`,
+    ///         dated `time`. The reviewer recomputes the table at that block with `generate.py anchor`, and checks that
+    ///         the vault's and the attester's masters read zero.
+    function checkVeChain(address verifier, bytes32 id, uint64 time, bytes32 table) public view {
+        VeChainStateVerifier v = VeChainStateVerifier(verifier);
+        IVeChainStateVerifier.Trusted memory t = v.trusted(id);
+        if (v.latestId() != id || t.table != table || t.time != time) revert WrongAnchor(verifier);
     }
 
     /// @notice The review of a deployed BNB verifier: it runs this release's code, and its first set is the one

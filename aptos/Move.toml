@@ -1,0 +1,16 @@
+[package]
+name = "xindex_vault"
+version = "1.0.0"
+license = "MIT"
+# Nobody can upgrade the code once published (interfaces doc).
+upgrade_policy = "immutable"
+
+[addresses]
+xindex_vault = "_"
+
+[dev-addresses]
+xindex_vault = "0xc0de"
+
+# Aptos's framework at the `mainnet` branch's commit on 4 October 2026 (aptos-node v1.39).
+[dependencies]
+AptosFramework = { git = "https://github.com/aptos-labs/aptos-core.git", subdir = "aptos-move/framework/aptos-framework", rev = "c7f8af62af80bedbf5b4824095fab0be29f9587c" }

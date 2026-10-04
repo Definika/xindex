@@ -27,12 +27,28 @@ Where the stages stand (none of v4 is deployed):
   and their state verifiers on Ethereum (`NearStateVerifier`, `StellarStateVerifier`, proven by `proofs/near` and
   `proofs/stellar`), to the interfaces of `design/2026-10-03-near-stellar-interfaces.md`. Solana is built from
   Ethereum to its vault, the vault's checkpoints, stall recovery and snapshot exit included (2026-10-03); its state
-  verifier on Ethereum is not built, and can ship only once Alpenglow reaches mainnet
-  (`design/2026-10-03-solana-state-proof.md` has the researched plan and a native prototype in `proofs/solana-state`).
+  verifier on Ethereum is not built, and can ship only once Alpenglow reaches mainnet. Its build waits for that (the
+  owner's call on 2026-10-04; `design/2026-10-03-solana-state-proof.md` has the researched plan, a native prototype in
+  `proofs/solana-state`, and a real devnet certificate verified on Ethereum).
   HyperEVM waits on Hyperliquid, since every header's state root is zero. The Stage B spec's section 8 has each
   chain's status, and its section 6 the build order.
 - Of Stage C, NEAR and Stellar are built (above). Avalanche, Hedera and Cardano were researched on 2026-10-01
   (`design/2026-10-01-stage-c-research.md`, summarized in the Stage B spec's section 8) and wait on the owner's calls.
+- Ethereum's L2s were researched on 2026-10-04 (`design/2026-10-04-l2-research.md`): their own tokens are about 0.6% of
+  the holdable universe, none investable for the flagship, and no optimistic rollup is final on Ethereum within the
+  hub's 6-hour `GRACE`. The record recommends building nothing for them.
+- Eleven more chains with a top-100 coin were researched on 2026-10-04 (`design/2026-10-04-chain-research.md`;
+  memecoin chains are out, the owner's call). None reaches the 0.2% floor. Sui, Injective, Aptos and VeChain pass the
+  rule; Cronos, ICP and TON pass it but wait on the owner's calls; Algorand needs a ruling on the rule; Bittensor and
+  Filecoin wait on their chains; Ethereum Classic fails.
+- The four that pass are being added (the owner's call on 2026-10-04), to `design/2026-10-04-four-chains-interfaces.md`:
+  - **Sui** is built in both directions: the vault with P1 and P2 in Move (`sui/`), and `SuiStateVerifier`, which
+    checks Sui's committee certificates in Solidity, with no zkVM.
+  - **Injective** and **VeChain** run `XindexVault` unchanged. Their state verifiers on Ethereum are built:
+    `CometBftStateVerifier` (`proofs/cometbft`) and `VeChainStateVerifier` (`proofs/vechain`), the latter with
+    `VeChainStakerAttester` on VeChain and its own deployment script (`vechain/`).
+  - **Aptos** is built in both directions: the vault with P1 and P2 in Move (`aptos/`), and `AptosStateVerifier`
+    (`proofs/aptos`), whose inputs come from Aptos Labs' public database backups.
 
 For more:
 - `ARCHITECTURE.md`: the design as built, Stage A and Stage B.
@@ -62,10 +78,11 @@ MAINNET_RPC_URL=https://ethereum-rpc.publicnode.com FORK_BLOCK=$(( $(cast block-
 
 Deployment: `script/Deploy.s.sol` then `script/ConfigureWhitelist.s.sol`, which also runs the weekly supply batch,
 vault coins' supplies included (see README). A vault chain adds `script/DeployVault.s.sol` on that chain (P1, P2, the
-state reader and the vault; `tron/deploy.mjs` deploys TRON's, built with Tron's compiler, and NEAR's and Stellar's go
-up with their chains' own tools, as `near/` and `stellar/` say) and `script/DeployStateVerifier.s.sol` on Ethereum (the
-chain's state verifier, from an anchor the fixture generator writes, or for NEAR and Stellar one assembled from
-their proofs' generators), then `script/ConfigureChains.s.sol`
+state reader and the vault, Injective's included; `tron/deploy.mjs` deploys TRON's, built with Tron's compiler, and
+`vechain/deploy.mjs` VeChain's with its staker attester; NEAR's, Stellar's and Sui's go up with their chains' own
+tools, as `near/`, `stellar/` and `sui/` say) and `script/DeployStateVerifier.s.sol` on Ethereum (the chain's state
+verifier, from an anchor the fixture generator writes, with the deployment's own ids added where it has some), then
+`script/ConfigureChains.s.sol`
 (`proposeChain`, then `proposeVaultListing` for each coin). Sepolia first needs its test market from
 `script/testnet/SetupTestMarket.s.sol`.
 
@@ -119,6 +136,8 @@ their proofs' generators), then `script/ConfigureChains.s.sol`
    - The logic review of 2026-10-02: `LG-1`..`LG-6` and `LG-I1`..`LG-I4` (`audit/2026-10-02-logic-review.md`), a test
      named `test_LG1_...`, and in Rust `test_lg1_...`. The record's status column names every test; the informational
      ids have none.
+   - The BLS signature-length finding of 2026-10-04: `BLS-1` (`audit/2026-10-04-bls-signature-length.md`), tested by
+     `test_BLS1_...` in `test/Bls12381.t.sol` and `test/BnbStateVerifier.t.sol`.
 
    Find a test by its id. Most v1 and R tests are in `test/Security.t.sol` and `test/fork/Security.fork.t.sol`. The R
    tests that drive the λ auction directly (R04, R08, R14, R17, R19, R22) are in `test/IndexHub.rebalance.t.sol`,
@@ -476,6 +495,27 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   built Wasm), fmt and `cargo clippy --all-targets -- -D warnings`; Stellar's `stellar contract build`, then `cargo
   test`, fmt and `cargo clippy --all-targets -- -D warnings`; `proofs/near`'s `cargo test -p xindex-near-finality` and
   `proofs/stellar`'s `cargo test --release -p xindex-stellar`, each with fmt and clippy.
+- **Sui, Aptos, Injective and VeChain.** The twin rule spans the EVM vault, Solana's, NEAR's, Stellar's, Sui's and
+  Aptos's: a change to a vault's rule or a message goes into each.
+  - `sui/` is the Move twin. Its `Attestation` object's bytes are pinned against `SuiStateVerifier`'s
+    (`test/SuiStateVerifier.vault.t.sol`). Its gates: `sui move build` (no warnings; one lint suppressed with its reason)
+    and `sui move test`, with `SUI_CONFIG_DIR` set to a throwaway directory holding a keyless `client.yaml` (an empty
+    keystore, no active address, one environment). Never run `sui client`, `sui keytool` or `sui start`: the CLI
+    creates a key when it finds no configuration.
+  - `aptos/` is the other Move twin. Its `Attested` event is pinned against `AptosStateVerifier`'s statement
+    (`proofs/aptos/fixtures/synthetic.json`). Its gates: `aptos move compile --dev --fail-on-warning` and
+    `aptos move test --dev`. Never run the Aptos CLI's `init`, `account`, `key`, `publish`, `run` or `node`: they
+    create keys or touch a network. The vault object belongs to `0x0`, since any owner up an object's chain could
+    withdraw from its fungible store, and `attest` is an entry function only, so a transaction holds at most one
+    `Attested`.
+  - `SuiStateVerifier`'s lag is 2 days from its committee's epoch start, since Sui's epochs last a day; `Bls12381MinSig`
+    is `Bls12381`'s min-sig twin, and checks every length (BLS-1).
+  - `CometBftStateVerifier` takes a hop only when more than 2/3 of the trusted set signs it, never ibc-go's third.
+    `proofs/cometbft`'s gates: `cargo test --release`, fmt and `cargo clippy --all-targets -- -D warnings`.
+  - VeChain's weights live only in its Staker's storage, which nothing public proves, so `VeChainStakerAttester`, an
+    ownerless view on VeChain, attests them, trusted by TRON's vouching rule (TRN-4). Every contract the VeChain
+    deployment creates has its Prototype master cleared. `proofs/vechain`'s gates as `proofs/cometbft`'s, and
+    `vechain/`'s `npm run deploy-test`.
 - **P1 is checked in plain Rust first.** `proofs/finality` holds the whole statement, so its logic is tested natively and
   the zkVM only runs it. Its gates: `cargo test --release`, `cargo fmt --check` and `cargo clippy`, at low priority,
   each also with `--features sepolia`, the testnets' build: Sepolia's genesis and fork versions, a program key of its
@@ -531,6 +571,8 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   `IXindexErrors.<Error>.selector`, because Solidity does not resolve an inherited error through
   `IIndexFactory.<Error>`. Immutables in SCREAMING_SNAKE_CASE. Loop counters initialised explicitly (`uint256 i = 0`).
   Modifier logic lives in a private function.
+- Foundry runs any test-contract function whose name starts with `table` as a table test: name none so, nor any
+  function a test suite inherits (VeChain's attester calls its view `currentTable` for that reason).
 - `foundry.toml` keeps `dynamic_test_linking = false`. With forge's default, a test function ends at the first
   `vm.expectRevert` followed by `new` of a `src/` contract, reported as a pass, and every check after it is skipped
   (LR-01). It also keeps `[invariant] fail_on_revert = true`: the handler only makes calls that must succeed, so a
