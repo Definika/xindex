@@ -117,10 +117,10 @@ transaction.
 One limit binds: `deliver` carries both proofs of a message's receipt, so a receipt whose proof exceeds about 65 KB
 cannot be delivered in one transaction, though each verifier accepts its proof alone (LG-1's 70 KB leaf). A message
 sent by a permissionless call can be made that large by anyone: `HybridHub.claimOrder`, which sends `INTAKE_SETTLED`,
-called from a contract that also emits some 65 KB of log data, leaves that intake open here, its depositors unable to
-take a refund. The factory's executions are permissionless too. Such a message waits on Stellar until the shared design
-gives it a path of bounded size, such as the hub's own mark of the message proven in its storage at a checkpoint, as
-`deliver_recorded` already reads it after a snapshot.
+called from a contract that also emits some 65 KB of log data; the factory's executions are permissionless too. Such a
+message is not stranded: the hub and the factory mark every message they send, and anyone may emit a marked one again,
+unchanged, with `resendMessage` in a transaction of their own (LG-1). The vault delivers that copy, whose receipt holds
+only the message, and runs the message once by its id.
 
 ## Deploying
 

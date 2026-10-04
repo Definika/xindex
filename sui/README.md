@@ -218,9 +218,10 @@ data compared byte by byte, and the tiers make that superlinear.
 - **One pure argument is at most 16 KB, a transaction at most 128 KB.** A proof longer than 16 KB is assembled in the
   programmable transaction with `std::vector::append` from several arguments. `deliver` carries both proofs of a
   receipt, so a receipt whose proof passes about 60 KB cannot be delivered in one transaction, and well before that
-  the byte walking above grows expensive. As on Stellar, a message sent by a permissionless call can be bloated this
-  way (`HybridHub.claimOrder` called from a contract that also emits large logs), leaving that intake open here; it
-  waits for the shared design to give such messages a path of bounded size, such as the hub's own mark proven in its
-  storage at a checkpoint, as `deliver_recorded` reads it after a snapshot.
+  the byte walking above grows expensive. A message sent by a permissionless call can be bloated this way
+  (`HybridHub.claimOrder` called from a contract that also emits large logs), but not stranded: the hub and the
+  factory mark every message they send, and anyone may emit a marked one again, unchanged, with `resendMessage` in a
+  transaction of their own (LG-1). The vault delivers that copy, whose receipt holds only the message, and runs the
+  message once by its id. The bloat costs the attacker gas and a relayer one resend.
 - **What the vault cannot see.** As on every chain: the recovery proposer's multisig and the light clients' keys are
   the deployment's to check (above).
