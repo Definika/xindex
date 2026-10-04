@@ -183,7 +183,7 @@ contract DeployStateVerifier is Script {
         uint256 chainId,
         string memory account,
         bytes32 epoch,
-        bytes32 producers,
+        bytes32 producersHash,
         uint64 named
     ) public returns (NearStateVerifier verifier) {
         _requireEthereum();
@@ -194,7 +194,7 @@ contract DeployStateVerifier is Script {
             revert StaleAnchor(namedAt, block.timestamp);
         }
         vm.startBroadcast();
-        verifier = new NearStateVerifier(sp1, programKey, chainId, account, epoch, producers, named);
+        verifier = new NearStateVerifier(sp1, programKey, chainId, account, epoch, producersHash, named);
         vm.stopBroadcast();
         console2.log("NearStateVerifier:", address(verifier));
         console2.log("  code hash:       ", vm.toString(address(verifier).codehash));
