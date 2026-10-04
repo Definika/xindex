@@ -11,10 +11,11 @@ import {VaultMessages} from "../libraries/VaultMessages.sol";
 import {VaultSnapshot} from "./VaultSnapshot.sol";
 
 /// @title XindexVault
-/// @notice The vault an EVM chain (BNB Chain, HyperEVM, Tron) runs for every index whose shares live on Ethereum. It
-///         holds the chain's native coin in a separate balance per index, takes coins in only as deposits to an intake,
-///         and lets them out only on messages that P1 and P2, two independent proofs of Ethereum's finality, show were
-///         sent by that index or by the factory. Payouts stay within a speed limit, exact over any 24 hours.
+/// @notice The vault an EVM chain (BNB Chain, Tron, Injective, VeChain; HyperEVM once it can be proven) runs for every
+///         index whose shares live on Ethereum. It holds the chain's native coin in a separate balance per index,
+///         takes coins in only as deposits to an intake, and lets them out only on messages that P1 and P2, two
+///         independent proofs of Ethereum's finality, show were sent by that index or by the factory. Payouts stay
+///         within a speed limit, exact over any 24 hours.
 /// @dev No owner, no upgrade. Every coin the vault accounts for is in `held`: settled balances plus the deposits of
 ///      open and failed intakes not yet refunded. State is written before any coin moves, and every entry point that
 ///      can move a coin shares one reentrancy guard. If Ethereum's formats change unannounced and P1 and P2 stop
@@ -51,9 +52,9 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
     ///      A holder's claim reads more, in `VaultSnapshot`.
     uint256 private constant HUB_SETTLED_INTAKES_SLOT = 60;
     uint256 private constant HUB_SENT_MESSAGES_SLOT = 62;
-    /// @dev The key of a waiting freezer change, which the freezer may not cancel and a freeze does not hold.
     /// @dev Bits in an address, which a 32-byte word holds in its low part.
     uint256 private constant ADDRESS_BITS = 160;
+    /// @dev The key of a waiting freezer change, which the freezer may not cancel and a freeze does not hold.
     bytes32 private constant FREEZER_KEY = bytes32(uint256(VaultMessages.FREEZER_CHANGE) << ADDRESS_BITS);
     bytes32 private constant SNAPSHOT_CLAIM_TYPEHASH =
         keccak256("SnapshotClaim(address index,address holder,address recipient)");

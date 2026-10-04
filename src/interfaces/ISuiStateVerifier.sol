@@ -127,7 +127,7 @@ interface ISuiStateVerifier is IVaultStateVerifier {
     function PACKAGE_ID() external view returns (bytes32);
 
     /// @notice The epoch whose committee certifies the checkpoints the verifier takes, the hash of that committee
-    ///         (`committeeHash(keys, powers)`), and when the epoch began in milliseconds: the time of the checkpoint
+    ///         (`hashCommittee(keys, powers)`), and when the epoch began in milliseconds: the time of the checkpoint
     ///         that ended the epoch before.
     function epoch() external view returns (uint64);
     function epochStartMs() external view returns (uint64);

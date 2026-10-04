@@ -165,8 +165,9 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
     mapping(uint256 intakeId => bool) internal _settledIntakes;
     /// @dev When a chain's snapshot exit was recorded here: from then on nothing mints on it again.
     mapping(uint256 chainId => uint256) internal _exitedAt;
-    /// @dev Every BURN and MIGRATE this index sent, by message id, marked in the transaction that sends it: the vault
-    ///      reads it at slot 62 to pay a message still in flight at its snapshot, which could never be delivered.
+    /// @dev Every message this index sent, by id, marked in the transaction that sends it: anyone may emit a marked one
+    ///      again (`resendMessage`, LG-1), and the vault reads it at slot 62 to pay a BURN or MIGRATE still in flight
+    ///      at its snapshot, which could never be delivered.
     mapping(bytes32 id => bool) internal _sentMessages;
 
     modifier onlyInitialized() {
@@ -174,7 +175,7 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
         _;
     }
 
-    /// @dev The factory: each of the two contracts keeps it as an immutable of its own.
+    /// @dev The factory: each of the three contracts keeps it as an immutable of its own.
     function _factory() internal view virtual returns (address);
 
     function _checkInitialized() internal view {

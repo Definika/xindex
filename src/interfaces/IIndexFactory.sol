@@ -105,9 +105,10 @@ interface IIndexFactory is IXindexErrors {
     ///         cold, so it fits EIP-7825's 2^24 cap with room for the Safe that sends it (SA-03).
     function MAX_BATCH() external view returns (uint256);
 
-    /// @notice Largest move of a token's reference supply one relisting or batch can make, either way (1e18 = 100%),
-    ///         after its first listing. The hub clamps each rebalance to the same step, however many batches landed
-    ///         between two rebalances, so neither bound alone is the one holders rely on.
+    /// @notice Largest move of a token's reference supply one batch can make, either way (1e18 = 100%), after its
+    ///         first listing; a relisting keeps the supply in force (SA-02). The hub clamps each rebalance to the same
+    ///         step, however many batches landed between two rebalances, so neither bound alone is the one holders rely
+    ///         on.
     function MAX_SUPPLY_STEP() external view returns (uint256);
 
     /// @notice Largest reference supply, in a token's raw units: the hub multiplies it by units below 2^96, and the
@@ -133,12 +134,15 @@ interface IIndexFactory is IXindexErrors {
     /// @notice Once a proposal is ready it must be executed within this window, or proposed again.
     function PROPOSAL_WINDOW() external view returns (uint256);
 
-    /// @notice IndexHub implementation every index clones. It cannot be initialized, so it can never issue shares.
+    /// @notice IndexHub implementation every index of Ethereum tokens only clones (a factory that also lists tokens
+    ///         held elsewhere clones another template for an index holding one). It cannot be initialized, so it can
+    ///         never issue shares.
     function IMPLEMENTATION() external view returns (address);
 
     /// @notice Address that, alongside the owner, can cancel pending listings, supply batches and rebalances, delist
-    ///         tokens, start a rebalance with a keep mask on any index, and start one while strangers are held off after
-    ///         a cancel or an unfilled auction (RT-08). May be zero.
+    ///         tokens, start a rebalance with a keep mask on any index, and start one while strangers are held off
+    ///         after a cancel or an unfilled auction (RT-08). It can also cancel a pending guardian change that would
+    ///         remove the role (`pendingGuardian` zero), never one that replaces it. May be zero.
     function guardian() external view returns (address);
 
     /// @notice Guardian the last proposed change names. It stays set after that proposal expires, so on its own it does
@@ -232,7 +236,9 @@ interface IIndexFactory is IXindexErrors {
 
     /// @notice Permissionless. Deploys a new index whose constituents are fixed and whose units start proportional to
     ///         the reference supplies in force: `units_i = k * referenceSupply_i / K_SCALE`, rounded down. The index
-    ///         starts with no supply; anyone can then issue shares against the basket. No price is read.
+    ///         starts with no supply. An IndexHub clone then issues shares to anyone against the basket; an index
+    ///         holding a vault token is a HybridHub clone that mints by order, and the seed of an empty one is its
+    ///         creator's alone. No price is read.
     /// @param name ERC-20 name, non-empty. It is also the index's EIP-712 domain name for permits.
     /// @param symbol ERC-20 symbol, non-empty.
     /// @param tokens Whitelisted component tokens, no duplicates, 1..MAX_COMPONENTS entries.
@@ -244,9 +250,9 @@ interface IIndexFactory is IXindexErrors {
 
     /// @notice Owner only. Starts the delay after which `token` is whitelisted with `referenceSupply`. A token that has
     ///         carried a supply before, as a delisted one does, is relisted only at that supply (RelistChangesSupply),
-    ///         which a batch then revises; a first listing is bounded only by MAX_SUPPLY. Reverts AlreadyListed for a whitelisted token, whose supply changes
-    ///         only in a batch, and TokenInBatch while `token` is in the live supply batch. An expired proposal can be
-    ///         proposed again.
+    ///         which a batch then revises; a first listing is bounded only by MAX_SUPPLY. Reverts AlreadyListed for a
+    ///         whitelisted token, whose supply changes only in a batch, and TokenInBatch while `token` is in the live
+    ///         supply batch. An expired proposal can be proposed again.
     /// @param token Token to list; must have code.
     /// @param referenceSupply Its reference supply, in raw units, from 1 to MAX_SUPPLY.
     function proposeListing(address token, uint256 referenceSupply) external;
@@ -254,8 +260,9 @@ interface IIndexFactory is IXindexErrors {
     /// @notice Owner or guardian. Cancels a pending or expired listing.
     function cancelListing(address token) external;
 
-    /// @notice Permissionless between the proposal's eta and eta + PROPOSAL_WINDOW. Sets the proposed reference supply
-    ///         and whitelists the token if it is not listed.
+    /// @notice Permissionless between the proposal's eta and eta + PROPOSAL_WINDOW. Whitelists the token. A first
+    ///         listing also sets its reference supply (ReferenceSupplySet); a relisting keeps the supply in force,
+    ///         which it already equals, and emits no ReferenceSupplySet.
     function executeListing(address token) external;
 
     /// @notice Owner or guardian, effective immediately. Relisting takes a fresh proposal and delay. The reference supply

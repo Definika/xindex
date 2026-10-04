@@ -45,7 +45,9 @@ contract NearStateVerifier is INearStateVerifier {
     uint256 private constant BYTE_BITS = 8;
     uint256 private constant BYTE_MASK = 0xff;
 
+    /// @notice SP1's Groth16 verifier v6.0.0, a bare deployment, never SP1's gateway, which has an owner.
     ISP1Verifier public immutable SP1_VERIFIER;
+    /// @notice The program's key: `near vkey` of `proofs/near`.
     bytes32 public immutable PROGRAM_KEY;
     /// @inheritdoc INearStateVerifier
     uint256 public immutable CHAIN_ID;
@@ -146,7 +148,8 @@ contract NearStateVerifier is INearStateVerifier {
 
     /// @inheritdoc IVaultStateVerifier
     /// @dev `proof` is `abi.encode(AttestProof)`. `blockNumber` and `timestamp` are the vault's own, from its record:
-    ///      the block it ran `attest` in.
+    ///      the block it ran `attest` in. Heads never expire: an attest of any age under a recorded head verifies, so
+    ///      that time is the only bound on its age, and a reader must compare it with its own deadline.
     function verifySlots(address account, bytes32[] calldata slots, bytes calldata proof)
         external
         view

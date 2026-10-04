@@ -410,8 +410,8 @@ circulating supply of what the token represents. WBTC carries bitcoin's and WETH
 supply is only the wrapped float. Each figure in `script/MainnetAddresses.sol` carries its source and date.
 
 **Listing.** `proposeListing(token, referenceSupply)`, owner only, starts `LISTING_DELAY` (2 days); from then until
-`PROPOSAL_WINDOW` (7 days) later anyone can `executeListing`, which sets the supply and whitelists the token; after that
-the proposal expires. Until it executes, the owner or guardian can `cancelListing` it. A listed token cannot be proposed
+`PROPOSAL_WINDOW` (7 days) later anyone can `executeListing`, which whitelists the token and, on a first listing, sets
+its supply; after that the proposal expires. Until it executes, the owner or guardian can `cancelListing` it. A listed token cannot be proposed
 again (`AlreadyListed`): its supply changes only in a batch. Either role can `delist` a token at any time. Delisting
 affects only indexes created afterwards and keeps the reference supply, because existing indexes still rebalance with
 it; a batch can still revise it. Relisting takes a fresh proposal and delay at exactly the supply the token carries
@@ -565,7 +565,9 @@ For an index holding vault coins (Stage B, not deployed; the Stage B spec has th
 - **NEAR's and Stellar's states rest on unslashed trust.** NEAR's verifier needs more than two thirds of each epoch's
   block-producer stake honest, and NEAR slashes nobody; Stellar's needs 7 of Tier 1's 10 organisations, two validators
   each, and Stellar slashes nobody either. That is TRON's kind of trust, bounded as every chain's is by its quantity cap,
-  the 24-hour lock and the mint cap. A new Tier 1 means a new Stellar verifier, through the 30-day rotation.
+  the 24-hour lock and the mint cap. A new Tier 1 means a new Stellar verifier, through the 30-day rotation, and until
+  it replaces the old one a retired or leaked Tier 1 key still counts: the verifier's one-day limit is on a ledger's
+  age, and the signers write its close time.
 - **A Stellar transaction holds 132 KB.** A message whose receipt proof is larger, which anyone can force by wrapping a
   permissionless call in a transaction of large logs, is delivered from the copy `resendMessage` emits in a clean one.
   Sui's 128 KB transactions are handled the same way.
@@ -814,8 +816,8 @@ names a token twice reverts `DuplicateEntry` in every mode (RT-24).
   any pending listing with its window, and whether the live batch names it.
 
 In the Safe app, a safe mode's output becomes one Transaction Builder batch: each calldata line is one transaction to
-the factory with value 0, under a label line naming the call and the token. Two signers sign it, and one executes it.
-For a local stack, `anvil --fork-url $MAINNET_RPC_URL` and run the same scripts against `http://127.0.0.1:8545`; the
+the factory with value 0, under a label line naming the call and the token. At least three of the Safe's signers sign
+it (the owner Safe's threshold, `MIN_OWNER_THRESHOLD`), and one executes it. For a local stack, `anvil --fork-url $MAINNET_RPC_URL` and run the same scripts against `http://127.0.0.1:8545`; the
 fork keeps chain id 1, and `.gitignore` keeps those rehearsal records out of git. An ignore rule does not cover a file
 git already tracks, so check `git status` after a rehearsal.
 

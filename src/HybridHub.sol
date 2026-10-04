@@ -23,18 +23,21 @@ import {VaultMessages} from "./libraries/VaultMessages.sol";
 /// @dev Deployed as an EIP-1167 clone by {HybridIndexFactory}, from a template built for that factory. Stage A's
 ///      `IndexHub` stays as it is for indexes held entirely on Ethereum (Stage B spec, proposal 1).
 ///
-///      The hub keeps the common paths: orders from opening to claim, redemption and claims. The rest, voids,
-///      re-confirmations, stray intakes and the rebalance, runs in MODULE, which the fallback reaches by
-///      DELEGATECALL on this index's own storage. The two share {HybridHubStorage} and nothing else, and MODULE is
-///      fixed in the template's constructor, so it is one contract's code split in two for size, not an upgrade path.
+///      The hub keeps the common paths: orders from opening to claim, redemption and claims. The rest runs in MODULE,
+///      which the fallback reaches by DELEGATECALL on this index's own storage: voids, re-confirmations, stray intakes
+///      and the rebalance there, and migration, evidence, recovery addresses, the exit record and held orders in the
+///      module's EXTENSION, which the module's own fallback reaches the same way. The three share {HybridHubStorage}
+///      and nothing else; MODULE is fixed in the template's constructor and EXTENSION in the module's, so they are one
+///      contract's code split in three for size, not an upgrade path.
 ///
 ///      The hub's book of each vault component, `_vaultBacking`, is exact by construction: it grows by the proven
-///      deposits of every claimed order and the deliveries of every settled fill, and falls by every amount burned, all
-///      derived from supply and units. Orders span the whole basket, so every order touches every vault chain.
+///      deposits of every claimed order, the proven deliveries of every settled fill and the vault legs a migration
+///      brings in, and falls by every amount burned or migrated out, all derived from supply and units. Orders span
+///      the whole basket, so every order touches every vault chain.
 ///
 ///      Every function that mints, burns, pays a claim or moves an order or a fill shares one reentrancy guard. The
 ///      only calls out are to Ethereum components (escrow and payouts), to views (the factory's registry and the
-///      chains' state verifiers), and to MODULE.
+///      chains' state verifiers), and by DELEGATECALL to MODULE and, through it, EXTENSION.
 contract HybridHub is HybridHubStorage, ERC20Upgradeable, ERC20PermitUpgradeable, ReentrancyGuard, IHybridHub {
     using SafeERC20 for IERC20;
 

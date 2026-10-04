@@ -283,9 +283,9 @@ on its own, down when it leaves and up when it comes back, so the amounts come f
 index never pays out rounding dust or a donation. As a difference of floored backings, a shrinking leg of a sub-token
 index could release a whole raw unit for a fraction of one while no growing leg asked for any, paying an executor that
 delivered nothing (SA-07). The invariant survives the rounding, since `⌊a − b⌋ ≤ ⌊a⌋ − ⌊b⌋` and
-`⌊a + b⌋ ≤ ⌊a⌋ + ⌈b⌉`. If no `out_i` is non-zero
-at `λ(t)`, as on an empty index or one so small that every shrinking leg rounds to zero, the settlement is taken at
-`λmax` instead, where nothing shrinks, so the units never depend on timing when nothing is paid for (R14, XA-27).
+`⌊a + b⌋ ≤ ⌊a⌋ + ⌈b⌉`. If no `out_i` is non-zero at `λ(t)`, as on an empty index or one so small that every shrinking leg
+rounds to zero, the settlement is taken at `λmax` instead, where nothing shrinks, so the units never depend on timing
+when nothing is paid for (R14, XA-27).
 
 In order: check the window and, for the bounded overload, `maxAmountsIn`; read what the index holds of every component
 that moves (a component with neither an `out` nor an `in` is not read at all, not even for its balance, DA-14); write
@@ -762,7 +762,8 @@ balance per index, takes coins only as deposits to an intake, and lets them out 
 - **Speed limit.** `SPEED_LIMIT` is 4%. A payout counts in its hour's bucket, and the current hour and the 24 before
   it, with the payout, must stay within 4% of the index's balance before them, or the coin's outflow floor if that is
   larger, so outflow in any 24 hours is at most 4% exactly. What the limit holds back stays owed, and `release` pays it
-  later; nothing expires. `paidTotal` counts every payout, which can never exceed what the index sent.
+  later; nothing expires. `paidTotal` counts every payout. Before a snapshot exit it can never exceed what the index
+  sent; after one, snapshot claims add to it (VLT-I6).
 - **Freeze.** The freezer, the guardian's freeze address on that chain, can `freeze()` for 14 days, as a `FREEZE`
   message can. A frozen vault takes no deposit and pays nothing; accepted burns stay owed. Nothing freezes a vault
   after its snapshot (VLT-5).
@@ -787,9 +788,11 @@ balance per index, takes coins only as deposits to an intake, and lets them out 
   node under mainnet's VM switches and 80 ms CPU limit (`tron/`; Stage B spec, section 5.7).
 - **On Solana** the vault is a twin program, `solana/programs/xindex-vault` (Anchor 1.2), with the same messages,
   digests, speed limit, freeze and governance delay, one instruction per message kind, and SOL held by a treasury
-  account the program signs for. Its `abi` tests pin every encoding against Solidity's. It keeps checkpoints, stalls,
-  recovers and exits as the EVM vault does (SOL-7, closed 2026-10-03), its holders signing their snapshot claim with an
-  EIP-712 domain that names the vault's 32-byte id as `salt` and its registry chain id, for a `bytes32` recipient.
+  account the program signs for. Its `abi` module wraps `xindex_core::abi`, whose tests pin the message envelope, a
+  BURN, both digests, the clone address, the hub's storage reads and the claim's EIP-712 digest against Solidity's
+  (`crates/xindex-core/tests/vault.rs`). It keeps checkpoints, stalls, recovers and exits as the EVM vault does (SOL-7,
+  closed 2026-10-03), its holders signing their snapshot claim with an EIP-712 domain that names the vault's 32-byte id
+  as `salt` and its registry chain id, for a `bytes32` recipient.
   `solana/programs/stub-verifier` trusts a relayer key and serves testnets only; nothing in `src/` or `script/` names
   it.
 - **On NEAR** (`near/`) the vault is a near-sdk contract with P1 and P2 compiled in, since NEAR's cross-contract calls

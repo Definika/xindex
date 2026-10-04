@@ -138,6 +138,10 @@ verifier, from an anchor the fixture generator writes, with the deployment's own
      ids have none.
    - The BLS signature-length finding of 2026-10-04: `BLS-1` (`audit/2026-10-04-bls-signature-length.md`), tested by
      `test_BLS1_...` in `test/Bls12381.t.sol` and `test/BnbStateVerifier.t.sol`.
+   - The whole-repo audit of 2026-10-04: ids by reviewer, `A1a-01`..`C1-08`, with the roll-ups `SYS-01` and `DEP-01`
+     (`audit/2026-10-04-skills-audit.md`, triaged in `audit/2026-10-04-triage.md`). A test is named `test_B501_...` in
+     Solidity and `test_b501_...` in Rust and Move; one covering two ids carries both (`test_A302_A403_...`). A fix in
+     one vault goes into its twins under the same id. The triage names every test, and the ids still pending.
 
    Find a test by its id. Most v1 and R tests are in `test/Security.t.sol` and `test/fork/Security.fork.t.sol`. The R
    tests that drive the λ auction directly (R04, R08, R14, R17, R19, R22) are in `test/IndexHub.rebalance.t.sol`,
@@ -388,8 +392,9 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   `HybridIndexFactory` reaches it only through `IndexFactory`'s two template hooks.
 - **Vaults.** A chain's vault is fixed once registered, and an index copies its vaults at creation. A vault pays out
   only on messages both Ethereum-side proofs carry, and only protective messages (a freeze, a lowered cap) pass on one.
-- **The hub's book is exact.** `vaultBacking` changes only by the proven deposits of a claimed order and by burns, both
-  from supply and units. Every order spans every chain of its index, and its intake id carries its deadline.
+- **The hub's book is exact.** `vaultBacking` changes only by the proven deposits of a claimed order, the proven
+  deliveries of a settled fill and the vault legs a migration brings in, and by burns and migrations out, all from
+  supply and units. Every order spans every chain of its index, and its intake id carries its deadline.
 - **Nothing an order rests on can change unseen.** Deposits are proven only after their deadline. During the lock, any
   different proof of the intake voids the order and freezes the chain. A freeze that began at or after settlement holds
   the order until a proof from after the freeze re-confirms it.
@@ -476,8 +481,11 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
 - **Size.** The hub and the module are both near the 24KB limit; new code goes in the extension. Check
   `forge build --sizes` after any change to any of the three.
 - **The Solana vault is the EVM vault's twin.** `solana/programs/xindex-vault` keeps the same messages, digests, speed
-  limit and freeze, and its `abi` tests pin every encoding against Solidity's. A change to either vault's rules or to a
-  message goes into both. `solana/programs/stub-verifier` trusts a relayer key and exists for testnets only; nothing in
+  limit and freeze. Its `abi` module is a thin wrapper of `xindex_core::abi`, so the pins against Solidity's encodings
+  live in the shared core's tests (`crates/xindex-core/tests/vault.rs`: the message envelope and a BURN, both digests,
+  the clone address, the hub's storage reads and the claim's EIP-712 digest); a new message kind or a changed body
+  needs its own pin there. A change to either vault's rules or to a message goes into both.
+  `solana/programs/stub-verifier` trusts a relayer key and exists for testnets only; nothing in
   `src/` or `script/` may name it. `solana/programs/ethereum-verifier` is P1 on Solana, the twin of
   `EthereumFinalityVerifier.sol`: the same anchor, the same headers tree, the same receipt proof, and SP1 v6's Groth16
   check on the alt_bn128 syscalls, tested on SP1's own proof and on real mainnet receipts. `solana/programs/
@@ -606,8 +614,11 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
 - **Scripts.** They keep their logic in public functions that take explicit arguments, so tests can call them without
   environment variables: `Deploy.deploy`, which deploys `HybridIndexFactory` with both templates, the zap and
   `MintRequests`; `DeployVault.deploy`, which deploys a vault chain's P1, P2, state reader and vault, refusing any
-  Groth16 verifier but the pinned SP1 and RISC Zero ones; `DeployStateVerifier.deployBnb` and `deployTron`, which
-  deploy a chain's state verifier on Ethereum from a fresh anchor; `ConfigureWhitelist.propose`, `execute`,
+  Groth16 verifier but the pinned SP1 and RISC Zero ones; `DeployStateVerifier.deployBnb`, `deployTron`, `deployNear`,
+  `deployStellar`, `deploySui`, `deployInjective`, `deployVeChain` and `deployAptos`, which deploy a chain's state
+  verifier on Ethereum from a fresh anchor, and its `checkBnb`, `checkTron`, `checkSui`, `checkInjective`,
+  `checkVeChain` and `checkAptos`, which the owner and guardian review it with (NEAR's and Stellar's verifiers hold
+  their anchors in public fields and have no helper); `ConfigureWhitelist.propose`, `execute`,
   `proposeSupplies` and `executeSupplies`; and `ConfigureChains.propose` and `execute`, which add a vault chain and its
   coins. Environment variables are process-global and tests run in parallel, so each variable name is set by exactly
   one test (see `test/Scripts.t.sol`). In tests, script broadcasts come from `DEFAULT_SENDER`.
@@ -624,9 +635,12 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
     anchor, and a floor above the cap. The freezer and the recovery proposer must be set, distinct and not the
     broadcasting key, and the recovery proposer, the owner's emergency multisig there, must be a contract that is not
     an EIP-7702 delegated account.
-  - `DeployStateVerifier` deploys only on mainnet or Sepolia, from a BNB anchor at most `MAX_ANCHOR_AGE` (1 hour) old
-    or the TRON period in progress. The verifier must then be advanced within `MAX_LAG` (1 day) of its anchor, and
-    every day after, or it stops for good.
+  - `DeployStateVerifier` deploys only on mainnet or Sepolia, from an anchor no older than its chain's limit: a BNB
+    Chain or Injective anchor at most `MAX_ANCHOR_AGE` (1 hour) old, and `MAX_NEAR_ANCHOR_AGE`, `MAX_SUI_ANCHOR_AGE`,
+    `MAX_VECHAIN_ANCHOR_AGE` and `MAX_APTOS_ANCHOR_AGE` for the others; TRON's must be the period in progress, and
+    Stellar's keeps no checkpoint, so its anchor has no age. A verifier that keeps a checkpoint must then be advanced
+    within its `MAX_LAG` of the anchor (1 day; Sui's is 2 days from its committee's epoch start), and every day after,
+    or it stops for good.
 - **Mainnet addresses** are verified on-chain before being committed: tokens by symbol and decimals, and the router and
   the PoolManager by their runtime code hashes, since every Universal Router build answers `poolManager()` alike
   (CR-I35). `test/fork/MainnetAddresses.fork.t.sol` checks `script/MainnetAddresses.sol` that way. It also lists the

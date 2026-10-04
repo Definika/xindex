@@ -9,6 +9,10 @@ verification of the findings that matter, then orchestrator synthesis.
 private (checked 2026-10-04). Per the skill's disclosure gate no GitHub issue was filed for any finding, and CRITICAL/HIGH
 items must not be copied to a public surface before they are fixed.
 
+**Fix status.** Each finding's current status (fixed with its commit and test, documented, or pending an owner
+decision) is in `audit/2026-10-04-triage.md`. The HIGH B3-01, SYS-01's code (B5-01, A5-01), B1-01 and the VLT-4 gap
+(A3-02, A4-03, B3-03) are fixed in all affected vaults and verifiers.
+
 ---
 
 ## 1. Summary

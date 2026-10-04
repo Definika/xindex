@@ -50,7 +50,8 @@ CARGO_BUILD_JOBS=1 cargo test --release -p xindex-stellar          # the stateme
 cargo fmt --all --check && cargo clippy -p xindex-stellar --all-targets
 cargo build --release -p xindex-stellar-script                     # builds the program for SP1 too
 ./target/release/stellar-proof execute --synthetic 7 1            # the program, on a synthetic attest
-./target/release/stellar-proof execute --mainnet statement/fixtures/mainnet.json 14
+./target/release/stellar-proof execute --mainnet statement/fixtures/mainnet.json          # the fewest signatures Tier 1 needs: 14
+./target/release/stellar-proof execute --mainnet statement/fixtures/mainnet.json --all    # every signature the fixture holds
 ./target/release/stellar-proof vkey                                # StellarStateVerifier's PROGRAM_KEY
 SP1_PROVER=network NETWORK_PRIVATE_KEY=0x... ./target/release/stellar-proof prove input.json proof.json
 ```

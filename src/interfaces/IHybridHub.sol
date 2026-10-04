@@ -19,8 +19,9 @@ import {IHybridHubTypes} from "./IHybridHubTypes.sol";
 ///      component with S the total supply:
 ///          Ethereum: balanceOf(hub) >= floor(S * units / 1e18) + totalClaims + escrowed
 ///          vault:    vaultBacking   >= floor(S * units / 1e18) + totalClaims
-///      where `vaultBacking` is the hub's own book of what the vault holds for it: the deposits of every claimed order,
-///      less every amount burned. The rarer paths, voids, re-confirmations, stray intakes and the rebalance, run in the
+///      where `vaultBacking` is the hub's own book of what the vault holds for it: the proven deposits of every claimed
+///      order, the proven deliveries of every settled fill and the vault legs a migration brings in, less every amount
+///      burned or migrated out. The rarer paths, voids, re-confirmations, stray intakes and the rebalance, run in the
 ///      module the hub delegates to: {IHybridHubModule}. Integrators call an index through {IHybridIndex}, which has
 ///      both.
 interface IHybridHub is IHybridHubTypes, IERC20, IERC20Permit {
@@ -97,8 +98,9 @@ interface IHybridHub is IHybridHubTypes, IERC20, IERC20Permit {
     /// @notice Shares that could become claimable now without breaking MINT_CAP, by an order or a migration: none on an
     ///         empty index, which only its creator may seed.
     function mintRoom() external view returns (uint256);
-    /// @notice When the factory's latest freeze of `chainId` began and when it ends, whether the owner, the guardian or an
-    ///         index's evidence froze it: an order settled before `start` needs re-confirming before it can be claimed.
+    /// @notice When the factory's latest freeze of `chainId` began and when it ends, whether the owner, the guardian or
+    ///         an index's evidence froze it: an order settled at or before `start` needs re-confirming before it can be
+    ///         claimed.
     function chainFreeze(uint256 chainId) external view returns (uint256 start, uint256 until);
     function vaultBacking(address token) external view returns (uint256);
     function escrowed(address token) external view returns (uint256);

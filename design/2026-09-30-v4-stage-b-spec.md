@@ -274,7 +274,8 @@ byte-identical: an index of Ethereum tokens only is still an `IndexHub` clone.
 **`HybridHub`.**
 - **Tokens on Ethereum** are held in the hub's balance as in Stage A.
 - **Tokens in vaults** are held in the hub's book, `vaultBacking`, which is exact by construction: it grows by the
-  proven deposits of every claimed order and falls by every amount burned.
+  proven deposits of every claimed order, the proven deliveries of every settled fill and what a migration brings in,
+  and falls by every amount burned or migrated out.
 - **Invariants:** `balanceOf ≥ floor(S·u) + claims + escrow` on Ethereum, and `vaultBacking ≥ floor(S·u) + claims`
   per vault token. The invariant suite also checks, with every message delivered, that the vault's real balance
   equals the book.
@@ -289,9 +290,9 @@ The order flow:
 - **Mint cap.** Settling applies the mint cap, 4% of the supply over the current hour and the 24 before it. An empty
   index has no room: only its creator may seed it, with no cap of its own, since the vault's quantity cap bounds a real
   seed. A stranger's seed could be dust, which 4% a day would never let grow (HUB-2).
-- **Void.** During the 24-hour lock, `voidOrder` takes any proof of the same intake, at a block after the deadline,
-  showing a different digest. An intake cannot change between its deadline and the hub's message, so such a proof means
-  the deposit or the proof was false. The order fails, and the hub freezes that chain's mints for 14 days.
+- **Void.** While an order is locked, during the 24-hour lock or after it until it is claimed, `voidOrder` takes any
+  proof of the same intake, at a block after the deadline, showing a different digest. An intake cannot change between
+  its deadline and the hub's message, so such a proof means the deposit or the proof was false. The order fails, and the hub freezes that chain's mints for 14 days.
 - **Freeze.** A freeze of the chain, by the factory or by a void, that begins at or after an order's settlement holds
   the order. It cannot be claimed until `reconfirmOrder` proves the intake unchanged at a block after the freeze ended.
   Same-second freezes count, since nothing settles while frozen; a mutant using `>` fails
@@ -388,8 +389,9 @@ component. A vault component's reference supply comes from the factory like any 
   unwinds as a failure.
 
 **Orders across a rebalance.**
-- While a fill is accepted, `claimOrder` waits (`RebalanceInProgress`), at most the delivery window and its grace.
-  Supply then cannot grow under a settlement sized for it.
+- While a fill is accepted, `claimOrder` waits (`RebalanceInProgress`) until it settles or fails. Nothing ends a fill
+  by itself: anyone may fail it `SETTLE_GRACE` after the delivery deadline, so the wait is bounded only if someone
+  does. Supply then cannot grow under a settlement sized for it.
 - An order whose escrow or deposits no longer cover its shares at the units in force when it is claimed fails at that
   claim, returning its escrow as claims and refunding its deposits. That is the rare order that lives across a settled
   rebalance whose units moved against it.
@@ -941,7 +943,7 @@ deterministic-finality rule. The record, with every source, is `design/2026-10-0
 |---|---|---|---|
 | Avalanche C-Chain | no as written: probabilistic safety, though accepted blocks never revert | nothing on mainnet signs the validator set's changes | waits on Ava Labs, and on the owner's reading of the rule |
 | NEAR | yes | a zkVM proof of each epoch's ed25519 approvals, then SHA-256 paths to an `attest` result | built (4 October 2026) |
-| Stellar | yes | a zkVM proof of a Tier 1 quorum's EXTERNALIZE signatures, then the `attest` call's result | built (4 October 2026); Tier 1's changes have no on-chain anchor |
+| Stellar | yes | a zkVM proof of a Tier 1 quorum's EXTERNALIZE signatures, then the `attest` call's result | built (4 October 2026); Tier 1's changes have no on-chain anchor, so a retired or leaked key counts until a new verifier replaces the old one (the one-day limit is on a ledger's age, and the signers write its close time) |
 | Hedera | yes, under a permissioned council | hinTS (BLS12-381) block proofs, switched off on mainnet until about November 2026 | waits on Hedera's TSS cutover, and on the owner accepting the council |
 | Cardano | no: Praos, and Peras too, are probabilistic | Mithril certifies inclusion only, under operator-held genesis keys | fails the rule as written |
 

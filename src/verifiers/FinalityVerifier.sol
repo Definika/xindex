@@ -55,6 +55,8 @@ abstract contract FinalityVerifier is IEthereumEventVerifier {
 
     event Advanced(uint64 indexed epoch, bytes32 anchor, bytes32 headersRoot, uint64 first, uint64 last);
 
+    /// @notice A constructor was given a zero value: this one's anchor or genesis time, or a subclass's verifier, key
+    ///         or image id.
     error ZeroAddress();
     error WrongAnchor(bytes32 given, bytes32 held);
     error UnknownHeaders(bytes32 root);

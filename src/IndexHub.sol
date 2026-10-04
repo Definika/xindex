@@ -398,9 +398,10 @@ contract IndexHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, Re
     /// @dev Settlement for the current block at the current λ. Every moving component's units become
     ///      ceil(λ · u / r); a kept one keeps its units. Amounts are each leg's change in required backing, rounded
     ///      down when it leaves and up when it must come back, so they depend only on supply and units: the index never
-    ///      sends out rounding dust or donations, and the executor has to deliver every amount in full (SA-07). A settlement that would send nothing out, as on an empty index or one so small that
-    ///      every shrinking leg rounds to zero, is taken at λmax instead, so the units never depend on timing when
-    ///      nothing is paid for: at λmax nothing shrinks, since no ratio exceeds it.
+    ///      sends out rounding dust or donations, and the executor has to deliver every amount in full (SA-07). A
+    ///      settlement that would send nothing out, as on an empty index or one so small that every shrinking leg
+    ///      rounds to zero, is taken at λmax instead, so the units never depend on timing when nothing is paid for: at
+    ///      λmax nothing shrinks, since no ratio exceeds it.
     function _previewRebalance(uint256 supply)
         private
         view

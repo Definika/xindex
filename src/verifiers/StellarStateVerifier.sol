@@ -76,8 +76,10 @@ contract StellarStateVerifier is IStellarStateVerifier {
         if (v.networkId != NETWORK_ID) revert WrongNetwork(v.networkId);
         if (v.quorumSetHash != QUORUM_SET_HASH) revert WrongQuorumSet(v.quorumSetHash);
         if (v.vaultId != VAULT_ID) revert WrongVault(v.vaultId);
-        // Keys outlive their validators' tenure, and nothing slashes a Stellar validator: keys retired or leaked later
-        // could sign a ledger dated long ago at no cost. A day bounds that, as it does for every other verifier.
+        // A day bounds how stale a proof may be. It does not bound retired or leaked keys: the signers write the close
+        // time, so keys of the pinned quorum set can sign a ledger dated now for as long as this verifier is
+        // registered. Nothing ties the set to Ethereum's clock, so a Tier 1 change calls for a rotation at once, and
+        // the old keys stay trusted for the factory's ROTATION_DELAY.
         if (block.timestamp > uint256(v.closeTime) + MAX_LAG) revert TooOld(v.closeTime);
         // The record the vault emitted, written here from the requested slots and the given values: equal only if the
         // vault attested exactly these slots, in this order, with exactly these values.

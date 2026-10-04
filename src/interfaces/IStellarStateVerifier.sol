@@ -45,9 +45,10 @@ interface IStellarStateVerifier is IVaultStateVerifier {
     error LengthMismatch();
     error ZeroValue();
 
-    /// @notice How old a proven ledger may be, by its close time: 1 day, as every other verifier's limit. Keys outlive
-    ///         their validators' tenure and nothing slashes a Stellar validator, so keys retired or leaked later could
-    ///         otherwise sign a ledger dated long ago at no cost.
+    /// @notice How old a proven ledger may be, by its close time: 1 day. It bounds how stale a proof may be, not how
+    ///         long a retired or leaked key counts: the signers write the close time, so keys of the pinned quorum set
+    ///         can sign a ledger dated now for as long as this verifier is registered, and a Tier 1 change calls for
+    ///         a new verifier, whose rotation takes the factory's ROTATION_DELAY.
     function MAX_LAG() external view returns (uint256);
 
     /// @notice `keccak256("xindex.v4.vault-attest")`, the record's first word.

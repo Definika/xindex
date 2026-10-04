@@ -252,8 +252,9 @@ interface IXindexVault {
 
     function isIndex(address index) external view returns (bool);
     function balance(address index, address token) external view returns (uint256);
-    /// @notice Everything paid out of the index's balance of `token`: to burn recipients, and into other indexes'
-    ///         balances by migration. It can never exceed what the index sent out in BURN and MIGRATE messages.
+    /// @notice Everything paid out of the index's balance of `token`: to burn recipients, into other indexes' balances
+    ///         by migration, and to holders' snapshot claims. Before a snapshot exit it can never exceed what the index
+    ///         sent out in BURN and MIGRATE messages; after one, claims carry it past that (VLT-I6).
     function paidTotal(address index, address token) external view returns (uint256);
     function held(address token) external view returns (uint256);
     function cap(address token) external view returns (uint256);
@@ -291,7 +292,9 @@ interface IXindexVault {
     ///         template under `salt`. Only a registered index takes deposits.
     function registerIndex(address index, bytes32 salt) external;
 
-    /// @notice Anyone, while not frozen. Deposits the native coin sent into intake `intakeId` of `index`.
+    /// @notice Anyone, while the vault is neither frozen nor stalled, into a registered index, within the cap and before
+    ///         the intake's deadline, which a new intake may set at most MAX_INTAKE_LIFE away. Deposits the native coin
+    ///         sent into intake `intakeId` of `index`.
     function deposit(address index, uint256 intakeId) external payable;
 
     /// @notice Anyone. Runs one message proven final on Ethereum by P1 (`proof1`), P2 (`proof2`) or both.

@@ -25,7 +25,9 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///         producers of the period in progress. The anchor is the one thing a verifier trusts; every later set or list
 ///         is proven from it. So it must be fresh; the verifier must be advanced within MAX_LAG (1 day) of it, and
 ///         every day after, or it stops for good; and the owner and guardian check it against the chain itself during
-///         the chain's listing delay, with `checkBnb` or `checkTron`.
+///         the chain's listing delay, with `checkBnb`, `checkTron`, `checkSui`, `checkInjective`, `checkVeChain` or
+///         `checkAptos`. NEAR's and Stellar's verifiers have no check helper: they hold their anchors in public fields,
+///         which are compared with the chain directly.
 ///
 ///     python3 test/fixtures/bnb/generate.py <BNB Chain RPC> anchor bnb-anchor.json
 ///     STATE_CHAIN=bnb STATE_ANCHOR=bnb-anchor.json forge script script/DeployStateVerifier.s.sol --rpc-url mainnet \
@@ -110,7 +112,7 @@ contract DeployStateVerifier is Script {
     /// @notice A verifier of a chain's state belongs on Ethereum, beside the hub, and the BNB verifier needs Ethereum's
     ///         BLS12-381 precompiles: mainnet or Sepolia only.
     error NotEthereum(uint256 chainId);
-    /// @notice STATE_CHAIN is none of `bnb`, `tron`, `near` and `stellar`.
+    /// @notice STATE_CHAIN is none of `bnb`, `tron`, `near`, `stellar`, `sui`, `injective`, `vechain` and `aptos`.
     error UnknownChain(string chain);
     /// @notice `chainId` is not the registry id of the chain's network that pairs with this Ethereum network: mainnet's
     ///         on mainnet, the testnet's on Sepolia.

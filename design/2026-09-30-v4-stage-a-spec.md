@@ -113,10 +113,12 @@ change, or a single moving component. Storage: `{eta, λmax, λmin}`, the keep m
 
 **Settle** (`executeRebalance(data)` and `executeRebalance(data, maxAmountsIn)`), as v3's `_settle` without the feed
 gate: for each moving `i`, `u'_i = ⌈λ · u_i / r_i⌉`; kept components keep `u_i`. A component whose `u'` is below `u` is
-sold: `out_i = ⌊S·u_i/1e18⌋ − ⌊S·u'_i/1e18⌋`; one above is bought: `in_i = ⌊S·u'_i/1e18⌋ − ⌊S·u_i/1e18⌋`. If no `out_i`
-is non-zero at `λ(t)`, the settlement is computed at `λmax` instead, so units never depend on timing when nothing is
-paid for (R14, XA-27). State is written before any transfer; the executor gets `out`, is called back, and
-`_checkBacking` requires the invariant with the new units and the whole of `in` on top of what the index held.
+sold: `out_i = ⌊S·(u_i − u'_i)/1e18⌋`; one above is bought: `in_i = ⌈S·(u'_i − u_i)/1e18⌉`. Each leg's change in backing
+is rounded the holders' way on its own (SA-07), and the invariant survives since `⌊a − b⌋ ≤ ⌊a⌋ − ⌊b⌋` and
+`⌊a + b⌋ ≤ ⌊a⌋ + ⌈b⌉`. If no `out_i` is non-zero at `λ(t)`, the settlement is computed at `λmax` instead, so units never
+depend on timing when nothing is paid for (R14, XA-27). State is written before any transfer; the executor gets `out`, is
+called back, and `_checkBacking` requires the invariant with the new units and the whole of `in` on top of what the
+index held.
 
 **Why no price is needed.** At any prices the value-neutral `λ* = Σ u_i p_i / Σ (u_i/r_i) p_i` is a weighted average of
 the stored `r_i`, so `λmin ≤ λ* ≤ λmax`, and a fill at `λ` leaves holders `λ/λ* ≥ λmin/λmax ≥ (1−STEP)/(1+STEP)` of the

@@ -122,7 +122,9 @@ interface IHybridIndexFactory is IIndexFactory {
     ///         values, so `chainPending` says whether it can still run.
     function chainProposal(uint256 chainId) external view returns (bytes32 vault, address verifier, uint256 eta);
 
-    /// @notice The governance proposal `id`; an empty one if none is pending.
+    /// @notice The governance proposal `id`; an empty one if none was made or it was executed or cancelled. An expired
+    ///         one keeps its values, and no view says whether it can still run: it can between its `eta` and `eta` +
+    ///         PROPOSAL_WINDOW.
     function vaultProposal(bytes32 id) external view returns (VaultProposal memory);
 
     /// @notice The id of the one proposal of `kind` for `chainId` that may be live at a time; `key` is the token of a

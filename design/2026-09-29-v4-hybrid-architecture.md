@@ -406,7 +406,8 @@ components that move (all but those in the keep mask).
    so the units never depend on timing when nothing is paid for.
 3. **Ethereum-only indexes** settle atomically with v3's callback (`executeRebalance`): the executor receives the sold
    tokens, delivers the bought ones inside the call, and the backing check runs after it returns. Amounts are
-   differences of floored backing, as in v3, so they come only from supply and units.
+   each leg's change in backing, rounded down when it leaves and up when it comes back (SA-07), so they come only
+   from supply and units.
 4. **Indexes with vault tokens:** an executor calls `accept()` at the current λ and posts a bond in index shares
    (0.1% of supply). It delivers every bought token first: Tier 1 tokens in the same transaction, other chains'
    tokens as vault deposits under the rebalance id within `DELIVERY_WINDOW`. `settle(proofs)` checks the deliveries

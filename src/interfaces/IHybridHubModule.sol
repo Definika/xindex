@@ -26,10 +26,12 @@ interface IHybridHubModule is IHybridHubTypes {
     /// @notice The extension this module delegates everything it does not answer to: migration and evidence.
     function EXTENSION() external view returns (address);
 
-    /// @notice Anyone, during a locked order's lock. `proof` shows `chainId`'s intake at a block after the deadline
-    ///         other than the order rests on: the order fails and the chain's mints freeze. As all evidence, `proof`
-    ///         covers two slots, the claim's and the vault's snapshot root, and is refused (`ChainExited`) once the
-    ///         vault has begun its snapshot exit, which honestly fails what was never settled.
+    /// @notice Anyone, while an order is locked (settled, not yet claimed or failed), after its 24-hour lock as well as
+    ///         during it: the hub sends the intake's settle message only when it claims the order. `proof` shows
+    ///         `chainId`'s intake at a block after the deadline other than the order rests on: the order fails and the
+    ///         chain's mints freeze. As all evidence, `proof` covers two slots, the claim's and the vault's snapshot
+    ///         root, and is refused (`ChainExited`) once the vault has begun its snapshot exit, which honestly fails
+    ///         what was never settled.
     function voidOrder(uint256 orderId, uint256 chainId, bytes calldata proof) external;
 
     /// @notice Anyone. For a locked order whose chain froze at or after it settled: proofs from after each such freeze

@@ -150,8 +150,9 @@ contract AptosStateVerifier is IAptosStateVerifier {
         Trusted memory t = _trusted[s.trustedEpoch];
         if (t.set == bytes32(0) || s.trustedSet != t.set) revert UnknownAnchor(s.trustedEpoch);
         // The ledger infos are signed by sets trusted from this one on; keys retired or leaked later could sign them at
-        // no cost, so the set must be recent, by the same day an update needs. That also bounds the state's age from
-        // below, for a reader that takes an old state as evidence.
+        // no cost, so the set must be recent, by the same day an update needs. That does not bound the attested
+        // state's age: the accumulator proves any transaction at or before the ledger info's version, so the returned
+        // time, the vault's own, is the only bound, and a reader must compare it with its own deadline.
         if (block.timestamp > t.time / MICROS + MAX_LAG) revert TooOld(t.time);
         if (s.timestamp / MICROS > block.timestamp) revert InTheFuture(s.timestamp);
         // Equal only if the vault attested exactly these slots, in this order, to exactly these values.
