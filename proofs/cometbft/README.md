@@ -99,7 +99,9 @@ read-only: a trusted header 3,000 blocks back and its next set, a skipping hop t
 adjacent hop to `H+1`, block `H`'s header, and two slots of a real contract at `H`, one present and one absent. It checks
 every header hash, set hash, signature, voting power and ICS-23 path with its own implementation, and every value
 against `eth_getStorageAt`, then writes the public values the statement must commit. The public endpoints keep proofs
-briefly, so a regenerated fixture is a different chain; the tests read every value from the file.
+briefly, so a regenerated fixture is a different chain; the tests read every value from the file. `generate.py anchor
+<out.json>` writes a deployment's anchor: the latest header with a canonical commit, its hash checked against the commit,
+its height and time, and the chain ids.
 
 ## Measured
 

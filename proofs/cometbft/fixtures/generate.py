@@ -2,6 +2,7 @@
 checking every link with `cometbft_py`, an implementation separate from the Rust statement and the Solidity verifier.
 
     uv run --with pynacl --with pycryptodome python3 generate.py [span] [contract] [comet-url] [evm-url]
+    uv run --with pynacl --with pycryptodome python3 generate.py anchor <out.json> [comet-url]
 
 - the trusted header T, `span` blocks back (3,000 by default, about half an hour), and its next validator set;
 - a skipping hop to H, every validator set of H and H+1 checked against the headers, H's commit signed by more than two
@@ -10,6 +11,10 @@ checking every link with `cometbft_py`, an implementation separate from the Rust
 - ICS-23 proofs of two storage slots of `contract`, one present and one absent, in the `evm` store under
   `0x02 ++ address ++ slot` at height H, checked to H+1's `app_hash` and against `eth_getStorageAt` at block H;
 - the public values the statement must commit for the update to H+1 and for the slots.
+
+`anchor` writes a deployment's anchor instead: the latest header with a canonical commit, its hash computed here and
+checked against the commit's block id, its height and time in seconds, and the chain ids, for
+`DeployStateVerifier.deployInjective`. The verifier must then be updated within a day of that time, and every day after.
 
 Injective's public sentry keeps state proofs for about the last 100 blocks, so the generator takes H three blocks behind
 the head and fetches its proofs first; Polkachu's archive (`https://injective-rpc.polkachu.com`) keeps about 8 hours.
@@ -36,10 +41,11 @@ from cometbft_py import (
 )
 from rpc import COMET, EVM, comet, evm
 
-SPAN = int(sys.argv[1]) if len(sys.argv) > 1 else 3000
-CONTRACT = (sys.argv[2] if len(sys.argv) > 2 else "0x263c63c1d8901c14520474110ce88cfadae0cfe9").lower()
+ANCHOR = len(sys.argv) > 1 and sys.argv[1] == "anchor"
+SPAN = 3000 if ANCHOR or len(sys.argv) < 2 else int(sys.argv[1])
+CONTRACT = (sys.argv[2] if len(sys.argv) > 2 and not ANCHOR else "0x263c63c1d8901c14520474110ce88cfadae0cfe9").lower()
 COMET_URL = sys.argv[3] if len(sys.argv) > 3 else COMET
-EVM_URL = sys.argv[4] if len(sys.argv) > 4 else EVM
+EVM_URL = sys.argv[4] if len(sys.argv) > 4 and not ANCHOR else EVM
 CHAIN_ID = "injective-1"
 EVM_CHAIN_ID = 1776
 # A slot the contract holds (an `Ownable` owner) and one it never wrote: the snapshot root's slot, `bytes32(25)`, which
@@ -207,5 +213,30 @@ def main():
     )
 
 
+def anchor(out_path):
+    """The latest header with a canonical commit, as a deployment's anchor."""
+    head = int(c("status")["sync_info"]["latest_block_height"])
+    sh = signed_header(head - 1)
+    h = sh["header"]
+    assert h["chain_id"] == CHAIN_ID
+    digest = header_hash(h)
+    assert digest == bytes.fromhex(sh["commit"]["block_id"]["hash"]), "the header is the one its commit signed"
+    out = {
+        "note": "Injective mainnet header %s, read from %s by generate.py anchor." % (h["height"], COMET_URL),
+        "chainId": EVM_CHAIN_ID,
+        "cosmosChainId": CHAIN_ID,
+        "height": int(h["height"]),
+        "hash": "0x" + digest.hex(),
+        "time": seconds(h),
+    }
+    with open(out_path, "w") as f:
+        json.dump(out, f, indent=2)
+        f.write("\n")
+    print("anchor: header %d, %s, time %d" % (out["height"], out["hash"], out["time"]))
+
+
 if __name__ == "__main__":
-    main()
+    if ANCHOR:
+        anchor(sys.argv[2])
+    else:
+        main()
