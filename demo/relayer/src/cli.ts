@@ -69,8 +69,33 @@ async function solanaInit() {
       freezer: pubkey("SOLANA_FREEZER"),
       nativeCap: 1_000_000_000_000n, // 1,000 SOL
       nativeFloor: 1_000_000_000n, // 1 SOL
+      recoveryProposer: solanaRecovery(),
     }),
   );
+}
+
+/** The Solana vault's recovery proposer: `SOLANA_RECOVERY`, a Squads vault's address, or else an address derived from the
+ *  vault program that nobody can sign for, so the devnet vault has no stall recovery and its upgrade authority stands
+ *  in. Either is off the curve, as the vault requires. */
+function solanaRecovery() {
+  if (process.env.SOLANA_RECOVERY) return pubkey("SOLANA_RECOVERY");
+  return PublicKey.findProgramAddressSync([new TextEncoder().encode("demo recovery")], sol.vaultProgram())[0];
+}
+
+/** Advances the Solana vault's checkpoint to Sepolia's latest finalized block, unless it is there already. */
+async function checkpointSolana(): Promise<bigint | undefined> {
+  const finalized = await sepoliaClient().getBlock({ blockTag: "finalized" });
+  if ((await sol.checkpointBlock()) >= finalized.number) return undefined;
+  await sol.advanceCheckpoint(
+    finalized.number,
+    finalized.timestamp,
+    finalized.stateRoot,
+    keypair("SOLANA_RELAYER1"),
+    keypair("SOLANA_RELAYER2"),
+    pubkey("SOLANA_P1_PROGRAM"),
+    pubkey("SOLANA_P2_PROGRAM"),
+  );
+  return finalized.number;
 }
 
 /** Registers the demo index on both vaults. */
@@ -140,6 +165,8 @@ async function relayOnce(from: bigint): Promise<bigint> {
         } else if (m.destChainId === BigInt(s.hyperChainId)) {
           log("HyperEVM", m.id.slice(0, 10), "kind", m.kind, await deliverHyper(entry));
         } else if (m.destChainId === BigInt(s.solanaChainId)) {
+          // As on HyperEVM, a message that moves coins runs only from a block the vault's checkpoint covers (VLT-3).
+          if ((await sol.checkpointBlock()) < l.blockNumber!) await checkpointSolana();
           const outcome = await sol.deliverSolana(
             m,
             l.blockNumber!,
@@ -178,6 +205,9 @@ async function relay(args: string[]) {
     if (Date.now() - lastCheckpoint > 3_600_000) {
       const c = await checkpointHyper().catch((e) => log("checkpoint:", String(e).split("\n")[0]));
       if (c) log("HyperEVM checkpoint", c);
+      // A week without a checkpoint stalls the Solana vault, which then takes no deposit.
+      const k = await checkpointSolana().catch((e) => log("Solana checkpoint:", String(e).split("\n")[0]));
+      if (k) log("Solana checkpoint", k);
       if (bnbOn && process.env.SP1_PROVER) {
         // P1 must move within a day of its anchor, and the BNB vault's checkpoint with it.
         const u = await bnb.updateP1().catch((err) => log("P1:", String(err).split("\n")[0]));
@@ -384,6 +414,7 @@ const commands: Record<string, (args: string[]) => unknown> = {
   register,
   relay,
   checkpoint: async () => log("HyperEVM checkpoint", (await checkpointHyper()) ?? "current"),
+  "solana-checkpoint": async () => log("Solana checkpoint", (await checkpointSolana()) ?? "current"),
   open,
   deposit: depositFor,
   settle,

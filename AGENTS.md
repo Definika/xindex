@@ -21,10 +21,11 @@ methodology; v3 is tagged `v3.0.0` and never ships on mainnet. The web app lives
 Where the stages stand (none of v4 is deployed):
 - Stage A is built.
 - Stage B is built in large part: the EVM vault and the Solana vault program; P1 (SP1) and P2 (RISC Zero) on EVM vault
-  chains, and P1 on Solana; BNB Chain's and TRON's state verifiers on Ethereum; and `HybridIndexFactory` with
-  `HybridHub`, its module and its extension. So BNB Chain and TRON are built in both directions. Solana lacks P2 and
-  its vault's stall recovery and snapshot exit, and its state verifier on Ethereum waits on Alpenglow's mainnet launch;
-  the rest of Solana waits while the other chains' code comes first (the owner's call on 2026-10-01).
+  chains and on Solana; BNB Chain's and TRON's state verifiers on Ethereum; and `HybridIndexFactory` with
+  `HybridHub`, its module and its extension. So BNB Chain and TRON are built in both directions. Solana is built from
+  Ethereum to its vault, the vault's checkpoints, stall recovery and snapshot exit included (2026-10-03); its state
+  verifier on Ethereum is not built, and can ship only once Alpenglow reaches mainnet
+  (`design/2026-10-03-solana-state-proof.md` has the researched plan and a native prototype in `proofs/solana-state`).
   HyperEVM waits on Hyperliquid, since every header's state root is zero. The Stage B spec's section 8 has each
   chain's status, and its section 6 the build order.
 - No Stage C chain is built. Avalanche, NEAR, Stellar, Hedera and Cardano were researched on 2026-10-01
@@ -450,9 +451,13 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   message goes into both. `solana/programs/stub-verifier` trusts a relayer key and exists for testnets only; nothing in
   `src/` or `script/` may name it. `solana/programs/ethereum-verifier` is P1 on Solana, the twin of
   `EthereumFinalityVerifier.sol`: the same anchor, the same headers tree, the same receipt proof, and SP1 v6's Groth16
-  check on the alt_bn128 syscalls, tested on SP1's own proof and on real mainnet receipts. Its gates: `anchor build
-  --no-idl`, `cargo build-sbf` for the stub and for `ethereum-verifier`, `cargo test -p xindex-vault -p
-  ethereum-verifier`, `cargo fmt --check` and `cargo clippy`, at low priority.
+  check on the alt_bn128 syscalls, tested on SP1's own proof and on real mainnet receipts. `solana/programs/
+  risc0-verifier` is P2, the same core (`process_with`) with RISC Zero v3.0's check, tested on RISC Zero's own receipt;
+  as on the EVM, only the proof's check may differ between them. The vault keeps checkpoints, stalls, recovers and
+  exits as `XindexVault` does, reading the hub's storage at its snapshot, which `tests/fixtures/generate.py` captures
+  from a real hub on anvil. Its gates: `anchor build --no-idl`, `cargo build-sbf` for the stub, `ethereum-verifier`
+  and `risc0-verifier`, `cargo test -p xindex-vault -p ethereum-verifier -p risc0-verifier`, `cargo fmt --check` and
+  `cargo clippy`, at low priority.
 - **P1 is checked in plain Rust first.** `proofs/finality` holds the whole statement, so its logic is tested natively and
   the zkVM only runs it. Its gates: `cargo test --release`, `cargo fmt --check` and `cargo clippy`, at low priority,
   each also with `--features sepolia`, the testnets' build: Sepolia's genesis and fork versions, a program key of its

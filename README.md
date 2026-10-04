@@ -16,9 +16,11 @@ chains' native coins in ownerless vaults. Stage A, the price-free part held on E
 no fee, WBT off after its check, and an owner Safe of at least three signatures. Stage B, the vaults and their proofs
 (`design/2026-09-30-v4-stage-b-spec.md`), is largely built in code: `HybridIndexFactory`, `HybridHub` with its module
 and extension, the EVM vault `XindexVault` and the Solana vault program, P1 (on SP1) and P2 (on RISC Zero) for an EVM
-vault chain and P1 for Solana, and the state verifiers of BNB Chain and TRON on Ethereum.
-- **BNB Chain and TRON** are complete in code in both directions; TRON has no deploy script yet.
-- **Solana** still lacks P2 and a state verifier on Ethereum, which waits on Alpenglow's mainnet launch.
+vault chain and for Solana, and the state verifiers of BNB Chain and TRON on Ethereum.
+- **BNB Chain and TRON** are complete in code in both directions, deployment included: `script/DeployVault.s.sol` for
+  BNB Chain and `tron/deploy.mjs` for TRON, each with the same checks.
+- **Solana** is complete from Ethereum to its vault: P1, P2, and the vault's checkpoints, stall recovery and snapshot
+  exit. Its state verifier on Ethereum is not built, and can ship only once Alpenglow reaches mainnet.
 - **HyperEVM** cannot hold a vault while its headers' state root is zero (Stage B spec, section 8).
 - **Stage C**'s chains (Avalanche, NEAR, Stellar, Hedera, Cardano) were researched on 2026-10-01, and none is built
   (`design/2026-10-01-stage-c-research.md`).

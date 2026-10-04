@@ -787,8 +787,9 @@ balance per index, takes coins only as deposits to an intake, and lets them out 
   node under mainnet's VM switches and 80 ms CPU limit (`tron/`; Stage B spec, section 5.7).
 - **On Solana** the vault is a twin program, `solana/programs/xindex-vault` (Anchor 1.2), with the same messages,
   digests, speed limit, freeze and governance delay, one instruction per message kind, and SOL held by a treasury
-  account the program signs for. Its `abi` tests pin every encoding against Solidity's. It has no checkpoint, stall
-  recovery or snapshot exit yet. `solana/programs/stub-verifier` trusts a relayer key and serves testnets only;
+  account the program signs for. Its `abi` tests pin every encoding against Solidity's. It keeps checkpoints, stalls,
+  recovers and exits as the EVM vault does (SOL-7, closed 2026-10-03), its holders signing their snapshot claim with an
+  EIP-712 domain that names the vault's 32-byte id as `salt` and its registry chain id, for a `bytes32` recipient. `solana/programs/stub-verifier` trusts a relayer key and serves testnets only;
   nothing in `src/` or `script/` names it.
 
 ### 10.4 From Ethereum to a vault chain: P1 and P2
@@ -816,8 +817,8 @@ implement it over the same statement, so that one broken prover can stop coins b
   sha256(publicValues))` on one RISC Zero verifier deployment, never its router. `script/DeployVault.s.sol` refuses any
   Groth16 verifier but SP1's v6.0.0 and RISC Zero's 3.0.0.
 - **On Solana**, `solana/programs/ethereum-verifier` is P1, the same verifier as a program, with the same day's lag. It
-  reads RLP in place, so only compute bounds a receipt, at about 19,600 logs (LG-1). P2 on Solana is not built, and
-  with no stall recovery there yet, a P1 left a day behind cannot be rotated out (LG-I4).
+  reads RLP in place, so only compute bounds a receipt, at about 19,600 logs (LG-1). P2 is
+  `solana/programs/risc0-verifier`, the same core with RISC Zero's check; both answer `verify_checkpoint`.
 - **Shared risk.** A bug in either zkVM breaks one system only; a bug in the statement breaks both. That is a known
   limitation (Stage B spec, section 11).
 - **Measured.** SP1's Groth16 check costs about 227k gas on an EVM and 96,910 compute units on Solana. P1's statement
@@ -912,7 +913,7 @@ registration delay, and proves every later step.
 - TRON's deployment settings and its deployment script (Stage B spec, section 5.7);
 - external audits, a Sepolia rehearsal, and the mainnet deployment through the Safe.
 
-**Stage B, not built.** P2 on Solana, a Solana state verifier, and the Solana vault's checkpoints and snapshot exit; a
+**Stage B, not built.** A Solana state verifier, which waits on Alpenglow's mainnet launch; a
 vault on HyperEVM, until Hyperliquid publishes a state root; a successor's proof of descent, which stall recovery asks
 for; look-through for an official pool's LPs at a snapshot; and watchers.
 

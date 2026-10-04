@@ -77,6 +77,24 @@ fn the_recovery_proposer_is_a_multisig() {
 // checkpoints and the stall
 // ---------------------------------------------------------------------
 
+/// The demo's relayer reads the checkpoint's block straight from the `config` account, at the offset its
+/// `CHECKPOINT_OFFSET` (`demo/relayer/src/solana.ts`) names: this pins that offset to the account's real layout.
+#[test]
+fn the_relayers_checkpoint_offset() {
+    const CHECKPOINT_OFFSET: usize = 8 + 16 + 40 + 96 + 56 + 120 + 2 + 32;
+    let (h, _) = Harness::ready();
+    let data = h.svm.get_account(&h.config).unwrap().data;
+    let c = h.config().checkpoint;
+    assert_eq!(c.block, 1_000);
+    let at = |i: usize| u64::from_le_bytes(data[i..i + 8].try_into().unwrap());
+    assert_eq!(at(CHECKPOINT_OFFSET), c.block);
+    assert_eq!(at(CHECKPOINT_OFFSET + 8), c.timestamp);
+    assert_eq!(
+        &data[CHECKPOINT_OFFSET + 16..CHECKPOINT_OFFSET + 48],
+        &c.state_root
+    );
+}
+
 #[test]
 fn a_checkpoint_needs_both_proofs_and_is_always_newer() {
     let (mut h, _) = Harness::ready();

@@ -728,10 +728,14 @@ forge a proof. What remains:
   java-tron on the machine measured; every run passed at 80 ms, while at java-tron's default 50 ms a cold or loaded
   node failed. The check runs only in `update`, one per proof system, never in a delivery. Whoever sends `update`
   sets a fee limit near its energy, about 300,000, and the margin is measured again on Nile before mainnet.
-- **Still for the deployment:** the script that deploys the vault on a TRON network with `script/DeployVault.s.sol`'s
-  checks and `consume_user_resource_percent` at 100 (so callers pay all energy, as nobody owns the vault), as
-  `tron/rehearse.mjs` deploys it on the local chain; and TRX's 6 decimals in the caps, the floor and the reference
-  supply. The Ethereum side is scripted: `script/DeployStateVerifier.s.sol` deploys the verifier from a fresh anchor,
+- **Deployment (3 October 2026).** `tron/deploy.mjs` deploys P1, P2, the state reader and the vault on TRON as Tron's
+  compiler builds them, with every check `DeployVault.check` makes, adapted to TRON, and `consume_user_resource_percent`
+  at 100, so callers pay all energy, as nobody owns the vault. The recovery proposer may be a contract or TRON's own
+  account multisig, every permission able to call a contract needing two keys. It deploys the vendored Groth16
+  verifiers unless given addresses, and reads the wiring back. A whole deployment takes about 12.2 million energy,
+  about 1,220 TRX at mainnet's energy fee. The cap and the floor are in sun, TRX's 6 decimals. The rehearsal passes
+  again on the code with LG-1 to LG-6, LG-4's refusal included (`tron/README.md`). The deployer keeps one TRON-level
+  power, the energy setting and the stored ABI, which touch neither funds nor rules. The Ethereum side is scripted: `script/DeployStateVerifier.s.sol` deploys the verifier from a fresh anchor,
   and `script/ConfigureChains.s.sol` proposes chain 728126428 and TRX's listing (`tron/README.md`).
 
 ## 6. Build order
@@ -748,9 +752,9 @@ Statuses as of `main` on 1 October 2026. Nothing has been deployed but on local 
    migration with the evidence against a chain (section 5.5), are built.
 4. The Ethereum-event verifiers: P1 on SP1 (built, section 10) and P2 on RISC Zero (built, section 11, the owner's call
    on 1 October 2026). Neither has generated a proof yet; a proof's price and time wait on the owner's GPU run.
-5. The Solana vault program (built, section 7, with P1 on Solana; P2 on Solana and a Solana state verifier are not
-   built), then Tron (its state verifier built, section 5.7, and its contracts run on TRON's VM; the vault's deploy
-   script on TRON is not written) and HyperEVM (blocked: no state root to prove against, section 8).
+5. The Solana vault program (built, section 7, with P1 and P2 on Solana and the vault's checkpoints, stall recovery and
+   snapshot exit; a Solana state verifier is not built), then Tron (its state verifier built, section 5.7, and its contracts run on TRON's VM; the vault's deploy
+   script is `tron/deploy.mjs`) and HyperEVM (blocked: no state root to prove against, section 8).
 6. The stall recovery and snapshot exit (built, section 5.6, but for the pool look-through and a successor's proof of
    descent), then watchers (not built), then the testnet rehearsals of the design's Phase 3 (not run; the hackathon's
    demonstration has been rehearsed only on local chains and local forks, with real testnet data, `demo/README.md`).
@@ -788,7 +792,9 @@ limit and the same freeze. What Solana changes:
     proof is 1.5 to 2.2 KB (section 10).
   - The real P1, built since, is `solana/programs/ethereum-verifier` (section 10): its `update` checks the SP1 Groth16
     proof, 96,910 compute units measured in LiteSVM, and its `verify_event` proves the log by its receipt under the
-    headers root that proof recorded, 9,100 to 12,500. P2 on Solana is not built.
+    headers root that proof recorded, 9,100 to 12,500. P2 on Solana is `solana/programs/risc0-verifier`: the same core
+    (`process_with`) with RISC Zero v3.0's Groth16 check, 98,160 compute units on RISC Zero's own receipt (built
+    3 October 2026). Both verifiers also answer `verify_checkpoint`, which the vault's checkpoints need.
 - **Used messages.** Each delivered message creates an account at an address derived from its id, so a second
   delivery fails by construction.
 - **Initialization** only by the program's upgrade authority, so nobody can take the configuration in front of the
@@ -806,8 +812,28 @@ limit and the same freeze. What Solana changes:
   VLT-2, VLT-4).
 - `anchor build --no-idl`: Anchor's IDL generator cannot follow addresses derived from the payload.
 
-**Not in the hackathon build:** stall recovery and the snapshot exit (section 5.6), which follow once Solana's own state
-proof exists; the vault's state proven to Ethereum, which a relayer stub stands in for; tokens other than SOL.
+**Checkpoints, stall recovery and the snapshot exit (built 3 October 2026, closing SOL-7).** The twin of section 5.6:
+the checkpoint both verifiers prove (`advance_checkpoint`, verifier instruction 4), messages that wait for it (VLT-3),
+the stall, recovery with LG-2 and LG-3, and the snapshot exit (`claim_snapshot`, `resolve_intake`,
+`deliver_recorded_burn`, `deliver_recorded_migrate`), which reads the hub's storage under the snapshot's state root from
+`eth_getProof`'s nodes, staged in a loader buffer. What Solana changes:
+- **The recovery proposer** is fixed at initialization and must be a program-derived address, off the ed25519 curve, as
+  a Squads multisig's is, and not the freezer: the twin of "a contract, not an EIP-7702 account".
+- **The claim's signature** is EIP-712 with the domain `EIP712Domain(string name,string version,uint256 chainId,bytes32
+  salt)`: "Xindex vault", "1", the registry's chain id, and the vault's 32-byte id as `salt`, since a Solana vault has no
+  20-byte address. The struct is `SnapshotClaim(address index,address holder,bytes32 recipient)`, the recipient a Solana
+  key. It is recovered with the `secp256k1_recover` syscall, low `s` and `v` of 27 or 28 only, as OpenZeppelin's ECDSA.
+- **The recovery address** the hub keeps is read under the registry's chain id; any non-zero value counts, since every 32
+  bytes are a key. A claim is once per holder by its owed account's creation.
+- **Amounts** must fit 64-bit lamports. `deliverRecorded` is one instruction per kind, as the other deliveries are.
+- **Measured** in LiteSVM: a claim by signature 79,850 compute units on anvil's small trie, about 110,000 expected at
+  mainnet's depth; `advance_checkpoint` 16,940; `propose_successor` 56,131.
+- **Tests** read real hub storage: `tests/fixtures/generate.py` runs the repo's factory and hub on anvil, mints, burns,
+  migrates and registers a recovery key, then records `eth_getProof`. Two more run the vault against the real P1 and P2
+  programs, proving a real mainnet block's checkpoint and refusing a message its receipt does not hold.
+
+**Not built:** the vault's state proven to Ethereum, which a relayer stub stands in for on the devnet; tokens other
+than SOL.
 
 **The stubs.** `solana/programs/stub-verifier` accepts any log its relayer key signed. It is deployed twice, as P1 and
 as P2, under two keys. Its name, its first line and the submission all say it is a stub. The Ethereum side's stub is
@@ -851,6 +877,13 @@ holds a value proves that value.
 - **The other direction:** TVM has BN254 precompiles but no BLS12-381 ones, so P1's Groth16 verifier works there.
 
 ### Solana: prove the slot's account writes, once Alpenglow is live
+
+> **Researched 3 October 2026:** `design/2026-10-03-solana-state-proof.md` confirms the formats on devnet's real
+> Alpenglow data and corrects this section in five places: slow finality pairs a finalize certificate over the slot
+> with a notarize certificate over the block, and every vote signs the shred version; the set's BLS keys come from the
+> epoch's first slot, not the registry; `attest` writes the index's account and `Config` too; a prover must run its own
+> node, since public RPC serves none of a proof's inputs; and Alpenglow has no slashing, so a forging coalition of 60%
+> of stake loses nothing. About three to four weeks of work, a node, and an outside review.
 
 Alpenglow's finalization certificates are BLS12-381 aggregates over a block id, with Ethereum's own ciphersuite. Each
 block's footer carries its bank hash, which folds in the lattice hash of all accounts, and validators vote only after
@@ -1054,9 +1087,12 @@ behind the vault's existing verifier interface (`xindex_vault::verify`).
   513 logs take 41,633 units, and about 19,600 logs or 2.8 MB of log data fit, below the about 44,700 empty logs a
   2^24-gas transaction can hold. That residual ceiling is why messages can be sent again (section 2).
 - **A day's lag (LG-4).** `update` refuses a proof more than a day after the stored anchor's epoch began, as the EVM
-  verifier does. With no stall recovery on the Solana vault yet (SOL-7), a P1 left a day behind there cannot be
-  rotated out on its own: a `VERIFIER_ROTATION` needs both proofs, P1's included (LG-I4).
-- **Not built.** `verifyCheckpoint`: the Solana vault has no checkpoints or snapshot exit yet.
+  verifier does. A P1 left a day behind there cannot be rotated out by a `VERIFIER_ROTATION`, which needs both proofs,
+  P1's included (LG-I4): the vault stalls, and a successor pair replaces it by stall recovery (section 5.6), built on
+  Solana since 3 October 2026.
+- **Checkpoints.** `verify_checkpoint` (instruction 4) attests a block's number, timestamp and state root from a header
+  proof under a recorded headers root, as `verifyCheckpoint` returns them, in about 3,350 compute units.
+- **P2.** `solana/programs/risc0-verifier` shares this core; only the check of the proof differs, as on the EVM.
 
 ### Deliberately not in P1
 
@@ -1121,4 +1157,5 @@ each, and P2's own test pins the SHA-256 digest of the journal.
   ceremony. Check each against its published ceremony record.
 - The image id is reproducible only from a pinned build: RISC Zero builds a guest reproducibly in its Docker image,
   which a mainnet image id should come from.
-- P2 on Solana, the twin of `solana/programs/ethereum-verifier`, waits with the rest of the Solana work.
+- P2 on Solana is built (`solana/programs/risc0-verifier`, 3 October 2026): the same core as P1 there, with this
+  section's check.
