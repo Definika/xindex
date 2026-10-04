@@ -382,6 +382,23 @@ module xindex_vault::light_client_tests {
     }
 
     #[test]
+    fun test_b501_a_recent_checkpoint_is_taken_up_to_its_bound() {
+        let lc = client();
+        let fresh_until = GENESIS + 400_001 * 384 + 21_600;
+        light_client::advance_at_for_testing(lc, values(0xaa, 0xbb, 400_001, 100, 163), fresh_until);
+        assert!(light_client::epoch(lc) == 400_001);
+    }
+
+    #[test, expected_failure(abort_code = light_client::EStale, location = light_client)]
+    /// B5-01: an update must end at a checkpoint whose epoch began at most MAX_UPDATE_AGE before now, as
+    /// `FinalityVerifier.update`: a stale one-epoch step would void the proofs in flight while aging the anchor.
+    fun test_b501_a_stale_checkpoint_is_refused() {
+        let lc = client();
+        let fresh_until = GENESIS + 400_001 * 384 + 21_600;
+        light_client::advance_at_for_testing(lc, values(0xaa, 0xbb, 400_001, 100, 163), fresh_until + 1);
+    }
+
+    #[test]
     /// LG-4: the last second an update is taken is exactly a day after the anchor's epoch began, saturating.
     fun test_lg4_the_lag_ends_a_day_after_the_anchors_epoch() {
         let lc = client();

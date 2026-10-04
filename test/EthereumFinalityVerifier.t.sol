@@ -171,6 +171,22 @@ abstract contract FinalityVerifierTest is Test {
         verifier.update(later, laterProof);
     }
 
+    /// @dev B5-01: an update must land a checkpoint whose epoch began within MAX_UPDATE_AGE of now. Before, anyone could
+    ///      land a stale one-epoch step from the anchor: each voided the honest proofs in flight while moving the lag
+    ///      bound by 384 seconds, until the verifier was a day behind and stopped for good.
+    function test_B501_anUpdateMustLandARecentCheckpoint() public {
+        assertEq(verifier.MAX_UPDATE_AGE(), 6 hours);
+        uint256 start = GENESIS + uint256(EPOCH + 1) * 384;
+        bytes memory publicValues = abi.encode(ANCHOR, NEXT, EPOCH + 1, keccak256("headers"), uint64(10), uint64(20));
+        bytes memory proof = _prove(KEY, publicValues);
+        vm.warp(start + 6 hours + 1);
+        vm.expectRevert(abi.encodeWithSelector(FinalityVerifier.StaleHead.selector, EPOCH + 1));
+        verifier.update(publicValues, proof);
+        vm.warp(start + 6 hours);
+        verifier.update(publicValues, proof);
+        assertEq(verifier.anchorEpoch(), EPOCH + 1);
+    }
+
     // ---------------------------------------------------------------------
     // events and checkpoints
     // ---------------------------------------------------------------------

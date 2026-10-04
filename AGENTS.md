@@ -427,15 +427,20 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
 - **Messages wait for the checkpoint.** A vault runs a message that moves coins or loosens a rule only from an
   Ethereum block its checkpoint covers, so the snapshot never pays a holder whose burn it paid (VLT-3). A snapshot
   claim reads a component only inside the hub's components array (VLT-1).
-- **A stall is only ever Ethereum's formats breaking.** Anyone can advance a vault's checkpoint while P1 and P2 work, so
-  a stall (7 days without one) cannot be manufactured. Only then may the owner's emergency multisig propose a
+- **A stall is Ethereum's formats breaking, or a day nobody proves.** Anyone can advance a vault's checkpoint while P1
+  and P2 work, and every update must land a checkpoint whose epoch began within `MAX_UPDATE_AGE` (6 hours) of now, so
+  nobody can age P1 or P2 to their lag by landing stale steps: whoever lands an update keeps them alive (B5-01). A day
+  in which nobody lands one still stops them for good (LG-4), so provers independent of the owner must update both
+  daily. Only in a stall (7 days without a checkpoint) may the owner's emergency multisig propose a
   successor, which must prove the last checkpoint, a recent one and the last message, and wait 30 days of review with
   at most 2 vetoes. A stalled vault takes no deposit.
   - Only a checkpoint that ends the stall lapses the successor and restarts the vetoes. A stale one, which the old pair
     can still prove, keeps both, so nobody can throw the review away a block at a time (LG-2).
   - The last message is the last on both proofs: a one-proof freeze could be forged by one broken system (LG-3).
   - P1 and P2 stop for good a day behind: `update` refuses a proof once `MAX_LAG` has passed since the anchor's epoch
-    began, dated from the beacon genesis time fixed at deployment, on EVM chains and on Solana (LG-4).
+    began, dated from the beacon genesis time fixed at deployment, on EVM chains and on Solana (LG-4). The CometBFT and
+    VeChain state verifiers, whose steps are single blocks, hold an update's new head to the same `MAX_UPDATE_AGE`
+    (A5-01).
 - **The snapshot exit is final and speed-limited.** 180 days into a stall, the last checkpoint becomes the snapshot:
   no message from a later block runs, the freezer can no longer freeze, holders at it claim their share by signature
   or recovery address within the speed limit, and open intakes are settled or refunded from the hub's

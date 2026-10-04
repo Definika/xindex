@@ -38,6 +38,8 @@ pub enum VerifierError {
     NotTheLog = 113,
     NotTheCheckpoint = 114,
     InvalidProof = 115,
+    /// An update's checkpoint is of an epoch that began more than MAX_UPDATE_AGE ago (B5-01).
+    Stale = 116,
 }
 
 impl From<lc::Error> for VerifierError {
@@ -56,6 +58,7 @@ impl From<lc::Error> for VerifierError {
             lc::Error::NoLog => VerifierError::NoLog,
             lc::Error::NotTheLog => VerifierError::NotTheLog,
             lc::Error::NotTheCheckpoint => VerifierError::NotTheCheckpoint,
+            lc::Error::Stale => VerifierError::Stale,
         }
     }
 }
@@ -155,7 +158,9 @@ pub fn update(env: &Env, values: &Bytes, proof: &Bytes, check: ProofCheck) {
         fail(env, VerifierError::InvalidProof);
     }
     let mut anchor = s.anchor.to_array();
-    let v = lc::advance(&mut anchor, &mut s.epoch, &values).unwrap_or_else(|e| fail(env, e.into()));
+    let now = env.ledger().timestamp() as i64;
+    let v = lc::advance(&mut anchor, &mut s.epoch, &values, s.genesis_time, now)
+        .unwrap_or_else(|e| fail(env, e.into()));
     s.anchor = BytesN::from_array(env, &anchor);
     env.storage().instance().set(&Key::State, &s);
     let key = Key::Range(BytesN::from_array(env, &v.headers_root));

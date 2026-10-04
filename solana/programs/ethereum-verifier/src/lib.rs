@@ -93,6 +93,8 @@ pub enum VerifierError {
     NotTheLog,
     Lagging,
     NotTheCheckpoint,
+    /// An update's checkpoint is of an epoch that began more than MAX_UPDATE_AGE ago (B5-01).
+    Stale,
 }
 
 impl From<VerifierError> for ProgramError {
@@ -119,6 +121,7 @@ impl From<light_client::Error> for VerifierError {
             E::NoLog => VerifierError::NoLog,
             E::NotTheLog => VerifierError::NotTheLog,
             E::NotTheCheckpoint => VerifierError::NotTheCheckpoint,
+            E::Stale => VerifierError::Stale,
         }
     }
 }
@@ -343,12 +346,13 @@ fn update(
     if *state.key != state_key || state.owner != program_id || state.data_len() != STATE_LEN {
         return Err(VerifierError::WrongAccount.into());
     }
-    check_lag(&state.data.borrow(), Clock::get()?.unix_timestamp)?;
+    let now = Clock::get()?.unix_timestamp;
+    check_lag(&state.data.borrow(), now)?;
     let key: [u8; 32] = state.data.borrow()[..32].try_into().unwrap();
     if !(proofs.verify)(&key, values, proof) {
         return Err(VerifierError::InvalidProof.into());
     }
-    let v = apply_update(&mut state.data.borrow_mut(), values)?;
+    let v = apply_update(&mut state.data.borrow_mut(), values, now)?;
     let (range_key, bump) =
         Pubkey::find_program_address(&[RANGE_SEED, &v.headers_root], program_id);
     if *range.key != range_key {
@@ -374,12 +378,18 @@ pub fn check_lag(state: &[u8], now: i64) -> Result<(), VerifierError> {
     Ok(light_client::check_lag(epoch, genesis_time, now)?)
 }
 
-/// Moves the anchor in `state` (the state account's data) one proven step (`light_client::advance`): the proof must
-/// start from the stored anchor. Returns the values, whose headers root and blocks the caller records.
-pub fn apply_update(state: &mut [u8], values: &[u8]) -> Result<PublicValues, VerifierError> {
+/// Moves the anchor in `state` (the state account's data) one proven step at `now` (`light_client::advance`): the proof
+/// must start from the stored anchor and end at a checkpoint no older than MAX_UPDATE_AGE (B5-01). Returns the values,
+/// whose headers root and blocks the caller records.
+pub fn apply_update(
+    state: &mut [u8],
+    values: &[u8],
+    now: i64,
+) -> Result<PublicValues, VerifierError> {
     let mut anchor: [u8; 32] = state[32..64].try_into().unwrap();
     let mut epoch = u64::from_le_bytes(state[64..72].try_into().unwrap());
-    let v = light_client::advance(&mut anchor, &mut epoch, values)?;
+    let genesis_time = u64::from_le_bytes(state[72..80].try_into().unwrap());
+    let v = light_client::advance(&mut anchor, &mut epoch, values, genesis_time, now)?;
     state[32..64].copy_from_slice(&anchor);
     state[64..72].copy_from_slice(&epoch.to_le_bytes());
     Ok(v)
@@ -464,17 +474,41 @@ mod tests {
     fn an_update_follows_the_anchor() {
         let mut state = [[0x11u8; 32], [0xaa; 32]].concat();
         state.extend_from_slice(&5u64.to_le_bytes());
-        let v = apply_update(&mut state, &values(0xaa, 0xbb, 6, 100, 163)).unwrap();
+        state.extend_from_slice(&0u64.to_le_bytes());
+        let v = apply_update(&mut state, &values(0xaa, 0xbb, 6, 100, 163), 0).unwrap();
         assert_eq!(&state[32..64], &[0xbb; 32]);
         assert_eq!(u64::from_le_bytes(state[64..72].try_into().unwrap()), 6);
         assert_eq!((v.headers_root, v.first, v.last), ([0x77; 32], 100, 163));
         assert_eq!(&state[..32], &[0x11; 32], "the program key never moves");
         // The same proof again starts from an anchor no longer held.
         assert!(matches!(
-            apply_update(&mut state, &values(0xaa, 0xbb, 6, 100, 163)),
+            apply_update(&mut state, &values(0xaa, 0xbb, 6, 100, 163), 0),
             Err(VerifierError::WrongAnchor)
         ));
-        assert!(apply_update(&mut state, &values(0xbb, 0xcc, 7, 164, 200)).is_ok());
+        assert!(apply_update(&mut state, &values(0xbb, 0xcc, 7, 164, 200), 0).is_ok());
+    }
+
+    /// B5-01: an update must end at a checkpoint whose epoch began at most MAX_UPDATE_AGE before now, as
+    /// `FinalityVerifier.update`: a stale one-epoch step would void the honest proofs in flight while aging the anchor.
+    #[test]
+    fn test_b501_an_update_must_land_a_recent_checkpoint() {
+        let (genesis, next) = (1_606_824_023u64, 400_001u64);
+        let mut state = [
+            &[0x11u8; 32][..],
+            &[0xaa; 32],
+            &(next - 1).to_le_bytes(),
+            &genesis.to_le_bytes(),
+        ]
+        .concat();
+        let fresh_until = (genesis + next * 384 + light_client::MAX_UPDATE_AGE) as i64;
+        let v = values(0xaa, 0xbb, next, 100, 163);
+        assert!(matches!(
+            apply_update(&mut state, &v, fresh_until + 1),
+            Err(VerifierError::Stale)
+        ));
+        assert_eq!(&state[32..64], &[0xaa; 32], "a refused step moves nothing");
+        assert!(apply_update(&mut state, &v, fresh_until).is_ok());
+        assert_eq!(&state[32..64], &[0xbb; 32]);
     }
 
     /// LG-4: an update is taken until exactly a day after the anchor's epoch began, and refused a second later.
@@ -505,12 +539,12 @@ mod tests {
     #[test]
     fn public_values_are_six_words_of_the_right_widths() {
         let mut state = [[0x11u8; 32], [0xaa; 32], [0u8; 32]].concat();
-        state.truncate(72);
+        state.truncate(80);
         let mut v = values(0xaa, 0xbb, 6, 100, 163);
         v[2 * 32] = 1;
         assert!(
             matches!(
-                apply_update(&mut state, &v),
+                apply_update(&mut state, &v, 0),
                 Err(VerifierError::BadPublicValues)
             ),
             "an epoch past 64 bits"
@@ -519,14 +553,14 @@ mod tests {
         v[5 * 32 + 23] = 1;
         assert!(
             matches!(
-                apply_update(&mut state, &v),
+                apply_update(&mut state, &v, 0),
                 Err(VerifierError::BadPublicValues)
             ),
             "a block past 64 bits"
         );
         let v = values(0xaa, 0xbb, 6, 100, 163);
         assert!(matches!(
-            apply_update(&mut state, &v[..191]),
+            apply_update(&mut state, &v[..191], 0),
             Err(VerifierError::BadPublicValues)
         ));
         assert_eq!(&state[32..64], &[0xaa; 32], "nothing moved");

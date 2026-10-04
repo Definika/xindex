@@ -353,6 +353,26 @@ fun short_public_values_are_refused() {
 
 /// LG-4: the last second an update is taken is exactly a day after the anchor's epoch began, saturating.
 #[test]
+fun test_b501_a_recent_checkpoint_is_taken_up_to_its_bound() {
+    let mut ctx = tx_context::dummy();
+    let mut lc = client(&mut ctx);
+    let fresh_until = GENESIS + 400_001 * 384 + 21_600;
+    light_client::advance_at_for_testing(&mut lc, values(0xaa, 0xbb, 400_001, 100, 163), fresh_until);
+    lc.destroy_for_testing();
+}
+
+/// B5-01: an update must end at a checkpoint whose epoch began at most MAX_UPDATE_AGE before now, as
+/// `FinalityVerifier.update`: a stale one-epoch step would void the proofs in flight while aging the anchor.
+#[test, expected_failure(abort_code = light_client::EStale)]
+fun test_b501_a_stale_checkpoint_is_refused() {
+    let mut ctx = tx_context::dummy();
+    let mut lc = client(&mut ctx);
+    let fresh_until = GENESIS + 400_001 * 384 + 21_600;
+    light_client::advance_at_for_testing(&mut lc, values(0xaa, 0xbb, 400_001, 100, 163), fresh_until + 1);
+    lc.destroy_for_testing();
+}
+
+#[test]
 fun test_lg4_the_lag_ends_a_day_after_the_anchors_epoch() {
     let mut ctx = tx_context::dummy();
     let lc = client(&mut ctx);

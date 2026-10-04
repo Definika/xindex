@@ -40,6 +40,11 @@ abstract contract FinalityVerifier is IEthereumEventVerifier {
     ///         epochs; this bounds the anchor in time, so validators who have since exited, and can no longer be
     ///         slashed, cannot sign a past checkpoint into a verifier left behind (LG-4).
     uint256 public constant MAX_LAG = 1 days;
+    /// @notice How long before now the epoch of an update's checkpoint may have begun. Without it, anyone could keep
+    ///         landing a stale one-epoch step from the anchor, each voiding the honest proofs in flight while moving the
+    ///         lag bound by an epoch, until the verifier was MAX_LAG behind and stopped for good (B5-01). Each update
+    ///         now brings the anchor near Ethereum's present, so whoever lands one keeps the verifier alive.
+    uint256 public constant MAX_UPDATE_AGE = 6 hours;
     /// @notice When the network's beacon chain began, which dates every epoch.
     uint256 public immutable GENESIS_TIME;
 
@@ -60,6 +65,8 @@ abstract contract FinalityVerifier is IEthereumEventVerifier {
     error NoLog(uint256 logIndex);
     /// @notice The anchor's epoch began more than MAX_LAG ago.
     error TooOld(uint64 epoch);
+    /// @notice The update's checkpoint is of an epoch that began more than MAX_UPDATE_AGE ago.
+    error StaleHead(uint64 epoch);
 
     uint256 private constant ADDRESS_BYTES = 20;
     uint256 private constant STATUS = 0;
@@ -89,6 +96,8 @@ abstract contract FinalityVerifier is IEthereumEventVerifier {
         (bytes32 anchorIn, bytes32 anchorOut, uint64 epoch, bytes32 headersRoot, uint64 first, uint64 last) =
             abi.decode(publicValues, (bytes32, bytes32, uint64, bytes32, uint64, uint64));
         if (anchorIn != anchor) revert WrongAnchor(anchorIn, anchor);
+        // Never a stale step: one would void the proofs in flight while aging the anchor toward MAX_LAG (B5-01).
+        if (block.timestamp > GENESIS_TIME + uint256(epoch) * EPOCH_SECONDS + MAX_UPDATE_AGE) revert StaleHead(epoch);
         anchor = anchorOut;
         anchorEpoch = epoch;
         _ranges[headersRoot] = Range({first: first, last: last});

@@ -22,6 +22,8 @@ pub enum Error {
     NoLog,
     NotTheLog,
     NotTheCheckpoint,
+    /// An update's checkpoint is of an epoch that began more than MAX_UPDATE_AGE ago (B5-01).
+    Stale,
 }
 
 /// `abi.encode(anchorIn, anchorOut, epoch, headersRoot, first, last)`, as the P1 program commits it and P2's journal
@@ -31,6 +33,10 @@ pub const PUBLIC_VALUES_LEN: usize = 6 * 32;
 /// verifier stops for good: catching up from an old anchor would trust stake that may have left since, and could sign
 /// a forged finality at no risk (LG-4).
 pub const MAX_LAG: u64 = 86_400;
+/// How long before now the epoch of an update's checkpoint may have begun, as `FinalityVerifier.MAX_UPDATE_AGE`.
+/// Without it, anyone could keep landing a stale one-epoch step from the anchor, each voiding the honest proofs in
+/// flight while moving the lag bound by an epoch, until the verifier stopped for good (B5-01).
+pub const MAX_UPDATE_AGE: u64 = 6 * 3_600;
 /// An epoch's length: 32 slots of 12 seconds.
 pub const SECONDS_PER_EPOCH: u64 = 384;
 
@@ -48,6 +54,19 @@ pub fn lag_ends(epoch: u64, genesis_time: u64) -> u64 {
 pub fn check_lag(epoch: u64, genesis_time: u64, now: i64) -> Result<(), Error> {
     if i128::from(now) > i128::from(lag_ends(epoch, genesis_time)) {
         return Err(Error::Lagging);
+    }
+    Ok(())
+}
+
+/// Refuses a step at `now` to a checkpoint of `epoch` that began more than MAX_UPDATE_AGE earlier, as
+/// `FinalityVerifier.update` does: every update must bring the anchor near Ethereum's present (B5-01).
+pub fn check_fresh(epoch: u64, genesis_time: u64, now: i64) -> Result<(), Error> {
+    let stale_after = epoch
+        .saturating_mul(SECONDS_PER_EPOCH)
+        .saturating_add(genesis_time)
+        .saturating_add(MAX_UPDATE_AGE);
+    if i128::from(now) > i128::from(stale_after) {
+        return Err(Error::Stale);
     }
     Ok(())
 }
@@ -87,17 +106,21 @@ impl PublicValues {
     }
 }
 
-/// Moves the stored `anchor` and `epoch` one proven step: the proof's values must start from the stored anchor.
-/// Returns the values, whose headers root and blocks the caller records. Check the proof itself first.
+/// Moves the stored `anchor` and `epoch` one proven step at `now`: the proof's values must start from the stored anchor
+/// and end at a checkpoint no older than MAX_UPDATE_AGE (`check_fresh`). Returns the values, whose headers root and
+/// blocks the caller records. Check the proof itself first.
 pub fn advance(
     anchor: &mut [u8; 32],
     epoch: &mut u64,
     values: &[u8],
+    genesis_time: u64,
+    now: i64,
 ) -> Result<PublicValues, Error> {
     let v = PublicValues::decode(values)?;
     if *anchor != v.anchor_in {
         return Err(Error::WrongAnchor);
     }
+    check_fresh(v.epoch, genesis_time, now)?;
     *anchor = v.anchor_out;
     *epoch = v.epoch;
     Ok(v)

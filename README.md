@@ -551,6 +551,9 @@ For an index holding vault coins (Stage B, not deployed; the Stage B spec has th
   next list (TRN-3). P1's and P2's verifiers on a vault chain keep the same pace: a proof covers at most 225 epochs, a
   day, past the verifier's anchor, and `update` refuses any proof once a day has passed since the anchor's epoch began
   (`lagEnds()`), so one left further behind stops for good and must be replaced (LG-4; Stage B spec, section 10).
+  Every update must also land a checkpoint whose epoch began within 6 hours of now (`MAX_UPDATE_AGE`), so nobody can
+  age a verifier to that limit by landing stale steps (B5-01); the CometBFT and VeChain verifiers hold an update's new
+  head to the same age (A5-01). A day in which nobody proves still stops a verifier, so independent provers matter.
 - **TRON's state rests on 19 of its 27 producers,** who could forge a proof at no cost to their stake, since TRON has
   no slashing.
 - **TRON's 80 ms CPU limit leaves a proof check little room.** TRON fails a transaction past 80 ms of CPU time and burns its whole fee limit;

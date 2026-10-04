@@ -278,14 +278,65 @@ fn values(anchor_in: u8, anchor_out: u8, epoch: u64, first: u64, last: u64) -> V
 #[test]
 fn an_update_follows_the_anchor() {
     let (mut anchor, mut epoch) = ([0xaa; 32], 5u64);
-    let v = advance(&mut anchor, &mut epoch, &values(0xaa, 0xbb, 6, 100, 163)).unwrap();
+    let v = advance(
+        &mut anchor,
+        &mut epoch,
+        &values(0xaa, 0xbb, 6, 100, 163),
+        0,
+        0,
+    )
+    .unwrap();
     assert_eq!((anchor, epoch), ([0xbb; 32], 6));
     assert_eq!((v.headers_root, v.first, v.last), ([0x77; 32], 100, 163));
     assert!(matches!(
-        advance(&mut anchor, &mut epoch, &values(0xaa, 0xbb, 6, 100, 163)),
+        advance(
+            &mut anchor,
+            &mut epoch,
+            &values(0xaa, 0xbb, 6, 100, 163),
+            0,
+            0
+        ),
         Err(Error::WrongAnchor)
     ));
-    assert!(advance(&mut anchor, &mut epoch, &values(0xbb, 0xcc, 7, 164, 200)).is_ok());
+    assert!(advance(
+        &mut anchor,
+        &mut epoch,
+        &values(0xbb, 0xcc, 7, 164, 200),
+        0,
+        0
+    )
+    .is_ok());
+}
+
+/// B5-01: an update must end at a checkpoint whose epoch began at most MAX_UPDATE_AGE before now, as
+/// `FinalityVerifier.update`: a stale one-epoch step would void the honest proofs in flight while aging the anchor.
+#[test]
+fn test_b501_an_update_must_land_a_recent_checkpoint() {
+    assert_eq!(MAX_UPDATE_AGE, 6 * 3_600);
+    let (genesis, next) = (1_606_824_023u64, 400_001u64);
+    let fresh_until = (genesis + next * 384 + MAX_UPDATE_AGE) as i64;
+    let v = values(0xaa, 0xbb, next, 100, 163);
+    let (mut anchor, mut epoch) = ([0xaa; 32], next - 1);
+    assert!(matches!(
+        advance(&mut anchor, &mut epoch, &v, genesis, fresh_until + 1),
+        Err(Error::Stale)
+    ));
+    assert_eq!(
+        (anchor, epoch),
+        ([0xaa; 32], next - 1),
+        "a refused step moves nothing"
+    );
+    assert!(advance(&mut anchor, &mut epoch, &v, genesis, fresh_until).is_ok());
+    assert_eq!((anchor, epoch), ([0xbb; 32], next));
+    assert_eq!(
+        check_fresh(next, genesis, fresh_until + 1),
+        Err(Error::Stale)
+    );
+    assert_eq!(
+        check_fresh(u64::MAX, genesis, i64::MAX),
+        Ok(()),
+        "saturates, never wraps"
+    );
 }
 
 /// LG-4: an update is taken until exactly a day after the anchor's epoch began, and refused a second later.
@@ -314,18 +365,18 @@ fn public_values_are_six_words_of_the_right_widths() {
     let mut v = values(0xaa, 0xbb, 6, 100, 163);
     v[2 * 32] = 1;
     assert!(matches!(
-        advance(&mut anchor, &mut epoch, &v),
+        advance(&mut anchor, &mut epoch, &v, 0, 0),
         Err(Error::BadPublicValues)
     ));
     let mut v = values(0xaa, 0xbb, 6, 100, 163);
     v[5 * 32 + 23] = 1;
     assert!(matches!(
-        advance(&mut anchor, &mut epoch, &v),
+        advance(&mut anchor, &mut epoch, &v, 0, 0),
         Err(Error::BadPublicValues)
     ));
     let v = values(0xaa, 0xbb, 6, 100, 163);
     assert!(matches!(
-        advance(&mut anchor, &mut epoch, &v[..191]),
+        advance(&mut anchor, &mut epoch, &v[..191], 0, 0),
         Err(Error::BadPublicValues)
     ));
     assert_eq!((anchor, epoch), ([0xaa; 32], 5), "nothing moved");

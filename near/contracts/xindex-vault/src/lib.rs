@@ -480,8 +480,14 @@ impl Vault {
         };
         check(checked.is_ok(), Error::InvalidProof);
         let (mut anchor, mut epoch) = (lc.anchor.0, lc.epoch);
-        let v = light_client::advance(&mut anchor, &mut epoch, &public_values.0)
-            .unwrap_or_else(|e| fail(Error::Verifier(e)));
+        let v = light_client::advance(
+            &mut anchor,
+            &mut epoch,
+            &public_values.0,
+            lc.genesis_time,
+            now() as i64,
+        )
+        .unwrap_or_else(|e| fail(Error::Verifier(e)));
         lc.anchor = Hex32(anchor);
         lc.epoch = epoch;
         self.verifiers.insert(id.0, lc);

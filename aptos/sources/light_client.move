@@ -41,12 +41,17 @@ module xindex_vault::light_client {
     const ENotTheCheckpoint: u64 = 138;
     /// No light client lives at the address.
     const ENoClient: u64 = 139;
+    /// The update's checkpoint is of an epoch that began more than MAX_UPDATE_AGE ago (B5-01).
+    const EStale: u64 = 140;
 
     /// SP1's Groth16 proof (P1's), or RISC Zero's (P2's).
     const SP1: u8 = 1;
     const RISC_ZERO: u8 = 2;
     /// How long after its anchor's epoch began a light client still takes a proof, as `FinalityVerifier.MAX_LAG`.
     const MAX_LAG: u64 = 86_400;
+    /// How long before now the epoch of an update's checkpoint may have begun, as `FinalityVerifier.MAX_UPDATE_AGE`: a
+    /// stale one-epoch step would void the proofs in flight while aging the anchor toward MAX_LAG (B5-01).
+    const MAX_UPDATE_AGE: u64 = 21_600;
     /// An epoch's length: 32 slots of 12 seconds.
     const SECONDS_PER_EPOCH: u64 = 384;
     /// `abi.encode(anchorIn, anchorOut, epoch, headersRoot, first, last)`.
@@ -145,11 +150,12 @@ module xindex_vault::light_client {
         } else {
             proofs::verify_risc0(&lc.key, &public_values, &proof);
         };
-        advance(client, lc, &public_values);
+        advance(client, lc, &public_values, timestamp::now_seconds());
     }
 
-    /// Moves the anchor one proven step: the values must start from the stored anchor.
-    fun advance(client: address, lc: &mut LightClient, values: &vector<u8>) {
+    /// Moves the anchor one proven step at `now`: the values must start from the stored anchor and end at a checkpoint
+    /// no older than MAX_UPDATE_AGE.
+    fun advance(client: address, lc: &mut LightClient, values: &vector<u8>, now: u64) {
         assert!(values.length() == PUBLIC_VALUES_LEN, EBadPublicValues);
         let anchor_in = bytes::slice(values, 0, 32);
         let anchor_out = bytes::slice(values, 32, 32);
@@ -158,6 +164,10 @@ module xindex_vault::light_client {
         let first = small(values, 4);
         let last = small(values, 5);
         assert!(anchor_in == lc.anchor, EWrongAnchor);
+        // Never a stale step: one would void the proofs in flight while aging the anchor toward MAX_LAG (B5-01).
+        let fresh_until = (lc.genesis_time as u128) + (epoch as u128) * (SECONDS_PER_EPOCH as u128)
+            + (MAX_UPDATE_AGE as u128);
+        assert!((now as u128) <= fresh_until, EStale);
         lc.anchor = anchor_out;
         lc.epoch = epoch;
         lc.ranges.upsert(headers_root, Range { first, last });
@@ -285,6 +295,12 @@ module xindex_vault::light_client {
     #[test_only]
     public fun advance_for_testing(client: address, values: vector<u8>) acquires LightClient {
         let lc = &mut LightClient[client];
-        advance(client, lc, &values);
+        advance(client, lc, &values, 0);
+    }
+
+    #[test_only]
+    public fun advance_at_for_testing(client: address, values: vector<u8>, now: u64) acquires LightClient {
+        let lc = &mut LightClient[client];
+        advance(client, lc, &values, now);
     }
 }

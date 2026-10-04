@@ -164,7 +164,8 @@ contract CometBftStateVerifierTest is Test {
         verifier.update(updateValues, proof);
     }
 
-    /// @dev A day after the latest trusted header, nothing advances the verifier again.
+    /// @dev A day after the latest trusted header, nothing advances the verifier again; until then, an update that lands
+    ///      a recent head does.
     function test_update_stopsForGoodADayBehind() public {
         bytes memory proof = sp1.prove(KEY, updateValues);
         uint256 ends = uint256(trustedTime) + 1 days;
@@ -172,7 +173,25 @@ contract CometBftStateVerifierTest is Test {
         vm.expectRevert(abi.encodeWithSelector(ICometBftStateVerifier.TooOld.selector, trustedTime));
         verifier.update(updateValues, proof);
         vm.warp(ends);
+        ICometBftStateVerifier.UpdateValues memory u = _realUpdate();
+        u.time = uint64(ends);
+        bytes memory pv = _update(u);
+        verifier.update(pv, sp1.prove(KEY, pv));
+    }
+
+    /// @dev A5-01: an update must land a head dated within MAX_UPDATE_AGE of now. Before, anyone could keep landing
+    ///      one-block hops from the latest header: each voided the keepers' proofs in flight while aging the latest
+    ///      header by about a second, until the verifier was a day behind and stopped for good.
+    function test_A501_anUpdateMustLandARecentHead() public {
+        bytes memory proof = sp1.prove(KEY, updateValues);
+        uint256 age = verifier.MAX_UPDATE_AGE();
+        assertEq(age, 6 hours);
+        vm.warp(uint256(headTime) + age + 1);
+        vm.expectRevert(abi.encodeWithSelector(ICometBftStateVerifier.StaleHead.selector, headTime));
         verifier.update(updateValues, proof);
+        vm.warp(uint256(headTime) + age);
+        verifier.update(updateValues, proof);
+        assertEq(verifier.latestHash(), headHash);
     }
 
     /// @dev `update` with values the mocked zkVM accepts, which the verifier must still refuse with `error`.

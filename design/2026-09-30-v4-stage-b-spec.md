@@ -534,7 +534,10 @@ whether full finality or the sync-committee fallback:
 - The block must be later than the last in number and time, not in the future, and carry a state root.
 - A vault that has accepted no checkpoint for `STALL_PERIOD` (7 days, counted from the checkpoint's own Ethereum
   timestamp) is stalled. Old checkpoints cannot keep it out of a stall.
-- While Ethereum's formats are unchanged, anyone can end a stall, so nobody, the owner included, can manufacture one.
+- While Ethereum's formats are unchanged and someone proves at least daily, anyone can end a stall. Every update must
+  land a checkpoint whose epoch began within `MAX_UPDATE_AGE` (6 hours) of now, so landing stale steps cannot age P1 or
+  P2 to their lag (B5-01). But a day in which nobody lands an update stops them for good (LG-4), and the vault then
+  stalls a week later, which only a successor or the snapshot exit ends (A4-01).
 - A stalled vault takes no deposit, since it may never see the message that would settle or refund it. It keeps paying
   what it already owes.
 - **Messages wait for the checkpoint (VLT-3).** A message that moves coins or loosens a rule runs only from an Ethereum

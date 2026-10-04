@@ -33,6 +33,8 @@ contract VeChainStateVerifier is IVeChainStateVerifier {
     /// @inheritdoc IVeChainStateVerifier
     uint256 public constant MAX_LAG = 1 days;
     /// @inheritdoc IVeChainStateVerifier
+    uint256 public constant MAX_UPDATE_AGE = 6 hours;
+    /// @inheritdoc IVeChainStateVerifier
     bytes32 public constant UPDATE = keccak256("xindex.v4.vechain.update");
     /// @inheritdoc IVeChainStateVerifier
     bytes32 public constant SLOTS = keccak256("xindex.v4.vechain.slots");
@@ -112,6 +114,9 @@ contract VeChainStateVerifier is IVeChainStateVerifier {
         // The block is vouched for by the table before it, which could date it later than now and so stretch its
         // successor's lag beyond a day: never a time still to come.
         if (u.time > block.timestamp) revert InTheFuture(u.time);
+        // Nor long past: a block just beyond the latest would void the keepers' proofs in flight while aging the verifier
+        // toward MAX_LAG, so every update must bring it near the chain's present (A5-01).
+        if (block.timestamp > uint256(u.time) + MAX_UPDATE_AGE) revert StaleHead(u.time);
         _trust(u.id, u.time, u.table);
     }
 

@@ -172,7 +172,8 @@ contract VeChainStateVerifierTest is Test {
         verifier.update(updateValues, proof);
     }
 
-    /// @dev A day after the latest trusted table's block, nothing advances the verifier again.
+    /// @dev A day after the latest trusted table's block, nothing advances the verifier again; until then, an update that
+    ///      lands a recent block does.
     function test_update_stopsForGoodADayBehind() public {
         bytes memory proof = sp1.prove(KEY, updateValues);
         uint256 ends = uint256(trustedTime) + 1 days;
@@ -180,7 +181,26 @@ contract VeChainStateVerifierTest is Test {
         vm.expectRevert(abi.encodeWithSelector(IVeChainStateVerifier.TooOld.selector, trustedTime));
         verifier.update(updateValues, proof);
         vm.warp(ends);
+        IVeChainStateVerifier.UpdateValues memory u = _realUpdate();
+        u.time = uint64(ends);
+        bytes memory pv = abi.encode(u);
+        verifier.update(pv, sp1.prove(KEY, pv));
+    }
+
+    /// @dev A5-01: an update must land a block dated within MAX_UPDATE_AGE of now. Before, anyone could keep landing an
+    ///      update one block past the latest: each voided the keepers' proofs in flight while aging the latest table by
+    ///      ten seconds, until the verifier was a day behind and stopped for good.
+    function test_A501_anUpdateMustLandARecentBlock() public {
+        bytes memory proof = sp1.prove(KEY, updateValues);
+        uint64 head = _realUpdate().time;
+        uint256 age = verifier.MAX_UPDATE_AGE();
+        assertEq(age, 6 hours);
+        vm.warp(uint256(head) + age + 1);
+        vm.expectRevert(abi.encodeWithSelector(IVeChainStateVerifier.StaleHead.selector, head));
         verifier.update(updateValues, proof);
+        vm.warp(uint256(head) + age);
+        verifier.update(updateValues, proof);
+        assertEq(verifier.latestId(), _realUpdate().id);
     }
 
     /// @dev `update` with values the mocked zkVM accepts, which the verifier must still refuse with `error`.

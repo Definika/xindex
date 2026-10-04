@@ -60,6 +60,9 @@ interface ICometBftStateVerifier is IVaultStateVerifier {
     error TooOld(uint256 time);
     /// @notice A header dated `time`, after this block.
     error InTheFuture(uint256 time);
+    /// @notice An update's new header is dated `time`, more than MAX_UPDATE_AGE ago: it would age the verifier, not
+    ///         advance it (A5-01).
+    error StaleHead(uint256 time);
     /// @notice Public values of the wrong length or claim, or an update that does not rise.
     error BadPublicValues();
     /// @notice The proof is of a chain whose id's keccak is `chainIdHash`.
@@ -81,6 +84,12 @@ interface ICometBftStateVerifier is IVaultStateVerifier {
     ///         could sign a header at no cost; a day bounds that. Left a day behind, the verifier stops for good, and
     ///         the chain registry replaces it.
     function MAX_LAG() external view returns (uint256);
+
+    /// @notice How old an update's new header may be: 6 hours. Without it, anyone could keep landing a step just past
+    ///         the latest, each voiding the keepers' proofs in flight and aging the latest by seconds, until the
+    ///         verifier was MAX_LAG behind and stopped for good (A5-01). Each update now brings it near the chain's
+    ///         present, so whoever lands one keeps it alive.
+    function MAX_UPDATE_AGE() external view returns (uint256);
 
     /// @notice `keccak256("xindex.v4.cometbft.update")` and `keccak256("xindex.v4.cometbft.slots")`: the public values'
     ///         first word.
