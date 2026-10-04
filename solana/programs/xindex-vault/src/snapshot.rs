@@ -2,7 +2,8 @@
 //! `VaultSnapshot.sol`, as every chain's vault without a 20-byte address reads it (`xindex_core::snapshot`), over
 //! Solana's syscalls. Solana's differences: the chain is named by the id the factory's registry gives it, where the EVM
 //! vault uses `block.chainid`; a recovery address is a whole 32-byte key, so only zero counts as none; and the signed
-//! claim names a 32-byte recipient, under a domain whose salt is the vault's 32-byte id.
+//! claim names a 32-byte recipient, under a domain whose salt is the vault's 32-byte id and whose `chainId` is
+//! Ethereum's.
 
 use anchor_lang::prelude::*;
 use ethereum_verifier::Solana;
@@ -53,11 +54,11 @@ pub fn claim_id(index: &[u8; 20], holder: &[u8; 20]) -> [u8; 32] {
     core::claim_id(&Solana, index, holder)
 }
 
-/// The EIP-712 digest `holder` signs to have the vault `vault_id` on chain `chain_id` pay its share of `index` to
-/// `recipient`.
+/// The EIP-712 digest `holder` signs to have the vault `vault_id` pay its share of `index` to `recipient`, under a
+/// domain whose `chainId` is Ethereum's, `source_chain_id`, where the holder's wallet is (B1-06).
 pub fn claim_digest(
     vault_id: &[u8; 32],
-    chain_id: u64,
+    source_chain_id: u64,
     index: &[u8; 20],
     holder: &[u8; 20],
     recipient: &Pubkey,
@@ -65,7 +66,7 @@ pub fn claim_digest(
     core::claim_digest(
         &Solana,
         vault_id,
-        chain_id,
+        source_chain_id,
         index,
         holder,
         &recipient.to_bytes(),

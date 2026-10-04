@@ -107,9 +107,12 @@ pub fn decode_message(p: &[u8]) -> Result<Message<'_>, AbiError> {
     if to_u64(word(p, 7)?)? != HEAD as u64 {
         return Err(AbiError::BadMessage);
     }
-    let len = to_u64(word(p, 8)?)? as usize;
+    // The length word whole, never cut to a 32-bit `usize` (B2-05), and no longer than the payload before any sum on
+    // it, so nothing wraps.
+    let len = usize::try_from(to_u64(word(p, 8)?)?).map_err(|_| AbiError::BadMessage)?;
     let start = HEAD + WORD;
-    if p.len() != start + padded(len) || !p[start + len..].iter().all(|b| *b == 0) {
+    let room = p.len() - start;
+    if len > room || room != padded(len) || !p[start + len..].iter().all(|b| *b == 0) {
         return Err(AbiError::BadMessage);
     }
     Ok(Message {
@@ -155,6 +158,18 @@ pub fn body_word(body: &[u8], words: usize, i: usize) -> Result<&[u8; 32], AbiEr
         return Err(AbiError::BadMessage);
     }
     word(body, i)
+}
+
+/// The end of the freeze a `FREEZE` with this body sets. The body is `abi.encode(until)`, the end of the factory's own
+/// freeze of this chain in Unix seconds (A3-03): the vault's freeze ends there, but never more than FREEZE_DURATION
+/// from `now`, and a `FREEZE` whose freeze is already over freezes nothing (`None`), however late it arrives. The body
+/// must be exactly one word (B4-04); an `until` past `i64` saturates, as `XindexVault`'s `uint256` comparisons read it.
+pub fn freeze_end(body: &[u8], now: i64) -> Result<Option<i64>, AbiError> {
+    let until = to_u64(body_word(body, 1, 0)?)
+        .ok()
+        .and_then(|u| i64::try_from(u).ok())
+        .unwrap_or(i64::MAX);
+    Ok((until > now).then(|| until.min(now.saturating_add(FREEZE_DURATION))))
 }
 
 /// The log's data: `abi.encode(bytes payload)`, which the verifiers attest by its hash.

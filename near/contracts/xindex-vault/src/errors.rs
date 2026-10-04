@@ -59,6 +59,8 @@ pub enum Error {
     VerifiersNotDistinct,
     InvalidProof,
     StorageNotPaid,
+    /// The outflow floor above the cap: the speed limit would never bind (B2-02).
+    FloorAboveCap,
     /// A light client's refusal, by the core's name for it.
     Verifier(xindex_core::light_client::Error),
 }

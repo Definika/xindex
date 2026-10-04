@@ -81,4 +81,8 @@ pub enum VaultError {
         "the message already ran: only a cut taken on one proof may come again, on both (A3-02)"
     )]
     AlreadyDelivered,
+    #[msg(
+        "the outflow floor must not lie above the cap: the speed limit would never bind (B2-02)"
+    )]
+    FloorAboveCap,
 }

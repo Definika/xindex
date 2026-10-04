@@ -257,9 +257,10 @@ fn the_route_and_the_emitter_must_be_this_vaults() {
     other_vault[4 * 32] ^= 1;
     h.deliver_intake_payload(index, intake, other_vault, By::Both)
         .expect_code(VaultError::WrongRoute);
-    // A governance kind on an index's instruction (its empty body names intake zero).
-    let p = h.payload(FREEZE, index, &[]);
-    h.deliver_intake_payload(index, [0u8; 32], p, By::Both)
+    // A governance kind on an index's instruction (its body, the freeze's end, names the intake).
+    let end = freeze_body(h.now() + FREEZE_DURATION);
+    let p = h.payload(FREEZE, index, &end);
+    h.deliver_intake_payload(index, end.try_into().unwrap(), p, By::Both)
         .expect_code(VaultError::UnknownKind);
     // Kind zero, and one past the last.
     for kind in [0u8, 9] {
@@ -531,7 +532,7 @@ fn a_cap_raise_needs_both_proofs_and_a_lowering_one() {
 fn only_the_factory_governs() {
     let (mut h, index) = Harness::ready();
     // An index's FREEZE: its emitter is not the factory.
-    let p = h.payload(FREEZE, index, &[]);
+    let p = h.freeze_payload(index);
     h.deliver_governance(p, By::Both)
         .expect_code(VaultError::WrongEmitter);
     // An index's kind from the factory, on the governance instruction.
@@ -567,7 +568,7 @@ fn a_freeze_stops_coins_moving_and_expires() {
 
     // The factory's FREEZE rests on either proof, and never shortens a freeze.
     h.warp(24 * 3600);
-    let p = h.payload(FREEZE, FACTORY, &[]);
+    let p = h.freeze_payload(FACTORY);
     h.deliver_governance(p, By::P2).expect_ok();
     assert_eq!(h.config().frozen_until, h.now() + FREEZE_DURATION);
     let later = h.config().frozen_until;
@@ -719,8 +720,8 @@ fn test_sol3_an_older_freezer_change_cannot_undo_a_newer_one() {
     h.deliver_governance(lower, By::Both)
         .expect_code(VaultError::StaleGovernance);
     // An older freeze still runs: it only protects.
-    let freeze = h.payload(FREEZE, FACTORY, &[]);
-    let later = h.payload(FREEZE, FACTORY, &[]);
+    let freeze = h.freeze_payload(FACTORY);
+    let later = h.freeze_payload(FACTORY);
     h.deliver_governance(later, By::P1).expect_ok();
     h.deliver_governance(freeze, By::P2).expect_ok();
 }
@@ -844,7 +845,7 @@ fn test_a302_a403_a_cut_on_one_proof_still_moves_the_mark_on_both() {
         .expect_code(VaultError::AlreadyDelivered);
     h.deliver_governance(newer_cut, By::P1)
         .expect_code(VaultError::AlreadyDelivered);
-    let freeze = h.payload(FREEZE, FACTORY, &[]);
+    let freeze = h.freeze_payload(FACTORY);
     h.deliver_governance(freeze.clone(), By::P1).expect_ok();
     h.deliver_governance(freeze, By::P1)
         .expect_code(VaultError::AlreadyDelivered);
@@ -867,4 +868,191 @@ fn test_vlt4_one_proof_moves_no_mark() {
         .expect_ok();
     assert_eq!(h.config().cap, CAP, "the factory's next message still runs");
     assert_eq!(h.config().cap_nonce, h.nonce);
+}
+
+// ---------------------------------------------------------------------
+// the whole-repo audit of 4 October (A3-03, B4-04, B1-04, B1-05, B2-02, B1-03, B1-07)
+// ---------------------------------------------------------------------
+
+/// A3-03: a FREEZE carries the end of the factory's own freeze. Delivered after that end, it freezes nothing, so an
+/// undelivered FREEZE is no 14-day pause a stranger may fire months later; delivered mid-freeze, it freezes only to
+/// that end. Either way it is used up.
+#[test]
+fn test_a303_a_late_freeze_ends_with_the_factorys() {
+    let (mut h, index) = Harness::ready();
+    h.fund(index, 10 * SOL);
+    let late = h.freeze_payload(FACTORY);
+    h.warp(300 * DAY);
+    h.fresh();
+    h.deliver_governance(late.clone(), By::P1).expect_ok();
+    assert_eq!(
+        h.config().frozen_until,
+        0,
+        "the factory's freeze is long over"
+    );
+    h.deliver_governance(late, By::Both)
+        .expect_code(VaultError::AlreadyDelivered);
+    let alice = Keypair::new();
+    h.svm.airdrop(&alice.pubkey(), 10 * SOL).unwrap();
+    h.deposit(&alice, index, intake_id(h.now() + 60, 99), SOL)
+        .expect_ok();
+
+    let until = h.now() + FREEZE_DURATION;
+    let mid = h.freeze_payload(FACTORY);
+    h.warp(10 * DAY);
+    h.deliver_governance(mid, By::P2).expect_ok();
+    assert_eq!(h.config().frozen_until, until, "only to the factory's end");
+    // A later freeze of the freezer's own still runs its whole FREEZE_DURATION, and a FREEZE never shortens one.
+    let freezer = h.freezer.insecure_clone();
+    h.freeze(&freezer).expect_ok();
+    let longer = h.now() + FREEZE_DURATION;
+    assert_eq!(h.config().frozen_until, longer);
+    let short = h.payload(FREEZE, FACTORY, &freeze_body(h.now() + DAY));
+    h.deliver_governance(short, By::P1).expect_ok();
+    assert_eq!(h.config().frozen_until, longer);
+    // An end far past FREEZE_DURATION, or past 64 bits, freezes FREEZE_DURATION from now.
+    h.set_time(longer);
+    let mut far = [0xffu8; 32];
+    far[0] = 0;
+    let p = h.payload(FREEZE, FACTORY, &far);
+    h.deliver_governance(p, By::P1).expect_ok();
+    assert_eq!(h.config().frozen_until, h.now() + FREEZE_DURATION);
+}
+
+/// B4-04: a FREEZE's body is exactly one word, `abi.encode(until)`.
+#[test]
+fn test_b404_a_freeze_body_is_one_word() {
+    let (mut h, _) = Harness::ready();
+    for body in [
+        Vec::new(),
+        vec![0u8; 31],
+        [freeze_body(h.now() + DAY), vec![0u8; 32]].concat(),
+    ] {
+        let p = h.payload(FREEZE, FACTORY, &body);
+        h.deliver_governance(p, By::P1)
+            .expect_code(VaultError::BadMessage);
+    }
+    assert_eq!(h.config().frozen_until, 0);
+}
+
+/// B1-04: no deposit before the first checkpoint. No message could settle or fail such an intake, since every one
+/// needs a checkpoint covering its block, and no successor or snapshot could follow without one: its SOL would stay for
+/// good.
+#[test]
+fn test_b104_no_deposit_before_the_first_checkpoint() {
+    let mut h = Harness::new();
+    let authority = h.authority.insecure_clone();
+    let ix = h.initialize_ix(&authority.pubkey(), h.init_args(), h.p1, h.p2);
+    h.send(&[ix], &[&authority]).expect_ok();
+    let (index, salt) = index_of(1);
+    h.register(index, salt).expect_ok();
+    let alice = Keypair::new();
+    h.svm.airdrop(&alice.pubkey(), 10 * SOL).unwrap();
+    let intake = intake_id(h.now() + 3600, 1);
+    h.deposit(&alice, index, intake, SOL)
+        .expect_code(VaultError::NoCheckpoint);
+    h.warp(1);
+    h.advance(1_000).expect_ok();
+    h.deposit(&alice, index, intake, SOL).expect_ok();
+    assert_eq!(h.config().held, SOL);
+}
+
+/// A cap update's body with a cap and a floor of any 256-bit width.
+fn wide_cap_body(cap: [u8; 32], floor: [u8; 32]) -> Vec<u8> {
+    [[0u8; 32], cap, floor].concat()
+}
+
+/// B1-05: a CAP_UPDATE figure past u64, which an EVM vault takes, means u64::MAX here: no lamport amount is larger.
+/// Refused, it could never be delivered, and a lowered floor beside it never applied either.
+#[test]
+fn test_b105_a_cap_wider_than_the_native_type_saturates() {
+    let (mut h, _) = Harness::ready();
+    let mut past = [0u8; 32];
+    past[23] = 1 << 6; // 2^70
+    let mut floor = [0u8; 32];
+    floor[24..].copy_from_slice(&(FLOOR / 2).to_be_bytes());
+    let body = wide_cap_body(past, floor);
+    let p = h.payload(CAP_UPDATE, FACTORY, &body);
+    h.deliver_governance(p.clone(), By::P1)
+        .expect_code(VaultError::BothProofsRequired);
+    h.deliver_governance(p, By::Both).expect_ok();
+    assert_eq!(h.config().cap, CAP, "a raise waits");
+    h.warp(GOVERNANCE_DELAY);
+    h.apply_change(CAP_UPDATE, &body, None).expect_ok();
+    assert_eq!(
+        (h.config().cap, h.config().outflow_floor),
+        (u64::MAX, FLOOR / 2)
+    );
+    // `type(uint256).max` as "no cap" is the same, and lowering then applies at once on one proof.
+    let body = wide_cap_body([0xff; 32], floor);
+    let p = h.payload(CAP_UPDATE, FACTORY, &body);
+    h.deliver_governance(p, By::P1).expect_ok();
+    assert_eq!(h.config().cap, u64::MAX);
+}
+
+/// B2-02, B1-03: initialization refuses what `DeployVault` refuses: a floor above the cap, which would leave the speed
+/// limit never binding; Ethereum's own chain as the vault's, under which no message could route; and the deploying key
+/// as the freezer.
+#[test]
+fn test_b202_b103_initialization_refuses_what_deploy_vault_refuses() {
+    let mut h = Harness::new();
+    let authority = h.authority.insecure_clone();
+    let mut args = h.init_args();
+    args.native_floor = args.native_cap + 1;
+    let ix = h.initialize_ix(&authority.pubkey(), args, h.p1, h.p2);
+    h.send(&[ix], &[&authority])
+        .expect_code(VaultError::FloorAboveCap);
+    let mut args = h.init_args();
+    args.chain_id = args.source_chain_id;
+    let ix = h.initialize_ix(&authority.pubkey(), args, h.p1, h.p2);
+    h.send(&[ix], &[&authority])
+        .expect_code(VaultError::WrongRoute);
+    let mut args = h.init_args();
+    args.freezer = authority.pubkey();
+    let ix = h.initialize_ix(&authority.pubkey(), args, h.p1, h.p2);
+    h.send(&[ix], &[&authority])
+        .expect_code(VaultError::SameRole);
+    let mut args = h.init_args();
+    args.native_floor = args.native_cap;
+    let ix = h.initialize_ix(&authority.pubkey(), args, h.p1, h.p2);
+    h.send(&[ix], &[&authority]).expect_ok();
+}
+
+/// B1-07: a payout leaves its recipient rent-exempt, or waits. A recipient already holding lamports but below its rent
+/// minimum may not stay below it with more: the runtime refused the whole delivery. A payout that lifts it to the
+/// minimum is paid.
+#[test]
+fn test_b107_a_payout_leaves_its_recipient_rent_exempt_or_waits() {
+    let (mut h, index) = Harness::ready();
+    h.fund(index, 10 * SOL);
+    let rent = h.svm.minimum_balance_for_rent_exemption(0);
+    let bob = Pubkey::new_unique();
+    h.svm
+        .set_account(
+            bob,
+            solana_account::Account {
+                lamports: 1,
+                data: Vec::new(),
+                owner: anchor_lang::solana_program::system_program::ID,
+                executable: false,
+                rent_epoch: 0,
+            },
+        )
+        .unwrap();
+    let small = rent / 2;
+    let p = h.payload(BURN, index, &burn_body(small, &bob));
+    let id = abi::keccak(&[&p]);
+    h.deliver_burn(index, p, bob, By::Both).expect_ok();
+    assert_eq!(h.owed(&index, &id).remaining, small, "it waits");
+    assert_eq!(h.lamports(&bob), 1);
+    h.release(index, id, bob)
+        .expect_code(VaultError::NothingPayable);
+
+    // Exactly the gap to the minimum is paid, and leaves it exempt.
+    let gap = rent - 1;
+    let p = h.payload(BURN, index, &burn_body(gap, &bob));
+    h.deliver_burn(index, p, bob, By::Both).expect_ok();
+    assert_eq!(h.lamports(&bob), rent);
+    h.release(index, id, bob).expect_ok();
+    assert_eq!(h.lamports(&bob), rent + small);
 }

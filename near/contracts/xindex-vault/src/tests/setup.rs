@@ -244,3 +244,79 @@ fn attest_vouches_only_for_what_the_vault_holds() {
 /// `cast abi-encode "f(bytes32,uint256,bytes32,uint64,uint64,bytes32[],bytes32[])" ATTEST_DOMAIN 4078699518750379172
 /// keccak("vault.test.near") 123456789 1759500000123456789 "[0x11..,0x22..]" "[0x33..,0x44..]"`.
 pub const ATTEST_VECTOR: &str = "0xb0ec2b25fdd79b42b523d5b0e641474599bbba254460db808de33f7bc0c25d5c000000000000000000000000000000000000000000000000389a739a38ac4ca44eaa69495e9ee6c1516bfbfa5af14200ef184119216685e332487ce645d51daf00000000000000000000000000000000000000000000000000000000075bcd15000000000000000000000000000000000000000000000000186affed89a88d1500000000000000000000000000000000000000000000000000000000000000e00000000000000000000000000000000000000000000000000000000000000140000000000000000000000000000000000000000000000000000000000000000211111111111111111111111111111111111111111111111111111111111111112222222222222222222222222222222222222222222222222222222222222222000000000000000000000000000000000000000000000000000000000000000233333333333333333333333333333333333333333333333333333333333333334444444444444444444444444444444444444444444444444444444444444444";
+
+/// B2-02: initialization refuses what `DeployVault` refuses: a floor above the cap, which would leave the speed limit
+/// never binding, and Ethereum's own chain as the vault's, under which no message could route. A deterministic account
+/// has no later chance to fix either.
+#[test]
+fn test_b202_initialization_refuses_what_deploy_vault_refuses() {
+    let f = json();
+    let now = 1_800_000_000;
+    at(now, RELAYER, 0);
+    let ok = T::config(&f, now);
+    let mut c = ok.clone();
+    c.native_floor = U128(c.native_cap.0 + 1);
+    fails("FloorAboveCap", || Vault::new(c));
+    let mut c = ok.clone();
+    c.chain_id = c.source_chain_id;
+    fails("WrongRoute", || Vault::new(c));
+    let mut c = ok.clone();
+    c.native_floor = c.native_cap;
+    Vault::new(c);
+}
+
+/// B2-08: the `config` view and `new`'s settings name the chain ids as strings. NEAR's registry ids pass 2^53, which a
+/// JavaScript number cannot hold exactly: read as one, testnet's id became another, and a client building a holder's
+/// snapshot claim from it signed for the wrong chain.
+#[test]
+fn test_b208_the_chain_ids_are_strings_in_json() {
+    let f = json();
+    let now = 1_800_000_000;
+    at(now, RELAYER, 0);
+    let config = T::config(&f, now);
+    let json = near_sdk::serde_json::to_value(&config).unwrap();
+    assert_eq!(json["chain_id"], "4078699518750379172");
+    assert_eq!(json["source_chain_id"], "11155111");
+    let back: InitConfig = near_sdk::serde_json::from_value(json).unwrap();
+    assert_eq!(back.chain_id.0, NEAR_TESTNET);
+    let view = near_sdk::serde_json::to_value(Vault::new(config).config()).unwrap();
+    assert_eq!(view["chain_id"], "4078699518750379172");
+    assert_eq!(view["source_chain_id"], "11155111");
+    // Past what a JavaScript number holds: read as one, it is another id.
+    assert_ne!(NEAR_TESTNET as f64 as u64, NEAR_TESTNET);
+}
+
+/// B2-09: a recovery proposer of nearcore's universal account family (`0u…`) is refused as an implicit one is: its keys
+/// are its state init's, which a contract cannot read, so it may be one key's.
+#[test]
+fn test_b209_a_universal_account_is_no_recovery_proposer() {
+    let f = json();
+    let now = 1_800_000_000;
+    at(now, RELAYER, 0);
+    let mut c = T::config(&f, now);
+    c.recovery_proposer = "0u7e5f4552091a69125d5dfcb7b8c2659029395bdf"
+        .parse()
+        .unwrap();
+    assert!(is_implicit(&c.recovery_proposer));
+    fails("RecoveryNotMultisig", || Vault::new(c));
+    for named in ["recovery.test.near", "u0.near", "multisig.0u.near"] {
+        assert!(!is_implicit(&named.parse().unwrap()), "{named}");
+    }
+}
+
+/// B1-04: no deposit before the first checkpoint. No message could settle or fail such an intake, since every one
+/// needs a checkpoint covering its block, and no successor or snapshot could follow without one: its NEAR would stay
+/// for good.
+#[test]
+fn test_b104_no_deposit_before_the_first_checkpoint() {
+    let mut t = T::bare();
+    let index = Hex20(t.index);
+    let intake = Hex32(intake_id(t.now + 3600, 1));
+    fails("NoCheckpoint", || {
+        t.call(ALICE, 2 * ONE, |v| v.deposit(index, intake, U128(ONE)))
+    });
+    assert_eq!(t.v.config().held.0, 0);
+    t.advance(1_000);
+    t.deposit(ALICE, &intake.0, ONE);
+    assert_eq!(t.v.config().held.0, ONE);
+}

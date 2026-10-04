@@ -6,8 +6,8 @@
 mod common;
 
 use common::*;
-use soroban_sdk::testutils::Events as _;
-use soroban_sdk::{xdr, Address, Bytes, Event, IntoVal, Symbol};
+use soroban_sdk::testutils::{Events as _, Ledger as _};
+use soroban_sdk::{xdr, Address, Bytes, Env, Event, IntoVal, Symbol};
 use xindex_core::constants::*;
 use xindex_core::Crypto;
 use xindex_vault::error::VaultError;
@@ -268,7 +268,7 @@ fn deliver_refusals() {
     let (stranger_index, _) = h.index_of(9);
     let q = h.payload(INTAKE_SETTLED, stranger_index, &id);
     err(h.try_deliver(&q, By::Both), VaultError::NotAnIndex);
-    let q = h.payload(FREEZE, h.index, &[]);
+    let q = h.freeze_payload(h.index);
     err(h.try_deliver(&q, By::Both), VaultError::WrongEmitter);
     let q = h.payload(9, h.index, &[]);
     err(h.try_deliver(&q, By::Both), VaultError::UnknownKind);
@@ -577,7 +577,7 @@ fn test_a302_a403_a_cut_on_one_proof_still_moves_the_mark_on_both() {
         VaultError::AlreadyDelivered,
     );
     // A freeze on one proof is used up at once: delivered again, it would re-arm the freeze.
-    let freeze = h.payload(FREEZE, FACTORY, &[]);
+    let freeze = h.freeze_payload(FACTORY);
     h.deliver(&freeze, By::P1);
     err(h.try_deliver(&freeze, By::P1), VaultError::AlreadyDelivered);
 }
@@ -738,7 +738,7 @@ fn unsigned(f: impl FnOnce()) -> bool {
 fn a_freeze_stops_payouts() {
     let mut h = H::ready();
     h.fund(100 * XLM);
-    let p = h.payload(FREEZE, FACTORY, &[]);
+    let p = h.freeze_payload(FACTORY);
     h.deliver(&p, By::P2);
     let until = h.config().frozen_until;
     assert_eq!(until, h.now() + FREEZE_DURATION as u64);
@@ -964,4 +964,242 @@ fn the_vaults_calls_fit_stellars_limits() {
         println!("vault: {call}, {n} instructions");
         assert!(n < MAX_INSTRUCTIONS / 10);
     }
+}
+
+// ---------------------------------------------------------------------
+// the whole-repo audit of 4 October (B3-02, B2-02, B1-04, A3-03, B4-04, B1-05)
+// ---------------------------------------------------------------------
+
+/// Deploys the vault on `env` with `args`; the vault's error if its constructor refused.
+fn construct(env: &Env, args: InitArgs, p1: &Address, p2: &Address) -> Option<u32> {
+    let w = wasm("xindex_vault");
+    let vault = H::vault_address(env);
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        env.register_at(&vault, w.as_slice(), (args, p1.clone(), p2.clone()));
+    }));
+    let message = r.err()?.downcast::<std::string::String>().unwrap();
+    let at = message
+        .find("constructor invocation has failed with error\", Error(Contract, #")
+        .unwrap();
+    let tail = &message[at..];
+    let digits: std::string::String = tail[tail.find('#').unwrap() + 1..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    Some(digits.parse().unwrap())
+}
+
+/// A fresh host on `network`, with its native asset, P1, P2, a freezer and a recovery proposer.
+fn deployment(network: [u8; 32]) -> (Env, Address, Address, InitArgs) {
+    let env = new_env();
+    env.mock_all_auths();
+    env.ledger().set_network_id(network);
+    native_asset(&env);
+    let p1 = env.register(MockVerifier, (false,));
+    let p2 = env.register(MockVerifier, (false,));
+    let freezer = funded(&env, "freezer");
+    let recovery = env.register(MockMultisig, ());
+    let args = H::init_args(&env, &freezer, &recovery, FACTORY, HUB);
+    (env, p1, p2, args)
+}
+
+/// B3-02: the constructor binds the vault's chain ids to the network it runs on: Stellar's registry id and Ethereum's
+/// on pubnet, testnet's and Sepolia's on testnet, and nothing on any other network. A wrong id on an ownerless vault
+/// was irreversible: every message refused, every digest unprovable. The ids are recomputed here from their
+/// definitions: a network's id is the SHA-256 of its passphrase, and a chain's registry id the first 8 bytes of
+/// `keccak256("stellar:pubnet")` or `keccak256("stellar:testnet")`, as `StellarStateVerifier` and the factory name
+/// them.
+#[test]
+fn test_b302_the_constructor_binds_the_chain_ids_to_the_network() {
+    let sha = |s: &str| C.sha256(&[s.as_bytes()]);
+    assert_eq!(
+        sha("Public Global Stellar Network ; September 2015"),
+        xindex_vault::PUBNET_NETWORK_ID
+    );
+    assert_eq!(
+        sha("Test SDF Network ; September 2015"),
+        xindex_vault::TESTNET_NETWORK_ID
+    );
+    let registry =
+        |s: &str| u64::from_be_bytes(C.keccak256(&[s.as_bytes()])[..8].try_into().unwrap());
+    assert_eq!(registry("stellar:pubnet"), xindex_vault::STELLAR_PUBNET);
+    assert_eq!(registry("stellar:pubnet"), 839_718_837_228_939_926);
+    assert_eq!(registry("stellar:testnet"), xindex_vault::STELLAR_TESTNET);
+    assert_eq!(registry("stellar:testnet"), CHAIN_ID);
+    let refused = Some(VaultError::WrongRoute as u32);
+
+    // Testnet: testnet's ids and Sepolia's only.
+    let (env, p1, p2, args) = deployment(xindex_vault::TESTNET_NETWORK_ID);
+    for (source, chain) in [
+        (1, xindex_vault::STELLAR_PUBNET),
+        (1, CHAIN_ID),
+        (SOURCE_CHAIN_ID, xindex_vault::STELLAR_PUBNET),
+        (SOURCE_CHAIN_ID, 0),
+        (0, CHAIN_ID),
+    ] {
+        let wrong = InitArgs {
+            source_chain_id: source,
+            chain_id: chain,
+            ..args.clone()
+        };
+        assert_eq!(
+            construct(&env, wrong, &p1, &p2),
+            refused,
+            "{source}, {chain}"
+        );
+    }
+    assert_eq!(construct(&env, args, &p1, &p2), None);
+
+    // Pubnet: pubnet's ids and Ethereum mainnet's only.
+    let (env, p1, p2, args) = deployment(xindex_vault::PUBNET_NETWORK_ID);
+    assert_eq!(
+        construct(&env, args.clone(), &p1, &p2),
+        refused,
+        "testnet's ids"
+    );
+    let mainnet = InitArgs {
+        source_chain_id: 1,
+        chain_id: xindex_vault::STELLAR_PUBNET,
+        ..args
+    };
+    assert_eq!(construct(&env, mainnet.clone(), &p1, &p2), None);
+    let cfg = xindex_vault::XindexVaultClient::new(&env, &H::vault_address(&env)).config();
+    assert_eq!(
+        (cfg.source_chain_id, cfg.chain_id),
+        (1, 839_718_837_228_939_926)
+    );
+
+    // Any other network, a local one or futurenet's: nothing.
+    for network in [[0u8; 32], sha("Standalone Network ; February 2017")] {
+        let (env, p1, p2, args) = deployment(network);
+        assert_eq!(construct(&env, args, &p1, &p2), refused);
+        let (env, p1, p2, _) = deployment(network);
+        assert_eq!(construct(&env, mainnet.clone(), &p1, &p2), refused);
+    }
+}
+
+/// B2-02: the constructor refuses what `DeployVault` refuses: a floor above the cap, which would leave the speed limit
+/// never binding, and Ethereum's own chain as the vault's, under which no message could route.
+#[test]
+fn test_b202_the_constructor_refuses_what_deploy_vault_refuses() {
+    let (env, p1, p2, args) = deployment(xindex_vault::TESTNET_NETWORK_ID);
+    let high = InitArgs {
+        native_floor: args.native_cap + 1,
+        ..args.clone()
+    };
+    assert_eq!(
+        construct(&env, high, &p1, &p2),
+        Some(VaultError::FloorAboveCap as u32)
+    );
+    let ethereum = InitArgs {
+        chain_id: args.source_chain_id,
+        ..args.clone()
+    };
+    assert_eq!(
+        construct(&env, ethereum, &p1, &p2),
+        Some(VaultError::WrongRoute as u32)
+    );
+    let level = InitArgs {
+        native_floor: args.native_cap,
+        ..args
+    };
+    assert_eq!(construct(&env, level, &p1, &p2), None);
+}
+
+/// B1-04: no deposit before the first checkpoint. No message could settle or fail such an intake, since every one
+/// needs a checkpoint covering its block, and no successor or snapshot could follow without one: its XLM would stay
+/// for good.
+#[test]
+fn test_b104_no_deposit_before_the_first_checkpoint() {
+    let mut h = H::deployed();
+    let env = h.env.clone();
+    h.v()
+        .register_index(&b20(&env, &h.index), &b32(&env, &h.salt));
+    let from = funded(&env, "alice");
+    let id = h.intake(h.now() + 3600);
+    let (index, intake) = (b20(&env, &h.index), b32(&env, &id));
+    assert_eq!(
+        h.v().try_deposit(&from, &index, &intake, &(XLM as i128)),
+        Err(Ok(code(VaultError::NoCheckpoint)))
+    );
+    h.warp(1);
+    h.advance(1_000);
+    h.v().deposit(&from, &index, &intake, &(XLM as i128));
+    assert_eq!(h.config().held, XLM);
+}
+
+/// A3-03: a FREEZE carries the end of the factory's own freeze. Delivered after that end, it freezes nothing, so an
+/// undelivered FREEZE is no 14-day pause a stranger may fire months later; delivered mid-freeze, it freezes only to
+/// that end. Either way it is used up.
+#[test]
+fn test_a303_a_late_freeze_ends_with_the_factorys() {
+    let mut h = H::ready();
+    let late = h.freeze_payload(FACTORY);
+    h.warp(300 * DAY);
+    h.fresh();
+    h.deliver(&late, By::P1);
+    assert_eq!(
+        h.config().frozen_until,
+        0,
+        "the factory's freeze is long over"
+    );
+    err(h.try_deliver(&late, By::Both), VaultError::AlreadyDelivered);
+
+    let until = h.now() + FREEZE_DURATION as u64;
+    let mid = h.freeze_payload(FACTORY);
+    h.warp(10 * DAY);
+    h.deliver(&mid, By::P2);
+    assert_eq!(h.config().frozen_until, until, "only to the factory's end");
+    // The freezer's own freeze still runs its whole FREEZE_DURATION, and a FREEZE never shortens one.
+    h.v().freeze();
+    let longer = h.now() + FREEZE_DURATION as u64;
+    assert_eq!(h.config().frozen_until, longer);
+    let short = h.payload(FREEZE, FACTORY, &freeze_body(h.now() + DAY));
+    h.deliver(&short, By::P1);
+    assert_eq!(h.config().frozen_until, longer);
+    // An end far past FREEZE_DURATION, or past 64 bits, freezes FREEZE_DURATION from now.
+    h.set_time(longer);
+    let mut far = [0xffu8; 32];
+    far[0] = 0;
+    let p = h.payload(FREEZE, FACTORY, &far);
+    h.deliver(&p, By::P1);
+    assert_eq!(h.config().frozen_until, h.now() + FREEZE_DURATION as u64);
+}
+
+/// B4-04: a FREEZE's body is exactly one word, `abi.encode(until)`.
+#[test]
+fn test_b404_a_freeze_body_is_one_word() {
+    let mut h = H::ready();
+    let two = [freeze_body(h.now() + DAY), vec![0u8; 32]].concat();
+    for body in [vec![], vec![0u8; 31], two] {
+        let p = h.payload(FREEZE, FACTORY, &body);
+        err(h.try_deliver(&p, By::P1), VaultError::BadMessage);
+    }
+    assert_eq!(h.config().frozen_until, 0);
+}
+
+/// B1-05: a CAP_UPDATE figure past u64, which an EVM vault takes, means u64::MAX here: no stroop amount is larger.
+/// Refused, it could never be delivered, and a lowered floor beside it never applied either.
+#[test]
+fn test_b105_a_cap_wider_than_the_native_type_saturates() {
+    let mut h = H::ready();
+    let mut past = [0u8; 32];
+    past[23] = 1 << 6; // 2^70
+    let body = [[0u8; 32], past, u256(FLOOR / 2)].concat();
+    let p = h.payload(CAP_UPDATE, FACTORY, &body);
+    err(h.try_deliver(&p, By::P1), VaultError::BothProofsRequired);
+    h.deliver(&p, By::Both);
+    assert_eq!(h.config().cap, CAP, "a raise waits");
+    h.warp(GOVERNANCE_DELAY as u64);
+    h.v()
+        .apply_change(&(CAP_UPDATE as u32), &bytes(&h.env, &body));
+    assert_eq!(
+        (h.config().cap, h.config().outflow_floor),
+        (u64::MAX, FLOOR / 2)
+    );
+    // `type(uint256).max` as "no cap" is the same, and then lowers nothing: it applies at once on one proof.
+    let body = [[0u8; 32], [0xff; 32], u256(FLOOR / 2)].concat();
+    let p = h.payload(CAP_UPDATE, FACTORY, &body);
+    h.deliver(&p, By::P1);
+    assert_eq!(h.config().cap, u64::MAX);
 }

@@ -498,10 +498,13 @@ pub fn handle_deliver_governance<'info>(
             }
         }
         FREEZE => {
-            require!(m.body.is_empty(), VaultError::BadMessage);
+            let end = abi::freeze_end(m.body, now)?;
             // Nothing could replace the freezer after a snapshot, and nothing may hold the exit off (VLT-5).
             vault::check_no_snapshot(config)?;
-            freeze_until(config, now, Pubkey::default());
+            // Only until the factory's own freeze ends: one delivered after it freezes nothing (A3-03).
+            if let Some(end) = end {
+                freeze_until(config, end, Pubkey::default());
+            }
         }
         FREEZER_CHANGE => {
             check_loosening(config, both, block)?;
@@ -517,10 +520,10 @@ pub fn handle_deliver_governance<'info>(
     Ok(())
 }
 
-/// Freezes the vault for FREEZE_DURATION from now; a later freeze extends it, and none shortens it. `by` is the freezer,
-/// or the default key for the factory's message.
-pub fn freeze_until(config: &mut Config, now: i64, by: Pubkey) {
-    let until = now + FREEZE_DURATION;
+/// Freezes the vault until `until`: FREEZE_DURATION from now for the freezer, the factory's own freeze's end for its
+/// message. A later freeze extends it, and none shortens it. `by` is the freezer, or the default key for the factory's
+/// message.
+pub fn freeze_until(config: &mut Config, until: i64, by: Pubkey) {
     if until > config.frozen_until {
         config.frozen_until = until;
     }

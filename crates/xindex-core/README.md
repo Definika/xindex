@@ -38,7 +38,7 @@ Solana's syscalls fall back to off-chain (`sha3`, `sha2`, `k256`, `solana-bn254`
 | `event` | the headers tree, a receipt's log, and the proof formats P1's and P2's verifiers read |
 | `light_client` | `FinalityVerifier`'s rules: the anchor's step, the day's lag (LG-4), a log's and a checkpoint's checks |
 | `groth16`, `sp1`, `risc0` | BN254 Groth16 over `Crypto`, SP1 v6's check (P1) and RISC Zero v3.0's (P2), with their keys |
-| `abi` | the `VaultMessages` payload, the index and intake digests, the log data, an index's CREATE2 address |
+| `abi` | the `VaultMessages` payload, a `FREEZE`'s end, the index and intake digests, the log data, an index's CREATE2 address |
 | `constants` | the vault's rules and Ethereum-side ids, byte for byte the EVM vault's |
 | `speed` | the speed limit's hourly buckets |
 | `checkpoint` | checkpoints, the stall, and which messages need both proofs (`_needsBoth`) |
@@ -55,6 +55,7 @@ cargo build --target wasm32-unknown-unknown --no-default-features   # as NEAR an
 
 The tests read the repository's own fixtures: `test/fixtures/ethereum/receipts.json` (real mainnet receipts), SP1 v6's
 Groth16 fixture (`prototype/evm/test/SP1VerifierGroth16V6.t.sol`), RISC Zero's v3.0 receipt and the vendored verifier's
-constants (`vendor/risc0-ethereum`), and a real hub's storage
-(`solana/programs/xindex-vault/tests/fixtures/hub.json`). The Solana programs' own suites, LiteSVM included, check that
-the programs run this code unchanged in behaviour.
+constants (`vendor/risc0-ethereum`), a real hub's storage (`solana/programs/xindex-vault/tests/fixtures/hub.json`), and
+one payload of each governance and settlement kind as `VaultMessages.encode` writes it
+(`test/fixtures/vault-messages.json`, C1-02). The Solana programs' own suites, LiteSVM included, check that the programs
+run this code unchanged in behaviour. The tests run with overflow checks, as every chain's release build does.

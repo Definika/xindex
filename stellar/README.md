@@ -16,7 +16,8 @@ what Stellar shares with the Ethereum side in `../design/2026-10-03-near-stellar
 - Holds XLM for every index registered here, an index being a CREATE2 clone of the hub template by the factory on
   Ethereum (`register_index`).
 - Takes XLM only as deposits to an intake (`deposit`), through the native asset's contract, whose address it computes
-  itself. It keeps a book (`held`) and never reads its own balance.
+  itself, and none before its first checkpoint, since no message could settle or fail an intake then (B1-04). It keeps
+  a book (`held`) and never reads its own balance.
 - Pays out only on messages from Ethereum that P1 and P2 prove (`deliver`, one entry point for every kind, as on EVM):
   burns, intakes settled or failed, migrations, and the factory's governance. A message that moves coins or loosens a
   rule needs both proofs and a checkpoint covering its block (VLT-3); a freeze and a lowered cap may rest on one.
@@ -30,7 +31,8 @@ what Stellar shares with the Ethereum side in `../design/2026-10-03-near-stellar
   no deposit. In a stall the recovery proposer may propose a successor pair (`propose_successor`), which after 30 days
   and at most two vetoes anyone adopts (`adopt_successor`); only a checkpoint that ends the stall lapses it (LG-2), and
   the last message a successor must prove is the last on both proofs (LG-3). 180 days into a stall the last checkpoint
-  becomes the snapshot (`begin_snapshot`): holders claim their share by an EIP-712 signature or to their recovery key
+  becomes the snapshot (`begin_snapshot`): holders claim their share by an EIP-712 signature, under Ethereum's chain id
+  (where the holder's wallet is) and the vault's id as the domain's `salt` (B1-06), or to their recovery key
   (`claim_snapshot`), open intakes resolve from the hub's mark (`resolve_intake`), and burns and migrations the hub
   marked sent are paid (`deliver_recorded`), each reading the hub's storage under the snapshot's state root.
 - Shows its own state to Ethereum through `attest(slots, values)`: it succeeds only if each slot of the map the hub
@@ -49,6 +51,11 @@ what Stellar shares with the Ethereum side in `../design/2026-10-03-near-stellar
   verifier that no longer runs it (`VerifierChanged`), whether its code was replaced or its reference moved: the twin of
   Solana's SOL-2. A verifier upgraded under the vault stalls it until a successor is adopted, rather than taking its
   coins.
+- The constructor binds the vault's chain ids to the network it runs on, by `env.ledger().network_id()`: Stellar's
+  registry id (`stellar:pubnet`'s, 839718837228939926) and Ethereum mainnet's on pubnet, testnet's
+  (17667989177921016935) and Sepolia's on testnet, and no other network, a local one included (`WrongRoute`). On an
+  ownerless vault a wrong id would be for good: every message refused, every digest unprovable (B3-02, the twin of
+  `DeployVault`'s pairing, HUB-I2). It also refuses a floor above the cap (`FloorAboveCap`, B2-02).
 - The freezer is a Stellar account (`NotAnAccount`), not the zero key, whose own signers and thresholds may make it a
   multisig; it should not be the deploying key, which the constructor cannot see. The recovery proposer must be a
   contract (`NotAContract`): a Stellar account's signers cannot be read from a contract, so an account could not be
@@ -95,8 +102,8 @@ computes `attest`'s record and the hub's slot keys with `cast`.
 
 ## Costs and limits
 
-Each contract is a plain Wasm file well under the 128 KiB a contract's code may take: the vault 61,195 bytes, P1 20,443
-and P2 20,832. A transaction may spend 400M instructions and be 132,096 bytes long. Measured on the host by the tests
+Each contract is a plain Wasm file well under the 128 KiB a contract's code may take: the vault 62,890 bytes, P1 20,702
+and P2 21,091. A transaction may spend 400M instructions and be 132,096 bytes long. Measured on the host by the tests
 (`--nocapture` prints them):
 
 | Call | Instructions | Argument bytes |
@@ -129,6 +136,7 @@ only the message, and runs the message once by its id.
    1655733600 on Sepolia). Each must then be advanced within a day, and daily after (LG-4).
 2. Deploy the vault with its constructor: the indexes' chain id, Stellar's registry id
    (`design/2026-10-03-near-stellar-interfaces.md`), the factory and the hub template, the freezer's account, the
-   recovery proposer's contract, XLM's cap and floor in stroops, and P1 and P2.
+   recovery proposer's contract, XLM's cap and floor in stroops, and P1 and P2. The constructor refuses chain ids that
+   are not the network's own pair (B3-02).
 3. On Ethereum, the factory's owner proposes the chain with the vault's contract id as its 32-byte vault, and Stellar's
    state verifier.

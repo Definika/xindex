@@ -2,7 +2,7 @@
 //! `VaultSnapshot.sol`, for a vault chain without a 20-byte address for its vault. The chain is named by the id the
 //! factory's registry gives it, where the EVM vault uses `block.chainid`; a recovery address is a whole 32-byte key, so
 //! only zero counts as none; and the signed claim names a 32-byte recipient, under a domain whose salt is the vault's
-//! 32-byte id.
+//! 32-byte id and whose `chainId` is Ethereum's, where the holder's wallet is (B1-06).
 
 use crate::abi::{address_word, u256};
 use crate::constants::*;
@@ -216,12 +216,14 @@ pub fn claim_id<C: Crypto>(c: &C, index: &[u8; 20], holder: &[u8; 20]) -> [u8; 3
     ])
 }
 
-/// The EIP-712 digest `holder` signs to have the vault `vault_id` on chain `chain_id` pay its share of `index` to
-/// `recipient`.
+/// The EIP-712 digest `holder` signs to have the vault `vault_id` pay its share of `index` to `recipient`. The domain's
+/// `chainId` is `source_chain_id`, Ethereum's (1 on mainnet, 11155111 on Sepolia), where the holder's wallet already
+/// is: wallets refuse to sign for a chain id that is not the network they are on, and no EVM network carries the
+/// registry's id for a vault chain (B1-06). The vault's 32-byte id, the salt, keeps the domain the vault's own.
 pub fn claim_digest<C: Crypto>(
     c: &C,
     vault_id: &[u8; 32],
-    chain_id: u64,
+    source_chain_id: u64,
     index: &[u8; 20],
     holder: &[u8; 20],
     recipient: &[u8; 32],
@@ -230,7 +232,7 @@ pub fn claim_digest<C: Crypto>(
         &EIP712_DOMAIN_TYPEHASH,
         &EIP712_NAME_HASH,
         &EIP712_VERSION_HASH,
-        &u256(chain_id),
+        &u256(source_chain_id),
         vault_id,
     ]);
     let claim = c.keccak256(&[

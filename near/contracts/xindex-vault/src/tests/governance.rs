@@ -20,7 +20,7 @@ fn a_freeze_and_a_lower_cap_need_one_proof() {
     t.govern(CAP_UPDATE, &cap_body(500 * ONE, ONE / 2), false, true);
     let c = t.v.config();
     assert_eq!((c.cap.0, c.outflow_floor.0), (500 * ONE, ONE / 2));
-    t.govern(FREEZE, &[], true, false);
+    t.govern(FREEZE, &t.freeze_body(), true, false);
     assert_eq!(t.v.config().frozen_until, t.now + FREEZE_DURATION as u64);
     let index = Hex20(t.index);
     let intake = Hex32(intake_id(t.now + 3600, 1));
@@ -143,7 +143,7 @@ fn test_a302_a403_a_cut_on_one_proof_still_moves_the_mark_on_both() {
     fails("AlreadyDelivered", || {
         t.deliver_by(&factory, &newer_cut, true, false)
     });
-    let freeze = t.govern(FREEZE, &[], true, false);
+    let freeze = t.govern(FREEZE, &t.freeze_body(), true, false);
     fails("AlreadyDelivered", || {
         t.deliver_by(&factory, &freeze, true, false)
     });
@@ -297,4 +297,91 @@ fn test_lg4_a_verifier_takes_a_proof_only_within_a_day_of_its_anchor() {
             v.update_verifier(Hex32([1; 32]), pv.clone(), pr.clone())
         })
     });
+}
+
+const DAY: u64 = 24 * 3600;
+
+/// A3-03: a FREEZE carries the end of the factory's own freeze. Delivered after that end, it freezes nothing, so an
+/// undelivered FREEZE is no 14-day pause a stranger may fire months later; delivered mid-freeze, it freezes only to
+/// that end. Either way it is used up.
+#[test]
+fn test_a303_a_late_freeze_ends_with_the_factorys() {
+    let mut t = T::new();
+    let factory = h20(&t.f["factory"]);
+    let late = t.payload(FREEZE, &factory, &t.freeze_body());
+    t.warp(300 * DAY);
+    t.deliver_by(&factory, &late, true, false);
+    assert_eq!(
+        t.v.config().frozen_until,
+        0,
+        "the factory's freeze is long over"
+    );
+    assert!(t.v.used(Hex32(keccak(&[&late]))), "used up");
+    fails("AlreadyDelivered", || {
+        t.deliver_by(&factory, &late, true, true)
+    });
+
+    let until = t.now + FREEZE_DURATION as u64;
+    let mid = t.payload(FREEZE, &factory, &t.freeze_body());
+    t.warp(10 * DAY);
+    t.deliver_by(&factory, &mid, false, true);
+    assert_eq!(
+        t.v.config().frozen_until,
+        until,
+        "only to the factory's end"
+    );
+    // The freezer's own freeze still runs its whole FREEZE_DURATION, and a FREEZE never shortens one.
+    t.call(FREEZER, 0, |v| v.freeze());
+    let longer = t.now + FREEZE_DURATION as u64;
+    assert_eq!(t.v.config().frozen_until, longer);
+    let short = t.payload(FREEZE, &factory, &freeze_body(t.now + DAY));
+    t.deliver_by(&factory, &short, true, false);
+    assert_eq!(t.v.config().frozen_until, longer);
+    // An end far past FREEZE_DURATION, or past 64 bits, freezes FREEZE_DURATION from now.
+    t.now = longer;
+    let mut far = [0xffu8; 32];
+    far[0] = 0;
+    let p = t.payload(FREEZE, &factory, &far);
+    t.deliver_by(&factory, &p, true, false);
+    assert_eq!(t.v.config().frozen_until, t.now + FREEZE_DURATION as u64);
+}
+
+/// B4-04: a FREEZE's body is exactly one word, `abi.encode(until)`. (The mocked runtime keeps the used mark a refused
+/// delivery wrote, which nothing reads again.)
+#[test]
+fn test_b404_a_freeze_body_is_one_word() {
+    let mut t = T::new();
+    let factory = h20(&t.f["factory"]);
+    let two = [t.freeze_body(), vec![0u8; 32]].concat();
+    for body in [vec![], vec![0u8; 31], two] {
+        let p = t.payload(FREEZE, &factory, &body);
+        fails("BadMessage", || t.deliver_by(&factory, &p, true, false));
+    }
+    assert_eq!(t.v.config().frozen_until, 0);
+}
+
+/// B1-05: a CAP_UPDATE figure past u128, which an EVM vault takes, means u128::MAX here: no yoctoNEAR amount is
+/// larger. Refused, it could never be delivered, and a lowered floor beside it never applied either.
+#[test]
+fn test_b105_a_cap_wider_than_the_native_type_saturates() {
+    let mut t = T::new();
+    let factory = h20(&t.f["factory"]);
+    let mut past = [0u8; 32];
+    past[15] = 1; // 2^128
+    let body = [&[0u8; 32][..], &past, &u256_wide(ONE / 2)].concat();
+    let raise = t.payload(CAP_UPDATE, &factory, &body);
+    fails("BothProofsRequired", || {
+        t.deliver_by(&factory, &raise, true, false)
+    });
+    t.deliver_by(&factory, &raise, true, true);
+    assert_eq!(t.v.config().cap.0, 1_000_000 * ONE, "a raise waits");
+    t.warp(GOVERNANCE_DELAY as u64);
+    let b = Base64VecU8(body);
+    t.call(RELAYER, 0, |v| v.apply_change(CAP_UPDATE, b));
+    let c = t.v.config();
+    assert_eq!((c.cap.0, c.outflow_floor.0), (u128::MAX, ONE / 2));
+    // `type(uint256).max` as "no cap" is the same, and then lowers nothing: it applies at once on one proof.
+    let body = [&[0u8; 32][..], &[0xff; 32], &u256_wide(ONE / 2)].concat();
+    t.govern(CAP_UPDATE, &body, true, false);
+    assert_eq!(t.v.config().cap.0, u128::MAX);
 }

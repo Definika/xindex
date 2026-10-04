@@ -194,7 +194,8 @@ fn the_reads_and_the_digest_are_solidity_s() {
 
     let index = h20(&f["index"]);
     let recipient = h32(&f["holder_a"]["recipient"]);
-    let digest = snapshot::claim_digest(&C, &h32(&f["vault"]), chain, &index, &holder, &recipient);
+    let source = f["source_chain_id"].as_u64().unwrap();
+    let digest = snapshot::claim_digest(&C, &h32(&f["vault"]), source, &index, &holder, &recipient);
     assert_eq!(digest, h32(&f["holder_a"]["digest"]));
     let signature = bytes(&f["holder_a"]["signature"]);
     assert_eq!(
@@ -547,4 +548,261 @@ fn an_array_slot_adds_with_carry() {
     let b = snapshot::add(&a, 1);
     assert_eq!(&b[29..], &[1, 0, 0]);
     assert_eq!(snapshot::add(&[0xff; 32], 1), [0u8; 32]);
+}
+
+/// B1-06: the snapshot claim's domain names Ethereum's chain id, where the holder's wallet is, not the registry's id
+/// for the vault chain, which no EVM network carries and wallets refuse to sign for. The fixture's holder signed the
+/// digest under Sepolia's id; under the registry's id, the domain the claim had before, the digest is another.
+#[test]
+fn test_b106_the_claim_domain_names_ethereum() {
+    let f = fixture();
+    let (source, chain) = (
+        f["source_chain_id"].as_u64().unwrap(),
+        f["chain_id"].as_u64().unwrap(),
+    );
+    assert_eq!(source, 11_155_111);
+    let (vault, index, holder) = (
+        h32(&f["vault"]),
+        h20(&f["index"]),
+        h20(&f["holder_a"]["address"]),
+    );
+    let recipient = h32(&f["holder_a"]["recipient"]);
+    let digest = snapshot::claim_digest(&C, &vault, source, &index, &holder, &recipient);
+    assert_eq!(digest, h32(&f["holder_a"]["digest"]));
+    // By hand: the domain is `EIP712Domain("Xindex vault", "1", 11155111, vault)`.
+    let domain = C.keccak256(&[
+        &EIP712_DOMAIN_TYPEHASH,
+        &EIP712_NAME_HASH,
+        &EIP712_VERSION_HASH,
+        &u256(11_155_111),
+        &vault,
+    ]);
+    let claim = C.keccak256(&[
+        &SNAPSHOT_CLAIM_TYPEHASH,
+        &address_word(&index),
+        &address_word(&holder),
+        &recipient,
+    ]);
+    assert_eq!(digest, C.keccak256(&[b"\x19\x01", &domain, &claim]));
+    let registry = snapshot::claim_digest(&C, &vault, chain, &index, &holder, &recipient);
+    assert_eq!(
+        registry,
+        h32s("9d8a129de2a566b39324866db6cc2fa7b829760bf8bca9f8e0f9757fc7237db5"),
+        "the digest the fixture held under the registry's id"
+    );
+    let signature = bytes(&f["holder_a"]["signature"]);
+    assert_eq!(
+        snapshot::check_signature(&C, &digest, &signature, &holder),
+        Ok(())
+    );
+    assert_eq!(
+        snapshot::check_signature(&C, &registry, &signature, &holder),
+        Err(SnapshotError::BadSignature)
+    );
+}
+
+/// B2-05: the body's length word is read whole. Cut to a 32-bit `usize` with `as`, as NEAR's and Soroban's Wasm cut it,
+/// a length of 2^32 + 96 read as the body's own 96 bytes, and that second encoding of the same message decoded. A
+/// length within a word of 2^64 overflowed the padding's sum, a panic under overflow checks (every chain's release
+/// build, and this crate's tests) and a wrap without them.
+#[test]
+fn test_b205_a_body_length_is_read_whole() {
+    let p = hex(BURN_PAYLOAD);
+    let len = 8 * 32;
+    let mut wide = p.clone();
+    wide[len + 27] = 1;
+    assert_eq!(
+        to_u64(wide[len..len + 32].try_into().unwrap()),
+        Ok((1 << 32) + 96)
+    );
+    assert_eq!(decode_message(&wide).err(), Some(AbiError::BadMessage));
+    for k in 0..64u64 {
+        let mut huge = p.clone();
+        huge[len + 24..len + 32].copy_from_slice(&(u64::MAX - k).to_be_bytes());
+        assert_eq!(
+            decode_message(&huge).err(),
+            Some(AbiError::BadMessage),
+            "{k}"
+        );
+        assert_eq!(
+            decode_message(&huge[..len + 32]).err(),
+            Some(AbiError::BadMessage),
+            "{k}, nothing after the length"
+        );
+    }
+    assert!(decode_message(&p).is_ok());
+}
+
+/// A decimal number as a 256-bit big-endian word.
+fn decimal_word(s: &str) -> [u8; 32] {
+    let mut w = [0u8; 32];
+    for d in s.bytes() {
+        let mut carry = (d - b'0') as u32;
+        for b in w.iter_mut().rev() {
+            let x = *b as u32 * 10 + carry;
+            *b = x as u8;
+            carry = x >> 8;
+        }
+        assert_eq!(carry, 0, "{s} fits 256 bits");
+    }
+    w
+}
+
+/// C1-02: every governance and settlement kind as `VaultMessages.encode` writes it
+/// (`test/fixtures/vault-messages.json`, which Solidity pins), decoded by the core's own decoder: the envelope, the id,
+/// and every body field where each vault reads it.
+#[test]
+fn test_c102_the_message_bodies_are_soliditys() {
+    let f = json("test/fixtures/vault-messages.json");
+    let source = f["sourceChainId"].as_u64().unwrap();
+    let dest = f["destChainId"].as_u64().unwrap();
+    let (vault, index) = (h32(&f["vault"]), h20(&f["index"]));
+    let messages = f["messages"].as_array().unwrap();
+    let mut kinds: Vec<u8> = Vec::new();
+    for m in messages {
+        let name = m["name"].as_str().unwrap();
+        let p = bytes(&m["payload"]);
+        let d = decode_message(&p).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        assert_eq!(d.kind as u64, m["kind"].as_u64().unwrap(), "{name}");
+        assert_eq!(d.nonce, m["nonce"].as_u64().unwrap(), "{name}");
+        assert_eq!(
+            (d.source_chain_id, d.dest_chain_id),
+            (source, dest),
+            "{name}"
+        );
+        assert_eq!((d.vault, d.index), (vault, index), "{name}");
+        assert_eq!(d.body, bytes(&m["body"]).as_slice(), "{name}");
+        assert_eq!(message_id(&C, &p), h32(&m["id"]), "{name}");
+        assert_eq!(index_in(&p), index, "{name}");
+        let fields = &m["fields"];
+        let field = |k: &str| fields[k].as_str().unwrap();
+        match d.kind {
+            INTAKE_SETTLED | INTAKE_FAILED => {
+                let id = decimal_word(field("intakeId"));
+                assert_eq!(*body_word(d.body, 1, 0).unwrap(), id, "{name}");
+                assert_eq!(body_word_in(&p, 0), id, "{name}");
+                assert_eq!(deadline_of(&id), 1_800_000_000, "{name}");
+            }
+            MIGRATE => {
+                assert_eq!(
+                    to_address(body_word(d.body, 3, 0).unwrap()),
+                    Ok(h20(&fields["newIndex"]))
+                );
+                assert_eq!(address_in_body(&p, 0), h20(&fields["newIndex"]));
+                assert_eq!(*body_word(d.body, 3, 1).unwrap(), h32(&fields["token"]));
+                assert_eq!(
+                    to_u64(body_word(d.body, 3, 2).unwrap()),
+                    Ok(field("amount").parse().unwrap())
+                );
+            }
+            CAP_UPDATE => {
+                assert_eq!(*body_word(d.body, 3, 0).unwrap(), h32(&fields["token"]));
+                assert_eq!(
+                    *body_word(d.body, 3, 1).unwrap(),
+                    decimal_word(field("cap"))
+                );
+                assert_eq!(
+                    to_u128(body_word(d.body, 3, 1).unwrap()),
+                    Ok(500 * 10u128.pow(18))
+                );
+                assert_eq!(
+                    to_u64(body_word(d.body, 3, 1).unwrap()),
+                    Err(AbiError::Overflow),
+                    "a cap past 64 bits, as CAP_UPDATE may carry (B1-05)"
+                );
+                assert_eq!(
+                    to_u64(body_word(d.body, 3, 2).unwrap()),
+                    Ok(field("floor").parse().unwrap())
+                );
+            }
+            FREEZE => {
+                assert_eq!(
+                    to_u64(body_word(d.body, 1, 0).unwrap()),
+                    Ok(field("until").parse().unwrap()),
+                    "a freeze carries its end (A3-03)"
+                );
+            }
+            FREEZER_CHANGE => {
+                assert_eq!(*body_word(d.body, 1, 0).unwrap(), h32(&fields["freezer"]));
+            }
+            VERIFIER_ROTATION => {
+                assert_eq!(*body_word(d.body, 2, 0).unwrap(), h32(&fields["p1"]));
+                assert_eq!(*body_word(d.body, 2, 1).unwrap(), h32(&fields["p2"]));
+            }
+            other => panic!("an unexpected kind {other}"),
+        }
+        kinds.push(d.kind);
+    }
+    assert_eq!(
+        kinds,
+        [
+            INTAKE_SETTLED,
+            INTAKE_FAILED,
+            MIGRATE,
+            CAP_UPDATE,
+            FREEZE,
+            FREEZER_CHANGE,
+            VERIFIER_ROTATION
+        ],
+        "one payload per kind but BURN, which `a_burn_decodes` pins"
+    );
+}
+
+/// A3-03, B4-04: a FREEZE carries the end of the factory's own freeze, `abi.encode(until)`, and the vault's freeze ends
+/// there, never more than FREEZE_DURATION from now. One delivered after its freeze ended freezes nothing, so an
+/// undelivered FREEZE is no 14-day pause anyone may fire at a time of their choosing. Its body is exactly one word.
+#[test]
+fn test_a303_b404_a_freeze_ends_with_the_factorys() {
+    let now = 1_800_000_000i64;
+    let body = |until: u64| u256(until).to_vec();
+    assert_eq!(freeze_end(&body(now as u64 - 1), now), Ok(None), "over");
+    assert_eq!(freeze_end(&body(now as u64), now), Ok(None), "over now");
+    assert_eq!(freeze_end(&body(0), now), Ok(None));
+    assert_eq!(
+        freeze_end(&body(now as u64 + 3600), now),
+        Ok(Some(now + 3600)),
+        "mid-freeze: only to the factory's end"
+    );
+    assert_eq!(
+        freeze_end(&body((now + FREEZE_DURATION) as u64), now),
+        Ok(Some(now + FREEZE_DURATION))
+    );
+    for until in [
+        (now + FREEZE_DURATION) as u64 + 1,
+        i64::MAX as u64,
+        i64::MAX as u64 + 1,
+        u64::MAX,
+    ] {
+        assert_eq!(
+            freeze_end(&body(until), now),
+            Ok(Some(now + FREEZE_DURATION)),
+            "{until}: never past FREEZE_DURATION"
+        );
+    }
+    let mut wide = [0xffu8; 32];
+    wide[0] = 0x7f;
+    assert_eq!(
+        freeze_end(&wide, now),
+        Ok(Some(now + FREEZE_DURATION)),
+        "a uint256 past 64 bits saturates"
+    );
+    for bad in [0usize, 31, 33, 64] {
+        assert_eq!(
+            freeze_end(&vec![0u8; bad], now),
+            Err(AbiError::BadMessage),
+            "a body of {bad} bytes"
+        );
+    }
+    // The factory's own FREEZE, as Solidity encodes it.
+    let f = json("test/fixtures/vault-messages.json");
+    let freeze = f["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["name"] == "FREEZE")
+        .unwrap();
+    let p = bytes(&freeze["payload"]);
+    let m = decode_message(&p).unwrap();
+    assert_eq!(freeze_end(m.body, now - 3600), Ok(Some(now)));
+    assert_eq!(freeze_end(m.body, now), Ok(None));
 }

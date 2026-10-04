@@ -65,8 +65,9 @@ pub struct ClaimSnapshot<'info> {
 
 /// Anyone, after the snapshot: pays `holder`'s share of SOL in `index` at the snapshot, read from the hub's storage
 /// there (`snapshot::share`), to `recipient`: the recovery key it registered in the hub for this chain, if any, which a
-/// contract holder must register; otherwise the recipient it signed for with its Ethereum key (EIP-712). Paid within
-/// the speed limit, as any payout: a snapshot of a forged checkpoint takes no more than a forged burn.
+/// contract holder must register; otherwise the recipient it signed for with its Ethereum key (EIP-712, under
+/// Ethereum's chain id, where its wallet is, B1-06). Paid within the speed limit, as any payout: a snapshot of a forged
+/// checkpoint takes no more than a forged burn.
 pub fn handle_claim_snapshot<'info>(
     ctx: Context<'info, ClaimSnapshot<'info>>,
     index: [u8; 20],
@@ -96,7 +97,7 @@ pub fn handle_claim_snapshot<'info>(
         None => {
             let digest = snapshot::claim_digest(
                 &vault::vault_id(&config.key()),
-                config.chain_id,
+                config.source_chain_id,
                 &index,
                 &holder,
                 &recipient,

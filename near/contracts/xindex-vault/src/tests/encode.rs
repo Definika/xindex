@@ -215,3 +215,8 @@ pub fn burn_body(amount: u128, recipient: &[u8; 32]) -> Vec<u8> {
 pub fn cap_body(cap: u128, floor: u128) -> Vec<u8> {
     [&[0u8; 32][..], &u256_wide(cap), &u256_wide(floor)].concat()
 }
+
+/// A FREEZE body: `abi.encode(until)`, when the factory's own freeze of this chain ends (A3-03).
+pub fn freeze_body(until: u64) -> Vec<u8> {
+    u256(until).to_vec()
+}

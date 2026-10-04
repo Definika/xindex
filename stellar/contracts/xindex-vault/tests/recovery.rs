@@ -240,7 +240,7 @@ fn test_lg3_a_one_proof_message_is_not_the_last_message() {
     let id = h.fund(10 * XLM);
     let settle = h.payload_last_settle(&id);
     let real = h.config().last_message;
-    let forged = h.payload(FREEZE, FACTORY, &[]);
+    let forged = h.freeze_payload(FACTORY);
     h.deliver(&forged, By::P1);
     assert!(h.config().frozen_until > h.now());
     assert_eq!(h.config().last_message, real);
@@ -289,7 +289,7 @@ fn test_vlt5_no_freeze_after_the_snapshot() {
     h.set_time(h.v().stall_start() + SNAPSHOT_EXIT_DELAY as u64);
     h.v().begin_snapshot();
     err(h.v().try_freeze(), VaultError::SnapshotTaken);
-    let p = h.payload(FREEZE, FACTORY, &[]);
+    let p = h.freeze_payload(FACTORY);
     assert_eq!(
         h.try_deliver(&p, By::P1),
         Err(code(VaultError::SnapshotTaken))

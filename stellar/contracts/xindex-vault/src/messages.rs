@@ -53,13 +53,13 @@ pub fn check_route(env: &Env, cfg: &Config, m: &Message) {
     );
 }
 
-/// A cap update's body: XLM's id, which must be zero, then its cap and floor.
+/// A cap update's body: XLM's id, which must be zero, then its cap and floor. No stroop amount the vault keeps exceeds
+/// u64, so a figure past it means u64::MAX here, as an EVM vault reads the same message, never a message nobody can
+/// deliver (B1-05).
 pub fn read_cap(env: &Env, body: &[u8]) -> (u64, u64) {
     check_native(env, word(env, body, 3, 0));
-    (
-        to_u64(env, word(env, body, 3, 1)),
-        to_u64(env, word(env, body, 3, 2)),
-    )
+    let figure = |i| abi::to_u64(word(env, body, 3, i)).unwrap_or(u64::MAX);
+    (figure(1), figure(2))
 }
 
 /// Refuses a message already used, then marks it used when `keep`, so it never runs again.
@@ -345,16 +345,21 @@ pub fn pay_migration(
 // Governance: CAP_UPDATE, FREEZE, FREEZER_CHANGE, VERIFIER_ROTATION
 // ---------------------------------------------------------------------
 
-/// A freeze runs at once, but not after a snapshot (VLT-5). Every other governance message must be newer than the last
-/// of its kind taken on both proofs, and only one taken on both proofs moves that mark, so one broken proof system
-/// cannot lock the factory out with a forged nonce (VLT-4). A cap update raising neither figure applies at once; a
-/// raise, a new freezer and new verifiers wait GOVERNANCE_DELAY here, where the freezer can see them and stop a raise
-/// or a rotation, however their proofs were obtained (VLT-2).
+/// A freeze runs at once, until the factory's own freeze ends (A3-03), but not after a snapshot (VLT-5). Every other
+/// governance message must be newer than the last of its kind taken on both proofs, and only one taken on both proofs
+/// moves that mark, so one broken proof system cannot lock the factory out with a forged nonce (VLT-4). A cap update
+/// raising neither figure applies at once; a raise, a new freezer and new verifiers wait GOVERNANCE_DELAY here, where
+/// the freezer can see them and stop a raise or a rotation, however their proofs were obtained (VLT-2).
 fn governance_message(env: &Env, cfg: &mut Config, m: &Message, both: bool) {
     if m.kind == FREEZE {
-        require(env, m.body.is_empty(), VaultError::BadMessage);
+        let now = vault::now(env);
+        let end = abi::freeze_end(m.body, i64::try_from(now).unwrap_or(i64::MAX))
+            .unwrap_or_else(|e| abi_err(env, e));
         vault::check_no_snapshot(env, cfg);
-        freeze_until(env, cfg);
+        // Only until the factory's own freeze ends: one delivered after it freezes nothing (A3-03).
+        if let Some(end) = end {
+            freeze_until(env, cfg, end as u64);
+        }
         return;
     }
     let last = match m.kind {
@@ -422,9 +427,9 @@ pub fn set_cap(env: &Env, cfg: &mut Config, cap: u64, floor: u64) {
     .publish(env);
 }
 
-/// Freezes the vault for FREEZE_DURATION from now; a later freeze extends it, and none shortens it.
-pub fn freeze_until(env: &Env, cfg: &mut Config) {
-    let until = vault::now(env) + FREEZE_DURATION as u64;
+/// Freezes the vault until `until`: FREEZE_DURATION from now for the freezer, the factory's own freeze's end for its
+/// message. A later freeze extends it, and none shortens it.
+pub fn freeze_until(env: &Env, cfg: &mut Config, until: u64) {
     if until > cfg.frozen_until {
         cfg.frozen_until = until;
     }

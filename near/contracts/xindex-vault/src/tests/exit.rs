@@ -44,7 +44,7 @@ fn bytes(v: &near_sdk::serde_json::Value) -> Base64VecU8 {
 impl T {
     fn snapshot(&mut self) {
         self.now = self.v.stall_start() + SNAPSHOT_EXIT_DELAY as u64;
-        self.call(RELAYER, 0, |v| v.begin_snapshot());
+        self.call(RELAYER, ONE, |v| v.begin_snapshot());
     }
 
     fn proof(&self, name: &str) -> Base64VecU8 {
@@ -373,7 +373,7 @@ fn a_state_proof_must_prove_the_storage() {
 
 /// What the vault computes of Ethereum's encodings, against what Solidity's encoder and `cast` computed for the same
 /// hub: every slot a claim, a resolution and a recorded delivery read, and the EIP-712 digest a holder signs, under the
-/// NEAR domain (salt the vault's id, chain id the registry's), whose signature recovers to the holder.
+/// NEAR domain (salt the vault's id, chain id Ethereum's, B1-06), whose signature recovers to the holder.
 #[test]
 fn the_reads_and_the_digest_are_soliditys() {
     let t = T::new();
@@ -409,7 +409,7 @@ fn the_reads_and_the_digest_are_soliditys() {
     let digest = snapshot::claim_digest(
         &Near,
         &T::vault_id(),
-        NEAR_TESTNET,
+        SEPOLIA,
         &t.index,
         &holder,
         &h32(&f["holder_a"]["recipient"]),
@@ -417,4 +417,23 @@ fn the_reads_and_the_digest_are_soliditys() {
     assert_eq!(digest, h32(&f["holder_a"]["digest"]));
     let signature = hex(f["holder_a"]["signature"].as_str().unwrap());
     snapshot::check_signature(&Near, &digest, &signature, &holder).unwrap();
+}
+
+/// B1-06: the claim's EIP-712 domain names Ethereum's chain id, where the holder's wallet is, not the registry's id for
+/// NEAR, which no EVM network carries and wallets refuse to sign for. Holder A's signature under Sepolia's id pays; the
+/// one it gave under the registry's id, the domain the claim had before, is refused.
+#[test]
+fn test_b106_the_claim_domain_names_ethereum() {
+    let mut t = exit();
+    t.snapshot();
+    let proof = t.proof("settled_intake");
+    t.resolve("settled_intake", proof);
+    let recipient = t.recipient("holder_a");
+    let registry = hex("0x04e0506f9f3a114ad12ff881923095862a384dc359b26e9f10c762d67a3a8ec63461b1f453dddf9cc4f0950990f1bb1e4d20780e1aec6a7fc9c52239180ee9f21b");
+    fails("BadSignature", || t.claim_a(recipient, 1, registry));
+    let signature = t.signature();
+    t.claim_a(recipient, 1, signature);
+    let id = snapshot::claim_id(&Near, &t.index, &h20(&t.f["holder_a"]["address"]));
+    let owed = t.v.owed(Hex20(t.index), Hex32(id)).unwrap();
+    assert_eq!(owed.recipient, Some(implicit(&recipient)));
 }

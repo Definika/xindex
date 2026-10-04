@@ -65,6 +65,21 @@ pub fn handle_initialize(ctx: Context<Initialize>, args: InitArgs) -> Result<()>
         VaultError::RecoveryNotMultisig
     );
     require_keys_neq!(args.recovery_proposer, args.freezer, VaultError::SameRole);
+    // And as `DeployVault`: the deploying key is not the freezer; a floor above the cap would leave the speed limit
+    // never binding; and Ethereum's own chain is not the vault's, under which no message could route (B2-02, B1-03).
+    require_keys_neq!(
+        args.freezer,
+        ctx.accounts.authority.key(),
+        VaultError::SameRole
+    );
+    require!(
+        args.native_floor <= args.native_cap,
+        VaultError::FloorAboveCap
+    );
+    require!(
+        args.source_chain_id != args.chain_id,
+        VaultError::WrongRoute
+    );
     require_keys_neq!(
         ctx.accounts.p1.key(),
         ctx.accounts.p2.key(),

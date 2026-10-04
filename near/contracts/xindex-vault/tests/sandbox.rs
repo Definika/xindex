@@ -34,7 +34,7 @@ use near_primitives::utils::derive_near_deterministic_account_id;
 use near_primitives::views::{
     FinalExecutionOutcomeViewEnum, FinalExecutionStatus, TxExecutionStatus,
 };
-use near_sdk::json_types::{Base64VecU8, U128};
+use near_sdk::json_types::{Base64VecU8, U128, U64};
 use near_sdk::test_utils::VMContextBuilder;
 use near_sdk::testing_env;
 use near_workspaces::network::Sandbox;
@@ -98,8 +98,8 @@ fn config(f: &Value, now: u64) -> InitConfig {
     let (vkey, _, _) = sp1_fixture();
     let (image, _, _) = risc0_receipt();
     InitConfig {
-        source_chain_id: SEPOLIA,
-        chain_id: NEAR_TESTNET,
+        source_chain_id: U64(SEPOLIA),
+        chain_id: U64(NEAR_TESTNET),
         factory: Hex20(h20(&f["factory"])),
         hub_implementation: Hex20(h20(&f["hub_implementation"])),
         p1: VerifierConfig {
@@ -647,7 +647,25 @@ async fn the_snapshot_exit_on_wasm() -> anyhow::Result<()> {
     let mut v = Vault::build(config, start);
     at(start, "relayer.test.near", ONE);
     v.register_index(Hex20(index), Hex32(h32(&f["salt"])));
-    at(start, "alice.test.near", 31 * ONE);
+    // A first checkpoint, which deposits wait for (B1-04).
+    let first = [0x77; 32];
+    let (head, headers) = header(1, start + 1, &first, &[9; 32]);
+    for id in [p1, p2] {
+        near_sdk::env::storage_write(&range_key(&id, &headers), &range_value(1, 1));
+    }
+    at(start + 1, "relayer.test.near", 0);
+    v.advance_checkpoint(
+        Checkpoint {
+            block: 1,
+            timestamp: start + 1,
+            state_root: Hex32(first),
+        },
+        PairProofs {
+            proof1: b64(&head),
+            proof2: b64(&head),
+        },
+    );
+    at(start + 1, "alice.test.near", 31 * ONE);
     let settled = h32(&f["settled_intake"]["id"]);
     v.deposit(Hex20(index), Hex32(settled), U128(amount("settled_intake")));
     at(timestamp + 60, "bob.test.near", 4 * ONE);
@@ -671,10 +689,11 @@ async fn the_snapshot_exit_on_wasm() -> anyhow::Result<()> {
             proof2: b64(&head),
         },
     );
+    // Whoever begins the snapshot pays its slot's storage (B2-04).
     at(
         v.stall_start() + SNAPSHOT_EXIT_DELAY as u64,
         "relayer.test.near",
-        0,
+        ONE,
     );
     v.begin_snapshot();
     let state = near_sdk::borsh::to_vec(&v)?;

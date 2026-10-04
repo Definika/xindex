@@ -31,6 +31,7 @@ pub const CAP: u64 = 1_000_000 * 1_000_000_000;
 pub const FLOOR: u64 = 1_000_000_000;
 pub const START: i64 = 1_800_000_000;
 pub const SOL: u64 = 1_000_000_000;
+pub const DAY: i64 = 24 * 3600;
 
 pub struct Harness {
     pub svm: LiteSVM,
@@ -110,6 +111,11 @@ pub fn migrate_body(new_index: &[u8; 20], amount: u64) -> Vec<u8> {
 
 pub fn cap_body(cap: u64, floor: u64) -> Vec<u8> {
     [[0u8; 32], u256(cap), u256(floor)].concat()
+}
+
+/// A FREEZE's body: `abi.encode(until)`, when the factory's own freeze of this chain ends (A3-03).
+pub fn freeze_body(until: i64) -> Vec<u8> {
+    u256(until as u64).to_vec()
 }
 
 /// Which verifiers prove a message, as the relayer chooses.
@@ -840,6 +846,12 @@ impl Harness {
         p.extend_from_slice(body);
         p.resize(p.len() + (32 - body.len() % 32) % 32, 0);
         p
+    }
+
+    /// The factory's FREEZE of a freeze it began now: it ends FREEZE_DURATION from now.
+    pub fn freeze_payload(&mut self, emitter: [u8; 20]) -> Vec<u8> {
+        let body = freeze_body(self.now() + FREEZE_DURATION);
+        self.payload(FREEZE, emitter, &body)
     }
 
     pub fn proofs(&self, by: By) -> xindex_vault::Proofs {

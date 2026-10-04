@@ -43,12 +43,28 @@ pub const ATTEST_DOMAIN: [u8; 32] =
 /// The native asset as an XDR `Asset`: its type, `ASSET_TYPE_NATIVE`, alone.
 const NATIVE_ASSET: [u8; 4] = [0, 0, 0, 0];
 
+/// The networks the vault deploys on, by their ids, the SHA-256 of their passphrases: `Public Global Stellar Network ;
+/// September 2015` and `Test SDF Network ; September 2015`.
+pub const PUBNET_NETWORK_ID: [u8; 32] =
+    h("7ac33997544e3175d266bd022439b22cdb16508c01163f26e5cb2a3e1045a979");
+pub const TESTNET_NETWORK_ID: [u8; 32] =
+    h("cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472");
+/// Their ids in the factory's chain registry, the first 8 bytes of `keccak256("stellar:pubnet")` and
+/// `keccak256("stellar:testnet")` (`design/2026-10-03-near-stellar-interfaces.md`).
+pub const STELLAR_PUBNET: u64 = 839_718_837_228_939_926;
+pub const STELLAR_TESTNET: u64 = 17_667_989_177_921_016_935;
+/// The Ethereum network each pairs with: mainnet with pubnet, Sepolia with testnet.
+pub const ETHEREUM_MAINNET: u64 = 1;
+pub const SEPOLIA: u64 = 11_155_111;
+
 #[contract]
 pub struct XindexVault;
 
 #[contractimpl]
 impl XindexVault {
-    /// The deployer's settings, and P1 and P2: two different Wasm contracts, whose code the vault pins. The freezer is a
+    /// The deployer's settings, and P1 and P2: two different Wasm contracts, whose code the vault pins. The chain ids
+    /// are the network's own: Stellar's registry id and Ethereum mainnet's on pubnet, testnet's and Sepolia's on
+    /// testnet, and no other network takes the vault (B3-02). The floor is at most the cap (B2-02). The freezer is a
     /// Stellar account, whose own signers and thresholds may make it a multisig. The recovery proposer must be a
     /// contract, the twin of `DeployVault`'s "a contract, not an EIP-7702 account": a Stellar account's signers cannot
     /// be read from a contract, so one would have to be trusted to be a multisig.
@@ -57,6 +73,25 @@ impl XindexVault {
             &env,
             args.factory.to_array() != [0u8; 20] && args.hub_implementation.to_array() != [0u8; 20],
             VaultError::ZeroAddress,
+        );
+        // The chain ids the network it runs on must carry, as `DeployVault` pairs them on an EVM chain (HUB-I2): on an
+        // ownerless vault a wrong one is for good, every message refused and every digest unprovable (B3-02).
+        // Ethereum's own chain is then never the vault's (B2-02).
+        let (registry, ethereum) = match env.ledger().network_id().to_array() {
+            PUBNET_NETWORK_ID => (STELLAR_PUBNET, ETHEREUM_MAINNET),
+            TESTNET_NETWORK_ID => (STELLAR_TESTNET, SEPOLIA),
+            _ => fail(&env, VaultError::WrongRoute),
+        };
+        require(
+            &env,
+            args.chain_id == registry && args.source_chain_id == ethereum,
+            VaultError::WrongRoute,
+        );
+        // A floor above the cap would leave the speed limit never binding, as `DeployVault` refuses (B2-02).
+        require(
+            &env,
+            args.native_floor <= args.native_cap,
+            VaultError::FloorAboveCap,
         );
         let freezer = match args.freezer.to_payload() {
             Some(AddressPayload::AccountIdPublicKeyEd25519(key)) => key,
@@ -151,9 +186,10 @@ impl XindexVault {
         IndexRegistered { index, salt }.publish(&env);
     }
 
-    /// `from`, while neither frozen nor stalled: deposits `amount` stroops of XLM into intake `intake_id` of `index`.
-    /// The intake's deadline is its id's top 64 bits: nobody can open another's intake with another deadline, and
-    /// deposits close at it for everyone. The vault books what the native asset's contract moves, exactly `amount`.
+    /// `from`, while neither frozen nor stalled, from the first checkpoint: deposits `amount` stroops of XLM into
+    /// intake `intake_id` of `index`. The intake's deadline is its id's top 64 bits: nobody can open another's intake
+    /// with another deadline, and deposits close at it for everyone. The vault books what the native asset's contract
+    /// moves, exactly `amount`.
     pub fn deposit(
         env: Env,
         from: Address,
@@ -166,6 +202,13 @@ impl XindexVault {
         vault::check_not_frozen(&env, &cfg);
         // A stalled vault may never again see the message that would settle or fail an intake.
         require(&env, !vault::stalled(&env, &cfg), VaultError::VaultStalled);
+        // Nor may one without a checkpoint: no message runs from a block none covers, and no successor or snapshot can
+        // follow without one (B1-04).
+        require(
+            &env,
+            cfg.checkpoint.state_root != vault::zero32(&env),
+            VaultError::NoCheckpoint,
+        );
         require(&env, amount > 0, VaultError::ZeroAmount);
         require(&env, amount <= u64::MAX as i128, VaultError::Overflow);
         let amount = amount as u64;
@@ -284,7 +327,8 @@ impl XindexVault {
         let mut cfg = vault::config(&env);
         cfg.freezer.require_auth();
         vault::check_no_snapshot(&env, &cfg);
-        messages::freeze_until(&env, &mut cfg);
+        let until = vault::now(&env) + FREEZE_DURATION as u64;
+        messages::freeze_until(&env, &mut cfg, until);
         vault::set_config(&env, &cfg);
     }
 

@@ -67,6 +67,9 @@ fn exit() -> Exit {
     h.salt = h32(&f["salt"]);
     h.v()
         .register_index(&b20(&env, &index), &b32(&env, &h.salt));
+    // A first checkpoint, before any deposit (B1-04).
+    h.warp(1);
+    h.advance(1);
     let amount = |name: &str| f[name]["amount"].as_u64().unwrap() as i128;
     let settled_depositor = funded(&env, "settled depositor");
     let open_depositor = funded(&env, "open depositor");
@@ -452,7 +455,7 @@ fn a_state_proof_must_prove_the_storage() {
 
 /// What the vault computes of Ethereum's encodings, against what Solidity's encoder and `cast` computed for the same
 /// hub: every slot a claim, a resolution and a recorded delivery read, XLM's token id, and the EIP-712 digest a holder
-/// signs, under the domain whose salt is this vault's id and whose chain id is the registry's.
+/// signs, under the domain whose salt is this vault's id and whose chain id is Ethereum's (B1-06).
 #[test]
 fn the_reads_and_the_digest_are_solidity_s() {
     let f = fixture();
@@ -473,7 +476,7 @@ fn the_reads_and_the_digest_are_solidity_s() {
     let digest = snapshot::claim_digest(
         &C,
         &VAULT_ID,
-        CHAIN_ID,
+        SOURCE_CHAIN_ID,
         &h20(&f["index"]),
         &holder,
         &h32(&f["holder_a"]["recipient"]),
@@ -538,4 +541,20 @@ fn the_exits_calls_fit_stellars_limits() {
         assert!(n < MAX_INSTRUCTIONS / 10);
         assert!(bytes < MAX_TX_BYTES / 4);
     }
+}
+
+/// B1-06: the claim's EIP-712 domain names Ethereum's chain id, where the holder's wallet is, not the registry's id for
+/// Stellar, which no EVM network carries and wallets refuse to sign for. Holder A's signature under Sepolia's id pays;
+/// the one it gave under the registry's id, the domain the claim had before, is refused.
+#[test]
+fn test_b106_the_claim_domain_names_ethereum() {
+    let e = exit();
+    e.snapshot();
+    e.resolve("settled_intake", e.settled);
+    let recipient = e.recipient("holder_a");
+    let registry = hex("0x5943aa1bbb86d6e9d4fac7ea67a0ab051624efa27264cbaa61b1c155b819b8275b528a50da8fa1732388249044d6d7734b5ebae34f1f4247bb1f022ae837800b1c");
+    err(e.claim_a(recipient, 1, &registry), VaultError::BadSignature);
+    e.claim_a(recipient, 1, &e.signature()).unwrap().unwrap();
+    let id = snapshot::claim_id(&C, &e.index, &h20(&e.f["holder_a"]["address"]));
+    assert_eq!(e.owed(&id).recipient, b32(&e.h.env, &recipient));
 }

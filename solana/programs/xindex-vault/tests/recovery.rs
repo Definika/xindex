@@ -10,8 +10,6 @@ use solana_keypair::Keypair;
 use solana_signer::Signer;
 use xindex_vault::{constants::*, error::VaultError, state::Checkpoint, vault};
 
-const DAY: i64 = 24 * 3600;
-
 /// Deposits `amount` into a fresh intake of `index` and settles it on both proofs; returns the settle message, the last
 /// message a successor must prove again.
 fn fund(h: &mut Harness, index: [u8; 20], amount: u64) -> Vec<u8> {
@@ -180,7 +178,7 @@ fn test_vlt3_a_message_after_the_checkpoint_waits_for_it() {
     let lower = h.payload(CAP_UPDATE, FACTORY, &cap_body(CAP / 2, FLOOR));
     h.deliver_governance(lower, By::Both).expect_ok();
     assert_eq!(h.config().cap, CAP / 2);
-    let freeze = h.payload(FREEZE, FACTORY, &[]);
+    let freeze = h.freeze_payload(FACTORY);
     h.deliver_governance(freeze, By::P1).expect_ok();
     h.set_time(h.config().frozen_until);
     h.advance(1_001).expect_ok();
@@ -412,10 +410,10 @@ fn test_lg3_a_one_proof_message_is_not_the_last_message() {
     let real_id = h.config().last_message;
     assert_eq!(real_id, abi_id(&real));
 
-    let forged = h.payload(FREEZE, FACTORY, &[]);
+    let forged = h.freeze_payload(FACTORY);
     h.deliver_governance(forged, By::P1).expect_ok();
     assert!(h.config().frozen_until > h.now(), "frozen");
-    let forged2 = h.payload(FREEZE, FACTORY, &[]);
+    let forged2 = h.freeze_payload(FACTORY);
     h.deliver_governance(forged2, By::P2).expect_ok();
     assert_eq!(
         h.config().last_message,
@@ -477,10 +475,10 @@ fn test_vlt5_no_freeze_after_the_snapshot() {
     h.begin_snapshot().expect_ok();
     let freezer = h.freezer.insecure_clone();
     h.freeze(&freezer).expect_code(VaultError::SnapshotTaken);
-    let freeze = h.payload(FREEZE, FACTORY, &[]);
+    let freeze = h.freeze_payload(FACTORY);
     h.deliver_governance(freeze, By::Both)
         .expect_code(VaultError::SnapshotTaken);
-    let freeze = h.payload(FREEZE, FACTORY, &[]);
+    let freeze = h.freeze_payload(FACTORY);
     h.deliver_governance(freeze, By::P1)
         .expect_code(VaultError::SnapshotTaken);
     assert_eq!(h.config().frozen_until, 0);

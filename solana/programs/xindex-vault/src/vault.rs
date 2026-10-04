@@ -169,13 +169,13 @@ pub fn pay_owed(
     Ok(pay)
 }
 
-/// The least a payout to `recipient` may be: an account holding nothing must be left rent-exempt, or the transfer fails.
+/// The least a payout to `recipient` may be: what leaves it rent-exempt for its data. The runtime refuses a transfer
+/// that leaves an empty account below rent (SOL-5), or one already below it still below with more (B1-07); so a smaller
+/// payout waits instead of failing the delivery.
 pub fn min_payout(recipient: &AccountInfo) -> Result<u64> {
-    Ok(if recipient.lamports() == 0 {
-        Rent::get()?.minimum_balance(0)
-    } else {
-        0
-    })
+    Ok(Rent::get()?
+        .minimum_balance(recipient.data_len())
+        .saturating_sub(recipient.lamports()))
 }
 
 /// A verifier must be a program nobody can change: an upgradeable one only with its upgrade authority removed, whose

@@ -72,6 +72,9 @@ fn exit() -> Exit {
     h.send(&[ix], &[&authority]).expect_ok();
     let index = h20(&f["index"]);
     h.register(index, h32(&f["salt"])).expect_ok();
+    // A first checkpoint, before any deposit (B1-04).
+    h.warp(1);
+    h.advance(1).expect_ok();
 
     let (settled_depositor, open_depositor) = (Keypair::new(), Keypair::new());
     let amount = |name: &str| f[name]["amount"].as_u64().unwrap();
@@ -406,7 +409,13 @@ fn the_reads_and_the_digest_are_solidity_s() {
 
     let index = h20(&f["index"]);
     let recipient = key(&f["holder_a"]["recipient"]);
-    let digest = snapshot::claim_digest(&h32(&f["vault"]), CHAIN_ID, &index, &holder, &recipient);
+    let digest = snapshot::claim_digest(
+        &h32(&f["vault"]),
+        SOURCE_CHAIN_ID,
+        &index,
+        &holder,
+        &recipient,
+    );
     assert_eq!(digest, h32(&f["holder_a"]["digest"]));
     let signature = bytes(&f["holder_a"]["signature"]);
     snapshot::check_signature(&digest, &signature, &holder).unwrap();
@@ -443,4 +452,25 @@ fn the_state_reader_reads_what_eth_get_proof_reported() {
     // Under another root, nothing is proven.
     let hub_proof = bytes(&f["settled_intake"]["proof"]["proof"]);
     assert!(state_reader::read_slots(&[0x22; 32], &index, &[[0u8; 32]], &hub_proof).is_err());
+}
+
+/// B1-06: the claim's EIP-712 domain names Ethereum's chain id, where the holder's wallet is, not the registry's id for
+/// Solana, which no EVM network carries and wallets refuse to sign for. Holder A's signature under Sepolia's id pays;
+/// the one it gave under the registry's id, the domain the claim had before, is refused.
+#[test]
+fn test_b106_the_claim_domain_names_ethereum() {
+    let mut e = exit();
+    e.snapshot();
+    e.h.resolve_intake(e.index, e.settled, &e.proof(&["settled_intake", "proof"]))
+        .expect_ok();
+    let recipient = e.recipient("holder_a");
+    let registry = bytes(&Value::from(
+        "0xb71f8db60b38425c7bdd2d7d5eca6c0c1edb7cfc4685e0f597c810a9cc618492308d5a67e6affd495a176e6b207dc6ccbc3a8fa016d3f3f0a50da7b3166c3a6e1b",
+    ));
+    e.claim_a(recipient, 1, registry)
+        .expect_code(VaultError::BadSignature);
+    let signature = e.signature();
+    e.claim_a(recipient, 1, signature).expect_ok();
+    let id = snapshot::claim_id(&e.index, &e.holder("holder_a"));
+    assert_eq!(e.h.owed(&e.index, &id).recipient, recipient);
 }

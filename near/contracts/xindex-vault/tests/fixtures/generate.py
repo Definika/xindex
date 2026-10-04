@@ -144,10 +144,11 @@ def claim_slots(holder, component, sol_token):
 
 
 def claim_digest(index, holder, recipient):
+    # The domain's chainId is Ethereum's, where the holder's wallet is; the vault's id is the salt (B1-06).
     domain = keccak(abi_encode("bytes32,bytes32,bytes32,uint256,bytes32",
                                keccak("0x" + b"EIP712Domain(string name,string version,uint256 chainId,bytes32 salt)"
                                       .hex()),
-                               keccak("0x" + b"Xindex vault".hex()), keccak("0x31"), SOL_CHAIN, SOL_VAULT))
+                               keccak("0x" + b"Xindex vault".hex()), keccak("0x31"), CHAIN, SOL_VAULT))
     claim = keccak(abi_encode("bytes32,address,address,bytes32",
                               keccak("0x" + b"SnapshotClaim(address index,address holder,bytes32 recipient)".hex()),
                               index, holder, recipient))

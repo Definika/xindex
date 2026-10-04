@@ -114,7 +114,7 @@ pub fn handle_freeze(ctx: Context<Freeze>) -> Result<()> {
     vault::check_no_snapshot(&ctx.accounts.config)?;
     freeze_until(
         &mut ctx.accounts.config,
-        vault::now()?,
+        vault::now()? + FREEZE_DURATION,
         ctx.accounts.freezer.key(),
     );
     Ok(())

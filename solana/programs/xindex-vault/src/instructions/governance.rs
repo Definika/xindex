@@ -107,11 +107,13 @@ pub fn queue(slot: &mut PendingChange, kind: u8, body: &[u8], now: i64) {
     });
 }
 
-/// A cap update's body: SOL's id, which must be zero, then its cap and floor.
+/// A cap update's body: SOL's id, which must be zero, then its cap and floor. No lamport amount exceeds u64, so a
+/// figure past it means u64::MAX here, as an EVM vault reads the same message, never a message nobody can deliver
+/// (B1-05).
 pub fn read_cap(body: &[u8]) -> Result<(u64, u64)> {
     check_native(abi::body_word(body, 3, 0)?)?;
-    let cap = abi::to_u64(abi::body_word(body, 3, 1)?)?;
-    let floor = abi::to_u64(abi::body_word(body, 3, 2)?)?;
+    let cap = abi::to_u64(abi::body_word(body, 3, 1)?).unwrap_or(u64::MAX);
+    let floor = abi::to_u64(abi::body_word(body, 3, 2)?).unwrap_or(u64::MAX);
     Ok((cap, floor))
 }
 

@@ -71,4 +71,6 @@ pub enum VaultError {
     NotAttested = 50,
     /// The native asset's contract is not deployed where the network puts it.
     NoNativeAsset = 51,
+    /// The outflow floor above the cap: the speed limit would never bind (B2-02).
+    FloorAboveCap = 52,
 }

@@ -81,10 +81,11 @@ pub fn claim_snapshot(
         // A holder that registered a recovery key, such as a contract, is paid there and nowhere else.
         Some(key) => require(env, recipient.to_array() == key, VaultError::WrongRecipient),
         None => {
+            // Under Ethereum's chain id, where the holder's wallet is (B1-06).
             let digest = snapshot::claim_digest(
                 &c,
                 &vault::vault_id(env),
-                cfg.chain_id,
+                cfg.source_chain_id,
                 &index_a,
                 &holder_a,
                 &recipient.to_array(),

@@ -828,8 +828,9 @@ the stall, recovery with LG-2 and LG-3, and the snapshot exit (`claim_snapshot`,
 - **The recovery proposer** is fixed at initialization and must be a program-derived address, off the ed25519 curve, as
   a Squads multisig's is, and not the freezer: the twin of "a contract, not an EIP-7702 account".
 - **The claim's signature** is EIP-712 with the domain `EIP712Domain(string name,string version,uint256 chainId,bytes32
-  salt)`: "Xindex vault", "1", the registry's chain id, and the vault's 32-byte id as `salt`, since a Solana vault has no
-  20-byte address. The struct is `SnapshotClaim(address index,address holder,bytes32 recipient)`, the recipient a Solana
+  salt)`: "Xindex vault", "1", the vault's source chain id (Ethereum's, where the holder's wallet already is; wallets
+  refuse a domain naming a chain they do not know, as the registry's id is, B1-06), and the vault's 32-byte id as
+  `salt`, since a Solana vault has no 20-byte address. The struct is `SnapshotClaim(address index,address holder,bytes32 recipient)`, the recipient a Solana
   key. It is recovered with the `secp256k1_recover` syscall, low `s` and `v` of 27 or 28 only, as OpenZeppelin's ECDSA.
 - **The recovery address** the hub keeps is read under the registry's chain id; any non-zero value counts, since every 32
   bytes are a key. A claim is once per holder by its owed account's creation.

@@ -45,11 +45,15 @@ pub fn instructions(env: &Env) -> u64 {
 pub const MAX_INSTRUCTIONS: u64 = 400_000_000;
 pub const MAX_TX_BYTES: usize = 132_096;
 
-/// A host that writes no test snapshot when dropped.
+/// A host that writes no test snapshot when dropped, on Stellar testnet: the network whose registry id and Ethereum
+/// network (Sepolia) the vault's constructor pairs with the tests' ids (B3-02).
 pub fn new_env() -> Env {
-    Env::new_with_config(soroban_sdk::testutils::EnvTestConfig {
+    let env = Env::new_with_config(soroban_sdk::testutils::EnvTestConfig {
         capture_snapshot_at_drop: false,
-    })
+    });
+    env.ledger()
+        .set_network_id(xindex_vault::TESTNET_NETWORK_ID);
+    env
 }
 
 // ---------------------------------------------------------------------
@@ -531,6 +535,12 @@ impl H {
         intake_id(deadline, self.nonce)
     }
 
+    /// The factory's FREEZE of a freeze it began now: its body is when that freeze ends, FREEZE_DURATION from now.
+    pub fn freeze_payload(&mut self, emitter: [u8; 20]) -> std::vec::Vec<u8> {
+        let body = freeze_body(self.now() + FREEZE_DURATION as u64);
+        self.payload(FREEZE, emitter, &body)
+    }
+
     pub fn burn_payload(&mut self, amount: u64, recipient: &[u8; 32]) -> std::vec::Vec<u8> {
         let body = [[0u8; 32], u256(amount), *recipient].concat();
         self.payload(BURN, self.index, &body)
@@ -539,6 +549,11 @@ impl H {
     pub fn index_state(&self, index: &[u8; 20]) -> IndexState {
         self.v().index_state(&b20(&self.env, index)).unwrap()
     }
+}
+
+/// A FREEZE's body: `abi.encode(until)`, when the factory's own freeze of this chain ends (A3-03).
+pub fn freeze_body(until: u64) -> std::vec::Vec<u8> {
+    u256(until).to_vec()
 }
 
 pub fn intake_id(deadline: u64, nonce: u64) -> [u8; 32] {

@@ -46,13 +46,14 @@ core is also checked against Solana's tests.
 ## Methods
 
 Anyone may call every method except the role-gated ones (freezer, recovery proposer) and the vault's own callbacks. A
-method that adds storage takes a deposit to pay for it and refunds the change.
+method that adds storage takes a deposit to pay for it and refunds the change. Storage paid is permanent: nothing the
+vault writes is ever deleted, so neither depositors nor relayers get their storage stake back, as on Solana (SOL-8).
 
 | Method | What it does |
 |---|---|
-| `new(config)` | Initialization: P1 and P2 configurations, freezer, recovery proposer, cap and floor. Run once, or written as the initial state of a deterministic account. |
+| `new(config)` | Initialization: P1 and P2 configurations, freezer, recovery proposer, cap and floor. Run once, or written as the initial state of a deterministic account. Refuses a floor above the cap and Ethereum's chain id as the vault's (B2-02). The chain ids are `U64` strings in JSON, here and in the `config` view: NEAR's registry ids pass 2^53, past what a JavaScript number holds exactly (B2-08). |
 | `register_index(index, salt)` | Registers a clone of the factory's `HybridHub` template, checked by the CREATE2 formula. |
-| `deposit(index, intake_id, amount)` | Attaches `amount` yoctoNEAR plus storage. The deadline is in the id's top 64 bits; the deposit must come before it and within `MAX_INTAKE_LIFE`. Refused under the cap, in a freeze or in a stall. |
+| `deposit(index, intake_id, amount)` | Attaches `amount` yoctoNEAR plus storage. The deadline is in the id's top 64 bits; the deposit must come before it and within `MAX_INTAKE_LIFE`. Refused past the cap, in a freeze, in a stall or before the first checkpoint, since no message could settle or fail an intake then (B1-04). |
 | `refund(index, intake_id)` | The depositor takes back its deposit to a failed intake. |
 | `deliver(payload, block, proof1, proof2)` | Runs a `VaultMessage` on P1's proof, P2's or both. Anything that moves coins or loosens a rule needs both, plus a checkpoint covering its block. |
 | `release(index, id)` | Pays what the speed limit now allows of an owed burn, claim or migration. |
@@ -64,8 +65,8 @@ method that adds storage takes a deposit to pay for it and refunds the change.
 | `propose_successor(p1, p2, continuity)` | Recovery proposer only, while stalled. The new pair must prove the last checkpoint, a recent one and the last message. |
 | `veto_successor()` | Freezer only, at most twice per stall. |
 | `adopt_successor(checkpoint, proofs)` | After 30 days of review, on a recent checkpoint from the new pair. |
-| `begin_snapshot()` | 180 days into a stall: the last checkpoint becomes the snapshot, and its state root goes to slot 25. |
-| `claim_snapshot(index, holder, component, recipient, signature, proof)` | Pays a holder's share at the snapshot. Goes to the recipient its EIP-712 signature names, or to its registered recovery address. |
+| `begin_snapshot()` | 180 days into a stall: the last checkpoint becomes the snapshot, and its state root goes to slot 25. The caller pays that slot's storage, about 0.001 NEAR, and gets the change back (B2-04). |
+| `claim_snapshot(index, holder, component, recipient, signature, proof)` | Pays a holder's share at the snapshot. Goes to the recipient its EIP-712 signature names, or to its registered recovery address. The signature's domain is `EIP712Domain("Xindex vault", "1", chainId, salt)` with Ethereum's chain id (1, or 11155111 on Sepolia), where the holder's wallet is, and the vault's id as `salt` (B1-06). |
 | `resolve_intake(index, intake_id, proof)` | Settles or fails an open intake from the hub's `_settledIntakes` at the snapshot. |
 | `deliver_recorded(payload, proof)` | Runs a burn or migration in flight at the snapshot, from the hub's `_sentMessages`. |
 | `attest(slots, values)` | Succeeds only if every slot holds its value. Returns `abi.encode(ATTEST_DOMAIN, chainId, vaultId, height, timestampNs, slots, values)` as the receipt's value, with nothing logged. |
@@ -109,11 +110,20 @@ The vault id, `keccak256(utf8(account_id))`, is computed from the running accoun
 deterministic account's initial state cannot contain its own id, because the id is a hash of that state.
 
 The recovery proposer must be the owner's emergency multisig. The vault refuses an implicit account (ed25519 or
-ETH-implicit), which one key holds, and refuses the freezer. A contract cannot read another account's keys or code, so
+ETH-implicit), which one key holds, and any id of nearcore's universal account family (`0u…`), whose keys its state
+init sets (B2-09); and it refuses the freezer. A contract cannot read another account's keys or code, so
 the rest is the deployment's job. Before deploying, check over RPC that the proposer account:
 - runs a known multisig contract (`view_code` hash);
 - has no full-access key (`view_access_key_list`);
 - has at least three confirmations configured.
+
+The initial checkpoint's timestamp is the `now` the deployer passes `Vault::build`, the first week's grace before a
+stall. Nothing on chain bounds it, since the account's initial data is computed off chain. A `now` in the future, from
+a typo or a nanosecond-for-second mix-up, blocks every checkpoint until that date, since a checkpoint must be newer in
+time than the last, and with it every message that needs one and the stall that recovery and the snapshot wait for:
+the vault's deposits would be locked. So the deployment check confirms that the initial state's checkpoint timestamp
+lies within an hour before the block that creates the account (B2-03). The rule stays as it is, since a first
+checkpoint exempt from it would let anyone date one far ahead and stall the vault at once.
 
 ## Gas
 
@@ -154,7 +164,7 @@ client's own checks and one storage write.
 
 ## Tests
 
-`cargo test` runs 40 unit tests on the mocked runtime and 2 on the sandbox. Tests named after findings:
+`cargo test` runs 50 unit tests on the mocked runtime and 2 on the sandbox. Tests named after findings:
 
 | Test | Checks |
 |---|---|
@@ -167,6 +177,15 @@ client's own checks and one storage write.
 | `test_lg3_a_one_proof_message_is_not_the_last_message` | A one-proof message cannot block an honest successor. |
 | `test_lg4_a_verifier_takes_a_proof_only_within_a_day_of_its_anchor` | Real SP1 and RISC Zero proofs; the lag rule. |
 | `test_sol9_the_vault_is_no_recipient`, `test_sol9_a_claim_never_pays_the_vault` | Neither a burn nor a claim pays the vault's own account. |
+| `test_a303_a_late_freeze_ends_with_the_factorys` | A FREEZE freezes only until the factory's own freeze ends, and nothing once it has. |
+| `test_b404_a_freeze_body_is_one_word` | A FREEZE's body is exactly `abi.encode(until)`. |
+| `test_b104_no_deposit_before_the_first_checkpoint` | No deposit before the first checkpoint. |
+| `test_b105_a_cap_wider_than_the_native_type_saturates` | A cap or floor past `u128` means `u128::MAX`. |
+| `test_b106_the_claim_domain_names_ethereum` | A snapshot claim is signed under Ethereum's chain id. |
+| `test_b202_initialization_refuses_what_deploy_vault_refuses` | No floor above the cap, and not Ethereum's chain id as the vault's. |
+| `test_b204_the_snapshot_pays_its_own_storage` | Beginning the snapshot pays its own storage. |
+| `test_b208_the_chain_ids_are_strings_in_json` | The chain ids are strings in JSON. |
+| `test_b209_a_universal_account_is_no_recovery_proposer` | A `0u…` account is refused as the recovery proposer. |
 
 The rest cover the domains and ids against `cast`, CREATE2 registration, the intake rules, the speed limit, implicit
 recipients, migrations, failed payouts, the continuity test, vetoes, the snapshot's start, signatures under

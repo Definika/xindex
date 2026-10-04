@@ -12,7 +12,8 @@
 //!   `VERIFIER_ROTATION` and a successor proposal name. Anyone registers a light client and advances it with proofs.
 //! - The vault never reads its own balance: NEAR credits plain transfers and gas rebates silently, so `held` is a book.
 //!   Whoever adds storage pays for it with the call, and a payout is a transfer whose failure puts its amount back.
-//! - Amounts are yoctoNEAR, `u128`; one from Ethereum that does not fit is refused.
+//! - Amounts are yoctoNEAR, `u128`; one from Ethereum that does not fit is refused, but for a cap or a floor, which
+//!   then means `u128::MAX` (B1-05).
 //! - No owner and no upgrade: the code has no method that deploys code or adds a key, and the vault runs at a NEP-616
 //!   deterministic account (`0s…`) whose code is a global contract fixed by its hash, so no key can ever act for it.
 
@@ -24,7 +25,7 @@ mod fixtures;
 mod tests;
 pub mod types;
 
-use near_sdk::json_types::{Base64VecU8, U128};
+use near_sdk::json_types::{Base64VecU8, U128, U64};
 use near_sdk::store::{LookupMap, LookupSet};
 use near_sdk::{env, near, AccountId, BorshStorageKey, Gas, NearToken, PanicOnDefault, Promise};
 use xindex_core::abi::{self, Message};
@@ -225,9 +226,10 @@ impl Vault {
         self.charge(before, 0);
     }
 
-    /// Anyone, while neither frozen nor stalled: deposits `amount` yoctoNEAR into intake `intake_id` of `index`, the
-    /// call's deposit covering it and the storage it adds; the rest is returned. The intake's deadline is its id's top 64
-    /// bits: nobody can open another's intake with another deadline, and deposits close at it for everyone.
+    /// Anyone, while neither frozen nor stalled, from the first checkpoint: deposits `amount` yoctoNEAR into intake
+    /// `intake_id` of `index`, the call's deposit covering it and the storage it adds; the rest is returned. The
+    /// intake's deadline is its id's top 64 bits: nobody can open another's intake with another deadline, and deposits
+    /// close at it for everyone.
     #[payable]
     pub fn deposit(&mut self, index: Hex20, intake_id: Hex32, amount: U128) {
         let before = env::storage_usage();
@@ -236,6 +238,12 @@ impl Vault {
         self.check_not_frozen();
         // A stalled vault may never again see the message that would settle or fail an intake.
         check(!self.stalled(), Error::VaultStalled);
+        // Nor may one without a checkpoint: no message runs from a block none covers, and no successor or snapshot can
+        // follow without one (B1-04).
+        check(
+            self.checkpoint.state_root.0 != [0u8; 32],
+            Error::NoCheckpoint,
+        );
         check(amount != 0, Error::ZeroAmount);
         let deadline = abi::deadline_of(&intake_id);
         let now = now();
@@ -408,7 +416,10 @@ impl Vault {
             Error::NotFreezer,
         );
         self.check_no_snapshot();
-        self.freeze_now(env::predecessor_account_id().to_string());
+        self.freeze_until(
+            now() + FREEZE_DURATION as u64,
+            env::predecessor_account_id().to_string(),
+        );
     }
 
     /// Anyone, from its ready time: applies the waiting change of `kind` whose body its `change_queued` event announced.
@@ -617,9 +628,13 @@ impl Vault {
         );
     }
 
-    /// Anyone, SNAPSHOT_EXIT_DELAY after the stall began: takes the last checkpoint as the snapshot for good. From then
-    /// on no message from a later Ethereum block runs, and holders at it claim directly.
+    /// Anyone, SNAPSHOT_EXIT_DELAY after the stall began, paying the storage it adds: takes the last checkpoint as the
+    /// snapshot for good. From then on no message from a later Ethereum block runs, and holders at it claim directly.
+    /// The caller pays the snapshot's slot, as every caller pays what it adds, so the exit never rests on the vault's
+    /// own balance beyond its storage stake (B2-04).
+    #[payable]
     pub fn begin_snapshot(&mut self) {
+        let before = env::storage_usage();
         self.check_no_snapshot();
         let due =
             checkpoint::stall_start(self.checkpoint.timestamp).saturating_add(SNAPSHOT_EXIT_DELAY);
@@ -635,13 +650,15 @@ impl Vault {
             self.successor = Successor::default();
             event("successor_lapsed", near_sdk::serde_json::json!({}));
         }
+        self.charge(before, 0);
     }
 
     /// Anyone after the snapshot, paying the storage it adds: pays `holder`'s share of NEAR in `index` at the snapshot,
     /// read from the hub's storage there, to the account `recipient` names: the recovery address it registered in the
-    /// hub for this chain, if any, which a contract holder must register; otherwise the recipient it signed for with its
-    /// Ethereum key (EIP-712, the domain's salt this vault's id). Within the speed limit, as any payout: a snapshot of a
-    /// forged checkpoint takes no more than a forged burn. Once per holder and index.
+    /// hub for this chain, if any, which a contract holder must register; otherwise the recipient it signed for with
+    /// its Ethereum key (EIP-712, the domain's salt this vault's id and its chain id Ethereum's, where the holder's
+    /// wallet is, B1-06). Within the speed limit, as any payout: a snapshot of a forged checkpoint takes no more than a
+    /// forged burn. Once per holder and index.
     #[payable]
     pub fn claim_snapshot(
         &mut self,
@@ -671,7 +688,7 @@ impl Vault {
                 let digest = snapshot::claim_digest(
                     &Near,
                     &self.vault_id(),
-                    self.chain_id,
+                    self.source_chain_id,
                     &index,
                     &holder,
                     &recipient,
@@ -826,8 +843,8 @@ impl Vault {
 
     pub fn config(&self) -> ConfigView {
         ConfigView {
-            source_chain_id: self.source_chain_id,
-            chain_id: self.chain_id,
+            source_chain_id: U64(self.source_chain_id),
+            chain_id: U64(self.chain_id),
             vault_id: Hex32(self.vault_id()),
             factory: Hex20(self.factory),
             hub_implementation: Hex20(self.hub_implementation),
@@ -930,6 +947,16 @@ impl Vault {
             Error::RecoveryNotMultisig,
         );
         check(config.recovery_proposer != config.freezer, Error::SameRole);
+        // And as `DeployVault`: a floor above the cap would leave the speed limit never binding, and Ethereum's own
+        // chain is not the vault's, under which no message could route (B2-02).
+        check(
+            config.native_floor.0 <= config.native_cap.0,
+            Error::FloorAboveCap,
+        );
+        check(
+            config.source_chain_id.0 != config.chain_id.0,
+            Error::WrongRoute,
+        );
         config.p1.check();
         config.p2.check();
         check(
@@ -937,8 +964,8 @@ impl Vault {
             Error::VerifiersNotDistinct,
         );
         let mut v = Self {
-            source_chain_id: config.source_chain_id,
-            chain_id: config.chain_id,
+            source_chain_id: config.source_chain_id.0,
+            chain_id: config.chain_id.0,
             factory: config.factory.0,
             hub_implementation: config.hub_implementation.0,
             p1: verifier_id(&config.p1),
@@ -1332,10 +1359,13 @@ impl Vault {
     /// rotation, however its proofs were obtained (VLT-2).
     fn governance_message(&mut self, m: &Message, loosening: bool, both: bool) {
         if m.kind == FREEZE {
-            check(m.body.is_empty(), Error::BadMessage);
+            let end = abi::freeze_end(m.body, now() as i64).unwrap_or_else(|e| fail(abi_err(e)));
             // Nothing could replace the freezer after a snapshot, and nothing may hold the exit off (VLT-5).
             self.check_no_snapshot();
-            self.freeze_now("factory".to_string());
+            // Only until the factory's own freeze ends: one delivered after it freezes nothing (A3-03).
+            if let Some(end) = end {
+                self.freeze_until(end as u64, "factory".to_string());
+            }
             return;
         }
         let last = match m.kind {
@@ -1420,9 +1450,9 @@ impl Vault {
         }
     }
 
-    /// Freezes the vault for FREEZE_DURATION from now; a later freeze extends it, and none shortens it.
-    fn freeze_now(&mut self, by: String) {
-        let until = now() + FREEZE_DURATION as u64;
+    /// Freezes the vault until `until`: FREEZE_DURATION from now for the freezer, the factory's own freeze's end for
+    /// its message. A later freeze extends it, and none shortens it.
+    fn freeze_until(&mut self, until: u64, by: String) {
         if until > self.frozen_until {
             self.frozen_until = until;
         }
@@ -1472,13 +1502,12 @@ impl Vault {
     }
 }
 
-/// A cap update's body: NEAR's id, which must be zero, then its cap and floor.
+/// A cap update's body: NEAR's id, which must be zero, then its cap and floor. A figure past u128 means u128::MAX here,
+/// as an EVM vault reads the same message, never a message nobody can deliver (B1-05).
 fn read_cap(body: &[u8]) -> (u128, u128) {
     check_native(&body_word(body, 3, 0));
-    (
-        amount(&body_word(body, 3, 1)),
-        amount(&body_word(body, 3, 2)),
-    )
+    let figure = |i| abi::to_u128(&body_word(body, 3, i)).unwrap_or(u128::MAX);
+    (figure(1), figure(2))
 }
 
 /// Where the hub reads an index's digest on an EVM vault: `keccak256(abi.encode(index, 14))`.

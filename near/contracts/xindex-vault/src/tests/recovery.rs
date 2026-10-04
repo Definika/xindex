@@ -303,13 +303,13 @@ fn test_lg3_a_one_proof_message_is_not_the_last_message() {
     assert_eq!(keccak(&[&real_payload]), real);
 
     let factory = h20(&t.f["factory"]);
-    let forged = t.payload(FREEZE, &factory, &[]);
+    let forged = t.payload(FREEZE, &factory, &t.freeze_body());
     t.deliver_by(&factory, &forged, true, false);
     assert!(
         t.v.used(Hex32(keccak(&[&forged]))),
         "delivered: the vault is frozen"
     );
-    let forged2 = t.payload(FREEZE, &factory, &[]);
+    let forged2 = t.payload(FREEZE, &factory, &t.freeze_body());
     t.deliver_by(&factory, &forged2, false, true);
     assert_eq!(
         t.v.config().last_message.0,
@@ -329,13 +329,13 @@ fn test_lg3_a_one_proof_message_is_not_the_last_message() {
 /// checkpoint or proposal follows, and the snapshot's root is in the slot the hub reads (25).
 #[test]
 fn the_snapshot_begins_after_180_days_of_stall() {
-    let mut t = T::new();
+    let mut t = T::bare();
     fails("SnapshotNotDue", || {
-        t.call(RELAYER, 0, |v| v.begin_snapshot())
+        t.call(RELAYER, ONE, |v| v.begin_snapshot())
     });
     t.warp(t.v.stall_start() - t.now + SNAPSHOT_EXIT_DELAY as u64);
     fails("NoCheckpoint", || {
-        t.call(RELAYER, 0, |v| v.begin_snapshot())
+        t.call(RELAYER, ONE, |v| v.begin_snapshot())
     });
     t.advance(1_000);
     let last = t.v.checkpoint;
@@ -345,10 +345,10 @@ fn the_snapshot_begins_after_180_days_of_stall() {
     let c = t.continuity(pair, 2_000, None);
     t.propose(pair, c.clone());
     fails("SnapshotNotDue", || {
-        t.call(RELAYER, 0, |v| v.begin_snapshot())
+        t.call(RELAYER, ONE, |v| v.begin_snapshot())
     });
     t.now = due;
-    t.call(RELAYER, 0, |v| v.begin_snapshot());
+    t.call(RELAYER, ONE, |v| v.begin_snapshot());
     let cfg = t.v.config();
     assert_eq!(cfg.snapshot, last);
     assert_eq!(
@@ -357,7 +357,7 @@ fn the_snapshot_begins_after_180_days_of_stall() {
     );
     assert_eq!(t.v.slot(Hex32(u256(SNAPSHOT_ROOT_SLOT))), last.state_root);
     fails("SnapshotTaken", || {
-        t.call(RELAYER, 0, |v| v.begin_snapshot())
+        t.call(RELAYER, ONE, |v| v.begin_snapshot())
     });
     let later = Checkpoint {
         block: 5_000,
@@ -378,10 +378,10 @@ fn test_vlt5_no_freeze_after_the_snapshot() {
     let mut t = T::new();
     t.advance(1_000);
     let factory = h20(&t.f["factory"]);
-    let freeze = t.payload(FREEZE, &factory, &[]);
+    let freeze = t.payload(FREEZE, &factory, &t.freeze_body());
     let proof = Base64VecU8(t.event_proof(&factory, &freeze, 900));
     t.now = t.v.stall_start() + SNAPSHOT_EXIT_DELAY as u64;
-    t.call(RELAYER, 0, |v| v.begin_snapshot());
+    t.call(RELAYER, ONE, |v| v.begin_snapshot());
     fails("SnapshotTaken", || t.call(FREEZER, 0, |v| v.freeze()));
     fails("SnapshotTaken", || {
         t.call(RELAYER, ONE, |v| {
@@ -393,7 +393,7 @@ fn test_vlt5_no_freeze_after_the_snapshot() {
             )
         })
     });
-    let later = t.payload(FREEZE, &factory, &[]);
+    let later = t.payload(FREEZE, &factory, &t.freeze_body());
     let proof = Base64VecU8(t.event_proof(&factory, &later, 1_001));
     fails("IssuedAfterSnapshot", || {
         t.call(RELAYER, ONE, |v| {
@@ -404,5 +404,19 @@ fn test_vlt5_no_freeze_after_the_snapshot() {
                 Some(proof.clone()),
             )
         })
+    });
+}
+
+/// B2-04: whoever begins the snapshot pays the storage it adds, as every caller pays what it adds, so the exit never
+/// draws on the vault's balance beyond its storage stake, where it could fail for want of it. Unpaid, it is refused.
+#[test]
+fn test_b204_the_snapshot_pays_its_own_storage() {
+    let mut t = T::new();
+    t.advance(1_000);
+    t.now = t.v.stall_start() + SNAPSHOT_EXIT_DELAY as u64;
+    // The check comes last in the call, after it wrote, and the mocked runtime keeps what a failed call wrote, so it
+    // comes last here.
+    fails("StorageNotPaid", || {
+        t.call(RELAYER, 0, |v| v.begin_snapshot())
     });
 }

@@ -85,7 +85,7 @@ fn a_message_needs_its_proofs_its_route_and_one_delivery() {
             )
         })
     });
-    let freeze_from_index = t.payload(FREEZE, &index, &[]);
+    let freeze_from_index = t.payload(FREEZE, &index, &t.freeze_body());
     let p = Base64VecU8(t.event_proof(&index, &freeze_from_index, block));
     fails("WrongEmitter", || {
         t.call(RELAYER, ONE, |v| {

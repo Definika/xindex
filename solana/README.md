@@ -14,11 +14,14 @@ hackathon demonstration of `../design/2026-09-30-hackathon-plan.md`.
 
 - Holds SOL for every index registered here, an index being a CREATE2 clone of the hub template by the factory on
   Ethereum.
-- Takes SOL only as deposits to an intake: a mint order or a rebalance delivery.
+- Takes SOL only as deposits to an intake: a mint order or a rebalance delivery; none before its first checkpoint,
+  since no message could settle or fail an intake then (B1-04).
 - Pays out only on messages from Ethereum that P1 and P2 prove: burns, intakes settled or failed, migrations, and the
   factory's governance.
 - Pays within 4% of an index's balance in any 24 hours, or the outflow floor; the rest stays owed. A freeze stops
-  deposits and payouts for 14 days.
+  deposits and payouts for 14 days; the factory's `FREEZE` carries the end of its own freeze and freezes only until
+  then, so one delivered late freezes nothing (A3-03). A payout leaves its recipient rent-exempt, or waits (SOL-5,
+  B1-07). A cap or floor past `u64` in a `CAP_UPDATE` means `u64::MAX` (B1-05).
 - Keeps two digests Ethereum proves, per index and per intake, byte for byte those of the EVM vault.
 - Keeps a checkpoint, a final Ethereum block both verifiers prove (`advance_checkpoint`, verifier instruction 4). A
   message that moves coins or loosens a rule runs only from a block the checkpoint covers (VLT-3), so relayers advance
@@ -27,11 +30,13 @@ hackathon demonstration of `../design/2026-09-30-hackathon-plan.md`.
   successor pair that proves the last checkpoint, a recent one and the last message delivered on both proofs; after 30
   days and at most two vetoes by the freezer, anyone adopts it. Only a checkpoint that ends the stall lapses it (LG-2).
 - 180 days into a stall the last checkpoint becomes the snapshot, for good. Holders at it claim their share
-  (`claim_snapshot`), by an EIP-712 signature of their Ethereum key or to the recovery key they registered on the hub;
-  open intakes resolve from the hub's settled mark (`resolve_intake`); and burns and migrations the hub marked sent are
-  paid (`deliver_recorded_burn`, `deliver_recorded_migrate`). Each reads the hub's storage under the snapshot's state
-  root from `eth_getProof`'s nodes, staged in a loader buffer. `programs/xindex-vault/tests/fixtures/generate.py`
-  rebuilds, from the repo's own hub on anvil, the real storage those tests read.
+  (`claim_snapshot`), by an EIP-712 signature of their Ethereum key, whose domain names Ethereum's chain id, where
+  their wallet is, and the vault's `config` address as its `salt` (B1-06), or to the recovery key they registered on
+  the hub; open intakes resolve from the hub's settled mark (`resolve_intake`); and burns and migrations the hub
+  marked sent are paid (`deliver_recorded_burn`, `deliver_recorded_migrate`). Each reads the hub's storage under the
+  snapshot's state root from `eth_getProof`'s nodes, staged in a loader buffer.
+  `programs/xindex-vault/tests/fixtures/generate.py` rebuilds, from the repo's own hub on anvil, the real storage those
+  tests read.
 
 Not built yet: a verifier of the vault's state on Ethereum, which waits on Alpenglow's mainnet launch (Stage B spec,
 section 8), and tokens other than SOL. On the devnet a relayer's stub on Sepolia (`../demo/src/StubStateVerifier.sol`)
@@ -117,8 +122,10 @@ cargo fmt --all --check && cargo clippy -p xindex-vault -p stub-verifier -p ethe
 5. Initialize the vault from its upgrade authority, with Sepolia's chain id, the Solana id the factory's registry
    assigns, the factory, the hub template, the freezer, the recovery proposer, and the cap and floor in lamports. It
    takes each verifier's ProgramData account too. The recovery proposer must be a program-derived address, such as a
-   Squads multisig's vault, distinct from the freezer. The vault's first week of grace starts here: a relayer must
-   advance its checkpoint within a week, and before delivering any message that needs both proofs.
+   Squads multisig's vault, distinct from the freezer. As `DeployVault`, `initialize` refuses the deploying key as the
+   freezer, a floor above the cap, and Ethereum's chain id as Solana's (B2-02, B1-03). The vault's first week of grace
+   starts here: a relayer must advance its checkpoint within a week, and before delivering any message that needs both
+   proofs or taking any deposit.
 6. On Sepolia, the factory's owner proposes the chain with the vault's `config` address as its 32-byte vault, and a
    state verifier: the demo's `sepolia0` names its stub. `../script/ConfigureChains.s.sol` takes the same 32-byte
    vault, but Solana has no state verifier outside the demo.

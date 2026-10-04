@@ -39,9 +39,9 @@ pub struct Deposit<'info> {
     pub system_program: Program<'info, System>,
 }
 
-/// Anyone, while neither frozen nor stalled: deposits `amount` lamports into intake `intake_id` of `index`. The intake's
-/// deadline is its id's top 64 bits: nobody can open another's intake with another deadline, and deposits close at it
-/// for everyone.
+/// Anyone, while neither frozen nor stalled, from the first checkpoint: deposits `amount` lamports into intake
+/// `intake_id` of `index`. The intake's deadline is its id's top 64 bits: nobody can open another's intake with another
+/// deadline, and deposits close at it for everyone.
 pub fn handle_deposit(
     ctx: Context<Deposit>,
     index: [u8; 20],
@@ -54,6 +54,12 @@ pub fn handle_deposit(
     require!(
         !vault::stalled(&ctx.accounts.config, now),
         VaultError::VaultStalled
+    );
+    // Nor can one without a checkpoint: no message runs from a block none covers, and no successor or snapshot can
+    // follow without one (B1-04).
+    require!(
+        ctx.accounts.config.checkpoint.state_root != [0u8; 32],
+        VaultError::NoCheckpoint
     );
     require!(amount != 0, VaultError::ZeroAmount);
     let deadline = abi::deadline_of(&intake_id);

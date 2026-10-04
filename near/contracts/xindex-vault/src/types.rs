@@ -3,7 +3,7 @@
 //! (`design/2026-10-03-near-stellar-interfaces.md`).
 
 use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
-use near_sdk::json_types::U128;
+use near_sdk::json_types::{U128, U64};
 use near_sdk::serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use near_sdk::{near, AccountId};
 
@@ -183,14 +183,15 @@ pub struct Owed {
     pub remaining: u128,
 }
 
-/// What the vault's settings are at initialization.
+/// What the vault's settings are at initialization. The chain ids are `U64` strings in JSON, since the registry's ids
+/// pass 2^53, past what a JavaScript number holds exactly (B2-08).
 #[near(serializers = [json])]
 #[derive(Clone, Debug)]
 pub struct InitConfig {
     /// Ethereum's chain id, which every message must name.
-    pub source_chain_id: u64,
+    pub source_chain_id: U64,
     /// The id the factory's registry gives this chain (`near:mainnet` 339552387624818629).
-    pub chain_id: u64,
+    pub chain_id: U64,
     pub factory: Hex20,
     pub hub_implementation: Hex20,
     pub p1: VerifierConfig,
@@ -258,12 +259,13 @@ pub struct OwedView {
     pub remaining: U128,
 }
 
-/// The vault's settings and state, as the `config` view returns them.
+/// The vault's settings and state, as the `config` view returns them. The chain ids are `U64` strings: NEAR's registry
+/// ids pass 2^53, and a JavaScript client reading a number would sign a snapshot claim for another chain (B2-08).
 #[near(serializers = [json])]
 #[derive(Clone, Debug)]
 pub struct ConfigView {
-    pub source_chain_id: u64,
-    pub chain_id: u64,
+    pub source_chain_id: U64,
+    pub chain_id: U64,
     pub vault_id: Hex32,
     pub factory: Hex20,
     pub hub_implementation: Hex20,
@@ -298,12 +300,16 @@ pub fn account_of(word: &[u8; 32]) -> AccountId {
     id.parse().unwrap_or_else(|_| fail(Error::WrongRecipient))
 }
 
-/// Whether `account` is an implicit account, ed25519's (64 hex) or ETH-implicit (`0x` and 40 hex): one key holds it.
+/// Whether `account` is an implicit account, ed25519's (64 hex) or ETH-implicit (`0x` and 40 hex), which one key holds;
+/// or of nearcore's newer universal family (`0u…`), whose keys its state init sets, which a contract cannot read
+/// (B2-09).
 pub fn is_implicit(account: &AccountId) -> bool {
     let s = account.as_str();
     let hex_only = |t: &str| {
         t.bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     };
-    (s.len() == 64 && hex_only(s)) || (s.len() == 42 && s.starts_with("0x") && hex_only(&s[2..]))
+    (s.len() == 64 && hex_only(s))
+        || (s.len() == 42 && s.starts_with("0x") && hex_only(&s[2..]))
+        || s.starts_with("0u")
 }

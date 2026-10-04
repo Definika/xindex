@@ -43,6 +43,12 @@ pub fn message_id(p: &[u8]) -> [u8; 32] {
     core::message_id(&Solana, p)
 }
 
+/// The end of the freeze a `FREEZE` with this body sets: the factory's own freeze's end, never more than
+/// FREEZE_DURATION from now; none if that freeze is over (A3-03). The body must be one word (B4-04).
+pub fn freeze_end(body: &[u8], now: i64) -> Result<Option<i64>> {
+    core::freeze_end(body, now).map_err(err)
+}
+
 /// The body's `i`-th word, of a body that must be exactly `words` long.
 pub fn body_word(body: &[u8], words: usize, i: usize) -> Result<&[u8; 32]> {
     core::body_word(body, words, i).map_err(err)

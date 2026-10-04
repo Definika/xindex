@@ -13,7 +13,7 @@ mod setup;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use near_sdk::json_types::{Base64VecU8, U128};
+use near_sdk::json_types::{Base64VecU8, U128, U64};
 use near_sdk::test_utils::VMContextBuilder;
 use near_sdk::{testing_env, AccountId, Gas, NearToken};
 use xindex_core::abi::{address_word, u256, u256_wide};
@@ -112,8 +112,8 @@ pub struct T {
 impl T {
     pub fn config(f: &near_sdk::serde_json::Value, now: u64) -> InitConfig {
         InitConfig {
-            source_chain_id: SEPOLIA,
-            chain_id: NEAR_TESTNET,
+            source_chain_id: U64(SEPOLIA),
+            chain_id: U64(NEAR_TESTNET),
             factory: Hex20(h20(&f["factory"])),
             hub_implementation: Hex20(h20(&f["hub_implementation"])),
             p1: verifier_config(SP1, 1, epoch_at(now)),
@@ -125,8 +125,16 @@ impl T {
         }
     }
 
-    /// The vault initialized a little before the fixture's settled intake's deadline, with its index registered.
+    /// The vault initialized a little before the fixture's settled intake's deadline, with its index registered and a
+    /// first checkpoint, at block 1, which deposits wait for (B1-04).
     pub fn new() -> Self {
+        let mut t = Self::bare();
+        t.advance(1);
+        t
+    }
+
+    /// As `new`, before any checkpoint.
+    pub fn bare() -> Self {
         let f = json();
         let now = f["settled_intake"]["deadline"].as_u64().unwrap() - 600;
         at(now, RELAYER, 0);
@@ -153,6 +161,11 @@ impl T {
 
     pub fn warp(&mut self, seconds: u64) {
         self.now += seconds;
+    }
+
+    /// The body of the factory's FREEZE of a freeze it began now: it ends FREEZE_DURATION from now.
+    pub fn freeze_body(&self) -> Vec<u8> {
+        freeze_body(self.now + FREEZE_DURATION as u64)
     }
 
     pub fn vault_id() -> [u8; 32] {
