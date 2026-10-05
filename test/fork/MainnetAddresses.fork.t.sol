@@ -61,6 +61,58 @@ contract MainnetAddressesForkTest is Test {
         _assertToken(M.UNI, "UNI", 18);
     }
 
+    /// @dev The wide list's tokens, by the symbol and decimals each answers on chain, written out here rather than read
+    ///      from the list. TONCOIN is Toncoin (now listed as GRAM), RNDR is Render and Cake is PancakeSwap's.
+    function testFork_wideTokensAreWhatTheirNamesSay() public view {
+        _assertToken(M.QNT, "QNT", 18);
+        _assertToken(M.AAVE, "AAVE", 18);
+        _assertToken(M.OKB, "OKB", 18);
+        _assertToken(M.ENA, "ENA", 18);
+        _assertToken(M.ONDO, "ONDO", 18);
+        _assertToken(M.SKY, "SKY", 18);
+        _assertToken(M.WLD, "WLD", 18);
+        _assertToken(M.MNT, "MNT", 18);
+        _assertToken(M.MORPHO, "MORPHO", 18);
+        _assertToken(M.BGB, "BGB", 18);
+        _assertToken(M.POL, "POL", 18);
+        _assertToken(M.GT, "GT", 18);
+        _assertToken(M.LIT, "LIT", 18);
+        _assertToken(M.ETHFI, "ETHFI", 18);
+        _assertToken(M.FET, "FET", 18);
+        _assertToken(M.CRV, "CRV", 18);
+        _assertToken(M.NEXO, "NEXO", 18);
+        _assertToken(M.VIRTUAL, "VIRTUAL", 18);
+        _assertToken(M.STRK, "STRK", 18);
+        _assertToken(M.PENDLE, "PENDLE", 18);
+        _assertToken(M.GRAM, "TONCOIN", 9);
+        _assertToken(M.CRO, "CRO", 8);
+        _assertToken(M.ICP, "ICP", 8);
+        _assertToken(M.ARB, "ARB", 18);
+        _assertToken(M.RENDER, "RNDR", 18);
+        _assertToken(M.CAKE, "Cake", 18);
+        _assertToken(M.ZRO, "ZRO", 18);
+    }
+
+    /// @dev Every wide entry, as the listing script builds it, listed on a fresh factory, with each reference supply a
+    ///      whole number of tokens between a million and a trillion at the token's own on-chain decimals.
+    function testFork_wideWhitelistMatchesMainnet() public {
+        IndexFactory factory = new IndexFactory(address(this), address(0));
+        ConfigureWhitelist.Entry[] memory list = new ConfigureWhitelist().wideMainnetList();
+        assertEq(list.length, 27);
+        for (uint256 i = 0; i < list.length; ++i) {
+            uint256 one = 10 ** uint256(IERC20Metadata(list[i].token).decimals());
+            assertEq(list[i].referenceSupply % one, 0, "a whole number of tokens");
+            assertGe(list[i].referenceSupply / one, 1e6, "at least a million of them");
+            assertLe(list[i].referenceSupply / one, 1e12, "and at most a trillion");
+            factory.proposeListing(list[i].token, list[i].referenceSupply);
+        }
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        for (uint256 i = 0; i < list.length; ++i) {
+            factory.executeListing(list[i].token);
+            assertTrue(factory.isWhitelisted(list[i].token));
+        }
+    }
+
     /// @dev XA-13, CR-I35. The zap reads the pool manager off the router, so the pinned router has to name the pool
     ///      manager the address book does, and both are pinned by their code hashes to the builds the zap was verified
     ///      against: every Universal Router build answers `poolManager()` the same way.

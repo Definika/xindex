@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {CheckToken} from "../../script/CheckToken.s.sol";
+import {ConfigureWhitelist} from "../../script/ConfigureWhitelist.s.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
 
 /// @notice The admission check on real tokens: WBTC and LINK, which the Stage A list holds, pass it with their powers
@@ -65,6 +66,31 @@ contract CheckTokenForkTest is Test {
         assertEq(uint8(r.owner.kind), uint8(CheckToken.Kind.None));
         assertGt(r.pools.length, 0);
         assertEq(uint8(r.verdict), uint8(CheckToken.Verdict.Listable));
+    }
+
+    /// @dev The wide list is what passed the check: no entry is refused, and none is left for review.
+    function testFork_everyWideTokenPassesTheCheck() public {
+        ConfigureWhitelist.Entry[] memory list = new ConfigureWhitelist().wideMainnetList();
+        for (uint256 i = 0; i < list.length; ++i) {
+            CheckToken.Report memory r = _check(list[i].token, list[i].referenceSupply);
+            assertEq(uint8(r.transfers), uint8(CheckToken.Transfers.Exact), r.symbol);
+            assertEq(uint8(r.verdict), uint8(CheckToken.Verdict.Listable), r.symbol);
+        }
+    }
+
+    /// @dev The two the WBT rule kept off the wide list. LEO is a MiniMe token: its controller destroys any balance
+    ///      and approves every transfer. WLFI's owner, a Safe, blacklists and reallocates any holder's balance.
+    function testFork_theWbtRuleRefusesLeoAndWlfi() public {
+        CheckToken.Report memory leo = _check(A.LEO, 919_857_851e18);
+        assertEq(leo.symbol, "LEO");
+        assertEq(leo.powers & (checker.BLACKLIST() | checker.DESTROY()), checker.BLACKLIST() | checker.DESTROY());
+        assertEq(uint8(leo.owner.kind), uint8(CheckToken.Kind.Contract), "the controller");
+        assertEq(uint8(leo.verdict), uint8(CheckToken.Verdict.Refused));
+        CheckToken.Report memory wlfi = _check(A.WLFI, 31_778_337_976e18);
+        assertEq(wlfi.symbol, "WLFI");
+        assertEq(wlfi.powers & (checker.BLACKLIST() | checker.DESTROY()), checker.BLACKLIST() | checker.DESTROY());
+        assertEq(uint8(wlfi.owner.kind), uint8(CheckToken.Kind.Safe));
+        assertEq(uint8(wlfi.verdict), uint8(CheckToken.Verdict.Refused));
     }
 
     /// @dev WBT: a single key can pause, blacklist and destroy a blacklisted balance, which the WBT rule refuses.

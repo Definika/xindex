@@ -17,6 +17,11 @@ library ForkAddresses {
     /// @dev WhiteBIT's WBT, kept off every list by the WBT rule (design/2026-09-30-wbt-check.md); the admission check's
     ///      fork test proves the check refuses it.
     address internal constant WBT = 0x925206b8a707096Ed26ae47C84747fE0bb734F59;
+    /// @dev The two top-100 Ethereum coins the WBT rule keeps off the wide list (design/2026-10-05-token-admission-
+    ///      report.md): LEO, whose MiniMe controller destroys any balance and approves every transfer, and WLFI, whose
+    ///      owner blacklists and reallocates any holder's balance.
+    address internal constant LEO = 0x2AF5D2aD76741191D15Dfe7bF6aC92d4Bd912Ca3;
+    address internal constant WLFI = 0xdA5e1988097297dCdc1f90D4dFE7909e847CBeF6;
 
     /// @dev Uniswap SwapRouter02. The zap swaps through the Universal Router; this is only the fork tests' own rebalance
     ///      executor, a fixture whose venue is independent of anything Xindex deploys.

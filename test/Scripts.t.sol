@@ -613,9 +613,129 @@ contract ScriptsTest is Test {
 
         vm.expectRevert(ConfigureWhitelist.DefaultListOnlyOnMainnet.selector);
         configure.resolveList("default");
+        vm.expectRevert(ConfigureWhitelist.WideListOnlyOnMainnet.selector);
+        configure.resolveList("wide");
         vm.chainId(1);
         list = configure.resolveList("default");
         assertEq(list.length, 4);
+        list = configure.resolveList("wide");
+        assertEq(list.length, 27);
+    }
+
+    /// @dev The wide list is a release record too, pinned against a table written out independently of it: each
+    ///      token, its reference supply, its decimals and its trust tier. Its tokens never repeat the default list's.
+    function test_theWideListIsItsReleaseRecord() public view {
+        ConfigureWhitelist.Entry[] memory l = configure.wideMainnetList();
+        address[27] memory tokens = [
+            0x4a220E6096B25EADb88358cb44068A3248254675, // QNT
+            0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9, // AAVE
+            0x75231F58b43240C9718Dd58B4967c5114342a86c, // OKB
+            0x57e114B691Db790C35207b2e685D4A43181e6061, // ENA
+            0xfAbA6f8e4a5E8Ab82F62fe7C39859FA577269BE3, // ONDO
+            0x56072C95FAA701256059aa122697B133aDEd9279, // SKY
+            0x163f8C2467924be0ae7B5347228CABF260318753, // WLD
+            0x3c3a81e81dc49A522A592e7622A7E711c06bf354, // MNT
+            0x58D97B57BB95320F9a05dC918Aef65434969c2B2, // MORPHO
+            0x54D2252757e1672EEaD234D27B1270728fF90581, // BGB
+            0x455e53CBB86018Ac2B8092FdCd39d8444aFFC3F6, // POL
+            0xE66747a101bFF2dBA3697199DCcE5b743b454759, // GT
+            0x232CE3bd40fCd6f80f3d55A522d03f25Df784Ee2, // LIT
+            0xFe0c30065B384F05761f15d0CC899D4F9F9Cc0eB, // ETHFI
+            0xaea46A60368A7bD060eec7DF8CBa43b7EF41Ad85, // FET
+            0xD533a949740bb3306d119CC777fa900bA034cd52, // CRV
+            0xB62132e35a6c13ee1EE0f84dC5d40bad8d815206, // NEXO
+            0x44ff8620b8cA30902395A7bD3F2407e1A091BF73, // VIRTUAL
+            0xCa14007Eff0dB1f8135f4C25B34De49AB0d42766, // STRK
+            0x808507121B80c02388fAd14726482e061B8da827, // PENDLE
+            0x582d872A1B094FC48F5DE31D3B73F2D9bE47def1, // TONCOIN (GRAM)
+            0xA0b73E1Ff0B80914AB6fe0444E65848C4C34450b, // CRO
+            0x00f3C42833C3170159af4E92dbb451Fb3F708917, // ICP
+            0xB50721BCf8d664c30412Cfbc6cf7a15145234ad1, // ARB
+            0x6De037ef9aD2725EB40118Bb1702EBb27e4Aeb24, // RNDR (RENDER)
+            0x152649eA73beAb28c5b49B26eb48f7EAD6d4c898, // Cake
+            0x6985884C4392D348587B19cb9eAAf157F13271cd // ZRO
+        ];
+        // Whole tokens, from CoinGecko's circulating supplies on 2026-10-05.
+        uint256[27] memory wholeTokens = [
+            uint256(14_544_176),
+            15_435_383,
+            21_000_000,
+            10_362_500_000,
+            4_869_330_647,
+            23_430_551_390,
+            3_798_073_016,
+            3_302_003_382,
+            700_036_111,
+            699_992_029,
+            10_626_317_704,
+            104_663_958,
+            250_000_000,
+            965_350_000,
+            2_311_508_384,
+            1_571_278_819,
+            1_000_000_000,
+            658_385_841,
+            7_421_949_505,
+            173_634_059,
+            2_819_616_021,
+            49_533_969_069,
+            557_202_382,
+            6_785_574_605,
+            518_776_241,
+            376_261_104,
+            353_313_325
+        ];
+        assertEq(l.length, tokens.length);
+        ConfigureWhitelist.Entry[] memory flagship = configure.defaultMainnetList();
+        for (uint256 i = 0; i < l.length; ++i) {
+            // Read on chain: TONCOIN has 9 decimals, CRO and ICP 8, every other token 18.
+            uint256 decimals = i == 20 ? 9 : (i == 21 || i == 22) ? 8 : 18;
+            _assertEntry(l[i], tokens[i], wholeTokens[i] * 10 ** decimals);
+            ConfigureWhitelist.Tier tier = i < 20 ? ConfigureWhitelist.Tier.Native : ConfigureWhitelist.Tier.Bridged;
+            assertEq(uint8(configure.tierOf(tokens[i])), uint8(tier), "tier");
+            for (uint256 j = 0; j < flagship.length; ++j) {
+                assertTrue(flagship[j].token != tokens[i], "no token on both lists");
+            }
+            for (uint256 j = 0; j < i; ++j) {
+                assertTrue(tokens[j] != tokens[i], "no token twice");
+            }
+        }
+    }
+
+    /// @dev The tiers of the flagship's list, and a token on neither list.
+    function test_tierOf() public view {
+        assertEq(uint8(configure.tierOf(MainnetAddresses.WETH)), uint8(ConfigureWhitelist.Tier.Native));
+        assertEq(uint8(configure.tierOf(MainnetAddresses.WBTC)), uint8(ConfigureWhitelist.Tier.Custodial));
+        assertEq(uint8(configure.tierOf(MainnetAddresses.LINK)), uint8(ConfigureWhitelist.Tier.Native));
+        assertEq(uint8(configure.tierOf(MainnetAddresses.UNI)), uint8(ConfigureWhitelist.Tier.Native));
+        assertEq(uint8(configure.tierOf(MainnetAddresses.USDC)), uint8(ConfigureWhitelist.Tier.Unrecorded));
+        assertEq(configure.tierName(ConfigureWhitelist.Tier.Native), "Native");
+        assertEq(configure.tierName(ConfigureWhitelist.Tier.Bridged), "Bridged");
+        assertEq(configure.tierName(ConfigureWhitelist.Tier.Custodial), "Custodial");
+        assertEq(configure.tierName(ConfigureWhitelist.Tier.Unrecorded), "Unrecorded");
+    }
+
+    /// @dev Every wide supply is a whole number of tokens between a million and a trillion, as the default list's are.
+    function test_everyWideSupplyIsAPlausibleCountOfWholeTokens() public view {
+        ConfigureWhitelist.Entry[] memory l = configure.wideMainnetList();
+        for (uint256 i = 0; i < l.length; ++i) {
+            uint256 one = 10 ** (i == 20 ? 9 : (i == 21 || i == 22) ? 8 : 18);
+            assertEq(l[i].referenceSupply % one, 0, "rounded down to whole tokens, in raw units");
+            assertGe(l[i].referenceSupply / one, 1e6, "at least a million tokens");
+            assertLe(l[i].referenceSupply / one, 1e12, "at most a trillion");
+        }
+    }
+
+    /// @dev Safe mode's label names a listed token's tier, so the signers see it beside the call.
+    function test_safeModeLabelsCarryTheTier() public {
+        IndexFactory factory = _factory(owner, guardian);
+        address[3] memory tokens = [MainnetAddresses.AAVE, MainnetAddresses.GRAM, MainnetAddresses.WBTC];
+        string[3] memory tiers = [" (Native)", " (Bridged)", " (Custodial)"];
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            _tokenAt(tokens[i], 18);
+            // `vm.etch` copies code, not the storage the symbol lives in, so the symbol reads empty.
+            assertEq(_labelOf(factory, tokens[i]), string.concat("proposeListing  ", vm.toString(tokens[i]), tiers[i]));
+        }
     }
 
     /// @dev CR-M01: every default entry carries a reference supply, since nothing reads a supply live.
@@ -1278,6 +1398,10 @@ contract ScriptsTest is Test {
 
         vm.setEnv("WHITELIST", "default");
         vm.expectRevert(ConfigureWhitelist.DefaultListOnlyOnMainnet.selector);
+        configure.run();
+
+        vm.setEnv("WHITELIST", "wide");
+        vm.expectRevert(ConfigureWhitelist.WideListOnlyOnMainnet.selector);
         configure.run();
     }
 

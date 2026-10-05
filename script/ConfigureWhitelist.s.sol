@@ -34,9 +34,10 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///   LISTING_MODE  `propose`, `safe`, `execute`, `supplies`, `supplies-safe`, `execute-supplies`, or `status`
 ///                 (read-only: what is listed, pending and due, per entry).
 ///   FACTORY       Deployed IndexFactory.
-///   WHITELIST     `default` for the mainnet list below (chain 1 only), or comma-separated entries
-///                 `token:referenceSupply`, both required. `referenceSupply` is in the token's raw units (with its
-///                 decimals) and is the supply of what the token represents; nothing reads a supply live (CR-M01).
+///   WHITELIST     `default` for the flagship's mainnet list below, `wide` for the wide list (both chain 1 only), or
+///                 comma-separated entries `token:referenceSupply`, both required. `referenceSupply` is in the token's
+///                 raw units (with its decimals) and is the supply of what the token represents; nothing reads a supply
+///                 live (CR-M01). Run `CheckToken` on a token before its first listing.
 ///   LIST          Optional. Tokens never listed that propose and safe mode may propose a listing for: comma-separated
 ///                 addresses, or `all` for every entry of WHITELIST. A token it does not name is skipped with its
 ///                 reason, which keeps a listing the guardian cancelled cancelled (RT-06). Leave it unset on a routine
@@ -49,6 +50,16 @@ contract ConfigureWhitelist is Script {
     struct Entry {
         address token;
         uint256 referenceSupply;
+    }
+
+    /// @notice A listed token's trust tier (design/2026-10-05-wide-asset-support.md, section 1): what backs it and who
+    ///         can break it, shown by the app beside every index that holds it. A label the contracts never read, so it
+    ///         lives here rather than in the factory. `Unrecorded` for a token neither mainnet list names.
+    enum Tier {
+        Unrecorded,
+        Native,
+        Bridged,
+        Custodial
     }
 
     /// @notice What `status` found for one entry.
@@ -81,6 +92,8 @@ contract ConfigureWhitelist is Script {
     error UnknownMode(string mode);
     /// @notice WHITELIST=default off chain 1.
     error DefaultListOnlyOnMainnet();
+    /// @notice WHITELIST=wide off chain 1.
+    error WideListOnlyOnMainnet();
     /// @notice A WHITELIST entry does not have exactly two fields, or leaves its reference supply empty.
     error MalformedEntry(string entry);
     /// @notice A broadcasting mode needs an owner that can sign transactions, and this factory's owner is a contract (a
@@ -105,6 +118,75 @@ contract ConfigureWhitelist is Script {
         list[1] = Entry({token: MainnetAddresses.WBTC, referenceSupply: MainnetAddresses.BTC_SUPPLY});
         list[2] = Entry({token: MainnetAddresses.LINK, referenceSupply: MainnetAddresses.LINK_SUPPLY});
         list[3] = Entry({token: MainnetAddresses.UNI, referenceSupply: MainnetAddresses.UNI_SUPPLY});
+    }
+
+    /// @notice The wide list (design/2026-10-05-wide-asset-support.md, section 2): every coin of CoinMarketCap's top 100
+    ///         on 2026-10-05 with a contract on Ethereum, less stablecoins, gold tokens and memecoins, and less LEO and
+    ///         WLFI, which the WBT rule refuses (design/2026-10-05-token-admission-report.md). It serves creators'
+    ///         indexes; the flagship's list is `defaultMainnetList`. Each entry passed `CheckToken` and carries a dated
+    ///         reference supply; a bridged copy carries its coin's. Many are too thin on Ethereum for the zap, and mint
+    ///         through MintRequests; every one redeems in kind.
+    /// @return list Twenty issued on Ethereum, then seven bridged copies, in `MainnetAddresses`' order.
+    function wideMainnetList() public pure returns (Entry[] memory list) {
+        list = new Entry[](27);
+        list[0] = Entry({token: MainnetAddresses.QNT, referenceSupply: MainnetAddresses.QNT_SUPPLY});
+        list[1] = Entry({token: MainnetAddresses.AAVE, referenceSupply: MainnetAddresses.AAVE_SUPPLY});
+        list[2] = Entry({token: MainnetAddresses.OKB, referenceSupply: MainnetAddresses.OKB_SUPPLY});
+        list[3] = Entry({token: MainnetAddresses.ENA, referenceSupply: MainnetAddresses.ENA_SUPPLY});
+        list[4] = Entry({token: MainnetAddresses.ONDO, referenceSupply: MainnetAddresses.ONDO_SUPPLY});
+        list[5] = Entry({token: MainnetAddresses.SKY, referenceSupply: MainnetAddresses.SKY_SUPPLY});
+        list[6] = Entry({token: MainnetAddresses.WLD, referenceSupply: MainnetAddresses.WLD_SUPPLY});
+        list[7] = Entry({token: MainnetAddresses.MNT, referenceSupply: MainnetAddresses.MNT_SUPPLY});
+        list[8] = Entry({token: MainnetAddresses.MORPHO, referenceSupply: MainnetAddresses.MORPHO_SUPPLY});
+        list[9] = Entry({token: MainnetAddresses.BGB, referenceSupply: MainnetAddresses.BGB_SUPPLY});
+        list[10] = Entry({token: MainnetAddresses.POL, referenceSupply: MainnetAddresses.POL_SUPPLY});
+        list[11] = Entry({token: MainnetAddresses.GT, referenceSupply: MainnetAddresses.GT_SUPPLY});
+        list[12] = Entry({token: MainnetAddresses.LIT, referenceSupply: MainnetAddresses.LIT_SUPPLY});
+        list[13] = Entry({token: MainnetAddresses.ETHFI, referenceSupply: MainnetAddresses.ETHFI_SUPPLY});
+        list[14] = Entry({token: MainnetAddresses.FET, referenceSupply: MainnetAddresses.FET_SUPPLY});
+        list[15] = Entry({token: MainnetAddresses.CRV, referenceSupply: MainnetAddresses.CRV_SUPPLY});
+        list[16] = Entry({token: MainnetAddresses.NEXO, referenceSupply: MainnetAddresses.NEXO_SUPPLY});
+        list[17] = Entry({token: MainnetAddresses.VIRTUAL, referenceSupply: MainnetAddresses.VIRTUAL_SUPPLY});
+        list[18] = Entry({token: MainnetAddresses.STRK, referenceSupply: MainnetAddresses.STRK_SUPPLY});
+        list[19] = Entry({token: MainnetAddresses.PENDLE, referenceSupply: MainnetAddresses.PENDLE_SUPPLY});
+        list[20] = Entry({token: MainnetAddresses.GRAM, referenceSupply: MainnetAddresses.GRAM_SUPPLY});
+        list[21] = Entry({token: MainnetAddresses.CRO, referenceSupply: MainnetAddresses.CRO_SUPPLY});
+        list[22] = Entry({token: MainnetAddresses.ICP, referenceSupply: MainnetAddresses.ICP_SUPPLY});
+        list[23] = Entry({token: MainnetAddresses.ARB, referenceSupply: MainnetAddresses.ARB_SUPPLY});
+        list[24] = Entry({token: MainnetAddresses.RENDER, referenceSupply: MainnetAddresses.RENDER_SUPPLY});
+        list[25] = Entry({token: MainnetAddresses.CAKE, referenceSupply: MainnetAddresses.CAKE_SUPPLY});
+        list[26] = Entry({token: MainnetAddresses.ZRO, referenceSupply: MainnetAddresses.ZRO_SUPPLY});
+    }
+
+    /// @notice The trust tier of a token on either mainnet list, for the app and safe mode's labels: `Custodial` for
+    ///         WBTC (BitGo holds the bitcoin), `Bridged` for a bridge's copy of a coin issued elsewhere, `Native` for a
+    ///         token issued on Ethereum, ether's WETH among them, and `Unrecorded` for any other token.
+    function tierOf(address token) public pure returns (Tier) {
+        if (token == MainnetAddresses.WBTC) return Tier.Custodial;
+        if (
+            token == MainnetAddresses.GRAM || token == MainnetAddresses.CRO || token == MainnetAddresses.ICP
+                || token == MainnetAddresses.ARB || token == MainnetAddresses.RENDER || token == MainnetAddresses.CAKE
+                || token == MainnetAddresses.ZRO
+        ) return Tier.Bridged;
+        if (
+            token == MainnetAddresses.WETH || token == MainnetAddresses.LINK || token == MainnetAddresses.UNI
+                || token == MainnetAddresses.QNT || token == MainnetAddresses.AAVE || token == MainnetAddresses.OKB
+                || token == MainnetAddresses.ENA || token == MainnetAddresses.ONDO || token == MainnetAddresses.SKY
+                || token == MainnetAddresses.WLD || token == MainnetAddresses.MNT || token == MainnetAddresses.MORPHO
+                || token == MainnetAddresses.BGB || token == MainnetAddresses.POL || token == MainnetAddresses.GT
+                || token == MainnetAddresses.LIT || token == MainnetAddresses.ETHFI || token == MainnetAddresses.FET
+                || token == MainnetAddresses.CRV || token == MainnetAddresses.NEXO || token == MainnetAddresses.VIRTUAL
+                || token == MainnetAddresses.STRK || token == MainnetAddresses.PENDLE
+        ) return Tier.Native;
+        return Tier.Unrecorded;
+    }
+
+    /// @notice A tier's name, as safe mode's labels and the app show it.
+    function tierName(Tier tier) public pure returns (string memory) {
+        if (tier == Tier.Native) return "Native";
+        if (tier == Tier.Bridged) return "Bridged";
+        if (tier == Tier.Custodial) return "Custodial";
+        return "Unrecorded";
     }
 
     /// @notice Reads FACTORY, WHITELIST, LIST, RELIST and LISTING_MODE from the environment and runs that mode.
@@ -170,15 +252,18 @@ contract ConfigureWhitelist is Script {
         }
     }
 
-    /// @notice `default` means the mainnet list and is only accepted on chain 1; anything else is parsed as
-    ///         comma-separated entries. Reverts DuplicateEntry for a list that names a token twice, whatever mode would
-    ///         run on it (RT-24).
+    /// @notice `default` means the flagship's mainnet list and `wide` the wide list, each only accepted on chain 1;
+    ///         anything else is parsed as comma-separated entries. Reverts DuplicateEntry for a list that names a token
+    ///         twice, whatever mode would run on it (RT-24).
     /// @param raw The WHITELIST value.
     /// @return list The entries, in order.
     function resolveList(string memory raw) public view returns (Entry[] memory list) {
         if (ScriptUtils.same(raw, "default")) {
             if (block.chainid != 1) revert DefaultListOnlyOnMainnet();
             list = defaultMainnetList();
+        } else if (ScriptUtils.same(raw, "wide")) {
+            if (block.chainid != 1) revert WideListOnlyOnMainnet();
+            list = wideMainnetList();
         } else {
             string[] memory parts = vm.split(raw, ",");
             list = new Entry[](parts.length);
@@ -235,7 +320,8 @@ contract ConfigureWhitelist is Script {
     /// @param firstListings Tokens never listed that may get a listing (LIST).
     /// @param relist Delisted tokens that may be listed again (RELIST).
     /// @return calls One call per proposal, in entry order.
-    /// @return labels For each call, `proposeListing`, the token's symbol and its address (RT-06).
+    /// @return labels For each call, `proposeListing`, the token's symbol and its address (RT-06), then its trust tier
+    ///         in brackets when one is recorded.
     function safeCalldata(
         IIndexFactory factory,
         Entry[] memory list,
@@ -256,8 +342,13 @@ contract ConfigureWhitelist is Script {
             if (!chosen[i]) continue;
             calls[count] =
                 abi.encodeCall(IIndexFactory.proposeListing, (list[i].token, listingSupply(factory, list[i])));
-            labels[count] =
-                string.concat("proposeListing ", ScriptUtils.symbolOf(list[i].token), " ", vm.toString(list[i].token));
+            labels[count] = string.concat(
+                "proposeListing ",
+                ScriptUtils.symbolOf(list[i].token),
+                " ",
+                vm.toString(list[i].token),
+                _tierLabel(list[i].token)
+            );
             ++count;
         }
     }
@@ -335,6 +426,12 @@ contract ConfigureWhitelist is Script {
             console2.log("relisted at the supply in force; supplies mode revises it once it is listed (SA-02)", token);
         }
         return true;
+    }
+
+    /// @dev ` (<tier>)` for a token with a recorded tier, and nothing for any other.
+    function _tierLabel(address token) private pure returns (string memory) {
+        Tier tier = tierOf(token);
+        return tier == Tier.Unrecorded ? "" : string.concat(" (", tierName(tier), ")");
     }
 
     /// @notice The supply a listing of `entry` proposes: the entry's for a first listing, and the one in force for a
