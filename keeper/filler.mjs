@@ -24,6 +24,7 @@ import { createPublicClient, createWalletClient, http, formatUnits, getAddress }
 import { privateKeyToAccount } from "viem/accounts";
 import { abi } from "./artifacts.mjs";
 import { bnbChain } from "./chains/bnb.mjs";
+import { injectiveChain } from "./chains/injective.mjs";
 
 const env = (name, fallback) => {
   const value = process.env[name] ?? fallback;
@@ -61,6 +62,10 @@ if (process.env.BNB_RPC) {
     ethWallet,
   });
   adapters.set(bnb.chainId, bnb);
+}
+if (process.env.INJECTIVE_RPC) {
+  const injective = injectiveChain({ rpc: env("INJECTIVE_RPC"), key: env("INJECTIVE_KEY"), ethClient: eth, ethWallet });
+  adapters.set(injective.chainId, injective);
 }
 
 const log = (...args) => console.log(new Date().toISOString(), ...args);
