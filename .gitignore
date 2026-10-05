@@ -45,3 +45,8 @@ docs/
 # committed copy would be a second, silently diverging set of remappings -- see the Wake step in .github/workflows.
 wake.toml
 .wake/
+
+# The rebalancer bot
+/keeper/node_modules/
+/keeper/out/
+/keeper/cache/

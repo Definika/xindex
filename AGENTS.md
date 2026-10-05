@@ -23,7 +23,12 @@ fixed at creation, and the index rebalances back to them at Pyth prices. v5 offe
 market-cap hub and its supply batches are retired from new deployments, as v3 was, once their retirement record is
 written. v5 phase 1 is built and deployed nowhere: `WeightedIndexFactory` and its `WeightedHub` template, on branch
 `v5-custom-weights`, holding Ethereum ERC-20s; vault coins are phase 2, and the vaults and proofs below carry over.
-`design/2026-10-05-custom-weights.md` is its spec and records what remains before any deployment. Until the retirement
+`design/2026-10-05-custom-weights.md` is its spec and records what remains before any deployment.
+**Draft state (2026-10-06):** the vault-coin index (`HybridHub`, its module and extension, `HybridIndexFactory`,
+`WeightedPricing`), `Deploy.s.sol`, `ConfigureChains` and the bot in `keeper/` were moved to v5 code-first, at the
+owner's request; their tests come in the safety pass. Until then `foundry.toml`'s `skip` list sets aside the v4 suites
+they broke, and nothing may ship while it is not empty. `src/IndexHub.sol` and `src/IndexFactory.sol` (v4) are no
+longer used by anything and wait for the owner to remove them. Until the retirement
 record lands, the v4 code and every rule below stay in force for it, and the v5 section further down governs the
 weighted contracts.
 
