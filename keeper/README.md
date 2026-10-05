@@ -36,9 +36,16 @@ which keeps the chain's state verifier on Ethereum within its day):
 - Aptos (`aptos.mjs`): the vault's `attest` event, proven by `proofs/aptos` from Aptos Labs' public backups
   (`proofs/aptos/fixtures/input.py`), which cover a version two to four hours after it ran. Its trusted-set and hop
   readers reproduce the mainnet fixture exactly (2026-10-06).
+- NEAR (`near.mjs`): the vault's `attest`, whose return value carries the run's height and time, proven under a head
+  the verifier records (`proofs/near/fixtures/attest_input.py`, with an SP1 update when no recorded head covers it).
+  Its update and light-client paths ran read-only on mainnet (2026-10-06).
+- Stellar (`stellar.mjs`): the vault's `attest` event, proven from the history archive's checkpoint
+  (`proofs/stellar/statement/examples/attest_input.rs`, which runs the statement natively first). Its verifier holds
+  no state, so it has no `follow`. The host's `minimal()` takes the quorum set's first inner sets, not the ones that
+  signed, and can fail where the whole set has a quorum: a fix for the safety pass.
 
-Every other vault chain needs its adapter before the filler takes an auction that moves its coins; until then it leaves
-those to other executors. The proof builders need `uv` (Python with its packages) and, for SP1 chains, the hosts built
+Solana has no adapter: its state verifier waits on Alpenglow. Until one exists the filler leaves auctions that move
+SOL to other executors. The proof builders need `uv` (Python with its packages) and, for SP1 chains, the hosts built
 under `proofs/`.
 
     RPC_URL=... KEEPER_KEY=... FACTORY=... PYTH_API_KEY=... BNB_RPC=... BNB_KEY=... TRON_API=... TRON_KEY=... npm run fill

@@ -12,8 +12,9 @@
 //
 // Each pass resumes a fill this filler accepted, so a restart loses nothing, and first keeps every adapter's state
 // verifier on Ethereum within its day (`follow`). Chains: BNB Chain (`chains/bnb.mjs`), Injective
-// (`chains/injective.mjs`), TRON (`chains/tron.mjs`), VeChain (`chains/vechain.mjs`), Sui (`chains/sui.mjs`) and Aptos
-// (`chains/aptos.mjs`). Every other vault chain needs its adapter (deposit, intake proof,
+// (`chains/injective.mjs`), TRON (`chains/tron.mjs`), VeChain (`chains/vechain.mjs`), Sui (`chains/sui.mjs`), Aptos
+// (`chains/aptos.mjs`), NEAR (`chains/near.mjs`) and Stellar (`chains/stellar.mjs`): every vault chain but Solana, whose
+// state verifier waits on Alpenglow. Every other vault chain needs its adapter (deposit, intake proof,
 // recipient) before an index holding its coins can be filled here; until then such an auction is logged and left to
 // other executors.
 //
@@ -30,6 +31,10 @@
 //                          package. SUI_RPC (gRPC) and SUI_GRAPHQL default to Sui's public mainnet services.
 //   APTOS_KEY, APTOS_VAULT, APTOS_PACKAGE   The filler's Aptos key, the vault's object address and its package.
 //                          APTOS_NETWORK is mainnet (the default) or testnet.
+//   NEAR_RPC, NEAR_ACCOUNT, NEAR_KEY (ed25519:...) or NEAR_KEY_PATH (near-cli credentials JSON), NEAR_VAULT (the
+//                          vault's account id), NEAR_NETWORK mainnet|testnet. Proving updates needs SP1's prover network.
+//   STELLAR_RPC, STELLAR_SECRET (S...), STELLAR_VAULT (C...), STELLAR_NETWORK pubnet|testnet, STELLAR_ARCHIVE (history
+//                          archive, defaults to SDF's), STELLAR_QUORUM_SET (pinned quorum set XDR hex file, optional).
 // The filler's Ethereum account must hold the bond's shares and the Ethereum legs it delivers: it buys nothing itself.
 
 import { createPublicClient, createWalletClient, http, formatUnits, getAddress } from "viem";
@@ -38,6 +43,8 @@ import { abi } from "./artifacts.mjs";
 import { aptosChain } from "./chains/aptos.mjs";
 import { bnbChain } from "./chains/bnb.mjs";
 import { injectiveChain } from "./chains/injective.mjs";
+import { nearChain } from "./chains/near.mjs";
+import { stellarChain } from "./chains/stellar.mjs";
 import { tronChain } from "./chains/tron.mjs";
 import { suiChain } from "./chains/sui.mjs";
 import { vechainChain } from "./chains/vechain.mjs";
@@ -92,6 +99,32 @@ if (process.env.TRON_API) {
     chainId: BigInt(env("TRON_CHAIN_ID", "728126428")),
   });
   adapters.set(tron.chainId, tron);
+}
+if (process.env.NEAR_RPC) {
+  const near = nearChain({
+    rpc: env("NEAR_RPC"),
+    accountId: env("NEAR_ACCOUNT"),
+    privateKey: process.env.NEAR_KEY,
+    keyPath: process.env.NEAR_KEY_PATH,
+    vaultId: env("NEAR_VAULT"),
+    network: env("NEAR_NETWORK", "mainnet"),
+    ethClient: eth,
+    ethWallet,
+  });
+  adapters.set(near.chainId, near);
+}
+if (process.env.STELLAR_RPC) {
+  const stellar = stellarChain({
+    rpc: env("STELLAR_RPC"),
+    secret: env("STELLAR_SECRET"),
+    vaultId: env("STELLAR_VAULT"),
+    network: env("STELLAR_NETWORK", "pubnet"),
+    archive: process.env.STELLAR_ARCHIVE,
+    quorumSetFile: process.env.STELLAR_QUORUM_SET,
+    ethClient: eth,
+    ethWallet,
+  });
+  adapters.set(stellar.chainId, stellar);
 }
 if (process.env.SUI_KEY) {
   const sui = suiChain({
