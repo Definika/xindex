@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, Vm} from "forge-std/Test.sol";
 import {Deploy} from "../script/Deploy.s.sol";
 import {MainnetAddresses} from "../script/MainnetAddresses.sol";
 import {ConfigureWhitelist} from "../script/ConfigureWhitelist.s.sol";
@@ -27,6 +27,7 @@ import {MockWETH} from "./mocks/MockWETH.sol";
 import {MockUSDT} from "./mocks/MockUSDT.sol";
 import {DeployVault} from "../script/DeployVault.s.sol";
 import {ConfigureChains} from "../script/ConfigureChains.s.sol";
+import {VaultMessages} from "../src/libraries/VaultMessages.sol";
 import {DeployStateVerifier} from "../script/DeployStateVerifier.s.sol";
 import {BnbStateVerifier} from "../src/verifiers/BnbStateVerifier.sol";
 import {TronStateVerifier} from "../src/verifiers/TronStateVerifier.sol";
@@ -1931,6 +1932,19 @@ contract ScriptsTest is Test {
         assertEq(script.parseChains("").length, 0);
         assertEq(script.parseTokens("").length, 0);
         assertEq(script.parseIds("").length, 0);
+        assertEq(script.parseCaps("").length, 0);
+        ConfigureChains.CapEntry[] memory caps = script.parseCaps("56:0x0:1000:10, 56:0xb5c:7:0");
+        assertEq(caps.length, 2);
+        assertEq(caps[0].chainId, 56);
+        assertEq(caps[0].tokenId, bytes32(0));
+        assertEq(caps[0].cap, 1000);
+        assertEq(caps[0].floor, 10);
+        assertEq(caps[1].tokenId, bytes32(uint256(0xb5c)));
+        assertEq(caps[1].cap, 7);
+        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.MalformedEntry.selector, "56:0x0:1"));
+        script.parseCaps("56:0x0:1");
+        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.MalformedEntry.selector, "56:7:1:0"));
+        script.parseCaps("56:7:1:0");
 
         ConfigureChains.ChainEntry[] memory chains = script.parseChains(
             string.concat(
@@ -2219,6 +2233,163 @@ contract ScriptsTest is Test {
         assertTrue(keyed.chainPending(BNB), "the delegated key proposed");
     }
 
+    function _capEntry(uint256 id, bytes32 tokenId, uint256 cap, uint256 floor)
+        internal
+        pure
+        returns (ConfigureChains.CapEntry[] memory entries)
+    {
+        entries = new ConfigureChains.CapEntry[](1);
+        entries[0] = ConfigureChains.CapEntry({chainId: id, tokenId: tokenId, cap: cap, floor: floor});
+    }
+
+    /// @dev Registers BNB Chain on `factory` through the script, as `test_configureChains_addsAChainThenItsCoin` does.
+    function _registerBnb(ConfigureChains script, HybridIndexFactory factory) internal {
+        ConfigureChains.ChainEntry[] memory chains = _chainEntry(BNB, BNB_VAULT, address(router));
+        ConfigureChains.TokenEntry[] memory noTokens;
+        uint256[] memory noRotation;
+        script.propose(factory, chains, noTokens, noRotation);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        script.execute(factory, chains, noTokens);
+    }
+
+    /// @dev A token on a vault chain gets its cap through the factory's timelock: proposed once its chain is registered,
+    ///      then sent as a CAP_UPDATE once due, and only as its entry says. An unregistered chain, a floor above the
+    ///      cap and a live proposal, the entry's or another, are skipped with their reasons; an expired one is left.
+    function test_configureChains_proposesAndSendsATokensCap() public {
+        ConfigureChains script = new ConfigureChains();
+        HybridIndexFactory factory = _hybridFactory(DEFAULT_SENDER);
+        bytes32 peg = bytes32(uint256(uint160(makeAddr("Binance-Peg XRP Token"))));
+        ConfigureChains.CapEntry[] memory caps = _capEntry(BNB, peg, 1_000_000e18, 1000e18);
+        ConfigureChains.CapEntry[] memory other = _capEntry(BNB, peg, 2_000_000e18, 1000e18);
+        assertFalse(script.shouldProposeCap(factory, caps[0]), "the cap waits for its chain");
+        (bytes[] memory calls, string[] memory labels) = script.capCalldata(factory, caps);
+        assertEq(calls.length, 0);
+        script.proposeCaps(factory, caps);
+        bytes32 id = script.capProposalId(factory, caps[0]);
+        assertEq(id, factory.vaultProposalId(BNB, VaultMessages.CAP_UPDATE, peg));
+        assertEq(factory.vaultProposal(id).eta, 0, "nothing proposed");
+
+        _registerBnb(script, factory);
+        assertFalse(script.shouldProposeCap(factory, _capEntry(BNB, peg, 1, 2)[0]), "a floor above the cap");
+        (calls, labels) = script.capCalldata(factory, caps);
+        assertEq(calls.length, 1);
+        assertEq(calls[0], abi.encodeCall(IHybridIndexFactory.proposeCap, (BNB, peg, 1_000_000e18, 1000e18)));
+        assertEq(labels[0], string.concat("proposeCap 56 ", vm.toString(peg)));
+        script.proposeCaps(factory, caps);
+        IHybridIndexFactory.VaultProposal memory p = factory.vaultProposal(id);
+        assertEq(p.body, script.capBody(caps[0]));
+        assertEq(p.eta, block.timestamp + factory.LISTING_DELAY());
+        (calls,) = script.capCalldata(factory, caps);
+        assertEq(calls.length, 0, "already pending");
+        (calls,) = script.capCalldata(factory, other);
+        assertEq(calls.length, 0, "another cap is pending");
+
+        script.executeCaps(factory, caps);
+        assertEq(factory.vaultProposal(id).eta, p.eta, "not before its delay");
+        vm.warp(p.eta);
+        script.executeCaps(factory, other);
+        assertEq(factory.vaultProposal(id).eta, p.eta, "not as another entry says");
+        vm.recordLogs();
+        script.executeCaps(factory, caps);
+        assertEq(factory.vaultProposal(id).eta, 0, "sent");
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        VaultMessages.Message memory m;
+        for (uint256 i = 0; i < logs.length; ++i) {
+            if (logs[i].topics.length != 0 && logs[i].topics[0] == VaultMessages.EVENT_TOPIC) {
+                m = VaultMessages.decode(abi.decode(logs[i].data, (bytes)));
+            }
+        }
+        assertEq(m.kind, VaultMessages.CAP_UPDATE);
+        assertEq(m.body, script.capBody(caps[0]));
+        script.executeCaps(factory, caps); // nothing pending
+
+        script.proposeCaps(factory, other);
+        vm.warp(block.timestamp + factory.LISTING_DELAY() + factory.PROPOSAL_WINDOW() + 1);
+        script.executeCaps(factory, other);
+        assertTrue(factory.vaultProposal(id).eta != 0, "an expired proposal is left");
+        assertTrue(script.shouldProposeCap(factory, other[0]), "and may be proposed again");
+    }
+
+    /// @dev RT-24 for caps: a coin named twice would be proposed twice and revert the whole Safe batch. And XA-18 for
+    ///      caps: a contract owner cannot sign, so `proposeCaps` points to safe mode.
+    function test_RT24_capsNamedTwiceAreRefused() public {
+        ConfigureChains script = new ConfigureChains();
+        HybridIndexFactory factory = _hybridFactory(DEFAULT_SENDER);
+        ConfigureChains.CapEntry[] memory caps = new ConfigureChains.CapEntry[](3);
+        caps[0] = ConfigureChains.CapEntry({chainId: BNB, tokenId: bytes32(uint256(7)), cap: 2, floor: 1});
+        caps[1] = ConfigureChains.CapEntry({chainId: 43114, tokenId: bytes32(uint256(7)), cap: 2, floor: 1});
+        caps[2] = ConfigureChains.CapEntry({chainId: BNB, tokenId: bytes32(uint256(7)), cap: 3, floor: 1});
+        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.DuplicateCap.selector, BNB, bytes32(uint256(7))));
+        script.capCalldata(factory, caps);
+        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.DuplicateCap.selector, BNB, bytes32(uint256(7))));
+        script.proposeCaps(factory, caps);
+
+        MockSafe safe = new MockSafe(3);
+        HybridIndexFactory owned = _hybridFactory(address(safe));
+        vm.expectRevert(abi.encodeWithSelector(ConfigureChains.OwnerIsContract.selector, address(safe)));
+        script.proposeCaps(owned, _capEntry(BNB, bytes32(uint256(7)), 2, 1));
+    }
+
+    /// @dev The BNB list is the admission report's record, written here independently of `BnbChainAddresses`: each
+    ///      token's address on chain 56, read there by symbol and decimals on 2026-10-05, and its coin's supply in the
+    ///      token's raw units (DOGE's 8 decimals). NIGHT is left out pending the owner. `bnb` names it on chain 1 only,
+    ///      and a run proposes each listing once BNB Chain is registered.
+    function test_theBnbListIsTheAdmissionRecord() public {
+        ConfigureChains script = new ConfigureChains();
+        address[13] memory tokens = [
+            0x1D2F0da169ceB9fC7B3144628dB156f3F6c60dBE, // XRP
+            0x570A5D26f7765Ecb712C0924E4De545B89fD43dF, // SOL
+            0x1Ba42e5193dfA8B03D15dd1B86a3113bbBEF8Eeb, // ZEC
+            0xbA2aE424d960c26247Dd6c32edC70B295c744C43, // DOGE
+            0x3EE2200Efb3400fAbB9AacF31297cBdD1d435D47, // ADA
+            0x8fF795a6F4D97E7887C79beA79aba5cc76444aDf, // BCH
+            0x4338665CBB7B2485A8855A139b75D5e34AB0DB94, // LTC
+            0x1CE0c2827e2eF14D5C4f29a091d735A204794041, // AVAX
+            0x7083609fCE4d1d8Dc0C979AAb8c869Ea2C873402, // DOT
+            0x0D8Ce2A99Bb6e3B7Db580eD848240e4a0F9aE153, // FIL
+            0x0Eb3a705fc54725037CC9e008bDede697f62F335, // ATOM
+            0x000Ae314E2A2172a039B26378814C252734f556A, // ASTER
+            0x011EBe7d75E2C9D1E0bD0be0bEf5C36f0A90075F // STABLE
+        ];
+        uint256[13] memory supplies = [
+            uint256(63_092_975_951) * 1e18,
+            588_314_090 * 1e18,
+            16_966_725 * 1e18,
+            156_193_186_383 * 1e8,
+            37_541_298_084 * 1e18,
+            20_098_553 * 1e18,
+            77_681_660 * 1e18,
+            443_237_655 * 1e18,
+            1_705_877_534 * 1e18,
+            833_303_530 * 1e18,
+            534_279_412 * 1e18,
+            2_710_487_455 * 1e18,
+            26_924_041_495 * 1e18
+        ];
+        ConfigureChains.TokenEntry[] memory list = script.bnbTokens();
+        assertEq(list.length, tokens.length);
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            assertEq(list[i].chainId, 56);
+            assertEq(list[i].tokenId, bytes32(uint256(uint160(tokens[i]))), "listed by its address");
+            assertEq(list[i].supply, supplies[i]);
+            assertTrue(
+                list[i].tokenId != bytes32(uint256(uint160(0xFe930c2d63AeD9b82fC4DBC801920dD2c1a3224F))), "NIGHT"
+            );
+        }
+
+        vm.expectRevert(ConfigureChains.BnbListOnlyOnMainnet.selector);
+        script.parseTokens("bnb");
+        vm.chainId(1);
+        assertEq(abi.encode(script.parseTokens("bnb")), abi.encode(list));
+        HybridIndexFactory factory = _hybridFactory(DEFAULT_SENDER);
+        _registerBnb(script, factory);
+        ConfigureChains.ChainEntry[] memory noChains;
+        uint256[] memory noRotation;
+        bytes[] memory calls = _chainCalls(script, factory, noChains, list, noRotation);
+        assertEq(calls.length, tokens.length, "every token's listing");
+        assertEq(calls[3], abi.encodeCall(IHybridIndexFactory.proposeVaultListing, (56, list[3].tokenId, supplies[3])));
+    }
+
     function test_configureChainsRun_readsEnvironment() public {
         ConfigureChains script = new ConfigureChains();
         HybridIndexFactory factory = _hybridFactory(DEFAULT_SENDER);
@@ -2226,6 +2397,8 @@ contract ScriptsTest is Test {
         vm.setEnv("CHAINS", string.concat("56:", vm.toString(BNB_VAULT), ":", vm.toString(address(router))));
         vm.setEnv("VAULT_TOKENS", "56:0x0:140000000000000000000000000");
         vm.setEnv("ROTATE", "56");
+        vm.setEnv("VAULT_CAPS", "56:0x0:1000000000000000000000000:1000000000000000000");
+        bytes32 capId = factory.vaultProposalId(BNB, VaultMessages.CAP_UPDATE, bytes32(0));
 
         vm.setEnv("CHAIN_MODE", "safe"); // logs the chain's calldata, broadcasts nothing
         script.run();
@@ -2238,12 +2411,16 @@ contract ScriptsTest is Test {
         script.run();
         assertEq(factory.chain(BNB).vault, BNB_VAULT);
 
+        vm.setEnv("CHAIN_MODE", "safe"); // now the coin's listing and its cap
+        script.run();
         vm.setEnv("CHAIN_MODE", "propose");
         script.run();
+        assertTrue(factory.vaultProposal(capId).eta != 0, "the cap proposed once the chain is registered");
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         vm.setEnv("CHAIN_MODE", "execute");
         script.run();
         assertTrue(factory.isWhitelisted(factory.vaultTokenId(BNB, bytes32(0))));
+        assertEq(factory.vaultProposal(capId).eta, 0, "the cap sent");
 
         vm.setEnv("CHAIN_MODE", "sideways");
         vm.expectRevert(abi.encodeWithSelector(ConfigureChains.UnknownMode.selector, "sideways"));

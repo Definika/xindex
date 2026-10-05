@@ -5,6 +5,8 @@ import {Script, console2} from "forge-std/Script.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IHybridIndexFactory} from "../src/interfaces/IHybridIndexFactory.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
+import {VaultMessages} from "../src/libraries/VaultMessages.sol";
+import {BnbChainAddresses} from "./BnbChainAddresses.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
 
 /// @notice Adds vault chains and their coins to the hybrid factory through its timelock: first a chain with its vault
@@ -12,7 +14,10 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///         (`proposeVaultListing`). Every entry is checked against the factory first, and anything the factory would
 ///         refuse is skipped with its reason, so a Safe batch never fails on one call (CR-I38). A registered chain's
 ///         vault is fixed, and a new state verifier for it is a 30-day rotation (FAC-1), proposed only for a chain
-///         named in ROTATE: a routine run never rotates a verifier.
+///         named in ROTATE: a routine run never rotates a verifier. A token on a vault chain, a Binance-Peg coin on BNB
+///         Chain say, also needs a cap on its vault (`proposeCap`, from VAULT_CAPS), which the vault refuses it without:
+///         executing the proposal emits the CAP_UPDATE, which a relayer delivers to the vault, where a raise waits
+///         GOVERNANCE_DELAY before anyone applies it.
 ///
 ///   For a Safe owner (mainnet): logs each call to sign in the Safe app, to the factory with no value. Nothing is
 ///   broadcast:
@@ -27,9 +32,13 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///   CHAINS_FACTORY  The HybridIndexFactory.
 ///   CHAINS          Comma-separated `chainId:vault:stateVerifier`. The vault is a 32-byte word in hex, left-padded: an
 ///                   EVM vault's address, or a Solana vault's config account.
-///   VAULT_TOKENS    Comma-separated `chainId:tokenId:supply`: tokenId in hex, 0x0 for the chain's native coin, and the
-///                   supply in the coin's smallest unit. A coin's chain must be registered first, two days after its
-///                   proposal.
+///   VAULT_TOKENS    Comma-separated `chainId:tokenId:supply`: tokenId in hex, 0x0 for the chain's native coin and a
+///                   token's address for a token, and the supply in the coin's smallest unit. A coin's chain must be
+///                   registered first, two days after its proposal. `bnb` (chain 1 only) names BNB Chain's tokens in
+///                   `BnbChainAddresses`, the Binance-Peg coins among them.
+///   VAULT_CAPS      Optional. Comma-separated `chainId:tokenId:cap:floor`: a coin's quantity cap across all indexes
+///                   and its outflow floor on the vault, in its smallest unit. The native coin's first cap comes with the
+///                   vault's deployment; every token needs one here.
 ///   ROTATE          Optional. Comma-separated chain ids whose registered state verifier may be replaced by the entry's.
 contract ConfigureChains is Script {
     /// @notice A vault chain: its id, its vault, and the verifier of its state on Ethereum.
@@ -46,8 +55,19 @@ contract ConfigureChains is Script {
         uint256 supply;
     }
 
+    /// @notice A coin's quantity cap across all indexes and its outflow floor on its chain's vault.
+    struct CapEntry {
+        uint256 chainId;
+        bytes32 tokenId;
+        uint256 cap;
+        uint256 floor;
+    }
+
     uint256 private constant CHAIN_FIELDS = 3;
     uint256 private constant TOKEN_FIELDS = 3;
+    uint256 private constant CAP_FIELDS = 4;
+    /// @dev Tokens in `bnbTokens`.
+    uint256 private constant BNB_TOKENS = 13;
 
     /// @notice CHAIN_MODE is none of the modes.
     error UnknownMode(string mode);
@@ -60,6 +80,10 @@ contract ConfigureChains is Script {
     error DuplicateChain(uint256 chainId);
     /// @notice The entries name coin `tokenId` of chain `chainId` twice (RT-24).
     error DuplicateToken(uint256 chainId, bytes32 tokenId);
+    /// @notice The cap entries name coin `tokenId` of chain `chainId` twice (RT-24).
+    error DuplicateCap(uint256 chainId, bytes32 tokenId);
+    /// @notice VAULT_TOKENS=bnb off chain 1, whose factory is the one BNB Chain's vault serves.
+    error BnbListOnlyOnMainnet();
 
     /// @notice Reads the mode, the factory and the entries from the environment and runs the mode.
     function run() external {
@@ -67,17 +91,19 @@ contract ConfigureChains is Script {
         ChainEntry[] memory chains = parseChains(vm.envOr("CHAINS", string("")));
         TokenEntry[] memory tokens = parseTokens(vm.envOr("VAULT_TOKENS", string("")));
         uint256[] memory rotate = parseIds(vm.envOr("ROTATE", string("")));
+        CapEntry[] memory caps = parseCaps(vm.envOr("VAULT_CAPS", string("")));
         string memory mode = vm.envString("CHAIN_MODE");
         if (ScriptUtils.same(mode, "safe")) {
             (bytes[] memory calls, string[] memory labels) = safeCalldata(factory, chains, tokens, rotate);
-            for (uint256 i = 0; i < calls.length; ++i) {
-                console2.log(labels[i]);
-                console2.logBytes(calls[i]);
-            }
+            _log(calls, labels);
+            (calls, labels) = capCalldata(factory, caps);
+            _log(calls, labels);
         } else if (ScriptUtils.same(mode, "propose")) {
             propose(factory, chains, tokens, rotate);
+            proposeCaps(factory, caps);
         } else if (ScriptUtils.same(mode, "execute")) {
             execute(factory, chains, tokens);
+            executeCaps(factory, caps);
         } else {
             revert UnknownMode(mode);
         }
@@ -101,9 +127,13 @@ contract ConfigureChains is Script {
         }
     }
 
-    /// @notice VAULT_TOKENS, parsed.
-    function parseTokens(string memory raw) public pure returns (TokenEntry[] memory entries) {
+    /// @notice VAULT_TOKENS, parsed: `bnb` for `bnbTokens`, on chain 1 only, and entries otherwise.
+    function parseTokens(string memory raw) public view returns (TokenEntry[] memory entries) {
         if (bytes(raw).length == 0) return entries;
+        if (ScriptUtils.same(raw, "bnb")) {
+            if (block.chainid != 1) revert BnbListOnlyOnMainnet();
+            return bnbTokens();
+        }
         string[] memory parts = vm.split(raw, ",");
         entries = new TokenEntry[](parts.length);
         for (uint256 i = 0; i < parts.length; ++i) {
@@ -111,6 +141,65 @@ contract ConfigureChains is Script {
             if (f.length != TOKEN_FIELDS) revert MalformedEntry(parts[i]);
             entries[i] =
                 TokenEntry({chainId: vm.parseUint(f[0]), tokenId: _word(f[1], parts[i]), supply: vm.parseUint(f[2])});
+        }
+    }
+
+    /// @notice BNB Chain's tokens (design/2026-10-05-wide-asset-support.md, section 3), each listed by its address, with
+    ///         its coin's dated circulating supply: the ten Binance-Peg coins and ATOM's, custodial, then ASTER and
+    ///         STABLE. Each needs its cap too (VAULT_CAPS), which the owner sets at the listing.
+    function bnbTokens() public pure returns (TokenEntry[] memory list) {
+        address[BNB_TOKENS] memory tokens = [
+            BnbChainAddresses.XRP,
+            BnbChainAddresses.SOL,
+            BnbChainAddresses.ZEC,
+            BnbChainAddresses.DOGE,
+            BnbChainAddresses.ADA,
+            BnbChainAddresses.BCH,
+            BnbChainAddresses.LTC,
+            BnbChainAddresses.AVAX,
+            BnbChainAddresses.DOT,
+            BnbChainAddresses.FIL,
+            BnbChainAddresses.ATOM,
+            BnbChainAddresses.ASTER,
+            BnbChainAddresses.STABLE
+        ];
+        uint256[BNB_TOKENS] memory supplies = [
+            BnbChainAddresses.XRP_SUPPLY,
+            BnbChainAddresses.SOL_SUPPLY,
+            BnbChainAddresses.ZEC_SUPPLY,
+            BnbChainAddresses.DOGE_SUPPLY,
+            BnbChainAddresses.ADA_SUPPLY,
+            BnbChainAddresses.BCH_SUPPLY,
+            BnbChainAddresses.LTC_SUPPLY,
+            BnbChainAddresses.AVAX_SUPPLY,
+            BnbChainAddresses.DOT_SUPPLY,
+            BnbChainAddresses.FIL_SUPPLY,
+            BnbChainAddresses.ATOM_SUPPLY,
+            BnbChainAddresses.ASTER_SUPPLY,
+            BnbChainAddresses.STABLE_SUPPLY
+        ];
+        list = new TokenEntry[](tokens.length);
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            list[i] = TokenEntry({
+                chainId: BnbChainAddresses.CHAIN_ID, tokenId: bytes32(uint256(uint160(tokens[i]))), supply: supplies[i]
+            });
+        }
+    }
+
+    /// @notice VAULT_CAPS, parsed.
+    function parseCaps(string memory raw) public pure returns (CapEntry[] memory entries) {
+        if (bytes(raw).length == 0) return entries;
+        string[] memory parts = vm.split(raw, ",");
+        entries = new CapEntry[](parts.length);
+        for (uint256 i = 0; i < parts.length; ++i) {
+            string[] memory f = vm.split(vm.trim(parts[i]), ":");
+            if (f.length != CAP_FIELDS) revert MalformedEntry(parts[i]);
+            entries[i] = CapEntry({
+                chainId: vm.parseUint(f[0]),
+                tokenId: _word(f[1], parts[i]),
+                cap: vm.parseUint(f[2]),
+                floor: vm.parseUint(f[3])
+            });
         }
     }
 
@@ -247,10 +336,7 @@ contract ConfigureChains is Script {
         TokenEntry[] memory tokens,
         uint256[] memory rotate
     ) public {
-        address owner = Ownable(address(factory)).owner();
-        // A key that delegated its account under EIP-7702 has code and still signs, so it is not a contract owner.
-        bytes memory ownerCode = owner.code;
-        if (ownerCode.length != 0 && !ScriptUtils.isDelegatedAccount(ownerCode)) revert OwnerIsContract(owner);
+        _requireOwnerKey(factory);
         _requireDistinct(chains, tokens);
         vm.startBroadcast();
         for (uint256 i = 0; i < chains.length; ++i) {
@@ -305,6 +391,134 @@ contract ConfigureChains is Script {
             }
         }
         vm.stopBroadcast();
+    }
+
+    // ---------------------------------------------------------------------
+    // Caps
+    // ---------------------------------------------------------------------
+
+    /// @notice Whether to propose `e`'s cap: false, with the reason logged, when its chain is not registered, its floor
+    ///         is above its cap, or a cap proposal for the coin is live. The vault's own cap is on another chain, out of
+    ///         this script's sight; proposing the cap in force again changes nothing there.
+    function shouldProposeCap(IHybridIndexFactory factory, CapEntry memory e) public view returns (bool) {
+        if (factory.chain(e.chainId).vault == bytes32(0)) {
+            console2.log("skipped, the chain is not registered yet", e.chainId);
+            return false;
+        }
+        if (e.floor > e.cap) {
+            console2.log("skipped, the floor is above the cap", vm.toString(e.tokenId));
+            return false;
+        }
+        IHybridIndexFactory.VaultProposal memory p = factory.vaultProposal(capProposalId(factory, e));
+        if (p.eta != 0 && block.timestamp <= p.eta + IIndexFactory(address(factory)).PROPOSAL_WINDOW()) {
+            console2.log(
+                keccak256(p.body) == keccak256(capBody(e))
+                    ? "already pending"
+                    : "skipped, a different cap is pending; it must run or expire first",
+                vm.toString(e.tokenId)
+            );
+            return false;
+        }
+        return true;
+    }
+
+    /// @notice The factory's id of the one live cap proposal for `e`'s coin.
+    function capProposalId(IHybridIndexFactory factory, CapEntry memory e) public pure returns (bytes32) {
+        return factory.vaultProposalId(e.chainId, VaultMessages.CAP_UPDATE, e.tokenId);
+    }
+
+    /// @notice The CAP_UPDATE body `e` proposes, as the factory stores it.
+    function capBody(CapEntry memory e) public pure returns (bytes memory) {
+        return abi.encode(e.tokenId, e.cap, e.floor);
+    }
+
+    /// @notice Every cap proposal to sign, in order, each labelled for the Safe app. Reverts at a coin named twice.
+    function capCalldata(IHybridIndexFactory factory, CapEntry[] memory caps)
+        public
+        view
+        returns (bytes[] memory calls, string[] memory labels)
+    {
+        _requireDistinctCaps(caps);
+        bytes[] memory all = new bytes[](caps.length);
+        string[] memory names = new string[](caps.length);
+        uint256 n = 0;
+        for (uint256 i = 0; i < caps.length; ++i) {
+            CapEntry memory e = caps[i];
+            if (!shouldProposeCap(factory, e)) continue;
+            names[n] = string.concat("proposeCap ", vm.toString(e.chainId), " ", vm.toString(e.tokenId));
+            all[n++] = abi.encodeCall(IHybridIndexFactory.proposeCap, (e.chainId, e.tokenId, e.cap, e.floor));
+        }
+        calls = new bytes[](n);
+        labels = new string[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            (calls[i], labels[i]) = (all[i], names[i]);
+        }
+    }
+
+    /// @notice Owner key only: proposes every cap `capCalldata` would list.
+    function proposeCaps(IHybridIndexFactory factory, CapEntry[] memory caps) public {
+        if (caps.length == 0) return;
+        _requireOwnerKey(factory);
+        _requireDistinctCaps(caps);
+        vm.startBroadcast();
+        for (uint256 i = 0; i < caps.length; ++i) {
+            CapEntry memory e = caps[i];
+            if (!shouldProposeCap(factory, e)) continue;
+            // forge-lint: disable-next-line(unused-return) the id is `capProposalId`, logged below
+            factory.proposeCap(e.chainId, e.tokenId, e.cap, e.floor);
+            console2.log("proposed a cap", vm.toString(e.tokenId));
+        }
+        vm.stopBroadcast();
+    }
+
+    /// @notice Any account: sends every cap proposal that is due and exactly what its entry says. Each emits its
+    ///         CAP_UPDATE, for a relayer to deliver to the vault; anything else is left, with the reason logged.
+    function executeCaps(IHybridIndexFactory factory, CapEntry[] memory caps) public {
+        uint256 window = IIndexFactory(address(factory)).PROPOSAL_WINDOW();
+        vm.startBroadcast();
+        for (uint256 i = 0; i < caps.length; ++i) {
+            CapEntry memory e = caps[i];
+            bytes32 id = capProposalId(factory, e);
+            IHybridIndexFactory.VaultProposal memory p = factory.vaultProposal(id);
+            if (p.eta == 0) continue; // nothing pending
+            if (keccak256(p.body) != keccak256(capBody(e))) {
+                console2.log("not executed, the pending cap differs from the entry", vm.toString(e.tokenId));
+            } else if (block.timestamp < p.eta) {
+                console2.log("not ready yet", vm.toString(e.tokenId));
+            } else if (block.timestamp > p.eta + window) {
+                console2.log("expired, propose again", vm.toString(e.tokenId));
+            } else {
+                factory.executeVaultProposal(id);
+                console2.log("cap sent; deliver it to the vault, and apply a raise there after its delay", e.chainId);
+            }
+        }
+        vm.stopBroadcast();
+    }
+
+    /// @dev Reverts OwnerIsContract for a contract owner, which cannot sign: on mainnet, use `safe`. A key that
+    ///      delegated its account under EIP-7702 has code and still signs, so it is not a contract owner.
+    function _requireOwnerKey(IHybridIndexFactory factory) private view {
+        address owner = Ownable(address(factory)).owner();
+        bytes memory ownerCode = owner.code;
+        if (ownerCode.length != 0 && !ScriptUtils.isDelegatedAccount(ownerCode)) revert OwnerIsContract(owner);
+    }
+
+    /// @dev Reverts DuplicateCap at the first coin named twice (RT-24).
+    function _requireDistinctCaps(CapEntry[] memory caps) private pure {
+        for (uint256 i = 0; i < caps.length; ++i) {
+            for (uint256 j = 0; j < i; ++j) {
+                if (caps[j].chainId == caps[i].chainId && caps[j].tokenId == caps[i].tokenId) {
+                    revert DuplicateCap(caps[i].chainId, caps[i].tokenId);
+                }
+            }
+        }
+    }
+
+    function _log(bytes[] memory calls, string[] memory labels) private pure {
+        for (uint256 i = 0; i < calls.length; ++i) {
+            console2.log(labels[i]);
+            console2.logBytes(calls[i]);
+        }
     }
 
     /// @dev Reverts DuplicateChain or DuplicateToken at the first entry named twice (RT-24).
