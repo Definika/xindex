@@ -6,8 +6,9 @@ import {IHybridHubTypes} from "./IHybridHubTypes.sol";
 /// @title IHybridHubModule
 /// @notice The part of a HybridHub index that runs in its module: voids, re-confirmations and stray intakes of orders,
 ///         and the rebalance. Call it on the index itself, which delegates here (see {IHybridIndex}).
-/// @dev The rebalance is Stage A's, with a fill in three steps, since vault legs cannot settle in one transaction:
-///      `acceptRebalance` at the current λ takes a bond and the Ethereum deliveries; the executor deposits the vault
+/// @dev v5 (DRAFT, untested): the rebalance brings the units back to the creator's weights at Pyth prices read in
+///      `acceptRebalance`, at the auction's μ, with `WeightedHub`'s math. The fill takes three steps, since vault legs
+///      cannot settle in one transaction: `acceptRebalance` takes a bond and the Ethereum deliveries; the executor deposits the vault
 ///      deliveries under the fill's intake; `settleRebalance` proves them and settles at the supply of the settling
 ///      block. The bond is held BOND_HOLD after settlement, and burned if a delivery proves forged.
 interface IHybridHubModule is IHybridHubTypes {
@@ -15,8 +16,8 @@ interface IHybridHubModule is IHybridHubTypes {
     function MIN_REBALANCE_INTERVAL() external view returns (uint256);
     function REBALANCE_DELAY() external view returns (uint256);
     function AUCTION_DURATION() external view returns (uint256);
-    function MAX_SUPPLY_STEP() external view returns (uint256);
-    function MIN_BAND() external view returns (uint256);
+    /// @notice How far before the accepting block the fill's prices are read: one slot.
+    function PRICE_LAG() external view returns (uint256);
     /// @notice An executor's bond: 0.1% of the supply, in shares.
     function REBALANCE_BOND() external view returns (uint256);
     /// @notice How long a settled fill's bond is held against a forged delivery: 24 hours.
@@ -47,11 +48,16 @@ interface IHybridHubModule is IHybridHubTypes {
     /// @notice The owner or guardian. Cancels the proposal, or an accepted fill, which unwinds with its bond returned.
     function cancelRebalance() external;
 
-    /// @notice Anyone, while the auction is live. Takes it at the current λ: posts the bond, delivers the bought
-    ///         Ethereum components now, and names a recipient per vault chain for the sold vault legs, whose share
-    ///         is booked as the executor's claim where that is zero. `maxAmountsIn`, if not empty, bounds each
+    /// @notice Anyone, while the auction is live. Takes it at the current μ and the moving components' Pyth prices one
+    ///         slot back, from `priceUpdate`, forwarding msg.value as Pyth's fee: posts the bond, delivers the bought
+    ///         Ethereum components now, and names a recipient per vault chain for the sold vault legs, whose share is
+    ///         booked as the executor's claim where that is zero. `maxAmountsIn`, if not empty, bounds each
     ///         component's delivery.
-    function acceptRebalance(bytes32[] calldata recipients, uint256[] calldata maxAmountsIn) external;
+    function acceptRebalance(
+        bytes32[] calldata recipients,
+        uint256[] calldata maxAmountsIn,
+        bytes[] calldata priceUpdate
+    ) external payable;
 
     /// @notice Anyone, while a fill is accepted. Settles it with a proof of each vault chain's delivery intake; a chain
     ///         with no bought leg takes an empty proof.
@@ -76,20 +82,10 @@ interface IHybridHubModule is IHybridHubTypes {
         external
         view
         returns (uint256[] memory units, uint256[] memory deliveries, uint256[] memory delivered);
-    function previewBand(uint256 keepMask)
-        external
-        view
-        returns (uint256[] memory ratios, uint256 lambdaMin, uint256 lambdaMax);
     function pendingRebalance()
         external
         view
         returns (uint256 eta, uint256 keepMask, uint256 lambdaMin, uint256 lambdaMax, uint256[] memory ratios);
-    /// @notice The settlement a fill accepted now would take: λ, the new units, and each component's payout and
-    ///         delivery at the current supply.
-    function previewRebalance()
-        external
-        view
-        returns (uint256 lambda, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn);
     function canStartRebalance() external view returns (bool);
     function proposalCount() external view returns (uint256);
     function rebalanceNonce() external view returns (uint256);

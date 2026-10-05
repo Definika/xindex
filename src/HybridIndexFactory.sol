@@ -2,7 +2,9 @@
 pragma solidity 0.8.28;
 
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
-import {IndexFactory} from "./IndexFactory.sol";
+import {WeightedIndexFactory} from "./WeightedIndexFactory.sol";
+import {IWeightedHub} from "./interfaces/IWeightedHub.sol";
+import {WeightedPricing} from "./libraries/WeightedPricing.sol";
 import {IHybridIndexFactory} from "./interfaces/IHybridIndexFactory.sol";
 import {IHybridHub} from "./interfaces/IHybridHub.sol";
 import {IHybridHubTypes} from "./interfaces/IHybridHubTypes.sol";
@@ -18,7 +20,7 @@ import {VaultMessages} from "./libraries/VaultMessages.sol";
 ///      which is how a verifier follows a chain upgrade (design 6.10), and a new one waits ROTATION_DELAY (FAC-1). A vault's own settings change only through
 ///      messages the factory sends after a delay: a cap after LISTING_DELAY, the freezer after GUARDIAN_DELAY, and the
 ///      Ethereum-event verifiers after ROTATION_DELAY (design 6.9).
-contract HybridIndexFactory is IndexFactory, IHybridIndexFactory {
+contract HybridIndexFactory is WeightedIndexFactory, IHybridIndexFactory {
     /// @inheritdoc IHybridIndexFactory
     uint256 public constant FREEZE_DURATION = 14 days;
     /// @inheritdoc IHybridIndexFactory
@@ -47,9 +49,10 @@ contract HybridIndexFactory is IndexFactory, IHybridIndexFactory {
     mapping(bytes32 id => bool) public messageSent;
     mapping(bytes32 id => VaultProposal) private _vaultProposals;
 
+    /// @param pyth The Pyth contract every index reads its prices from.
     /// @param hybridImplementation A `HybridHub` deployed for this factory: its FACTORY must be this contract.
-    constructor(address initialOwner, address initialGuardian, address hybridImplementation)
-        IndexFactory(initialOwner, initialGuardian)
+    constructor(address initialOwner, address initialGuardian, address pyth, address hybridImplementation)
+        WeightedIndexFactory(initialOwner, initialGuardian, pyth)
     {
         if (hybridImplementation == address(0)) revert ZeroAddress();
         HYBRID_IMPLEMENTATION = hybridImplementation;
@@ -99,7 +102,9 @@ contract HybridIndexFactory is IndexFactory, IHybridIndexFactory {
     }
 
     /// @inheritdoc IHybridIndexFactory
-    function proposeVaultListing(uint256 chainId, bytes32 tokenId, uint256 supply) external onlyOwner {
+    function proposeVaultListing(uint256 chainId, bytes32 tokenId, bytes32 priceId, uint8 decimals) external onlyOwner {
+        // A vault coin's decimals are its chain's native unit's, which may reach 24 (NEAR's yoctoNEAR).
+        if (decimals > WeightedPricing.MAX_DECIMALS) revert InvalidDecimals(vaultTokenId(chainId, tokenId), decimals);
         if (_chains[chainId].vault == bytes32(0)) revert UnknownChain(chainId);
         address token = vaultTokenId(chainId, tokenId);
         if (_tokenChain[token] == 0) {
@@ -107,7 +112,7 @@ contract HybridIndexFactory is IndexFactory, IHybridIndexFactory {
             _tokenId[token] = tokenId;
             emit VaultTokenRegistered(token, chainId, tokenId);
         }
-        _proposeListing(token, supply);
+        _proposeListing(token, priceId, decimals);
     }
 
     /// @inheritdoc IHybridIndexFactory
@@ -224,11 +229,11 @@ contract HybridIndexFactory is IndexFactory, IHybridIndexFactory {
     // Templates
     // ---------------------------------------------------------------------
 
-    /// @dev An index holding any vault token is a HybridHub.
-    function _template(address[] calldata tokens) internal view override returns (address) {
-        uint256 n = tokens.length;
+    /// @dev An index holding any vault token is a HybridHub; one of Ethereum tokens only, a WeightedHub.
+    function _template(ComponentSpec[] calldata components) internal view override returns (address) {
+        uint256 n = components.length;
         for (uint256 i = 0; i < n; ++i) {
-            if (_tokenChain[tokens[i]] != 0) return HYBRID_IMPLEMENTATION;
+            if (_tokenChain[components[i].token] != 0) return HYBRID_IMPLEMENTATION;
         }
         return IMPLEMENTATION;
     }
@@ -240,23 +245,25 @@ contract HybridIndexFactory is IndexFactory, IHybridIndexFactory {
         bytes32 salt,
         string calldata name,
         string calldata symbol,
-        address[] calldata tokens,
-        uint256[] memory units
+        IWeightedHub.ComponentInit[] memory inits
     ) internal override {
-        if (_template(tokens) == IMPLEMENTATION) {
-            super._initializeIndex(index, salt, name, symbol, tokens, units);
+        uint256 n = inits.length;
+        IHybridHubTypes.Placement[] memory placements = new IHybridHubTypes.Placement[](n);
+        bool hybrid = false;
+        for (uint256 i = 0; i < n; ++i) {
+            uint256 id = _tokenChain[inits[i].token];
+            if (id == 0) continue;
+            hybrid = true;
+            placements[i] = IHybridHubTypes.Placement({
+                chainId: id, vaultToken: _tokenId[inits[i].token], vault: _chains[id].vault
+            });
+        }
+        if (!hybrid) {
+            super._initializeIndex(index, salt, name, symbol, inits);
             return;
         }
-        uint256 n = tokens.length;
-        IHybridHubTypes.Placement[] memory placements = new IHybridHubTypes.Placement[](n);
-        for (uint256 i = 0; i < n; ++i) {
-            uint256 id = _tokenChain[tokens[i]];
-            if (id == 0) continue;
-            placements[i] =
-                IHybridHubTypes.Placement({chainId: id, vaultToken: _tokenId[tokens[i]], vault: _chains[id].vault});
-        }
         indexSalt[index] = salt;
-        IHybridHub(index).initialize(name, symbol, tokens, units, placements);
+        IHybridHub(index).initialize(name, symbol, inits, placements);
     }
 
     // ---------------------------------------------------------------------

@@ -6,6 +6,11 @@ import {IXindexErrors} from "./IXindexErrors.sol";
 /// @title IHybridHubTypes
 /// @notice The types, events and errors a HybridHub index raises, shared by the hub and the module it delegates to.
 interface IHybridHubTypes is IXindexErrors {
+    /// @notice Pyth returned an update for `id` that is not the one asked for, or one published outside the slot the
+    ///         fill reads.
+    error PriceMismatch(bytes32 id, uint256 publishTime);
+    /// @notice A hub takes no plain ether.
+    error NoEther();
     enum OrderStatus {
         None,
         Open,

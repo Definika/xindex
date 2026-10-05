@@ -103,12 +103,13 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         _validateComponents(components);
         IWeightedHub.ComponentInit[] memory inits = _inits(components);
 
+        address template = _template(components);
         bytes32 salt = _salt(msg.sender, name, symbol, inits);
-        address predicted = Clones.predictDeterministicAddress(IMPLEMENTATION, salt);
+        address predicted = Clones.predictDeterministicAddress(template, salt);
         if (predicted.code.length != 0) revert IndexAlreadyExists(predicted);
 
         // Effects before interaction: register the clone, then initialize it in the same tx.
-        index = Clones.cloneDeterministic(IMPLEMENTATION, salt);
+        index = Clones.cloneDeterministic(template, salt);
         isIndex[index] = true;
         creatorOf[index] = msg.sender;
         allIndexes.push(index);
@@ -116,6 +117,23 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         // forge-lint: disable-next-line(reentrancy-events)
         emit IndexCreated(index, msg.sender, name, symbol, inits);
 
+        _initializeIndex(index, salt, name, symbol, inits);
+    }
+
+    /// @dev The template an index of `components` is a clone of: `WeightedHub`. A factory that also lists coins held in
+    ///      vaults on other chains overrides this and `_initializeIndex`.
+    function _template(ComponentSpec[] calldata) internal view virtual returns (address) {
+        return IMPLEMENTATION;
+    }
+
+    /// @dev Initializes a fresh clone. The salt is unused here, and kept for a factory that records it.
+    function _initializeIndex(
+        address index,
+        bytes32,
+        string calldata name,
+        string calldata symbol,
+        IWeightedHub.ComponentInit[] memory inits
+    ) internal virtual {
         IWeightedHub(index).initialize(name, symbol, inits);
     }
 
@@ -126,7 +144,9 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         string calldata symbol,
         ComponentSpec[] calldata components
     ) external view returns (address) {
-        return Clones.predictDeterministicAddress(IMPLEMENTATION, _salt(creator, name, symbol, _inits(components)));
+        return Clones.predictDeterministicAddress(
+            _template(components), _salt(creator, name, symbol, _inits(components))
+        );
     }
 
     /// @inheritdoc IWeightedIndexFactory
@@ -199,15 +219,21 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
     /// @inheritdoc IWeightedIndexFactory
     function proposeListing(address token, bytes32 priceId) external onlyOwner {
         if (token.code.length == 0) revert NotAContract(token);
-        if (priceId == bytes32(0)) revert InvalidPriceId(token);
-        if (isWhitelisted[token]) revert AlreadyListed(token);
-        uint256 pending = listingEta[token];
-        if (pending != 0 && block.timestamp <= pending + PROPOSAL_WINDOW) revert ListingPending(token, pending);
         // Read once, here, and never again: every price of this token is scaled by this figure, so no index ever calls
         // the token to price it (RT-01). The owner's proposal and the delay put it in public view before it counts.
         // aderyn-fp-next-line(reentrancy-state-change)
         uint8 decimals = IERC20Metadata(token).decimals();
         if (decimals > MAX_DECIMALS) revert InvalidDecimals(token, decimals);
+        _proposeListing(token, priceId, decimals);
+    }
+
+    /// @dev The listing flow for any token id: an ERC-20 on Ethereum, whose decimals were just read, or a coin held in
+    ///      a vault on another chain, whose decimals the owner gives.
+    function _proposeListing(address token, bytes32 priceId, uint8 decimals) internal {
+        if (priceId == bytes32(0)) revert InvalidPriceId(token);
+        if (isWhitelisted[token]) revert AlreadyListed(token);
+        uint256 pending = listingEta[token];
+        if (pending != 0 && block.timestamp <= pending + PROPOSAL_WINDOW) revert ListingPending(token, pending);
 
         uint256 eta = block.timestamp + LISTING_DELAY;
         listingEta[token] = eta;

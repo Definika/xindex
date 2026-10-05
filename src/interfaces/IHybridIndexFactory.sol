@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {IIndexFactory} from "./IIndexFactory.sol";
+import {IWeightedIndexFactory} from "./IWeightedIndexFactory.sol";
 
 /// @title IHybridIndexFactory
 /// @notice The factory of Stage B: everything {IIndexFactory} does, plus a registry of the chains whose native coins
@@ -10,7 +10,7 @@ import {IIndexFactory} from "./IIndexFactory.sol";
 ///         `HybridHub` clone.
 /// @dev A vault token has an Ethereum-side id, `vaultTokenId(chainId, tokenId)`, a 20-byte hash no contract can hold,
 ///      and from its listing on it takes Stage A's flow unchanged under that id: executeListing, delist, supply batches.
-interface IHybridIndexFactory is IIndexFactory {
+interface IHybridIndexFactory is IWeightedIndexFactory {
     /// @notice A chain registered with its vault and the Ethereum-side verifier of its state.
     struct Chain {
         bytes32 vault;
@@ -139,7 +139,7 @@ interface IHybridIndexFactory is IIndexFactory {
 
     /// @notice Owner only. Proposes listing `tokenId` on the registered `chainId` with `supply`; the listing then runs
     ///         as {proposeListing}'s under `vaultTokenId(chainId, tokenId)`.
-    function proposeVaultListing(uint256 chainId, bytes32 tokenId, uint256 supply) external;
+    function proposeVaultListing(uint256 chainId, bytes32 tokenId, bytes32 priceId, uint8 decimals) external;
 
     /// @notice Owner or guardian. Freezes `chainId` for FREEZE_DURATION from now: every index's mints on it stop, and a
     ///         `FREEZE` message, which either Ethereum-side proof carries, stops the vault's payouts and deposits.

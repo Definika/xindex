@@ -67,4 +67,35 @@ library BnbChainAddresses {
     uint256 internal constant ASTER_SUPPLY = 2_710_487_455e18;
     /// @dev CoinMarketCap 26,923,983,196.
     uint256 internal constant STABLE_SUPPLY = 26_924_041_495e18;
+
+    // ---------------------------------------------------------------------
+    // Pyth price ids for v5 (Hermes catalogue, 2026-10-05): a Binance-Peg token is priced at its coin, as nothing quotes
+    // the peg itself; its custodian is labelled in the app. Decimals are 18 but DOGE's 8.
+    // ---------------------------------------------------------------------
+    /// @dev RIPPLE / US DOLLAR.
+    bytes32 internal constant XRP_PRICE_ID = 0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8;
+    /// @dev SOLANA / US DOLLAR.
+    bytes32 internal constant SOL_PRICE_ID = 0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d;
+    /// @dev ZCASH / US DOLLAR.
+    bytes32 internal constant ZEC_PRICE_ID = 0xbe9b59d178f0d6a97ab4c343bff2aa69caa1eaae3e9048a65788c529b125bb24;
+    /// @dev DOGECOIN / US DOLLAR.
+    bytes32 internal constant DOGE_PRICE_ID = 0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c;
+    /// @dev CARDANO / US DOLLAR.
+    bytes32 internal constant ADA_PRICE_ID = 0x2a01deaec9e51a579277b34b122399984d0bbf57e2458a7e42fecd2829867a0d;
+    /// @dev BITCOIN CASH / US DOLLAR.
+    bytes32 internal constant BCH_PRICE_ID = 0x3dd2b63686a450ec7290df3a1e0b583c0481f651351edfa7636f39aed55cf8a3;
+    /// @dev LITECOIN / US DOLLAR.
+    bytes32 internal constant LTC_PRICE_ID = 0x6e3f3fa8253588df9326580180233eb791e03b443a3ba7a1d892e73874e19a54;
+    /// @dev AVALANCHE / US DOLLAR.
+    bytes32 internal constant AVAX_PRICE_ID = 0x93da3352f9f1d105fdfe4971cfa80e9dd777bfc5d0f683ebb6e1294b92137bb7;
+    /// @dev POLKADOT / US DOLLAR.
+    bytes32 internal constant DOT_PRICE_ID = 0xca3eed9b267293f6595901c734c7525ce8ef49adafe8284606ceb307afa2ca5b;
+    /// @dev FILECOIN / US DOLLAR.
+    bytes32 internal constant FIL_PRICE_ID = 0x150ac9b959aee0051e4091f0ef5216d941f590e1c5e7f91cf7635b5c11628c0e;
+    /// @dev COSMOS / US DOLLAR.
+    bytes32 internal constant ATOM_PRICE_ID = 0xb00b60f88b03a6a625a8d1c048c3f66653edf217439983d037e7222c4e612819;
+    /// @dev ASTER DEX / US DOLLAR.
+    bytes32 internal constant ASTER_PRICE_ID = 0xa903b5a82cb572397e3d47595d2889cf80513f5b4cf7a36b513ae10cc8b1e338;
+    /// @dev STABLE / US DOLLAR.
+    bytes32 internal constant STABLE_PRICE_ID = 0x98d7f32f2c26ea94c79a15df45239b7c2e04368e46f49fdbf06dd5e449374e64;
 }

@@ -237,13 +237,21 @@ contract RepoTest is Test {
     ///      `MintRequests`, the market-cap hubs and the vaults name none of them. A new file is covered without being
     ///      listed. The words cover every way to read a Pyth price, not only the one the hub uses (V5-I4).
     function test_V5I4_onlyTheWeightedHubReadsAPrice() public view {
-        string[6] memory allowed = [
+        // v5 DRAFT (2026-10-06): the hybrid index reads Pyth in its fill, through the module, the extension's preview
+        // and the shared `WeightedPricing`.
+        string[12] memory allowed = [
             "src/WeightedHub.sol",
             "src/interfaces/IWeightedHub.sol",
             "src/interfaces/pyth/IPyth.sol",
             "src/interfaces/pyth/IPythEvents.sol",
             "src/interfaces/pyth/PythStructs.sol",
-            "abi/WeightedHub.json"
+            "abi/WeightedHub.json",
+            "src/hybrid/HybridHubModule.sol",
+            "src/hybrid/HybridHubExtension.sol",
+            "src/libraries/WeightedPricing.sol",
+            "src/interfaces/IHybridHubExtension.sol",
+            "abi/IHybridIndex.json",
+            "src/interfaces/IHybridHubModule.sol"
         ];
         string[5] memory pythWords = ["IPyth", "parsePriceFeedUpdates", "getPrice", "updatePriceFeeds", "PythStructs"];
         uint256 read = 0;

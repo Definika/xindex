@@ -24,6 +24,8 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
     uint256 internal constant ONE_SHARE = 1e18;
     uint256 internal constant FREEZE_LENGTH = 14 days;
     uint256 internal constant GRACE = 6 hours;
+    /// @dev A rebalance auction's length, which the module's AUCTION_DURATION names and the extension's preview reads.
+    uint256 internal constant AUCTION_LENGTH = 24 hours;
     /// @dev The mint cap counts the current hour and the 24 before it, so it holds over any real 24 hours.
     uint256 internal constant BUCKETS = 25;
     uint256 internal constant HOUR = 1 hours;
@@ -73,6 +75,13 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
     }
 
     /// @dev `eta == 0` means no rebalance is proposed. Both ends of the band lie within 1e18 ± MAX_SUPPLY_STEP.
+    /// @dev v5: one component's weight, Pyth price id and decimals.
+    struct Terms {
+        bytes32 priceId;
+        uint16 weight;
+        uint8 decimals;
+    }
+
     struct PendingRebalance {
         uint40 eta;
         uint64 lambdaMax;
@@ -168,6 +177,10 @@ abstract contract HybridHubStorage is Initializable, IHybridHubTypes {
     /// @dev Every BURN and MIGRATE this index sent, by message id, marked in the transaction that sends it: the vault
     ///      reads it at slot 62 to pay a message still in flight at its snapshot, which could never be delivered.
     mapping(bytes32 id => bool) internal _sentMessages;
+    /// @dev v5 (DRAFT): what the creator fixed for each component, in component order: its weight in basis points, its
+    ///      Pyth price id and its decimals (a vault coin's are its chain's native unit's). Appended, so every slot the
+    ///      vaults read stays where it was.
+    Terms[] internal _terms;
 
     modifier onlyInitialized() {
         _checkInitialized();

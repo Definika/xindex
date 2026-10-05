@@ -3,8 +3,8 @@ pragma solidity 0.8.28;
 
 import {Script, console2} from "forge-std/Script.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IHybridIndexFactory} from "../src/interfaces/IHybridIndexFactory.sol";
-import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {VaultMessages} from "../src/libraries/VaultMessages.sol";
 import {BnbChainAddresses} from "./BnbChainAddresses.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
@@ -32,8 +32,9 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///   CHAINS_FACTORY  The HybridIndexFactory.
 ///   CHAINS          Comma-separated `chainId:vault:stateVerifier`. The vault is a 32-byte word in hex, left-padded: an
 ///                   EVM vault's address, or a Solana vault's config account.
-///   VAULT_TOKENS    Comma-separated `chainId:tokenId:supply`: tokenId in hex, 0x0 for the chain's native coin and a
-///                   token's address for a token, and the supply in the coin's smallest unit. A coin's chain must be
+///   VAULT_TOKENS    Comma-separated `chainId:tokenId:priceId:decimals`: tokenId in hex, 0x0 for the chain's native
+///                   coin and a token's address for a token, the coin's Pyth price id, and the decimals of the unit
+///                   its vault counts in (v5; `VaultCoins` has the native coins'). A coin's chain must be
 ///                   registered first, two days after its proposal. `bnb` (chain 1 only) names BNB Chain's tokens in
 ///                   `BnbChainAddresses`, the Binance-Peg coins among them.
 ///   VAULT_CAPS      Optional. Comma-separated `chainId:tokenId:cap:floor`: a coin's quantity cap across all indexes
@@ -48,11 +49,12 @@ contract ConfigureChains is Script {
         address stateVerifier;
     }
 
-    /// @notice A coin held in a chain's vault, and its reference supply in the chain's smallest unit.
+    /// @notice A coin held in a chain's vault, its Pyth price id, and the decimals of the unit its vault counts in.
     struct TokenEntry {
         uint256 chainId;
         bytes32 tokenId;
-        uint256 supply;
+        bytes32 priceId;
+        uint8 decimals;
     }
 
     /// @notice A coin's quantity cap across all indexes and its outflow floor on its chain's vault.
@@ -64,7 +66,7 @@ contract ConfigureChains is Script {
     }
 
     uint256 private constant CHAIN_FIELDS = 3;
-    uint256 private constant TOKEN_FIELDS = 3;
+    uint256 private constant TOKEN_FIELDS = 4;
     uint256 private constant CAP_FIELDS = 4;
     /// @dev Tokens in `bnbTokens`.
     uint256 private constant BNB_TOKENS = 13;
@@ -139,13 +141,17 @@ contract ConfigureChains is Script {
         for (uint256 i = 0; i < parts.length; ++i) {
             string[] memory f = vm.split(vm.trim(parts[i]), ":");
             if (f.length != TOKEN_FIELDS) revert MalformedEntry(parts[i]);
-            entries[i] =
-                TokenEntry({chainId: vm.parseUint(f[0]), tokenId: _word(f[1], parts[i]), supply: vm.parseUint(f[2])});
+            entries[i] = TokenEntry({
+                chainId: vm.parseUint(f[0]),
+                tokenId: _word(f[1], parts[i]),
+                priceId: vm.parseBytes32(f[2]),
+                decimals: SafeCast.toUint8(vm.parseUint(f[3]))
+            });
         }
     }
 
     /// @notice BNB Chain's tokens (design/2026-10-05-wide-asset-support.md, section 3), each listed by its address, with
-    ///         its coin's dated circulating supply: the ten Binance-Peg coins and ATOM's, custodial, then ASTER and
+    ///         its coin's Pyth price id: the ten Binance-Peg coins and ATOM's, custodial, then ASTER and
     ///         STABLE. Each needs its cap too (VAULT_CAPS), which the owner sets at the listing.
     function bnbTokens() public pure returns (TokenEntry[] memory list) {
         address[BNB_TOKENS] memory tokens = [
@@ -163,25 +169,28 @@ contract ConfigureChains is Script {
             BnbChainAddresses.ASTER,
             BnbChainAddresses.STABLE
         ];
-        uint256[BNB_TOKENS] memory supplies = [
-            BnbChainAddresses.XRP_SUPPLY,
-            BnbChainAddresses.SOL_SUPPLY,
-            BnbChainAddresses.ZEC_SUPPLY,
-            BnbChainAddresses.DOGE_SUPPLY,
-            BnbChainAddresses.ADA_SUPPLY,
-            BnbChainAddresses.BCH_SUPPLY,
-            BnbChainAddresses.LTC_SUPPLY,
-            BnbChainAddresses.AVAX_SUPPLY,
-            BnbChainAddresses.DOT_SUPPLY,
-            BnbChainAddresses.FIL_SUPPLY,
-            BnbChainAddresses.ATOM_SUPPLY,
-            BnbChainAddresses.ASTER_SUPPLY,
-            BnbChainAddresses.STABLE_SUPPLY
+        bytes32[BNB_TOKENS] memory ids = [
+            BnbChainAddresses.XRP_PRICE_ID,
+            BnbChainAddresses.SOL_PRICE_ID,
+            BnbChainAddresses.ZEC_PRICE_ID,
+            BnbChainAddresses.DOGE_PRICE_ID,
+            BnbChainAddresses.ADA_PRICE_ID,
+            BnbChainAddresses.BCH_PRICE_ID,
+            BnbChainAddresses.LTC_PRICE_ID,
+            BnbChainAddresses.AVAX_PRICE_ID,
+            BnbChainAddresses.DOT_PRICE_ID,
+            BnbChainAddresses.FIL_PRICE_ID,
+            BnbChainAddresses.ATOM_PRICE_ID,
+            BnbChainAddresses.ASTER_PRICE_ID,
+            BnbChainAddresses.STABLE_PRICE_ID
         ];
         list = new TokenEntry[](tokens.length);
         for (uint256 i = 0; i < tokens.length; ++i) {
             list[i] = TokenEntry({
-                chainId: BnbChainAddresses.CHAIN_ID, tokenId: bytes32(uint256(uint160(tokens[i]))), supply: supplies[i]
+                chainId: BnbChainAddresses.CHAIN_ID,
+                tokenId: bytes32(uint256(uint160(tokens[i]))),
+                priceId: ids[i],
+                decimals: tokens[i] == BnbChainAddresses.DOGE ? 8 : 18
             });
         }
     }
@@ -258,41 +267,20 @@ contract ConfigureChains is Script {
         return true;
     }
 
-    /// @notice Whether to propose listing `e`'s coin: false, with the reason logged, when it is listed or pending, its
-    ///         chain is not registered, the live supply batch names it, or its supply is out of range.
+    /// @notice Whether to propose listing `e`'s coin: false, with the reason logged, when it is listed or pending, or its
+    ///         chain is not registered.
     function shouldListToken(IHybridIndexFactory factory, TokenEntry memory e) public view returns (bool) {
         if (factory.chain(e.chainId).vault == bytes32(0)) {
             console2.log("skipped, the chain is not registered yet", e.chainId);
             return false;
         }
-        IIndexFactory f = IIndexFactory(address(factory));
         address token = factory.vaultTokenId(e.chainId, e.tokenId);
-        // A listed coin's supply changes only in the weekly batch (ConfigureWhitelist's supplies mode).
-        if (f.isWhitelisted(token)) return false;
-        if (f.listingPending(token)) {
+        if (factory.isWhitelisted(token)) return false;
+        if (factory.listingPending(token)) {
             console2.log("already pending", token);
             return false;
         }
-        if (_inLiveBatch(f, token)) {
-            console2.log("skipped, the pending supply batch names it; list it once the batch is gone", token);
-            return false;
-        }
-        uint256 supply = listingSupply(factory, e);
-        if (supply == 0 || supply > f.MAX_SUPPLY()) {
-            console2.log("skipped, the reference supply must be from 1 to MAX_SUPPLY", token);
-            return false;
-        }
-        if (supply != e.supply) {
-            console2.log("relisted at the supply in force; supplies mode revises it once it is listed (SA-02)", token);
-        }
         return true;
-    }
-
-    /// @notice The supply a listing of `e` proposes: the entry's for a first listing, and the one in force for a
-    ///         relisting, which the factory requires; a batch then revises it (SA-02).
-    function listingSupply(IHybridIndexFactory factory, TokenEntry memory e) public view returns (uint256) {
-        uint256 inForce = IIndexFactory(address(factory)).referenceSupply(factory.vaultTokenId(e.chainId, e.tokenId));
-        return inForce != 0 ? inForce : e.supply;
     }
 
     /// @notice Every call to sign, in order, each labelled for the Safe app. Reverts at an entry named twice, which
@@ -317,9 +305,8 @@ contract ConfigureChains is Script {
             TokenEntry memory e = tokens[i];
             if (!shouldListToken(factory, e)) continue;
             names[n] = string.concat("proposeVaultListing ", vm.toString(e.chainId), " ", vm.toString(e.tokenId));
-            all[n++] = abi.encodeCall(
-                IHybridIndexFactory.proposeVaultListing, (e.chainId, e.tokenId, listingSupply(factory, e))
-            );
+            all[n++] =
+                abi.encodeCall(IHybridIndexFactory.proposeVaultListing, (e.chainId, e.tokenId, e.priceId, e.decimals));
         }
         calls = new bytes[](n);
         labels = new string[](n);
@@ -348,7 +335,7 @@ contract ConfigureChains is Script {
         for (uint256 i = 0; i < tokens.length; ++i) {
             TokenEntry memory e = tokens[i];
             if (!shouldListToken(factory, e)) continue;
-            factory.proposeVaultListing(e.chainId, e.tokenId, listingSupply(factory, e));
+            factory.proposeVaultListing(e.chainId, e.tokenId, e.priceId, e.decimals);
             console2.log("proposed a listing", factory.vaultTokenId(e.chainId, e.tokenId));
         }
         vm.stopBroadcast();
@@ -357,7 +344,7 @@ contract ConfigureChains is Script {
     /// @notice Any account: executes every chain proposal and coin listing that is due and exactly what its entry says;
     ///         anything else is left, with the reason logged.
     function execute(IHybridIndexFactory factory, ChainEntry[] memory chains, TokenEntry[] memory tokens) public {
-        IIndexFactory f = IIndexFactory(address(factory));
+        IHybridIndexFactory f = factory;
         uint256 window = f.PROPOSAL_WINDOW();
         vm.startBroadcast();
         for (uint256 i = 0; i < chains.length; ++i) {
@@ -379,8 +366,10 @@ contract ConfigureChains is Script {
             address token = factory.vaultTokenId(tokens[i].chainId, tokens[i].tokenId);
             uint256 eta = f.listingEta(token);
             if (eta == 0) continue; // nothing pending
-            if (f.pendingReferenceSupply(token) != listingSupply(factory, tokens[i])) {
-                console2.log("not executed, the pending supply differs from the entry", token);
+            // forge-lint: disable-next-line(unused-return) only the pending id matters here
+            (bytes32 pendingId,) = f.pendingTerms(token);
+            if (pendingId != tokens[i].priceId) {
+                console2.log("not executed, the pending price id differs from the entry", token);
             } else if (block.timestamp < eta) {
                 console2.log("not ready yet", token);
             } else if (block.timestamp > eta + window) {
@@ -410,7 +399,7 @@ contract ConfigureChains is Script {
             return false;
         }
         IHybridIndexFactory.VaultProposal memory p = factory.vaultProposal(capProposalId(factory, e));
-        if (p.eta != 0 && block.timestamp <= p.eta + IIndexFactory(address(factory)).PROPOSAL_WINDOW()) {
+        if (p.eta != 0 && block.timestamp <= p.eta + factory.PROPOSAL_WINDOW()) {
             console2.log(
                 keccak256(p.body) == keccak256(capBody(e))
                     ? "already pending"
@@ -474,7 +463,7 @@ contract ConfigureChains is Script {
     /// @notice Any account: sends every cap proposal that is due and exactly what its entry says. Each emits its
     ///         CAP_UPDATE, for a relayer to deliver to the vault; anything else is left, with the reason logged.
     function executeCaps(IHybridIndexFactory factory, CapEntry[] memory caps) public {
-        uint256 window = IIndexFactory(address(factory)).PROPOSAL_WINDOW();
+        uint256 window = factory.PROPOSAL_WINDOW();
         vm.startBroadcast();
         for (uint256 i = 0; i < caps.length; ++i) {
             CapEntry memory e = caps[i];
@@ -543,16 +532,6 @@ contract ConfigureChains is Script {
         bytes memory b = bytes(raw);
         if (b.length < 3 || b[0] != "0" || b[1] != "x") revert MalformedEntry(entry);
         return bytes32(vm.parseUint(raw));
-    }
-
-    function _inLiveBatch(IIndexFactory factory, address token) private view returns (bool) {
-        if (!factory.suppliesPending()) return false;
-        // forge-lint: disable-next-line(unused-return) only the batch's tokens matter here
-        (,, address[] memory batch,) = factory.pendingSupplies();
-        for (uint256 i = 0; i < batch.length; ++i) {
-            if (batch[i] == token) return true;
-        }
-        return false;
     }
 
     function _contains(uint256[] memory ids, uint256 id) private pure returns (bool) {

@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {IHybridHubTypes} from "./IHybridHubTypes.sol";
+import {PythStructs} from "./pyth/PythStructs.sol";
 
 /// @title IHybridHubExtension
 /// @notice The part of a HybridHub index that runs in its module's extension: migration between versions, and the
@@ -81,4 +82,18 @@ interface IHybridHubExtension is IHybridHubTypes {
     ///         settled. Freezes the chain's mints, for every index; the vault keeps paying. Refused on an exited
     ///         chain, as `voidOrder` is.
     function reportForgedDeposit(uint256 orderId, uint256 chainId, ChainProof calldata proof) external;
+
+    /// @notice v5 (DRAFT): what the creator fixed for each component: weight in basis points, Pyth price id and
+    ///         decimals.
+    function componentTerms()
+        external
+        view
+        returns (uint256[] memory weights, bytes32[] memory priceIds, uint8[] memory decimals);
+
+    /// @notice v5 (DRAFT): the settlement a fill accepted now would take at `prices` (one per component; a kept one's
+    ///         is ignored): μ, the new units, and each component's payout and delivery at the current supply.
+    function previewRebalance(PythStructs.Price[] calldata prices)
+        external
+        view
+        returns (uint256 mu, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn);
 }

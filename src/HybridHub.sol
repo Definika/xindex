@@ -12,6 +12,8 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import {IWeightedHub} from "./interfaces/IWeightedHub.sol";
+import {WeightedPricing} from "./libraries/WeightedPricing.sol";
 import {IHybridHub} from "./interfaces/IHybridHub.sol";
 import {IHybridIndexFactory} from "./interfaces/IHybridIndexFactory.sol";
 import {HybridHubStorage} from "./hybrid/HybridHubStorage.sol";
@@ -51,6 +53,8 @@ contract HybridHub is HybridHubStorage, ERC20Upgradeable, ERC20PermitUpgradeable
     uint256 public constant FREEZE_DURATION = FREEZE_LENGTH;
     /// @inheritdoc IHybridHub
     address public immutable FACTORY;
+    /// @notice What the weights sum to: basis points.
+    uint256 public constant TOTAL_WEIGHT = 1e4;
     /// @inheritdoc IHybridHub
     address public immutable MODULE;
 
@@ -72,12 +76,11 @@ contract HybridHub is HybridHubStorage, ERC20Upgradeable, ERC20PermitUpgradeable
     function initialize(
         string calldata name_,
         string calldata symbol_,
-        address[] calldata tokens,
-        uint256[] calldata units,
+        IWeightedHub.ComponentInit[] calldata components_,
         Placement[] calldata placements
     ) external initializer {
         if (msg.sender != FACTORY) revert NotFactory();
-        _addComponents(tokens, units, placements);
+        _addComponents(components_, placements);
         __ERC20_init(name_, symbol_);
         __ERC20Permit_init(name_);
         // Set once at creation: the first rebalance waits MIN_REBALANCE_INTERVAL, as in Stage A.
@@ -85,21 +88,33 @@ contract HybridHub is HybridHubStorage, ERC20Upgradeable, ERC20PermitUpgradeable
         _lastRebalance = block.timestamp;
     }
 
-    function _addComponents(address[] calldata tokens, uint256[] calldata units, Placement[] calldata placements)
+    /// @dev v5 (DRAFT): each component with its weight, price id and decimals; the weights sum to 10,000, two at
+    ///      least, and no two share a token or a price id (V5-M1).
+    function _addComponents(IWeightedHub.ComponentInit[] calldata components_, Placement[] calldata placements)
         private
     {
-        uint256 n = tokens.length;
-        if (n == 0 || units.length != n || placements.length != n) revert InvalidComponents();
+        uint256 n = components_.length;
+        if (n < 2 || placements.length != n) revert InvalidComponents();
+        uint256 total = 0;
         for (uint256 i = 0; i < n; ++i) {
-            if (tokens[i] == address(0) || units[i] == 0) revert InvalidComponents();
-            _components.push(Component({token: tokens[i], units: SafeCast.toUint96(units[i])}));
-            _position[tokens[i]] = i + 1;
+            IWeightedHub.ComponentInit calldata c = components_[i];
+            if (
+                c.token == address(0) || c.units == 0 || c.weight == 0 || c.weight > TOTAL_WEIGHT
+                    || c.priceId == bytes32(0) || c.decimals > WeightedPricing.MAX_DECIMALS
+            ) revert InvalidComponents();
+            for (uint256 j = 0; j < i; ++j) {
+                if (components_[j].token == c.token || components_[j].priceId == c.priceId) revert InvalidComponents();
+            }
+            total += c.weight;
+            _components.push(Component({token: c.token, units: SafeCast.toUint96(c.units)}));
+            _terms.push(Terms({priceId: c.priceId, weight: SafeCast.toUint16(c.weight), decimals: c.decimals}));
+            _position[c.token] = i + 1;
             Placement calldata p = placements[i];
             _vaultTokenOf.push(p.vaultToken);
             _slotOf.push(p.chainId == 0 ? 0 : _chainSlot(p.chainId, p.vault) + 1);
         }
         // The factory uses this template only for a basket holding a vault token.
-        if (_chains.length == 0) revert InvalidComponents();
+        if (_chains.length == 0 || total != TOTAL_WEIGHT) revert InvalidComponents();
     }
 
     /// @dev The position of `chainId` in `_chains`, added on first sight.
@@ -114,8 +129,15 @@ contract HybridHub is HybridHubStorage, ERC20Upgradeable, ERC20PermitUpgradeable
     }
 
     /// @notice Everything else an index answers ({IHybridHubModule}) runs in MODULE, on this index's storage.
-    fallback(bytes calldata data) external returns (bytes memory) {
+    /// @dev Payable for `acceptRebalance` alone, whose Pyth fee the module forwards; every other function there and in
+    ///      the extension is non-payable and refuses ether, so none can stay here.
+    fallback(bytes calldata data) external payable returns (bytes memory) {
         return Address.functionDelegateCall(MODULE, data);
+    }
+
+    /// @notice Plain ether is refused: the only ether a hub takes is a fill's Pyth fee, which it passes on.
+    receive() external payable {
+        revert NoEther();
     }
 
     // ---------------------------------------------------------------------

@@ -13,6 +13,11 @@
         "internalType": "address"
       },
       {
+        "name": "pyth",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
         "name": "hybridImplementation",
         "type": "address",
         "internalType": "address"
@@ -74,33 +79,7 @@
   },
   {
     "type": "function",
-    "name": "K_SCALE",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "LISTING_DELAY",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "MAX_BATCH",
     "inputs": [],
     "outputs": [
       {
@@ -126,33 +105,20 @@
   },
   {
     "type": "function",
-    "name": "MAX_SUPPLY",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "MAX_SUPPLY_STEP",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "MAX_UNITS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MIN_COMPONENTS",
     "inputs": [],
     "outputs": [
       {
@@ -178,19 +144,6 @@
   },
   {
     "type": "function",
-    "name": "MIN_SUPPLY_INTERVAL",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "PROPOSAL_WINDOW",
     "inputs": [],
     "outputs": [
@@ -204,7 +157,33 @@
   },
   {
     "type": "function",
+    "name": "PYTH",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "ROTATION_DELAY",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "TOTAL_WEIGHT",
     "inputs": [],
     "outputs": [
       {
@@ -284,13 +263,6 @@
         "internalType": "address"
       }
     ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "cancelSupplies",
-    "inputs": [],
     "outputs": [],
     "stateMutability": "nonpayable"
   },
@@ -432,14 +404,26 @@
         "internalType": "string"
       },
       {
-        "name": "tokens",
-        "type": "address[]",
-        "internalType": "address[]"
-      },
-      {
-        "name": "k",
-        "type": "uint256",
-        "internalType": "uint256"
+        "name": "components",
+        "type": "tuple[]",
+        "internalType": "struct IWeightedIndexFactory.ComponentSpec[]",
+        "components": [
+          {
+            "name": "token",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "weight",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "units",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
       }
     ],
     "outputs": [
@@ -466,6 +450,25 @@
         "name": "",
         "type": "address",
         "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "decimalsOf",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
       }
     ],
     "stateMutability": "view"
@@ -513,13 +516,6 @@
         "internalType": "address"
       }
     ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "executeSupplies",
-    "inputs": [],
     "outputs": [],
     "stateMutability": "nonpayable"
   },
@@ -671,30 +667,17 @@
   },
   {
     "type": "function",
-    "name": "lastSupplyUpdate",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "listingEta",
     "inputs": [
       {
-        "name": "",
+        "name": "token",
         "type": "address",
         "internalType": "address"
       }
     ],
     "outputs": [
       {
-        "name": "",
+        "name": "eta",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -806,7 +789,7 @@
   },
   {
     "type": "function",
-    "name": "pendingReferenceSupply",
+    "name": "pendingTerms",
     "inputs": [
       {
         "name": "token",
@@ -816,37 +799,14 @@
     ],
     "outputs": [
       {
-        "name": "supply",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "pendingSupplies",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "batchId",
-        "type": "uint256",
-        "internalType": "uint256"
+        "name": "priceId",
+        "type": "bytes32",
+        "internalType": "bytes32"
       },
       {
-        "name": "eta",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "tokens",
-        "type": "address[]",
-        "internalType": "address[]"
-      },
-      {
-        "name": "supplies",
-        "type": "uint256[]",
-        "internalType": "uint256[]"
+        "name": "decimals",
+        "type": "uint8",
+        "internalType": "uint8"
       }
     ],
     "stateMutability": "view"
@@ -871,14 +831,26 @@
         "internalType": "string"
       },
       {
-        "name": "tokens",
-        "type": "address[]",
-        "internalType": "address[]"
-      },
-      {
-        "name": "k",
-        "type": "uint256",
-        "internalType": "uint256"
+        "name": "components",
+        "type": "tuple[]",
+        "internalType": "struct IWeightedIndexFactory.ComponentSpec[]",
+        "components": [
+          {
+            "name": "token",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "weight",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "units",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
       }
     ],
     "outputs": [
@@ -892,24 +864,19 @@
   },
   {
     "type": "function",
-    "name": "previewUnits",
+    "name": "priceIdOf",
     "inputs": [
       {
-        "name": "tokens",
-        "type": "address[]",
-        "internalType": "address[]"
-      },
-      {
-        "name": "k",
-        "type": "uint256",
-        "internalType": "uint256"
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
       }
     ],
     "outputs": [
       {
-        "name": "units",
-        "type": "uint256[]",
-        "internalType": "uint256[]"
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
       }
     ],
     "stateMutability": "view"
@@ -1018,9 +985,9 @@
         "internalType": "address"
       },
       {
-        "name": "supply",
-        "type": "uint256",
-        "internalType": "uint256"
+        "name": "priceId",
+        "type": "bytes32",
+        "internalType": "bytes32"
       }
     ],
     "outputs": [],
@@ -1057,24 +1024,6 @@
   },
   {
     "type": "function",
-    "name": "proposeSupplies",
-    "inputs": [
-      {
-        "name": "tokens",
-        "type": "address[]",
-        "internalType": "address[]"
-      },
-      {
-        "name": "supplies",
-        "type": "uint256[]",
-        "internalType": "uint256[]"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
     "name": "proposeVaultListing",
     "inputs": [
       {
@@ -1088,51 +1037,18 @@
         "internalType": "bytes32"
       },
       {
-        "name": "supply",
-        "type": "uint256",
-        "internalType": "uint256"
+        "name": "priceId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "decimals",
+        "type": "uint8",
+        "internalType": "uint8"
       }
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "referenceSupplies",
-    "inputs": [
-      {
-        "name": "tokens",
-        "type": "address[]",
-        "internalType": "address[]"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "supplies",
-        "type": "uint256[]",
-        "internalType": "uint256[]"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "referenceSupply",
-    "inputs": [
-      {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "supply",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -1169,32 +1085,6 @@
         "name": "",
         "type": "address",
         "internalType": "address"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "suppliesPending",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "bool",
-        "internalType": "bool"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "supplyBatchCount",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -1517,16 +1407,37 @@
         "internalType": "string"
       },
       {
-        "name": "tokens",
-        "type": "address[]",
+        "name": "components",
+        "type": "tuple[]",
         "indexed": false,
-        "internalType": "address[]"
-      },
-      {
-        "name": "units",
-        "type": "uint256[]",
-        "indexed": false,
-        "internalType": "uint256[]"
+        "internalType": "struct IWeightedHub.ComponentInit[]",
+        "components": [
+          {
+            "name": "token",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "units",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "weight",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "priceId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "decimals",
+            "type": "uint8",
+            "internalType": "uint8"
+          }
+        ]
       }
     ],
     "anonymous": false
@@ -1561,10 +1472,16 @@
         "internalType": "uint256"
       },
       {
-        "name": "referenceSupply",
-        "type": "uint256",
+        "name": "priceId",
+        "type": "bytes32",
         "indexed": false,
-        "internalType": "uint256"
+        "internalType": "bytes32"
+      },
+      {
+        "name": "decimals",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "uint8"
       }
     ],
     "anonymous": false
@@ -1609,7 +1526,7 @@
   },
   {
     "type": "event",
-    "name": "ReferenceSupplySet",
+    "name": "TokenTermsSet",
     "inputs": [
       {
         "name": "token",
@@ -1618,73 +1535,16 @@
         "internalType": "address"
       },
       {
-        "name": "previous",
-        "type": "uint256",
+        "name": "priceId",
+        "type": "bytes32",
         "indexed": false,
-        "internalType": "uint256"
+        "internalType": "bytes32"
       },
       {
-        "name": "referenceSupply",
-        "type": "uint256",
+        "name": "decimals",
+        "type": "uint8",
         "indexed": false,
-        "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "SuppliesCancelled",
-    "inputs": [
-      {
-        "name": "batchId",
-        "type": "uint256",
-        "indexed": true,
-        "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "SuppliesExecuted",
-    "inputs": [
-      {
-        "name": "batchId",
-        "type": "uint256",
-        "indexed": true,
-        "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "SuppliesProposed",
-    "inputs": [
-      {
-        "name": "batchId",
-        "type": "uint256",
-        "indexed": true,
-        "internalType": "uint256"
-      },
-      {
-        "name": "eta",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "tokens",
-        "type": "address[]",
-        "indexed": false,
-        "internalType": "address[]"
-      },
-      {
-        "name": "referenceSupplies",
-        "type": "uint256[]",
-        "indexed": false,
-        "internalType": "uint256[]"
+        "internalType": "uint8"
       }
     ],
     "anonymous": false
@@ -1882,6 +1742,17 @@
   },
   {
     "type": "error",
+    "name": "DuplicatePriceId",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "DuplicateToken",
     "inputs": [
       {
@@ -1952,17 +1823,6 @@
   },
   {
     "type": "error",
-    "name": "InvalidBatch",
-    "inputs": [
-      {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
-      }
-    ]
-  },
-  {
-    "type": "error",
     "name": "InvalidChain",
     "inputs": [
       {
@@ -1985,6 +1845,33 @@
   },
   {
     "type": "error",
+    "name": "InvalidDecimals",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "decimals",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "InvalidPriceId",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "InvalidRecipient",
     "inputs": [
       {
@@ -1993,6 +1880,11 @@
         "internalType": "address"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "InvalidWeights",
+    "inputs": []
   },
   {
     "type": "error",
@@ -2076,11 +1968,6 @@
   },
   {
     "type": "error",
-    "name": "NoPendingSupplies",
-    "inputs": []
-  },
-  {
-    "type": "error",
     "name": "NoVaultProposal",
     "inputs": [
       {
@@ -2107,17 +1994,6 @@
     "inputs": [
       {
         "name": "caller",
-        "type": "address",
-        "internalType": "address"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "NotConfigured",
-    "inputs": [
-      {
-        "name": "token",
         "type": "address",
         "internalType": "address"
       }
@@ -2196,27 +2072,6 @@
   },
   {
     "type": "error",
-    "name": "RelistChangesSupply",
-    "inputs": [
-      {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "inForce",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "proposed",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
     "name": "RenounceDisabled",
     "inputs": []
   },
@@ -2233,87 +2088,6 @@
         "name": "value",
         "type": "uint256",
         "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "SuppliesExpired",
-    "inputs": [
-      {
-        "name": "deadline",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "SuppliesNotReady",
-    "inputs": [
-      {
-        "name": "eta",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "SuppliesPending",
-    "inputs": [
-      {
-        "name": "eta",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "SupplyOutOfRange",
-    "inputs": [
-      {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "referenceSupply",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "SupplyStepTooLarge",
-    "inputs": [
-      {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "inForce",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "proposed",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "TokenInBatch",
-    "inputs": [
-      {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
       }
     ]
   },

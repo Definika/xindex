@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {IWeightedHub} from "./IWeightedHub.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
 import {IHybridHubTypes} from "./IHybridHubTypes.sol";
@@ -42,12 +43,12 @@ interface IHybridHub is IHybridHubTypes, IERC20, IERC20Permit {
     ///         mints on that chain, whoever began it.
     function FREEZE_DURATION() external view returns (uint256);
 
-    /// @notice The factory only, once. `placements` is per component; an Ethereum component's is all zero.
+    /// @notice The factory only, once. `components_` carries each component's units, weight, Pyth price id and
+    ///         decimals; `placements` is per component, and an Ethereum component's is all zero.
     function initialize(
         string calldata name_,
         string calldata symbol_,
-        address[] calldata tokens,
-        uint256[] calldata units,
+        IWeightedHub.ComponentInit[] calldata components_,
         Placement[] calldata placements
     ) external;
 

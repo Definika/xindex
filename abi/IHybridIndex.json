@@ -118,19 +118,6 @@
   },
   {
     "type": "function",
-    "name": "MAX_SUPPLY_STEP",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "MINT_CAP",
     "inputs": [],
     "outputs": [
@@ -145,19 +132,6 @@
   {
     "type": "function",
     "name": "MINT_LOCK",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "MIN_BAND",
     "inputs": [],
     "outputs": [
       {
@@ -190,6 +164,19 @@
         "name": "",
         "type": "address",
         "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "PRICE_LAG",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -279,10 +266,15 @@
         "name": "maxAmountsIn",
         "type": "uint256[]",
         "internalType": "uint256[]"
+      },
+      {
+        "name": "priceUpdate",
+        "type": "bytes[]",
+        "internalType": "bytes[]"
       }
     ],
     "outputs": [],
-    "stateMutability": "nonpayable"
+    "stateMutability": "payable"
   },
   {
     "type": "function",
@@ -497,6 +489,29 @@
       }
     ],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "componentTerms",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "weights",
+        "type": "uint256[]",
+        "internalType": "uint256[]"
+      },
+      {
+        "name": "priceIds",
+        "type": "bytes32[]",
+        "internalType": "bytes32[]"
+      },
+      {
+        "name": "decimals",
+        "type": "uint8[]",
+        "internalType": "uint8[]"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -721,14 +736,36 @@
         "internalType": "string"
       },
       {
-        "name": "tokens",
-        "type": "address[]",
-        "internalType": "address[]"
-      },
-      {
-        "name": "units",
-        "type": "uint256[]",
-        "internalType": "uint256[]"
+        "name": "components_",
+        "type": "tuple[]",
+        "internalType": "struct IWeightedHub.ComponentInit[]",
+        "components": [
+          {
+            "name": "token",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "units",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "weight",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "priceId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "decimals",
+            "type": "uint8",
+            "internalType": "uint8"
+          }
+        ]
       },
       {
         "name": "placements",
@@ -1099,35 +1136,6 @@
   },
   {
     "type": "function",
-    "name": "previewBand",
-    "inputs": [
-      {
-        "name": "keepMask",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "ratios",
-        "type": "uint256[]",
-        "internalType": "uint256[]"
-      },
-      {
-        "name": "lambdaMin",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "lambdaMax",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "previewOrder",
     "inputs": [
       {
@@ -1148,10 +1156,38 @@
   {
     "type": "function",
     "name": "previewRebalance",
-    "inputs": [],
+    "inputs": [
+      {
+        "name": "prices",
+        "type": "tuple[]",
+        "internalType": "struct PythStructs.Price[]",
+        "components": [
+          {
+            "name": "price",
+            "type": "int64",
+            "internalType": "int64"
+          },
+          {
+            "name": "conf",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "expo",
+            "type": "int32",
+            "internalType": "int32"
+          },
+          {
+            "name": "publishTime",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      }
+    ],
     "outputs": [
       {
-        "name": "lambda",
+        "name": "mu",
         "type": "uint256",
         "internalType": "uint256"
       },
@@ -2760,6 +2796,11 @@
   },
   {
     "type": "error",
+    "name": "NoEther",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "NoPendingRebalance",
     "inputs": []
   },
@@ -2869,6 +2910,22 @@
         "name": "token",
         "type": "address",
         "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "PriceMismatch",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "publishTime",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ]
   },

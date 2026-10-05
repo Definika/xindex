@@ -9,6 +9,8 @@ import {IHybridHub} from "../interfaces/IHybridHub.sol";
 import {IHybridHubExtension} from "../interfaces/IHybridHubExtension.sol";
 import {IHybridIndexFactory} from "../interfaces/IHybridIndexFactory.sol";
 import {VaultMessages} from "../libraries/VaultMessages.sol";
+import {WeightedPricing} from "../libraries/WeightedPricing.sol";
+import {PythStructs} from "../interfaces/pyth/PythStructs.sol";
 import {HybridHubStorage} from "./HybridHubStorage.sol";
 import {HubShares} from "./HubShares.sol";
 
@@ -350,5 +352,60 @@ contract HybridHubExtension is HybridHubStorage, HubShares, ReentrancyGuard, IHy
     /// @inheritdoc IHybridHubExtension
     function sentOut(address token) external view returns (uint256) {
         return _sentOut[token];
+    }
+
+    // ---------------------------------------------------------------------
+    // v5 views (DRAFT)
+    // ---------------------------------------------------------------------
+
+    /// @inheritdoc IHybridHubExtension
+    function componentTerms()
+        external
+        view
+        returns (uint256[] memory weights, bytes32[] memory priceIds, uint8[] memory decimals)
+    {
+        uint256 n = _terms.length;
+        weights = new uint256[](n);
+        priceIds = new bytes32[](n);
+        decimals = new uint8[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            (weights[i], priceIds[i], decimals[i]) = (_terms[i].weight, _terms[i].priceId, _terms[i].decimals);
+        }
+    }
+
+    /// @inheritdoc IHybridHubExtension
+    function previewRebalance(PythStructs.Price[] calldata prices)
+        external
+        view
+        returns (uint256 mu, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn)
+    {
+        uint256 n = _components.length;
+        if (prices.length != n) revert LengthMismatch();
+        uint256 eta = _pending.eta;
+        if (eta == 0) revert NoPendingRebalance();
+        if (block.timestamp < eta) revert RebalanceNotReady(eta);
+        if (block.timestamp > eta + AUCTION_LENGTH) revert RebalanceExpired(eta + AUCTION_LENGTH);
+        uint256 keepMask = _keepMask;
+        uint256[] memory read = new uint256[](n);
+        uint256[] memory current = new uint256[](n);
+        uint256[] memory weights = new uint256[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            current[i] = _components[i].units;
+            weights[i] = _terms[i].weight;
+            if ((keepMask & (1 << i)) == 0) {
+                read[i] = WeightedPricing.price(prices[i], _terms[i].decimals, _components[i].token);
+            }
+        }
+        return WeightedPricing.settle(
+            WeightedPricing.Basket({
+                current: current,
+                prices: read,
+                weights: weights,
+                keepMask: keepMask,
+                elapsed: block.timestamp - eta,
+                duration: AUCTION_LENGTH,
+                supply: _shareSupply()
+            })
+        );
     }
 }

@@ -10,7 +10,10 @@ import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {IHybridHub} from "../interfaces/IHybridHub.sol";
 import {IHybridHubModule} from "../interfaces/IHybridHubModule.sol";
 import {IHybridIndexFactory} from "../interfaces/IHybridIndexFactory.sol";
-import {IIndexFactory} from "../interfaces/IIndexFactory.sol";
+import {IWeightedIndexFactory} from "../interfaces/IWeightedIndexFactory.sol";
+import {IPyth} from "../interfaces/pyth/IPyth.sol";
+import {PythStructs} from "../interfaces/pyth/PythStructs.sol";
+import {WeightedPricing} from "../libraries/WeightedPricing.sol";
 import {VaultMessages} from "../libraries/VaultMessages.sol";
 import {HybridHubStorage} from "./HybridHubStorage.sol";
 import {HubShares} from "./HubShares.sol";
@@ -19,8 +22,10 @@ import {HubShares} from "./HubShares.sol";
 /// @notice The half of a HybridHub index its hub delegates to: voids, re-confirmations and stray intakes of orders, and
 ///         the rebalance. See {IHybridHubModule}.
 /// @dev Runs only by DELEGATECALL from a hub clone, on the clone's storage: called directly it is never initialized,
-///      so every path that moves anything refuses. The rebalance's start, band, notice, keep mask and cancel are Stage
-///      A's `IndexHub`'s, unchanged; its fill takes three steps, since vault legs cannot settle in one transaction:
+///      so every path that moves anything refuses. v5 (DRAFT, untested, 2026-10-06): the rebalance brings the units
+///      back to the creator's fixed weights at Pyth prices read when the fill is accepted, with `WeightedHub`'s math
+///      (`WeightedPricing`); start, notice, keep mask and cancel are as before. Its fill takes three steps, since vault
+///      legs cannot settle in one transaction:
 ///      accept (bond and Ethereum deliveries), the vault deliveries under the fill's intake, and settle on their proofs,
 ///      at the supply of the settling block. The bond is held BOND_HOLD after settlement and burned if a delivery
 ///      proves forged (Stage B spec, section 5.3). Everything else, migration and evidence, runs in EXTENSION, which
@@ -33,11 +38,11 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
     /// @inheritdoc IHybridHubModule
     uint256 public constant REBALANCE_DELAY = 2 days;
     /// @inheritdoc IHybridHubModule
-    uint256 public constant AUCTION_DURATION = 24 hours;
+    uint256 public constant AUCTION_DURATION = AUCTION_LENGTH;
     /// @inheritdoc IHybridHubModule
-    uint256 public constant MAX_SUPPLY_STEP = 0.005e18;
-    /// @inheritdoc IHybridHubModule
-    uint256 public constant MIN_BAND = 0.001e18;
+    uint256 public constant PRICE_LAG = 12;
+    /// @notice Fewest components a keep mask may leave moving: one alone is on its weight (V5-L2).
+    uint256 internal constant MIN_MOVING = 2;
     /// @inheritdoc IHybridHubModule
     uint256 public constant REBALANCE_BOND = 0.001e18;
     /// @inheritdoc IHybridHubModule
@@ -144,34 +149,33 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
             revert RebalancePending(pendingEta + AUCTION_DURATION);
         }
         uint256 n = _components.length;
-        if (keepMask >> n != 0 || keepMask == (1 << n) - 1) revert InvalidKeepMask(keepMask);
+        if (keepMask >> n != 0 || n - _bits(keepMask) < MIN_MOVING) revert InvalidKeepMask(keepMask);
         if (
             // A view on the factory, by STATICCALL: nothing it reaches can change state, so nothing re-enters.
             // aderyn-fp-next-line(reentrancy-state-change)
             (keepMask != 0 || block.timestamp < _permissionlessAt(pendingEta))
-                && !IIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender)
+                && !IWeightedIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender)
         ) {
             revert Unauthorized(msg.sender);
         }
 
-        (uint256[] memory ratios, uint256 lambdaMin, uint256 lambdaMax) = _band(keepMask);
-        if (lambdaMax * WAD < lambdaMin * (WAD + MIN_BAND)) revert BandTooNarrow(lambdaMin, lambdaMax);
-
-        delete _ratios;
-        for (uint256 i = 0; i < n; ++i) {
-            _ratios.push(SafeCast.toUint64(ratios[i]));
-        }
+        // A start reads no price: the fill reads Pyth when it is accepted. The band fields stay zero.
         uint256 eta = block.timestamp + REBALANCE_DELAY;
-        _pending = PendingRebalance({
-            eta: SafeCast.toUint40(eta),
-            lambdaMax: SafeCast.toUint64(lambdaMax),
-            lambdaMin: SafeCast.toUint64(lambdaMin)
-        });
+        _pending = PendingRebalance({eta: SafeCast.toUint40(eta), lambdaMax: 0, lambdaMin: 0});
         _keepMask = keepMask;
         uint256 proposalId = ++_proposalCount;
-        // The calls above are views on the factory; nothing external can run in between.
+        // The call above is a view on the factory; nothing external can run in between.
         // forge-lint: disable-next-line(reentrancy-events)
-        emit RebalanceStarted(proposalId, _rebalanceNonce + 1, msg.sender, keepMask, lambdaMin, lambdaMax, ratios, eta);
+        emit RebalanceStarted(proposalId, _rebalanceNonce + 1, msg.sender, keepMask, 0, 0, new uint256[](0), eta);
+    }
+
+    /// @dev How many bits `mask` sets.
+    function _bits(uint256 mask) private pure returns (uint256 count) {
+        count = 0;
+        while (mask != 0) {
+            mask &= mask - 1;
+            ++count;
+        }
     }
 
     /// @dev As Stage A: a cancel, or an auction that expired unfilled, holds strangers off for REBALANCE_DELAY.
@@ -184,7 +188,7 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
     function cancelRebalance() external nonReentrant onlyInitialized {
         // A view on the factory, by STATICCALL: nothing it reaches can change state, so nothing re-enters.
         // aderyn-fp-next-line(reentrancy-state-change)
-        if (!IIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender)) revert Unauthorized(msg.sender);
+        if (!IWeightedIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender)) revert Unauthorized(msg.sender);
         uint256 restartAt;
         if (_fill.status == FillStatus.Accepted) {
             // The executor did nothing wrong: its bond comes back, and the rest unwinds as a failure.
@@ -205,7 +209,6 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
     function _clearPending() private {
         delete _pending;
         delete _keepMask;
-        delete _ratios;
     }
 
     // ---------------------------------------------------------------------
@@ -213,11 +216,11 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
     // ---------------------------------------------------------------------
 
     /// @inheritdoc IHybridHubModule
-    function acceptRebalance(bytes32[] calldata recipients, uint256[] calldata maxAmountsIn)
-        external
-        nonReentrant
-        onlyInitialized
-    {
+    function acceptRebalance(
+        bytes32[] calldata recipients,
+        uint256[] calldata maxAmountsIn,
+        bytes[] calldata priceUpdate
+    ) external payable nonReentrant onlyInitialized {
         if (recipients.length != _chains.length) revert LengthMismatch();
         // The last fill's bond is released on the way: its hold is always over, since a fill settles no sooner than
         // MIN_REBALANCE_INTERVAL and REBALANCE_DELAY after the last, and both outlast BOND_HOLD
@@ -225,7 +228,9 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
         if (_fill.status == FillStatus.Settled) _releaseBond();
         if (_fill.status != FillStatus.None) revert WrongFillStatus(_fill.status);
         uint256 supply = _shareSupply();
-        (uint256 lambda, uint256[] memory units,, uint256[] memory amountsIn) = _previewRebalance(supply);
+        _openAuction();
+        (uint256 lambda, uint256[] memory units,, uint256[] memory amountsIn) =
+            _previewRebalance(supply, _readPrices(priceUpdate));
         _checkBounds(amountsIn, maxAmountsIn);
         _checkMovingChains(units);
 
@@ -504,108 +509,73 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
     // The band and the settlement, as Stage A
     // ---------------------------------------------------------------------
 
-    /// @dev Settlement for the current block at the current λ, as Stage A's `_previewRebalance`: a settlement that
-    ///      would send nothing out is taken at λmax, so the units never depend on timing when nothing is paid for.
-    function _previewRebalance(uint256 supply)
-        private
-        view
-        returns (uint256 lambda, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn)
-    {
-        PendingRebalance memory pending = _pending;
-        uint256 eta = pending.eta;
+    /// @dev Reverts unless an auction is open now.
+    function _openAuction() private view {
+        uint256 eta = _pending.eta;
         if (eta == 0) revert NoPendingRebalance();
         if (block.timestamp < eta) revert RebalanceNotReady(eta);
         if (block.timestamp > eta + AUCTION_DURATION) revert RebalanceExpired(eta + AUCTION_DURATION);
-
-        lambda = pending.lambdaMax
-            - Math.mulDiv(pending.lambdaMax - pending.lambdaMin, block.timestamp - eta, AUCTION_DURATION);
-        bool sells;
-        (units, amountsOut, amountsIn, sells) = _settlementAt(lambda, supply);
-        if (!sells && lambda != pending.lambdaMax) {
-            lambda = pending.lambdaMax;
-            (units, amountsOut, amountsIn,) = _settlementAt(lambda, supply);
-        }
     }
 
-    function _settlementAt(uint256 lambda, uint256 supply)
-        private
-        view
-        returns (uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn, bool sells)
-    {
+    /// @dev The moving components' prices one slot back, from `priceUpdate` through Pyth, forwarding the whole of
+    ///      msg.value as its fee; Pyth returns each feed's first update at or after that second, before this block.
+    function _readPrices(bytes[] calldata priceUpdate) private returns (uint256[] memory prices) {
         uint256 n = _components.length;
-        units = new uint256[](n);
-        amountsOut = new uint256[](n);
-        amountsIn = new uint256[](n);
-        sells = false;
         uint256 keepMask = _keepMask;
+        uint256 moving = n - _bits(keepMask);
+        bytes32[] memory ids = new bytes32[](moving);
+        uint256 k = 0;
         for (uint256 i = 0; i < n; ++i) {
-            uint256 current = _components[i].units;
-            if ((keepMask & (1 << i)) != 0) {
-                units[i] = current;
-                continue;
-            }
-            uint256 next = Math.mulDiv(lambda, current, _ratios[i], Math.Rounding.Ceil);
-            units[i] = next;
-            if (next < current) {
-                uint256 out = _backing(supply, current - next, Math.Rounding.Floor);
-                amountsOut[i] = out;
-                if (out != 0) sells = true;
-            } else {
-                amountsIn[i] = _backing(supply, next - current, Math.Rounding.Ceil);
-            }
+            if ((keepMask & (1 << i)) == 0) ids[k++] = _terms[i].priceId;
+        }
+        uint256 time = block.timestamp - PRICE_LAG;
+        uint256 last = block.timestamp - 1;
+        // Pyth is fixed in the factory, and the guard covers anything it could call back into. The ether sent is the
+        // caller's own, the fee for its update, passed on whole.
+        // wake-disable-next-line reentrancy
+        // forge-lint: disable-next-item(arbitrary-send-eth)
+        PythStructs.PriceFeed[] memory feeds = IPyth(IWeightedIndexFactory(FACTORY).PYTH())
+        .parsePriceFeedUpdatesUnique{value: msg.value}(
+            priceUpdate, ids, SafeCast.toUint64(time), SafeCast.toUint64(last)
+        );
+        if (feeds.length != moving) revert PriceMismatch(bytes32(0), 0);
+        prices = new uint256[](n);
+        k = 0;
+        for (uint256 i = 0; i < n; ++i) {
+            if ((keepMask & (1 << i)) != 0) continue;
+            PythStructs.PriceFeed memory feed = feeds[k];
+            uint256 published = feed.price.publishTime;
+            if (feed.id != ids[k] || published < time || published > last) revert PriceMismatch(feed.id, published);
+            prices[i] = WeightedPricing.price(feed.price, _terms[i].decimals, _components[i].token);
+            ++k;
         }
     }
 
-    /// @dev Stage A's band over the components not in `keepMask`, from the factory's reference supplies, a vault
-    ///      token's included: each moving component's ρ relative to the first one's, centred, then clamped to
-    ///      1e18 ± MAX_SUPPLY_STEP.
-    function _band(uint256 keepMask)
+    /// @dev The settlement at this block's μ and `prices`, computed by the linked `WeightedPricing`. Assumes the auction
+    ///      is open.
+    function _previewRebalance(uint256 supply, uint256[] memory prices)
         private
         view
-        returns (uint256[] memory ratios, uint256 lambdaMin, uint256 lambdaMax)
+        returns (uint256 mu, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn)
     {
-        uint256 low;
-        uint256 high;
-        (ratios, low, high) = _relatives(keepMask);
-        uint256 centre = (low + high) / 2;
-        lambdaMin = type(uint256).max;
-        lambdaMax = 0;
-        uint256 n = ratios.length;
-        for (uint256 i = 0; i < n; ++i) {
-            if ((keepMask & (1 << i)) != 0) continue;
-            uint256 r = Math.mulDiv(ratios[i], WAD, centre);
-            if (r < WAD - MAX_SUPPLY_STEP) r = WAD - MAX_SUPPLY_STEP;
-            else if (r > WAD + MAX_SUPPLY_STEP) r = WAD + MAX_SUPPLY_STEP;
-            ratios[i] = r;
-            if (r < lambdaMin) lambdaMin = r;
-            if (r > lambdaMax) lambdaMax = r;
-        }
-    }
-
-    /// @dev ρ_i / ρ_a in WAD for every moving component, where ρ = units / supply and a is the first moving component,
-    ///      which cancels a's own figures exactly; with the smallest and largest of them. Units are below 2^96 and
-    ///      supplies below 2^128, so the products fit.
-    function _relatives(uint256 keepMask) private view returns (uint256[] memory relative, uint256 low, uint256 high) {
         uint256 n = _components.length;
-        address[] memory tokens = new address[](n);
+        uint256[] memory current = new uint256[](n);
+        uint256[] memory weights = new uint256[](n);
         for (uint256 i = 0; i < n; ++i) {
-            tokens[i] = _components[i].token;
+            current[i] = _components[i].units;
+            weights[i] = _terms[i].weight;
         }
-        uint256[] memory supplies = IIndexFactory(FACTORY).referenceSupplies(tokens);
-        relative = new uint256[](n);
-        low = type(uint256).max;
-        high = 0;
-        uint256 anchorUnits = 0;
-        uint256 anchorSupply = 0;
-        for (uint256 i = 0; i < n; ++i) {
-            if ((keepMask & (1 << i)) != 0) continue;
-            uint256 units = _components[i].units;
-            if (anchorUnits == 0) (anchorUnits, anchorSupply) = (units, supplies[i]);
-            uint256 r = Math.mulDiv(units * anchorSupply, WAD, supplies[i] * anchorUnits);
-            relative[i] = r;
-            if (r < low) low = r;
-            if (r > high) high = r;
-        }
+        return WeightedPricing.settle(
+            WeightedPricing.Basket({
+                current: current,
+                prices: prices,
+                weights: weights,
+                keepMask: _keepMask,
+                elapsed: block.timestamp - _pending.eta,
+                duration: AUCTION_DURATION,
+                supply: supply
+            })
+        );
     }
 
     // ---------------------------------------------------------------------
@@ -642,36 +612,13 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
     }
 
     /// @inheritdoc IHybridHubModule
-    function previewBand(uint256 keepMask)
-        external
-        view
-        returns (uint256[] memory ratios, uint256 lambdaMin, uint256 lambdaMax)
-    {
-        return _band(keepMask);
-    }
-
-    /// @inheritdoc IHybridHubModule
     function pendingRebalance()
         external
         view
         returns (uint256 eta, uint256 keepMask, uint256 lambdaMin, uint256 lambdaMax, uint256[] memory ratios)
     {
-        PendingRebalance memory pending = _pending;
-        uint256 n = _ratios.length;
-        ratios = new uint256[](n);
-        for (uint256 i = 0; i < n; ++i) {
-            ratios[i] = _ratios[i];
-        }
-        return (pending.eta, _keepMask, pending.lambdaMin, pending.lambdaMax, ratios);
-    }
-
-    /// @inheritdoc IHybridHubModule
-    function previewRebalance()
-        external
-        view
-        returns (uint256 lambda, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn)
-    {
-        return _previewRebalance(_shareSupply());
+        // v5 keeps no band: λ's fields and the ratios stay empty, and the views keep their shape for integrators.
+        return (_pending.eta, _keepMask, 0, 0, ratios);
     }
 
     /// @inheritdoc IHybridHubModule
