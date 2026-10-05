@@ -15,6 +15,7 @@ import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
 import {IIndexHub} from "../../src/interfaces/IIndexHub.sol";
 import {Deploy} from "../../script/Deploy.s.sol";
+import {DeployChecks} from "../../script/DeployChecks.sol";
 
 interface IWbtcAdmin {
     function owner() external view returns (address);
@@ -555,13 +556,13 @@ contract SecurityForkTest is Test {
         address[2] memory singletons = [SAFE_130, SAFE_141];
         for (uint256 i = 0; i < factories.length; ++i) {
             ISafe twoOfThree = _safe(factories[i], singletons[i], 2, 0);
-            vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerThresholdTooLow.selector, address(twoOfThree), 2));
+            vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerThresholdTooLow.selector, address(twoOfThree), 2));
             deployer.checkOwner(address(twoOfThree));
 
             ISafe safe = _safe(factories[i], singletons[i], 3, 1);
             deployer.checkOwner(address(safe));
             _enableModule(safe, module);
-            vm.expectRevert(abi.encodeWithSelector(Deploy.OwnerHasModules.selector, address(safe), module));
+            vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerHasModules.selector, address(safe), module));
             deployer.checkOwner(address(safe));
         }
     }
