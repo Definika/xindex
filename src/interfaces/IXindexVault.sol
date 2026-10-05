@@ -4,9 +4,10 @@ pragma solidity 0.8.28;
 import {IEthereumEventVerifier} from "./IEthereumEventVerifier.sol";
 import {IStateReader} from "./IStateReader.sol";
 
-/// @notice A vault on another chain holding that chain's native coin for every index whose shares live on Ethereum.
-///         No owner, no upgrade. Coins come in only as deposits to an intake (a mint order or a rebalance delivery)
-///         and leave only on messages proven to be final on Ethereum, within a speed limit.
+/// @notice A vault on another chain holding that chain's native coin, and the tokens governance has given a cap, for
+///         every index whose shares live on Ethereum. No owner, no upgrade. Coins come in only as deposits to an intake
+///         (a mint order or a rebalance delivery) and leave only on messages proven to be final on Ethereum, within a
+///         speed limit per token.
 interface IXindexVault {
     /// @notice The life of an intake: None until its first deposit, then Open, then Settled or Failed for good.
     enum IntakeState {
@@ -93,7 +94,9 @@ interface IXindexVault {
     event SuccessorLapsed();
     event SuccessorAdopted(address indexed p1, address indexed p2);
     event SnapshotBegun(uint256 blockNumber, uint256 timestamp, bytes32 stateRoot);
-    event SnapshotClaimed(address indexed index, address indexed holder, address recipient, uint256 amount, bytes32 id);
+    event SnapshotClaimed(
+        address indexed index, address indexed holder, address token, address recipient, uint256 amount, bytes32 id
+    );
     event IntakeResolved(address indexed index, uint256 indexed intakeId, bool settled);
     event ChangeQueued(bytes32 indexed key, uint8 kind, bytes body, uint256 readyAt);
     event ChangeApplied(bytes32 indexed key);
@@ -148,7 +151,9 @@ interface IXindexVault {
     error NoCheckpoint();
     /// @notice After a snapshot exit, a message from a block after its checkpoint never runs.
     error IssuedAfterSnapshot(uint256 blockNumber);
-    error AlreadyClaimed(address index, address holder);
+    error AlreadyClaimed(address index, address holder, address token);
+    /// @notice A token deposit delivered less than the amount it named: a fee-on-transfer or deflationary token.
+    error DepositShortfall(address token, uint256 received, uint256 amount);
     /// @notice The component at that position of the index is not this chain's coin.
     error WrongComponent(uint256 component);
     /// @notice The holder registered `registered` as its recovery address on this chain, and is paid only there.
@@ -227,8 +232,8 @@ interface IXindexVault {
     /// @notice The freezer only: drops a waiting cap raise or rotation. It cannot drop its own replacement.
     function cancelChange(bytes32 key) external;
 
-    /// @notice Whether `holder` has claimed its snapshot share of `index`.
-    function snapshotClaimed(address index, address holder) external view returns (bool);
+    /// @notice Whether `holder` has claimed its snapshot share of `token` in `index`.
+    function snapshotClaimed(address index, address holder, address token) external view returns (bool);
 
     /// @notice Whether a week has passed since the last checkpoint.
     function stalled() external view returns (bool);
@@ -256,6 +261,8 @@ interface IXindexVault {
     ///         balances by migration. It can never exceed what the index sent out in BURN and MIGRATE messages.
     function paidTotal(address index, address token) external view returns (uint256);
     function held(address token) external view returns (uint256);
+    /// @notice The quantity cap on `token` across all indexes, the native coin's being address zero. A cap of zero
+    ///         refuses every deposit of the token, as every token but the native coin has until a `CAP_UPDATE` sets one.
     function cap(address token) external view returns (uint256);
     function outflowFloor(address token) external view returns (uint256);
     function used(bytes32 id) external view returns (bool);
@@ -294,6 +301,10 @@ interface IXindexVault {
     /// @notice Anyone, while not frozen. Deposits the native coin sent into intake `intakeId` of `index`.
     function deposit(address index, uint256 intakeId) external payable;
 
+    /// @notice Anyone, while not frozen. Deposits `amount` of `token`, pulled from the caller, who must have approved it,
+    ///         into intake `intakeId` of `index`. Refused for a token without a cap, and when less than `amount` arrives.
+    function depositToken(address index, uint256 intakeId, address token, uint256 amount) external;
+
     /// @notice Anyone. Runs one message proven final on Ethereum by P1 (`proof1`), P2 (`proof2`) or both.
     function deliver(bytes calldata proof1, bytes calldata proof2) external;
 
@@ -305,8 +316,9 @@ interface IXindexVault {
     /// @notice Anyone, while not frozen. Pays what the speed limit now allows of an owed burn or migration.
     function release(address index, bytes32 id) external;
 
-    /// @notice A depositor of a failed intake, while not frozen. Takes their deposit back.
-    function refund(address index, uint256 intakeId) external;
+    /// @notice A depositor of a failed intake, while not frozen. Takes their deposit of `token` back, the native coin's
+    ///         being address zero; one token at a time, so a token that refuses its transfer holds back no other.
+    function refund(address index, uint256 intakeId, address token) external;
 
     /// @notice The guardian's freeze address only, before any snapshot exit. Freezes the vault for FREEZE_DURATION.
     function freeze() external;
@@ -331,9 +343,11 @@ interface IXindexVault {
     ///         from then on no message from a later Ethereum block runs, and holders at it claim directly.
     function beginSnapshot() external;
 
-    /// @notice Anyone, after the snapshot. Pays `holder`'s share of this chain's coin in `index` at the snapshot, its
-    ///         shares at the units then in force plus its claim, to `recipient`: the recovery address it registered in
-    ///         the hub for this chain, or else the one it signed for. Within the speed limit, as every payout.
+    /// @notice Anyone, after the snapshot. Pays `holder`'s share of `token` in `index` at the snapshot, its shares at
+    ///         the units then in force plus its claim, to `recipient`: the recovery address it registered in the hub for
+    ///         this chain, or else the one it signed for, which covers every token of the index here. Within the speed
+    ///         limit, as every payout. Each token of an index is claimed once per holder.
+    /// @param token The coin on this chain, the native coin's being address zero.
     /// @param component The coin's position among the index's components.
     /// @param proof The state reader's proof of the holder's balance, the component, the claim and the recovery address.
     /// @param signature The holder's EIP-712 `SnapshotClaim(index, holder, recipient)`, if it registered none.
@@ -341,6 +355,7 @@ interface IXindexVault {
         address index,
         address holder,
         address recipient,
+        address token,
         uint256 component,
         bytes calldata proof,
         bytes calldata signature

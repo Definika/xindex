@@ -324,7 +324,7 @@ contract HybridHubRebalanceTest is HybridTest {
         hub.failRebalance();
         _deliverAll(vm.getRecordedLogs());
         vm.prank(executor);
-        vault.refund(address(hub), intakeId);
+        vault.refund(address(hub), intakeId, address(0));
         assertEq(executor.balance, deliveries[1], "the delivery comes back on the vault chain");
         vm.expectRevert(
             abi.encodeWithSelector(IHybridHubTypes.WrongFillStatus.selector, IHybridHubTypes.FillStatus.None)

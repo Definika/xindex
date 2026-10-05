@@ -14,6 +14,7 @@ import {IXindexVault} from "../src/interfaces/IXindexVault.sol";
 import {XindexVault} from "../src/vault/XindexVault.sol";
 import {VaultMessages} from "../src/libraries/VaultMessages.sol";
 import {MockFeeToken} from "./mocks/MockFeeToken.sol";
+import {MockERC20} from "./mocks/MockERC20.sol";
 import {HybridTest} from "./HybridTest.sol";
 
 /// @notice The HybridHub on one EVM, against a real vault: mint orders from opening to claim, burns delivered and paid,
@@ -384,7 +385,7 @@ contract HybridHubTest is HybridTest {
         hub.claim(address(weth), minter);
         assertEq(weth.balanceOf(minter), amounts[0]);
         vm.prank(minter);
-        vault.refund(address(hub), intakeId);
+        vault.refund(address(hub), intakeId, address(0));
         assertEq(minter.balance, amounts[1], "refunded on the vault chain");
         vm.expectRevert(
             abi.encodeWithSelector(IHybridHubTypes.WrongStatus.selector, orderId, IHybridHubTypes.OrderStatus.Failed)
@@ -428,7 +429,7 @@ contract HybridHubTest is HybridTest {
         assertEq(hub.claimOf(minter, address(weth)), 1.2e18);
         uint256 intakeId = hub.intakeIdOf(orderId); // before the prank, which a call in the arguments would consume
         vm.prank(minter);
-        vault.refund(address(hub), intakeId);
+        vault.refund(address(hub), intakeId, address(0));
         assertEq(minter.balance, 1.4e18, "the deposit came back on the vault chain");
 
         vm.expectRevert(
@@ -554,7 +555,7 @@ contract HybridHubTest is HybridTest {
         hub.failIntake(chainId, stray); // order 99 does not exist
         _deliverAll(vm.getRecordedLogs());
         vm.prank(holder);
-        vault.refund(address(hub), stray);
+        vault.refund(address(hub), stray, address(0));
         assertEq(holder.balance, 1e18);
         vm.expectRevert(abi.encodeWithSelector(IHybridHubTypes.IntakeAlreadyFailed.selector, stray));
         hub.failIntake(chainId, stray);
@@ -731,6 +732,81 @@ contract HybridHubTest is HybridTest {
         assertEq(address(uint160(uint256(recipient))).balance, amounts[1] + amounts[2], "paid on both chains");
         assertEq(vault.balance(address(two), address(0)), 0);
         assertEq(second.balance(address(two), address(0)), 0);
+    }
+
+    /// @dev An index holding a vault chain's native coin and a token on that chain, a Binance-Peg coin say: one intake
+    ///      takes both, settling credits both, and a burn pays both to the one recipient named for the chain. The hub
+    ///      treats the token as any vault coin, its id on the chain being its address.
+    function test_aChainsCoinAndTokenTogether() public {
+        MockERC20 peg = new MockERC20("Binance-Peg XRP Token", "XRP", 18);
+        address pegId = _listVaultToken(address(peg), 1_000_000_000e18, 1_000_000e18, 1_000_000e18);
+        assertEq(vault.cap(address(peg)), 1_000_000e18);
+        address[] memory tokens = new address[](3);
+        (tokens[0], tokens[1], tokens[2]) = (address(weth), native, pegId);
+        vm.prank(minter);
+        IHybridIndex mixed = IHybridIndex(factory.createIndex("Mixed", "MIX", tokens, K));
+        (uint256[] memory ids,) = mixed.chains();
+        assertEq(ids.length, 1, "one chain, two of its coins");
+        vault.registerIndex(address(mixed), factory.indexSalt(address(mixed)));
+
+        uint256[] memory amounts = _mintWithToken(mixed, minter, 1e18, peg);
+        assertEq(amounts[2], 10e18, "10 tokens per index token");
+        assertEq(mixed.balanceOf(minter), 1e18);
+        assertEq(mixed.vaultBacking(pegId), amounts[2]);
+        assertEq(vault.balance(address(mixed), address(peg)), amounts[2], "the vault's books agree");
+        assertEq(vault.intakeTokens(address(mixed), mixed.intakeIdOf(1))[1], address(peg));
+
+        vm.recordLogs();
+        vm.prank(minter);
+        mixed.redeem(0.5e18, to, _recipients(recipient), 0);
+        assertEq(_deliverAll(vm.getRecordedLogs()), 2, "one burn per coin");
+        address payee = address(uint160(uint256(recipient)));
+        assertEq(payee.balance, amounts[1] / 2);
+        assertEq(peg.balanceOf(payee), amounts[2] / 2, "the token paid on the vault chain");
+        assertEq(mixed.vaultBacking(pegId), amounts[2] / 2);
+        assertEq(vault.balance(address(mixed), address(peg)), amounts[2] / 2);
+    }
+
+    /// @dev A stranger depositing another capped token into an order's intake blocks nothing: the settle proves the
+    ///      intake by its whole preimage and counts only the index's components, and the stray token joins the index's
+    ///      vault balance as a donation the hub never counts.
+    function test_aStrayTokenInAnIntakeBlocksNothing() public {
+        MockERC20 peg = new MockERC20("Binance-Peg XRP Token", "XRP", 18);
+        _listVaultToken(address(peg), 1_000_000_000e18, 1_000_000e18, 0);
+        uint256[] memory amounts = hub.previewOrder(1e18);
+        weth.mint(minter, amounts[0]);
+        vm.deal(minter, amounts[1]);
+        vm.startPrank(minter);
+        weth.approve(address(hub), amounts[0]);
+        (uint256 orderId, uint256 intakeId) = hub.openOrder(1e18, block.timestamp + 1 hours);
+        _fresh();
+        vault.deposit{value: amounts[1]}(address(hub), intakeId);
+        vm.stopPrank();
+        address stranger = makeAddr("stranger");
+        peg.mint(stranger, 1);
+        vm.startPrank(stranger);
+        peg.approve(address(vault), 1);
+        vault.depositToken(address(hub), intakeId, address(peg), 1);
+        vm.stopPrank();
+
+        vm.warp(block.timestamp + 1 hours + 1);
+        IHybridHubTypes.ChainProof[] memory proofs = _chainProof(block.timestamp, amounts[1]);
+        // The vault's digest covers the stray token too, so a preimage without it is not the vault's.
+        vm.expectPartialRevert(IHybridHubTypes.DigestMismatch.selector);
+        hub.settleOrder(orderId, proofs);
+        proofs[0].tokens = new address[](2);
+        proofs[0].tokens[1] = address(peg);
+        proofs[0].totals = new uint256[](2);
+        (proofs[0].totals[0], proofs[0].totals[1]) = (amounts[1], 1);
+        hub.settleOrder(orderId, proofs);
+        vm.warp(block.timestamp + hub.MINT_LOCK());
+        vm.recordLogs();
+        hub.claimOrder(orderId);
+        _deliverAll(vm.getRecordedLogs());
+        assertEq(hub.balanceOf(minter), 1e18);
+        assertEq(hub.vaultBacking(native), amounts[1]);
+        assertEq(vault.balance(address(hub), address(peg)), 1, "a donation the hub never counts");
+        _checkBacking();
     }
 
     /// @dev Delivers each message to the vault it names: the first vault as it is, `other` on `otherChain`.

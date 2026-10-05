@@ -10,6 +10,10 @@ import {VaultMessages} from "../src/libraries/VaultMessages.sol";
 import {IStateReader} from "../src/interfaces/IStateReader.sol";
 import {MockEventVerifier} from "./mocks/MockEventVerifier.sol";
 import {MockStateReader} from "./mocks/MockStateReader.sol";
+import {MockERC20} from "./mocks/MockERC20.sol";
+import {MockFeeToken} from "./mocks/MockFeeToken.sol";
+import {MockUSDT} from "./mocks/MockUSDT.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /// @notice Refuses every payment, as a contract recipient without a receive function does.
 contract RefusingRecipient {}
@@ -583,17 +587,17 @@ contract XindexVaultTest is VaultTestBase {
         _deposit(bob, index, intakeId, 2 ether);
         vm.expectRevert(abi.encodeWithSelector(IXindexVault.IntakeNotOpen.selector, index, intakeId));
         vm.prank(alice);
-        vault.refund(index, intakeId);
+        vault.refund(index, intakeId, address(0));
 
         _deliver(index, _payload(VaultMessages.INTAKE_FAILED, index, abi.encode(intakeId)));
         vm.prank(alice);
-        vault.refund(index, intakeId);
+        vault.refund(index, intakeId, address(0));
         assertEq(alice.balance, 3 ether);
         vm.prank(alice);
         vm.expectRevert(IXindexVault.NothingToRefund.selector);
-        vault.refund(index, intakeId);
+        vault.refund(index, intakeId, address(0));
         vm.prank(bob);
-        vault.refund(index, intakeId);
+        vault.refund(index, intakeId, address(0));
         assertEq(bob.balance, 2 ether);
         assertEq(vault.held(address(0)), 0);
         assertEq(vault.balance(index, address(0)), 0, "a failed intake never joined the index");
@@ -738,7 +742,7 @@ contract XindexVaultTest is VaultTestBase {
         vault.deliver(_proof(factory, _payload(VaultMessages.FREEZE, factory, "")), ""); // one proof suffices
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(IXindexVault.VaultFrozen.selector, vault.frozenUntil()));
-        vault.refund(index, intakeId);
+        vault.refund(index, intakeId, address(0));
     }
 
     function test_governance_freezerAndVerifiers() public {
@@ -1373,10 +1377,10 @@ contract XindexVaultTest is VaultTestBase {
         );
         _snapshot();
         vm.expectRevert(abi.encodeWithSelector(IXindexVault.WrongComponent.selector, past));
-        vault.claimSnapshot(index, holder, bob, past, "", _sign(key, index, holder, bob));
+        vault.claimSnapshot(index, holder, bob, address(0), past, "", _sign(key, index, holder, bob));
         vm.expectRevert(abi.encodeWithSelector(IXindexVault.WrongComponent.selector, 2));
-        vault.claimSnapshot(index, holder, bob, 2, "", _sign(key, index, holder, bob));
-        vault.claimSnapshot(index, holder, bob, 1, "", _sign(key, index, holder, bob));
+        vault.claimSnapshot(index, holder, bob, address(0), 2, "", _sign(key, index, holder, bob));
+        vault.claimSnapshot(index, holder, bob, address(0), 1, "", _sign(key, index, holder, bob));
         assertEq(bob.balance, 2.8 ether);
     }
 
@@ -1389,7 +1393,7 @@ contract XindexVaultTest is VaultTestBase {
         bytes32 slot = keccak256(abi.encode(block.chainid, keccak256(abi.encode(holder, uint256(59)))));
         vm.store(index, slot, bytes32(type(uint256).max));
         _snapshot();
-        vault.claimSnapshot(index, holder, bob, 1, "", _sign(key, index, holder, bob));
+        vault.claimSnapshot(index, holder, bob, address(0), 1, "", _sign(key, index, holder, bob));
         assertEq(bob.balance, 2.8 ether);
     }
 
@@ -1475,30 +1479,32 @@ contract XindexVaultTest is VaultTestBase {
         (address holder, uint256 key) = makeAddrAndKey("holder");
         _hubState(index, holder, 2e18, 1.4e18, 0.2 ether, address(0));
         vm.expectRevert(IXindexVault.NoSnapshot.selector);
-        vault.claimSnapshot(index, holder, bob, 1, "", _sign(key, index, holder, bob));
+        vault.claimSnapshot(index, holder, bob, address(0), 1, "", _sign(key, index, holder, bob));
         _snapshot();
 
         vm.expectRevert(IXindexVault.BadSignature.selector);
-        vault.claimSnapshot(index, holder, bob, 1, "", _sign(key, index, holder, alice));
+        vault.claimSnapshot(index, holder, bob, address(0), 1, "", _sign(key, index, holder, alice));
         vm.expectRevert(IXindexVault.BadSignature.selector);
-        vault.claimSnapshot(index, holder, bob, 1, "", hex"00");
+        vault.claimSnapshot(index, holder, bob, address(0), 1, "", hex"00");
         vm.expectRevert(abi.encodeWithSelector(IXindexVault.WrongComponent.selector, 0));
-        vault.claimSnapshot(index, holder, bob, 0, "", _sign(key, index, holder, bob));
+        vault.claimSnapshot(index, holder, bob, address(0), 0, "", _sign(key, index, holder, bob));
         vm.expectRevert(abi.encodeWithSelector(IXindexVault.NotAnIndex.selector, alice));
-        vault.claimSnapshot(alice, holder, bob, 1, "", _sign(key, index, holder, bob));
+        vault.claimSnapshot(alice, holder, bob, address(0), 1, "", _sign(key, index, holder, bob));
         vm.expectRevert(IXindexVault.ZeroAddress.selector);
-        vault.claimSnapshot(index, holder, address(0), 1, "", _sign(key, index, holder, address(0)));
+        vault.claimSnapshot(index, holder, address(0), address(0), 1, "", _sign(key, index, holder, address(0)));
 
         bytes32 id = keccak256(
-            abi.encode(keccak256("SnapshotClaim(address index,address holder,address recipient)"), index, holder)
+            abi.encode(
+                keccak256("SnapshotClaim(address index,address holder,address recipient)"), index, holder, address(0)
+            )
         );
         vm.expectEmit(address(vault));
-        emit IXindexVault.SnapshotClaimed(index, holder, bob, 3 ether, id);
-        vault.claimSnapshot(index, holder, bob, 1, "", _sign(key, index, holder, bob));
+        emit IXindexVault.SnapshotClaimed(index, holder, address(0), bob, 3 ether, id);
+        vault.claimSnapshot(index, holder, bob, address(0), 1, "", _sign(key, index, holder, bob));
         assertEq(bob.balance, 3 ether, "2 shares at 1.4, plus a claim of 0.2");
-        assertTrue(vault.snapshotClaimed(index, holder));
-        vm.expectRevert(abi.encodeWithSelector(IXindexVault.AlreadyClaimed.selector, index, holder));
-        vault.claimSnapshot(index, holder, bob, 1, "", _sign(key, index, holder, bob));
+        assertTrue(vault.snapshotClaimed(index, holder, address(0)));
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.AlreadyClaimed.selector, index, holder, address(0)));
+        vault.claimSnapshot(index, holder, bob, address(0), 1, "", _sign(key, index, holder, bob));
     }
 
     /// @dev A holder with a recovery address, such as a contract, is paid there and only there; one with no share is
@@ -1511,11 +1517,13 @@ contract XindexVaultTest is VaultTestBase {
         address nobody = makeAddr("nobody");
         _snapshot();
         vm.expectRevert(abi.encodeWithSelector(IXindexVault.WrongRecipient.selector, safeOnBnb));
-        vault.claimSnapshot(index, safe, bob, 1, "", "");
-        vault.claimSnapshot(index, safe, safeOnBnb, 1, "", "");
+        vault.claimSnapshot(index, safe, bob, address(0), 1, "", "");
+        vault.claimSnapshot(index, safe, safeOnBnb, address(0), 1, "", "");
         assertEq(safeOnBnb.balance, 4 ether, "4% of the 100 today");
         bytes32 id = keccak256(
-            abi.encode(keccak256("SnapshotClaim(address index,address holder,address recipient)"), index, safe)
+            abi.encode(
+                keccak256("SnapshotClaim(address index,address holder,address recipient)"), index, safe, address(0)
+            )
         );
         assertEq(vault.owed(index, id).remaining, 46 ether);
         vm.warp(block.timestamp + 25 hours);
@@ -1524,7 +1532,7 @@ contract XindexVaultTest is VaultTestBase {
 
         _hubState(index, nobody, 0, 1e18, 0, address(0));
         vm.expectRevert(IXindexVault.ZeroAmount.selector);
-        vault.claimSnapshot(index, nobody, bob, 1, "", "");
+        vault.claimSnapshot(index, nobody, bob, address(0), 1, "", "");
     }
 
     /// @dev After the snapshot, an intake still open is settled if the hub had sent its settle message by then, and
@@ -1546,9 +1554,398 @@ contract XindexVaultTest is VaultTestBase {
         vault.resolveIntake(index, unsettled, "");
         assertEq(uint256(vault.intakeState(index, unsettled)), uint256(IXindexVault.IntakeState.Failed));
         vm.prank(bob);
-        vault.refund(index, unsettled);
+        vault.refund(index, unsettled, address(0));
         assertEq(bob.balance, 3 ether);
         vm.expectRevert(abi.encodeWithSelector(IXindexVault.IntakeNotOpen.selector, index, settled));
         vault.resolveIntake(index, settled, "");
+    }
+
+    // ---------------------------------------------------------------------
+    // tokens on this chain (a Binance-Peg coin or a BNB Chain token)
+    // ---------------------------------------------------------------------
+
+    /// @dev Gives `token` a cap and a floor as the factory's CAP_UPDATE does: both proofs, then GOVERNANCE_DELAY.
+    function _capped(address token, uint256 cap_, uint256 floor_) internal {
+        _govern(VaultMessages.CAP_UPDATE, abi.encode(_b32(token), cap_, floor_));
+        _fresh();
+    }
+
+    /// @dev Mints `amount` of `token` to `from`, which approves the vault and deposits it. A low-level approve, since
+    ///      a USDT-like token returns nothing.
+    function _depositToken(address from, address idx, uint256 intakeId, address token, uint256 amount) internal {
+        MockERC20(token).mint(from, amount);
+        vm.prank(from);
+        (bool ok,) = token.call(abi.encodeCall(IERC20.approve, (address(vault), amount)));
+        assertTrue(ok);
+        vm.prank(from);
+        vault.depositToken(idx, intakeId, token, amount);
+    }
+
+    /// @dev Deposits `amount` of `token` into a fresh intake of `idx` and settles it.
+    function _fundToken(address idx, address token, uint256 amount) internal {
+        uint256 intakeId = _intake(block.timestamp + 1 hours, ++nonce);
+        _depositToken(alice, idx, intakeId, token, amount);
+        _deliver(idx, _payload(VaultMessages.INTAKE_SETTLED, idx, abi.encode(intakeId)));
+    }
+
+    function _tokenBurn(address idx, address token, uint256 amount, address to) internal returns (bytes memory) {
+        return _payload(VaultMessages.BURN, idx, abi.encode(_b32(token), amount, _b32(to)));
+    }
+
+    /// @dev A token is refused until governance gives it a cap, which waits as any raise does; then it is held and
+    ///      counted on its own, apart from the native coin.
+    function test_depositToken_refusedUntilGovernanceGivesACap() public {
+        MockERC20 peg = new MockERC20("Binance-Peg XRP Token", "XRP", 18);
+        uint256 intakeId = _intake(block.timestamp + 1 hours, 1);
+        peg.mint(alice, 7e18);
+        vm.prank(alice);
+        peg.approve(address(vault), 7e18);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.CapExceeded.selector, address(peg), 5e18, 0));
+        vault.depositToken(index, intakeId, address(peg), 5e18);
+        vm.prank(alice);
+        vm.expectRevert(IXindexVault.ZeroAddress.selector);
+        vault.depositToken(index, intakeId, address(0), 5e18);
+
+        _capped(address(peg), 6e18, 0);
+        intakeId = _intake(block.timestamp + 1 hours, 2);
+        vm.expectEmit(address(vault));
+        emit IXindexVault.Deposited(index, intakeId, alice, address(peg), 5e18);
+        vm.prank(alice);
+        vault.depositToken(index, intakeId, address(peg), 5e18);
+        assertEq(peg.balanceOf(address(vault)), 5e18);
+        assertEq(vault.held(address(peg)), 5e18);
+        assertEq(vault.held(address(0)), 0, "the native coin's count is its own");
+        assertEq(vault.deposited(index, intakeId, address(peg), alice), 5e18);
+        assertEq(vault.intakeTotal(index, intakeId, address(peg)), 5e18);
+        assertEq(vault.intakeTokens(index, intakeId)[0], address(peg));
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.CapExceeded.selector, address(peg), 7e18, 6e18));
+        vault.depositToken(index, intakeId, address(peg), 2e18);
+        vm.prank(alice);
+        vm.expectRevert(IXindexVault.ZeroAmount.selector);
+        vault.depositToken(index, intakeId, address(peg), 0);
+    }
+
+    /// @dev A deposit must deliver every unit it names: a fee-on-transfer token is refused, and so is a USDT-like
+    ///      token once its fee switch is on, which it was not when it was listed.
+    function test_depositToken_aShortDeliveryIsRefused() public {
+        MockFeeToken fee = new MockFeeToken();
+        MockUSDT switchable = new MockUSDT();
+        _capped(address(fee), 1000e18, 0);
+        _capped(address(switchable), 1000e6, 0);
+        uint256 intakeId = _intake(block.timestamp + 1 hours, 1);
+        fee.mint(alice, 100e18);
+        vm.prank(alice);
+        fee.approve(address(vault), 100e18);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.DepositShortfall.selector, address(fee), 99e18, 100e18));
+        vault.depositToken(index, intakeId, address(fee), 100e18);
+
+        _depositToken(alice, index, intakeId, address(switchable), 100e6);
+        assertEq(vault.held(address(switchable)), 100e6, "a token returning nothing is taken");
+        switchable.setParams(10, 1000);
+        switchable.mint(alice, 100e6);
+        vm.prank(alice);
+        switchable.approve(address(vault), 100e6);
+        vm.prank(alice);
+        vm.expectRevert(
+            abi.encodeWithSelector(IXindexVault.DepositShortfall.selector, address(switchable), 99.9e6, 100e6)
+        );
+        vault.depositToken(index, intakeId, address(switchable), 100e6);
+        assertEq(vault.held(address(switchable)), 100e6, "the refused deposit left no trace");
+    }
+
+    /// @dev One intake takes the native coin and tokens together, and its digest, and then the index's, commit to each
+    ///      token's total in the order the tokens first arrived, as the hub's preimage lists them.
+    function test_token_anIntakeHoldsTheCoinAndTokensTogether() public {
+        MockERC20 peg = new MockERC20("Binance-Peg XRP Token", "XRP", 18);
+        _capped(address(peg), 1000e18, 0);
+        uint256 intakeId = _intake(block.timestamp + 1 hours, 1);
+        _deposit(bob, index, intakeId, 2 ether);
+        _depositToken(alice, index, intakeId, address(peg), 3e18);
+        address[] memory tokens = new address[](2);
+        tokens[1] = address(peg);
+        uint256[] memory totals = new uint256[](2);
+        (totals[0], totals[1]) = (2 ether, 3e18);
+        assertEq(
+            vault.intakeDigest(index, intakeId),
+            keccak256(
+                abi.encode(
+                    keccak256("xindex.v4.vault.intake-digest"),
+                    block.chainid,
+                    address(vault),
+                    index,
+                    intakeId,
+                    IXindexVault.IntakeState.Open,
+                    tokens,
+                    totals
+                )
+            )
+        );
+        _deliver(index, _payload(VaultMessages.INTAKE_SETTLED, index, abi.encode(intakeId)));
+        assertEq(vault.balance(index, address(0)), 2 ether);
+        assertEq(vault.balance(index, address(peg)), 3e18);
+        assertEq(vault.indexTokens(index), tokens);
+        uint256[] memory paid = new uint256[](2);
+        assertEq(
+            vault.indexDigest(index),
+            keccak256(
+                abi.encode(
+                    keccak256("xindex.v4.vault.index-digest"),
+                    block.chainid,
+                    address(vault),
+                    index,
+                    tokens,
+                    totals,
+                    paid
+                )
+            )
+        );
+    }
+
+    /// @dev A token's burn pays within the token's own speed limit and floor, which leave the native coin's untouched.
+    function test_token_aBurnPaysWithinItsOwnLimit() public {
+        MockERC20 peg = new MockERC20("Binance-Peg XRP Token", "XRP", 18);
+        _capped(address(peg), 10_000e18, 0);
+        _fund(index, 100 ether);
+        _fundToken(index, address(peg), 1000e18);
+        bytes memory payload = _tokenBurn(index, address(peg), 100e18, bob);
+        bytes32 id = keccak256(payload);
+        vm.expectEmit(address(vault));
+        emit IXindexVault.BurnAccepted(index, id, address(peg), 100e18, bob);
+        vm.expectEmit(address(vault));
+        emit IXindexVault.Paid(index, id, bob, 40e18, 60e18);
+        _deliver(index, payload);
+        assertEq(peg.balanceOf(bob), 40e18, "4% of 1000");
+        assertEq(vault.held(address(peg)), 960e18);
+        assertEq(vault.paidTotal(index, address(peg)), 40e18);
+        assertEq(vault.available(index, address(peg)), 0);
+        assertEq(vault.available(index, address(0)), 4 ether, "the native coin's limit is its own");
+        _deliver(index, _burnPayload(index, 4 ether, bob));
+        assertEq(bob.balance, 4 ether);
+
+        vm.warp(block.timestamp + 25 hours);
+        vault.release(index, id);
+        assertEq(peg.balanceOf(bob), 40e18 + 38.4e18, "4% of the 960 left");
+        assertEq(vault.owed(index, id).remaining, 21.6e18);
+    }
+
+    /// @dev A token that refuses its transfers, paused or blacklisting the vault, holds back only its own payouts: its
+    ///      burn stays deliverable and its owed rest releasable, and the native coin keeps moving.
+    function test_token_aRefusingTokenHoldsBackOnlyItself() public {
+        MockUSDT pausing = new MockUSDT();
+        _capped(address(pausing), 1_000_000e6, 0);
+        _fund(index, 100 ether);
+        _fundToken(index, address(pausing), 1000e6);
+
+        pausing.pause();
+        bytes memory payload = _tokenBurn(index, address(pausing), 100e6, bob);
+        vm.expectRevert("USDT: paused");
+        _deliver(index, payload);
+        assertFalse(vault.used(keccak256(payload)));
+        _deliver(index, _burnPayload(index, 1 ether, bob));
+        assertEq(bob.balance, 1 ether, "the native coin still moves");
+
+        pausing.unpause();
+        _deliver(index, payload);
+        assertEq(pausing.balanceOf(bob), 40e6);
+        vm.warp(block.timestamp + 25 hours);
+        pausing.addBlackList(address(vault));
+        vm.expectRevert("USDT: blacklisted");
+        vault.release(index, keccak256(payload));
+        pausing.removeBlackList(address(vault));
+        vault.release(index, keccak256(payload));
+        assertEq(pausing.balanceOf(bob), 40e6 + 38.4e6);
+    }
+
+    /// @dev A failed intake's depositor takes each token back on its own, so a token that refuses holds back no other.
+    function test_token_aRefundIsPerToken() public {
+        MockERC20 peg = new MockERC20("Binance-Peg XRP Token", "XRP", 18);
+        MockUSDT pausing = new MockUSDT();
+        _capped(address(peg), 1000e18, 0);
+        _capped(address(pausing), 1000e6, 0);
+        uint256 intakeId = _intake(block.timestamp + 1 hours, 1);
+        _deposit(alice, index, intakeId, 1 ether);
+        _depositToken(alice, index, intakeId, address(peg), 2e18);
+        _depositToken(alice, index, intakeId, address(pausing), 3e6);
+        _deliver(index, _payload(VaultMessages.INTAKE_FAILED, index, abi.encode(intakeId)));
+
+        pausing.pause();
+        vm.prank(alice);
+        vm.expectRevert("USDT: paused");
+        vault.refund(index, intakeId, address(pausing));
+        vm.expectEmit(address(vault));
+        emit IXindexVault.Refunded(index, intakeId, alice, address(peg), 2e18);
+        vm.prank(alice);
+        vault.refund(index, intakeId, address(peg));
+        assertEq(peg.balanceOf(alice), 2e18);
+        assertEq(vault.held(address(peg)), 0);
+        assertEq(vault.intakeTotal(index, intakeId, address(peg)), 0);
+        vm.prank(alice);
+        vm.expectRevert(IXindexVault.NothingToRefund.selector);
+        vault.refund(index, intakeId, address(peg));
+        vm.prank(alice);
+        vault.refund(index, intakeId, address(0));
+        assertEq(alice.balance, 1 ether);
+        pausing.unpause();
+        vm.prank(alice);
+        vault.refund(index, intakeId, address(pausing));
+        assertEq(pausing.balanceOf(alice), 3e6);
+        assertEq(vault.held(address(pausing)), 0);
+    }
+
+    /// @dev A migration moves a token into the new index's balance within the speed limit; the token stays in the vault.
+    function test_token_aMigrationMovesTheToken() public {
+        MockERC20 peg = new MockERC20("Binance-Peg XRP Token", "XRP", 18);
+        _capped(address(peg), 10_000e18, 0);
+        address newIndex = _registered(keccak256("index-2"));
+        _fundToken(index, address(peg), 1000e18);
+        bytes memory payload = _payload(VaultMessages.MIGRATE, index, abi.encode(newIndex, _b32(address(peg)), 100e18));
+        vm.expectEmit(address(vault));
+        emit IXindexVault.MigrationAccepted(index, keccak256(payload), address(peg), 100e18, newIndex);
+        _deliver(index, payload);
+        assertEq(vault.balance(newIndex, address(peg)), 40e18);
+        assertEq(vault.balance(index, address(peg)), 960e18);
+        assertEq(vault.held(address(peg)), 1000e18, "a migration moves nothing out of the vault");
+        assertEq(peg.balanceOf(address(vault)), 1000e18);
+        assertEq(vault.indexTokens(newIndex)[0], address(peg));
+    }
+
+    /// @dev Writes a token component into the hub's storage the snapshot reads: `token`'s Ethereum-side id at position
+    ///      `component`, the array's length, and the holder's claim of it.
+    function _hubToken(address idx, address holder, address token, uint256 component, uint256 units, uint256 claim)
+        internal
+    {
+        address id = _vaultId(token);
+        vm.store(idx, bytes32(0), bytes32(component + 1));
+        vm.store(
+            idx, bytes32(uint256(keccak256(abi.encode(uint256(0)))) + component), bytes32(units << 160 | uint160(id))
+        );
+        vm.store(idx, keccak256(abi.encode(id, keccak256(abi.encode(holder, uint256(11))))), bytes32(claim));
+    }
+
+    /// @dev The factory's `vaultTokenId(block.chainid, bytes32(token))`.
+    function _vaultId(address token) internal view returns (address) {
+        return address(
+            uint160(uint256(keccak256(abi.encode(keccak256("xindex.v4.vault-token"), block.chainid, _b32(token)))))
+        );
+    }
+
+    /// @dev After the snapshot, a holder claims each coin of the index on this chain once, the native coin and a token
+    ///      alike, with the one signature naming its recipient; a token's claim reads that token's component and claim.
+    function test_claimSnapshot_eachTokenOnce() public {
+        MockERC20 peg = new MockERC20("Binance-Peg XRP Token", "XRP", 18);
+        _capped(address(peg), 10_000e18, 0);
+        _fund(index, 100 ether);
+        _fundToken(index, address(peg), 100e18);
+        (address holder, uint256 key) = makeAddrAndKey("holder");
+        _hubState(index, holder, 2e18, 1.4e18, 0, address(0));
+        _hubToken(index, holder, address(peg), 2, 5e18, 1e18);
+        _snapshot();
+        bytes memory signature = _sign(key, index, holder, bob);
+
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.WrongComponent.selector, 1));
+        vault.claimSnapshot(index, holder, bob, address(peg), 1, "", signature);
+        bytes32 id = keccak256(
+            abi.encode(
+                keccak256("SnapshotClaim(address index,address holder,address recipient)"), index, holder, address(peg)
+            )
+        );
+        vm.expectEmit(address(vault));
+        emit IXindexVault.SnapshotClaimed(index, holder, address(peg), bob, 11e18, id);
+        vault.claimSnapshot(index, holder, bob, address(peg), 2, "", signature);
+        assertEq(peg.balanceOf(bob), 4e18, "4% of the 100 today, of 2 shares at 5 plus a claim of 1");
+        assertTrue(vault.snapshotClaimed(index, holder, address(peg)));
+        assertFalse(vault.snapshotClaimed(index, holder, address(0)));
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.AlreadyClaimed.selector, index, holder, address(peg)));
+        vault.claimSnapshot(index, holder, bob, address(peg), 2, "", signature);
+
+        vault.claimSnapshot(index, holder, bob, address(0), 1, "", signature);
+        assertEq(bob.balance, 2.8 ether, "the native coin is claimed on its own");
+        IXindexVault.Owed memory rest = vault.owed(index, id);
+        assertEq(rest.token, address(peg), "the token's rest is its own debt");
+        assertEq(rest.remaining, 7e18);
+        vm.warp(block.timestamp + 25 hours);
+        vault.release(index, id);
+        assertEq(peg.balanceOf(bob), 4e18 + 3.84e18);
+    }
+
+    /// @dev VLT-1 on a token: a claim reads its component only inside the components array, whatever lies past it.
+    function test_VLT1_aTokenClaimReadsOnlyInsideTheArray() public {
+        MockERC20 peg = new MockERC20("Binance-Peg XRP Token", "XRP", 18);
+        _capped(address(peg), 10_000e18, 0);
+        _fundToken(index, address(peg), 1000e18);
+        (address holder, uint256 key) = makeAddrAndKey("holder");
+        _hubState(index, holder, 2e18, 1.4e18, 0, address(0));
+        _hubToken(index, holder, address(peg), 2, 5e18, 0);
+        uint256 past = 7;
+        vm.store(
+            index,
+            bytes32(uint256(keccak256(abi.encode(uint256(0)))) + past),
+            bytes32(uint256(1e24) << 160 | uint160(_vaultId(address(peg))))
+        );
+        _snapshot();
+        bytes memory signature = _sign(key, index, holder, bob);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.WrongComponent.selector, past));
+        vault.claimSnapshot(index, holder, bob, address(peg), past, "", signature);
+        vault.claimSnapshot(index, holder, bob, address(peg), 2, "", signature);
+        assertEq(peg.balanceOf(bob), 10e18);
+    }
+
+    /// @dev VLT-2 on a token: its first cap is a raise, so it waits GOVERNANCE_DELAY on the vault, where the freezer can
+    ///      cancel it; until then the token is refused.
+    function test_VLT2_aTokensFirstCapWaitsAndTheFreezerCanStopIt() public {
+        MockERC20 peg = new MockERC20("Binance-Peg XRP Token", "XRP", 18);
+        bytes memory body = abi.encode(_b32(address(peg)), 1000e18, 0);
+        bytes32 key = bytes32(uint256(VaultMessages.CAP_UPDATE) << 160 | uint160(address(peg)));
+        uint256 readyAt = block.timestamp + 7 days;
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.BothProofsRequired.selector, VaultMessages.CAP_UPDATE));
+        vault.deliver(_proof(factory, _payload(VaultMessages.CAP_UPDATE, factory, body)), "");
+        vm.expectEmit(address(vault));
+        emit IXindexVault.ChangeQueued(key, VaultMessages.CAP_UPDATE, body, readyAt);
+        _deliver(factory, _payload(VaultMessages.CAP_UPDATE, factory, body));
+        assertEq(vault.cap(address(peg)), 0, "the cap waits");
+        vm.prank(freezerKey);
+        vault.cancelChange(key);
+        vm.warp(readyAt);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NoPendingChange.selector, key));
+        vault.applyChange(VaultMessages.CAP_UPDATE, body, readyAt);
+        _fresh();
+        uint256 intakeId = _intake(block.timestamp + 1 hours, 1);
+        peg.mint(alice, 1e18);
+        vm.prank(alice);
+        peg.approve(address(vault), 1e18);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.CapExceeded.selector, address(peg), 1e18, 0));
+        vault.depositToken(index, intakeId, address(peg), 1e18);
+    }
+
+    /// @dev VLT-3 on a token: a burn of it from a block after the checkpoint waits for the checkpoint.
+    function test_VLT3_aTokenBurnWaitsForTheCheckpoint() public {
+        MockERC20 peg = new MockERC20("Binance-Peg XRP Token", "XRP", 18);
+        _capped(address(peg), 10_000e18, 0);
+        _fundToken(index, address(peg), 100e18);
+        _advance(100);
+        v1.setEventBlock(101);
+        v2.setEventBlock(101);
+        bytes memory payload = _tokenBurn(index, address(peg), 1e18, bob);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.NotCheckpointed.selector, 101, 100));
+        _deliver(index, payload);
+        _advance(101);
+        _deliver(index, payload);
+        assertEq(peg.balanceOf(bob), 1e18);
+    }
+
+    /// @dev A token burn in flight at the snapshot is paid from the index's mark, as a native one is.
+    function test_deliverRecorded_paysATokenBurn() public {
+        MockERC20 peg = new MockERC20("Binance-Peg XRP Token", "XRP", 18);
+        _capped(address(peg), 10_000e18, 0);
+        _fundToken(index, address(peg), 100e18);
+        bytes memory burn = _tokenBurn(index, address(peg), 2e18, bob);
+        _record(burn);
+        _snapshot();
+        vault.deliverRecorded(burn, "");
+        assertEq(peg.balanceOf(bob), 2e18);
     }
 }

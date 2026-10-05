@@ -2,6 +2,8 @@
 pragma solidity 0.8.28;
 
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {StorageSlot} from "@openzeppelin/contracts/utils/StorageSlot.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IXindexVault} from "../interfaces/IXindexVault.sol";
@@ -11,16 +13,19 @@ import {VaultMessages} from "../libraries/VaultMessages.sol";
 import {VaultSnapshot} from "./VaultSnapshot.sol";
 
 /// @title XindexVault
-/// @notice The vault an EVM chain (BNB Chain, HyperEVM, Tron) runs for every index whose shares live on Ethereum. It
-///         holds the chain's native coin in a separate balance per index, takes coins in only as deposits to an intake,
-///         and lets them out only on messages that P1 and P2, two independent proofs of Ethereum's finality, show were
-///         sent by that index or by the factory. Payouts stay within a speed limit, exact over any 24 hours.
+/// @notice The vault an EVM chain (BNB Chain, Tron, Injective, VeChain) runs for every index whose shares live on
+///         Ethereum. It holds the chain's native coin, and each token governance has given a cap, in a separate balance
+///         per index and token, takes them in only as deposits to an intake, and lets them out only on messages that P1
+///         and P2, two independent proofs of Ethereum's finality, show were sent by that index or by the factory.
+///         Payouts stay within a speed limit per token, exact over any 24 hours.
 /// @dev No owner, no upgrade. Every coin the vault accounts for is in `held`: settled balances plus the deposits of
 ///      open and failed intakes not yet refunded. State is written before any coin moves, and every entry point that
 ///      can move a coin shares one reentrancy guard. If Ethereum's formats change unannounced and P1 and P2 stop
 ///      working, the vault stalls, may adopt a successor pair after a continuity test and 30 days of review, and after
 ///      180 days pays each index's holders at its last checkpoint directly (design 6.9).
 contract XindexVault is IXindexVault, ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
     /// @inheritdoc IXindexVault
     uint256 public constant SPEED_LIMIT = 0.04e18;
     /// @inheritdoc IXindexVault
@@ -127,7 +132,7 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
     /// @inheritdoc IXindexVault
     uint256 public vetoes;
     /// @inheritdoc IXindexVault
-    mapping(address index => mapping(address holder => bool)) public snapshotClaimed;
+    mapping(address index => mapping(address holder => mapping(address token => bool))) public snapshotClaimed;
     /// @inheritdoc IXindexVault
     mapping(bytes32 key => uint256) public governanceNonce;
     /// @inheritdoc IXindexVault
@@ -174,11 +179,33 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
 
     /// @inheritdoc IXindexVault
     function deposit(address index, uint256 intakeId) external payable nonReentrant {
+        _deposit(index, intakeId, NATIVE, msg.value);
+    }
+
+    /// @inheritdoc IXindexVault
+    function depositToken(address index, uint256 intakeId, address token, uint256 amount) external nonReentrant {
+        if (token == NATIVE) revert ZeroAddress();
+        // Effects first, then the pull, which must deliver every unit, as the hub's issue requires: a fee-on-transfer or
+        // deflationary token is refused even if a listed token changes behaviour. A token without a cap never gets here.
+        _deposit(index, intakeId, token, amount);
+        uint256 before = _balanceOf(token);
+        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+        uint256 received = _balanceOf(token) - before;
+        if (received < amount) revert DepositShortfall(token, received, amount);
+    }
+
+    /// @dev One call site for both reads of a deposit, which keeps the vault within EIP-170's size limit.
+    function _balanceOf(address token) private view returns (uint256) {
+        return IERC20(token).balanceOf(address(this));
+    }
+
+    /// @dev Records `amount` of `token` from the caller in intake `intakeId` of `index`. A token whose cap is zero, every
+    ///      token until governance gives it one, is refused here.
+    function _deposit(address index, uint256 intakeId, address token, uint256 amount) private {
         if (!isIndex[index]) revert NotAnIndex(index);
         _checkNotFrozen();
         // A stalled vault may never again see the message that would settle or fail an intake.
         if (stalled()) revert VaultStalled(stallStart());
-        uint256 amount = msg.value;
         if (amount == 0) revert ZeroAmount();
         uint256 deadline = intakeId >> 192; // an intake id is `(deadline << 192) | nonce` (VaultMessages)
         if (block.timestamp > deadline) revert IntakeClosed(index, intakeId);
@@ -189,16 +216,16 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         } else if (state != IntakeState.Open) {
             revert IntakeClosed(index, intakeId);
         }
-        uint256 newHeld = held[NATIVE] + amount;
-        if (newHeld > cap[NATIVE]) revert CapExceeded(NATIVE, newHeld, cap[NATIVE]);
-        held[NATIVE] = newHeld;
-        deposited[index][intakeId][NATIVE][msg.sender] += amount;
-        intakeTotal[index][intakeId][NATIVE] += amount;
-        if (!_intakeHasToken[index][intakeId][NATIVE]) {
-            _intakeHasToken[index][intakeId][NATIVE] = true;
-            _intakeTokens[index][intakeId].push(NATIVE);
+        uint256 newHeld = held[token] + amount;
+        if (newHeld > cap[token]) revert CapExceeded(token, newHeld, cap[token]);
+        held[token] = newHeld;
+        deposited[index][intakeId][token][msg.sender] += amount;
+        intakeTotal[index][intakeId][token] += amount;
+        if (!_intakeHasToken[index][intakeId][token]) {
+            _intakeHasToken[index][intakeId][token] = true;
+            _intakeTokens[index][intakeId].push(token);
         }
-        emit Deposited(index, intakeId, msg.sender, NATIVE, amount);
+        emit Deposited(index, intakeId, msg.sender, token, amount);
         _refreshIntakeDigest(index, intakeId);
     }
 
@@ -458,7 +485,7 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
             _refreshIndexDigest(recipient);
         } else {
             held[token] -= pay;
-            _send(recipient, pay);
+            _send(token, recipient, pay);
         }
     }
 
@@ -529,17 +556,17 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
     /// @inheritdoc IXindexVault
     // The payee is the caller, refunded only what the caller deposited.
     // aderyn-fp-next-line(eth-send-unchecked-address)
-    function refund(address index, uint256 intakeId) external nonReentrant {
+    function refund(address index, uint256 intakeId, address token) external nonReentrant {
         if (intakeState[index][intakeId] != IntakeState.Failed) revert IntakeNotOpen(index, intakeId);
         _checkNotFrozen();
-        uint256 amount = deposited[index][intakeId][NATIVE][msg.sender];
+        uint256 amount = deposited[index][intakeId][token][msg.sender];
         if (amount == 0) revert NothingToRefund();
-        deposited[index][intakeId][NATIVE][msg.sender] = 0;
-        intakeTotal[index][intakeId][NATIVE] -= amount;
-        held[NATIVE] -= amount;
-        emit Refunded(index, intakeId, msg.sender, NATIVE, amount);
+        deposited[index][intakeId][token][msg.sender] = 0;
+        intakeTotal[index][intakeId][token] -= amount;
+        held[token] -= amount;
+        emit Refunded(index, intakeId, msg.sender, token, amount);
         _refreshIntakeDigest(index, intakeId);
-        _send(msg.sender, amount);
+        _send(token, msg.sender, amount);
     }
 
     // ---------------------------------------------------------------------
@@ -690,27 +717,23 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         address index,
         address holder,
         address recipient,
+        address token,
         uint256 component,
         bytes calldata proof,
         bytes calldata signature
     ) external nonReentrant {
         if (!isIndex[index]) revert NotAnIndex(index);
         if (recipient == address(0)) revert ZeroAddress();
-        if (snapshotClaimed[index][holder]) revert AlreadyClaimed(index, holder);
-        (uint256 amount, address registered) =
-            VaultSnapshot.share(STATE_READER, _snapshotRoot(), index, holder, component, proof);
-        if (registered != address(0)) {
-            // A holder that registered a recovery address, such as a contract, is paid there and nowhere else.
-            if (recipient != registered) revert WrongRecipient(registered);
-        } else {
-            VaultSnapshot.checkSignature(address(this), index, holder, recipient, signature);
-        }
-        snapshotClaimed[index][holder] = true;
-        bytes32 id = keccak256(abi.encode(SNAPSHOT_CLAIM_TYPEHASH, index, holder));
-        _owed[index][id] = Owed({token: NATIVE, toIndex: false, recipient: recipient, remaining: amount});
+        if (snapshotClaimed[index][holder][token]) revert AlreadyClaimed(index, holder, token);
+        uint256 amount = VaultSnapshot.claim(
+            STATE_READER, _snapshotRoot(), index, holder, recipient, token, component, proof, signature
+        );
+        snapshotClaimed[index][holder][token] = true;
+        bytes32 id = keccak256(abi.encode(SNAPSHOT_CLAIM_TYPEHASH, index, holder, token));
+        _owed[index][id] = Owed({token: token, toIndex: false, recipient: recipient, remaining: amount});
         // The only call before this is a view of the fixed state reader, by staticcall.
         // forge-lint: disable-next-line(reentrancy-events)
-        emit SnapshotClaimed(index, holder, recipient, amount, id);
+        emit SnapshotClaimed(index, holder, token, recipient, amount, id);
         // Paid within the speed limit, as any payout: a snapshot of a forged checkpoint takes no more than a forged burn.
         _release(index, id, false);
     }
@@ -833,15 +856,20 @@ contract XindexVault is IXindexVault, ReentrancyGuard {
         );
     }
 
-    /// @dev Native coin only in Stage B; a listed ERC-20 would come with measured deposits, as MintRequests takes them.
+    /// @dev A token's address on this chain from its 32-byte id in a message: the native coin is zero.
     function _toAddress(bytes32 value) private pure returns (address a) {
         if (uint256(value) >> ADDRESS_BITS != 0) revert NotAnAddress(value);
         a = address(uint160(uint256(value)));
     }
 
-    function _send(address to, uint256 amount) private {
-        // A recipient that refuses reverts the payout, so a burn to it stays deliverable, or owed, for a later try.
+    function _send(address token, address to, uint256 amount) private {
+        // A recipient that refuses, or a token that refuses it (paused, blacklisting), reverts the payout, so a burn to
+        // it stays deliverable, or owed, for a later try, and no other token's payouts wait on it.
         // The destination is deliberate: a burn's recipient named by a proven message, or a failed intake's depositor.
+        if (token != NATIVE) {
+            IERC20(token).safeTransfer(to, amount);
+            return;
+        }
         // forge-lint: disable-next-line(low-level-calls,arbitrary-send-eth)
         (bool ok,) = to.call{value: amount}("");
         if (!ok) revert PaymentFailed(to);

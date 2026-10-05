@@ -172,6 +172,55 @@ abstract contract HybridTest is Test {
         _deliverAll(vm.getRecordedLogs());
     }
 
+    /// @dev Lists `token`, a token on the vault chain, as a vault coin with `supply`, and gives it `cap` and `floor` on
+    ///      the vault, as the factory's `proposeVaultListing` and `proposeCap` do. Returns its Ethereum-side id.
+    function _listVaultToken(address token, uint256 supply, uint256 cap, uint256 floor) internal returns (address id) {
+        vm.startPrank(owner);
+        factory.proposeVaultListing(chainId, _b32(token), supply);
+        bytes32 capId = factory.proposeCap(chainId, _b32(token), cap, floor);
+        vm.stopPrank();
+        id = factory.vaultTokenId(chainId, _b32(token));
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        factory.executeListing(id);
+        vm.recordLogs();
+        factory.executeVaultProposal(capId);
+        _deliverAll(vm.getRecordedLogs());
+        _applyChange(VaultMessages.CAP_UPDATE, abi.encode(_b32(token), cap, floor));
+    }
+
+    /// @dev A whole mint of `shares` of `idx`, whose components are WETH, the native coin and `token` on the vault
+    ///      chain: one intake takes both vault coins, proven together, then claimed and delivered.
+    function _mintWithToken(IHybridIndex idx, address who, uint256 shares, MockERC20 token)
+        internal
+        returns (uint256[] memory amounts)
+    {
+        amounts = idx.previewOrder(shares);
+        weth.mint(who, amounts[0]);
+        token.mint(who, amounts[2]);
+        vm.deal(who, amounts[1]);
+        vm.startPrank(who);
+        weth.approve(address(idx), amounts[0]);
+        (uint256 orderId, uint256 intakeId) = idx.openOrder(shares, block.timestamp + 1 hours);
+        _fresh();
+        vault.deposit{value: amounts[1]}(address(idx), intakeId);
+        token.approve(address(vault), amounts[2]);
+        vault.depositToken(address(idx), intakeId, address(token), amounts[2]);
+        vm.stopPrank();
+
+        vm.warp(block.timestamp + 1 hours + 1);
+        IHybridHubTypes.ChainProof[] memory proofs = new IHybridHubTypes.ChainProof[](1);
+        proofs[0].proof = _honest(block.timestamp);
+        proofs[0].tokens = new address[](2);
+        proofs[0].tokens[1] = address(token);
+        proofs[0].totals = new uint256[](2);
+        (proofs[0].totals[0], proofs[0].totals[1]) = (amounts[1], amounts[2]);
+        idx.settleOrder(orderId, proofs);
+        vm.warp(block.timestamp + idx.MINT_LOCK());
+        vm.recordLogs();
+        idx.claimOrder(orderId);
+        _deliverAll(vm.getRecordedLogs());
+    }
+
     /// @dev Delivers every VaultMessage in `logs` to the vault, with both proofs.
     function _deliverAll(Vm.Log[] memory logs) internal returns (uint256 delivered) {
         for (uint256 i = 0; i < logs.length; ++i) {

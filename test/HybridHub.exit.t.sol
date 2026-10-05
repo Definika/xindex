@@ -8,6 +8,7 @@ import {IHybridIndex} from "../src/interfaces/IHybridIndex.sol";
 import {IXindexVault} from "../src/interfaces/IXindexVault.sol";
 import {VaultMessages} from "../src/libraries/VaultMessages.sol";
 import {HybridTest} from "./HybridTest.sol";
+import {MockERC20} from "./mocks/MockERC20.sol";
 
 /// @notice The snapshot exit against a real hub (design 6.9, layer 4): recovery addresses registered in the hub, the
 ///         vault paying holders at its last checkpoint from the hub's own storage, open intakes settled or refunded from
@@ -47,6 +48,14 @@ contract HybridHubExitTest is HybridTest {
     }
 
     function _sign(uint256 key, address holder, address recipient) internal view returns (bytes memory) {
+        return _signFor(address(hub), key, holder, recipient);
+    }
+
+    function _signFor(address idx, uint256 key, address holder, address recipient)
+        internal
+        view
+        returns (bytes memory)
+    {
         bytes32 domain = keccak256(
             abi.encode(
                 keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
@@ -58,10 +67,7 @@ contract HybridHubExitTest is HybridTest {
         );
         bytes32 structHash = keccak256(
             abi.encode(
-                keccak256("SnapshotClaim(address index,address holder,address recipient)"),
-                address(hub),
-                holder,
-                recipient
+                keccak256("SnapshotClaim(address index,address holder,address recipient)"), idx, holder, recipient
             )
         );
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, keccak256(abi.encodePacked("\x19\x01", domain, structHash)));
@@ -116,8 +122,33 @@ contract HybridHubExitTest is HybridTest {
         assertEq(bob.balance, 0.14e18, "0.1 shares at 1.4 a share");
         (, uint256 minterKey) = makeAddrAndKey("minter");
         address minterTo = makeAddr("minter's recipient");
-        vault.claimSnapshot(address(hub), minter, minterTo, 1, "", _sign(minterKey, minter, minterTo));
+        vault.claimSnapshot(address(hub), minter, minterTo, address(0), 1, "", _sign(minterKey, minter, minterTo));
         assertEq(minterTo.balance, 1.26e18, "the 0.9 shares left");
+    }
+
+    /// @dev A token on the vault chain is paid at the snapshot from the hub's own storage, as the native coin is: its
+    ///      component and the holder's claim, read at the token's Ethereum-side id. One signature covers both coins.
+    function test_aTokenIsPaidAtTheSnapshot() public {
+        MockERC20 peg = new MockERC20("Binance-Peg XRP Token", "XRP", 18);
+        address pegId = _listVaultToken(address(peg), 1_000_000_000e18, 1_000_000e18, 1_000_000e18);
+        address[] memory tokens = new address[](3);
+        (tokens[0], tokens[1], tokens[2]) = (address(weth), native, pegId);
+        vm.prank(minter);
+        IHybridIndex mixed = IHybridIndex(factory.createIndex("Mixed", "MIX", tokens, K));
+        vault.registerIndex(address(mixed), factory.indexSalt(address(mixed)));
+        _mintWithToken(mixed, minter, 1e18, peg);
+        _checkpointAt(SNAPSHOT_BLOCK);
+        _snapshot();
+
+        (, uint256 minterKey) = makeAddrAndKey("minter");
+        address minterTo = makeAddr("minter's recipient");
+        bytes memory signature = _signFor(address(mixed), minterKey, minter, minterTo);
+        vm.expectRevert(abi.encodeWithSelector(IXindexVault.WrongComponent.selector, 1));
+        vault.claimSnapshot(address(mixed), minter, minterTo, address(peg), 1, "", signature);
+        vault.claimSnapshot(address(mixed), minter, minterTo, address(peg), 2, "", signature);
+        assertEq(peg.balanceOf(minterTo), 10e18, "1 share at 10 a share");
+        vault.claimSnapshot(address(mixed), minter, minterTo, address(0), 1, "", signature);
+        assertEq(minterTo.balance, 1.4e18, "and the native coin, on its own");
     }
 
     /// @dev VLT-I6 and MOD-I1: after the exit, the vault's paid totals include the holders' claims and it resolves every intake
@@ -172,7 +203,7 @@ contract HybridHubExitTest is HybridTest {
         // A holder at the checkpoint is paid directly: more than the index ever sent the vault.
         (, uint256 minterKey) = makeAddrAndKey("minter");
         bytes memory signature = _sign(minterKey, minter, minter);
-        vault.claimSnapshot(address(hub), minter, minter, 1, "", signature);
+        vault.claimSnapshot(address(hub), minter, minter, address(0), 1, "", signature);
         IHybridHubTypes.IndexRecord memory record = _indexRecord();
         assertGt(record.paid[0], 0);
 
@@ -224,23 +255,23 @@ contract HybridHubExitTest is HybridTest {
         _snapshot();
 
         // The holders at the checkpoint: 0.75 and 0.25 shares, at 1.4 BNB a share.
-        vault.claimSnapshot(address(hub), eoa, eoa, 1, "", _sign(eoaKey, eoa, eoa));
+        vault.claimSnapshot(address(hub), eoa, eoa, address(0), 1, "", _sign(eoaKey, eoa, eoa));
         assertEq(eoa.balance, 1.05e18);
-        vault.claimSnapshot(address(hub), safe, safeOnVaultChain, 1, "", "");
+        vault.claimSnapshot(address(hub), safe, safeOnVaultChain, address(0), 1, "", "");
         assertEq(safeOnVaultChain.balance, 0.35e18);
         // The claimed order's intake joins the index, and its minter claims its shares' share like anyone.
         vault.resolveIntake(address(hub), hub.intakeIdOf(claimed), "");
         assertEq(uint256(vault.intakeState(address(hub), hub.intakeIdOf(claimed))), 2, "settled");
         (, uint256 minterKey) = makeAddrAndKey("minter");
         address minterTo = makeAddr("minter's recipient");
-        vault.claimSnapshot(address(hub), minter, minterTo, 1, "", _sign(minterKey, minter, minterTo));
+        vault.claimSnapshot(address(hub), minter, minterTo, address(0), 1, "", _sign(minterKey, minter, minterTo));
         assertEq(minterTo.balance, 0.014e18, "its 0.01 shares, backed by the intake just settled");
         // The locked order's deposit goes back to its depositor.
         uint256 lockedIntake = hub.intakeIdOf(locked);
         vault.resolveIntake(address(hub), lockedIntake, "");
         uint256 before = minter.balance;
         vm.prank(minter);
-        vault.refund(address(hub), lockedIntake);
+        vault.refund(address(hub), lockedIntake, address(0));
         assertEq(minter.balance - before, 0.028e18);
 
         // The hub learns of the exit through the vault's own state.

@@ -445,6 +445,11 @@
         "internalType": "address"
       },
       {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
         "name": "component",
         "type": "uint256",
         "internalType": "uint256"
@@ -516,6 +521,34 @@
     ],
     "outputs": [],
     "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "depositToken",
+    "inputs": [
+      {
+        "name": "index",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "intakeId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -1019,6 +1052,11 @@
         "name": "intakeId",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
       }
     ],
     "outputs": [],
@@ -1124,6 +1162,11 @@
       },
       {
         "name": "holder",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "token",
         "type": "address",
         "internalType": "address"
       }
@@ -1705,6 +1748,12 @@
         "internalType": "address"
       },
       {
+        "name": "token",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
         "name": "recipient",
         "type": "address",
         "indexed": false,
@@ -1820,6 +1869,11 @@
         "name": "holder",
         "type": "address",
         "internalType": "address"
+      },
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
       }
     ]
   },
@@ -1882,6 +1936,27 @@
       },
       {
         "name": "readyAt",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "DepositShortfall",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "received",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "amount",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -2201,6 +2276,17 @@
         "name": "reviewEnds",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "SafeERC20FailedOperation",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
       }
     ]
   },

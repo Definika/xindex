@@ -27,29 +27,58 @@ library VaultSnapshot {
     bytes32 private constant SNAPSHOT_CLAIM_TYPEHASH =
         keccak256("SnapshotClaim(address index,address holder,address recipient)");
 
-    /// @notice `holder`'s share of this chain's coin in `index` at the snapshot, read from the hub's storage under
-    ///         `root`: its shares at the units then in force, rounded down, plus its claim of the coin; and its recovery
-    ///         address on this chain, zero if none.
-    function share(
+    /// @notice What `holder` is owed of `token`, this chain's coin or a token on it, in `index` at the snapshot, once
+    ///         `recipient` is shown to be where it is paid: the recovery address it registered in the hub for this chain,
+    ///         such as a contract's, and nowhere else, or else the one it signed for with its Ethereum key. Called by the
+    ///         vault, whose address, under delegatecall, is the signature's domain. One entry point for both checks
+    ///         keeps the vault within EIP-170's size limit.
+    function claim(
         IStateReader reader,
         bytes32 root,
         address index,
         address holder,
+        address recipient,
+        address token,
+        uint256 component,
+        bytes calldata proof,
+        bytes calldata signature
+    ) external view returns (uint256 amount) {
+        address registered;
+        (amount, registered) = _share(reader, root, index, holder, token, component, proof);
+        if (registered != address(0)) {
+            if (recipient != registered) revert IXindexVault.WrongRecipient(registered);
+        } else {
+            _checkSignature(address(this), index, holder, recipient, signature);
+        }
+    }
+
+    /// @dev `holder`'s share of `token` in `index` at the snapshot, read from the hub's storage under `root`: its shares
+    ///      at the units then in force, rounded down, plus its claim of the coin; and its recovery address on this
+    ///      chain, zero if none.
+    function _share(
+        IStateReader reader,
+        bytes32 root,
+        address index,
+        address holder,
+        address token,
         uint256 component,
         bytes calldata proof
-    ) external view returns (uint256 amount, address registered) {
-        // The coin's id on Ethereum, as the factory's `vaultTokenId(chainId, bytes32(0))` computes it.
-        address token = address(uint160(uint256(keccak256(abi.encode(VAULT_TOKEN_DOMAIN, block.chainid, bytes32(0))))));
+    ) private view returns (uint256 amount, address registered) {
+        // The coin's id on Ethereum, as the factory's `vaultTokenId(chainId, tokenId)` computes it: the native coin's
+        // `tokenId` is zero, and a token's is its address.
+        address id = address(
+            uint160(uint256(keccak256(abi.encode(VAULT_TOKEN_DOMAIN, block.chainid, bytes32(uint256(uint160(token)))))))
+        );
         bytes32[] memory slots = new bytes32[](5);
         slots[0] = keccak256(abi.encode(holder, HUB_SHARES));
         slots[1] = bytes32(uint256(keccak256(abi.encode(HUB_COMPONENTS_SLOT))) + component);
-        slots[2] = keccak256(abi.encode(token, keccak256(abi.encode(holder, HUB_CLAIMS_SLOT))));
+        slots[2] = keccak256(abi.encode(id, keccak256(abi.encode(holder, HUB_CLAIMS_SLOT))));
         slots[3] = keccak256(abi.encode(block.chainid, keccak256(abi.encode(holder, HUB_RECOVERY_SLOT))));
         slots[4] = bytes32(HUB_COMPONENTS_SLOT);
         bytes32[] memory v = reader.readSlots(root, index, slots, proof);
         // Inside the components array, whose length the slot itself holds: past it lies any other storage a holder
         // could fill, an allowance included, with whatever "units" it likes (VLT-1).
-        if (component >= uint256(v[4]) || address(uint160(uint256(v[1]))) != token) {
+        if (component >= uint256(v[4]) || address(uint160(uint256(v[1]))) != id) {
             revert IXindexVault.WrongComponent(component);
         }
         amount = uint256(v[0]) * (uint256(v[1]) >> UNITS_SHIFT) / WAD + uint256(v[2]);
@@ -58,10 +87,10 @@ library VaultSnapshot {
         registered = uint256(v[3]) >> 160 == 0 ? address(uint160(uint256(v[3]))) : address(0);
     }
 
-    /// @notice EIP-712: `holder` signed, with its Ethereum key, that `vault` may pay its snapshot share of `index` to
-    ///         `recipient`.
-    function checkSignature(address vault, address index, address holder, address recipient, bytes calldata signature)
-        external
+    /// @dev EIP-712: `holder` signed, with its Ethereum key, that `vault` may pay its snapshot share of `index` to
+    ///      `recipient`, every token of it on this chain.
+    function _checkSignature(address vault, address index, address holder, address recipient, bytes calldata signature)
+        private
         view
     {
         bytes32 domain = keccak256(
