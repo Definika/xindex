@@ -18,13 +18,15 @@ It changes three recorded decisions, and says so:
 - **"No price in any contract"** becomes "no price in any contract but `WeightedHub`'s settlement". The factory, the zap,
   `MintRequests` and the vaults stay price-free, and so do an index's issue, redeem and claims.
 - **"Uncapped market-cap weighting is the only methodology"** is replaced: v5's only methodology is the creator's fixed
-  weights. The v4 market-cap code stays in the tree until its retirement record (section 10).
+  weights. The v4 market-cap code stays in the tree until its retirement record (section 11).
 - **v4 replaced v3's Chainlink pricing.** v5 brings an oracle back, for a different mechanism (section 5), learning from
   what v3's audits measured (section 7).
 
 Settled with the owner on 2026-10-05:
 - Weights are fixed at creation, like the coin list. Nobody, the creator included, can change them later; new weights
   mean a new index.
+- Pyth is the one oracle. Chainlink alone was considered and refused for its coverage (11 of the 52 coins), and so
+  was Chainlink as a second check on the coins it covers, which would have refused a fill when the two disagreed.
 - Phase 1 holds Ethereum ERC-20s; vault coins follow (section 9).
 
 ## 2. The oracle: Pyth, because Chainlink covers too few coins
@@ -193,7 +195,32 @@ with Chainlink) sets `MU_MIN`, `MAX_TURNOVER` and `MAX_CONFIDENCE` from evidence
 Pyth covers BNB, TRX, SUI and the other vault coins. Holding them needs the three-step hybrid fill (Stage B spec) with
 prices; the vaults, proofs and state verifiers carry over unchanged.
 
-## 10. What is done and what remains
+## 10. What a mainnet fork showed (2026-10-06)
+
+`test/fork/WeightedHub.fork.t.sol` runs v5 on a fork near the chain head, with real tokens and real Uniswap pools and
+only Pyth stood in. It lists the 30 coins of `script/PythIds.sol`.
+
+- **Every coin works in kind.** All 30 issue into one index, rebalance with real transfers of every token, and redeem
+  to the last unit. A 30-coin fill cost 4.6M gas, before Pyth's own verification.
+- **24 of the 30 trade on Uniswap.** That many sell $1,000 within 2% of a $10 sale, along the route that pays best for
+  the size; most are within 0.5%, and ENA, ONDO and SKY within 0.03%. Six do not:
+  - OKB, STRK, ARB and CAKE are too thin, which the admission report's depth column already showed;
+  - BGB and GT have no Uniswap V3 route at all.
+
+  An index holding any of these is minted in kind or through `MintRequests`, not through the zap, and rebalanced by
+  executors that hold inventory; the app says so when a creator picks one.
+- **The zap works on a weighted index.** On a 24-coin index, minting two tokens with USDC cost $2,023.67 and burning them
+  returned $2,004.91, about 0.9% for the round trip.
+- **Filling pays.** A Uniswap rebalancer filling a $52,000 index at the auction's end, at the pools' own prices, kept
+  $13.55 after fees and slippage, so rebalances get filled without anyone being paid to.
+- **The drills hold on real tokens:**
+  - WBTC paused by its real owner: holders leave with the rest and a claim, the guardian rebalances around it, and the
+    claim pays once it is unpaused;
+  - a feed going silent stops the fill until the guardian keeps that coin;
+  - a price a hundred times low sends out at most a fifth of each coin, and the guardian cancels;
+  - an unfilled auction expires and the owner restarts it.
+
+## 11. What is done and what remains
 
 Done (2026-10-05):
 - `src/WeightedHub.sol`, `src/WeightedIndexFactory.sol`, their interfaces and ABIs; Pyth's interface vendored at
@@ -209,9 +236,10 @@ Done (2026-10-05):
 - forge fmt, build, lint, Aderyn and Wake clean.
 
 Remaining before any deployment:
-- A fork suite settling a rebalance against Pyth's real contract on a real signed update (needs a Pyth API key).
+- The fork suite settles against a stand-in Pyth; settling against Pyth's real contract on a real signed update, and
+  its real gas, need a Pyth API key.
 - The parameter replay (section 8).
-- `script/ConfigureWeighted.s.sol`, the listing script with the price-id table, and GRAM's feed.
+- `script/ConfigureWeighted.s.sol`, the listing script over `script/PythIds.sol`, and GRAM's feed.
 - The v4 retirement record: which ids' mechanisms go with the market-cap hub and the supply batches, and AGENTS.md,
   README and ARCHITECTURE rewritten for v5.
 - External audit.

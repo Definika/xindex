@@ -118,7 +118,8 @@ verifier, from an anchor the fixture generator writes, with the deployment's own
    is the reason for the suppression in `IndexFactory.createIndex`.
 3. `forge test` green. `forge coverage` at 100% for every file, including mocks and scripts.
 4. Fork tests green if the change touches `IndexZap`, the hub's rebalancing, routes, token behaviour, or anything
-   router- or pool-related. Their summary must list the five `test/fork/` suites and 0 skipped.
+   router- or pool-related, `WeightedHub` and its price ids included. Their summary must list the six `test/fork/`
+   suites and 0 skipped. `WeightedHub.fork.t.sol` alone takes about fifteen minutes on a public RPC.
 5. The Wake VS Code analyzer reports no errors or warnings on `src/`. Its reentrancy detector does not model reentrancy
    guards; the three documented suppressions are on the `redeem` call in `IndexZap._burnBasket`, the `permit` call in
    `IndexZap.burnToTokenWithPermit`, and the executor callback in `IndexHub._settle`. One more marks `IHybridIndex`,
@@ -719,7 +720,8 @@ the rules code must never break.
 
 **v5 replaces v4's market-cap index** (the owner's calls on 2026-10-05). Creators choose each coin's percentage; the
 weights are fixed at creation; the index rebalances to them at Pyth prices, which cover all 52 listed coins where
-Chainlink's Ethereum feeds cover 11. v5 is custom percentages only. Its parameters (section 8 of the spec) wait on a
+Chainlink's Ethereum feeds cover 11. Pyth is the only oracle: Chainlink alone, and Chainlink as a second check on the
+coins it covers, were both refused (the owner's call on 2026-10-05). v5 is custom percentages only. Its parameters (section 8 of the spec) wait on a
 replay of Pyth's history, and Hermes now needs a paid API key, an operating cost the owner weighs before launch.
 
 **v4 replaces v3** (the owner's call on 2026-09-30). v3 stays at the `v3.0.0` tag and on Sepolia and never launches on

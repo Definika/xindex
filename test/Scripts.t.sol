@@ -5,6 +5,7 @@ import {Test, Vm} from "forge-std/Test.sol";
 import {Deploy} from "../script/Deploy.s.sol";
 import {DeployChecks} from "../script/DeployChecks.sol";
 import {DeployWeighted} from "../script/DeployWeighted.s.sol";
+import {PythIds} from "../script/PythIds.sol";
 import {WeightedIndexFactory} from "../src/WeightedIndexFactory.sol";
 import {WeightedHub} from "../src/WeightedHub.sol";
 import {MockPyth} from "./mocks/MockPyth.sol";
@@ -524,6 +525,33 @@ contract ScriptsTest is Test {
         assertEq(weightedDeployer.MAINNET_PYTH(), MainnetAddresses.PYTH);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.MainnetOverride.selector, "PYTH", pyth));
         weightedDeployer.resolvePyth(pyth);
+    }
+
+    /// @dev The price-id table covers the flagship's four and the wide list, GRAM aside until its feed is chosen, in
+    ///      that order, with a distinct non-zero id each: two coins on one id could never share an index (V5-M1). The
+    ///      ids are pinned against a few written out independently, from Pyth's catalogue on 2026-10-05.
+    function test_pythIds_coverTheListBarGram() public view {
+        (address[] memory tokens, bytes32[] memory ids) = PythIds.all();
+        ConfigureWhitelist.Entry[] memory flagship = configure.defaultMainnetList();
+        ConfigureWhitelist.Entry[] memory wide = configure.wideMainnetList();
+        assertEq(tokens.length, flagship.length + wide.length - 1);
+        uint256 k = 0;
+        for (uint256 i = 0; i < flagship.length; ++i) {
+            assertEq(tokens[k++], flagship[i].token);
+        }
+        for (uint256 i = 0; i < wide.length; ++i) {
+            if (wide[i].token == MainnetAddresses.GRAM) continue;
+            assertEq(tokens[k++], wide[i].token);
+        }
+        for (uint256 i = 0; i < ids.length; ++i) {
+            assertTrue(ids[i] != bytes32(0));
+            for (uint256 j = 0; j < i; ++j) {
+                assertTrue(ids[i] != ids[j], "one id per coin");
+            }
+        }
+        assertEq(ids[0], 0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace, "WETH on ETH/USD");
+        assertEq(ids[1], 0xc9d8b075a5c69303365ae23633d4e085199bf5c520a3b90fed1322a0342ffc33, "WBTC on WBTC/USD");
+        assertEq(ids[2], 0x8ac0c70fff57e9aefdf5edf44b51d62c2d433653cbb2cf5cc06bb115af04d221, "LINK on LINK/USD");
     }
 
     function test_deployWeighted_checkDeploymentRefusesAnother() public {
