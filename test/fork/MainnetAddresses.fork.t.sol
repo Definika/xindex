@@ -13,10 +13,23 @@ interface IRouterImmutables {
     function poolManager() external view returns (address);
 }
 
+/// @dev What the fork test asks Pyth: its Wormhole chain id, and the parse `WeightedHub` calls, with the feeds it
+///      returns read as raw words, since only their count matters here.
+interface IPythProbe {
+    function chainId() external view returns (uint16);
+
+    function parsePriceFeedUpdatesUnique(
+        bytes[] calldata updateData,
+        bytes32[] calldata priceIds,
+        uint64 minPublishTime,
+        uint64 maxPublishTime
+    ) external payable returns (bytes32[] memory);
+}
+
 /// @notice Checks the scripts' `MainnetAddresses` against mainnet, as AGENTS.md requires before addresses are
 ///         committed: tokens by symbol and decimals, the router by the PoolManager it names and both by their runtime
 ///         code hashes, and every default whitelist entry for a supply of plausibly many whole tokens at the token's
-///         own decimals. Nothing in v4 reads a price, so no feed is pinned. Skips when MAINNET_RPC_URL is unset.
+///         own decimals, and Pyth's proxy, v5's one price source. Skips when MAINNET_RPC_URL is unset.
 contract MainnetAddressesForkTest is Test {
     /// @dev Runtime code hash of Universal Router 2.0.0 at `MainnetAddresses.UNIVERSAL_ROUTER`, read on 2026-09-23. The
     ///      router has no proxy, and its immutables are part of its code, so the hash is the build and its wiring.
@@ -25,6 +38,9 @@ contract MainnetAddressesForkTest is Test {
     bytes32 constant POOL_MANAGER_CODEHASH = 0x785f1014552b7ce7d5fb7d0c970ca60edee94fd00425d7ca21609acac7ce1293;
     /// @dev Runtime code hash of Uniswap V3's factory at `MainnetAddresses.UNISWAP_V3_FACTORY`, read on 2026-10-05.
     bytes32 constant UNISWAP_V3_FACTORY_CODEHASH = 0x4d7b8525cd5d14343fa67a732fba5b24cddba11620ca88392f4ec6c52f91fd69;
+    /// @dev Runtime code hash of Pyth's ERC-1967 proxy at `MainnetAddresses.PYTH`, read on 2026-10-05. Pyth's DAO
+    ///      upgrades the implementation behind it, so only the proxy is pinned.
+    bytes32 constant PYTH_PROXY_CODEHASH = 0x330b9f1afee9d71fb2ee42927a996a39889a45323883a66a194e210ab850d111;
 
     function setUp() public {
         string memory url = vm.envOr("MAINNET_RPC_URL", string(""));
@@ -120,6 +136,18 @@ contract MainnetAddressesForkTest is Test {
         assertEq(IRouterImmutables(M.UNIVERSAL_ROUTER).poolManager(), M.POOL_MANAGER);
         assertEq(M.UNIVERSAL_ROUTER.codehash, UNIVERSAL_ROUTER_CODEHASH, "the pinned router is the 2.0.0 build");
         assertEq(M.POOL_MANAGER.codehash, POOL_MANAGER_CODEHASH, "and the PoolManager is the one it settles with");
+    }
+
+    /// @dev v5's one price source is Pyth's own proxy on Ethereum, Wormhole chain 2, and it answers the parse
+    ///      `WeightedHub` calls: with no ids it returns no feeds, and for a feed with no update it refuses.
+    function testFork_pythIsPyths() public {
+        assertEq(M.PYTH.codehash, PYTH_PROXY_CODEHASH);
+        assertEq(IPythProbe(M.PYTH).chainId(), 2);
+        assertEq(IPythProbe(M.PYTH).parsePriceFeedUpdatesUnique(new bytes[](0), new bytes32[](0), 0, 0).length, 0);
+        bytes32[] memory ids = new bytes32[](1);
+        ids[0] = 0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43;
+        vm.expectRevert();
+        IPythProbe(M.PYTH).parsePriceFeedUpdatesUnique(new bytes[](0), ids, 0, 0);
     }
 
     /// @dev The V3 factory `CheckToken` reads depth from is Uniswap's own, by its code.

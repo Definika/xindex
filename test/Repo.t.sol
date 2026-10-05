@@ -129,10 +129,19 @@ contract RepoTest is Test {
     }
 
     /// @dev XA-44: the ABIs the web app decodes with are committed, and CI regenerates them and fails on a diff: Stage A's,
-    ///      the hybrid factory v4 launches on, a hybrid index's three parts as one interface, and the vault.
+    ///      the hybrid factory, a hybrid index's three parts as one interface, the vault, and v5's weighted factory and
+    ///      index.
     function test_XA44_theAbisAreCommittedAndChecked() public view {
-        string[7] memory contracts = [
-            "IndexFactory", "IndexHub", "IndexZap", "MintRequests", "HybridIndexFactory", "IHybridIndex", "XindexVault"
+        string[9] memory contracts = [
+            "IndexFactory",
+            "IndexHub",
+            "IndexZap",
+            "MintRequests",
+            "HybridIndexFactory",
+            "IHybridIndex",
+            "XindexVault",
+            "WeightedIndexFactory",
+            "WeightedHub"
         ];
         for (uint256 i = 0; i < contracts.length; ++i) {
             assertTrue(
@@ -144,7 +153,7 @@ contract RepoTest is Test {
         assertTrue(
             _contains(
                 workflow,
-                "for contract in IndexFactory IndexHub IndexZap MintRequests HybridIndexFactory IHybridIndex XindexVault; do"
+                "for contract in IndexFactory IndexHub IndexZap MintRequests HybridIndexFactory IHybridIndex XindexVault WeightedIndexFactory WeightedHub; do"
             ),
             "CI regenerates every ABI"
         );
@@ -202,10 +211,10 @@ contract RepoTest is Test {
 
     function reachedAfterTheRevert() external {}
 
-    /// @dev v4 reads no price anywhere: no file in `src/` and no shipped ABI in `abi/` names a price feed, a pool's
-    ///      price or its oracle, and the v3 price contracts are gone. Every file of both folders is read, Stage B's
-    ///      included, so a new file is covered without being listed. A change that brought a price back would have to
-    ///      delete this test to do it.
+    /// @dev No file in `src/` and no shipped ABI in `abi/` names a Chainlink feed, a pool's price or its oracle, and the
+    ///      v3 price contracts are gone. Every file of both folders is read, Stage B's included, so a new file is covered
+    ///      without being listed. v5's one price source is Pyth, read only by `WeightedHub`'s settlement
+    ///      (`test_V5I4_onlyTheWeightedHubReadsAPrice`).
     function test_noContractReadsAPrice() public view {
         string[5] memory priceWords = ["latestRoundData", "AggregatorV3", "slot0", "observe(", "navPerToken"];
         uint256 read = _assertNoPriceIn("src", priceWords) + _assertNoPriceIn("abi", priceWords);
@@ -220,6 +229,54 @@ contract RepoTest is Test {
         for (uint256 i = 0; i < gone.length; ++i) {
             assertFalse(vm.exists(gone[i]), string.concat(gone[i], " is gone"));
         }
+    }
+
+    /// @dev v5 reads one price source, Pyth, in one place: `WeightedHub`'s settlement. Only the hub, its interface (which
+    ///      names Pyth's fee quote and takes Pyth's price struct for executors), its ABI and the vendored Pyth files name
+    ///      Pyth's contract, its parse, its getters, its pushes or its price struct; the factory, the zap,
+    ///      `MintRequests`, the market-cap hubs and the vaults name none of them. A new file is covered without being
+    ///      listed. The words cover every way to read a Pyth price, not only the one the hub uses (V5-I4).
+    function test_V5I4_onlyTheWeightedHubReadsAPrice() public view {
+        string[6] memory allowed = [
+            "src/WeightedHub.sol",
+            "src/interfaces/IWeightedHub.sol",
+            "src/interfaces/pyth/IPyth.sol",
+            "src/interfaces/pyth/IPythEvents.sol",
+            "src/interfaces/pyth/PythStructs.sol",
+            "abi/WeightedHub.json"
+        ];
+        string[5] memory pythWords = ["IPyth", "parsePriceFeedUpdates", "getPrice", "updatePriceFeeds", "PythStructs"];
+        uint256 read = 0;
+        string[2] memory dirs = ["src", "abi"];
+        for (uint256 d = 0; d < dirs.length; ++d) {
+            VmSafe.DirEntry[] memory entries = vm.readDir(dirs[d], 8);
+            for (uint256 i = 0; i < entries.length; ++i) {
+                if (entries[i].isDir) continue;
+                ++read;
+                bool exempt = false;
+                for (uint256 a = 0; a < allowed.length; ++a) {
+                    exempt = exempt || _endsWith(entries[i].path, allowed[a]);
+                }
+                if (exempt) continue;
+                string memory text = vm.readFile(entries[i].path);
+                for (uint256 j = 0; j < pythWords.length; ++j) {
+                    assertFalse(_contains(text, pythWords[j]), string.concat(entries[i].path, " names ", pythWords[j]));
+                }
+            }
+        }
+        assertGt(read, 50, "every source and ABI file is read");
+        assertTrue(_contains(_read("src/WeightedHub.sol"), "parsePriceFeedUpdatesUnique"), "the hub reads Pyth");
+        assertFalse(_contains(_read("src/WeightedIndexFactory.sol"), "Pyth("), "the factory never calls Pyth");
+    }
+
+    function _endsWith(string memory text, string memory suffix) internal pure returns (bool) {
+        bytes memory t = bytes(text);
+        bytes memory s = bytes(suffix);
+        if (s.length > t.length) return false;
+        for (uint256 i = 0; i < s.length; ++i) {
+            if (t[t.length - s.length + i] != s[i]) return false;
+        }
+        return true;
     }
 
     /// @dev Reads every file under `dir` and fails on any price word; returns how many files it read.

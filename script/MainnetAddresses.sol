@@ -100,6 +100,15 @@ library MainnetAddresses {
     address internal constant UNISWAP_V3_FACTORY = 0x1F98431c8aD98523631AE4a59f267346ea31F984;
 
     // ---------------------------------------------------------------------
+    // Prices, for v5's weighted indexes only.
+    // ---------------------------------------------------------------------
+    /// @dev Pyth's contract on Ethereum, from which `WeightedHub` reads every settlement's prices. An ERC-1967 proxy the
+    ///      Pyth DAO upgrades by governance message; read on 2026-10-05 at block 26,128,096: version 1.4.6, Wormhole
+    ///      chain id 2, update fee 0, implementation 0x3F38404A2e3Cb949bcDfA19a5C3bDf3fE375fEb0. The proxy's code hash
+    ///      is pinned by `test/fork/MainnetAddresses.fork.t.sol`; the implementation's is not, since Pyth upgrades it.
+    address internal constant PYTH = 0x4305FB66699C3B2702D4d05CF36551390A4c69C6;
+
+    // ---------------------------------------------------------------------
     // Reference supplies. Every token carries one, and nothing reads a supply live (CR-M01). Circulating supplies
     // reported by CoinGecko on 2026-09-22, rounded down to whole tokens, in raw units. WBTC and WETH are listed with
     // bitcoin's and ether's supply, because their on-chain supply is only the wrapped float. Revised weekly through a
