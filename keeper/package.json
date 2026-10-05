@@ -10,8 +10,9 @@
     "fill-once": "node filler.mjs --once"
   },
   "dependencies": {
-    "viem": "2.21.54",
+    "@mysten/sui": "2.34.0",
     "@noble/curves": "1.9.7",
-    "tronweb": "6.5.1"
+    "tronweb": "6.5.1",
+    "viem": "2.21.54"
   }
 }

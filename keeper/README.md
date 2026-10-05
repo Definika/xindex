@@ -30,6 +30,9 @@ which keeps the chain's state verifier on Ethereum within its day):
 - VeChain (`vechain.mjs`): the vault's `attest` and the Staker attester's in two later rounds, sent with
   `vechain/deploy.mjs`'s path, proven by `proofs/vechain` from `proofs/vechain/fixtures/input.py`'s input, about 90
   minutes after the attest. Its call builder reproduces the mainnet fixture's call exactly (2026-10-06).
+- Sui (`sui.mjs`): the vault's `attest` freezes an `Attestation`; `sui/proof.py` builds its `AttestProof` (checkpoint,
+  certificate, artifacts path) and each epoch's committee `update`, from Sui's GraphQL, with no prover. Its update
+  builder reproduces the fixture's epoch 1268 exactly (2026-10-06). Sui's JSON-RPC is retired: it uses gRPC.
 
 Every other vault chain needs its adapter before the filler takes an auction that moves its coins; until then it leaves
 those to other executors. The proof builders need `uv` (Python with its packages) and, for SP1 chains, the hosts built
