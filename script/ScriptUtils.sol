@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {ISP1Groth16Identity} from "./interfaces/ISP1Groth16Identity.sol";
 
-/// @notice Constants and helpers the deploy, listing and test-market scripts share.
+/// @notice Constants and helpers the deploy, listing, admission and test-market scripts share.
 library ScriptUtils {
+    /// @dev Bytes in an ABI word.
+    uint256 internal constant WORD = 32;
+
     /// @notice SP1's Groth16 verifier v6.0.0 names itself by this hash, the circuit its proofs come from.
     bytes32 internal constant SP1_VERIFIER_HASH = 0x0e78f4db7a6771a3a6a7d9c3b0de6fe73d58781368967a7fe84d87aefffec896;
     string internal constant SP1_VERSION = "v6.0.0";
@@ -46,5 +51,39 @@ library ScriptUtils {
     function isSp1Verifier(address verifier) internal view returns (bool) {
         return answers(verifier, abi.encodeCall(ISP1Groth16Identity.VERIFIER_HASH, ()), abi.encode(SP1_VERIFIER_HASH))
             && answers(verifier, abi.encodeCall(ISP1Groth16Identity.VERSION, ()), abi.encode(SP1_VERSION));
+    }
+
+    /// @notice `token`'s ERC-20 symbol, or "?" when it has none that decodes as a string: the symbol is optional in
+    ///         ERC-20, and some tokens return it as bytes32.
+    function symbolOf(address token) internal view returns (string memory) {
+        // A static call, so a token without the function, or one answering in another shape, cannot stop the run.
+        // forge-lint: disable-next-line(low-level-calls)
+        (bool ok, bytes memory data) = token.staticcall(abi.encodeCall(IERC20Metadata.symbol, ()));
+        // A string answer holds at least its offset and its length; anything shorter, a bytes32 among them, is not one.
+        if (!ok || data.length < 2 * WORD) return "?";
+        // Nor is an answer whose offset or length points past its end, which `abi.decode` refuses by reverting, and
+        // that reverted the whole run (RT-25). The offset is checked first, so the length is read inside the answer.
+        uint256 offset = wordAt(data, 0);
+        if (offset > data.length - WORD || wordAt(data, offset) > data.length - WORD - offset) return "?";
+        return abi.decode(data, (string));
+    }
+
+    /// @notice What `token.decimals()` answers, when it answers a uint8 at all. A static call whose answer is checked
+    ///         before it is read, so a token without the function, or one answering in another shape, cannot stop the
+    ///         run: decoding a `try` call's answer happens in the caller, where no `catch` reaches a failure.
+    function decimalsOf(address token) internal view returns (bool answered, uint8 decimals) {
+        // forge-lint: disable-next-line(low-level-calls)
+        (bool ok, bytes memory data) = token.staticcall(abi.encodeCall(IERC20Metadata.decimals, ()));
+        // A failed call, or an answer shorter than a word, reads as a word no uint8 fits.
+        uint256 word = ok && data.length >= WORD ? wordAt(data, 0) : type(uint256).max;
+        answered = word <= type(uint8).max;
+        if (answered) decimals = SafeCast.toUint8(word);
+    }
+
+    /// @notice The word of `data` that starts at byte `at`, read big-endian; the caller keeps it inside `data`.
+    function wordAt(bytes memory data, uint256 at) internal pure returns (uint256 word) {
+        for (uint256 i = 0; i < WORD; ++i) {
+            word = word << 8 | uint8(data[at + i]);
+        }
     }
 }

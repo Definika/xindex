@@ -14,6 +14,9 @@ library ForkAddresses {
     address internal constant UNI = MainnetAddresses.UNI;
     /// @dev tBTC is not on the Stage A whitelist; the zap fork tests still route through its pool.
     address internal constant TBTC = 0x18084fbA666a33d37592fA2633fD49a74DD93a88;
+    /// @dev WhiteBIT's WBT, kept off every list by the WBT rule (design/2026-09-30-wbt-check.md); the admission check's
+    ///      fork test proves the check refuses it.
+    address internal constant WBT = 0x925206b8a707096Ed26ae47C84747fE0bb734F59;
 
     /// @dev Uniswap SwapRouter02. The zap swaps through the Universal Router; this is only the fork tests' own rebalance
     ///      executor, a fixture whose venue is independent of anything Xindex deploys.

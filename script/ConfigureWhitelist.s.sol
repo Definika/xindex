@@ -3,8 +3,6 @@ pragma solidity 0.8.28;
 
 import {Script, console2} from "forge-std/Script.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IHybridIndexFactory} from "../src/interfaces/IHybridIndexFactory.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
@@ -77,8 +75,6 @@ contract ConfigureWhitelist is Script {
     /// @dev Fields in a WHITELIST entry.
     uint256 private constant ENTRY_FIELDS = 2;
 
-    /// @dev Bytes in an ABI word.
-    uint256 private constant WORD = 32;
     uint256 private constant WAD = 1e18;
 
     /// @notice LISTING_MODE is not one of the modes above.
@@ -260,7 +256,8 @@ contract ConfigureWhitelist is Script {
             if (!chosen[i]) continue;
             calls[count] =
                 abi.encodeCall(IIndexFactory.proposeListing, (list[i].token, listingSupply(factory, list[i])));
-            labels[count] = string.concat("proposeListing ", _symbolOf(list[i].token), " ", vm.toString(list[i].token));
+            labels[count] =
+                string.concat("proposeListing ", ScriptUtils.symbolOf(list[i].token), " ", vm.toString(list[i].token));
             ++count;
         }
     }
@@ -543,7 +540,7 @@ contract ConfigureWhitelist is Script {
             console2.log("skipped, the token has no code", token);
             return false;
         }
-        (bool answered, uint8 decimals) = _decimalsOf(token);
+        (bool answered, uint8 decimals) = ScriptUtils.decimalsOf(token);
         if (!answered) {
             console2.log("skipped, the token reports no decimals", token);
             return false;
@@ -553,7 +550,8 @@ contract ConfigureWhitelist is Script {
             return false;
         }
         console2.log(
-            string.concat(_symbolOf(token), " reference supply in whole tokens"), referenceSupply / 10 ** decimals
+            string.concat(ScriptUtils.symbolOf(token), " reference supply in whole tokens"),
+            referenceSupply / 10 ** decimals
         );
         return true;
     }
@@ -565,40 +563,6 @@ contract ConfigureWhitelist is Script {
         // forge-lint: disable-next-line(low-level-calls)
         (bool ok, bytes memory data) = address(factory).staticcall(query);
         return ok && data.length == 64 && abi.decode(data, (uint256)) != 0;
-    }
-
-    /// @dev `token`'s ERC-20 symbol for the log and safe mode's labels, or "?" when it has none that decodes as a
-    ///      string: the symbol is optional in ERC-20, and some tokens return it as bytes32.
-    function _symbolOf(address token) private view returns (string memory) {
-        // A static call, so a token without the function, or one answering in another shape, cannot stop the run.
-        // forge-lint: disable-next-line(low-level-calls)
-        (bool ok, bytes memory data) = token.staticcall(abi.encodeCall(IERC20Metadata.symbol, ()));
-        // A string answer holds at least its offset and its length; anything shorter, a bytes32 among them, is not one.
-        if (!ok || data.length < 2 * WORD) return "?";
-        // Nor is an answer whose offset or length points past its end, which `abi.decode` refuses by reverting, and
-        // that reverted the whole run (RT-25). The offset is checked first, so the length is read inside the answer.
-        uint256 offset = _wordAt(data, 0);
-        if (offset > data.length - WORD || _wordAt(data, offset) > data.length - WORD - offset) return "?";
-        return abi.decode(data, (string));
-    }
-
-    /// @dev What `token.decimals()` answers, when it answers a uint8 at all. A static call whose answer is checked
-    ///      before it is read, so a token without the function, or one answering in another shape, cannot stop the
-    ///      run: decoding a `try` call's answer happens in the caller, where no `catch` reaches a failure.
-    function _decimalsOf(address token) private view returns (bool answered, uint8 decimals) {
-        // forge-lint: disable-next-line(low-level-calls)
-        (bool ok, bytes memory data) = token.staticcall(abi.encodeCall(IERC20Metadata.decimals, ()));
-        // A failed call, or an answer shorter than a word, reads as a word no uint8 fits.
-        uint256 word = ok && data.length >= WORD ? _wordAt(data, 0) : type(uint256).max;
-        answered = word <= type(uint8).max;
-        if (answered) decimals = SafeCast.toUint8(word);
-    }
-
-    /// @dev The word of `data` that starts at byte `at`, read big-endian; the caller keeps it inside `data`.
-    function _wordAt(bytes memory data, uint256 at) private pure returns (uint256 word) {
-        for (uint256 i = 0; i < WORD; ++i) {
-            word = word << 8 | uint8(data[at + i]);
-        }
     }
 
     // ---------------------------------------------------------------------

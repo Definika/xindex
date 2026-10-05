@@ -35,6 +35,9 @@ library MainnetAddresses {
     /// @dev Uniswap V4 singleton the Universal Router settles V4 legs against. The zap reads it from the router
     ///      rather than taking it as an argument, so the two can never be wired to different deployments.
     address internal constant POOL_MANAGER = 0x000000000004444c5dc75cB358380D2e3dE08A90;
+    /// @dev Uniswap V3's factory, where `CheckToken` looks up a token's pools to record its depth before a listing. No
+    ///      contract reads it. Its runtime code hash is pinned by `test/fork/MainnetAddresses.fork.t.sol`.
+    address internal constant UNISWAP_V3_FACTORY = 0x1F98431c8aD98523631AE4a59f267346ea31F984;
 
     // ---------------------------------------------------------------------
     // Reference supplies. Every token carries one, and nothing reads a supply live (CR-M01). Circulating supplies
