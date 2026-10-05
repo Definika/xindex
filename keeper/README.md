@@ -33,6 +33,9 @@ which keeps the chain's state verifier on Ethereum within its day):
 - Sui (`sui.mjs`): the vault's `attest` freezes an `Attestation`; `sui/proof.py` builds its `AttestProof` (checkpoint,
   certificate, artifacts path) and each epoch's committee `update`, from Sui's GraphQL, with no prover. Its update
   builder reproduces the fixture's epoch 1268 exactly (2026-10-06). Sui's JSON-RPC is retired: it uses gRPC.
+- Aptos (`aptos.mjs`): the vault's `attest` event, proven by `proofs/aptos` from Aptos Labs' public backups
+  (`proofs/aptos/fixtures/input.py`), which cover a version two to four hours after it ran. Its trusted-set and hop
+  readers reproduce the mainnet fixture exactly (2026-10-06).
 
 Every other vault chain needs its adapter before the filler takes an auction that moves its coins; until then it leaves
 those to other executors. The proof builders need `uv` (Python with its packages) and, for SP1 chains, the hosts built

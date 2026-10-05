@@ -10,6 +10,7 @@
     "fill-once": "node filler.mjs --once"
   },
   "dependencies": {
+    "@aptos-labs/ts-sdk": "7.4.0",
     "@mysten/sui": "2.34.0",
     "@noble/curves": "1.9.7",
     "tronweb": "6.5.1",

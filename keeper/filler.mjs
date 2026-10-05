@@ -12,7 +12,8 @@
 //
 // Each pass resumes a fill this filler accepted, so a restart loses nothing, and first keeps every adapter's state
 // verifier on Ethereum within its day (`follow`). Chains: BNB Chain (`chains/bnb.mjs`), Injective
-// (`chains/injective.mjs`), TRON (`chains/tron.mjs`), VeChain (`chains/vechain.mjs`) and Sui (`chains/sui.mjs`). Every other vault chain needs its adapter (deposit, intake proof,
+// (`chains/injective.mjs`), TRON (`chains/tron.mjs`), VeChain (`chains/vechain.mjs`), Sui (`chains/sui.mjs`) and Aptos
+// (`chains/aptos.mjs`). Every other vault chain needs its adapter (deposit, intake proof,
 // recipient) before an index holding its coins can be filled here; until then such an auction is logged and left to
 // other executors.
 //
@@ -27,11 +28,14 @@
 //                          is mainnet (the default), testnet or solo; VECHAIN_NODE another node of that network.
 //   SUI_KEY, SUI_VAULT, SUI_PACKAGE   The filler's Sui key (suiprivkey...), the vault's 32-byte object id and its
 //                          package. SUI_RPC (gRPC) and SUI_GRAPHQL default to Sui's public mainnet services.
+//   APTOS_KEY, APTOS_VAULT, APTOS_PACKAGE   The filler's Aptos key, the vault's object address and its package.
+//                          APTOS_NETWORK is mainnet (the default) or testnet.
 // The filler's Ethereum account must hold the bond's shares and the Ethereum legs it delivers: it buys nothing itself.
 
 import { createPublicClient, createWalletClient, http, formatUnits, getAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { abi } from "./artifacts.mjs";
+import { aptosChain } from "./chains/aptos.mjs";
 import { bnbChain } from "./chains/bnb.mjs";
 import { injectiveChain } from "./chains/injective.mjs";
 import { tronChain } from "./chains/tron.mjs";
@@ -100,6 +104,17 @@ if (process.env.SUI_KEY) {
     ethWallet,
   });
   adapters.set(sui.chainId, sui);
+}
+if (process.env.APTOS_KEY) {
+  const aptos = aptosChain({
+    network: env("APTOS_NETWORK", "mainnet"),
+    key: env("APTOS_KEY"),
+    vault: env("APTOS_VAULT"),
+    packageAddress: env("APTOS_PACKAGE"),
+    ethClient: eth,
+    ethWallet,
+  });
+  adapters.set(aptos.chainId, aptos);
 }
 if (process.env.VECHAIN_KEY) {
   const vechain = await vechainChain({
