@@ -18,6 +18,15 @@ chains. It launches as one product, on the hybrid factory, once the hybrid index
 2026-10-01); Stage A does not launch on its own. v4 replaces v3, which priced through Chainlink and offered a capped
 methodology; v3 is tagged `v3.0.0` and never ships on mainnet. The web app lives in a separate repo.
 
+**v5 is replacing v4's market-cap index** (the owner's calls on 2026-10-05): creators choose each coin's percentage,
+fixed at creation, and the index rebalances back to them at Pyth prices. v5 offers custom percentages only; the
+market-cap hub and its supply batches are retired from new deployments, as v3 was, once their retirement record is
+written. v5 phase 1 is built and deployed nowhere: `WeightedIndexFactory` and its `WeightedHub` template, on branch
+`v5-custom-weights`, holding Ethereum ERC-20s; vault coins are phase 2, and the vaults and proofs below carry over.
+`design/2026-10-05-custom-weights.md` is its spec and records what remains before any deployment. Until the retirement
+record lands, the v4 code and every rule below stay in force for it, and the v5 section further down governs the
+weighted contracts.
+
 Where the stages stand (none of v4 is deployed):
 - Stage A is built.
 - Stage B is built in large part: the EVM vault and the Solana vault program; P1 (SP1) and P2 (RISC Zero) on EVM vault
@@ -75,7 +84,7 @@ forge test                   # unit + fuzz + invariant tests, no RPC needed; for
                              # an RPC that cannot serve the pinned block fails with that sentence, not a raw fork error
 forge coverage               # must stay at 100% for every file (lines, statements, branches, functions)
 aderyn .                     # Aderyn on src/, configured by aderyn.toml: must report nothing; CI does not run it
-for c in IndexFactory IndexHub IndexZap MintRequests HybridIndexFactory IHybridIndex XindexVault; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
+for c in IndexFactory IndexHub IndexZap MintRequests HybridIndexFactory IHybridIndex XindexVault WeightedIndexFactory WeightedHub; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
 
 # mainnet fork tests (real tokens, Universal Router, V3 and V4 pools); skipped when the env var is unset.
 # A rate-limited RPC throttles five suites in parallel: add -j 1.
@@ -113,7 +122,8 @@ verifier, from an anchor the fixture generator writes, with the deployment's own
 5. The Wake VS Code analyzer reports no errors or warnings on `src/`. Its reentrancy detector does not model reentrancy
    guards; the three documented suppressions are on the `redeem` call in `IndexZap._burnBasket`, the `permit` call in
    `IndexZap.burnToTokenWithPermit`, and the executor callback in `IndexHub._settle`. One more marks `IHybridIndex`,
-   which only integrators and tests use, as meant to have no user in `src/`.
+   which only integrators and tests use, as meant to have no user in `src/`. v5 adds the executor callback and Pyth's
+   parse in `WeightedHub`, and the two events of the vendored `IPythEvents`, which only Pyth emits.
    Aderyn (Cyfrin's analyzer, `aderyn .`, and its VS Code extension) reports nothing on `src/` either. `aderyn.toml`
    excludes the rules the design rejects, each with its reason, as `foundry.toml` does for lint; a verified false
    positive is marked where it stands with `// aderyn-fp-next-line(<detector>)` and its reason on the line above, or
@@ -150,6 +160,9 @@ verifier, from an anchor the fixture generator writes, with the deployment's own
      ids have none.
    - The BLS signature-length finding of 2026-10-04: `BLS-1` (`audit/2026-10-04-bls-signature-length.md`), tested by
      `test_BLS1_...` in `test/Bls12381.t.sol` and `test/BnbStateVerifier.t.sol`.
+   - The internal review of v5's weighted index on 2026-10-05: `V5-M1`, `V5-M2`, `V5-L1`..`V5-L3` and `V5-I1`..`V5-I4`
+     (`audit/2026-10-05-v5-review.md`), a test named `test_V5M1_...`. The record's status column names every test, and
+     the ids fixed or recorded by documentation alone, which have none.
 
    Find a test by its id. Most v1 and R tests are in `test/Security.t.sol` and `test/fork/Security.fork.t.sol`. The R
    tests that drive the λ auction directly (R04, R08, R14, R17, R19, R22) are in `test/IndexHub.rebalance.t.sol`,
@@ -194,10 +207,12 @@ Foundry project) never deploy to a mainnet.
 
 ## Design rules that must not be broken
 
-- **No price in any contract.** No contract reads a price, a feed or a pool's state to size, gate or value anything.
-  Amounts come from supply and units, and units come from reference supplies. `test_noContractReadsAPrice` in
-  `test/Repo.t.sol` fails if `src/` or `abi/` names an oracle or a pool's price. Valuing an index is the app's job,
-  off-chain. The zap swaps, but it reads no price either: it enforces the limits its caller sets.
+- **No price in any v4 contract.** No v4 contract reads a price, a feed or a pool's state to size, gate or value
+  anything. Amounts come from supply and units, and units come from reference supplies. `test_noContractReadsAPrice` in
+  `test/Repo.t.sol` fails if `src/` or `abi/` names a Chainlink feed or a pool's price. Valuing an index is the app's
+  job, off-chain. The zap swaps, but it reads no price either: it enforces the limits its caller sets. v5's
+  `WeightedHub` is the one exception, and only in its settlement (the v5 section below;
+  `test_V5I4_onlyTheWeightedHubReadsAPrice`).
 - **Value-bearing amounts are in-kind.** `IndexHub` only ever moves amounts derived from supply and units: issue,
   redeem, claims and rebalance settlements. Never compute an amount from balances (balances only verify), and never
   add a share price to the hub. `_backing(shares, units, rounding)` is the one place that turns shares and units into an
@@ -546,6 +561,52 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   (`tests/hash_to_curve.rs`). P2 (`proofs/p2`, RISC Zero) is built with `cargo build --release -p xindex-p2-host`, and
   `p2 execute` on a real input must commit what `p1 execute` commits.
 
+## v5: custom-weight indexes (in progress, not deployed)
+
+`design/2026-10-05-custom-weights.md` has the spec, and `audit/2026-10-05-v5-review.md` its internal review. These are
+the rules code must never break.
+- **One place reads a price.** Only `WeightedHub`'s settlement reads one, from Pyth, and only for the moving
+  components. Issue, redeem, `redeemSkipping` and claims never read a price, so no feed can block an exit or misprice a
+  mint (`test_issueAndRedeemNeverCallPyth`). The factory stores price ids and never calls Pyth;
+  `test_V5I4_onlyTheWeightedHubReadsAPrice` fails if any other file names Pyth's contract, parse, getters, pushes or
+  price struct. No Chainlink feed or pool price anywhere, as in v4 (`test_noContractReadsAPrice`).
+- **One price per block.** The hub, never the executor, fixes the second the prices belong to: one slot back,
+  `PRICE_LAG` (12 seconds) before the block (`priceTime()`), and Pyth's `parsePriceFeedUpdatesUnique` returns each
+  feed's first update at or after it, published before the block. The hub checks the ids and publish times Pyth
+  returns. Do not let a caller name the time or widen the window; the minute first pinned was known two minutes ahead
+  (V5-L1). That the update is the first is Pyth's to keep, since Pyth does not return the previous publish time
+  (V5-I1).
+- **No two components on one price id.** Pyth fills only the first of two equal ids, so such an index could never
+  settle; the factory and the hub's initializer both refuse it (V5-M1). Test any change to the parse against Pyth's own
+  fill loop, which `MockPyth` follows.
+- **Prices are scaled from recorded decimals.** A price is `price · 10^(36 + expo − decimals)` with the decimals the
+  factory read when the listing was proposed; no component is called to price it (RT-01). Refused: a non-positive
+  price, an exponent outside [-18, 0], a result above `MAX_PRICE`, a confidence interval wider than `MAX_CONFIDENCE`.
+- **Weights and constituents are fixed at creation,** two to a hundred components, and an index copies its price ids
+  and decimals then, so no relisting reaches an existing index. The CREATE2 salt commits to every component's token,
+  units, weight, price id and decimals.
+- **The cap counts units, never value.** A fill sends out at most `MAX_TURNOVER` (20%) of each component's own units,
+  every leg moving the same share of the way, so a wrong or malicious price takes at most that, once a week. A value
+  cap measured in the reported prices let two wrong feeds take 89% of an index far from its weights (V5-M2); do not
+  bring one back as the only cap.
+- **A fill must trade.** One that would release less than `MIN_TRADE` (0.1%) of the moving value reverts
+  `NothingToRebalance`, and a keep mask must leave two components moving, so a fill that changes nothing cannot restart
+  `MIN_REBALANCE_INTERVAL` (V5-L2). The guardian's cancel remains the trust assumption DA-12 records.
+- **The settlement's rounding.** Targets round up; a shrinking leg's step rounds down; a growing leg's rounds up, by the
+  factor `μ · s` rounded up, with `μ` falling from `MU_MAX` to `MU_MIN` and rounding up. At the settling prices the
+  executor delivers at least `μ` times what it takes. A fill that sends nothing out settles at `MU_MAX`. The backing
+  post-check is `IndexHub`'s. The mutants worth rerunning: each of those roundings flipped, no unit cap, no
+  `MIN_TRADE`, a keep mask leaving one, a wider window or the minute, no confidence or publish-time check, a kept feed
+  read, and the duplicate-id checks removed.
+- **A collapsing coin can stop the fills.** Fixed weights keep buying it, and units beyond `uint96` stop the fill rather
+  than wrap, until the guardian keeps it (V5-L3, a known limitation).
+- **Everything else is `IndexHub`'s**: the invariant, rounding on issue and redeem, claims booked to `to`, the
+  recipient traps, the reentrancy guard on every mutating entry point, keep masks (a kept component is neither priced
+  nor read), the cancel and restart hold-offs, and the bounded fill.
+- **The zap and `MintRequests` are v4's, unchanged,** deployed against the weighted factory: an index keeps the
+  signatures they call (`issue`, `redeem`, the previews, `componentTokens`, `rebalanceNonce`).
+- **Every payable path forwards the whole of `msg.value` to Pyth;** the hub never holds ether.
+
 ## Conventions
 
 - `pragma solidity 0.8.28;` in `src/` and `script/`; tests use `^0.8.24`. The compiler is pinned to 0.8.28 in
@@ -582,6 +643,9 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   - `IRiscZeroVerifier` comes from risc0/risc0-ethereum (Apache-2.0) at `365e7b2db4f620fa256580c27558d2623362b9ae`,
     tag v3.0.1, the release that matches the zkVM P2 is built with: the interface and the `Receipt` struct it takes,
     with its pragma pinned and the file's libraries left out, since nothing here computes a claim.
+  - `IPyth`, `IPythEvents` and `PythStructs` come from pyth-network/pyth-crosschain (Apache-2.0) at
+    `2bb0eb54b2b3af8854d0c26f3884c28a0fce0802`, `target_chains/ethereum/sdk/solidity/`, with the pragma pinned and the
+    whitespace `forge fmt` writes; their plain imports and Pyth's own events carry the suppressions of vendored code.
 
   A vendored struct may retype `Currency` and `IHooks` to `address`, which is ABI-identical. Change vendored code only
   to replace a dependency, never to restyle. Both router libraries record the input layout of every command and action
@@ -652,6 +716,11 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   WBTC address is `0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599`; an earlier draft had a wrong one.
 
 ## Product decisions already made (do not re-litigate silently)
+
+**v5 replaces v4's market-cap index** (the owner's calls on 2026-10-05). Creators choose each coin's percentage; the
+weights are fixed at creation; the index rebalances to them at Pyth prices, which cover all 52 listed coins where
+Chainlink's Ethereum feeds cover 11. v5 is custom percentages only. Its parameters (section 8 of the spec) wait on a
+replay of Pyth's history, and Hermes now needs a paid API key, an operating cost the owner weighs before launch.
 
 **v4 replaces v3** (the owner's call on 2026-09-30). v3 stays at the `v3.0.0` tag and on Sepolia and never launches on
 mainnet. Its recorded decisions were Chainlink USD feeds, the capped 30/20 methodology, a monthly cadence, the seven-token
