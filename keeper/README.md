@@ -27,6 +27,9 @@ which keeps the chain's state verifier on Ethereum within its day):
 - TRON (`tron.mjs`): an `attest` of the intake digest sent on TRON, proven as a call in a solidified block by
   `tron/proof.py`, which also advances the verifier through TRON's producer lists. Its builders reproduce the
   verifier's mainnet fixture exactly (2026-10-06); nothing else of it has run.
+- VeChain (`vechain.mjs`): the vault's `attest` and the Staker attester's in two later rounds, sent with
+  `vechain/deploy.mjs`'s path, proven by `proofs/vechain` from `proofs/vechain/fixtures/input.py`'s input, about 90
+  minutes after the attest. Its call builder reproduces the mainnet fixture's call exactly (2026-10-06).
 
 Every other vault chain needs its adapter before the filler takes an auction that moves its coins; until then it leaves
 those to other executors. The proof builders need `uv` (Python with its packages) and, for SP1 chains, the hosts built

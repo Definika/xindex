@@ -12,7 +12,7 @@
 //
 // Each pass resumes a fill this filler accepted, so a restart loses nothing, and first keeps every adapter's state
 // verifier on Ethereum within its day (`follow`). Chains: BNB Chain (`chains/bnb.mjs`), Injective
-// (`chains/injective.mjs`) and TRON (`chains/tron.mjs`). Every other vault chain needs its adapter (deposit, intake proof,
+// (`chains/injective.mjs`), TRON (`chains/tron.mjs`) and VeChain (`chains/vechain.mjs`). Every other vault chain needs its adapter (deposit, intake proof,
 // recipient) before an index holding its coins can be filled here; until then such an auction is logged and left to
 // other executors.
 //
@@ -23,6 +23,8 @@
 //   INJECTIVE_RPC, INJECTIVE_KEY   Injective's EVM RPC and the filler's key there; proving needs SP1's prover network.
 //   TRON_API, TRON_KEY     TronGrid's API (https://api.trongrid.io) and the filler's key on TRON, holding TRX for its
 //                          deliveries and its energy. TRON_CHAIN_ID defaults to mainnet's, 728126428.
+//   VECHAIN_KEY            The filler's key on VeChain, holding VET for its deliveries and VTHO for gas. VECHAIN_NETWORK
+//                          is mainnet (the default), testnet or solo; VECHAIN_NODE another node of that network.
 // The filler's Ethereum account must hold the bond's shares and the Ethereum legs it delivers: it buys nothing itself.
 
 import { createPublicClient, createWalletClient, http, formatUnits, getAddress } from "viem";
@@ -31,6 +33,7 @@ import { abi } from "./artifacts.mjs";
 import { bnbChain } from "./chains/bnb.mjs";
 import { injectiveChain } from "./chains/injective.mjs";
 import { tronChain } from "./chains/tron.mjs";
+import { vechainChain } from "./chains/vechain.mjs";
 
 const env = (name, fallback) => {
   const value = process.env[name] ?? fallback;
@@ -82,6 +85,16 @@ if (process.env.TRON_API) {
     chainId: BigInt(env("TRON_CHAIN_ID", "728126428")),
   });
   adapters.set(tron.chainId, tron);
+}
+if (process.env.VECHAIN_KEY) {
+  const vechain = await vechainChain({
+    network: env("VECHAIN_NETWORK", "mainnet"),
+    host: process.env.VECHAIN_NODE,
+    key: env("VECHAIN_KEY"),
+    ethClient: eth,
+    ethWallet,
+  });
+  adapters.set(vechain.chainId, vechain);
 }
 
 const log = (...args) => console.log(new Date().toISOString(), ...args);
