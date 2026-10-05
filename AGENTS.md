@@ -49,6 +49,14 @@ Where the stages stand (none of v4 is deployed):
     `VeChainStakerAttester` on VeChain and its own deployment script (`vechain/`).
   - **Aptos** is built in both directions: the vault with P1 and P2 in Move (`aptos/`), and `AptosStateVerifier`
     (`proofs/aptos`), whose inputs come from Aptos Labs' public database backups.
+- Every top-100 coin with a contract on Ethereum or BNB Chain is being added (the owner's call on 2026-10-05,
+  `design/2026-10-05-wide-asset-support.md`). Built: `script/CheckToken.s.sol`, the admission check; the wide list,
+  `WHITELIST=wide`, of the 27 Ethereum coins that pass it (LEO and WLFI fail the WBT rule;
+  `design/2026-10-05-token-admission-report.md`); token support in `XindexVault`; and 13 of BNB Chain's 14 coins
+  (Binance-Peg coins and BNB Chain tokens) pinned in `script/BnbChainAddresses.sol` as `ConfigureChains`'
+  `VAULT_TOKENS=bnb`, listed once that vault is deployed, each with a cap the owner sets then. NIGHT waits on the
+  owner. Three of the design's decisions are open: the flagship's policy, the WBT rule's reach and thin tokens (its
+  section 6).
 
 For more:
 - `ARCHITECTURE.md`: the design as built, Stage A and Stage B.
@@ -70,14 +78,18 @@ aderyn .                     # Aderyn on src/, configured by aderyn.toml: must r
 for c in IndexFactory IndexHub IndexZap MintRequests HybridIndexFactory IHybridIndex XindexVault; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
 
 # mainnet fork tests (real tokens, Universal Router, V3 and V4 pools); skipped when the env var is unset.
-# A rate-limited RPC throttles four suites in parallel: add -j 1.
+# A rate-limited RPC throttles five suites in parallel: add -j 1.
 MAINNET_RPC_URL=https://... forge test --match-path 'test/fork/*' -vvv
 # public non-archive RPCs only serve recent state: pin near the head
 MAINNET_RPC_URL=https://ethereum-rpc.publicnode.com FORK_BLOCK=$(( $(cast block-number --rpc-url https://ethereum-rpc.publicnode.com) - 8 )) forge test --match-path 'test/fork/*'
+
+# the admission check, read-only, before any listing: one report per token for the Safe's signers
+CHECK=wide forge script script/CheckToken.s.sol --fork-url $MAINNET_RPC_URL
 ```
 
 Deployment: `script/Deploy.s.sol` then `script/ConfigureWhitelist.s.sol`, which also runs the weekly supply batch,
-vault coins' supplies included (see README). A vault chain adds `script/DeployVault.s.sol` on that chain (P1, P2, the
+vault coins' supplies included (see README). `script/CheckToken.s.sol` reports on every token before its first listing;
+`WHITELIST=default` is the flagship's list and `WHITELIST=wide` the wide list. A vault chain adds `script/DeployVault.s.sol` on that chain (P1, P2, the
 state reader and the vault, Injective's included; `tron/deploy.mjs` deploys TRON's, built with Tron's compiler, and
 `vechain/deploy.mjs` VeChain's with its staker attester; NEAR's, Stellar's and Sui's go up with their chains' own
 tools, as `near/`, `stellar/` and `sui/` say) and `script/DeployStateVerifier.s.sol` on Ethereum (the chain's state
@@ -97,7 +109,7 @@ verifier, from an anchor the fixture generator writes, with the deployment's own
    is the reason for the suppression in `IndexFactory.createIndex`.
 3. `forge test` green. `forge coverage` at 100% for every file, including mocks and scripts.
 4. Fork tests green if the change touches `IndexZap`, the hub's rebalancing, routes, token behaviour, or anything
-   router- or pool-related. Their summary must list the four `test/fork/` suites and 0 skipped.
+   router- or pool-related. Their summary must list the five `test/fork/` suites and 0 skipped.
 5. The Wake VS Code analyzer reports no errors or warnings on `src/`. Its reentrancy detector does not model reentrancy
    guards; the three documented suppressions are on the `redeem` call in `IndexZap._burnBasket`, the `permit` call in
    `IndexZap.burnToTokenWithPermit`, and the executor callback in `IndexHub._settle`. One more marks `IHybridIndex`,
@@ -388,6 +400,12 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   `HybridIndexFactory` reaches it only through `IndexFactory`'s two template hooks.
 - **Vaults.** A chain's vault is fixed once registered, and an index copies its vaults at creation. A vault pays out
   only on messages both Ethereum-side proofs carry, and only protective messages (a freeze, a lowered cap) pass on one.
+- **Tokens on an EVM vault chain.** `XindexVault` also holds a token governance has capped, a Binance-Peg coin or a
+  token issued on BNB Chain (`design/2026-10-05-wide-asset-support.md`). A cap of zero refuses it, so no token enters a
+  vault faster than a `CAP_UPDATE` waits out both delays. `depositToken` records the amount, then pulls it, and refuses
+  a short delivery (`DepositShortfall`). A token's cap, floor, speed limit, refunds and snapshot claims are its own, so
+  one that pauses or blacklists the vault holds back only its own payouts. On Ethereum it is a vault coin like any
+  other, `vaultTokenId(chainId, bytes32(token))`: the hub, the factory and the state verifiers do not change.
 - **The hub's book is exact.** `vaultBacking` changes only by the proven deposits of a claimed order and by burns, both
   from supply and units. Every order spans every chain of its index, and its intake id carries its deadline.
 - **Nothing an order rests on can change unseen.** Deposits are proven only after their deadline. During the lock, any
@@ -469,7 +487,8 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   (TRN-2; `test/fixtures/tron/generate.py` checks it on mainnet). Only the list before vouches (TRN-4). Section 5.7 of
   the spec has the rest.
 - **Size.** The hub and the module are both near the 24KB limit; new code goes in the extension. Check
-  `forge build --sizes` after any change to any of the three.
+  `forge build --sizes` after any change to any of the three. `XindexVault` is near it too, with about 200 bytes to
+  spare after token support; the snapshot claim's reading and signature check live in the linked `VaultSnapshot`.
 - **The Solana vault is the EVM vault's twin.** `solana/programs/xindex-vault` keeps the same messages, digests, speed
   limit and freeze, and its `abi` tests pin every encoding against Solidity's. A change to either vault's rules or to a
   message goes into both. `solana/programs/stub-verifier` trusts a relayer key and exists for testnets only; nothing in
@@ -496,7 +515,9 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   test`, fmt and `cargo clippy --all-targets -- -D warnings`; `proofs/near`'s `cargo test -p xindex-near-finality` and
   `proofs/stellar`'s `cargo test --release -p xindex-stellar`, each with fmt and clippy.
 - **Sui, Aptos, Injective and VeChain.** The twin rule spans the EVM vault, Solana's, NEAR's, Stellar's, Sui's and
-  Aptos's: a change to a vault's rule or a message goes into each.
+  Aptos's: a change to a vault's rule or a message goes into each, for the coins each vault holds. Which coins a vault
+  can hold differs by chain: the EVM vault (BNB Chain, TRON, Injective, VeChain) holds capped tokens as well as the
+  native coin, and the others hold their native coin only, so holding tokens there would be a change of its own.
   - `sui/` is the Move twin. Its `Attestation` object's bytes are pinned against `SuiStateVerifier`'s
     (`test/SuiStateVerifier.vault.t.sol`). Its gates: `sui move build` (no warnings; one lint suppressed with its reason)
     and `sui move test`, with `SUI_CONFIG_DIR` set to a throwaway directory holding a keyless `client.yaml` (an empty
@@ -603,8 +624,9 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   `MintRequests`; `DeployVault.deploy`, which deploys a vault chain's P1, P2, state reader and vault, refusing any
   Groth16 verifier but the pinned SP1 and RISC Zero ones; `DeployStateVerifier.deployBnb` and `deployTron`, which
   deploy a chain's state verifier on Ethereum from a fresh anchor; `ConfigureWhitelist.propose`, `execute`,
-  `proposeSupplies` and `executeSupplies`; and `ConfigureChains.propose` and `execute`, which add a vault chain and its
-  coins. Environment variables are process-global and tests run in parallel, so each variable name is set by exactly
+  `proposeSupplies` and `executeSupplies`; `ConfigureChains.propose` and `execute`, which add a vault chain and its
+  coins, and `proposeCaps` and `executeCaps`, which give a vault coin its cap; and `CheckToken.check`, which reports on
+  one token. Environment variables are process-global and tests run in parallel, so each variable name is set by exactly
   one test (see `test/Scripts.t.sol`). In tests, script broadcasts come from `DEFAULT_SENDER`.
 - **Deployment rules.**
   - Deployments never use raw private keys: `--account` keystores or `--ledger`.
@@ -652,7 +674,8 @@ records what went with them:
   Ethereum (`design/2026-09-30-wbt-check.md`, the owner's call on 2026-09-30). The whitelist follows from the floor,
   the screen, the listing check and the
   owner's preference for native coins in vaults over wrapped ones. Bitcoin is held as WBTC only (the owner's call on
-  2026-09-29; do not reopen it).
+  2026-09-29; do not reopen it). The wide list (`WHITELIST=wide`) serves creators' indexes; whether the flagship takes
+  any bridged or custodial coin is open (`design/2026-10-05-wide-asset-support.md`, section 6).
 - **Fees.** None in Stage A: audits, the bounty and watchers are funded from outside (the owner's call on 2026-09-30,
   over a minter fee in shares or a management fee, design §13.1). A later version could add one; only `_backing` and
   its callers would change.

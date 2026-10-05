@@ -91,7 +91,7 @@ The history, in one paragraph each:
 | Prices | None on chain. The app values an index off chain as the sum of units times its own prices (design section 10). |
 | Swaps | Uniswap's Universal Router 2.0.0, V3 and V4, one venue per leg, chosen by the caller: as in v3. The app offers the one-click zap only up to about 35 components (EIP-7825's 16.78M gas per transaction). |
 | Fees | None: Stage A is funded from outside (the owner's call on 2026-09-30, design section 13.1). Every amount the hub moves goes through one helper, `_backing`, so a fee in a later version would land in one reviewed change. |
-| Layer-1 coins | Stage A holds Ethereum tokens only; Bitcoin is held as WBTC. Native coins of chains whose contracts can verify a proof about Ethereum, and whose state Ethereum can verify in turn, come in vaults from Stage B. Script-only chains, whose contracts cannot verify one (Bitcoin, XRP Ledger, Dogecoin, ...), are out of scope. |
+| Layer-1 coins | Stage A holds Ethereum tokens only; Bitcoin is held as WBTC. Native coins of chains whose contracts can verify a proof about Ethereum, and whose state Ethereum can verify in turn, come in vaults from Stage B. Script-only chains, whose contracts cannot verify one (Bitcoin, XRP Ledger, Dogecoin, ...), are out of scope as vault chains; their coins can come as Binance-Peg tokens in the BNB Chain vault, a custodial copy labelled as such (`design/2026-10-05-wide-asset-support.md`). |
 | Stable in / out | Mint with USDC or USDT through the zap, or through `MintRequests` at a limit of the requester's own, filled by anyone who holds shares. The burner chooses USDC, USDT or any other token at exit, or asks for USDC or USDT at a limit through `MintRequests`. Index tokens are fungible, so the protocol cannot know which stable a holder used. |
 | Decentralization | No admin can move an index's funds, mint or burn its shares, pause or upgrade it, or set its units by hand. The owner proposes listings and supply batches, which take effect after 2 days, and guardian changes, which take 7; a proposal not executed within 7 days of becoming ready expires. Owner and guardian both cancel pending listings and batches, delist, cancel a rebalance, and start one with a keep mask or before strangers may. The guardian can cancel a change that would remove it, not one that replaces it. Ownership moves in two steps with no delay, and cannot be renounced. |
 | Frozen components | If a component's issuer pauses or blacklists transfers, holders take every other component out with `redeemSkipping` and collect the frozen one later with `claim`; the guardian rebalances around it with a keep mask, which neither transfers the component nor reads its balance or its supply. |
@@ -762,13 +762,33 @@ CHAIN_MODE=safe CHAINS_FACTORY=0x... CHAINS=56:<vault>:<state verifier> forge sc
 CHAIN_MODE=execute CHAINS_FACTORY=0x... CHAINS=<same> forge script script/ConfigureChains.s.sol --rpc-url mainnet --account deployer --sender <any account> --broadcast
 # then its native coin, 0x0, and its listing the same way
 CHAIN_MODE=safe CHAINS_FACTORY=0x... CHAINS=<same> VAULT_TOKENS=56:0x0:<supply> forge script script/ConfigureChains.s.sol --rpc-url mainnet
+# a token on the chain, a Binance-Peg coin say: its listing, by its address, and its cap and floor on the vault
+CHAIN_MODE=safe CHAINS_FACTORY=0x... VAULT_TOKENS=56:<token>:<supply> VAULT_CAPS=56:<token>:<cap>:<floor> forge script script/ConfigureChains.s.sol --rpc-url mainnet
+# BNB Chain's 13 pinned tokens (script/BnbChainAddresses.sol) at once, each with its cap
+CHAIN_MODE=safe CHAINS_FACTORY=0x... VAULT_TOKENS=bnb VAULT_CAPS=<one per token> forge script script/ConfigureChains.s.sol --rpc-url mainnet
 ```
+
+A token's cap is zero until then, which refuses its deposits. Executing the cap proposal emits its `CAP_UPDATE`; a
+relayer delivers it to the vault with both proofs, and anyone applies it there with `applyChange` after
+`GOVERNANCE_DELAY` (7 days), since a first cap is a raise.
 
 Once listed, a vault coin's supply is revised in the weekly batch with every other (`ConfigureWhitelist`), its entry
 naming it by its Ethereum-side id, the factory's `vaultTokenId(chainId, tokenId)`. The script checks only its supply's
 range, since it has no code on Ethereum, and its listing modes skip it, since `proposeVaultListing` lists it.
 
-**Listings and supply batches** go through `script/ConfigureWhitelist.s.sol`, or the equivalent calls through the Safe:
+**The admission check** comes first: `script/CheckToken.s.sol` is read-only and prints one report per token for the
+Safe's signers (transfers simulated on a fork, transfer hooks, admin powers and who holds them, Uniswap depth on
+Ethereum, the supply), and refuses a token by the WBT rule. `design/2026-10-05-token-admission-report.md` records its
+run on all 43 coins.
+
+```bash
+CHECK=wide forge script script/CheckToken.s.sol --fork-url <mainnet rpc>
+CHECK=<token:supply,...> forge script script/CheckToken.s.sol --fork-url <bnb chain rpc>
+```
+
+**Listings and supply batches** go through `script/ConfigureWhitelist.s.sol`, or the equivalent calls through the Safe.
+`WHITELIST=default` is the flagship's list, and `WHITELIST=wide` the 27 Ethereum coins of the wide list, each labelled
+with its trust tier in safe mode:
 
 ```bash
 # owner is a key you hold (testnets and local forks only; a contract owner such as the mainnet Safe cannot sign, and
@@ -924,7 +944,7 @@ test/fixtures/                real BNB Chain, Ethereum and TRON data for the Sta
                               DeployStateVerifier (the other chains' data is under proofs/), and
                               Solana devnet's Alpenglow certificate for EIP-2537 (proofs/solana-state's eip2537_fixture)
 test/fork/                    mainnet fork tests: real V3 and V4 pools, λ rebalancing and security regressions on real tokens
-script/                       Deploy, ConfigureWhitelist, DeployVault, DeployStateVerifier, ConfigureChains, MainnetAddresses, ScriptUtils
+script/                       Deploy, ConfigureWhitelist, CheckToken, DeployVault, DeployStateVerifier, ConfigureChains, MainnetAddresses, BnbChainAddresses, ScriptUtils
 script/interfaces/            the Safe, WETH, Uniswap and Groth16-verifier calls the scripts make
 script/testnet/               SetupTestMarket and FaucetToken for the Sepolia test market
 abi/                          the ABIs the web app decodes with; CI regenerates them and fails on a diff

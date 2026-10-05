@@ -538,9 +538,10 @@ balance-measured zap, and fixed constituents (a new list is a new index version,
   `audit/2026-09-30-v4-stage-a-retirement.md` for Stage A, which retired 31 tested ids (the rule, capped, the feeds,
   the price gate, the turnover gate and the decimals record) and re-targeted the rest, checked against the ids tested
   at `v3.0.0`. A retired id's test is never restored against the new design.
-- **Mainnet fork tests,** four suites and 28 tests against the real Universal Router 2.0.0, the V4 PoolManager and real
-  tokens: the zap end to end on V3 and V4 legs (`IndexZap.fork`); the address book, the router's and PoolManager's code
-  hashes and the default list (`MainnetAddresses.fork`); a λ fill through real V3 pools, the break-even at real quotes
+- **Mainnet fork tests,** five suites and 36 tests against the real Universal Router 2.0.0, the V4 PoolManager and real
+  tokens: the zap end to end on V3 and V4 legs (`IndexZap.fork`); the address book, the router's, PoolManager's and V3
+  factory's code hashes, the default list and the wide list (`MainnetAddresses.fork`); the admission check passing WBTC,
+  LINK and every wide-list token and refusing WBT, LEO and WLFI (`CheckToken.fork`); a λ fill through real V3 pools, the break-even at real quotes
   and a guardian keep mask around a real WBTC pause (`Rebalance.fork`); and the WBTC pause exit, USDT's fee switch,
   stray router balances, WETH's supply moving around a start, `MintRequests` with the real USDC and USDT and Tether's
   real blacklist, and the deploy script's module check against real Safe 1.3.0 and 1.4.1 singletons (`Security.fork`).
@@ -575,8 +576,8 @@ tests, and the PoolManager is reached through the router. The V3 pools the fork 
 
 ## 10. Stage B: vaults on other chains
 
-Stage B is built in code and deployed nowhere. It holds other chains' native coins in vaults on those chains, for
-indexes whose shares live on Ethereum. Coins leave a vault only on messages from Ethereum that two independent proof
+Stage B is built in code and deployed nowhere. It holds other chains' native coins in vaults on those chains, and on
+an EVM vault chain the tokens governance has given a cap, for indexes whose shares live on Ethereum. Coins leave a vault only on messages from Ethereum that two independent proof
 systems, P1 and P2, show final there; Ethereum reads each vault's state through a verifier of that chain's own
 consensus. The rules are in the Stage B spec, and `AGENTS.md` ("Stage B") lists those code must never break. This
 section says what is built; the spec has the rest.
@@ -731,15 +732,26 @@ which pays it out only on messages the hub sends. Integrators call it through `I
 
 ### 10.3 XindexVault (`src/vault/XindexVault.sol`)
 
-One per chain, shared by every index, with no owner and no upgrade. It holds the chain's native coin in a separate
-balance per index, takes coins only as deposits to an intake, and lets them out only on proven messages.
+One per chain, shared by every index, with no owner and no upgrade. It holds the chain's native coin, and each token a
+`CAP_UPDATE` has given a cap, in a separate balance per index and token, takes coins only as deposits to an intake,
+and lets them out only on proven messages.
 
 - **Indexes.** `registerIndex(index, salt)`, anyone, records an index once its address is the factory's CREATE2 clone
   of `HUB_IMPLEMENTATION` under `salt`. Only a registered index takes deposits or sends a message that runs.
 - **Deposits.** `deposit(index, intakeId)` is payable. It is refused while the vault is frozen or stalled, after the
   intake's deadline (the id's top 64 bits), and above the coin's quantity cap across all indexes. A first deposit may
   set a deadline at most `MAX_INTAKE_LIFE` (7 days) ahead. An intake stays open until a message settles or fails it;
-  nothing is withdrawn meanwhile, and the vault never refunds on a timeout.
+  nothing is withdrawn meanwhile, and the vault never refunds on a timeout. `depositToken(index, intakeId, token,
+  amount)` takes a token into the same intakes, refused unless the vault's balance rose by the whole amount.
+- **Tokens.** A Binance-Peg coin or a token issued on BNB Chain is held as the native coin is
+  (`design/2026-10-05-wide-asset-support.md`). Its cap starts at zero, which refuses it, so it enters only after a
+  `CAP_UPDATE` has waited `LISTING_DELAY` on Ethereum and `GOVERNANCE_DELAY` on the vault. Its cap, floor, speed limit,
+  refunds (`refund(index, intakeId, token)`) and snapshot claims are its own, so a token that pauses or blacklists the
+  vault holds back only itself: its payout reverts, and its burn stays deliverable or owed. On Ethereum it is a vault
+  coin like any other, `vaultTokenId(chainId, bytes32(token))`; the hub and the state verifiers do not change. A
+  stranger's deposit of another capped token into an index's intake blocks nothing: the hub proves digests by their
+  whole preimage and counts only its components, so the token joins the index's vault balance as a donation the hub
+  never counts (`test_aStrayTokenInAnIntakeBlocksNothing`). The other vaults hold their native coin only.
 - **Messages.** `deliver(proof1, proof2)` runs one `VaultMessage` that an index or the factory emitted, with
   `id = keccak256(payload)` and a payload naming the domain, Ethereum's chain id, the kind, the vault's chain, the
   vault, the index and a nonce (`src/libraries/VaultMessages.sol`). The route, the emitter and the used mark are
@@ -777,8 +789,8 @@ balance per index, takes coins only as deposits to an intake, and lets them out 
   `RECOVERY_DELAY` (30 days) with at most `MAX_RECOVERY_VETOES` (2) vetoes by the freezer in the stall. Only a
   checkpoint that ends the stall lapses the successor and restarts the count; a stale one, which the old pair can still
   prove, leaves both (LG-2). `SNAPSHOT_EXIT_DELAY` (180 days) into a stall,
-  `beginSnapshot` takes the last checkpoint as the snapshot for good. Holders then claim their share directly
-  (`claimSnapshot`), at the recovery address they registered on the hub or one they signed for (EIP-712), within the
+  `beginSnapshot` takes the last checkpoint as the snapshot for good. Holders then claim their share of each coin
+  directly (`claimSnapshot`), at the recovery address they registered on the hub or one they signed for (EIP-712), within the
   speed limit; open intakes are settled or refunded from the hub's settled marks (`resolveIntake`); and a burn or
   migration the hub marked as sent is paid by `deliverRecorded`. The vault reads the hub's storage under the
   snapshot's state root through `STATE_READER` (`EthereumStateReader`), and the claim's reading and signature check
@@ -941,8 +953,8 @@ registration delay, and proves every later step.
   delivering every message at once. It asserts that both versions' components stay backed, the vault's balance for an
   index is the hub's book plus what the vault still owes, no vault record shows more paid than sent, the settled marks
   follow the claimed orders, the index holds of its own shares exactly a live fill's bond, and the escrow follows the
-  orders. `test/XindexVault.invariant.t.sol` holds the vault's V1 to V5: the vault holds at least what it accounts for,
-  a message pays at most once, a burn pays at most its index's balance, outflow over any 24 hours stays within the
+  orders. `test/XindexVault.invariant.t.sol` holds the vault's V1 to V5, for the native coin and a token alike: the vault
+  holds at least what it accounts for, a message pays at most once, a burn pays at most its index's balance, outflow over any 24 hours stays within the
   limit, and each digest is the hash of what it covers.
 - **Security regression tests** for the Stage B red team's and the Tron review's ids (VLT, HUB, MOD, BNB, FAC, SOL,
   TRN), named as `AGENTS.md` gate 6 sets out.

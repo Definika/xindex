@@ -101,10 +101,10 @@ Four code paths assume the native coin. Each gains the token case:
 
 | Path | Today | With tokens |
 |---|---|---|
-| `deposit` | payable, native only | `depositToken(index, intakeId, token, amount)`: `transferFrom`, the amount **measured** as the vault's balance increase, as `MintRequests` measures escrows |
-| `refund` | the native deposit | the caller's deposit of each token in the intake |
+| `deposit` | payable, native only | `depositToken(index, intakeId, token, amount)`: records `amount`, then pulls it with `transferFrom`, and refuses the deposit unless the vault's balance rose by all of it (`DepositShortfall`), as the hub's `issue` refuses a fee-on-transfer token |
+| `refund` | the native deposit | `refund(index, intakeId, token)`: the caller's deposit of one token, so a token that refuses holds back no other |
 | `_send` | `call{value}` | `SafeERC20.safeTransfer` for a token; a revert keeps the amount owed, as a refused native payout does |
-| snapshot claim | owes the native coin | owes the component's token |
+| snapshot claim | owes the native coin | `claimSnapshot(index, holder, recipient, token, component, proof, signature)` owes the component's token, once per holder, index and token, under one signature for all of them |
 
 Rules that go with it:
 - **A token is accepted only once it has a cap.** Cap zero means refused. A cap comes only by `CAP_UPDATE`, which the
@@ -115,6 +115,17 @@ Rules that go with it:
 - **Fee-on-transfer and rebasing tokens are refused** by the admission check (2.1), run against BNB Chain.
 - **The listing.** `proposeVaultListing(56, bytes32(uint256(uint160(token))), supply)` on Ethereum, then the
   `CAP_UPDATE`, through `ConfigureChains`.
+
+**As built (5 October 2026).** The four paths are in `src/vault/XindexVault.sol`, the claim's token in
+`VaultSnapshot`. Measuring the increase, as first written above, would have written state after the pull; recording
+the amount first and refusing a short delivery keeps every write ahead of the external call, refuses the same tokens,
+and needs no reentrancy suppression. The vault was 816 bytes under EIP-170's limit and is 215 under it now: the claim's
+two library calls became one (`VaultSnapshot.claim`). `ConfigureChains` gained `VAULT_CAPS`, which proposes and sends
+a coin's cap, and `VAULT_TOKENS=bnb`, the 13 BNB Chain tokens of `script/BnbChainAddresses.sol` (NIGHT waits on the
+owner: its owner burns any balance, and its bridge was reported drained). Tests: twelve in `test/XindexVault.t.sol` (VLT-1, VLT-2 and VLT-3 on a token among them; VLT-4's per
+token mark was already tested), the invariant suite run on the native coin and a token alike, and two against a real
+hub (`test_aChainsCoinAndTokenTogether`, `test_aTokenIsPaidAtTheSnapshot`). `BnbStateVerifier`'s fork test on a real
+token intake waits for a deployed vault: the digest's format does not change.
 
 ### 3.3 The twin rule
 
@@ -156,9 +167,14 @@ None of this blocks the hackathon demo, and none of it should go before it.
 
 ## 6. Decisions for the owner
 
-1. **The tiers.** Accept bridged and custodial tokens as listable at all, labelled as above.
-2. **The flagship's policy.** Native only (recommended), or with the custodial tier.
+1. **The tiers.** Accept bridged and custodial tokens as listable at all, labelled as above. **Taken**: the owner asked
+   on 5 October 2026 for all 43 coins in Xindex, Binance-Peg coins included.
+2. **The flagship's policy.** Native only (recommended), or with the custodial tier. Open; the flagship stays native
+   only meanwhile, and no code depends on it.
 3. **The WBT rule's reach.** Which admin powers refuse a token outright: a key that can blacklist and destroy (WBT),
-   a single key that can mint unbacked tokens (Binance-Peg), an upgrade with no timelock (the bridged TRX).
-4. **Token support in the EVM vault**, and the restated twin rule.
-5. **Depth.** Whether a token too thin for the zap is listed, minted only through `MintRequests`.
+   a single key that can mint unbacked tokens (Binance-Peg), an upgrade with no timelock (the bridged TRX). Open; the
+   admission check refuses only the WBT rule meanwhile and records the rest, since refusing a single minting key would
+   refuse every Binance-Peg coin the owner asked for.
+4. **Token support in the EVM vault**, and the restated twin rule. **Taken** with item 1, and built (section 3).
+5. **Depth.** Whether a token too thin for the zap is listed, minted only through `MintRequests`. Open; thin tokens
+   are listed meanwhile.

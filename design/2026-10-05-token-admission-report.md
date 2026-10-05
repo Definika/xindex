@@ -2,7 +2,7 @@
 
 This report covers the 43 coins of `design/2026-10-05-wide-asset-support.md`:
 - 29 with a contract on Ethereum, checked for listing;
-- 14 on BNB Chain only, recorded for their vault listings.
+- 14 on BNB Chain only, recorded for their vault listings, of which 13 are pinned for them (`VAULT_TOKENS=bnb`).
 
 `script/CheckToken.s.sol` (design section 2.1) checked every token on a fork. Its reports are the source of the
 transfer, hook, power and depth columns below.
@@ -16,7 +16,8 @@ transfer, hook, power and depth columns below.
     controller's owner can install a new controller in one transaction.
   - **WLFI:** its owner, a 3-of-5 Safe, can blacklist any holder and move any holder's balance to another address
     (`ownerReallocateFrom`, read in the verified source).
-- **The 14 BNB Chain tokens all pass the check.** None is refused, and none is added to any list. Eleven are custodial
+- **The 14 BNB Chain tokens all pass the check.** None is refused. Thirteen are pinned as `ConfigureChains`'
+  `VAULT_TOKENS=bnb` for the vault's listings, and NIGHT waits on the owner. Eleven are custodial
   (the 10 Binance-Peg coins and ATOM); each lets a single externally owned key mint without limit, and four can also be
   upgraded by a single key. Bridged NIGHT has very likely lost its backing (see its note).
 - **Depth on Ethereum is thin for every one of the 27.**
@@ -125,8 +126,10 @@ do both is the controller's owner.
 
 ## BNB Chain: the 14, recorded for their vault listings
 
-None of these is added to any list or script. Every row passed with exact transfers and no ERC-777 or ERC-1363 hooks
-[v]. Depth is measured on Ethereum only, so it is not given here.
+Thirteen are pinned in `script/BnbChainAddresses.sol`, `ConfigureChains`' `VAULT_TOKENS=bnb`, after their addresses
+were read again on chain 56 by symbol, name and decimals; each is listed once BNB Chain's vault is deployed, with a cap
+the owner sets then. NIGHT is left out pending the owner (see its note). Every row passed with exact transfers and no
+ERC-777 or ERC-1363 hooks [v]. Depth is measured on Ethereum only, so it is not given here.
 
 Binance-Peg tokens are listed by the native coin's circulating supply. Supplies are whole tokens; the entry is that
 number times 10^decimals.

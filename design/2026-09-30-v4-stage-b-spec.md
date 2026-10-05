@@ -141,10 +141,20 @@ One vault per chain, shared by every index, with no owner and no upgrade. Its im
 | `p1`, `p2`, `freezer`, `frozenUntil` | verifiers, the guardian's freeze address, the freeze |
 | `indexDigest[index]`, `intakeDigest[index][intakeId]` | the commitments Ethereum proves (section 1, item 3) |
 
-Tokens are the native coin (`address(0)`) in Stage B. ERC-20 deposits are measured as balance increases, as
-`MintRequests` does, when a chain's listed tokens need them.
+Tokens are the native coin (`address(0)`) and, on an EVM vault chain, each token a `CAP_UPDATE` has given a cap: a
+Binance-Peg coin or a token issued on BNB Chain (`design/2026-10-05-wide-asset-support.md`, built 5 October 2026). A
+token's cap is zero, so its deposits are refused, until the factory sends one, which waits `LISTING_DELAY` on Ethereum
+and then, as a raise, `GOVERNANCE_DELAY` on the vault. Every count above is already per token, so a token has its own
+cap, floor, speed limit and payouts. A token that refuses its transfers, paused or blacklisting, holds back only its own
+payouts and refunds. Anyone may deposit any capped token into any open intake; one that is not the index's component
+joins its vault balance as a donation, which the hub never counts and which blocks nothing, since the hub proves every
+digest from its whole preimage. Only capped tokens enter, so the lists a digest hashes stay short. The other vaults
+(Solana, NEAR, Stellar, Sui, Aptos) hold their native coin only.
 
 **Deposits.** `deposit(index, intakeId)` is payable, and works while not frozen and within the native coin's cap.
+`depositToken(index, intakeId, token, amount)` takes a token the same way, pulled from the caller: it records the
+amount, then pulls it, and is refused unless the vault's balance rose by all of it, as the hub's `issue` refuses a
+fee-on-transfer token (`DepositShortfall`).
 - It adds to the depositor's share of an open intake.
 - An intake id carries its deposit deadline in its top 64 bits, `(deadline << 192) | nonce`. So nobody can open
   someone else's intake with a different deadline, and deposits close at the deadline for everyone.
@@ -570,14 +580,16 @@ Review and adoption:
 `beginSnapshot`. The last checkpoint becomes the snapshot, for good. From then on:
 - **No later message.** A message from an Ethereum block after the snapshot never runs. Messages from its block or
   earlier still do, if the old verifiers can prove them.
-- **Holders claim directly.** `claimSnapshot(index, holder, recipient, component, proof, signature)` reads the hub's
+- **Holders claim directly.** `claimSnapshot(index, holder, recipient, token, component, proof, signature)` reads the hub's
   storage at the snapshot's state root. `component` must lie inside the hub's components array, whose length the claim
   reads too; past its end lies storage a holder could fill with "units" of its choosing (VLT-1). The holder's shares at
   the units then in force, rounded down, plus its claim on the coin (`_claimOf`) are paid to:
   - the recovery address it registered in the hub for this chain, if any, which a contract holder must register; a
     value that is no address on this chain counts as none (VLT-I3);
-  - otherwise the recipient it signed for with its Ethereum key (EIP-712 `SnapshotClaim(index, holder, recipient)`).
-  - One claim per holder and index.
+  - otherwise the recipient it signed for with its Ethereum key (EIP-712 `SnapshotClaim(index, holder, recipient)`),
+    one signature for every coin of the index on this chain.
+  - One claim per holder, index and coin: the component must be `token`'s, `vaultTokenId(chainId, token)` on
+    Ethereum, the native coin's token being zero.
 - **Open intakes are resolved.** The hub marks an intake settled in the transaction that sends its settle message
   (`_settledIntakes`). `resolveIntake` reads that mark at the snapshot and settles the intake if it was sent, and
   otherwise fails it so its depositors take their coins back. Nothing sent later can ever run here.
@@ -720,9 +732,10 @@ forge a proof. What remains:
   step a mined transaction:
   - SP1's and RISC Zero's Groth16 verifiers pass on their own real proofs, 217,950 and 222,908 energy, and refuse a
     wrong input; P1's and P2's `verifyEvent` prove three real mainnet receipts, 51,955 to 74,606 energy;
-  - the vault deploys (Tron's compiler makes it 25,360 bytes; TRON has no 24,576-byte limit), registers an index by
-    Ethereum's CREATE2 formula, takes a TRX deposit, settles it, and pays a burn to a new account; `attest` costs 1,164
-    energy, and a transaction to that view is accepted, since Constantinople is on.
+  - the vault deploys (Tron's compiler made it 25,360 bytes, and 27,283 with token support on 5 October 2026; TRON
+    has no 24,576-byte limit), registers an index by Ethereum's CREATE2 formula, takes a TRX deposit, settles it, and
+    pays a burn to a new account; `attest` costs 1,164 energy, and a transaction to that view is accepted, since
+    Constantinople is on.
 - **The CPU limit is TRON's constraint for P1 and P2.** TRON bounds a transaction by 80 ms of elapsed CPU time, and one
   past it fails `OUT_OF_TIME` and burns its whole fee limit. The BN254 pairing of a Groth16 check takes about 40 ms in
   java-tron on the machine measured; every run passed at 80 ms, while at java-tron's default 50 ms a cold or loaded
