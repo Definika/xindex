@@ -10,14 +10,19 @@
 //            once the message relayers carry the burns.
 // The bond comes back BOND_HOLD after settlement (or with the next accept), and burns if a delivery proves forged.
 //
-// Each pass resumes a fill this filler accepted, so a restart loses nothing. Chains: BNB Chain (`chains/bnb.mjs`, with
-// real BNB state proofs). Every other vault chain needs its adapter (deposit, intake proof, recipient) before an index
-// holding its coins can be filled here; until then such an auction is logged and left to other executors.
+// Each pass resumes a fill this filler accepted, so a restart loses nothing, and first keeps every adapter's state
+// verifier on Ethereum within its day (`follow`). Chains: BNB Chain (`chains/bnb.mjs`), Injective
+// (`chains/injective.mjs`) and TRON (`chains/tron.mjs`). Every other vault chain needs its adapter (deposit, intake proof,
+// recipient) before an index holding its coins can be filled here; until then such an auction is logged and left to
+// other executors.
 //
 // Env: RPC_URL, KEEPER_KEY, FACTORY, PYTH_API_KEY, HERMES_URL, MIN_PROFIT_USD, MAX_SUBSIDY_USD, SWAP_COST_BPS and
 // POLL_SECONDS as for keeper.mjs, plus:
 //   BNB_RPC, BNB_KEY       BNB Chain's RPC and the filler's key there, holding the coins it delivers. BNB_CHAIN_ID
 //                          defaults to 56 (97 for BNB testnet).
+//   INJECTIVE_RPC, INJECTIVE_KEY   Injective's EVM RPC and the filler's key there; proving needs SP1's prover network.
+//   TRON_API, TRON_KEY     TronGrid's API (https://api.trongrid.io) and the filler's key on TRON, holding TRX for its
+//                          deliveries and its energy. TRON_CHAIN_ID defaults to mainnet's, 728126428.
 // The filler's Ethereum account must hold the bond's shares and the Ethereum legs it delivers: it buys nothing itself.
 
 import { createPublicClient, createWalletClient, http, formatUnits, getAddress } from "viem";
@@ -25,6 +30,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { abi } from "./artifacts.mjs";
 import { bnbChain } from "./chains/bnb.mjs";
 import { injectiveChain } from "./chains/injective.mjs";
+import { tronChain } from "./chains/tron.mjs";
 
 const env = (name, fallback) => {
   const value = process.env[name] ?? fallback;
@@ -66,6 +72,16 @@ if (process.env.BNB_RPC) {
 if (process.env.INJECTIVE_RPC) {
   const injective = injectiveChain({ rpc: env("INJECTIVE_RPC"), key: env("INJECTIVE_KEY"), ethClient: eth, ethWallet });
   adapters.set(injective.chainId, injective);
+}
+if (process.env.TRON_API) {
+  const tron = tronChain({
+    api: env("TRON_API"),
+    key: env("TRON_KEY"),
+    ethClient: eth,
+    ethWallet,
+    chainId: BigInt(env("TRON_CHAIN_ID", "728126428")),
+  });
+  adapters.set(tron.chainId, tron);
 }
 
 const log = (...args) => console.log(new Date().toISOString(), ...args);
@@ -222,7 +238,22 @@ async function deliverAndSettle(index, l) {
   await write(index, "IHybridIndex", "settleRebalance", [proofs]);
 }
 
+/// Keeps each adapter's state verifier on Ethereum within its day, so a fill can always be proven.
+async function follow() {
+  for (const [chainId, adapter] of adapters) {
+    if (!adapter.follow) continue;
+    try {
+      const { vault, stateVerifier } = await read(FACTORY, "HybridIndexFactory", "chain", [chainId]);
+      if (stateVerifier === ZERO) continue;
+      await adapter.follow(stateVerifier, wordToAddress(vault));
+    } catch (error) {
+      log("follow failed on chain", chainId, error.shortMessage ?? error.message);
+    }
+  }
+}
+
 async function pass() {
+  await follow();
   const count = await read(FACTORY, "HybridIndexFactory", "allIndexesLength");
   for (let k = 0n; k < count; k++) {
     const index = await read(FACTORY, "HybridIndexFactory", "allIndexes", [k]);

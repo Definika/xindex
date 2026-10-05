@@ -50,3 +50,4 @@ wake.toml
 /keeper/node_modules/
 /keeper/out/
 /keeper/cache/
+__pycache__/

@@ -191,6 +191,9 @@ export function bnbChain({ chainId, rpc, key, ethClient, ethWallet }) {
   return {
     chainId: BigInt(chainId),
 
+    /// Keeps `verifier` within its day; the vault is not needed here.
+    follow: (verifier) => follow(verifier),
+
     /// Deposits `amount` of `token` (the zero address for BNB itself) into `vault` under `intakeId` for `index`.
     async deposit(vault, index, intakeId, token, amount) {
       if (token === "0x0000000000000000000000000000000000000000") {

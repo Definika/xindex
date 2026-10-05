@@ -56,6 +56,7 @@ export function injectiveChain({ rpc, key, ethClient, ethWallet }) {
 
   return {
     chainId: 1776n,
+    follow: keepFresh,
     deposit: ops.deposit,
     readDeposited: ops.readDeposited,
     holds: ops.holds,

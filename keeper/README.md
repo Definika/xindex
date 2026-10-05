@@ -19,12 +19,20 @@ The bond comes back 24 hours after settlement. The filler commits only to delive
 on each vault chain, since an undelivered fill costs the bond. It buys nothing itself: fund it with the index's shares
 for the bond, and with inventory of the coins.
 
-Chains: BNB Chain (`chains/bnb.mjs`, with real BNB state proofs from its validators' votes, ported from the testnet
-relayer in `demo/relayer`). Every other vault chain needs its adapter (`deposit`, `intakeProof`, `readDeposited`,
-`holds`, `recipient`) before the filler takes an auction that moves its coins; until then it leaves those to other
-executors.
+Chains, each an adapter in `chains/` (`deposit`, `intakeProof`, `readDeposited`, `holds`, `recipient`, and `follow`,
+which keeps the chain's state verifier on Ethereum within its day):
+- BNB Chain (`bnb.mjs`): state proofs from its validators' votes, ported from the testnet relayer in `demo/relayer`.
+- Injective (`injective.mjs`): an SP1 proof of CometBFT light-client hops and ICS-23 slot proofs, its input built by
+  `proofs/cometbft/fixtures/input.py` and proven on SP1's prover network.
+- TRON (`tron.mjs`): an `attest` of the intake digest sent on TRON, proven as a call in a solidified block by
+  `tron/proof.py`, which also advances the verifier through TRON's producer lists. Its builders reproduce the
+  verifier's mainnet fixture exactly (2026-10-06); nothing else of it has run.
 
-    RPC_URL=... KEEPER_KEY=... FACTORY=... PYTH_API_KEY=... BNB_RPC=... BNB_KEY=... npm run fill
+Every other vault chain needs its adapter before the filler takes an auction that moves its coins; until then it leaves
+those to other executors. The proof builders need `uv` (Python with its packages) and, for SP1 chains, the hosts built
+under `proofs/`.
+
+    RPC_URL=... KEEPER_KEY=... FACTORY=... PYTH_API_KEY=... BNB_RPC=... BNB_KEY=... TRON_API=... TRON_KEY=... npm run fill
 
     forge build                      # at the repo root first: both read its ABIs from out/
     forge build                      # here, the executor; deploy it with the bot's key, fund it with a small USDC float,
