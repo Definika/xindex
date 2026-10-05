@@ -1,13 +1,16 @@
 {
   "name": "xindex-keeper",
   "private": true,
-  "description": "Starts and fills v5 rebalances: one pass over a factory's indexes, then sleeps; DRAFT, untested",
+  "description": "Starts and fills v5 rebalances: keeper.mjs for Ethereum-only indexes, filler.mjs for indexes holding vault coins; DRAFT, untested",
   "type": "module",
   "scripts": {
     "start": "node keeper.mjs",
-    "once": "node keeper.mjs --once"
+    "once": "node keeper.mjs --once",
+    "fill": "node filler.mjs",
+    "fill-once": "node filler.mjs --once"
   },
   "dependencies": {
-    "viem": "2.21.54"
+    "viem": "2.21.54",
+    "@noble/curves": "1.9.7"
   }
 }
