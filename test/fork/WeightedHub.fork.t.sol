@@ -81,6 +81,7 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
 
     Coin[] coins;
     uint256 constant VALUE = 1000; // dollars per index token
+    uint256 constant QUOTE_ATTEMPTS = 3;
     uint24[4] TIERS = [uint24(100), 500, 3000, 10_000];
 
     // ---------------------------------------------------------------------
@@ -143,9 +144,19 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
                 (uint256 one,) = _quote(c.route, 10 ** c.decimals);
                 uint256 small = Math.max(Math.mulDiv(10e6, 10 ** c.decimals, Math.max(one, 1)), 1);
                 (c.route,) = _bestRouteFor(tokens[i], small * 100);
-                (uint256 smallOut,) = _quote(c.route, small);
+                (uint256 smallOut, bool priced) = _quote(c.route, small);
+                // A live route that prices a coin at nothing means a quote failed, not that the coin is worthless.
+                // Pricing it at the smallest unit instead once gave VIRTUAL 10^-8 USD and units past MAX_UNITS, when the
+                // public RPC dropped its pool's storage reads (2026-10-06): refuse with the reason rather than misprice.
+                require(
+                    priced && smallOut != 0,
+                    string.concat(
+                        "cannot price ",
+                        IERC20Metadata(tokens[i]).symbol(),
+                        " along its live route: the fork's RPC dropped a read, or the route broke; re-run"
+                    )
+                );
                 c.priceE8 = int64(int256(Math.mulDiv(smallOut, 10 ** c.decimals * 100, small)));
-                if (c.priceE8 == 0) c.priceE8 = 1;
                 (uint256 bigOut, bool ok) = _quote(c.route, small * 100);
                 c.slippageBps =
                     ok && smallOut != 0 ? 10_000 - Math.min(10_000, bigOut * 10_000 / (smallOut * 100)) : 10_000;
@@ -190,12 +201,15 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         }
     }
 
+    /// @dev A quote along `path`, tried up to QUOTE_ATTEMPTS times: on a fork, a failed quote is as often the RPC
+    ///      dropping a storage read as the route failing, and a dropped read must not pass for "no output".
     function _quote(bytes memory path, uint256 amountIn) internal returns (uint256 out, bool ok) {
-        try quoter.quoteExactInput(path, amountIn) returns (uint256 o, uint160[] memory, uint32[] memory, uint256) {
-            return (o, true);
-        } catch {
-            return (0, false);
+        for (uint256 attempt = 0; attempt < QUOTE_ATTEMPTS; ++attempt) {
+            try quoter.quoteExactInput(path, amountIn) returns (uint256 o, uint160[] memory, uint32[] memory, uint256) {
+                return (o, true);
+            } catch {}
         }
+        return (0, false);
     }
 
     function _live(address a, address b, uint24 fee) internal view returns (bool) {
