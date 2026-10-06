@@ -2,7 +2,8 @@
 
 This report covers the 43 coins of `design/2026-10-05-wide-asset-support.md`:
 - 29 with a contract on Ethereum, checked for listing;
-- 14 on BNB Chain only, recorded for their vault listings, of which 13 are pinned for them (`VAULT_TOKENS=bnb`).
+- 14 on BNB Chain only, recorded for their vault listings, of which 13 are pinned for them (`VAULT_TOKENS=bnb`);
+- and, added on 2026-10-06, TRON's TRX as its bridge minted it on BNB Chain, pinned with them (see "TRX on BNB Chain").
 
 `script/CheckToken.s.sol` (design section 2.1) checked every token on a fork. Its reports are the source of the
 transfer, hook, power and depth columns below.
@@ -150,6 +151,24 @@ number times 10^decimals.
 | ATOM | `0x0Eb3a705fc54725037CC9e008bDede697f62F335` | Custodial | 18 | 534,279,412 | CoinMarketCap 534,079,426 | mint [v] | `0xF68a…f62d`, a single key | 2,499,993 | passes |
 | NIGHT | `0xFe930c2d63AeD9b82fC4DBC801920dD2c1a3224F` | Bridged | 18 | 16,607,399,400 | CoinMarketCap, same | mint; **`burn(account, value)` destroys any holder's balance with no allowance** [s] | owner `0x39Af…17dD` (Wanchain's token manager [w]), a contract whose owner `0x5a80…e15f` is a contract | 526,467,272 | passes (no blacklist), with the warning below |
 | STABLE | `0x011EBe7d75E2C9D1E0bD0be0bEf5C36f0A90075F` | Bridged | 18 | 26,924,041,495 | CoinMarketCap 26,923,983,196 | upgrade [v]; mint on LayerZero messages from the peers the owner sets (OFT) [v] | owner `0x2548…d2E6`, a 3-of-5 Safe, which also owns the proxy admin `0x386f…6392` | 727,292,148 | passes |
+
+### TRX on BNB Chain (2026-10-06)
+
+The owner chose on 2026-10-06 to hold TRX through BNB Chain's vault rather than only through TRON's.
+- **The token:** `0xCE7de646e7208a4Ef112cb6ed5038FA6cC6b12e3`, symbol TRX, name TRON, 6 decimals, 295,585,024 on chain
+  56 [v]. It is the TRX TRON's BTTC bridge minted, which replaced Binance-Peg TRX in 2023 [w].
+- **Tier: Custodial.** TRON closed the BTTC bridge on 2026-06-18, after a sunset program; holders now redeem through
+  TRON's partner exchanges, not a bridge [w]. Its Ethereum twin, `0x5032…7ab5`, has the same history and under 100 TRX
+  of Uniswap depth within 2%, and is not listed.
+- **Admin powers [v]:** mint, through `AccessControl`. The one holder of `PREDICATE_ROLE` is the bridge's predicate,
+  `0xCa266910d92a313E5F9eb1AfFC462bcbb7d9c4A9`, a proxy whose owner is a 3-of-5 Safe,
+  `0x7dEf28fDD268e7Fd496cE0c834186fa5ffbfDBbb`; no account holds the admin or minter role.
+- **Check:** passes (exact transfers, no hooks; no blacklist or destroy).
+- **Depth:** on PancakeSwap about $262k against WBNB and $291k against USDT in its two largest pools, $1.1M across
+  BNB Chain, from DexScreener on 2026-10-06 [w]. A rebalance on BNB Chain can trade it.
+- **Price:** Pyth's TRX/USD, native TRX's feed. Nothing prices the bridged copy apart, so a rebalance would not see it
+  lose its peg; the unit cap and the guardian's keep mask bound that. Native TRX in the TRON vault takes the same feed,
+  so no index can hold both (V5-M1).
 
 **The proxies:**
 - SOL, DOGE, AVAX and FIL share one implementation, `0xBA5F…0B5C` [v]. Its `mintable()` reads true [w, read by the

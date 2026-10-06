@@ -121,8 +121,9 @@ Rules that go with it:
 the amount first and refusing a short delivery keeps every write ahead of the external call, refuses the same tokens,
 and needs no reentrancy suppression. The vault was 816 bytes under EIP-170's limit and is 215 under it now: the claim's
 two library calls became one (`VaultSnapshot.claim`). `ConfigureChains` gained `VAULT_CAPS`, which proposes and sends
-a coin's cap, and `VAULT_TOKENS=bnb`, the 13 BNB Chain tokens of `script/BnbChainAddresses.sol` (NIGHT waits on the
-owner: its owner burns any balance, and its bridge was reported drained). Tests: twelve in `test/XindexVault.t.sol` (VLT-1, VLT-2 and VLT-3 on a token among them; VLT-4's per
+a coin's cap, and `VAULT_TOKENS=bnb`, the BNB Chain tokens of `script/BnbChainAddresses.sol`: 13 at first (NIGHT
+refused: its owner burns any balance, and its bridge was reported drained), and TRON's bridged TRX, custodial, added on
+2026-10-06. Tests: twelve in `test/XindexVault.t.sol` (VLT-1, VLT-2 and VLT-3 on a token among them; VLT-4's per
 token mark was already tested), the invariant suite run on the native coin and a token alike, and two against a real
 hub (`test_aChainsCoinAndTokenTogether`, `test_aTokenIsPaidAtTheSnapshot`). `BnbStateVerifier`'s fork test on a real
 token intake waits for a deployed vault: the digest's format does not change.

@@ -37,6 +37,14 @@ library BnbChainAddresses {
     address internal constant STABLE = 0x011EBe7d75E2C9D1E0bD0be0bEf5C36f0A90075F;
 
     // ---------------------------------------------------------------------
+    // TRON's TRX as its BTTC bridge minted it, read on chain 56 on 2026-10-06 (the owner's call that day): `Custodial`,
+    // since TRON closed that bridge on 2026-06-18 and holders now redeem through its partner exchanges. Its one minter
+    // is the bridge's predicate, 0xCa266910d92a313E5F9eb1AfFC462bcbb7d9c4A9, a proxy whose owner, a 3-of-5 Safe at
+    // 0x7dEf28fDD268e7Fd496cE0c834186fa5ffbfDBbb, upgrades it. 6 decimals.
+    // ---------------------------------------------------------------------
+    address internal constant TRX = 0xCE7de646e7208a4Ef112cb6ed5038FA6cC6b12e3;
+
+    // ---------------------------------------------------------------------
     // Reference supplies: the coin's circulating supply reported by CoinGecko on 2026-10-05 (04:44 to 04:56 UTC),
     // rounded down to whole tokens, in the BNB Chain token's raw units; beside each, the second source the admission
     // report took. A Binance-Peg token carries its coin's whole circulating supply, as WBTC carries bitcoin's.
@@ -98,4 +106,7 @@ library BnbChainAddresses {
     bytes32 internal constant ASTER_PRICE_ID = 0xa903b5a82cb572397e3d47595d2889cf80513f5b4cf7a36b513ae10cc8b1e338;
     /// @dev STABLE / US DOLLAR.
     bytes32 internal constant STABLE_PRICE_ID = 0x98d7f32f2c26ea94c79a15df45239b7c2e04368e46f49fdbf06dd5e449374e64;
+    /// @dev TRON / US DOLLAR, native TRX's feed, as for the TRON vault's coin (`VaultCoins.TRX_PRICE_ID`): nothing prices
+    ///      the bridged copy apart, so a rebalance would not see it lose its peg, and no index can hold both (V5-M1).
+    bytes32 internal constant TRX_PRICE_ID = 0x67aed5a24fdad045475e7195c98a98aea119c763f272d4523f5bac93a4f33c2b;
 }

@@ -72,9 +72,9 @@ Where the stages stand (none of v4 is deployed):
 - Every top-100 coin with a contract on Ethereum or BNB Chain is being added (the owner's call on 2026-10-05,
   `design/2026-10-05-wide-asset-support.md`). Built: `script/CheckToken.s.sol`, the admission check; the wide list of
   the Ethereum coins that pass it, now `V5_WHITELIST=wide` in `script/PythIds.sol` (LEO and WLFI fail the WBT rule;
-  `design/2026-10-05-token-admission-report.md`); token support in `XindexVault`; and 13 of BNB Chain's 14 coins
-  (Binance-Peg coins and BNB Chain tokens) pinned in `script/BnbChainAddresses.sol` as `ConfigureChains`'
-  `VAULT_TOKENS=bnb`, listed once that vault is deployed, each with a cap the owner sets then. The design's last
+  `design/2026-10-05-token-admission-report.md`); token support in `XindexVault`; and 14 BNB Chain tokens
+  (Binance-Peg coins, BNB Chain tokens and TRON's bridged TRX) pinned in `script/BnbChainAddresses.sol` as
+  `ConfigureChains`' `VAULT_TOKENS=bnb`, listed once that vault is deployed, each with a cap the owner sets then. The design's last
   decisions were taken on 2026-10-06 (its section 6): no team index at launch, so "flagship" names no product; the WBT
   rule unchanged; Binance-Peg coins kept, labelled Custodial; NIGHT refused; and a v5 list of 27 Ethereum coins, without
   OKB (being retired on Ethereum), BGB and GT (no Uniswap route, so no fill can rebalance them) or GRAM.
@@ -747,6 +747,8 @@ replay of Pyth's history, and Hermes now needs a paid API key, an operating cost
 - No team index at launch: creators make every index, so "flagship" names no product.
 - The admission rule stays the WBT rule; Binance-Peg coins stay listable, labelled Custodial.
 - The v5 Ethereum list is 27 coins: no OKB, BGB, GT or GRAM. NIGHT is refused.
+- TRX is held as the BEP-20 TRX of TRON's closed BTTC bridge, in BNB Chain's vault, labelled Custodial; its Ethereum
+  copy is not listed. The TRON vault stays built, and whether it is deployed too is the owner's call.
 - The vault chains are the eight built, plus Solana and HyperEVM when their chains allow; any other chain's coin comes
   in only as an existing token on Ethereum or BNB Chain ("What this is" has the detail).
 

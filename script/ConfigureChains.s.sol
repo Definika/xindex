@@ -69,7 +69,7 @@ contract ConfigureChains is Script {
     uint256 private constant TOKEN_FIELDS = 4;
     uint256 private constant CAP_FIELDS = 4;
     /// @dev Tokens in `bnbTokens`.
-    uint256 private constant BNB_TOKENS = 13;
+    uint256 private constant BNB_TOKENS = 14;
 
     /// @notice CHAIN_MODE is none of the modes.
     error UnknownMode(string mode);
@@ -151,8 +151,9 @@ contract ConfigureChains is Script {
     }
 
     /// @notice BNB Chain's tokens (design/2026-10-05-wide-asset-support.md, section 3), each listed by its address, with
-    ///         its coin's Pyth price id: the ten Binance-Peg coins and ATOM's, custodial, then ASTER and
-    ///         STABLE. Each needs its cap too (VAULT_CAPS), which the owner sets at the listing.
+    ///         its coin's Pyth price id: the ten Binance-Peg coins and ATOM's, custodial, then ASTER and STABLE, then
+    ///         TRON's bridged TRX, custodial since its bridge closed. Each needs its cap too (VAULT_CAPS), which the owner
+    ///         sets at the listing.
     function bnbTokens() public pure returns (TokenEntry[] memory list) {
         address[BNB_TOKENS] memory tokens = [
             BnbChainAddresses.XRP,
@@ -167,7 +168,8 @@ contract ConfigureChains is Script {
             BnbChainAddresses.FIL,
             BnbChainAddresses.ATOM,
             BnbChainAddresses.ASTER,
-            BnbChainAddresses.STABLE
+            BnbChainAddresses.STABLE,
+            BnbChainAddresses.TRX
         ];
         bytes32[BNB_TOKENS] memory ids = [
             BnbChainAddresses.XRP_PRICE_ID,
@@ -182,7 +184,8 @@ contract ConfigureChains is Script {
             BnbChainAddresses.FIL_PRICE_ID,
             BnbChainAddresses.ATOM_PRICE_ID,
             BnbChainAddresses.ASTER_PRICE_ID,
-            BnbChainAddresses.STABLE_PRICE_ID
+            BnbChainAddresses.STABLE_PRICE_ID,
+            BnbChainAddresses.TRX_PRICE_ID
         ];
         list = new TokenEntry[](tokens.length);
         for (uint256 i = 0; i < tokens.length; ++i) {
@@ -190,9 +193,16 @@ contract ConfigureChains is Script {
                 chainId: BnbChainAddresses.CHAIN_ID,
                 tokenId: bytes32(uint256(uint160(tokens[i]))),
                 priceId: ids[i],
-                decimals: tokens[i] == BnbChainAddresses.DOGE ? 8 : 18
+                decimals: _bnbDecimals(tokens[i])
             });
         }
+    }
+
+    /// @dev Every BNB Chain token here has 18 decimals but DOGE, with 8, and TRX, with 6.
+    function _bnbDecimals(address token) private pure returns (uint8) {
+        if (token == BnbChainAddresses.DOGE) return 8;
+        if (token == BnbChainAddresses.TRX) return 6;
+        return 18;
     }
 
     /// @notice VAULT_CAPS, parsed.
