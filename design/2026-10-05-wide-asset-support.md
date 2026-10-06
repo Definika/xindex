@@ -169,12 +169,16 @@ None of this blocks the hackathon demo, and none of it should go before it.
 
 1. **The tiers.** Accept bridged and custodial tokens as listable at all, labelled as above. **Taken**: the owner asked
    on 5 October 2026 for all 43 coins in Xindex, Binance-Peg coins included.
-2. **The flagship's policy.** Native only (recommended), or with the custodial tier. Open; the flagship stays native
-   only meanwhile, and no code depends on it.
+2. **The flagship's policy.** Native only (recommended), or with the custodial tier. **Taken** on 2026-10-06: v5 lets
+   creators choose coins and percentages, and the team publishes no index of its own at launch, so there is no
+   flagship to set a policy for.
 3. **The WBT rule's reach.** Which admin powers refuse a token outright: a key that can blacklist and destroy (WBT),
-   a single key that can mint unbacked tokens (Binance-Peg), an upgrade with no timelock (the bridged TRX). Open; the
-   admission check refuses only the WBT rule meanwhile and records the rest, since refusing a single minting key would
-   refuse every Binance-Peg coin the owner asked for.
+   a single key that can mint unbacked tokens (Binance-Peg), an upgrade with no timelock (the bridged TRX). **Taken**
+   on 2026-10-06: the rule stays as it is. Only a blacklist together with a destroy refuses; the rest is recorded and
+   labelled, and the Binance-Peg coins stay listable as Custodial.
 4. **Token support in the EVM vault**, and the restated twin rule. **Taken** with item 1, and built (section 3).
-5. **Depth.** Whether a token too thin for the zap is listed, minted only through `MintRequests`. Open; thin tokens
-   are listed meanwhile.
+5. **Depth.** Whether a token too thin for the zap is listed, minted only through `MintRequests`. **Taken** on
+   2026-10-06, for v5, where a fill has to trade every moving component: a token with no Uniswap route on Ethereum is
+   refused, since no fill could rebalance it (BGB, GT); a thin one that still trades is listed and labelled thin (STRK,
+   ARB, CAKE). OKB is dropped too (being retired on Ethereum), GRAM stays out (its bridge closed on 2026-09-01), and
+   NIGHT is refused (its backing reportedly drained). The v5 Ethereum list is 27 coins.

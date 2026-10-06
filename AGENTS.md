@@ -47,14 +47,20 @@ Where the stages stand (none of v4 is deployed):
   HyperEVM waits on Hyperliquid, since every header's state root is zero. The Stage B spec's section 8 has each
   chain's status, and its section 6 the build order.
 - Of Stage C, NEAR and Stellar are built (above). Avalanche, Hedera and Cardano were researched on 2026-10-01
-  (`design/2026-10-01-stage-c-research.md`, summarized in the Stage B spec's section 8) and wait on the owner's calls.
+  (`design/2026-10-01-stage-c-research.md`, summarized in the Stage B spec's section 8); none is pursued (below).
 - Ethereum's L2s were researched on 2026-10-04 (`design/2026-10-04-l2-research.md`): their own tokens are about 0.6% of
   the holdable universe, none investable for the flagship, and no optimistic rollup is final on Ethereum within the
   hub's 6-hour `GRACE`. The record recommends building nothing for them.
 - Eleven more chains with a top-100 coin were researched on 2026-10-04 (`design/2026-10-04-chain-research.md`;
   memecoin chains are out, the owner's call). None reaches the 0.2% floor. Sui, Injective, Aptos and VeChain pass the
-  rule; Cronos, ICP and TON pass it but wait on the owner's calls; Algorand needs a ruling on the rule; Bittensor and
+  rule; Cronos, ICP and TON pass it but needed the owner's calls; Algorand needed a ruling on the rule; Bittensor and
   Filecoin wait on their chains; Ethereum Classic fails.
+- **The vault chains are frozen at the eight built** (the owner's calls on 2026-10-06): BNB Chain, TRON, NEAR, Stellar,
+  Sui, Injective, VeChain and Aptos, with Solana and HyperEVM when their chains allow. Another chain's coin comes in
+  only as a token that already exists on Ethereum or BNB Chain and passes `CheckToken`: AVAX and ADA as Binance-Peg
+  tokens, CRO and ICP on Ethereum. TON and ALGO stay out (no sound token: the TON bridge closed on 2026-09-01), HBAR
+  too (only unknown issuers' wrappers). Avalanche's and Algorand's finality, the permissioned sets (Hedera, ICP's
+  canisters, Cronos), TON's BLS12-381 wrapper and a restated rule for Cardano are not pursued.
 - The four that pass are being added (the owner's call on 2026-10-04), to `design/2026-10-04-four-chains-interfaces.md`:
   - **Sui** is built in both directions: the vault with P1 and P2 in Move (`sui/`), and `SuiStateVerifier`, which
     checks Sui's committee certificates in Solidity, with no zkVM.
@@ -68,9 +74,10 @@ Where the stages stand (none of v4 is deployed):
   `WHITELIST=wide`, of the 27 Ethereum coins that pass it (LEO and WLFI fail the WBT rule;
   `design/2026-10-05-token-admission-report.md`); token support in `XindexVault`; and 13 of BNB Chain's 14 coins
   (Binance-Peg coins and BNB Chain tokens) pinned in `script/BnbChainAddresses.sol` as `ConfigureChains`'
-  `VAULT_TOKENS=bnb`, listed once that vault is deployed, each with a cap the owner sets then. NIGHT waits on the
-  owner. Three of the design's decisions are open: the flagship's policy, the WBT rule's reach and thin tokens (its
-  section 6).
+  `VAULT_TOKENS=bnb`, listed once that vault is deployed, each with a cap the owner sets then. The design's last
+  decisions were taken on 2026-10-06 (its section 6): no team index at launch, so "flagship" names no product; the WBT
+  rule unchanged; Binance-Peg coins kept, labelled Custodial; NIGHT refused; and a v5 list of 27 Ethereum coins, without
+  OKB (being retired on Ethereum), BGB and GT (no Uniswap route, so no fill can rebalance them) or GRAM.
 
 For more:
 - `ARCHITECTURE.md`: the design as built, Stage A and Stage B.
@@ -735,6 +742,13 @@ weights are fixed at creation; the index rebalances to them at Pyth prices, whic
 Chainlink's Ethereum feeds cover 11. Pyth is the only oracle: Chainlink alone, and Chainlink as a second check on the
 coins it covers, were both refused (the owner's call on 2026-10-05). v5 is custom percentages only. Its parameters (section 8 of the spec) wait on a
 replay of Pyth's history, and Hermes now needs a paid API key, an operating cost the owner weighs before launch.
+
+**The listings and chains of v5** (the owner's calls on 2026-10-06):
+- No team index at launch: creators make every index, so "flagship" names no product.
+- The admission rule stays the WBT rule; Binance-Peg coins stay listable, labelled Custodial.
+- The v5 Ethereum list is 27 coins: no OKB, BGB, GT or GRAM. NIGHT is refused.
+- The vault chains are the eight built, plus Solana and HyperEVM when their chains allow; any other chain's coin comes
+  in only as an existing token on Ethereum or BNB Chain ("What this is" has the detail).
 
 **v4 replaces v3** (the owner's call on 2026-09-30). v3 stays at the `v3.0.0` tag and on Sepolia and never launches on
 mainnet. Its recorded decisions were Chainlink USD feeds, the capped 30/20 methodology, a monthly cadence, the seven-token

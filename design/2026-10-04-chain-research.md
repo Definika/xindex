@@ -58,7 +58,13 @@ now (Sui, Injective, Aptos, VeChain). Three pass it but need the owner's call on
 TON). One needs a ruling on the rule itself (Algorand). Two wait on their chains (Bittensor, Filecoin). One fails
 (Ethereum Classic).
 
-**Decisions for the owner.**
+**Taken on 2026-10-06.** No new vault chain: the eight built (Sui, Injective, Aptos and VeChain among them) are the
+list, with Solana and HyperEVM when their chains allow. A coin from another chain comes in only as a token already on
+Ethereum or BNB Chain that passes the admission check: CRO and ICP on Ethereum. TON stays out, since both its wrapped
+copies came from the bridge that closed on 2026-09-01; Algorand has no Binance-Peg token; Cronos's, ICP's and TON's
+trust questions and Algorand's ruling are not pursued. Bittensor and Filecoin still wait on their chains.
+
+**Decisions for the owner** (as asked).
 1. **Value.** Whether to build any vault for a coin below the floor, for creators' indexes or readiness. Every vault
    is a new audit surface.
 2. **Sui.** The lag rule for 24-hour epochs: counted from the epoch's end, or `MAX_LAG` of two days. And whether the

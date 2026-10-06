@@ -17,7 +17,11 @@ Section 8 of the Stage B spec (`design/2026-09-30-v4-stage-b-spec.md`) carries t
 | Hedera | yes: aBFT, with deterministic safety | yes: BN254 and BLS12-381 precompiles, Prague, 15M gas a transaction | not today: TSS block signatures are switched off on mainnet until about November 2026 (v0.79), and the WRAPS format is still moving | waits on Hedera's TSS cutover, and on the owner accepting the council's trust |
 | Cardano | no: Praos is probabilistic, and Peras (a proposal, aimed at Q2 2027) is too | only through an unaudited BLS12-381 wrapper of both proofs: no BN254 | not to Xindex's standard: Mithril certifies inclusion, not success or unspentness, under operator-held genesis keys | fails the rule as written |
 
-**Decisions for the owner.**
+**Taken on 2026-10-06.** None of the three is built. AVAX and ADA come in as the Binance-Peg tokens the BNB Chain
+vault holds, labelled Custodial; HBAR is skipped, since only unknown issuers' wrappers exist on Ethereum and BNB Chain.
+The finality ruling (Avalanche), the council's trust (Hedera) and a restated rule (Cardano) are not pursued.
+
+**Decisions for the owner** (as asked).
 1. **Avalanche:** whether "irreversible acceptance with a negligible probability of a safety failure" passes the
    deterministic-finality rule. Nothing can be built until Avalanche signs its validator set's changes either way.
 2. **Hedera:** whether a permissioned council of about 30 known organisations is an acceptable trust, since a proof

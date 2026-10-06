@@ -220,6 +220,10 @@ number times 10^decimals.
 
 ## Judgment calls for the owner
 
+**Taken on 2026-10-06** (`design/2026-10-05-wide-asset-support.md`, section 6): the WBT rule stays as it is; NIGHT is
+refused; GRAM and OKB are not listed; BGB and GT are refused for want of any Uniswap route, which a v5 fill needs. The
+v5 Ethereum list is the remaining 27.
+
 1. **LEO is refused under the WBT rule.** Its blacklist is indirect: a controller that approves every transfer, which
    the controller's owner can replace at once. I counted that as a blacklist, because the same key can refuse any
    holder's transfers and destroy any holder's balance. Read literally as "a function named blacklist", LEO would pass.

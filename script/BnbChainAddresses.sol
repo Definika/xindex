@@ -6,8 +6,8 @@ pragma solidity 0.8.28;
 ///         (design/2026-10-05-token-admission-report.md). A token here is listed on Ethereum as a vault coin,
 ///         `vaultTokenId(56, bytes32(token))`, by `ConfigureChains`' `VAULT_TOKENS=bnb`; the vault takes it only once a
 ///         `CAP_UPDATE` gives it a cap.
-/// @dev NIGHT (0xFe930c2d63AeD9b82fC4DBC801920dD2c1a3224F) is left out pending the owner's word: its owner burns any
-///      holder's balance with no allowance, and its bridge's treasury was reported drained on 2026-07-20.
+/// @dev NIGHT (0xFe930c2d63AeD9b82fC4DBC801920dD2c1a3224F) is refused (the owner's call on 2026-10-06): its owner burns
+///      any holder's balance with no allowance, and its bridge's treasury was reported drained on 2026-07-20.
 library BnbChainAddresses {
     /// @notice BNB Chain's chain id.
     uint256 internal constant CHAIN_ID = 56;
