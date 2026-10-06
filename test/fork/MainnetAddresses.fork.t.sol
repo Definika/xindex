@@ -3,7 +3,8 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import {IndexFactory} from "../../src/IndexFactory.sol";
+import {WeightedIndexFactory} from "../../src/WeightedIndexFactory.sol";
+import {ConfigureWeighted} from "../../script/ConfigureWeighted.s.sol";
 import {ConfigureWhitelist} from "../../script/ConfigureWhitelist.s.sol";
 import {Deploy} from "../../script/Deploy.s.sol";
 import {MainnetAddresses as M} from "../../script/MainnetAddresses.sol";
@@ -109,24 +110,39 @@ contract MainnetAddressesForkTest is Test {
         _assertToken(M.ZRO, "ZRO", 18);
     }
 
-    /// @dev Every wide entry, as the listing script builds it, listed on a fresh factory, with each reference supply a
-    ///      whole number of tokens between a million and a trillion at the token's own on-chain decimals.
-    function testFork_wideWhitelistMatchesMainnet() public {
-        IndexFactory factory = new IndexFactory(address(this), address(0));
-        ConfigureWhitelist.Entry[] memory list = new ConfigureWhitelist().wideMainnetList();
-        assertEq(list.length, 27);
+    /// @dev Each recorded reference supply is a whole number of tokens between a million and a trillion at the token's
+    ///      own on-chain decimals, where a decimals slip shows.
+    function _assertPlausibleSupplies(ConfigureWhitelist.Entry[] memory list) internal view {
         for (uint256 i = 0; i < list.length; ++i) {
             uint256 one = 10 ** uint256(IERC20Metadata(list[i].token).decimals());
             assertEq(list[i].referenceSupply % one, 0, "a whole number of tokens");
             assertGe(list[i].referenceSupply / one, 1e6, "at least a million of them");
             assertLe(list[i].referenceSupply / one, 1e12, "and at most a trillion");
-            factory.proposeListing(list[i].token, list[i].referenceSupply);
+        }
+    }
+
+    /// @dev Every entry, as the listing script builds it, listed on a fresh v5 factory over Pyth's own contract, which
+    ///      records each token's on-chain decimals and the price id the entry names.
+    function _listOnAFreshFactory(ConfigureWeighted.Entry[] memory list) internal {
+        WeightedIndexFactory factory = new WeightedIndexFactory(address(this), address(0), M.PYTH);
+        for (uint256 i = 0; i < list.length; ++i) {
+            factory.proposeListing(list[i].token, list[i].priceId);
         }
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         for (uint256 i = 0; i < list.length; ++i) {
             factory.executeListing(list[i].token);
             assertTrue(factory.isWhitelisted(list[i].token));
+            assertEq(factory.priceIdOf(list[i].token), list[i].priceId);
+            assertEq(factory.decimalsOf(list[i].token), IERC20Metadata(list[i].token).decimals());
         }
+    }
+
+    /// @dev Every wide entry: its reference supply is plausible, and it lists on a fresh factory with its price id.
+    function testFork_wideWhitelistMatchesMainnet() public {
+        ConfigureWhitelist.Entry[] memory list = new ConfigureWhitelist().wideMainnetList();
+        assertEq(list.length, 27);
+        _assertPlausibleSupplies(list);
+        _listOnAFreshFactory(new ConfigureWeighted().wideMainnetList());
     }
 
     /// @dev XA-13, CR-I35. The zap reads the pool manager off the router, so the pinned router has to name the pool
@@ -162,26 +178,18 @@ contract MainnetAddressesForkTest is Test {
         assertEq(deployer.resolveStable("USDT", address(0), M.USDT), M.USDT);
     }
 
-    /// @dev Every default entry, as the listing script builds it, listed on a fresh factory. Each reference supply is a
-    ///      whole number of tokens between a million and a trillion at the token's own on-chain decimals, where a
-    ///      decimals slip shows: a first listing has nothing to bound it against (XA-24, CR-I22).
+    /// @dev Every default entry. Each reference supply `ConfigureWhitelist` records is a whole number of tokens between
+    ///      a million and a trillion at the token's own on-chain decimals, where a decimals slip shows (XA-24, CR-I22),
+    ///      and the flagship's four, in the same order, list on a fresh v5 factory with their price ids.
     function testFork_XA13_XA24_CRI22_defaultWhitelistMatchesMainnet() public {
-        IndexFactory factory = new IndexFactory(address(this), address(0));
-        ConfigureWhitelist configure = new ConfigureWhitelist();
-        ConfigureWhitelist.Entry[] memory list = configure.defaultMainnetList();
-        assertEq(list.length, 4, "the Stage A list is four components");
+        ConfigureWhitelist.Entry[] memory list = new ConfigureWhitelist().defaultMainnetList();
+        assertEq(list.length, 4, "the flagship is four components");
+        _assertPlausibleSupplies(list);
+        ConfigureWeighted.Entry[] memory weighted = new ConfigureWeighted().defaultMainnetList();
+        assertEq(weighted.length, list.length);
         for (uint256 i = 0; i < list.length; ++i) {
-            uint256 one = 10 ** uint256(IERC20Metadata(list[i].token).decimals());
-            assertEq(list[i].referenceSupply % one, 0, "a whole number of tokens");
-            assertGe(list[i].referenceSupply / one, 1e6, "at least a million of them");
-            assertLe(list[i].referenceSupply / one, 1e12, "and at most a trillion");
-            factory.proposeListing(list[i].token, list[i].referenceSupply);
+            assertEq(weighted[i].token, list[i].token, "the same four, in the same order");
         }
-        vm.warp(block.timestamp + factory.LISTING_DELAY());
-        for (uint256 i = 0; i < list.length; ++i) {
-            factory.executeListing(list[i].token);
-            assertTrue(factory.isWhitelisted(list[i].token));
-            assertEq(factory.referenceSupply(list[i].token), list[i].referenceSupply);
-        }
+        _listOnAFreshFactory(weighted);
     }
 }

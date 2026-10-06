@@ -9,6 +9,11 @@ delay, and a rebalance settles through an auction on a single number, λ. **No c
 This repository holds the smart contracts (Foundry), and for Stage B the Solana programs (`solana/`), the proof systems
 (`proofs/`) and the TRON build (`tron/`). The web app lives elsewhere.
 
+**v5 replaces the market-cap index** (the owner's calls on 2026-10-05, `design/2026-10-05-custom-weights.md`):
+creators fix each coin's percentage, and `WeightedHub` rebalances back to it at Pyth prices. v4's `IndexHub` and
+`IndexFactory` were deleted on 2026-10-06 (`audit/2026-10-06-v4-retirement.md`); the sections below that describe them,
+the reference supplies and the λ auction are v4's design record until this file is rewritten for v5.
+
 **Status (2026-10-01): v4, the design that launches on mainnet; deployed nowhere yet.** v4 is one hybrid product
 (`design/2026-09-29-v4-hybrid-architecture.md`): an index token on Ethereum that holds Ethereum tokens itself and other
 chains' native coins in ownerless vaults. Stage A, the price-free part held on Ethereum, is built as
@@ -914,17 +919,18 @@ Add `--verify` with `ETHERSCAN_API_KEY` set to verify the contracts, so testers 
 `USD_POOL_WETH` and `TOKEN_POOL_WETH` (in wei) change the liquidity `seed` adds. Timing is mainnet's: listings and
 batches take 2 days, and a rebalance can start 7 days after an index's creation, once a batch has changed a supply,
 followed by 2 days of notice and a 24-hour auction. The test pools are shallow and nobody arbitrages them, so zap
-prices on this market say nothing about mainnet. `test/fork/RebalanceExecutorV3.sol` fills auctions through
+prices on this market say nothing about mainnet. `test/fork/WeightedExecutorV3.sol` fills auctions through
 SwapRouter02; it is a test fixture without slippage limits, so never fund it on mainnet.
 
 ## Layout
 
 ```
-src/IndexHub.sol              index implementation (ERC20 + permit, in-kind issue, redeem, redeemSkipping, claim, λ rebalance), cloned
-src/IndexFactory.sol          listings, reference supplies and weekly batches, guardian, registry, CREATE2 clone deployer
+src/WeightedHub.sol           v5 index implementation (ERC20 + permit, in-kind issue, redeem, redeemSkipping, claim, rebalance
+                              to fixed weights at Pyth prices), cloned
+src/WeightedIndexFactory.sol  v5 listings (each token with its Pyth price id), guardian, registry, CREATE2 clone deployer
 src/IndexZap.sol              Universal Router mint/burn router, one venue per leg, per-leg limits, nonce check
 src/MintRequests.sol          ownerless escrow of USDC/USDT-for-shares requests at the requester's own limit
-src/HybridIndexFactory.sol    Stage B: IndexFactory plus the chain registry, vault-coin listings, the chain freeze and the template choice
+src/HybridIndexFactory.sol    Stage B: WeightedIndexFactory plus the chain registry, vault-coin listings, the chain freeze and the template choice
 src/HybridHub.sol             Stage B: an index of Ethereum tokens and vault coins: orders, burns, claims; delegates the rest to its module
 src/hybrid/                   Stage B: the hub's module and extension (by DELEGATECALL), the storage all three share, share operations
 src/vault/                    Stage B: XindexVault, the ownerless vault on an EVM chain, VaultSnapshot, its snapshot-exit library,

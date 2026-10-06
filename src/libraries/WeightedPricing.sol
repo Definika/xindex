@@ -9,8 +9,8 @@ import {PythStructs} from "../interfaces/pyth/PythStructs.sol";
 ///         unit, the targets of a weighted basket, the unit cap and the settlement at a multiplier. Pure functions over
 ///         memory, so the caller keeps its own storage and errors.
 /// @dev DRAFT, untested in this form (2026-10-06): the hybrid index's port of `WeightedHub`'s tested math. Its
-///      functions are public, so the library is deployed once and linked, which keeps the hybrid module under the
-///      size limit. Decimals may
+///      entry points are external or public, so the library is deployed once and linked, which keeps the hybrid module
+///      under the size limit. Decimals may
 ///      reach MAX_DECIMALS (24, NEAR's yoctoNEAR), so a price is refused when 36 + expo - decimals would be negative.
 library WeightedPricing {
     uint256 internal constant WAD = 1e18;
@@ -33,7 +33,7 @@ library WeightedPricing {
     error NothingToRebalance();
 
     /// @notice `p` as USD per raw unit scaled by 1e36, refused as `WeightedHub` refuses it.
-    function price(PythStructs.Price memory p, uint256 decimals, address token) public pure returns (uint256) {
+    function price(PythStructs.Price memory p, uint256 decimals, address token) external pure returns (uint256) {
         int256 expo = p.expo;
         // Both constants and `decimals` are small (a vault coin's are at most MAX_DECIMALS), so the casts keep them.
         // forge-lint: disable-next-line(unsafe-typecast)
@@ -83,6 +83,8 @@ library WeightedPricing {
         pure
         returns (uint256 value, uint256 weight)
     {
+        value = 0;
+        weight = 0;
         for (uint256 i = 0; i < units.length; ++i) {
             if ((keepMask & (1 << i)) != 0) continue;
             value += units[i] * prices[i];
@@ -106,7 +108,7 @@ library WeightedPricing {
     ///         each leg's change in required backing at `supply` shares, rounded down when it leaves and up when it
     ///         must come back (SA-07).
     function settle(Basket memory b)
-        public
+        external
         pure
         returns (uint256 m, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn)
     {
@@ -128,6 +130,7 @@ library WeightedPricing {
         returns (uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn, bool sells)
     {
         units = next;
+        sells = false;
         uint256 n = next.length;
         amountsOut = new uint256[](n);
         amountsIn = new uint256[](n);

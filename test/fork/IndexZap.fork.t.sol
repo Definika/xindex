@@ -4,9 +4,11 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {IndexFactory} from "../../src/IndexFactory.sol";
-import {IndexHub} from "../../src/IndexHub.sol";
+import {WeightedIndexFactory} from "../../src/WeightedIndexFactory.sol";
+import {WeightedHub} from "../../src/WeightedHub.sol";
 import {IndexZap} from "../../src/IndexZap.sol";
+import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
+import {IWeightedIndexFactory} from "../../src/interfaces/IWeightedIndexFactory.sol";
 import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
 import {IUniversalRouter} from "../../src/interfaces/IUniversalRouter.sol";
 import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
@@ -37,9 +39,9 @@ interface IQuoterV2 {
 contract IndexZapForkTest is Test {
     using SafeERC20 for IERC20;
 
-    IndexFactory factory;
+    WeightedIndexFactory factory;
     IndexZap zap;
-    IndexHub index;
+    WeightedHub index;
     IQuoterV2 quoter = IQuoterV2(A.QUOTER_V2);
 
     address alice = makeAddr("alice");
@@ -48,8 +50,6 @@ contract IndexZapForkTest is Test {
     uint256 constant U_WBTC = 100_000;
     uint256 constant U_WETH = 1e16;
     uint256 constant U_LINK = 1e18;
-    /// @dev With each component listed at its units as its supply, this scale gives exactly those units.
-    uint256 constant K = 1e36;
 
     uint24 constant F500 = 500;
     uint24 constant F3000 = 3000;
@@ -79,23 +79,23 @@ contract IndexZapForkTest is Test {
             );
         }
 
-        factory = new IndexFactory(address(this), address(0));
-        zap = new IndexZap(factory, IUniversalRouter(A.UNIVERSAL_ROUTER));
+        factory = new WeightedIndexFactory(address(this), address(0), A.PYTH);
+        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER));
 
-        // Listed with their units as their supplies, so k = K gives exactly the units the suite's amounts use.
-        factory.proposeListing(A.WBTC, U_WBTC);
-        factory.proposeListing(A.WETH, U_WETH);
-        factory.proposeListing(A.LINK, U_LINK);
+        // The zap never asks for a price, so each token is listed under a price id of its own making.
+        factory.proposeListing(A.WBTC, keccak256(abi.encode(A.WBTC)));
+        factory.proposeListing(A.WETH, keccak256(abi.encode(A.WETH)));
+        factory.proposeListing(A.LINK, keccak256(abi.encode(A.LINK)));
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(A.WBTC);
         factory.executeListing(A.WETH);
         factory.executeListing(A.LINK);
 
-        address[] memory t = new address[](3);
-        t[0] = A.WBTC;
-        t[1] = A.WETH;
-        t[2] = A.LINK;
-        index = IndexHub(factory.createIndex("Blue Chip", "BLUE", t, K));
+        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](3);
+        specs[0] = IWeightedIndexFactory.ComponentSpec({token: A.WBTC, weight: 3334, units: U_WBTC});
+        specs[1] = IWeightedIndexFactory.ComponentSpec({token: A.WETH, weight: 3333, units: U_WETH});
+        specs[2] = IWeightedIndexFactory.ComponentSpec({token: A.LINK, weight: 3333, units: U_LINK});
+        index = WeightedHub(factory.createIndex("Blue Chip", "BLUE", specs));
     }
 
     // ---------------------------------------------------------------------
@@ -167,7 +167,7 @@ contract IndexZapForkTest is Test {
         }
     }
 
-    function _mintCall(IndexHub idx, address tokenIn, uint256 maxIn, uint256 shares, IIndexZap.MintLeg[] memory legs)
+    function _mintCall(WeightedHub idx, address tokenIn, uint256 maxIn, uint256 shares, IIndexZap.MintLeg[] memory legs)
         internal
         returns (uint256)
     {
@@ -185,10 +185,13 @@ contract IndexZapForkTest is Test {
         );
     }
 
-    function _burnCall(IndexHub idx, uint256 shares, address tokenOut, uint256 minOut, IIndexZap.BurnLeg[] memory legs)
-        internal
-        returns (uint256)
-    {
+    function _burnCall(
+        WeightedHub idx,
+        uint256 shares,
+        address tokenOut,
+        uint256 minOut,
+        IIndexZap.BurnLeg[] memory legs
+    ) internal returns (uint256) {
         return zap.burnToToken(
             IIndexZap.BurnParams({
                 index: address(idx),
@@ -455,13 +458,16 @@ contract IndexZapForkTest is Test {
         t[0] = A.WBTC;
         t[1] = A.TBTC;
 
-        // tBTC is not on the Stage A whitelist; it is listed here to exercise a two-hop route. Its supply is set so
-        // that half of K gives 0.0005 of each: 50,000 raw units of WBTC (8 decimals) and 5e14 of tBTC (18).
-        factory.proposeListing(A.TBTC, 1e15);
+        // tBTC is on no list; it is listed here to exercise a two-hop route. The basket holds 0.0005 of each: 50,000
+        // raw units of WBTC (8 decimals) and 5e14 of tBTC (18).
+        factory.proposeListing(A.TBTC, keccak256(abi.encode(A.TBTC)));
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(A.TBTC);
 
-        IndexHub btc = IndexHub(factory.createIndex("BTC Basket", "BTC2", t, K / 2));
+        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](2);
+        specs[0] = IWeightedIndexFactory.ComponentSpec({token: t[0], weight: 5000, units: 50_000});
+        specs[1] = IWeightedIndexFactory.ComponentSpec({token: t[1], weight: 5000, units: 5e14});
+        WeightedHub btc = WeightedHub(factory.createIndex("BTC Basket", "BTC2", specs));
 
         bytes[] memory mintPaths = new bytes[](2);
         mintPaths[0] = abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDC);

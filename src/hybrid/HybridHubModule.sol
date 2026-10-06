@@ -30,6 +30,9 @@ import {HubShares} from "./HubShares.sol";
 ///      at the supply of the settling block. The bond is held BOND_HOLD after settlement and burned if a delivery
 ///      proves forged (Stage B spec, section 5.3). Everything else, migration and evidence, runs in EXTENSION, which
 ///      this module's fallback reaches by DELEGATECALL, still on the clone's storage.
+// The one payable function, `acceptRebalance`, forwards the whole of msg.value to Pyth in `_readPrices`, which it always
+// reaches; the fallback is not payable, and neither is anything in the extension, so no ether stays on a clone.
+// aderyn-fp-next-line(contract-locks-ether)
 contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybridHubModule {
     using SafeERC20 for IERC20;
 
@@ -532,8 +535,8 @@ contract HybridHubModule is HybridHubStorage, HubShares, ReentrancyGuard, IHybri
         uint256 last = block.timestamp - 1;
         // Pyth is fixed in the factory, and the guard covers anything it could call back into. The ether sent is the
         // caller's own, the fee for its update, passed on whole.
-        // wake-disable-next-line reentrancy
         // forge-lint: disable-next-item(arbitrary-send-eth)
+        // wake-disable-next-line reentrancy
         PythStructs.PriceFeed[] memory feeds = IPyth(IWeightedIndexFactory(FACTORY).PYTH())
         .parsePriceFeedUpdatesUnique{value: msg.value}(
             priceUpdate, ids, SafeCast.toUint64(time), SafeCast.toUint64(last)

@@ -7,6 +7,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {WeightedHub} from "../src/WeightedHub.sol";
 import {IWeightedHub} from "../src/interfaces/IWeightedHub.sol";
 import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
+import {IRebalanceExecutor} from "../src/interfaces/IRebalanceExecutor.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {PythStructs} from "../src/interfaces/pyth/PythStructs.sol";
 import {WeightedTest} from "./WeightedTest.sol";
@@ -14,6 +15,28 @@ import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockPausableToken} from "./mocks/MockPausableToken.sol";
 import {MockPyth} from "./mocks/MockPyth.sol";
 import {MockWeightedExecutor} from "./mocks/MockWeightedExecutor.sol";
+
+/// @notice Delivers what a fill asks for, then claws one raw unit of a component back out of the index, as an issuer's
+///         clawback inside the callback would.
+contract ClawingExecutor is IRebalanceExecutor {
+    uint256 internal immutable CLAWED;
+
+    constructor(uint256 clawed) {
+        CLAWED = clawed;
+    }
+
+    function execute(IWeightedHub index, bytes[] calldata priceUpdate) external {
+        index.executeRebalance("", priceUpdate);
+    }
+
+    function onXindexRebalance(uint256[] calldata, uint256[] calldata amountsIn, bytes calldata) external {
+        address[] memory t = IWeightedHub(msg.sender).componentTokens();
+        for (uint256 i = 0; i < t.length; ++i) {
+            if (amountsIn[i] != 0) MockERC20(t[i]).mint(msg.sender, amountsIn[i]);
+        }
+        MockERC20(t[CLAWED]).burn(msg.sender, 1);
+    }
+}
 
 /// @notice The weighted hub's rebalance: start, notice, auction, prices, settlement and cancellation.
 /// @dev The default index (ETH 50%, BTC 30%, USD 20%, $100 a token) with 100 tokens issued. Most tests price ETH at
@@ -148,7 +171,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
         assertEq(index.rebalanceNonce(), 1);
     }
 
-    function test_onlyTheOwnerOrGuardianPassesAKeepMask() public {
+    function test_R16_onlyTheOwnerOrGuardianPassesAKeepMask() public {
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, stranger));
         vm.prank(stranger);
@@ -161,7 +184,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
     // Cancel and restart
     // ---------------------------------------------------------------------
 
-    function test_cancelHoldsStrangersOff() public {
+    function test_R15_VR04_cancelHoldsStrangersOff() public {
         vm.expectRevert(IWeightedHub.NoPendingRebalance.selector);
         vm.prank(guardian);
         index.cancelRebalance();
@@ -194,7 +217,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
         index.startRebalance(0);
     }
 
-    function test_anExpiredAuctionHoldsStrangersOffUntilItsDelayPasses() public {
+    function test_XA02_XA16_VR04_anExpiredAuctionHoldsStrangersOffUntilItsDelayPasses() public {
         _open(0, 0);
         (uint256 eta,) = index.pendingRebalance();
         uint256 end = eta + index.AUCTION_DURATION();
@@ -453,7 +476,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
     }
 
     /// @dev Rounding goes the holders' way: a growing leg's step rounds up even when μ makes it fractional.
-    function test_aGrowingStepRoundsUp() public {
+    function test_DA01_aGrowingStepRoundsUp() public {
         _open(0, 1);
         (uint256 mu, uint256[] memory units,,) = index.previewRebalance(_structs3(2500e8, BTC_PRICE, USD_PRICE));
         // 6,250 · μ / 1e18 = 6,374.997106…, rounded up.
@@ -536,7 +559,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
     }
 
     /// @dev On an empty index nothing leaves, so nobody is paid: the fill settles at MU_MAX whatever the clock says.
-    function test_anEmptyIndexSettlesAtMuMax() public {
+    function test_R14_XA27_anEmptyIndexSettlesAtMuMax() public {
         vm.prank(alice);
         index.redeem(SHARES, alice);
         _open(0, index.AUCTION_DURATION());
@@ -573,7 +596,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
 
     /// @dev A kept component is not priced, not read and not moved; the others share out their own value by their own
     ///      weights.
-    function test_aKeptComponentIsNeitherPricedNorRead() public {
+    function test_R08_DA14_RT01_aKeptComponentIsNeitherPricedNorRead() public {
         MockPausableToken frozen = new MockPausableToken("Frozen", "FRZ", 18);
         _list(address(frozen), keccak256("FRZ/USD"));
         IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](3);
@@ -618,7 +641,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
     // Executors
     // ---------------------------------------------------------------------
 
-    function test_aShortDeliveryReverts() public {
+    function test_R10_aShortDeliveryReverts() public {
         _open(0, _midpoint());
         executor.setMode(MockWeightedExecutor.Mode.Short);
         executor.setShortComponent(2);
@@ -631,7 +654,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
     }
 
     /// @dev Surplus the index already held stays with the holders: an executor cannot deliver that much less.
-    function test_aDonationDoesNotPayForTheFill() public {
+    function test_R21_XA28_aDonationDoesNotPayForTheFill() public {
         _open(0, _midpoint());
         usd.mint(address(index), 5e6);
         executor.setMode(MockWeightedExecutor.Mode.Short);
@@ -644,7 +667,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
         executor.execute(index, "", data);
     }
 
-    function test_aNoopExecutorReverts() public {
+    function test_VR03_aNoopExecutorReverts() public {
         _open(0, _midpoint());
         executor.setMode(MockWeightedExecutor.Mode.Noop);
         bytes[] memory data = _updates(index, _ids3(), _prices3(2500e8, BTC_PRICE, USD_PRICE));
@@ -656,7 +679,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
         executor.execute(index, "", data);
     }
 
-    function test_theBoundedFill() public {
+    function test_DA13_theBoundedFill() public {
         _open(0, _midpoint());
         bytes[] memory data = _updates(index, _ids3(), _prices3(2500e8, BTC_PRICE, USD_PRICE));
         uint256[] memory bounds = new uint256[](2);
@@ -687,7 +710,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
         assertEq(address(pyth).balance, 3);
     }
 
-    function test_everyEntryPointIsGuardedDuringTheCallback() public {
+    function test_R11_everyEntryPointIsGuardedDuringTheCallback() public {
         _open(0, _midpoint());
         executor.setMode(MockWeightedExecutor.Mode.Reentrant);
         _fill(2500e8, BTC_PRICE, USD_PRICE);
@@ -721,12 +744,105 @@ contract WeightedHubRebalanceTest is WeightedTest {
     }
 
     // ---------------------------------------------------------------------
+    // The backing post-check and each leg's rounding, carried from v4's hub
+    // ---------------------------------------------------------------------
+
+    /// @dev CR-I30: the post-check reads again every leg that moved. A raw unit of a bought component clawed from the
+    ///      index before the fill leaves it a unit short of the backing it owes, whatever the executor delivers.
+    function test_CRI30_aSettlementStillDemandsTheBackingItOwes() public {
+        _open(0, _midpoint());
+        (, uint256[] memory units,, uint256[] memory in_) =
+            index.previewRebalance(_structs3(2500e8, BTC_PRICE, USD_PRICE));
+        assertGt(in_[1], 0, "BTC is bought");
+        btc.burn(address(index), 1); // the issuer's clawback
+        uint256 required = SHARES * units[1] / WAD;
+        bytes[] memory data = _updates(index, _ids3(), _prices3(2500e8, BTC_PRICE, USD_PRICE));
+        vm.expectRevert(
+            abi.encodeWithSelector(IWeightedHub.RebalanceUnderfunded.selector, address(btc), required - 1, required)
+        );
+        executor.execute(index, "", data);
+    }
+
+    /// @dev CR-I30 and VR-06: the `+ totalClaims` in the backing term. With a claim open on the bought component, a
+    ///      clawed unit there is caught only if the claim is counted.
+    function test_VR06_CRI30_theBackingTermCountsOpenClaims() public {
+        vm.prank(alice);
+        index.redeemSkipping(1e18, alice, 1 << 1); // leaves a token's BTC in the index as alice's claim
+        assertEq(index.totalClaims(address(btc)), BTC_UNITS);
+        _open(0, _midpoint());
+        (, uint256[] memory units,, uint256[] memory in_) =
+            index.previewRebalance(_structs3(2500e8, BTC_PRICE, USD_PRICE));
+        assertGt(in_[1], 0);
+        btc.burn(address(index), 1);
+        uint256 required = index.totalSupply() * units[1] / WAD + index.totalClaims(address(btc));
+        bytes[] memory data = _updates(index, _ids3(), _prices3(2500e8, BTC_PRICE, USD_PRICE));
+        vm.expectRevert(
+            abi.encodeWithSelector(IWeightedHub.RebalanceUnderfunded.selector, address(btc), required - 1, required)
+        );
+        executor.execute(index, "", data);
+    }
+
+    /// @dev CR-I30, the sold legs: the post-check reads again a leg the index only sold.
+    function test_CRI30_aSoldLegIsCheckedAgainAfterTheCallback() public {
+        _open(0, _midpoint());
+        (, uint256[] memory units, uint256[] memory out, uint256[] memory in_) =
+            index.previewRebalance(_structs3(2500e8, BTC_PRICE, USD_PRICE));
+        assertGt(out[0], 0, "ETH is sold");
+        assertEq(in_[0], 0, "and receives nothing");
+        uint256 required = SHARES * units[0] / WAD;
+        ClawingExecutor clawing = new ClawingExecutor(0);
+        bytes[] memory data = _updates(index, _ids3(), _prices3(2500e8, BTC_PRICE, USD_PRICE));
+        vm.expectRevert(
+            abi.encodeWithSelector(IWeightedHub.RebalanceUnderfunded.selector, address(eth), required - 1, required)
+        );
+        clawing.execute(index, data);
+    }
+
+    /// @dev RT-12 and SA-07. On a supply under one index token a leg's change in backing is a fraction of a raw unit. As
+    ///      a difference of floored backings a shrinking leg released its whole raw unit while no growing leg asked for
+    ///      one, so an executor that delivered nothing was paid. Each leg rounds its own change the holders' way:
+    ///      nothing leaves, the settlement falls back to MU_MAX, and each growing leg asks for its raw unit, which an
+    ///      empty executor cannot deliver.
+    function test_RT12_SA07_anEmptyExecutorIsPaidNothingOnASubTokenSupply() public {
+        vm.prank(creator);
+        WeightedHub dust = WeightedHub(factory.createIndex("Dust", "DUST", _defaultSpecs()));
+        // Forty wei of shares: exactly one raw unit of ETH, and one of BTC and USD, rounded up. A tenth of the ETH
+        // leaves, which as a difference of floored backings, 1 - 0, was the whole raw unit.
+        _issue(dust, alice, 40);
+        assertEq(eth.balanceOf(address(dust)), 1);
+        vm.warp(dust.lastRebalance() + dust.MIN_REBALANCE_INTERVAL());
+        dust.startRebalance(0);
+        (uint256 eta,) = dust.pendingRebalance();
+        vm.warp(eta + 2 hours);
+
+        (uint256 mu, uint256[] memory units, uint256[] memory out, uint256[] memory in_) =
+            dust.previewRebalance(_structs3(2500e8, BTC_PRICE, USD_PRICE));
+        assertEq(mu, dust.MU_MAX(), "nothing leaves, so the settlement is taken at the top");
+        for (uint256 i = 0; i < 3; ++i) {
+            assertEq(out[i], 0, "no leg releases a raw unit for a fraction of one");
+        }
+        assertLt(units[0], ETH_UNITS, "ETH still shrinks");
+        assertGt(units[1], BTC_UNITS, "and BTC grows");
+        assertEq(in_[1], 1, "asking for its raw unit, rounded up");
+        assertEq(in_[2], 1);
+
+        bytes[] memory data = _updates(dust, _ids3(), _prices3(2500e8, BTC_PRICE, USD_PRICE));
+        executor.setMode(MockWeightedExecutor.Mode.Noop);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalanceUnderfunded.selector, address(btc), 1, 2));
+        executor.execute(dust, "", data);
+        executor.setMode(MockWeightedExecutor.Mode.Honest);
+        executor.execute(dust, "", data);
+        assertEq(eth.balanceOf(address(executor)), 0, "an honest executor is paid nothing either");
+        assertEq(dust.rebalanceNonce(), 1);
+    }
+
+    // ---------------------------------------------------------------------
     // Bounds
     // ---------------------------------------------------------------------
 
     /// @dev At the settling prices, the executor always delivers at least μ times the value it takes, and no fill sends
     ///      out more than MAX_TURNOVER of any component's units.
-    function testFuzz_theExecutorDeliversMuTimesWhatItTakes(
+    function testFuzz_R04_theExecutorDeliversMuTimesWhatItTakes(
         uint256 ethPrice,
         uint256 btcPrice,
         uint256 usdPrice,

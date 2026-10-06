@@ -6,20 +6,19 @@ import {Vm} from "forge-std/Vm.sol";
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
-import {IndexFactory} from "../src/IndexFactory.sol";
-import {IndexHub} from "../src/IndexHub.sol";
+import {WeightedHub} from "../src/WeightedHub.sol";
 import {IndexZap} from "../src/IndexZap.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IIndexZap} from "../src/interfaces/IIndexZap.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
-import {IIndexHub} from "../src/interfaces/IIndexHub.sol";
+import {IWeightedHub} from "../src/interfaces/IWeightedHub.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockUSDT} from "./mocks/MockUSDT.sol";
 import {MockFeeToken} from "./mocks/MockFeeToken.sol";
 import {MockHookToken, ITokenReceiverHook} from "./mocks/MockHookToken.sol";
-import {MockRebalanceExecutor} from "./mocks/MockRebalanceExecutor.sol";
+import {MockWeightedExecutor} from "./mocks/MockWeightedExecutor.sol";
 import {MockMarket} from "./mocks/MockMarket.sol";
 import {MockUniversalRouter} from "./mocks/MockUniversalRouter.sol";
 import {PathLib} from "../src/libraries/PathLib.sol";
@@ -29,7 +28,7 @@ contract IndexZapTest is XindexTest {
     IndexZap zap;
     MockUniversalRouter router;
     address poolManager;
-    IndexHub index;
+    WeightedHub index;
 
     MockERC20 wbtc; // 8
     MockERC20 weth; // 18
@@ -47,19 +46,19 @@ contract IndexZapTest is XindexTest {
     uint256 constant NAV_USD6 = 105e6;
     /// @dev USDC's units in the suite's dollar indexes.
     uint256 constant U_USDC = 50e6;
-    /// @dev With each component listed at its units as its supply, this scale gives exactly those units.
-    uint256 constant K = 1e36;
+    /// @dev The smallest holding an index may start with, the factory's `MIN_RAW_UNITS`: 0.01 USDC.
+    uint256 constant U_DUST = 1e4;
 
     uint24 constant FEE = 500;
 
     function setUp() public {
         market = new MockMarket();
-        factory = new IndexFactory(owner, address(0));
+        _deployFactory(address(0));
         // A plain address stands in for the V4 singleton: the zap only ever reads it, to keep it off the recipient
         // list, and the mock router never settles against it.
         poolManager = makeAddr("poolManager");
         router = new MockUniversalRouter(poolManager);
-        zap = new IndexZap(factory, router);
+        zap = new IndexZap(IIndexFactory(address(factory)), router);
 
         wbtc = new MockERC20("Wrapped BTC", "WBTC", 8);
         weth = market.weth();
@@ -79,17 +78,18 @@ contract IndexZapTest is XindexTest {
         usdc.mint(address(router.inventory()), 1_000_000_000e6);
         usdt.mint(address(router.inventory()), 1_000_000_000e6);
 
-        // Listed with the units the suite's indexes hold as their supplies, so k = K gives exactly those units.
-        _listWith(address(wbtc), U_WBTC);
-        _listWith(address(weth), U_WETH);
-        _listWith(address(link), U_LINK);
-        _listWith(address(usdc), U_USDC);
+        _listWith(address(wbtc));
+        _listWith(address(weth));
+        _listWith(address(link));
+        _listWith(address(usdc));
 
         address[] memory t = new address[](3);
         t[0] = address(wbtc);
         t[1] = address(weth);
         t[2] = address(link);
-        index = IndexHub(factory.createIndex("Blue Chip", "BLUE", t, K));
+        uint256[] memory u = new uint256[](3);
+        (u[0], u[1], u[2]) = (U_WBTC, U_WETH, U_LINK);
+        index = _createIndex("Blue Chip", "BLUE", t, u);
     }
 
     // ---------------------------------------------------------------------
@@ -213,11 +213,36 @@ contract IndexZapTest is XindexTest {
     }
 
     /// @dev 0.01 WETH + 50 USDC, so USDC is both the mint currency and a component.
-    function _mixedIndex() internal returns (IndexHub idx) {
-        address[] memory t = new address[](2);
-        t[0] = address(weth);
-        t[1] = address(usdc);
-        idx = IndexHub(factory.createIndex("Mixed", "MIX", t, K));
+    function _mixedIndex() internal returns (WeightedHub idx) {
+        idx = _createIndex("Mixed", "MIX", _pair(address(weth), address(usdc)), _pair(U_WETH, U_USDC));
+    }
+
+    /// @dev A whole WETH a token beside USDC's smallest holding, `MIN_RAW_UNITS`: a basket whose one swapped leg is
+    ///      WETH, since an index holds at least two components. USDC is paid out as it is on a burn to USDC.
+    function _etherIndex() internal returns (WeightedHub idx) {
+        idx = _createIndex("Ether", "ETH1", _pair(address(weth), address(usdc)), _pair(1e18, U_DUST));
+    }
+
+    /// @dev Issues one token of `_etherIndex` to `who`, in kind.
+    function _issueEther(WeightedHub idx, address who) internal {
+        weth.mint(who, 1e18);
+        usdc.mint(who, U_DUST);
+        vm.startPrank(who);
+        weth.approve(address(idx), 1e18);
+        usdc.approve(address(idx), U_DUST);
+        idx.issue(1e18, who);
+        vm.stopPrank();
+    }
+
+    /// @dev Burn legs for `_etherIndex` into USDC: WETH along the given route, USDC passed through.
+    function _etherBurnLegs(bytes memory v3Path, PathKey[] memory v4Path)
+        internal
+        pure
+        returns (IIndexZap.BurnLeg[] memory legs)
+    {
+        legs = new IIndexZap.BurnLeg[](2);
+        legs[0] = IIndexZap.BurnLeg({v3Path: v3Path, v4Path: v4Path, minAmountOut: 0});
+        legs[1] = IIndexZap.BurnLeg({v3Path: "", v4Path: new PathKey[](0), minAmountOut: 0});
     }
 
     function _mixedLegs() internal view returns (IIndexZap.MintLeg[] memory legs) {
@@ -264,7 +289,7 @@ contract IndexZapTest is XindexTest {
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
         new IndexZap(IIndexFactory(address(0)), router);
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new IndexZap(factory, IUniversalRouter(address(0)));
+        new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(address(0)));
     }
 
     // ---------------------------------------------------------------------
@@ -334,7 +359,7 @@ contract IndexZapTest is XindexTest {
     }
 
     function test_mint_tokenInIsComponent() public {
-        IndexHub idx = _mixedIndex();
+        WeightedHub idx = _mixedIndex();
         usdc.mint(alice, 100e6);
         vm.startPrank(alice);
         usdc.approve(address(zap), 100e6);
@@ -358,7 +383,7 @@ contract IndexZapTest is XindexTest {
     }
 
     function test_mint_revertsInsufficientBudget() public {
-        IndexHub idx = _mixedIndex();
+        WeightedHub idx = _mixedIndex();
         usdc.mint(alice, 10e6);
         vm.startPrank(alice);
         usdc.approve(address(zap), 10e6);
@@ -368,7 +393,7 @@ contract IndexZapTest is XindexTest {
     }
 
     function test_mint_revertsTokenInComponentWithNonEmptyPath() public {
-        IndexHub idx = _mixedIndex();
+        WeightedHub idx = _mixedIndex();
         IIndexZap.MintLeg[] memory legs = _mixedLegs();
         legs[1].v3Path = _path2(address(usdc), address(usdc));
         usdc.mint(alice, 100e6);
@@ -764,7 +789,7 @@ contract IndexZapTest is XindexTest {
         bytes[] memory nonces = new bytes[](2);
         nonces[0] = abi.encode(uint256(0));
         nonces[1] = abi.encode(uint256(1));
-        vm.mockCalls(address(index), abi.encodeWithSelector(IIndexHub.rebalanceNonce.selector), nonces);
+        vm.mockCalls(address(index), abi.encodeWithSelector(IWeightedHub.rebalanceNonce.selector), nonces);
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(IIndexZap.StaleRebalanceNonce.selector, 0, 1));
         zap.mintWithToken(p);
@@ -777,15 +802,21 @@ contract IndexZapTest is XindexTest {
     ///      approvals sized for the old one and fail with an allowance error instead.
     function test_LR05_aRebalanceSettledDuringTheRefundStopsTheMint() public {
         _mintFor(alice, 1e18, 200e6);
-        _revise(address(link), U_LINK + U_LINK / 200); // LINK's supply grows a step, so there is a rebalance to start
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
         index.startRebalance(0);
-        (uint256 eta,,,,) = index.pendingRebalance();
+        (uint256 eta,) = index.pendingRebalance();
         vm.warp(eta);
+
+        // At the router's prices the basket holds $60, $30 and $15 against equal weights, so the fill trades.
+        bytes[] memory updates = new bytes[](3);
+        uint64 time = uint64(index.priceTime());
+        updates[0] = pyth.update(_priceId(address(wbtc)), 60_000e8, 0, -8, time, time - 1);
+        updates[1] = pyth.update(_priceId(address(weth)), 3_000e8, 0, -8, time, time - 1);
+        updates[2] = pyth.update(_priceId(address(link)), 15e8, 0, -8, time, time - 1);
 
         MockHookToken hook = new MockHookToken();
         router.setPrice(address(hook), 1e18, 18);
-        RebalancingMinter minter = new RebalancingMinter(zap, index, new MockRebalanceExecutor());
+        RebalancingMinter minter = new RebalancingMinter(zap, index, new MockWeightedExecutor(), updates);
         hook.mint(address(minter), 200e18);
 
         IIndexZap.MintParams memory p =
@@ -873,23 +904,17 @@ contract IndexZapTest is XindexTest {
     }
 
     function test_burn_partialFillReturnsUnsoldComponent() public {
-        address[] memory t = new address[](1);
-        t[0] = address(weth);
-        IndexHub idx = IndexHub(factory.createIndex("Ether", "ETH1", t, K * 1e18 / U_WETH)); // a whole WETH a token
-
-        weth.mint(alice, 1e18);
+        WeightedHub idx = _etherIndex();
+        _issueEther(idx, alice);
         vm.startPrank(alice);
-        weth.approve(address(idx), 1e18);
-        idx.issue(1e18, alice);
         idx.approve(address(zap), 1e18);
-        IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](1);
-        legs[0] = IIndexZap.BurnLeg({v3Path: _path2(address(weth), address(usdc)), v4Path: _noV4(), minAmountOut: 0});
+        IIndexZap.BurnLeg[] memory legs = _etherBurnLegs(_path2(address(weth), address(usdc)), _noV4());
 
         // The pool stops at its price limit and takes half the input.
         router.setMode(MockUniversalRouter.Mode.PartialFirstHop);
 
         // An overall minimum above what half the basket sells for still reverts.
-        vm.expectRevert(abi.encodeWithSelector(IIndexZap.InsufficientOutput.selector, 1_500e6, 2_970e6));
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.InsufficientOutput.selector, 1_500e6 + U_DUST, 2_970e6));
         zap.burnToToken(_burnParams(address(idx), 1e18, address(usdc), 2_970e6, legs, alice));
 
         vm.expectEmit(true, true, true, true, address(zap));
@@ -897,8 +922,8 @@ contract IndexZapTest is XindexTest {
         uint256 out = zap.burnToToken(_burnParams(address(idx), 1e18, address(usdc), 1_000e6, legs, bob));
         vm.stopPrank();
 
-        assertEq(out, 1_500e6);
-        assertEq(usdc.balanceOf(bob), 1_500e6);
+        assertEq(out, 1_500e6 + U_DUST, "half the WETH sold, and the USDC held as it is");
+        assertEq(usdc.balanceOf(bob), 1_500e6 + U_DUST);
         assertEq(weth.balanceOf(bob), 5e17, "the unsold half goes to the recipient");
         assertEq(weth.balanceOf(address(zap)), 0);
         assertEq(weth.balanceOf(address(router)), 0, "and nothing is left in the router to be swept by anyone");
@@ -1383,16 +1408,11 @@ contract IndexZapTest is XindexTest {
     ///      although a V4 leg that stops short would then leave the user's unsold component in the zap, which counts
     ///      only balance changes and would never pay it to anyone. The mock's partial mode halves a V4 exact input too.
     function test_CRI27_aV4BurnLegReturnsItsUnsoldInputToTheRecipient() public {
-        address[] memory t = new address[](1);
-        t[0] = address(weth);
-        IndexHub idx = IndexHub(factory.createIndex("Ether", "ETH1", t, K * 1e18 / U_WETH)); // a whole WETH a token
-        weth.mint(alice, 1e18);
+        WeightedHub idx = _etherIndex();
+        _issueEther(idx, alice);
         vm.startPrank(alice);
-        weth.approve(address(idx), 1e18);
-        idx.issue(1e18, alice);
         idx.approve(address(zap), 1e18);
-        IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](1);
-        legs[0] = IIndexZap.BurnLeg({v3Path: "", v4Path: _v4Path1(address(usdc)), minAmountOut: 0});
+        IIndexZap.BurnLeg[] memory legs = _etherBurnLegs("", _v4Path1(address(usdc)));
         router.setMode(MockUniversalRouter.Mode.PartialFirstHop);
 
         vm.expectEmit(true, true, true, true, address(zap));
@@ -1400,7 +1420,7 @@ contract IndexZapTest is XindexTest {
         uint256 out = zap.burnToToken(_burnParams(address(idx), 1e18, address(usdc), 1, legs, bob));
         vm.stopPrank();
 
-        assertEq(out, 1_500e6, "half the WETH sold");
+        assertEq(out, 1_500e6 + U_DUST, "half the WETH sold, and the USDC held as it is");
         assertEq(weth.balanceOf(bob), 5e17, "the unsold half reached the recipient");
         assertEq(weth.balanceOf(address(zap)), 0, "none of it is stranded in the zap");
         assertEq(weth.balanceOf(address(router)), 0, "or in the router");
@@ -1432,7 +1452,7 @@ contract IndexZapTest is XindexTest {
     /// @dev CR-I31. A leg names exactly one venue, and the pass-through leg names none. The committed tests only ever
     ///      put a V3 path on it, so dropping the V4 half of the check passed them and a V4 route was silently ignored.
     function test_CRI31_aPassThroughLegCarryingAV4RouteIsABadRoute() public {
-        IndexHub idx = _mixedIndex();
+        WeightedHub idx = _mixedIndex();
         IIndexZap.MintLeg[] memory mintLegs = _mixedLegs();
         mintLegs[1].v4Path = _v4Path1(address(weth)); // USDC is the component and the currency: no swap belongs here
         usdc.mint(alice, 100e6);
@@ -1453,26 +1473,26 @@ contract IndexZapTest is XindexTest {
     }
 
     /// @dev CR-I31: a budget that exactly covers the part of the basket that already is `tokenIn` is enough, as
-    ///      InsufficientBudget's "needs more than" says; a `>=` there refused it and passed every committed test.
+    ///      InsufficientBudget's "needs more than" says; a `>=` there refused it and passed every committed test. An
+    ///      index holds two components at least, so such a budget passes the check and runs out at the swap that buys
+    ///      the other one, with the pool's own error; the refusal it must not meet is `InsufficientBudget`.
     function test_CRI31_aBudgetExactlyCoveringThePassThroughLegIsEnough() public {
-        address[] memory t = new address[](1);
-        t[0] = address(usdc);
-        IndexHub idx = IndexHub(factory.createIndex("Dollar", "USD1", t, K));
-        IIndexZap.MintLeg[] memory legs = new IIndexZap.MintLeg[](1);
-        legs[0] = IIndexZap.MintLeg({v3Path: "", v4Path: _noV4(), maxAmountIn: 0});
-        usdc.mint(alice, 50e6);
+        WeightedHub idx = _mixedIndex(); // 0.01 WETH, bought for 30 USDC, and 50 USDC held as it is
+        usdc.mint(alice, U_USDC);
         vm.startPrank(alice);
-        usdc.approve(address(zap), 50e6);
-        uint256 spent = zap.mintWithToken(_mintParams(address(idx), address(usdc), 50e6, 1e18, legs, alice));
+        usdc.approve(address(zap), U_USDC);
+        vm.expectRevert(abi.encodeWithSignature("V3TooMuchRequested()"));
+        zap.mintWithToken(_mintParams(address(idx), address(usdc), U_USDC, 1e18, _mixedLegs(), alice));
+
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.InsufficientBudget.selector, U_USDC, U_USDC - 1));
+        zap.mintWithToken(_mintParams(address(idx), address(usdc), U_USDC - 1, 1e18, _mixedLegs(), alice));
         vm.stopPrank();
-        assertEq(spent, 50e6, "every unit of the budget went into the basket");
-        assertEq(idx.balanceOf(alice), 1e18);
     }
 
     /// @dev CR-I31: a mint that spends its whole budget owes no refund and sends none. Refunding unconditionally sent
     ///      `transfer(msg.sender, 0)`, which a currency that refuses zero transfers turns into a failed mint.
     function test_CRI31_anExactSpendMintSendsNoZeroRefund() public {
-        IndexHub idx = _mixedIndex(); // 0.01 WETH, bought for 30 USDC, and 50 USDC held as it is
+        WeightedHub idx = _mixedIndex(); // 0.01 WETH, bought for 30 USDC, and 50 USDC held as it is
         usdc.mint(alice, 80e6);
         vm.startPrank(alice);
         usdc.approve(address(zap), 80e6);
@@ -1724,16 +1744,21 @@ contract PathShapeProbe {
     }
 }
 
-/// @dev Mints through the zap with a callback token and, when the zap refunds it, fills the index's auction.
+/// @dev Mints through the zap with a callback token and, when the zap refunds it, fills the index's auction with the
+///      price updates it was given.
 contract RebalancingMinter is ITokenReceiverHook {
     IndexZap internal immutable ZAP;
-    IndexHub internal immutable INDEX;
-    MockRebalanceExecutor internal immutable EXECUTOR;
+    WeightedHub internal immutable INDEX;
+    MockWeightedExecutor internal immutable EXECUTOR;
+    bytes[] internal _updates;
 
-    constructor(IndexZap zap, IndexHub index, MockRebalanceExecutor executor) {
+    constructor(IndexZap zap, WeightedHub index, MockWeightedExecutor executor, bytes[] memory updates) {
         ZAP = zap;
         INDEX = index;
         EXECUTOR = executor;
+        for (uint256 i = 0; i < updates.length; ++i) {
+            _updates.push(updates[i]);
+        }
     }
 
     function mint(IIndexZap.MintParams calldata p) external {
@@ -1742,7 +1767,7 @@ contract RebalancingMinter is ITokenReceiverHook {
     }
 
     function onTokenReceived(address from, uint256) external {
-        if (from == address(ZAP)) EXECUTOR.execute(INDEX, "");
+        if (from == address(ZAP)) EXECUTOR.execute(INDEX, "", _updates);
     }
 }
 

@@ -18,6 +18,11 @@ contract specs are `design/2026-09-30-v4-stage-a-spec.md` (the "spec") and `desi
 (`audit/2026-09-30-stage-b-red-team.md`) and the Tron state verifier (`audit/2026-10-01-tron-review.md`); nothing has
 had an external audit. Section 11 lists what remains.
 
+**v5 replaces the market-cap index** (`design/2026-10-05-custom-weights.md`). `src/IndexHub.sol` and
+`src/IndexFactory.sol` were deleted on 2026-10-06 (`audit/2026-10-06-v4-retirement.md`), so the sections on them, on
+the reference supplies and on the λ auction, and the test files they cite, describe v4 as it was built, until this file
+is rewritten for v5. `WeightedHub` keeps `IndexHub`'s issue, redeem, claims and backing post-check.
+
 ## 1. Goals and constraints
 
 | Requirement (from the product brief) | How Stage A meets it |

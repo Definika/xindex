@@ -127,7 +127,7 @@ contract WeightedHubTest is WeightedTest {
         clone.initialize("X", "X", inits);
     }
 
-    function test_anUninitializedCloneDoesNothing() public {
+    function test_DA22_CRI25_CRI33_anUninitializedCloneDoesNothing() public {
         WeightedHub clone = _clone();
         vm.expectRevert(IWeightedHub.NotInitialized.selector);
         clone.issue(1, alice);
@@ -215,6 +215,38 @@ contract WeightedHubTest is WeightedTest {
         vm.stopPrank();
     }
 
+    /// @dev RT-05. `issue` refuses a component that arrives short, measured as the change in the index's balance across
+    ///      the pull. Tested only on an index holding none of the token, where the balance afterwards is the change
+    ///      itself, a check that added the balance before the pull, or read the balance alone, would pass, and mint shares
+    ///      short by the fee on every issue once the index holds some of a component that starts charging one. Here the
+    ///      index already holds the fee token, from a donation, and only the change still shows the fee.
+    function test_RT05_theFeeCheckMeasuresTheChangeWhenTheIndexAlreadyHoldsTheToken() public {
+        MockFeeToken fee = new MockFeeToken();
+        _list(address(fee), keccak256("FEE/USD"));
+        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](2);
+        specs[0] = _spec(address(eth), 5000, ETH_UNITS);
+        specs[1] = _spec(address(fee), 5000, 1e18);
+        vm.prank(creator);
+        WeightedHub feeIndex = WeightedHub(factory.createIndex("Fee", "FEE", specs));
+
+        fee.mint(stranger, 10e18);
+        vm.prank(stranger);
+        fee.transfer(address(feeIndex), 10e18); // 1% burns on the way, so 9.9 arrive
+        assertEq(fee.balanceOf(address(feeIndex)), 9.9e18, "the index already holds some of the token");
+
+        fee.mint(alice, 1e18);
+        eth.mint(alice, ETH_UNITS);
+        vm.startPrank(alice);
+        fee.approve(address(feeIndex), 1e18);
+        eth.approve(address(feeIndex), ETH_UNITS);
+        // A share needs 1e18 and 0.99e18 arrives. The balance afterwards, 10.89e18, would clear the check on its own.
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.TransferAmountMismatch.selector, address(fee)));
+        feeIndex.issue(1e18, alice);
+        vm.stopPrank();
+        assertEq(feeIndex.totalSupply(), 0, "no share was minted against 0.99 of its basket");
+        assertEq(fee.balanceOf(address(feeIndex)), 9.9e18, "and the index holds only the donation");
+    }
+
     function test_redeemSendsTheBasketRoundedDown() public {
         _issue(index, alice, 3e18);
         uint256 shares = 1e18 - 1;
@@ -252,7 +284,7 @@ contract WeightedHubTest is WeightedTest {
         assertEq(btc.balanceOf(alice), 0);
     }
 
-    function test_redeemSkippingBooksTheClaimToTheRecipient() public {
+    function test_DA17_redeemSkippingBooksTheClaimToTheRecipient() public {
         _issue(index, alice, 2e18);
         vm.expectEmit(address(index));
         emit IWeightedHub.ClaimRecorded(stranger, address(btc), BTC_UNITS);
@@ -326,7 +358,7 @@ contract WeightedHubTest is WeightedTest {
         index.claim(address(btc), address(factory));
     }
 
-    function test_sharesCannotBeSentToTheIndexOrItsFactory() public {
+    function test_CRI01_RT21_sharesCannotBeSentToTheIndexOrItsFactory() public {
         _issue(index, alice, 1e18);
         vm.startPrank(alice);
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(index)));

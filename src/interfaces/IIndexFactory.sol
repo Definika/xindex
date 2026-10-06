@@ -6,98 +6,12 @@ import {IXindexErrors} from "./IXindexErrors.sol";
 /// @title IIndexFactory
 /// @notice Deploys index hubs as EIP-1167 clones at creator-bound CREATE2 addresses, curates the component whitelist
 ///         and each token's reference supply behind public delays, and keeps the registry. Nothing here reads a price.
+///         v4's `IndexFactory`, the one contract that implemented all of this, is deleted, and the errors and events
+///         only it raised and emitted with it (audit/2026-10-06-v4-retirement.md). `IndexZap` and `MintRequests` call only `isIndex`,
+///         which every Xindex factory answers; `ConfigureWhitelist`'s listing and supply modes call the rest.
 /// @dev "Owner only" functions revert with OpenZeppelin's `OwnableUnauthorizedAccount` for any other caller, and
 ///      "owner or guardian" functions with `Unauthorized`.
 interface IIndexFactory is IXindexErrors {
-    /// @notice `creator` deployed and initialized `index` with these constituents and starting units (raw units of each
-    ///         token per 1e18 shares, in the same order), computed as `k * referenceSupply / K_SCALE`.
-    event IndexCreated(
-        address indexed index, address indexed creator, string name, string symbol, address[] tokens, uint256[] units
-    );
-    /// @notice Listing `token` with `referenceSupply` was proposed. It can be executed from `eta` until
-    ///         `eta + PROPOSAL_WINDOW`.
-    event ListingProposed(address indexed token, uint256 eta, uint256 referenceSupply);
-    /// @notice The pending listing of `token` was cancelled.
-    event ListingCancelled(address indexed token);
-    /// @notice `token`'s reference supply changed from `previous` (zero before a first listing) to `referenceSupply`.
-    event ReferenceSupplySet(address indexed token, uint256 previous, uint256 referenceSupply);
-    /// @notice `token` was whitelisted (`allowed`) or delisted.
-    event TokenWhitelisted(address indexed token, bool allowed);
-    /// @notice Supply batch `batchId` was proposed. It can be executed from `eta` until `eta + PROPOSAL_WINDOW`.
-    event SuppliesProposed(uint256 indexed batchId, uint256 eta, address[] tokens, uint256[] referenceSupplies);
-    /// @notice Supply batch `batchId` was cancelled.
-    event SuppliesCancelled(uint256 indexed batchId);
-    /// @notice Supply batch `batchId` came into force; a `ReferenceSupplySet` precedes this for each of its tokens.
-    event SuppliesExecuted(uint256 indexed batchId);
-    /// @notice A change to `newGuardian` was proposed. It can be executed from `eta` until `eta + PROPOSAL_WINDOW`.
-    event GuardianProposed(address indexed newGuardian, uint256 eta);
-    /// @notice The pending change to `newGuardian` was cancelled, or replaced by a new proposal.
-    event GuardianChangeCancelled(address indexed newGuardian);
-    /// @notice The guardian changed, at deployment or when a proposed change was executed. Zero means no guardian.
-    event GuardianSet(address indexed previousGuardian, address indexed newGuardian);
-
-    /// @notice The index name or symbol is empty.
-    error EmptyString();
-    /// @notice An index needs 1 to MAX_COMPONENTS components; `count` were given.
-    error InvalidComponentCount(uint256 count);
-    /// @notice `token` is not whitelisted, so no new index can hold it.
-    error TokenNotWhitelisted(address token);
-    /// @notice `token` appears twice in the components.
-    error DuplicateToken(address token);
-    /// @notice `k` gives `token` `units` raw units per whole index token, outside [MIN_RAW_UNITS, MAX_UNITS].
-    error UnitsOutOfRange(address token, uint256 units);
-    /// @notice The same creator already deployed an index with these exact arguments, at `index`.
-    error IndexAlreadyExists(address index);
-    /// @notice `token` has no code.
-    error NotAContract(address token);
-    /// @notice `token` has never been listed, so it has no reference supply to revise.
-    error NotConfigured(address token);
-    /// @notice A reference supply of `referenceSupply` for `token` is zero or above MAX_SUPPLY.
-    error SupplyOutOfRange(address token, uint256 referenceSupply);
-    /// @notice A proposed reference supply for `token` moves more than MAX_SUPPLY_STEP from the one in force. A larger
-    ///         change goes in steps, each behind its own delay and the guardian's veto.
-    error SupplyStepTooLarge(address token, uint256 inForce, uint256 proposed);
-    /// @notice A listing of `token` executable from `eta` is still pending or executable. Cancel it first; one that
-    ///         expired can be replaced.
-    error ListingPending(address token, uint256 eta);
-    /// @notice No listing is proposed for `token`.
-    error NoPendingListing(address token);
-    /// @notice The listing of `token` can be executed from `eta`.
-    error ListingNotReady(address token, uint256 eta);
-    /// @notice The listing of `token` could be executed until `deadline`; propose it again.
-    error ListingExpired(address token, uint256 deadline);
-    /// @notice {delist} for a token that is not whitelisted.
-    error NotWhitelisted(address token);
-    /// @notice {proposeListing} for a token that is whitelisted: its reference supply changes only through a supply
-    ///         batch, so no revision can land outside one.
-    error AlreadyListed(address token);
-    /// @notice A relisting proposed `proposed` for a token whose supply in force is `inForce`; a relisting keeps the
-    ///         supply in force, and a batch revises it (SA-02).
-    error RelistChangesSupply(address token, uint256 inForce, uint256 proposed);
-    /// @notice A supply batch executable from `eta` is still pending or executable. Cancel it first; one that expired
-    ///         can be replaced.
-    error SuppliesPending(uint256 eta);
-    /// @notice `token` is in the live supply batch, so its listing waits for that batch to execute, be cancelled or
-    ///         expire: nothing but the batch may change a supply the batch was checked against.
-    error TokenInBatch(address token);
-    /// @notice A supply batch must name 1 to MAX_BATCH tokens in strictly ascending address order; this one breaks that
-    ///         at `token`, or is empty or too long (`token` zero).
-    error InvalidBatch(address token);
-    /// @notice No supply batch is proposed.
-    error NoPendingSupplies();
-    /// @notice The supply batch can be executed from `eta`.
-    error SuppliesNotReady(uint256 eta);
-    /// @notice The supply batch could be executed until `deadline`; propose it again.
-    error SuppliesExpired(uint256 deadline);
-    /// @notice No guardian change is pending.
-    error NoPendingGuardianChange();
-    /// @notice The pending guardian change can be executed from `eta`.
-    error GuardianChangeNotReady(uint256 eta);
-    /// @notice The pending guardian change could be executed until `deadline`; propose it again.
-    error GuardianChangeExpired(uint256 deadline);
-    /// @notice Ownership cannot be renounced: without an owner, listings and reference supplies could never change.
-    error RenounceDisabled();
-
     /// @notice Most components an index can have.
     function MAX_COMPONENTS() external view returns (uint256);
 

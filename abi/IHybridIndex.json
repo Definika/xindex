@@ -2539,22 +2539,6 @@
   },
   {
     "type": "error",
-    "name": "BandTooNarrow",
-    "inputs": [
-      {
-        "name": "lambdaMin",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "lambdaMax",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
     "name": "ChainExited",
     "inputs": [
       {

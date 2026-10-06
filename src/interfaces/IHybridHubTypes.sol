@@ -149,8 +149,6 @@ interface IHybridHubTypes is IXindexErrors {
     error RebalanceTooSoon(uint256 earliest);
     error RebalancePending(uint256 deadline);
     error InvalidKeepMask(uint256 keepMask);
-    /// @notice The band is narrower than MIN_BAND: units already follow supplies to within rounding.
-    error BandTooNarrow(uint256 lambdaMin, uint256 lambdaMax);
     error NoPendingRebalance();
     error RebalanceNotReady(uint256 eta);
     error RebalanceExpired(uint256 deadline);

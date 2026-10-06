@@ -227,6 +227,41 @@ contract WeightedIndexFactoryTest is WeightedTest {
         assertEq(listed[0], address(usd));
     }
 
+    /// @dev LR-05: delisting the token that swap-and-pop moved must still work.
+    function test_LR05_aTokenMovedBySwapAndPopCanStillBeDelisted() public {
+        _listAll(); // [eth, btc, usd]
+        vm.startPrank(guardian);
+        factory.delist(address(eth)); // moves usd into eth's slot: [usd, btc]
+        factory.delist(address(usd)); // usd is now first, and btc moves into its slot: [btc]
+        vm.stopPrank();
+        address[] memory listed = factory.whitelistedTokens();
+        assertEq(listed.length, 1);
+        assertEq(listed[0], address(btc));
+        assertFalse(factory.isWhitelisted(address(usd)));
+
+        vm.prank(guardian);
+        factory.delist(address(btc));
+        assertEq(factory.whitelistedTokens().length, 0);
+    }
+
+    /// @dev CR-I33. At exactly `listingEta + PROPOSAL_WINDOW` a listing still executes, so the view has to call it
+    ///      pending there, and stop a second later.
+    function test_CRI33_aListingIsPendingAtTheLastMomentItCanExecute() public {
+        vm.prank(owner);
+        factory.proposeListing(address(eth), ETH_ID);
+        uint256 deadline = factory.listingEta(address(eth)) + factory.PROPOSAL_WINDOW();
+
+        uint256 snapshot = vm.snapshotState();
+        vm.warp(deadline + 1);
+        assertFalse(factory.listingPending(address(eth)), "a second later it is dead");
+        vm.revertToState(snapshot);
+
+        vm.warp(deadline);
+        assertTrue(factory.listingPending(address(eth)), "the last executable moment is still pending");
+        factory.executeListing(address(eth));
+        assertTrue(factory.isWhitelisted(address(eth)), "and it does execute");
+    }
+
     function test_delistChecksTheCallerAndTheToken() public {
         _list(address(eth), ETH_ID);
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, stranger));
@@ -327,7 +362,7 @@ contract WeightedIndexFactoryTest is WeightedTest {
         factory.createIndex("Weighted", "WGT", specs);
     }
 
-    function test_createIndexChecksTheUnits() public {
+    function test_DA09_createIndexChecksTheUnits() public {
         _listAll();
         IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
         uint256 min = factory.MIN_RAW_UNITS();
@@ -436,7 +471,7 @@ contract WeightedIndexFactoryTest is WeightedTest {
 
     /// @dev Each field of the salt, varied alone, moves the address: the creator, the name, the symbol, and each
     ///      component's token, weight, units, price id and decimals (LR-05's lesson, for the weighted salt).
-    function test_theAddressCommitsToEveryField() public {
+    function test_LR05_theAddressCommitsToEveryField() public {
         _listAll();
         MockERC20 other = new MockERC20("Other", "OTH", 18);
         _list(address(other), ETH_ID);
@@ -527,7 +562,17 @@ contract WeightedIndexFactoryTest is WeightedTest {
         assertFalse(factory.guardianChangePending());
     }
 
-    function test_guardianChangeExpires() public {
+    /// @dev LR-05: the last moment of the window still executes, as the listing window's last moment does.
+    function test_LR05_aGuardianChangeExecutesAtTheLastMomentOfItsWindow() public {
+        address next = makeAddr("next guardian");
+        vm.prank(owner);
+        factory.proposeGuardian(next);
+        vm.warp(factory.pendingGuardianEta() + factory.PROPOSAL_WINDOW());
+        factory.executeGuardianChange();
+        assertEq(factory.guardian(), next);
+    }
+
+    function test_DA16_guardianChangeExpires() public {
         vm.prank(owner);
         factory.proposeGuardian(alice);
         uint256 eta = factory.pendingGuardianEta();
@@ -541,7 +586,7 @@ contract WeightedIndexFactoryTest is WeightedTest {
         factory.executeGuardianChange();
     }
 
-    function test_aNewProposalReplacesThePendingOne() public {
+    function test_XA60_aNewProposalReplacesThePendingOne() public {
         vm.prank(owner);
         factory.proposeGuardian(alice);
         vm.expectEmit(address(factory));
@@ -557,7 +602,7 @@ contract WeightedIndexFactoryTest is WeightedTest {
         factory.proposeGuardian(alice);
     }
 
-    function test_whoMayCancelAGuardianChange() public {
+    function test_XA61_whoMayCancelAGuardianChange() public {
         vm.expectRevert(IWeightedIndexFactory.NoPendingGuardianChange.selector);
         factory.cancelGuardianChange();
         vm.expectRevert(IWeightedIndexFactory.NoPendingGuardianChange.selector);

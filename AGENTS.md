@@ -20,17 +20,17 @@ methodology; v3 is tagged `v3.0.0` and never ships on mainnet. The web app lives
 
 **v5 is replacing v4's market-cap index** (the owner's calls on 2026-10-05): creators choose each coin's percentage,
 fixed at creation, and the index rebalances back to them at Pyth prices. v5 offers custom percentages only; the
-market-cap hub and its supply batches are retired from new deployments, as v3 was, once their retirement record is
-written. v5 phase 1 is built and deployed nowhere: `WeightedIndexFactory` and its `WeightedHub` template, on branch
+market-cap hub and its supply batches are retired, as v3 was: `src/IndexHub.sol`, `src/IndexFactory.sol` and their
+ABIs were deleted on 2026-10-06, and `audit/2026-10-06-v4-retirement.md` records what went with them. v5 phase 1 is
+built and deployed nowhere: `WeightedIndexFactory` and its `WeightedHub` template, on branch
 `v5-custom-weights`, holding Ethereum ERC-20s; vault coins are phase 2, and the vaults and proofs below carry over.
 `design/2026-10-05-custom-weights.md` is its spec and records what remains before any deployment.
 **Draft state (2026-10-06):** the vault-coin index (`HybridHub`, its module and extension, `HybridIndexFactory`,
 `WeightedPricing`), `Deploy.s.sol`, `ConfigureChains` and the bot in `keeper/` were moved to v5 code-first, at the
 owner's request; their tests come in the safety pass. Until then `foundry.toml`'s `skip` list sets aside the v4 suites
-they broke, and nothing may ship while it is not empty. `src/IndexHub.sol` and `src/IndexFactory.sol` (v4) are no
-longer used by anything and wait for the owner to remove them. Until the retirement
-record lands, the v4 code and every rule below stay in force for it, and the v5 section further down governs the
-weighted contracts.
+they broke, and nothing may ship while it is not empty; they still import the deleted v4 contracts. The rules below
+that name `IndexHub` or `IndexFactory` describe v4's design, which `WeightedHub` and `WeightedIndexFactory` keep where
+the v5 section says so ("Everything else is `IndexHub`'s"); the v5 section governs the weighted contracts.
 
 Where the stages stand (none of v4 is deployed):
 - Stage A is built.
@@ -89,7 +89,7 @@ forge test                   # unit + fuzz + invariant tests, no RPC needed; for
                              # an RPC that cannot serve the pinned block fails with that sentence, not a raw fork error
 forge coverage               # must stay at 100% for every file (lines, statements, branches, functions)
 aderyn .                     # Aderyn on src/, configured by aderyn.toml: must report nothing; CI does not run it
-for c in IndexFactory IndexHub IndexZap MintRequests HybridIndexFactory IHybridIndex XindexVault WeightedIndexFactory WeightedHub; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
+for c in IndexZap MintRequests HybridIndexFactory IHybridIndex XindexVault WeightedIndexFactory WeightedHub; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
 
 # mainnet fork tests (real tokens, Universal Router, V3 and V4 pools); skipped when the env var is unset.
 # A rate-limited RPC throttles five suites in parallel: add -j 1.
@@ -120,14 +120,14 @@ verifier, from an anchor the fixture generator writes, with the deployment's own
    add exclusions without a reason there. Prefer fixing code; use `// forge-lint: disable-next-line(<rule>)`
    or `disable-next-item(<rule>)` only for verified false positives, deliberate behaviour, or vendored code, with a
    one-line reason on the line above. The lint reads OpenZeppelin's internal `Math.mulDiv` as an external call, which
-   is the reason for the suppression in `IndexFactory.createIndex`.
+   was the reason for the suppression in v4's `IndexFactory.createIndex`.
 3. `forge test` green. `forge coverage` at 100% for every file, including mocks and scripts.
 4. Fork tests green if the change touches `IndexZap`, the hub's rebalancing, routes, token behaviour, or anything
-   router- or pool-related, `WeightedHub` and its price ids included. Their summary must list the six `test/fork/`
+   router- or pool-related, `WeightedHub` and its price ids included. Their summary must list the five `test/fork/`
    suites and 0 skipped. `WeightedHub.fork.t.sol` alone takes about fifteen minutes on a public RPC.
 5. The Wake VS Code analyzer reports no errors or warnings on `src/`. Its reentrancy detector does not model reentrancy
-   guards; the three documented suppressions are on the `redeem` call in `IndexZap._burnBasket`, the `permit` call in
-   `IndexZap.burnToTokenWithPermit`, and the executor callback in `IndexHub._settle`. One more marks `IHybridIndex`,
+   guards; the two documented suppressions are on the `redeem` call in `IndexZap._burnBasket` and the `permit` call in
+   `IndexZap.burnToTokenWithPermit`. One more marks `IHybridIndex`,
    which only integrators and tests use, as meant to have no user in `src/`. v5 adds the executor callback and Pyth's
    parse in `WeightedHub`, and the two events of the vendored `IPythEvents`, which only Pyth emits.
    Aderyn (Cyfrin's analyzer, `aderyn .`, and its VS Code extension) reports nothing on `src/` either. `aderyn.toml`
@@ -170,9 +170,11 @@ verifier, from an anchor the fixture generator writes, with the deployment's own
      (`audit/2026-10-05-v5-review.md`), a test named `test_V5M1_...`. The record's status column names every test, and
      the ids fixed or recorded by documentation alone, which have none.
 
-   Find a test by its id. Most v1 and R tests are in `test/Security.t.sol` and `test/fork/Security.fork.t.sol`. The R
-   tests that drive the λ auction directly (R04, R08, R14, R17, R19, R22) are in `test/IndexHub.rebalance.t.sol`,
-   some beside a `test/Security.t.sol` twin. Some ids no contract test can reach:
+   Find a test by its id. Most v1 and R tests are in `test/Security.t.sol` and `test/fork/Security.fork.t.sol`, on
+   `WeightedHub` indexes. The hub and factory ids `audit/2026-10-06-v4-retirement.md` re-targets are in the weighted
+   suites (`test/WeightedHub.t.sol`, `test/WeightedHub.rebalance.t.sol`, `test/WeightedIndexFactory.t.sol`), the R
+   tests that drive the auction directly (R04, R08, R10, R11, R14 to R16, R21) among them. Some ids no contract test
+   can reach:
    - L06 and FR06 are `test_L06_checkOwner` and `test_FR06_checkGuardian`, and FR05 is the two `test_FR05_*` tests,
      all in `test/Scripts.t.sol`.
    - I09, I10, I11, L08 and FR04 are in `test/Repo.t.sol`: the known-limitations section, the pinned compiler, the
@@ -189,12 +191,16 @@ verifier, from an anchor the fixture generator writes, with the deployment's own
    - Findings fixed by documentation alone have none, among them VR-05, RT-02, RT-07, RT-08, RT-09, RT-11 and RT-18.
      RT-20 was already a known limitation.
 
-   Two records list the ids whose mechanism is gone, with the test that went and the property, if any, that survives:
+   Three records list the ids whose mechanism is gone, with the test that went and the property, if any, that survives:
    - `audit/2026-09-22-v3-retirement.md`: the move from Uniswap V3 prices to Chainlink.
    - `audit/2026-09-30-v4-stage-a-retirement.md`: Stage A's removal of every price. It retires 31 tested ids in full,
      retires CR-I36, CR-L08 and VR-06 in part, and names the test of every re-targeted id.
+   - `audit/2026-10-06-v4-retirement.md`: the deletion of v4's market-cap hub and factory for v5. It retires 13 tested
+     ids in full (the band's and the supply batches'), retires CR-M01, LR-04, LR-05 and RT-15 in part, and names the
+     v5 test of every re-targeted id.
 
-   The ids tested at `v3.0.0`, less those tested now, are exactly the ids that record retires in full. A change that
+   The ids tested at `v3.0.0`, less those tested at Stage A, are exactly the ids the Stage A record retires in full,
+   and the ids tested at `8e6148b`, less those tested now, exactly the ids the v4 record retires in full. A change that
    removes an id's last test adds its row to a retirement record in the same commit. Do not restore a retired id's test
    against the new design; if the property matters here, it gets a new id from the review of this surface.
 
@@ -617,18 +623,18 @@ the rules code must never break.
 
 - `pragma solidity 0.8.28;` in `src/` and `script/`; tests use `^0.8.24`. The compiler is pinned to 0.8.28 in
   `foundry.toml`, and CI pins Foundry v1.8.1 and eth-wake 4.22.1 in `.github/workflows/test.yml`.
-- **Wake config.** CI generates its Wake config from `foundry.toml` and adds `audit/`, `prototype/`, `demo/` and
-  `vendor/` to its excluded folders, since any of them would stop Wake before a detector runs: the PoC tests in
-  `audit/` only compile inside `test/poc/` of the audited commit, `prototype/evm` is a separate Foundry project that
-  needs via-IR, `demo/` is one whose `xindex/` remapping only it knows, and `vendor/` holds third-party verifiers with
-  their own import paths, which no gate analyzes by design. The Wake VS Code extension reads `.vscode/settings.json`
+- **Wake config.** CI generates its Wake config from `foundry.toml` and adds `audit/`, `prototype/`, `demo/`,
+  `keeper/` and `vendor/` to its excluded folders, since any of them would stop Wake before a detector runs: the PoC
+  tests in `audit/` only compile inside `test/poc/` of the audited commit, `prototype/evm` is a separate Foundry project
+  that needs via-IR, `demo/` and `keeper/` (the bot's executor) are ones whose `xindex/` remapping only they know, and
+  `vendor/` holds third-party verifiers with their own import paths, which no gate analyzes by design. The Wake VS Code extension reads `.vscode/settings.json`
   instead, which holds four things:
   - `wake.configuration.use_toml_if_present` set to false. The extension otherwise prefers a `wake.toml` in the
     workspace root, and a local `wake detect` or `wake init config` leaves one there, gitignored. A stale one
     replaces the whole committed config, so the extension compiles `prototype/` and `demo/` and reports their errors;
   - its copy of `forge remappings` (paste the new output there whenever a dependency or remapping changes);
   - the optimizer settings of `foundry.toml` (without them the factory's initcode looks too large to deploy);
-  - Wake's default excluded folders plus `audit/`, `prototype/`, `demo/` and `vendor/`.
+  - Wake's default excluded folders plus `audit/`, `prototype/`, `demo/`, `keeper/` and `vendor/`.
 - **Prague in tests.** `src/` compiles for Cancun, but the BLS12-381 precompiles (EIP-2537) exist from Prague on,
   which Ethereum mainnet runs. A suite that calls them sets `/// forge-config: default.evm_version = "prague"` on its
   contract; `vm.setEvmVersion` inside a test does not enable them for calls already running.
@@ -671,19 +677,20 @@ the rules code must never break.
   `previewBand`, a live batch, a non-zero balance).
 - **A regression test has to fail without its fix.** Check it against the old code or a mutant before relying on it.
   The logic review found tests that passed either way: mocked return values instead of the real flow, prices that never
-  moved between two snapshots, a salt whose fields were never varied one at a time. Mutants worth rerunning on the
-  hub: plain arithmetic in place of the band's `mulDiv`, a floor in place of the ceiling on new units, no clamp, and λ
-  rounded down.
+  moved between two snapshots, a salt whose fields were never varied one at a time. The mutants worth rerunning on
+  `WeightedHub` are listed in the v5 section, with the backing post-check's: the claims dropped from the backing term,
+  only the bought legs re-read, and a shrinking leg paid as a difference of floored backings.
 - **Tests.**
   - One `*.t.sol` per contract; both hubs' rebalancing and invariants have their own files, and so do a HybridHub's
-    migration and snapshot exit and the invariants of the factory, the vault and `MintRequests`.
+    migration and snapshot exit and the invariants of the vault and `MintRequests`.
   - Mocks go under `test/mocks/`. Mainnet constants live in `script/MainnetAddresses.sol`, re-exported with test-only
     ones by `test/fork/ForkAddresses.sol`.
   - New behaviour needs a unit test, and a new revert path needs a test hitting the exact error
     (`vm.expectRevert(abi.encodeWithSelector(...))`).
-  - Listing in tests goes through `XindexTest._listWith(token, supply)`: `proposeListing`, a `vm.warp` past
-    `LISTING_DELAY`, then `executeListing`. Supply changes go through `XindexTest._revise`, a one-batch
-    `proposeSupplies` then `executeSupplies`.
+  - Listing in tests goes through `WeightedTest._list(token, priceId)` or, in the zap, `MintRequests` and security
+    suites, `XindexTest._listWith(token)`, which lists a token under a price id of its own: `proposeListing`, a
+    `vm.warp` past `LISTING_DELAY`, then `executeListing`. `XindexTest._createIndex` builds an index from explicit
+    units with the weights shared equally.
   - Compute every argument before `vm.prank`: an external call in the arguments consumes the prank.
   - Measure gas with every touched account cooled first (`vm.cool`), so a call pays the cold reads a transaction of its
     own would.

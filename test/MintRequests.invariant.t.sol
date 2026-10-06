@@ -2,8 +2,10 @@
 pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
-import {IndexFactory} from "../src/IndexFactory.sol";
-import {IndexHub} from "../src/IndexHub.sol";
+import {WeightedIndexFactory} from "../src/WeightedIndexFactory.sol";
+import {WeightedHub} from "../src/WeightedHub.sol";
+import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
+import {MockPyth} from "./mocks/MockPyth.sol";
 import {MintRequests} from "../src/MintRequests.sol";
 import {IMintRequests} from "../src/interfaces/IMintRequests.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
@@ -15,7 +17,7 @@ contract RequestsHandler is Test {
     MintRequests public immutable REQUESTS;
     MockUSDT public immutable USDT;
     MockERC20 public immutable USDC;
-    IndexHub public immutable INDEX;
+    WeightedHub public immutable INDEX;
     address[] internal _components;
     address[3] internal _requesters = [makeAddr("r0"), makeAddr("r1"), makeAddr("r2")];
     address[2] internal _fillers = [makeAddr("f0"), makeAddr("f1")];
@@ -35,7 +37,7 @@ contract RequestsHandler is Test {
     uint256 public refunds;
     uint256 public feeFills;
 
-    constructor(IndexFactory factory, IndexHub index, MockERC20 usdc, address[] memory components) {
+    constructor(WeightedIndexFactory factory, WeightedHub index, MockERC20 usdc, address[] memory components) {
         USDT = new MockUSDT();
         USDC = usdc;
         INDEX = index;
@@ -244,26 +246,30 @@ contract RequestsHandler is Test {
 /// @notice Whatever requesters, fillers and Tether do, the contract holds exactly the open escrows plus donations,
 ///         every request is open or closed as the handler saw it, and no requester is ever paid below their limit.
 contract MintRequestsInvariantTest is Test {
-    IndexFactory factory;
-    IndexHub index;
+    WeightedIndexFactory factory;
+    WeightedHub index;
     RequestsHandler handler;
     MintRequests requests;
     address owner = makeAddr("owner");
 
     function setUp() public {
-        factory = new IndexFactory(owner, makeAddr("guardian"));
+        factory = new WeightedIndexFactory(owner, makeAddr("guardian"), address(new MockPyth()));
         address[] memory components = new address[](2);
         vm.startPrank(owner);
         for (uint256 i = 0; i < 2; ++i) {
             components[i] = address(new MockERC20("C", "C", 18));
-            factory.proposeListing(components[i], 100e18);
+            factory.proposeListing(components[i], keccak256(abi.encode(components[i])));
         }
         vm.stopPrank();
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         for (uint256 i = 0; i < 2; ++i) {
             factory.executeListing(components[i]);
         }
-        index = IndexHub(factory.createIndex("Requested", "REQ", components, 1e36));
+        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](2);
+        for (uint256 i = 0; i < 2; ++i) {
+            specs[i] = IWeightedIndexFactory.ComponentSpec({token: components[i], weight: 5000, units: 100e18});
+        }
+        index = WeightedHub(factory.createIndex("Requested", "REQ", specs));
         handler = new RequestsHandler(factory, index, new MockERC20("USD Coin", "USDC", 6), components);
         requests = handler.REQUESTS();
         targetContract(address(handler));

@@ -84,8 +84,8 @@ contract RepoTest is Test {
 
     /// @dev XA-10: CI runs every gate of the definition of done. Wake's generated config must leave out `audit/`, whose
     ///      PoC tests compile only inside the audited commit, `prototype/`, a separate Foundry project that needs via-IR,
-    ///      `demo/`, one whose remapping only it knows, and `vendor/`, third-party verifiers with their own import paths:
-    ///      Wake stops on any of them before running a detector. The
+    ///      `demo/` and `keeper/`, the bot's executor, ones whose remapping only they know, and `vendor/`, third-party
+    ///      verifiers with their own import paths: Wake stops on any of them before running a detector. The
     ///      extension must ignore a local `wake.toml`, which would otherwise replace its committed config.
     function test_XA10_ciRunsEveryGate() public view {
         string memory workflow = _read(".github/workflows/test.yml");
@@ -98,14 +98,14 @@ contract RepoTest is Test {
         );
         assertTrue(_contains(workflow, "wake init config --force"), "Wake's config comes from foundry.toml");
         assertTrue(
-            _contains(workflow, 'exclude_paths = ["audit", "prototype", "demo", "vendor", '),
-            "Wake compiles neither the PoCs, the prototype, the demo nor the vendored verifiers"
+            _contains(workflow, 'exclude_paths = ["audit", "prototype", "demo", "keeper", "vendor", '),
+            "Wake compiles neither the PoCs, the prototype, the demo, the keeper nor the vendored verifiers"
         );
         assertTrue(_contains(workflow, "wake detect all src"), "the Wake detectors run");
         string memory settings = _read(".vscode/settings.json");
         assertTrue(
             _contains(settings, '"audit"') && _contains(settings, '"prototype"') && _contains(settings, '"demo"')
-                && _contains(settings, '"vendor"'),
+                && _contains(settings, '"keeper"') && _contains(settings, '"vendor"'),
             "nor does the Wake extension"
         );
         assertTrue(
@@ -128,13 +128,11 @@ contract RepoTest is Test {
         );
     }
 
-    /// @dev XA-44: the ABIs the web app decodes with are committed, and CI regenerates them and fails on a diff: Stage A's,
-    ///      the hybrid factory, a hybrid index's three parts as one interface, the vault, and v5's weighted factory and
-    ///      index.
+    /// @dev XA-44: the ABIs the web app decodes with are committed, and CI regenerates them and fails on a diff: the zap
+    ///      and `MintRequests`, the hybrid factory, a hybrid index's three parts as one interface, the vault, and v5's
+    ///      weighted factory and index. v4's market-cap factory and hub are deleted, and their ABIs with them.
     function test_XA44_theAbisAreCommittedAndChecked() public view {
-        string[9] memory contracts = [
-            "IndexFactory",
-            "IndexHub",
+        string[7] memory contracts = [
             "IndexZap",
             "MintRequests",
             "HybridIndexFactory",
@@ -153,11 +151,13 @@ contract RepoTest is Test {
         assertTrue(
             _contains(
                 workflow,
-                "for contract in IndexFactory IndexHub IndexZap MintRequests HybridIndexFactory IHybridIndex XindexVault WeightedIndexFactory WeightedHub; do"
+                "for contract in IndexZap MintRequests HybridIndexFactory IHybridIndex XindexVault WeightedIndexFactory WeightedHub; do"
             ),
             "CI regenerates every ABI"
         );
         assertTrue(_contains(workflow, "git diff --exit-code abi/"), "a stale ABI fails CI");
+        assertFalse(vm.exists("abi/IndexFactory.json"), "v4's factory ABI is gone");
+        assertFalse(vm.exists("abi/IndexHub.json"), "and its hub's");
     }
 
     /// @dev DA-10. A token config carried a list of excluded holders whose balances `IndexRule._supply` subtracted
@@ -165,8 +165,12 @@ contract RepoTest is Test {
     ///      fund and drain made that component's market cap manipulable inside one transaction: flash loan in, start a
     ///      rebalance, flash loan out. Nothing shipped used it, and a reference supply behind the listing timelock
     ///      covers the same need, so the field is gone from the config, the events, the rule and the listing script.
+    ///      v5 lists a token with a price id and nothing else, and its listing ABIs carry no exclusion list either.
     function test_DA10_noConfigCanCarryExclusions() public view {
-        assertFalse(_contains(_read("abi/IndexFactory.json"), "excluded"), "the listing ABI has no exclusion list");
+        assertFalse(
+            _contains(_read("abi/WeightedIndexFactory.json"), "excluded"), "the listing ABI has no exclusion list"
+        );
+        assertFalse(_contains(_read("abi/HybridIndexFactory.json"), "excluded"), "nor the hybrid factory's");
         assertFalse(
             _contains(_read("script/ConfigureWhitelist.s.sol"), "entry.excluded"), "nor the whitelist script's entries"
         );

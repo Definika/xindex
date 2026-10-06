@@ -37,6 +37,9 @@ import {VaultMessages} from "./libraries/VaultMessages.sol";
 ///      Every function that mints, burns, pays a claim or moves an order or a fill shares one reentrancy guard. The
 ///      only calls out are to Ethereum components (escrow and payouts), to views (the factory's registry and the
 ///      chains' state verifiers), and to MODULE.
+// Ether reaches a clone only through the payable fallback, for the module's `acceptRebalance`, which forwards all of
+// it to Pyth; `receive` refuses plain ether, and the module's other functions refuse any.
+// aderyn-fp-next-line(contract-locks-ether)
 contract HybridHub is HybridHubStorage, ERC20Upgradeable, ERC20PermitUpgradeable, ReentrancyGuard, IHybridHub {
     using SafeERC20 for IERC20;
 

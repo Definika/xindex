@@ -87,7 +87,7 @@ Sizes: `WeightedHub` 22.0 KB, `WeightedIndexFactory` 8.7 KB.
 - weights in basis points, each at least 1, summing to exactly 10,000;
 - units each in `[MIN_RAW_UNITS, MAX_UNITS]`, as v4;
 - the CREATE2 salt commits to the creator, the name, the symbol and every component's token, units, weight, price id
-  and decimals, so the address commits to its contents (`test_theAddressCommitsToEveryField` varies each alone).
+  and decimals, so the address commits to its contents (`test_LR05_theAddressCommitsToEveryField` varies each alone).
 
 The app computes the starting units from the chosen percentages at current prices. The factory does not check them
 against a price, so creation never depends on an oracle. An index whose units do not match its weights is visible as
@@ -127,7 +127,7 @@ mask, guardian cancel and restart hold-off) and replaces the band with prices re
    that changes nothing cannot restart the interval; a keep mask must leave two components moving (V5-L2).
 6. **The auction.** A shrinking leg moves `⌊s · (u − t)⌋`; a growing leg `⌈μ · s · (t − u)⌉`, with the factor `μ · s`
    itself rounded up. `μ` falls linearly from `MU_MAX` to `MU_MIN` and rounds up. At the settling prices the executor
-   therefore delivers at least `μ` times the value it takes (`testFuzz_theExecutorDeliversMuTimesWhatItTakes` and the
+   therefore delivers at least `μ` times the value it takes (`testFuzz_R04_theExecutorDeliversMuTimesWhatItTakes` and the
    invariant suite check exactly that). Starting above 1 means that when Pyth lags the market in the executor's favour,
    competing executors hand that gain to the holders. A lone executor keeps at most `(1 − MU_MIN)` of the traded value,
    plus the gap between Pyth and the market. A fill that would send nothing out, as on an empty index, settles at
@@ -240,6 +240,7 @@ Remaining before any deployment:
   its real gas, need a Pyth API key.
 - The parameter replay (section 8).
 - `script/ConfigureWeighted.s.sol`, the listing script over `script/PythIds.sol`, and GRAM's feed.
-- The v4 retirement record: which ids' mechanisms go with the market-cap hub and the supply batches, and AGENTS.md,
-  README and ARCHITECTURE rewritten for v5.
+- AGENTS.md, README and ARCHITECTURE rewritten for v5. The v4 retirement record is written
+  (`audit/2026-10-06-v4-retirement.md`): `IndexHub`, `IndexFactory` and their ABIs were deleted on 2026-10-06, and the
+  docs carry a note until they are rewritten.
 - External audit.

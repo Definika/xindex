@@ -4,8 +4,10 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {IndexFactory} from "../../src/IndexFactory.sol";
-import {IndexHub} from "../../src/IndexHub.sol";
+import {WeightedIndexFactory} from "../../src/WeightedIndexFactory.sol";
+import {WeightedHub} from "../../src/WeightedHub.sol";
+import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
+import {IWeightedIndexFactory} from "../../src/interfaces/IWeightedIndexFactory.sol";
 import {IndexZap} from "../../src/IndexZap.sol";
 import {MintRequests} from "../../src/MintRequests.sol";
 import {IMintRequests} from "../../src/interfaces/IMintRequests.sol";
@@ -13,7 +15,6 @@ import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
 import {IUniversalRouter} from "../../src/interfaces/IUniversalRouter.sol";
 import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
-import {IIndexHub} from "../../src/interfaces/IIndexHub.sol";
 import {Deploy} from "../../script/Deploy.s.sol";
 import {DeployChecks} from "../../script/DeployChecks.sol";
 
@@ -28,10 +29,6 @@ interface IUsdtAdmin {
     function setParams(uint256 newBasisPoints, uint256 newMaxFee) external;
     function addBlackList(address user) external;
     function removeBlackList(address user) external;
-}
-
-interface IWETH9 {
-    function deposit() external payable;
 }
 
 interface ISafeProxyFactory {
@@ -89,7 +86,7 @@ interface ISafe {
 contract SecurityForkTest is Test {
     using SafeERC20 for IERC20;
 
-    IndexFactory factory;
+    WeightedIndexFactory factory;
     IndexZap zap;
     address user = makeAddr("user");
 
@@ -97,8 +94,6 @@ contract SecurityForkTest is Test {
     uint256 constant U_WBTC = 10_000;
     uint256 constant U_WETH = 1e15;
     uint256 constant U_LINK = 1e18;
-    /// @dev With each component listed at its units as its supply, this scale gives exactly those units.
-    uint256 constant K = 1e36;
 
     uint24 constant F500 = 500;
     uint24 constant F3000 = 3000;
@@ -131,27 +126,32 @@ contract SecurityForkTest is Test {
                 )
             );
         }
-        factory = new IndexFactory(address(this), address(0));
-        zap = new IndexZap(factory, IUniversalRouter(A.UNIVERSAL_ROUTER));
+        factory = new WeightedIndexFactory(address(this), address(0), A.PYTH);
+        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER));
 
-        // Listed with their units as their supplies, so k = K gives exactly the units the suite's amounts use.
-        factory.proposeListing(A.WBTC, U_WBTC);
-        factory.proposeListing(A.WETH, U_WETH);
-        factory.proposeListing(A.LINK, U_LINK);
+        // Nothing here asks for a price, so each token is listed under a price id of its own making.
+        factory.proposeListing(A.WBTC, keccak256(abi.encode(A.WBTC)));
+        factory.proposeListing(A.WETH, keccak256(abi.encode(A.WETH)));
+        factory.proposeListing(A.LINK, keccak256(abi.encode(A.LINK)));
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(A.WBTC);
         factory.executeListing(A.WETH);
         factory.executeListing(A.LINK);
     }
 
-    function _create(address a, address b) internal returns (IndexHub idx) {
-        address[] memory t = new address[](2);
-        t[0] = a;
-        t[1] = b;
-        idx = IndexHub(factory.createIndex("Fork Security", "FSEC", t, K));
+    function _create(address a, address b) internal returns (WeightedHub idx) {
+        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](2);
+        specs[0] = IWeightedIndexFactory.ComponentSpec({token: a, weight: 5000, units: _units(a)});
+        specs[1] = IWeightedIndexFactory.ComponentSpec({token: b, weight: 5000, units: _units(b)});
+        idx = WeightedHub(factory.createIndex("Fork Security", "FSEC", specs));
     }
 
-    function _issue(IndexHub idx, uint256 shares) internal {
+    /// @dev The suite's units per index token for each of its components.
+    function _units(address token) internal pure returns (uint256) {
+        return token == A.WBTC ? U_WBTC : token == A.WETH ? U_WETH : U_LINK;
+    }
+
+    function _issue(WeightedHub idx, uint256 shares) internal {
         address[] memory t = idx.componentTokens();
         uint256[] memory need = idx.previewIssue(shares);
         for (uint256 i = 0; i < t.length; ++i) {
@@ -166,7 +166,7 @@ contract SecurityForkTest is Test {
     }
 
     function test_M01_realWbtcPause_redeemSkippingFreesWethAndClaimPaysLater() public {
-        IndexHub idx = _create(A.WBTC, A.WETH);
+        WeightedHub idx = _create(A.WBTC, A.WETH);
         _issue(idx, 1e18);
         address wbtcController = IWbtcAdmin(A.WBTC).owner();
         vm.prank(wbtcController);
@@ -193,7 +193,7 @@ contract SecurityForkTest is Test {
     }
 
     function test_I02_realUsdtFeeSwitch_zapRevertsWithTransferShortfall() public {
-        IndexHub idx = _create(A.WBTC, A.WETH);
+        WeightedHub idx = _create(A.WBTC, A.WETH);
         _issue(idx, 1e18);
 
         vm.prank(IUsdtAdmin(A.USDT).owner());
@@ -253,7 +253,7 @@ contract SecurityForkTest is Test {
     }
 
     function test_I03_strayRouterEthIsRefundedNotLocked() public {
-        IndexHub idx = _create(A.WBTC, A.LINK);
+        WeightedHub idx = _create(A.WBTC, A.LINK);
         IIndexZap.MintLeg[] memory legs = new IIndexZap.MintLeg[](2);
         legs[0] = IIndexZap.MintLeg({
             v3Path: abi.encodePacked(A.WBTC, F500, A.WETH), v4Path: new PathKey[](0), maxAmountIn: 0
@@ -290,7 +290,7 @@ contract SecurityForkTest is Test {
     }
 
     function test_FR01_strayRouterEthNoLongerBlocksBurns() public {
-        IndexHub idx = _create(A.WBTC, A.WETH);
+        WeightedHub idx = _create(A.WBTC, A.WETH);
         _issue(idx, 1e18);
 
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](2);
@@ -327,7 +327,7 @@ contract SecurityForkTest is Test {
         assertEq(A.UNIVERSAL_ROUTER.balance, 10 ether, "and the stray ether is untouched: nothing here wraps it");
     }
 
-    function _burnToUsdc(IndexHub idx, IIndexZap.BurnLeg[] memory legs) internal returns (uint256 out) {
+    function _burnToUsdc(WeightedHub idx, IIndexZap.BurnLeg[] memory legs) internal returns (uint256 out) {
         vm.startPrank(user);
         idx.approve(address(zap), 1e18);
         out = zap.burnToToken(
@@ -351,7 +351,7 @@ contract SecurityForkTest is Test {
     ///      through that token. What came back is now measured as the balance above what was left, and handed on with
     ///      the hop's unsold input.
     function test_FR01_CRL02_aStrayTokenInTheRouterNoLongerBlocksABurn() public {
-        IndexHub idx = _create(A.WBTC, A.WETH);
+        WeightedHub idx = _create(A.WBTC, A.WETH);
         _issue(idx, 1e18);
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](2);
         legs[0] = IIndexZap.BurnLeg({
@@ -375,7 +375,7 @@ contract SecurityForkTest is Test {
     /// @dev FR-01, CR-L02: the same for a V4 leg, whose sweep returns the component itself. The stray, 3 LINK, is more
     ///      than the leg's 1 LINK.
     function test_FR01_CRL02_aStrayComponentInTheRouterNoLongerBlocksAV4Burn() public {
-        IndexHub idx = _create(A.LINK, A.WETH);
+        WeightedHub idx = _create(A.LINK, A.WETH);
         _issue(idx, 1e18);
         PathKey[] memory route = new PathKey[](2);
         route[0] =
@@ -397,67 +397,13 @@ contract SecurityForkTest is Test {
         assertEq(IERC20(A.LINK).balanceOf(address(zap)), 0, "and nothing stays in the zap");
     }
 
-    /// @dev CR-M01. The v3 rule read a token's own live supply whenever its config carried no reference supply, and a
-    ///      supply that anyone can move inside one transaction put the targets, and whether a stranger could start a
-    ///      rebalance, up for sale. The hub now reads only the factory's reference supplies. WETH's own supply moves one
-    ///      for one with every deposit, so wrapping a million ether around a start is the live test: the band a start
-    ///      would take does not move by a wei, an index on its supplies still cannot be started, and after a revision
-    ///      the band the start stores is the one read before the wrap.
-    function test_CRM01_wrappingEtherAroundAStartMovesNothing() public {
-        address[] memory t = new address[](3);
-        (t[0], t[1], t[2]) = (A.WBTC, A.WETH, A.LINK);
-        IndexHub idx = IndexHub(factory.createIndex("Wrapped", "WRP", t, K));
-        _issue(idx, 10e18);
-        vm.warp(block.timestamp + idx.MIN_REBALANCE_INTERVAL());
-        address stranger = makeAddr("stranger");
-        vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(IIndexHub.BandTooNarrow.selector, 1e18, 1e18));
-        idx.startRebalance(0);
-
-        _wrap(1_000_000 ether);
-        vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(IIndexHub.BandTooNarrow.selector, 1e18, 1e18));
-        idx.startRebalance(0);
-
-        address[] memory revised = new address[](1);
-        uint256[] memory supplies = new uint256[](1);
-        (revised[0], supplies[0]) = (A.WETH, U_WETH + U_WETH / 200);
-        factory.proposeSupplies(revised, supplies);
-        vm.warp(block.timestamp + factory.LISTING_DELAY());
-        factory.executeSupplies();
-        (uint256[] memory ratios, uint256 lambdaMin, uint256 lambdaMax) = idx.previewBand(0);
-        assertGt(lambdaMax, lambdaMin, "the revision opens a band");
-
-        _wrap(1_000_000 ether);
-        (uint256[] memory ratiosAfter, uint256 minAfter, uint256 maxAfter) = idx.previewBand(0);
-        assertEq(ratiosAfter, ratios, "the wrap moves no ratio");
-        assertEq(minAfter, lambdaMin);
-        assertEq(maxAfter, lambdaMax);
-        vm.prank(stranger);
-        idx.startRebalance(0);
-        (,, uint256 storedMin, uint256 storedMax, uint256[] memory stored) = idx.pendingRebalance();
-        assertEq(stored, ratios, "the start stores the band read before the wrap");
-        assertEq(storedMin, lambdaMin);
-        assertEq(storedMax, lambdaMax);
-    }
-
-    /// @dev Wraps `amount` of fresh ether into WETH, which raises WETH's own total supply by exactly that.
-    function _wrap(uint256 amount) internal {
-        address wrapper = makeAddr("wrapper");
-        uint256 before = IERC20(A.WETH).totalSupply();
-        vm.deal(wrapper, amount);
-        vm.prank(wrapper);
-        IWETH9(A.WETH).deposit{value: amount}();
-        assertEq(IERC20(A.WETH).totalSupply(), before + amount, "WETH's live supply moves with the wrap");
-    }
-
     /// @dev MintRequests against the real stablecoins. With Tether's fee switched on after a USDT request was made,
     ///      the escrow still leaves in full to its requester, less the fee on the way out, and a redemption filled in
     ///      USDT must deliver the requester's limit after the fee: a filler sending exactly the limit is refused. USDC's
     ///      request fills as it would on any day.
     function test_mintRequestsWithTheRealStablecoins() public {
         MintRequests requests = new MintRequests(address(factory), A.USDC, A.USDT);
-        IndexHub idx = _create(A.WBTC, A.WETH);
+        WeightedHub idx = _create(A.WBTC, A.WETH);
         _issue(idx, 2e18);
         address requester = makeAddr("requester");
 
@@ -505,7 +451,7 @@ contract SecurityForkTest is Test {
     ///      has blacklisted would still take a USDT deposit it could never pay out, so a mint request refuses one.
     function test_SA01_realTetherFreezesAsTheMockDoes() public {
         MintRequests requests = new MintRequests(address(factory), A.USDC, A.USDT);
-        IndexHub idx = _create(A.WBTC, A.WETH);
+        WeightedHub idx = _create(A.WBTC, A.WETH);
         _issue(idx, 1e18);
         address requester = makeAddr("requester");
         address tether = IUsdtAdmin(A.USDT).owner();

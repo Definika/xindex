@@ -26,6 +26,7 @@
         "audit",
         "prototype",
         "demo",
+        "keeper",
         "vendor"
     ],
     "wake.compiler.solc.optimizer.enabled": true,

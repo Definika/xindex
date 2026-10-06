@@ -10,7 +10,10 @@ import {IXindexErrors} from "./IXindexErrors.sol";
 ///         index token) are always redeemable for exactly `units_i` raw units of each component. The constituents never
 ///         change. The units follow the components' reference supplies, and change only through a rebalance that
 ///         settles through a price-free auction on a single number, λ. Nothing in the hub reads a price, and nobody
-///         controls its funds.
+///         controls its funds. v4's `IndexHub`, the one contract that implemented all of this, is deleted, and the
+///         errors and events only it raised and emitted with it (audit/2026-10-06-v4-retirement.md): `IndexZap` calls an index through the
+///         functions every Xindex index answers, `issue`, `redeem`, the previews, `componentTokens` and
+///         `rebalanceNonce`.
 /// @dev Integrators: value an index as the sum of `units_i * price_i` from {components} and an independent price
 ///      source. Never derive a price from `balanceOf(index)` and `totalSupply()`: inside `issue`, `redeem` and
 ///      `executeRebalance` they change at different moments, and a component with transfer callbacks could expose that
@@ -20,102 +23,6 @@ import {IXindexErrors} from "./IXindexErrors.sol";
 ///      ever move a share on (CR-I01, RT-21); one to zero reverts with OpenZeppelin's ERC20InvalidReceiver. Callers
 ///      other than the factory owner or guardian get Unauthorized where those roles are required.
 interface IIndexHub is IERC20, IERC20Permit, IXindexErrors {
-    /// @notice `sender` paid `amounts` (per component, in component order, rounded up) and `to` received `shares`.
-    event Issued(address indexed sender, address indexed to, uint256 shares, uint256[] amounts);
-    /// @notice `sender` burned `shares` for `amounts` (per component, in component order, rounded down). With
-    ///         {redeemSkipping}, the skipped components' amounts are recorded as claims for `to` instead of being
-    ///         sent to it.
-    event Redeemed(address indexed sender, address indexed to, uint256 shares, uint256[] amounts);
-    /// @notice {redeemSkipping} kept `amount` of `token` in the index for `account` to collect with {claim}.
-    event ClaimRecorded(address indexed account, address indexed token, uint256 amount);
-    /// @notice `account`'s claim of `amount` of `token` was paid to `to`.
-    event Claimed(address indexed account, address indexed to, address indexed token, uint256 amount);
-
-    /// @notice A rebalance proposal, replacing any earlier one. Each one carries its own `proposalId` ({proposalCount}
-    ///         after the call), so proposals can be told apart even when several share an `id`, the value
-    ///         {rebalanceNonce} takes if one of them executes. No event marks an expiry: a proposal nobody filled
-    ///         expires after `eta + AUCTION_DURATION`, and the next `RebalanceStarted` is the first sign of it.
-    /// @param proposalId Counts every proposal ever started on this index, from 1.
-    /// @param id The value {rebalanceNonce} takes if this proposal executes.
-    /// @param caller The account that started it.
-    /// @param keepMask Bit i set leaves component i untouched.
-    /// @param lambdaMin Where λ ends, at `eta + AUCTION_DURATION` (1e18 = parity).
-    /// @param lambdaMax Where λ starts, at `eta`.
-    /// @param ratios Each moving component's clamped ratio r_i (1e18 = parity), in component order; zero for a kept one.
-    /// @param eta Start of the auction, after REBALANCE_DELAY of notice.
-    event RebalanceStarted(
-        uint256 indexed proposalId,
-        uint256 indexed id,
-        address indexed caller,
-        uint256 keepMask,
-        uint256 lambdaMin,
-        uint256 lambdaMax,
-        uint256[] ratios,
-        uint256 eta
-    );
-    /// @notice Cancels the proposal with this `proposalId`, which is the most recent one: usually the live proposal,
-    ///         but `cancelRebalance` also cancels an auction that expired unfilled. That only clears the stale proposal
-    ///         the views still report: the hold-off the expiry granted stands, neither shortened nor extended (VR-04).
-    /// @param proposalId The cancelled proposal's id, as its `RebalanceStarted` carried it.
-    /// @param caller The factory owner or guardian who cancelled it.
-    /// @param restartAllowedAt Before this time only the factory owner or guardian can start a rebalance.
-    event RebalanceCancelled(uint256 indexed proposalId, address indexed caller, uint256 restartAllowedAt);
-    /// @notice The proposal with this `proposalId` settled, and {rebalanceNonce} is now `id`.
-    /// @param proposalId The settled proposal's id, as its `RebalanceStarted` carried it.
-    /// @param id The new {rebalanceNonce}.
-    /// @param executor The contract that filled the auction.
-    /// @param lambda The λ the settlement used (1e18 = parity).
-    /// @param units New units per component, in component order.
-    /// @param amountsOut What the index sent `executor` per component.
-    /// @param amountsIn What the index needed back per component; see `IRebalanceExecutor`.
-    event Rebalanced(
-        uint256 indexed proposalId,
-        uint256 indexed id,
-        address indexed executor,
-        uint256 lambda,
-        uint256[] units,
-        uint256[] amountsOut,
-        uint256[] amountsIn
-    );
-
-    /// @notice {initialize} was called by an address other than FACTORY.
-    error NotFactory();
-    /// @notice The implementation, or a clone the factory did not initialize, cannot issue, redeem or rebalance.
-    error NotInitialized();
-    /// @notice {initialize} got no components, arrays of different lengths, a zero token or zero units.
-    error InvalidComponents();
-    /// @notice `shares` is zero.
-    error ZeroShares();
-    /// @notice `skipMask` is zero or sets a bit at or above {componentCount}.
-    error InvalidSkipMask(uint256 skipMask);
-    /// @notice The caller has no claim on `token`.
-    error NothingToClaim(address token);
-    /// @notice {issue} received less `token` than it pulled, as with a fee-on-transfer token.
-    error TransferAmountMismatch(address token);
-    /// @notice MIN_REBALANCE_INTERVAL has not passed since the last rebalance; it does at `earliest`.
-    error RebalanceTooSoon(uint256 earliest);
-    /// @notice A rebalance is pending until `deadline`, the end of its auction.
-    error RebalancePending(uint256 deadline);
-    /// @notice `keepMask` sets a bit at or above {componentCount}, or keeps every component.
-    error InvalidKeepMask(uint256 keepMask);
-    /// @notice The moving components' ratios span less than MIN_BAND: their units already follow their reference
-    ///         supplies (no supply changed, every supply changed alike, or a single component moves), so there is
-    ///         nothing to rebalance.
-    error BandTooNarrow(uint256 lambdaMin, uint256 lambdaMax);
-    /// @notice No rebalance is pending.
-    error NoPendingRebalance();
-    /// @notice The auction opens at `eta`.
-    error RebalanceNotReady(uint256 eta);
-    /// @notice The auction closed at `deadline`; start a new rebalance.
-    error RebalanceExpired(uint256 deadline);
-    /// @notice After the executor returned, the index held `balance` of `token`, below `required`: the higher of the
-    ///         backing (totalSupply * new units / 1e18, plus open claims on `token`) and what the index held before the
-    ///         settlement, less what it sent out and plus the whole of what it asked back.
-    error RebalanceUnderfunded(address token, uint256 balance, uint256 required);
-    /// @notice The settlement needs more of `token` than the caller said it would fill, because the supply grew
-    ///         between the quote and this block. Only raised by the bounded `executeRebalance`.
-    error RebalanceMovedOn(address token, uint256 required, uint256 maxAmountIn);
-
     /// @notice Number of shares that make up one whole index token (1e18).
     function SHARE_UNIT() external view returns (uint256);
 
