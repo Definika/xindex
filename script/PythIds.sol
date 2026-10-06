@@ -8,10 +8,12 @@ import {MainnetAddresses as M} from "./MainnetAddresses.sol";
 ///         beside it. WETH takes ETH/USD: it redeems one for one on chain, and ETH/USD is Pyth's deepest feed. WBTC takes
 ///         WBTC/USD, not BTC/USD: it is custodial, so its own price is what catches a depeg. GRAM is left out until the
 ///         owner confirms whether Pyth's "GRAM / US DOLLAR" or "TONCOIN / US DOLLAR" is the coin it bridges
-///         (design/2026-10-05-custom-weights.md, section 2).
+///         (design/2026-10-05-custom-weights.md, section 2). The owner's calls of 2026-10-06 keep GRAM out, its bridge
+///         closed, and drop OKB, being retired on Ethereum, and BGB and GT, which no Uniswap route trades, so no fill
+///         could rebalance them (design/2026-10-05-wide-asset-support.md, section 6).
 library PythIds {
     /// @notice How many coins the table names.
-    uint256 internal constant COUNT = 30;
+    uint256 internal constant COUNT = 27;
 
     /// @dev ETHEREUM / US DOLLAR.
     bytes32 internal constant WETH = 0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace;
@@ -25,8 +27,6 @@ library PythIds {
     bytes32 internal constant QNT = 0x19ab139032007c8bd7d1fd3842ef392a5434569a72b555504a5aee47df2a0a35;
     /// @dev AAVE / US DOLLAR.
     bytes32 internal constant AAVE = 0x2b9ab1e972a281585084148ba1389800799bd4be63b957507db1349314e47445;
-    /// @dev OKB / US DOLLAR.
-    bytes32 internal constant OKB = 0xd6f83dfeaff95d596ddec26af2ee32f391c206a183b161b7980821860eeef2f5;
     /// @dev ETHENA / US DOLLAR.
     bytes32 internal constant ENA = 0xb7910ba7322db020416fcac28b48c01212fd9cc8fbcbaf7d30477ed8605f6bd4;
     /// @dev ONDO / US DOLLAR.
@@ -39,12 +39,8 @@ library PythIds {
     bytes32 internal constant MNT = 0x4e3037c822d852d79af3ac80e35eb420ee3b870dca49f9344a38ef4773fb0585;
     /// @dev MORPHO / US DOLLAR.
     bytes32 internal constant MORPHO = 0x5b2a4c542d4a74dd11784079ef337c0403685e3114ba0d9909b5c7a7e06fdc42;
-    /// @dev BITGET TOKEN / US DOLLAR.
-    bytes32 internal constant BGB = 0x708bfcf418ead52a408407b039f2c33ce24ddc80d6dcb6d1cffef91c156c80fa;
     /// @dev POLYGON ECOSYSTEM TOKEN / US DOLLAR.
     bytes32 internal constant POL = 0xffd11c5a1cfd42f80afb2df4d9f264c15f956d68153335374ec10722edd70472;
-    /// @dev GATETOKEN / US DOLLAR.
-    bytes32 internal constant GT = 0x051ee6cdd581106d0291dfd9b0ee13e6b4dde8fb251afd262c2ba5444257daa8;
     /// @dev LIGHTER / US DOLLAR.
     bytes32 internal constant LIT = 0xc0c83f00c39165892d55dcd17ade2191e289697e2ac132d9ab721e20834e2a9e;
     /// @dev ETHER.FI / US DOLLAR.
@@ -74,8 +70,8 @@ library PythIds {
     /// @dev LAYER ZERO / US DOLLAR.
     bytes32 internal constant ZRO = 0x3bd860bea28bf982fa06bcf358118064bb114086cc03993bd76197eaab0b8018;
 
-    /// @notice Every coin of the table and its id: the flagship's four in `ConfigureWhitelist.defaultMainnetList`'s order,
-    ///         then the wide list in `wideMainnetList`'s, GRAM aside.
+    /// @notice Every coin of the table and its id: WETH, WBTC, LINK and UNI first, the `default` list, then the wide
+    ///         list.
     function all() internal pure returns (address[] memory tokens, bytes32[] memory ids) {
         tokens = new address[](COUNT);
         ids = new bytes32[](COUNT);
@@ -85,29 +81,26 @@ library PythIds {
         (tokens[3], ids[3]) = (M.UNI, UNI);
         (tokens[4], ids[4]) = (M.QNT, QNT);
         (tokens[5], ids[5]) = (M.AAVE, AAVE);
-        (tokens[6], ids[6]) = (M.OKB, OKB);
-        (tokens[7], ids[7]) = (M.ENA, ENA);
-        (tokens[8], ids[8]) = (M.ONDO, ONDO);
-        (tokens[9], ids[9]) = (M.SKY, SKY);
-        (tokens[10], ids[10]) = (M.WLD, WLD);
-        (tokens[11], ids[11]) = (M.MNT, MNT);
-        (tokens[12], ids[12]) = (M.MORPHO, MORPHO);
-        (tokens[13], ids[13]) = (M.BGB, BGB);
-        (tokens[14], ids[14]) = (M.POL, POL);
-        (tokens[15], ids[15]) = (M.GT, GT);
-        (tokens[16], ids[16]) = (M.LIT, LIT);
-        (tokens[17], ids[17]) = (M.ETHFI, ETHFI);
-        (tokens[18], ids[18]) = (M.FET, FET);
-        (tokens[19], ids[19]) = (M.CRV, CRV);
-        (tokens[20], ids[20]) = (M.NEXO, NEXO);
-        (tokens[21], ids[21]) = (M.VIRTUAL, VIRTUAL);
-        (tokens[22], ids[22]) = (M.STRK, STRK);
-        (tokens[23], ids[23]) = (M.PENDLE, PENDLE);
-        (tokens[24], ids[24]) = (M.CRO, CRO);
-        (tokens[25], ids[25]) = (M.ICP, ICP);
-        (tokens[26], ids[26]) = (M.ARB, ARB);
-        (tokens[27], ids[27]) = (M.RENDER, RENDER);
-        (tokens[28], ids[28]) = (M.CAKE, CAKE);
-        (tokens[29], ids[29]) = (M.ZRO, ZRO);
+        (tokens[6], ids[6]) = (M.ENA, ENA);
+        (tokens[7], ids[7]) = (M.ONDO, ONDO);
+        (tokens[8], ids[8]) = (M.SKY, SKY);
+        (tokens[9], ids[9]) = (M.WLD, WLD);
+        (tokens[10], ids[10]) = (M.MNT, MNT);
+        (tokens[11], ids[11]) = (M.MORPHO, MORPHO);
+        (tokens[12], ids[12]) = (M.POL, POL);
+        (tokens[13], ids[13]) = (M.LIT, LIT);
+        (tokens[14], ids[14]) = (M.ETHFI, ETHFI);
+        (tokens[15], ids[15]) = (M.FET, FET);
+        (tokens[16], ids[16]) = (M.CRV, CRV);
+        (tokens[17], ids[17]) = (M.NEXO, NEXO);
+        (tokens[18], ids[18]) = (M.VIRTUAL, VIRTUAL);
+        (tokens[19], ids[19]) = (M.STRK, STRK);
+        (tokens[20], ids[20]) = (M.PENDLE, PENDLE);
+        (tokens[21], ids[21]) = (M.CRO, CRO);
+        (tokens[22], ids[22]) = (M.ICP, ICP);
+        (tokens[23], ids[23]) = (M.ARB, ARB);
+        (tokens[24], ids[24]) = (M.RENDER, RENDER);
+        (tokens[25], ids[25]) = (M.CAKE, CAKE);
+        (tokens[26], ids[26]) = (M.ZRO, ZRO);
     }
 }

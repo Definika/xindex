@@ -44,8 +44,8 @@ interface IWbtcAdmin {
     function unpause() external;
 }
 
-/// @notice v5 on a mainnet fork, with every coin of the Ethereum list that has a Pyth id (30: the flagship's four and
-///         the wide list less GRAM), real token contracts and real Uniswap pools. Only Pyth is a stand-in, since real
+/// @notice v5 on a mainnet fork, with every coin of the Ethereum list (27: the first four and the wide list), real
+///         token contracts and real Uniswap pools. Only Pyth is a stand-in, since real
 ///         signed updates need an API key; its prices come from the pools, as Pyth's track the market.
 ///
 ///         It answers what the unit tests cannot: does every real token issue, redeem and rebalance through the hub;
@@ -339,7 +339,7 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
     function _blueChips() internal view returns (Coin[] memory picked) {
         picked = new Coin[](4);
         for (uint256 i = 0; i < 4; ++i) {
-            picked[i] = coins[i]; // WETH, WBTC, LINK, UNI: PythIds lists the flagship's four first
+            picked[i] = coins[i]; // WETH, WBTC, LINK, UNI: PythIds lists them first
         }
     }
 
@@ -350,7 +350,7 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
     /// @dev Every coin `deal` can fund goes in one index: it issues, rebalances with real transfers of every token, and
     ///      redeems to the last unit. The report says which coins Uniswap can trade, and how well.
     function testFork_everyCoinIssuesRebalancesAndRedeems() public {
-        _discover(30);
+        _discover(PythIds.COUNT);
         _report();
         Coin[] memory picked = _pick(_dealable);
         console2.log("coins in the index:", picked.length, "of", coins.length);
@@ -405,13 +405,13 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
     ///      Alice mints with USDC through the zap, a Uniswap rebalancer fills at the auction's end, and she burns back
     ///      to USDC.
     function testFork_liquidCoinsThroughTheZapAndAUniswapRebalance() public {
-        _discover(30);
+        _discover(PythIds.COUNT);
         Coin[] memory picked = _pick(_liquid);
         console2.log("liquid coins (<= 2% slippage on $1,000):", picked.length);
         for (uint256 i = 0; i < picked.length; ++i) {
             console2.log("  ", IERC20Metadata(picked[i].token).symbol(), "slippage bps", picked[i].slippageBps);
         }
-        assertGe(picked.length, 4, "at least the flagship's four are liquid");
+        assertGe(picked.length, 4, "at least the first four are liquid");
 
         uint256[] memory skew = new uint256[](picked.length);
         for (uint256 i = 0; i < picked.length; ++i) {
@@ -485,7 +485,7 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
     }
 
     // ---------------------------------------------------------------------
-    // 3. Drills, on the flagship's four real coins
+    // 3. Drills, on the first four real coins
     // ---------------------------------------------------------------------
 
     /// @dev WBTC's real owner pauses it. Holders cannot redeem it but leave with the rest and a claim; the guardian

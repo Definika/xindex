@@ -52,17 +52,18 @@ contract ConfigureWeightedTest is Test {
 
     function test_theMainnetListsAreTheTable() public {
         vm.chainId(1);
-        ConfigureWeighted.Entry[] memory flagship = configure.resolveList("default");
+        ConfigureWeighted.Entry[] memory first = configure.resolveList("default");
         ConfigureWeighted.Entry[] memory wide = configure.resolveList("wide");
         (address[] memory tokens, bytes32[] memory ids) = PythIds.all();
-        assertEq(flagship.length, configure.FLAGSHIP());
-        assertEq(flagship.length + wide.length, tokens.length);
+        assertEq(first.length, configure.DEFAULT_COUNT());
+        assertEq(first.length + wide.length, tokens.length);
+        assertEq(tokens.length, 27, "the owner's list of 2026-10-06");
         for (uint256 i = 0; i < tokens.length; ++i) {
-            ConfigureWeighted.Entry memory entry = i < 4 ? flagship[i] : wide[i - 4];
+            ConfigureWeighted.Entry memory entry = i < 4 ? first[i] : wide[i - 4];
             assertEq(entry.token, tokens[i]);
             assertEq(entry.priceId, ids[i]);
         }
-        assertEq(flagship[0].token, MainnetAddresses.WETH);
+        assertEq(first[0].token, MainnetAddresses.WETH);
     }
 
     function test_theMainnetListsOnlyOnMainnet() public {

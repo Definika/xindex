@@ -28,7 +28,7 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 /// Env:
 ///   V5_MODE       `propose`, `safe`, `execute`, or `status` (read-only: what is listed and pending, per entry).
 ///   V5_FACTORY    Deployed WeightedIndexFactory.
-///   V5_WHITELIST  `default` for the flagship's four, `wide` for the rest of `PythIds` (both chain 1 only), or
+///   V5_WHITELIST  `default` for the first four of `PythIds`, `wide` for the rest (both chain 1 only), or
 ///                 comma-separated entries `token:priceId`, both required. Check a feed's description names the coin
 ///                 before its first listing, as `PythIds` records.
 ///   V5_LIST       Optional. Tokens never listed that propose and safe mode may propose: comma-separated addresses, or
@@ -58,8 +58,8 @@ contract ConfigureWeighted is Script {
     /// @notice Fewest and most decimals the whitelist policy accepts for a component.
     uint8 public constant MIN_DECIMALS = 6;
     uint8 public constant MAX_DECIMALS = 18;
-    /// @notice How many of `PythIds`' coins are the flagship's, listed first there.
-    uint256 public constant FLAGSHIP = 4;
+    /// @notice How many of `PythIds`' coins the `default` list takes, listed first there: WETH, WBTC, LINK and UNI.
+    uint256 public constant DEFAULT_COUNT = 4;
 
     /// @dev Fields in a V5_WHITELIST entry.
     uint256 private constant ENTRY_FIELDS = 2;
@@ -108,14 +108,14 @@ contract ConfigureWeighted is Script {
     // Lists
     // ---------------------------------------------------------------------
 
-    /// @notice The flagship's four from `PythIds`: WETH, WBTC, LINK and UNI.
+    /// @notice The first four of `PythIds`: WETH, WBTC, LINK and UNI.
     function defaultMainnetList() public pure returns (Entry[] memory list) {
-        return _slice(0, FLAGSHIP);
+        return _slice(0, DEFAULT_COUNT);
     }
 
-    /// @notice The rest of `PythIds`: the wide list, less GRAM until its feed is chosen.
+    /// @notice The rest of `PythIds`: the wide list.
     function wideMainnetList() public pure returns (Entry[] memory list) {
-        return _slice(FLAGSHIP, PythIds.COUNT);
+        return _slice(DEFAULT_COUNT, PythIds.COUNT);
     }
 
     function _slice(uint256 from, uint256 to) private pure returns (Entry[] memory list) {

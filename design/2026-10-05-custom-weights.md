@@ -198,7 +198,8 @@ prices; the vaults, proofs and state verifiers carry over unchanged.
 ## 10. What a mainnet fork showed (2026-10-06)
 
 `test/fork/WeightedHub.fork.t.sol` runs v5 on a fork near the chain head, with real tokens and real Uniswap pools and
-only Pyth stood in. It lists the 30 coins of `script/PythIds.sol`.
+only Pyth stood in. It lists the coins of `script/PythIds.sol`: 30 when this was measured, 27 since the owner's calls
+of 2026-10-06 dropped OKB, BGB and GT, the three below that no fill can trade or that are being retired.
 
 - **Every coin works in kind.** All 30 issue into one index, rebalance with real transfers of every token, and redeem
   to the last unit. A 30-coin fill cost 4.6M gas, before Pyth's own verification.
