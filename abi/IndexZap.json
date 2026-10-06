@@ -11,6 +11,11 @@
         "name": "router",
         "type": "address",
         "internalType": "contract IUniversalRouter"
+      },
+      {
+        "name": "pancakeRouter",
+        "type": "address",
+        "internalType": "contract IPancakeUniversalRouter"
       }
     ],
     "stateMutability": "nonpayable"
@@ -24,6 +29,19 @@
         "name": "",
         "type": "address",
         "internalType": "contract IIndexFactory"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "PANCAKE_ROUTER",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract IPancakeUniversalRouter"
       }
     ],
     "stateMutability": "view"
@@ -131,6 +149,11 @@
                 ]
               },
               {
+                "name": "pancakePath",
+                "type": "bytes",
+                "internalType": "bytes"
+              },
+              {
                 "name": "minAmountOut",
                 "type": "uint256",
                 "internalType": "uint256"
@@ -234,6 +257,11 @@
                     "internalType": "bytes"
                   }
                 ]
+              },
+              {
+                "name": "pancakePath",
+                "type": "bytes",
+                "internalType": "bytes"
               },
               {
                 "name": "minAmountOut",
@@ -354,6 +382,11 @@
                     "internalType": "bytes"
                   }
                 ]
+              },
+              {
+                "name": "pancakePath",
+                "type": "bytes",
+                "internalType": "bytes"
               },
               {
                 "name": "maxAmountIn",

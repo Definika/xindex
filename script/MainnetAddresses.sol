@@ -87,6 +87,13 @@ library MainnetAddresses {
     /// @dev Uniswap V3's factory, where `CheckToken` looks up a token's pools to record its depth before a listing. No
     ///      contract reads it. Its runtime code hash is pinned by `test/fork/MainnetAddresses.fork.t.sol`.
     address internal constant UNISWAP_V3_FACTORY = 0x1F98431c8aD98523631AE4a59f267346ea31F984;
+    /// @dev PancakeSwap's v3 Universal Router, through which the zap runs a leg that names a PancakeSwap V3 path (the
+    ///      owner's call on 2026-10-06; `design/2026-10-06-swap-venues.md`). Its immutables wire it to PancakeSwap's V3
+    ///      deployer and pool init code hash, its own Permit2 and WETH, so its runtime code hash, pinned by
+    ///      `test/fork/MainnetAddresses.fork.t.sol`, fixes all of them. Read on 2026-10-06: owner PancakeSwap's Safe
+    ///      0x21835332cBDf1b3530fAE9f6Cd66FEB9477dFC02, not paused. The owner can pause it, which stops the zap's
+    ///      PancakeSwap legs and moves nobody's funds.
+    address internal constant PANCAKE_UNIVERSAL_ROUTER = 0x65b382653f7C31bC0Af67f188122035461ec9C76;
 
     // ---------------------------------------------------------------------
     // Prices, for v5's weighted indexes only.

@@ -2,51 +2,59 @@
 pragma solidity 0.8.28;
 
 import {IIndexFactory} from "./IIndexFactory.sol";
+import {IPancakeUniversalRouter} from "./IPancakeUniversalRouter.sol";
 import {IUniversalRouter} from "./IUniversalRouter.sol";
 import {IXindexErrors} from "./IXindexErrors.sol";
 import {PathKey} from "../libraries/UniswapV4Types.sol";
 
 /// @title IIndexZap
 /// @notice Stateless convenience router: mint any index with a single token (USDC, USDT, ...) and burn any index
-///         straight into a single token, swapping through Uniswap's Universal Router. Apps encode calls against this
-///         interface.
-/// @dev Each leg names its own venue. Depth still favours V3 for some components and V4 for others, so the app picks
-///      per leg and the zap builds the router commands for whichever it finds. A leg carries a V3 path or a V4 route,
-///      never both and never neither, except the pass-through leg whose component is already the token being paid or
-///      received.
+///         straight into a single token, swapping through Uniswap's Universal Router and, leg by leg, PancakeSwap's.
+///         Apps encode calls against this interface.
+/// @dev Each leg names its own venue. Depth favours Uniswap V3 for some components, V4 for others and PancakeSwap V3
+///      for a few (CAKE above all), so the app picks per leg and the zap builds the router commands for whichever it
+///      finds. A leg carries exactly one of a Uniswap V3 path, a Uniswap V4 route and a PancakeSwap V3 path, except the
+///      pass-through leg whose component is already the token being paid or received, which carries none.
 ///
 ///      Of the shared errors, the zap raises NotIndex for an index the factory did not deploy, ZeroAddress for a zero
 ///      factory, router, recipient, `tokenIn` or `tokenOut`, and InvalidRecipient for a recipient that is the zap, the
-///      index, the router, the PoolManager, the factory or the rule (RT-21).
+///      index, either router, the PoolManager, the factory or the rule (RT-21).
 interface IIndexZap is IXindexErrors {
-    /// @param v3Path Exact-output Uniswap V3 path from the component back to `tokenIn`. Empty for a V4 leg and for
-    ///        the pass-through leg whose component is `tokenIn` itself.
+    /// @param v3Path Exact-output Uniswap V3 path from the component back to `tokenIn`. Empty for any other leg and
+    ///        for the pass-through leg whose component is `tokenIn` itself.
     /// @param v4Path Uniswap V4 route, whose first entry names `tokenIn` because an exact-output route is walked from
-    ///        the component backwards. Empty for a V3 leg and for the pass-through leg. Native ether may appear as an
-    ///        intermediate currency but never as an endpoint, and every hop must be hookless.
+    ///        the component backwards. Empty for any other leg and for the pass-through leg. Native ether may appear as
+    ///        an intermediate currency but never as an endpoint, and every hop must be hookless.
+    /// @param pancakePath Exact-output PancakeSwap V3 path from the component back to `tokenIn`, in Uniswap's packed
+    ///        format (PancakeSwap's tiers are 100, 500, 2500 and 10000). Empty for any other leg and for the
+    ///        pass-through leg, and refused when the zap was deployed without a PancakeSwap router.
     /// @param maxAmountIn Most `tokenIn` this leg may spend, or 0 for the overall limit only.
     struct MintLeg {
         bytes v3Path;
         PathKey[] v4Path;
+        bytes pancakePath;
         uint256 maxAmountIn;
     }
 
-    /// @param v3Path Exact-input Uniswap V3 path from the component to `tokenOut`. Empty for a V4 leg and for the
+    /// @param v3Path Exact-input Uniswap V3 path from the component to `tokenOut`. Empty for any other leg and for the
     ///        pass-through leg whose component is `tokenOut` itself. Checked even when the component redeems to zero.
     ///        Each hop is swapped on its own, so the unsold input of any hop, not only the first, comes back to `to`;
     ///        an intermediate hop that sells nothing reverts with InsufficientOutput.
-    /// @param v4Path Uniswap V4 route, whose last entry names `tokenOut`. Empty for a V3 leg and for the pass-through
-    ///        leg. The whole route is one swap, so an intermediate hop that fills short leaves the pool manager
+    /// @param v4Path Uniswap V4 route, whose last entry names `tokenOut`. Empty for any other leg and for the
+    ///        pass-through leg. The whole route is one swap, so an intermediate hop that fills short leaves the pool manager
     ///        unsettled and reverts the leg, unless that hop's input is the component or `tokenOut` again: a route that
     ///        revisits the component nets the leftover against the leg's debt, and it comes back to `to`, while a
     ///        leftover `tokenOut` is paid out. On a route that revisits neither, only the first hop can leave unsold
     ///        input, which comes back to `to`.
+    /// @param pancakePath Exact-input PancakeSwap V3 path from the component to `tokenOut`. Empty for any other leg and
+    ///        for the pass-through leg. Swapped one hop at a time, as a Uniswap V3 path is, with the same returns.
     /// @param minAmountOut Least `tokenOut` this leg must return, or 0 for the overall limit only. It applies to the
     ///        leg's final output. A non-zero minimum on a leg whose redeemed amount rounds to zero reverts, and so does
     ///        an intermediate V3 hop that produces nothing, whatever the minimum (RT-11).
     struct BurnLeg {
         bytes v3Path;
         PathKey[] v4Path;
+        bytes pancakePath;
         uint256 minAmountOut;
     }
 
@@ -56,8 +64,8 @@ interface IIndexZap is IXindexErrors {
     /// @param maxAmountIn Most `tokenIn` the whole mint may spend; non-zero.
     /// @param shares Exact index shares to mint (1e18 is one index token); non-zero.
     /// @param legs One entry per component, in component order.
-    /// @param to Receives the shares; not zero, the zap, the index, the router, the PoolManager, the factory or the
-    ///        rule (RT-21).
+    /// @param to Receives the shares; not zero, the zap, the index, either router, the PoolManager, the factory or
+    ///        the rule (RT-21).
     /// @param deadline Last timestamp at which the call is valid.
     struct MintParams {
         address index;
@@ -76,8 +84,8 @@ interface IIndexZap is IXindexErrors {
     /// @param tokenOut Token the caller receives.
     /// @param minAmountOut Least `tokenOut` the whole burn must return; non-zero.
     /// @param legs One entry per component, in component order.
-    /// @param to Receives `tokenOut` and any unsold component; not zero, the zap, the index, the router, the
-    ///        PoolManager, the factory or the rule (RT-21).
+    /// @param to Receives `tokenOut` and any unsold component; not zero, the zap, the index, either router,
+    ///        the PoolManager, the factory or the rule (RT-21).
     /// @param deadline Last timestamp at which the call is valid; also the permit's deadline.
     struct BurnParams {
         address index;
@@ -128,7 +136,8 @@ interface IIndexZap is IXindexErrors {
     error ZeroAmount();
     /// @notice `legs` does not have one entry per component.
     error LegCountMismatch();
-    /// @notice Leg `i` has a malformed path, one with the wrong endpoints, or a path where none belongs.
+    /// @notice Leg `i` names no venue or more than one, has a malformed path, one with the wrong endpoints, a hooked V4
+    ///         pool, a path where none belongs, or a PancakeSwap path on a zap deployed without PancakeSwap's router.
     error BadRoute(uint256 i);
     /// @notice A leg's swap delivered less of the component than the basket needs. The V4 router at the version this
     ///         zap is pinned to does not check an exact-output swap's delivery itself, so the zap measures it.
@@ -144,8 +153,13 @@ interface IIndexZap is IXindexErrors {
     /// @notice Factory whose registry proves an address is an index.
     function FACTORY() external view returns (IIndexFactory);
 
-    /// @notice Uniswap's Universal Router, through which every swap runs.
+    /// @notice Uniswap's Universal Router, through which every Uniswap V3 and V4 leg runs.
     function ROUTER() external view returns (IUniversalRouter);
+
+    /// @notice PancakeSwap's v3 Universal Router, through which every PancakeSwap leg runs; zero when this zap was
+    ///         deployed without one, which refuses every PancakeSwap leg. Never a valid recipient: anyone can sweep a
+    ///         router's balance.
+    function PANCAKE_ROUTER() external view returns (IPancakeUniversalRouter);
 
     /// @notice The Uniswap V4 singleton the router settles V4 legs against, read from the router at construction. It
     ///         is never a valid recipient: anything sent there is a donation to the protocol.

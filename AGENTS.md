@@ -97,6 +97,7 @@ forge test                   # unit + fuzz + invariant tests, no RPC needed; for
 forge coverage               # must stay at 100% for every file (lines, statements, branches, functions)
 aderyn .                     # Aderyn on src/, configured by aderyn.toml: must report nothing; CI does not run it
 for c in IndexZap MintRequests HybridIndexFactory IHybridIndex XindexVault WeightedIndexFactory WeightedHub; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
+node --test swaprail/        # the THORChain swap rail's planner (app-side JavaScript, no dependency); CI runs it
 
 # mainnet fork tests (real tokens, Universal Router, V3 and V4 pools); skipped when the env var is unset.
 # A rate-limited RPC throttles five suites in parallel: add -j 1.
@@ -176,6 +177,10 @@ verifier, from an anchor the fixture generator writes, with the deployment's own
    - The internal review of v5's weighted index on 2026-10-05: `V5-M1`, `V5-M2`, `V5-L1`..`V5-L3` and `V5-I1`..`V5-I4`
      (`audit/2026-10-05-v5-review.md`), a test named `test_V5M1_...`. The record's status column names every test, and
      the ids fixed or recorded by documentation alone, which have none.
+   - The swap-venue review of 2026-10-06: `SV-1` and `SV-I1`..`SV-I4` (`audit/2026-10-06-swap-venues-review.md`), a
+     test named `test_SV1_...` in `test/IndexZap.pancake.t.sol` and `testFork_SV1_...` in
+     `test/fork/IndexZap.fork.t.sol`. The informational ids are recorded by documentation, SV-I3 and SV-I4 with the
+     planner's tests in `swaprail/`.
 
    Find a test by its id. Most v1 and R tests are in `test/Security.t.sol` and `test/fork/Security.fork.t.sol`, on
    `WeightedHub` indexes. The hub and factory ids `audit/2026-10-06-v4-retirement.md` re-targets are in the weighted
@@ -223,7 +228,8 @@ and a maintainer re-runs them before merging.
 
 `ls` and each file's header comments show what lives where, and README.md's Layout section gives the tour. Two things
 the tree does not say: `script/testnet/` (the Sepolia test market) and `demo/` (the hackathon demonstration, its own
-Foundry project) never deploy to a mainnet.
+Foundry project) never deploy to a mainnet, and `swaprail/` is app-side JavaScript that no contract calls: the reference
+THORChain planner the web app adopts (`design/2026-10-06-swap-venues.md`).
 
 ## Design rules that must not be broken
 
@@ -370,8 +376,20 @@ Foundry project) never deploy to a mainnet.
 - **The zap is stateless and replaceable.** New UX features (ETH in/out, aggregators, mixed-venue legs) go in a new or
   extended zap, never in the hub or factory. The app caps a zap basket at about 35 components, which is where 16.78M gas
   runs out.
-  - **Venue.** It swaps through Uniswap's Universal Router, pinned to the 2.0.0 deployment. Each leg names exactly one
-    venue: a packed `v3Path` or a hookless `PathKey[] v4Path`, never both and never neither, else `BadRoute(i)`.
+  - **Venue.** It swaps through Uniswap's Universal Router, pinned to the 2.0.0 deployment, and, for the legs that name
+    one, PancakeSwap's v3 Universal Router (`PANCAKE_ROUTER`, pinned by its runtime code hash; the owner's call on
+    2026-10-06, `design/2026-10-06-swap-venues.md`). Each leg names exactly one venue: a packed `v3Path`, a hookless
+    `PathKey[] v4Path` or a packed `pancakePath`, never two and never none, else `BadRoute(i)`; the pass-through leg
+    names none. A zap deployed without PancakeSwap (zero, as on a testnet) refuses every `pancakePath`.
+  - **PancakeSwap.** Its legs use the same pre-fund, sweep and measurement as Uniswap's V3 legs, with
+    `PancakeRouterCommands`, never Uniswap's library: the two command sets part from 0x10 up. Every PancakeSwap call
+    ends with `WRAP_ETH(ADDRESS_THIS, CONTRACT_BALANCE)`, because that router sends its whole ether balance to its caller
+    after the last command and reverts if that fails, and takes ether from anyone: without the wrap, one wei sent there
+    would block every PancakeSwap leg (SV-1). Never give the zap a `receive()` instead. PancakeSwap's Safe can pause the
+    router and attach a contract to its pools; that stops PancakeSwap legs and moves nobody's funds (SV-I1).
+  - **THORChain** never touches a contract: a deposit made inside one can be ignored and lost (SV-I3). It is the app's,
+    from the user's own accounts, through `swaprail/thorchain.mjs`, which refuses contract senders and destinations,
+    writes its own memo with a limit and a refund address, cross-checks two THORNode endpoints and pins the router.
   - **Commands.** The zap builds every command and every action itself and forwards nothing a caller supplied. The
     router's command set includes `TRANSFER` and `PERMIT2_TRANSFER_FROM`, which move a payer's funds, so passing
     calldata through would hand a caller the router's permissions.
@@ -405,7 +423,8 @@ Foundry project) never deploy to a mainnet.
   - **Errors.** Swap failures reach the caller unchanged. The router wraps a command in `ExecutionFailed` only when it
     dispatched it with a low-level call. Swaps are internal calls, so what surfaces is the pool's own revert:
     `V3TooMuchRequested`, `V4TooLittleReceived` and their neighbours. That was verified against the pinned deployment
-    on a fork, which is why `IUniversalRouter` does not declare `ExecutionFailed` at all.
+    on a fork, which is why `IUniversalRouter` does not declare `ExecutionFailed` at all. PancakeSwap's router
+    dispatches the same way; a paused one reverts with `Pausable: paused`.
 - **MintRequests holds only open escrows.** A requester escrows USDC or USDT for at least `minShares` of a factory
   index, or shares for at least `minOut` of a stablecoin. Anyone fills before the deadline, and the requester's limit is
   the only valuation: nothing reads a price.
@@ -667,6 +686,11 @@ the rules code must never break.
     `2bb0eb54b2b3af8854d0c26f3884c28a0fce0802`, `target_chains/ethereum/sdk/solidity/`, with the pragma pinned and the
     whitespace `forge fmt` writes; their plain imports and Pyth's own events carry the suppressions of vendored code.
 
+  - `PancakeRouterCommands` records the command bytes, sentinels and input layouts of PancakeSwap's v3 Universal Router
+    (GPL-3.0-or-later) from its verified source on Etherscan at `0x65b382653f7C31bC0Af67f188122035461ec9C76`, runtime
+    code hash `0xdb8dfdb9…d3f6`: no public repository holds that version, so the deployed source is the reference.
+    `test/mocks/MockPancakeRouter.sol` follows the same source.
+
   A vendored struct may retype `Currency` and `IHooks` to `address`, which is ABI-identical. Change vendored code only
   to replace a dependency, never to restyle. Both router libraries record the input layout of every command and action
   they name, from `Dispatcher.sol` and `Actions.sol` at those commits, because that layout is what the zap encodes
@@ -752,6 +776,11 @@ replay of Pyth's history, and Hermes now needs a paid API key, an operating cost
 - The vault chains are the eight built, plus Solana and HyperEVM when their chains allow; any other chain's coin comes
   in only as an existing token on Ethereum or BNB Chain ("What this is" has the detail).
 
+**Swap venues** (the owner's call on 2026-10-06, "only for swap rail", `design/2026-10-06-swap-venues.md`): the zap
+gains PancakeSwap V3 legs through PancakeSwap's v3 Universal Router, beside Uniswap's 2.0.0; on Ethereum it matters
+mainly for CAKE, whose Uniswap depth is negligible. THORChain is app-side only, from the user's own accounts
+(`swaprail/`), and no contract calls it.
+
 **v4 replaces v3** (the owner's call on 2026-09-30). v3 stays at the `v3.0.0` tag and on Sepolia and never launches on
 mainnet. Its recorded decisions were Chainlink USD feeds, the capped 30/20 methodology, a monthly cadence, the seven-token
 launch whitelist and `MAX_COMPONENTS` of 20. Each is superseded as follows, and `audit/2026-09-30-v4-stage-a-retirement.md`
@@ -790,7 +819,8 @@ records what went with them:
 Unchanged from v3:
 - Ethereum mainnet first.
 - Execution through Uniswap's Universal Router 2.0.0, with the venue chosen per leg by the caller. That decision of
-  2026-09-22 superseded SwapRouter02 and QuoterV2 (`audit/2026-09-22-v3-retirement.md`).
+  2026-09-22 superseded SwapRouter02 and QuoterV2 (`audit/2026-09-22-v3-retirement.md`). Since 2026-10-06 a leg may
+  name PancakeSwap's v3 Universal Router instead ("Swap venues" above).
 - Fixed constituents; no protocol bots or hot keys; component whitelist only.
 - The burner chooses the exit token, and the mint currency is not tracked per holder.
 

@@ -7,6 +7,7 @@ import {WeightedHub} from "../src/WeightedHub.sol";
 import {IndexZap} from "../src/IndexZap.sol";
 import {MintRequests} from "../src/MintRequests.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
+import {IPancakeUniversalRouter} from "../src/interfaces/IPancakeUniversalRouter.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
 import {DeployChecks} from "./DeployChecks.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
@@ -28,6 +29,7 @@ import {MainnetAddresses} from "./MainnetAddresses.sol";
 ///                       1 to `MainnetAddresses.PYTH`, and nothing else is accepted there.
 ///   UNIVERSAL_ROUTER    As for `Deploy`.
 ///   USDC, USDT          As for `Deploy`.
+///   PANCAKE_ROUTER      As for `Deploy`.
 contract DeployWeighted is DeployChecks {
     /// @notice Mainnet default {resolvePyth} uses on chain 1, from `MainnetAddresses`.
     address public constant MAINNET_PYTH = MainnetAddresses.PYTH;
@@ -40,7 +42,8 @@ contract DeployWeighted is DeployChecks {
             vm.envOr("PYTH", address(0)),
             vm.envOr("UNIVERSAL_ROUTER", address(0)),
             vm.envOr("USDC", address(0)),
-            vm.envOr("USDT", address(0))
+            vm.envOr("USDT", address(0)),
+            vm.envOr("PANCAKE_ROUTER", address(0))
         );
     }
 
@@ -53,27 +56,37 @@ contract DeployWeighted is DeployChecks {
     /// @param router Uniswap's Universal Router, through which the zap swaps; see {resolveRouter}.
     /// @param usdc USDC for MintRequests; see {resolveStable}.
     /// @param usdt USDT for MintRequests; see {resolveStable}.
+    /// @param pancakeRouter PancakeSwap's v3 Universal Router for the zap; see {resolvePancakeRouter}.
     /// @return factory The deployed factory.
     /// @return zap The deployed zap.
     /// @return requests The deployed MintRequests.
-    function deploy(address owner, address guardian, address pyth, address router, address usdc, address usdt)
-        public
-        returns (WeightedIndexFactory factory, IndexZap zap, MintRequests requests)
-    {
+    function deploy(
+        address owner,
+        address guardian,
+        address pyth,
+        address router,
+        address usdc,
+        address usdt,
+        address pancakeRouter
+    ) public returns (WeightedIndexFactory factory, IndexZap zap, MintRequests requests) {
         checkOwner(owner);
         checkGuardian(owner, guardian);
         pyth = resolvePyth(pyth);
         router = resolveRouter(router);
         usdc = resolveStable("USDC", usdc, MainnetAddresses.USDC);
         usdt = resolveStable("USDT", usdt, MainnetAddresses.USDT);
+        pancakeRouter = resolvePancakeRouter(pancakeRouter);
         checkRolesAreNotMarket(owner, guardian, router);
+        checkRolesAreNotPancake(owner, guardian, pancakeRouter);
         // A factory owned by Pyth could never be administered, and Pyth as guardian would veto for nobody.
         if (owner == pyth || guardian == pyth) revert RoleIsMarketContract(pyth);
 
         vm.startBroadcast();
         factory = new WeightedIndexFactory(owner, guardian, pyth);
         // The zap types its factory as `IIndexFactory`, and calls only `isIndex` on it, which this factory answers.
-        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(router));
+        zap = new IndexZap(
+            IIndexFactory(address(factory)), IUniversalRouter(router), IPancakeUniversalRouter(pancakeRouter)
+        );
         requests = new MintRequests(address(factory), usdc, usdt);
         vm.stopBroadcast();
 
@@ -85,6 +98,7 @@ contract DeployWeighted is DeployChecks {
         console2.log("Guardian:                ", guardian);
         console2.log("Universal Router:        ", router);
         console2.log("PoolManager:             ", zap.POOL_MANAGER());
+        console2.log("PancakeSwap router:      ", address(zap.PANCAKE_ROUTER()));
         console2.log("MintRequests:            ", address(requests));
         console2.log("USDC:                    ", usdc);
         console2.log("USDT:                    ", usdt);

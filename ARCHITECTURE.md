@@ -160,16 +160,18 @@ ERC20Permit (clones skip constructors, so name and symbol are set in `initialize
 
 ### IndexZap (`src/IndexZap.sol`)
 
-v3's user-facing convenience layer, unchanged but for its recipient check, which no longer names a rule. Stateless,
-ownerless, holds no funds between transactions, and the only contract here that knows about Uniswap.
+v3's user-facing convenience layer, with PancakeSwap's v3 Universal Router as a third venue per leg since 2026-10-06
+(`design/2026-10-06-swap-venues.md`). Stateless, ownerless, holds no funds between transactions, and the only contract
+here that knows about Uniswap or PancakeSwap. THORChain is app-side only (`swaprail/`): no contract calls it.
 
 - `mintWithToken(MintParams{index, expectedNonce, tokenIn, maxAmountIn, shares, legs, to, deadline})` and
   `burnToToken(BurnParams{index, expectedNonce, shares, tokenOut, minAmountOut, legs, to, deadline})`: route endpoints
   validated, per-leg limits, balance-measured accounting, shortfalls reverted, `issue` as the final interaction of a
   mint. The leg whose component is already the mint's `tokenIn` or the burn's `tokenOut` carries no swap and honours
   its own limit too (DA-15). `burnToTokenWithPermit(BurnParams, v, r, s)` runs the same checks before the permit.
-- **One venue per leg.** A `MintLeg` or `BurnLeg` carries exactly one non-empty route, a packed `v3Path` or a
-  `PathKey[] v4Path`, or `BadRoute(i)`; both empty is valid only for the pass-through leg. A V4 route must be hookless
+- **One venue per leg.** A `MintLeg` or `BurnLeg` carries exactly one non-empty route, a packed `v3Path`, a
+  `PathKey[] v4Path` or a packed `pancakePath`, or `BadRoute(i)`; all empty is valid only for the pass-through leg, and
+  a `pancakePath` needs a zap deployed with PancakeSwap's router. A V4 route must be hookless
   (`hooks` zero and `hookData` empty), which also rules out the dynamic-fee flag. `address(0)` is native ether and may
   appear only as an intermediate; the zap has no `receive()`.
 - **Every command is the zap's own.** Each swap is one `ROUTER.execute(commands, inputs)` built here, and nothing a
@@ -179,7 +181,11 @@ ownerless, holds no funds between transactions, and the only contract here that 
   was built from. A mint leg is `V3_SWAP_EXACT_OUT, SWEEP` or `V4_SWAP, SWEEP`; a V3 burn hop `V3_SWAP_EXACT_IN,
   SWEEP`; a V4 burn leg `V4_SWAP, SWEEP`. The zap never encodes a swap amount of zero, which the pinned V4 router reads
   as "the full debt": a burn leg that redeems nothing is skipped, and every component's units stay at least one, so a
-  mint leg always needs at least one raw unit (CR-I05).
+  mint leg always needs at least one raw unit (CR-I05). A PancakeSwap leg is `V3_SWAP_EXACT_OUT` or `V3_SWAP_EXACT_IN`,
+  `SWEEP`, `WRAP_ETH` on PancakeSwap's router, from `src/libraries/PancakeRouterCommands.sol` (that router's command
+  bytes part from Uniswap's at 0x10). The closing `WRAP_ETH` turns any ether the router holds into WETH it keeps: that
+  router sends its whole ether balance to its caller after the last command and reverts if it cannot, and takes ether
+  from anyone, so one wei would otherwise block every PancakeSwap leg (SV-1).
 - **Pre-fund and sweep, not Permit2.** The zap sends the router what a leg may spend and appends `SWEEP` back to itself
   in the same `execute`, so the router is never left holding anything and no allowance survives a call. The pre-fund
   is the operative bound on a leg's spend, because the pinned V4 router does not hold an exact-output route that
@@ -194,7 +200,7 @@ ownerless, holds no funds between transactions, and the only contract here that 
   revert a burn (CR-L02).
 - `expectedNonce` is the index's `rebalanceNonce` when the legs were quoted, checked on entry and again right before
   `issue`, so a rebalance in between reverts the call with `StaleRebalanceNonce` instead of buying a different basket.
-- Recipients: zero, the zap, the index, the Universal Router, the PoolManager and the factory are refused (RT-21).
+- Recipients: zero, the zap, the index, either router, the PoolManager and the factory are refused (RT-21).
 - The zap never calls `redeemSkipping` (the claim would be booked to the zap) or `executeRebalance`.
 - **`IndexHub` clones only.** A `HybridHub` is in the factory's registry, but no part of it answers `componentTokens`,
   so a zap call on one reverts with nothing moved (`test_theZapCannotMintOrBurnAHybridIndex`). A hybrid index's mints
@@ -204,7 +210,9 @@ ownerless, holds no funds between transactions, and the only contract here that 
   the pinned deployment on a fork.
 - **Pinned to Universal Router 2.0.0** (`0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af`), not the 2.1.x line, whose
   command inputs carry an extra per-hop price array. The zap reads `POOL_MANAGER` from the router's own
-  `poolManager()`, so the two can never be wired to different deployments.
+  `poolManager()`, so the two can never be wired to different deployments. PancakeSwap's router
+  (`0x65b382653f7C31bC0Af67f188122035461ec9C76`) is pinned by its runtime code hash, which also fixes its pool deployer
+  and init code hash; its Safe can pause it, which stops PancakeSwap legs and moves nobody's funds (SV-I1).
 - **Scale.** The zap costs 265k to 430k gas per component (v3's fork measurement at 20 components, CR-I08), so
   EIP-7825's 2^24-gas transaction cap stops it at 39 to 63 components; the app offers it up to about 35. Larger
   indexes are minted and redeemed in kind.

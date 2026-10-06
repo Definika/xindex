@@ -101,6 +101,11 @@ jobs:
         env:
           MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
 
+      # The THORChain swap rail is app-side JavaScript (swaprail/), with no dependency: Node's own test runner, which
+      # the runner image carries.
+      - name: Run the THORChain swap rail's tests
+        run: node --test swaprail/
+
       # Offline suites only; the fork helpers are covered by them. Every file row must show hit == total for lines,
       # statements, branches and functions, and an empty summary fails.
       - name: Require 100% coverage on every file

@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {IndexZap} from "../src/IndexZap.sol";
+import {IPancakeUniversalRouter} from "../src/interfaces/IPancakeUniversalRouter.sol";
 import {MintRequests} from "../src/MintRequests.sol";
 import {WeightedHub} from "../src/WeightedHub.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
@@ -33,7 +34,7 @@ contract WeightedZapTest is WeightedTest {
         index = _create(_defaultSpecs());
 
         router = new MockUniversalRouter(makeAddr("poolManager"));
-        zap = new IndexZap(IIndexFactory(address(factory)), router);
+        zap = new IndexZap(IIndexFactory(address(factory)), router, IPancakeUniversalRouter(address(0)));
         usdc = new MockERC20("USD Coin", "USDC", 6);
         usdt = new MockERC20("Tether", "USDT", 6);
         requests = new MintRequests(address(factory), address(usdc), address(usdt));
@@ -54,12 +55,15 @@ contract WeightedZapTest is WeightedTest {
 
     function _mint(uint256 shares, uint256 nonce) internal returns (uint256 spent) {
         IIndexZap.MintLeg[] memory legs = new IIndexZap.MintLeg[](3);
-        legs[0] =
-            IIndexZap.MintLeg({v3Path: _path(address(eth), address(usdc)), v4Path: new PathKey[](0), maxAmountIn: 0});
-        legs[1] =
-            IIndexZap.MintLeg({v3Path: _path(address(btc), address(usdc)), v4Path: new PathKey[](0), maxAmountIn: 0});
-        legs[2] =
-            IIndexZap.MintLeg({v3Path: _path(address(usd), address(usdc)), v4Path: new PathKey[](0), maxAmountIn: 0});
+        legs[0] = IIndexZap.MintLeg({
+            v3Path: _path(address(eth), address(usdc)), v4Path: new PathKey[](0), pancakePath: "", maxAmountIn: 0
+        });
+        legs[1] = IIndexZap.MintLeg({
+            v3Path: _path(address(btc), address(usdc)), v4Path: new PathKey[](0), pancakePath: "", maxAmountIn: 0
+        });
+        legs[2] = IIndexZap.MintLeg({
+            v3Path: _path(address(usd), address(usdc)), v4Path: new PathKey[](0), pancakePath: "", maxAmountIn: 0
+        });
         usdc.mint(alice, 1000e6);
         vm.startPrank(alice);
         usdc.approve(address(zap), 1000e6);
@@ -84,12 +88,15 @@ contract WeightedZapTest is WeightedTest {
         assertApproxEqRel(spent, 200e6, 0.01e18, "two $100 tokens");
 
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](3);
-        legs[0] =
-            IIndexZap.BurnLeg({v3Path: _path(address(eth), address(usdc)), v4Path: new PathKey[](0), minAmountOut: 0});
-        legs[1] =
-            IIndexZap.BurnLeg({v3Path: _path(address(btc), address(usdc)), v4Path: new PathKey[](0), minAmountOut: 0});
-        legs[2] =
-            IIndexZap.BurnLeg({v3Path: _path(address(usd), address(usdc)), v4Path: new PathKey[](0), minAmountOut: 0});
+        legs[0] = IIndexZap.BurnLeg({
+            v3Path: _path(address(eth), address(usdc)), v4Path: new PathKey[](0), pancakePath: "", minAmountOut: 0
+        });
+        legs[1] = IIndexZap.BurnLeg({
+            v3Path: _path(address(btc), address(usdc)), v4Path: new PathKey[](0), pancakePath: "", minAmountOut: 0
+        });
+        legs[2] = IIndexZap.BurnLeg({
+            v3Path: _path(address(usd), address(usdc)), v4Path: new PathKey[](0), pancakePath: "", minAmountOut: 0
+        });
         vm.startPrank(alice);
         index.approve(address(zap), 1e18);
         uint256 out = zap.burnToToken(

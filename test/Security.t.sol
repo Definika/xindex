@@ -9,6 +9,7 @@ import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {WeightedHub} from "../src/WeightedHub.sol";
 import {IndexZap} from "../src/IndexZap.sol";
+import {IPancakeUniversalRouter} from "../src/interfaces/IPancakeUniversalRouter.sol";
 import {IIndexZap} from "../src/interfaces/IIndexZap.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IWeightedHub} from "../src/interfaces/IWeightedHub.sol";
@@ -132,7 +133,7 @@ contract SecurityRegressionTest is XindexTest {
         _deployFactory(guardian);
         poolManager = makeAddr("poolManager");
         router = new MockUniversalRouter(poolManager);
-        zap = new IndexZap(IIndexFactory(address(factory)), router);
+        zap = new IndexZap(IIndexFactory(address(factory)), router, IPancakeUniversalRouter(address(0)));
 
         wbtc = new MockERC20("Wrapped BTC", "WBTC", 8);
         weth = market.weth();
@@ -178,14 +179,19 @@ contract SecurityRegressionTest is XindexTest {
         legs[0] = IIndexZap.MintLeg({
             v3Path: abi.encodePacked(address(wbtc), FEE, address(weth), FEE, stable),
             v4Path: new PathKey[](0),
+            pancakePath: "",
             maxAmountIn: 0
         });
         legs[1] = IIndexZap.MintLeg({
-            v3Path: abi.encodePacked(address(weth), FEE, stable), v4Path: new PathKey[](0), maxAmountIn: 0
+            v3Path: abi.encodePacked(address(weth), FEE, stable),
+            v4Path: new PathKey[](0),
+            pancakePath: "",
+            maxAmountIn: 0
         });
         legs[2] = IIndexZap.MintLeg({
             v3Path: abi.encodePacked(address(link), FEE, address(weth), FEE, stable),
             v4Path: new PathKey[](0),
+            pancakePath: "",
             maxAmountIn: 0
         });
     }
@@ -195,14 +201,19 @@ contract SecurityRegressionTest is XindexTest {
         legs[0] = IIndexZap.BurnLeg({
             v3Path: abi.encodePacked(address(wbtc), FEE, address(weth), FEE, tokenOut),
             v4Path: new PathKey[](0),
+            pancakePath: "",
             minAmountOut: 0
         });
         legs[1] = IIndexZap.BurnLeg({
-            v3Path: abi.encodePacked(address(weth), FEE, tokenOut), v4Path: new PathKey[](0), minAmountOut: 0
+            v3Path: abi.encodePacked(address(weth), FEE, tokenOut),
+            v4Path: new PathKey[](0),
+            pancakePath: "",
+            minAmountOut: 0
         });
         legs[2] = IIndexZap.BurnLeg({
             v3Path: abi.encodePacked(address(link), FEE, address(weth), FEE, tokenOut),
             v4Path: new PathKey[](0),
+            pancakePath: "",
             minAmountOut: 0
         });
     }
@@ -498,9 +509,12 @@ contract SecurityRegressionTest is XindexTest {
 
         IIndexZap.MintLeg[] memory legs = new IIndexZap.MintLeg[](2);
         legs[0] = IIndexZap.MintLeg({
-            v3Path: abi.encodePacked(address(weth), FEE, address(usdc)), v4Path: new PathKey[](0), maxAmountIn: 0
+            v3Path: abi.encodePacked(address(weth), FEE, address(usdc)),
+            v4Path: new PathKey[](0),
+            pancakePath: "",
+            maxAmountIn: 0
         });
-        legs[1] = IIndexZap.MintLeg({v3Path: "", v4Path: new PathKey[](0), maxAmountIn: 0});
+        legs[1] = IIndexZap.MintLeg({v3Path: "", v4Path: new PathKey[](0), pancakePath: "", maxAmountIn: 0});
 
         usdc.mint(alice, 10e6);
         vm.startPrank(alice);
@@ -572,9 +586,12 @@ contract SecurityRegressionTest is XindexTest {
         idx.approve(address(halfZap), 1e18);
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](2);
         legs[0] = IIndexZap.BurnLeg({
-            v3Path: abi.encodePacked(address(weth), FEE, address(usdc)), v4Path: new PathKey[](0), minAmountOut: 0
+            v3Path: abi.encodePacked(address(weth), FEE, address(usdc)),
+            v4Path: new PathKey[](0),
+            pancakePath: "",
+            minAmountOut: 0
         });
-        legs[1] = IIndexZap.BurnLeg({v3Path: "", v4Path: new PathKey[](0), minAmountOut: 0});
+        legs[1] = IIndexZap.BurnLeg({v3Path: "", v4Path: new PathKey[](0), pancakePath: "", minAmountOut: 0});
         uint256 out = halfZap.burnToToken(_burnParams(address(idx), 1e18, address(usdc), 1_000e6, legs, alice));
         vm.stopPrank();
 
@@ -799,7 +816,7 @@ contract SecurityRegressionTest is XindexTest {
         half.setPrice(address(usdc), 1e18, 18);
         weth.mint(address(half.inventory()), 100e18);
         usdc.mint(address(half.inventory()), 100e18);
-        halfZap = new IndexZap(IIndexFactory(address(factory)), half);
+        halfZap = new IndexZap(IIndexFactory(address(factory)), half, IPancakeUniversalRouter(address(0)));
 
         idx = _createIndex("Link One", "LNK1", _pair(address(link), address(usdc)), _pair(1e18, U_DUST));
 
@@ -816,8 +833,8 @@ contract SecurityRegressionTest is XindexTest {
     /// @dev Burn legs for `_halfFilled`'s index: LINK along `v3Path`, USDC passed through.
     function _halfLegs(bytes memory v3Path) internal pure returns (IIndexZap.BurnLeg[] memory legs) {
         legs = new IIndexZap.BurnLeg[](2);
-        legs[0] = IIndexZap.BurnLeg({v3Path: v3Path, v4Path: new PathKey[](0), minAmountOut: 0});
-        legs[1] = IIndexZap.BurnLeg({v3Path: "", v4Path: new PathKey[](0), minAmountOut: 0});
+        legs[0] = IIndexZap.BurnLeg({v3Path: v3Path, v4Path: new PathKey[](0), pancakePath: "", minAmountOut: 0});
+        legs[1] = IIndexZap.BurnLeg({v3Path: "", v4Path: new PathKey[](0), pancakePath: "", minAmountOut: 0});
     }
 
     function test_XA08_aLaterHopsUnsoldInputReachesTheRecipient() public {

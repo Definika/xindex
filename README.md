@@ -94,7 +94,7 @@ The history, in one paragraph each:
 | Supplies | One reference supply per token, in its raw units: the supply of what the token represents (bitcoin's for WBTC, ether's for WETH). Nothing reads a supply live. After the first listing a supply changes only through a weekly **batch**: atomic, one live at a time, 2 days of notice with the guardian's veto, each supply within `MAX_SUPPLY_STEP` (0.5%) of the one in force. |
 | Rebalancing | Anyone starts a rebalance 7 days after the last one (`MIN_REBALANCE_INTERVAL`), 2 days of notice (`REBALANCE_DELAY`), then a 24-hour auction (`AUCTION_DURATION`) in which λ falls from the top of the band to the bottom and any contract can fill. Every moving component's units move within `[λmin/λmax, λmax/λmin] ⊂ [0.990, 1.0101]` per rebalance, plus one raw unit of rounding. |
 | Prices | None on chain. The app values an index off chain as the sum of units times its own prices (design section 10). |
-| Swaps | Uniswap's Universal Router 2.0.0, V3 and V4, one venue per leg, chosen by the caller: as in v3. The app offers the one-click zap only up to about 35 components (EIP-7825's 16.78M gas per transaction). |
+| Swaps | Uniswap's Universal Router 2.0.0, V3 and V4, and PancakeSwap's v3 Universal Router for PancakeSwap V3 (since 2026-10-06, chiefly for CAKE), one venue per leg, chosen by the caller. THORChain only in the app, from the user's own wallets, never through a contract (`design/2026-10-06-swap-venues.md`). The app offers the one-click zap only up to about 35 components (EIP-7825's 16.78M gas per transaction). |
 | Fees | None: Stage A is funded from outside (the owner's call on 2026-09-30, design section 13.1). Every amount the hub moves goes through one helper, `_backing`, so a fee in a later version would land in one reviewed change. |
 | Layer-1 coins | Stage A holds Ethereum tokens only; Bitcoin is held as WBTC. Native coins of chains whose contracts can verify a proof about Ethereum, and whose state Ethereum can verify in turn, come in vaults from Stage B. Script-only chains, whose contracts cannot verify one (Bitcoin, XRP Ledger, Dogecoin, ...), are out of scope as vault chains; their coins can come as Binance-Peg tokens in the BNB Chain vault, a custodial copy labelled as such (`design/2026-10-05-wide-asset-support.md`). |
 | Stable in / out | Mint with USDC or USDT through the zap, or through `MintRequests` at a limit of the requester's own, filled by anyone who holds shares. The burner chooses USDC, USDT or any other token at exit, or asks for USDC or USDT at a limit through `MintRequests`. Index tokens are fungible, so the protocol cannot know which stable a holder used. |
@@ -134,10 +134,10 @@ The history, in one paragraph each:
   replacement takes 7 days, and the registry (`isIndex`, `creatorOf`, `allIndexes`). Indexes are EIP-1167 clones
   deployed with CREATE2 from a salt over the creator, the name, the symbol, the tokens and the **computed units**;
   `predictIndexAddress` returns the address before the transaction is sent.
-- `IndexZap` (`src/IndexZap.sol`) is v3's stateless convenience router over Uniswap's Universal Router, unchanged but
-  for its recipient check. `mintWithToken` buys exactly the basket with exact-output swaps and issues; `burnToToken`
+- `IndexZap` (`src/IndexZap.sol`) is v3's stateless convenience router over Uniswap's Universal Router, with
+  PancakeSwap's v3 Universal Router as a third venue per leg since 2026-10-06. `mintWithToken` buys exactly the basket with exact-output swaps and issues; `burnToToken`
   redeems and sells every component into the chosen token; `burnToTokenWithPermit` does it in one transaction. It is the
-  only contract here that knows about Uniswap.
+  only contract here that knows about Uniswap or PancakeSwap.
 - `MintRequests` (`src/MintRequests.sol`) is an ownerless escrow. `requestMint(index, stable, amount, minShares,
   deadline)` escrows USDC or USDT for at least `minShares` shares; `requestRedeem(index, shares, stable, minOut,
   deadline)` escrows shares for at least `minOut` of a stablecoin. Anyone `fill`s a request before its deadline by
@@ -286,12 +286,25 @@ at any time) or `refund` (anyone, after the deadline).
   reviewed, and watch keep masks. The contracts cannot tell a mistyped supply from a real one; the guardian's
   `cancelSupplies` during a batch's 2 days and `cancelRebalance` during a notice are the checks.
 - **Zap calls take a params struct.** `MintParams {index, expectedNonce, tokenIn, maxAmountIn, shares, legs, to,
-  deadline}` with `MintLeg {v3Path, v4Path, maxAmountIn}`, and `BurnParams {index, expectedNonce, shares, tokenOut,
-  minAmountOut, legs, to, deadline}` with `BurnLeg {v3Path, v4Path, minAmountOut}`. `legs` has one entry per component,
+  deadline}` with `MintLeg {v3Path, v4Path, pancakePath, maxAmountIn}`, and `BurnParams {index, expectedNonce, shares,
+  tokenOut, minAmountOut, legs, to, deadline}` with `BurnLeg {v3Path, v4Path, pancakePath, minAmountOut}`. `legs` has one entry per component,
   in component order. `expectedNonce` is `rebalanceNonce()` when the legs were quoted; after a rebalance, re-quote.
-- **One venue per leg.** A leg carries a packed `v3Path` **or** a `v4Path`, never both. Both empty means "no swap",
-  which is only valid for the pass-through leg, the one whose component already is the stable on a mint or `tokenOut`
-  on a burn. Anything else is `BadRoute(i)`. There are no mixed-venue legs.
+- **One venue per leg.** A leg carries exactly one of a packed `v3Path` (Uniswap V3), a `v4Path` (Uniswap V4) and a
+  packed `pancakePath` (PancakeSwap V3). All empty means "no swap", which is only valid for the pass-through leg, the one
+  whose component already is the stable on a mint or `tokenOut` on a burn. Anything else is `BadRoute(i)`, and so is a
+  `pancakePath` on a zap whose `PANCAKE_ROUTER()` is zero. There are no mixed-venue legs.
+- **PancakeSwap routes.** Uniswap's packed format, through PancakeSwap's own pools, whose fee tiers are 100, 500, 2500
+  and 10000 (no 3000). Quote them with PancakeSwap's QuoterV2, `0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997`. On
+  Ethereum only CAKE is deeper there than on Uniswap; quote both venues per leg and take the better. If PancakeSwap's
+  router is paused, its legs revert with `Pausable: paused`: route those legs through Uniswap.
+- **THORChain, from the user's own wallets.** No contract calls THORChain, and the zap, an index or `MintRequests` must
+  never be a THORChain destination: a contract receives a plain transfer it cannot use. `swaprail/thorchain.mjs` is the
+  reference planner: `planFundToEthereum` turns BTC, LTC, BCH or DOGE into USDC, USDT, ETH or WBTC at the user's own
+  Ethereum account before a zap mint; `planExitFromEthereum` turns a burn's USDC, USDT, ETH or WBTC into BTC, or into
+  BNB or TRX at the user's own address to fund a vault-coin mint, as the user's own transaction to THORChain's router.
+  It refuses contract senders and destinations, needs two independent THORNode endpoints that agree, pins the
+  router, checks the vault and the halts, and writes its own memo with a limit and a refund address. Use it as it is, or
+  port its checks whole; `design/2026-10-06-swap-venues.md` explains each.
 - **V3 routes.** Packed paths: `token(20) | fee(3) | token(20) [| fee(3) | token(20)]`. For **mint** the path is
   exact-output encoded, starting with the component and ending with the stable (e.g. `WBTC 500 WETH 500 USDC`). For
   **burn** it is exact-input encoded, starting with the component and ending with `tokenOut`.
@@ -375,7 +388,7 @@ at any time) or `refund` (anyone, after the deadline).
 - **Watch the ownership handover.** `transferOwnership(new owner)` emits `OwnershipTransferStarted` and
   `acceptOwnership()` emits `OwnershipTransferred`. It is the one admin change with no delay and no guardian veto.
 - **Errors.** `IndexZap`: `NotIndex`, `StaleRebalanceNonce`, `Expired`, `ZeroAddress`, `ZeroAmount`, `InvalidRecipient`
-  (the zap, the index, the Universal Router, the PoolManager or the factory, RT-21), `LegCountMismatch`, `BadRoute(i)`,
+  (the zap, the index, either router, the PoolManager or the factory, RT-21), `LegCountMismatch`, `BadRoute(i)`,
   `ShortFill(i, received, required)`, `InsufficientBudget`, `InsufficientOutput`, `TransferShortfall`. `IndexHub`:
   `NotFactory`, `NotInitialized`, `InvalidComponents`, `ZeroShares`, `ZeroAddress`, `InvalidRecipient` (also for a share
   transfer to the index itself or its factory), `InvalidSkipMask`, `NothingToClaim`, `TransferAmountMismatch`,
@@ -539,6 +552,13 @@ order; v5's `default` list keeps the four, with Pyth price ids instead of suppli
   the zap's practical limit. The in-kind path is what fits at 100.
 - The zap is pinned to **Universal Router 2.0.0** rather than the 2.1.x line, whose command inputs carry an extra
   per-hop price array. Moving to a newer router means a new zap; the hub and factory do not depend on it.
+- **PancakeSwap's owner can stop its legs.** PancakeSwap's Safe can pause its router, and can attach a contract its V3
+  pools call during every swap. Either makes PancakeSwap legs revert; neither can take a zap user's funds, since a leg
+  holds only what it may spend and sweeps the rest back in the same call (SV-I1). Its router's source commit and audit
+  are unknown; it is pinned by code hash (SV-I2).
+- **THORChain is a trusted third party and can halt.** A THORChain swap is not atomic: its validators hold the coins
+  between the two chains, it has halted trading for weeks (39 days after the exploit of May 2026), and a swap that
+  cannot fill at its limit is refunded, minus fees, to the refund address. Nothing in Xindex depends on it.
 - Bytecode targets the Cancun EVM (`evm_version = "cancun"`), which TRON has on (`tron/README.md`); `BnbStateVerifier`
   also needs Prague's BLS12-381 precompiles, which Ethereum and Sepolia have. Re-check before deploying to any other
   chain.
@@ -604,11 +624,15 @@ For an index holding vault coins (Stage B, not deployed; the Stage B spec has th
 | Uniswap QuoterV2 (V3 quotes) | `0x61fFE014bA17989E743c5F6cB21bF9697530B21e` |
 | Uniswap V4 Quoter | `0x52F0E24D1c21C8A0cB1e5a5dD6198556BD9E1203` |
 | Uniswap V4 StateView | `0x7fFE42C4a5DEeA5b0feC41C94C136Cf115597227` |
+| PancakeSwap v3 Universal Router | `0x65b382653f7C31bC0Af67f188122035461ec9C76` |
+| PancakeSwap V3 Factory / QuoterV2 | `0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865` / `0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997` |
+| THORChain Router v4.1 (app-side only) | `0xD37BbE5744D730a1d98d8DC97c42F0Ca46aD7146` |
 | HybridIndexFactory / IndexZap / MintRequests | not deployed |
 
 The scripts read mainnet addresses and reference supplies from `script/MainnetAddresses.sol`, which
 `test/fork/MainnetAddresses.fork.t.sol` checks on-chain: tokens by symbol and decimals, the router and the PoolManager
-by their runtime code hashes (every Universal Router build answers `poolManager()` alike, CR-I35), and the default list
+by their runtime code hashes (every Universal Router build answers `poolManager()` alike, CR-I35), PancakeSwap's
+router the same way, and the default list
 on a fresh factory. The quoters and StateView are for apps and tests; no contract reads them.
 
 ## Development
@@ -924,7 +948,7 @@ SwapRouter02; it is a test fixture without slippage limits, so never fund it on 
 src/WeightedHub.sol           v5 index implementation (ERC20 + permit, in-kind issue, redeem, redeemSkipping, claim, rebalance
                               to fixed weights at Pyth prices), cloned
 src/WeightedIndexFactory.sol  v5 listings (each token with its Pyth price id), guardian, registry, CREATE2 clone deployer
-src/IndexZap.sol              Universal Router mint/burn router, one venue per leg, per-leg limits, nonce check
+src/IndexZap.sol              mint/burn router over Uniswap's and PancakeSwap's Universal Routers, one venue per leg, per-leg limits, nonce check
 src/MintRequests.sol          ownerless escrow of USDC/USDT-for-shares requests at the requester's own limit
 src/HybridIndexFactory.sol    Stage B: WeightedIndexFactory plus the chain registry, vault-coin listings, the chain freeze and the template choice
 src/HybridHub.sol             Stage B: an index of Ethereum tokens and vault coins: orders, burns, claims; delegates the rest to its module
@@ -935,7 +959,7 @@ src/verifiers/                Stage B: P1 (SP1) and P2 (RISC Zero) on an EVM vau
                               Ethereum the state of BNB Chain, TRON, NEAR, Stellar, Sui, Injective (CometBFT), VeChain and Aptos
 src/interfaces/               every contract's interface, the shared errors (IXindexErrors), and the vendored
                               IUniversalRouter, ISP1Verifier and IRiscZeroVerifier
-src/libraries/                PathLib, UniversalRouterCommands and UniswapV4Types (vendored), and Stage B's VaultMessages,
+src/libraries/                PathLib, UniversalRouterCommands, UniswapV4Types and PancakeRouterCommands (vendored), and Stage B's VaultMessages,
                               RlpReader, MerklePatricia, Bls12381, and for Sui Bls12381MinSig, Blake2b and SuiBcs
 test/*.t.sol                  unit, fuzz, invariant, script and repository tests
 test/Security.t.sol           regression tests for the security review findings (some ids are tested elsewhere; see AGENTS.md gate 6)
@@ -965,6 +989,7 @@ tron/                         the TRON build: the contracts under Tron's compile
 prototype/                    the proving prototype, with SP1's Groth16 verifier vendored unchanged in evm/src/sp1
 vendor/risc0-ethereum/        RISC Zero's Groth16 verifier, vendored unchanged at v3.0.1
 demo/                         the hackathon's testnet demonstration, with stub verifiers for some or all of the proofs; never for a mainnet
+swaprail/                     the THORChain planner the web app adopts (app-side, no contract calls it), its tests and a read-only live check
 design/                       the v4 design (its PDF and the builder), the Stage A and B specs, the proving prototype,
                               the WBT check, the hackathon plan, the Stage C, Solana, L2 and other chains'
                               research, and the analysis scripts

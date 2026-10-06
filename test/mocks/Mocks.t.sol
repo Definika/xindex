@@ -8,6 +8,7 @@ import {MockUSDT} from "./MockUSDT.sol";
 import {MockSwapRouter} from "./MockSwapRouter.sol";
 import {MockPausableToken} from "./MockPausableToken.sol";
 import {MockRouterInventory, MockUniversalRouter} from "./MockUniversalRouter.sol";
+import {MockPancakeRouter} from "./MockPancakeRouter.sol";
 import {UniversalRouterCommands as Cmd} from "../../src/libraries/UniversalRouterCommands.sol";
 import {
     PathKey,
@@ -438,6 +439,62 @@ contract MocksTest is Test {
         two[1] = abi.encode(address(a), address(this), uint256(0));
         vm.expectRevert("MockUR: not pre-funded");
         r.execute(abi.encodePacked(Cmd.V3_SWAP_EXACT_IN, Cmd.SWEEP), two);
+    }
+
+    /// @dev The PancakeSwap router stand-in's own branches, each as the deployed router behaves.
+    function test_pancakeRouter_followsTheDeployedRouter() public {
+        MockWETH w = new MockWETH();
+        MockPancakeRouter r = new MockPancakeRouter(address(w));
+        MockERC20 a = new MockERC20("A", "A", 18);
+        MockERC20 b = new MockERC20("B", "B", 18);
+        r.setPrice(address(a), 1e18, 18);
+        r.setPrice(address(b), 1e18, 18);
+        b.mint(address(r.inventory()), 100e18);
+        bytes memory ab = abi.encodePacked(address(a), uint24(2500), address(b));
+        bytes[] memory one = new bytes[](1);
+
+        vm.expectRevert(MockPancakeRouter.LengthMismatch.selector);
+        r.execute(abi.encodePacked(uint8(0x04), uint8(0x04)), one);
+
+        one[0] = "";
+        vm.expectRevert("MockPancake: the zap emitted a command it should not");
+        r.execute(abi.encodePacked(uint8(0x10)), one); // OWNER_CHECK_721 here, V4_SWAP at Uniswap
+
+        one[0] = abi.encode(address(this), uint256(1), uint256(0), ab, true);
+        vm.expectRevert("MockPancake: the zap pays from the router's balance");
+        r.execute(abi.encodePacked(uint8(0x00)), one);
+        one[0] = abi.encode(address(this), uint256(1), uint256(1), ab, true);
+        vm.expectRevert("MockPancake: the zap pays from the router's balance");
+        r.execute(abi.encodePacked(uint8(0x01)), one);
+
+        one[0] = abi.encode(address(this), uint256(1e18), uint256(0), ab, false);
+        vm.expectRevert("MockPancake: not pre-funded");
+        r.execute(abi.encodePacked(uint8(0x00)), one);
+
+        one[0] = abi.encode(address(a), makeAddr("elsewhere"), uint256(0));
+        vm.expectRevert("MockPancake: the zap names itself as the recipient");
+        r.execute(abi.encodePacked(uint8(0x04)), one);
+        one[0] = abi.encode(address(a), address(this), uint256(1));
+        vm.expectRevert(abi.encodeWithSignature("InsufficientToken()"));
+        r.execute(abi.encodePacked(uint8(0x04)), one);
+        one[0] = abi.encode(address(a), address(this), uint256(0));
+        r.execute(abi.encodePacked(uint8(0x04)), one); // an empty sweep sends nothing
+
+        // MSG_SENDER pays the caller; an exact amount of ether is wrapped, and sent on when the recipient is not the
+        // router; asking for more ether than it holds reverts.
+        a.mint(address(r), 1e18);
+        one[0] = abi.encode(address(1), uint256(1e18), uint256(0), ab, false);
+        r.execute(abi.encodePacked(uint8(0x00)), one);
+        assertEq(b.balanceOf(address(this)), 1e18);
+        vm.deal(address(r), 3);
+        one[0] = abi.encode(alice, uint256(2));
+        vm.prank(bob);
+        r.execute(abi.encodePacked(uint8(0x0b)), one);
+        assertEq(w.balanceOf(alice), 2, "wrapped and sent on");
+        assertEq(bob.balance, 1, "the rest of the router's ether goes to its caller after the last command");
+        one[0] = abi.encode(address(2), uint256(1));
+        vm.expectRevert(MockPancakeRouter.InsufficientETH.selector);
+        r.execute(abi.encodePacked(uint8(0x0b)), one);
     }
 
     function test_universalRouter_refusesMalformedV4Actions() public {

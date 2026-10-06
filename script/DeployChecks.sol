@@ -13,6 +13,8 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 abstract contract DeployChecks is Script {
     /// @notice Mainnet default {resolveRouter} uses on chain 1, from `MainnetAddresses`.
     address public constant MAINNET_UNIVERSAL_ROUTER = MainnetAddresses.UNIVERSAL_ROUTER;
+    /// @notice Mainnet default {resolvePancakeRouter} uses on chain 1, from `MainnetAddresses`.
+    address public constant MAINNET_PANCAKE_ROUTER = MainnetAddresses.PANCAKE_UNIVERSAL_ROUTER;
     /// @notice Fewest signatures a Safe owner may need on mainnet: the design's 3-of-5 hardware wallets held by
     ///         separate people (the owner's call on 2026-09-30).
     uint256 public constant MIN_OWNER_THRESHOLD = 3;
@@ -148,6 +150,24 @@ abstract contract DeployChecks is Script {
     /// @return The resolved router.
     function resolveRouter(address router) public view returns (address) {
         return _resolve("UNIVERSAL_ROUTER", router, MAINNET_UNIVERSAL_ROUTER);
+    }
+
+    /// @notice Fills a zero PancakeSwap router with mainnet's on chain 1, refuses any other there, and requires code.
+    ///         Off mainnet a zero router is accepted and deploys a zap that refuses every PancakeSwap leg, since a
+    ///         testnet has no PancakeSwap to route to.
+    /// @param given Address from the environment.
+    /// @return The resolved router, or zero off mainnet for none.
+    function resolvePancakeRouter(address given) public view returns (address) {
+        if (block.chainid != 1 && given == address(0)) return address(0);
+        return _resolve("PANCAKE_ROUTER", given, MAINNET_PANCAKE_ROUTER);
+    }
+
+    /// @notice Neither role may be PancakeSwap's router either: anyone can sweep a router's balance (CR-I37).
+    /// @param pancakeRouter The resolved router, or zero for none.
+    function checkRolesAreNotPancake(address owner, address guardian, address pancakeRouter) public pure {
+        if (pancakeRouter != address(0) && (owner == pancakeRouter || guardian == pancakeRouter)) {
+            revert RoleIsMarketContract(pancakeRouter);
+        }
     }
 
     /// @notice Fills a zero stablecoin with mainnet's on chain 1 only, refuses any other there, and requires code, as

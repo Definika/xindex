@@ -9,6 +9,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {WeightedIndexFactory} from "../../src/WeightedIndexFactory.sol";
 import {WeightedHub} from "../../src/WeightedHub.sol";
 import {IndexZap} from "../../src/IndexZap.sol";
+import {IPancakeUniversalRouter} from "../../src/interfaces/IPancakeUniversalRouter.sol";
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
 import {IWeightedHub} from "../../src/interfaces/IWeightedHub.sol";
@@ -106,7 +107,9 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
 
         pyth = new MockPyth();
         factory = new WeightedIndexFactory(address(this), guardian, address(pyth));
-        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER));
+        zap = new IndexZap(
+            IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), IPancakeUniversalRouter(address(0))
+        );
 
         (address[] memory tokens, bytes32[] memory ids) = PythIds.all();
         for (uint256 i = 0; i < tokens.length; ++i) {
@@ -422,7 +425,8 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         // Alice mints two tokens, $2,000 at the pools, with USDC.
         IIndexZap.MintLeg[] memory legs = new IIndexZap.MintLeg[](picked.length);
         for (uint256 i = 0; i < picked.length; ++i) {
-            legs[i] = IIndexZap.MintLeg({v3Path: picked[i].route, v4Path: new PathKey[](0), maxAmountIn: 0});
+            legs[i] =
+                IIndexZap.MintLeg({v3Path: picked[i].route, v4Path: new PathKey[](0), pancakePath: "", maxAmountIn: 0});
         }
         deal(A.USDC, alice, 3000e6);
         vm.startPrank(alice);
@@ -463,7 +467,9 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         // Alice burns both tokens to USDC.
         IIndexZap.BurnLeg[] memory burnLegs = new IIndexZap.BurnLeg[](picked.length);
         for (uint256 i = 0; i < picked.length; ++i) {
-            burnLegs[i] = IIndexZap.BurnLeg({v3Path: picked[i].route, v4Path: new PathKey[](0), minAmountOut: 0});
+            burnLegs[i] = IIndexZap.BurnLeg({
+                v3Path: picked[i].route, v4Path: new PathKey[](0), pancakePath: "", minAmountOut: 0
+            });
         }
         vm.startPrank(alice);
         index.approve(address(zap), 2e18);

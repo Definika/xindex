@@ -10,6 +10,7 @@ import {HybridHubModule} from "../src/hybrid/HybridHubModule.sol";
 import {IHybridIndex} from "../src/interfaces/IHybridIndex.sol";
 import {IndexHub} from "../src/IndexHub.sol";
 import {IndexZap} from "../src/IndexZap.sol";
+import {IPancakeUniversalRouter} from "../src/interfaces/IPancakeUniversalRouter.sol";
 import {IIndexZap} from "../src/interfaces/IIndexZap.sol";
 import {Errors} from "@openzeppelin/contracts/utils/Errors.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
@@ -511,7 +512,9 @@ contract HybridIndexFactoryTest is HybridTest {
     ///      on one reverts there with nothing moved. A hybrid index's mints are orders.
     function test_theZapCannotMintOrBurnAHybridIndex() public {
         IHybridIndex hub = _createHybrid();
-        IndexZap zap = new IndexZap(factory, new MockUniversalRouter(makeAddr("poolManager")));
+        IndexZap zap = new IndexZap(
+            factory, new MockUniversalRouter(makeAddr("poolManager")), IPancakeUniversalRouter(address(0))
+        );
         MockERC20 usdc = new MockERC20("USD Coin", "USDC", 6);
         usdc.mint(holder, 1_000e6);
         vm.prank(holder);

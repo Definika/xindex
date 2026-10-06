@@ -9,6 +9,7 @@ import {WeightedHub} from "../../src/WeightedHub.sol";
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {IWeightedIndexFactory} from "../../src/interfaces/IWeightedIndexFactory.sol";
 import {IndexZap} from "../../src/IndexZap.sol";
+import {IPancakeUniversalRouter} from "../../src/interfaces/IPancakeUniversalRouter.sol";
 import {MintRequests} from "../../src/MintRequests.sol";
 import {IMintRequests} from "../../src/interfaces/IMintRequests.sol";
 import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
@@ -127,7 +128,9 @@ contract SecurityForkTest is Test {
             );
         }
         factory = new WeightedIndexFactory(address(this), address(0), A.PYTH);
-        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER));
+        zap = new IndexZap(
+            IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), IPancakeUniversalRouter(address(0))
+        );
 
         // Nothing here asks for a price, so each token is listed under a price id of its own making.
         factory.proposeListing(A.WBTC, keccak256(abi.encode(A.WBTC)));
@@ -201,10 +204,13 @@ contract SecurityForkTest is Test {
 
         IIndexZap.BurnLeg[] memory burnLegs = new IIndexZap.BurnLeg[](2);
         burnLegs[0] = IIndexZap.BurnLeg({
-            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDT), v4Path: new PathKey[](0), minAmountOut: 0
+            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDT),
+            v4Path: new PathKey[](0),
+            pancakePath: "",
+            minAmountOut: 0
         });
         burnLegs[1] = IIndexZap.BurnLeg({
-            v3Path: abi.encodePacked(A.WETH, F500, A.USDT), v4Path: new PathKey[](0), minAmountOut: 0
+            v3Path: abi.encodePacked(A.WETH, F500, A.USDT), v4Path: new PathKey[](0), pancakePath: "", minAmountOut: 0
         });
         vm.startPrank(user);
         idx.approve(address(zap), 1e18);
@@ -229,10 +235,13 @@ contract SecurityForkTest is Test {
         deal(A.USDT, user, 100e6);
         IIndexZap.MintLeg[] memory mintLegs = new IIndexZap.MintLeg[](2);
         mintLegs[0] = IIndexZap.MintLeg({
-            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDT), v4Path: new PathKey[](0), maxAmountIn: 0
+            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDT),
+            v4Path: new PathKey[](0),
+            pancakePath: "",
+            maxAmountIn: 0
         });
         mintLegs[1] = IIndexZap.MintLeg({
-            v3Path: abi.encodePacked(A.WETH, F500, A.USDT), v4Path: new PathKey[](0), maxAmountIn: 0
+            v3Path: abi.encodePacked(A.WETH, F500, A.USDT), v4Path: new PathKey[](0), pancakePath: "", maxAmountIn: 0
         });
         vm.startPrank(user);
         IERC20(A.USDT).forceApprove(address(zap), 100e6);
@@ -256,10 +265,10 @@ contract SecurityForkTest is Test {
         WeightedHub idx = _create(A.WBTC, A.LINK);
         IIndexZap.MintLeg[] memory legs = new IIndexZap.MintLeg[](2);
         legs[0] = IIndexZap.MintLeg({
-            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH), v4Path: new PathKey[](0), maxAmountIn: 0
+            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH), v4Path: new PathKey[](0), pancakePath: "", maxAmountIn: 0
         });
         legs[1] = IIndexZap.MintLeg({
-            v3Path: abi.encodePacked(A.LINK, F3000, A.WETH), v4Path: new PathKey[](0), maxAmountIn: 0
+            v3Path: abi.encodePacked(A.LINK, F3000, A.WETH), v4Path: new PathKey[](0), pancakePath: "", maxAmountIn: 0
         });
 
         vm.deal(A.UNIVERSAL_ROUTER, 10 ether); // stray ether sitting in the router
@@ -295,10 +304,13 @@ contract SecurityForkTest is Test {
 
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](2);
         legs[0] = IIndexZap.BurnLeg({
-            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDC), v4Path: new PathKey[](0), minAmountOut: 0
+            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDC),
+            v4Path: new PathKey[](0),
+            pancakePath: "",
+            minAmountOut: 0
         });
         legs[1] = IIndexZap.BurnLeg({
-            v3Path: abi.encodePacked(A.WETH, F500, A.USDC), v4Path: new PathKey[](0), minAmountOut: 0
+            v3Path: abi.encodePacked(A.WETH, F500, A.USDC), v4Path: new PathKey[](0), pancakePath: "", minAmountOut: 0
         });
 
         vm.deal(A.UNIVERSAL_ROUTER, 10 ether); // a griefer, or a careless user, leaves ether in the router
@@ -355,10 +367,13 @@ contract SecurityForkTest is Test {
         _issue(idx, 1e18);
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](2);
         legs[0] = IIndexZap.BurnLeg({
-            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDC), v4Path: new PathKey[](0), minAmountOut: 0
+            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDC),
+            v4Path: new PathKey[](0),
+            pancakePath: "",
+            minAmountOut: 0
         });
         legs[1] = IIndexZap.BurnLeg({
-            v3Path: abi.encodePacked(A.WETH, F500, A.USDC), v4Path: new PathKey[](0), minAmountOut: 0
+            v3Path: abi.encodePacked(A.WETH, F500, A.USDC), v4Path: new PathKey[](0), pancakePath: "", minAmountOut: 0
         });
 
         // A griefer, or a user's slip, leaves a whole WETH in the router: far more than the WBTC leg's WETH hop sells.
@@ -382,9 +397,9 @@ contract SecurityForkTest is Test {
             PathKey({intermediateCurrency: address(0), fee: F3000, tickSpacing: 60, hooks: address(0), hookData: ""});
         route[1] = PathKey({intermediateCurrency: A.USDC, fee: F500, tickSpacing: 10, hooks: address(0), hookData: ""});
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](2);
-        legs[0] = IIndexZap.BurnLeg({v3Path: "", v4Path: route, minAmountOut: 0});
+        legs[0] = IIndexZap.BurnLeg({v3Path: "", v4Path: route, pancakePath: "", minAmountOut: 0});
         legs[1] = IIndexZap.BurnLeg({
-            v3Path: abi.encodePacked(A.WETH, F500, A.USDC), v4Path: new PathKey[](0), minAmountOut: 0
+            v3Path: abi.encodePacked(A.WETH, F500, A.USDC), v4Path: new PathKey[](0), pancakePath: "", minAmountOut: 0
         });
 
         deal(A.LINK, A.UNIVERSAL_ROUTER, 3e18);

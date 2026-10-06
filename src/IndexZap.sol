@@ -10,19 +10,24 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IIndexFactory} from "./interfaces/IIndexFactory.sol";
 import {IIndexHub} from "./interfaces/IIndexHub.sol";
 import {IIndexZap} from "./interfaces/IIndexZap.sol";
+import {IPancakeUniversalRouter} from "./interfaces/IPancakeUniversalRouter.sol";
 import {IUniversalRouter} from "./interfaces/IUniversalRouter.sol";
+import {PancakeRouterCommands as PCmd} from "./libraries/PancakeRouterCommands.sol";
 import {PathLib} from "./libraries/PathLib.sol";
 import {UniversalRouterCommands as Cmd} from "./libraries/UniversalRouterCommands.sol";
 import {PathKey, UniswapV4Types as V4, V4ExactInputParams, V4ExactOutputParams} from "./libraries/UniswapV4Types.sol";
 
 /// @title IndexZap
 /// @notice Stateless convenience router: mint any index with a single token (USDC, USDT, ...) and burn any index
-///         straight into a single token, swapping through Uniswap's Universal Router.
+///         straight into a single token, swapping through Uniswap's Universal Router and, leg by leg, PancakeSwap's.
 /// @dev Design notes
 ///      - The contract holds no state and no funds between transactions. Anyone can deploy a competing zap; the index
 ///        contracts do not know or care about this one.
-///      - Each leg names its venue. Depth still favours V3 for some components and V4 for others, so the app chooses
-///        per leg and the zap builds the router commands for whichever it finds.
+///      - Each leg names its venue: a Uniswap V3 path, a Uniswap V4 route or a PancakeSwap V3 path, exactly one.
+///        Depth favours Uniswap V3 for some components, V4 for others and PancakeSwap V3 for a few, CAKE above all, so
+///        the app chooses per leg and the zap builds the router commands for whichever it finds. A PancakeSwap leg runs
+///        through PancakeSwap's own v3 Universal Router with exactly the pattern below; only its command set and its
+///        ether refund differ, and both are handled where the commands are built.
 ///      - The zap builds every command itself and forwards nothing a caller supplied. The router's command set
 ///        includes sweeps and Permit2 transfers, so passing calldata through would hand a caller its permissions.
 ///      - Nothing is approved to the router and Permit2 is never used. A leg pre-funds the router with exactly what it
@@ -32,7 +37,12 @@ import {PathKey, UniswapV4Types as V4, V4ExactInputParams, V4ExactOutputParams} 
 ///        balance measurement plus `ShortFill` on a mint. The pre-fund is the operative bound, not a backstop: the
 ///        pinned V4 router checks `amountInMaximum` against the last hop it executed only, so an exact-output route
 ///        that passes back through `tokenIn` could otherwise spend past it (upstream v4-periphery #564, CR-I06). Never
-///        approve the router or pre-fund more than a leg's cap.
+///        approve either router or pre-fund more than a leg's cap.
+///      - PancakeSwap's router sends its whole ether balance to the caller after its last command, reverting if the
+///        send fails, and accepts ether from anyone. This contract cannot receive ether, so one wei sent to that router
+///        would revert every PancakeSwap leg until someone else's call carried it off. Every PancakeSwap call therefore
+///        ends with WRAP_ETH of the router's whole balance, kept in the router, which leaves nothing to send (SV-1).
+///        Accepting the ether here instead would break the rule that native ether never reaches the zap.
 ///      - Minting uses exact-output swaps so the zap buys precisely the basket for `shares` and the only leftover is
 ///        `tokenIn`, refunded in one transfer. The V4 router at the pinned version does not check that an exact-output
 ///        swap delivered, so the zap measures each leg's component balance and raises `ShortFill` if it did not.
@@ -72,17 +82,39 @@ contract IndexZap is ReentrancyGuard, IIndexZap {
     IUniversalRouter public immutable ROUTER;
     /// @inheritdoc IIndexZap
     address public immutable POOL_MANAGER;
+    /// @inheritdoc IIndexZap
+    IPancakeUniversalRouter public immutable PANCAKE_ROUTER;
 
     /// @dev The zap sweeps whatever the router did not spend and accepts any amount, including none: the leg's own
     ///      limits already bound what it could have spent, and the swap's delivery is checked separately.
     uint256 private constant SWEEP_NO_MINIMUM = 0;
     /// @dev Every V4 leg is the same three actions: swap, settle what it owes, take what it produced.
     uint256 private constant V4_ACTIONS = 3;
+    /// @dev Every PancakeSwap call is the same three commands: swap, sweep, and wrap the router's ether (SV-1).
+    uint256 private constant PANCAKE_COMMANDS = 3;
 
-    constructor(IIndexFactory factory, IUniversalRouter router) {
+    /// @dev Where a leg swaps.
+    enum Venue {
+        UniswapV3,
+        UniswapV4,
+        PancakeV3
+    }
+
+    /// @dev One V3 hop of a burn leg: what it sells, into what, and the least it must produce.
+    struct Hop {
+        address tokenIn;
+        address tokenOut;
+        uint256 given;
+        uint256 minOut;
+    }
+
+    /// @param pancakeRouter PancakeSwap's v3 Universal Router, or zero for a zap without PancakeSwap legs (a testnet
+    ///        has none). The deployment scripts pin mainnet's.
+    constructor(IIndexFactory factory, IUniversalRouter router, IPancakeUniversalRouter pancakeRouter) {
         if (address(factory) == address(0) || address(router) == address(0)) revert ZeroAddress();
         FACTORY = factory;
         ROUTER = router;
+        PANCAKE_ROUTER = pancakeRouter;
         // Read from the router rather than passed in, so the two can never be wired to different deployments.
         POOL_MANAGER = router.poolManager();
     }
@@ -141,7 +173,7 @@ contract IndexZap is ReentrancyGuard, IIndexZap {
         for (uint256 i = 0; i < n; ++i) {
             address component = tokens[i];
             if (component == p.tokenIn) {
-                if (p.legs[i].v3Path.length != 0 || p.legs[i].v4Path.length != 0) revert BadRoute(i);
+                if (_namesAVenue(p.legs[i].v3Path, p.legs[i].v4Path, p.legs[i].pancakePath)) revert BadRoute(i);
                 // As on the burn side, the leg that carries no swap still honours its own limit (DA-15).
                 uint256 legCap = p.legs[i].maxAmountIn;
                 if (legCap != 0 && need[i] > legCap) revert InsufficientBudget(need[i], legCap);
@@ -164,42 +196,53 @@ contract IndexZap is ReentrancyGuard, IIndexZap {
         returns (uint256 amountIn)
     {
         MintLeg calldata leg = p.legs[i];
-        bool isV4 = _checkRoute(leg.v3Path, leg.v4Path, component, p.tokenIn, true, i);
+        Venue venue = _checkRoute(leg.v3Path, leg.v4Path, leg.pancakePath, component, p.tokenIn, true, i);
         uint256 cap = leg.maxAmountIn != 0 && leg.maxAmountIn < budget ? leg.maxAmountIn : budget;
 
         IERC20 tokenIn = IERC20(p.tokenIn);
         uint256 inBefore = tokenIn.balanceOf(address(this));
         uint256 outBefore = IERC20(component).balanceOf(address(this));
-        tokenIn.safeTransfer(address(ROUTER), cap);
-
-        bytes memory commands;
-        bytes[] memory inputs = new bytes[](2);
-        if (isV4) {
-            commands = abi.encodePacked(Cmd.V4_SWAP, Cmd.SWEEP);
-            bytes[] memory params = new bytes[](V4_ACTIONS);
-            params[0] = abi.encode(
-                V4ExactOutputParams({
-                    currencyOut: component,
-                    path: leg.v4Path,
-                    amountOut: SafeCast.toUint128(amountOut),
-                    amountInMaximum: SafeCast.toUint128(cap)
-                })
-            );
-            params[1] = abi.encode(p.tokenIn, V4.OPEN_DELTA, false);
-            params[2] = abi.encode(component, address(this), V4.OPEN_DELTA);
-            inputs[0] = abi.encode(abi.encodePacked(V4.SWAP_EXACT_OUT, V4.SETTLE, V4.TAKE), params);
-        } else {
-            commands = abi.encodePacked(Cmd.V3_SWAP_EXACT_OUT, Cmd.SWEEP);
-            inputs[0] = abi.encode(address(this), amountOut, cap, leg.v3Path, false);
-        }
-        inputs[1] = abi.encode(p.tokenIn, address(this), SWEEP_NO_MINIMUM);
-        ROUTER.execute(commands, inputs);
+        _swapExactOut(leg, venue, p.tokenIn, component, amountOut, cap);
 
         // The router reports nothing, so both sides are measured here. The pinned V4 router does not check that an
         // exact-output swap delivered, and a short fill would otherwise surface as an opaque failure inside issue().
         uint256 delivered = IERC20(component).balanceOf(address(this)) - outBefore;
         if (delivered < amountOut) revert ShortFill(i, delivered, amountOut);
         amountIn = Math.saturatingSub(inBefore, tokenIn.balanceOf(address(this)));
+    }
+
+    /// @dev Pre-funds the leg's router with `cap` of `tokenIn` and buys exactly `amountOut` of `component` on `venue`,
+    ///      sweeping back in the same call whatever the swap did not spend.
+    function _swapExactOut(
+        MintLeg calldata leg,
+        Venue venue,
+        address tokenIn,
+        address component,
+        uint256 amountOut,
+        uint256 cap
+    ) private {
+        bool pancake = venue == Venue.PancakeV3;
+        IERC20(tokenIn).safeTransfer(_routerFor(pancake), cap);
+        if (venue != Venue.UniswapV4) {
+            bytes calldata path = pancake ? leg.pancakePath : leg.v3Path;
+            _swapV3(pancake, true, abi.encode(address(this), amountOut, cap, path, false), tokenIn);
+            return;
+        }
+        bytes[] memory inputs = new bytes[](2);
+        bytes[] memory params = new bytes[](V4_ACTIONS);
+        params[0] = abi.encode(
+            V4ExactOutputParams({
+                currencyOut: component,
+                path: leg.v4Path,
+                amountOut: SafeCast.toUint128(amountOut),
+                amountInMaximum: SafeCast.toUint128(cap)
+            })
+        );
+        params[1] = abi.encode(tokenIn, V4.OPEN_DELTA, false);
+        params[2] = abi.encode(component, address(this), V4.OPEN_DELTA);
+        inputs[0] = abi.encode(abi.encodePacked(V4.SWAP_EXACT_OUT, V4.SETTLE, V4.TAKE), params);
+        inputs[1] = abi.encode(tokenIn, address(this), SWEEP_NO_MINIMUM);
+        ROUTER.execute(abi.encodePacked(Cmd.V4_SWAP, Cmd.SWEEP), inputs);
     }
 
     // ---------------------------------------------------------------------
@@ -262,19 +305,20 @@ contract IndexZap is ReentrancyGuard, IIndexZap {
         for (uint256 i = 0; i < n; ++i) {
             address component = tokens[i];
             if (component == p.tokenOut) {
-                if (p.legs[i].v3Path.length != 0 || p.legs[i].v4Path.length != 0) revert BadRoute(i);
+                if (_namesAVenue(p.legs[i].v3Path, p.legs[i].v4Path, p.legs[i].pancakePath)) revert BadRoute(i);
                 // The pass-through leg carries no swap, but its limit is still the caller's and is still checked, so
                 // every leg honours the limit its NatSpec promises (DA-15).
                 if (got[i] < p.legs[i].minAmountOut) revert InsufficientOutput(got[i], p.legs[i].minAmountOut);
                 continue;
             }
             // Every leg is validated, including one that sells nothing, whose minimum then cannot be met.
-            bool isV4 = _checkRoute(p.legs[i].v3Path, p.legs[i].v4Path, component, p.tokenOut, false, i);
+            BurnLeg calldata leg = p.legs[i];
+            Venue venue = _checkRoute(leg.v3Path, leg.v4Path, leg.pancakePath, component, p.tokenOut, false, i);
             if (got[i] != 0) {
-                if (isV4) {
+                if (venue == Venue.UniswapV4) {
                     _sellV4(p, component, got[i], i);
                 } else {
-                    _sellV3(p, component, got[i], i);
+                    _sellV3(p, component, got[i], i, venue == Venue.PancakeV3);
                 }
             } else if (p.legs[i].minAmountOut != 0) {
                 revert InsufficientOutput(0, p.legs[i].minAmountOut);
@@ -282,20 +326,23 @@ contract IndexZap is ReentrancyGuard, IIndexZap {
         }
     }
 
-    /// @dev Sells `amountIn` of `component` along the leg's V3 path, one hop at a time. A V3 pool can stop at its
-    ///      price limit and take less than the input of any hop. A multi-hop call would hide that on every hop after
-    ///      the first, so each hop is swapped on its own and its unsold input is measured and returned. The leg's
-    ///      minimum applies to the last hop's output; the overall minimum bounds the whole burn.
-    function _sellV3(BurnParams calldata p, address component, uint256 amountIn, uint256 i) private {
+    /// @dev Sells `amountIn` of `component` along the leg's V3 path, Uniswap's or PancakeSwap's, one hop at a time. A
+    ///      V3 pool can stop at its price limit and take less than the input of any hop. A multi-hop call would hide
+    ///      that on every hop after the first, so each hop is swapped on its own and its unsold input is measured and
+    ///      returned. The leg's minimum applies to the last hop's output; the overall minimum bounds the whole burn.
+    function _sellV3(BurnParams calldata p, address component, uint256 amountIn, uint256 i, bool pancake) private {
         BurnLeg calldata leg = p.legs[i];
-        bytes calldata path = leg.v3Path;
+        bytes calldata path = pancake ? leg.pancakePath : leg.v3Path;
         address hopIn = component;
         uint256 given = amountIn;
         while (true) {
             bool last = path.length == PathLib.ADDR_SIZE + PathLib.HOP_SIZE;
             address hopOut = address(bytes20(path[PathLib.HOP_SIZE:PathLib.HOP_SIZE + PathLib.ADDR_SIZE]));
             uint256 produced = _v3Hop(
-                p, path[:PathLib.ADDR_SIZE + PathLib.HOP_SIZE], hopIn, hopOut, given, last ? leg.minAmountOut : 0
+                p,
+                path[:PathLib.ADDR_SIZE + PathLib.HOP_SIZE],
+                Hop({tokenIn: hopIn, tokenOut: hopOut, given: given, minOut: last ? leg.minAmountOut : 0}),
+                pancake
             );
             if (last) return;
             // A hop that produced nothing has nothing to hand the next one, and the leg cannot complete.
@@ -309,26 +356,45 @@ contract IndexZap is ReentrancyGuard, IIndexZap {
     ///      to the recipient rather than staying where anyone could sweep it. What the sweep brought back is measured
     ///      directly, as the balance above what was left once the router had been pre-funded: the sweep only ever adds
     ///      to it, so this cannot underflow whatever the router held beforehand (CR-L02).
-    function _v3Hop(
-        BurnParams calldata p,
-        bytes calldata hopPath,
-        address hopIn,
-        address hopOut,
-        uint256 given,
-        uint256 minOut
-    ) private returns (uint256 produced) {
-        IERC20 token = IERC20(hopIn);
+    function _v3Hop(BurnParams calldata p, bytes calldata hopPath, Hop memory hop, bool pancake)
+        private
+        returns (uint256 produced)
+    {
+        IERC20 token = IERC20(hop.tokenIn);
         uint256 inBefore = token.balanceOf(address(this));
-        uint256 outBefore = IERC20(hopOut).balanceOf(address(this));
-        token.safeTransfer(address(ROUTER), given);
+        uint256 outBefore = IERC20(hop.tokenOut).balanceOf(address(this));
+        token.safeTransfer(_routerFor(pancake), hop.given);
 
-        bytes[] memory inputs = new bytes[](2);
-        inputs[0] = abi.encode(address(this), given, minOut, hopPath, false);
-        inputs[1] = abi.encode(hopIn, address(this), SWEEP_NO_MINIMUM);
-        ROUTER.execute(abi.encodePacked(Cmd.V3_SWAP_EXACT_IN, Cmd.SWEEP), inputs);
+        _swapV3(pancake, false, abi.encode(address(this), hop.given, hop.minOut, hopPath, false), hop.tokenIn);
 
-        produced = IERC20(hopOut).balanceOf(address(this)) - outBefore;
-        _returnUnsold(p, hopIn, token.balanceOf(address(this)) + given - inBefore);
+        produced = IERC20(hop.tokenOut).balanceOf(address(this)) - outBefore;
+        _returnUnsold(p, hop.tokenIn, token.balanceOf(address(this)) + hop.given - inBefore);
+    }
+
+    /// @dev Runs one V3 swap, whose input `swapInput` has the layout both routers share, on Uniswap's router or
+    ///      PancakeSwap's, then sweeps `sweepToken` back here. On PancakeSwap's router the call ends with WRAP_ETH of the
+    ///      router's whole ether balance, kept there, so its end-of-call ether refund has nothing to send to this
+    ///      contract, which cannot receive it (SV-1). The router was pre-funded with exactly what the swap may spend.
+    function _swapV3(bool pancake, bool exactOut, bytes memory swapInput, address sweepToken) private {
+        bytes memory sweep = abi.encode(sweepToken, address(this), SWEEP_NO_MINIMUM);
+        if (!pancake) {
+            bytes[] memory inputs = new bytes[](2);
+            (inputs[0], inputs[1]) = (swapInput, sweep);
+            ROUTER.execute(abi.encodePacked(exactOut ? Cmd.V3_SWAP_EXACT_OUT : Cmd.V3_SWAP_EXACT_IN, Cmd.SWEEP), inputs);
+            return;
+        }
+        bytes[] memory pancakeInputs = new bytes[](PANCAKE_COMMANDS);
+        (pancakeInputs[0], pancakeInputs[1]) = (swapInput, sweep);
+        pancakeInputs[2] = abi.encode(PCmd.ADDRESS_THIS, PCmd.CONTRACT_BALANCE);
+        PANCAKE_ROUTER.execute(
+            abi.encodePacked(exactOut ? PCmd.V3_SWAP_EXACT_OUT : PCmd.V3_SWAP_EXACT_IN, PCmd.SWEEP, PCmd.WRAP_ETH),
+            pancakeInputs
+        );
+    }
+
+    /// @dev The router a V3 leg runs through.
+    function _routerFor(bool pancake) private view returns (address) {
+        return pancake ? address(PANCAKE_ROUTER) : address(ROUTER);
     }
 
     /// @dev Sells `amountIn` of `component` along the leg's V4 route as one swap. Every intermediate currency, native
@@ -387,12 +453,13 @@ contract IndexZap is ReentrancyGuard, IIndexZap {
         if (!FACTORY.isIndex(index)) revert NotIndex(index);
         _checkNonce(index, expectedNonce);
         if (to == address(0)) revert ZeroAddress();
-        // Tokens left in the router can be swept by anyone, and anything sent to the pool manager is a donation. The
-        // factory can never move a token on either, so a burn paid to it is lost (RT-21).
-        if (to == address(this) || to == index || to == address(ROUTER) || to == POOL_MANAGER || to == address(FACTORY))
-        {
-            revert InvalidRecipient(to);
-        }
+        // Tokens left in either router can be swept by anyone, and anything sent to the pool manager is a donation. The
+        // factory can never move a token on either, so a burn paid to it is lost (RT-21). A zero PancakeSwap router
+        // adds nothing here: a zero recipient was refused above.
+        if (
+            to == address(this) || to == index || to == address(ROUTER) || to == POOL_MANAGER || to == address(FACTORY)
+                || to == address(PANCAKE_ROUTER)
+        ) revert InvalidRecipient(to);
     }
 
     function _checkNonce(address index, uint256 expectedNonce) private view {
@@ -400,31 +467,56 @@ contract IndexZap is ReentrancyGuard, IIndexZap {
         if (nonce != expectedNonce) revert StaleRebalanceNonce(expectedNonce, nonce);
     }
 
-    /// @dev A leg names exactly one venue, and its route has to reach from the component to the user's token. The
-    ///      `component` end of a V4 route is the zap's own argument rather than the caller's, so only the far end
-    ///      needs checking; which entry that is depends on the direction the router walks the route, from the front
-    ///      for an exact input and from the back for an exact output.
+    /// @dev Whether a leg names any venue at all; the pass-through leg must name none.
+    function _namesAVenue(bytes calldata v3Path, PathKey[] calldata v4Path, bytes calldata pancakePath)
+        private
+        pure
+        returns (bool)
+    {
+        return v3Path.length != 0 || v4Path.length != 0 || pancakePath.length != 0;
+    }
+
+    /// @dev A leg names exactly one venue, and its route has to reach from the component to the user's token. A V3
+    ///      path, Uniswap's or PancakeSwap's, is checked at both ends. The `component` end of a V4 route is the zap's
+    ///      own argument rather than the caller's, so only the far end needs checking; which entry that is depends on
+    ///      the direction the router walks the route, from the front for an exact input and from the back for an exact
+    ///      output. A PancakeSwap path needs a PancakeSwap router, which a testnet zap may not have.
     /// @param exactOut True for a mint leg, whose route the router walks backwards.
-    /// @return isV4 Whether the leg named a V4 route.
+    /// @return venue Where the leg swaps.
     function _checkRoute(
         bytes calldata v3Path,
         PathKey[] calldata v4Path,
+        bytes calldata pancakePath,
         address component,
         address userToken,
         bool exactOut,
         uint256 i
-    ) private pure returns (bool isV4) {
-        isV4 = v4Path.length != 0;
-        if (isV4 == (v3Path.length != 0)) revert BadRoute(i); // both, or neither
-        if (!isV4) {
-            if (!v3Path.isValidShape() || v3Path.firstToken() != component || v3Path.lastToken() != userToken) {
-                revert BadRoute(i);
-            }
-            return false;
+    ) private view returns (Venue venue) {
+        bool isV3 = v3Path.length != 0;
+        bool isV4 = v4Path.length != 0;
+        bool isPancake = pancakePath.length != 0;
+        // Exactly one: not none, and not two or three.
+        if ((isV3 ? 1 : 0) + (isV4 ? 1 : 0) + (isPancake ? 1 : 0) != 1) revert BadRoute(i);
+        if (isV4) {
+            _checkV4Route(v4Path, userToken, exactOut, i);
+            return Venue.UniswapV4;
         }
-        // A hook is arbitrary code running inside the swap, able to move the deltas the zap is measuring; a hookless
-        // key also cannot carry a dynamic fee, so this one equality is the whole check. Native ether is allowed as an
-        // intermediate currency and never as an endpoint, which the equality below settles.
+        if (isPancake && address(PANCAKE_ROUTER) == address(0)) revert BadRoute(i);
+        _checkV3Path(isPancake ? pancakePath : v3Path, component, userToken, i);
+        return isPancake ? Venue.PancakeV3 : Venue.UniswapV3;
+    }
+
+    /// @dev A packed V3 path, Uniswap's or PancakeSwap's, runs from the component to the user's token.
+    function _checkV3Path(bytes calldata path, address component, address userToken, uint256 i) private pure {
+        if (!path.isValidShape() || path.firstToken() != component || path.lastToken() != userToken) {
+            revert BadRoute(i);
+        }
+    }
+
+    /// @dev A hook is arbitrary code running inside the swap, able to move the deltas the zap is measuring; a hookless
+    ///      key also cannot carry a dynamic fee, so this one equality is the whole check. Native ether is allowed as an
+    ///      intermediate currency and never as an endpoint, which the far end's equality settles.
+    function _checkV4Route(PathKey[] calldata v4Path, address userToken, bool exactOut, uint256 i) private pure {
         for (uint256 h = 0; h < v4Path.length; ++h) {
             if (v4Path[h].hooks != address(0) || v4Path[h].hookData.length != 0) revert BadRoute(i);
         }

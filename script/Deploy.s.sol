@@ -9,6 +9,7 @@ import {HybridHubExtension} from "../src/hybrid/HybridHubExtension.sol";
 import {IndexZap} from "../src/IndexZap.sol";
 import {MintRequests} from "../src/MintRequests.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
+import {IPancakeUniversalRouter} from "../src/interfaces/IPancakeUniversalRouter.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
 import {DeployChecks} from "./DeployChecks.sol";
@@ -35,6 +36,9 @@ import {DeployChecks} from "./DeployChecks.sol";
 ///                       mainnet's.
 ///   PYTH                The Pyth contract every index reads its prices from. Required off mainnet; defaults on chain
 ///                       1 to `MainnetAddresses.PYTH`, and nothing else is accepted there.
+///   PANCAKE_ROUTER      PancakeSwap's v3 Universal Router, for the zap's PancakeSwap legs. Defaults on chain 1 to
+///                       `MainnetAddresses.PANCAKE_UNIVERSAL_ROUTER`, and nothing else is accepted there; off mainnet,
+///                       unset deploys a zap that refuses every PancakeSwap leg.
 contract Deploy is DeployChecks {
     /// @notice Reads OWNER, GUARDIAN and the optional market addresses from the environment and calls {deploy}.
     function run() external returns (HybridIndexFactory factory, IndexZap zap, MintRequests requests) {
@@ -44,7 +48,8 @@ contract Deploy is DeployChecks {
             vm.envOr("UNIVERSAL_ROUTER", address(0)),
             vm.envOr("USDC", address(0)),
             vm.envOr("USDT", address(0)),
-            vm.envOr("PYTH", address(0))
+            vm.envOr("PYTH", address(0)),
+            vm.envOr("PANCAKE_ROUTER", address(0))
         );
     }
 
@@ -61,49 +66,53 @@ contract Deploy is DeployChecks {
     /// @param router Uniswap's Universal Router, through which the zap swaps; see {resolveRouter}.
     /// @param usdc USDC for MintRequests; see {resolveStable}.
     /// @param usdt USDT for MintRequests; see {resolveStable}.
+    /// @param pyth Pyth's contract; see {resolvePyth}.
+    /// @param pancakeRouter PancakeSwap's v3 Universal Router for the zap; see {resolvePancakeRouter}.
     /// @return factory The deployed factory.
     /// @return zap The deployed zap.
     /// @return requests The deployed MintRequests.
-    function deploy(address owner, address guardian, address router, address usdc, address usdt, address pyth)
-        public
-        returns (HybridIndexFactory factory, IndexZap zap, MintRequests requests)
-    {
+    function deploy(
+        address owner,
+        address guardian,
+        address router,
+        address usdc,
+        address usdt,
+        address pyth,
+        address pancakeRouter
+    ) public returns (HybridIndexFactory factory, IndexZap zap, MintRequests requests) {
         checkOwner(owner);
         checkGuardian(owner, guardian);
         router = resolveRouter(router);
         usdc = resolveStable("USDC", usdc, MainnetAddresses.USDC);
         usdt = resolveStable("USDT", usdt, MainnetAddresses.USDT);
         pyth = resolvePyth(pyth);
+        pancakeRouter = resolvePancakeRouter(pancakeRouter);
         checkRolesAreNotMarket(owner, guardian, router);
+        checkRolesAreNotPancake(owner, guardian, pancakeRouter);
         if (owner == pyth || guardian == pyth) revert RoleIsMarketContract(pyth);
 
         vm.startBroadcast();
-        // Each part of the template names the factory, and the factory's constructor refuses a template built for
-        // another, so the three are deployed first for the address the factory's CREATE will take: the broadcaster's
-        // fourth transaction from here.
-        // Only the broadcaster is needed, not the caller mode or tx.origin; the script's own msg.sender differs in tests.
-        // forge-lint: disable-next-line(unused-return)
-        (, address broadcaster,) = vm.readCallers();
-        address predicted = vm.computeCreateAddress(broadcaster, vm.getNonce(broadcaster) + 3);
-        HybridHubExtension extension = new HybridHubExtension(predicted);
-        HybridHubModule module = new HybridHubModule(predicted, address(extension));
-        HybridHub template = new HybridHub(predicted, address(module));
-        factory = new HybridIndexFactory(owner, guardian, pyth, address(template));
-        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(router));
+        factory = new HybridIndexFactory(owner, guardian, pyth, _deployTemplate());
+        zap = new IndexZap(
+            IIndexFactory(address(factory)), IUniversalRouter(router), IPancakeUniversalRouter(pancakeRouter)
+        );
         requests = new MintRequests(address(factory), usdc, usdt);
         vm.stopBroadcast();
 
+        address template = factory.HYBRID_IMPLEMENTATION();
+        address module = HybridHub(payable(template)).MODULE();
         console2.log("HybridIndexFactory:      ", address(factory));
         console2.log("WeightedHub impl:        ", factory.IMPLEMENTATION());
         console2.log("Pyth:                    ", pyth);
-        console2.log("HybridHub template:      ", address(template));
-        console2.log("HybridHubModule:         ", address(module));
-        console2.log("HybridHubExtension:      ", address(extension));
+        console2.log("HybridHub template:      ", template);
+        console2.log("HybridHubModule:         ", module);
+        console2.log("HybridHubExtension:      ", HybridHubModule(module).EXTENSION());
         console2.log("IndexZap:                ", address(zap));
         console2.log("Factory owner:           ", owner);
         console2.log("Guardian:                ", guardian);
         console2.log("Universal Router:        ", router);
         console2.log("PoolManager:             ", zap.POOL_MANAGER());
+        console2.log("PancakeSwap router:      ", address(zap.PANCAKE_ROUTER()));
         console2.log("MintRequests:            ", address(requests));
         console2.log("USDC:                    ", usdc);
         console2.log("USDT:                    ", usdt);
@@ -118,6 +127,19 @@ contract Deploy is DeployChecks {
         console2.log("HybridHubExtension hash: ", vm.toString(codehashes[4]));
         console2.log("IndexZap hash:           ", vm.toString(codehashes[5]));
         console2.log("MintRequests hash:       ", vm.toString(codehashes[6]));
+    }
+
+    /// @dev Broadcasts the `HybridHub` template's three parts. Each names the factory, and the factory's constructor
+    ///      refuses a template built for another, so they are deployed first for the address the factory's CREATE will
+    ///      take: the broadcaster's fourth transaction from here, the factory's own.
+    function _deployTemplate() private returns (address) {
+        // Only the broadcaster is needed, not the caller mode or tx.origin; the script's own msg.sender differs in tests.
+        // forge-lint: disable-next-line(unused-return)
+        (, address broadcaster,) = vm.readCallers();
+        address predicted = vm.computeCreateAddress(broadcaster, vm.getNonce(broadcaster) + 3);
+        HybridHubExtension extension = new HybridHubExtension(predicted);
+        HybridHubModule module = new HybridHubModule(predicted, address(extension));
+        return address(new HybridHub(predicted, address(module)));
     }
 
     /// @notice Checks that a factory, a zap and MintRequests are one deployment and returns the runtime code hashes to
