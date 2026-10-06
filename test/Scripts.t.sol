@@ -10,7 +10,7 @@ import {WeightedIndexFactory} from "../src/WeightedIndexFactory.sol";
 import {WeightedHub} from "../src/WeightedHub.sol";
 import {MockPyth} from "./mocks/MockPyth.sol";
 import {MainnetAddresses} from "../script/MainnetAddresses.sol";
-import {ConfigureWhitelist} from "../script/ConfigureWhitelist.s.sol";
+import {ConfigureWeighted} from "../script/ConfigureWeighted.s.sol";
 import {IndexFactory} from "../src/IndexFactory.sol";
 import {HybridIndexFactory} from "../src/HybridIndexFactory.sol";
 import {HybridHub} from "../src/HybridHub.sol";
@@ -197,7 +197,6 @@ contract ScriptsTest is Test {
     address constant MAINNET_UNIVERSAL_ROUTER = MainnetAddresses.UNIVERSAL_ROUTER;
 
     Deploy deployer;
-    ConfigureWhitelist configure;
     SetupTestMarket testMarket;
     MockUniversalRouter router;
     address usdc;
@@ -214,7 +213,6 @@ contract ScriptsTest is Test {
 
     function setUp() public {
         deployer = new Deploy();
-        configure = new ConfigureWhitelist();
         testMarket = new SetupTestMarket();
         router = new MockUniversalRouter(makeAddr("poolManager"));
         usdc = address(new MockERC20("USD Coin", "USDC", 6));
@@ -223,21 +221,6 @@ contract ScriptsTest is Test {
 
     function _factory(address owner_, address guardian_) internal returns (IndexFactory) {
         return new IndexFactory(owner_, guardian_);
-    }
-
-    /// @dev Two tokens with reference supplies: A with 18 decimals, B with 8.
-    function _twoEntries() internal returns (ConfigureWhitelist.Entry[] memory list) {
-        list = new ConfigureWhitelist.Entry[](2);
-        list[0] = ConfigureWhitelist.Entry({token: address(new MockERC20("A", "A", 18)), referenceSupply: 1_000e18});
-        list[1] = ConfigureWhitelist.Entry({token: address(new MockERC20("B", "B", 8)), referenceSupply: 21_000_000e8});
-    }
-
-    /// @dev Every token `list` names, as a LIST that lets each of them be proposed for a listing (RT-06).
-    function _tokens(ConfigureWhitelist.Entry[] memory list) internal pure returns (address[] memory tokens) {
-        tokens = new address[](list.length);
-        for (uint256 i = 0; i < list.length; ++i) {
-            tokens[i] = list[i].token;
-        }
     }
 
     /// @dev What the Safe does with safe mode's output: every call, from the owner, in order. Each must succeed, because
@@ -249,40 +232,6 @@ contract ScriptsTest is Test {
             (bool ok,) = address(factory).call(calls[i]);
             assertTrue(ok, "the Safe batch executes");
         }
-    }
-
-    function _safeCalls(
-        IndexFactory factory,
-        ConfigureWhitelist.Entry[] memory list,
-        address[] memory firstListings,
-        address[] memory relist
-    ) internal view returns (bytes[] memory calls) {
-        (calls,) = configure.safeCalldata(factory, list, firstListings, relist);
-    }
-
-    /// @dev "List" when a one-entry run named in LIST would propose `entry`, "Skip" otherwise.
-    function _actionFor(IndexFactory factory, ConfigureWhitelist.Entry memory entry, address[] memory relist)
-        internal
-        view
-        returns (string memory)
-    {
-        ConfigureWhitelist.Entry[] memory one = new ConfigureWhitelist.Entry[](1);
-        one[0] = entry;
-        return _safeCalls(factory, one, _tokens(one), relist).length == 1 ? "List" : "Skip";
-    }
-
-    /// @dev A real ERC-20 put at `at` with `decimals`, and the entry that lists it with a million whole tokens.
-    function _tokenAt(address at, uint8 decimals) internal returns (ConfigureWhitelist.Entry memory) {
-        vm.etch(at, address(new MockERC20("T", "T", decimals)).code);
-        MockERC20(at).setDecimals(decimals); // `vm.etch` copies code, not the storage the decimals live in
-        return ConfigureWhitelist.Entry({token: at, referenceSupply: 1_000_000 * 10 ** uint256(decimals)});
-    }
-
-    /// @dev Lists `list` on a key-owned factory through the script, propose then execute.
-    function _listed(IndexFactory factory, ConfigureWhitelist.Entry[] memory list) internal {
-        configure.propose(factory, list, _tokens(list), none);
-        vm.warp(block.timestamp + factory.LISTING_DELAY());
-        configure.execute(factory, list);
     }
 
     // ---------------------------------------------------------------------
@@ -527,33 +476,6 @@ contract ScriptsTest is Test {
         weightedDeployer.resolvePyth(pyth);
     }
 
-    /// @dev The price-id table covers the flagship's four and the wide list, GRAM aside until its feed is chosen, in
-    ///      that order, with a distinct non-zero id each: two coins on one id could never share an index (V5-M1). The
-    ///      ids are pinned against a few written out independently, from Pyth's catalogue on 2026-10-05.
-    function test_pythIds_coverTheListBarGram() public view {
-        (address[] memory tokens, bytes32[] memory ids) = PythIds.all();
-        ConfigureWhitelist.Entry[] memory flagship = configure.defaultMainnetList();
-        ConfigureWhitelist.Entry[] memory wide = configure.wideMainnetList();
-        assertEq(tokens.length, flagship.length + wide.length - 1);
-        uint256 k = 0;
-        for (uint256 i = 0; i < flagship.length; ++i) {
-            assertEq(tokens[k++], flagship[i].token);
-        }
-        for (uint256 i = 0; i < wide.length; ++i) {
-            if (wide[i].token == MainnetAddresses.GRAM) continue;
-            assertEq(tokens[k++], wide[i].token);
-        }
-        for (uint256 i = 0; i < ids.length; ++i) {
-            assertTrue(ids[i] != bytes32(0));
-            for (uint256 j = 0; j < i; ++j) {
-                assertTrue(ids[i] != ids[j], "one id per coin");
-            }
-        }
-        assertEq(ids[0], 0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace, "WETH on ETH/USD");
-        assertEq(ids[1], 0xc9d8b075a5c69303365ae23633d4e085199bf5c520a3b90fed1322a0342ffc33, "WBTC on WBTC/USD");
-        assertEq(ids[2], 0x8ac0c70fff57e9aefdf5edf44b51d62c2d433653cbb2cf5cc06bb115af04d221, "LINK on LINK/USD");
-    }
-
     function test_deployWeighted_checkDeploymentRefusesAnother() public {
         DeployWeighted weightedDeployer = new DeployWeighted();
         (WeightedIndexFactory factory, IndexZap zap, MintRequests requests) =
@@ -740,151 +662,6 @@ contract ScriptsTest is Test {
         deployer.deploy(MainnetAddresses.WETH, guardian, address(0), address(0), address(0));
     }
 
-    // ---------------------------------------------------------------------
-    // ConfigureWhitelist: entries and the default list
-    // ---------------------------------------------------------------------
-
-    function test_parseEntry() public {
-        string memory token = vm.toString(address(router));
-        ConfigureWhitelist.Entry memory e = configure.parseEntry(string.concat(token, ":120000000000000000000000000"));
-        assertEq(e.token, address(router));
-        assertEq(e.referenceSupply, 120_000_000e18);
-
-        // CR-L03: the reference supply is not optional, and v3's feed fields are gone, so their shape is malformed.
-        string memory noSupply = string.concat(token, ":");
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.MalformedEntry.selector, noSupply));
-        configure.parseEntry(noSupply);
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.MalformedEntry.selector, token));
-        configure.parseEntry(token);
-        string memory v3Shape = string.concat(token, ":", vm.toString(owner), ":5400:7");
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.MalformedEntry.selector, v3Shape));
-        configure.parseEntry(v3Shape);
-    }
-
-    function test_resolveList() public {
-        string memory raw = string.concat(vm.toString(address(router)), ":3, ", vm.toString(owner), ":5");
-        ConfigureWhitelist.Entry[] memory list = configure.resolveList(raw);
-        assertEq(list.length, 2);
-        assertEq(list[0].token, address(router));
-        assertEq(list[0].referenceSupply, 3);
-        assertEq(list[1].token, owner);
-        assertEq(list[1].referenceSupply, 5);
-
-        vm.expectRevert(ConfigureWhitelist.DefaultListOnlyOnMainnet.selector);
-        configure.resolveList("default");
-        vm.expectRevert(ConfigureWhitelist.WideListOnlyOnMainnet.selector);
-        configure.resolveList("wide");
-        vm.chainId(1);
-        list = configure.resolveList("default");
-        assertEq(list.length, 4);
-        list = configure.resolveList("wide");
-        assertEq(list.length, 27);
-    }
-
-    /// @dev The wide list is a release record too, pinned against a table written out independently of it: each
-    ///      token, its reference supply, its decimals and its trust tier. Its tokens never repeat the default list's.
-    function test_theWideListIsItsReleaseRecord() public view {
-        ConfigureWhitelist.Entry[] memory l = configure.wideMainnetList();
-        address[27] memory tokens = [
-            0x4a220E6096B25EADb88358cb44068A3248254675, // QNT
-            0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9, // AAVE
-            0x75231F58b43240C9718Dd58B4967c5114342a86c, // OKB
-            0x57e114B691Db790C35207b2e685D4A43181e6061, // ENA
-            0xfAbA6f8e4a5E8Ab82F62fe7C39859FA577269BE3, // ONDO
-            0x56072C95FAA701256059aa122697B133aDEd9279, // SKY
-            0x163f8C2467924be0ae7B5347228CABF260318753, // WLD
-            0x3c3a81e81dc49A522A592e7622A7E711c06bf354, // MNT
-            0x58D97B57BB95320F9a05dC918Aef65434969c2B2, // MORPHO
-            0x54D2252757e1672EEaD234D27B1270728fF90581, // BGB
-            0x455e53CBB86018Ac2B8092FdCd39d8444aFFC3F6, // POL
-            0xE66747a101bFF2dBA3697199DCcE5b743b454759, // GT
-            0x232CE3bd40fCd6f80f3d55A522d03f25Df784Ee2, // LIT
-            0xFe0c30065B384F05761f15d0CC899D4F9F9Cc0eB, // ETHFI
-            0xaea46A60368A7bD060eec7DF8CBa43b7EF41Ad85, // FET
-            0xD533a949740bb3306d119CC777fa900bA034cd52, // CRV
-            0xB62132e35a6c13ee1EE0f84dC5d40bad8d815206, // NEXO
-            0x44ff8620b8cA30902395A7bD3F2407e1A091BF73, // VIRTUAL
-            0xCa14007Eff0dB1f8135f4C25B34De49AB0d42766, // STRK
-            0x808507121B80c02388fAd14726482e061B8da827, // PENDLE
-            0x582d872A1B094FC48F5DE31D3B73F2D9bE47def1, // TONCOIN (GRAM)
-            0xA0b73E1Ff0B80914AB6fe0444E65848C4C34450b, // CRO
-            0x00f3C42833C3170159af4E92dbb451Fb3F708917, // ICP
-            0xB50721BCf8d664c30412Cfbc6cf7a15145234ad1, // ARB
-            0x6De037ef9aD2725EB40118Bb1702EBb27e4Aeb24, // RNDR (RENDER)
-            0x152649eA73beAb28c5b49B26eb48f7EAD6d4c898, // Cake
-            0x6985884C4392D348587B19cb9eAAf157F13271cd // ZRO
-        ];
-        // Whole tokens, from CoinGecko's circulating supplies on 2026-10-05.
-        uint256[27] memory wholeTokens = [
-            uint256(14_544_176),
-            15_435_383,
-            21_000_000,
-            10_362_500_000,
-            4_869_330_647,
-            23_430_551_390,
-            3_798_073_016,
-            3_302_003_382,
-            700_036_111,
-            699_992_029,
-            10_626_317_704,
-            104_663_958,
-            250_000_000,
-            965_350_000,
-            2_311_508_384,
-            1_571_278_819,
-            1_000_000_000,
-            658_385_841,
-            7_421_949_505,
-            173_634_059,
-            2_819_616_021,
-            49_533_969_069,
-            557_202_382,
-            6_785_574_605,
-            518_776_241,
-            376_261_104,
-            353_313_325
-        ];
-        assertEq(l.length, tokens.length);
-        ConfigureWhitelist.Entry[] memory flagship = configure.defaultMainnetList();
-        for (uint256 i = 0; i < l.length; ++i) {
-            // Read on chain: TONCOIN has 9 decimals, CRO and ICP 8, every other token 18.
-            uint256 decimals = i == 20 ? 9 : (i == 21 || i == 22) ? 8 : 18;
-            _assertEntry(l[i], tokens[i], wholeTokens[i] * 10 ** decimals);
-            ConfigureWhitelist.Tier tier = i < 20 ? ConfigureWhitelist.Tier.Native : ConfigureWhitelist.Tier.Bridged;
-            assertEq(uint8(configure.tierOf(tokens[i])), uint8(tier), "tier");
-            for (uint256 j = 0; j < flagship.length; ++j) {
-                assertTrue(flagship[j].token != tokens[i], "no token on both lists");
-            }
-            for (uint256 j = 0; j < i; ++j) {
-                assertTrue(tokens[j] != tokens[i], "no token twice");
-            }
-        }
-    }
-
-    /// @dev The tiers of the flagship's list, and a token on neither list.
-    function test_tierOf() public view {
-        assertEq(uint8(configure.tierOf(MainnetAddresses.WETH)), uint8(ConfigureWhitelist.Tier.Native));
-        assertEq(uint8(configure.tierOf(MainnetAddresses.WBTC)), uint8(ConfigureWhitelist.Tier.Custodial));
-        assertEq(uint8(configure.tierOf(MainnetAddresses.LINK)), uint8(ConfigureWhitelist.Tier.Native));
-        assertEq(uint8(configure.tierOf(MainnetAddresses.UNI)), uint8(ConfigureWhitelist.Tier.Native));
-        assertEq(uint8(configure.tierOf(MainnetAddresses.USDC)), uint8(ConfigureWhitelist.Tier.Unrecorded));
-        assertEq(configure.tierName(ConfigureWhitelist.Tier.Native), "Native");
-        assertEq(configure.tierName(ConfigureWhitelist.Tier.Bridged), "Bridged");
-        assertEq(configure.tierName(ConfigureWhitelist.Tier.Custodial), "Custodial");
-        assertEq(configure.tierName(ConfigureWhitelist.Tier.Unrecorded), "Unrecorded");
-    }
-
-    /// @dev Every wide supply is a whole number of tokens between a million and a trillion, as the default list's are.
-    function test_everyWideSupplyIsAPlausibleCountOfWholeTokens() public view {
-        ConfigureWhitelist.Entry[] memory l = configure.wideMainnetList();
-        for (uint256 i = 0; i < l.length; ++i) {
-            uint256 one = 10 ** (i == 20 ? 9 : (i == 21 || i == 22) ? 8 : 18);
-            assertEq(l[i].referenceSupply % one, 0, "rounded down to whole tokens, in raw units");
-            assertGe(l[i].referenceSupply / one, 1e6, "at least a million tokens");
-            assertLe(l[i].referenceSupply / one, 1e12, "at most a trillion");
-        }
-    }
-
     /// @dev Safe mode's label names a listed token's tier, so the signers see it beside the call.
     function test_safeModeLabelsCarryTheTier() public {
         IndexFactory factory = _factory(owner, guardian);
@@ -895,321 +672,6 @@ contract ScriptsTest is Test {
             // `vm.etch` copies code, not the storage the symbol lives in, so the symbol reads empty.
             assertEq(_labelOf(factory, tokens[i]), string.concat("proposeListing  ", vm.toString(tokens[i]), tiers[i]));
         }
-    }
-
-    /// @dev CR-M01: every default entry carries a reference supply, since nothing reads a supply live.
-    function test_CRM01_everyDefaultEntryCarriesAReferenceSupply() public view {
-        ConfigureWhitelist.Entry[] memory l = configure.defaultMainnetList();
-        for (uint256 i = 0; i < l.length; ++i) {
-            assertGt(l[i].referenceSupply, 0);
-        }
-    }
-
-    /// @dev CR-L08, re-targeted: the default list is the release record, pinned here against a table written out
-    ///      independently of the list: the Stage A tokens and the supply each carries.
-    function test_CRL08_theDefaultListIsTheReleaseRecord() public view {
-        ConfigureWhitelist.Entry[] memory l = configure.defaultMainnetList();
-        assertEq(l.length, 4);
-        _assertEntry(l[0], 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2, 122_070_499e18);
-        _assertEntry(l[1], 0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599, 20_087_871e8);
-        _assertEntry(l[2], 0x514910771AF9Ca656af840dff83E8264EcF986CA, 748_099_970e18);
-        _assertEntry(l[3], 0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984, 620_716_422e18);
-    }
-
-    function _assertEntry(ConfigureWhitelist.Entry memory e, address token, uint256 referenceSupply) internal pure {
-        assertEq(e.token, token, "token");
-        assertEq(e.referenceSupply, referenceSupply, "reference supply");
-    }
-
-    /// @dev XA-24 and CR-I22: every default supply is a whole number of tokens between a million and a trillion, with
-    ///      each token's decimals written out independently.
-    function test_XA24_CRI22_everyDefaultSupplyIsAPlausibleCountOfWholeTokens() public view {
-        ConfigureWhitelist.Entry[] memory l = configure.defaultMainnetList();
-        uint8[4] memory decimals = [18, 8, 18, 18]; // WETH, WBTC, LINK, UNI
-        for (uint256 i = 0; i < l.length; ++i) {
-            uint256 one = 10 ** uint256(decimals[i]);
-            assertEq(l[i].referenceSupply % one, 0, "rounded down to whole tokens, in raw units");
-            assertGe(l[i].referenceSupply / one, 1e6, "at least a million tokens");
-            assertLe(l[i].referenceSupply / one, 1e12, "at most a trillion");
-        }
-    }
-
-    function test_parseAddresses() public view {
-        assertEq(configure.parseAddresses("").length, 0);
-        address[] memory parsed =
-            configure.parseAddresses(string.concat(vm.toString(owner), " , ", vm.toString(guardian)));
-        assertEq(parsed.length, 2);
-        assertEq(parsed[0], owner);
-        assertEq(parsed[1], guardian);
-    }
-
-    // ---------------------------------------------------------------------
-    // ConfigureWhitelist: listings
-    // ---------------------------------------------------------------------
-
-    function test_XA18_proposeRefusesAContractOwner() public {
-        MockSafe safe = new MockSafe(3);
-        IndexFactory factory = _factory(address(safe), address(0));
-        ConfigureWhitelist.Entry[] memory list = _twoEntries();
-
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.OwnerIsContract.selector, address(safe)));
-        configure.propose(factory, list, _tokens(list), none);
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.OwnerIsContract.selector, address(safe)));
-        configure.proposeSupplies(factory, list);
-
-        bytes[] memory calls = _safeCalls(factory, list, _tokens(list), none);
-        assertEq(calls.length, 2);
-        assertEq(factory.listingEta(list[0].token), 0);
-    }
-
-    /// @dev DA-20, re-targeted. A delisted token named in RELIST while the live supply batch names it was still
-    ///      proposed, and the factory refuses that listing (TokenInBatch): the run reverted whole, and safe mode handed the
-    ///      Safe a batch whose call fails. It is now skipped with the reason logged until the batch is gone, and then
-    ///      RELIST proposes it as it always meant to.
-    function test_DA20_aRelistIsNotProposedIntoALiveBatch() public {
-        IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
-        ConfigureWhitelist.Entry[] memory list = _twoEntries();
-        _listed(factory, list);
-        list[0].referenceSupply += list[0].referenceSupply / 400; // a quarter of a percent, inside the step
-        configure.proposeSupplies(factory, list);
-        vm.prank(guardian);
-        factory.delist(list[0].token);
-
-        address[] memory relist = new address[](1);
-        relist[0] = list[0].token;
-        assertEq(_safeCalls(factory, list, none, relist).length, 0, "nothing to propose while the batch names it");
-        configure.propose(factory, list, none, relist);
-        assertEq(factory.listingEta(list[0].token), 0, "and nothing is proposed");
-
-        vm.warp(block.timestamp + factory.LISTING_DELAY());
-        configure.executeSupplies(factory, list);
-        bytes[] memory calls = _safeCalls(factory, list, none, relist);
-        assertEq(calls.length, 1, "once the batch has executed, the relisting is proposed");
-        assertEq(calls[0], abi.encodeCall(IIndexFactory.proposeListing, (list[0].token, list[0].referenceSupply)));
-        configure.propose(factory, list, none, relist);
-        assertGt(factory.listingEta(list[0].token), 0);
-    }
-
-    /// @dev LR-07: a key that delegated its account under EIP-7702 still signs.
-    function test_LR07_proposeAcceptsAnOwnerKeyDelegatedUnderEip7702() public {
-        IndexFactory factory = _factory(DEFAULT_SENDER, address(0));
-        ConfigureWhitelist.Entry[] memory list = _twoEntries();
-        vm.etch(DEFAULT_SENDER, abi.encodePacked(hex"ef0100", address(this)));
-
-        configure.propose(factory, list, _tokens(list), none);
-        assertGt(factory.listingEta(list[0].token), 0, "the delegated key proposed");
-        assertGt(factory.listingEta(list[1].token), 0);
-    }
-
-    function test_FR05_proposeThenExecute() public {
-        IndexFactory factory = _factory(DEFAULT_SENDER, address(0));
-        ConfigureWhitelist.Entry[] memory list = _twoEntries();
-
-        configure.execute(factory, list); // nothing proposed yet: nothing happens
-        assertEq(factory.listingEta(list[0].token), 0);
-
-        configure.propose(factory, list, _tokens(list), none);
-        uint256 eta = block.timestamp + factory.LISTING_DELAY();
-        assertEq(factory.listingEta(list[0].token), eta);
-        assertEq(factory.listingEta(list[1].token), eta);
-        assertEq(factory.pendingReferenceSupply(list[1].token), 21_000_000e8);
-
-        vm.warp(block.timestamp + 1 hours);
-        configure.propose(factory, list, _tokens(list), none); // already pending: skipped, eta unchanged
-        assertEq(factory.listingEta(list[0].token), eta);
-
-        configure.execute(factory, list); // not ready yet: skipped
-        assertFalse(factory.isWhitelisted(list[0].token));
-
-        vm.warp(eta);
-        configure.execute(factory, list);
-        assertTrue(factory.isWhitelisted(list[0].token));
-        assertTrue(factory.isWhitelisted(list[1].token));
-        assertEq(factory.referenceSupply(list[0].token), list[0].referenceSupply);
-
-        configure.propose(factory, list, _tokens(list), none); // listed: its supply changes only in a batch
-        assertEq(factory.listingEta(list[0].token), 0);
-        configure.execute(factory, list); // nothing pending: skipped
-        assertEq(factory.whitelistedTokens().length, 2);
-    }
-
-    function test_FR05_executeWorksFromAnyAccountAndNeverReproposesACancelledListing() public {
-        IndexFactory factory = _factory(owner, guardian); // the broadcaster is neither owner nor guardian
-        ConfigureWhitelist.Entry[] memory list = _twoEntries();
-        vm.startPrank(owner);
-        factory.proposeListing(list[0].token, list[0].referenceSupply);
-        factory.proposeListing(list[1].token, list[1].referenceSupply);
-        vm.stopPrank();
-        vm.prank(guardian);
-        factory.cancelListing(list[1].token);
-
-        vm.warp(block.timestamp + factory.LISTING_DELAY());
-        configure.execute(factory, list);
-
-        assertTrue(factory.isWhitelisted(list[0].token));
-        assertFalse(factory.isWhitelisted(list[1].token));
-        assertEq(factory.listingEta(list[1].token), 0, "a cancelled listing stays cancelled");
-    }
-
-    function test_expiredProposalsAreSkippedThenProposedAgain() public {
-        IndexFactory factory = _factory(DEFAULT_SENDER, address(0));
-        ConfigureWhitelist.Entry[] memory list = _twoEntries();
-        configure.propose(factory, list, _tokens(list), none);
-        uint256 eta = factory.listingEta(list[0].token);
-
-        vm.warp(eta + factory.PROPOSAL_WINDOW() + 1);
-        configure.execute(factory, list); // expired: skipped
-        assertFalse(factory.isWhitelisted(list[0].token));
-
-        configure.propose(factory, list, _tokens(list), none); // proposed again with a fresh delay
-        assertEq(factory.listingEta(list[0].token), block.timestamp + factory.LISTING_DELAY());
-    }
-
-    function test_safeCalldata_matchesProposeAndWorksWhenTheOwnerSendsIt() public {
-        IndexFactory factory = _factory(owner, guardian);
-        ConfigureWhitelist.Entry[] memory list = _twoEntries();
-
-        bytes[] memory calls = _safeCalls(factory, list, _tokens(list), none);
-        assertEq(calls.length, 2);
-        for (uint256 i = 0; i < list.length; ++i) {
-            assertEq(calls[i], abi.encodeCall(IIndexFactory.proposeListing, (list[i].token, list[i].referenceSupply)));
-        }
-        _sendAsOwner(factory, calls);
-        vm.warp(block.timestamp + factory.LISTING_DELAY());
-        configure.execute(factory, list);
-        assertTrue(factory.isWhitelisted(list[0].token));
-        assertTrue(factory.isWhitelisted(list[1].token));
-    }
-
-    /// @dev XA-11: a routine run never relists a token the guardian delisted; RELIST names one, and the relisting stays
-    ///      within a step of the supply the token carried.
-    function test_XA11_proposeSkipsADelistedTokenUnlessNamedForRelisting() public {
-        IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
-        ConfigureWhitelist.Entry[] memory list = _twoEntries();
-        _listed(factory, list);
-        vm.prank(guardian);
-        factory.delist(list[0].token);
-
-        configure.propose(factory, list, none, none); // a routine run with the same list must not undo the guardian
-        assertEq(factory.listingEta(list[0].token), 0);
-        assertEq(_safeCalls(factory, list, none, none).length, 0);
-
-        address[] memory relist = new address[](2);
-        (relist[0], relist[1]) = (list[1].token, list[0].token); // naming a listed token too changes nothing for it
-        // A relisting takes the supply the token carries, whatever the entry says; a batch revises it (SA-02).
-        list[0].referenceSupply = 1_010e18;
-        bytes[] memory calls = _safeCalls(factory, list, none, relist);
-        assertEq(calls.length, 1);
-        assertEq(calls[0], abi.encodeCall(IIndexFactory.proposeListing, (list[0].token, 1_000e18)));
-        assertEq(configure.listingSupply(factory, list[0]), 1_000e18);
-        configure.propose(factory, list, none, relist);
-        vm.warp(block.timestamp + factory.LISTING_DELAY());
-        configure.execute(factory, list);
-        assertTrue(factory.isWhitelisted(list[0].token));
-        assertEq(factory.referenceSupply(list[0].token), 1_000e18, "relisted at the supply in force");
-    }
-
-    /// @dev RT-06. A first listing the guardian cancelled leaves nothing on chain, so it is proposed again only when
-    ///      LIST names it, and a routine run leaves LIST unset.
-    function test_RT06_aVetoedFirstListingIsNotProposedAgainByARoutineRun() public {
-        IndexFactory factory = _factory(owner, guardian);
-        ConfigureWhitelist.Entry[] memory list = _twoEntries();
-        _sendAsOwner(factory, _safeCalls(factory, list, _tokens(list), none));
-        vm.prank(guardian);
-        factory.cancelListing(list[1].token);
-        vm.warp(block.timestamp + factory.LISTING_DELAY());
-        configure.execute(factory, list);
-        assertTrue(factory.isWhitelisted(list[0].token));
-        assertFalse(factory.isWhitelisted(list[1].token), "the veto holds at launch");
-
-        vm.warp(block.timestamp + 30 days);
-        assertEq(_safeCalls(factory, list, none, none).length, 0, "a routine run proposes no listing");
-        address[] memory named = new address[](1);
-        named[0] = list[1].token;
-        assertEq(_safeCalls(factory, list, none, named).length, 0, "RELIST is not LIST");
-    }
-
-    /// @dev RT-06: a listing only for a token LIST names; `all` names every entry of the run and no other token.
-    function test_RT06_aFirstListingIsProposedOnlyWhenNamedInList() public {
-        IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
-        ConfigureWhitelist.Entry[] memory list = _twoEntries();
-        address[] memory second = new address[](1);
-        second[0] = list[1].token;
-
-        configure.propose(factory, list, none, none); // nothing named, so nothing proposed
-        assertEq(factory.listingEta(list[0].token), 0, "fail closed");
-        assertEq(factory.listingEta(list[1].token), 0);
-
-        configure.propose(factory, list, second, none);
-        assertEq(factory.listingEta(list[0].token), 0, "the token LIST leaves out is left alone");
-        assertGt(factory.listingEta(list[1].token), 0);
-
-        vm.prank(guardian);
-        factory.cancelListing(list[1].token);
-        configure.propose(factory, list, none, none);
-        assertEq(factory.listingEta(list[1].token), 0, "a vetoed first listing stays vetoed");
-        configure.propose(factory, list, second, none);
-        assertGt(factory.listingEta(list[1].token), 0, "until the operator names it again");
-
-        assertEq(configure.resolveFirstListings("all", list), _tokens(list));
-        assertEq(configure.resolveFirstListings("", list).length, 0);
-        address[] memory parsed =
-            configure.resolveFirstListings(string.concat(vm.toString(list[0].token), ", ", vm.toString(owner)), list);
-        assertEq(parsed.length, 2);
-        assertEq(parsed[0], list[0].token);
-        assertEq(parsed[1], owner, "an address outside the list is kept, and names nothing the run proposes");
-    }
-
-    /// @dev RT-06: every call of safe mode comes with the line printed above it: the call, the token's symbol and its
-    ///      address.
-    function test_RT06_safeModeLabelsEveryProposal() public {
-        IndexFactory factory = _factory(owner, guardian);
-        ConfigureWhitelist.Entry[] memory list = _twoEntries();
-        (bytes[] memory calls, string[] memory labels) = configure.safeCalldata(factory, list, _tokens(list), none);
-        assertEq(calls.length, 2);
-        assertEq(labels.length, 2, "one label per call");
-        assertEq(labels[0], string.concat("proposeListing A ", vm.toString(list[0].token)));
-        assertEq(labels[1], string.concat("proposeListing B ", vm.toString(list[1].token)));
-    }
-
-    /// @dev XA-06: execute runs only a pending listing that is exactly the entry.
-    function test_XA06_executeSkipsAPendingSupplyThatDiffersFromTheEntry() public {
-        IndexFactory factory = _factory(owner, guardian);
-        ConfigureWhitelist.Entry[] memory list = _twoEntries();
-        vm.prank(owner);
-        factory.proposeListing(list[1].token, 1); // not what the WHITELIST entry says
-        vm.warp(block.timestamp + factory.LISTING_DELAY());
-
-        configure.execute(factory, list);
-        assertFalse(factory.isWhitelisted(list[1].token), "a supply the entry did not ask for is not executed");
-        assertGt(factory.listingEta(list[1].token), 0);
-        assertEq(_safeCalls(factory, list, _tokens(list), none).length, 1, "the other entry's calldata is produced");
-    }
-
-    /// @dev XA-40: entries outside the whitelist policy are skipped with their reason, never proposed.
-    function test_XA40_proposeSkipsTokensOutsideTheWhitelistPolicy() public {
-        IndexFactory factory = _factory(DEFAULT_SENDER, address(0));
-        ConfigureWhitelist.Entry[] memory list = new ConfigureWhitelist.Entry[](5);
-        list[0] = ConfigureWhitelist.Entry({token: address(new MockERC20("Two", "TWO", 2)), referenceSupply: 1e8});
-        list[1] = ConfigureWhitelist.Entry({token: MainnetAddresses.USDC, referenceSupply: 1e8}); // a mint currency
-        list[2] = ConfigureWhitelist.Entry({token: address(router), referenceSupply: 1e8}); // no decimals()
-        list[3] = ConfigureWhitelist.Entry({token: address(new MockERC20("Z", "Z", 18)), referenceSupply: 0});
-        list[4] = ConfigureWhitelist.Entry({
-            token: address(new MockERC20("M", "M", 18)), referenceSupply: uint256(type(uint128).max) + 1
-        });
-
-        configure.propose(factory, list, _tokens(list), none);
-        for (uint256 i = 0; i < list.length; ++i) {
-            assertEq(factory.listingEta(list[i].token), 0);
-        }
-        assertEq(_safeCalls(factory, list, _tokens(list), none).length, 0);
-    }
-
-    /// @dev A token without code is skipped with its reason: the factory refuses one.
-    function test_propose_skipsATokenWithoutCode() public {
-        IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
-        ConfigureWhitelist.Entry memory e = ConfigureWhitelist.Entry({token: makeAddr("nothing"), referenceSupply: 1});
-        assertEq(_actionFor(factory, e, none), "Skip");
     }
 
     /// @dev CR-I36: USDC and USDT are never components, even with a real token at their addresses.
@@ -1227,74 +689,6 @@ contract ScriptsTest is Test {
         assertEq(_actionFor(factory, _tokenAt(makeAddr("five"), 5), none), "Skip", "five is below it");
         assertEq(_actionFor(factory, _tokenAt(makeAddr("eighteen"), 18), none), "List", "eighteen the ceiling");
         assertEq(_actionFor(factory, _tokenAt(makeAddr("nineteen"), 19), none), "Skip", "nineteen above it");
-    }
-
-    /// @dev CR-I36: a proposal is live through the last second of its window: the script neither proposes it again
-    ///      nor fails to execute it.
-    function test_CRI36_aProposalIsLiveThroughTheLastSecondOfItsWindow() public {
-        IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
-        ConfigureWhitelist.Entry[] memory one = new ConfigureWhitelist.Entry[](1);
-        one[0] = _tokenAt(makeAddr("edge"), 18);
-        configure.propose(factory, one, _tokens(one), none);
-        vm.warp(factory.listingEta(one[0].token) + factory.PROPOSAL_WINDOW());
-        assertTrue(factory.listingPending(one[0].token), "the factory still counts it");
-        assertEq(_actionFor(factory, one[0], none), "Skip", "so the script does not propose it again");
-        configure.execute(factory, one);
-        assertTrue(factory.isWhitelisted(one[0].token), "and executes it");
-    }
-
-    /// @dev CR-I36: RELIST names only the tokens it names.
-    function test_CRI36_relistNamesOnlyTheTokensItNames() public {
-        IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
-        ConfigureWhitelist.Entry[] memory two = new ConfigureWhitelist.Entry[](2);
-        two[0] = _tokenAt(makeAddr("named"), 18);
-        two[1] = _tokenAt(makeAddr("not named"), 18);
-        _listed(factory, two);
-        vm.startPrank(guardian);
-        factory.delist(two[0].token);
-        factory.delist(two[1].token);
-        vm.stopPrank();
-
-        address[] memory relist = new address[](1);
-        relist[0] = two[0].token;
-        bytes[] memory calls = _safeCalls(factory, two, _tokens(two), relist);
-        assertEq(calls.length, 1, "only the named token is proposed");
-        assertEq(calls[0], abi.encodeCall(IIndexFactory.proposeListing, (two[0].token, two[0].referenceSupply)));
-    }
-
-    /// @dev RT-24: a list naming a token twice is refused, whatever mode would run on it.
-    function test_RT24_aListNamingATokenTwiceIsRefused() public {
-        IndexFactory factory = _factory(owner, guardian);
-        ConfigureWhitelist.Entry[] memory two = _twoEntries();
-        ConfigureWhitelist.Entry[] memory list = new ConfigureWhitelist.Entry[](3);
-        (list[0], list[1]) = (two[0], two[1]);
-        list[2] = ConfigureWhitelist.Entry({token: two[0].token, referenceSupply: 1_100e18}); // an edited copy
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.DuplicateEntry.selector, two[0].token));
-        configure.safeCalldata(factory, list, _tokens(list), none);
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.DuplicateEntry.selector, two[0].token));
-        configure.supplyBatch(factory, list);
-
-        IndexFactory keyOwned = _factory(DEFAULT_SENDER, guardian);
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.DuplicateEntry.selector, two[0].token));
-        configure.propose(keyOwned, list, _tokens(list), none);
-        assertEq(keyOwned.listingEta(two[1].token), 0, "nothing is proposed");
-
-        string memory entry = string.concat(vm.toString(address(router)), ":");
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.DuplicateEntry.selector, address(router)));
-        configure.resolveList(string.concat(entry, "3, ", entry, "5"));
-
-        bytes[] memory calls = _safeCalls(factory, two, _tokens(two), none);
-        assertEq(calls.length, 2);
-        _sendAsOwner(factory, calls);
-    }
-
-    /// @dev The line of a one-entry run's only proposal.
-    function _labelOf(IndexFactory factory, address token) internal view returns (string memory) {
-        ConfigureWhitelist.Entry[] memory one = new ConfigureWhitelist.Entry[](1);
-        one[0] = ConfigureWhitelist.Entry({token: token, referenceSupply: 1_000e18});
-        (bytes[] memory calls, string[] memory labels) = configure.safeCalldata(factory, one, _tokens(one), none);
-        assertEq(calls.length, 1, "the entry is proposed whatever its symbol");
-        return labels[0];
     }
 
     /// @dev RT-25. A symbol answered in another shape is "?", never a revert of the whole run.
@@ -1317,251 +711,6 @@ contract ScriptsTest is Test {
         }
         address genuine = address(new RawAnswersToken(abi.encode("RAW"), eighteen));
         assertEq(_labelOf(factory, genuine), string.concat("proposeListing RAW ", vm.toString(genuine)));
-    }
-
-    /// @dev RT-25: a decimals answer that is not a uint8 is no answer, and the entry is skipped, not fatal.
-    function test_RT25_aDecimalsAnswerInAnotherShapeIsSkippedNotFatal() public {
-        IndexFactory factory = _factory(owner, guardian);
-        bytes[3] memory answers = [abi.encode(uint256(256 + 18)), bytes(hex"12"), abi.encode(uint256(18))];
-        string[3] memory actions = ["Skip", "Skip", "List"];
-        for (uint256 i = 0; i < answers.length; ++i) {
-            address token = address(new RawAnswersToken(abi.encode("RAW"), answers[i]));
-            assertEq(
-                _actionFor(factory, ConfigureWhitelist.Entry({token: token, referenceSupply: 1e30}), none), actions[i]
-            );
-        }
-    }
-
-    /// @dev LR-05: `status` returns the report its log lines are written from.
-    function test_XA42_statusReportsListingsAndPendingProposals() public {
-        IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
-        ConfigureWhitelist.Entry[] memory list = _twoEntries();
-        ConfigureWhitelist.Report[] memory reports = configure.status(factory, list);
-        assertEq(reports.length, 2);
-        for (uint256 i = 0; i < 2; ++i) {
-            assertEq(reports[i].token, list[i].token);
-            assertFalse(reports[i].listed, "nothing is listed yet");
-            assertFalse(reports[i].inForce);
-            assertEq(reports[i].eta, 0, "and nothing is pending");
-        }
-
-        configure.propose(factory, list, _tokens(list), none);
-        reports = configure.status(factory, list);
-        for (uint256 i = 0; i < 2; ++i) {
-            assertEq(reports[i].eta, block.timestamp + factory.LISTING_DELAY(), "a listing is pending");
-            assertTrue(reports[i].pendingMatches, "as the entry says");
-        }
-
-        vm.warp(block.timestamp + factory.LISTING_DELAY());
-        configure.execute(factory, list);
-        list[1].referenceSupply += 1;
-        configure.proposeSupplies(factory, list);
-        list[1].referenceSupply -= 1; // the entries now say the supply in force, and the batch says otherwise
-        reports = configure.status(factory, list);
-        assertTrue(reports[0].listed);
-        assertTrue(reports[0].inForce, "the first entry is in force");
-        assertFalse(reports[0].inBatch, "and not in the batch");
-        assertTrue(reports[1].inForce, "so is the second");
-        assertTrue(reports[1].inBatch, "with a batch pending for it");
-
-        // A pending listing whose supply differs from its entry, and a batch that has expired.
-        MockERC20 later = new MockERC20("L", "L", 18);
-        vm.prank(DEFAULT_SENDER);
-        factory.proposeListing(address(later), 7);
-        ConfigureWhitelist.Entry[] memory one = new ConfigureWhitelist.Entry[](1);
-        one[0] = ConfigureWhitelist.Entry({token: address(later), referenceSupply: 8});
-        reports = configure.status(factory, one);
-        assertFalse(reports[0].pendingMatches, "a pending listing that differs from the entry");
-        vm.warp(block.timestamp + 10 days);
-        reports = configure.status(factory, list);
-        assertFalse(reports[1].inBatch, "an expired batch names nothing");
-    }
-
-    // ---------------------------------------------------------------------
-    // ConfigureWhitelist: supply batches
-    // ---------------------------------------------------------------------
-
-    /// @dev The weekly batch: sorted by address, only entries whose supply moved, skipping a token never listed and one
-    ///      with a listing pending.
-    function test_supplyBatch_sortsAndChoosesTheRevisions() public {
-        IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
-        ConfigureWhitelist.Entry[] memory list = new ConfigureWhitelist.Entry[](4);
-        for (uint256 i = 0; i < 4; ++i) {
-            list[i] = _tokenAt(address(uint160(0x9000 - i * 0x100)), 18); // descending addresses
-        }
-        ConfigureWhitelist.Entry[] memory listed = new ConfigureWhitelist.Entry[](3);
-        (listed[0], listed[1], listed[2]) = (list[0], list[1], list[2]);
-        _listed(factory, listed);
-        vm.prank(guardian);
-        factory.delist(list[2].token);
-        vm.prank(DEFAULT_SENDER);
-        factory.proposeListing(list[2].token, list[2].referenceSupply); // a relisting is pending for the third
-
-        list[0].referenceSupply += 1_000e18; // revised
-        list[2].referenceSupply += 1_000e18; // revised, but a listing is pending: skipped
-        list[3].referenceSupply += 1_000e18; // never listed: skipped
-        // list[1] unchanged: not in the batch
-        (address[] memory tokens, uint256[] memory supplies) = configure.supplyBatch(factory, list);
-        assertEq(tokens.length, 1);
-        assertEq(tokens[0], list[0].token);
-        assertEq(supplies[0], list[0].referenceSupply);
-
-        list[1].referenceSupply -= 1_000e18;
-        (tokens,) = configure.supplyBatch(factory, list);
-        assertEq(tokens.length, 2);
-        assertLt(uint256(uint160(tokens[0])), uint256(uint160(tokens[1])), "ascending, as the factory requires");
-    }
-
-    /// @dev CR-I38 and RT-25, re-targeted: the script mirrors the factory's step, so a revision of exactly one step is
-    ///      batched and one raw unit past it is skipped with its reason, rather than refusing the whole Safe batch.
-    function test_CRI38_RT25_aRevisionOfExactlyOneStepIsBatchedAndOnePastIsSkipped() public {
-        IndexFactory factory = _factory(owner, guardian);
-        ConfigureWhitelist.Entry[] memory list = _twoEntries();
-        _sendAsOwner(factory, _safeCalls(factory, list, _tokens(list), none));
-        vm.warp(block.timestamp + factory.LISTING_DELAY());
-        configure.execute(factory, list);
-        uint256 stepA = list[0].referenceSupply / 200;
-        uint256 stepB = list[1].referenceSupply / 200;
-
-        list[0].referenceSupply += stepA + 1; // one past
-        list[1].referenceSupply -= stepB; // exactly one step down
-        (address[] memory tokens,) = configure.supplyBatch(factory, list);
-        assertEq(tokens.length, 1, "the entry past the step is skipped");
-        assertEq(tokens[0], list[1].token);
-
-        list[0].referenceSupply -= 1; // exactly one step up
-        bytes memory call = configure.supplyCalldata(factory, list);
-        vm.prank(owner);
-        (bool ok,) = address(factory).call(call);
-        assertTrue(ok, "the factory takes both");
-        (, uint256 eta, address[] memory pending,) = factory.pendingSupplies();
-        assertEq(pending.length, 2);
-        vm.warp(eta);
-        configure.executeSupplies(factory, list);
-        assertEq(factory.referenceSupply(list[0].token), list[0].referenceSupply);
-        assertEq(factory.referenceSupply(list[1].token), list[1].referenceSupply);
-    }
-
-    /// @dev SA-05. With last week's batch still live, the batch modes built this week's against the supplies it was
-    ///      about to replace and handed the Safe a `proposeSupplies` the factory refuses. They now stop with the live
-    ///      batch's deadline, and build again once it has executed.
-    function test_SA05_theBatchModesRefuseWhileABatchIsLive() public {
-        IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
-        ConfigureWhitelist.Entry[] memory list = _twoEntries();
-        _listed(factory, list);
-        list[0].referenceSupply += list[0].referenceSupply / 400;
-        configure.proposeSupplies(factory, list);
-        (, uint256 eta,,) = factory.pendingSupplies();
-        uint256 deadline = eta + factory.PROPOSAL_WINDOW();
-
-        list[1].referenceSupply += list[1].referenceSupply / 400;
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.BatchStillLive.selector, deadline));
-        configure.supplyBatch(factory, list);
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.BatchStillLive.selector, deadline));
-        configure.supplyCalldata(factory, list);
-
-        vm.warp(eta);
-        configure.executeSupplies(factory, list);
-        (address[] memory tokens,) = configure.supplyBatch(factory, list);
-        assertEq(tokens.length, 1, "next week's batch names only what still moves");
-        assertEq(tokens[0], list[1].token);
-    }
-
-    function test_supplyBatch_revertsWhenNothingMoves() public {
-        IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
-        ConfigureWhitelist.Entry[] memory list = _twoEntries();
-        vm.expectRevert(ConfigureWhitelist.NothingToBatch.selector);
-        configure.supplyBatch(factory, list); // never listed
-        _listed(factory, list);
-        vm.expectRevert(ConfigureWhitelist.NothingToBatch.selector);
-        configure.supplyBatch(factory, list); // listed at exactly these supplies
-    }
-
-    /// @dev Propose broadcasts the batch from an owner key; execute runs a due batch only when every one of its
-    ///      supplies is what the entries say, and says why otherwise.
-    function test_proposeAndExecuteSupplies() public {
-        IndexFactory factory = _factory(DEFAULT_SENDER, guardian);
-        ConfigureWhitelist.Entry[] memory list = _twoEntries();
-        configure.executeSupplies(factory, list); // nothing pending: logs and returns
-        _listed(factory, list);
-
-        list[0].referenceSupply += 1e18;
-        configure.proposeSupplies(factory, list);
-        (, uint256 eta,,) = factory.pendingSupplies();
-        configure.executeSupplies(factory, list); // not ready yet
-        vm.warp(eta);
-        list[0].referenceSupply += 1e18; // the entries moved on since the proposal
-        configure.executeSupplies(factory, list);
-        assertEq(factory.referenceSupply(list[0].token), 1_000e18, "a batch the entries no longer name waits");
-        list[0].referenceSupply -= 1e18;
-        ConfigureWhitelist.Entry[] memory other = new ConfigureWhitelist.Entry[](1);
-        other[0] = list[1];
-        configure.executeSupplies(factory, other); // entries that do not name the batch's token
-        assertEq(factory.referenceSupply(list[0].token), 1_000e18);
-        configure.executeSupplies(factory, list);
-        assertEq(factory.referenceSupply(list[0].token), 1_001e18, "executed");
-
-        list[0].referenceSupply += 1e18;
-        configure.proposeSupplies(factory, list);
-        (, eta,,) = factory.pendingSupplies();
-        vm.warp(eta + factory.PROPOSAL_WINDOW() + 1);
-        configure.executeSupplies(factory, list); // expired
-        assertEq(factory.referenceSupply(list[0].token), 1_001e18);
-    }
-
-    function test_configureRun_readsEnvironment() public {
-        IndexFactory factory = _factory(DEFAULT_SENDER, address(0));
-        ConfigureWhitelist.Entry[] memory list = _twoEntries();
-        vm.setEnv("FACTORY", vm.toString(address(factory)));
-        vm.setEnv("WHITELIST", string.concat(vm.toString(list[0].token), ":", vm.toString(list[0].referenceSupply)));
-
-        vm.setEnv("RELIST", vm.toString(list[0].token)); // parsed by run; nothing here is delisted
-        vm.setEnv("LIST", vm.toString(list[1].token)); // names no entry of this WHITELIST (RT-06)
-        vm.setEnv("LISTING_MODE", "safe");
-        configure.run();
-        vm.setEnv("LISTING_MODE", "propose");
-        configure.run();
-        assertEq(factory.listingEta(list[0].token), 0, "a listing LIST does not name is not proposed");
-
-        vm.setEnv("LIST", "all");
-        vm.setEnv("LISTING_MODE", "safe");
-        configure.run();
-        assertEq(factory.listingEta(list[0].token), 0);
-        vm.setEnv("LISTING_MODE", "propose");
-        configure.run();
-        assertEq(factory.listingEta(list[0].token), block.timestamp + factory.LISTING_DELAY());
-
-        vm.warp(block.timestamp + factory.LISTING_DELAY());
-        vm.setEnv("LISTING_MODE", "execute");
-        configure.run();
-        assertTrue(factory.isWhitelisted(list[0].token));
-
-        vm.setEnv("WHITELIST", string.concat(vm.toString(list[0].token), ":", vm.toString(list[0].referenceSupply + 1)));
-        vm.setEnv("LISTING_MODE", "supplies-safe"); // logs the batch's calldata, broadcasts nothing
-        configure.run();
-        assertFalse(factory.suppliesPending());
-        vm.setEnv("LISTING_MODE", "supplies");
-        configure.run();
-        assertTrue(factory.suppliesPending());
-        vm.warp(block.timestamp + factory.LISTING_DELAY());
-        vm.setEnv("LISTING_MODE", "execute-supplies");
-        configure.run();
-        assertEq(factory.referenceSupply(list[0].token), list[0].referenceSupply + 1);
-
-        vm.setEnv("LISTING_MODE", "status"); // read-only
-        configure.run();
-
-        vm.setEnv("LISTING_MODE", "sideways");
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWhitelist.UnknownMode.selector, "sideways"));
-        configure.run();
-
-        vm.setEnv("WHITELIST", "default");
-        vm.expectRevert(ConfigureWhitelist.DefaultListOnlyOnMainnet.selector);
-        configure.run();
-
-        vm.setEnv("WHITELIST", "wide");
-        vm.expectRevert(ConfigureWhitelist.WideListOnlyOnMainnet.selector);
-        configure.run();
     }
 
     // ---------------------------------------------------------------------
@@ -1588,12 +737,12 @@ contract ScriptsTest is Test {
         assertEq(list[0].symbol, "tUSDC");
         assertEq(list[0].decimals, 6);
         assertEq(list[0].fee, 500);
-        assertEq(list[0].referenceSupply, 0, "a currency, never listed");
+        assertEq(list[0].priceId, bytes32(0), "a currency, never listed");
         assertEq(list[1].symbol, "tWBTC");
         assertEq(list[2].symbol, "tLINK");
         assertEq(list[3].symbol, "tUNI");
         for (uint256 i = 1; i < list.length; ++i) {
-            assertGt(list[i].referenceSupply, 0, "components list with a reference supply");
+            assertTrue(list[i].priceId != bytes32(0), "components list with a price id");
             assertGt(list[i].supply, list[i].dripAmount);
         }
     }
@@ -1720,20 +869,21 @@ contract ScriptsTest is Test {
         testMarket.seed(uniswap, tokens, 1, 1);
     }
 
-    function test_testMarketWhitelist_parsesAsConfigureWhitelistEntries() public {
+    function test_testMarketWhitelist_parsesAsConfigureWeightedEntries() public {
         SetupTestMarket.Uniswap memory uniswap = _uniswap();
         address[] memory tokens = testMarket.create(uniswap);
         SetupTestMarket.Spec[] memory list = testMarket.specs();
 
-        ConfigureWhitelist.Entry[] memory entries = configure.resolveList(testMarket.whitelist(uniswap.weth, tokens));
+        ConfigureWeighted.Entry[] memory entries =
+            new ConfigureWeighted().resolveList(testMarket.whitelist(uniswap.weth, tokens));
         assertEq(entries.length, 4);
         assertEq(entries[0].token, tokens[1]);
-        assertEq(entries[0].referenceSupply, list[1].referenceSupply);
+        assertEq(entries[0].priceId, list[1].priceId);
         assertEq(entries[1].token, uniswap.weth);
-        assertEq(entries[1].referenceSupply, testMarket.ETH_SUPPLY());
+        assertEq(entries[1].priceId, PythIds.WETH);
         for (uint256 i = 2; i < 4; ++i) {
             assertEq(entries[i].token, tokens[i]);
-            assertEq(entries[i].referenceSupply, list[i].referenceSupply);
+            assertEq(entries[i].priceId, list[i].priceId);
         }
     }
 
@@ -2011,46 +1161,6 @@ contract ScriptsTest is Test {
         factory.proposeChain(BNB, BNB_VAULT, address(router));
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeChain(BNB);
-    }
-
-    /// @dev A vault token has no code on Ethereum, so the ERC-20 checks of the whitelist policy cannot apply to it. The
-    ///      script executes its listing, includes it in the weekly batch on its supply alone, and never proposes its
-    ///      first listing, which `proposeListing` would refuse: `proposeVaultListing` lists it.
-    function test_vaultTokensRideTheWeeklyBatch() public {
-        (HybridIndexFactory factory, address bnb) = _hybridWithVaultToken(140_000_000e18);
-        ConfigureWhitelist.Entry[] memory list = new ConfigureWhitelist.Entry[](1);
-        list[0] = ConfigureWhitelist.Entry({token: bnb, referenceSupply: 140_000_000e18});
-        vm.warp(block.timestamp + factory.LISTING_DELAY());
-        configure.execute(factory, list);
-        assertTrue(factory.isWhitelisted(bnb), "its listing executes as any other");
-
-        list[0].referenceSupply = 140_500_000e18; // within MAX_SUPPLY_STEP
-        configure.proposeSupplies(factory, list);
-        (, uint256 eta,,) = factory.pendingSupplies();
-        assertGt(eta, 0, "the batch names the vault token");
-        vm.warp(eta);
-        configure.executeSupplies(factory, list);
-        assertEq(factory.referenceSupply(bnb), 140_500_000e18);
-
-        // Delisted, it is not proposed again through proposeListing, even when named for relisting.
-        vm.prank(guardian);
-        factory.delist(bnb);
-        address[] memory relist = new address[](1);
-        relist[0] = bnb;
-        configure.propose(factory, list, none, relist);
-        assertEq(factory.listingEta(bnb), 0, "a vault token is never proposed through proposeListing");
-        (bytes[] memory calls,) = configure.safeCalldata(factory, list, none, relist);
-        assertEq(calls.length, 0, "nor offered to a Safe");
-
-        // An out-of-range supply is still refused for a vault token.
-        vm.warp(block.timestamp + 7 days);
-        vm.prank(DEFAULT_SENDER);
-        factory.proposeVaultListing(56, bytes32(0), 140_500_000e18);
-        vm.warp(block.timestamp + factory.LISTING_DELAY());
-        configure.execute(factory, list);
-        list[0].referenceSupply = 0;
-        vm.expectRevert(ConfigureWhitelist.NothingToBatch.selector);
-        configure.proposeSupplies(factory, list);
     }
 
     // ---------------------------------------------------------------------

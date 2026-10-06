@@ -7,8 +7,8 @@ import {IXindexErrors} from "./IXindexErrors.sol";
 /// @notice Deploys index hubs as EIP-1167 clones at creator-bound CREATE2 addresses, curates the component whitelist
 ///         and each token's reference supply behind public delays, and keeps the registry. Nothing here reads a price.
 ///         v4's `IndexFactory`, the one contract that implemented all of this, is deleted, and the errors and events
-///         only it raised and emitted with it (audit/2026-10-06-v4-retirement.md). `IndexZap` and `MintRequests` call only `isIndex`,
-///         which every Xindex factory answers; `ConfigureWhitelist`'s listing and supply modes call the rest.
+///         only it raised and emitted with it (audit/2026-10-06-v4-retirement.md). `IndexZap` and `MintRequests` call
+///         only `isIndex`, which every Xindex factory answers; nothing calls the rest since `ConfigureWhitelist` went.
 /// @dev "Owner only" functions revert with OpenZeppelin's `OwnableUnauthorizedAccount` for any other caller, and
 ///      "owner or guardian" functions with `Unauthorized`.
 interface IIndexFactory is IXindexErrors {

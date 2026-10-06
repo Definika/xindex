@@ -70,6 +70,40 @@ library PythIds {
     /// @dev LAYER ZERO / US DOLLAR.
     bytes32 internal constant ZRO = 0x3bd860bea28bf982fa06bcf358118064bb114086cc03993bd76197eaab0b8018;
 
+    /// @notice A token's trust tier (design/2026-10-05-wide-asset-support.md, section 1), shown by the app beside every
+    ///         index that holds it and by `ConfigureWeighted`'s safe mode beside every listing.
+    enum Tier {
+        Unrecorded,
+        Native,
+        Bridged,
+        Custodial
+    }
+
+    /// @notice The tier of a token in the table: `Custodial` for WBTC (BitGo holds the bitcoin), `Bridged` for a
+    ///         bridge's copy of a coin issued elsewhere, `Native` for a token issued on Ethereum, ether's WETH among
+    ///         them, and `Unrecorded` for any token off the table.
+    function tierOf(address token) internal pure returns (Tier) {
+        if (token == M.WBTC) return Tier.Custodial;
+        if (
+            token == M.CRO || token == M.ICP || token == M.ARB || token == M.RENDER || token == M.CAKE || token == M.ZRO
+        ) return Tier.Bridged;
+        if (
+            token == M.WETH || token == M.LINK || token == M.UNI || token == M.QNT || token == M.AAVE || token == M.ENA
+                || token == M.ONDO || token == M.SKY || token == M.WLD || token == M.MNT || token == M.MORPHO
+                || token == M.POL || token == M.LIT || token == M.ETHFI || token == M.FET || token == M.CRV
+                || token == M.NEXO || token == M.VIRTUAL || token == M.STRK || token == M.PENDLE
+        ) return Tier.Native;
+        return Tier.Unrecorded;
+    }
+
+    /// @notice A tier's name, as safe mode's labels and the app show it.
+    function tierName(Tier tier) internal pure returns (string memory) {
+        if (tier == Tier.Native) return "Native";
+        if (tier == Tier.Bridged) return "Bridged";
+        if (tier == Tier.Custodial) return "Custodial";
+        return "Unrecorded";
+    }
+
     /// @notice Every coin of the table and its id: WETH, WBTC, LINK and UNI first, the `default` list, then the wide
     ///         list.
     function all() internal pure returns (address[] memory tokens, bytes32[] memory ids) {

@@ -70,8 +70,8 @@ Where the stages stand (none of v4 is deployed):
   - **Aptos** is built in both directions: the vault with P1 and P2 in Move (`aptos/`), and `AptosStateVerifier`
     (`proofs/aptos`), whose inputs come from Aptos Labs' public database backups.
 - Every top-100 coin with a contract on Ethereum or BNB Chain is being added (the owner's call on 2026-10-05,
-  `design/2026-10-05-wide-asset-support.md`). Built: `script/CheckToken.s.sol`, the admission check; the wide list,
-  `WHITELIST=wide`, of the 27 Ethereum coins that pass it (LEO and WLFI fail the WBT rule;
+  `design/2026-10-05-wide-asset-support.md`). Built: `script/CheckToken.s.sol`, the admission check; the wide list of
+  the Ethereum coins that pass it, now `V5_WHITELIST=wide` in `script/PythIds.sol` (LEO and WLFI fail the WBT rule;
   `design/2026-10-05-token-admission-report.md`); token support in `XindexVault`; and 13 of BNB Chain's 14 coins
   (Binance-Peg coins and BNB Chain tokens) pinned in `script/BnbChainAddresses.sol` as `ConfigureChains`'
   `VAULT_TOKENS=bnb`, listed once that vault is deployed, each with a cap the owner sets then. The design's last
@@ -108,9 +108,9 @@ MAINNET_RPC_URL=https://ethereum-rpc.publicnode.com FORK_BLOCK=$(( $(cast block-
 CHECK=wide forge script script/CheckToken.s.sol --fork-url $MAINNET_RPC_URL
 ```
 
-Deployment: `script/Deploy.s.sol` then `script/ConfigureWhitelist.s.sol`, which also runs the weekly supply batch,
-vault coins' supplies included (see README). `script/CheckToken.s.sol` reports on every token before its first listing;
-`WHITELIST=default` is the flagship's list and `WHITELIST=wide` the wide list. A vault chain adds `script/DeployVault.s.sol` on that chain (P1, P2, the
+Deployment: `script/Deploy.s.sol` then `script/ConfigureWeighted.s.sol`, which lists each coin with its Pyth price id
+(`script/PythIds.sol`). `script/CheckToken.s.sol` reports on every token before its first listing; `V5_WHITELIST=default`
+is the first four coins and `V5_WHITELIST=wide` the rest, 27 in all. A vault chain adds `script/DeployVault.s.sol` on that chain (P1, P2, the
 state reader and the vault, Injective's included; `tron/deploy.mjs` deploys TRON's, built with Tron's compiler, and
 `vechain/deploy.mjs` VeChain's with its staker attester; NEAR's, Stellar's and Sui's go up with their chains' own
 tools, as `near/`, `stellar/` and `sui/` say) and `script/DeployStateVerifier.s.sol` on Ethereum (the chain's state
@@ -182,8 +182,8 @@ verifier, from an anchor the fixture generator writes, with the deployment's own
    suites (`test/WeightedHub.t.sol`, `test/WeightedHub.rebalance.t.sol`, `test/WeightedIndexFactory.t.sol`), the R
    tests that drive the auction directly (R04, R08, R10, R11, R14 to R16, R21) among them. Some ids no contract test
    can reach:
-   - L06 and FR06 are `test_L06_checkOwner` and `test_FR06_checkGuardian`, and FR05 is the two `test_FR05_*` tests,
-     all in `test/Scripts.t.sol`.
+   - L06 and FR06 are `test_L06_checkOwner` and `test_FR06_checkGuardian`, in `test/Scripts.t.sol`, and FR05 is
+     `test_FR05_*` in `test/ConfigureWeighted.t.sol`.
    - I09, I10, I11, L08 and FR04 are in `test/Repo.t.sol`: the known-limitations section, the pinned compiler, the
      pinned CI toolchain and required fork RPC, and the dependency lock against `.gitmodules`. CI also compares the
      committed submodule commits, which needs git.
@@ -203,11 +203,12 @@ verifier, from an anchor the fixture generator writes, with the deployment's own
    - `audit/2026-09-30-v4-stage-a-retirement.md`: Stage A's removal of every price. It retires 31 tested ids in full,
      retires CR-I36, CR-L08 and VR-06 in part, and names the test of every re-targeted id.
    - `audit/2026-10-06-v4-retirement.md`: the deletion of v4's market-cap hub and factory for v5. It retires 13 tested
-     ids in full (the band's and the supply batches'), retires CR-M01, LR-04, LR-05 and RT-15 in part, and names the
-     v5 test of every re-targeted id.
+     ids in full (the band's and the supply batches'), retires LR-04, LR-05 and RT-15 in part, and names the v5 test
+     of every re-targeted id. A second section retires six more with `ConfigureWhitelist`, CR-M01 among them.
 
-   The ids tested at `v3.0.0`, less those tested at Stage A, are exactly the ids the Stage A record retires in full,
-   and the ids tested at `8e6148b`, less those tested now, exactly the ids the v4 record retires in full. A change that
+   The ids tested at `v3.0.0`, less those tested at Stage A, are exactly the ids the Stage A record retires in full;
+   the ids tested at `8e6148b`, less those tested at `4f40b67`, the v4 record's first section; and those at `22d532a`,
+   less those tested after it, its second. A change that
    removes an id's last test adds its row to a retirement record in the same commit. Do not restore a retired id's test
    against the new design; if the property matters here, it gets a new id from the review of this surface.
 
@@ -707,8 +708,8 @@ the rules code must never break.
   environment variables: `Deploy.deploy`, which deploys `HybridIndexFactory` with both templates, the zap and
   `MintRequests`; `DeployVault.deploy`, which deploys a vault chain's P1, P2, state reader and vault, refusing any
   Groth16 verifier but the pinned SP1 and RISC Zero ones; `DeployStateVerifier.deployBnb` and `deployTron`, which
-  deploy a chain's state verifier on Ethereum from a fresh anchor; `ConfigureWhitelist.propose`, `execute`,
-  `proposeSupplies` and `executeSupplies`; `ConfigureChains.propose` and `execute`, which add a vault chain and its
+  deploy a chain's state verifier on Ethereum from a fresh anchor; `ConfigureWeighted.propose`, `execute`,
+  `safeCalldata` and `status`; `ConfigureChains.propose` and `execute`, which add a vault chain and its
   coins, and `proposeCaps` and `executeCaps`, which give a vault coin its cap; and `CheckToken.check`, which reports on
   one token. Environment variables are process-global and tests run in parallel, so each variable name is set by exactly
   one test (see `test/Scripts.t.sol`). In tests, script broadcasts come from `DEFAULT_SENDER`.
@@ -730,10 +731,9 @@ the rules code must never break.
     every day after, or it stops for good.
 - **Mainnet addresses** are verified on-chain before being committed: tokens by symbol and decimals, and the router and
   the PoolManager by their runtime code hashes, since every Universal Router build answers `poolManager()` alike
-  (CR-I35). `test/fork/MainnetAddresses.fork.t.sol` checks `script/MainnetAddresses.sol` that way. It also lists the
-  default whitelist on a fresh factory, and `test_CRL08_theDefaultListIsTheReleaseRecord` pins the default list against
-  a table written independently of it. Every reference supply carries its source and date in a comment beside it. The
-  WBTC address is `0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599`; an earlier draft had a wrong one.
+  (CR-I35). `test/fork/MainnetAddresses.fork.t.sol` checks `script/MainnetAddresses.sol` that way. It also lists v5's
+  lists on a fresh factory, and `test_CRL08_theListsAreTheReleaseRecord` pins both lists, address and price id, against
+  a table written independently of them. Every price id carries its feed's description beside it. The WBTC address is `0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599`; an earlier draft had a wrong one.
 
 ## Product decisions already made (do not re-litigate silently)
 
@@ -771,8 +771,8 @@ records what went with them:
   Ethereum (`design/2026-09-30-wbt-check.md`, the owner's call on 2026-09-30). The whitelist follows from the floor,
   the screen, the listing check and the
   owner's preference for native coins in vaults over wrapped ones. Bitcoin is held as WBTC only (the owner's call on
-  2026-09-29; do not reopen it). The wide list (`WHITELIST=wide`) serves creators' indexes; whether the flagship takes
-  any bridged or custodial coin is open (`design/2026-10-05-wide-asset-support.md`, section 6).
+  2026-09-29; do not reopen it). The wide list (`V5_WHITELIST=wide`) serves creators' indexes; there is no flagship to
+  hold any of it since the owner's calls of 2026-10-06.
 - **Fees.** None in Stage A: audits, the bounty and watchers are funded from outside (the owner's call on 2026-09-30,
   over a minter fee in shares or a management fee, design §13.1). A later version could add one; only `_backing` and
   its callers would change.

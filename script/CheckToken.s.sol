@@ -7,7 +7,7 @@ import {IERC165} from "@openzeppelin/contracts/interfaces/IERC165.sol";
 import {IERC1820Registry} from "@openzeppelin/contracts/interfaces/IERC1820Registry.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
-import {ConfigureWhitelist} from "./ConfigureWhitelist.s.sol";
+import {ConfigureWeighted} from "./ConfigureWeighted.s.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
 import {IAdminReads} from "./interfaces/IAdminReads.sol";
@@ -22,7 +22,7 @@ import {IUniswapV3PoolRead} from "./interfaces/IUniswapV3PoolRead.sol";
 ///         day passing) is undone after each token.
 ///
 ///   CHECK=wide forge script script/CheckToken.s.sol --fork-url <mainnet rpc>
-///   CHECK=<token:supply,...> forge script script/CheckToken.s.sol --fork-url <bnb chain rpc>
+///   CHECK=<token,...> forge script script/CheckToken.s.sol --fork-url <bnb chain rpc>
 ///
 /// What it checks, and what each finding does:
 ///   - Transfers: `transfer` and `transferFrom` on the fork, balances compared exactly, then a day later. A shortfall
@@ -38,7 +38,7 @@ import {IUniswapV3PoolRead} from "./interfaces/IUniswapV3PoolRead.sol";
 ///   - Depth, on Ethereum only: each Uniswap V3 pool against WETH and USDC at the four standard fees, and each hookless
 ///     V4 pool against ether and USDC at the standard fee and tick spacing pairs, with the token within 2% of the
 ///     pool's price on either side from the liquidity active now. Recorded only.
-///   - Supply: the token's symbol, decimals and on-chain `totalSupply`, beside the entry's reference supply.
+///   - Supply: the token's symbol, decimals and on-chain `totalSupply`.
 ///
 /// The selector scan is a heuristic: a power under a name the table does not list is missed, and a listed name says
 /// nothing about who may call it. The depth figure is an approximation: it ignores the ticks between the price and the
@@ -48,8 +48,8 @@ import {IUniswapV3PoolRead} from "./interfaces/IUniswapV3PoolRead.sol";
 /// deployed.
 ///
 /// Env:
-///   CHECK          What ConfigureWhitelist's WHITELIST takes: `default` or `wide` (chain 1 only), or comma-separated
-///                  `token:referenceSupply` entries.
+///   CHECK          `default` or `wide`, the tokens of `ConfigureWeighted`'s lists (chain 1 only), or comma-separated
+///                  token addresses.
 ///   CHECK_HOLDERS  Optional comma-separated `token:holder` pairs: an account the transfer check may take the test
 ///                  balance from when the token's balance slot cannot be written (balances kept elsewhere, or shares).
 ///                  On Ethereum the token's own pools are tried after it.
@@ -132,7 +132,6 @@ contract CheckToken is Script {
         bool decimalsAnswered;
         uint8 decimals;
         uint256 totalSupply;
-        uint256 referenceSupply;
         Transfers transfers;
         bool registry;
         bool erc777;
@@ -236,7 +235,7 @@ contract CheckToken is Script {
     /// @dev The answer bytes a read or a call keeps, in the scratch space below the free memory pointer.
     uint256 private constant ONE_WORD = 0x20;
     uint256 private constant TWO_WORDS = 0x40;
-    /// @dev The whitelist policy's decimals, as ConfigureWhitelist applies them.
+    /// @dev The listing policy's decimals, as ConfigureWeighted applies them.
     uint8 private constant MIN_DECIMALS = 6;
     uint8 private constant MAX_DECIMALS = 18;
 
@@ -251,21 +250,33 @@ contract CheckToken is Script {
     // Entry points
     // ---------------------------------------------------------------------
 
-    /// @notice Reads CHECK and CHECK_HOLDERS, checks every entry and logs its report, then the entries the checks did
-    ///         not refuse, in WHITELIST's format.
+    /// @notice Reads CHECK and CHECK_HOLDERS, checks every token and logs its report, then the tokens the checks did
+    ///         not refuse.
     function run() external {
-        ConfigureWhitelist.Entry[] memory list = new ConfigureWhitelist().resolveList(vm.envString("CHECK"));
+        address[] memory tokens = resolveTokens(vm.envString("CHECK"));
         string memory holders = vm.envOr("CHECK_HOLDERS", string(""));
         Markets memory m = markets();
-        string memory entries = "";
-        for (uint256 i = 0; i < list.length; ++i) {
-            Report memory r = check(list[i].token, list[i].referenceSupply, holderFor(holders, list[i].token), m);
+        string memory passed = "";
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            Report memory r = check(tokens[i], holderFor(holders, tokens[i]), m);
             log(r);
             if (r.verdict == Verdict.Refused) continue;
-            entries = string.concat(entries, bytes(entries).length == 0 ? "" : ",", entry(r));
+            passed = string.concat(passed, bytes(passed).length == 0 ? "" : ",", vm.toString(r.token));
         }
-        console2.log("Entries the checks did not refuse, for WHITELIST (settle any marked REVIEW first):");
-        console2.log(entries);
+        console2.log("Tokens the checks did not refuse (settle any marked REVIEW first):");
+        console2.log(passed);
+    }
+
+    /// @notice CHECK's tokens: those of `ConfigureWeighted`'s `default` or `wide` list, which only chain 1 resolves, or
+    ///         comma-separated addresses.
+    function resolveTokens(string memory raw) public returns (address[] memory tokens) {
+        ConfigureWeighted lists = new ConfigureWeighted();
+        if (!ScriptUtils.same(raw, "default") && !ScriptUtils.same(raw, "wide")) return lists.parseAddresses(raw);
+        ConfigureWeighted.Entry[] memory list = lists.resolveList(raw);
+        tokens = new address[](list.length);
+        for (uint256 i = 0; i < list.length; ++i) {
+            tokens[i] = list[i].token;
+        }
     }
 
     /// @notice Where depth is measured on this chain: Uniswap on Ethereum, and nowhere elsewhere.
@@ -281,16 +292,11 @@ contract CheckToken is Script {
 
     /// @notice The whole check of one token.
     /// @param token The token.
-    /// @param referenceSupply The entry's reference supply, reported beside the token's own `totalSupply`.
     /// @param holder An account the transfer check may take its test balance from, or zero.
     /// @param m Where to measure depth; all zero to skip it.
     /// @return r The report; `log` prints it.
-    function check(address token, uint256 referenceSupply, address holder, Markets memory m)
-        public
-        returns (Report memory r)
-    {
+    function check(address token, address holder, Markets memory m) public returns (Report memory r) {
         r.token = token;
-        r.referenceSupply = referenceSupply;
         if (token.code.length == 0) {
             r.reason = "the token has no code";
             return r;
@@ -340,11 +346,6 @@ contract CheckToken is Script {
             );
         }
         return (Verdict.Listable, "");
-    }
-
-    /// @notice `token:referenceSupply`, the report's entry for ConfigureWhitelist.
-    function entry(Report memory r) public pure returns (string memory) {
-        return string.concat(vm.toString(r.token), ":", vm.toString(r.referenceSupply));
     }
 
     /// @notice The holder CHECK_HOLDERS names for `token`, or zero.
@@ -814,7 +815,6 @@ contract CheckToken is Script {
         if (r.token.code.length != 0) _logFindings(r);
         string memory reason = bytes(r.reason).length == 0 ? "" : string.concat(": ", r.reason);
         console2.log(string.concat("verdict: ", verdictText(r.verdict), reason));
-        console2.log(string.concat("entry: ", entry(r)));
     }
 
     function _logFindings(Report memory r) private view {
@@ -823,9 +823,7 @@ contract CheckToken is Script {
                 "decimals ",
                 r.decimalsAnswered ? vm.toString(r.decimals) : "unanswered",
                 "; totalSupply ",
-                _amount(r, r.totalSupply),
-                "; reference supply ",
-                _amount(r, r.referenceSupply)
+                _amount(r, r.totalSupply)
             )
         );
         console2.log(string.concat("transfers: ", transferText(r.transfers)));

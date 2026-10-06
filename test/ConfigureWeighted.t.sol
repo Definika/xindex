@@ -66,6 +66,117 @@ contract ConfigureWeightedTest is Test {
         assertEq(first[0].token, MainnetAddresses.WETH);
     }
 
+    /// @dev Every coin of the table has a price id of its own, none zero, and the first three are pinned to the feeds
+    ///      they were read from: no index could hold two coins on one id (V5-M1).
+    function test_everyListedCoinHasItsOwnPriceId() public pure {
+        (, bytes32[] memory ids) = PythIds.all();
+        for (uint256 i = 0; i < ids.length; ++i) {
+            assertTrue(ids[i] != bytes32(0));
+            for (uint256 j = 0; j < i; ++j) {
+                assertTrue(ids[i] != ids[j], "one id per coin");
+            }
+        }
+        assertEq(ids[0], 0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace, "WETH on ETH/USD");
+        assertEq(ids[1], 0xc9d8b075a5c69303365ae23633d4e085199bf5c520a3b90fed1322a0342ffc33, "WBTC on WBTC/USD");
+        assertEq(ids[2], 0x8ac0c70fff57e9aefdf5edf44b51d62c2d433653cbb2cf5cc06bb115af04d221, "LINK on LINK/USD");
+    }
+
+    /// @dev Every coin of the table carries a tier, as the app and safe mode show it: WBTC custodial, six bridged
+    ///         copies, and the rest issued on Ethereum.
+    function test_everyListedCoinHasItsTier() public view {
+        (address[] memory tokens,) = PythIds.all();
+        uint256[4] memory count;
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            PythIds.Tier tier = PythIds.tierOf(tokens[i]);
+            assertTrue(tier != PythIds.Tier.Unrecorded, "every listed coin is recorded");
+            ++count[uint256(tier)];
+        }
+        assertEq(count[uint256(PythIds.Tier.Native)], 20);
+        assertEq(count[uint256(PythIds.Tier.Bridged)], 6);
+        assertEq(count[uint256(PythIds.Tier.Custodial)], 1);
+        assertEq(uint8(PythIds.tierOf(MainnetAddresses.WBTC)), uint8(PythIds.Tier.Custodial));
+        assertEq(uint8(PythIds.tierOf(MainnetAddresses.ARB)), uint8(PythIds.Tier.Bridged));
+        assertEq(uint8(PythIds.tierOf(MainnetAddresses.USDC)), uint8(PythIds.Tier.Unrecorded));
+        assertEq(PythIds.tierName(PythIds.Tier.Native), "Native");
+        assertEq(PythIds.tierName(PythIds.Tier.Bridged), "Bridged");
+        assertEq(PythIds.tierName(PythIds.Tier.Custodial), "Custodial");
+        assertEq(PythIds.tierName(PythIds.Tier.Unrecorded), "Unrecorded");
+        assertEq(configure.tierLabel(MainnetAddresses.WBTC), " (Custodial)");
+        assertEq(configure.tierLabel(address(a)), "", "a token off the table carries no label");
+    }
+
+    /// @dev CR-L08: the lists are the release record, pinned against this table, written out by hand, address and
+    ///      price id, rather than read from `PythIds`, so a slip in either shows.
+    function test_CRL08_theListsAreTheReleaseRecord() public view {
+        ConfigureWeighted.Entry[] memory first = configure.defaultMainnetList();
+        ConfigureWeighted.Entry[] memory wide = configure.wideMainnetList();
+        address[27] memory tokens = [
+            0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2, // WETH
+            0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599, // WBTC
+            0x514910771AF9Ca656af840dff83E8264EcF986CA, // LINK
+            0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984, // UNI
+            0x4a220E6096B25EADb88358cb44068A3248254675, // QNT
+            0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9, // AAVE
+            0x57e114B691Db790C35207b2e685D4A43181e6061, // ENA
+            0xfAbA6f8e4a5E8Ab82F62fe7C39859FA577269BE3, // ONDO
+            0x56072C95FAA701256059aa122697B133aDEd9279, // SKY
+            0x163f8C2467924be0ae7B5347228CABF260318753, // WLD
+            0x3c3a81e81dc49A522A592e7622A7E711c06bf354, // MNT
+            0x58D97B57BB95320F9a05dC918Aef65434969c2B2, // MORPHO
+            0x455e53CBB86018Ac2B8092FdCd39d8444aFFC3F6, // POL
+            0x232CE3bd40fCd6f80f3d55A522d03f25Df784Ee2, // LIT
+            0xFe0c30065B384F05761f15d0CC899D4F9F9Cc0eB, // ETHFI
+            0xaea46A60368A7bD060eec7DF8CBa43b7EF41Ad85, // FET
+            0xD533a949740bb3306d119CC777fa900bA034cd52, // CRV
+            0xB62132e35a6c13ee1EE0f84dC5d40bad8d815206, // NEXO
+            0x44ff8620b8cA30902395A7bD3F2407e1A091BF73, // VIRTUAL
+            0xCa14007Eff0dB1f8135f4C25B34De49AB0d42766, // STRK
+            0x808507121B80c02388fAd14726482e061B8da827, // PENDLE
+            0xA0b73E1Ff0B80914AB6fe0444E65848C4C34450b, // CRO
+            0x00f3C42833C3170159af4E92dbb451Fb3F708917, // ICP
+            0xB50721BCf8d664c30412Cfbc6cf7a15145234ad1, // ARB
+            0x6De037ef9aD2725EB40118Bb1702EBb27e4Aeb24, // RENDER
+            0x152649eA73beAb28c5b49B26eb48f7EAD6d4c898, // CAKE
+            0x6985884C4392D348587B19cb9eAAf157F13271cd // ZRO
+        ];
+        bytes32[27] memory ids = [
+            bytes32(0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace), // WETH
+            0xc9d8b075a5c69303365ae23633d4e085199bf5c520a3b90fed1322a0342ffc33, // WBTC
+            0x8ac0c70fff57e9aefdf5edf44b51d62c2d433653cbb2cf5cc06bb115af04d221, // LINK
+            0x78d185a741d07edb3412b09008b7c5cfb9bbbd7d568bf00ba737b456ba171501, // UNI
+            0x19ab139032007c8bd7d1fd3842ef392a5434569a72b555504a5aee47df2a0a35, // QNT
+            0x2b9ab1e972a281585084148ba1389800799bd4be63b957507db1349314e47445, // AAVE
+            0xb7910ba7322db020416fcac28b48c01212fd9cc8fbcbaf7d30477ed8605f6bd4, // ENA
+            0xd40472610abe56d36d065a0cf889fc8f1dd9f3b7f2a478231a5fc6df07ea5ce3, // ONDO
+            0xa483243eed64ca27a1f6e26385b7d1e0d07e9fe264bb6903efb3efc4689d3fe7, // SKY
+            0xd6835ad1f773de4a378115eb6824bd0c0e42d84d1c84d9750e853fb6b6c7794a, // WLD
+            0x4e3037c822d852d79af3ac80e35eb420ee3b870dca49f9344a38ef4773fb0585, // MNT
+            0x5b2a4c542d4a74dd11784079ef337c0403685e3114ba0d9909b5c7a7e06fdc42, // MORPHO
+            0xffd11c5a1cfd42f80afb2df4d9f264c15f956d68153335374ec10722edd70472, // POL
+            0xc0c83f00c39165892d55dcd17ade2191e289697e2ac132d9ab721e20834e2a9e, // LIT
+            0xb27578a9654246cb0a2950842b92330e9ace141c52b63829cc72d5c45a5a595a, // ETHFI
+            0x7da003ada32eabbac855af3d22fcf0fe692cc589f0cfd5ced63cf0bdcc742efe, // FET
+            0xa19d04ac696c7a6616d291c7e5d1377cc8be437c327b75adb5dc1bad745fcae8, // CRV
+            0xe5f406d97d7fa159c21647912b72aa8c669e24d7bd59bcd518587bbde027c531, // NEXO
+            0x8132e3eb1dac3e56939a16ff83848d194345f6688bff97eb1c8bd462d558802b, // VIRTUAL
+            0x6a182399ff70ccf3e06024898942028204125a819e519a335ffa4579e66cd870, // STRK
+            0x9a4df90b25497f66b1afb012467e316e801ca3d839456db028892fe8c70c8016, // PENDLE
+            0x23199c2bcb1303f667e733b9934db9eca5991e765b45f5ed18bc4b231415f2fe, // CRO
+            0xc9907d786c5821547777780a1e4f89484f3417cb14dd244f2b0a34ea7a554d67, // ICP
+            0x3fa4252848f9f0a1480be62745a4629d9eb1322aebab8a791e344b3b9c1adcf5, // ARB
+            0x3d4a2bd9535be6ce8059d75eadeba507b043257321aa544717c56fa19b49e35d, // RENDER
+            0x2356af9529a1064d41e32d617e2ce1dca5733afa901daba9e2b68dee5d53ecf9, // CAKE
+            0x3bd860bea28bf982fa06bcf358118064bb114086cc03993bd76197eaab0b8018 // ZRO
+        ];
+        assertEq(first.length, 4);
+        assertEq(wide.length, 23);
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            ConfigureWeighted.Entry memory entry = i < 4 ? first[i] : wide[i - 4];
+            assertEq(entry.token, tokens[i]);
+            assertEq(entry.priceId, ids[i]);
+        }
+    }
+
     function test_theMainnetListsOnlyOnMainnet() public {
         vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.MainnetListOffMainnet.selector, "default"));
         configure.resolveList("default");
@@ -150,7 +261,7 @@ contract ConfigureWeightedTest is Test {
 
     /// @dev RT-06: a listing the guardian cancelled is not proposed again by a routine run, and a delisted token comes
     ///      back only when named in V5_RELIST.
-    function test_RT06_aVetoedOrDelistedTokenStaysOutUnlessNamed() public {
+    function test_RT06_XA11_aVetoedOrDelistedTokenStaysOutUnlessNamed() public {
         configure.propose(factory, _list(), _all(), _none());
         vm.prank(guardian);
         factory.cancelListing(address(a));
@@ -168,7 +279,7 @@ contract ConfigureWeightedTest is Test {
         assertGt(factory.listingEta(address(b)), 0, "named in V5_RELIST");
     }
 
-    function test_proposeSkipsWhatThePolicyOrTheFactoryWouldRefuse() public {
+    function test_XA40_proposeSkipsWhatThePolicyOrTheFactoryWouldRefuse() public {
         configure.propose(factory, _list(), _all(), _none());
         // Already pending with the entry's id, or with another: both skipped.
         ConfigureWeighted.Entry[] memory changed = _list();
@@ -199,7 +310,7 @@ contract ConfigureWeightedTest is Test {
         assertEq(calls.length, 0, "the policy skips every one");
     }
 
-    function test_proposeNeedsAnOwnerThatSigns() public {
+    function test_XA18_LR07_proposeNeedsAnOwnerThatSigns() public {
         WeightedIndexFactory owned = new WeightedIndexFactory(address(configure), guardian, address(new MockPyth()));
         ConfigureWeighted.Entry[] memory list = _list();
         address[] memory all = _all();
@@ -226,7 +337,7 @@ contract ConfigureWeightedTest is Test {
     // Execution and status
     // ---------------------------------------------------------------------
 
-    function test_executeRunsOnlyWhatIsDueAndTheEntrys() public {
+    function test_XA06_executeRunsOnlyWhatIsDueAndTheEntrys() public {
         configure.execute(factory, _list()); // nothing pending
         configure.propose(factory, _list(), _all(), _none());
         configure.execute(factory, _list()); // not ready
@@ -244,7 +355,27 @@ contract ConfigureWeightedTest is Test {
         assertFalse(factory.isWhitelisted(address(a)), "expired");
     }
 
-    function test_statusReportsListingsAndPendingProposals() public {
+    /// @dev FR-05: executing needs no role. Any account runs what is due, and a listing the guardian cancelled stays
+    ///      cancelled.
+    function test_FR05_executeWorksFromAnyAccountAndNeverReproposesACancelledListing() public {
+        address someoneElse = makeAddr("someone else"); // the broadcaster is neither owner nor guardian
+        WeightedIndexFactory other = new WeightedIndexFactory(someoneElse, guardian, address(new MockPyth()));
+        ConfigureWeighted.Entry[] memory list = _list();
+        vm.startPrank(someoneElse);
+        other.proposeListing(list[0].token, list[0].priceId);
+        other.proposeListing(list[1].token, list[1].priceId);
+        vm.stopPrank();
+        vm.prank(guardian);
+        other.cancelListing(list[1].token);
+
+        vm.warp(block.timestamp + other.LISTING_DELAY());
+        configure.execute(other, list);
+        assertTrue(other.isWhitelisted(list[0].token));
+        assertFalse(other.isWhitelisted(list[1].token));
+        assertEq(other.listingEta(list[1].token), 0, "a cancelled listing stays cancelled");
+    }
+
+    function test_XA42_statusReportsListingsAndPendingProposals() public {
         configure.propose(factory, _list(), _all(), _none());
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         ConfigureWeighted.Entry[] memory onlyB = new ConfigureWeighted.Entry[](1);

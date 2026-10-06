@@ -434,7 +434,8 @@ and not only by policy (SA-04). `lastSupplyUpdate()` says when the last one exec
 ## Stage A list: supplies and execution depth
 
 Four components, the Ethereum tokens of the design's 0.2% weight floor that pass its liquidity screen (daily volume at
-least 0.1% of market cap). `ConfigureWhitelist.defaultMainnetList()` ships them in this order:
+least 0.1% of market cap). v4's `ConfigureWhitelist.defaultMainnetList()`, deleted on 2026-10-06, shipped them in this
+order; v5's `default` list keeps the four, with Pyth price ids instead of supplies:
 
 | Token | Reference supply | Source |
 |---|---|---|
@@ -777,9 +778,8 @@ A token's cap is zero until then, which refuses its deposits. Executing the cap 
 relayer delivers it to the vault with both proofs, and anyone applies it there with `applyChange` after
 `GOVERNANCE_DELAY` (7 days), since a first cap is a raise.
 
-Once listed, a vault coin's supply is revised in the weekly batch with every other (`ConfigureWhitelist`), its entry
-naming it by its Ethereum-side id, the factory's `vaultTokenId(chainId, tokenId)`. The script checks only its supply's
-range, since it has no code on Ethereum, and its listing modes skip it, since `proposeVaultListing` lists it.
+In v4 a vault coin's supply was revised in the weekly batch with every other, by `ConfigureWhitelist`, deleted on
+2026-10-06 with the batches; v5 lists a vault coin with its Pyth price id through `ConfigureChains`.
 
 **The admission check** comes first: `script/CheckToken.s.sol` is read-only and prints one report per token for the
 Safe's signers (transfers simulated on a fork, transfer hooks, admin powers and who holds them, Uniswap depth on
@@ -788,31 +788,27 @@ run on all 43 coins.
 
 ```bash
 CHECK=wide forge script script/CheckToken.s.sol --fork-url <mainnet rpc>
-CHECK=<token:supply,...> forge script script/CheckToken.s.sol --fork-url <bnb chain rpc>
+CHECK=<token,...> forge script script/CheckToken.s.sol --fork-url <bnb chain rpc>
 ```
 
-**Listings and supply batches** go through `script/ConfigureWhitelist.s.sol`, or the equivalent calls through the Safe.
-`WHITELIST=default` is the flagship's list, and `WHITELIST=wide` the 27 Ethereum coins of the wide list, each labelled
-with its trust tier in safe mode:
+**Listings** go through `script/ConfigureWeighted.s.sol`, or the equivalent calls through the Safe: each coin with
+the Pyth price id its indexes rebalance at. `V5_WHITELIST=default` is the first four coins of `script/PythIds.sol`, and
+`V5_WHITELIST=wide` the other 23, each labelled with its trust tier in safe mode:
 
 ```bash
 # owner is a key you hold (testnets and local forks only; a contract owner such as the mainnet Safe cannot sign, and
-# the broadcasting modes then revert with OwnerIsContract: use the safe modes)
-LISTING_MODE=propose FACTORY=0x... WHITELIST=<entries> LIST=<tokens to list> forge script script/ConfigureWhitelist.s.sol --rpc-url <rpc> --account <owner key> --sender <owner> --broadcast
+# propose then reverts with OwnerIsContract: use safe mode)
+V5_MODE=propose V5_FACTORY=0x... V5_WHITELIST=<entries> V5_LIST=<tokens to list> forge script script/ConfigureWeighted.s.sol --rpc-url <rpc> --account <owner key> --sender <owner> --broadcast
 # owner is a Safe: print the listing proposals as calldata to sign in the Safe app (nothing is broadcast);
-# LIST=all on the launch run only, and unset on every later run
-LISTING_MODE=safe FACTORY=0x... WHITELIST=default LIST=all forge script script/ConfigureWhitelist.s.sol --rpc-url mainnet
-# every week: this week's supplies as one proposeSupplies call for the Safe
-LISTING_MODE=supplies-safe FACTORY=0x... WHITELIST=<this week's entries> forge script script/ConfigureWhitelist.s.sol --rpc-url mainnet
-# 2 to 9 days later, from any account: execute every due listing, or the due batch
-LISTING_MODE=execute FACTORY=0x... WHITELIST=default forge script script/ConfigureWhitelist.s.sol --rpc-url mainnet --account deployer --sender <any account> --broadcast
-LISTING_MODE=execute-supplies FACTORY=0x... WHITELIST=<same entries> forge script script/ConfigureWhitelist.s.sol --rpc-url mainnet --account deployer --sender <any account> --broadcast
+# V5_LIST=all on the launch run only, and unset on every later run
+V5_MODE=safe V5_FACTORY=0x... V5_WHITELIST=default V5_LIST=all forge script script/ConfigureWeighted.s.sol --rpc-url mainnet
+# 2 to 9 days later, from any account: execute every due listing
+V5_MODE=execute V5_FACTORY=0x... V5_WHITELIST=default forge script script/ConfigureWeighted.s.sol --rpc-url mainnet --account deployer --sender <any account> --broadcast
 ```
 
-`LISTING_MODE` is one of `propose`, `safe`, `execute`, `supplies`, `supplies-safe`, `execute-supplies` and `status`.
-`WHITELIST` is `default` for the mainnet list above (chain 1 only), or comma-separated `token:referenceSupply` entries,
-both fields required, the supply in the token's raw units; anything else reverts `MalformedEntry`, and a list that
-names a token twice reverts `DuplicateEntry` in every mode (RT-24).
+`V5_MODE` is one of `propose`, `safe`, `execute` and `status`. `V5_WHITELIST` is `default` or `wide` (chain 1 only), or
+comma-separated `token:priceId` entries; anything else reverts `MalformedEntry`, and a list that names a token or a
+price id twice reverts in every mode (RT-24, V5-M1).
 
 - **Propose and safe** propose a listing for each entry that is not listed and has no live proposal, skipping with the
   reason logged: a token never listed unless `LIST` names it (`LIST=all` for every entry), a delisted token unless
@@ -876,9 +872,9 @@ deployment of it is recorded on a public testnet (`demo/README.md`).
 
 `script/testnet/SetupTestMarket.s.sol` deploys stand-ins for USDC, WBTC, LINK and UNI as `FaucetToken`s, where any
 account can `drip()` a small amount once a day, each with a Uniswap V3 WETH pool at a mainnet-like price so the zap has
-a V3 route to swap through. Nothing in Xindex reads those pools' prices. `create` logs the `WHITELIST` entries for
-`ConfigureWhitelist`: tWBTC, WETH, tLINK and tUNI, with the mainnet reference supplies. Faucet tokens have no value and
-their supply grows with every drip, which is irrelevant here because nothing reads a supply live.
+a V3 route to swap through. Nothing in Xindex reads those pools' prices. `create` logs the `V5_WHITELIST` entries for
+`ConfigureWeighted`: tWBTC, WETH, tLINK and tUNI, each under its mainnet counterpart's Pyth price id, since Pyth's ids
+are the same on every chain. Faucet tokens have no value and their supply grows with every drip, which nothing reads.
 
 **No V4 pools on this market.** The V4 legs are proven on mainnet forks and against a strict mock of the Universal
 Router's encoding, not on Sepolia.
@@ -909,10 +905,10 @@ OWNER=<Safe> GUARDIAN=<guardian> UNIVERSAL_ROUTER=0x3A9D48AB9751398BbFa63ad67599
   forge script script/Deploy.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast
 
 # 3. print the listing proposals and sign them as one batch in the Safe app
-LISTING_MODE=safe FACTORY=<factory> WHITELIST=<logged by create> LIST=all forge script script/ConfigureWhitelist.s.sol --rpc-url sepolia
+V5_MODE=safe V5_FACTORY=<factory> V5_WHITELIST=<logged by create> V5_LIST=all forge script script/ConfigureWeighted.s.sol --rpc-url sepolia
 
 # 4. 2 to 9 days later, from any account
-LISTING_MODE=execute FACTORY=<factory> WHITELIST=<same> forge script script/ConfigureWhitelist.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast
+V5_MODE=execute V5_FACTORY=<factory> V5_WHITELIST=<same> forge script script/ConfigureWeighted.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast
 ```
 
 Add `--verify` with `ETHERSCAN_API_KEY` set to verify the contracts, so testers can call `drip()` from Etherscan.
@@ -950,7 +946,7 @@ test/fixtures/                real BNB Chain, Ethereum and TRON data for the Sta
                               DeployStateVerifier (the other chains' data is under proofs/), and
                               Solana devnet's Alpenglow certificate for EIP-2537 (proofs/solana-state's eip2537_fixture)
 test/fork/                    mainnet fork tests: real V3 and V4 pools, λ rebalancing and security regressions on real tokens
-script/                       Deploy, ConfigureWhitelist, CheckToken, DeployVault, DeployStateVerifier, ConfigureChains, MainnetAddresses, BnbChainAddresses, ScriptUtils
+script/                       Deploy, ConfigureWeighted, PythIds, CheckToken, DeployVault, DeployStateVerifier, ConfigureChains, MainnetAddresses, BnbChainAddresses, ScriptUtils
 script/interfaces/            the Safe, WETH, Uniswap and Groth16-verifier calls the scripts make
 script/testnet/               SetupTestMarket and FaucetToken for the Sepolia test market
 abi/                          the ABIs the web app decodes with; CI regenerates them and fails on a diff

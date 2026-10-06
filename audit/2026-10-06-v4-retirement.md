@@ -52,7 +52,7 @@ change, are exactly the tested ids retired in full below, 13 of them. Every re-t
 
 | ID | Sev | Finding | Disposition | Evidence |
 |---|---|---|---|---|
-| CR-M01 | MEDIUM | A live `totalSupply()` could be moved inside a permissionless start | RETIRED (in part) | There is no band for a wrap to move. `test_CRM01_wrappingEtherAroundAStartMovesNothing` removed from `test/fork/Security.fork.t.sol`. `test_CRM01_everyDefaultEntryCarriesAReferenceSupply` stands, on `ConfigureWhitelist`'s list, in `test/Scripts.t.sol`, which the skip list sets aside as before this change. |
+| CR-M01 | MEDIUM | A live `totalSupply()` could be moved inside a permissionless start | RETIRED (in part) | There is no band for a wrap to move. `test_CRM01_wrappingEtherAroundAStartMovesNothing` removed from `test/fork/Security.fork.t.sol`. `test_CRM01_everyDefaultEntryCarriesAReferenceSupply` stood, on `ConfigureWhitelist`'s list, until that script went the same day; CR-M01 is retired in full below. |
 | LR-04 | LOW | The fork executor's `fill` could be pointed at a fake index | RETIRED (in part) | `test/fork/RebalanceExecutorV3.sol` is deleted with the v4 rebalance fork suite. `test_LR04_weightedExecutorV3_fillCannotBePointedAtAFakeIndex` in `test/mocks/Mocks.t.sol` pins its v5 twin, `WeightedExecutorV3`: only its deployer starts a fill, and a callback outside one is refused. The twin has no factory, so the second guard, `NotIndex`, is gone: only the deployer can point a fill at anything. |
 | LR-05 | LOW | Seven mutants passed the whole suite | RETIRED (in part) | The restart that kept an expired snapshot is gone with snapshots: `test_LR05_aRestartAfterAnUnfilledAuctionTakesAFreshSnapshot` removed. The factory's three moved to `test/WeightedIndexFactory.t.sol`: `test_LR05_theAddressCommitsToEveryField` varies every field the address commits to, one at a time, and `test_LR05_aGuardianChangeExecutesAtTheLastMomentOfItsWindow` and `test_LR05_aTokenMovedBySwapAndPopCanStillBeDelisted` were ported. The zap's, `test_LR05_aRebalanceSettledDuringTheRefundStopsTheMint`, settles a weighted rebalance in the middle of a mint. |
 | RT-15 | INFO | Caller and recipient event arguments, and `RebalanceStarted`'s keep mask, were unpinned | RETIRED (in part) | The hub's two tests removed. The zap's, `test_RT15_*` in `test/IndexZap.t.sol`, stand. `WeightedHub`'s `Redeemed` is pinned with caller and recipient apart by `test_redeemSendsTheBasketRoundedDown`. |
@@ -113,9 +113,9 @@ the setup, it is named here.
   weighted hub's suites, and `test_control_aFrozenComponentNeedsTheGuardianEachRebalance` with them, as R08's test.
 - **XA-12** (`test/mocks/Mocks.t.sol`): on `WeightedExecutorV3`, which takes a callback only from the index it is
   filling.
-- **XA-13, XA-24, CR-I22** (`test/fork/MainnetAddresses.fork.t.sol`): the reference supplies `ConfigureWhitelist`
-  records are still bounded, since `CheckToken` reads its lists, and the lists are listed on a fresh
-  `WeightedIndexFactory` over Pyth's proxy, with their price ids and the tokens' own decimals.
+- **XA-13** (`test/fork/MainnetAddresses.fork.t.sol`): v5's lists are listed on a fresh `WeightedIndexFactory` over
+  Pyth's proxy, with their price ids and the tokens' own decimals. XA-24 and CR-I22, the reference supplies' bounds,
+  are retired with `ConfigureWhitelist` below.
 - **M01, I02, I03, FR01, CR-L02, CR-I36, SA-01, XA-07** (`test/fork/Security.fork.t.sol`): unchanged but for the index.
 - **XA-44, DA-10** (`test/Repo.t.sol`): the ABI list and CI's loop drop `IndexFactory` and `IndexHub`, and DA-10 reads
   the weighted and hybrid factories' ABIs.
@@ -135,9 +135,40 @@ the setup, it is named here.
 
 - `src/interfaces/IIndexHub.sol` and `src/interfaces/IIndexFactory.sol`: `IndexZap` and `MintRequests` type their calls
   with them. Their errors and events went with the contracts that raised and emitted them, since Aderyn and Wake
-  report an error or event nothing uses; their functions stay, as `ConfigureWhitelist` still calls the factory's.
-- `script/ConfigureWhitelist.s.sol`: `CheckToken` and the fork tests read its lists and reference supplies. Its listing
-  and supply-batch modes drive v4's interface, which no v5 factory answers; `script/ConfigureWeighted.s.sol` lists for
-  v5.
+  report an error or event nothing uses; their functions stay as v4's record, called by nothing since
+  `ConfigureWhitelist` went.
 - The suites in `foundry.toml`'s skip list (the hybrid hub's and `test/Scripts.t.sol`): they were written for v4 and
   still import its contracts, and are rewritten for v5 in the safety pass.
+
+## `ConfigureWhitelist`, retired the same day
+
+The owner's calls of 2026-10-06 (`design/2026-10-05-wide-asset-support.md`, section 6) made v5's list, `PythIds` read
+by `ConfigureWeighted`, the only one, and the v5 Ethereum list 27 coins. `script/ConfigureWhitelist.s.sol` is deleted:
+its listing and supply-batch modes could drive only the deleted factory, and its lists, tiers and reference supplies
+are replaced by `PythIds` (tokens, price ids and tiers) and gone (supplies). `CheckToken` checks the v5 lists or plain
+addresses and reports no reference supply; the Sepolia test market lists its tokens under their counterparts' Pyth ids;
+the `*_SUPPLY` constants of `MainnetAddresses` and `ForkAddresses` are deleted. Its 44 tests and helpers leave
+`test/Scripts.t.sol`.
+
+The check behind this section: the audit ids that name a test at `22d532a`, less the ids that name a test after it,
+are exactly the six retired below. Each re-targeted test fails on a mutant of the property its id names.
+
+| ID | Sev | Finding | Disposition | Evidence |
+|---|---|---|---|---|
+| CR-M01 | MEDIUM | A live `totalSupply()` could be moved inside a permissionless start | RETIRED | Nothing reads a supply, live or recorded. Its last test, `test_CRM01_everyDefaultEntryCarriesAReferenceSupply`, removed. |
+| XA-24 | INFO | A raw-unit reference supply had no sanity bound | RETIRED | There are no reference supplies. `test_XA24_CRI22_everyDefaultSupplyIsAPlausibleCountOfWholeTokens` removed from `test/Scripts.t.sol`, and the bound from `test/fork/MainnetAddresses.fork.t.sol`. |
+| CR-I22 | INFO | XA-24's bound was dropped from the fork test that kept its id | RETIRED | With XA-24. |
+| CR-I38 | INFO | `ConfigureWhitelist` did not pre-check the supply bound, so one entry failed a whole Safe batch | RETIRED | There are no supply batches. `test_CRI38_RT25_aRevisionOfExactlyOneStepIsBatchedAndOnePastIsSkipped` removed. |
+| SA-05 | INFO | The script's batch modes built a batch while another was live | RETIRED | With the batches. `test_SA05_theBatchModesRefuseWhileABatchIsLive` removed. |
+| DA-20 | LOW | `RELIST` was silently ignored while a change was pending | RETIRED | Its v4 form was a live supply batch, gone with the batches: `test_DA20_aRelistIsNotProposedIntoALiveBatch` removed. `ConfigureWeighted` logs the reason when a different listing is pending. |
+| CR-L08 | LOW | Nothing checked which feed each default whitelist entry uses | RE-TARGETED | The feed is a Pyth price id now: `test_CRL08_theListsAreTheReleaseRecord` in `test/ConfigureWeighted.t.sol` pins both v5 lists, address and price id, against a table written out by hand; it fails with one coin's id swapped in `PythIds`. |
+| FR-05 | — | The listing script's propose-then-execute flow (a v1 finding; its report is not in the repository, so this is read from its two tests) | RE-TARGETED | `test_FR05_executeWorksFromAnyAccountAndNeverReproposesACancelledListing`, ported to `ConfigureWeighted`: a factory whose owner is not the broadcaster, one listing cancelled; it fails with `execute` bound to the owner. |
+| XA-18 | LOW | The mainnet propose command could not work, since the owner must be a contract | RE-TARGETED | `test_XA18_LR07_proposeNeedsAnOwnerThatSigns`; fails with the contract-owner check removed. |
+| LR-07 | LOW | Propose mode refused an owner key delegated under EIP-7702 | RE-TARGETED | The same test; fails with any owner code refused. |
+| XA-11 | LOW | Propose re-proposed tokens the guardian delisted, and execute re-listed them | RE-TARGETED | `test_RT06_XA11_aVetoedOrDelistedTokenStaysOutUnlessNamed`; fails with the relist check removed. |
+| XA-40 | INFO | The decimals and stablecoin policy was only social | RE-TARGETED | `test_XA40_proposeSkipsWhatThePolicyOrTheFactoryWouldRefuse`; fails with the decimals range removed from the policy. |
+| XA-06 | LOW | Execute listed whatever was pending, ignoring the entry it was run with | RE-TARGETED | The terms are a price id now: `test_XA06_executeRunsOnlyWhatIsDueAndTheEntrys`; fails with the id comparison removed. |
+| XA-42 | INFO | Recurring operator duties had no runbook or monitor | RE-TARGETED | The status mode is the listing duty's monitor: `test_XA42_statusReportsListingsAndPendingProposals`; fails with `pendingMatches` always true. |
+
+RT-06 keeps its two `ConfigureWeighted` tests; its `ConfigureWhitelist` tests went. RT-24, RT-25 and CR-I36 keep tests
+outside the deleted ones.

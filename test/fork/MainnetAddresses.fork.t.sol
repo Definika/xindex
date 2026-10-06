@@ -5,7 +5,6 @@ import {Test} from "forge-std/Test.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {WeightedIndexFactory} from "../../src/WeightedIndexFactory.sol";
 import {ConfigureWeighted} from "../../script/ConfigureWeighted.s.sol";
-import {ConfigureWhitelist} from "../../script/ConfigureWhitelist.s.sol";
 import {Deploy} from "../../script/Deploy.s.sol";
 import {MainnetAddresses as M} from "../../script/MainnetAddresses.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
@@ -29,8 +28,8 @@ interface IPythProbe {
 
 /// @notice Checks the scripts' `MainnetAddresses` against mainnet, as AGENTS.md requires before addresses are
 ///         committed: tokens by symbol and decimals, the router by the PoolManager it names and both by their runtime
-///         code hashes, and every default whitelist entry for a supply of plausibly many whole tokens at the token's
-///         own decimals, and Pyth's proxy, v5's one price source. Skips when MAINNET_RPC_URL is unset.
+///         code hashes, every entry of v5's lists listed on a fresh factory with its price id and its token's own
+///         decimals, and Pyth's proxy, v5's one price source. Skips when MAINNET_RPC_URL is unset.
 contract MainnetAddressesForkTest is Test {
     /// @dev Runtime code hash of Universal Router 2.0.0 at `MainnetAddresses.UNIVERSAL_ROUTER`, read on 2026-09-23. The
     ///      router has no proxy, and its immutables are part of its code, so the hash is the build and its wiring.
@@ -79,20 +78,17 @@ contract MainnetAddressesForkTest is Test {
     }
 
     /// @dev The wide list's tokens, by the symbol and decimals each answers on chain, written out here rather than read
-    ///      from the list. TONCOIN is Toncoin (now listed as GRAM), RNDR is Render and Cake is PancakeSwap's.
+    ///      from the list. RNDR is Render and Cake is PancakeSwap's.
     function testFork_wideTokensAreWhatTheirNamesSay() public view {
         _assertToken(M.QNT, "QNT", 18);
         _assertToken(M.AAVE, "AAVE", 18);
-        _assertToken(M.OKB, "OKB", 18);
         _assertToken(M.ENA, "ENA", 18);
         _assertToken(M.ONDO, "ONDO", 18);
         _assertToken(M.SKY, "SKY", 18);
         _assertToken(M.WLD, "WLD", 18);
         _assertToken(M.MNT, "MNT", 18);
         _assertToken(M.MORPHO, "MORPHO", 18);
-        _assertToken(M.BGB, "BGB", 18);
         _assertToken(M.POL, "POL", 18);
-        _assertToken(M.GT, "GT", 18);
         _assertToken(M.LIT, "LIT", 18);
         _assertToken(M.ETHFI, "ETHFI", 18);
         _assertToken(M.FET, "FET", 18);
@@ -101,24 +97,12 @@ contract MainnetAddressesForkTest is Test {
         _assertToken(M.VIRTUAL, "VIRTUAL", 18);
         _assertToken(M.STRK, "STRK", 18);
         _assertToken(M.PENDLE, "PENDLE", 18);
-        _assertToken(M.GRAM, "TONCOIN", 9);
         _assertToken(M.CRO, "CRO", 8);
         _assertToken(M.ICP, "ICP", 8);
         _assertToken(M.ARB, "ARB", 18);
         _assertToken(M.RENDER, "RNDR", 18);
         _assertToken(M.CAKE, "Cake", 18);
         _assertToken(M.ZRO, "ZRO", 18);
-    }
-
-    /// @dev Each recorded reference supply is a whole number of tokens between a million and a trillion at the token's
-    ///      own on-chain decimals, where a decimals slip shows.
-    function _assertPlausibleSupplies(ConfigureWhitelist.Entry[] memory list) internal view {
-        for (uint256 i = 0; i < list.length; ++i) {
-            uint256 one = 10 ** uint256(IERC20Metadata(list[i].token).decimals());
-            assertEq(list[i].referenceSupply % one, 0, "a whole number of tokens");
-            assertGe(list[i].referenceSupply / one, 1e6, "at least a million of them");
-            assertLe(list[i].referenceSupply / one, 1e12, "and at most a trillion");
-        }
     }
 
     /// @dev Every entry, as the listing script builds it, listed on a fresh v5 factory over Pyth's own contract, which
@@ -137,12 +121,11 @@ contract MainnetAddressesForkTest is Test {
         }
     }
 
-    /// @dev Every wide entry: its reference supply is plausible, and it lists on a fresh factory with its price id.
+    /// @dev Every wide entry lists on a fresh factory with its price id and its token's own decimals.
     function testFork_wideWhitelistMatchesMainnet() public {
-        ConfigureWhitelist.Entry[] memory list = new ConfigureWhitelist().wideMainnetList();
-        assertEq(list.length, 27);
-        _assertPlausibleSupplies(list);
-        _listOnAFreshFactory(new ConfigureWeighted().wideMainnetList());
+        ConfigureWeighted.Entry[] memory list = new ConfigureWeighted().wideMainnetList();
+        assertEq(list.length, 23);
+        _listOnAFreshFactory(list);
     }
 
     /// @dev XA-13, CR-I35. The zap reads the pool manager off the router, so the pinned router has to name the pool
@@ -178,18 +161,14 @@ contract MainnetAddressesForkTest is Test {
         assertEq(deployer.resolveStable("USDT", address(0), M.USDT), M.USDT);
     }
 
-    /// @dev Every default entry. Each reference supply `ConfigureWhitelist` records is a whole number of tokens between
-    ///      a million and a trillion at the token's own on-chain decimals, where a decimals slip shows (XA-24, CR-I22),
-    ///      and the flagship's four, in the same order, list on a fresh v5 factory with their price ids.
-    function testFork_XA13_XA24_CRI22_defaultWhitelistMatchesMainnet() public {
-        ConfigureWhitelist.Entry[] memory list = new ConfigureWhitelist().defaultMainnetList();
-        assertEq(list.length, 4, "the flagship is four components");
-        _assertPlausibleSupplies(list);
-        ConfigureWeighted.Entry[] memory weighted = new ConfigureWeighted().defaultMainnetList();
-        assertEq(weighted.length, list.length);
-        for (uint256 i = 0; i < list.length; ++i) {
-            assertEq(weighted[i].token, list[i].token, "the same four, in the same order");
+    /// @dev Every default entry, the four checked above by address, lists on a fresh v5 factory with its price id.
+    function testFork_XA13_theDefaultListMatchesMainnet() public {
+        ConfigureWeighted.Entry[] memory list = new ConfigureWeighted().defaultMainnetList();
+        address[4] memory four = [M.WETH, M.WBTC, M.LINK, M.UNI];
+        assertEq(list.length, four.length);
+        for (uint256 i = 0; i < four.length; ++i) {
+            assertEq(list[i].token, four[i]);
         }
-        _listOnAFreshFactory(weighted);
+        _listOnAFreshFactory(list);
     }
 }

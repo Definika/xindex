@@ -32,12 +32,6 @@ library ForkAddresses {
     /// @dev Pyth's proxy, which a v5 factory needs at construction; the zap suites never ask it for a price.
     address internal constant PYTH = MainnetAddresses.PYTH;
 
-    /// @dev The reference supplies of the default whitelist.
-    uint256 internal constant BTC_SUPPLY = MainnetAddresses.BTC_SUPPLY;
-    uint256 internal constant ETH_SUPPLY = MainnetAddresses.ETH_SUPPLY;
-    uint256 internal constant LINK_SUPPLY = MainnetAddresses.LINK_SUPPLY;
-    uint256 internal constant UNI_SUPPLY = MainnetAddresses.UNI_SUPPLY;
-
     /// @dev Block the fork tests pin to. Bump deliberately; a pinned block keeps quotes deterministic
     ///      and lets the RPC cache.
     uint256 internal constant FORK_BLOCK = 26033838;

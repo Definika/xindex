@@ -8,6 +8,7 @@ import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/Upgradeabl
 import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {CheckToken} from "../script/CheckToken.s.sol";
+import {ConfigureWeighted} from "../script/ConfigureWeighted.s.sol";
 import {MainnetAddresses} from "../script/MainnetAddresses.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockFeeToken} from "./mocks/MockFeeToken.sol";
@@ -57,7 +58,7 @@ contract CheckTokenTest is Test {
     }
 
     function _check(address token) internal returns (CheckToken.Report memory) {
-        return checker.check(token, 21e24, address(0), none);
+        return checker.check(token, address(0), none);
     }
 
     // ---------------------------------------------------------------------
@@ -72,7 +73,6 @@ contract CheckTokenTest is Test {
         assertTrue(r.decimalsAnswered);
         assertEq(r.decimals, 18);
         assertEq(r.totalSupply, 1_000_000e18);
-        assertEq(r.referenceSupply, 21e24);
         assertEq(uint8(r.transfers), uint8(CheckToken.Transfers.Exact), "the balance slot is written and moves exactly");
         assertFalse(r.registry, "no ERC-1820 registry on a bare chain");
         assertEq(r.powers, checker.MINT() | checker.BURN_OTHERS(), "mint(address,uint256) and burn(address,uint256)");
@@ -80,7 +80,6 @@ contract CheckTokenTest is Test {
         assertEq(r.pools.length, 0, "no market named, so no depth");
         assertEq(uint8(r.verdict), uint8(CheckToken.Verdict.Listable));
         assertEq(r.reason, "");
-        assertEq(checker.entry(r), string.concat(vm.toString(address(token)), ":21000000000000000000000000"));
         assertEq(token.balanceOf(checker.SENDER()), 0, "the simulation is undone");
     }
 
@@ -115,9 +114,9 @@ contract CheckTokenTest is Test {
         );
         assertEq(even.balanceOf(holder), 20e18, "the holder's balance is put back");
 
-        CheckToken.Report memory r = checker.check(address(even), 1e24, holder, none);
+        CheckToken.Report memory r = checker.check(address(even), holder, none);
         assertEq(uint8(r.transfers), uint8(CheckToken.Transfers.Exact), "the named holder pays");
-        r = checker.check(address(growing), 1e24, holder, none);
+        r = checker.check(address(growing), holder, none);
         assertEq(uint8(r.verdict), uint8(CheckToken.Verdict.Refused));
         assertEq(r.reason, checker.transferText(CheckToken.Transfers.Rebases));
     }
@@ -149,7 +148,7 @@ contract CheckTokenTest is Test {
     }
 
     function test_aTokenWithoutCodeIsRefused() public {
-        CheckToken.Report memory r = checker.check(makeAddr("nothing"), 1, address(0), none);
+        CheckToken.Report memory r = checker.check(makeAddr("nothing"), address(0), none);
         assertEq(uint8(r.verdict), uint8(CheckToken.Verdict.Refused));
         assertEq(r.reason, "the token has no code");
         assertEq(uint8(r.transfers), uint8(CheckToken.Transfers.Untested));
@@ -537,7 +536,7 @@ contract CheckTokenTest is Test {
         (address c0, address c1) = address(token) < m.usdc ? (address(token), m.usdc) : (m.usdc, address(token));
         manager.setPool(c0, c1, 10_000, 200, uint160(1 << 96), 7, 10_000, 0);
 
-        CheckToken.Report memory r = checker.check(address(token), 1e24, address(0), m);
+        CheckToken.Report memory r = checker.check(address(token), address(0), m);
         assertEq(r.pools.length, 3);
         CheckToken.Pool memory v3 = r.pools[0];
         assertEq(v3.version, 3);
@@ -699,6 +698,29 @@ contract CheckTokenTest is Test {
         checker.holderFor(bad, token);
     }
 
+    /// @dev CHECK names `ConfigureWeighted`'s lists, on chain 1 only, or addresses.
+    function test_resolveTokens() public {
+        address a = makeAddr("a");
+        address b = makeAddr("b");
+        address[] memory parsed = checker.resolveTokens(string.concat(vm.toString(a), ", ", vm.toString(b)));
+        assertEq(parsed.length, 2);
+        assertEq(parsed[1], b);
+
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.MainnetListOffMainnet.selector, "wide"));
+        checker.resolveTokens("wide");
+        vm.chainId(1);
+        ConfigureWeighted lists = new ConfigureWeighted();
+        address[] memory first = checker.resolveTokens("default");
+        address[] memory wide = checker.resolveTokens("wide");
+        assertEq(first.length, lists.DEFAULT_COUNT());
+        assertEq(first[0], MainnetAddresses.WETH);
+        ConfigureWeighted.Entry[] memory entries = lists.wideMainnetList();
+        assertEq(wide.length, entries.length);
+        for (uint256 i = 0; i < wide.length; ++i) {
+            assertEq(wide[i], entries[i].token);
+        }
+    }
+
     function test_run_readsTheEnvironment() public {
         MockERC20 listable = _token(18);
         MockFeeToken refused = new MockFeeToken();
@@ -709,12 +731,7 @@ contract CheckTokenTest is Test {
         vm.setEnv(
             "CHECK",
             string.concat(
-                vm.toString(address(listable)),
-                ":1000,",
-                vm.toString(address(refused)),
-                ":1000,",
-                vm.toString(address(shares)),
-                ":1000"
+                vm.toString(address(listable)), ",", vm.toString(address(refused)), ",", vm.toString(address(shares))
             )
         );
         vm.setEnv("CHECK_HOLDERS", string.concat(vm.toString(address(shares)), ":", vm.toString(holder)));

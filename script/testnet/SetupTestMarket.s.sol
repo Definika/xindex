@@ -12,7 +12,7 @@ import {IUniswapV3PoolRead} from "../interfaces/IUniswapV3PoolRead.sol";
 import {INonfungiblePositionManager} from "../interfaces/INonfungiblePositionManager.sol";
 import {IUniswapV3FactorySetup} from "../interfaces/IUniswapV3FactorySetup.sol";
 import {IUniswapV3PoolSetup} from "../interfaces/IUniswapV3PoolSetup.sol";
-import {MainnetAddresses} from "../MainnetAddresses.sol";
+import {PythIds} from "../PythIds.sol";
 import {ScriptUtils} from "../ScriptUtils.sol";
 import {IWETH9} from "../interfaces/IWETH9.sol";
 import {FaucetToken} from "./FaucetToken.sol";
@@ -46,7 +46,8 @@ contract SetupTestMarket is Script {
     /// @param wethPerToken WETH wei per whole token at the starting price, which sizes the pool.
     /// @param supply Minted to the deployer at creation, for pool liquidity.
     /// @param dripAmount What each faucet drip mints.
-    /// @param referenceSupply Supply to list the token with; zero for tUSDC, which is a currency and never listed.
+    /// @param priceId The Pyth price id to list the token with, its mainnet counterpart's (Pyth's ids are the same on
+    ///        every chain); zero for tUSDC, which is a currency and never listed.
     struct Spec {
         string name;
         string symbol;
@@ -55,7 +56,7 @@ contract SetupTestMarket is Script {
         uint256 wethPerToken;
         uint256 supply;
         uint256 dripAmount;
-        uint256 referenceSupply;
+        bytes32 priceId;
     }
 
     /// @notice Uniswap V3 contracts and WETH the market is built on.
@@ -91,8 +92,6 @@ contract SetupTestMarket is Script {
     int24 public constant RANGE_TICKS = 6932;
     /// @notice `seed` refuses a pool whose square-root price is more than 1/this away from its spec price.
     uint160 public constant PRICE_TOLERANCE_DIVISOR = 100;
-    /// @notice Ether supply the WETH listing uses, as in the mainnet default whitelist.
-    uint256 public constant ETH_SUPPLY = MainnetAddresses.ETH_SUPPLY;
     /// @notice WETH `seed` puts in the tUSDC pool unless USD_POOL_WETH is set.
     uint256 public constant DEFAULT_USD_POOL_WETH = 0.3 ether;
     /// @notice WETH `seed` puts in each other pool unless TOKEN_POOL_WETH is set.
@@ -125,7 +124,7 @@ contract SetupTestMarket is Script {
             wethPerToken: 0.0004167e18,
             supply: 1_000_000e6,
             dripAmount: 100e6,
-            referenceSupply: 0
+            priceId: bytes32(0)
         });
         list[1] = Spec({
             name: "Xindex Test WBTC",
@@ -135,7 +134,7 @@ contract SetupTestMarket is Script {
             wethPerToken: 31.6e18,
             supply: 10e8,
             dripAmount: 0.001e8,
-            referenceSupply: MainnetAddresses.BTC_SUPPLY
+            priceId: PythIds.WBTC
         });
         list[2] = Spec({
             name: "Xindex Test LINK",
@@ -145,7 +144,7 @@ contract SetupTestMarket is Script {
             wethPerToken: 0.0045e18,
             supply: 100_000e18,
             dripAmount: 10e18,
-            referenceSupply: MainnetAddresses.LINK_SUPPLY
+            priceId: PythIds.LINK
         });
         list[3] = Spec({
             name: "Xindex Test UNI",
@@ -155,7 +154,7 @@ contract SetupTestMarket is Script {
             wethPerToken: 0.00264e18,
             supply: 200_000e18,
             dripAmount: 20e18,
-            referenceSupply: MainnetAddresses.UNI_SUPPLY
+            priceId: PythIds.UNI
         });
     }
 
@@ -174,7 +173,7 @@ contract SetupTestMarket is Script {
         string memory mode = vm.envString("MARKET_MODE");
         if (ScriptUtils.same(mode, "create")) {
             tokens = create(sepoliaUniswap());
-            console2.log("Then list them with LIST=all WHITELIST=%s", whitelist(sepoliaUniswap().weth, tokens));
+            console2.log("Then list them with V5_LIST=all V5_WHITELIST=%s", whitelist(sepoliaUniswap().weth, tokens));
         } else if (ScriptUtils.same(mode, "seed")) {
             tokens = vm.envAddress("MARKET_TOKENS", ",");
             seed(
@@ -245,20 +244,20 @@ contract SetupTestMarket is Script {
         console2.log("Deploy Xindex with OWNER, GUARDIAN and:");
         console2.log("  UNIVERSAL_ROUTER=%s", SEPOLIA_UNIVERSAL_ROUTER);
         console2.log("Mint and burn with tUSDC at %s; the pools above are the V3 routes.", tokens[0]);
-        console2.log("List the components as `create` logged them, WHITELIST=<token:referenceSupply,...>");
+        console2.log("List the components as `create` logged them, V5_WHITELIST=<token:priceId,...>");
     }
 
-    /// @notice `ConfigureWhitelist` entries for the market's components: tWBTC, WETH, tLINK, tUNI. tUSDC is a currency
-    ///         and is not listed.
-    /// @param weth The Uniswap deployment's WETH, listed with ether's supply.
+    /// @notice `ConfigureWeighted` entries for the market's components: tWBTC, WETH, tLINK, tUNI, each under its
+    ///         mainnet counterpart's Pyth id. tUSDC is a currency and is not listed.
+    /// @param weth The Uniswap deployment's WETH, listed under ETH/USD.
     /// @param tokens The market's tokens, in {specs} order.
-    /// @return entries A WHITELIST value for `ConfigureWhitelist`.
+    /// @return entries A V5_WHITELIST value for `ConfigureWeighted`.
     function whitelist(address weth, address[] memory tokens) public pure returns (string memory entries) {
         Spec[] memory list = specs();
-        entries = _entry(tokens[1], list[1].referenceSupply);
-        entries = string.concat(entries, ",", _entry(weth, ETH_SUPPLY));
+        entries = _entry(tokens[1], list[1].priceId);
+        entries = string.concat(entries, ",", _entry(weth, PythIds.WETH));
         for (uint256 i = 2; i < list.length; ++i) {
-            entries = string.concat(entries, ",", _entry(tokens[i], list[i].referenceSupply));
+            entries = string.concat(entries, ",", _entry(tokens[i], list[i].priceId));
         }
     }
 
@@ -348,8 +347,8 @@ contract SetupTestMarket is Script {
         params.deadline = block.timestamp + 1 hours;
     }
 
-    function _entry(address token, uint256 referenceSupply) private pure returns (string memory) {
-        return string.concat(vm.toString(token), ":", vm.toString(referenceSupply));
+    function _entry(address token, bytes32 priceId) private pure returns (string memory) {
+        return string.concat(vm.toString(token), ":", vm.toString(priceId));
     }
 
     function _wholeToken(uint8 decimals) private pure returns (uint256) {

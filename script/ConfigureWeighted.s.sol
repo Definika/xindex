@@ -200,7 +200,8 @@ contract ConfigureWeighted is Script {
     }
 
     /// @notice Any account, nothing broadcast. For a Safe owner: the `proposeListing` calldata of every entry `propose`
-    ///         would submit, and a label for each naming the token's symbol, its address and its price id (RT-06).
+    ///         would submit, and a label for each naming the token's symbol, its tier, its address and its price id
+    ///         (RT-06).
     function safeCalldata(
         IWeightedIndexFactory factory,
         Entry[] memory list,
@@ -223,6 +224,7 @@ contract ConfigureWeighted is Script {
             labels[count] = string.concat(
                 "proposeListing ",
                 ScriptUtils.symbolOf(list[i].token),
+                tierLabel(list[i].token),
                 " ",
                 vm.toString(list[i].token),
                 " price id ",
@@ -230,6 +232,12 @@ contract ConfigureWeighted is Script {
             );
             ++count;
         }
+    }
+
+    /// @notice ` (<tier>)` for a token `PythIds` records a tier for, and nothing for any other.
+    function tierLabel(address token) public pure returns (string memory) {
+        PythIds.Tier tier = PythIds.tierOf(token);
+        return tier == PythIds.Tier.Unrecorded ? "" : string.concat(" (", PythIds.tierName(tier), ")");
     }
 
     /// @notice Any account. Executes every due listing whose pending id is exactly the entry's; skips everything else

@@ -165,15 +165,14 @@ contract RepoTest is Test {
     ///      fund and drain made that component's market cap manipulable inside one transaction: flash loan in, start a
     ///      rebalance, flash loan out. Nothing shipped used it, and a reference supply behind the listing timelock
     ///      covers the same need, so the field is gone from the config, the events, the rule and the listing script.
-    ///      v5 lists a token with a price id and nothing else, and its listing ABIs carry no exclusion list either.
+    ///      v5 lists a token with a price id and nothing else, and neither its listing ABIs nor its listing script's
+    ///      entries carry an exclusion list.
     function test_DA10_noConfigCanCarryExclusions() public view {
         assertFalse(
             _contains(_read("abi/WeightedIndexFactory.json"), "excluded"), "the listing ABI has no exclusion list"
         );
         assertFalse(_contains(_read("abi/HybridIndexFactory.json"), "excluded"), "nor the hybrid factory's");
-        assertFalse(
-            _contains(_read("script/ConfigureWhitelist.s.sol"), "entry.excluded"), "nor the whitelist script's entries"
-        );
+        assertFalse(_contains(_read("script/ConfigureWeighted.s.sol"), "excluded"), "nor the listing script's entries");
     }
 
     /// @dev XA-46: the agent instructions have one copy; CLAUDE.md only imports AGENTS.md.

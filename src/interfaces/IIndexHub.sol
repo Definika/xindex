@@ -11,9 +11,9 @@ import {IXindexErrors} from "./IXindexErrors.sol";
 ///         change. The units follow the components' reference supplies, and change only through a rebalance that
 ///         settles through a price-free auction on a single number, λ. Nothing in the hub reads a price, and nobody
 ///         controls its funds. v4's `IndexHub`, the one contract that implemented all of this, is deleted, and the
-///         errors and events only it raised and emitted with it (audit/2026-10-06-v4-retirement.md): `IndexZap` calls an index through the
-///         functions every Xindex index answers, `issue`, `redeem`, the previews, `componentTokens` and
-///         `rebalanceNonce`.
+///         errors and events only it raised and emitted with it (audit/2026-10-06-v4-retirement.md). `IndexZap` calls
+///         an index through the functions every Xindex index answers: `issue`, `redeem`, the previews,
+///         `componentTokens` and `rebalanceNonce`.
 /// @dev Integrators: value an index as the sum of `units_i * price_i` from {components} and an independent price
 ///      source. Never derive a price from `balanceOf(index)` and `totalSupply()`: inside `issue`, `redeem` and
 ///      `executeRebalance` they change at different moments, and a component with transfer callbacks could expose that
