@@ -181,6 +181,8 @@ verifier, from an anchor the fixture generator writes, with the deployment's own
      test named `test_SV1_...` in `test/IndexZap.pancake.t.sol` and `testFork_SV1_...` in
      `test/fork/IndexZap.fork.t.sol`. The informational ids are recorded by documentation, SV-I3 and SV-I4 with the
      planner's tests in `swaprail/`.
+   - The logic review of 2026-10-07: `V5R-1`, `V5R-I1` and `V5R-I2` (`audit/2026-10-07-v5-logic-review.md`), a test
+     named `test_V5R1_...` in `test/WeightedHub.rebalance.t.sol`. The informational ids are recorded by documentation.
 
    Find a test by its id. Most v1 and R tests are in `test/Security.t.sol` and `test/fork/Security.fork.t.sol`, on
    `WeightedHub` indexes. The hub and factory ids `audit/2026-10-06-v4-retirement.md` re-targets are in the weighted
@@ -628,17 +630,22 @@ the rules code must never break.
   every leg moving the same share of the way, so a wrong or malicious price takes at most that, once a week. A value
   cap measured in the reported prices let two wrong feeds take 89% of an index far from its weights (V5-M2); do not
   bring one back as the only cap.
-- **A fill must trade.** One that would release less than `MIN_TRADE` (0.1%) of the moving value reverts
-  `NothingToRebalance`, and a keep mask must leave two components moving, so a fill that changes nothing cannot restart
-  `MIN_REBALANCE_INTERVAL` (V5-L2). The guardian's cancel remains the trust assumption DA-12 records.
+- **A fill must trade.** One whose release, after the turnover cap, is worth less than `MIN_TRADE` (0.1%) of the
+  moving value reverts `NothingToRebalance`, and a keep mask must leave two components moving, so a fill that changes
+  nothing cannot restart `MIN_REBALANCE_INTERVAL` (V5-L2). The minimum is checked on the capped release: checked before
+  the cap, a fill could trade a fifth of it (V5R-1). The guardian's cancel remains the trust assumption DA-12 records.
 - **The settlement's rounding.** Targets round up; a shrinking leg's step rounds down; a growing leg's rounds up, by the
   factor `μ · s` rounded up, with `μ` falling from `MU_MAX` to `MU_MIN` and rounding up. At the settling prices the
   executor delivers at least `μ` times what it takes. A fill that sends nothing out settles at `MU_MAX`. The backing
   post-check is `IndexHub`'s. The mutants worth rerunning: each of those roundings flipped, no unit cap, no
-  `MIN_TRADE`, a keep mask leaving one, a wider window or the minute, no confidence or publish-time check, a kept feed
-  read, and the duplicate-id checks removed.
+  `MIN_TRADE` or one measured before the cap, a keep mask leaving one, a wider window or the minute, no confidence or
+  publish-time check, a kept feed read, and the duplicate-id checks removed.
 - **A collapsing coin can stop the fills.** Fixed weights keep buying it, and units beyond `uint96` stop the fill rather
-  than wrap, until the guardian keeps it (V5-L3, a known limitation).
+  than wrap, until the guardian keeps it (V5-L3, a known limitation). So does a 24-decimal vault coin whose feed's
+  exponent falls below −12, which `WeightedPricing` refuses to scale (V5R-I1).
+- **The notice is 2 hours.** `WeightedHub`'s `REBALANCE_DELAY` is 2 hours, not v4's 2 days: targets come from the
+  settlement's prices, so the notice is for executors, not for holders' exits (the spec's section 8). `AUCTION_DURATION`
+  stays 24 hours and `MIN_REBALANCE_INTERVAL` 7 days (V5R-I2).
 - **Everything else is `IndexHub`'s**: the invariant, rounding on issue and redeem, claims booked to `to`, the
   recipient traps, the reentrancy guard on every mutating entry point, keep masks (a kept component is neither priced
   nor read), the cancel and restart hold-offs, and the bounded fill.

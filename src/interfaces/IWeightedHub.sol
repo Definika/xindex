@@ -117,8 +117,9 @@ interface IWeightedHub is IERC20, IERC20Permit, IXindexErrors {
     /// @notice The settlement needs more of `token` than the caller said it would fill. Only raised by the bounded
     ///         `executeRebalance`.
     error RebalanceMovedOn(address token, uint256 required, uint256 maxAmountIn);
-    /// @notice What the shrinking legs would release is worth less than MIN_TRADE of the moving value at these prices:
-    ///         the index is on its weights, and a fill would only restart MIN_REBALANCE_INTERVAL.
+    /// @notice What the shrinking legs release, after the turnover cap, is worth less than MIN_TRADE of the moving
+    ///         value at these prices: the index is on its weights, and a fill would only restart
+    ///         MIN_REBALANCE_INTERVAL (V5-L2, V5R-1).
     error NothingToRebalance();
     /// @notice `prices` does not have one entry per component. Only raised by {previewRebalance}.
     error PriceCountMismatch(uint256 count);

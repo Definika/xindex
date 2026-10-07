@@ -171,6 +171,36 @@ contract WeightedHubRebalanceTest is WeightedTest {
         assertEq(index.rebalanceNonce(), 1);
     }
 
+    /// @dev V5R-1: the minimum trade counts what the fill releases after the turnover cap, not before it. ETH at one
+    ///      basis point of the weights but 0.4% of the value must shrink to a fortieth of its units, so the cap lets it
+    ///      give up a fifth: the full gap is $0.39 of $100, 0.39%, and the capped release $0.08, 0.08%. Measured before
+    ///      the cap, that fill went through, traded 0.08% and restarted the interval. At $3,000 the capped release is
+    ///      0.12% and the fill goes through, selling a fifth of the ETH.
+    function test_V5R1_theMinimumTradeIsMeasuredAfterTheCap() public {
+        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](3);
+        specs[0] = _spec(address(eth), 1, 0.0002e18);
+        specs[1] = _spec(address(btc), 6000, 0.001e8);
+        specs[2] = _spec(address(usd), 3999, 39.6e6);
+        WeightedHub skewed = _create(specs);
+        _issue(skewed, alice, SHARES);
+        vm.warp(skewed.lastRebalance() + skewed.MIN_REBALANCE_INTERVAL());
+        skewed.startRebalance(0);
+        (uint256 eta,) = skewed.pendingRebalance();
+        vm.warp(eta + _midpoint());
+
+        vm.expectRevert(IWeightedHub.NothingToRebalance.selector);
+        skewed.previewRebalance(_structs3(ETH_PRICE, BTC_PRICE, USD_PRICE));
+        bytes[] memory data = _updates(skewed, _ids3(), _prices3(ETH_PRICE, BTC_PRICE, USD_PRICE));
+        vm.expectRevert(IWeightedHub.NothingToRebalance.selector);
+        executor.execute(skewed, "", data);
+        assertEq(skewed.rebalanceNonce(), 0);
+
+        executor.execute(skewed, "", _updates(skewed, _ids3(), _prices3(3000e8, BTC_PRICE, USD_PRICE)));
+        assertEq(skewed.rebalanceNonce(), 1);
+        (, uint256[] memory units) = skewed.components();
+        assertApproxEqAbs(units[0], 0.00016e18, 2, "a fifth of the ETH sold");
+    }
+
     function test_R16_onlyTheOwnerOrGuardianPassesAKeepMask() public {
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, stranger));

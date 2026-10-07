@@ -600,9 +600,10 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
     /// @dev Each moving component's target units, w · V / (W · p) rounded up, and the share of the way to them every
     ///      leg moves: all of it, or less, so that no shrinking leg gives up more than MAX_TURNOVER of its own units,
     ///      rounded down. The cap counts units, not value, so a wrong price cannot widen it: the prices it guards against
-    ///      would otherwise measure it (V5-M2). Reverts NothingToRebalance when what the shrinking legs would release is
-    ///      worth less than MIN_TRADE of V. Values are units times prices: below 2^96 · MAX_PRICE each, so a hundred of
-    ///      them fit 256 bits.
+    ///      would otherwise measure it (V5-M2). Reverts NothingToRebalance when what the shrinking legs release, after
+    ///      the cap, is worth less than MIN_TRADE of V: measured before the cap, a fill could trade a fifth of that and
+    ///      still restart the interval (V5R-1). Values are units times prices: below 2^96 · MAX_PRICE each, so a hundred
+    ///      of them fit 256 bits.
     function _targets(uint256 keepMask, uint256[] memory prices)
         private
         view
@@ -629,7 +630,10 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
             uint256 limit = Math.mulDiv(current, MAX_TURNOVER, current - target);
             if (limit < share) share = limit;
         }
-        if (released < Math.mulDiv(value, MIN_TRADE, WAD, Math.Rounding.Ceil)) revert NothingToRebalance();
+        // What the fill trades is the release scaled by the cap, so the minimum is checked on that (V5R-1).
+        if (Math.mulDiv(released, share, WAD) < Math.mulDiv(value, MIN_TRADE, WAD, Math.Rounding.Ceil)) {
+            revert NothingToRebalance();
+        }
     }
 
     /// @dev The second whose prices a settlement in this block reads: one slot back, PRICE_LAG before the block, so Pyth

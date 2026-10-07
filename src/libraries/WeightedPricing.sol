@@ -11,7 +11,9 @@ import {PythStructs} from "../interfaces/pyth/PythStructs.sol";
 /// @dev DRAFT, untested in this form (2026-10-06): the hybrid index's port of `WeightedHub`'s tested math. Its
 ///      entry points are external or public, so the library is deployed once and linked, which keeps the hybrid module
 ///      under the size limit. Decimals may
-///      reach MAX_DECIMALS (24, NEAR's yoctoNEAR), so a price is refused when 36 + expo - decimals would be negative.
+///      reach MAX_DECIMALS (24, NEAR's yoctoNEAR), so a price is refused when 36 + expo - decimals would be negative: a
+///      24-decimal coin needs an exponent of at least -12. Pyth's crypto feeds use -8; should one fall lower, every fill
+///      of an index holding that coin reverts until the guardian keeps it, as with a collapsing coin (V5-L3, V5R-I1).
 library WeightedPricing {
     uint256 internal constant WAD = 1e18;
     uint256 internal constant PRICE_DECIMALS = 36;
@@ -56,8 +58,8 @@ library WeightedPricing {
     }
 
     /// @notice Each moving component's target units, w · V / (W · p) rounded up, and the share of the way every leg
-    ///         moves, so no shrinking leg gives up more than MAX_TURNOVER of its units. Reverts NothingToRebalance
-    ///         below MIN_TRADE.
+    ///         moves, so no shrinking leg gives up more than MAX_TURNOVER of its units. Reverts NothingToRebalance when
+    ///         the release, after the cap, is worth less than MIN_TRADE of the moving value (V5R-1).
     function targets(uint256[] memory units, uint256[] memory prices, uint256[] memory weights, uint256 keepMask)
         public
         pure
@@ -74,7 +76,10 @@ library WeightedPricing {
             released += (units[i] - target[i]) * prices[i];
             share = Math.min(share, Math.mulDiv(units[i], MAX_TURNOVER, units[i] - target[i]));
         }
-        if (released < Math.mulDiv(value, MIN_TRADE, WAD, Math.Rounding.Ceil)) revert NothingToRebalance();
+        // What the fill trades is the release scaled by the cap, so the minimum is checked on that (V5R-1).
+        if (Math.mulDiv(released, share, WAD) < Math.mulDiv(value, MIN_TRADE, WAD, Math.Rounding.Ceil)) {
+            revert NothingToRebalance();
+        }
     }
 
     /// @dev The moving components' value, Σ u·p, and weight.

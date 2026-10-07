@@ -123,8 +123,10 @@ mask, guardian cancel and restart hold-off) and replaces the band with prices re
    moves the same share `s = min_i ⌊MAX_TURNOVER · u_i / (u_i − t_i)⌋` of the way. A fill never sends out more than a
    fifth of any component, whatever any price says. The first cap was 20% of the moving value at the settling prices,
    which the prices it guards against measured: two wrong feeds on an index far from its weights took 89% of it (V5-M2).
-   A fill that would release less than `MIN_TRADE` (0.1%) of the moving value reverts `NothingToRebalance`, so a fill
-   that changes nothing cannot restart the interval; a keep mask must leave two components moving (V5-L2).
+   A fill whose release, after the cap, is worth less than `MIN_TRADE` (0.1%) of the moving value reverts
+   `NothingToRebalance`, so a fill that changes nothing cannot restart the interval; a keep mask must leave two
+   components moving (V5-L2). The minimum is checked on `s` times the release: checked before the cap, a capped fill
+   could trade a fifth of it and still restart the interval (V5R-1, `audit/2026-10-07-v5-logic-review.md`).
 6. **The auction.** A shrinking leg moves `⌊s · (u − t)⌋`; a growing leg `⌈μ · s · (t − u)⌉`, with the factor `μ · s`
    itself rounded up. `μ` falls linearly from `MU_MAX` to `MU_MIN` and rounds up. At the settling prices the executor
    therefore delivers at least `μ` times the value it takes (`testFuzz_R04_theExecutorDeliversMuTimesWhatItTakes` and the
@@ -158,6 +160,11 @@ reads Pyth.
 - **A collapsing coin**: fixed weights keep buying it, so its units grow; a coin that falls about a thousand times
   from units near `MAX_UNITS` asks for more than `uint96` holds, and the fill stops rather than wraps until the
   guardian keeps it (V5-L3, a known limitation).
+- **A 24-decimal coin needs an exponent of at least −12.** `WeightedPricing` scales a price by
+  `10^(36 + expo − decimals)` and refuses one that would need a negative power, so a vault coin with 24 decimals,
+  NEAR's, cannot be priced from a feed whose exponent falls to −13 or lower. Pyth's crypto feeds use −8. Should one
+  fall that far, every fill of an index holding the coin reverts until the guardian keeps it, as with a collapsing
+  coin (V5R-I1, a known limitation).
 - **Uniqueness is Pyth's.** The hub checks the ids and the window Pyth returns, but Pyth does not return the previous
   publish time, so that the update was the first is Pyth's to keep (V5-I1).
 
