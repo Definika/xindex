@@ -25,7 +25,10 @@ v4's market-cap index (reference supplies and a price-free λ auction, deleted o
 Where it stands (2026-10-07):
 - The weighted index is built and reviewed twice (`audit/2026-10-05-v5-review.md`, `audit/2026-10-07-v5-logic-review.md`).
 - The Ethereum deployment's scripts are built: `DeployWeighted`, `ConfigureWeighted` over `PythIds`, `CheckToken`.
-- The BNB Chain deployment is being built, to section 4 of the two-chain record.
+- The BNB Chain deployment's scripts are built: the address book (`script/BnbChainAddresses.sol`), the deploy
+  checks' chain-56 defaults, the `bnb` list and the fork suite that verifies all of it on chain. What remains there is
+  operational: the owner Safe and guardian on BNB Chain, and the deploy through them (section 4 of the two-chain
+  record).
 - Before any mainnet: Pyth's parameter replay (`design/2026-10-05-custom-weights.md`, section 8), the fork settlement
   against Pyth's real contract on a real signed update (a Hermes key), an external audit, and the BNB Chain
   rehearsal. README and ARCHITECTURE still describe v4 in places and carry a note until rewritten.
@@ -60,12 +63,19 @@ MAINNET_RPC_URL=https://ethereum-rpc.publicnode.com FORK_BLOCK=$(( $(cast block-
 
 # the admission check, read-only, before any listing: one report per token for the Safe's signers
 CHECK=wide forge script script/CheckToken.s.sol --fork-url $MAINNET_RPC_URL
+CHECK=bnb forge script script/CheckToken.s.sol --fork-url $BNB_RPC_URL
+
+# the BNB Chain fork suite (the address book, a deployment from it, the list on a fresh factory, the admission check
+# on WBNB, BTCB and ETH); skipped when the env var is unset
+BNB_RPC_URL=https://bsc-rpc.publicnode.com BNB_FORK_BLOCK=$(( $(cast block-number --rpc-url https://bsc-rpc.publicnode.com) - 8 )) forge test --match-path 'test/fork/BnbChainAddresses.fork.t.sol'
 ```
 
 Deployment, once per chain: `script/DeployWeighted.s.sol`, then `script/ConfigureWeighted.s.sol`, which lists each
 coin with its Pyth price id (`script/PythIds.sol` on Ethereum, `script/BnbChainAddresses.sol` on BNB Chain).
 `script/CheckToken.s.sol` reports on every token before its first listing; `V5_WHITELIST=default` is the first four
-coins and `V5_WHITELIST=wide` the rest, 27 in all. Sepolia first needs its test market from
+coins and `V5_WHITELIST=wide` the rest, 27 in all, on Ethereum; `V5_WHITELIST=bnb` is the 17 of BNB Chain. On both
+chains the deploy script resolves Pyth, the routers and the stablecoins from the chain's address book and refuses any
+other address (`DeployChecks.isPinnedChain`). Sepolia first needs its test market from
 `script/testnet/SetupTestMarket.s.sol`.
 
 ## Definition of done for any change
@@ -78,8 +88,10 @@ coins and `V5_WHITELIST=wide` the rest, 27 in all. Sepolia first needs its test 
    one-line reason on the line above. The lint reads OpenZeppelin's internal `Math.mulDiv` as an external call.
 3. `forge test` green. `forge coverage` at 100% for every file, including mocks and scripts.
 4. Fork tests green if the change touches `IndexZap`, the hub's rebalancing, routes, token behaviour, or anything
-   router- or pool-related, `WeightedHub` and its price ids included. Their summary must list the five `test/fork/`
-   suites and 0 skipped. `WeightedHub.fork.t.sol` alone takes about fifteen minutes on a public RPC.
+   router- or pool-related, `WeightedHub` and its price ids included. Their summary must list the five Ethereum
+   `test/fork/` suites and 0 skipped. `WeightedHub.fork.t.sol` alone takes about fifteen minutes on a public RPC. The
+   sixth, `BnbChainAddresses.fork.t.sol`, runs with `BNB_RPC_URL` and is required when `script/BnbChainAddresses.sol`
+   or the deploy checks change.
 5. The Wake VS Code analyzer reports no errors or warnings on `src/`. Its reentrancy detector does not model reentrancy
    guards; the two documented suppressions are on the `redeem` call in `IndexZap._burnBasket` and the `permit` call in
    `IndexZap.burnToTokenWithPermit`. v5 adds the executor callback and Pyth's parse in `WeightedHub`, and the two
@@ -432,10 +444,14 @@ rebalancer bot (DRAFT, untested), with its executor contract, which starts and f
     elsewhere they come from the environment.
 - **Mainnet addresses** are verified on-chain before being committed: tokens by symbol and decimals, and the routers
   and the PoolManager by their runtime code hashes, since every Universal Router build answers `poolManager()` alike
-  (CR-I35). `test/fork/MainnetAddresses.fork.t.sol` checks `script/MainnetAddresses.sol` that way. It also lists v5's
-  lists on a fresh factory, and `test_CRL08_theListsAreTheReleaseRecord` pins both lists, address and price id, against
-  a table written independently of them. Every price id carries its feed's description beside it. The WBTC address is
-  `0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599`; an earlier draft had a wrong one.
+  (CR-I35). `test/fork/MainnetAddresses.fork.t.sol` checks `script/MainnetAddresses.sol` that way, and
+  `test/fork/BnbChainAddresses.fork.t.sol` checks `script/BnbChainAddresses.sol` against BNB Chain, where both routers
+  are Ethereum's builds but for their immutables (compared byte for byte on 2026-10-07). Each also lists its chain's
+  lists on a fresh factory over the chain's Pyth, and `test_CRL08_theListsAreTheReleaseRecord` and
+  `test_CRL08_theBnbListIsTheReleaseRecord` pin every list, address and price id, against a table written
+  independently of them. Every price id carries its feed's description beside it. The WBTC address is
+  `0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599`; an earlier draft had a wrong one. BTCB is priced at BTC/USD, since
+  Pyth has no BTCB feed, as every Binance-Peg coin is priced at its coin; the app labels each Custodial.
 
 ## Product decisions already made (do not re-litigate silently)
 

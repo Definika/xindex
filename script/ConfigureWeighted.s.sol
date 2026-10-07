@@ -6,6 +6,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
 import {PythIds} from "./PythIds.sol";
+import {BnbChainAddresses} from "./BnbChainAddresses.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
 
 /// @notice Drives v5's listing flow on `WeightedIndexFactory`: each token with the Pyth price id its indexes will be
@@ -28,9 +29,10 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 /// Env:
 ///   V5_MODE       `propose`, `safe`, `execute`, or `status` (read-only: what is listed and pending, per entry).
 ///   V5_FACTORY    Deployed WeightedIndexFactory.
-///   V5_WHITELIST  `default` for the first four of `PythIds`, `wide` for the rest (both chain 1 only), or
-///                 comma-separated entries `token:priceId`, both required. Check a feed's description names the coin
-///                 before its first listing, as `PythIds` records.
+///   V5_WHITELIST  `default` for the first four of `PythIds`, `wide` for the rest (both chain 1 only), `bnb` for the
+///                 BNB Chain list of `BnbChainAddresses` (chain 56 only), or comma-separated entries `token:priceId`,
+///                 both required. Check a feed's description names the coin before its first listing, as the address
+///                 books record.
 ///   V5_LIST       Optional. Tokens never listed that propose and safe mode may propose: comma-separated addresses, or
 ///                 `all` for every entry. Leave it unset on a routine run.
 ///   V5_RELIST     Optional. Comma-separated delisted tokens that propose and safe mode may list again.
@@ -66,8 +68,8 @@ contract ConfigureWeighted is Script {
 
     /// @notice V5_MODE is not one of the modes above.
     error UnknownMode(string mode);
-    /// @notice V5_WHITELIST=default or wide off chain 1.
-    error MainnetListOffMainnet(string list);
+    /// @notice V5_WHITELIST names a chain's list on another chain: `default` or `wide` off chain 1, `bnb` off chain 56.
+    error ListOffItsChain(string list, uint256 chainId);
     /// @notice A V5_WHITELIST entry does not have exactly two fields, or its price id is zero.
     error MalformedEntry(string entry);
     /// @notice A broadcasting mode needs an owner that can sign, and this factory's owner is a contract (a Safe on
@@ -118,6 +120,15 @@ contract ConfigureWeighted is Script {
         return _slice(DEFAULT_COUNT, PythIds.COUNT);
     }
 
+    /// @notice The BNB Chain list, every coin of `BnbChainAddresses`.
+    function bnbList() public pure returns (Entry[] memory list) {
+        (address[] memory tokens, bytes32[] memory ids) = BnbChainAddresses.all();
+        list = new Entry[](tokens.length);
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            list[i] = Entry({token: tokens[i], priceId: ids[i]});
+        }
+    }
+
     function _slice(uint256 from, uint256 to) private pure returns (Entry[] memory list) {
         (address[] memory tokens, bytes32[] memory ids) = PythIds.all();
         list = new Entry[](to - from);
@@ -126,13 +137,16 @@ contract ConfigureWeighted is Script {
         }
     }
 
-    /// @notice `default` and `wide` on chain 1 only; anything else is parsed as comma-separated entries. Reverts on a
-    ///         token or a price id named twice (RT-24, V5-M1).
+    /// @notice `default` and `wide` on chain 1 only, `bnb` on chain 56 only; anything else is parsed as
+    ///         comma-separated entries. Reverts on a token or a price id named twice (RT-24, V5-M1).
     function resolveList(string memory raw) public view returns (Entry[] memory list) {
         bool isDefault = ScriptUtils.same(raw, "default");
         if (isDefault || ScriptUtils.same(raw, "wide")) {
-            if (block.chainid != 1) revert MainnetListOffMainnet(raw);
+            if (block.chainid != 1) revert ListOffItsChain(raw, block.chainid);
             list = isDefault ? defaultMainnetList() : wideMainnetList();
+        } else if (ScriptUtils.same(raw, "bnb")) {
+            if (block.chainid != BnbChainAddresses.CHAIN_ID) revert ListOffItsChain(raw, block.chainid);
+            list = bnbList();
         } else {
             string[] memory parts = vm.split(raw, ",");
             list = new Entry[](parts.length);
@@ -234,9 +248,10 @@ contract ConfigureWeighted is Script {
         }
     }
 
-    /// @notice ` (<tier>)` for a token `PythIds` records a tier for, and nothing for any other.
+    /// @notice ` (<tier>)` for a token either address book records a tier for, and nothing for any other.
     function tierLabel(address token) public pure returns (string memory) {
         PythIds.Tier tier = PythIds.tierOf(token);
+        if (tier == PythIds.Tier.Unrecorded) tier = BnbChainAddresses.tierOf(token);
         return tier == PythIds.Tier.Unrecorded ? "" : string.concat(" (", PythIds.tierName(tier), ")");
     }
 
@@ -301,7 +316,10 @@ contract ConfigureWeighted is Script {
     /// @dev The parts of the whitelist policy a script can check: a token with code and 6 to 18 decimals, and no mint
     ///      currency as a component.
     function _followsPolicy(address token) private view returns (bool) {
-        if (token == MainnetAddresses.USDC || token == MainnetAddresses.USDT) {
+        if (
+            token == MainnetAddresses.USDC || token == MainnetAddresses.USDT || token == BnbChainAddresses.USDC
+                || token == BnbChainAddresses.USDT
+        ) {
             console2.log("skipped, a mint currency is not a component", token);
             return false;
         }

@@ -1,7 +1,7 @@
 # Two chains, no vaults: Xindex on Ethereum and BNB Chain
 
 **Status:** the owner's decision of 2026-10-07. Stage B is retired (`audit/2026-10-07-stage-b-retirement.md`), and the
-BNB Chain deployment is being built in this record's section 4.
+BNB Chain deployment's scripts are built and verified on chain (section 4); its Safe and its deploy remain.
 
 ## 1. The decision
 
@@ -74,17 +74,25 @@ coverage; at most one, if cheap minting matters, after the two launches.
 ## 4. The BNB Chain deployment: what it needs
 
 Each item is checked off as it lands.
-- [ ] `script/BnbChainAddresses.sol` repurposed: Pyth's BNB Chain contract, Uniswap's Universal Router and
-      PancakeSwap's there, each pinned by its runtime code hash read on chain; USDT and USDC (18 decimals); WBNB, BTCB
-      and Binance-Peg ETH beside the pinned 14, each with its Pyth price id and tier.
-- [ ] `DeployWeighted` resolves chain 56's defaults as it resolves chain 1's, and refuses any other address there.
-- [ ] `ConfigureWeighted` takes `V5_WHITELIST=bnb`, the BNB Chain list, on chain 56 only.
-- [ ] The mint currencies' 18 decimals on BNB Chain checked against the zap and `MintRequests` (both measure balances
-      and never assume 6).
-- [ ] `CheckToken` run on a BNB Chain fork for WBNB, BTCB and Binance-Peg ETH (the 14 passed on 2026-10-05).
-- [ ] A BNB Chain fork suite (`BNB_RPC_URL`): the address book verified by symbol, decimals and code hash as
-      `test/fork/MainnetAddresses.fork.t.sol` verifies Ethereum's, and a mint, a burn and a fill on real PancakeSwap
-      pools.
+- [x] `script/BnbChainAddresses.sol` repurposed (2026-10-07): Pyth's BNB Chain contract (the same proxy code as
+      Ethereum's, version 1.4.6, Wormhole chain 4, fee 0), Uniswap's Universal Router 2.0.0 and PancakeSwap's v3
+      Universal Router there, both Ethereum's builds byte for byte but for their immutables, each pinned by its runtime
+      code hash read at block 126,305,003; USDT and USDC (18 decimals); WBNB, BTCB and Binance-Peg ETH beside the
+      pinned 14, each with its Pyth price id and tier. BTCB is priced at BTC/USD, since Pyth has no BTCB feed.
+- [x] `DeployWeighted` resolves chain 56's defaults as it resolves chain 1's (`DeployChecks.isPinnedChain`, the
+      `pinned*` getters), refuses any other address there, requires a contract owner there as on Ethereum, and counts
+      every token of the book as a market contract no role may hold.
+- [x] `ConfigureWeighted` takes `V5_WHITELIST=bnb` on chain 56 only (`ListOffItsChain` otherwise), labels BNB Chain's
+      tiers, and skips BNB Chain's mint currencies as components; `CheckToken` takes `CHECK=bnb` and measures Uniswap
+      depth on BNB Chain (PancakeSwap's pools, where most BNB Chain depth sits, are not read).
+- [x] The mint currencies' 18 decimals: nothing in the zap or `MintRequests` assumes a currency's decimals, and the
+      fork suite deploys both against BNB Chain's USDT and USDC.
+- [x] `CheckToken` on a BNB Chain fork: WBNB, BTCB and Binance-Peg ETH are listable with exact transfers
+      (`testFork_wbnbBtcbAndEthPassTheAdmissionCheck`); the 14 passed on 2026-10-05.
+- [x] `test/fork/BnbChainAddresses.fork.t.sol` (`BNB_RPC_URL`, `BNB_FORK_BLOCK`): the address book by symbol, decimals
+      and code hash, Pyth's parse, a whole deployment from the book alone, and the 17 listings on a fresh factory over
+      BNB Chain's Pyth, all passing against the live chain on 2026-10-07. A mint, a burn and a fill on real PancakeSwap
+      pools there are not yet exercised; the zap's PancakeSwap legs are the same code the Ethereum fork suite runs.
 - [ ] The owner Safe and the guardian deployed on BNB Chain, and the deploy run through them.
 
 ## 5. What remains before any mainnet

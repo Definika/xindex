@@ -5,17 +5,24 @@ import {Script} from "forge-std/Script.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
 import {ISafeThreshold} from "./interfaces/ISafeThreshold.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
+import {BnbChainAddresses} from "./BnbChainAddresses.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
 
 /// @notice The checks every deployment of a factory runs before it broadcasts: the owner, the guardian, the roles
-///         against the market, and the market addresses themselves. `Deploy` (v4) and `DeployWeighted` (v5) share
-///         them, so the rules on who may own a factory exist once.
+///         against the market, and the market addresses themselves. `DeployWeighted` runs them on each chain it
+///         deploys to, so the rules on who may own a factory exist once. Two chains are pinned: Ethereum (1), whose
+///         address book is `MainnetAddresses`, and BNB Chain (56), whose is `BnbChainAddresses`. On a pinned chain the
+///         market addresses are the book's and nothing else; elsewhere they come from the environment.
 abstract contract DeployChecks is Script {
-    /// @notice Mainnet default {resolveRouter} uses on chain 1, from `MainnetAddresses`.
+    /// @notice Default {resolveRouter} uses on chain 1, from `MainnetAddresses`.
     address public constant MAINNET_UNIVERSAL_ROUTER = MainnetAddresses.UNIVERSAL_ROUTER;
-    /// @notice Mainnet default {resolvePancakeRouter} uses on chain 1, from `MainnetAddresses`.
+    /// @notice Default {resolvePancakeRouter} uses on chain 1, from `MainnetAddresses`.
     address public constant MAINNET_PANCAKE_ROUTER = MainnetAddresses.PANCAKE_UNIVERSAL_ROUTER;
-    /// @notice Fewest signatures a Safe owner may need on mainnet: the design's 3-of-5 hardware wallets held by
+    /// @notice Default {resolveRouter} uses on chain 56, from `BnbChainAddresses`.
+    address public constant BNB_UNIVERSAL_ROUTER = BnbChainAddresses.UNIVERSAL_ROUTER;
+    /// @notice Default {resolvePancakeRouter} uses on chain 56, from `BnbChainAddresses`.
+    address public constant BNB_PANCAKE_ROUTER = BnbChainAddresses.PANCAKE_UNIVERSAL_ROUTER;
+    /// @notice Fewest signatures a Safe owner may need on a mainnet: the design's 3-of-5 hardware wallets held by
     ///         separate people (the owner's call on 2026-09-30).
     uint256 public constant MIN_OWNER_THRESHOLD = 3;
     /// @notice Start of a Safe's module list.
@@ -23,7 +30,7 @@ abstract contract DeployChecks is Script {
 
     /// @notice OWNER is zero or Foundry's default sender.
     error OwnerRequired();
-    /// @notice On mainnet, the owner has no code or is an EIP-7702 delegated account.
+    /// @notice On a pinned chain, the owner has no code or is an EIP-7702 delegated account.
     error OwnerMustBeContract(address owner);
     /// @notice The owner is a Safe that needs fewer than MIN_OWNER_THRESHOLD signatures.
     error OwnerThresholdTooLow(address owner, uint256 threshold);
@@ -41,24 +48,24 @@ abstract contract DeployChecks is Script {
     error BroadcasterSignsForOwner(address broadcaster);
     /// @notice The owner or guardian is one of the market contracts.
     error RoleIsMarketContract(address account);
-    /// @notice On mainnet, the market address `name` was set to `given` instead of the default.
+    /// @notice On a pinned chain, the market address `name` was set to `given` instead of that chain's default.
     error MainnetOverride(string name, address given);
-    /// @notice Off mainnet, the market address `name` must be set.
+    /// @notice Off the pinned chains, the market address `name` must be set.
     error AddressRequired(string name);
     /// @notice The market address `name` has no code.
     error AddressHasNoCode(string name, address account);
     /// @notice `name` points at `actual` instead of `expected`, so these contracts are not one deployment.
     error WrongWiring(string name, address expected, address actual);
 
-    /// @notice Rejects a missing owner and Foundry's default sender. On mainnet the owner must be a contract, not
-    ///         an EIP-7702 delegated account, and a Safe must need at least MIN_OWNER_THRESHOLD (3) signatures, the
+    /// @notice Rejects a missing owner and Foundry's default sender. On a pinned chain, a mainnet, the owner must be a
+    ///         contract, not an EIP-7702 delegated account, and a Safe must need at least MIN_OWNER_THRESHOLD (3) signatures, the
     ///         owner's call on 2026-09-30 to match the design's 3-of-5, and have no enabled module,
     ///         because a module acts as the Safe without signatures. Modules or guards added later are not checked, so
     ///         the Safe must keep none.
     /// @param owner The intended factory owner.
     function checkOwner(address owner) public view {
         if (owner == address(0) || owner == DEFAULT_SENDER) revert OwnerRequired();
-        if (block.chainid != 1) return;
+        if (!isPinnedChain()) return;
 
         bytes memory code = owner.code;
         if (code.length == 0 || ScriptUtils.isDelegatedAccount(code)) revert OwnerMustBeContract(owner);
@@ -123,19 +130,21 @@ abstract contract DeployChecks is Script {
 
     /// @notice The contracts a deployment on this chain trades or prices through, none of which may hold a role.
     /// @param router The resolved Universal Router.
-    /// @return list The router and the PoolManager it settles against, then, on chain 1, every token in
-    ///         `MainnetAddresses`.
+    /// @return list The router and the PoolManager it settles against, then, on a pinned chain, every token and mint
+    ///         currency in that chain's address book.
     function marketContracts(address router) public view returns (address[] memory list) {
-        address[] memory mainnet = block.chainid == 1 ? _mainnetMarket() : new address[](0);
-        list = new address[](mainnet.length + 2);
+        address[] memory book = block.chainid == 1
+            ? _mainnetMarket()
+            : block.chainid == BnbChainAddresses.CHAIN_ID ? _bnbMarket() : new address[](0);
+        list = new address[](book.length + 2);
         list[0] = router;
         list[1] = IUniversalRouter(router).poolManager();
-        for (uint256 i = 0; i < mainnet.length; ++i) {
-            list[i + 2] = mainnet[i];
+        for (uint256 i = 0; i < book.length; ++i) {
+            list[i + 2] = book[i];
         }
     }
 
-    /// @dev Every token the mainnet address book names.
+    /// @dev The tokens the Ethereum address book names for the `default` list, and its mint currencies.
     function _mainnetMarket() private pure returns (address[] memory list) {
         list = new address[](6);
         (list[0], list[1], list[2], list[3]) =
@@ -143,23 +152,63 @@ abstract contract DeployChecks is Script {
         (list[4], list[5]) = (MainnetAddresses.USDC, MainnetAddresses.USDT);
     }
 
-    /// @notice Fills a zero router with the mainnet default on chain 1 only, and requires it to have code. On chain 1
-    ///         a given address must be the default, because the router is pinned there: the zap encodes against one
-    ///         version's command inputs, and a later line changed them.
-    /// @param router Address from the environment; zero takes the mainnet default on chain 1.
-    /// @return The resolved router.
-    function resolveRouter(address router) public view returns (address) {
-        return _resolve("UNIVERSAL_ROUTER", router, MAINNET_UNIVERSAL_ROUTER);
+    /// @dev Every token the BNB Chain address book names, and its mint currencies.
+    function _bnbMarket() private pure returns (address[] memory list) {
+        (address[] memory tokens,) = BnbChainAddresses.all();
+        list = new address[](tokens.length + 2);
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            list[i] = tokens[i];
+        }
+        (list[tokens.length], list[tokens.length + 1]) = (BnbChainAddresses.USDC, BnbChainAddresses.USDT);
     }
 
-    /// @notice Fills a zero PancakeSwap router with mainnet's on chain 1, refuses any other there, and requires code.
-    ///         Off mainnet a zero router is accepted and deploys a zap that refuses every PancakeSwap leg, since a
-    ///         testnet has no PancakeSwap to route to.
+    /// @notice Whether this chain's market addresses are pinned to an address book: Ethereum or BNB Chain.
+    function isPinnedChain() public view returns (bool) {
+        return block.chainid == 1 || block.chainid == BnbChainAddresses.CHAIN_ID;
+    }
+
+    /// @notice The pinned chain's Universal Router: Ethereum's on chain 1, BNB Chain's on chain 56.
+    function pinnedRouter() public view returns (address) {
+        return block.chainid == BnbChainAddresses.CHAIN_ID ? BNB_UNIVERSAL_ROUTER : MAINNET_UNIVERSAL_ROUTER;
+    }
+
+    /// @notice The pinned chain's PancakeSwap router.
+    function pinnedPancakeRouter() public view returns (address) {
+        return block.chainid == BnbChainAddresses.CHAIN_ID ? BNB_PANCAKE_ROUTER : MAINNET_PANCAKE_ROUTER;
+    }
+
+    /// @notice The pinned chain's USDC.
+    function pinnedUsdc() public view returns (address) {
+        return block.chainid == BnbChainAddresses.CHAIN_ID ? BnbChainAddresses.USDC : MainnetAddresses.USDC;
+    }
+
+    /// @notice The pinned chain's USDT.
+    function pinnedUsdt() public view returns (address) {
+        return block.chainid == BnbChainAddresses.CHAIN_ID ? BnbChainAddresses.USDT : MainnetAddresses.USDT;
+    }
+
+    /// @notice The pinned chain's Pyth contract.
+    function pinnedPyth() public view returns (address) {
+        return block.chainid == BnbChainAddresses.CHAIN_ID ? BnbChainAddresses.PYTH : MainnetAddresses.PYTH;
+    }
+
+    /// @notice Fills a zero router with the chain's default on a pinned chain only, and requires it to have code. On a
+    ///         pinned chain a given address must be the default, because the router is pinned there: the zap encodes
+    ///         against one version's command inputs, and a later line changed them.
+    /// @param router Address from the environment; zero takes the default on a pinned chain.
+    /// @return The resolved router.
+    function resolveRouter(address router) public view returns (address) {
+        return _resolve("UNIVERSAL_ROUTER", router, pinnedRouter());
+    }
+
+    /// @notice Fills a zero PancakeSwap router with the chain's on a pinned chain, refuses any other there, and
+    ///         requires code. Off the pinned chains a zero router is accepted and deploys a zap that refuses every
+    ///         PancakeSwap leg, since a testnet has no PancakeSwap to route to.
     /// @param given Address from the environment.
-    /// @return The resolved router, or zero off mainnet for none.
+    /// @return The resolved router, or zero off the pinned chains for none.
     function resolvePancakeRouter(address given) public view returns (address) {
-        if (block.chainid != 1 && given == address(0)) return address(0);
-        return _resolve("PANCAKE_ROUTER", given, MAINNET_PANCAKE_ROUTER);
+        if (!isPinnedChain() && given == address(0)) return address(0);
+        return _resolve("PANCAKE_ROUTER", given, pinnedPancakeRouter());
     }
 
     /// @notice Neither role may be PancakeSwap's router either: anyone can sweep a router's balance (CR-I37).
@@ -170,21 +219,21 @@ abstract contract DeployChecks is Script {
         }
     }
 
-    /// @notice Fills a zero stablecoin with mainnet's on chain 1 only, refuses any other there, and requires code, as
-    ///         {resolveRouter} does for the router.
-    /// @param name "USDC" or "USDT", for the error.
-    /// @param given Address from the environment; zero takes the mainnet default on chain 1.
-    /// @param mainnetDefault Mainnet's address of that stablecoin.
-    /// @return The resolved stablecoin.
-    function resolveStable(string memory name, address given, address mainnetDefault) public view returns (address) {
-        return _resolve(name, given, mainnetDefault);
+    /// @notice Fills a zero address with the pinned chain's default, refuses any other there, and requires code, as
+    ///         {resolveRouter} does for the router. For the stablecoins and, in `DeployWeighted`, Pyth.
+    /// @param name "USDC", "USDT" or "PYTH", for the error.
+    /// @param given Address from the environment; zero takes the default on a pinned chain.
+    /// @param pinnedDefault The pinned chain's address, from {pinnedUsdc}, {pinnedUsdt} or {pinnedPyth}.
+    /// @return The resolved address.
+    function resolveStable(string memory name, address given, address pinnedDefault) public view returns (address) {
+        return _resolve(name, given, pinnedDefault);
     }
 
-    function _resolve(string memory name, address given, address mainnetDefault) private view returns (address) {
+    function _resolve(string memory name, address given, address pinnedDefault) private view returns (address) {
         if (given == address(0)) {
-            if (block.chainid != 1) revert AddressRequired(name);
-            given = mainnetDefault;
-        } else if (block.chainid == 1 && given != mainnetDefault) {
+            if (!isPinnedChain()) revert AddressRequired(name);
+            given = pinnedDefault;
+        } else if (isPinnedChain() && given != pinnedDefault) {
             revert MainnetOverride(name, given);
         }
         if (given.code.length == 0) revert AddressHasNoCode(name, given);

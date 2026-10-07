@@ -513,6 +513,8 @@ order; v5's `default` list keeps the four, with Pyth price ids instead of suppli
 
 ## Mainnet addresses
 
+Ethereum (`script/MainnetAddresses.sol`):
+
 | Contract | Address |
 |---|---|
 | USDC | `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` |
@@ -528,14 +530,32 @@ order; v5's `default` list keeps the four, with Pyth price ids instead of suppli
 | Uniswap V4 StateView | `0x7fFE42C4a5DEeA5b0feC41C94C136Cf115597227` |
 | PancakeSwap v3 Universal Router | `0x65b382653f7C31bC0Af67f188122035461ec9C76` |
 | PancakeSwap V3 Factory / QuoterV2 | `0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865` / `0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997` |
+| Pyth | `0x4305FB66699C3B2702D4d05CF36551390A4c69C6` |
 | THORChain Router v4.1 (app-side only) | `0xD37BbE5744D730a1d98d8DC97c42F0Ca46aD7146` |
-| WeightedIndexFactory / IndexZap / MintRequests | not deployed, on either chain |
+| WeightedIndexFactory / IndexZap / MintRequests | not deployed |
 
-The scripts read mainnet addresses and reference supplies from `script/MainnetAddresses.sol`, which
-`test/fork/MainnetAddresses.fork.t.sol` checks on-chain: tokens by symbol and decimals, the router and the PoolManager
-by their runtime code hashes (every Universal Router build answers `poolManager()` alike, CR-I35), PancakeSwap's
-router the same way, and the default list
-on a fresh factory. The quoters and StateView are for apps and tests; no contract reads them.
+BNB Chain (`script/BnbChainAddresses.sol`; the tokens of its list are in that file, each with its price id and tier):
+
+| Contract | Address |
+|---|---|
+| USDT (18 decimals) | `0x55d398326f99059fF775485246999027B3197955` |
+| USDC (18 decimals) | `0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d` |
+| WBNB | `0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c` |
+| BTCB (Custodial) | `0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c` |
+| Binance-Peg ETH (Custodial) | `0x2170Ed0880ac9A755fd29B2688956BD959F933F8` |
+| Uniswap Universal Router 2.0.0 | `0x1906c1d672b88cD1B9aC7593301cA990F94Eae07` |
+| Uniswap V4 PoolManager | `0x28e2Ea090877bF75740558f6BFB36A5ffeE9e9dF` |
+| Uniswap V3 Factory | `0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7` |
+| PancakeSwap v3 Universal Router | `0x1A0A18AC4BECDDbd6389559687d1A73d8927E416` |
+| Pyth | `0x4D7E825f80bDf85e913E0DD2A2D54927e9dE1594` |
+| WeightedIndexFactory / IndexZap / MintRequests | not deployed |
+
+The scripts read each chain's addresses from its address book, and a fork test checks each on chain:
+`test/fork/MainnetAddresses.fork.t.sol` against Ethereum and `test/fork/BnbChainAddresses.fork.t.sol` against BNB Chain
+(`BNB_RPC_URL`): tokens by symbol and decimals, the routers and the PoolManager by their runtime code hashes (every
+Universal Router build answers `poolManager()` alike, CR-I35; both routers on BNB Chain are Ethereum's builds but for
+their immutables), Pyth's proxy by its code, and each list on a fresh factory over the chain's Pyth. The quoters and
+StateView are for apps and tests; no contract reads them.
 
 ## Development
 
@@ -615,8 +635,9 @@ CHECK=<token,...> forge script script/CheckToken.s.sol --fork-url <bnb chain rpc
 ```
 
 **Listings** go through `script/ConfigureWeighted.s.sol`, or the equivalent calls through the Safe: each coin with
-the Pyth price id its indexes rebalance at. `V5_WHITELIST=default` is the first four coins of `script/PythIds.sol`, and
-`V5_WHITELIST=wide` the other 23, each labelled with its trust tier in safe mode:
+the Pyth price id its indexes rebalance at. `V5_WHITELIST=default` is the first four coins of `script/PythIds.sol`,
+`V5_WHITELIST=wide` the other 23 (both on Ethereum), and `V5_WHITELIST=bnb` the 17 of `script/BnbChainAddresses.sol`
+(on BNB Chain), each labelled with its trust tier in safe mode:
 
 ```bash
 # owner is a key you hold (testnets and local forks only; a contract owner such as the mainnet Safe cannot sign, and
@@ -629,7 +650,7 @@ V5_MODE=safe V5_FACTORY=0x... V5_WHITELIST=default V5_LIST=all forge script scri
 V5_MODE=execute V5_FACTORY=0x... V5_WHITELIST=default forge script script/ConfigureWeighted.s.sol --rpc-url mainnet --account deployer --sender <any account> --broadcast
 ```
 
-`V5_MODE` is one of `propose`, `safe`, `execute` and `status`. `V5_WHITELIST` is `default` or `wide` (chain 1 only), or
+`V5_MODE` is one of `propose`, `safe`, `execute` and `status`. `V5_WHITELIST` is `default` or `wide` (chain 1 only), `bnb` (chain 56 only), or
 comma-separated `token:priceId` entries; anything else reverts `MalformedEntry`, and a list that names a token or a
 price id twice reverts in every mode (RT-24, V5-M1).
 

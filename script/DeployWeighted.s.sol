@@ -11,28 +11,35 @@ import {IPancakeUniversalRouter} from "../src/interfaces/IPancakeUniversalRouter
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
 import {DeployChecks} from "./DeployChecks.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
+import {BnbChainAddresses} from "./BnbChainAddresses.sol";
 
-/// @notice Deploys v5: `WeightedIndexFactory`, which deploys the `WeightedHub` implementation every index is a clone
-///         of, then a zap and MintRequests for that factory. They are the v4 contracts unchanged: both reach an index
-///         only through `isIndex` and the functions every index shares. The owner, the guardian and the market are
-///         checked as `Deploy` checks them, and neither role may be the Pyth contract.
+/// @notice Deploys one chain's Xindex: `WeightedIndexFactory`, which deploys the `WeightedHub` implementation every
+///         index is a clone of, then a zap and MintRequests for that factory. Run once on Ethereum and once on BNB
+///         Chain (`design/2026-10-07-two-chain-deployment.md`), each with that chain's owner Safe and guardian. The
+///         owner, the guardian and the market are checked by `DeployChecks`, and neither role may be the Pyth
+///         contract.
 ///
 ///   OWNER=<safe address> GUARDIAN=<guardian address> forge script script/DeployWeighted.s.sol --rpc-url mainnet \
 ///     --account deployer --sender <deployer address> --broadcast --verify
 ///
 /// Env:
-///   OWNER               Required. Factory owner, as `Deploy` requires it.
+///   OWNER               Required. Factory owner. On Ethereum and BNB Chain it must be a contract that is not an
+///                       EIP-7702 delegated account, and a Safe must require at least three signatures and have no
+///                       enabled module.
 ///   GUARDIAN            Required. Can cancel pending listings and rebalances, start a rebalance that leaves a paused
 ///                       component or one whose price feed stopped untouched, and delist tokens. Must differ from OWNER;
 ///                       replacing it later takes 7 days.
-///   PYTH                The Pyth contract every index reads its prices from. Required off mainnet; defaults on chain
-///                       1 to `MainnetAddresses.PYTH`, and nothing else is accepted there.
-///   UNIVERSAL_ROUTER    As for `Deploy`.
-///   USDC, USDT          As for `Deploy`.
-///   PANCAKE_ROUTER      As for `Deploy`.
+///   PYTH                The Pyth contract every index reads its prices from. Required off Ethereum and BNB Chain;
+///                       on those two it defaults to the chain's address book, and nothing else is accepted there.
+///   UNIVERSAL_ROUTER    Uniswap's Universal Router, through which the zap swaps. Resolved like PYTH.
+///   USDC, USDT          The two stablecoins MintRequests escrows. Resolved like PYTH.
+///   PANCAKE_ROUTER      PancakeSwap's v3 Universal Router, for the zap's PancakeSwap legs. Resolved like PYTH on the
+///                       two chains; elsewhere, unset deploys a zap that refuses every PancakeSwap leg.
 contract DeployWeighted is DeployChecks {
-    /// @notice Mainnet default {resolvePyth} uses on chain 1, from `MainnetAddresses`.
+    /// @notice Default {resolvePyth} uses on chain 1, from `MainnetAddresses`.
     address public constant MAINNET_PYTH = MainnetAddresses.PYTH;
+    /// @notice Default {resolvePyth} uses on chain 56, from `BnbChainAddresses`.
+    address public constant BNB_PYTH = BnbChainAddresses.PYTH;
 
     /// @notice Reads OWNER, GUARDIAN, PYTH and the optional market addresses from the environment and calls {deploy}.
     function run() external returns (WeightedIndexFactory factory, IndexZap zap, MintRequests requests) {
@@ -73,8 +80,8 @@ contract DeployWeighted is DeployChecks {
         checkGuardian(owner, guardian);
         pyth = resolvePyth(pyth);
         router = resolveRouter(router);
-        usdc = resolveStable("USDC", usdc, MainnetAddresses.USDC);
-        usdt = resolveStable("USDT", usdt, MainnetAddresses.USDT);
+        usdc = resolveStable("USDC", usdc, pinnedUsdc());
+        usdt = resolveStable("USDT", usdt, pinnedUsdt());
         pancakeRouter = resolvePancakeRouter(pancakeRouter);
         checkRolesAreNotMarket(owner, guardian, router);
         checkRolesAreNotPancake(owner, guardian, pancakeRouter);
@@ -149,6 +156,6 @@ contract DeployWeighted is DeployChecks {
     /// @param given Address from the environment; zero takes the mainnet default on chain 1.
     /// @return The resolved Pyth.
     function resolvePyth(address given) public view returns (address) {
-        return resolveStable("PYTH", given, MAINNET_PYTH);
+        return resolveStable("PYTH", given, pinnedPyth());
     }
 }
