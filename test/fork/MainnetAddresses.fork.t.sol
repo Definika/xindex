@@ -5,7 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {WeightedIndexFactory} from "../../src/WeightedIndexFactory.sol";
 import {ConfigureWeighted} from "../../script/ConfigureWeighted.s.sol";
-import {Deploy} from "../../script/Deploy.s.sol";
+import {DeployWeighted} from "../../script/DeployWeighted.s.sol";
 import {DeployChecks} from "../../script/DeployChecks.sol";
 import {MainnetAddresses as M} from "../../script/MainnetAddresses.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
@@ -166,7 +166,7 @@ contract MainnetAddressesForkTest is Test {
     }
 
     function testFork_XA13_deployResolvesTheMainnetMarket() public {
-        Deploy deployer = new Deploy();
+        DeployWeighted deployer = new DeployWeighted();
         assertEq(deployer.resolveRouter(address(0)), M.UNIVERSAL_ROUTER);
         assertEq(deployer.resolvePancakeRouter(address(0)), M.PANCAKE_UNIVERSAL_ROUTER);
         vm.expectRevert(

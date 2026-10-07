@@ -16,7 +16,7 @@ import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
 import {IUniversalRouter} from "../../src/interfaces/IUniversalRouter.sol";
 import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
-import {Deploy} from "../../script/Deploy.s.sol";
+import {DeployWeighted} from "../../script/DeployWeighted.s.sol";
 import {DeployChecks} from "../../script/DeployChecks.sol";
 
 interface IWbtcAdmin {
@@ -511,7 +511,7 @@ contract SecurityForkTest is Test {
     ///      other start with an empty page, and on 1.4.1, which refuses one. A real 2-of-3 is refused outright, since
     ///      the owner needs at least three signatures (the owner's call on 2026-09-30).
     function test_XA07_CRI36_aRealSafeWithAModuleIsRefused() public {
-        Deploy deployer = new Deploy();
+        DeployWeighted deployer = new DeployWeighted();
         address module = makeAddr("module");
         address[2] memory factories = [SAFE_FACTORY_130, SAFE_FACTORY_141];
         address[2] memory singletons = [SAFE_130, SAFE_141];

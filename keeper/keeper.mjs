@@ -2,11 +2,10 @@
 //
 // Each pass, for every index of the factory:
 //   1. starts a rebalance when anyone may (canStartRebalance);
-//   2. during an auction of an Ethereum-only index (WeightedHub), previews the fill at Pyth's latest prices and fills it
-//      through KeeperExecutor when the expected profit, after gas and swap costs, reaches MIN_PROFIT_USD, or the loss
-//      stays within MAX_SUBSIDY_USD (for small indexes nobody else would fill);
-//   3. for an index holding vault coins (HybridHub), only starts: its fill needs deliveries on the vault chains and
-//      their proofs, which this bot does not make.
+//   2. during an auction, previews the fill at Pyth's latest prices and fills it through KeeperExecutor when the
+//      expected profit, after gas and swap costs, reaches MIN_PROFIT_USD, or the loss stays within MAX_SUBSIDY_USD
+//      (for small indexes nobody else would fill).
+// Run one per deployment: on Ethereum and on BNB Chain, each with its own RPC_URL, FACTORY and EXECUTOR.
 //
 // Env:
 //   RPC_URL            Ethereum JSON-RPC.
@@ -60,9 +59,6 @@ const hubAbi = parseAbi([
   "function totalSupply() view returns (uint256)",
   "struct Price { int64 price; uint64 conf; int32 expo; uint256 publishTime; }",
   "function previewRebalance(Price[] prices) view returns (uint256 mu, uint256[] units, uint256[] amountsOut, uint256[] amountsIn)",
-]);
-const hybridAbi = parseAbi([
-  "function pendingRebalance() view returns (uint256 eta, uint256 keepMask, uint256 lambdaMin, uint256 lambdaMax, uint256[] ratios)",
 ]);
 const pythAbi = parseAbi(["function getUpdateFee(bytes[] updateData) view returns (uint256)"]);
 const executorAbi = parseAbi(["function fill(address index, bytes[] priceUpdate, uint256 maxCost) payable"]);
@@ -191,18 +187,6 @@ async function pass() {
     const index = await publicClient.readContract({ address: FACTORY, abi: factoryAbi, functionName: "allIndexes", args: [i] });
     try {
       await tryStart(index);
-      let hybrid = false;
-      try {
-        const salt = await publicClient.readContract({ address: FACTORY, abi: factoryAbi, functionName: "indexSalt", args: [index] });
-        hybrid = salt !== `0x${"0".repeat(64)}`;
-      } catch {
-        hybrid = false; // a factory without vault chains
-      }
-      if (hybrid) {
-        const pending = await publicClient.readContract({ address: index, abi: hybridAbi, functionName: "pendingRebalance" });
-        if (pending[0] !== 0n) log("hybrid auction open, needs a vault-delivering executor:", index);
-        continue;
-      }
       await tryFill(index);
     } catch (error) {
       log("error on", index, error.shortMessage ?? error.message);

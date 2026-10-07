@@ -120,8 +120,8 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         _initializeIndex(index, salt, name, symbol, inits);
     }
 
-    /// @dev The template an index of `components` is a clone of: `WeightedHub`. A factory that also lists coins held in
-    ///      vaults on other chains overrides this and `_initializeIndex`.
+    /// @dev The template an index of `components` is a clone of: `WeightedHub`. A factory listing another kind of
+    ///      component would override this and `_initializeIndex`.
     function _template(ComponentSpec[] calldata) internal view virtual returns (address) {
         return IMPLEMENTATION;
     }
@@ -227,8 +227,7 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         _proposeListing(token, priceId, decimals);
     }
 
-    /// @dev The listing flow for any token id: an ERC-20 on Ethereum, whose decimals were just read, or a coin held in
-    ///      a vault on another chain, whose decimals the owner gives.
+    /// @dev The listing flow, with the token's decimals just read from it.
     function _proposeListing(address token, bytes32 priceId, uint8 decimals) internal {
         if (priceId == bytes32(0)) revert InvalidPriceId(token);
         if (isWhitelisted[token]) revert AlreadyListed(token);

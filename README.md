@@ -1,53 +1,31 @@
 # Xindex
 
 Xindex lets investors package a whole crypto portfolio into a single ERC-20 token. Anyone can create an index (any
-name, any symbol, any mix of whitelisted tokens), anyone can mint it with USDC or USDT, and anyone can burn it back into
-USDC, USDT, WBTC or any other token. Every index is a plain ERC-20, fully backed in kind by the tokens it represents.
-Its units follow the market-cap rule `units ∝ supply`, from reference supplies the owner updates weekly behind a public
-delay, and a rebalance settles through an auction on a single number, λ. **No contract reads a price.**
+name, any symbol, any mix of whitelisted tokens, each at the percentage the creator chooses), anyone can mint it with
+USDC or USDT, and anyone can burn it back into USDC, USDT or any other token. Every index is a plain ERC-20, fully
+backed in kind by the tokens it holds. It rebalances back to its creator's percentages at Pyth prices, through a
+permissionless auction, and that settlement is the only place any contract reads a price.
 
-This repository holds the smart contracts (Foundry), and for Stage B the Solana programs (`solana/`), the proof systems
-(`proofs/`) and the TRON build (`tron/`). The web app lives elsewhere.
+**Xindex is deployed twice, on Ethereum and on BNB Chain, and nothing crosses between them** (the owner's decision of
+2026-10-07, `design/2026-10-07-two-chain-deployment.md`). Each deployment of `WeightedIndexFactory`, `WeightedHub`,
+`IndexZap` and `MintRequests` holds the ERC-20s of its own chain: on Ethereum WBTC, WETH and the v5 list of 27
+Ethereum coins; on BNB Chain WBNB, BTCB, Binance-Peg ETH and the pinned BEP-20 list, with every Binance-Peg coin
+labelled Custodial. Together the two chains hold about 96% of the top 200's value. An index cannot mix the two chains'
+holdings; a buyer crosses between them in the app, with their own funds, through the THORChain rail (`swaprail/`).
 
-**v5 replaces the market-cap index** (the owner's calls on 2026-10-05, `design/2026-10-05-custom-weights.md`):
-creators fix each coin's percentage, and `WeightedHub` rebalances back to it at Pyth prices. v4's `IndexHub` and
-`IndexFactory` were deleted on 2026-10-06 (`audit/2026-10-06-v4-retirement.md`); the sections below that describe them,
-the reference supplies and the λ auction are v4's design record until this file is rewritten for v5.
+**Status (2026-10-07): v5, deployed nowhere yet.** The weighted index is built and reviewed twice
+(`audit/2026-10-05-v5-review.md`, `audit/2026-10-07-v5-logic-review.md`); the Ethereum deployment's scripts are built,
+and the BNB Chain deployment is being built. Before any mainnet: Pyth's parameter replay, the fork settlement against
+Pyth's real contract on a real signed update, an external audit, and the BNB Chain rehearsal.
 
-**Status (2026-10-01): v4, the design that launches on mainnet; deployed nowhere yet.** v4 is one hybrid product
-(`design/2026-09-29-v4-hybrid-architecture.md`): an index token on Ethereum that holds Ethereum tokens itself and other
-chains' native coins in ownerless vaults. Stage A, the price-free part held on Ethereum, is built as
-`design/2026-09-30-v4-stage-a-spec.md` describes it, `MintRequests` included, with the owner's decisions of 2026-09-30:
-no fee, WBT off after its check, and an owner Safe of at least three signatures. Stage B, the vaults and their proofs
-(`design/2026-09-30-v4-stage-b-spec.md`), is largely built in code: `HybridIndexFactory`, `HybridHub` with its module
-and extension, the EVM vault `XindexVault` and the Solana vault program, P1 (on SP1) and P2 (on RISC Zero) for an EVM
-vault chain and for Solana, and the state verifiers of BNB Chain and TRON on Ethereum.
-- **BNB Chain and TRON** are complete in code in both directions, deployment included: `script/DeployVault.s.sol` for
-  BNB Chain and `tron/deploy.mjs` for TRON, each with the same checks.
-- **NEAR and Stellar** are complete in code in both directions (2026-10-04): their vaults (`near/`, `stellar/`) with
-  P1 and P2, on the shared Rust core `crates/xindex-core`, and their state verifiers on Ethereum, `NearStateVerifier`
-  and `StellarStateVerifier`, proven by SP1 programs (`proofs/near`, `proofs/stellar`). Their vaults' deploy tooling
-  on their own chains is not written yet.
-- **Sui** is complete in code in both directions (2026-10-04): its Move vault with P1 and P2 inside it (`sui/`), and
-  `SuiStateVerifier`, which checks Sui's committee certificates on Ethereum in Solidity, with no zkVM.
-- **Injective and VeChain** run `XindexVault` unchanged, and their state verifiers on Ethereum are built
-  (2026-10-04): `CometBftStateVerifier` and `VeChainStateVerifier`, proven by SP1 programs (`proofs/cometbft`,
-  `proofs/vechain`). VeChain adds `VeChainStakerAttester` on VeChain, and its own deployment script (`vechain/`).
-- **Aptos** is complete in code in both directions (2026-10-04): its Move vault with P1 and P2 inside it (`aptos/`),
-  and `AptosStateVerifier`, proven by an SP1 program (`proofs/aptos`) over Aptos Labs' public database backups.
-- **Solana** is complete from Ethereum to its vault: P1, P2, and the vault's checkpoints, stall recovery and snapshot
-  exit. Its state verifier on Ethereum is not built, and can ship only once Alpenglow reaches mainnet.
-- **HyperEVM** cannot hold a vault while its headers' state root is zero (Stage B spec, section 8).
-- **Stage C**'s other chains (Avalanche, Hedera, Cardano) were researched on 2026-10-01 and are not built
-  (`design/2026-10-01-stage-c-research.md`).
-
-Internal red teams have reviewed Stage A, and Stage B's vaults, hub, factory and BNB verifier
-(`audit/2026-09-30-stage-a-red-team.md`, `audit/2026-09-30-stage-b-red-team.md`), and an internal review the TRON state
-verifier (`audit/2026-10-01-tron-review.md`); no review has read P1's and P2's verifiers yet. It launches as one
-product, on `HybridIndexFactory`, once the hybrid index is ready (the owner's call on 2026-10-01). Still to come: real
-proving (P1 and P2 have run only in execute mode, and a proof needs rented GPUs or a prover network), external audits,
-the vaults' among them, and a Sepolia rehearsal. v3 stays at the git tag `v3.0.0` and on Sepolia, and never launches
-on mainnet.
+Earlier designs, and what each retirement record says went with them: v3 priced through Chainlink and is tagged
+`v3.0.0` (`audit/2026-09-22-v3-retirement.md`); v4's market-cap index followed reference supplies through a price-free
+λ auction and was deleted on 2026-10-06 (`audit/2026-10-06-v4-retirement.md`); v4's Stage B held other chains' native
+coins in ownerless vaults driven by proofs of Ethereum's finality, was built in large part for eight chains, and is
+tagged `stage-b-2026-10-07` and deleted (`audit/2026-10-07-stage-b-retirement.md`). **The sections below that describe
+`IndexHub`, `IndexFactory`, the reference supplies and the λ auction are v4's design record until this file is
+rewritten for v5;** `WeightedHub` keeps `IndexHub`'s issue, redeem, claims and backing post-check, and the zap and
+`MintRequests` are unchanged.
 
 ## Product brief
 
@@ -81,14 +59,14 @@ The history, in one paragraph each:
   only when a supply changes. So the rule, the feeds, the capped methodology (which trades on every price move and needs
   every price) and the price gates on settlement are gone, and a rebalance is an auction whose worst case holds at any
   prices. `audit/2026-09-30-v4-stage-a-retirement.md` records which past findings that retired and where the rest are
-  tested now. Stages B and C add the native coins of other chains, held in vaults there (see "Roadmap" in
-  `ARCHITECTURE.md`).
+  tested now. Other chains' coins come in only as tokens on Ethereum or BNB Chain
+  (`design/2026-10-07-two-chain-deployment.md`).
 
 ## Design decisions (v4 Stage A)
 
 | Topic | Decision |
 |---|---|
-| Chain | Ethereum mainnet. Vaults on other chains come in Stage B. |
+| Chain | Ethereum mainnet and BNB Chain, one deployment each, nothing crossing between them. |
 | Composition | Constituents fixed at creation, up to 100 per index (`MAX_COMPONENTS`). Units follow the uncapped market-cap rule, `units ∝ referenceSupply`; the capped 30/20 methodology is retired, because it trades on price moves and needs prices. |
 | Creation | `createIndex(name, symbol, tokens, k)`: every component's units are `⌊k × referenceSupply / 1e36⌋`, each between `MIN_RAW_UNITS` (10,000) and `MAX_UNITS` (`(2^96 − 1) >> 10`). One whole index token holds the fraction `k / 1e36` of every component's reference supply. |
 | Supplies | One reference supply per token, in its raw units: the supply of what the token represents (bitcoin's for WBTC, ether's for WETH). Nothing reads a supply live. After the first listing a supply changes only through a weekly **batch**: atomic, one live at a time, 2 days of notice with the guardian's veto, each supply within `MAX_SUPPLY_STEP` (0.5%) of the one in force. |
@@ -96,7 +74,7 @@ The history, in one paragraph each:
 | Prices | None on chain. The app values an index off chain as the sum of units times its own prices (design section 10). |
 | Swaps | Uniswap's Universal Router 2.0.0, V3 and V4, and PancakeSwap's v3 Universal Router for PancakeSwap V3 (since 2026-10-06, chiefly for CAKE), one venue per leg, chosen by the caller. THORChain only in the app, from the user's own wallets, never through a contract (`design/2026-10-06-swap-venues.md`). The app offers the one-click zap only up to about 35 components (EIP-7825's 16.78M gas per transaction). |
 | Fees | None: Stage A is funded from outside (the owner's call on 2026-09-30, design section 13.1). Every amount the hub moves goes through one helper, `_backing`, so a fee in a later version would land in one reviewed change. |
-| Layer-1 coins | Stage A holds Ethereum tokens only; Bitcoin is held as WBTC. Native coins of chains whose contracts can verify a proof about Ethereum, and whose state Ethereum can verify in turn, come in vaults from Stage B. Script-only chains, whose contracts cannot verify one (Bitcoin, XRP Ledger, Dogecoin, ...), are out of scope as vault chains; their coins can come as Binance-Peg tokens in the BNB Chain vault, a custodial copy labelled as such (`design/2026-10-05-wide-asset-support.md`). |
+| Layer-1 coins | The Ethereum deployment holds Ethereum tokens, Bitcoin as WBTC. The BNB Chain deployment holds WBNB, BTCB, Binance-Peg ETH and the Binance-Peg coins of chains without contracts or without a deployment (XRP, SOL, DOGE, ADA, LTC, ...), each a custodial copy labelled as such (`design/2026-10-05-wide-asset-support.md`, `design/2026-10-07-two-chain-deployment.md`). |
 | Stable in / out | Mint with USDC or USDT through the zap, or through `MintRequests` at a limit of the requester's own, filled by anyone who holds shares. The burner chooses USDC, USDT or any other token at exit, or asks for USDC or USDT at a limit through `MintRequests`. Index tokens are fungible, so the protocol cannot know which stable a holder used. |
 | Decentralization | No admin can move an index's funds, mint or burn its shares, pause or upgrade it, or set its units by hand. The owner proposes listings and supply batches, which take effect after 2 days, and guardian changes, which take 7; a proposal not executed within 7 days of becoming ready expires. Owner and guardian both cancel pending listings and batches, delist, cancel a rebalance, and start one with a keep mask or before strangers may. The guardian can cancel a change that would remove it, not one that replaces it. Ownership moves in two steps with no delay, and cannot be renounced. |
 | Frozen components | If a component's issuer pauses or blacklists transfers, holders take every other component out with `redeemSkipping` and collect the frozen one later with `claim`; the guardian rebalances around it with a keep mask, which neither transfers the component nor reads its balance or its supply. |
@@ -144,14 +122,6 @@ The history, in one paragraph each:
   sending the requester what they asked for and takes the escrow. The requester can `cancel` at any time, and anyone can
   `refund` the escrow to the requester after the deadline, at most 30 days away. Nothing reads a price: the requester's
   limit is the valuation.
-- `HybridIndexFactory` (`src/HybridIndexFactory.sol`), the factory v4 deploys, is `IndexFactory` plus a registry of
-  vault chains, each with its vault and the verifier of its state on Ethereum, the listing of the coins those vaults
-  hold, a freeze of a chain, and the choice of template: an index of Ethereum tokens only is an `IndexHub` clone,
-  exactly as above, and one holding any vault coin is a `HybridHub` clone. `HybridHub` (`src/HybridHub.sol`, with its
-  module and extension in `src/hybrid/`, which run on the clone's storage by DELEGATECALL) mints by order and burns by
-  message. A vault (`src/vault/XindexVault.sol` on an EVM chain, `solana/` on Solana) takes its coin only as a deposit
-  to an intake and pays out only on messages from Ethereum that both P1 and P2 prove, within a speed limit; Ethereum
-  reads the vault's state through the chain's state verifier (`src/verifiers/`). The Stage B spec has the rules.
 
 Invariant, for every component `i` of every index, forever:
 
@@ -301,7 +271,7 @@ at any time) or `refund` (anyone, after the deadline).
   never be a THORChain destination: a contract receives a plain transfer it cannot use. `swaprail/thorchain.mjs` is the
   reference planner: `planFundToEthereum` turns BTC, LTC, BCH or DOGE into USDC, USDT, ETH or WBTC at the user's own
   Ethereum account before a zap mint; `planExitFromEthereum` turns a burn's USDC, USDT, ETH or WBTC into BTC, or into
-  BNB or TRX at the user's own address to fund a vault-coin mint, as the user's own transaction to THORChain's router.
+  BNB at the user's own BNB Chain address, to mint there, as the user's own transaction to THORChain's router.
   It refuses contract senders and destinations, needs two independent THORNode endpoints that agree, pins the
   router, checks the vault and the halts, and writes its own memo with a limit and a refund address. Use it as it is, or
   port its checks whole; `design/2026-10-06-swap-venues.md` explains each.
@@ -352,34 +322,14 @@ at any time) or `refund` (anyone, after the deadline).
   with a `ComponentReturned` event: every hop of a V3 burn leg, and as a rule only the first hop of a V4 burn leg,
   whose intermediate partial fill reverts the whole leg (CR-I07). A returned amount includes anything a stranger had
   left on the router, and a stray balance never makes a burn revert (CR-L02). Show them on the receipt.
-- **ABIs.** `abi/IndexFactory.json`, `abi/IndexHub.json`, `abi/IndexZap.json` and `abi/MintRequests.json`, and for
-  the hybrid product `abi/HybridIndexFactory.json` (the factory v4 launches on), `abi/IHybridIndex.json` (a hybrid
-  index: its hub, module and extension answer at one address, so decode with this one interface) and
-  `abi/XindexVault.json` (a vault on an EVM chain), are committed and regenerated by CI, which fails on a diff; decode
-  every event and revert with them (`forge inspect <contract> abi --json` reproduces them, and the interfaces in
-  `src/interfaces/` carry the NatSpec). Read the constants on chain rather than hard-coding them: `LISTING_DELAY`,
-  `PROPOSAL_WINDOW`, `GUARDIAN_DELAY`, `MAX_COMPONENTS`, `MAX_BATCH`, `MAX_SUPPLY_STEP`, `MAX_SUPPLY`, `MIN_RAW_UNITS`,
-  `MAX_UNITS`, `K_SCALE` on the factory, and `MIN_REBALANCE_INTERVAL`, `REBALANCE_DELAY`, `AUCTION_DURATION`,
-  `MAX_SUPPLY_STEP`, `MIN_BAND` on the hub; on the hybrid factory also `ROTATION_DELAY` and `FREEZE_DURATION`, and on a
-  hybrid index also `MINT_LOCK`, `MAX_ORDER_LIFE`, `SETTLE_GRACE`, `MINT_CAP`, `REBALANCE_BOND`, `BOND_HOLD` and
-  `DELIVERY_WINDOW`. Errors that several contracts raise (`ZeroAddress`, `LengthMismatch`, `Unauthorized`, `NotIndex`,
-  `InvalidRecipient`) are declared once, in `IXindexErrors`.
-- **A hybrid index mints by order, not through the zap.** An index holding any vault coin is a `HybridHub` clone; a zap
-  call on one reverts with nothing moved. `components()` also returns each component's chain and vault token, and
-  `chains()` the vault of each chain. A vault takes deposits only for an index registered there with
-  `registerIndex(index, salt)`, which anyone calls with the factory's `indexSalt(index)`. A minter calls
-  `openOrder(shares, deadline)`, with the deadline at most `MAX_ORDER_LIFE` (6 hours) away, which escrows the Ethereum
-  components at once (`previewOrder(shares)` gives every amount), and deposits each vault coin on its chain before the
-  deadline, on an EVM chain with the vault's `deposit(index, intakeId)`. After the deadline anyone calls `settleOrder`
-  with a proof of each chain's intake, which counts the shares against `MINT_CAP`, 4% of the supply in any 24 hours
-  (`mintRoom()`); `MINT_LOCK` (24 hours) later `claimOrder` mints them. The minter can `failOrder` an open order at any
-  time, and anyone `SETTLE_GRACE` (6 hours) after its deadline: the escrow becomes the minter's claims, and each vault
-  is told to let its depositors `refund`. `redeem(shares, to, recipients, skipMask)` pays the Ethereum components to
-  `to` at once and sends each vault a burn toward `recipients[j]`, a 32-byte address on the `j`-th of `chains()`; a zero
-  recipient books that chain's coins as claims of `to`, which `claimToVault` burns later. The vault pays it once P1 and
-  P2 prove the message, within its speed limit (4% of what it holds for the index in any 24 hours, or its floor:
-  `available(index, token)`), and `release` pays any rest later. A rebalance settles in three steps, `acceptRebalance`
-  with a bond, the deliveries to the vaults, and `settleRebalance` on their proof (Stage B spec, section 5.3).
+- **ABIs.** `abi/WeightedIndexFactory.json`, `abi/WeightedHub.json`, `abi/IndexZap.json` and `abi/MintRequests.json`
+  are committed and regenerated by CI, which fails on a diff; decode every event and revert with them
+  (`forge inspect <contract> abi --json` reproduces them, and the interfaces in `src/interfaces/` carry the NatSpec).
+  The same four ABIs serve both deployments. Read the constants on chain rather than hard-coding them: `LISTING_DELAY`,
+  `PROPOSAL_WINDOW`, `GUARDIAN_DELAY`, `MAX_COMPONENTS` on the factory, and `MIN_REBALANCE_INTERVAL`, `REBALANCE_DELAY`,
+  `AUCTION_DURATION`, `MAX_TURNOVER`, `MIN_TRADE`, `MU_MIN`, `MU_MAX`, `MAX_CONFIDENCE` and `PRICE_LAG` on the hub.
+  Errors that several contracts raise (`ZeroAddress`, `LengthMismatch`, `Unauthorized`, `NotIndex`, `InvalidRecipient`)
+  are declared once, in `IXindexErrors`.
 - **Events.** `IndexFactory`: `IndexCreated`, `ListingProposed`, `ListingCancelled`, `ReferenceSupplySet`,
   `TokenWhitelisted`, `SuppliesProposed`, `SuppliesCancelled`, `SuppliesExecuted`, `GuardianProposed`,
   `GuardianChangeCancelled`, `GuardianSet`, `OwnershipTransferStarted`, `OwnershipTransferred`. `IndexHub`: `Issued`,
@@ -401,7 +351,6 @@ at any time) or `refund` (anyone, after the deadline).
   `ListingExpired`, `NotWhitelisted`, `RelistChangesSupply`, `SuppliesPending`, `TokenInBatch`, `InvalidBatch`,
   `NoPendingSupplies`, `SuppliesNotReady`, `SuppliesExpired`, `NoPendingGuardianChange`, `GuardianChangeNotReady`,
   `GuardianChangeExpired`, `Unauthorized`, `LengthMismatch`, `RenounceDisabled`, and OpenZeppelin's `Ownable` errors.
-  The hybrid contracts' errors and events are in their ABIs and interfaces.
 - **Requests.** Suggest a limit from the app's own valuation and show the deadline; a fill pays exactly what the filler
   sends, so any surplus over the limit goes to the fastest filler. Read a request with `getRequest(id)` (`requester`,
   `deadline`, `isMint`, `open`, `index`, `stable`, `escrow`, `limit`) and follow `MintRequested`, `RedeemRequested`,
@@ -461,7 +410,7 @@ order; v5's `default` list keeps the four, with Pyth price ids instead of suppli
   `design/2026-09-30-wbt-check.md`): its Ethereum contract lets a single key blacklist any holder and destroy its
   balance, and no Uniswap V2, V3 or V4 pool holds it. Without it the Stage A list covers 79.4% of the holdable top-100
   value at 4.2% a year of tracking error, on a backtest that held supplies constant and so understates it.
-- **Left out.** v3's wstETH (a second claim on ether), wSOL (native SOL comes with Stage B) and AAVE (below the floor).
+- **Left out.** v3's wstETH (a second claim on ether), wSOL (SOL is held as Binance-Peg SOL on BNB Chain) and AAVE (below the floor).
   LEO is on the floor list by weight but fails the liquidity screen.
 - **Depth, measured on 2026-09-22.** LINK is deeper on V4 than V3 (about 6.6x); WBTC (0.26x) and UNI (0.66x) are
   deeper on V3. The app picks the venue per leg. Live V4 pools for these components are paired against native ether,
@@ -559,55 +508,8 @@ order; v5's `default` list keeps the four, with Pyth price ids instead of suppli
 - **THORChain is a trusted third party and can halt.** A THORChain swap is not atomic: its validators hold the coins
   between the two chains, it has halted trading for weeks (39 days after the exploit of May 2026), and a swap that
   cannot fill at its limit is refunded, minus fees, to the refund address. Nothing in Xindex depends on it.
-- Bytecode targets the Cancun EVM (`evm_version = "cancun"`), which TRON has on (`tron/README.md`); `BnbStateVerifier`
-  also needs Prague's BLS12-381 precompiles, which Ethereum and Sepolia have. Re-check before deploying to any other
-  chain.
-
-For an index holding vault coins (Stage B, not deployed; the Stage B spec has the full account):
-- **Shares that rest on a vault proof enter at most 4% of the supply a day.** `MINT_CAP` holds an order's shares and a
-  migration's alike, so after its creator's seed a new index version takes in the old one's holders at 4% of its own
-  supply a day.
-- **A vault pays out at most 4% of what it holds for an index in any 24 hours**, or its floor. A large burn of a vault
-  coin is paid in parts; the rest stays owed, and anyone can `release` it as the limit allows.
-- **Every verifier must be advanced daily.** `BnbStateVerifier` and `TronStateVerifier` let a validator set or
-  producer list name its successor only within `MAX_LAG` (1 day) of its start, so a verifier left a day behind (TRON's,
-  about 18 hours behind a boundary) stops for good. Mints on that chain then stop until the registry replaces the
-  verifier, a 30-day rotation (FAC-1); funds stay safe, and burns still pay, since they need only Ethereum's proofs.
-  TRON's also stops if nine of the producers its list recorded are voted out or change keys before vouching for the
-  next list (TRN-3). P1's and P2's verifiers on a vault chain keep the same pace: a proof covers at most 225 epochs, a
-  day, past the verifier's anchor, and `update` refuses any proof once a day has passed since the anchor's epoch began
-  (`lagEnds()`), so one left further behind stops for good and must be replaced (LG-4; Stage B spec, section 10).
-- **TRON's state rests on 19 of its 27 producers,** who could forge a proof at no cost to their stake, since TRON has
-  no slashing.
-- **TRON's 80 ms CPU limit leaves a proof check little room.** TRON fails a transaction past 80 ms of CPU time and burns its whole fee limit;
-  the Groth16 check in a P1 or P2 `update` took about 40 ms in java-tron on the machine measured. Whoever sends
-  `update` there sets a fee limit near its energy, about 300,000, and the margin is measured again on Nile, TRON's test
-  network, before mainnet (`tron/README.md`).
-- **P1 and P2 prove one statement.** Two zkVMs from two teams, with two Groth16 setups, guard against a broken prover,
-  but a bug in the statement they share (`proofs/finality`) would break both at once (Stage B spec, section 11).
-- **NEAR's and Stellar's states rest on unslashed trust.** NEAR's verifier needs more than two thirds of each epoch's
-  block-producer stake honest, and NEAR slashes nobody; Stellar's needs 7 of Tier 1's 10 organisations, two validators
-  each, and Stellar slashes nobody either. That is TRON's kind of trust, bounded as every chain's is by its quantity cap,
-  the 24-hour lock and the mint cap. A new Tier 1 means a new Stellar verifier, through the 30-day rotation.
-- **A Stellar transaction holds 132 KB.** A message whose receipt proof is larger, which anyone can force by wrapping a
-  permissionless call in a transaction of large logs, is delivered from the copy `resendMessage` emits in a clean one.
-  Sui's 128 KB transactions are handled the same way.
-- **Sui, Injective, VeChain and Aptos rest on unslashed stake too.** None of the four slashes a validator's principal
-  for signing a fork: Sui's 127 validators, Injective's 45 (both its slashing fractions read 0), VeChain's 101 and
-  Aptos's 85 are trusted as TRON's and Stellar's are, by more than two thirds of their stake, bounded by each coin's
-  cap, the 24-hour lock and the mint cap. Each chain also keeps powers over contracts: Sui's validators can deny
-  transactions to an object, as they did against the Cetus exploiter in 2025, and a stake vote once moved coins;
-  VeChain's 4-of-5 Executor sets consensus parameters; Aptos's and Injective's governance can upgrade their chains.
-- **VeChain's weights are attested, not proven.** Nothing public proves the Staker's storage, so a keeper sends
-  `VeChainStakerAttester.attest` each round a proof needs, and a new table is trusted once more than two thirds of the
-  trusted one's weight sign blocks after it, TRON's vouching rule.
-- **Aptos's inputs come from Aptos Labs' backups.** Signed ledger infos and accumulator proofs are not on Aptos's
-  public API, only in Aptos Labs' public database backups, every byte checked against signatures. If the backups stop,
-  a prover needs its own full node; a state is provable two to four hours after its `attest`.
-- **A mass slashing between two proofs lowers what a forger risks.** The statement counts each signer by the anchor's
-  records, up to a day old, with a margin for the churn since. A validator slashed after the anchor still counts there
-  as unslashed, and can no longer be slashed for signing a forgery; no churn limits how many are slashed. Such a
-  slashing would be a public attack on Ethereum itself (LG-I1; Stage B spec, section 10).
+- Bytecode targets the Cancun EVM (`evm_version = "cancun"`), which Ethereum and BNB Chain both run. Re-check before
+  deploying to any other chain.
 
 ## Mainnet addresses
 
@@ -627,7 +529,7 @@ For an index holding vault coins (Stage B, not deployed; the Stage B spec has th
 | PancakeSwap v3 Universal Router | `0x65b382653f7C31bC0Af67f188122035461ec9C76` |
 | PancakeSwap V3 Factory / QuoterV2 | `0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865` / `0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997` |
 | THORChain Router v4.1 (app-side only) | `0xD37BbE5744D730a1d98d8DC97c42F0Ca46aD7146` |
-| HybridIndexFactory / IndexZap / MintRequests | not deployed |
+| WeightedIndexFactory / IndexZap / MintRequests | not deployed, on either chain |
 
 The scripts read mainnet addresses and reference supplies from `script/MainnetAddresses.sol`, which
 `test/fork/MainnetAddresses.fork.t.sol` checks on-chain: tokens by symbol and decimals, the router and the PoolManager
@@ -658,10 +560,7 @@ CI (`.github/workflows/test.yml`) checks that every submodule commit matches `fo
 until a `MAINNET_RPC_URL` repository secret exists, so the fork tests always run there; it needs an archive node for the
 pinned fork block. Pull requests from forks get no secrets and skip the fork suites, so re-run them before merging. A
 keyed RPC may throttle four fork suites run in parallel; run them with `-j 1` when a revert appears next to an HTTP 429.
-CI does not run Aderyn yet, so run it before pushing. Nor does it build the Rust and TRON parts: their builds, tests
-and rehearsal are in `crates/xindex-core/README.md`, `solana/README.md`, `near/README.md`, `stellar/README.md`,
-`sui/README.md`, `aptos/README.md`, `vechain/README.md`, `proofs/README.md` (with `proofs/near`, `proofs/stellar`,
-`proofs/cometbft`, `proofs/vechain` and `proofs/aptos`) and `tron/README.md`.
+CI does not run Aderyn yet, so run it before pushing.
 
 ### Deploy
 
@@ -675,135 +574,35 @@ source .env
 forge script script/Deploy.s.sol --rpc-url mainnet --account deployer --sender <deployer address> --broadcast --verify
 ```
 
-`Deploy` deploys v4's one factory, `HybridIndexFactory`, and with it both templates: the factory deploys the `IndexHub`
-implementation itself, and the `HybridHub` template, its module and its extension come first, each built for the
-factory's address, which the script predicts from the broadcaster's nonce (the factory refuses a template built for any
-other). An index of Ethereum tokens only is an `IndexHub` clone; one holding any vault token is a `HybridHub` clone. Then
-come the zap, which mints and burns `IndexHub` clones only (a hybrid index's mints are orders, and a zap call on one
-reverts with nothing moved), and `MintRequests`, which takes any index's shares. Vault chains and vault-token listings
-are proposed afterwards, through the factory's timelock.
+`DeployWeighted` deploys one chain's deployment: `WeightedIndexFactory`, which deploys the `WeightedHub`
+implementation every index is a clone of, then the zap and `MintRequests` for that factory. Run it once on Ethereum
+and once on BNB Chain, each with that chain's owner Safe and guardian; listings follow through the factory's timelock.
 
-`OWNER` and `GUARDIAN` are required and must differ. On mainnet the owner must be a contract that is not an EIP-7702 delegated account, and a Safe
-must need at least three signatures (`MIN_OWNER_THRESHOLD`, the design's 3-of-5) and have no enabled module, because
-a module acts as the Safe without signatures
-(keep it that way after deployment; the script cannot see later changes). The guardian must not be the broadcasting
-key, which must hold no role; when the owner is a Safe, neither the guardian nor the broadcasting key may be one of
-its signers, since the guardian is the owner's veto (SA-06); and neither role may be a market contract: the router and its PoolManager everywhere, and
-on chain 1 also every token and mint currency in `script/MainnetAddresses.sol` (CR-I37). `UNIVERSAL_ROUTER`, `USDC`
-and `USDT` default to mainnet's on chain 1, where any other value is rejected, and are required anywhere else; they are
-the script's only market addresses, because the hub and factory depend on no Uniswap contract.
+```bash
+OWNER=<safe> GUARDIAN=<guardian> forge script script/DeployWeighted.s.sol --rpc-url mainnet --account deployer \
+  --sender <deployer> --broadcast --verify
+```
 
-**Deployment record.** `forge script --broadcast` writes `broadcast/Deploy.s.sol/<chain id>/run-latest.json`: the git
-commit, each transaction with its init code, and the addresses. Broadcast from a clean, committed tree
-so the recorded commit is the deployed source, commit the record with the README address table (on mainnet with `git
-add -f`: `.gitignore` keeps chain-1 records out, because fork rehearsals keep chain id 1), and verify the source on the
+`OWNER` and `GUARDIAN` are required and must differ. On a mainnet the owner must be a contract that is not an EIP-7702
+delegated account, and a Safe must need at least three signatures (`MIN_OWNER_THRESHOLD`, the design's 3-of-5) and have
+no enabled module, because a module acts as the Safe without signatures (keep it that way after deployment; the script
+cannot see later changes). The guardian must not be the broadcasting key, which must hold no role; when the owner is a
+Safe, neither the guardian nor the broadcasting key may be one of its signers, since the guardian is the owner's veto
+(SA-06); and neither role may be a market contract: the routers, the PoolManager and Pyth everywhere, and on a mainnet
+also every token and mint currency in that chain's address book (CR-I37). `PYTH`, `UNIVERSAL_ROUTER`, `PANCAKE_ROUTER`,
+`USDC` and `USDT` default to the address book's on chain 1 (`script/MainnetAddresses.sol`) and on chain 56
+(`script/BnbChainAddresses.sol`), where any other value is rejected, and are required anywhere else (a zero
+`PANCAKE_ROUTER` off a mainnet deploys a zap that refuses PancakeSwap legs); they are the script's only market
+addresses, because the hub and factory depend on no Uniswap contract.
+
+**Deployment record.** `forge script --broadcast` writes `broadcast/DeployWeighted.s.sol/<chain id>/run-latest.json`:
+the git commit, each transaction with its init code, and the addresses. Broadcast from a clean, committed tree so the
+recorded commit is the deployed source, commit the record with the README address table (on a mainnet with `git add
+-f`: `.gitignore` keeps chain-1 records out, because fork rehearsals keep chain id 1), and verify the source on the
 explorer (`--verify` needs `ETHERSCAN_API_KEY`). The deploy log ends with the runtime code hashes of the factory, the
-`IndexHub` implementation, the `HybridHub` template, its module, its extension, the zap and `MintRequests`: record them
-with the addresses, and
-`Deploy.checkDeployment(factory, zap, requests)` re-reads them later (it also refuses a zap or a `MintRequests` that
-does not point at that factory).
-
-**A vault chain** on an EVM is set up with `script/DeployVault.s.sol`, on that chain:
-P1's verifier on SP1's Groth16 verifier, P2's on RISC Zero's, the state reader and the vault, with its `VaultSnapshot`
-library. It refuses any Groth16 verifier but SP1's v6.0.0 (`VERIFIER_HASH`) and RISC Zero's 3.0.0 (`SELECTOR`
-`0x73c457ba`, its published control ids), so an owned gateway, router or emergency stop is refused; it refuses a
-deployment on the indexes' own chain, a missing address, key or anchor, a freezer or recovery multisig that is unset,
-shared, the broadcasting key or, for the multisig, not a contract, and a floor above the cap. Its environment variables
-are listed in the script; the anchor and P1's key come from `proofs/` (`p1-input check-state`, `p1 vkey`) and P2's
-image id from `proofs/p2` (`p2 image-id`). `DeployVault.checkDeployment` re-reads the wiring and the code hashes later.
-TRON's is deployed with `tron/deploy.mjs`, DeployVault's twin under Tron's compiler, with the same checks
-(`tron/README.md`). Injective runs `DeployVault` unchanged, once SP1's and RISC Zero's Groth16 verifiers are deployed
-there from their own repositories; VeChain's goes up with `vechain/deploy.mjs`, which also deploys
-`VeChainStakerAttester` and clears every contract's Prototype master (`vechain/README.md`). NEAR's, Stellar's, Sui's
-and Aptos's vaults are deployed with their chains' own tools, which no script here drives yet: NEAR's vault, with P1
-and P2 compiled in, goes to a keyless account fixed by its code and its initial state (NEP-616, `near/README.md`);
-Stellar's P1, P2 and vault deploy as plain Wasm, every setting fixed in their constructors (`stellar/README.md`); Sui's
-package is published and made immutable in one transaction (`sui/README.md`), and Aptos's is published with an
-immutable upgrade policy (`aptos/README.md`). On Ethereum each chain is added as below by its registry id: TRON's is
-728126428, Injective's 1776 and VeChain's its genesis id, and NEAR's, Stellar's, Sui's and Aptos's are the first 8 bytes
-of `keccak256` of their CAIP-2 names (`design/2026-10-03-near-stellar-interfaces.md`,
-`design/2026-10-04-four-chains-interfaces.md`). A chain holds a vault only once Ethereum can verify its state: today
-BNB Chain, TRON, NEAR, Stellar, Sui, Injective, VeChain and Aptos, whose state verifiers are built; section 8 of the
-Stage B spec has every other chain's status.
-
-**The chain's state verifier** is deployed on Ethereum with `script/DeployStateVerifier.s.sol`, from an anchor that
-the fixture generator reads off the chain: BNB Chain's newest final epoch block and its validators' keys, or TRON's
-producers of the period in progress, each checked there before it is written. The anchor is all the verifier
-trusts, since every later set or list is proven from it. The script deploys only on Ethereum (mainnet or Sepolia), and
-refuses a BNB anchor more than an hour old or a TRON period that has ended. Someone must then `advance` the verifier
-within a day of its anchor, and every day after, or it stops for good and the chain registry has to replace it.
-
-NEAR's and Stellar's verifiers check SP1 proofs of their chain's finality, each for one vault, so their anchor files are
-assembled by hand from their generators' output and the program's key (`near vkey`, `stellar-proof vkey`), and
-`STATE_SP1_VERIFIER` names SP1's Groth16 verifier v6.0.0, a bare verifier:
-- **NEAR's** holds `epochId`, `producersHash` and `namedAt` (nanoseconds) from the `anchor` of
-  `proofs/near/fixtures/generate.py`, the vault's `account` and the registry `chainId`. A set of producers is named an
-  epoch, about 7.2 hours, before it serves, so the script refuses one named more than 16 hours ago or in the future.
-  Someone must then `update` the verifier to each next epoch within a day of its naming, or it stops for good.
-- **Stellar's** holds the `networkId` and Tier 1's `quorumSet` XDR from `proofs/stellar`'s generator, the registry
-  `chainId` and the vault's contract id as `vaultId`. The script refuses a network id that is not the hash of the
-  network's passphrase. Nothing advances it: each proof carries its own ledger, at most a day old, and a new Tier 1 is
-  a new verifier through the 30-day rotation.
-
-The four chains of 4 October follow the same pattern, each anchor carrying the generator's chain data and the
-deployment's own ids (`design/2026-10-04-four-chains-interfaces.md`):
-- **Sui's** (`test/fixtures/sui/generate.py anchor`) is an epoch, its committee's keys and powers, and its start, with
-  the vault's object id and package id. The script refuses a committee Sui's `Committee::new` would refuse (a key not
-  the uncompressed form of its compressed one, keys out of order or named twice, powers not totalling 10,000) and an
-  epoch begun more than 20 hours ago; the verifier then stops two days after that start unless updated.
-- **Injective's** (`proofs/cometbft/fixtures/generate.py anchor`) is a header, refused when more than an hour old or on
-  the wrong network (`injective-1` with 1776, `injective-888` with 1439).
-- **VeChain's** (`proofs/vechain/fixtures/generate.py anchor`) is a staker table read at a finalized block, chosen after
-  the vault and the attester are deployed, refused when more than 6 hours old.
-- **Aptos's** (`proofs/aptos/fixtures/generate.py anchor`) is an epoch's validator set, refused when named more than 3
-  hours ago.
-
-For every chain the script refuses a registry id that does not pair with the Ethereum network: mainnet's on mainnet,
-the testnet's on Sepolia.
-
-```bash
-python3 test/fixtures/bnb/generate.py https://bsc-rpc.publicnode.com anchor bnb-anchor.json
-STATE_CHAIN=bnb STATE_ANCHOR=bnb-anchor.json forge script script/DeployStateVerifier.s.sol --rpc-url mainnet --account deployer --sender <deployer> --broadcast
-# TRON: test/fixtures/tron/generate.py https://api.trongrid.io anchor tron-anchor.json, then STATE_CHAIN=tron
-# NEAR, Stellar, Injective, VeChain and Aptos: STATE_CHAIN=<chain>, STATE_ANCHOR=<the file above>, STATE_SP1_VERIFIER=0x...
-# Sui: STATE_CHAIN=sui, STATE_ANCHOR=<the file above>; it checks its committee's signatures itself
-```
-
-During the chain's listing delay the owner and guardian review the anchor. `DeployStateVerifier.checkBnb` and
-`checkTron` confirm that the verifier runs this release's code and started from the anchor file. The file itself is
-compared with the chain: the epoch block's hash and its validators' registered keys, or `listwitnesses` and the
-period's blocks. NEAR's and Stellar's verifiers hold their anchors in public fields, compared directly: the epoch, the
-producers' hash and the vault account against NEAR's RPC, or the quorum set's hash against Tier 1's published
-validators. `checkSui`, `checkInjective`, `checkVeChain` and `checkAptos` confirm the four newer verifiers hold their
-anchor files' anchors; their code cannot be compared by hash, since their immutables are in it.
-
-**Adding the chain on Ethereum** goes through `script/ConfigureChains.s.sol`, or the equivalent calls through the Safe:
-`proposeChain` with the vault and the chain's state verifier, then, once the chain is registered, `proposeVaultListing`
-for each coin its vault holds, with a reference supply in the coin's smallest unit. Each waits `LISTING_DELAY` and is
-executed by anyone. The modes are `safe`, `propose` and `execute`, as for listings. The script skips, with the reason,
-anything the factory would refuse or that is already done or pending, and reverts on an entry named twice (RT-24). A
-registered chain's vault is fixed, and a new state verifier for it is a 30-day rotation (FAC-1), proposed only for a
-chain named in `ROTATE`.
-
-```bash
-# the chain, for the Safe; vaults and coin ids are hex words, left-padded
-CHAIN_MODE=safe CHAINS_FACTORY=0x... CHAINS=56:<vault>:<state verifier> forge script script/ConfigureChains.s.sol --rpc-url mainnet
-# 2 to 9 days later, from any account
-CHAIN_MODE=execute CHAINS_FACTORY=0x... CHAINS=<same> forge script script/ConfigureChains.s.sol --rpc-url mainnet --account deployer --sender <any account> --broadcast
-# then its native coin, 0x0, and its listing the same way
-CHAIN_MODE=safe CHAINS_FACTORY=0x... CHAINS=<same> VAULT_TOKENS=56:0x0:<supply> forge script script/ConfigureChains.s.sol --rpc-url mainnet
-# a token on the chain, a Binance-Peg coin say: its listing, by its address, and its cap and floor on the vault
-CHAIN_MODE=safe CHAINS_FACTORY=0x... VAULT_TOKENS=56:<token>:<supply> VAULT_CAPS=56:<token>:<cap>:<floor> forge script script/ConfigureChains.s.sol --rpc-url mainnet
-# BNB Chain's 13 pinned tokens (script/BnbChainAddresses.sol) at once, each with its cap
-CHAIN_MODE=safe CHAINS_FACTORY=0x... VAULT_TOKENS=bnb VAULT_CAPS=<one per token> forge script script/ConfigureChains.s.sol --rpc-url mainnet
-```
-
-A token's cap is zero until then, which refuses its deposits. Executing the cap proposal emits its `CAP_UPDATE`; a
-relayer delivers it to the vault with both proofs, and anyone applies it there with `applyChange` after
-`GOVERNANCE_DELAY` (7 days), since a first cap is a raise.
-
-In v4 a vault coin's supply was revised in the weekly batch with every other, by `ConfigureWhitelist`, deleted on
-2026-10-06 with the batches; v5 lists a vault coin with its Pyth price id through `ConfigureChains`.
+`WeightedHub` implementation, the zap and `MintRequests`: record them with the addresses, and
+`DeployWeighted.checkDeployment(factory, zap, requests)` re-reads them later (it also refuses a zap or a
+`MintRequests` that does not point at that factory, and an implementation reading another Pyth).
 
 **The admission check** comes first: `script/CheckToken.s.sol` is read-only and prints one report per token for the
 Safe's signers (transfers simulated on a fork, transfer hooks, admin powers and who holds them, Uniswap depth on
@@ -879,20 +678,16 @@ No bot runs Xindex, so these duties have owners and deadlines. Watch the events 
 | Re-check venue depth per leg | monthly, and before a large mint or burn | none | app | V3 and V4 depth move independently; the route is the app's choice |
 | Watch guardian changes | `GuardianProposed` | `eta` (7 days) | owner signers, guardian, app | a security alert: once executed, the new guardian's veto replaces the old one. `guardianChangePending()` says whether it is still executable |
 | Hand over factory ownership | `OwnershipTransferStarted` | none: it takes effect as soon as the new owner accepts | owner signers, then the new owner | the one admin change with no delay and no veto; announce it first, and the new owner has to meet the rules the deploy script checks |
-| Advance each chain's state verifier (Stage B) | its anchor, then each BNB Chain epoch or TRON 6-hour list | `MAX_LAG` (1 day), or it stops for good | anyone | `advance`; `DeployStateVerifier` logs the first deadline |
-| Advance P1 and P2 on each vault chain, and the vault's checkpoint (Stage B) | each verifier's last anchor | `lagEnds()`, a day after the anchor's epoch began, for P1 and P2, or they stop for good; `STALL_PERIOD` (7 days) for the vault, which then takes no deposit | anyone | a proof from each system (`proofs/README.md`) to each verifier's `update`, then the vault's `advanceCheckpoint` |
-| Deliver each message to its vault (Stage B) | `VaultMessage` from an index or the factory | none, but a burn is paid only once delivered | anyone | the vault's `deliver` with P1's and P2's proofs of it, then `release` for any part the speed limit held back. A message whose transaction's receipt is too large to prove there is first sent again in a transaction of its own, with the index's or the factory's `resendMessage(payload)` (LG-1) |
 
 ### Testnet (Sepolia)
 
 **v4 is not deployed on Sepolia.** v3 runs there, deployed on 2026-09-27 from `4b4dbe4`, the commit tagged `v3.0.0`;
 nothing on `main` can drive it, since its factory takes feed configs, and its deployment records are not kept here.
 
-The Stage B scripts take Sepolia as Ethereum: `DeployStateVerifier` deploys there, `DeployVault` takes its chain id as
-`VAULT_SOURCE_CHAIN_ID`, and P1 and P2 have Sepolia builds (`--features sepolia`, `proofs/README.md`). `demo/` holds
-the hackathon's testnet demonstration, a Foundry project of its own: the real factory, hub and vaults, with stub
-verifiers that trust relayer keys in place of some or all of the proofs, so nothing in it may reach a mainnet. No
-deployment of it is recorded on a public testnet (`demo/README.md`).
+`demo/` holds
+the hackathon's testnet demonstration, a Foundry project of its own written for v4 and not updated for v5, with stub
+verifiers in place of proofs, so nothing in it may reach a mainnet. No deployment of it is recorded on a public testnet
+(`demo/README.md`).
 
 `script/testnet/SetupTestMarket.s.sol` deploys stand-ins for USDC, WBTC, LINK and UNI as `FaucetToken`s, where any
 account can `drip()` a small amount once a day, each with a Uniswap V3 WETH pool at a mainnet-like price so the zap has
@@ -911,7 +706,7 @@ Router's encoding, not on Sepolia.
 | Uniswap QuoterV2 | `0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3` |
 | Uniswap V3 factory | `0x0227628f3F023bb0B980b67D528571c95c6DaC1c` |
 | Uniswap NonfungiblePositionManager | `0x1238536071E1c677A632429e3655c799b22cDA52` |
-| HybridIndexFactory / IndexHub implementation / HybridHub template, module, extension / IndexZap / MintRequests (v4) | not deployed |
+| WeightedIndexFactory / WeightedHub implementation / IndexZap / MintRequests (v5) | not deployed |
 
 ```bash
 export SEPOLIA_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com
@@ -950,58 +745,33 @@ src/WeightedHub.sol           v5 index implementation (ERC20 + permit, in-kind i
 src/WeightedIndexFactory.sol  v5 listings (each token with its Pyth price id), guardian, registry, CREATE2 clone deployer
 src/IndexZap.sol              mint/burn router over Uniswap's and PancakeSwap's Universal Routers, one venue per leg, per-leg limits, nonce check
 src/MintRequests.sol          ownerless escrow of USDC/USDT-for-shares requests at the requester's own limit
-src/HybridIndexFactory.sol    Stage B: WeightedIndexFactory plus the chain registry, vault-coin listings, the chain freeze and the template choice
-src/HybridHub.sol             Stage B: an index of Ethereum tokens and vault coins: orders, burns, claims; delegates the rest to its module
-src/hybrid/                   Stage B: the hub's module and extension (by DELEGATECALL), the storage all three share, share operations
-src/vault/                    Stage B: XindexVault, the ownerless vault on an EVM chain, VaultSnapshot, its snapshot-exit library,
-                              and VeChainStakerAttester, which attests VeChain's stake weights
-src/verifiers/                Stage B: P1 (SP1) and P2 (RISC Zero) on an EVM vault chain, the state reader, and on
-                              Ethereum the state of BNB Chain, TRON, NEAR, Stellar, Sui, Injective (CometBFT), VeChain and Aptos
-src/interfaces/               every contract's interface, the shared errors (IXindexErrors), and the vendored
-                              IUniversalRouter, ISP1Verifier and IRiscZeroVerifier
-src/libraries/                PathLib, UniversalRouterCommands, UniswapV4Types and PancakeRouterCommands (vendored), and Stage B's VaultMessages,
-                              RlpReader, MerklePatricia, Bls12381, and for Sui Bls12381MinSig, Blake2b and SuiBcs
+src/interfaces/               every contract's interface, the shared errors (IXindexErrors), the vendored IUniversalRouter and
+                              Pyth's IPyth, IPythEvents and PythStructs
+src/libraries/                PathLib, UniversalRouterCommands, UniswapV4Types and PancakeRouterCommands (vendored)
 test/*.t.sol                  unit, fuzz, invariant, script and repository tests
 test/Security.t.sol           regression tests for the security review findings (some ids are tested elsewhere; see AGENTS.md gate 6)
-test/mocks/                   mock tokens, a strict Universal Router, mock verifiers, V3 pools for the testnet script, the
-                              market fixture, with their own tests
-test/fixtures/                real BNB Chain, Ethereum and TRON data for the Stage B verifiers, each with the generate.py that rebuilds it,
-                              Sui's chain data, the test anchors of NEAR, Stellar, Sui, Injective, VeChain and Aptos for
-                              DeployStateVerifier (the other chains' data is under proofs/), and
-                              Solana devnet's Alpenglow certificate for EIP-2537 (proofs/solana-state's eip2537_fixture)
-test/fork/                    mainnet fork tests: real V3 and V4 pools, λ rebalancing and security regressions on real tokens
-script/                       Deploy, ConfigureWeighted, PythIds, CheckToken, DeployVault, DeployStateVerifier, ConfigureChains, MainnetAddresses, BnbChainAddresses, ScriptUtils
-script/interfaces/            the Safe, WETH, Uniswap and Groth16-verifier calls the scripts make
+test/mocks/                   mock tokens, a strict Universal Router and PancakeSwap router, a Pyth that follows Pyth's fill loop,
+                              V3 pools for the testnet script, the market fixture, with their own tests
+test/fork/                    mainnet fork tests: real V3 and V4 pools, settlements at Pyth prices and security regressions on real tokens
+script/                       DeployWeighted, ConfigureWeighted, PythIds, CheckToken, MainnetAddresses (Ethereum), BnbChainAddresses
+                              (BNB Chain), DeployChecks, ScriptUtils
+script/interfaces/            the Safe, WETH and Uniswap calls the scripts make
 script/testnet/               SetupTestMarket and FaucetToken for the Sepolia test market
 abi/                          the ABIs the web app decodes with; CI regenerates them and fails on a diff
-solana/                       Stage B on Solana: the vault program, P1 and P2, and a stub verifier for testnets only (solana/README.md)
-near/                         NEAR's vault, with P1 and P2 compiled in, for a keyless NEP-616 account (near/README.md)
-stellar/                      Stellar's vault, P1 and P2 as Soroban contracts (stellar/README.md)
-sui/                          Sui's vault, with P1 and P2 as light-client objects, in one Move package (sui/README.md)
-aptos/                        Aptos's vault, with P1 and P2, in one Move package (aptos/README.md)
-vechain/                      VeChain's deployment script, DeployVault's twin, with the staker attester (vechain/README.md)
-crates/xindex-core/           the Rust every vault chain shares (no_std): Ethereum's proofs, P1's and P2's checks, the vault's rules
-proofs/                       P1's statement in plain Rust, its SP1 program, host and input builder, P2 on RISC Zero
-                              in p2/, the state proofs of NEAR, Stellar, Injective, VeChain and Aptos in near/,
-                              stellar/, cometbft/, vechain/ and aptos/, and Solana's researched prototype in
-                              solana-state/ (proofs/README.md)
-tron/                         the TRON build: the contracts under Tron's compiler, their deployment, and a rehearsal on java-tron (tron/README.md)
-prototype/                    the proving prototype, with SP1's Groth16 verifier vendored unchanged in evm/src/sp1
-vendor/risc0-ethereum/        RISC Zero's Groth16 verifier, vendored unchanged at v3.0.1
-demo/                         the hackathon's testnet demonstration, with stub verifiers for some or all of the proofs; never for a mainnet
+keeper/                       the rebalancer bot (DRAFT, untested) and its executor contract; it holds no role
+demo/                         the hackathon's testnet demonstration, its own Foundry project, not updated for v5; never for a mainnet
 swaprail/                     the THORChain planner the web app adopts (app-side, no contract calls it), its tests and a read-only live check
-design/                       the v4 design (its PDF and the builder), the Stage A and B specs, the proving prototype,
-                              the WBT check, the hackathon plan, the Stage C, Solana, L2 and other chains'
-                              research, and the analysis scripts
-audit/                        the security reviews and their PoCs, their triage, and the two retirement records
+design/                       the v5 spec, the two-chain decision, the wide-asset and admission records, the swap-venue record, the
+                              v4 design and specs (history), the chain research, and the analysis scripts
+audit/                        the security reviews and their PoCs, their triage, and the four retirement records
 aderyn.toml                   Aderyn's configuration: the rules the design rejects, each with its reason
 ```
 
-## Not in Stage A (candidates for later)
+## Not built (candidates for later)
 
 A fee in a later index version, ETH in/out (`mintWithETH` / `burnToETH`), `createAndMint` in one call,
-`mintWithTokenPermit` for USDC, constituent changes (a new list is a new index version), mixed-venue legs that split one
-leg across V3 and V4, a backstop executor or trigger reminder, an aggregator or Universal Router 2.1 zap, V4 pools on
-the Sepolia market, and an auction whose exposure scales with the trade rather than the moving value. The native coins
-of other chains are Stage B's and C's, not Stage A's: the status at the top says what is built, and "Roadmap" in
-`ARCHITECTURE.md` what remains.
+`mintWithTokenPermit` for USDC, constituent changes (a new list is a new index), mixed-venue legs that split one leg
+across V3 and V4, a backstop executor or trigger reminder (the keeper in `keeper/` is a draft), an aggregator or
+Universal Router 2.1 zap, V4 pools on the Sepolia market, and one L2 deployment if cheap minting for small buyers
+matters after the two launches. Other chains' native coins come in only as tokens on Ethereum or BNB Chain
+(`design/2026-10-07-two-chain-deployment.md`).

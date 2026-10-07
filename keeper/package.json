@@ -1,21 +1,13 @@
 {
   "name": "xindex-keeper",
   "private": true,
-  "description": "Starts and fills v5 rebalances: keeper.mjs for Ethereum-only indexes, filler.mjs for indexes holding vault coins; DRAFT, untested",
+  "description": "Starts and fills v5 rebalances of WeightedHub indexes; DRAFT, untested",
   "type": "module",
   "scripts": {
     "start": "node keeper.mjs",
-    "once": "node keeper.mjs --once",
-    "fill": "node filler.mjs",
-    "fill-once": "node filler.mjs --once"
+    "once": "node keeper.mjs --once"
   },
   "dependencies": {
-    "@aptos-labs/ts-sdk": "7.4.0",
-    "@mysten/sui": "2.34.0",
-    "@noble/curves": "1.9.7",
-    "@stellar/stellar-sdk": "17.2.1",
-    "near-api-js": "7.3.1",
-    "tronweb": "6.5.1",
     "viem": "2.21.54"
   }
 }

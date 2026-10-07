@@ -77,7 +77,7 @@ jobs:
       - name: Check the committed ABIs are current
         run: |
           set -euo pipefail
-          for contract in IndexZap MintRequests HybridIndexFactory IHybridIndex XindexVault WeightedIndexFactory WeightedHub; do
+          for contract in IndexZap MintRequests WeightedIndexFactory WeightedHub; do
             forge inspect "$contract" abi --json > "abi/$contract.json"
           done
           git diff --exit-code abi/
@@ -134,19 +134,18 @@ jobs:
           EOF
 
       # Wake reads its remappings from foundry.toml, so no second copy is committed. The generated config leaves out
-      # only Wake's default folders, so audit/, prototype/, demo/, keeper/ and vendor/ are added: the PoC tests in audit/
-      # compile only inside the audited commit, prototype/evm is a separate Foundry project that needs via-IR, demo/ and
-      # keeper/ are ones whose xindex/ remapping only they know, and vendor/ holds third-party verifiers with their own
-      # import paths, unanalyzed by design; Wake stops on any of their errors before running a detector. `wake detect` exits non-zero on any detection; the documented inline
-      # suppressions in src/ still apply.
+      # only Wake's default folders, so audit/, demo/ and keeper/ are added: the PoC tests in audit/ compile only inside
+      # the audited commit, and demo/ and keeper/ are separate Foundry projects whose xindex/ remapping only they know;
+      # Wake stops on any of their errors before running a detector. `wake detect` exits non-zero on any detection; the
+      # documented inline suppressions in src/ still apply.
       - name: Run the Wake detectors on src
         run: |
           set -euo pipefail
           pipx install eth-wake==4.22.1
           wake init config --force
-          perl -pi -e 's/^exclude_paths = \[/exclude_paths = ["audit", "prototype", "demo", "keeper", "vendor", /' wake.toml
-          if ! grep -q '^exclude_paths = \["audit", "prototype", "demo", "keeper", "vendor", ' wake.toml; then
-            echo "::error::the generated wake.toml changed shape, so audit/, prototype/, demo/, keeper/ and vendor/ are not excluded"
+          perl -pi -e 's/^exclude_paths = \[/exclude_paths = ["audit", "demo", "keeper", /' wake.toml
+          if ! grep -q '^exclude_paths = \["audit", "demo", "keeper", ' wake.toml; then
+            echo "::error::the generated wake.toml changed shape, so audit/, demo/ and keeper/ are not excluded"
             exit 1
           fi
           wake detect all src

@@ -24,10 +24,8 @@
         "script",
         "test",
         "audit",
-        "prototype",
         "demo",
-        "keeper",
-        "vendor"
+        "keeper"
     ],
     "wake.compiler.solc.optimizer.enabled": true,
     "wake.compiler.solc.optimizer.runs": 1000
