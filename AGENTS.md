@@ -597,7 +597,9 @@ Stage B's rules live in `design/2026-09-30-v4-stage-b-spec.md`; these are the on
   the zkVM only runs it. Its gates: `cargo test --release`, `cargo fmt --check` and `cargo clippy`, at low priority,
   each also with `--features sepolia`, the testnets' build: Sepolia's genesis and fork versions, a program key of its
   own, pinned by a real Sepolia vote (`tests/sepolia.rs`). `tests/vectors.py` rebuilds its independent vectors, and a
-  regression in it needs a mutant that the tests catch. The statement must stay the same code under SP1 and RISC Zero,
+  regression in it needs a mutant that the tests catch. `tests/parsers.rs` fuzzes the header parser, and
+  `test/fixtures/trie/generate.py` builds the reference tries `test/MerklePatricia.t.sol` checks the walker against.
+  The statement must stay the same code under SP1 and RISC Zero,
   so it calls no zkVM fork's own API: its hash to G2 is composed from RFC 9380 and pinned by the RFC's vectors
   (`tests/hash_to_curve.rs`). P2 (`proofs/p2`, RISC Zero) is built with `cargo build --release -p xindex-p2-host`, and
   `p2 execute` on a real input must commit what `p1 execute` commits.

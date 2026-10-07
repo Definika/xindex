@@ -265,6 +265,84 @@ contract MerklePatriciaTest is Test {
     // helpers: an RLP writer and trie nodes
     // ---------------------------------------------------------------------
 
+    // ---------------------------------------------------------------------
+    // random tries and garbage
+    // ---------------------------------------------------------------------
+
+    /// @dev Every case of `test/fixtures/trie/random.json`: tries built by the reference implementation in its
+    ///      generator, with a proof of each key and of absent keys that diverge at a leaf, inside an extension or at an
+    ///      empty branch slot. The walker must agree with the reference on every verdict and every value.
+    function test_get_matchesTheReferenceTries() public view {
+        string memory json = vm.readFile("test/fixtures/trie/random.json");
+        uint256 n = vm.parseJsonUint(json, ".count");
+        assertGt(n, 400, "the fixture is whole");
+        for (uint256 i = 0; i < n; ++i) {
+            string memory c = string.concat(".cases[", vm.toString(i), "]");
+            (bool found, bytes memory value) = h.getKey(
+                vm.parseJsonBytes32(json, string.concat(c, ".root")),
+                vm.parseJsonBytes32(json, string.concat(c, ".key")),
+                vm.parseJsonUint(json, string.concat(c, ".nibbles")),
+                vm.parseJsonBytesArray(json, string.concat(c, ".proof"))
+            );
+            bool expected = vm.parseJsonBool(json, string.concat(c, ".found"));
+            assertEq(found, expected, string.concat("verdict of case ", vm.toString(i)));
+            if (expected) {
+                assertEq(
+                    value,
+                    vm.parseJsonBytes(json, string.concat(c, ".value")),
+                    string.concat("value of case ", vm.toString(i))
+                );
+            }
+        }
+    }
+
+    /// @dev Random bytes reach the reader only as a list whose children it walks: it either refuses them with BadRlp,
+    ///      or every child it returns lies inside the list, and the child past the last is refused.
+    function testFuzz_rlp_aListOfGarbageIsRefusedOrStaysInside(bytes memory payload) public view {
+        bytes memory data = _listOf(payload);
+        (bool ok, bytes memory ret) = address(h).staticcall(abi.encodeCall(h.count, (data)));
+        if (!ok) {
+            assertEq(bytes4(ret), RlpReader.BadRlp.selector, "refused for another reason");
+            return;
+        }
+        uint256 n = abi.decode(ret, (uint256));
+        uint256 total = 0;
+        for (uint256 i = 0; i < n; ++i) {
+            total += h.lengthAt(data, i);
+        }
+        assertLe(total, payload.length, "children larger than the list");
+        _refuse(abi.encodeCall(h.at, (data, n)), "the child past the last");
+    }
+
+    /// @dev Random bytes as one item: refused with BadRlp, or read as a string of at most their length and as a number
+    ///      only when that string fits a word.
+    function testFuzz_rlp_garbageAsOneItemIsRefusedOrBounded(bytes memory data) public view {
+        (bool ok, bytes memory ret) = address(h).staticcall(abi.encodeCall(h.toBytes, (data)));
+        if (!ok) {
+            assertEq(bytes4(ret), RlpReader.BadRlp.selector, "refused for another reason");
+            (ok, ret) = address(h).staticcall(abi.encodeCall(h.count, (data)));
+            if (!ok) assertEq(bytes4(ret), RlpReader.BadRlp.selector, "a list refused for another reason");
+            return;
+        }
+        bytes memory out = abi.decode(ret, (bytes));
+        assertLe(out.length, data.length, "a string longer than its encoding");
+        (ok, ret) = address(h).staticcall(abi.encodeCall(h.toUint, (data)));
+        assertEq(ok, out.length <= 32, "a number of the wrong size");
+        if (ok) assertEq(abi.decode(ret, (uint256)), _bigEndian(out), "a number read wrongly");
+    }
+
+    function _listOf(bytes memory payload) internal pure returns (bytes memory) {
+        if (payload.length <= 55) return abi.encodePacked(bytes1(uint8(0xc0 + payload.length)), payload);
+        if (payload.length < 256) return abi.encodePacked(bytes1(0xf8), bytes1(uint8(payload.length)), payload);
+        return abi.encodePacked(bytes1(0xf9), bytes2(uint16(payload.length)), payload);
+    }
+
+    function _bigEndian(bytes memory b) internal pure returns (uint256 value) {
+        for (uint256 i = 0; i < b.length; ++i) {
+            value = (value << 8) | uint8(b[i]);
+        }
+    }
+
     function _refuse(bytes memory call, string memory what) internal view {
         (bool ok, bytes memory ret) = address(h).staticcall(call);
         assertFalse(ok, what);

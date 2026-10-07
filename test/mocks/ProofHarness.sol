@@ -17,6 +17,10 @@ contract ProofHarness {
         return RlpReader.toItem(data).at(index).toBytes();
     }
 
+    function lengthAt(bytes memory data, uint256 index) external pure returns (uint256) {
+        return RlpReader.toItem(data).at(index).len;
+    }
+
     function byteAt(bytes memory data, uint256 offset) external pure returns (uint256) {
         return RlpReader.toItem(data).byteAt(offset);
     }
@@ -47,6 +51,15 @@ contract ProofHarness {
 
     function get(bytes32 root, bytes32 key, bytes[] memory proof) external pure returns (bool, bytes memory) {
         (bool found, RlpReader.Item memory value) = MerklePatricia.get(root, key, proof);
+        return (found, found ? value.toBytes() : bytes(""));
+    }
+
+    function getKey(bytes32 root, bytes32 key, uint256 keyNibbles, bytes[] memory proof)
+        external
+        pure
+        returns (bool, bytes memory)
+    {
+        (bool found, RlpReader.Item memory value) = MerklePatricia.get(root, key, keyNibbles, proof);
         return (found, found ? value.toBytes() : bytes(""));
     }
 
