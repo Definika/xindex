@@ -79,7 +79,6 @@ contract BnbChainAddressesForkTest is Test {
         _assertToken(B.BTCB, "BTCB", 18);
         _assertToken(B.ETH, "ETH", 18);
         _assertToken(B.XRP, "XRP", 18);
-        _assertToken(B.SOL, "SOL", 18);
         _assertToken(B.ZEC, "ZEC", 18);
         _assertToken(B.DOGE, "DOGE", 8);
         _assertToken(B.ADA, "ADA", 18);

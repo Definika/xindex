@@ -281,3 +281,134 @@ v5 Ethereum list is the remaining 27.
   LEO's admins. Each is "a contract" in the tables.
 - **The selector scan** misses a power held under a name its table does not list. Every token's full selector list was
   read by hand for this report, but the script alone would not catch a new name.
+
+## Top 100 of 2026-10-10
+
+CoinGecko's top 100 was read again on 2026-10-10 (its markets endpoint for the ranks, its coin list for each chain's
+contract). 56 of the 100 name an Ethereum contract. Of those, 20 were already listed. The other 36 were sorted as
+follows.
+
+- **Out by policy, 23:** 20 stablecoins and tokenized money-market funds (USDT, USDC, USDS, USDe, DAI, USD1, USDG,
+  PYUSD, RLUSD, USYC, USDY, BUIDL, USDf, EURSAFO, USDD, U, USDGO, OUSD, USTB, GHO), the gold tokens XAUT and PAXG, and
+  BCAP, a tokenized fund's equity. Stablecoins and gold were outside the design's universe from the start, and USDC
+  and USDT are mint currencies, never components.
+- **Already refused, 7:** LEO and WLFI by the WBT rule, above; WBT by the same rule
+  (`design/2026-09-30-wbt-check.md`); OKB, BGB, GT and GRAM by the owner's calls of 2026-10-06.
+- **Not the coin, 1:** BNB's Ethereum contract (`0xB8c7…dD52`) is its 2017 ICO token. BNB is held as WBNB on BNB
+  Chain.
+- **Checked on 2026-10-10, 5:** BTW, SHIB, PEPE, HTX and INJ, never reviewed before. `CheckToken` ran on Ethereum at
+  block 26,162,245 through `ethereum-rpc.publicnode.com`; feeds were read from Hermes's `/v2/price_feeds`; dollar
+  depth uses CoinGecko's price that day.
+
+| Token | Address | Check [v] | Pyth feed | Depth within 2% | Verdict |
+|---|---|---|---|---|---|
+| INJ | `0xe28b3B32B6c345A34Ff64674606124Dd5Aceca30` | listable: exact transfers, no hooks, no powers, no owner | INJECTIVE / US DOLLAR, `0x7a5b…f592` | about $38k, V3 against WETH and V4 against ether and USDC | **listed**, Bridged |
+| SHIB | `0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE` | listable: no powers, no owner | SHIBA INU / US DOLLAR | about $12k | **listed**, Native, on the owner's call |
+| PEPE | `0x6982508145454Ce325dDbE47a25d4ec3d2311933` | listable: blacklist, under an owner renounced to zero | PEPE / US DOLLAR | about $26k | **listed**, Native, on the owner's call |
+| HTX | `0x61EC85aB89377db65762E234C946b5c25A56E99e` | listable: mint by AccessControl roles, no enumerable admin | HTX DAO / US DOLLAR | none: one V3 pool against WETH, with no liquidity active | **refused**, no Uniswap route |
+| BTW | `0x3A63DE3572c69a1307ff08394f3Ee7702C16d25d` | listable: no powers found; owner a 2-of-3 Safe | none | none: no standard V3 pool or hookless V4 pool | **refused**, no feed and no route |
+
+- **INJ:** Injective's original ERC-20 of 2020. The verified source (Sourcify, `InjectiveToken`, Solidity 0.6.12) is
+  OpenZeppelin's ERC-20 with a constructor that mints 100,000,000 INJ once to a custodian; it has no owner, mint, burn,
+  pause or upgrade [s]. The coin itself lives on Injective's chain, which inflates and burns natively; this token
+  reaches it through the Peggy bridge, whose validators are what can break the tie. Bridged, as CRO is.
+- **SHIB and PEPE** pass every requirement the contracts and the check impose. The design's universe left memecoins
+  out (the owner's call of 4 October); the owner lifted that for these two on 2026-10-10. SHIB's verified source
+  (`TokenMintERC20Token`) has no owner and no admin function; its `burn` takes only the caller's own tokens [s]. PEPE's
+  (`PepeToken`) has an owner-only `blacklist(address,bool)` and holding limits (`setRule`) [s], but its owner is
+  renounced to zero, `limited` is false and both limits are zero [v], so nobody can blacklist a holder or limit a
+  balance; its `burn` is the caller's own too [s]. The check's table missed PEPE's blacklist name, so its first report
+  said no powers; `CheckToken.powerOf` now lists `blacklist(address,bool)` and `blacklists(address)`. Both feeds have exponent −10 on Pyth's Ethereum
+  contract [v], inside the hub's [−18, 0]. PEPE takes "PEPE / US DOLLAR", never "1000 PEPE / US DOLLAR" (KPEPE).
+- **Units bound a share's SHIB and PEPE.** The factory refuses units above `MAX_UNITS` (2^86 raw units, about 77.4M
+  whole tokens) per share. At 2026-10-10 prices one share can hold at most about $420 of SHIB or $310 of PEPE, so an
+  index weighted heavily to either needs a lower value per share. A further fall in price narrows that, and its
+  rebalances buy more units, until V5-L3's `uint96` bound stops the fill.
+- **HTX and BTW** pass the check itself, but a v5 fill must trade every moving component, so a token with no Uniswap
+  route is refused, as BGB and GT were. BTW also has no Pyth feed, so no settlement could price it.
+
+The v5 Ethereum list is now 30 coins: the four of `default` and 26 in `wide`.
+
+## Binance-Peg coins on Ethereum (2026-10-10)
+
+The owner asked, on 2026-10-10, that a Binance-Peg coin with an Ethereum contract be held on Ethereum and leave BNB
+Chain's list. CoinGecko's own pages for the ten Binance-Peg coins (XRP, SOL, ZEC, DOGE, ADA, BCH, LTC, AVAX, DOT, FIL)
+and ATOM list no Ethereum address [w]. Its coin list names seven bridged or wrapped copies on Ethereum, each a coin
+of its own there; `CheckToken` ran on all seven at about block 26,162,400.
+
+| Copy | Address | Check [v] | Depth within 2% | Verdict |
+|---|---|---|---|---|
+| SOL, Wormhole ("Wrapped SOL", 9 decimals) | `0xD31a59c85aE9D8edEFeC411D448f90841571b89c` | listable: mint and burn by its owner, Wormhole's token bridge | about $166k, V3 and V4 against ether | **listed** on Ethereum, Bridged |
+| XRP, Wrapped XRP (TokenSoft, 18 decimals) | `0x39fBBABf11738317a448031930706cd3e612e1B9` | listable by the scan; refused on reading the source | about $44k | **refused**, WBT rule |
+| XRP, Hex Trust wXRP | `0xB73eE5488647a6302EBf5FEE8Af3152F6960AE4c` | REVIEW: blacklist with a burn from any account; upgraded under a single key | none | **refused**, no route |
+| AVAX, Wormhole | `0x85f138bfEE4ef8e540890CFb48F620571d67Eda3` | listable | under one AVAX | **refused**, no route |
+| AVAX, 21.co | `0x399508A43d7E2b4451cd344633108b4d84b33B03` | listable | no pool | **refused**, no route |
+| BCH, 21.co | `0xFf4927e04c6a01868284F5C3fB9cba7F7ca4aeC0` | listable | none | **refused**, no route |
+| SOL, 21.co | `0xb80a1d87654BEf7aD8eB6BBDa3d2309E31D4e598` | listable | no pool | **refused**, no route |
+
+- **Wormhole's SOL [v][s]:** a `TokenImplementation` proxy whose owner is Wormhole's token bridge
+  (`0x3ee1…a585`, Wormhole chain 2, governance chain 1), whose `nativeContract` is Solana's native mint. Only the
+  bridge mints and burns, as SOL is locked on or released from Solana; the guardians' governance messages upgrade
+  the bridge. No blacklist or pause. Priced at SOLANA / US DOLLAR, the coin's feed, as Binance-Peg SOL was.
+- **Wrapped XRP [s]:** TokenSoft's token. Its owner can switch on a transfer whitelist (`setWhitelistEnabled`), which
+  stops any holder not on it, today off; a revoker takes any holder's balance (`revoke(from, amount)`), and a burner
+  burns any account's balance with no allowance. That is a blacklist with a destroy: the WBT rule refuses it, as it
+  refused LEO's indirect blacklist.
+- **BNB Chain's list** drops Binance-Peg SOL and keeps the rest: 16 coins. XRP, AVAX and BCH stay on BNB Chain, as
+  no Ethereum copy of them can be listed.
+
+The v5 Ethereum list is now 31 coins: the four of `default` and 27 in `wide`.
+
+## Real-world assets of 2026-10-10
+
+The owner asked for the top 20 of CoinMarketCap's real-world assets (coinmarketcap.com/real-world-assets, read on
+2026-10-10): gold, silver and 18 stocks. After the check below refused all of them, the owner ruled that a blacklist is
+no bar to listing and asked for Ondo's stock tokens and Tether Gold. They are listed, 18 entries, Custodial.
+
+- **Gold, Tether Gold (XAUt):** exact transfers; mint, blacklist, destroy (`destroyBlackFunds`) and upgrade [v];
+  `CheckToken` refuses it under the WBT rule, and the owner admits it regardless. About $440k of Uniswap depth.
+  PAXG, refused on the same rule, was not asked for.
+- **Silver:** no token is listable. Kinesis's KAG has pools with no liquidity, Matrixdock's XAGM under one token of
+  depth and a single upgrade key [v].
+- **Stocks, Ondo Global Markets:** 17 of the 18 have an Ondo token on Ethereum (Berkshire Hathaway has none). One
+  implementation, `GMToken` [s]: a compliance contract checks sender, receiver and any third-party caller on every
+  transfer, so Ondo can block any holder; `BURNER_ROLE` burns any holder's balance with no allowance; a pause manager
+  can stop transfers; the proxies upgrade through a timelock of 7,200 s [v]. No multiplier: a token is one share, and
+  NVDAon and TSLAon traded within a cent of Backed's xStocks on 2026-10-10 [w]. Every one passed the transfer check at
+  about block 26,162,700, 18 decimals [v]. Backed's xStocks were refused: their transfers do not move the amount asked
+  (a share multiplier), which the hub's `issue` would refuse anyway [v].
+- **Feeds.** A stock takes its Ondo token's own feed where Pyth has one (NVDA, AAPL, GOOGL, MSFT, TSLA), else Pyth's
+  24/7 price for the share (`Equity.Index`, AMZN, SPCX, META, SKHY, MU, AMD), else the US-hours feed (`Equity.US`: TSM,
+  AVGO, LLY, JPM, WMT, V). A US-hours feed publishes nothing while the market is closed, so a rebalance of an index
+  holding one of those six settles only while it is open, or with the stock kept by the guardian. Where a share price
+  stands in for the token, a gap between the two goes unseen, as with every Binance-Peg coin; the unit cap bounds it.
+- **Liquidity.** Most of the 17 have no Uniswap liquidity on Ethereum: the zap cannot route them, they mint in kind or
+  through `MintRequests`, and a rebalance needs an executor that holds them or mints them with Ondo. The owner's rule
+  of 2026-10-06 refused BGB and GT for want of a route; the owner overrides it for these.
+- **Tether Gold's minimum.** The factory refuses fewer than `MIN_RAW_UNITS` (10,000) raw units of a component per
+  share. XAUt has 6 decimals and an ounce cost about $4,180 on 2026-10-10, so a share must hold at least 0.01 XAUt,
+  about $42 of gold. The fork suite's index of all 49 coins first failed `UnitsOutOfRange` at $1,000 a share and now
+  uses $2,500. The app should tell a creator the smallest value per share their weights allow.
+
+| Token | Address | Pyth feed | Feed hours | Uniswap depth within 2%, tokens |
+|---|---|---|---|---|
+| XAUt | `0x68749665FF8D2d112Fa859AA293F07A622782F38` | Crypto.XAUT/USD | 24/7 | about 106 (about $440k) |
+| NVDAon | `0x2D1F7226Bd1F780AF6B9A49DCC0aE00E8Df4bDEE` | Crypto.NVDAON/USD | 24/7 | 798 |
+| AAPLon | `0x14c3abF95Cb9C93a8b82C1CdCB76D72Cb87b2d4c` | Crypto.AAPLON/USD | 24/7 | 53 |
+| GOOGLon | `0xbA47214eDd2bb43099611b208f75E4b42FDcfEDc` | Crypto.GOOGLON/USD | 24/7 | 39 |
+| MSFTon | `0xB812837b81a3a6b81d7CD74CfB19A7f2784555E5` | Crypto.MSFTON/USD | 24/7 | 0 |
+| AMZNon | `0xbb8774FB97436d23d74C1b882E8E9A69322cFD31` | Equity.Index.AMZN/USD | 24/7 | 0 |
+| TSMon | `0x3Cafdbfe682aec17d5acE2f97A2f3ab3dCf6a4A9` | Equity.US.TSM/USD | US market hours only | 0 |
+| SPCXon | `0xc9eef266834730340A55B6CC24621B31BAF55581` | Equity.Index.SPCX/USD | 24/7 | 1642 |
+| METAon | `0x59644165402b611b350645555B50Afb581C71EB2` | Equity.Index.META/USD | 24/7 | 0 |
+| AVGOon | `0x0d54D4279B9E8c54cD8547c2C75A8Ee81A0BcaE8` | Equity.US.AVGO/USD | US market hours only | 0 |
+| TSLAon | `0xf6b1117ec07684D3958caD8BEb1b302bfD21103f` | Crypto.TSLAON/USD | 24/7 | 86 |
+| SKHYon | `0xc0fE36F4FFBDf1B38E192215073590a68f9A2Af7` | Equity.Index.SKHY/USD | 24/7 | 0 |
+| MUon | `0x050362Ab1072Cb2Ce74d74770E22A3203Ad04ee5` | Equity.Index.MU/USD | 24/7 | 0 |
+| LLYon | `0xf192957AE52dB3eb088654403CC2eDeD014ae556` | Equity.US.LLY/USD | US market hours only | 0 |
+| AMDon | `0x0C1f3412A44Ff99E40bF14e06e5Ea321aE7B3938` | Equity.Index.AMD/USD | 24/7 | 0 |
+| JPMon | `0x03C1EC4CA9DBb168E6Db0DeF827c085999CBffaF` | Equity.US.JPM/USD | US market hours only | 0 |
+| WMTon | `0x82106347dDbB23cE44Cf4cE4053Ef1adf8b9323B` | Equity.US.WMT/USD | US market hours only | 0 |
+| Von | `0xaC37c20C1d0E5285035e056101a64e263Ff94a41` | Equity.US.V/USD | US market hours only | 0 |
+
+The v5 Ethereum list is now 49 coins: the four of `default` and 45 in `wide`.

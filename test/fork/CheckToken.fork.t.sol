@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {CheckToken} from "../../script/CheckToken.s.sol";
 import {ConfigureWeighted} from "../../script/ConfigureWeighted.s.sol";
+import {MainnetAddresses} from "../../script/MainnetAddresses.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
 
 /// @notice The admission check on real tokens: WBTC and LINK, which the `default` list holds, pass it with their powers
@@ -68,13 +69,17 @@ contract CheckTokenForkTest is Test {
         assertEq(uint8(r.verdict), uint8(CheckToken.Verdict.Listable));
     }
 
-    /// @dev The wide list is what passed the check: no entry is refused, and none is left for review.
+    /// @dev The wide list is what passed the check: none is left for review, and none is refused but one.
+    ///      The one exception is Tether Gold, which the check refuses under the WBT rule and the owner admitted on
+    ///      2026-10-10 regardless; it is pinned here as refused, so a change in what the check says about it shows.
     function testFork_everyWideTokenPassesTheCheck() public {
         ConfigureWeighted.Entry[] memory list = new ConfigureWeighted().wideMainnetList();
         for (uint256 i = 0; i < list.length; ++i) {
             CheckToken.Report memory r = _check(list[i].token);
             assertEq(uint8(r.transfers), uint8(CheckToken.Transfers.Exact), r.symbol);
-            assertEq(uint8(r.verdict), uint8(CheckToken.Verdict.Listable), r.symbol);
+            CheckToken.Verdict expected =
+                list[i].token == MainnetAddresses.XAUT ? CheckToken.Verdict.Refused : CheckToken.Verdict.Listable;
+            assertEq(uint8(r.verdict), uint8(expected), r.symbol);
         }
     }
 

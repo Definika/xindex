@@ -45,7 +45,7 @@ interface IWbtcAdmin {
     function unpause() external;
 }
 
-/// @notice v5 on a mainnet fork, with every coin of the Ethereum list (27: the first four and the wide list), real
+/// @notice v5 on a mainnet fork, with every coin of the Ethereum list (49: the first four and the wide list), real
 ///         token contracts and real Uniswap pools. Only Pyth is a stand-in, since real
 ///         signed updates need an API key; its prices come from the pools, as Pyth's track the market.
 ///
@@ -80,8 +80,12 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
     }
 
     Coin[] coins;
-    uint256 constant VALUE = 1000; // dollars per index token
+    /// @dev Dollars per index token. Spread over every coin of the list, each gets VALUE / 49; Tether Gold, at about
+    ///      $4,200 an ounce in 6 decimals, needs at least $42 of it to reach the factory's MIN_RAW_UNITS of 10,000.
+    uint256 constant VALUE = 2500;
     uint256 constant QUOTE_ATTEMPTS = 3;
+    /// @dev Gas for one `deal`: a probe that walks a token's storage stops here, with 1/64 left for the rest.
+    uint256 internal constant DEAL_GAS = 32_000_000;
     uint24[4] TIERS = [uint24(100), 500, 3000, 10_000];
 
     // ---------------------------------------------------------------------
@@ -189,12 +193,23 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         }
     }
 
-    function dealExternal(address token, address to, uint256 amount) external {
-        deal(token, to, amount);
+    /// @dev forge-std's `deal` finds a token's balance slot by writing `type(uint256).max` into each slot `balanceOf`
+    ///      read and calling it again. RSR's `balanceOf` reads the length of its `origins` set, so that probe makes
+    ///      it walk 2^256 empty slots, each a fresh fork read, until the gas runs out, which at a test's gas limit is
+    ///      hours of RPC calls. The cap ends the walk after about 10,000 reads; the probe fails, forge-std moves to
+    ///      the next slot, finds the balance and verifies its write with the 1/64 the walk leaves, about 500k. Every
+    ///      `deal` of this suite goes through it.
+    function deal(address token, address to, uint256 give) internal override {
+        this.dealWithin{gas: DEAL_GAS}(token, to, give);
+    }
+
+    /// @dev forge-std's `deal` as an external call, so `deal` can cap its gas and `_canDeal` can catch its revert.
+    function dealWithin(address token, address to, uint256 give) external {
+        super.deal(token, to, give);
     }
 
     function _canDeal(address token) internal returns (bool) {
-        try this.dealExternal(token, address(0xdead1), 12_345) {
+        try this.dealWithin{gas: DEAL_GAS}(token, address(0xdead1), 12_345) {
             return IERC20(token).balanceOf(address(0xdead1)) == 12_345;
         } catch {
             return false;
@@ -252,12 +267,22 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         uint256 n = picked.length;
         IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](n);
         uint256 each = 10_000 / n;
+        uint256 scale = 1;
         for (uint256 i = 0; i < n; ++i) {
             uint256 weight = i == 0 ? 10_000 - each * (n - 1) : each;
             // units = weight · VALUE dollars / price, in raw units: weight/1e4 · VALUE · 1e8 · 10^dec / priceE8.
             uint256 price = uint256(int256(picked[i].priceE8)) * skewBps[i] / 10_000;
             uint256 units = Math.mulDiv(weight * VALUE * 1e8, 10 ** picked[i].decimals, 10_000 * price);
             specs[i] = IWeightedIndexFactory.ComponentSpec({token: picked[i].token, weight: weight, units: units});
+            // A share is VALUE dollars, unless a coin's slice would fall under the factory's floor of raw units: Tether
+            // Gold, 6 decimals at thousands of dollars, holds under 1e4 of them at a ninetieth of VALUE. Then every
+            // slice is scaled by the same factor, which keeps the weights and makes the share worth that much more.
+            if (units < factory.MIN_RAW_UNITS()) {
+                scale = Math.max(scale, Math.ceilDiv(factory.MIN_RAW_UNITS(), units));
+            }
+        }
+        for (uint256 i = 0; i < n; ++i) {
+            specs[i].units *= scale;
         }
         vm.prank(creator);
         return WeightedHub(factory.createIndex(name, name, specs));
@@ -390,12 +415,15 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         assertEq(index.rebalanceNonce(), 1);
         _assertBacked(index);
 
-        // Each weight is back on target at the moved prices, to within rounding.
+        // Each weight is back on target at the moved prices, to within rounding. The prices are the ones `_updates`
+        // published, truncated to whole 1e-8 dollars: SHIB and PEPE trade near 400 of those, so the untruncated move
+        // would be up to 0.25% off the price the hub settled at.
         (, uint256[] memory units) = index.components();
         uint256 total = 0;
         uint256[] memory values = new uint256[](picked.length);
         for (uint256 i = 0; i < picked.length; ++i) {
-            values[i] = Math.mulDiv(units[i], uint256(int256(picked[i].priceE8)) * moves[i], 10 ** picked[i].decimals);
+            uint256 published = uint256(int256(picked[i].priceE8)) * moves[i] / 10_000;
+            values[i] = Math.mulDiv(units[i], published, 10 ** picked[i].decimals);
             total += values[i];
         }
         (uint256[] memory weights,,) = index.componentTerms();
@@ -436,21 +464,21 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         }
         WeightedHub index = _create("Liquid", picked, skew);
 
-        // Alice mints two tokens, $2,000 at the pools, with USDC.
+        // Alice mints two tokens, 2 * VALUE dollars at the pools, with USDC.
         IIndexZap.MintLeg[] memory legs = new IIndexZap.MintLeg[](picked.length);
         for (uint256 i = 0; i < picked.length; ++i) {
             legs[i] =
                 IIndexZap.MintLeg({v3Path: picked[i].route, v4Path: new PathKey[](0), pancakePath: "", maxAmountIn: 0});
         }
-        deal(A.USDC, alice, 3000e6);
+        deal(A.USDC, alice, 3 * VALUE * 1e6);
         vm.startPrank(alice);
-        IERC20(A.USDC).forceApprove(address(zap), 3000e6);
+        IERC20(A.USDC).forceApprove(address(zap), 3 * VALUE * 1e6);
         uint256 spent = zap.mintWithToken(
             IIndexZap.MintParams({
                 index: address(index),
                 expectedNonce: 0,
                 tokenIn: A.USDC,
-                maxAmountIn: 3000e6,
+                maxAmountIn: 3 * VALUE * 1e6,
                 shares: 2e18,
                 legs: legs,
                 to: alice,

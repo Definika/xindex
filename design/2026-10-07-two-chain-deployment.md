@@ -1,7 +1,9 @@
 # Two chains, no vaults: Xindex on Ethereum and BNB Chain
 
-**Status:** the owner's decision of 2026-10-07. Stage B is retired (`audit/2026-10-07-stage-b-retirement.md`), and the
-BNB Chain deployment's scripts are built and verified on chain (section 4); its Safe and its deploy remain.
+**Status:** the owner's decision of 2026-10-07, superseded in part on 2026-10-10
+(`design/2026-10-10-one-index-wormhole-legs.md`): Xindex is one deployment, on Ethereum, and the BNB Chain deployment
+below is shelved, its scripts kept. Stage B stays retired (`audit/2026-10-07-stage-b-retirement.md`). The BNB Chain
+scripts are built and verified on chain (section 4); no Safe and no deploy there are planned.
 
 ## 1. The decision
 

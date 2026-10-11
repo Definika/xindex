@@ -427,7 +427,7 @@ contract CheckTokenTest is Test {
         for (uint256 i = 0; i < pauses.length; ++i) {
             _assertPower(pauses[i], checker.PAUSE());
         }
-        string[23] memory blacklists = [
+        string[25] memory blacklists = [
             "addBlackList(address)",
             "blacklist(address)",
             "freeze(address)",
@@ -447,8 +447,10 @@ contract CheckTokenTest is Test {
             "lockAccount(address)",
             "ownerSetBlacklistStatus(address,bool)",
             "guardianSetBlacklistStatus(address,bool)",
+            "blacklist(address,bool)",
             "isBlacklisted(address)",
             "isBlackListed(address)",
+            "blacklists(address)",
             "isFrozen(address)",
             "onTransfer(address,address,uint256)"
         ];
@@ -732,7 +734,7 @@ contract CheckTokenTest is Test {
         address[] memory bnb = checker.resolveTokens("bnb");
         assertEq(bnb.length, BnbChainAddresses.COUNT);
         assertEq(bnb[0], BnbChainAddresses.WBNB);
-        assertEq(bnb[16], BnbChainAddresses.TRX);
+        assertEq(bnb[15], BnbChainAddresses.TRX);
     }
 
     function test_run_readsTheEnvironment() public {

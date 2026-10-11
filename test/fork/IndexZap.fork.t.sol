@@ -585,11 +585,15 @@ contract IndexZapForkTest is Test {
 
     function testFork_pancake_mintAndBurnCake() public {
         WeightedHub cakeIndex = _cakeIndex();
+        // USDC left in PancakeSwap's router by others (16,968 units on 2026-10-10): the sweep hands it back to the
+        // zap, which counts it as unsold input (CR-L02), so the mint costs that much less than the quoters say.
+        uint256 stray = IERC20(A.USDC).balanceOf(A.PANCAKE_UNIVERSAL_ROUTER);
         (uint256 quote, uint256 spent) = _mintCake(cakeIndex, 1e18);
         assertEq(cakeIndex.balanceOf(alice), 1e18);
         assertEq(IERC20(A.CAKE).balanceOf(address(cakeIndex)), 2e18, "the PancakeSwap leg delivered every CAKE");
         assertEq(IERC20(A.WETH).balanceOf(address(cakeIndex)), 1e15);
-        assertApproxEqRel(spent, quote, 1e14, "spend vs the two quoters");
+        assertApproxEqRel(spent + stray, quote, 1e14, "spend vs the two quoters");
+        assertEq(IERC20(A.USDC).balanceOf(A.PANCAKE_UNIVERSAL_ROUTER), 0, "the sweep took the stray USDC");
         assertGt(spent, 1e6);
         assertLt(spent, 100e6);
         _assertRoutersClean();

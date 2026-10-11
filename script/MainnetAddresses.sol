@@ -24,7 +24,12 @@ library MainnetAddresses {
     // (0x2AF5D2aD76741191D15Dfe7bF6aC92d4Bd912Ca3), whose MiniMe controller destroys any balance and approves every
     // transfer, and WLFI (0xdA5e1988097297dCdc1f90D4dFE7909e847CBeF6), whose owner blacklists and reallocates any
     // holder's balance. The owner's calls of 2026-10-06 left out four more: OKB, being retired on Ethereum, BGB and
-    // GT, which no Uniswap route trades, and the bridged GRAM, whose bridge closed. Issued on Ethereum:
+    // GT, which no Uniswap route trades, and the bridged GRAM, whose bridge closed. On 2026-10-10 CoinGecko's top 100
+    // was read again (design/2026-10-05-token-admission-report.md, "Top 100 of 2026-10-10"): INJ is added; BTW
+    // (0x3A63DE3572c69a1307ff08394f3Ee7702C16d25d) has no Pyth feed and no Uniswap pool, and HTX
+    // (0x61EC85aB89377db65762E234C946b5c25A56E99e) no Uniswap liquidity, so no fill could rebalance either. SHIB and
+    // PEPE, which passed the check, are added on the owner's call of 2026-10-10, which lifts the memecoin exclusion of
+    // 4 October for these two. Issued on Ethereum:
     // ---------------------------------------------------------------------
     address internal constant QNT = 0x4a220E6096B25EADb88358cb44068A3248254675;
     address internal constant AAVE = 0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9;
@@ -48,6 +53,10 @@ library MainnetAddresses {
     address internal constant VIRTUAL = 0x44ff8620b8cA30902395A7bD3F2407e1A091BF73;
     address internal constant STRK = 0xCa14007Eff0dB1f8135f4C25B34De49AB0d42766;
     address internal constant PENDLE = 0x808507121B80c02388fAd14726482e061B8da827;
+    /// @dev Shiba Inu, a fixed supply with no owner and no admin function (2026-10-10).
+    address internal constant SHIB = 0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE;
+    /// @dev Pepe, a fixed supply whose owner is renounced (2026-10-10).
+    address internal constant PEPE = 0x6982508145454Ce325dDbE47a25d4ec3d2311933;
 
     // ---------------------------------------------------------------------
     // The wide list, bridged copies of coins issued elsewhere.
@@ -64,6 +73,160 @@ library MainnetAddresses {
     address internal constant CAKE = 0x152649eA73beAb28c5b49B26eb48f7EAD6d4c898;
     /// @dev LayerZero's ZRO, one peer of its burn-and-mint mesh.
     address internal constant ZRO = 0x6985884C4392D348587B19cb9eAAf157F13271cd;
+    /// @dev Injective's original 2020 ERC-20, a fixed supply of 100,000,000 minted once at deployment, with no owner,
+    ///      mint, pause or upgrade (verified source, `InjectiveToken`). Added on 2026-10-10 from CoinGecko's top 100,
+    ///      read on chain by symbol and decimals and passed by `CheckToken`. Bridged: the coin lives on Injective's own
+    ///      chain, and the Peggy bridge's validators tie this token to it.
+    address internal constant INJ = 0xe28b3B32B6c345A34Ff64674606124Dd5Aceca30;
+    /// @dev Solana's SOL as Wormhole's token bridge wraps it, symbol SOL, name "Wrapped SOL", 9 decimals: the bridge
+    ///      (0x3ee18B2214AFF97000D974cf647E7C347E8fa585, Wormhole chain 2) owns it, mints it against SOL locked on
+    ///      Solana and burns it on the way back, and is upgraded by the guardians' governance messages. No blacklist.
+    ///      Moved here from BNB Chain's Binance-Peg SOL on 2026-10-10 (the owner's call): the only Ethereum copy of a
+    ///      Binance-Peg coin that passed `CheckToken` with a Uniswap route.
+    address internal constant SOL = 0xD31a59c85aE9D8edEFeC411D448f90841571b89c;
+
+    // ---------------------------------------------------------------------
+    // Real-world assets, `Custodial`, added on 2026-10-10 on the owner's call that a blacklist is no bar to listing
+    // (design/2026-10-05-token-admission-report.md, "Real-world assets of 2026-10-10"). Each issuer holds the asset and
+    // can block and burn any holder's tokens; `CheckToken` refuses XAUT under the WBT rule, and the owner admits it
+    // anyway. Read on chain on 2026-10-10 by symbol and decimals.
+    // ---------------------------------------------------------------------
+    /// @dev Tether Gold, symbol XAUt, 6 decimals: one fine troy ounce of gold Tether holds per token. Tether can
+    ///      blacklist a holder and destroy its balance (`destroyBlackFunds`).
+    address internal constant XAUT = 0x68749665FF8D2d112Fa859AA293F07A622782F38;
+    /// @dev Ondo Global Markets tokens, symbol `<ticker>on`, 18 decimals, one share each, the shares held by Ondo's
+    ///      custodian. One implementation (`GMToken`) behind each proxy, upgraded through a timelock: a compliance
+    ///      contract may block any sender or receiver, `BURNER_ROLE` burns any holder's balance, and a pause manager can
+    ///      stop transfers. Most have no Uniswap liquidity: they mint in kind or through `MintRequests`, and a rebalance
+    ///      needs an executor that holds them or mints them with Ondo.
+    address internal constant NVDAON = 0x2D1F7226Bd1F780AF6B9A49DCC0aE00E8Df4bDEE;
+    address internal constant AAPLON = 0x14c3abF95Cb9C93a8b82C1CdCB76D72Cb87b2d4c;
+    address internal constant GOOGLON = 0xbA47214eDd2bb43099611b208f75E4b42FDcfEDc;
+    address internal constant MSFTON = 0xB812837b81a3a6b81d7CD74CfB19A7f2784555E5;
+    address internal constant AMZNON = 0xbb8774FB97436d23d74C1b882E8E9A69322cFD31;
+    address internal constant TSMON = 0x3Cafdbfe682aec17d5acE2f97A2f3ab3dCf6a4A9;
+    address internal constant SPCXON = 0xc9eef266834730340A55B6CC24621B31BAF55581;
+    address internal constant METAON = 0x59644165402b611b350645555B50Afb581C71EB2;
+    address internal constant AVGOON = 0x0d54D4279B9E8c54cD8547c2C75A8Ee81A0BcaE8;
+    address internal constant TSLAON = 0xf6b1117ec07684D3958caD8BEb1b302bfD21103f;
+    address internal constant SKHYON = 0xc0fE36F4FFBDf1B38E192215073590a68f9A2Af7;
+    address internal constant MUON = 0x050362Ab1072Cb2Ce74d74770E22A3203Ad04ee5;
+    address internal constant LLYON = 0xf192957AE52dB3eb088654403CC2eDeD014ae556;
+    address internal constant AMDON = 0x0C1f3412A44Ff99E40bF14e06e5Ea321aE7B3938;
+    address internal constant JPMON = 0x03C1EC4CA9DBb168E6Db0DeF827c085999CBffaF;
+    address internal constant WMTON = 0x82106347dDbB23cE44Cf4cE4053Ef1adf8b9323B;
+    address internal constant VON = 0xaC37c20C1d0E5285035e056101a64e263Ff94a41;
+
+    // ---------------------------------------------------------------------
+    // The hundred-coin list, Ethereum-issued: CoinGecko's top 300 on 2026-10-10, less stablecoins, gold, stocks,
+    // wrapped or staked derivatives, memecoins beyond SHIB, PEPE and DOGE, and the refused exchange tokens, keeping
+    // only coins with a Pyth feed (design/2026-10-10-one-index-wormhole-legs.md, section 2). Each address is
+    // CoinGecko's, read on chain on 2026-10-10 by symbol and decimals, and each passed `CheckToken` on a fork at block
+    // 26,163,788. Refused by the check that day: LDO (the WBT rule: its MiniMe controller destroys any balance), ZAMA
+    // (ERC-1363 callbacks) and NEAR's Rainbow bridge copy (24 decimals). Left for the owner's call: Binance's 2017 BNB
+    // ERC-20 (0xB8c77482e45F1F44dE1745F52C74426C631bDD52), which Binance alone redeems; U (United Stables, which may
+    // be a stablecoin); and EDGE and BEAM, whose Pyth feeds (EDGEX, BEAM) may name other coins. LEO, WLFI and GRAM
+    // stay out under the earlier calls.
+    // ---------------------------------------------------------------------
+    /// @dev Falcon Finance; no owner and no admin power.
+    address internal constant FF = 0xFA1C09fC8B491B6A4d3Ff53A10CAd29381b3F949;
+    /// @dev BitTorrent's BTT as BTTC's bridge issues it on Ethereum (name "BitTorrent", minted under AccessControl roles); bridged from TRON.
+    address internal constant BTT = 0xC669928185DbCE49d2230CC9B0979BE6DC797957;
+    /// @dev Gnosis; no owner.
+    address internal constant GNO = 0x6810e776880C02933D47DB1b9fc05908e5386b96;
+    /// @dev Olympus's OHM, 9 decimals.
+    address internal constant OHM = 0x64aa3364F17a4D01c6f1751Fd97C2BD3D7e7f1D5;
+    /// @dev The Graph.
+    address internal constant GRT = 0xc944E90C64B2c07662A292be6244BDf05Cda44a7;
+    /// @dev Maple Finance's SYRUP, priced at Pyth's MAPLE FINANCE feed.
+    address internal constant SYRUP = 0x643C4E15d7d62Ad0aBeC4a9BD4b001aA3Ef52d66;
+    /// @dev Ethereum Name Service; owned by a timelock with a 2-day delay.
+    address internal constant ENS = 0xC18360217D8F7Ab5e7c516566761Ea12Ce7F9D72;
+    /// @dev JasmyCoin.
+    address internal constant JASMY = 0x7420B4b9a0110cdC71fB720908340C03F9Bc03EC;
+    /// @dev Compound.
+    address internal constant COMP = 0xc00e94Cb662C3520282E6f5717214004A7f26888;
+    /// @dev EigenLayer's EIGEN, a proxy upgraded by a 1-of-2 Safe: that key can change the token's code at any time.
+    address internal constant EIGEN = 0xec53bF9167f50cDEB3Ae105f56099aaaB9061F83;
+    /// @dev Axie Infinity.
+    address internal constant AXS = 0xBB0E17EF65F82Ab018d8EDd776e8DD940327B28b;
+    /// @dev The Sandbox.
+    address internal constant SAND = 0x3845badAde8e6dFF049820680d1F14bD3903a5d0;
+    /// @dev Basic Attention Token.
+    address internal constant BAT = 0x0D8775F648430679A709E98d2b0Cb6250d2887EF;
+    /// @dev Convex Finance.
+    address internal constant CVX = 0x4e3FBD56CD56c3e72c1403e103b45Db9da5B9D2B;
+    /// @dev Decentraland's MANA; its minter contract is owned by one externally owned key.
+    address internal constant MANA = 0x0F5D2fB29fb7d3CFeE444a200298f468908cC942;
+    /// @dev Immutable.
+    address internal constant IMX = 0xF57e7e7C23978C3cAEC3C3548E3D615c346e79fF;
+    /// @dev Fluid.
+    address internal constant FLUID = 0x6f40d4A6237C257fff2dB00FA0510DeEECd303eb;
+    /// @dev Chiliz, symbol CHZ.
+    address internal constant CHZ = 0x3506424F91fD33084466F402d5D97f05F8e3b4AF;
+    /// @dev ZKsync's ZK, a proxy upgraded by a contract.
+    address internal constant ZK = 0x66A5cFB2e9c529f14FE6364Ad1075dF3a649C0A5;
+    /// @dev ApeCoin.
+    address internal constant APE = 0x4d224452801ACEd8B2F0aebE155379bb5D594381;
+    /// @dev Sentient.
+    address internal constant SENT = 0x56A3BA04E95d34268A19b2a4474DC979baBDaf76;
+    /// @dev Synthetix, owned by a 4-of-7 Safe.
+    address internal constant SNX = 0xC011a73ee8576Fb46F5E1c5751cA3B9Fe0af2a6F;
+    /// @dev 1inch, symbol 1INCH (the identifier cannot start with a digit).
+    address internal constant ONEINCH = 0x111111111117dC0aa78b770fA6A738034120C302;
+    /// @dev Golem.
+    address internal constant GLM = 0x7DD9c5Cba05E151C895FDe1CF355C9A1D5DA6429;
+    /// @dev Aethir, owned by a 2-of-3 Safe.
+    address internal constant ATH = 0xbe0Ed4138121EcFC5c0E56B40517da27E6c5226B;
+    /// @dev Humanity's H, a proxy upgraded by a contract owned by a 4-of-7 Safe.
+    address internal constant H = 0xE76c5b78f93909d34404E9eb4C1f19e7582a5dE1;
+    /// @dev Plume Network.
+    address internal constant PLUME = 0x4C1746A800D224393fE2470C70A35717eD4eA5F1;
+    /// @dev Gala, 8 decimals.
+    address internal constant GALA = 0xd1d2Eb1B1e90B638588728b4130137D262C87cae;
+    /// @dev Rollbit Coin, a proxy upgraded by a contract owned by one externally owned key: that key can change the token's code at any time.
+    address internal constant RLB = 0x046EeE2cc3188071C02BfC1745A6b17c656e3f3d;
+    /// @dev Wormhole's W, the Ethereum peer of its native-token-transfer mesh, owned by its transfer manager; the coin's home is Solana.
+    address internal constant W = 0xB0fFa8000886e57F86dd5264b9582b2Ad87b2b91;
+    /// @dev Reserve Rights.
+    address internal constant RSR = 0x320623b8E4fF03373931769A31Fc52A4E78B5d70;
+
+    // ---------------------------------------------------------------------
+    // Wormhole's copies: coins Ethereum does not have, as Wormhole's token bridge (`WORMHOLE_TOKEN_BRIDGE`) wraps them
+    // from the chain that has them (the owner's decision of 2026-10-10). The bridge owns each: it mints against the
+    // source token locked on the home chain, burns on the way back, and its guardians' governance can upgrade every
+    // copy's code at once, with no timelock. Each is priced at its coin's Pyth feed. `Custodial` when the source is a
+    // Binance-Peg BEP-20, since Binance's custody stands under the bridge's; `Bridged` otherwise. None has Uniswap
+    // depth: they mint in kind or through `MintRequests`, and a fill needs an executor that bridged them beforehand.
+    // Each address was read on 2026-10-10 from the bridge's `wrappedAsset(chain, source)`, which
+    // `test/fork/MainnetAddresses.fork.t.sol` repeats, and each passed `CheckToken` at block 26,163,788.
+    // ---------------------------------------------------------------------
+    /// @dev XRP as the bridge wraps Binance-Peg XRP (0x1d2f0da169ceb9fc7b3144628db156f3f6c60dbe on BNB Chain, Wormhole chain 4): symbol XRP, 18 decimals.
+    address internal constant XRP = 0xc730d8256B8A1030eEA67f1Bc7ebed3898f7A535;
+    /// @dev DOGE as the bridge wraps Binance-Peg DOGE (0xba2ae424d960c26247dd6c32edc70b295c744c43 on BNB Chain, Wormhole chain 4): symbol DOGE, 8 decimals.
+    address internal constant DOGE = 0xd881A7F17Ed2c71FD671AfbA3A9b30Eb914Aea5F;
+    /// @dev ADA as the bridge wraps Binance-Peg ADA (0x3ee2200efb3400fabb9aacf31297cbdd1d435d47 on BNB Chain, Wormhole chain 4): symbol ADA, 18 decimals.
+    address internal constant ADA = 0x8EfFbF747d4A60Bc6b68D9A1bE4c4188bA8A3a0b;
+    /// @dev LTC as the bridge wraps Binance-Peg LTC (0x4338665cbb7b2485a8855a139b75d5e34ab0db94 on BNB Chain, Wormhole chain 4): symbol LTC, 18 decimals.
+    address internal constant LTC = 0x1cA1Ef3fB8Ff4a480C0ae7eea5f91A24a5BB3344;
+    /// @dev AVAX as the bridge wraps Avalanche's WAVAX (0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7, Wormhole chain 6): symbol WAVAX, 18 decimals.
+    address internal constant AVAX = 0x85f138bfEE4ef8e540890CFb48F620571d67Eda3;
+    /// @dev DOT as the bridge wraps Binance-Peg DOT (0x7083609fce4d1d8dc0c979aab8c869ea2c873402 on BNB Chain, Wormhole chain 4): symbol DOT, 18 decimals.
+    address internal constant DOT = 0x1839a38E59536D88C25e8E6e0D0f59e05b143ab2;
+    /// @dev JUP as the bridge wraps Solana's mint JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN (Wormhole chain 1): symbol JUP, 6 decimals.
+    address internal constant JUP = 0x8687a10BCa6F139B25eb31020FCABB5782214764;
+    /// @dev ALGO as the bridge wraps Algorand's ALGO itself (asset 0, Wormhole chain 8): symbol ALGO, 6 decimals.
+    address internal constant ALGO = 0xe31Cfcd36FeD044ae4Cf9405B577fe875762194F;
+    /// @dev ATOM as the bridge wraps Binance-Peg ATOM (0x0eb3a705fc54725037cc9e008bdede697f62f335 on BNB Chain, Wormhole chain 4): symbol ATOM, 18 decimals.
+    address internal constant ATOM = 0x7845167B54253269624dBA0cA5Fee87933107b34;
+    /// @dev AERO as the bridge wraps Base's 0x940181a94a35a4569e4529a3cdfb74e38fd98631 (Wormhole chain 30): symbol AERO, 18 decimals.
+    address internal constant AERO = 0x750525C1877E30304F1E22b1b49b4C9DdE674ddF;
+    /// @dev APT as the bridge wraps Aptos's APT itself (0x1::aptos_coin::AptosCoin, Wormhole chain 22): symbol APT, 8 decimals.
+    address internal constant APT = 0x8CDf7AF57E4c8B930e1B23c477c22f076530585e;
+    /// @dev Pyth Network's PYTH (`PYTH_TOKEN`, since `PYTH` is Pyth's price contract below) as the bridge wraps Solana's mint HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3 (Wormhole chain 1): symbol PYTH, 6 decimals.
+    address internal constant PYTH_TOKEN = 0xeFc0CED4B3D536103e76a1c4c74F0385C8F4Bdd3;
+    /// @dev OP as the bridge wraps Optimism's 0x4200000000000000000000000000000000000042 (Wormhole chain 24): symbol OP, 18 decimals.
+    address internal constant OP = 0x1df721D242E0783F8fCab4A9FfE4F35bdf329909;
 
     // ---------------------------------------------------------------------
     // Mint and burn currencies. Never components; see the whitelist policy.
@@ -94,6 +257,16 @@ library MainnetAddresses {
     ///      0x21835332cBDf1b3530fAE9f6Cd66FEB9477dFC02, not paused. The owner can pause it, which stops the zap's
     ///      PancakeSwap legs and moves nobody's funds.
     address internal constant PANCAKE_UNIVERSAL_ROUTER = 0x65b382653f7C31bC0Af67f188122035461ec9C76;
+
+    // ---------------------------------------------------------------------
+    // Bridges. No contract calls one; the app and the fillers do.
+    // ---------------------------------------------------------------------
+    /// @dev Wormhole's token bridge on Ethereum (Portal), which owns every Wormhole copy above: `wrappedAsset(chain,
+    ///      source)` names the copy of a source token, and `isWrappedAsset(token)` says whether a token is one. An
+    ///      ERC-1967 proxy the guardians' governance upgrades; its proxy code hash is pinned by
+    ///      `test/fork/MainnetAddresses.fork.t.sol`, as Pyth's is. Anyone attests a new source token on its home chain,
+    ///      and the bridge deploys its copy here (design/2026-10-10-one-index-wormhole-legs.md, section 5).
+    address internal constant WORMHOLE_TOKEN_BRIDGE = 0x3ee18B2214AFF97000D974cf647E7C347E8fa585;
 
     // ---------------------------------------------------------------------
     // Prices, for v5's weighted indexes only.

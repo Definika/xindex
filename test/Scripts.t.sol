@@ -620,13 +620,13 @@ contract ScriptsTest is Test {
         deployer.resolveRouter(MainnetAddresses.UNIVERSAL_ROUTER); // Ethereum's router is another address here
 
         address[] memory market = deployer.marketContracts(bnbRouter);
-        assertEq(market.length, 2 + BnbChainAddresses.COUNT + 2, "the router, its PoolManager, 17 tokens, 2 stables");
+        assertEq(market.length, 2 + BnbChainAddresses.COUNT + 2, "the router, its PoolManager, 16 tokens, 2 stables");
         assertEq(market[0], bnbRouter);
         assertEq(market[1], BnbChainAddresses.POOL_MANAGER);
         assertEq(market[2], BnbChainAddresses.WBNB);
-        assertEq(market[18], BnbChainAddresses.TRX);
-        assertEq(market[19], BnbChainAddresses.USDC);
-        assertEq(market[20], BnbChainAddresses.USDT);
+        assertEq(market[17], BnbChainAddresses.TRX);
+        assertEq(market[18], BnbChainAddresses.USDC);
+        assertEq(market[19], BnbChainAddresses.USDT);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.RoleIsMarketContract.selector, BnbChainAddresses.BTCB));
         deployer.checkRolesAreNotMarket(BnbChainAddresses.BTCB, guardian, bnbRouter);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.RoleIsMarketContract.selector, BnbChainAddresses.USDT));

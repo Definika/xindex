@@ -11,31 +11,47 @@ pools, or PancakeSwap's. Creators choose each coin's percentage, fixed at creati
 rebalances back to those percentages at Pyth prices, through a permissionless auction. Only that settlement reads a
 price; issue, redeem and claims never do. The web app lives in a separate repo.
 
-**Xindex is deployed twice, on Ethereum and on BNB Chain, and holds nothing across chains** (the owner's decision of
-2026-10-07, `design/2026-10-07-two-chain-deployment.md`). Each deployment of `WeightedIndexFactory`, `WeightedHub`,
-`IndexZap` and `MintRequests` holds its own chain's ERC-20s: on Ethereum WBTC, WETH and the v5 list of 27 Ethereum
-coins; on BNB Chain WBNB, BTCB, Binance-Peg ETH and the pinned BEP-20 list, Binance-Peg coins labelled Custodial. The
-two chains hold about 96% of the top 200's value. An index cannot mix the two chains' holdings. No vault, no proof, no
-bridge, no speed limit and no freezer exist any more: Stage B (six vaults, eight state verifiers, the P1 and P2 proofs
-of Ethereum's finality, the hybrid index) is tagged `stage-b-2026-10-07` and deleted, and
+**Xindex is one deployment, on Ethereum, and one index holds up to 100 coins of the top 300** (the owner's decision
+of 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). `WeightedIndexFactory`, `WeightedHub`, `IndexZap` and
+`MintRequests` hold Ethereum ERC-20s in kind: the issuer's own contract where Ethereum has one (71 candidates of the
+top 300 today), and otherwise a copy wrapped by Wormhole's token bridge from the chain that has it (17 from BNB Chain,
+nine of them Binance-Peg; 31 from Solana, Sui, Aptos, Base and the other chains Wormhole serves), priced at the coin's
+Pyth feed and labelled Bridged, Custodial as well when the source is Binance-Peg. The list stands at 93
+(`script/PythIds.sol`), 13 of them Wormhole copies, with 34 more copies to attest. Wormhole's guardians already sign
+every Pyth update, so the wrapping adds no party; it widens that party's reach from the turnover cap to the whole of
+each wrapped leg, and the app shows every index's wrapped share of value. Nothing crosses a chain inside a contract:
+the app and the fillers bridge. The BNB Chain deployment of 2026-10-07 (`design/2026-10-07-two-chain-deployment.md`)
+is shelved: its address book, defaults and fork suite stay, and no deploy there is planned. No vault, no proof, no
+bridge of our own, no speed limit and no freezer exist any more: Stage B (six vaults, eight state verifiers, the P1
+and P2 proofs of Ethereum's finality, the hybrid index) is tagged `stage-b-2026-10-07` and deleted, and
 `audit/2026-10-07-stage-b-retirement.md` records what went with it. Earlier: v3 (Chainlink prices, tagged `v3.0.0`),
 v4's market-cap index (reference supplies and a price-free λ auction, deleted on 2026-10-06,
 `audit/2026-10-06-v4-retirement.md`). Nothing is deployed on a mainnet yet.
 
-Where it stands (2026-10-07):
+Where it stands (2026-10-10):
 - The weighted index is built and reviewed twice (`audit/2026-10-05-v5-review.md`, `audit/2026-10-07-v5-logic-review.md`).
 - The Ethereum deployment's scripts are built: `DeployWeighted`, `ConfigureWeighted` over `PythIds`, `CheckToken`.
-- The BNB Chain deployment's scripts are built: the address book (`script/BnbChainAddresses.sol`), the deploy
-  checks' chain-56 defaults, the `bnb` list and the fork suite that verifies all of it on chain. What remains there is
-  operational: the owner Safe and guardian on BNB Chain, and the deploy through them (section 4 of the two-chain
-  record).
+- The BNB Chain deployment's scripts are built and shelved: the address book (`script/BnbChainAddresses.sol`), the
+  deploy checks' chain-56 defaults, the `bnb` list and the fork suite that verifies all of it on chain.
+- The hundred-coin list is built as far as Ethereum holds it: 93 listed on 2026-10-10 (the 49 of before, 31 more
+  Ethereum-issued coins and 13 Wormhole copies that already existed, every one through `CheckToken` on a fork), 75 of
+  them coins that count toward the hundred. 34 copies await an attestation on Wormhole's Portal, a transaction on each
+  home chain the owner sends (section 2a of the 2026-10-10 record lists them with the procedure); each then goes
+  through the check and the lists. A hundred-coin index is minted in kind or through `MintRequests`, since the zap
+  stops near 35 legs. On a fork of 2026-10-11, the 92 coins forge-std can fund issue, rebalance with real transfers
+  and redeem in one index, a fill of 92 legs costing 14.9M gas with Pyth's parse mocked, and 45 of them trade through
+  the zap within 2% on $1,000; SNX is out of that test only because its balances live in its `TokenState`, beyond
+  forge-std's `deal`.
 - Before any mainnet: Pyth's parameter replay (`design/2026-10-05-custom-weights.md`, section 8), the fork settlement
-  against Pyth's real contract on a real signed update (a Hermes key), an external audit, and the BNB Chain
-  rehearsal. README and ARCHITECTURE still describe v4 in places and carry a note until rewritten.
+  of a hundred feeds against Pyth's real contract on a real signed update (a Hermes key), and an external audit.
+  README and ARCHITECTURE still describe v4 in places and carry a note until rewritten.
 
 For more:
 - `design/2026-10-05-custom-weights.md`: the v5 spec.
-- `design/2026-10-07-two-chain-deployment.md`: the two-chain decision, its coverage figures and the BNB Chain checklist.
+- `design/2026-10-10-one-index-wormhole-legs.md`: the one-index decision, the count of the top 300, the trust table
+  and the steps to mainnet.
+- `design/2026-10-07-two-chain-deployment.md`: the two-chain decision, its coverage figures and the shelved BNB Chain
+  checklist.
 - `design/2026-10-05-wide-asset-support.md` and `design/2026-10-05-token-admission-report.md`: the lists and the
   admission check.
 - `design/2026-09-30-v4-stage-a-spec.md` and `ARCHITECTURE.md`: the Stage A design `WeightedHub` keeps.
@@ -73,7 +89,7 @@ BNB_RPC_URL=https://bsc-rpc.publicnode.com BNB_FORK_BLOCK=$(( $(cast block-numbe
 Deployment, once per chain: `script/DeployWeighted.s.sol`, then `script/ConfigureWeighted.s.sol`, which lists each
 coin with its Pyth price id (`script/PythIds.sol` on Ethereum, `script/BnbChainAddresses.sol` on BNB Chain).
 `script/CheckToken.s.sol` reports on every token before its first listing; `V5_WHITELIST=default` is the first four
-coins and `V5_WHITELIST=wide` the rest, 27 in all, on Ethereum; `V5_WHITELIST=bnb` is the 17 of BNB Chain. On both
+coins and `V5_WHITELIST=wide` the rest, 93 in all, on Ethereum; `V5_WHITELIST=bnb` is the 16 of BNB Chain. On both
 chains the deploy script resolves Pyth, the routers and the stablecoins from the chain's address book and refuses any
 other address (`DeployChecks.isPinnedChain`). Sepolia first needs its test market from
 `script/testnet/SetupTestMarket.s.sol`.
@@ -89,9 +105,10 @@ other address (`DeployChecks.isPinnedChain`). Sepolia first needs its test marke
 3. `forge test` green. `forge coverage` at 100% for every file, including mocks and scripts.
 4. Fork tests green if the change touches `IndexZap`, the hub's rebalancing, routes, token behaviour, or anything
    router- or pool-related, `WeightedHub` and its price ids included. Their summary must list the five Ethereum
-   `test/fork/` suites and 0 skipped. `WeightedHub.fork.t.sol` alone takes about fifteen minutes on a public RPC. The
-   sixth, `BnbChainAddresses.fork.t.sol`, runs with `BNB_RPC_URL` and is required when `script/BnbChainAddresses.sol`
-   or the deploy checks change.
+   `test/fork/` suites and 0 skipped. `WeightedHub.fork.t.sol` alone takes about an hour at 93 coins on an archive RPC
+   (Alchemy, Tenderly), nearly all of it the admission quotes on a cold RPC cache; a public endpoint prunes the state
+   before it ends. The sixth, `BnbChainAddresses.fork.t.sol`, runs with `BNB_RPC_URL` and is required when
+   `script/BnbChainAddresses.sol` or the deploy checks change.
 5. The Wake VS Code analyzer reports no errors or warnings on `src/`. Its reentrancy detector does not model reentrancy
    guards; the two documented suppressions are on the `redeem` call in `IndexZap._burnBasket` and the `permit` call in
    `IndexZap.burnToTokenWithPermit`. v5 adds the executor callback and Pyth's parse in `WeightedHub`, and the two
@@ -352,9 +369,13 @@ rebalancer bot (DRAFT, untested), with its executor contract, which starts and f
 - **Standard ERC-20s only as components** (whitelist policy). `issue` rejects fee-on-transfer tokens by checking the
   received amount. Do not whitelist USDC/USDT as components in scripts or docs; they are fine as mint/burn currencies.
   The policy wants 6 to 18 decimals, which matter only to display and to Pyth's scaling. The admission check is
-  `CheckToken`, and the WBT rule (a token that can both blacklist a holder and destroy its balance is refused) stays as
-  the owner left it on 2026-10-06; it is not raised again. Pausable components such as WBTC must be labelled in the
-  app, and so must every other issuer a component adds: BitGo for WBTC, Binance for BTCB and every Binance-Peg coin.
+  `CheckToken`, and the WBT rule (a token that can both blacklist a holder and destroy its balance is refused) stays its
+  default. On 2026-10-10 the owner ruled that a blacklist is no bar to listing and admitted Tether Gold, which the rule
+  refuses, and Ondo's stock tokens, whose compliance contract and burner role amount to the same power;
+  `testFork_everyWideTokenPassesTheCheck` pins Tether Gold as the one refused entry. Pausable components such as WBTC
+  must be labelled in the app, and so must every other issuer a component adds: BitGo for WBTC, Binance for BTCB and
+  every Binance-Peg coin, Tether for Tether Gold, Ondo for every `<ticker>on` stock, Wormhole for every wrapped copy,
+  and both Binance and Wormhole for a copy wrapped from a Binance-Peg coin.
 
 ## Conventions
 
@@ -455,13 +476,21 @@ rebalancer bot (DRAFT, untested), with its executor contract, which starts and f
 
 ## Product decisions already made (do not re-litigate silently)
 
-**Two chains, no vaults** (the owner's decision of 2026-10-07, `design/2026-10-07-two-chain-deployment.md`): Xindex
-is deployed on Ethereum and on BNB Chain, each holding its own chain's tokens, with nothing crossing between them.
-Stage B's vaults, proofs and verifiers are retired. Other chains' coins come in only as tokens that exist on Ethereum
+**One index on Ethereum, the missing coins as Wormhole-wrapped legs** (the owner's decision of 2026-10-10,
+`design/2026-10-10-one-index-wormhole-legs.md`): one deployment, on Ethereum; an index holds up to 100 coins of the
+top 300 in kind; a coin Ethereum lacks is listed as the copy Wormhole's token bridge wraps from its home chain,
+attested by anyone, priced at the coin's Pyth feed, labelled Bridged (and Custodial from a Binance-Peg source).
+Wormhole is the one bridge accepted for wrapping, because its guardians already sign Pyth's updates and its SOL copy
+was already listed. The BNB Chain deployment is shelved, not deleted. Own vaults, own proofs and any other bridge
+stay refused. The listing rules below (memecoins, exchange tokens, NIGHT, the WBT rule) are unchanged.
+
+**Two chains, no vaults** (the owner's decision of 2026-10-07, superseded in part by the one-index decision above,
+`design/2026-10-07-two-chain-deployment.md`): Xindex was to be deployed on Ethereum and on BNB Chain, each holding
+its own chain's tokens, with nothing crossing between them. What stands: Stage B's vaults, proofs and verifiers are
+retired. Other chains' coins come in only as tokens that exist on Ethereum
 or BNB Chain and pass `CheckToken`; Binance-Peg coins are listable, labelled Custodial. Not planned: a Solana
 deployment (a Rust rewrite for about 3% of coverage), L2 deployments (about 0.2% of coverage; at most one later, for
-cheap minting), tokenized stocks (the admission rule refuses their freeze keys, the legal question comes first, and
-Pyth's equity feeds publish only in market hours).
+cheap minting). Tokenized stocks, once on this list, were admitted on 2026-10-10 (below).
 
 **v5 replaces v4's market-cap index** (the owner's calls on 2026-10-05). Creators choose each coin's percentage; the
 weights are fixed at creation; the index rebalances to them at Pyth prices. Pyth is the only oracle: Chainlink alone,
@@ -472,7 +501,17 @@ cost the owner weighs before launch.
 **The listings** (the owner's calls on 2026-10-06):
 - No team index at launch: creators make every index, so "flagship" names no product.
 - The admission rule stays the WBT rule; Binance-Peg coins stay listable, labelled Custodial.
-- The v5 Ethereum list is 27 coins: no OKB, BGB, GT or GRAM. NIGHT is refused.
+- The v5 Ethereum list is 27 coins: no OKB, BGB, GT or GRAM. NIGHT is refused. INJ, SHIB and PEPE joined on
+  2026-10-10, from CoinGecko's top 100; SHIB and PEPE on the owner's call lifting the memecoin exclusion for those
+  two. The same day SOL moved to Ethereum as Wormhole's copy and left BNB Chain's list (the owner's rule: a
+  Binance-Peg coin with a listable Ethereum copy is held on Ethereum), making 31 on Ethereum and 16 on BNB Chain.
+- **Real-world assets** (the owner's call on 2026-10-10): Tether Gold and Ondo's tokens for the 17 of
+  CoinMarketCap's top-20 real-world assets that Ondo issues (Berkshire has none; silver has no listable token), making
+  49 on Ethereum, labelled Custodial. The owner accepted three costs: the issuers can block and burn holders; most have
+  no Uniswap liquidity, so they mint in kind or through `MintRequests` and a rebalance needs an executor that holds or
+  mints them, against the 2026-10-06 rule that refused BGB and GT for want of a route; and six (TSM, AVGO, LLY, JPM,
+  WMT, V) have only US-hours Pyth feeds, so an index holding one can settle a rebalance only while that market is
+  open, or with the stock kept. The legal question of offering stocks is the owner's.
 - TRX is held as the BEP-20 TRX of TRON's closed BTTC bridge, on BNB Chain, labelled Custodial; its Ethereum copy is
   not listed.
 - Bitcoin is held as WBTC on Ethereum (the owner's call on 2026-09-29; do not reopen it) and as BTCB on BNB Chain.

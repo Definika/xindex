@@ -6,12 +6,13 @@ USDC or USDT, and anyone can burn it back into USDC, USDT or any other token. Ev
 backed in kind by the tokens it holds. It rebalances back to its creator's percentages at Pyth prices, through a
 permissionless auction, and that settlement is the only place any contract reads a price.
 
-**Xindex is deployed twice, on Ethereum and on BNB Chain, and nothing crosses between them** (the owner's decision of
-2026-10-07, `design/2026-10-07-two-chain-deployment.md`). Each deployment of `WeightedIndexFactory`, `WeightedHub`,
-`IndexZap` and `MintRequests` holds the ERC-20s of its own chain: on Ethereum WBTC, WETH and the v5 list of 27
-Ethereum coins; on BNB Chain WBNB, BTCB, Binance-Peg ETH and the pinned BEP-20 list, with every Binance-Peg coin
-labelled Custodial. Together the two chains hold about 96% of the top 200's value. An index cannot mix the two chains'
-holdings; a buyer crosses between them in the app, with their own funds, through the THORChain rail (`swaprail/`).
+**Xindex is one deployment, on Ethereum, and one index holds up to 100 coins of the top 300** (the owner's decision
+of 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). `WeightedIndexFactory`, `WeightedHub`, `IndexZap` and
+`MintRequests` hold Ethereum ERC-20s in kind: the issuer's own contract where Ethereum has one, and otherwise the copy
+Wormhole's token bridge wraps from the chain that has it, priced at the coin's Pyth feed and labelled Bridged, or
+Custodial when the source is a Binance-Peg coin. The list stands at 93 (`script/PythIds.sol`), 13 of them Wormhole
+copies, with 34 more copies to attest. Nothing crosses a chain inside a contract: the app and the fillers bridge. The
+BNB Chain deployment of 2026-10-07 (`design/2026-10-07-two-chain-deployment.md`) is shelved, its scripts kept.
 
 **Status (2026-10-07): v5, deployed nowhere yet.** The weighted index is built and reviewed twice
 (`audit/2026-10-05-v5-review.md`, `audit/2026-10-07-v5-logic-review.md`); the Ethereum deployment's scripts are built,
@@ -74,7 +75,7 @@ The history, in one paragraph each:
 | Prices | None on chain. The app values an index off chain as the sum of units times its own prices (design section 10). |
 | Swaps | Uniswap's Universal Router 2.0.0, V3 and V4, and PancakeSwap's v3 Universal Router for PancakeSwap V3 (since 2026-10-06, chiefly for CAKE), one venue per leg, chosen by the caller. THORChain only in the app, from the user's own wallets, never through a contract (`design/2026-10-06-swap-venues.md`). The app offers the one-click zap only up to about 35 components (EIP-7825's 16.78M gas per transaction). |
 | Fees | None: Stage A is funded from outside (the owner's call on 2026-09-30, design section 13.1). Every amount the hub moves goes through one helper, `_backing`, so a fee in a later version would land in one reviewed change. |
-| Layer-1 coins | The Ethereum deployment holds Ethereum tokens, Bitcoin as WBTC. The BNB Chain deployment holds WBNB, BTCB, Binance-Peg ETH and the Binance-Peg coins of chains without contracts or without a deployment (XRP, SOL, DOGE, ADA, LTC, ...), each a custodial copy labelled as such (`design/2026-10-05-wide-asset-support.md`, `design/2026-10-07-two-chain-deployment.md`). |
+| Layer-1 coins | The Ethereum deployment holds Ethereum tokens, Bitcoin as WBTC. The BNB Chain deployment holds WBNB, BTCB, Binance-Peg ETH and the Binance-Peg coins of chains without contracts or without a deployment (XRP, DOGE, ADA, LTC, ...); SOL is held on Ethereum as Wormhole's copy, each a custodial copy labelled as such (`design/2026-10-05-wide-asset-support.md`, `design/2026-10-07-two-chain-deployment.md`). |
 | Stable in / out | Mint with USDC or USDT through the zap, or through `MintRequests` at a limit of the requester's own, filled by anyone who holds shares. The burner chooses USDC, USDT or any other token at exit, or asks for USDC or USDT at a limit through `MintRequests`. Index tokens are fungible, so the protocol cannot know which stable a holder used. |
 | Decentralization | No admin can move an index's funds, mint or burn its shares, pause or upgrade it, or set its units by hand. The owner proposes listings and supply batches, which take effect after 2 days, and guardian changes, which take 7; a proposal not executed within 7 days of becoming ready expires. Owner and guardian both cancel pending listings and batches, delist, cancel a rebalance, and start one with a keep mask or before strangers may. The guardian can cancel a change that would remove it, not one that replaces it. Ownership moves in two steps with no delay, and cannot be renounced. |
 | Frozen components | If a component's issuer pauses or blacklists transfers, holders take every other component out with `redeemSkipping` and collect the frozen one later with `claim`; the guardian rebalances around it with a keep mask, which neither transfers the component nor reads its balance or its supply. |
@@ -636,7 +637,7 @@ CHECK=<token,...> forge script script/CheckToken.s.sol --fork-url <bnb chain rpc
 
 **Listings** go through `script/ConfigureWeighted.s.sol`, or the equivalent calls through the Safe: each coin with
 the Pyth price id its indexes rebalance at. `V5_WHITELIST=default` is the first four coins of `script/PythIds.sol`,
-`V5_WHITELIST=wide` the other 23 (both on Ethereum), and `V5_WHITELIST=bnb` the 17 of `script/BnbChainAddresses.sol`
+`V5_WHITELIST=wide` the other 89 (both on Ethereum), and `V5_WHITELIST=bnb` the 16 of `script/BnbChainAddresses.sol`
 (on BNB Chain), each labelled with its trust tier in safe mode:
 
 ```bash

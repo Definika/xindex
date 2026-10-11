@@ -606,8 +606,10 @@ contract CheckToken is Script {
                 || selector == 0x47a64f44 // lockAccount(address)
                 || selector == 0xe1dfc884 // ownerSetBlacklistStatus(address,bool): World Liberty Financial (WLFI)
                 || selector == 0x5aa42d12 // guardianSetBlacklistStatus(address,bool): World Liberty Financial (WLFI)
+                || selector == 0x404e5129 // blacklist(address,bool): Pepe (PEPE), under a renounced owner
                 || selector == 0xfe575a87 // isBlacklisted(address): a blacklist's view (WBT, WLFI)
                 || selector == 0xe47d6060 // isBlackListed(address): a blacklist's view (Tether)
+                || selector == 0x16c02129 // blacklists(address): a blacklist's view (PEPE)
                 || selector == 0xe5839836 // isFrozen(address): a freeze list's view (Paxos)
                 || selector == 0x4a393149 // onTransfer(address,address,uint256): MiniMe (LEO) asks its controller
         ) {

@@ -11,13 +11,17 @@ import {PythIds} from "./PythIds.sol";
 ///         runtime code). Every token here is read on chain 56 by symbol, name and decimals; the fourteen of the
 ///         2026-10-05 list passed `CheckToken` then (`design/2026-10-05-token-admission-report.md`), and WBNB, BTCB and
 ///         ETH are checked by the fork suite.
-/// @dev NIGHT (0xFe930c2d63AeD9b82fC4DBC801920dD2c1a3224F) is refused (the owner's call on 2026-10-06): its owner burns
+/// @dev Binance-Peg SOL (0x570A5D26f7765Ecb712C0924E4De545B89fD43dF) left this list on 2026-10-10 (the owner's call):
+///      SOL is held on Ethereum instead, as Wormhole's copy (`MainnetAddresses.SOL`). Of the other Binance-Peg coins,
+///      none has an Ethereum copy that passes `CheckToken` with a Uniswap route
+///      (`design/2026-10-05-token-admission-report.md`, "Binance-Peg coins on Ethereum").
+///      NIGHT (0xFe930c2d63AeD9b82fC4DBC801920dD2c1a3224F) is refused (the owner's call on 2026-10-06): its owner burns
 ///      any holder's balance with no allowance, and its bridge's treasury was reported drained on 2026-07-20.
 library BnbChainAddresses {
     /// @notice BNB Chain's chain id.
     uint256 internal constant CHAIN_ID = 56;
     /// @notice How many coins the table names.
-    uint256 internal constant COUNT = 17;
+    uint256 internal constant COUNT = 16;
 
     // ---------------------------------------------------------------------
     // BNB Chain's own coin, wrapped as WETH wraps ether, and the two majors as Binance holds them: BTCB and "ETH" are
@@ -32,11 +36,10 @@ library BnbChainAddresses {
 
     // ---------------------------------------------------------------------
     // Binance-Peg tokens: custodial copies Binance mints with a single key (`0xF68a…f62d`), the trust tier
-    // `Custodial`. SOL, DOGE, AVAX and FIL also sit behind a proxy a single key upgrades. Read on chain 56 on
+    // `Custodial`. DOGE, AVAX and FIL also sit behind a proxy a single key upgrades. Read on chain 56 on
     // 2026-10-05.
     // ---------------------------------------------------------------------
     address internal constant XRP = 0x1D2F0da169ceB9fC7B3144628dB156f3F6c60dBE;
-    address internal constant SOL = 0x570A5D26f7765Ecb712C0924E4De545B89fD43dF;
     address internal constant ZEC = 0x1Ba42e5193dfA8B03D15dd1B86a3113bbBEF8Eeb;
     /// @dev 8 decimals, the only one here that is not 18.
     address internal constant DOGE = 0xbA2aE424d960c26247Dd6c32edC70B295c744C43;
@@ -108,8 +111,6 @@ library BnbChainAddresses {
     bytes32 internal constant ETH_PRICE_ID = 0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace;
     /// @dev RIPPLE / US DOLLAR.
     bytes32 internal constant XRP_PRICE_ID = 0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8;
-    /// @dev SOLANA / US DOLLAR.
-    bytes32 internal constant SOL_PRICE_ID = 0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d;
     /// @dev ZCASH / US DOLLAR.
     bytes32 internal constant ZEC_PRICE_ID = 0xbe9b59d178f0d6a97ab4c343bff2aa69caa1eaae3e9048a65788c529b125bb24;
     /// @dev DOGECOIN / US DOLLAR.
@@ -144,19 +145,18 @@ library BnbChainAddresses {
         (tokens[1], ids[1]) = (BTCB, BTCB_PRICE_ID);
         (tokens[2], ids[2]) = (ETH, ETH_PRICE_ID);
         (tokens[3], ids[3]) = (XRP, XRP_PRICE_ID);
-        (tokens[4], ids[4]) = (SOL, SOL_PRICE_ID);
-        (tokens[5], ids[5]) = (ZEC, ZEC_PRICE_ID);
-        (tokens[6], ids[6]) = (DOGE, DOGE_PRICE_ID);
-        (tokens[7], ids[7]) = (ADA, ADA_PRICE_ID);
-        (tokens[8], ids[8]) = (BCH, BCH_PRICE_ID);
-        (tokens[9], ids[9]) = (LTC, LTC_PRICE_ID);
-        (tokens[10], ids[10]) = (AVAX, AVAX_PRICE_ID);
-        (tokens[11], ids[11]) = (DOT, DOT_PRICE_ID);
-        (tokens[12], ids[12]) = (FIL, FIL_PRICE_ID);
-        (tokens[13], ids[13]) = (ATOM, ATOM_PRICE_ID);
-        (tokens[14], ids[14]) = (ASTER, ASTER_PRICE_ID);
-        (tokens[15], ids[15]) = (STABLE, STABLE_PRICE_ID);
-        (tokens[16], ids[16]) = (TRX, TRX_PRICE_ID);
+        (tokens[4], ids[4]) = (ZEC, ZEC_PRICE_ID);
+        (tokens[5], ids[5]) = (DOGE, DOGE_PRICE_ID);
+        (tokens[6], ids[6]) = (ADA, ADA_PRICE_ID);
+        (tokens[7], ids[7]) = (BCH, BCH_PRICE_ID);
+        (tokens[8], ids[8]) = (LTC, LTC_PRICE_ID);
+        (tokens[9], ids[9]) = (AVAX, AVAX_PRICE_ID);
+        (tokens[10], ids[10]) = (DOT, DOT_PRICE_ID);
+        (tokens[11], ids[11]) = (FIL, FIL_PRICE_ID);
+        (tokens[12], ids[12]) = (ATOM, ATOM_PRICE_ID);
+        (tokens[13], ids[13]) = (ASTER, ASTER_PRICE_ID);
+        (tokens[14], ids[14]) = (STABLE, STABLE_PRICE_ID);
+        (tokens[15], ids[15]) = (TRX, TRX_PRICE_ID);
     }
 
     /// @notice The tier of a token in the table, as `PythIds.tierOf` gives Ethereum's: `Custodial` for every
@@ -166,9 +166,9 @@ library BnbChainAddresses {
         if (token == WBNB || token == ASTER) return PythIds.Tier.Native;
         if (token == STABLE) return PythIds.Tier.Bridged;
         if (
-            token == BTCB || token == ETH || token == XRP || token == SOL || token == ZEC || token == DOGE
-                || token == ADA || token == BCH || token == LTC || token == AVAX || token == DOT || token == FIL
-                || token == ATOM || token == TRX
+            token == BTCB || token == ETH || token == XRP || token == ZEC || token == DOGE || token == ADA
+                || token == BCH || token == LTC || token == AVAX || token == DOT || token == FIL || token == ATOM
+                || token == TRX
         ) return PythIds.Tier.Custodial;
         return PythIds.Tier.Unrecorded;
     }
