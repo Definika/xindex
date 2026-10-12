@@ -281,6 +281,19 @@ contract ScriptsTest is Test {
         vm.prank(guardian);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.GuardianIsBroadcaster.selector, guardian));
         deployer.checkGuardian(owner, guardian);
+
+        // Nor a Safe the broadcasting key signs for, directly or through a signer Safe of its own.
+        MockSafe guardianSafe = new MockSafe(1);
+        guardianSafe.addOwner(address(this)); // the account calling the script, as the broadcasting key does
+        vm.expectRevert(abi.encodeWithSelector(DeployChecks.GuardianIsBroadcaster.selector, address(guardianSafe)));
+        deployer.checkGuardian(owner, address(guardianSafe));
+        MockSafe keyHolder = new MockSafe(1);
+        keyHolder.addOwner(address(this));
+        MockSafe outer = new MockSafe(2);
+        outer.addOwner(makeAddr("other signer"));
+        outer.addOwner(address(keyHolder));
+        vm.expectRevert(abi.encodeWithSelector(DeployChecks.GuardianIsBroadcaster.selector, address(outer)));
+        deployer.checkGuardian(owner, address(outer));
     }
 
     /// @dev SA-06. The guardian is the owner's veto, so a guardian that also signs for the owner Safe leaves one key
@@ -304,6 +317,61 @@ contract ScriptsTest is Test {
 
         deployer.checkGuardian(owner, guardian); // a key answers no signer list
         deployer.checkGuardian(address(new SilentFallback()), guardian); // nor does a contract that is not a Safe
+    }
+
+    /// @dev SA-06, one level deep on each side. Comparing addresses alone let a key reach both roles through a Safe: a
+    ///      guardian Safe controlled by one of the owner's signers, or a guardian key that signs for a treasury Safe
+    ///      among the owner's signers. Each side's signers that are Safes bring in their own.
+    function test_SA06_signersAreComparedOneLevelDeep() public {
+        address a = makeAddr("signer a");
+        address c = makeAddr("treasury signer c");
+        MockSafe treasury = new MockSafe(1);
+        treasury.addOwner(c);
+        MockSafe safe = new MockSafe(3);
+        safe.addOwner(a);
+        safe.addOwner(makeAddr("signer b"));
+        safe.addOwner(address(treasury));
+
+        // A guardian Safe that one of the owner's signers controls.
+        MockSafe guardianSafe = new MockSafe(1);
+        guardianSafe.addOwner(a);
+        vm.expectRevert(
+            abi.encodeWithSelector(DeployChecks.GuardianSharesOwnerSigner.selector, address(guardianSafe), a)
+        );
+        deployer.checkGuardian(address(safe), address(guardianSafe));
+        vm.expectRevert(
+            abi.encodeWithSelector(DeployChecks.GuardianSharesOwnerSigner.selector, address(guardianSafe), a)
+        );
+        _deploy(address(safe), address(guardianSafe));
+
+        // A guardian key that signs for the owner through the treasury.
+        vm.expectRevert(abi.encodeWithSelector(DeployChecks.GuardianSignsForOwner.selector, c));
+        deployer.checkGuardian(address(safe), c);
+
+        // A guardian Safe whose own signer Safe holds the treasury's key.
+        MockSafe holder = new MockSafe(1);
+        holder.addOwner(c);
+        MockSafe outerGuardian = new MockSafe(1);
+        outerGuardian.addOwner(address(holder));
+        vm.expectRevert(
+            abi.encodeWithSelector(DeployChecks.GuardianSharesOwnerSigner.selector, address(outerGuardian), c)
+        );
+        deployer.checkGuardian(address(safe), address(outerGuardian));
+
+        // The broadcasting key, through a treasury among the owner's signers.
+        MockSafe broadcasterTreasury = new MockSafe(1);
+        broadcasterTreasury.addOwner(address(this));
+        MockSafe other = new MockSafe(3);
+        other.addOwner(a);
+        other.addOwner(address(broadcasterTreasury));
+        vm.expectRevert(abi.encodeWithSelector(DeployChecks.BroadcasterSignsForOwner.selector, address(this)));
+        deployer.checkGuardian(address(other), guardian);
+
+        // A guardian Safe of keys of its own passes.
+        MockSafe separate = new MockSafe(2);
+        separate.addOwner(makeAddr("guardian signer d"));
+        separate.addOwner(makeAddr("guardian signer e"));
+        deployer.checkGuardian(address(safe), address(separate));
     }
 
     function test_XA39_rolesCannotBeMarketContracts() public {
@@ -552,18 +620,18 @@ contract ScriptsTest is Test {
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.RoleIsMarketContract.selector, pool));
         deployer.checkRolesAreNotMarket(owner, pool, address(router));
 
+        // On Ethereum, every token of the address book, all of the PythIds table and not the `default` four alone, as an
+        // earlier version had it, which let AAVE or any other listed token through as OWNER, then the mint currencies.
         vm.chainId(1);
         vm.etch(MAINNET_UNIVERSAL_ROUTER, address(new MockUniversalRouter(MainnetAddresses.POOL_MANAGER)).code);
-        address[8] memory expected = [
-            MAINNET_UNIVERSAL_ROUTER,
-            MainnetAddresses.POOL_MANAGER,
-            MainnetAddresses.WETH,
-            MainnetAddresses.WBTC,
-            MainnetAddresses.UNI,
-            MainnetAddresses.LINK,
-            MainnetAddresses.USDC,
-            MainnetAddresses.USDT
-        ];
+        (address[] memory tokens,) = PythIds.all();
+        address[] memory expected = new address[](tokens.length + 4);
+        (expected[0], expected[1]) = (MAINNET_UNIVERSAL_ROUTER, MainnetAddresses.POOL_MANAGER);
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            expected[i + 2] = tokens[i];
+        }
+        (expected[tokens.length + 2], expected[tokens.length + 3]) = (MainnetAddresses.USDC, MainnetAddresses.USDT);
+        assertEq(expected.length, PythIds.COUNT + 4);
         market = deployer.marketContracts(MAINNET_UNIVERSAL_ROUTER);
         assertEq(market.length, expected.length);
         for (uint256 i = 0; i < expected.length; ++i) {

@@ -277,8 +277,11 @@ rebalancer bot (DRAFT, untested), with its executor contract, which starts and f
     last second and hold rebalancing off while the index drifts from its weights. That stall is bounded by the owner
     replacing the guardian, which takes `GUARDIAN_DELAY` and which the guardian cannot cancel. It moves no funds, and
     holders redeem throughout. A cancel budget was considered and rejected (DA-12). A keep-mask start that leaves only
-    a sliver moving can also restart the interval for everyone; while a replacement is pending, the owner cancels the
-    outgoing guardian's keep-mask starts, and monitors watch `RebalanceStarted` with a non-zero `keepMask` (RT-07).
+    a sliver moving can also restart the interval for everyone, so the stall can outlast the guardian's replacement by
+    up to `MIN_REBALANCE_INTERVAL`. While a replacement is pending, the owner cancels the outgoing guardian's keep-mask
+    starts, and monitors watch `RebalanceStarted` with a non-zero `keepMask` (RT-07). The owner has only
+    `REBALANCE_DELAY`, 2 hours, to cancel one before the guardian's own executor can fill it at `eta`, so that cancel
+    needs signers on call.
   - An expired proposal leaves `pendingGuardian`, `pendingGuardianEta` and `listingEta` set. The views that say
     whether a proposal is still executable are `guardianChangePending()` and `listingPending(token)` (DA-16).
   - **Listings.** A listing records a token's Pyth price id and its decimals, read from the token then; a relisting
@@ -291,9 +294,12 @@ rebalancer bot (DRAFT, untested), with its executor contract, which starts and f
   supply in the settling block requires. The `executeRebalance(bytes, uint256[] maxAmountsIn)` overload bounds that, and
   reverts `RebalanceMovedOn` when the settlement has grown past what the caller will deliver. Issue stays open through
   notice and auction, so a dust issue can grief an executor sized from an off-chain simulation: the callback arguments
-  are authoritative (DA-13). At `MAX_COMPONENTS` (100), the hub's own paths fit a transaction under EIP-7825's 2^24 gas
-  cap with room to spare, the largest being redeem at about 3.7M gas (`test_aHundredComponentsFitOneTransaction`). Swaps
-  for 100 legs do not fit, so an atomic fill that wide needs an executor that already holds the tokens.
+  are authoritative (DA-13). At `MAX_COMPONENTS` (100), every path of the hub and the factory fits a transaction under
+  EIP-7825's 2^24 gas cap on mock tokens (`test_aHundredComponentsFitOneTransaction`): `createIndex` about 13.1M,
+  `redeemSkipping` with every component skipped 5.1M, the settlement's own work 4.8M with Pyth's parse mocked. A fill
+  of real legs costs far more, 14.9M for 92 on the fork with the parse still mocked, so whether a hundred-leg fill fits
+  once Pyth's real parse is added is open until the fork settlement against Pyth's contract measures it. Swaps for 100
+  legs do not fit, so an atomic fill that wide needs an executor that already holds the tokens.
 - **Keep mask.** Only the owner or guardian can pass one, and it routes around a component that cannot be moved. A kept
   component is neither priced nor read, and its units stay exactly as they were. `executeRebalance` reads `balanceOf`
   only on a component that sends or receives something, so a component whose `transfer` or `balanceOf` reverts, or

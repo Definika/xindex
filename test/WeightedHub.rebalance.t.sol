@@ -4,6 +4,8 @@ pragma solidity ^0.8.24;
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {WeightedHub} from "../src/WeightedHub.sol";
 import {IWeightedHub} from "../src/interfaces/IWeightedHub.sol";
 import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
@@ -35,6 +37,23 @@ contract ClawingExecutor is IRebalanceExecutor {
             if (amountsIn[i] != 0) MockERC20(t[i]).mint(msg.sender, amountsIn[i]);
         }
         MockERC20(t[CLAWED]).burn(msg.sender, 1);
+    }
+}
+
+/// @notice Delivers what a fill asks for out of the tokens it already holds and keeps no record of its own, so a measured
+///         fill costs the hub's work and the token transfers alone.
+contract HoldingExecutor is IRebalanceExecutor {
+    using SafeERC20 for IERC20;
+
+    function execute(IWeightedHub index, bytes[] calldata priceUpdate) external {
+        index.executeRebalance("", priceUpdate);
+    }
+
+    function onXindexRebalance(uint256[] calldata, uint256[] calldata amountsIn, bytes calldata) external {
+        address[] memory t = IWeightedHub(msg.sender).componentTokens();
+        for (uint256 i = 0; i < t.length; ++i) {
+            if (amountsIn[i] != 0) IERC20(t[i]).safeTransfer(msg.sender, amountsIn[i]);
+        }
     }
 }
 
@@ -999,31 +1018,115 @@ contract WeightedHubRebalanceTest is WeightedTest {
     // Gas
     // ---------------------------------------------------------------------
 
-    /// @dev A hundred components settle within the hub's own work, Pyth's parse aside (the mock's is not Pyth's), far
-    ///      below EIP-7825's 2^24 cap.
-    function test_aHundredComponentsSettle() public {
-        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](100);
-        bytes32[] memory ids = new bytes32[](100);
-        int64[] memory prices = new int64[](100);
-        for (uint256 i = 0; i < 100; ++i) {
+    /// @dev EIP-7825's cap on a transaction's gas.
+    uint256 constant TX_GAS_CAP = 1 << 24;
+
+    /// @dev Every hub path at a hundred components fits EIP-7825's 2^24 cap, each measured as the transaction Foundry
+    ///      makes of the call, with every account it touches cold. The settlement is measured as the fork suite measures
+    ///      it, with Pyth's parse mocked and an executor that already holds the tokens, so its figure is the hub's own
+    ///      work and the transfers: Pyth's real parse checks signatures and a Merkle proof and charges calldata for every
+    ///      feed, and the listed tokens transfer dearer than MockERC20, so a fill of a hundred real legs has much less
+    ///      room than this shows. It is measured against Pyth's contract on a real update before mainnet.
+    function test_aHundredComponentsFitOneTransaction() public {
+        uint256 n = 100;
+        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](n);
+        address[] memory tokens = new address[](n);
+        bytes32[] memory ids = new bytes32[](n);
+        int64[] memory prices = new int64[](n);
+        for (uint256 i = 0; i < n; ++i) {
             MockERC20 token = new MockERC20("T", "T", 18);
+            tokens[i] = address(token);
             ids[i] = keccak256(abi.encode("T", i));
             _list(address(token), ids[i]);
             specs[i] = _spec(address(token), 100, 1e18);
             prices[i] = i % 2 == 0 ? int64(1.1e8) : int64(0.9e8);
         }
+
+        _coolAll(tokens, address(0));
+        uint256 before = gasleft();
         vm.prank(creator);
         WeightedHub wide = WeightedHub(factory.createIndex("Wide", "WIDE", specs));
-        _issue(wide, alice, 1e18);
+        _fits("createIndex", before - gasleft());
+
+        uint256 shares = 2e18;
+        uint256[] memory amounts = wide.previewIssue(shares);
+        vm.startPrank(alice);
+        for (uint256 i = 0; i < n; ++i) {
+            MockERC20(tokens[i]).mint(alice, amounts[i]);
+            MockERC20(tokens[i]).approve(address(wide), amounts[i]);
+        }
+        vm.stopPrank();
+        _coolAll(tokens, address(wide));
+        before = gasleft();
+        vm.prank(alice);
+        wide.issue(shares, alice);
+        _fits("issue", before - gasleft());
+
         vm.warp(wide.lastRebalance() + wide.MIN_REBALANCE_INTERVAL());
+        _coolAll(tokens, address(wide));
+        before = gasleft();
         wide.startRebalance(0);
+        _fits("startRebalance", before - gasleft());
+
         (uint256 eta,) = wide.pendingRebalance();
         vm.warp(eta + 12 hours);
         bytes[] memory data = _updates(wide, ids, prices);
-        uint256 before = gasleft();
-        executor.execute(wide, "", data);
-        uint256 used = before - gasleft();
-        assertLt(used, 16_777_216);
+        PythStructs.PriceFeed[] memory feeds = new PythStructs.PriceFeed[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            (feeds[i],) = abi.decode(data[i], (PythStructs.PriceFeed, uint64));
+        }
+        vm.mockCall(
+            address(pyth), abi.encodeWithSelector(MockPyth.parsePriceFeedUpdatesUnique.selector), abi.encode(feeds)
+        );
+        HoldingExecutor holder = new HoldingExecutor();
+        for (uint256 i = 0; i < n; ++i) {
+            MockERC20(tokens[i]).mint(address(holder), shares);
+        }
+        _coolAll(tokens, address(wide));
+        vm.cool(address(pyth));
+        vm.cool(address(holder));
+        before = gasleft();
+        holder.execute(wide, data);
+        _fits("executeRebalance", before - gasleft());
         assertEq(wide.rebalanceNonce(), 1);
+        vm.clearMockedCalls();
+
+        _coolAll(tokens, address(wide));
+        before = gasleft();
+        vm.prank(alice);
+        wide.redeem(1e18, alice);
+        _fits("redeem", before - gasleft());
+
+        uint256 everyComponent = (1 << n) - 1;
+        _coolAll(tokens, address(wide));
+        before = gasleft();
+        vm.prank(alice);
+        wide.redeemSkipping(1e18, alice, everyComponent);
+        _fits("redeemSkipping, every component skipped", before - gasleft());
+        assertEq(wide.totalSupply(), 0);
+
+        uint256 owed = wide.claimOf(alice, tokens[0]);
+        uint256 held = MockERC20(tokens[0]).balanceOf(alice);
+        assertGt(owed, 0);
+        _coolAll(tokens, address(wide));
+        before = gasleft();
+        vm.prank(alice);
+        wide.claim(tokens[0], alice);
+        _fits("claim", before - gasleft());
+        assertEq(MockERC20(tokens[0]).balanceOf(alice), held + owed);
+    }
+
+    /// @dev Marks the components, the factory, its implementation and `hub` cold, as a transaction of its own finds them.
+    function _coolAll(address[] memory tokens, address hub) private {
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            vm.cool(tokens[i]);
+        }
+        vm.cool(address(factory));
+        vm.cool(factory.IMPLEMENTATION());
+        if (hub != address(0)) vm.cool(hub);
+    }
+
+    function _fits(string memory path, uint256 used) private pure {
+        assertLt(used, TX_GAS_CAP, path);
     }
 }

@@ -122,10 +122,12 @@ interface IWeightedIndexFactory is IXindexErrors {
     ///         with a keep mask. Zero when there is none.
     function guardian() external view returns (address);
 
-    /// @notice The proposed guardian, while a change is pending.
+    /// @notice The proposed guardian; zero when no change was proposed. Stays set after the proposal expires: read
+    ///         {guardianChangePending}.
     function pendingGuardian() external view returns (address);
 
-    /// @notice When the pending guardian change becomes executable; zero when none is pending.
+    /// @notice When the proposed guardian change becomes executable; zero when none was proposed. Stays set after it
+    ///         expires: read {guardianChangePending}.
     function pendingGuardianEta() external view returns (uint256);
 
     /// @notice Whether `account` is the owner or a non-zero guardian.

@@ -300,7 +300,8 @@ at any time) or `refund` (anyone, after the deadline).
 - **Gas.** The zap costs 265k to 430k gas per component (measured on a mainnet fork at 20 components in v3, CR-I08:
   a mint 5.3M to 6.2M, a burn 5.1M with two V3 hops a leg to 8.6M with four). EIP-7825 caps a transaction at 2^24
   gas, so disable the zap above about 35 components, keep routes to two or three hops, and refuse or reroute any zap
-  call whose simulated gas exceeds about 14M. The in-kind path fits at 100 components (about 3.7M for `redeem`).
+  call whose simulated gas exceeds about 14M. The in-kind paths fit at 100 components (about 3.7M for `redeem`, 5.1M
+  for `redeemSkipping` with every component skipped).
 - **Approvals.** USDC supports `permit`; USDT does not, and its `approve` reverts when it changes a non-zero allowance
   to another non-zero value: if `allowance(user, zap)` is not 0, send `approve(zap, 0)` first. The same holds for
   `MintRequests`: a filler who lost a race, or a requester whose request reverted, keeps a non-zero USDT allowance. Index tokens support
@@ -461,10 +462,11 @@ order; v5's `default` list keeps the four, with Pyth price ids instead of suppli
   compromised guardian can cancel each proposal at the last second of its auction and hold rebalancing off while the
   units drift from the supplies. It moves no funds, holders redeem throughout, and the owner ends it by replacing that
   guardian: 7 days of notice the guardian cannot cancel, since it may only cancel its own removal (DA-12). A guardian
-  can also stall without a cancel: a keep-mask rebalance that leaves a pair of components moving can clear `MIN_BAND`
+  can also stall without a cancel: a keep-mask rebalance that leaves a pair of components moving can clear `MIN_TRADE`
   on a sliver of the index, and its fill restarts `MIN_REBALANCE_INTERVAL` for everyone, so the stall can outlast the
   guardian's replacement by up to a week. While a replacement is pending, the owner cancels the outgoing guardian's
-  keep-mask proposals, and monitors alert on `RebalanceStarted` with a non-zero `keepMask` (RT-07).
+  keep-mask proposals, and monitors alert on `RebalanceStarted` with a non-zero `keepMask` (RT-07). The owner has only
+  `REBALANCE_DELAY`, 2 hours, to cancel one before the guardian's own executor can fill it at `eta`.
 - **Issuers can freeze components.** WBTC can be paused by its custodian. A paused component makes `redeem`, the zap
   and any fill that moves it revert; `redeemSkipping`, `claim` and the guardian's keep mask are the recourse, and a
   permanently frozen component needs the keep mask at every rebalance.

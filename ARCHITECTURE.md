@@ -436,18 +436,22 @@ a trade; one live batch at a time keeps what the guardian reviews the whole of w
 can never hold a different basket, even if a batch lands between a preview and the creation, and a front-runner's copy
 lands at its own address (LR-05).
 
-**Up to 100 components.** The in-kind paths fit EIP-7825's per-transaction cap of 2^24 gas at 100, measured with every
-account cold (`test_aHundredComponentsFitOneTransaction`, `test_createIndex_maxComponentsOk`):
+**Up to 100 components.** Every path fits EIP-7825's per-transaction cap of 2^24 gas at 100, measured on mock tokens
+with every account cold (`test_aHundredComponentsFitOneTransaction`):
 
 | Operation at 100 components | Gas |
 |---|---|
-| `createIndex` | about 4.9M |
+| `createIndex` | about 13.1M |
 | `issue` | about 3.6M |
-| `startRebalance` | about 1.5M |
-| `executeRebalance`, an executor that already holds the bought tokens | about 3.4M |
+| `startRebalance` | about 90k |
+| `executeRebalance`, Pyth's parse mocked, an executor that already holds the bought tokens | about 4.8M |
 | `redeem` | about 3.7M |
-| `redeemSkipping`, one component skipped | about 1.7M |
+| `redeemSkipping`, every component skipped | about 5.1M |
 | `claim` | about 53k |
+
+The settlement's row is the hub's own work. A fill of the listed tokens costs far more: 14.9M for 92 legs on the fork,
+Pyth's parse still mocked, so whether a hundred-leg fill fits once Pyth's real parse is added is open until the fork
+settlement against Pyth's contract measures it before mainnet.
 
 A fill that swaps inside the call costs about 150k a leg on top (design section 9.1), so an atomic fill at 100
 components needs an executor with inventory. The zap stops near 35 components (section 2).
@@ -474,10 +478,11 @@ balance-measured zap, and fixed constituents (a new list is a new index version,
   cancel every proposal at the last second of its auction until the owner replaces it: `GUARDIAN_DELAY` of notice that
   the guardian cannot cancel. That is a trust assumption of the role, because the cancel exists to stop a bad
   rebalance in its last seconds (DA-12). The guardian can also stall without a cancel: a keep-mask rebalance that
-  leaves a pair of components moving can clear `MIN_BAND` on a sliver of the index, and its fill restarts
+  leaves a pair of components moving can clear `MIN_TRADE` on a sliver of the index, and its fill restarts
   `MIN_REBALANCE_INTERVAL` for everyone, so the stall can outlast the guardian's replacement by up to a week. While a
   replacement is pending the owner cancels the outgoing guardian's keep-mask proposals, and monitors watch
-  `RebalanceStarted` with a non-zero `keepMask` (RT-07). Neither stall moves funds; holders redeem throughout.
+  `RebalanceStarted` with a non-zero `keepMask` (RT-07). The owner has only `REBALANCE_DELAY`, 2 hours, to cancel one
+  before the guardian's own executor can fill it at `eta`. Neither stall moves funds; holders redeem throughout.
 - **Reentrancy.** `nonReentrant` on `issue`, `redeem`, `redeemSkipping`, `claim`, `startRebalance`, `cancelRebalance`,
   both `executeRebalance` overloads, `createIndex`, `mintWithToken`, `burnToToken` and `burnToTokenWithPermit`.
   Checks-effects-interactions throughout: the new units, the nonce and the cleared proposal are written before any

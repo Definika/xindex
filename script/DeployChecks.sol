@@ -5,6 +5,7 @@ import {Script} from "forge-std/Script.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
 import {ISafeThreshold} from "./interfaces/ISafeThreshold.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
+import {PythIds} from "./PythIds.sol";
 import {BnbChainAddresses} from "./BnbChainAddresses.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
 
@@ -40,10 +41,13 @@ abstract contract DeployChecks is Script {
     error OwnerModulesUnknown(address owner);
     /// @notice GUARDIAN is zero, Foundry's default sender, or the owner.
     error GuardianRequired();
-    /// @notice The guardian is the key broadcasting the deployment.
+    /// @notice The guardian is the key broadcasting the deployment, or a Safe that key signs for.
     error GuardianIsBroadcaster(address guardian);
     /// @notice The guardian signs for the owner Safe, so one key would both act as the owner and hold its veto (SA-06).
     error GuardianSignsForOwner(address guardian);
+    /// @notice The guardian is a Safe that shares `signer` with the owner Safe, directly or through a signer that is
+    ///         itself a Safe, so one key would sign on both sides (SA-06).
+    error GuardianSharesOwnerSigner(address guardian, address signer);
     /// @notice The key broadcasting the deployment signs for the owner Safe (SA-06).
     error BroadcasterSignsForOwner(address broadcaster);
     /// @notice The owner or guardian is one of the market contracts.
@@ -94,30 +98,65 @@ abstract contract DeployChecks is Script {
     }
 
     /// @notice Requires a guardian that is set, is not Foundry's default sender, is not the owner, and is not the key
-    ///         broadcasting the deployment (the script's msg.sender), which must hold no role in the factory. When the
-    ///         owner is a Safe, neither the guardian nor the broadcasting key may be one of its signers: the guardian is
-    ///         the owner's veto, and a key that signs for both weakens both (SA-06).
+    ///         broadcasting the deployment (the script's msg.sender), which must hold no role in the factory, neither
+    ///         as the guardian nor as a signer of a guardian Safe. When the owner is a Safe, neither the guardian nor
+    ///         the broadcasting key may be one of its signers, and a guardian Safe may share no signer with it: the
+    ///         guardian is the owner's veto, and a key that signs for both weakens both (SA-06). Signers are compared
+    ///         one level deep on each side, so a signer that is itself a Safe, such as a treasury, brings in its own.
     /// @param owner The intended factory owner.
     /// @param guardian The intended guardian.
     function checkGuardian(address owner, address guardian) public view {
         if (guardian == address(0) || guardian == DEFAULT_SENDER || guardian == owner) revert GuardianRequired();
         if (guardian == msg.sender) revert GuardianIsBroadcaster(guardian);
-        // A static call, as for the threshold: an owner that is a key or a contract other than a Safe answers nothing.
-        // forge-lint: disable-next-line(low-level-calls)
-        (bool ok, bytes memory data) = owner.staticcall(abi.encodeCall(ISafeThreshold.getOwners, ()));
-        // A well-formed answer holds at least the array offset and its length.
-        if (!ok || data.length < 64) return;
-        address[] memory signers = abi.decode(data, (address[]));
-        for (uint256 i = 0; i < signers.length; ++i) {
-            if (signers[i] == guardian) revert GuardianSignsForOwner(guardian);
-            if (signers[i] == msg.sender) revert BroadcasterSignsForOwner(msg.sender);
+        address[] memory guardianKeys = _signerKeys(guardian);
+        for (uint256 j = 0; j < guardianKeys.length; ++j) {
+            if (guardianKeys[j] == msg.sender) revert GuardianIsBroadcaster(guardian);
         }
+        address[] memory ownerKeys = _signerKeys(owner);
+        for (uint256 i = 0; i < ownerKeys.length; ++i) {
+            address key = ownerKeys[i];
+            if (key == guardian) revert GuardianSignsForOwner(guardian);
+            if (key == msg.sender) revert BroadcasterSignsForOwner(msg.sender);
+            for (uint256 j = 0; j < guardianKeys.length; ++j) {
+                if (guardianKeys[j] == key) revert GuardianSharesOwnerSigner(guardian, key);
+            }
+        }
+    }
+
+    /// @dev `account`'s signers, each followed by its own signers when it is a Safe too: one level down, so a treasury
+    ///      Safe that signs for the owner, or for a guardian Safe, brings in its keys. Empty for a key or for a contract
+    ///      that is not a Safe.
+    function _signerKeys(address account) private view returns (address[] memory keys) {
+        address[] memory signers = _signers(account);
+        address[][] memory nested = new address[][](signers.length);
+        uint256 total = signers.length;
+        for (uint256 i = 0; i < signers.length; ++i) {
+            nested[i] = _signers(signers[i]);
+            total += nested[i].length;
+        }
+        keys = new address[](total);
+        uint256 k = 0;
+        for (uint256 i = 0; i < signers.length; ++i) {
+            keys[k++] = signers[i];
+            for (uint256 j = 0; j < nested[i].length; ++j) {
+                keys[k++] = nested[i][j];
+            }
+        }
+    }
+
+    /// @dev `account`'s signers if it answers Safe's `getOwners`, else none. A static call, as for the threshold: a key,
+    ///      or a contract other than a Safe, answers nothing.
+    function _signers(address account) private view returns (address[] memory signers) {
+        // forge-lint: disable-next-line(low-level-calls)
+        (bool ok, bytes memory data) = account.staticcall(abi.encodeCall(ISafeThreshold.getOwners, ()));
+        // A well-formed answer holds at least the array offset and its length.
+        if (ok && data.length >= 64) signers = abi.decode(data, (address[]));
     }
 
     /// @notice Rejects an owner or guardian that is one of the market contracts, such as one pasted as OWNER. None of
     ///         them answers `getThreshold`, so {checkOwner} would accept any as a contract owner, and a factory owned
     ///         by one could never be administered: no listing, no supply batch, and a redeploy. An earlier version had
-    ///         narrowed this to the router alone (XA-39, CR-I37).
+    ///         narrowed this to the router alone (XA-39, CR-I37), and a later one, on Ethereum, to the `default` list.
     /// @param owner The intended factory owner.
     /// @param guardian The intended guardian.
     /// @param router The resolved router.
@@ -144,22 +183,30 @@ abstract contract DeployChecks is Script {
         }
     }
 
-    /// @dev The tokens the Ethereum address book names for the `default` list, and its mint currencies.
-    function _mainnetMarket() private pure returns (address[] memory list) {
-        list = new address[](6);
-        (list[0], list[1], list[2], list[3]) =
-        (MainnetAddresses.WETH, MainnetAddresses.WBTC, MainnetAddresses.UNI, MainnetAddresses.LINK);
-        (list[4], list[5]) = (MainnetAddresses.USDC, MainnetAddresses.USDT);
+    /// @dev Every token the Ethereum address book lists, the whole `PythIds` table, and its mint currencies.
+    function _mainnetMarket() private pure returns (address[] memory) {
+        (address[] memory tokens,) = PythIds.all();
+        return _withStables(tokens, MainnetAddresses.USDC, MainnetAddresses.USDT);
     }
 
     /// @dev Every token the BNB Chain address book names, and its mint currencies.
-    function _bnbMarket() private pure returns (address[] memory list) {
+    function _bnbMarket() private pure returns (address[] memory) {
         (address[] memory tokens,) = BnbChainAddresses.all();
-        list = new address[](tokens.length + 2);
-        for (uint256 i = 0; i < tokens.length; ++i) {
+        return _withStables(tokens, BnbChainAddresses.USDC, BnbChainAddresses.USDT);
+    }
+
+    /// @dev `tokens`, then the chain's two mint currencies.
+    function _withStables(address[] memory tokens, address usdc, address usdt)
+        private
+        pure
+        returns (address[] memory list)
+    {
+        uint256 n = tokens.length;
+        list = new address[](n + 2);
+        for (uint256 i = 0; i < n; ++i) {
             list[i] = tokens[i];
         }
-        (list[tokens.length], list[tokens.length + 1]) = (BnbChainAddresses.USDC, BnbChainAddresses.USDT);
+        (list[n], list[n + 1]) = (usdc, usdt);
     }
 
     /// @notice Whether this chain's market addresses are pinned to an address book: Ethereum or BNB Chain.

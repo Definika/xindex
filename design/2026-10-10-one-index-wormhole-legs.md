@@ -166,9 +166,12 @@ coin needs Wormhole live. A Wormhole halt locks that value, it does not take it.
   hundred legs do not fit a transaction. Nothing in the hub changes; this is the executor's operation.
 - Attestations. Each wrapped ERC-20 that does not exist yet is created once through Portal: one transaction on the
   home chain, one on Ethereum. Permissionless and reversible by nobody.
-- Gas. A hundred components fit every hub path in one transaction (`test_aHundredComponentsFitOneTransaction`, about
-  3.7M for redeem). The settlement's parse of a hundred Pyth feeds through the real contract is measured on the fork
-  before mainnet (section 5).
+- Gas. A hundred components fit every hub and factory path in one transaction on mock tokens
+  (`test_aHundredComponentsFitOneTransaction`: about 3.7M for redeem, 13.1M for `createIndex`, 4.8M for the
+  settlement's own work with Pyth's parse mocked). A fill of real legs costs far more, 14.9M for 92 on the fork with
+  the parse still mocked, so whether a hundred-leg fill fits under the 16.78M cap once Pyth's real parse is added is
+  open: the fork settlement against Pyth's contract measures it before mainnet (section 5). If it does not fit, the
+  guardian's keep-mask starts fill the legs in parts, and the cap on components is the owner's to revisit.
 
 ## 5. The steps to mainnet, in order
 
