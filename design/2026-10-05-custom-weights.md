@@ -49,9 +49,9 @@ transaction.
 comes from, so one keyed service, the app's backend for instance, can fetch updates and hand them to any executor. But
 a rebalance now needs someone with a key; that is an operating cost and a dependency the owner should weigh.
 
-**What holders then trust.** Pyth's publishers (exchanges and trading firms) feed its aggregate, Wormhole's guardians
-sign it across, and the Pyth contract on Ethereum is upgradeable by Pyth's DAO, which upgraded it in place on
-2026-08-26. The app says so on every index, as it labels WBTC's custodian. Section 6 bounds what a broken price can cost.
+**What holders then trust.** Pyth's publishers (exchanges and trading firms) feed its aggregate, Pyth's own set of five
+signing keys signs it across (since OP-PIP-132 of 2026-08-26; Wormhole's guardians did before), and the Pyth contract
+on Ethereum is upgradeable by Pyth's DAO, which upgraded it in place on 2026-08-26. The app says so on every index, as it labels WBTC's custodian. Section 6 bounds what a broken price can cost.
 
 **Per coin, before listing.** Each coin's price id is checked like its address: the feed's description names the
 asset. Read on 2026-10-05, every id names its coin, with two choices and one open question:

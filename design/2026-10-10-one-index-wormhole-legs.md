@@ -27,8 +27,16 @@ The listing universe is every coin that meets three conditions:
 
 Wormhole is the one bridge accepted for wrapping, for three reasons. Its token bridge is permissionless: anyone
 attests a token on its home chain and the bridge deploys the wrapped ERC-20 on Ethereum, so no listing waits on a
-third party. Its guardians (13 of 19) already sign every Pyth price update the hub settles on, so it adds no party
-to the trust set. And its SOL copy is already listed (`MainnetAddresses.SOL`, the owner's call of 2026-10-10). A
+third party. Its guardians (13 of 19) were taken to sign every Pyth price update the hub settles on, so that it would
+add no party to the trust set. And its SOL copy is already listed (`MainnetAddresses.SOL`, the owner's call of
+2026-10-10).
+
+**Correction, 2026-10-13.** The second reason was already out of date when this record was written. Read on an anvil
+fork of Ethereum at block 26,176,814 on 2026-10-12, Pyth's contract verifies updates through its receiver against
+guardian set 1, five keys, none of them among Wormhole's 19 guardians (set 7): Pyth's OP-PIP-132 moved Pyth Core on
+the EVM mainnets to the Pyth Pro signers on 2026-08-26. So the wrapped legs add Wormhole's guardians as a party of
+their own, and section 3 counts them that way. Whether that changes the decision is the owner's call; read OP-PIP-132,
+whose forum thread is titled "Pyth Core deprecation EVM", before mainnet. A
 wrapped copy is listed at its coin's Pyth feed, as Binance-Peg copies are, in the tier `Bridged`; one wrapped from a
 Binance-Peg BEP-20 carries Binance's custody too and is labelled Custodial as well. The app names Wormhole on every
 wrapped leg.
@@ -126,33 +134,38 @@ its coin's feed, and extend `testFork_theWormholeCopiesAreTheBridges` with its s
 listed `Custodial`, the rest `Bridged`. Nothing here needs a key of ours beyond gas.
 
 **Fork results, 2026-10-11** (`test/fork/WeightedHub.fork.t.sol` on Alchemy's archive node, blocks 26,167,826 and
-26,168,132): the 92 coins forge-std's `deal` can fund issue, rebalance with real transfers of every token and redeem
-to the last unit in one index, and the fill of 92 legs costs 14.9M gas with Pyth's parse mocked, under EIP-7825's
-16.78M. 45 coins trade through the zap within 2% slippage on $1,000, and an index of them mints through the zap and
+26,168,132): the 92 coins forge-std's `deal` can fund issue, rebalance with real transfers of every token and redeem to
+the last unit in one index, and the fill of 92 legs measures 14.9M gas with Pyth's parse mocked, under EIP-7825's
+16.78M. That figure counts the test executor's own forge-std `deal` calls, which run inside the measured window; on an
+anvil fork of 2026-10-12 at block 26,176,814, with Pyth's real contract verifying an update signed by five keys the test
+installed as its receiver's guardian set, a fill of 93 legs cost 7,259,578 gas, Pyth's parse 2.34M of it for a 30.9 KB
+update. 45 coins trade through the zap within 2% slippage on $1,000, and an index of them mints through the zap and
 rebalances through a Uniswap-routed executor. SNX is the one coin out of the first test: its balances live in its
 `TokenState` contract, which forge-std's slot finder cannot reach; the hub holds it like any other ERC-20. Two earlier
-runs of that test ran for one and two hours before the network dropped, both inside RSR: forge-std's `deal` probes
-every slot `balanceOf` reads with `type(uint256).max`, one of RSR's is the length of its `origins` set, and its
-`balanceOf` then walks that many empty slots, one fork read each. The suite now caps every `deal` at 32M gas
-(`DEAL_GAS`), which ends the walk after about 10,000 reads.
+runs of that test ran for one and two hours before the network dropped, both inside RSR: forge-std's `deal` probes every
+slot `balanceOf` reads with `type(uint256).max`, one of RSR's is the length of its `origins` set, and its `balanceOf`
+then walks that many empty slots, one fork read each. The suite now caps every `deal` at 32M gas (`DEAL_GAS`), which
+ends the walk after about 10,000 reads.
 
 ## 3. The trust, stated for the app
 
 | Party | What it can do | Reach |
 |---|---|---|
 | The Xindex contracts | A bug | Everything. Reviewed internally twice; the external audit is before any mainnet. |
-| Wormhole's guardians, 13 of 19 | Forge a bridge message: mint unbacked wrapped tokens, or upgrade every wrapped token's code at once, with no timelock | Every wrapped leg at once. Also a forged Pyth price, which the turnover cap bounds to 20% of a leg per fill, once a week, and the guardian can cancel. |
+| Wormhole's guardians, 13 of 19 | Forge a bridge message: mint unbacked wrapped tokens, or upgrade every wrapped token's code at once, with no timelock | Every wrapped leg at once. |
+| Pyth's five signing keys (since 2026-08-26) and Pyth's governance, which can upgrade its contract | Sign or install a forged price | The turnover cap: 20% of each leg's units per fill, once a week, and the guardian can cancel. |
 | Binance | Stop honouring a Binance-Peg coin | That leg. Nine coins carry Binance and Wormhole both. |
 | BitGo, Ondo, Tether, every other issuer | Pause, blacklist or burn its token | That leg. |
 | Pyth's publishers | A wrong price | Bounded as above. |
 | The owner Safe and the guardian | Nothing over funds; the guardian can stall rebalances | Drift, no loss. |
 | Executors, anyone | Nothing beyond the capped auction | Bounded by design. |
 
-Xindex v5 already trusted Wormhole's guardians through Pyth, bounded to the turnover cap. This decision widens that
-one party's reach from a capped haircut to the whole of each wrapped leg. An index whose value sits mostly in the
-first row of section 2 carries little of it; an equal-weighted hundred carries about half its value on the
-guardians. The app shows a creator the wrapped share of value before the index is created, and shows every holder
-the same figure.
+This record first said that Xindex v5 already trusted Wormhole's guardians through Pyth, bounded to the turnover cap, so
+that this decision only widened that party's reach. On chain that no longer holds (section 1's correction): this
+decision adds Wormhole's guardians as a party of their own, whose reach is the whole of each wrapped leg. An index whose
+value sits mostly in the first row of section 2 carries little of it; an equal-weighted hundred carries about half its
+value on the guardians. The app shows a creator the wrapped share of value before the index is created, and shows every
+holder the same figure.
 
 The wrapped copies have no DEX liquidity. Redeem always works and pays the wrapped tokens; turning them into the
 coin needs Wormhole live. A Wormhole halt locks that value, it does not take it.
@@ -168,10 +181,11 @@ coin needs Wormhole live. A Wormhole halt locks that value, it does not take it.
   home chain, one on Ethereum. Permissionless and reversible by nobody.
 - Gas. A hundred components fit every hub and factory path in one transaction on mock tokens
   (`test_aHundredComponentsFitOneTransaction`: about 3.7M for redeem, 13.1M for `createIndex`, 4.8M for the
-  settlement's own work with Pyth's parse mocked). A fill of real legs costs far more, 14.9M for 92 on the fork with
-  the parse still mocked, so whether a hundred-leg fill fits under the 16.78M cap once Pyth's real parse is added is
-  open: the fork settlement against Pyth's contract measures it before mainnet (section 5). If it does not fit, the
-  guardian's keep-mask starts fill the legs in parts, and the cap on components is the owner's to revisit.
+  settlement's own work with Pyth's parse mocked). With real tokens and Pyth's real contract, a fill of 93 legs cost
+  7.26M on an anvil fork of 2026-10-12, Pyth's parse 2.34M of it, on an update signed by keys the test installed
+  (section 2); a hundred legs fit under the 16.78M cap with room to spare. The settlement on a real update from
+  Hermes is still to be measured (section 5). Were it not to fit, the guardian's keep-mask starts would fill the legs
+  in parts.
 
 ## 5. The steps to mainnet, in order
 
@@ -182,13 +196,14 @@ coin needs Wormhole live. A Wormhole halt locks that value, it does not take it.
    `testFork_theWormholeCopiesAreTheBridges` pin the result. Done for everything on Ethereum on 2026-10-10: the list
    is 93.
 3. Measure a hundred-feed settlement against Pyth's real contract on a real signed update (a Hermes key), which the
-   v5 spec's section 8 already requires.
+   v5 spec's section 8 already requires. Pyth's real contract is measured (7.26M for 93 legs, section 2); the update
+   from Hermes is not.
 4. Pyth's parameter replay (`design/2026-10-05-custom-weights.md`, section 8).
 5. The external audit.
 6. The owner Safe (3 of 5) and the guardian on Ethereum; `DeployWeighted`, then `ConfigureWeighted` over the list.
 7. The app side, in the web app's repository: Wormhole Connect embedded for bridging in and out, the wrapped share
    and the Wormhole and Custodial labels on every index, and a filler for `MintRequests`. No filler exists:
-   `keeper/` is a draft that fills rebalance auctions only. Until the owner runs one or market makers fill, a buyer
+   `keeper/` starts and fills rebalance auctions only. Until the owner runs one or market makers fill, a buyer
    with only USDC waits for a fill or cancels.
 
 ## 6. What does not change

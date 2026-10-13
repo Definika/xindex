@@ -17,9 +17,10 @@ of 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). `WeightedIndexFa
 top 300 today), and otherwise a copy wrapped by Wormhole's token bridge from the chain that has it (17 from BNB Chain,
 nine of them Binance-Peg; 31 from Solana, Sui, Aptos, Base and the other chains Wormhole serves), priced at the coin's
 Pyth feed and labelled Bridged, Custodial as well when the source is Binance-Peg. The list stands at 93
-(`script/PythIds.sol`), 13 of them Wormhole copies, with 34 more copies to attest. Wormhole's guardians already sign
-every Pyth update, so the wrapping adds no party; it widens that party's reach from the turnover cap to the whole of
-each wrapped leg, and the app shows every index's wrapped share of value. Nothing crosses a chain inside a contract:
+(`script/PythIds.sol`), 14 of them Wormhole copies, with 34 more copies to attest. The wrapping adds Wormhole's
+guardians as a party whose reach is the whole of each wrapped leg, and the app shows every index's wrapped share of
+value. They do not sign Pyth's prices: since Pyth's OP-PIP-132 of 2026-08-26, Pyth's contract on Ethereum verifies
+updates against Pyth's own set of five keys (read on chain on 2026-10-12). Nothing crosses a chain inside a contract:
 the app and the fillers bridge. The BNB Chain deployment of 2026-10-07 (`design/2026-10-07-two-chain-deployment.md`)
 is shelved: its address book, defaults and fork suite stay, and no deploy there is planned. No vault, no proof, no
 bridge of our own, no speed limit and no freezer exist any more: Stage B (six vaults, eight state verifiers, the P1
@@ -28,7 +29,7 @@ and P2 proofs of Ethereum's finality, the hybrid index) is tagged `stage-b-2026-
 v4's market-cap index (reference supplies and a price-free λ auction, deleted on 2026-10-06,
 `audit/2026-10-06-v4-retirement.md`). Nothing is deployed on a mainnet yet.
 
-Where it stands (2026-10-10):
+Where it stands (2026-10-13):
 - The weighted index is built and reviewed twice (`audit/2026-10-05-v5-review.md`, `audit/2026-10-07-v5-logic-review.md`).
 - The Ethereum deployment's scripts are built: `DeployWeighted`, `ConfigureWeighted` over `PythIds`, `CheckToken`.
 - The BNB Chain deployment's scripts are built and shelved: the address book (`script/BnbChainAddresses.sol`), the
@@ -39,12 +40,15 @@ Where it stands (2026-10-10):
   home chain the owner sends (section 2a of the 2026-10-10 record lists them with the procedure); each then goes
   through the check and the lists. A hundred-coin index is minted in kind or through `MintRequests`, since the zap
   stops near 35 legs. On a fork of 2026-10-11, the 92 coins forge-std can fund issue, rebalance with real transfers
-  and redeem in one index, a fill of 92 legs costing 14.9M gas with Pyth's parse mocked, and 45 of them trade through
-  the zap within 2% on $1,000; SNX is out of that test only because its balances live in its `TokenState`, beyond
-  forge-std's `deal`.
-- Before any mainnet: Pyth's parameter replay (`design/2026-10-05-custom-weights.md`, section 8), the fork settlement
-  of a hundred feeds against Pyth's real contract on a real signed update (a Hermes key), and an external audit.
-  README and ARCHITECTURE still describe v4 in places and carry a note until rewritten.
+  and redeem in one index, and 45 of them trade through the zap within 2% on $1,000; SNX is out of that test only
+  because its balances live in its `TokenState`, beyond forge-std's `deal`. That test's 14.9M gas for the fill counts
+  its executor's own `deal` calls; on an anvil fork of 2026-10-12, with Pyth's real contract verifying an update signed
+  by keys the test installed in Pyth's receiver, a fill of 93 legs cost 7.26M, Pyth's parse 2.34M of it.
+- The keeper bot is built (`keeper/`, the keeper's own Foundry project and Node bot, with unit and end-to-end tests):
+  it starts and fills auctions, serves coins without a Uniswap route from its executor's stock, and holds no role.
+- Before any mainnet: Pyth's parameter replay (`design/2026-10-05-custom-weights.md`, section 8), a settlement on a
+  real update from Hermes (which needs Pyth's API key), a reading of OP-PIP-132 for what it means for Pyth on Ethereum,
+  and an external audit.
 
 For more:
 - `design/2026-10-05-custom-weights.md`: the v5 spec.
@@ -300,10 +304,11 @@ Anyone may run one; its key is the keeper's own hot key, never the owner's or th
   notice and auction, so a dust issue can grief an executor sized from an off-chain simulation: the callback arguments
   are authoritative (DA-13). At `MAX_COMPONENTS` (100), every path of the hub and the factory fits a transaction under
   EIP-7825's 2^24 gas cap on mock tokens (`test_aHundredComponentsFitOneTransaction`): `createIndex` about 13.1M,
-  `redeemSkipping` with every component skipped 5.1M, the settlement's own work 4.8M with Pyth's parse mocked. A fill
-  of real legs costs far more, 14.9M for 92 on the fork with the parse still mocked, so whether a hundred-leg fill fits
-  once Pyth's real parse is added is open until the fork settlement against Pyth's contract measures it. Swaps for 100
-  legs do not fit, so an atomic fill that wide needs an executor that already holds the tokens.
+  `redeemSkipping` with every component skipped 5.1M, the settlement's own work 4.8M with Pyth's parse mocked. With
+  real tokens and Pyth's real contract, a fill of 93 legs cost 7.26M on an anvil fork of 2026-10-12, the parse 2.34M
+  of it for a 30.9 KB update signed by keys the test installed; the fork suite's 14.9M for 92 legs counts its
+  executor's `deal` calls. A real Hermes update is still to be measured. Swaps for 100 legs do not fit, so an atomic
+  fill that wide needs an executor that already holds the tokens.
 - **Keep mask.** Only the owner or guardian can pass one, and it routes around a component that cannot be moved. A kept
   component is neither priced nor read, and its units stay exactly as they were. `executeRebalance` reads `balanceOf`
   only on a component that sends or receives something, so a component whose `transfer` or `balanceOf` reverts, or
@@ -487,12 +492,14 @@ Anyone may run one; its key is the keeper's own hot key, never the owner's or th
 ## Product decisions already made (do not re-litigate silently)
 
 **One index on Ethereum, the missing coins as Wormhole-wrapped legs** (the owner's decision of 2026-10-10,
-`design/2026-10-10-one-index-wormhole-legs.md`): one deployment, on Ethereum; an index holds up to 100 coins of the
-top 300 in kind; a coin Ethereum lacks is listed as the copy Wormhole's token bridge wraps from its home chain,
-attested by anyone, priced at the coin's Pyth feed, labelled Bridged (and Custodial from a Binance-Peg source).
-Wormhole is the one bridge accepted for wrapping, because its guardians already sign Pyth's updates and its SOL copy
-was already listed. The BNB Chain deployment is shelved, not deleted. Own vaults, own proofs and any other bridge
-stay refused. The listing rules below (memecoins, exchange tokens, NIGHT, the WBT rule) are unchanged.
+`design/2026-10-10-one-index-wormhole-legs.md`): one deployment, on Ethereum; an index holds up to 100 coins of the top
+300 in kind; a coin Ethereum lacks is listed as the copy Wormhole's token bridge wraps from its home chain, attested by
+anyone, priced at the coin's Pyth feed, labelled Bridged (and Custodial from a Binance-Peg source). Wormhole is the one
+bridge accepted for wrapping, because its token bridge is permissionless and its SOL copy was already listed. The
+record's third reason, that its guardians sign Pyth's updates, no longer holds on chain: since 2026-08-26 Pyth on
+Ethereum verifies with its own five keys, so wrapped legs add Wormhole as a party of its own. The BNB Chain deployment
+is shelved, not deleted. Own vaults, own proofs and any other bridge stay refused. The listing rules below (memecoins,
+exchange tokens, NIGHT, the WBT rule) are unchanged.
 
 **Two chains, no vaults** (the owner's decision of 2026-10-07, superseded in part by the one-index decision above,
 `design/2026-10-07-two-chain-deployment.md`): Xindex was to be deployed on Ethereum and on BNB Chain, each holding
