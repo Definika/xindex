@@ -155,7 +155,7 @@ abstract contract DeployChecks is Script {
 
     /// @notice Rejects an owner or guardian that is one of the market contracts, such as one pasted as OWNER. None of
     ///         them answers `getThreshold`, so {checkOwner} would accept any as a contract owner, and a factory owned
-    ///         by one could never be administered: no listing, no supply batch, and a redeploy. An earlier version had
+    ///         by one could never be administered: no listing, no guardian change, and a redeploy. An earlier version had
     ///         narrowed this to the router alone (XA-39, CR-I37), and a later one, on Ethereum, to the `default` list.
     /// @param owner The intended factory owner.
     /// @param guardian The intended guardian.

@@ -5,7 +5,7 @@
 //
 // Two flows:
 //   planExitFromEthereum   after a burn to USDC, USDT, ETH or WBTC, swap it from the user's Ethereum account to another
-//                          chain's coin at the user's own address there: BTC, or BNB and TRX to fund a vault-coin mint.
+//                          chain's coin at the user's own address there, such as BTC.
 //   planFundToEthereum     before a mint, swap a UTXO chain's coin (BTC, LTC, BCH, DOGE) to USDC, USDT, ETH or WBTC
 //                          at the user's own Ethereum account; the user then mints with the zap.
 //

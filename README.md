@@ -271,8 +271,8 @@ at any time) or `refund` (anyone, after the deadline).
 - **THORChain, from the user's own wallets.** No contract calls THORChain, and the zap, an index or `MintRequests` must
   never be a THORChain destination: a contract receives a plain transfer it cannot use. `swaprail/thorchain.mjs` is the
   reference planner: `planFundToEthereum` turns BTC, LTC, BCH or DOGE into USDC, USDT, ETH or WBTC at the user's own
-  Ethereum account before a zap mint; `planExitFromEthereum` turns a burn's USDC, USDT, ETH or WBTC into BTC, or into
-  BNB at the user's own BNB Chain address, to mint there, as the user's own transaction to THORChain's router.
+  Ethereum account before a zap mint; `planExitFromEthereum` turns a burn's USDC, USDT, ETH or WBTC into BTC or another
+  chain's coin at the user's own address there, as the user's own transaction to THORChain's router.
   It refuses contract senders and destinations, needs two independent THORNode endpoints that agree, pins the
   router, checks the vault and the halts, and writes its own memo with a limit and a refund address. Use it as it is, or
   port its checks whole; `design/2026-10-06-swap-venues.md` explains each.

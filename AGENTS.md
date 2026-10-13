@@ -335,8 +335,7 @@ Anyone may run one; its key is the keeper's own hot key, never the owner's or th
     router and attach a contract to its pools; that stops PancakeSwap legs and moves nobody's funds (SV-I1).
   - **THORChain** never touches a contract: a deposit made inside one can be ignored and lost (SV-I3). It is the app's,
     from the user's own accounts, through `swaprail/thorchain.mjs`, which refuses contract senders and destinations,
-    writes its own memo with a limit and a refund address, cross-checks two THORNode endpoints and pins the router. It
-    is also how a buyer crosses between the Ethereum and BNB Chain deployments.
+    writes its own memo with a limit and a refund address, cross-checks two THORNode endpoints and pins the router.
   - **Commands.** The zap builds every command and every action itself and forwards nothing a caller supplied. The
     router's command set includes `TRANSFER` and `PERMIT2_TRANSFER_FROM`, which move a payer's funds, so passing
     calldata through would hand a caller the router's permissions.
