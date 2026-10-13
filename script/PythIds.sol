@@ -83,7 +83,7 @@ library PythIds {
     /// @dev PEPE / US DOLLAR, read from Hermes on 2026-10-10; exponent -10. Not "1000 PEPE / US DOLLAR" (KPEPE),
     ///      which prices a thousand tokens.
     bytes32 internal constant PEPE = 0xd69731a2e74ac1ce884fc3890f7ee324b6deb66147055249568869ed700882e4;
-    /// @dev SOLANA / US DOLLAR, the coin's feed, as BNB Chain's list used it: nothing prices Wormhole's copy apart.
+    /// @dev SOLANA / US DOLLAR, the coin's feed: nothing prices Wormhole's copy apart.
     bytes32 internal constant SOL = 0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d;
     /// @dev TETHER GOLD / US DOLLAR, the token's own feed.
     bytes32 internal constant XAUT = 0x44465e17d2e9d390e70c999d5a11fda4f092847fcd2e3e5aa089d96c98a30e67;

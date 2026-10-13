@@ -96,12 +96,10 @@ jobs:
             exit 1
           fi
 
-      # BNB_RPC_URL runs the BNB Chain fork suite too; without the secret that suite skips.
       - name: Run Forge tests
         run: forge test -vvv
         env:
           MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
-          BNB_RPC_URL: ${{ secrets.BNB_RPC_URL }}
 
       # The THORChain swap rail is app-side JavaScript (swaprail/), with no dependency: Node's own test runner, which
       # the runner image carries.

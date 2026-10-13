@@ -5,7 +5,6 @@ import {Test} from "forge-std/Test.sol";
 import {ConfigureWeighted} from "../script/ConfigureWeighted.s.sol";
 import {MainnetAddresses} from "../script/MainnetAddresses.sol";
 import {PythIds} from "../script/PythIds.sol";
-import {BnbChainAddresses} from "../script/BnbChainAddresses.sol";
 import {WeightedIndexFactory} from "../src/WeightedIndexFactory.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockPyth} from "./mocks/MockPyth.sol";
@@ -327,119 +326,14 @@ contract ConfigureWeightedTest is Test {
         }
     }
 
-    /// @dev Each named list resolves on its own chain only: Ethereum's two on chain 1, BNB Chain's on chain 56.
+    /// @dev The named lists are Ethereum's and resolve on chain 1 only.
     function test_theNamedListsResolveOnlyOnTheirChain() public {
         vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "default", block.chainid));
         configure.resolveList("default");
         vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "wide", block.chainid));
         configure.resolveList("wide");
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "bnb", block.chainid));
-        configure.resolveList("bnb");
         vm.chainId(1);
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "bnb", 1));
-        configure.resolveList("bnb");
-        vm.chainId(BnbChainAddresses.CHAIN_ID);
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "wide", 56));
-        configure.resolveList("wide");
-        assertEq(configure.resolveList("bnb").length, BnbChainAddresses.COUNT);
-    }
-
-    /// @dev The BNB Chain list is `BnbChainAddresses`' table: WBNB, BTCB and ETH first, one price id per coin, none
-    ///      zero, the three majors pinned to the feeds they were read from (V5-M1), and every coin carrying its tier.
-    function test_theBnbListIsTheTable() public {
-        vm.chainId(BnbChainAddresses.CHAIN_ID);
-        ConfigureWeighted.Entry[] memory list = configure.resolveList("bnb");
-        (address[] memory tokens, bytes32[] memory ids) = BnbChainAddresses.all();
-        assertEq(list.length, 16, "the BNB Chain list of 2026-10-07, less SOL on 2026-10-10");
-        assertEq(tokens.length, list.length);
-        uint256[4] memory count;
-        for (uint256 i = 0; i < tokens.length; ++i) {
-            assertEq(list[i].token, tokens[i]);
-            assertEq(list[i].priceId, ids[i]);
-            assertTrue(ids[i] != bytes32(0));
-            for (uint256 j = 0; j < i; ++j) {
-                assertTrue(ids[i] != ids[j], "one id per coin");
-                assertTrue(tokens[i] != tokens[j], "one entry per token");
-            }
-            PythIds.Tier tier = BnbChainAddresses.tierOf(tokens[i]);
-            assertTrue(tier != PythIds.Tier.Unrecorded, "every listed coin is recorded");
-            ++count[uint256(tier)];
-        }
-        assertEq(list[0].token, BnbChainAddresses.WBNB);
-        assertEq(ids[0], 0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f, "WBNB on BNB/USD");
-        assertEq(ids[1], 0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43, "BTCB on BTC/USD");
-        assertEq(ids[2], 0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace, "ETH on ETH/USD");
-        assertEq(count[uint256(PythIds.Tier.Native)], 2, "WBNB and ASTER");
-        assertEq(count[uint256(PythIds.Tier.Bridged)], 1, "STABLE");
-        assertEq(count[uint256(PythIds.Tier.Custodial)], 13, "BTCB, ETH, the Binance-Peg coins and TRX");
-        assertEq(configure.tierLabel(BnbChainAddresses.BTCB), " (Custodial)");
-        assertEq(configure.tierLabel(BnbChainAddresses.WBNB), " (Native)");
-        assertEq(configure.tierLabel(BnbChainAddresses.STABLE), " (Bridged)");
-        assertEq(uint8(BnbChainAddresses.tierOf(BnbChainAddresses.USDC)), uint8(PythIds.Tier.Unrecorded));
-        assertEq(
-            uint8(BnbChainAddresses.tierOf(0x570A5D26f7765Ecb712C0924E4De545B89fD43dF)),
-            uint8(PythIds.Tier.Unrecorded),
-            "Binance-Peg SOL left the list"
-        );
-    }
-
-    /// @dev CR-L08 for BNB Chain: the list is the release record, pinned against this table, written out by hand.
-    function test_CRL08_theBnbListIsTheReleaseRecord() public view {
-        ConfigureWeighted.Entry[] memory list = configure.bnbList();
-        address[16] memory tokens = [
-            0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c, // WBNB
-            0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c, // BTCB
-            0x2170Ed0880ac9A755fd29B2688956BD959F933F8, // ETH
-            0x1D2F0da169ceB9fC7B3144628dB156f3F6c60dBE, // XRP
-            0x1Ba42e5193dfA8B03D15dd1B86a3113bbBEF8Eeb, // ZEC
-            0xbA2aE424d960c26247Dd6c32edC70B295c744C43, // DOGE
-            0x3EE2200Efb3400fAbB9AacF31297cBdD1d435D47, // ADA
-            0x8fF795a6F4D97E7887C79beA79aba5cc76444aDf, // BCH
-            0x4338665CBB7B2485A8855A139b75D5e34AB0DB94, // LTC
-            0x1CE0c2827e2eF14D5C4f29a091d735A204794041, // AVAX
-            0x7083609fCE4d1d8Dc0C979AAb8c869Ea2C873402, // DOT
-            0x0D8Ce2A99Bb6e3B7Db580eD848240e4a0F9aE153, // FIL
-            0x0Eb3a705fc54725037CC9e008bDede697f62F335, // ATOM
-            0x000Ae314E2A2172a039B26378814C252734f556A, // ASTER
-            0x011EBe7d75E2C9D1E0bD0be0bEf5C36f0A90075F, // STABLE
-            0xCE7de646e7208a4Ef112cb6ed5038FA6cC6b12e3 // TRX
-        ];
-        bytes32[16] memory ids = [
-            bytes32(0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f), // WBNB
-            0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43, // BTCB
-            0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace, // ETH
-            0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8, // XRP
-            0xbe9b59d178f0d6a97ab4c343bff2aa69caa1eaae3e9048a65788c529b125bb24, // ZEC
-            0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c, // DOGE
-            0x2a01deaec9e51a579277b34b122399984d0bbf57e2458a7e42fecd2829867a0d, // ADA
-            0x3dd2b63686a450ec7290df3a1e0b583c0481f651351edfa7636f39aed55cf8a3, // BCH
-            0x6e3f3fa8253588df9326580180233eb791e03b443a3ba7a1d892e73874e19a54, // LTC
-            0x93da3352f9f1d105fdfe4971cfa80e9dd777bfc5d0f683ebb6e1294b92137bb7, // AVAX
-            0xca3eed9b267293f6595901c734c7525ce8ef49adafe8284606ceb307afa2ca5b, // DOT
-            0x150ac9b959aee0051e4091f0ef5216d941f590e1c5e7f91cf7635b5c11628c0e, // FIL
-            0xb00b60f88b03a6a625a8d1c048c3f66653edf217439983d037e7222c4e612819, // ATOM
-            0xa903b5a82cb572397e3d47595d2889cf80513f5b4cf7a36b513ae10cc8b1e338, // ASTER
-            0x98d7f32f2c26ea94c79a15df45239b7c2e04368e46f49fdbf06dd5e449374e64, // STABLE
-            0x67aed5a24fdad045475e7195c98a98aea119c763f272d4523f5bac93a4f33c2b // TRX
-        ];
-        assertEq(list.length, tokens.length);
-        for (uint256 i = 0; i < tokens.length; ++i) {
-            assertEq(list[i].token, tokens[i]);
-            assertEq(list[i].priceId, ids[i]);
-        }
-    }
-
-    /// @dev BNB Chain's mint currencies are never components either, whatever a list names (the whitelist policy).
-    function test_theBnbMintCurrenciesAreNeverComponents() public view {
-        address[2] memory stables = [BnbChainAddresses.USDT, BnbChainAddresses.USDC];
-        for (uint256 i = 0; i < stables.length; ++i) {
-            ConfigureWeighted.Entry[] memory list = new ConfigureWeighted.Entry[](1);
-            list[0] = ConfigureWeighted.Entry({token: stables[i], priceId: A_ID});
-            address[] memory first = new address[](1);
-            first[0] = stables[i];
-            (bytes[] memory calls,) = configure.safeCalldata(factory, list, first, _none());
-            assertEq(calls.length, 0, "a mint currency is skipped");
-        }
+        assertEq(configure.resolveList("default").length, configure.DEFAULT_COUNT());
     }
 
     function test_entriesParse() public view {

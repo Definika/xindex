@@ -11,8 +11,8 @@ key or bot is involved in rebalancing.
 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). An index holds Ethereum ERC-20s in kind: the issuer's own
 contract where Ethereum has one, and otherwise the copy Wormhole's token bridge wraps from the chain that has it, priced
 at the coin's own Pyth feed. Nothing crosses a chain inside a contract: the app and the fillers bridge. There is no
-vault, no proof and no bridge of ours. The BNB Chain deployment (`design/2026-10-07-two-chain-deployment.md`) is
-shelved: its address book, deploy defaults and fork suite stay in the tree, and no deploy there is planned.
+vault, no proof and no bridge of ours. The BNB Chain deployment of 2026-10-07 was shelved on 2026-10-10 and deleted
+on 2026-10-13.
 
 This file describes **v5 as built**: `WeightedIndexFactory`, the `WeightedHub` it clones, `IndexZap` and
 `MintRequests`. The v5 spec is `design/2026-10-05-custom-weights.md` (the "spec"). `WeightedHub` keeps the issue,
@@ -447,9 +447,9 @@ cost 7,259,578 gas, Pyth's parse 2.34M of it for a 30.9 KB update, under EIP-782
 `keeper/test/e2e/pnau.mjs` signs updates the same way. What stays open before mainnet is the same settlement on a real
 update from Hermes, which needs the API key.
 
-A fill that swaps inside the call costs an estimated 150k a leg on top (`design/2026-09-29-v4-hybrid-architecture.md`,
-section 9.1), so swaps inside a 100-leg fill do not fit, and a fill that wide needs an executor with inventory. The zap
-stops near 35 components (section 2).
+A fill that swaps inside the call costs an estimated 150k a leg on top (v4's hybrid design, section 9.1), so swaps
+inside a 100-leg fill do not fit, and a fill that wide needs an executor with inventory. The zap stops near 35
+components (section 2).
 
 ## 7. Security model
 
@@ -502,11 +502,10 @@ stops near 35 components (section 2).
   `mulDiv`. Units beyond `uint96` stop a fill rather than wrap (V5-L3).
 - **Operations.** `script/DeployWeighted.s.sol` deploys the factory (and through it the hub's implementation), the zap
   and `MintRequests`. `OWNER` and `GUARDIAN` are required and must differ. On chain 1, Pyth, both routers and the
-  stablecoins come from `script/MainnetAddresses.sol` and nothing else is accepted (`MainnetOverride`); chain 56 is
-  pinned to `script/BnbChainAddresses.sol` the same way. There the owner must be a contract that is not an EIP-7702
-  delegated account, and a Safe must need at least three signatures and have no enabled module; neither the guardian
-  nor the broadcasting key may be one of its signers (SA-06). Neither role may be either router, the PoolManager, Pyth,
-  or any token or mint currency in the chain's address book (XA-39, CR-I37).
+  stablecoins come from `script/MainnetAddresses.sol` and nothing else is accepted (`MainnetOverride`). There the owner
+  must be a contract that is not an EIP-7702 delegated account, and a Safe must need at least three signatures and have
+  no enabled module; neither the guardian nor the broadcasting key may be one of its signers (SA-06). Neither role may
+  be either router, the PoolManager, Pyth, or any token or mint currency in the chain's address book (XA-39, CR-I37).
 - **Known limitations** are listed in the README, where users read them.
 
 ## 8. Verification
@@ -537,8 +536,7 @@ stops near 35 components (section 2).
   balances, `MintRequests` on the real stablecoins and the deploy script against real Safes (`Security.fork`); and v5
   with Pyth's parse mocked: every coin forge-std can fund issued, rebalanced and redeemed in one index, the liquid ones
   through the zap and a Uniswap-routed executor, and four drills, a WBTC pause, a silent feed, a price a hundred times
-  low and an auction nobody fills (`WeightedHub.fork`). A sixth, `BnbChainAddresses.fork`, checks the shelved BNB Chain
-  address book.
+  low and an auction nobody fills (`WeightedHub.fork`).
 - **Gates,** enforced in CI: the submodule check against `foundry.lock`, `forge fmt --check`, `forge build`,
   `forge lint -D notes`, the ABI diff of the four committed ABIs, `forge test` (fork suites required on pushes to
   `main` and on pull requests into it from this repository), the swap rail's and the keeper's tests, 100% coverage on
@@ -592,10 +590,9 @@ and one L2 deployment if cheap minting for small buyers matters after launch.
 - **v3** (2026-09-22): prices from Chainlink USD feeds, execution through the Universal Router; the change and what it
   retired are in `audit/2026-09-22-v3-retirement.md`. v3 is tagged `v3.0.0` and runs on Sepolia; it never launches on
   mainnet.
-- **v4 Stage A** (2026-09-29 to 2026-09-30): the hybrid multichain design
-  (`design/2026-09-29-v4-hybrid-architecture.md`), revised after an external review, and Stage A's price-free
-  market-cap index: units proportional to reference supplies the owner revised in weekly batches, settled by a
-  price-free auction on a band λ. What that retired is in `audit/2026-09-30-v4-stage-a-retirement.md`.
+- **v4 Stage A** (2026-09-29 to 2026-09-30): the hybrid multichain design, revised after an external review, and Stage
+  A's price-free market-cap index: units proportional to reference supplies the owner revised in weekly batches, settled
+  by a price-free auction on a band λ. What that retired is in `audit/2026-09-30-v4-stage-a-retirement.md`.
 - **v4 Stage B** (2026-09-30 to 2026-10-06): ownerless vaults on BNB Chain, TRON, NEAR, Stellar, Sui, Injective,
   VeChain, Aptos and Solana, driven by two zkVM proofs of Ethereum's finality, with each chain's state verifier on
   Ethereum and the hybrid index that held their coins. Built in large part, deployed nowhere, tagged
@@ -604,8 +601,9 @@ and one L2 deployment if cheap minting for small buyers matters after launch.
   `WeightedIndexFactory`) and reviewed (`audit/2026-10-05-v5-review.md`); the market-cap hub and factory deleted on
   2026-10-06 (`audit/2026-10-06-v4-retirement.md`); PancakeSwap legs in the zap; the logic review and V5R-1's fix on
   2026-10-07; and that day the owner's decision to deploy on Ethereum and BNB Chain, each holding its own chain's
-  tokens, with no vaults (`design/2026-10-07-two-chain-deployment.md`).
+  tokens, with no vaults.
 - **One index on Ethereum** (2026-10-10 to 2026-10-13): the owner's decision to ship one deployment, on Ethereum, with
   the coins it lacks as Wormhole copies, shelving BNB Chain (`design/2026-10-10-one-index-wormhole-legs.md`); the list
-  grown to 93; the fork run of 92 coins in one index; the end-to-end run against Pyth's real contract (section 6); and
-  the keeper bot with its executor (`keeper/`).
+  grown to 93; the fork run of 92 coins in one index; the end-to-end run against Pyth's real contract (section 6); the
+  keeper bot with its executor (`keeper/`); and on 2026-10-13 the deletion of the BNB Chain deployment, the v4 demo,
+  the review PoCs and the records of retired designs, all recoverable from git at `f83dcab`.

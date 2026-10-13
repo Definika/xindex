@@ -10,7 +10,6 @@ import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {CheckToken} from "../script/CheckToken.s.sol";
 import {ConfigureWeighted} from "../script/ConfigureWeighted.s.sol";
 import {MainnetAddresses} from "../script/MainnetAddresses.sol";
-import {BnbChainAddresses} from "../script/BnbChainAddresses.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockFeeToken} from "./mocks/MockFeeToken.sol";
 import {MockRebasingToken} from "./mocks/MockRebasingToken.sol";
@@ -568,21 +567,15 @@ contract CheckTokenTest is Test {
         assertEq(checker.depth(address(token), none).length, 0);
     }
 
-    function test_marketsAreThePinnedChains() public {
+    function test_marketsAreThePinnedChain() public {
         CheckToken.Markets memory m = checker.markets();
-        assertEq(m.v3Factory, address(0), "no depth is measured off Ethereum and BNB Chain");
+        assertEq(m.v3Factory, address(0), "no depth is measured off Ethereum");
         vm.chainId(1);
         m = checker.markets();
         assertEq(m.v3Factory, MainnetAddresses.UNISWAP_V3_FACTORY);
         assertEq(m.poolManager, MainnetAddresses.POOL_MANAGER);
         assertEq(m.weth, MainnetAddresses.WETH);
         assertEq(m.usdc, MainnetAddresses.USDC);
-        vm.chainId(BnbChainAddresses.CHAIN_ID);
-        m = checker.markets();
-        assertEq(m.v3Factory, BnbChainAddresses.UNISWAP_V3_FACTORY);
-        assertEq(m.poolManager, BnbChainAddresses.POOL_MANAGER);
-        assertEq(m.weth, BnbChainAddresses.WBNB);
-        assertEq(m.usdc, BnbChainAddresses.USDC);
     }
 
     // ---------------------------------------------------------------------
@@ -707,7 +700,7 @@ contract CheckTokenTest is Test {
         checker.holderFor(bad, token);
     }
 
-    /// @dev CHECK names `ConfigureWeighted`'s lists, each on its own chain only, or addresses.
+    /// @dev CHECK names `ConfigureWeighted`'s lists, on Ethereum only, or addresses.
     function test_resolveTokens() public {
         address a = makeAddr("a");
         address b = makeAddr("b");
@@ -717,8 +710,6 @@ contract CheckTokenTest is Test {
 
         vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "wide", block.chainid));
         checker.resolveTokens("wide");
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "bnb", block.chainid));
-        checker.resolveTokens("bnb");
         vm.chainId(1);
         ConfigureWeighted lists = new ConfigureWeighted();
         address[] memory first = checker.resolveTokens("default");
@@ -730,11 +721,6 @@ contract CheckTokenTest is Test {
         for (uint256 i = 0; i < wide.length; ++i) {
             assertEq(wide[i], entries[i].token);
         }
-        vm.chainId(BnbChainAddresses.CHAIN_ID);
-        address[] memory bnb = checker.resolveTokens("bnb");
-        assertEq(bnb.length, BnbChainAddresses.COUNT);
-        assertEq(bnb[0], BnbChainAddresses.WBNB);
-        assertEq(bnb[15], BnbChainAddresses.TRX);
     }
 
     function test_run_readsTheEnvironment() public {

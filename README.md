@@ -12,7 +12,7 @@ of 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). `WeightedIndexFa
 Wormhole's token bridge wraps from the chain that has it, priced at the coin's Pyth feed and labelled Bridged, or
 Custodial when the source is a Binance-Peg coin. The list stands at 93 (`script/PythIds.sol`), 14 of them Wormhole
 copies, with 34 more copies to attest. Nothing crosses a chain inside a contract: the app and the fillers bridge. The
-BNB Chain deployment of 2026-10-07 (`design/2026-10-07-two-chain-deployment.md`) is shelved, its scripts kept.
+BNB Chain deployment of 2026-10-07 was shelved on 2026-10-10 and deleted on 2026-10-13.
 
 **Status (2026-10-13): v5, deployed nowhere yet.** The weighted index is built and reviewed twice
 (`audit/2026-10-05-v5-review.md`, `audit/2026-10-07-v5-logic-review.md`); the Ethereum deployment's scripts are built,
@@ -69,7 +69,7 @@ The history, in one paragraph each:
 
 | Topic | Decision |
 |---|---|
-| Chain | Ethereum mainnet, one deployment (the owner's decision of 2026-10-10). The BNB Chain deployment's scripts are kept and shelved; nothing crosses a chain inside a contract. |
+| Chain | Ethereum mainnet, one deployment (the owner's decision of 2026-10-10). The BNB Chain deployment was deleted on 2026-10-13; nothing crosses a chain inside a contract. |
 | Composition | Constituents and weights fixed at creation, 2 to 100 per index (`MIN_COMPONENTS`, `MAX_COMPONENTS`). Weights are in basis points and sum to `TOTAL_WEIGHT` (10,000). A new list or new weights is a new index. |
 | Creation | `createIndex(name, symbol, components)` with one `ComponentSpec {token, weight, units}` per component. The app derives the starting units from the weights at its own prices; each lies between `MIN_RAW_UNITS` (10,000) and `MAX_UNITS` (`(2^96 − 1) >> 10`). The factory reads no price, and the first rebalance brings an index to its weights. Every component copies its listing's Pyth price id and decimals. |
 | Rebalancing | Anyone starts a rebalance 7 days after the last one or after creation (`MIN_REBALANCE_INTERVAL`), then 2 hours of notice (`REBALANCE_DELAY`), then a 24-hour auction (`AUCTION_DURATION`) in which any contract can fill. The fill reads Pyth's prices, sets each moving component's target from its weight, and moves every leg the same share of the way. The growing legs ask `μ` times their step, `μ` falling from `MU_MAX` (1.02) to `MU_MIN` (0.98). One fill sends out at most `MAX_TURNOVER` (20%) of each component's own units, and must trade at least `MIN_TRADE` (0.1%) of the moving value. |
@@ -502,8 +502,8 @@ stock, Wormhole for every wrapped copy, and both Binance and Wormhole for a copy
 - **THORChain is a trusted third party and can halt.** A THORChain swap is not atomic: its validators hold the coins
   between the two chains, it has halted trading for weeks (39 days after the exploit of May 2026), and a swap that
   cannot fill at its limit is refunded, minus fees, to the refund address. Nothing in Xindex depends on it.
-- Bytecode targets the Cancun EVM (`evm_version = "cancun"`), which Ethereum and BNB Chain both run. Re-check before
-  deploying to any other chain.
+- Bytecode targets the Cancun EVM (`evm_version = "cancun"`), which Ethereum runs. Re-check before deploying to any
+  other chain.
 
 ## Mainnet addresses
 
@@ -528,28 +528,11 @@ Ethereum (`script/MainnetAddresses.sol`):
 | THORChain Router v4.1 (app-side only) | `0xD37BbE5744D730a1d98d8DC97c42F0Ca46aD7146` |
 | WeightedIndexFactory / IndexZap / MintRequests | not deployed |
 
-BNB Chain (`script/BnbChainAddresses.sol`; the tokens of its list are in that file, each with its price id and tier):
-
-| Contract | Address |
-|---|---|
-| USDT (18 decimals) | `0x55d398326f99059fF775485246999027B3197955` |
-| USDC (18 decimals) | `0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d` |
-| WBNB | `0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c` |
-| BTCB (Custodial) | `0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c` |
-| Binance-Peg ETH (Custodial) | `0x2170Ed0880ac9A755fd29B2688956BD959F933F8` |
-| Uniswap Universal Router 2.0.0 | `0x1906c1d672b88cD1B9aC7593301cA990F94Eae07` |
-| Uniswap V4 PoolManager | `0x28e2Ea090877bF75740558f6BFB36A5ffeE9e9dF` |
-| Uniswap V3 Factory | `0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7` |
-| PancakeSwap v3 Universal Router | `0x1A0A18AC4BECDDbd6389559687d1A73d8927E416` |
-| Pyth | `0x4D7E825f80bDf85e913E0DD2A2D54927e9dE1594` |
-| WeightedIndexFactory / IndexZap / MintRequests | not deployed |
-
-The scripts read each chain's addresses from its address book, and a fork test checks each on chain:
-`test/fork/MainnetAddresses.fork.t.sol` against Ethereum and `test/fork/BnbChainAddresses.fork.t.sol` against BNB Chain
-(`BNB_RPC_URL`): tokens by symbol and decimals, the routers and the PoolManager by their runtime code hashes (every
-Universal Router build answers `poolManager()` alike, CR-I35; both routers on BNB Chain are Ethereum's builds but for
-their immutables), Pyth's proxy by its code, and each list on a fresh factory over the chain's Pyth. The quoters and
-StateView are for apps and tests; no contract reads them.
+The scripts read these addresses from the address book, and `test/fork/MainnetAddresses.fork.t.sol` checks it on
+chain: tokens by symbol and decimals, the routers and the PoolManager by their runtime code hashes (every Universal
+Router build answers `poolManager()` alike, CR-I35), Pyth's proxy by its code, the Wormhole copies against the bridge,
+and both lists on a fresh factory over Pyth. The quoters and StateView are for apps and tests; no contract reads
+them.
 
 ## Development
 
@@ -591,8 +574,8 @@ source .env
 ```
 
 `DeployWeighted` deploys `WeightedIndexFactory`, which deploys the `WeightedHub` implementation every index is a clone
-of, then the zap and `MintRequests` for that factory. It runs once, on Ethereum; the BNB Chain deployment is shelved,
-though the script still accepts chain 56. Listings follow through the factory's timelock.
+of, then the zap and `MintRequests` for that factory. It runs once, on Ethereum. Listings follow through the factory's
+timelock.
 
 ```bash
 OWNER=<safe> GUARDIAN=<guardian> forge script script/DeployWeighted.s.sol --rpc-url mainnet --account deployer \
@@ -605,9 +588,9 @@ no enabled module, because a module acts as the Safe without signatures (keep it
 cannot see later changes). The guardian must not be the broadcasting key, which must hold no role; when the owner is a
 Safe, neither the guardian nor the broadcasting key may be one of its signers, since the guardian is the owner's veto
 (SA-06); and neither role may be a market contract: the routers, the PoolManager and Pyth everywhere, and on a mainnet
-also every token and mint currency in that chain's address book (CR-I37). `PYTH`, `UNIVERSAL_ROUTER`, `PANCAKE_ROUTER`,
-`USDC` and `USDT` default to the address book's on chain 1 (`script/MainnetAddresses.sol`) and on chain 56
-(`script/BnbChainAddresses.sol`), where any other value is rejected, and are required anywhere else (a zero
+also every token and mint currency in the address book (CR-I37). `PYTH`, `UNIVERSAL_ROUTER`, `PANCAKE_ROUTER`, `USDC`
+and `USDT` default to the address book's on chain 1 (`script/MainnetAddresses.sol`), where any other value is
+rejected, and are required anywhere else (a zero
 `PANCAKE_ROUTER` off a mainnet deploys a zap that refuses PancakeSwap legs); they are the script's only market
 addresses, because the hub and factory depend on no Uniswap contract.
 
@@ -627,13 +610,12 @@ first run, on 43 coins; every coin of today's list went through it on a fork bef
 
 ```bash
 CHECK=wide forge script script/CheckToken.s.sol --fork-url <mainnet rpc>
-CHECK=<token,...> forge script script/CheckToken.s.sol --fork-url <bnb chain rpc>
+CHECK=<token,...> forge script script/CheckToken.s.sol --fork-url <any evm rpc>
 ```
 
 **Listings** go through `script/ConfigureWeighted.s.sol`, or the equivalent calls through the Safe: each coin with
 the Pyth price id its indexes rebalance at. `V5_WHITELIST=default` is the first four coins of `script/PythIds.sol`
-and `V5_WHITELIST=wide` the other 89, both on Ethereum; `V5_WHITELIST=bnb` is the 16 of the shelved BNB Chain list
-(`script/BnbChainAddresses.sol`). Safe mode labels each with its trust tier:
+and `V5_WHITELIST=wide` the other 89. Safe mode labels each with its trust tier:
 
 ```bash
 # owner is a key you hold (testnets and local forks only; a contract owner such as the mainnet Safe cannot sign, and
@@ -647,7 +629,7 @@ V5_MODE=execute V5_FACTORY=0x... V5_WHITELIST=default forge script script/Config
 ```
 
 `V5_MODE` is one of `propose`, `safe`, `execute` and `status`. `V5_WHITELIST` is `default` or `wide` (chain 1 only),
-`bnb` (chain 56 only), or comma-separated `token:priceId` entries; anything else reverts `MalformedEntry`, and a list
+or comma-separated `token:priceId` entries; anything else reverts `MalformedEntry`, and a list
 that names a token or a price id twice reverts in every mode (RT-24, V5-M1).
 
 - **Propose and safe** propose a listing for each entry that is not listed and has no live proposal, skipping with the
@@ -759,17 +741,16 @@ test/Security.t.sol           regression tests for the security review findings 
 test/mocks/                   mock tokens, a strict Universal Router and PancakeSwap router, a Pyth that follows Pyth's fill loop,
                               V3 pools for the testnet script, the market fixture, with their own tests
 test/fork/                    mainnet fork tests: real V3 and V4 pools, settlements at Pyth prices and security regressions on real tokens
-script/                       DeployWeighted, ConfigureWeighted, PythIds, CheckToken, MainnetAddresses (Ethereum), BnbChainAddresses
-                              (BNB Chain), DeployChecks, ScriptUtils
+script/                       DeployWeighted, ConfigureWeighted, PythIds, CheckToken, MainnetAddresses, DeployChecks, ScriptUtils
 script/interfaces/            the Safe, WETH and Uniswap calls the scripts make
 script/testnet/               SetupTestMarket and FaucetToken for the Sepolia test market
 abi/                          the ABIs the web app decodes with; CI regenerates them and fails on a diff
 keeper/                       the keeper bot and its executor, a Foundry project of its own with its own tests; it holds
                               no role in the protocol (keeper/README.md)
 swaprail/                     the THORChain planner the web app adopts (app-side, no contract calls it), its tests and a read-only live check
-design/                       the v5 spec, the one-index decision, the two-chain decision (shelved), the wide-asset and
-                              admission records, the swap-venue record, the v4 design and specs (history), and the
-                              chain research
+design/                       the v5 spec, the one-index decision, the wide-asset and admission records, the WBT
+                              check, the swap-venue record, and the Stage A spec whose issue, redeem and claims v5
+                              keeps
 audit/                        the security reviews, their triage, and the four retirement records (the PoCs are in git
                               history at f83dcab)
 aderyn.toml                   Aderyn's configuration: the rules the design rejects, each with its reason

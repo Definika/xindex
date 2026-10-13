@@ -3,6 +3,8 @@
 **Status:** the owner's decision of 2026-10-10. It supersedes the second half of the two-chain decision of 2026-10-07
 (`design/2026-10-07-two-chain-deployment.md`): Xindex ships as one deployment, on Ethereum, and the BNB Chain
 deployment is shelved. Its scripts, address book and fork suite stay in the tree; no deploy there is planned.
+**Update, 2026-10-13:** the owner deleted the BNB Chain deployment, and with it the two-chain record; both are in git at
+`f83dcab`.
 
 ## 1. The decision
 

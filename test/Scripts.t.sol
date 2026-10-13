@@ -9,7 +9,6 @@ import {WeightedIndexFactory} from "../src/WeightedIndexFactory.sol";
 import {WeightedHub} from "../src/WeightedHub.sol";
 import {MockPyth} from "./mocks/MockPyth.sol";
 import {MainnetAddresses} from "../script/MainnetAddresses.sol";
-import {BnbChainAddresses} from "../script/BnbChainAddresses.sol";
 import {ConfigureWeighted} from "../script/ConfigureWeighted.s.sol";
 import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
 import {IndexZap} from "../src/IndexZap.sol";
@@ -650,69 +649,6 @@ contract ScriptsTest is Test {
         vm.etch(MainnetAddresses.PANCAKE_UNIVERSAL_ROUTER, hex"00");
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.RoleIsMarketContract.selector, MainnetAddresses.WETH));
         deployer.deploy(MainnetAddresses.WETH, guardian, address(0), address(0), address(0), address(0), address(0));
-    }
-
-    /// @dev On BNB Chain the market addresses are pinned to `BnbChainAddresses` as Ethereum's are to `MainnetAddresses`:
-    ///      zero takes the book's, any other address is refused, every token of the book is a market contract no role
-    ///      may hold, a key is refused as owner, and a Safe deploys from the book alone.
-    function test_deployWeighted_resolvesBnbChainsAddressBook() public {
-        vm.chainId(BnbChainAddresses.CHAIN_ID);
-        address bnbRouter = BnbChainAddresses.UNIVERSAL_ROUTER;
-        vm.etch(bnbRouter, address(new MockUniversalRouter(BnbChainAddresses.POOL_MANAGER)).code);
-        vm.etch(BnbChainAddresses.PANCAKE_UNIVERSAL_ROUTER, hex"00");
-        vm.etch(BnbChainAddresses.USDC, hex"00");
-        vm.etch(BnbChainAddresses.USDT, hex"00");
-        vm.etch(BnbChainAddresses.PYTH, hex"00");
-        assertTrue(deployer.isPinnedChain());
-        assertEq(deployer.pinnedRouter(), bnbRouter);
-        assertEq(deployer.pinnedPancakeRouter(), BnbChainAddresses.PANCAKE_UNIVERSAL_ROUTER);
-        assertEq(deployer.pinnedPyth(), BnbChainAddresses.PYTH);
-        assertEq(deployer.resolveRouter(address(0)), bnbRouter);
-        assertEq(deployer.resolvePancakeRouter(address(0)), BnbChainAddresses.PANCAKE_UNIVERSAL_ROUTER);
-        assertEq(deployer.resolvePyth(address(0)), BnbChainAddresses.PYTH);
-        assertEq(deployer.BNB_PYTH(), BnbChainAddresses.PYTH);
-        assertEq(deployer.pinnedUsdc(), BnbChainAddresses.USDC);
-        assertEq(deployer.pinnedUsdt(), BnbChainAddresses.USDT);
-        assertEq(deployer.resolveStable("USDC", address(0), deployer.pinnedUsdc()), BnbChainAddresses.USDC);
-        vm.expectRevert(
-            abi.encodeWithSelector(DeployChecks.MainnetOverride.selector, "UNIVERSAL_ROUTER", address(router))
-        );
-        deployer.resolveRouter(address(router));
-        vm.expectRevert(abi.encodeWithSelector(DeployChecks.MainnetOverride.selector, "PYTH", pyth));
-        deployer.resolvePyth(pyth);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                DeployChecks.MainnetOverride.selector, "UNIVERSAL_ROUTER", MainnetAddresses.UNIVERSAL_ROUTER
-            )
-        );
-        deployer.resolveRouter(MainnetAddresses.UNIVERSAL_ROUTER); // Ethereum's router is another address here
-
-        address[] memory market = deployer.marketContracts(bnbRouter);
-        assertEq(market.length, 2 + BnbChainAddresses.COUNT + 2, "the router, its PoolManager, 16 tokens, 2 stables");
-        assertEq(market[0], bnbRouter);
-        assertEq(market[1], BnbChainAddresses.POOL_MANAGER);
-        assertEq(market[2], BnbChainAddresses.WBNB);
-        assertEq(market[17], BnbChainAddresses.TRX);
-        assertEq(market[18], BnbChainAddresses.USDC);
-        assertEq(market[19], BnbChainAddresses.USDT);
-        vm.expectRevert(abi.encodeWithSelector(DeployChecks.RoleIsMarketContract.selector, BnbChainAddresses.BTCB));
-        deployer.checkRolesAreNotMarket(BnbChainAddresses.BTCB, guardian, bnbRouter);
-        vm.expectRevert(abi.encodeWithSelector(DeployChecks.RoleIsMarketContract.selector, BnbChainAddresses.USDT));
-        deployer.checkRolesAreNotMarket(owner, BnbChainAddresses.USDT, bnbRouter);
-
-        // A mainnet: a key may not own the factory, a Safe deploys from the book alone.
-        vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerMustBeContract.selector, owner));
-        deployer.deploy(owner, guardian, address(0), address(0), address(0), address(0), address(0));
-        address safeOwner = address(new MockSafe(3));
-        (WeightedIndexFactory factory, IndexZap zap, MintRequests requests) =
-            deployer.deploy(safeOwner, guardian, address(0), address(0), address(0), address(0), address(0));
-        assertEq(factory.owner(), safeOwner);
-        assertEq(factory.PYTH(), BnbChainAddresses.PYTH);
-        assertEq(address(zap.ROUTER()), bnbRouter);
-        assertEq(zap.POOL_MANAGER(), BnbChainAddresses.POOL_MANAGER);
-        assertEq(address(zap.PANCAKE_ROUTER()), BnbChainAddresses.PANCAKE_UNIVERSAL_ROUTER);
-        assertEq(requests.USDC(), BnbChainAddresses.USDC);
-        assertEq(requests.USDT(), BnbChainAddresses.USDT);
     }
 
     // ---------------------------------------------------------------------
