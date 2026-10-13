@@ -25,9 +25,6 @@ docs/
 # Aderyn's default report, written by a local `aderyn .`
 /report.md
 
-# Local market-data snapshots of v4's analysis scripts, which were deleted on 2026-10-13 (git history has them).
-/design/analysis/data/
-
 # Dotenv file
 .env
 .env.*
