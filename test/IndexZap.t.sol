@@ -12,6 +12,7 @@ import {IPancakeUniversalRouter} from "../src/interfaces/IPancakeUniversalRouter
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IIndexZap} from "../src/interfaces/IIndexZap.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
+import {IIndexHub} from "../src/interfaces/IIndexHub.sol";
 import {IWeightedHub} from "../src/interfaces/IWeightedHub.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
@@ -822,7 +823,7 @@ contract IndexZapTest is XindexTest {
         bytes[] memory nonces = new bytes[](2);
         nonces[0] = abi.encode(uint256(0));
         nonces[1] = abi.encode(uint256(1));
-        vm.mockCalls(address(index), abi.encodeWithSelector(IWeightedHub.rebalanceNonce.selector), nonces);
+        vm.mockCalls(address(index), abi.encodeWithSelector(IIndexHub.rebalanceNonce.selector), nonces);
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(IIndexZap.StaleRebalanceNonce.selector, 0, 1));
         zap.mintWithToken(p);

@@ -25,6 +25,7 @@ import {MockMarket} from "./MockMarket.sol";
 import {MockPyth} from "./MockPyth.sol";
 import {WeightedIndexFactory} from "../../src/WeightedIndexFactory.sol";
 import {WeightedHub} from "../../src/WeightedHub.sol";
+import {IIndexHub} from "../../src/interfaces/IIndexHub.sol";
 import {IWeightedHub} from "../../src/interfaces/IWeightedHub.sol";
 import {IWeightedIndexFactory} from "../../src/interfaces/IWeightedIndexFactory.sol";
 import {PythStructs} from "../../src/interfaces/pyth/PythStructs.sol";
@@ -733,7 +734,7 @@ contract MocksTest is Test {
         vm.etch(fake, hex"00");
         address[] memory onlyWeth = new address[](1);
         onlyWeth[0] = address(weth);
-        vm.mockCall(fake, abi.encodeWithSelector(IWeightedHub.componentTokens.selector), abi.encode(onlyWeth));
+        vm.mockCall(fake, abi.encodeWithSelector(IIndexHub.componentTokens.selector), abi.encode(onlyWeth));
         uint256[] memory nothing = new uint256[](1);
         uint256[] memory everything = new uint256[](1);
         everything[0] = 3e18;

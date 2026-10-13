@@ -137,8 +137,9 @@ OpenZeppelin's upgradeable ERC20 and ERC20Permit (clones skip constructors, so n
 v3's user-facing convenience layer, unchanged by v5, with PancakeSwap's v3 Universal Router as a third venue per leg
 since 2026-10-06 (`design/2026-10-06-swap-venues.md`). Stateless, ownerless, holds no funds between transactions, and
 the only contract here that knows about Uniswap or PancakeSwap. THORChain is app-side only (`swaprail/`). The zap types
-its calls with v4's `IIndexFactory` and `IIndexHub` interfaces, kept for that purpose: it calls only `isIndex` on the
-factory, and `issue`, `redeem`, the previews, `componentTokens` and `rebalanceNonce` on an index.
+its calls with `IIndexFactory` and `IIndexHub`, which declare exactly what it calls: `isIndex` on the factory, and
+`issue`, `redeem`, the previews, `componentTokens` and `rebalanceNonce` on an index. `IWeightedIndexFactory` and
+`IWeightedHub` extend them, so the compiler holds the weighted contracts to that surface.
 
 - `mintWithToken(MintParams{index, expectedNonce, tokenIn, maxAmountIn, shares, legs, to, deadline})` and
   `burnToToken(BurnParams{index, expectedNonce, shares, tokenOut, minAmountOut, legs, to, deadline})`: route endpoints

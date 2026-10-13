@@ -12,6 +12,9 @@ import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC2
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+// Named only by `@inheritdoc IIndexHub`, which solc refuses without the import.
+// aderyn-fp-next-line(unused-import)
+import {IIndexHub} from "./interfaces/IIndexHub.sol";
 import {IWeightedHub} from "./interfaces/IWeightedHub.sol";
 import {IWeightedIndexFactory} from "./interfaces/IWeightedIndexFactory.sol";
 import {IRebalanceExecutor} from "./interfaces/IRebalanceExecutor.sol";
@@ -131,7 +134,7 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
     /// @inheritdoc IWeightedHub
     uint256 public proposalCount;
 
-    /// @inheritdoc IWeightedHub
+    /// @inheritdoc IIndexHub
     uint256 public rebalanceNonce;
 
     /// @inheritdoc IWeightedHub
@@ -190,7 +193,7 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
     // Issue / redeem / claim
     // ---------------------------------------------------------------------
 
-    /// @inheritdoc IWeightedHub
+    /// @inheritdoc IIndexHub
     function issue(uint256 shares, address to) external nonReentrant onlyInitialized {
         if (shares == 0) revert ZeroShares();
         _checkRecipient(to);
@@ -215,7 +218,7 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         }
     }
 
-    /// @inheritdoc IWeightedHub
+    /// @inheritdoc IIndexHub
     function redeem(uint256 shares, address to) external nonReentrant onlyInitialized {
         _redeem(shares, to, 0);
     }
@@ -673,7 +676,7 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         return _components.length;
     }
 
-    /// @inheritdoc IWeightedHub
+    /// @inheritdoc IIndexHub
     function componentTokens() external view returns (address[] memory tokens) {
         uint256 n = _components.length;
         tokens = new address[](n);
@@ -711,12 +714,12 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         }
     }
 
-    /// @inheritdoc IWeightedHub
+    /// @inheritdoc IIndexHub
     function previewIssue(uint256 shares) external view returns (uint256[] memory amountsIn) {
         return _amounts(shares, Math.Rounding.Ceil);
     }
 
-    /// @inheritdoc IWeightedHub
+    /// @inheritdoc IIndexHub
     function previewRedeem(uint256 shares) external view returns (uint256[] memory amountsOut) {
         return _amounts(shares, Math.Rounding.Floor);
     }

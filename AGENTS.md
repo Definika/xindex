@@ -434,8 +434,10 @@ Anyone may run one; its key is the keeper's own hot key, never the owner's or th
 - Custom errors, not revert strings. An error that more than one contract raises is declared once, in
   `src/interfaces/IXindexErrors.sol`, which the factory, hub and zap interfaces extend. Tests name it
   `IXindexErrors.<Error>.selector`, because Solidity does not resolve an inherited error through
-  `IIndexFactory.<Error>`. Immutables in SCREAMING_SNAKE_CASE. Loop counters initialised explicitly (`uint256 i = 0`).
-  Modifier logic lives in a private function.
+  `IWeightedIndexFactory.<Error>`; for the same reason a test names `issue`, `redeem`, the previews, `componentTokens`,
+  `rebalanceNonce` and `isIndex` through `IIndexHub` and `IIndexFactory`, which the weighted interfaces extend.
+  Immutables in SCREAMING_SNAKE_CASE. Loop counters initialised explicitly (`uint256 i = 0`). Modifier logic lives in a
+  private function.
 - Foundry runs any test-contract function whose name starts with `table` as a table test: name none so, nor any
   function a test suite inherits.
 - `foundry.toml` keeps `dynamic_test_linking = false`. With forge's default, a test function ends at the first

@@ -7,6 +7,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {WeightedHub} from "../src/WeightedHub.sol";
+import {IIndexHub} from "../src/interfaces/IIndexHub.sol";
 import {IWeightedHub} from "../src/interfaces/IWeightedHub.sol";
 import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
 import {IRebalanceExecutor} from "../src/interfaces/IRebalanceExecutor.sol";
@@ -773,7 +774,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
 
     function test_pythCannotReenter() public {
         _open(0, _midpoint());
-        pyth.setReenter(address(index), abi.encodeCall(IWeightedHub.redeem, (1, alice)));
+        pyth.setReenter(address(index), abi.encodeCall(IIndexHub.redeem, (1, alice)));
         _fill(2500e8, BTC_PRICE, USD_PRICE);
         assertEq(pyth.reenterResult(), abi.encodeWithSelector(ReentrancyGuard.ReentrancyGuardReentrantCall.selector));
     }

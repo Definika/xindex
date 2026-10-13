@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {IIndexHub} from "../../src/interfaces/IIndexHub.sol";
 import {IWeightedHub} from "../../src/interfaces/IWeightedHub.sol";
 import {IRebalanceExecutor} from "../../src/interfaces/IRebalanceExecutor.sol";
 
@@ -83,8 +84,8 @@ contract MockWeightedExecutor is IRebalanceExecutor {
     function _reenter(IWeightedHub index) internal {
         delete _reentryErrors;
         bytes[8] memory attempts = [
-            abi.encodeCall(IWeightedHub.issue, (1, address(this))),
-            abi.encodeCall(IWeightedHub.redeem, (1, address(this))),
+            abi.encodeCall(IIndexHub.issue, (1, address(this))),
+            abi.encodeCall(IIndexHub.redeem, (1, address(this))),
             abi.encodeCall(IWeightedHub.redeemSkipping, (1, address(this), 1)),
             abi.encodeCall(IWeightedHub.claim, (address(0), address(this))),
             abi.encodeCall(IWeightedHub.startRebalance, (0)),

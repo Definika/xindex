@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {IIndexFactory} from "./IIndexFactory.sol";
 import {IXindexErrors} from "./IXindexErrors.sol";
 import {IWeightedHub} from "./IWeightedHub.sol";
 
@@ -9,7 +10,7 @@ import {IWeightedHub} from "./IWeightedHub.sol";
 ///         behind a timelock, each with the Pyth price id its indexes will be rebalanced at.
 /// @dev "Owner only" functions revert with OpenZeppelin's `OwnableUnauthorizedAccount` for any other caller, and
 ///      "owner or guardian" functions with `Unauthorized`. The factory stores price ids and never reads a price.
-interface IWeightedIndexFactory is IXindexErrors {
+interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     /// @notice One component of an index to create.
     /// @param token A whitelisted token.
     /// @param weight Its share of the index's value, in basis points, non-zero; all of them sum to TOTAL_WEIGHT.
@@ -157,9 +158,6 @@ interface IWeightedIndexFactory is IXindexErrors {
 
     /// @notice Whether a guardian change can still be executed or is waiting out its delay.
     function guardianChangePending() external view returns (bool);
-
-    /// @notice Whether `index` was created by this factory.
-    function isIndex(address index) external view returns (bool);
 
     /// @notice Who created `index`.
     function creatorOf(address index) external view returns (address);

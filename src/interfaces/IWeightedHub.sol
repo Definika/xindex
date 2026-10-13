@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
+import {IIndexHub} from "./IIndexHub.sol";
 import {IXindexErrors} from "./IXindexErrors.sol";
 import {PythStructs} from "./pyth/PythStructs.sol";
 
@@ -19,9 +18,9 @@ import {PythStructs} from "./pyth/PythStructs.sol";
 ///      a plain ERC-20 transfer to either of those reverts InvalidRecipient too. Callers other than the factory owner or
 ///      guardian get Unauthorized where those roles are required.
 ///
-///      The functions an index shares with `IIndexHub` (issue, redeem, the previews, `componentTokens` and
-///      `rebalanceNonce`) keep its signatures, so `IndexZap` and `MintRequests` serve these indexes unchanged.
-interface IWeightedHub is IERC20, IERC20Permit, IXindexErrors {
+///      It extends `IIndexHub`, which declares `issue`, `redeem`, the previews, `componentTokens` and
+///      `rebalanceNonce`: all that `IndexZap` calls on an index.
+interface IWeightedHub is IIndexHub, IXindexErrors {
     /// @notice One component as the factory hands it to {initialize}.
     /// @param token The component.
     /// @param units Starting raw units per 1e18 shares, non-zero and within uint96.
@@ -198,14 +197,6 @@ interface IWeightedHub is IERC20, IERC20Permit, IXindexErrors {
     /// @param components_ The components, in the order every array of this index uses.
     function initialize(string calldata name_, string calldata symbol_, ComponentInit[] calldata components_) external;
 
-    /// @notice Pulls the exact basket for `shares` from msg.sender and mints `shares` to `to`.
-    ///         Amounts are rounded up per component. Caller must have approved every component. Reads no price.
-    function issue(uint256 shares, address to) external;
-
-    /// @notice Burns `shares` from msg.sender and sends the pro-rata basket to `to`, rounded down. Reads no price.
-    ///         Reverts if any component transfer reverts; use {redeemSkipping} when a component is frozen.
-    function redeem(uint256 shares, address to) external;
-
     /// @notice Burns `shares` from msg.sender, sends every component whose bit is clear in `skipMask` to `to`,
     ///         and records the skipped amounts as claims that `to` can collect later with {claim}.
     /// @param skipMask Bit i set skips component i. Must be non-zero and use only bits below {componentCount}.
@@ -224,9 +215,6 @@ interface IWeightedHub is IERC20, IERC20Permit, IXindexErrors {
     /// @notice Number of components, fixed at initialization.
     function componentCount() external view returns (uint256);
 
-    /// @notice Component token addresses only (cheaper than {components} when units are not needed).
-    function componentTokens() external view returns (address[] memory tokens);
-
     /// @notice Component tokens and the raw units of each backing one whole index token (1e18 shares).
     function components() external view returns (address[] memory tokens, uint256[] memory units);
 
@@ -239,17 +227,8 @@ interface IWeightedHub is IERC20, IERC20Permit, IXindexErrors {
         view
         returns (uint256[] memory weights, bytes32[] memory priceIds, uint8[] memory decimals);
 
-    /// @notice Exact amounts `issue(shares)` will pull for each component (rounded up).
-    function previewIssue(uint256 shares) external view returns (uint256[] memory amountsIn);
-
-    /// @notice Exact amounts `redeem(shares)` will push for each component (rounded down).
-    function previewRedeem(uint256 shares) external view returns (uint256[] memory amountsOut);
-
     /// @notice Number of rebalance proposals ever started, including cancelled and expired ones.
     function proposalCount() external view returns (uint256);
-
-    /// @notice Number of executed rebalances. It changes exactly when the units change.
-    function rebalanceNonce() external view returns (uint256);
 
     /// @notice Time of the last executed rebalance, or of creation.
     function lastRebalance() external view returns (uint256);
