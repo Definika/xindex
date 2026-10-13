@@ -108,6 +108,21 @@ jobs:
       - name: Run the THORChain swap rail's tests
         run: node --test swaprail/
 
+      # The keeper (keeper/) is a Foundry project of its own and holds no role in the protocol; its executor gets the
+      # same gates as the repo's contracts.
+      - name: Check, build and test the keeper's executor
+        run: |
+          set -euo pipefail
+          forge fmt --check --root keeper
+          forge build --root keeper
+          forge lint -D notes --root keeper
+          forge test --root keeper -vvv
+
+      # The keeper bot's arithmetic, settings, Hermes client and transaction tracker have no dependency, so Node's own
+      # test runner covers them without an install. Its end-to-end test needs an archive RPC and runs by hand.
+      - name: Run the keeper bot's unit tests
+        run: node --test keeper/test/unit/
+
       # Offline suites only; the fork helpers are covered by them. Every file row must show hit == total for lines,
       # statements, branches and functions, and an empty summary fails.
       - name: Require 100% coverage on every file

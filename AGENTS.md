@@ -70,6 +70,8 @@ forge coverage               # must stay at 100% for every file (lines, statemen
 aderyn .                     # Aderyn on src/, configured by aderyn.toml: must report nothing; CI does not run it
 for c in IndexZap MintRequests WeightedIndexFactory WeightedHub; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
 node --test swaprail/        # the THORChain swap rail's planner (app-side JavaScript, no dependency); CI runs it
+forge test --root keeper     # the keeper's executor, its own Foundry project; CI also runs its fmt, build and lint
+node --test keeper/test/unit/  # the keeper bot's arithmetic, settings, Hermes client and tx tracker (no dependency)
 
 # mainnet fork tests (real tokens, Universal Router, V3 and V4 pools); skipped when the env var is unset.
 # A rate-limited RPC throttles five suites in parallel: add -j 1.
@@ -201,7 +203,9 @@ and a maintainer re-runs them before merging.
 the tree does not say: `script/testnet/` (the Sepolia test market) and `demo/` (the hackathon demonstration, its own
 Foundry project, not updated for v5) never deploy to a mainnet; `swaprail/` is app-side JavaScript that no contract
 calls, the reference THORChain planner the web app adopts (`design/2026-10-06-swap-venues.md`); and `keeper/` is the
-rebalancer bot (DRAFT, untested), with its executor contract, which starts and fills auctions and holds no role.
+keeper bot with its executor contract, a Foundry project of its own with its own tests (`keeper/README.md`): it starts
+and fills auctions, serves coins without a Uniswap route from the executor's stock, and holds no role in the protocol.
+Anyone may run one; its key is the keeper's own hot key, never the owner's or the guardian's.
 
 ## Design rules that must not be broken
 
@@ -541,7 +545,8 @@ If a change would alter any of these, say so explicitly.
 - Constituent changes (a new list is a new index).
 - Mixed-venue legs (a single leg splitting across V3 and V4).
 - Per-pair partial-fill auctions.
-- A backstop executor or trigger reminder; the keeper in `keeper/` is a draft.
+- A backstop for auctions too small to pay: the keeper in `keeper/` fills only what pays, unless its operator sets a
+  subsidy (`MIN_PROFIT_USD` below zero).
 - An aggregator or Universal Router 2.1 zap.
 - V4 pools on Sepolia, so the V4 legs get a testnet rehearsal rather than only fork and mock coverage.
 - One L2 deployment, if cheap minting for small buyers matters after the two launches.

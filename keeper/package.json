@@ -1,11 +1,13 @@
 {
   "name": "xindex-keeper",
   "private": true,
-  "description": "Starts and fills v5 rebalances of WeightedHub indexes; DRAFT, untested",
+  "description": "Starts and fills WeightedHub auctions through KeeperExecutor",
   "type": "module",
   "scripts": {
     "start": "node keeper.mjs",
-    "once": "node keeper.mjs --once"
+    "once": "node keeper.mjs --once",
+    "test": "node --test test/unit/",
+    "e2e": "node test/e2e/run.mjs"
   },
   "dependencies": {
     "viem": "2.21.54"
