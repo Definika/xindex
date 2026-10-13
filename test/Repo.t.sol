@@ -83,10 +83,9 @@ contract RepoTest is Test {
         assertTrue(_contains(readme, "Known limitations"), "the README keeps its known limitations section");
     }
 
-    /// @dev XA-10: CI runs every gate of the definition of done. Wake's generated config must leave out `audit/`, whose
-    ///      PoC tests compile only inside the audited commit, and `demo/` and `keeper/`, the bot's executor, separate
-    ///      Foundry projects whose remapping only they know: Wake stops on any of them before running a detector. The
-    ///      extension must ignore a local `wake.toml`, which would otherwise replace its committed config.
+    /// @dev XA-10: CI runs every gate of the definition of done. Wake's generated config must leave out `keeper/`, the
+    ///      bot's executor, a separate Foundry project whose remapping only it knows: Wake stops on it before running a
+    ///      detector. The extension must ignore a local `wake.toml`, which would otherwise replace its committed config.
     function test_XA10_ciRunsEveryGate() public view {
         string memory workflow = _read(".github/workflows/test.yml");
         assertTrue(_contains(workflow, "forge lint -D notes"), "lint fails on notes");
@@ -97,16 +96,10 @@ contract RepoTest is Test {
             "pull requests from this repository need the fork-test RPC"
         );
         assertTrue(_contains(workflow, "wake init config --force"), "Wake's config comes from foundry.toml");
-        assertTrue(
-            _contains(workflow, 'exclude_paths = ["audit", "demo", "keeper", '),
-            "Wake compiles neither the PoCs, the demo nor the keeper"
-        );
+        assertTrue(_contains(workflow, 'exclude_paths = ["keeper", '), "Wake does not compile the keeper");
         assertTrue(_contains(workflow, "wake detect all src"), "the Wake detectors run");
         string memory settings = _read(".vscode/settings.json");
-        assertTrue(
-            _contains(settings, '"audit"') && _contains(settings, '"demo"') && _contains(settings, '"keeper"'),
-            "nor does the Wake extension"
-        );
+        assertTrue(_contains(settings, '"keeper"'), "nor does the Wake extension");
         assertTrue(
             _contains(settings, '"wake.configuration.use_toml_if_present": false'),
             "and no local wake.toml replaces the extension's committed config"

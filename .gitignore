@@ -25,7 +25,7 @@ docs/
 # Aderyn's default report, written by a local `aderyn .`
 /report.md
 
-# Market-data snapshots behind design/analysis (about 4 MB); the scripts and their printed figures are the record.
+# Local market-data snapshots of v4's analysis scripts, which were deleted on 2026-10-13 (git history has them).
 /design/analysis/data/
 
 # Dotenv file
@@ -38,7 +38,7 @@ docs/
 wake.toml
 .wake/
 
-# The rebalancer bot
+# The keeper bot
 /keeper/node_modules/
 /keeper/out/
 /keeper/cache/

@@ -23,8 +23,6 @@
         "lib",
         "script",
         "test",
-        "audit",
-        "demo",
         "keeper"
     ],
     "wake.compiler.solc.optimizer.enabled": true,

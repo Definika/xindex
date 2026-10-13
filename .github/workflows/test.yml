@@ -151,18 +151,17 @@ jobs:
           EOF
 
       # Wake reads its remappings from foundry.toml, so no second copy is committed. The generated config leaves out
-      # only Wake's default folders, so audit/, demo/ and keeper/ are added: the PoC tests in audit/ compile only inside
-      # the audited commit, and demo/ and keeper/ are separate Foundry projects whose xindex/ remapping only they know;
-      # Wake stops on any of their errors before running a detector. `wake detect` exits non-zero on any detection; the
+      # only Wake's default folders, so keeper/ is added: it is a separate Foundry project whose xindex/ remapping only
+      # it knows, and Wake stops on its errors before running a detector. `wake detect` exits non-zero on any detection; the
       # documented inline suppressions in src/ still apply.
       - name: Run the Wake detectors on src
         run: |
           set -euo pipefail
           pipx install eth-wake==4.22.1
           wake init config --force
-          perl -pi -e 's/^exclude_paths = \[/exclude_paths = ["audit", "demo", "keeper", /' wake.toml
-          if ! grep -q '^exclude_paths = \["audit", "demo", "keeper", ' wake.toml; then
-            echo "::error::the generated wake.toml changed shape, so audit/, demo/ and keeper/ are not excluded"
+          perl -pi -e 's/^exclude_paths = \[/exclude_paths = ["keeper", /' wake.toml
+          if ! grep -q '^exclude_paths = \["keeper", ' wake.toml; then
+            echo "::error::the generated wake.toml changed shape, so keeper/ is not excluded"
             exit 1
           fi
           wake detect all src

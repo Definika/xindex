@@ -1,7 +1,0 @@
-out/
-cache/
-broadcast/
-deployments/*.local.json
-relayer/node_modules/
-relayer/.env
-relayer/state/

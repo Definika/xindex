@@ -695,10 +695,6 @@ No bot holds a role in Xindex, so these duties have owners and deadlines. Watch 
 **v5 is not deployed on Sepolia.** v3 runs there, deployed on 2026-09-27 from `4b4dbe4`, the commit tagged `v3.0.0`;
 nothing on `main` can drive it, since its factory takes feed configs, and its deployment records are not kept here.
 
-`demo/` holds the hackathon's testnet demonstration, a Foundry project of its own written for v4 and not updated for v5,
-with stub verifiers in place of proofs, so nothing in it may reach a mainnet. No deployment of it is recorded on a
-public testnet (`demo/README.md`).
-
 `script/testnet/SetupTestMarket.s.sol` deploys stand-ins for USDC, WBTC, LINK and UNI as `FaucetToken`s, where any
 account can `drip()` a small amount once a day, each with a Uniswap V3 WETH pool at a mainnet-like price so the zap has
 a V3 route to swap through. Nothing in Xindex reads those pools' prices. `create` logs the `V5_WHITELIST` entries for
@@ -770,12 +766,12 @@ script/testnet/               SetupTestMarket and FaucetToken for the Sepolia te
 abi/                          the ABIs the web app decodes with; CI regenerates them and fails on a diff
 keeper/                       the keeper bot and its executor, a Foundry project of its own with its own tests; it holds
                               no role in the protocol (keeper/README.md)
-demo/                         the hackathon's testnet demonstration, its own Foundry project, not updated for v5; never for a mainnet
 swaprail/                     the THORChain planner the web app adopts (app-side, no contract calls it), its tests and a read-only live check
 design/                       the v5 spec, the one-index decision, the two-chain decision (shelved), the wide-asset and
-                              admission records, the swap-venue record, the v4 design and specs (history), the chain
-                              research, and the analysis scripts
-audit/                        the security reviews and their PoCs, their triage, and the four retirement records
+                              admission records, the swap-venue record, the v4 design and specs (history), and the
+                              chain research
+audit/                        the security reviews, their triage, and the four retirement records (the PoCs are in git
+                              history at f83dcab)
 aderyn.toml                   Aderyn's configuration: the rules the design rejects, each with its reason
 ```
 

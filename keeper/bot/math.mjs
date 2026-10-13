@@ -1,10 +1,10 @@
 // The keeper's arithmetic and decisions, pure and dependency-free. Token amounts, gas and wei are BigInt throughout;
 // dollars are floats, used only to decide, and turned into USDC's raw units by rounding toward the bot's safety.
 
-export const BPS = 10_000n;
+const BPS = 10_000n;
 const GWEI = 1_000_000_000n;
 
-export const ceilDiv = (a, b) => (a + b - 1n) / b;
+const ceilDiv = (a, b) => (a + b - 1n) / b;
 export const min = (a, b) => (a < b ? a : b);
 export const max = (a, b) => (a > b ? a : b);
 

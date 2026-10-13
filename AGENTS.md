@@ -204,12 +204,16 @@ and a maintainer re-runs them before merging.
 ## Layout
 
 `ls` and each file's header comments show what lives where, and README.md's Layout section gives the tour. Three things
-the tree does not say: `script/testnet/` (the Sepolia test market) and `demo/` (the hackathon demonstration, its own
-Foundry project, not updated for v5) never deploy to a mainnet; `swaprail/` is app-side JavaScript that no contract
-calls, the reference THORChain planner the web app adopts (`design/2026-10-06-swap-venues.md`); and `keeper/` is the
-keeper bot with its executor contract, a Foundry project of its own with its own tests (`keeper/README.md`): it starts
-and fills auctions, serves coins without a Uniswap route from the executor's stock, and holds no role in the protocol.
-Anyone may run one; its key is the keeper's own hot key, never the owner's or the guardian's.
+the tree does not say: `script/testnet/` (the Sepolia test market) never deploys to a mainnet; `swaprail/` is app-side
+JavaScript that no contract calls, the reference THORChain planner the web app adopts
+(`design/2026-10-06-swap-venues.md`); and `keeper/` is the keeper bot with its executor contract, a Foundry project of
+its own with its own tests (`keeper/README.md`): it starts and fills auctions, serves coins without a Uniswap route from
+the executor's stock, and holds no role in the protocol. Anyone may run one; its key is the keeper's own hot key, never
+the owner's or the guardian's.
+
+Deleted on 2026-10-13 as unused, and recoverable from git at `f83dcab`: the v4 hackathon demo (`demo/`), the reviews'
+PoC tests (`audit/poc/`, which the audit records still cite), v4's market-cap analysis scripts (`design/analysis/`), and
+the v4 architecture PDF with its builder (`design/build_pdf.py`).
 
 ## Design rules that must not be broken
 
@@ -395,17 +399,16 @@ Anyone may run one; its key is the keeper's own hot key, never the owner's or th
 
 - `pragma solidity 0.8.28;` in `src/` and `script/`; tests use `^0.8.24`. The compiler is pinned to 0.8.28 in
   `foundry.toml`, and CI pins Foundry v1.8.1 and eth-wake 4.22.1 in `.github/workflows/test.yml`.
-- **Wake config.** CI generates its Wake config from `foundry.toml` and adds `audit/`, `demo/` and `keeper/` to its
-  excluded folders, since any of them would stop Wake before a detector runs: the PoC tests in `audit/` only compile
-  inside `test/poc/` of the audited commit, and `demo/` and `keeper/` (the bot's executor) are separate Foundry
-  projects whose `xindex/` remapping only they know. The Wake VS Code extension reads `.vscode/settings.json` instead,
+- **Wake config.** CI generates its Wake config from `foundry.toml` and adds `keeper/` to its excluded folders, since
+  it would stop Wake before a detector runs: the keeper's executor is a separate Foundry project whose `xindex/`
+  remapping only it knows. The Wake VS Code extension reads `.vscode/settings.json` instead,
   which holds four things:
   - `wake.configuration.use_toml_if_present` set to false. The extension otherwise prefers a `wake.toml` in the
     workspace root, and a local `wake detect` or `wake init config` leaves one there, gitignored. A stale one
     replaces the whole committed config;
   - its copy of `forge remappings` (paste the new output there whenever a dependency or remapping changes);
   - the optimizer settings of `foundry.toml` (without them the factory's initcode looks too large to deploy);
-  - Wake's default excluded folders plus `audit/`, `demo/` and `keeper/`.
+  - Wake's default excluded folders plus `keeper/`.
 - **Gas in tests.** Foundry 1.8 runs every call a test makes as its own transaction (`isolate = true`), so a measured
   call already carries the 21,000 and its calldata, EIP-7623's floor included. Build the calldata before measuring,
   and send it without Solidity's `call`, which first copies it to the top of the test's memory and pays for that
