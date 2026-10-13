@@ -76,7 +76,7 @@ The RPC must honour `eth_call` block overrides (Tenderly, publicnode and geth do
 ## Tests
 
 - `forge test --root keeper` (from the repo root): the executor against the real hub and factory with mocks.
-- `node --test keeper/test/unit/`: arithmetic, settings, the Hermes client and the transaction tracker; no install.
+- `node --test keeper/test/unit/*.test.mjs`: arithmetic, settings, the Hermes client and the transaction tracker; no install.
 - `MAINNET_RPC_URL=<archive> npm run e2e` (in `keeper/`): an anvil fork with the real Pyth contract verifying updates
   this test signs, real pools and tokens, and `keeper.mjs` as its own process. It covers a start held back by a quiet
   feed and by missing stock, an index never started, fills only once profitable, stock kept and delivered, a two-hop

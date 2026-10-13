@@ -104,7 +104,7 @@ jobs:
       # The THORChain swap rail is app-side JavaScript (swaprail/), with no dependency: Node's own test runner, which
       # the runner image carries.
       - name: Run the THORChain swap rail's tests
-        run: node --test swaprail/
+        run: node --test swaprail/*.test.mjs
 
       # The keeper (keeper/) is a Foundry project of its own and holds no role in the protocol; its executor gets the
       # same gates as the repo's contracts.
@@ -119,7 +119,7 @@ jobs:
       # The keeper bot's arithmetic, settings, Hermes client and transaction tracker have no dependency, so Node's own
       # test runner covers them without an install. Its end-to-end test needs an archive RPC and runs by hand.
       - name: Run the keeper bot's unit tests
-        run: node --test keeper/test/unit/
+        run: node --test keeper/test/unit/*.test.mjs
 
       # Offline suites only; the fork helpers are covered by them. Every file row must show hit == total for lines,
       # statements, branches and functions, and an empty summary fails.

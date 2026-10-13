@@ -543,9 +543,9 @@ forge fmt
 forge test                      # unit, fuzz, invariant and security regression tests, no RPC needed
 forge coverage                  # 100% on every file
 aderyn .                        # Cyfrin's analyzer on src/, configured in aderyn.toml: reports nothing
-node --test swaprail/           # the THORChain planner
+node --test swaprail/*.test.mjs # the THORChain planner
 forge test --root keeper        # the keeper's executor, a Foundry project of its own
-node --test keeper/test/unit/   # the keeper bot's arithmetic, settings, Hermes client and transaction tracker
+node --test keeper/test/unit/*.test.mjs  # the keeper bot's arithmetic, settings, Hermes client and transaction tracker
 
 # end-to-end against the real Universal Router, V3 and V4 pools, USDC, USDT and a real WBTC pause
 # (skipped when the env var is unset)

@@ -1,4 +1,4 @@
-// Run: node --test swaprail/
+// Run: node --test swaprail/*.test.mjs
 // Fixtures are live THORNode responses of 2026-10-06 (gateway.liquify.com/chain/thorchain_api): inbound addresses,
 // the Asgard vaults (trimmed to status, addresses and routers), and two quotes: 1,000 USDC to BTC, 0.1 BTC to USDC.
 import { test } from "node:test";

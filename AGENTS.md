@@ -69,9 +69,9 @@ forge test                   # unit + fuzz + invariant tests, no RPC needed; for
 forge coverage               # must stay at 100% for every file (lines, statements, branches, functions)
 aderyn .                     # Aderyn on src/, configured by aderyn.toml: must report nothing; CI does not run it
 for c in IndexZap MintRequests WeightedIndexFactory WeightedHub; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
-node --test swaprail/        # the THORChain swap rail's planner (app-side JavaScript, no dependency); CI runs it
+node --test swaprail/*.test.mjs  # the THORChain swap rail's planner (app-side JavaScript, no dependency); CI runs it
 forge test --root keeper     # the keeper's executor, its own Foundry project; CI also runs its fmt, build and lint
-node --test keeper/test/unit/  # the keeper bot's arithmetic, settings, Hermes client and tx tracker (no dependency)
+node --test keeper/test/unit/*.test.mjs  # the keeper bot's arithmetic, settings, Hermes client and tx tracker (no dependency)
 
 # mainnet fork tests (real tokens, Universal Router, V3 and V4 pools); skipped when the env var is unset.
 # A rate-limited RPC throttles five suites in parallel: add -j 1.
