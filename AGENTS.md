@@ -46,7 +46,8 @@ Where it stands (2026-10-13):
   it starts and fills auctions, serves coins without a Uniswap route from its executor's stock, and holds no role.
 - The security audit of 2026-10-13 (`audit/2026-10-13-security-audit.md`, Cloudflare's security-audit skill, ids
   `CF-1`..`CF-8`) found no exploitable path in the four contracts that hold index funds; its findings in the keeper,
-  the THORChain planner, CheckToken, the deploy script and CI are fixed, and CF-3 is a known limitation below.
+  CheckToken, the deploy script and CI are fixed, CF-3 is a known limitation below, and CF-2 and CF-8 went with the
+  THORChain planner on 2026-10-14 (`audit/2026-10-14-thorchain-retirement.md`).
 - Before any mainnet: Pyth's parameter replay (`design/2026-10-05-custom-weights.md`, section 8), a settlement on a
   real update from Hermes (which needs Pyth's API key), a reading of OP-PIP-132 for what it means for Pyth on Ethereum,
   Ondo's corporate-action mechanism for its stock tokens (CF-3), the owner's reading of the verified source of the 44
@@ -75,7 +76,6 @@ forge test                   # unit + fuzz + invariant tests, no RPC needed; for
 forge coverage               # must stay at 100% for every file (lines, statements, branches, functions)
 aderyn .                     # Aderyn on src/, configured by aderyn.toml: must report nothing; CI does not run it
 for c in IndexZap MintRequests WeightedIndexFactory WeightedHub; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
-node --test swaprail/*.test.mjs  # the THORChain swap rail's planner (app-side JavaScript, no dependency); CI runs it
 forge test --root keeper     # the keeper's executor, its own Foundry project; CI also runs its fmt, build and lint
 node --test keeper/test/unit/*.test.mjs  # the keeper bot's arithmetic, settings, Hermes client and tx tracker (no dependency)
 
@@ -142,16 +142,16 @@ deploy script resolves Pyth, the routers and the stablecoins from the address bo
      the ids fixed or recorded by documentation alone, which have none.
    - The swap-venue review of 2026-10-06: `SV-1` and `SV-I1`..`SV-I4` (`audit/2026-10-06-swap-venues-review.md`), a
      test named `test_SV1_...` in `test/IndexZap.pancake.t.sol` and `testFork_SV1_...` in
-     `test/fork/IndexZap.fork.t.sol`. The informational ids are recorded by documentation, SV-I3 and SV-I4 with the
-     planner's tests in `swaprail/`.
+     `test/fork/IndexZap.fork.t.sol`. The informational ids are recorded by documentation; SV-I3 and SV-I4 are retired
+     with THORChain.
    - The logic review of 2026-10-07: `V5R-1`, `V5R-I1` and `V5R-I2` (`audit/2026-10-07-v5-logic-review.md`), a test
      named `test_V5R1_...` in `test/WeightedHub.rebalance.t.sol`. The informational ids are recorded by documentation;
      V5R-I1 is retired with Stage B.
    - The security audit of 2026-10-13: `CF-1`..`CF-8` (`audit/2026-10-13-security-audit.md`). CF-1's tests are
-     `test_CF1_...` in `keeper/test/KeeperExecutor.t.sol`; CF-2's and CF-8's are the node tests named `CF-2: ...` and
-     `CF-8: ...` in `swaprail/thorchain.test.mjs`; CF-4's `test_CF4_...` in `test/CheckToken.t.sol`; CF-5's
+     `test_CF1_...` in `keeper/test/KeeperExecutor.t.sol`; CF-4's `test_CF4_...` in `test/CheckToken.t.sol`; CF-5's
      `test_CF5_...` in `test/Scripts.t.sol`; CF-6's `test_CF6_...` in `test/Repo.t.sol`; CF-7's the node test named
-     `CF-7: ...` in `keeper/test/unit/math.test.mjs`. CF-3 is recorded by documentation alone.
+     `CF-7: ...` in `keeper/test/unit/math.test.mjs`. CF-3 is recorded by documentation alone. CF-2 and CF-8 are
+     retired with THORChain.
    - Stage B's families are retired in full with Stage B (`audit/2026-10-07-stage-b-retirement.md`): the Stage B red
      team's `VLT`, `HUB`, `MOD`, `BNB`, `FAC` and `SOL` ids, the TRON review's `TRN`, the logic review of 2026-10-02's
      `LG`, and `BLS-1`. No test carries them, and none may be restored.
@@ -178,7 +178,7 @@ deploy script resolves Pyth, the routers and the stablecoins from the address bo
    - Findings fixed by documentation alone have none, among them VR-05, RT-02, RT-07, RT-08, RT-09, RT-11 and RT-18.
      RT-20 was already a known limitation.
 
-   Four records list the ids whose mechanism is gone, with the test that went and the property, if any, that survives:
+   Five records list the ids whose mechanism is gone, with the test that went and the property, if any, that survives:
    - `audit/2026-09-22-v3-retirement.md`: the move from Uniswap V3 prices to Chainlink.
    - `audit/2026-09-30-v4-stage-a-retirement.md`: Stage A's removal of every price. It retires 31 tested ids in full,
      retires CR-I36, CR-L08 and VR-06 in part, and names the test of every re-targeted id.
@@ -187,6 +187,8 @@ deploy script resolves Pyth, the routers and the stablecoins from the address bo
      of every re-targeted id. A second section retires six more with `ConfigureWhitelist`, CR-M01 among them.
    - `audit/2026-10-07-stage-b-retirement.md`: the deletion of Stage B. It retires 31 ids with a Solidity test in
      full, the Rust and Move tests of the vault chains with them, V5R-I1, and RT-24 in part.
+   - `audit/2026-10-14-thorchain-retirement.md`: the removal of the THORChain planner. It retires CF-2 and CF-8, whose
+     node tests went with it, and SV-I3 and SV-I4, recorded by documentation.
 
    The ids tested at `v3.0.0`, less those tested at Stage A, are exactly the ids the Stage A record retires in full;
    the ids tested at `8e6148b`, less those tested at `4f40b67`, the v4 record's first section; those at `22d532a`,
@@ -204,10 +206,8 @@ and a maintainer re-runs them before merging.
 
 ## Layout
 
-`ls` and each file's header comments show what lives where, and README.md's Layout section gives the tour. Three things
-the tree does not say: `script/testnet/` (the Sepolia test market) never deploys to a mainnet; `swaprail/` is app-side
-JavaScript that no contract calls, the reference THORChain planner the web app adopts
-(`design/2026-10-06-swap-venues.md`); and `keeper/` is the keeper bot with its executor contract, a Foundry project of
+`ls` and each file's header comments show what lives where, and README.md's Layout section gives the tour. Two things
+the tree does not say: `script/testnet/` (the Sepolia test market) never deploys to a mainnet; and `keeper/` is the keeper bot with its executor contract, a Foundry project of
 its own with its own tests (`keeper/README.md`): it starts and fills auctions, serves coins without a Uniswap route from
 the executor's stock, and holds no role in the protocol. Anyone may run one; its key is the keeper's own hot key, never
 the owner's or the guardian's.
@@ -344,9 +344,6 @@ records also cite.
     after the last command and reverts if that fails, and takes ether from anyone: without the wrap, one wei sent there
     would block every PancakeSwap leg (SV-1). Never give the zap a `receive()` instead. PancakeSwap's Safe can pause the
     router and attach a contract to its pools; that stops PancakeSwap legs and moves nobody's funds (SV-I1).
-  - **THORChain** never touches a contract: a deposit made inside one can be ignored and lost (SV-I3). It is the app's,
-    from the user's own accounts, through `swaprail/thorchain.mjs`, which refuses contract senders and destinations,
-    writes its own memo with a limit and a refund address, cross-checks two THORNode endpoints and pins the router.
   - **Commands.** The zap builds every command and every action itself and forwards nothing a caller supplied. The
     router's command set includes `TRANSFER` and `PERMIT2_TRANSFER_FROM`, which move a payer's funds, so passing
     calldata through would hand a caller the router's permissions.
@@ -548,7 +545,8 @@ cost the owner weighs before launch.
 
 **Swap venues** (the owner's call on 2026-10-06, `design/2026-10-06-swap-venues.md`): the zap swaps through
 Uniswap's Universal Router 2.0.0 and PancakeSwap's v3 Universal Router, one venue per leg, chosen by the caller.
-THORChain is app-side only, from the user's own accounts (`swaprail/`), and no contract calls it.
+THORChain, added the same day as an app-side rail, was removed on 2026-10-14 (the owner's call: users come with USDC
+or USDT), with its planner (`swaprail/`); nothing in Xindex uses it.
 
 **Unchanged from earlier versions:** no fee (the owner's call on 2026-09-30; audits, the bounty and watchers are
 funded from outside; a later version could add one through `_backing`); an owner Safe of at least three signatures;

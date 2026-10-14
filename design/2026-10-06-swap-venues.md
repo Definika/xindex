@@ -5,6 +5,10 @@ that turns a stablecoin into a basket and back: the zap on Ethereum, and the app
 the factory, the vaults or the index's components. This record states what was built, what was refused and why, and what
 stays open. Its review ids are `SV-*` (`audit/2026-10-06-swap-venues-review.md`).
 
+**2026-10-14: THORChain is removed** (the owner's call: users come with USDC or USDT). `swaprail/` is deleted, and its
+ids are retired in `audit/2026-10-14-thorchain-retirement.md`; the THORChain sections below are history. PancakeSwap
+stands as decided here.
+
 Sources: on-chain reads at Ethereum block 26,134,263 through a public archive RPC; the verified source of PancakeSwap's
 v3 Universal Router on Etherscan; THORNode's source on GitLab (`develop`); and the live THORNode API
 (`gateway.liquify.com/chain/thorchain_api`; the older `thornode.ninerealms.com` no longer resolves). Where only docs

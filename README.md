@@ -74,7 +74,7 @@ The history, in one paragraph each:
 | Creation | `createIndex(name, symbol, components)` with one `ComponentSpec {token, weight, units}` per component. The app derives the starting units from the weights at its own prices; each lies between `MIN_RAW_UNITS` (10,000) and `MAX_UNITS` (`(2^96 − 1) >> 10`). The factory reads no price, and the first rebalance brings an index to its weights. Every component copies its listing's Pyth price id and decimals. |
 | Rebalancing | Anyone starts a rebalance 7 days after the last one or after creation (`MIN_REBALANCE_INTERVAL`), then 2 hours of notice (`REBALANCE_DELAY`), then a 24-hour auction (`AUCTION_DURATION`) in which any contract can fill. The fill reads Pyth's prices, sets each moving component's target from its weight, and moves every leg the same share of the way. The growing legs ask `μ` times their step, `μ` falling from `MU_MAX` (1.02) to `MU_MIN` (0.98). One fill sends out at most `MAX_TURNOVER` (20%) of each component's own units, and must trade at least `MIN_TRADE` (0.1%) of the moving value. |
 | Prices | Pyth only, read only by the settlement and only for the moving components. One price per block: each feed's first update at or after `priceTime()`, 12 seconds (`PRICE_LAG`) before the block. Refused: a non-positive price, an exponent outside [-18, 0], a price above `MAX_PRICE`, a confidence interval wider than `MAX_CONFIDENCE` (2%). Issue, redeem and claims read none. The app values an index off chain. |
-| Swaps | Uniswap's Universal Router 2.0.0, V3 and V4, and PancakeSwap's v3 Universal Router for PancakeSwap V3 (since 2026-10-06, chiefly for CAKE), one venue per leg, chosen by the caller. THORChain only in the app, from the user's own wallets, never through a contract (`design/2026-10-06-swap-venues.md`). The app offers the one-click zap only up to about 35 components (EIP-7825's 16.78M gas per transaction). |
+| Swaps | Uniswap's Universal Router 2.0.0, V3 and V4, and PancakeSwap's v3 Universal Router for PancakeSwap V3 (since 2026-10-06, chiefly for CAKE), one venue per leg, chosen by the caller (`design/2026-10-06-swap-venues.md`). The app offers the one-click zap only up to about 35 components (EIP-7825's 16.78M gas per transaction). |
 | Fees | None: v5 is funded from outside (the owner's call on 2026-09-30). Every amount the hub moves goes through one helper, `_backing`, so a fee in a later version would land in one reviewed change. |
 | Coins | Ethereum ERC-20s: the issuer's own contract where Ethereum has one, Bitcoin as WBTC, and otherwise the copy Wormhole's token bridge wraps from the coin's home chain, labelled Bridged (and Custodial from a Binance-Peg source). Tether Gold and Ondo's stock tokens are listed too, labelled Custodial. 93 are listed in `script/PythIds.sol`, 14 of them Wormhole copies (SOL and the 13 added on 2026-10-10), with 34 more copies to attest. |
 | Stable in / out | Mint with USDC or USDT through the zap, or through `MintRequests` at a limit of the requester's own, filled by anyone who holds shares. The burner chooses USDC, USDT or any other token at exit, or asks for USDC or USDT at a limit through `MintRequests`. Index tokens are fungible, so the protocol cannot know which stable a holder used. |
@@ -268,14 +268,6 @@ at any time) or `refund` (anyone, after the deadline).
   and 10000 (no 3000). Quote them with PancakeSwap's QuoterV2, `0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997`. On
   Ethereum only CAKE is deeper there than on Uniswap; quote both venues per leg and take the better. If PancakeSwap's
   router is paused, its legs revert with `Pausable: paused`: route those legs through Uniswap.
-- **THORChain, from the user's own wallets.** No contract calls THORChain, and the zap, an index or `MintRequests` must
-  never be a THORChain destination: a contract receives a plain transfer it cannot use. `swaprail/thorchain.mjs` is the
-  reference planner: `planFundToEthereum` turns BTC, LTC, BCH or DOGE into USDC, USDT, ETH or WBTC at the user's own
-  Ethereum account before a zap mint; `planExitFromEthereum` turns a burn's USDC, USDT, ETH or WBTC into BTC or another
-  chain's coin at the user's own address there, as the user's own transaction to THORChain's router.
-  It refuses contract senders and destinations, needs two independent THORNode endpoints that agree, pins the
-  router, checks the vault and the halts, and writes its own memo with a limit and a refund address. Use it as it is, or
-  port its checks whole; `design/2026-10-06-swap-venues.md` explains each.
 - **V3 routes.** Packed paths: `token(20) | fee(3) | token(20) [| fee(3) | token(20)]`. For **mint** the path is
   exact-output encoded, starting with the component and ending with the stable (e.g. `WBTC 500 WETH 500 USDC`). For
   **burn** it is exact-input encoded, starting with the component and ending with `tokenOut`.
@@ -505,9 +497,6 @@ stock, Wormhole for every wrapped copy, and both Binance and Wormhole for a copy
   pools call during every swap. Either makes PancakeSwap legs revert; neither can take a zap user's funds, since a leg
   holds only what it may spend and sweeps the rest back in the same call (SV-I1). Its router's source commit and audit
   are unknown; it is pinned by code hash (SV-I2).
-- **THORChain is a trusted third party and can halt.** A THORChain swap is not atomic: its validators hold the coins
-  between the two chains, it has halted trading for weeks (39 days after the exploit of May 2026), and a swap that
-  cannot fill at its limit is refunded, minus fees, to the refund address. Nothing in Xindex depends on it.
 - Bytecode targets the Cancun EVM (`evm_version = "cancun"`), which Ethereum runs. Re-check before deploying to any
   other chain.
 
@@ -531,7 +520,6 @@ Ethereum (`script/MainnetAddresses.sol`):
 | PancakeSwap v3 Universal Router | `0x65b382653f7C31bC0Af67f188122035461ec9C76` |
 | PancakeSwap V3 Factory / QuoterV2 | `0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865` / `0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997` |
 | Pyth | `0x4305FB66699C3B2702D4d05CF36551390A4c69C6` |
-| THORChain Router v4.1 (app-side only) | `0xD37BbE5744D730a1d98d8DC97c42F0Ca46aD7146` |
 | WeightedIndexFactory / IndexZap / MintRequests | not deployed |
 
 The scripts read these addresses from the address book, and `test/fork/MainnetAddresses.fork.t.sol` checks it on
@@ -549,7 +537,6 @@ forge fmt
 forge test                      # unit, fuzz, invariant and security regression tests, no RPC needed
 forge coverage                  # 100% on every file
 aderyn .                        # Cyfrin's analyzer on src/, configured in aderyn.toml: reports nothing
-node --test swaprail/*.test.mjs # the THORChain planner
 forge test --root keeper        # the keeper's executor, a Foundry project of its own
 node --test keeper/test/unit/*.test.mjs  # the keeper bot's arithmetic, settings, Hermes client and transaction tracker
 
@@ -753,11 +740,10 @@ script/testnet/               SetupTestMarket and FaucetToken for the Sepolia te
 abi/                          the ABIs the web app decodes with; CI regenerates them and fails on a diff
 keeper/                       the keeper bot and its executor, a Foundry project of its own with its own tests; it holds
                               no role in the protocol (keeper/README.md)
-swaprail/                     the THORChain planner the web app adopts (app-side, no contract calls it), its tests and a read-only live check
 design/                       the v5 spec, the one-index decision, the wide-asset and admission records, the WBT
                               check, the swap-venue record, and the Stage A spec whose issue, redeem and claims v5
                               keeps
-audit/                        the security reviews, their triage, and the four retirement records (the PoCs are in git
+audit/                        the security reviews, their triage, and the five retirement records (the PoCs are in git
                               history at f83dcab)
 aderyn.toml                   Aderyn's configuration: the rules the design rejects, each with its reason
 ```
