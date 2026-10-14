@@ -37,7 +37,7 @@ import {IUniswapV3PoolRead} from "./interfaces/IUniswapV3PoolRead.sol";
 ///     OpenZeppelin's `burnFrom` spends the holder's allowance and only the source says whether this one does.
 ///   - Depth, on Ethereum: each Uniswap V3 pool against WETH and USDC at the four standard fees, and each hookless V4
 ///     pool against ether and USDC at the standard fee and tick spacing pairs, with the token within 2% of the pool's
-///     price on either side from the liquidity active now. Recorded only. PancakeSwap's pools are not read.
+///     price on either side from the liquidity active now. Recorded only.
 ///   - Supply: the token's symbol, decimals and on-chain `totalSupply`.
 ///
 /// The selector scan is a heuristic: a power under a name the table does not list is missed, and a listed name says

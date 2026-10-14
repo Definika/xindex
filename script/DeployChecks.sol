@@ -16,8 +16,6 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 abstract contract DeployChecks is Script {
     /// @notice Default {resolveRouter} uses on chain 1, from `MainnetAddresses`.
     address public constant MAINNET_UNIVERSAL_ROUTER = MainnetAddresses.UNIVERSAL_ROUTER;
-    /// @notice Default {resolvePancakeRouter} uses on chain 1, from `MainnetAddresses`.
-    address public constant MAINNET_PANCAKE_ROUTER = MainnetAddresses.PANCAKE_UNIVERSAL_ROUTER;
     /// @notice Fewest signatures a Safe owner may need on a mainnet: the design's 3-of-5 hardware wallets held by
     ///         separate people (the owner's call on 2026-09-30).
     uint256 public constant MIN_OWNER_THRESHOLD = 3;
@@ -197,11 +195,6 @@ abstract contract DeployChecks is Script {
         return MAINNET_UNIVERSAL_ROUTER;
     }
 
-    /// @notice Ethereum's PancakeSwap router, the default on the pinned chain.
-    function pinnedPancakeRouter() public pure returns (address) {
-        return MAINNET_PANCAKE_ROUTER;
-    }
-
     /// @notice Ethereum's USDC, the default on the pinned chain.
     function pinnedUsdc() public pure returns (address) {
         return MainnetAddresses.USDC;
@@ -224,24 +217,6 @@ abstract contract DeployChecks is Script {
     /// @return The resolved router.
     function resolveRouter(address router) public view returns (address) {
         return _resolve("UNIVERSAL_ROUTER", router, pinnedRouter());
-    }
-
-    /// @notice Fills a zero PancakeSwap router with the chain's on a pinned chain, refuses any other there, and
-    ///         requires code. Off the pinned chains a zero router is accepted and deploys a zap that refuses every
-    ///         PancakeSwap leg, since a testnet has no PancakeSwap to route to.
-    /// @param given Address from the environment.
-    /// @return The resolved router, or zero off the pinned chains for none.
-    function resolvePancakeRouter(address given) public view returns (address) {
-        if (!isPinnedChain() && given == address(0)) return address(0);
-        return _resolve("PANCAKE_ROUTER", given, pinnedPancakeRouter());
-    }
-
-    /// @notice Neither role may be PancakeSwap's router either: anyone can sweep a router's balance (CR-I37).
-    /// @param pancakeRouter The resolved router, or zero for none.
-    function checkRolesAreNotPancake(address owner, address guardian, address pancakeRouter) public pure {
-        if (pancakeRouter != address(0) && (owner == pancakeRouter || guardian == pancakeRouter)) {
-            revert RoleIsMarketContract(pancakeRouter);
-        }
     }
 
     /// @notice Fills a zero address with the pinned chain's default, refuses any other there, and requires code, as

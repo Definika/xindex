@@ -7,8 +7,6 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {WeightedIndexFactory} from "../../src/WeightedIndexFactory.sol";
 import {WeightedHub} from "../../src/WeightedHub.sol";
 import {IndexZap} from "../../src/IndexZap.sol";
-import {NoEtherCaller} from "../mocks/NoEtherCaller.sol";
-import {IPancakeUniversalRouter} from "../../src/interfaces/IPancakeUniversalRouter.sol";
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {IWeightedIndexFactory} from "../../src/interfaces/IWeightedIndexFactory.sol";
 import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
@@ -36,14 +34,8 @@ interface IQuoterV2 {
         );
 }
 
-interface IPancakeRouterAdmin {
-    function owner() external view returns (address);
-    function pause() external;
-}
-
-/// @notice End-to-end against the real Universal Router, real V3 and V4 pools, PancakeSwap's real router and V3 pools,
-///         USDC and USDT. Skips when MAINNET_RPC_URL is unset. Run: MAINNET_RPC_URL=... forge test --match-path
-///         'test/fork/*' -vvv
+/// @notice End-to-end against the real Universal Router, real V3 and V4 pools, USDC and USDT. Skips when
+///         MAINNET_RPC_URL is unset. Run: MAINNET_RPC_URL=... forge test --match-path 'test/fork/*' -vvv
 contract IndexZapForkTest is Test {
     using SafeERC20 for IERC20;
 
@@ -88,11 +80,7 @@ contract IndexZapForkTest is Test {
         }
 
         factory = new WeightedIndexFactory(address(this), address(0), A.PYTH);
-        zap = new IndexZap(
-            IIndexFactory(address(factory)),
-            IUniversalRouter(A.UNIVERSAL_ROUTER),
-            IPancakeUniversalRouter(A.PANCAKE_UNIVERSAL_ROUTER)
-        );
+        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER));
 
         // The zap never asks for a price, so each token is listed under a price id of its own making.
         factory.proposeListing(A.WBTC, keccak256(abi.encode(A.WBTC)));
@@ -152,30 +140,30 @@ contract IndexZapForkTest is Test {
     function _mixedMintLegs() internal pure returns (IIndexZap.MintLeg[] memory legs) {
         bytes[] memory p = _mintPaths(A.USDC);
         legs = new IIndexZap.MintLeg[](3);
-        legs[0] = IIndexZap.MintLeg({v3Path: p[0], v4Path: new PathKey[](0), pancakePath: "", maxAmountIn: 0});
-        legs[1] = IIndexZap.MintLeg({v3Path: p[1], v4Path: new PathKey[](0), pancakePath: "", maxAmountIn: 0});
-        legs[2] = IIndexZap.MintLeg({v3Path: "", v4Path: _v4MintPathLink(), pancakePath: "", maxAmountIn: 0});
+        legs[0] = IIndexZap.MintLeg({v3Path: p[0], v4Path: new PathKey[](0), maxAmountIn: 0});
+        legs[1] = IIndexZap.MintLeg({v3Path: p[1], v4Path: new PathKey[](0), maxAmountIn: 0});
+        legs[2] = IIndexZap.MintLeg({v3Path: "", v4Path: _v4MintPathLink(), maxAmountIn: 0});
     }
 
     function _mixedBurnLegs() internal pure returns (IIndexZap.BurnLeg[] memory legs) {
         bytes[] memory p = _burnPaths(A.USDC);
         legs = new IIndexZap.BurnLeg[](3);
-        legs[0] = IIndexZap.BurnLeg({v3Path: p[0], v4Path: new PathKey[](0), pancakePath: "", minAmountOut: 0});
-        legs[1] = IIndexZap.BurnLeg({v3Path: p[1], v4Path: new PathKey[](0), pancakePath: "", minAmountOut: 0});
-        legs[2] = IIndexZap.BurnLeg({v3Path: "", v4Path: _v4BurnPathLink(), pancakePath: "", minAmountOut: 0});
+        legs[0] = IIndexZap.BurnLeg({v3Path: p[0], v4Path: new PathKey[](0), minAmountOut: 0});
+        legs[1] = IIndexZap.BurnLeg({v3Path: p[1], v4Path: new PathKey[](0), minAmountOut: 0});
+        legs[2] = IIndexZap.BurnLeg({v3Path: "", v4Path: _v4BurnPathLink(), minAmountOut: 0});
     }
 
     function _mintLegs(bytes[] memory paths) internal pure returns (IIndexZap.MintLeg[] memory legs) {
         legs = new IIndexZap.MintLeg[](paths.length);
         for (uint256 i = 0; i < paths.length; ++i) {
-            legs[i] = IIndexZap.MintLeg({v3Path: paths[i], v4Path: new PathKey[](0), pancakePath: "", maxAmountIn: 0});
+            legs[i] = IIndexZap.MintLeg({v3Path: paths[i], v4Path: new PathKey[](0), maxAmountIn: 0});
         }
     }
 
     function _burnLegs(bytes[] memory paths) internal pure returns (IIndexZap.BurnLeg[] memory legs) {
         legs = new IIndexZap.BurnLeg[](paths.length);
         for (uint256 i = 0; i < paths.length; ++i) {
-            legs[i] = IIndexZap.BurnLeg({v3Path: paths[i], v4Path: new PathKey[](0), pancakePath: "", minAmountOut: 0});
+            legs[i] = IIndexZap.BurnLeg({v3Path: paths[i], v4Path: new PathKey[](0), minAmountOut: 0});
         }
     }
 
@@ -379,7 +367,7 @@ contract IndexZapForkTest is Test {
         for (uint256 i = 0; i < 3; ++i) {
             (uint256 legQuote,,,) = quoter.quoteExactOutput(mintPaths[i], need[i]);
             mintLegs[i] = IIndexZap.MintLeg({
-                v3Path: mintPaths[i], v4Path: new PathKey[](0), pancakePath: "", maxAmountIn: legQuote + legQuote / 200
+                v3Path: mintPaths[i], v4Path: new PathKey[](0), maxAmountIn: legQuote + legQuote / 200
             });
             total += legQuote;
         }
@@ -398,7 +386,7 @@ contract IndexZapForkTest is Test {
         for (uint256 i = 0; i < 3; ++i) {
             (uint256 legOut,,,) = quoter.quoteExactInput(burnPaths[i], got[i]);
             burnLegs[i] = IIndexZap.BurnLeg({
-                v3Path: burnPaths[i], v4Path: new PathKey[](0), pancakePath: "", minAmountOut: legOut - legOut / 200
+                v3Path: burnPaths[i], v4Path: new PathKey[](0), minAmountOut: legOut - legOut / 200
             });
             quoteOut += legOut;
         }
@@ -430,15 +418,12 @@ contract IndexZapForkTest is Test {
         _mint(A.USDC, 1e18, 100);
 
         IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](3);
-        legs[0] = IIndexZap.BurnLeg({v3Path: "", v4Path: new PathKey[](0), pancakePath: "", minAmountOut: 0}); // WBTC is the payout token
+        legs[0] = IIndexZap.BurnLeg({v3Path: "", v4Path: new PathKey[](0), minAmountOut: 0}); // WBTC is the payout token
         legs[1] = IIndexZap.BurnLeg({
-            v3Path: abi.encodePacked(A.WETH, F500, A.WBTC), v4Path: new PathKey[](0), pancakePath: "", minAmountOut: 0
+            v3Path: abi.encodePacked(A.WETH, F500, A.WBTC), v4Path: new PathKey[](0), minAmountOut: 0
         });
         legs[2] = IIndexZap.BurnLeg({
-            v3Path: abi.encodePacked(A.LINK, F3000, A.WETH, F500, A.WBTC),
-            v4Path: new PathKey[](0),
-            pancakePath: "",
-            minAmountOut: 0
+            v3Path: abi.encodePacked(A.LINK, F3000, A.WETH, F500, A.WBTC), v4Path: new PathKey[](0), minAmountOut: 0
         });
 
         (uint256 wethOut,,,) = quoter.quoteExactInput(legs[1].v3Path, U_WETH);
@@ -516,156 +501,5 @@ contract IndexZapForkTest is Test {
         vm.stopPrank();
         assertGt(out, spent - spent / 20);
         assertEq(btc.totalSupply(), 0);
-    }
-
-    // ---------------------------------------------------------------------
-    // PancakeSwap legs (the owner's call on 2026-10-06; design/2026-10-06-swap-venues.md)
-    // ---------------------------------------------------------------------
-
-    uint24 constant P100 = 100;
-    uint24 constant P2500 = 2500;
-
-    /// @dev WETH and CAKE, a dollar or two of each a token; CAKE is listed here under a price id of its own making.
-    function _cakeIndex() internal returns (WeightedHub cakeIndex) {
-        factory.proposeListing(A.CAKE, keccak256(abi.encode(A.CAKE)));
-        vm.warp(block.timestamp + factory.LISTING_DELAY());
-        factory.executeListing(A.CAKE);
-        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](2);
-        specs[0] = IWeightedIndexFactory.ComponentSpec({token: A.WETH, weight: 5000, units: 1e15});
-        specs[1] = IWeightedIndexFactory.ComponentSpec({token: A.CAKE, weight: 5000, units: 2e18});
-        cakeIndex = WeightedHub(factory.createIndex("Cake and Ether", "CAKEETH", specs));
-    }
-
-    /// @dev CAKE through PancakeSwap (CAKE/WETH 0.25%, WETH/USDC 0.01%), WETH through Uniswap V3: one mint, both
-    ///      routers, each pre-funded and swept clean.
-    function _cakeMintLegs() internal pure returns (IIndexZap.MintLeg[] memory legs) {
-        legs = new IIndexZap.MintLeg[](2);
-        legs[0] = IIndexZap.MintLeg({
-            v3Path: abi.encodePacked(A.WETH, F500, A.USDC), v4Path: new PathKey[](0), pancakePath: "", maxAmountIn: 0
-        });
-        legs[1] = IIndexZap.MintLeg({
-            v3Path: "",
-            v4Path: new PathKey[](0),
-            pancakePath: abi.encodePacked(A.CAKE, P2500, A.WETH, P100, A.USDC),
-            maxAmountIn: 0
-        });
-    }
-
-    function _cakeBurnLegs() internal pure returns (IIndexZap.BurnLeg[] memory legs) {
-        legs = new IIndexZap.BurnLeg[](2);
-        legs[0] = IIndexZap.BurnLeg({
-            v3Path: abi.encodePacked(A.WETH, F500, A.USDC), v4Path: new PathKey[](0), pancakePath: "", minAmountOut: 0
-        });
-        legs[1] = IIndexZap.BurnLeg({
-            v3Path: "",
-            v4Path: new PathKey[](0),
-            pancakePath: abi.encodePacked(A.CAKE, P2500, A.WETH, P100, A.USDC),
-            minAmountOut: 0
-        });
-    }
-
-    /// @dev What the app does: Uniswap's QuoterV2 for the Uniswap leg, PancakeSwap's for the PancakeSwap leg.
-    function _quoteCakeMint(WeightedHub cakeIndex, uint256 shares) internal returns (uint256 total) {
-        uint256[] memory need = cakeIndex.previewIssue(shares);
-        IIndexZap.MintLeg[] memory legs = _cakeMintLegs();
-        (uint256 wethLeg,,,) = quoter.quoteExactOutput(legs[0].v3Path, need[0]);
-        (uint256 cakeLeg,,,) = IQuoterV2(A.PANCAKE_QUOTER_V2).quoteExactOutput(legs[1].pancakePath, need[1]);
-        total = wethLeg + cakeLeg;
-    }
-
-    function _mintCake(WeightedHub cakeIndex, uint256 shares) internal returns (uint256 quote, uint256 spent) {
-        quote = _quoteCakeMint(cakeIndex, shares);
-        uint256 maxIn = quote + quote / 100;
-        deal(A.USDC, alice, maxIn);
-        vm.startPrank(alice);
-        IERC20(A.USDC).forceApprove(address(zap), maxIn);
-        spent = _mintCall(cakeIndex, A.USDC, maxIn, shares, _cakeMintLegs());
-        vm.stopPrank();
-    }
-
-    function testFork_pancake_mintAndBurnCake() public {
-        WeightedHub cakeIndex = _cakeIndex();
-        // USDC left in PancakeSwap's router by others (16,968 units on 2026-10-10): the sweep hands it back to the
-        // zap, which counts it as unsold input (CR-L02), so the mint costs that much less than the quoters say.
-        uint256 stray = IERC20(A.USDC).balanceOf(A.PANCAKE_UNIVERSAL_ROUTER);
-        (uint256 quote, uint256 spent) = _mintCake(cakeIndex, 1e18);
-        assertEq(cakeIndex.balanceOf(alice), 1e18);
-        assertEq(IERC20(A.CAKE).balanceOf(address(cakeIndex)), 2e18, "the PancakeSwap leg delivered every CAKE");
-        assertEq(IERC20(A.WETH).balanceOf(address(cakeIndex)), 1e15);
-        assertApproxEqRel(spent + stray, quote, 1e14, "spend vs the two quoters");
-        assertEq(IERC20(A.USDC).balanceOf(A.PANCAKE_UNIVERSAL_ROUTER), 0, "the sweep took the stray USDC");
-        assertGt(spent, 1e6);
-        assertLt(spent, 100e6);
-        _assertRoutersClean();
-
-        // Burn: CAKE sold through PancakeSwap one hop at a time, WETH through Uniswap.
-        uint256[] memory got = cakeIndex.previewRedeem(1e18);
-        IIndexZap.BurnLeg[] memory legs = _cakeBurnLegs();
-        (uint256 wethOut,,,) = quoter.quoteExactInput(legs[0].v3Path, got[0]);
-        (uint256 cakeOut,,,) = IQuoterV2(A.PANCAKE_QUOTER_V2).quoteExactInput(legs[1].pancakePath, got[1]);
-        uint256 burnQuote = wethOut + cakeOut;
-        uint256 before = IERC20(A.USDC).balanceOf(alice);
-        vm.startPrank(alice);
-        cakeIndex.approve(address(zap), 1e18);
-        uint256 out = _burnCall(cakeIndex, 1e18, A.USDC, burnQuote - burnQuote / 100, _cakeBurnLegs());
-        vm.stopPrank();
-        assertApproxEqRel(out, burnQuote, 1e14, "payout vs the two quoters");
-        assertEq(IERC20(A.USDC).balanceOf(alice) - before, out);
-        assertEq(cakeIndex.totalSupply(), 0);
-        _assertRoutersClean();
-    }
-
-    /// @dev SV-1 against the deployed router. One wei sent to PancakeSwap's router is enough to revert a call from
-    ///      any contract that cannot receive ether, as the zap cannot: shown first with a plain sweep. The zap's
-    ///      PancakeSwap legs still go through, because each ends with WRAP_ETH, which turns the wei into WETH kept by
-    ///      the router.
-    function testFork_SV1_strayEtherInThePancakeRouterCannotBlockALeg() public {
-        WeightedHub cakeIndex = _cakeIndex();
-        vm.deal(address(this), 1 wei);
-        (bool sent,) = A.PANCAKE_UNIVERSAL_ROUTER.call{value: 1 wei}("");
-        assertTrue(sent, "anyone can send PancakeSwap's router ether");
-
-        NoEtherCaller victim = new NoEtherCaller();
-        bytes[] memory inputs = new bytes[](1);
-        inputs[0] = abi.encode(A.USDC, address(victim), uint256(0));
-        vm.expectRevert(bytes("ETH_TRANSFER_FAILED"));
-        victim.run(IPancakeUniversalRouter(A.PANCAKE_UNIVERSAL_ROUTER), abi.encodePacked(uint8(0x04)), inputs);
-
-        uint256 wethBefore = IERC20(A.WETH).balanceOf(A.PANCAKE_UNIVERSAL_ROUTER);
-        // Forge seeds a freshly created address with a wei, so what the call must leave untouched is the delta.
-        uint256 zapEthBefore = address(zap).balance;
-        _mintCake(cakeIndex, 1e18);
-        assertEq(cakeIndex.balanceOf(alice), 1e18, "the mint went through");
-        assertEq(A.PANCAKE_UNIVERSAL_ROUTER.balance, 0, "the wei was wrapped");
-        assertEq(IERC20(A.WETH).balanceOf(A.PANCAKE_UNIVERSAL_ROUTER), wethBefore + 1, "and kept by the router");
-        assertEq(address(zap).balance, zapEthBefore, "no ether ever reaches the zap");
-    }
-
-    /// @dev PancakeSwap's Safe can pause its router: the PancakeSwap leg reverts whole, nothing is stranded, and the
-    ///      same basket routed through Uniswap alone still mints.
-    function testFork_pancake_aPausedRouterStopsOnlyItsLegs() public {
-        WeightedHub cakeIndex = _cakeIndex();
-        uint256 quote = _quoteCakeMint(cakeIndex, 1e18);
-        vm.prank(IPancakeRouterAdmin(A.PANCAKE_UNIVERSAL_ROUTER).owner());
-        IPancakeRouterAdmin(A.PANCAKE_UNIVERSAL_ROUTER).pause();
-
-        uint256 maxIn = quote + quote / 100;
-        deal(A.USDC, alice, maxIn);
-        vm.startPrank(alice);
-        IERC20(A.USDC).forceApprove(address(zap), maxIn);
-        vm.expectRevert(bytes("Pausable: paused"));
-        _mintCall(cakeIndex, A.USDC, maxIn, 1e18, _cakeMintLegs());
-        vm.stopPrank();
-        assertEq(IERC20(A.USDC).balanceOf(alice), maxIn, "nothing spent");
-        _assertRoutersClean();
-    }
-
-    function _assertRoutersClean() internal view {
-        address[3] memory tokens = [A.USDC, A.WETH, A.CAKE];
-        for (uint256 i = 0; i < tokens.length; ++i) {
-            assertEq(IERC20(tokens[i]).balanceOf(address(zap)), 0, "the zap keeps nothing");
-        }
-        assertEq(IERC20(A.CAKE).allowance(address(zap), A.PANCAKE_UNIVERSAL_ROUTER), 0, "and approves no router");
-        assertEq(IERC20(A.USDC).allowance(address(zap), A.PANCAKE_UNIVERSAL_ROUTER), 0);
     }
 }

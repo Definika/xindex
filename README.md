@@ -74,7 +74,7 @@ The history, in one paragraph each:
 | Creation | `createIndex(name, symbol, components)` with one `ComponentSpec {token, weight, units}` per component. The app derives the starting units from the weights at its own prices; each lies between `MIN_RAW_UNITS` (10,000) and `MAX_UNITS` (`(2^96 − 1) >> 10`). The factory reads no price, and the first rebalance brings an index to its weights. Every component copies its listing's Pyth price id and decimals. |
 | Rebalancing | Anyone starts a rebalance 7 days after the last one or after creation (`MIN_REBALANCE_INTERVAL`), then 2 hours of notice (`REBALANCE_DELAY`), then a 24-hour auction (`AUCTION_DURATION`) in which any contract can fill. The fill reads Pyth's prices, sets each moving component's target from its weight, and moves every leg the same share of the way. The growing legs ask `μ` times their step, `μ` falling from `MU_MAX` (1.02) to `MU_MIN` (0.98). One fill sends out at most `MAX_TURNOVER` (20%) of each component's own units, and must trade at least `MIN_TRADE` (0.1%) of the moving value. |
 | Prices | Pyth only, read only by the settlement and only for the moving components. One price per block: each feed's first update at or after `priceTime()`, 12 seconds (`PRICE_LAG`) before the block. Refused: a non-positive price, an exponent outside [-18, 0], a price above `MAX_PRICE`, a confidence interval wider than `MAX_CONFIDENCE` (2%). Issue, redeem and claims read none. The app values an index off chain. |
-| Swaps | Uniswap's Universal Router 2.0.0, V3 and V4, and PancakeSwap's v3 Universal Router for PancakeSwap V3 (since 2026-10-06, chiefly for CAKE), one venue per leg, chosen by the caller (`design/2026-10-06-swap-venues.md`). The app offers the one-click zap only up to about 35 components (EIP-7825's 16.78M gas per transaction). |
+| Swaps | Uniswap's Universal Router 2.0.0 alone, V3 or V4, one venue per leg, chosen by the caller. PancakeSwap and THORChain were removed on 2026-10-14. The app offers the one-click zap only up to about 35 components (EIP-7825's 16.78M gas per transaction). |
 | Fees | None: v5 is funded from outside (the owner's call on 2026-09-30). Every amount the hub moves goes through one helper, `_backing`, so a fee in a later version would land in one reviewed change. |
 | Coins | Ethereum ERC-20s: the issuer's own contract where Ethereum has one, Bitcoin as WBTC, and otherwise the copy Wormhole's token bridge wraps from the coin's home chain, labelled Bridged (and Custodial from a Binance-Peg source). Tether Gold and Ondo's stock tokens are listed too, labelled Custodial. 93 are listed in `script/PythIds.sol`, 14 of them Wormhole copies (SOL and the 13 added on 2026-10-10), with 34 more copies to attest. |
 | Stable in / out | Mint with USDC or USDT through the zap, or through `MintRequests` at a limit of the requester's own, filled by anyone who holds shares. The burner chooses USDC, USDT or any other token at exit, or asks for USDC or USDT at a limit through `MintRequests`. Index tokens are fungible, so the protocol cannot know which stable a holder used. |
@@ -116,10 +116,10 @@ The history, in one paragraph each:
   EIP-1167 clones deployed with CREATE2 from a salt over the creator, the name, the symbol and every component's token,
   units, weight, price id and decimals; `predictIndexAddress` returns the address before the transaction is sent. The
   factory stores price ids and never calls Pyth.
-- `IndexZap` (`src/IndexZap.sol`) is v3's stateless convenience router over Uniswap's Universal Router, with
-  PancakeSwap's v3 Universal Router as a third venue per leg since 2026-10-06. `mintWithToken` buys exactly the basket with exact-output swaps and issues; `burnToToken`
-  redeems and sells every component into the chosen token; `burnToTokenWithPermit` does it in one transaction. It is the
-  only contract here that knows about Uniswap or PancakeSwap.
+- `IndexZap` (`src/IndexZap.sol`) is v3's stateless convenience router over Uniswap's Universal Router.
+  `mintWithToken` buys exactly the basket with exact-output swaps and issues; `burnToToken` redeems and sells every
+  component into the chosen token; `burnToTokenWithPermit` does it in one transaction. It is the only contract here that
+  knows about Uniswap.
 - `MintRequests` (`src/MintRequests.sol`) is an ownerless escrow. `requestMint(index, stable, amount, minShares,
   deadline)` escrows USDC or USDT for at least `minShares` shares; `requestRedeem(index, shares, stable, minOut,
   deadline)` escrows shares for at least `minOut` of a stablecoin. Anyone `fill`s a request before its deadline by
@@ -257,17 +257,12 @@ at any time) or `refund` (anyone, after the deadline).
   `cancelRebalance` is the check, and a keep mask routes around a feed that has stopped. The contracts cannot tell a
   wrong price id from a right one; the guardian's `cancelListing` during a listing's 2 days is the check.
 - **Zap calls take a params struct.** `MintParams {index, expectedNonce, tokenIn, maxAmountIn, shares, legs, to,
-  deadline}` with `MintLeg {v3Path, v4Path, pancakePath, maxAmountIn}`, and `BurnParams {index, expectedNonce, shares,
-  tokenOut, minAmountOut, legs, to, deadline}` with `BurnLeg {v3Path, v4Path, pancakePath, minAmountOut}`. `legs` has one entry per component,
+  deadline}` with `MintLeg {v3Path, v4Path, maxAmountIn}`, and `BurnParams {index, expectedNonce, shares, tokenOut,
+  minAmountOut, legs, to, deadline}` with `BurnLeg {v3Path, v4Path, minAmountOut}`. `legs` has one entry per component,
   in component order. `expectedNonce` is `rebalanceNonce()` when the legs were quoted; after a rebalance, re-quote.
-- **One venue per leg.** A leg carries exactly one of a packed `v3Path` (Uniswap V3), a `v4Path` (Uniswap V4) and a
-  packed `pancakePath` (PancakeSwap V3). All empty means "no swap", which is only valid for the pass-through leg, the one
-  whose component already is the stable on a mint or `tokenOut` on a burn. Anything else is `BadRoute(i)`, and so is a
-  `pancakePath` on a zap whose `PANCAKE_ROUTER()` is zero. There are no mixed-venue legs.
-- **PancakeSwap routes.** Uniswap's packed format, through PancakeSwap's own pools, whose fee tiers are 100, 500, 2500
-  and 10000 (no 3000). Quote them with PancakeSwap's QuoterV2, `0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997`. On
-  Ethereum only CAKE is deeper there than on Uniswap; quote both venues per leg and take the better. If PancakeSwap's
-  router is paused, its legs revert with `Pausable: paused`: route those legs through Uniswap.
+- **One venue per leg.** A leg carries exactly one of a packed `v3Path` (Uniswap V3) and a `v4Path` (Uniswap V4). Both
+  empty means "no swap", which is only valid for the pass-through leg, the one whose component already is the stable on
+  a mint or `tokenOut` on a burn. Anything else is `BadRoute(i)`. There are no mixed-venue legs.
 - **V3 routes.** Packed paths: `token(20) | fee(3) | token(20) [| fee(3) | token(20)]`. For **mint** the path is
   exact-output encoded, starting with the component and ending with the stable (e.g. `WBTC 500 WETH 500 USDC`). For
   **burn** it is exact-input encoded, starting with the component and ending with `tokenOut`.
@@ -332,7 +327,7 @@ at any time) or `refund` (anyone, after the deadline).
 - **Watch the ownership handover.** `transferOwnership(new owner)` emits `OwnershipTransferStarted` and
   `acceptOwnership()` emits `OwnershipTransferred`. It is the one admin change with no delay and no guardian veto.
 - **Errors.** `IndexZap`: `NotIndex`, `StaleRebalanceNonce`, `Expired`, `ZeroAddress`, `ZeroAmount`, `InvalidRecipient`
-  (the zap, the index, either router, the PoolManager or the factory, RT-21), `LegCountMismatch`, `BadRoute(i)`,
+  (the zap, the index, the router, the PoolManager or the factory, RT-21), `LegCountMismatch`, `BadRoute(i)`,
   `ShortFill(i, received, required)`, `InsufficientBudget`, `InsufficientOutput`, `TransferShortfall`. `WeightedHub`:
   `NotFactory`, `NotInitialized`, `InvalidComponents`, `ZeroShares`, `ZeroAddress`, `InvalidRecipient` (also for a share
   transfer to the index itself or its factory), `InvalidSkipMask`, `NothingToClaim`, `TransferAmountMismatch`,
@@ -493,10 +488,6 @@ stock, Wormhole for every wrapped copy, and both Binance and Wormhole for a copy
   the zap's practical limit. The in-kind path is what fits at 100.
 - The zap is pinned to **Universal Router 2.0.0** rather than the 2.1.x line, whose command inputs carry an extra
   per-hop price array. Moving to a newer router means a new zap; the hub and factory do not depend on it.
-- **PancakeSwap's owner can stop its legs.** PancakeSwap's Safe can pause its router, and can attach a contract its V3
-  pools call during every swap. Either makes PancakeSwap legs revert; neither can take a zap user's funds, since a leg
-  holds only what it may spend and sweeps the rest back in the same call (SV-I1). Its router's source commit and audit
-  are unknown; it is pinned by code hash (SV-I2).
 - Bytecode targets the Cancun EVM (`evm_version = "cancun"`), which Ethereum runs. Re-check before deploying to any
   other chain.
 
@@ -517,13 +508,11 @@ Ethereum (`script/MainnetAddresses.sol`):
 | Uniswap QuoterV2 (V3 quotes) | `0x61fFE014bA17989E743c5F6cB21bF9697530B21e` |
 | Uniswap V4 Quoter | `0x52F0E24D1c21C8A0cB1e5a5dD6198556BD9E1203` |
 | Uniswap V4 StateView | `0x7fFE42C4a5DEeA5b0feC41C94C136Cf115597227` |
-| PancakeSwap v3 Universal Router | `0x65b382653f7C31bC0Af67f188122035461ec9C76` |
-| PancakeSwap V3 Factory / QuoterV2 | `0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865` / `0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997` |
 | Pyth | `0x4305FB66699C3B2702D4d05CF36551390A4c69C6` |
 | WeightedIndexFactory / IndexZap / MintRequests | not deployed |
 
 The scripts read these addresses from the address book, and `test/fork/MainnetAddresses.fork.t.sol` checks it on
-chain: tokens by symbol and decimals, the routers and the PoolManager by their runtime code hashes (every Universal
+chain: tokens by symbol and decimals, the router and the PoolManager by their runtime code hashes (every Universal
 Router build answers `poolManager()` alike, CR-I35), Pyth's proxy by its code, the Wormhole copies against the bridge,
 and both lists on a fresh factory over Pyth. The quoters and StateView are for apps and tests; no contract reads
 them.
@@ -580,12 +569,10 @@ delegated account, and a Safe must need at least three signatures (`MIN_OWNER_TH
 no enabled module, because a module acts as the Safe without signatures (keep it that way after deployment; the script
 cannot see later changes). The guardian must not be the broadcasting key, which must hold no role; when the owner is a
 Safe, neither the guardian nor the broadcasting key may be one of its signers, since the guardian is the owner's veto
-(SA-06); and neither role may be a market contract: the routers, the PoolManager and Pyth everywhere, and on a mainnet
-also every token and mint currency in the address book (CR-I37). `PYTH`, `UNIVERSAL_ROUTER`, `PANCAKE_ROUTER`, `USDC`
-and `USDT` default to the address book's on chain 1 (`script/MainnetAddresses.sol`), where any other value is
-rejected, and are required anywhere else (a zero
-`PANCAKE_ROUTER` off a mainnet deploys a zap that refuses PancakeSwap legs); they are the script's only market
-addresses, because the hub and factory depend on no Uniswap contract.
+(SA-06); and neither role may be a market contract: the router, the PoolManager and Pyth everywhere, and on a mainnet
+also every token and mint currency in the address book (CR-I37). `PYTH`, `UNIVERSAL_ROUTER`, `USDC` and `USDT`
+default to the address book's on chain 1 (`script/MainnetAddresses.sol`), where any other value is rejected, and are
+required anywhere else; they are the script's only market addresses, because the hub and factory depend on no Uniswap contract.
 
 **Deployment record.** `forge script --broadcast` writes `broadcast/DeployWeighted.s.sol/<chain id>/run-latest.json`:
 the git commit, each transaction with its init code, and the addresses. Broadcast from a clean, committed tree so the
@@ -698,8 +685,7 @@ MARKET_MODE=create forge script script/testnet/SetupTestMarket.s.sol --rpc-url s
 MARKET_MODE=seed MARKET_TOKENS=<logged by create> forge script script/testnet/SetupTestMarket.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast
 
 # 2. the factory (which deploys the WeightedHub implementation), the zap and MintRequests; the test market has no
-#    USDT, so USDT is any second 6-decimal test token, a FaucetToken for instance; off a mainnet PYTH is required and
-#    PANCAKE_ROUTER may stay unset, which deploys a zap that refuses PancakeSwap legs
+#    USDT, so USDT is any second 6-decimal test token, a FaucetToken for instance; off a mainnet PYTH is required
 OWNER=<Safe> GUARDIAN=<guardian> PYTH=<Pyth's Sepolia contract> UNIVERSAL_ROUTER=0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b \
   USDC=<tUSDC logged by create> USDT=<a second test stablecoin> \
   forge script script/DeployWeighted.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast
@@ -724,14 +710,14 @@ SwapRouter02; it is a test fixture without slippage limits, so never fund it on 
 src/WeightedHub.sol           v5 index implementation (ERC20 + permit, in-kind issue, redeem, redeemSkipping, claim, rebalance
                               to fixed weights at Pyth prices), cloned
 src/WeightedIndexFactory.sol  v5 listings (each token with its Pyth price id), guardian, registry, CREATE2 clone deployer
-src/IndexZap.sol              mint/burn router over Uniswap's and PancakeSwap's Universal Routers, one venue per leg, per-leg limits, nonce check
+src/IndexZap.sol              mint/burn router over Uniswap's Universal Router, one venue per leg, per-leg limits, nonce check
 src/MintRequests.sol          ownerless escrow of USDC/USDT-for-shares requests at the requester's own limit
 src/interfaces/               every contract's interface, the shared errors (IXindexErrors), the vendored IUniversalRouter and
                               Pyth's IPyth, IPythEvents and PythStructs
-src/libraries/                PathLib, UniversalRouterCommands, UniswapV4Types and PancakeRouterCommands (vendored)
+src/libraries/                PathLib, UniversalRouterCommands and UniswapV4Types (vendored)
 test/*.t.sol                  unit, fuzz, invariant, script and repository tests
 test/Security.t.sol           regression tests for the security review findings (some ids are tested elsewhere; see AGENTS.md gate 6)
-test/mocks/                   mock tokens, a strict Universal Router and PancakeSwap router, a Pyth that follows Pyth's fill loop,
+test/mocks/                   mock tokens, a strict Universal Router, a Pyth that follows Pyth's fill loop,
                               V3 pools for the testnet script, the market fixture, with their own tests
 test/fork/                    mainnet fork tests: real V3 and V4 pools, settlements at Pyth prices and security regressions on real tokens
 script/                       DeployWeighted, ConfigureWeighted, PythIds, CheckToken, MainnetAddresses, DeployChecks, ScriptUtils
@@ -743,7 +729,7 @@ keeper/                       the keeper bot and its executor, a Foundry project
 design/                       the v5 spec, the one-index decision, the wide-asset and admission records, the WBT
                               check, the swap-venue record, and the Stage A spec whose issue, redeem and claims v5
                               keeps
-audit/                        the security reviews, their triage, and the five retirement records (the PoCs are in git
+audit/                        the security reviews, their triage, and the six retirement records (the PoCs are in git
                               history at f83dcab)
 aderyn.toml                   Aderyn's configuration: the rules the design rejects, each with its reason
 ```

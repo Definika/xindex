@@ -29,12 +29,6 @@ library ForkAddresses {
     address internal constant UNIVERSAL_ROUTER = MainnetAddresses.UNIVERSAL_ROUTER;
     address internal constant POOL_MANAGER = MainnetAddresses.POOL_MANAGER;
     address internal constant QUOTER_V2 = 0x61fFE014bA17989E743c5F6cB21bF9697530B21e;
-    /// @dev PancakeSwap's v3 Universal Router, through which the zap runs a leg that names a PancakeSwap V3 path, and
-    ///      PancakeSwap's QuoterV2, which only the fork tests use to size such a leg. CAKE is PancakeSwap's own coin and
-    ///      the one listed coin whose deepest Ethereum pool is PancakeSwap's.
-    address internal constant PANCAKE_UNIVERSAL_ROUTER = MainnetAddresses.PANCAKE_UNIVERSAL_ROUTER;
-    address internal constant PANCAKE_QUOTER_V2 = 0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997;
-    address internal constant CAKE = MainnetAddresses.CAKE;
     /// @dev Pyth's proxy, which a v5 factory needs at construction; the zap suites never ask it for a price.
     address internal constant PYTH = MainnetAddresses.PYTH;
 

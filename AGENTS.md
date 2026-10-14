@@ -7,7 +7,7 @@ Guidance for coding agents and humans working in this repository. Codex reads th
 
 Xindex smart contracts, v5: a Foundry project where users create crypto index tokens (ERC-20) backed in kind, mint
 them with USDC/USDT, and burn them into any token through Uniswap's Universal Router, which reaches both V3 and V4
-pools, or PancakeSwap's. Creators choose each coin's percentage, fixed at creation with the coin list, and the index
+pools. Creators choose each coin's percentage, fixed at creation with the coin list, and the index
 rebalances back to those percentages at Pyth prices, through a permissionless auction. Only that settlement reads a
 price; issue, redeem and claims never do. The web app lives in a separate repo.
 
@@ -92,7 +92,7 @@ CHECK=wide forge script script/CheckToken.s.sol --fork-url $MAINNET_RPC_URL
 Deployment, once, on Ethereum: `script/DeployWeighted.s.sol`, then `script/ConfigureWeighted.s.sol`, which lists each
 coin with its Pyth price id (`script/PythIds.sol`). `script/CheckToken.s.sol` reports on every token before its first
 listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 93 in all. On chain 1 the
-deploy script resolves Pyth, the routers and the stablecoins from the address book and refuses any other address
+deploy script resolves Pyth, the router and the stablecoins from the address book and refuses any other address
 (`DeployChecks.isPinnedChain`). Sepolia first needs its test market from
 `script/testnet/SetupTestMarket.s.sol`.
 
@@ -140,10 +140,6 @@ deploy script resolves Pyth, the routers and the stablecoins from the address bo
    - The internal review of v5's weighted index on 2026-10-05: `V5-M1`, `V5-M2`, `V5-L1`..`V5-L3` and `V5-I1`..`V5-I4`
      (`audit/2026-10-05-v5-review.md`), a test named `test_V5M1_...`. The record's status column names every test, and
      the ids fixed or recorded by documentation alone, which have none.
-   - The swap-venue review of 2026-10-06: `SV-1` and `SV-I1`..`SV-I4` (`audit/2026-10-06-swap-venues-review.md`), a
-     test named `test_SV1_...` in `test/IndexZap.pancake.t.sol` and `testFork_SV1_...` in
-     `test/fork/IndexZap.fork.t.sol`. The informational ids are recorded by documentation; SV-I3 and SV-I4 are retired
-     with THORChain.
    - The logic review of 2026-10-07: `V5R-1`, `V5R-I1` and `V5R-I2` (`audit/2026-10-07-v5-logic-review.md`), a test
      named `test_V5R1_...` in `test/WeightedHub.rebalance.t.sol`. The informational ids are recorded by documentation;
      V5R-I1 is retired with Stage B.
@@ -155,6 +151,9 @@ deploy script resolves Pyth, the routers and the stablecoins from the address bo
    - Stage B's families are retired in full with Stage B (`audit/2026-10-07-stage-b-retirement.md`): the Stage B red
      team's `VLT`, `HUB`, `MOD`, `BNB`, `FAC` and `SOL` ids, the TRON review's `TRN`, the logic review of 2026-10-02's
      `LG`, and `BLS-1`. No test carries them, and none may be restored.
+   - The swap-venue review of 2026-10-06's `SV` ids (`audit/2026-10-06-swap-venues-review.md`) are retired in full:
+     SV-I3 and SV-I4 with THORChain (`audit/2026-10-14-thorchain-retirement.md`), SV-1, SV-I1 and SV-I2 with
+     PancakeSwap (`audit/2026-10-14-pancakeswap-retirement.md`). No test carries them, and none may be restored.
 
    Find a test by its id. Most v1 and R tests are in `test/Security.t.sol` and `test/fork/Security.fork.t.sol`, on
    `WeightedHub` indexes. The hub and factory ids `audit/2026-10-06-v4-retirement.md` re-targets are in the weighted
@@ -178,7 +177,7 @@ deploy script resolves Pyth, the routers and the stablecoins from the address bo
    - Findings fixed by documentation alone have none, among them VR-05, RT-02, RT-07, RT-08, RT-09, RT-11 and RT-18.
      RT-20 was already a known limitation.
 
-   Five records list the ids whose mechanism is gone, with the test that went and the property, if any, that survives:
+   Six records list the ids whose mechanism is gone, with the test that went and the property, if any, that survives:
    - `audit/2026-09-22-v3-retirement.md`: the move from Uniswap V3 prices to Chainlink.
    - `audit/2026-09-30-v4-stage-a-retirement.md`: Stage A's removal of every price. It retires 31 tested ids in full,
      retires CR-I36, CR-L08 and VR-06 in part, and names the test of every re-targeted id.
@@ -189,6 +188,8 @@ deploy script resolves Pyth, the routers and the stablecoins from the address bo
      full, the Rust and Move tests of the vault chains with them, V5R-I1, and RT-24 in part.
    - `audit/2026-10-14-thorchain-retirement.md`: the removal of the THORChain planner. It retires CF-2 and CF-8, whose
      node tests went with it, and SV-I3 and SV-I4, recorded by documentation.
+   - `audit/2026-10-14-pancakeswap-retirement.md`: the removal of the zap's PancakeSwap legs. It retires SV-1, whose
+     unit and fork tests went with them, and SV-I1 and SV-I2, recorded by documentation.
 
    The ids tested at `v3.0.0`, less those tested at Stage A, are exactly the ids the Stage A record retires in full;
    the ids tested at `8e6148b`, less those tested at `4f40b67`, the v4 record's first section; those at `22d532a`,
@@ -333,17 +334,9 @@ records also cite.
 - **The zap is stateless and replaceable.** New UX features (ETH in/out, aggregators, mixed-venue legs) go in a new or
   extended zap, never in the hub or factory. The app caps a zap basket at about 35 components, which is where 16.78M gas
   runs out.
-  - **Venue.** It swaps through Uniswap's Universal Router, pinned to the 2.0.0 deployment, and, for the legs that name
-    one, PancakeSwap's v3 Universal Router (`PANCAKE_ROUTER`, pinned by its runtime code hash; the owner's call on
-    2026-10-06, `design/2026-10-06-swap-venues.md`). Each leg names exactly one venue: a packed `v3Path`, a hookless
-    `PathKey[] v4Path` or a packed `pancakePath`, never two and never none, else `BadRoute(i)`; the pass-through leg
-    names none. A zap deployed without PancakeSwap (zero, as on a testnet) refuses every `pancakePath`.
-  - **PancakeSwap.** Its legs use the same pre-fund, sweep and measurement as Uniswap's V3 legs, with
-    `PancakeRouterCommands`, never Uniswap's library: the two command sets part from 0x10 up. Every PancakeSwap call
-    ends with `WRAP_ETH(ADDRESS_THIS, CONTRACT_BALANCE)`, because that router sends its whole ether balance to its caller
-    after the last command and reverts if that fails, and takes ether from anyone: without the wrap, one wei sent there
-    would block every PancakeSwap leg (SV-1). Never give the zap a `receive()` instead. PancakeSwap's Safe can pause the
-    router and attach a contract to its pools; that stops PancakeSwap legs and moves nobody's funds (SV-I1).
+  - **Venue.** It swaps through Uniswap's Universal Router, pinned to the 2.0.0 deployment, and nothing else (the
+    owner's call on 2026-10-14). Each leg names exactly one venue: a packed `v3Path` or a hookless `PathKey[] v4Path`,
+    never both and never neither, else `BadRoute(i)`; the pass-through leg names none.
   - **Commands.** The zap builds every command and every action itself and forwards nothing a caller supplied. The
     router's command set includes `TRANSFER` and `PERMIT2_TRANSFER_FROM`, which move a payer's funds, so passing
     calldata through would hand a caller the router's permissions.
@@ -370,7 +363,7 @@ records also cite.
   - **Errors.** Swap failures reach the caller unchanged. The router wraps a command in `ExecutionFailed` only when it
     dispatched it with a low-level call; swaps are internal calls, so what surfaces is the pool's own revert
     (`V3TooMuchRequested`, `V4TooLittleReceived` and their neighbours), which is why `IUniversalRouter` does not declare
-    `ExecutionFailed`. PancakeSwap's router dispatches the same way; a paused one reverts with `Pausable: paused`.
+    `ExecutionFailed`.
 - **MintRequests holds only open escrows.** A requester escrows USDC or USDT for at least `minShares` of a factory
   index, or shares for at least `minOut` of a stablecoin. Anyone fills before the deadline, and the requester's limit is
   the only valuation: nothing reads a price.
@@ -429,10 +422,6 @@ records also cite.
   - `IPyth`, `IPythEvents` and `PythStructs` come from pyth-network/pyth-crosschain (Apache-2.0) at
     `2bb0eb54b2b3af8854d0c26f3884c28a0fce0802`, `target_chains/ethereum/sdk/solidity/`, with the pragma pinned and the
     whitespace `forge fmt` writes; their plain imports and Pyth's own events carry the suppressions of vendored code.
-  - `PancakeRouterCommands` records the command bytes, sentinels and input layouts of PancakeSwap's v3 Universal Router
-    (GPL-3.0-or-later) from its verified source on Etherscan at `0x65b382653f7C31bC0Af67f188122035461ec9C76`, runtime
-    code hash `0xdb8dfdb9…d3f6`: no public repository holds that version, so the deployed source is the reference.
-    `test/mocks/MockPancakeRouter.sol` follows the same source.
 
   A vendored struct may retype `Currency` and `IHooks` to `address`, which is ABI-identical. Change vendored code only
   to replace a dependency, never to restyle. Both router libraries record the input layout of every command and action
@@ -483,7 +472,7 @@ records also cite.
     `MIN_OWNER_THRESHOLD` (3) signatures, the design's 3-of-5 (the owner's call on 2026-09-30), and have no enabled
     module.
   - When the owner is a Safe, neither the guardian nor the broadcasting key may be one of its signers (SA-06).
-  - Neither role may be a market contract: the routers and the PoolManager, Pyth, and on a mainnet every token and mint
+  - Neither role may be a market contract: the router and the PoolManager, Pyth, and on a mainnet every token and mint
     currency in the address book (CR-I37).
   - On chain 1 the market addresses are the address book's and nothing else (`MainnetOverride`); elsewhere they come
     from the environment.
@@ -491,7 +480,7 @@ records also cite.
     `REQUESTS_INITCODE_HASH` record (`BuildNotReleased`, CF-5). A change to `src/`, a dependency or the compiler
     settings fails `test_CF5_theReleaseHashesAreThisBuilds` until those three are set to the values it prints, in the
     same commit.
-- **Mainnet addresses** are verified on-chain before being committed: tokens by symbol and decimals, and the routers
+- **Mainnet addresses** are verified on-chain before being committed: tokens by symbol and decimals, and the router
   and the PoolManager by their runtime code hashes, since every Universal Router build answers `poolManager()` alike
   (CR-I35). `test/fork/MainnetAddresses.fork.t.sol` checks `script/MainnetAddresses.sol` that way and lists both lists
   on a fresh factory over Pyth, and `test_CRL08_theListsAreTheReleaseRecord` pins every list, address and price id,
@@ -543,10 +532,11 @@ cost the owner weighs before launch.
   listed, and its Ethereum copy is not either.
 - Bitcoin is held as WBTC (the owner's call on 2026-09-29; do not reopen it).
 
-**Swap venues** (the owner's call on 2026-10-06, `design/2026-10-06-swap-venues.md`): the zap swaps through
-Uniswap's Universal Router 2.0.0 and PancakeSwap's v3 Universal Router, one venue per leg, chosen by the caller.
-THORChain, added the same day as an app-side rail, was removed on 2026-10-14 (the owner's call: users come with USDC
-or USDT), with its planner (`swaprail/`); nothing in Xindex uses it.
+**Swap venues** (the owner's call on 2026-10-14): the zap swaps through Uniswap's Universal Router 2.0.0 alone, V3 or
+V4 per leg, chosen by the caller. PancakeSwap's v3 Universal Router, a third venue per leg since 2026-10-06 (chiefly
+for CAKE), and THORChain, an app-side rail added the same day (`design/2026-10-06-swap-venues.md`), were both removed on
+2026-10-14: users come with USDC or USDT. CAKE stays listed; its legs route through Uniswap's pools, or it mints in
+kind or through `MintRequests`.
 
 **Unchanged from earlier versions:** no fee (the owner's call on 2026-09-30; audits, the bounty and watchers are
 funded from outside; a later version could add one through `_backing`); an owner Safe of at least three signatures;

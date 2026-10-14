@@ -205,12 +205,12 @@ contract ScriptsTest is Test {
         usdt = address(new MockUSDT());
     }
 
-    /// @dev A deployment with the test's market and no PancakeSwap router, as a testnet's.
+    /// @dev A deployment with the test's market, as a testnet's.
     function _deploy(address owner_, address guardian_)
         internal
         returns (WeightedIndexFactory, IndexZap, MintRequests)
     {
-        return deployer.deploy(owner_, guardian_, pyth, address(router), usdc, usdt, address(0));
+        return deployer.deploy(owner_, guardian_, pyth, address(router), usdc, usdt);
     }
 
     // ---------------------------------------------------------------------
@@ -286,7 +286,6 @@ contract ScriptsTest is Test {
         vm.etch(MAINNET_UNIVERSAL_ROUTER, hex"00");
         assertTrue(deployer.isPinnedChain());
         assertEq(deployer.pinnedRouter(), MAINNET_UNIVERSAL_ROUTER);
-        assertEq(deployer.pinnedPancakeRouter(), MainnetAddresses.PANCAKE_UNIVERSAL_ROUTER);
         assertEq(deployer.pinnedUsdc(), MainnetAddresses.USDC);
         assertEq(deployer.pinnedUsdt(), MainnetAddresses.USDT);
         assertEq(deployer.resolveRouter(address(0)), MAINNET_UNIVERSAL_ROUTER, "the mainnet default on chain 1");
@@ -425,7 +424,6 @@ contract ScriptsTest is Test {
         assertEq(implementation.PYTH(), pyth);
         assertEq(address(zap.FACTORY()), address(factory));
         assertEq(address(zap.ROUTER()), address(router));
-        assertEq(address(zap.PANCAKE_ROUTER()), address(0), "no PancakeSwap off mainnet");
         assertEq(requests.FACTORY(), address(factory));
         assertEq(requests.USDC(), usdc);
         assertEq(requests.USDT(), usdt);
@@ -580,10 +578,10 @@ contract ScriptsTest is Test {
 
         vm.chainId(1);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerMustBeContract.selector, owner));
-        deployer.deploy(owner, guardian, address(0), address(0), address(0), address(0), address(0));
+        deployer.deploy(owner, guardian, address(0), address(0), address(0), address(0));
         MockSafe singleSigner = new MockSafe(1);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerThresholdTooLow.selector, address(singleSigner), 1));
-        deployer.deploy(address(singleSigner), guardian, address(0), address(0), address(0), address(0), address(0));
+        deployer.deploy(address(singleSigner), guardian, address(0), address(0), address(0), address(0));
     }
 
     /// @dev CF-5. The constants are the release record: this build's init-code hashes. A change to src/, to a
@@ -606,7 +604,6 @@ contract ScriptsTest is Test {
         vm.etch(MainnetAddresses.PYTH, hex"00");
         vm.etch(MainnetAddresses.USDC, hex"00");
         vm.etch(MainnetAddresses.USDT, hex"00");
-        vm.etch(MainnetAddresses.PANCAKE_UNIVERSAL_ROUTER, hex"00");
         address safe = address(new MockSafe(3));
 
         DeployWeighted other = new DeployWeightedOtherBuild();
@@ -617,7 +614,7 @@ contract ScriptsTest is Test {
                 DeployWeighted.BuildNotReleased.selector, "WeightedIndexFactory", bytes32(uint256(1)), built[0]
             )
         );
-        other.deploy(safe, guardian, address(0), address(0), address(0), address(0), address(0));
+        other.deploy(safe, guardian, address(0), address(0), address(0), address(0));
 
         bytes32[3] memory wrongZap = [built[0], bytes32(0), built[2]];
         vm.expectRevert(
@@ -632,8 +629,7 @@ contract ScriptsTest is Test {
 
         DeployWeighted same = new DeployWeightedThisBuild();
         assertEq(same.releaseInitCodeHashes()[1], built[1], "a record of this build");
-        (WeightedIndexFactory factory,,) =
-            same.deploy(safe, guardian, address(0), address(0), address(0), address(0), address(0));
+        (WeightedIndexFactory factory,,) = same.deploy(safe, guardian, address(0), address(0), address(0), address(0));
         assertEq(factory.owner(), safe, "the recorded build broadcasts on chain 1");
     }
 
@@ -713,9 +709,8 @@ contract ScriptsTest is Test {
         vm.etch(MainnetAddresses.PYTH, hex"00");
         vm.etch(MainnetAddresses.USDC, hex"00");
         vm.etch(MainnetAddresses.USDT, hex"00");
-        vm.etch(MainnetAddresses.PANCAKE_UNIVERSAL_ROUTER, hex"00");
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.RoleIsMarketContract.selector, MainnetAddresses.WETH));
-        deployer.deploy(MainnetAddresses.WETH, guardian, address(0), address(0), address(0), address(0), address(0));
+        deployer.deploy(MainnetAddresses.WETH, guardian, address(0), address(0), address(0), address(0));
     }
 
     // ---------------------------------------------------------------------

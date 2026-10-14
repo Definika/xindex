@@ -49,10 +49,6 @@ contract MainnetAddressesForkTest is Test {
     bytes32 constant UNISWAP_V3_FACTORY_CODEHASH = 0x4d7b8525cd5d14343fa67a732fba5b24cddba11620ca88392f4ec6c52f91fd69;
     /// @dev Runtime code hash of Pyth's ERC-1967 proxy at `MainnetAddresses.PYTH`, read on 2026-10-05. Pyth's DAO
     ///      upgrades the implementation behind it, so only the proxy is pinned.
-    /// @dev Runtime code hash of PancakeSwap's v3 Universal Router at `MainnetAddresses.PANCAKE_UNIVERSAL_ROUTER`, read on
-    ///      2026-10-06. Its immutables (PancakeSwap's V3 deployer and pool init code hash, its Permit2 and WETH) are
-    ///      part of the code, so this pins the pools a PancakeSwap leg can reach too.
-    bytes32 constant PANCAKE_ROUTER_CODEHASH = 0xdb8dfdb9e10400c36fae415f58c5d4a6a573b28e2bd1e25a6328623a2112d3f6;
     bytes32 constant PYTH_PROXY_CODEHASH = 0x330b9f1afee9d71fb2ee42927a996a39889a45323883a66a194e210ab850d111;
     /// @dev Runtime code hash of Wormhole's token bridge proxy at `MainnetAddresses.WORMHOLE_TOKEN_BRIDGE`, read on
     ///      2026-10-10. The guardians' governance upgrades the implementation behind it, so only the proxy is pinned.
@@ -260,12 +256,6 @@ contract MainnetAddressesForkTest is Test {
         IPythProbe(M.PYTH).parsePriceFeedUpdatesUnique(new bytes[](0), ids, 0, 0);
     }
 
-    /// @dev The zap's PancakeSwap legs run through PancakeSwap's own v3 Universal Router, by its code; the zap's fork
-    ///      suite runs real legs through it and checks SV-1 there.
-    function testFork_thePancakeRouterIsPancakes() public view {
-        assertEq(M.PANCAKE_UNIVERSAL_ROUTER.codehash, PANCAKE_ROUTER_CODEHASH);
-    }
-
     /// @dev The V3 factory `CheckToken` reads depth from is Uniswap's own, by its code.
     function testFork_theV3FactoryIsUniswaps() public view {
         assertEq(M.UNISWAP_V3_FACTORY.codehash, UNISWAP_V3_FACTORY_CODEHASH);
@@ -274,11 +264,6 @@ contract MainnetAddressesForkTest is Test {
     function testFork_XA13_deployResolvesTheMainnetMarket() public {
         DeployWeighted deployer = new DeployWeighted();
         assertEq(deployer.resolveRouter(address(0)), M.UNIVERSAL_ROUTER);
-        assertEq(deployer.resolvePancakeRouter(address(0)), M.PANCAKE_UNIVERSAL_ROUTER);
-        vm.expectRevert(
-            abi.encodeWithSelector(DeployChecks.MainnetOverride.selector, "PANCAKE_ROUTER", M.UNIVERSAL_ROUTER)
-        );
-        deployer.resolvePancakeRouter(M.UNIVERSAL_ROUTER);
         assertEq(deployer.resolveStable("USDC", address(0), M.USDC), M.USDC);
         assertEq(deployer.resolveStable("USDT", address(0), M.USDT), M.USDT);
     }

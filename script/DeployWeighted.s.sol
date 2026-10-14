@@ -7,7 +7,6 @@ import {WeightedHub} from "../src/WeightedHub.sol";
 import {IndexZap} from "../src/IndexZap.sol";
 import {MintRequests} from "../src/MintRequests.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
-import {IPancakeUniversalRouter} from "../src/interfaces/IPancakeUniversalRouter.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
 import {DeployChecks} from "./DeployChecks.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
@@ -31,8 +30,6 @@ import {MainnetAddresses} from "./MainnetAddresses.sol";
 ///                       it defaults to the address book, and nothing else is accepted there.
 ///   UNIVERSAL_ROUTER    Uniswap's Universal Router, through which the zap swaps. Resolved like PYTH.
 ///   USDC, USDT          The two stablecoins MintRequests escrows. Resolved like PYTH.
-///   PANCAKE_ROUTER      PancakeSwap's v3 Universal Router, for the zap's PancakeSwap legs. Resolved like PYTH on
-///                       Ethereum; elsewhere, unset deploys a zap that refuses every PancakeSwap leg.
 contract DeployWeighted is DeployChecks {
     /// @notice Default {resolvePyth} uses on chain 1, from `MainnetAddresses`.
     address public constant MAINNET_PYTH = MainnetAddresses.PYTH;
@@ -44,7 +41,7 @@ contract DeployWeighted is DeployChecks {
     ///         test/Scripts.t.sol fails until these equal the build, so only a reviewed, CI-green commit moves them.
     bytes32 public constant FACTORY_INITCODE_HASH = 0x861f26a723d77ea886c5cb410dddc28f3eb20245d0c3402914d043913b6a63b0;
     /// @notice keccak256 of `IndexZap`'s init code, as above.
-    bytes32 public constant ZAP_INITCODE_HASH = 0x8f63967e89b4043c0f849f927293da50df9e7b8e0d628e94a6e8553f6d52abc0;
+    bytes32 public constant ZAP_INITCODE_HASH = 0xefd5c70921786723ddb4ade5681787fe722e5753f977534143a8dcb2becfe38d;
     /// @notice keccak256 of `MintRequests`' init code, as above.
     bytes32 public constant REQUESTS_INITCODE_HASH = 0xac5cf69355ae8a1c008e465e5a8bb980e8ae060b123f2851c4fd7914f74d7d4e;
 
@@ -62,8 +59,7 @@ contract DeployWeighted is DeployChecks {
             vm.envOr("PYTH", address(0)),
             vm.envOr("UNIVERSAL_ROUTER", address(0)),
             vm.envOr("USDC", address(0)),
-            vm.envOr("USDT", address(0)),
-            vm.envOr("PANCAKE_ROUTER", address(0))
+            vm.envOr("USDT", address(0))
         );
     }
 
@@ -76,28 +72,20 @@ contract DeployWeighted is DeployChecks {
     /// @param router Uniswap's Universal Router, through which the zap swaps; see {resolveRouter}.
     /// @param usdc USDC for MintRequests; see {resolveStable}.
     /// @param usdt USDT for MintRequests; see {resolveStable}.
-    /// @param pancakeRouter PancakeSwap's v3 Universal Router for the zap; see {resolvePancakeRouter}.
     /// @return factory The deployed factory.
     /// @return zap The deployed zap.
     /// @return requests The deployed MintRequests.
-    function deploy(
-        address owner,
-        address guardian,
-        address pyth,
-        address router,
-        address usdc,
-        address usdt,
-        address pancakeRouter
-    ) public returns (WeightedIndexFactory factory, IndexZap zap, MintRequests requests) {
+    function deploy(address owner, address guardian, address pyth, address router, address usdc, address usdt)
+        public
+        returns (WeightedIndexFactory factory, IndexZap zap, MintRequests requests)
+    {
         checkOwner(owner);
         checkGuardian(owner, guardian);
         pyth = resolvePyth(pyth);
         router = resolveRouter(router);
         usdc = resolveStable("USDC", usdc, pinnedUsdc());
         usdt = resolveStable("USDT", usdt, pinnedUsdt());
-        pancakeRouter = resolvePancakeRouter(pancakeRouter);
         checkRolesAreNotMarket(owner, guardian, router);
-        checkRolesAreNotPancake(owner, guardian, pancakeRouter);
         // A factory owned by Pyth could never be administered, and Pyth as guardian would veto for nobody.
         if (owner == pyth || guardian == pyth) revert RoleIsMarketContract(pyth);
         // What is broadcast on Ethereum is the build this commit records, never whatever the local tree compiles (CF-5).
@@ -106,9 +94,7 @@ contract DeployWeighted is DeployChecks {
         vm.startBroadcast();
         factory = new WeightedIndexFactory(owner, guardian, pyth);
         // The zap types its factory as `IIndexFactory`, and calls only `isIndex` on it, which this factory answers.
-        zap = new IndexZap(
-            IIndexFactory(address(factory)), IUniversalRouter(router), IPancakeUniversalRouter(pancakeRouter)
-        );
+        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(router));
         requests = new MintRequests(address(factory), usdc, usdt);
         vm.stopBroadcast();
 
@@ -120,7 +106,6 @@ contract DeployWeighted is DeployChecks {
         console2.log("Guardian:                ", guardian);
         console2.log("Universal Router:        ", router);
         console2.log("PoolManager:             ", zap.POOL_MANAGER());
-        console2.log("PancakeSwap router:      ", address(zap.PANCAKE_ROUTER()));
         console2.log("MintRequests:            ", address(requests));
         console2.log("USDC:                    ", usdc);
         console2.log("USDT:                    ", usdt);
