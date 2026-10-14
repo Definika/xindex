@@ -14,6 +14,9 @@ interface IAdminReads {
     /// @notice A MiniMe token's controller, which mints, destroys and approves every transfer.
     function controller() external view returns (address);
 
+    /// @notice The Sandbox's admin (SAND), which appoints the super operators that move any holder's balance.
+    function getAdmin() external view returns (address);
+
     /// @notice An OwnedUpgradeabilityProxy's owner, who upgrades it.
     function proxyOwner() external view returns (address);
 

@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {IWeightedHub} from "xindex/src/interfaces/IWeightedHub.sol";
+import {PythStructs} from "xindex/src/interfaces/pyth/PythStructs.sol";
 import {IWeightedIndexFactory} from "xindex/src/interfaces/IWeightedIndexFactory.sol";
 import {WeightedHub} from "xindex/src/WeightedHub.sol";
 import {WeightedTest} from "xindex/test/WeightedTest.sol";
@@ -88,6 +89,11 @@ contract KeeperExecutorTest is WeightedTest {
         return int256(x);
     }
 
+    function _allow(address token, uint256 amount) internal {
+        vm.prank(execOwner);
+        executor.setStockAllowance(token, amount);
+    }
+
     /// @dev The float change of selling ETH and buying BTC and USD, each through its route, at the router's prices.
     function _expected(uint256[] memory out, uint256[] memory in_) internal view returns (int256) {
         return _int(router.quoteOut(address(eth), address(usdc), out[0]))
@@ -163,10 +169,12 @@ contract KeeperExecutorTest is WeightedTest {
         _open(index.AUCTION_DURATION());
         (uint256[] memory out, uint256[] memory in_) = _preview();
         btc.mint(address(executor), in_[1] + 5);
+        _allow(address(btc), in_[1]);
         bytes[] memory routes = _routes();
         routes[1] = "";
         (int256 delta,) = _fill(executor, routes, in_, type(int256).min);
         assertEq(btc.balanceOf(address(executor)), 5, "the BTC came out of stock");
+        assertEq(executor.stockAllowance(address(btc)), 0, "the delivery spent the allowance");
         assertEq(
             delta,
             _int(router.quoteOut(address(eth), address(usdc), out[0]))
@@ -180,6 +188,7 @@ contract KeeperExecutorTest is WeightedTest {
         (uint256[] memory out, uint256[] memory in_) = _preview();
         uint256 held = in_[1] / 2;
         btc.mint(address(executor), held);
+        _allow(address(btc), held);
         (int256 delta,) = _fill(executor, _routes(), in_, type(int256).min);
         assertEq(btc.balanceOf(address(executor)), 0, "stock and purchase together delivered");
         assertEq(
@@ -234,6 +243,106 @@ contract KeeperExecutorTest is WeightedTest {
         executor.fill{value: 3}(index, update, routes, in_, type(int256).min, deadline);
         assertEq(address(pyth).balance, 3, "the whole fee reached Pyth");
         assertEq(address(executor).balance, 0, "the executor kept no ether");
+    }
+
+    // ---------------------------------------------------------------------
+    // Stock allowance (CF-1)
+    // ---------------------------------------------------------------------
+
+    /// @dev The exploit of CF-1: the keeper key creates an index of its own whose BTC leg is far below its weight, issues
+    ///      its shares and fills it, serving BTC from the executor's stock with no route and no floor. Without an
+    ///      allowance the stock cannot leave, whichever factory index asks for it.
+    function test_CF1_aKeeperOwnedIndexCannotTakeTheStock() public {
+        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](2);
+        specs[0] = _spec(address(eth), 1, 1e18);
+        specs[1] = _spec(address(btc), 9999, factory.MIN_RAW_UNITS());
+        vm.prank(keeper);
+        WeightedHub own = WeightedHub(factory.createIndex("Own", "OWN", specs));
+        _issue(own, keeper, 1e18);
+        btc.mint(address(executor), 1e8);
+
+        vm.warp(own.lastRebalance() + own.MIN_REBALANCE_INTERVAL());
+        vm.prank(keeper);
+        own.startRebalance(0);
+        (uint256 eta,) = own.pendingRebalance();
+        vm.warp(eta);
+        PythStructs.Price[] memory prices = new PythStructs.Price[](2);
+        prices[0] = PythStructs.Price({price: ETH_PRICE, conf: 0, expo: EXPO, publishTime: 0});
+        prices[1] = PythStructs.Price({price: BTC_PRICE, conf: 0, expo: EXPO, publishTime: 0});
+        (,,, uint256[] memory in_) = own.previewRebalance(prices);
+        assertGt(in_[1], 0, "the keeper's index asks for BTC");
+
+        bytes32[] memory ids = new bytes32[](2);
+        (ids[0], ids[1]) = (ETH_ID, BTC_ID);
+        int64[] memory px = new int64[](2);
+        (px[0], px[1]) = (ETH_PRICE, BTC_PRICE);
+        bytes[] memory update = _updates(own, ids, px);
+        bytes[] memory routes = new bytes[](2);
+        routes[0] = abi.encodePacked(address(eth), uint24(500), address(usdc));
+        uint256 deadline = block.timestamp;
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NoRoute.selector, address(btc)));
+        vm.prank(keeper);
+        executor.fill(own, update, routes, in_, type(int256).min, deadline);
+        assertEq(btc.balanceOf(address(executor)), 1e8, "the stock stayed");
+    }
+
+    function test_CF1_stockLeavesOnlyWithinTheAllowance() public {
+        _open(index.AUCTION_DURATION());
+        (, uint256[] memory in_) = _preview();
+        btc.mint(address(executor), in_[1] + 100);
+        bytes[] memory routes = _routes();
+        routes[1] = "";
+
+        _expectFillReverts(
+            abi.encodeWithSelector(KeeperExecutor.NoRoute.selector, address(btc)),
+            keeper,
+            address(index),
+            routes,
+            block.timestamp
+        );
+        _allow(address(btc), in_[1] - 1);
+        _expectFillReverts(
+            abi.encodeWithSelector(KeeperExecutor.NoRoute.selector, address(btc)),
+            keeper,
+            address(index),
+            routes,
+            block.timestamp
+        );
+
+        _allow(address(btc), in_[1] + 7);
+        _fill(executor, routes, in_, type(int256).min);
+        assertEq(btc.balanceOf(address(executor)), 100, "exactly what the index needed left the stock");
+        assertEq(executor.stockAllowance(address(btc)), 7, "and was spent from the allowance");
+    }
+
+    function test_CF1_aRoutedLegBuysWhatTheAllowanceDoesNotCover() public {
+        _open(index.AUCTION_DURATION());
+        (uint256[] memory out, uint256[] memory in_) = _preview();
+        btc.mint(address(executor), in_[1]);
+        uint256 allowed = in_[1] / 3;
+        _allow(address(btc), allowed);
+        (int256 delta,) = _fill(executor, _routes(), in_, type(int256).min);
+        assertEq(btc.balanceOf(address(executor)), in_[1] - allowed, "only the allowance came out of stock");
+        assertEq(executor.stockAllowance(address(btc)), 0, "the allowance is spent");
+        assertEq(
+            delta,
+            _int(router.quoteOut(address(eth), address(usdc), out[0]))
+                - _int(router.quoteIn(address(usdc), address(btc), in_[1] - allowed))
+                - _int(router.quoteIn(address(usdc), address(usd), in_[2])),
+            "the rest of the BTC was bought from the float"
+        );
+    }
+
+    function test_onlyTheOwnerSetsStockAllowances() public {
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NotOwner.selector, keeper));
+        vm.prank(keeper);
+        executor.setStockAllowance(address(btc), 1);
+
+        vm.expectEmit(address(executor));
+        emit KeeperExecutor.StockAllowanceSet(address(btc), 5e7);
+        vm.prank(execOwner);
+        executor.setStockAllowance(address(btc), 5e7);
+        assertEq(executor.stockAllowance(address(btc)), 5e7);
     }
 
     // ---------------------------------------------------------------------

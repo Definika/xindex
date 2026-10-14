@@ -22,6 +22,7 @@ const START_EVERY_BLOCKS = 25n;
 const START_COOLDOWN = 86_400n; // a start of ours that nobody filled is not repeated for a day
 const FRESH_SECONDS = 60n; // a feed quieter than this is closed (US-hours stock feeds): no start
 const HERMES_MS = 5_000;
+const MAX_FILL_CHECKS = 8; // open auctions simulated per block, richest first (CF-7)
 const INT256_MIN = -(2n ** 255n);
 const ONCE = process.argv.includes("--once");
 
@@ -38,6 +39,7 @@ const isUsdc = (token) => token.toLowerCase() === MAINNET.usdc.toLowerCase();
 const statics = new Map(); // index -> {tokens, ids, decimals}
 const started = new Map(); // index -> timestamp of a start of ours not yet filled
 const said = new Map(); // index -> the last reason logged, so a waiting index is not logged every block
+const worth = new Map(); // `index:proposal` -> {supply, tvl, block}: an open auction's index, valued every 25 blocks
 let setup;
 let indexes = [];
 let lastRefresh = null;
@@ -112,6 +114,11 @@ async function legs(index, st, sim, maxIn, L, key) {
     st.tokens.map((t) => ({ address: t, abi: ABI.erc20, functionName: "balanceOf", args: [cfg.executor] })),
     L.number,
   );
+  // The executor delivers from stock only within the owner's allowance, so stock beyond it is bought like a shortfall.
+  const allowed = await chain.multicall(
+    st.tokens.map((t) => ({ address: cfg.executor, abi: ABI.executor, functionName: "stockAllowance", args: [t] })),
+    L.number,
+  );
   const routeOf = st.tokens.map(() => "0x");
   const short = [];
   let inventoryUsd = 0;
@@ -121,7 +128,10 @@ async function legs(index, st, sim, maxIn, L, key) {
     const out = sim.out[i];
     const need = sim.in[i];
     if ((out === 0n && need === 0n) || isUsdc(token)) continue; // a USDC leg is the float itself
-    const h = held[i].status === "success" ? held[i].result : 0n;
+    const h = M.min(
+      held[i].status === "success" ? held[i].result : 0n,
+      allowed[i].status === "success" ? allowed[i].result : 0n,
+    );
     const p = sim.priceOf(i);
     const dec = st.decimals[i];
     let route = null;
@@ -188,6 +198,51 @@ async function priceFill(index, sim, leg, maxIn, L) {
     maxPriorityFeePerGas: tip,
   };
   return { profit, usdcDelta, gasUsd, inventoryUsd: leg.inventoryUsd, tx };
+}
+
+/// The open auctions to simulate this block (CF-7): each index's supply and worth, read once per auction and again
+/// every 25 blocks with one multicall and one Hermes request for all of them, then M.auctionsToEvaluate. An auction
+/// on an empty or small index costs no Hermes request and no simulation per block.
+async function worthChecking(open, L) {
+  const keyOf = (index) => `${index}:${open.get(index).proposal}`;
+  const openKeys = new Set([...open.keys()].map(keyOf));
+  for (const key of worth.keys()) if (!openKeys.has(key)) worth.delete(key);
+  const stale = [...open.keys()].filter((index) => {
+    const w = worth.get(keyOf(index));
+    return !w || L.number - w.block >= START_EVERY_BLOCKS;
+  });
+  if (stale.length) {
+    const reads = await chain.multicall(
+      stale.flatMap((address) => [
+        { address, abi: ABI.hub, functionName: "totalSupply" },
+        { address, abi: ABI.hub, functionName: "components" },
+      ]),
+      L.number,
+    );
+    const live = [];
+    stale.forEach((index, k) => {
+      const [supply, comps] = [reads[2 * k], reads[2 * k + 1]];
+      const ok = supply.status === "success" && comps.status === "success" && supply.result > 0n;
+      if (ok) live.push({ index, supply: supply.result, units: comps.result[1] });
+      else worth.set(keyOf(index), { supply: 0n, tvl: 0, block: L.number });
+    });
+    if (live.length) {
+      const ids = new Set();
+      for (const r of live) for (const id of (await staticsOf(r.index, L.number)).ids) ids.add(id);
+      const latest = await hermes.latest([...ids], Date.now() + HERMES_MS);
+      for (const r of live) {
+        const st = statics.get(r.index);
+        const prices = st.ids.map((id) => latest.get(priceKey(id)));
+        worth.set(keyOf(r.index), { supply: r.supply, tvl: M.tvlUsd({ supply: r.supply, units: r.units, decimals: st.decimals, prices }), block: L.number });
+      }
+    }
+  }
+  const candidates = [...open.keys()].map((index) => ({ index, ...worth.get(keyOf(index)) }));
+  const chosen = M.auctionsToEvaluate(candidates, cfg.minTvlUsd, MAX_FILL_CHECKS);
+  for (const c of candidates) {
+    if (!chosen.includes(c)) say(c.index, `no fill check: worth ${c.tvl.toFixed(0)} USD, below MIN_TVL_USD or past the ${MAX_FILL_CHECKS} richest`);
+  }
+  return chosen;
 }
 
 /// An open auction of `index`, as a fill this bot could send now.
@@ -268,10 +323,7 @@ async function startChecks(L, open) {
       say(r.index, `not starting: feed closed or quiet: ${quiet.join(", ")}`);
       continue;
     }
-    let tvl = 0;
-    st.ids.forEach((id, i) => {
-      tvl += M.amountUsd((r.supply * r.units[i]) / 10n ** 18n, st.decimals[i], latest.get(priceKey(id)));
-    });
+    const tvl = M.tvlUsd({ supply: r.supply, units: r.units, decimals: st.decimals, prices: st.ids.map((id) => latest.get(priceKey(id))) });
     if (tvl < cfg.minTvlUsd) {
       say(r.index, `not starting: worth ${tvl.toFixed(0)} USD, below MIN_TVL_USD`);
       continue;
@@ -324,10 +376,12 @@ async function onBlock(L) {
   });
   routes.forget([...open].map(([index, a]) => `${index}:${a.proposal}`));
 
+  const checks = await worthChecking(open, L);
   const fills = await Promise.all(
-    [...open].map(([index, a]) =>
-      evaluateFill(index, a.keepMask, a.proposal, L).catch((error) => say(index, `fill check failed: ${revertReason(error)}`)),
-    ),
+    checks.map(({ index }) => {
+      const a = open.get(index);
+      return evaluateFill(index, a.keepMask, a.proposal, L).catch((error) => say(index, `fill check failed: ${revertReason(error)}`));
+    }),
   );
   const best = fills.filter(Boolean).sort((a, b) => b.profit - a.profit)[0];
   if (best) {

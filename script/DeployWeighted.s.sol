@@ -37,6 +37,23 @@ contract DeployWeighted is DeployChecks {
     /// @notice Default {resolvePyth} uses on chain 1, from `MainnetAddresses`.
     address public constant MAINNET_PYTH = MainnetAddresses.PYTH;
 
+    /// @notice keccak256 of `WeightedIndexFactory`'s init code, which embeds the `WeightedHub` implementation's, as this
+    ///         commit builds it with this repository's foundry.toml. With the two below, this is the release record a
+    ///         mainnet broadcast is bound to (CF-5): `deploy` refuses to broadcast on Ethereum from any other build (a
+    ///         local edit, a lib/ checkout off foundry.lock, a FOUNDRY_* override), and `test_CF5_*` in
+    ///         test/Scripts.t.sol fails until these equal the build, so only a reviewed, CI-green commit moves them.
+    bytes32 public constant FACTORY_INITCODE_HASH = 0x861f26a723d77ea886c5cb410dddc28f3eb20245d0c3402914d043913b6a63b0;
+    /// @notice keccak256 of `IndexZap`'s init code, as above.
+    bytes32 public constant ZAP_INITCODE_HASH = 0x8f63967e89b4043c0f849f927293da50df9e7b8e0d628e94a6e8553f6d52abc0;
+    /// @notice keccak256 of `MintRequests`' init code, as above.
+    bytes32 public constant REQUESTS_INITCODE_HASH = 0xac5cf69355ae8a1c008e465e5a8bb980e8ae060b123f2851c4fd7914f74d7d4e;
+
+    /// @dev How many contracts the release record covers: the factory, the zap and MintRequests.
+    uint256 private constant RELEASED = 3;
+
+    /// @notice The local build of `name` is not the one this commit records: its init code hashes to `actual`.
+    error BuildNotReleased(string name, bytes32 expected, bytes32 actual);
+
     /// @notice Reads OWNER, GUARDIAN, PYTH and the optional market addresses from the environment and calls {deploy}.
     function run() external returns (WeightedIndexFactory factory, IndexZap zap, MintRequests requests) {
         return deploy(
@@ -83,6 +100,8 @@ contract DeployWeighted is DeployChecks {
         checkRolesAreNotPancake(owner, guardian, pancakeRouter);
         // A factory owned by Pyth could never be administered, and Pyth as guardian would veto for nobody.
         if (owner == pyth || guardian == pyth) revert RoleIsMarketContract(pyth);
+        // What is broadcast on Ethereum is the build this commit records, never whatever the local tree compiles (CF-5).
+        if (isPinnedChain()) checkBuild(releaseInitCodeHashes());
 
         vm.startBroadcast();
         factory = new WeightedIndexFactory(owner, guardian, pyth);
@@ -144,6 +163,30 @@ contract DeployWeighted is DeployChecks {
             address(zap).codehash,
             address(requests).codehash
         ];
+    }
+
+    /// @notice The init-code hashes a mainnet broadcast must match: the factory's, the zap's and MintRequests'.
+    function releaseInitCodeHashes() public pure virtual returns (bytes32[RELEASED] memory) {
+        return [FACTORY_INITCODE_HASH, ZAP_INITCODE_HASH, REQUESTS_INITCODE_HASH];
+    }
+
+    /// @notice The init-code hashes of the factory, the zap and MintRequests as this build compiled them.
+    function buildInitCodeHashes() public pure returns (bytes32[RELEASED] memory) {
+        return [
+            keccak256(type(WeightedIndexFactory).creationCode),
+            keccak256(type(IndexZap).creationCode),
+            keccak256(type(MintRequests).creationCode)
+        ];
+    }
+
+    /// @notice Reverts BuildNotReleased unless this build's init-code hashes equal `expected`, in the order of
+    ///         {releaseInitCodeHashes}.
+    function checkBuild(bytes32[RELEASED] memory expected) public pure {
+        bytes32[RELEASED] memory actual = buildInitCodeHashes();
+        string[RELEASED] memory names = ["WeightedIndexFactory", "IndexZap", "MintRequests"];
+        for (uint256 i = 0; i < actual.length; ++i) {
+            if (actual[i] != expected[i]) revert BuildNotReleased(names[i], expected[i], actual[i]);
+        }
     }
 
     /// @notice Fills a zero Pyth with mainnet's on chain 1 only, refuses any other there, and requires code, as

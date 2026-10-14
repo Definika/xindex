@@ -108,3 +108,34 @@ contract MockRolesToken is ERC20, AccessControlEnumerable {
         _mint(to, amount);
     }
 }
+
+/// @notice The Sandbox's shape (SAND): an admin read through `getAdmin()`, who appoints super operators whose
+///         `transferFrom` and `burnFor` need no allowance, so they move or burn any holder's balance. No blacklist.
+contract MockSuperOperatorToken is ERC20 {
+    address public getAdmin;
+    mapping(address operator => bool) public isSuperOperator;
+
+    constructor(address admin) ERC20("Super Operator Token", "SOP") {
+        getAdmin = admin;
+    }
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+
+    function setSuperOperator(address operator, bool enabled) external {
+        require(msg.sender == getAdmin, "admin only");
+        isSuperOperator[operator] = enabled;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) public override returns (bool) {
+        if (msg.sender != from && !isSuperOperator[msg.sender]) _spendAllowance(from, msg.sender, amount);
+        _transfer(from, to, amount);
+        return true;
+    }
+
+    function burnFor(address from, uint256 amount) external {
+        if (msg.sender != from && !isSuperOperator[msg.sender]) _spendAllowance(from, msg.sender, amount);
+        _burn(from, amount);
+    }
+}

@@ -16,10 +16,12 @@ import {IV3SwapRouter} from "./interfaces/IV3SwapRouter.sol";
 ///         serves a coin with no route from its own inventory: it delivers that coin from stock and keeps that coin
 ///         when the index sells it. A fill reverts unless the USDC float ends at least `minUsdcDelta` above where it
 ///         started, so a swap moved against the bot's simulation cannot cost more than the bot accepted.
-/// @dev Two keys. The keeper, a hot key, only fills: it can reach no index the factory did not create, so it cannot
-///      route the inventory to a contract of its own, but it can trade the float badly within the floor it sets.
-///      The owner, a cold key, withdraws and rotates the keeper. The executor holds no role in the protocol: filling
-///      an auction is open to anyone.
+/// @dev Two keys. The keeper, a hot key, only fills, and the owner, a cold key, withdraws, rotates the keeper and sets
+///      how much of each coin the keeper may still deliver from stock. Anyone can create a factory index and hold all
+///      its shares, so a fill can deliver to an index the keeper itself owns (CF-1): what bounds the stock a compromised
+///      keeper key can move is that allowance, which every delivery from stock spends, not the factory check. The same
+///      key can trade the USDC float badly within the floor it sets. The executor holds no role in the protocol:
+///      filling an auction is open to anyone.
 contract KeeperExecutor is IRebalanceExecutor {
     /// @notice Uniswap's SwapRouter02.
     IV3SwapRouter public immutable ROUTER;
@@ -31,11 +33,16 @@ contract KeeperExecutor is IRebalanceExecutor {
     address public immutable OWNER;
     /// @notice The only account that fills.
     address public keeper;
+    /// @notice How much of each coin the keeper may still deliver from stock, USDC aside, whose float the fill's floor
+    ///         bounds. Only the owner sets it, and every delivery from stock spends it (CF-1).
+    mapping(address token => uint256 amount) public stockAllowance;
     /// @dev The index being filled, for its callback only.
     address private transient _filling;
 
     /// @notice The keeper changed from `previous` to `next`.
     event KeeperSet(address indexed previous, address indexed next);
+    /// @notice The keeper may now deliver up to `amount` of `token` from stock.
+    event StockAllowanceSet(address indexed token, uint256 amount);
 
     /// @notice An address argument is zero.
     error ZeroAddress();
@@ -51,7 +58,8 @@ contract KeeperExecutor is IRebalanceExecutor {
     error LengthMismatch();
     /// @notice `token`'s route is not a path from `token` to USDC, or names USDC itself.
     error BadRoute(address token);
-    /// @notice The index needs more of `token` than the executor holds, and `token` has no route to buy the rest.
+    /// @notice The index needs more of `token` than the executor may deliver from stock (what it holds, capped by the
+    ///         owner's stock allowance), and `token` has no route to buy the rest.
     error NoRoute(address token);
     /// @notice `caller` called back outside a fill of its own.
     error UnexpectedCaller(address caller);
@@ -88,6 +96,13 @@ contract KeeperExecutor is IRebalanceExecutor {
     /// @notice Owner only. Sends `amount` of `token`, float or inventory, to `to`.
     function withdraw(address token, address to, uint256 amount) external onlyOwner {
         SafeERC20.safeTransfer(IERC20(token), to, amount);
+    }
+
+    /// @notice Owner only. Lets the keeper deliver up to `amount` of `token` from stock from now on, replacing what was
+    ///         left of the previous allowance.
+    function setStockAllowance(address token, uint256 amount) external onlyOwner {
+        stockAllowance[token] = amount;
+        emit StockAllowanceSet(token, amount);
     }
 
     /// @notice Keeper only. Fills `index`'s auction with `priceUpdate`, forwarding all of msg.value to Pyth as its fee.
@@ -128,8 +143,8 @@ contract KeeperExecutor is IRebalanceExecutor {
 
     /// @inheritdoc IRebalanceExecutor
     /// @dev Sells each routed component the index sent out, keeps each unrouted one, then delivers each component the
-    ///      index needs from stock, buying only the shortfall. A USDC component, which no listing allows today, comes
-    ///      out of and goes into the float itself.
+    ///      index needs from stock, within the owner's stock allowance, buying only the rest. A USDC component, which no
+    ///      listing allows today, comes out of and goes into the float itself, which the allowance does not cover.
     function onXindexRebalance(uint256[] calldata amountsOut, uint256[] calldata amountsIn, bytes calldata data)
         external
     {
@@ -156,8 +171,13 @@ contract KeeperExecutor is IRebalanceExecutor {
             uint256 need = amountsIn[i];
             if (need == 0) continue;
             address token = tokens[i];
-            uint256 held = IERC20(token).balanceOf(address(this));
-            if (held < need) {
+            bool stock = token != USDC;
+            uint256 usable = IERC20(token).balanceOf(address(this));
+            if (stock && usable > stockAllowance[token]) usable = stockAllowance[token];
+            uint256 fromStock = usable < need ? usable : need;
+            // Spent before the purchase below, so the swap runs with the allowance already written.
+            if (stock && fromStock != 0) stockAllowance[token] -= fromStock;
+            if (fromStock < need) {
                 // USDC has no route, so a float too short for a USDC component also ends here.
                 if (routes[i].length == 0) revert NoRoute(token);
                 // forge-lint: disable-next-item(unused-return)
@@ -165,7 +185,7 @@ contract KeeperExecutor is IRebalanceExecutor {
                     IV3SwapRouter.ExactOutputParams({
                         path: routes[i],
                         recipient: address(this),
-                        amountOut: need - held,
+                        amountOut: need - fromStock,
                         amountInMaximum: IERC20(USDC).balanceOf(address(this))
                     })
                 );

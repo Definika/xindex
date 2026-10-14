@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
+import {VmSafe} from "forge-std/Vm.sol";
 import {DeployChecks} from "../script/DeployChecks.sol";
 import {DeployWeighted} from "../script/DeployWeighted.s.sol";
 import {PythIds} from "../script/PythIds.sol";
@@ -162,6 +163,21 @@ contract FakeWeightedFactory {
     constructor(address implementation, address pyth) {
         IMPLEMENTATION = implementation;
         PYTH = pyth;
+    }
+}
+
+/// @notice DeployWeighted recording this very build, whatever it is, so a test can deploy on chain 1 from any build,
+///         `forge coverage`'s unoptimized one included.
+contract DeployWeightedThisBuild is DeployWeighted {
+    function releaseInitCodeHashes() public pure override returns (bytes32[3] memory) {
+        return buildInitCodeHashes();
+    }
+}
+
+/// @notice DeployWeighted recording a build no compiler produces.
+contract DeployWeightedOtherBuild is DeployWeighted {
+    function releaseInitCodeHashes() public pure override returns (bytes32[3] memory released) {
+        released = [bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3))];
     }
 }
 
@@ -568,6 +584,57 @@ contract ScriptsTest is Test {
         MockSafe singleSigner = new MockSafe(1);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerThresholdTooLow.selector, address(singleSigner), 1));
         deployer.deploy(address(singleSigner), guardian, address(0), address(0), address(0), address(0), address(0));
+    }
+
+    /// @dev CF-5. The constants are the release record: this build's init-code hashes. A change to src/, to a
+    ///      dependency or to the compiler settings fails here until they are updated in the same reviewed commit, and
+    ///      the failure prints the new values. `forge coverage` compiles without the optimizer, so it skips the pin.
+    function test_CF5_theReleaseHashesAreThisBuilds() public view {
+        bytes32[3] memory pinned = deployer.releaseInitCodeHashes();
+        if (vm.isContext(VmSafe.ForgeContext.Coverage)) return;
+        bytes32[3] memory built = deployer.buildInitCodeHashes();
+        assertEq(pinned[0], built[0], "FACTORY_INITCODE_HASH: set it to this build's WeightedIndexFactory hash");
+        assertEq(pinned[1], built[1], "ZAP_INITCODE_HASH: set it to this build's IndexZap hash");
+        assertEq(pinned[2], built[2], "REQUESTS_INITCODE_HASH: set it to this build's MintRequests hash");
+        deployer.checkBuild(pinned);
+    }
+
+    /// @dev CF-5. On Ethereum, `deploy` broadcasts only the build its constants record; elsewhere it builds as before.
+    function test_CF5_aMainnetDeployBroadcastsOnlyTheRecordedBuild() public {
+        vm.chainId(1);
+        vm.etch(MAINNET_UNIVERSAL_ROUTER, address(new MockUniversalRouter(MainnetAddresses.POOL_MANAGER)).code);
+        vm.etch(MainnetAddresses.PYTH, hex"00");
+        vm.etch(MainnetAddresses.USDC, hex"00");
+        vm.etch(MainnetAddresses.USDT, hex"00");
+        vm.etch(MainnetAddresses.PANCAKE_UNIVERSAL_ROUTER, hex"00");
+        address safe = address(new MockSafe(3));
+
+        DeployWeighted other = new DeployWeightedOtherBuild();
+        bytes32[3] memory built = other.buildInitCodeHashes();
+        assertEq(other.releaseInitCodeHashes()[0], bytes32(uint256(1)), "a record no build matches");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                DeployWeighted.BuildNotReleased.selector, "WeightedIndexFactory", bytes32(uint256(1)), built[0]
+            )
+        );
+        other.deploy(safe, guardian, address(0), address(0), address(0), address(0), address(0));
+
+        bytes32[3] memory wrongZap = [built[0], bytes32(0), built[2]];
+        vm.expectRevert(
+            abi.encodeWithSelector(DeployWeighted.BuildNotReleased.selector, "IndexZap", bytes32(0), built[1])
+        );
+        other.checkBuild(wrongZap);
+        bytes32[3] memory wrongRequests = [built[0], built[1], bytes32(0)];
+        vm.expectRevert(
+            abi.encodeWithSelector(DeployWeighted.BuildNotReleased.selector, "MintRequests", bytes32(0), built[2])
+        );
+        other.checkBuild(wrongRequests);
+
+        DeployWeighted same = new DeployWeightedThisBuild();
+        assertEq(same.releaseInitCodeHashes()[1], built[1], "a record of this build");
+        (WeightedIndexFactory factory,,) =
+            same.deploy(safe, guardian, address(0), address(0), address(0), address(0), address(0));
+        assertEq(factory.owner(), safe, "the recorded build broadcasts on chain 1");
     }
 
     /// @dev CR-I36: a call that failed is not an answer.

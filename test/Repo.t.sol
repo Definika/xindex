@@ -57,6 +57,18 @@ contract RepoTest is Test {
         assertTrue(_contains(workflow, "wake detect all src"), "the Wake detectors run");
     }
 
+    /// @dev CF-6: Wake's run-time PyPI install never shares a job with Foundry's RPC cache, which the check job saves
+    ///      and later fork-suite runs read as chain state; the Wake job keeps no cache of its own.
+    function test_CF6_wakeRunsInAJobWithoutTheRpcCache() public view {
+        string memory workflow = _read(".github/workflows/test.yml");
+        uint256 wakeJob = vm.indexOf(workflow, "\n  wake:\n");
+        assertTrue(wakeJob != type(uint256).max, "Wake has a job of its own");
+        assertGt(vm.indexOf(workflow, "pipx install eth-wake"), wakeJob, "the PyPI install runs in it");
+        assertLt(vm.indexOf(workflow, "run: forge test -vvv"), wakeJob, "the fork suites run in the check job");
+        assertEq(_count(workflow, "pipx install"), 1, "nothing else installs from PyPI");
+        assertGt(vm.indexOf(workflow, "cache: false"), wakeJob, "and the Wake job's Foundry keeps no RPC cache");
+    }
+
     /// @dev L08 and FR04: every submodule is pinned in foundry.lock and every pinned path is a submodule. CI compares
     ///      the committed commits against the lock; that needs git, so it stays there.
     function test_L08_FR04_theDependencyLockAndGitmodulesAgree() public view {

@@ -17,14 +17,18 @@
 // Every plan fails closed. It refuses when:
 //   - fewer than two THORNode endpoints agree on the chain's router and vaults, or either reports a halt or pause;
 //   - the Ethereum router is not one this module pins (THORChain_Router v4.1);
+//   - any node's quote fails a check below, or the nodes' quotes name different vaults or expect outputs further apart
+//     than maxSpreadBps: every node is asked, so no single endpoint sets the limit, the expiry or the fee check (CF-2);
 //   - the quote's vault is not an active Asgard vault on both nodes, or its router is not the pinned one;
 //   - a destination or the depositing account is a contract (THORChain: "Do not swap to smart contract addresses");
 //     an EIP-7702 delegated account counts as a contract;
-//   - the quote resolves the memo's asset to anything but the asset asked for, has expired or expires within
-//     MIN_QUOTE_LIFE, charges more than maxFeeBps, or the amount is under its recommended minimum;
-//   - the memo, which this module writes itself rather than taking THORNode's, exceeds the source chain's limit.
-// The memo always carries a limit (the quote's expected output less slippageBps), so a swap that would pay less is
-// refunded rather than filled, and from Ethereum it always names the user as the refund address.
+//   - the quote resolves the output to anything but the asset asked for, has expired, expires within MIN_QUOTE_LIFE or
+//     later than MAX_QUOTE_LIFE, carries no numeric fee or charges more than maxFeeBps, or the amount is under its
+//     recommended minimum;
+//   - the memo, which this module writes itself rather than taking THORNode's, exceeds the source chain's limit, or
+//     names a `CHAIN.TICKER` that any node resolves to another asset when asked to quote that ticker itself (CF-8).
+// The memo always carries a limit (the lowest expected output the nodes quote, less slippageBps), so a swap that would
+// pay less is refunded rather than filled, and from Ethereum it always names the user as the refund address.
 
 /// THORChain_Router v4.1 on Ethereum mainnet: the router in `/thorchain/inbound_addresses`, Blockscout-verified
 /// (code hash 0x7f7ad482...68cc), checked 2026-10-06. Router v6.1 (0x00dc6100103BC402d490aEE3F9a5560cBd91f1d4) is
@@ -48,6 +52,9 @@ const MAX_MEMO = 250;
 const UTXO_MEMO = 80;
 /// A quote must still have this long to live when the plan is made, so the user has time to sign.
 export const MIN_QUOTE_LIFE = 300;
+/// And no longer than this: THORNode quotes for 15 minutes, and a later deadline lets a delayed deposit land after the
+/// vaults it names have rotated (CF-2).
+export const MAX_QUOTE_LIFE = 3600;
 /// `depositWithExpiry(address,address,uint256,string,uint256)` and `approve(address,uint256)`.
 const DEPOSIT_WITH_EXPIRY = "0x44bc937b";
 const APPROVE = "0x095ea7b3";
@@ -66,7 +73,7 @@ export function toThorUnits(raw, decimals) {
 }
 
 /// A swap memo, `=:ASSET:DEST[/REFUND]:LIM/INTERVAL/QUANTITY`, written here from typed fields. The full asset id is used
-/// when it fits the source chain's limit, and `CHAIN.TICKER` otherwise, whose resolution the quote then proves.
+/// when it fits the source chain's limit, and `CHAIN.TICKER` otherwise, whose resolution `proveMemoAsset` then checks.
 export function swapMemo({ asset, destination, refund, limit, sourceChain, interval = 1, quantity = 0 }) {
   if (limit <= 0n) refuse("a swap memo needs a positive limit");
   const max = UTXO_CHAINS.has(sourceChain) ? UTXO_MEMO : MAX_MEMO;
@@ -92,6 +99,8 @@ async function getJson(fetchImpl, url) {
 /// What every node must agree on for `chains`: none halted or paused, the same router, and the active vault addresses.
 export async function networkState(nodes, fetchImpl, chains) {
   if (!Array.isArray(nodes) || nodes.length < 2) refuse("two independent THORNode endpoints are required");
+  // The same endpoint twice would make every cross-check below, the quote's included, one endpoint's word (CF-2).
+  if (new Set(nodes.map((n) => new URL(n).origin.toLowerCase())).size !== nodes.length) refuse("the THORNode endpoints must be distinct");
   const states = [];
   for (const node of nodes) {
     const inbound = await getJson(fetchImpl, `${node}/thorchain/inbound_addresses`);
@@ -129,7 +138,10 @@ function checkQuote(quote, { states, sourceChain, buyAsset, amount1e8, maxFeeBps
   }
   if (lower(quote.fees?.asset ?? "") !== lower(buyAsset)) refuse(`the quote resolves the output to ${quote.fees?.asset}, not ${buyAsset}`);
   if (BigInt(quote.expiry) < BigInt(now + MIN_QUOTE_LIFE)) refuse("the quote expires too soon");
-  if (Number(quote.fees.total_bps) > maxFeeBps) refuse(`fees of ${quote.fees.total_bps} bps exceed ${maxFeeBps}`);
+  if (BigInt(quote.expiry) > BigInt(now + MAX_QUOTE_LIFE)) refuse("the quote's expiry is further out than a quote lives");
+  const bps = quote.fees?.total_bps;
+  if (!/^\d+$/.test(String(bps ?? ""))) refuse(`the quote's fee is not a number: ${bps}`);
+  if (Number(bps) > maxFeeBps) refuse(`fees of ${bps} bps exceed ${maxFeeBps}`);
   if (amount1e8 < BigInt(quote.recommended_min_amount_in ?? "0")) refuse("the amount is under THORChain's recommended minimum");
   for (const state of states) {
     if (amount1e8 <= state[sourceChain].dust) refuse("the amount is under the dust threshold");
@@ -152,6 +164,37 @@ function quoteUrl(node, { sellAsset, buyAsset, amount1e8, destination, refund })
 }
 
 const limitFrom = (expected, slippageBps) => (BigInt(expected) * BigInt(10_000 - slippageBps)) / 10_000n;
+
+/// Every node's quote for the swap, each checked, and required to agree: one vault, and expected outputs within
+/// `maxSpreadBps` of each other. The plan takes the lowest expected output and the earliest expiry, so a node that
+/// lies low, late or without a fee is refused rather than trusted (CF-2).
+async function agreedQuote({ nodes, fetchImpl, params, check, maxSpreadBps }) {
+  const quotes = [];
+  for (const node of nodes) {
+    const quote = await getJson(fetchImpl, quoteUrl(node, params));
+    checkQuote(quote, check);
+    quotes.push(quote);
+  }
+  if (new Set(quotes.map((q) => lower(q.inbound_address))).size !== 1) refuse("the nodes quote different vaults");
+  const outs = quotes.map((q) => BigInt(q.expected_amount_out));
+  const low = outs.reduce((a, b) => (b < a ? b : a));
+  const high = outs.reduce((a, b) => (b > a ? b : a));
+  if ((high - low) * 10_000n > low * BigInt(maxSpreadBps)) refuse(`the nodes' expected outputs differ by more than ${maxSpreadBps} bps`);
+  const expiry = quotes.map((q) => BigInt(q.expiry)).reduce((a, b) => (b < a ? b : a));
+  return { quote: quotes[0], expected: low, expiry };
+}
+
+/// A memo that names `CHAIN.TICKER`, because the full asset id does not fit, is sent only once every node, asked to
+/// quote that very ticker, resolves it to the asset the plan was quoted for (CF-8).
+async function proveMemoAsset({ memo, buyAsset, nodes, fetchImpl, params }) {
+  const named = memo.split(":")[1];
+  if (lower(named) === lower(buyAsset)) return;
+  for (const node of nodes) {
+    const quote = await getJson(fetchImpl, quoteUrl(node, { ...params, buyAsset: named }));
+    const resolved = quote.fees?.asset ?? "";
+    if (lower(resolved) !== lower(buyAsset)) refuse(`${node} resolves the memo's ${named} to ${resolved || "nothing"}, not ${buyAsset}`);
+  }
+}
 
 // ---------------------------------------------------------------------------------------------------------------
 // Encoding
@@ -188,6 +231,7 @@ export async function planExitFromEthereum({
   destination,
   slippageBps = 100,
   maxFeeBps = 100,
+  maxSpreadBps = 100,
   now = Math.floor(Date.now() / 1000),
   isContract,
 }) {
@@ -204,14 +248,15 @@ export async function planExitFromEthereum({
 
   const states = await networkState(nodes, fetchImpl, ["ETH", destChain]);
   const amount1e8 = toThorUnits(amount, sell.decimals);
-  const quote = await getJson(fetchImpl, quoteUrl(nodes[0], { sellAsset, buyAsset, amount1e8, destination, refund: from }));
-  checkQuote(quote, { states, sourceChain: "ETH", buyAsset, amount1e8, maxFeeBps, now });
+  const params = { sellAsset, buyAsset, amount1e8, destination, refund: from };
+  const check = { states, sourceChain: "ETH", buyAsset, amount1e8, maxFeeBps, now };
+  const { quote, expected, expiry } = await agreedQuote({ nodes, fetchImpl, params, check, maxSpreadBps });
 
-  const limit = limitFrom(quote.expected_amount_out, slippageBps);
+  const limit = limitFrom(expected, slippageBps);
   const memo = swapMemo({ asset: buyAsset, destination, refund: from, limit, sourceChain: "ETH" });
+  await proveMemoAsset({ memo, buyAsset, nodes, fetchImpl, params });
   const router = lower(quote.router);
   const vault = lower(quote.inbound_address);
-  const expiry = BigInt(quote.expiry);
   const transactions = [];
   if (sell.token) {
     // USDT refuses to change a non-zero allowance, so its approval is reset first; for the others it is harmless.
@@ -223,7 +268,7 @@ export async function planExitFromEthereum({
     value: sell.token ? 0n : amount,
     data: encodeDeposit(vault, sell.token ?? "0x0000000000000000000000000000000000000000", amount, memo, expiry),
   });
-  return { flow: "exit", from, memo, limit, expectedOut: BigInt(quote.expected_amount_out), expiry, router, vault, transactions, quote };
+  return { flow: "exit", from, memo, limit, expectedOut: expected, expiry, router, vault, transactions, quote };
 }
 
 /// Plans a swap from a UTXO chain's coin to `buyAsset` on Ethereum at the user's own Ethereum `destination`, where the
@@ -239,6 +284,7 @@ export async function planFundToEthereum({
   refund,
   slippageBps = 100,
   maxFeeBps = 100,
+  maxSpreadBps = 100,
   now = Math.floor(Date.now() / 1000),
   isContract,
 }) {
@@ -253,19 +299,12 @@ export async function planFundToEthereum({
   if (amount <= 0n) refuse("nothing to swap");
 
   const states = await networkState(nodes, fetchImpl, [sourceChain, "ETH"]);
-  const quote = await getJson(fetchImpl, quoteUrl(nodes[0], { sellAsset, buyAsset, amount1e8: amount, destination, refund }));
-  checkQuote(quote, { states, sourceChain, buyAsset, amount1e8: amount, maxFeeBps, now });
+  const params = { sellAsset, buyAsset, amount1e8: amount, destination, refund };
+  const check = { states, sourceChain, buyAsset, amount1e8: amount, maxFeeBps, now };
+  const { quote, expected, expiry } = await agreedQuote({ nodes, fetchImpl, params, check, maxSpreadBps });
 
-  const limit = limitFrom(quote.expected_amount_out, slippageBps);
+  const limit = limitFrom(expected, slippageBps);
   const memo = swapMemo({ asset: buyAsset, destination, refund, limit, sourceChain });
-  return {
-    flow: "fund",
-    vault: quote.inbound_address,
-    amount,
-    memo,
-    limit,
-    expectedOut: BigInt(quote.expected_amount_out),
-    expiry: BigInt(quote.expiry),
-    quote,
-  };
+  await proveMemoAsset({ memo, buyAsset, nodes, fetchImpl, params });
+  return { flow: "fund", vault: quote.inbound_address, amount, memo, limit, expectedOut: expected, expiry, quote };
 }

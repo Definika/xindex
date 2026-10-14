@@ -25,6 +25,25 @@ test("prices and values", () => {
   assert.equal(M.amountUsd(5n * 10n ** 5n, 6, { price: 1n, expo: 0 }), 0.5);
 });
 
+test("tvlUsd values supply times units at Pyth prices, a missing price as nothing", () => {
+  const eth = { price: 2000_00000000n, expo: -8 };
+  const btc = { price: 60_000_00000000n, expo: -8 };
+  const units = [25n * 10n ** 15n, 50_000n]; // 0.025 ETH and 0.0005 BTC per index token
+  const decimals = [18, 8];
+  assert.equal(M.tvlUsd({ supply: 2n * 10n ** 18n, units, decimals, prices: [eth, btc] }), 160);
+  assert.equal(M.tvlUsd({ supply: 2n * 10n ** 18n, units, decimals, prices: [eth, undefined] }), 100);
+  assert.equal(M.tvlUsd({ supply: 0n, units, decimals, prices: [eth, btc] }), 0);
+});
+
+test("CF-7: auctionsToEvaluate drops empty and small indexes, keeps the richest, caps the count", () => {
+  const a = (index, supply, tvl) => ({ index, supply, tvl });
+  const all = [a("empty", 0n, 0), a("dust", 1n, 0.01), a("mid", 10n, 5_000), a("big", 10n, 90_000), a("min", 10n, 1_000)];
+  assert.deepEqual(M.auctionsToEvaluate(all, 1_000, 8).map((c) => c.index), ["big", "mid", "min"]);
+  assert.deepEqual(M.auctionsToEvaluate(all, 1_000, 2).map((c) => c.index), ["big", "mid"]);
+  assert.deepEqual(M.auctionsToEvaluate(all, 0, 8).map((c) => c.index), ["big", "mid", "min", "dust"], "an empty index never, even at no minimum");
+  assert.deepEqual(M.auctionsToEvaluate([], 1_000, 8), []);
+});
+
 test("auctionOpen is the hub's rule at the fill's own timestamp", () => {
   const d = 86_400n;
   assert.equal(M.auctionOpen(0n, 5000n, d), false);

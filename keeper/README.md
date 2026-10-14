@@ -8,7 +8,9 @@ Its key is the keeper's own hot key, not the owner's or the guardian's.
 
 Every block L, with T = L's timestamp + 12 (the one block a fill sent now can land in):
 
-1. **Fills.** For each open auction, it fetches Pyth's update for second t_L from Hermes, previews the settlement and
+1. **Fills.** For each open auction on an index with shares worth at least `MIN_TVL_USD` (valued once per auction and
+   again every 25 blocks, with one Hermes request for all of them), the richest 8 first, it fetches Pyth's update for
+   second t_L from Hermes, previews the settlement and
    simulates the executor's whole fill exactly as block L+1 would run it (`eth_call` with block overrides), with the
    routes it quoted and the executor's stock. Profit = the USDC float's change + the stock's change valued at Pyth −
    gas. It sends the most profitable fill whose profit reaches `MIN_PROFIT_USD`, with a USDC floor no lower than that
@@ -28,16 +30,21 @@ The executor swaps through Uniswap V3 (SwapRouter02) along a route per coin, cho
 `token→USDC` and `token→WETH→USDC` pool at the leg's own size; a route losing more than `ROUTE_MAX_LOSS_BPS` against
 Pyth is not used. A coin without a usable route (Wormhole copies, Ondo stocks, Tether Gold) is served from the
 executor's **stock**: a coin the index sells is kept, and a coin it needs is delivered from stock, which the operator
-keeps filled, for example by bridging through Wormhole's Portal and sending the tokens to the executor. The bot logs
-`restock <coins>` and does not start or fill an auction its stock cannot cover. Stock comes first for a routed coin
-too; only the shortfall is bought. The executor's address must be able to hold and send every coin it stocks.
+keeps filled, for example by bridging through Wormhole's Portal and sending the tokens to the executor. A coin leaves
+stock only within the **stock allowance** `OWNER` sets for it (`setStockAllowance(token, amount)`), which every delivery
+from stock spends; with none, nothing is served from stock. The bot logs `restock <coins>` and does not start or fill an
+auction its usable stock (the lower of the balance and the allowance) cannot cover. Usable stock comes first for a
+routed coin too; only the rest is bought. The executor's address must be able to hold and send every coin it stocks.
 
 ## Keys and risk
 
-- `OWNER`, a cold key, withdraws float and stock and rotates the keeper (`setKeeper`). Keep it off the bot's machine.
-- `keeper`, the bot's hot key, can only `fill`, and only an index the factory created, so it cannot point the executor
-  at a contract of its own to take the stock. It can still trade the USDC float badly within the floor it sets itself:
-  keep the float to what fills need, and the key's ETH to a few days of gas.
+- `OWNER`, a cold key, withdraws float and stock, rotates the keeper (`setKeeper`) and sets each coin's stock allowance
+  (`setStockAllowance`). Keep it off the bot's machine.
+- `keeper`, the bot's hot key, can only `fill`, and only an index the factory created. Anyone can create a factory index
+  and hold all its shares, so that check does not keep the stock from an index the key's thief owns (CF-1): what bounds
+  the stock a stolen key can move is the allowance `OWNER` left, so keep each allowance to what the next fills need. The
+  key can also trade the USDC float badly within the floor it sets itself: keep the float to what fills need, and the
+  key's ETH to a few days of gas.
 - Fills go through the public mempool: anyone can see a fill and its price update before it lands. The floor bounds
   what a sandwich can take; a copier who fills first leaves this bot's transaction to revert cheaply.
 
@@ -66,7 +73,7 @@ The RPC must honour `eth_call` block overrides (Tenderly, publicnode and geth do
 | `HERMES_URL` | `https://pyth.dourolabs.app/hermes` | Hermes since 2026-08-26. |
 | `INDEXES` | every index | Comma-separated indexes to serve; anyone can create indexes, so a list caps the bot's work. |
 | `MIN_PROFIT_USD` | `5` | Least profit a fill or a start must promise; negative is a subsidy the operator accepts. |
-| `MIN_TVL_USD` | `1000` | Smallest index the bot starts. |
+| `MIN_TVL_USD` | `1000` | Smallest index the bot starts or simulates a fill for (anyone can open an empty one's). |
 | `SLIPPAGE_BPS` | `30` | Room the floor leaves for the pools to move, on the volume the routes trade. |
 | `SUPPLY_TOLERANCE_BPS` | `10` | How much an issue may grow the settlement before the fill reverts. |
 | `ROUTE_MAX_LOSS_BPS` | `100` | Most a route may lose against Pyth; the auction's whole edge is 200. |

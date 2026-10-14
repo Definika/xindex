@@ -617,6 +617,7 @@ contract CheckToken is Script {
                 || selector == 0xd3ce77fe // destroyTokens(address,uint256): MiniMe (LEO), by the controller
                 || selector == 0x7df9a674 // ownerReallocateFrom(address,address,uint256): WLFI, burns from any holder
                 || selector == 0x7adf1239 // ownerBatchReallocateFrom(address[],address[],uint256[]): WLFI, the same
+                || selector == 0xac9fe421 // setSuperOperator(address,bool): SAND, operators that need no allowance (CF-4)
         ) {
             return DESTROY;
         }
@@ -625,6 +626,7 @@ contract CheckToken is Script {
                 || selector == 0x9dc29fac // burn(address,uint256): minter and bridge burns
                 || selector == 0x74f4f547 // bridgeBurn(address,uint256): Arbitrum's standard gateway tokens
                 || selector == 0x2b8c49e3 // crosschainBurn(address,uint256): ERC-7802
+                || selector == 0x1dd319cb // burnFor(address,uint256): The Sandbox (SAND), a super operator's burn (CF-4)
         ) {
             return BURN_OTHERS;
         }
@@ -672,11 +674,13 @@ contract CheckToken is Script {
         party.delay = word;
     }
 
-    /// @dev `owner()`, or BEP-20's `getOwner()`, or a MiniMe token's `controller()`: the first that answers.
+    /// @dev `owner()`, or BEP-20's `getOwner()`, or a MiniMe token's `controller()`, or The Sandbox's `getAdmin()`: the
+    ///      first that answers. An admin behind a getter none of these names is reported as no owner (CF-4).
     function _ownerOf(address token) private view returns (address owner) {
         owner = _addressAnswer(token, abi.encodeCall(IAdminReads.owner, ()));
         if (owner == address(0)) owner = _addressAnswer(token, abi.encodeCall(IAdminReads.getOwner, ()));
         if (owner == address(0)) owner = _addressAnswer(token, abi.encodeCall(IAdminReads.controller, ()));
+        if (owner == address(0)) owner = _addressAnswer(token, abi.encodeCall(IAdminReads.getAdmin, ()));
     }
 
     /// @dev The first holder of AccessControl's DEFAULT_ADMIN_ROLE, when the roles are enumerable.

@@ -44,9 +44,15 @@ Where it stands (2026-10-13):
   by keys the test installed in Pyth's receiver, a fill of 93 legs cost 7.26M, Pyth's parse 2.34M of it.
 - The keeper bot is built (`keeper/`, the keeper's own Foundry project and Node bot, with unit and end-to-end tests):
   it starts and fills auctions, serves coins without a Uniswap route from its executor's stock, and holds no role.
+- The security audit of 2026-10-13 (`audit/2026-10-13-security-audit.md`, Cloudflare's security-audit skill, ids
+  `CF-1`..`CF-8`) found no exploitable path in the four contracts that hold index funds; its findings in the keeper,
+  the THORChain planner, CheckToken, the deploy script and CI are fixed, and CF-3 is a known limitation below.
 - Before any mainnet: Pyth's parameter replay (`design/2026-10-05-custom-weights.md`, section 8), a settlement on a
   real update from Hermes (which needs Pyth's API key), a reading of OP-PIP-132 for what it means for Pyth on Ethereum,
-  and an external audit.
+  Ondo's corporate-action mechanism for its stock tokens (CF-3), the owner's reading of the verified source of the 44
+  tokens listed on 2026-10-10, SAND's first, which `CheckToken` alone admitted (CF-4), the five fork suites run again
+  (CF-4 re-pins SAND as review without a fork run), and an external audit; then `DeployWeighted`'s release hashes
+  fixed at the audited commit (CF-5).
 
 For more:
 - `design/2026-10-05-custom-weights.md`: the v5 spec.
@@ -141,6 +147,11 @@ deploy script resolves Pyth, the routers and the stablecoins from the address bo
    - The logic review of 2026-10-07: `V5R-1`, `V5R-I1` and `V5R-I2` (`audit/2026-10-07-v5-logic-review.md`), a test
      named `test_V5R1_...` in `test/WeightedHub.rebalance.t.sol`. The informational ids are recorded by documentation;
      V5R-I1 is retired with Stage B.
+   - The security audit of 2026-10-13: `CF-1`..`CF-8` (`audit/2026-10-13-security-audit.md`). CF-1's tests are
+     `test_CF1_...` in `keeper/test/KeeperExecutor.t.sol`; CF-2's and CF-8's are the node tests named `CF-2: ...` and
+     `CF-8: ...` in `swaprail/thorchain.test.mjs`; CF-4's `test_CF4_...` in `test/CheckToken.t.sol`; CF-5's
+     `test_CF5_...` in `test/Scripts.t.sol`; CF-6's `test_CF6_...` in `test/Repo.t.sol`; CF-7's the node test named
+     `CF-7: ...` in `keeper/test/unit/math.test.mjs`. CF-3 is recorded by documentation alone.
    - Stage B's families are retired in full with Stage B (`audit/2026-10-07-stage-b-retirement.md`): the Stage B red
      team's `VLT`, `HUB`, `MOD`, `BNB`, `FAC` and `SOL` ids, the TRON review's `TRN`, the logic review of 2026-10-02's
      `LG`, and `BLS-1`. No test carries them, and none may be restored.
@@ -248,6 +259,10 @@ records also cite.
   legs re-read, and a shrinking leg paid as a difference of floored backings.
 - **A collapsing coin can stop the fills.** Fixed weights keep buying it, and units beyond `uint96` stop the fill rather
   than wrap, until the guardian keeps it (V5-L3, a known limitation).
+- **An issuer's corporate action is not accounted for.** Units are fixed per share and amounts come only from supply
+  and units, so tokens an issuer mints to holders, as a split paid in tokens would be, stay in the index owned by no
+  share, and a burn leaves that leg below its backing; a token that stops being one share misprices a leg priced at the
+  share's feed (CF-3, a known limitation). Do not add a path that pays out balances to cover it.
 - **The notice is 2 hours.** `WeightedHub`'s `REBALANCE_DELAY` is 2 hours: targets come from the settlement's prices,
   so the notice is for executors, not for holders' exits (the spec's section 8). `AUCTION_DURATION` is 24 hours and
   `MIN_REBALANCE_INTERVAL` 7 days (V5R-I2). A cancel, or an auction that expired unfilled, holds strangers off for
@@ -382,7 +397,8 @@ records also cite.
   `CheckToken`, and the WBT rule (a token that can both blacklist a holder and destroy its balance is refused) stays its
   default. On 2026-10-10 the owner ruled that a blacklist is no bar to listing and admitted Tether Gold, which the rule
   refuses, and Ondo's stock tokens, whose compliance contract and burner role amount to the same power;
-  `testFork_everyWideTokenPassesTheCheck` pins Tether Gold as the one refused entry. Pausable components such as WBTC
+  `testFork_everyWideTokenPassesTheCheck` pins Tether Gold as the one refused entry and SAND, whose admin's super
+  operators move any holder's balance, as the one for review (CF-4). Pausable components such as WBTC
   must be labelled in the app, and so must every other issuer a component adds: BitGo for WBTC, Binance for BTCB and
   every Binance-Peg coin, Tether for Tether Gold, Ondo for every `<ticker>on` stock, Wormhole for every wrapped copy,
   and both Binance and Wormhole for a copy wrapped from a Binance-Peg coin.
@@ -474,6 +490,10 @@ records also cite.
     currency in the address book (CR-I37).
   - On chain 1 the market addresses are the address book's and nothing else (`MainnetOverride`); elsewhere they come
     from the environment.
+  - On chain 1 `deploy` broadcasts only the build `DeployWeighted`'s `FACTORY_INITCODE_HASH`, `ZAP_INITCODE_HASH` and
+    `REQUESTS_INITCODE_HASH` record (`BuildNotReleased`, CF-5). A change to `src/`, a dependency or the compiler
+    settings fails `test_CF5_theReleaseHashesAreThisBuilds` until those three are set to the values it prints, in the
+    same commit.
 - **Mainnet addresses** are verified on-chain before being committed: tokens by symbol and decimals, and the routers
   and the PoolManager by their runtime code hashes, since every Universal Router build answers `poolManager()` alike
   (CR-I35). `test/fork/MainnetAddresses.fork.t.sol` checks `script/MainnetAddresses.sol` that way and lists both lists

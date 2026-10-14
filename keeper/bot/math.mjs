@@ -23,6 +23,25 @@ export const priceUsd = (p) => Number(p.price) * 10 ** Number(p.expo);
 /// The dollar value of `amount` raw units of a token with `decimals`, at Pyth price `p`.
 export const amountUsd = (amount, decimals, p) => (Number(amount) / 10 ** Number(decimals)) * priceUsd(p);
 
+/// An index's dollar value: `supply` shares, each backed by `units[i]` raw units of component i per 1e18 shares, at
+/// the Pyth prices `prices` (one per component, in component order). A component with no price counts as nothing.
+export function tvlUsd({ supply, units, decimals, prices }) {
+  let tvl = 0;
+  units.forEach((u, i) => {
+    if (prices[i]) tvl += amountUsd((supply * u) / 10n ** 18n, decimals[i], prices[i]);
+  });
+  return tvl;
+}
+
+/// The open auctions worth evaluating this block: an index with shares, worth at least `minTvlUsd`, richest first, at
+/// most `cap` of them. Anyone can open an auction on an empty index for the gas of a start, so an index's worth, not
+/// its auction's existence, decides what the bot spends Hermes requests and simulations on (CF-7).
+export const auctionsToEvaluate = (candidates, minTvlUsd, cap) =>
+  candidates
+    .filter((c) => c.supply > 0n && c.tvl >= minTvlUsd)
+    .sort((a, b) => b.tvl - a.tvl)
+    .slice(0, cap);
+
 /// The open-auction rule the hub applies at the fill's own timestamp `T` (WeightedHub `_openMu`).
 export const auctionOpen = (eta, T, duration) => eta !== 0n && eta <= T && T <= eta + duration;
 

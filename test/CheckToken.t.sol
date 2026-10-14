@@ -20,7 +20,8 @@ import {
     MockBep20Token,
     MockTokenController,
     MockMiniMeToken,
-    MockRolesToken
+    MockRolesToken,
+    MockSuperOperatorToken
 } from "./mocks/MockAdminTokens.sol";
 import {MockSafeOwner, MockTimelockOwner, MockDelayOwner} from "./mocks/MockOwners.sol";
 import {MockLegacyProxy} from "./mocks/MockLegacyProxy.sol";
@@ -230,6 +231,52 @@ contract CheckTokenTest is Test {
         );
         token.destroyTokens(address(this), 1);
         assertEq(token.balanceOf(address(this)), 1e24 - 1);
+    }
+
+    /// @dev CF-4: The Sandbox's shape was reported 'powers: none found', 'owner: none', listable, though its admin's
+    ///      super operators move and burn any holder's balance without an allowance. It now goes to review, with the
+    ///      admin named.
+    function test_CF4_aSuperOperatorTokenGoesToReviewWithItsAdmin() public {
+        MockSuperOperatorToken token = new MockSuperOperatorToken(key);
+        token.mint(address(this), 1e24);
+        CheckToken.Report memory r = _check(address(token));
+        assertEq(
+            r.powers,
+            checker.MINT() | checker.DESTROY() | checker.BURN_OTHERS(),
+            "the mock's mint, and the operators' powers"
+        );
+        assertEq(r.owner.account, key, "the admin, read through getAdmin()");
+        assertEq(uint8(r.verdict), uint8(CheckToken.Verdict.Review));
+        assertEq(
+            r.reason,
+            "it can destroy a holder's balance, though no blacklist was found: read the source for one under another name"
+        );
+
+        // The mock's power is real: a super operator takes a holder's balance with no allowance.
+        address operator = makeAddr("operator");
+        address victim = makeAddr("victim");
+        token.mint(victim, 7);
+        vm.prank(key);
+        token.setSuperOperator(operator, true);
+        vm.prank(operator);
+        token.transferFrom(victim, operator, 7);
+        assertEq(token.balanceOf(operator), 7);
+        token.mint(victim, 5);
+        vm.prank(operator);
+        token.burnFor(victim, 5);
+        assertEq(token.balanceOf(victim), 0, "and burns it");
+
+        // Only the admin appoints operators; anyone else burns with an allowance or their own balance.
+        vm.expectRevert(bytes("admin only"));
+        vm.prank(victim);
+        token.setSuperOperator(victim, true);
+        token.mint(victim, 3);
+        vm.prank(victim);
+        token.approve(address(this), 1);
+        token.burnFor(victim, 1);
+        vm.prank(victim);
+        token.burnFor(victim, 2);
+        assertEq(token.balanceOf(victim), 0);
     }
 
     function test_ownersAreReadFromOwnerGetOwnerOrRoles() public {
@@ -456,7 +503,7 @@ contract CheckTokenTest is Test {
         for (uint256 i = 0; i < blacklists.length; ++i) {
             _assertPower(blacklists[i], checker.BLACKLIST());
         }
-        string[11] memory destroys = [
+        string[12] memory destroys = [
             "destroyBlackFunds(address)",
             "wipeFrozenAddress(address)",
             "wipeBlacklistedAccount(address)",
@@ -467,16 +514,18 @@ contract CheckTokenTest is Test {
             "forceTransfer(address,address,uint256)",
             "destroyTokens(address,uint256)",
             "ownerReallocateFrom(address,address,uint256)",
-            "ownerBatchReallocateFrom(address[],address[],uint256[])"
+            "ownerBatchReallocateFrom(address[],address[],uint256[])",
+            "setSuperOperator(address,bool)"
         ];
         for (uint256 i = 0; i < destroys.length; ++i) {
             _assertPower(destroys[i], checker.DESTROY());
         }
-        string[4] memory burns = [
+        string[5] memory burns = [
             "burnFrom(address,uint256)",
             "burn(address,uint256)",
             "bridgeBurn(address,uint256)",
-            "crosschainBurn(address,uint256)"
+            "crosschainBurn(address,uint256)",
+            "burnFor(address,uint256)"
         ];
         for (uint256 i = 0; i < burns.length; ++i) {
             _assertPower(burns[i], checker.BURN_OTHERS());

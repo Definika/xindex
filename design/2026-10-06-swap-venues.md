@@ -114,16 +114,22 @@ A planner the app adopts, with no dependency. It signs and sends nothing, and fa
   Ethereum account; the user then mints with the zap.
 
 Every plan refuses unless all of these hold:
-- two THORNode endpoints agree on the router, both list the quote's vault as active, and neither reports a halt;
+- two distinct THORNode endpoints agree on the router, both list the quote's vault as active, and neither reports a
+  halt;
+- every endpoint quotes the swap, the quotes name one vault and expect outputs within `maxSpreadBps` (1%) of each
+  other, so no single endpoint sets the limit, the deadline or the fee check (CF-2, audit of 2026-10-13);
 - the Ethereum router is v4.1, which the module pins;
 - the sender and the destination are not contracts;
-- the quote resolves the output to the asset asked for, lives at least five more minutes, charges at most `maxFeeBps`,
-  and the amount clears its recommended minimum and the dust threshold.
+- each quote resolves the output to the asset asked for, lives at least five more minutes and at most an hour, carries
+  a numeric fee of at most `maxFeeBps`, and the amount clears its recommended minimum and the dust threshold.
 
 The module writes the memo itself, `=:ASSET:DEST[/REFUND]:LIM/1/0`, rather than taking THORNode's. The limit is the
-quote's expected output less `slippageBps`, so a worse fill is refunded, and from Ethereum the user is the refund
-address. A Bitcoin memo must fit OP_RETURN's 80 bytes, so there the asset is written `CHAIN.TICKER`. Two checks make
-that safe: the quote must resolve it to the full asset id, and the refund goes to the sending wallet.
+lowest expected output the endpoints quote, less `slippageBps`, so a worse fill is refunded, and from Ethereum the user
+is the refund address. A Bitcoin memo must fit OP_RETURN's 80 bytes, so there the asset is written `CHAIN.TICKER`. Two
+checks make that safe: every endpoint, asked to quote that very ticker, must resolve it to the full asset id (CF-8;
+the first version asked about the full id only, which proved nothing about the ticker), and the refund goes to the
+sending wallet. If THORNode ever stops resolving a ticker in a quote, the fund flow refuses rather than guesses; check
+it against a live node with `swaprail/check-live.mjs` before relying on it.
 
 `node --test swaprail/` runs its tests on live THORNode responses of 2026-10-06. CI runs it, and eight mutants of its
 refusals were caught. `swaprail/check-live.mjs` plans both flows read-only against a live THORNode; it ran on

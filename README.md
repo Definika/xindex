@@ -435,6 +435,12 @@ stock, Wormhole for every wrapped copy, and both Binance and Wormhole for a copy
   every holder (`design/2026-10-10-one-index-wormhole-legs.md`, section 3).
 - **A collapsing coin can stop the fills.** Fixed weights keep buying a coin whose price falls, and units beyond
   `uint96` stop the fill rather than wrap, until the guardian keeps it (V5-L3).
+- **An issuer's corporate action is not accounted for.** An index holds fixed units per share and pays out only those.
+  If an issuer mints tokens to every holder, as a stock split paid in tokens would, the index's new tokens belong to no
+  share; if it burns them, that leg falls below its backing; and if one of Ondo's stock tokens stops being exactly one
+  share, the legs priced at the share's own feed are mispriced at every rebalance. How Ondo applies splits and
+  dividends is to be confirmed before mainnet; until then the guardian keeps an Ondo leg out of any rebalance around a
+  corporate action (CF-3, `audit/2026-10-13-security-audit.md`).
 - **Price ids are data the owner maintains.** The contracts cannot tell a wrong price id from a right one. Check each
   listing's feed description during its 2 days, while it can still be cancelled. An index copies its ids at creation,
   so a wrong id reaches only indexes created while it stood, and the guardian can keep that component at each

@@ -148,6 +148,28 @@ jobs:
           print(f"100% coverage on all {rows} files")
           EOF
 
+  # Wake runs in a job of its own (CF-6, audit of 2026-10-13). Installing eth-wake with pipx resolves its dependencies
+  # from PyPI at run time, and the check job saves Foundry's RPC cache (~/.foundry/cache/rpc, foundry-toolchain's
+  # default) for later runs, whose fork suites read cached chain state instead of fetching it. In one job, a
+  # compromised dependency could have planted state those suites would trust; here it reaches no cache, no secret
+  # and only Wake's own result.
+  wake:
+    name: Wake detectors
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          submodules: true
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with:
+          version: v1.8.1
+          cache: false
+
       # Wake reads its remappings from foundry.toml, so no second copy is committed. The generated config leaves out
       # only Wake's default folders, so keeper/ is added: it is a separate Foundry project whose xindex/ remapping only
       # it knows, and Wake stops on its errors before running a detector. `wake detect` exits non-zero on any detection; the

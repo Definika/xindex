@@ -13,6 +13,7 @@ import {
   networkState,
   RailError,
   MIN_QUOTE_LIFE,
+  MAX_QUOTE_LIFE,
 } from "./thorchain.mjs";
 
 const fixture = (name) => JSON.parse(readFileSync(new URL(`./fixtures/${name}.json`, import.meta.url), "utf8"));
@@ -22,18 +23,19 @@ const BTC_DEST = "bc1q6527vxxqjpq80la2l0sw7hay3lj6dz07zs6gzl";
 const USDC = "ETH.USDC-0XA0B86991C6218B36C1D19D4A2E9EB0CE3606EB48";
 const ROUTER = "0xd37bbe5744d730a1d98d8dc97c42f0ca46ad7146";
 
-/// A fetch that serves the fixtures, optionally edited per node.
-function fakeFetch({ edit = () => {}, quote } = {}) {
+/// A fetch that serves the fixtures, optionally edited per node, and records every request in `log`.
+function fakeFetch({ edit = () => {}, quote, log = [] } = {}) {
   return async (url) => {
     const u = new URL(url);
     const node = `${u.protocol}//${u.host}`;
+    log.push(u);
     let body;
     if (u.pathname === "/thorchain/inbound_addresses") body = fixture("inbound_addresses");
     else if (u.pathname === "/thorchain/vaults/asgard") body = fixture("vaults_asgard");
     else if (u.pathname === "/thorchain/quote/swap") {
       body = quote ?? fixture(u.searchParams.get("from_asset") === "BTC.BTC" ? "quote_btc_to_usdc" : "quote_usdc_to_btc");
     } else return { ok: false, status: 404 };
-    edit(node, u.pathname, body);
+    edit(node, u.pathname, body, u);
     return { ok: true, status: 200, json: async () => body };
   };
 }
@@ -145,6 +147,7 @@ test("refusals: contracts, wrong assets and wrong directions", async () => {
 
 test("refusals: the network's state", async () => {
   await refuses(planExitFromEthereum(exitArgs({ nodes: [NODES[0]] })), /two independent/);
+  await refuses(planExitFromEthereum(exitArgs({ nodes: [NODES[0], `${NODES[0]}/`] })), /must be distinct/);
   const halt = (chain, field) => (node, path, body) => {
     if (path === "/thorchain/inbound_addresses") body.find((c) => c.chain === chain)[field] = true;
   };
@@ -186,4 +189,57 @@ test("refusals: the quote", async () => {
     if (path === "/thorchain/inbound_addresses") body.find((c) => c.chain === "ETH").router = "0x00dc6100103BC402d490aEE3F9a5560cBd91f1d4";
   };
   await refuses(planExitFromEthereum(exitArgs({ fetchImpl: fakeFetch({ edit: edited }) })), /not the network's/);
+});
+
+test("CF-2: every node quotes; one endpoint alone sets neither the limit, the expiry nor the fee check", async () => {
+  const log = [];
+  const plan = await planExitFromEthereum(exitArgs({ fetchImpl: fakeFetch({ log }) }));
+  const asked = log.filter((u) => u.pathname === "/thorchain/quote/swap").map((u) => `${u.protocol}//${u.host}`);
+  assert.deepEqual(asked, NODES, "the quote comes from every node");
+  assert.equal(plan.limit, 1_145_245n);
+
+  const onA = (edit) => (node, path, body) => {
+    if (node === NODES[0] && path === "/thorchain/quote/swap") edit(body);
+  };
+  const lying = (edit) => exitArgs({ fetchImpl: fakeFetch({ edit: onA(edit) }) });
+  await refuses(planExitFromEthereum(lying((q) => (q.expected_amount_out = "2"))), /differ by more than 100 bps/);
+  await refuses(planExitFromEthereum(lying((q) => (q.expiry = 99999999999))), /further out than a quote lives/);
+  await refuses(planExitFromEthereum(lying((q) => delete q.fees.total_bps)), /fee is not a number/);
+  await refuses(planExitFromEthereum(lying((q) => (q.fees.total_bps = "NaN"))), /fee is not a number/);
+  await refuses(planExitFromEthereum(lying((q) => (q.inbound_address = "0x755e7849e47cbbfaf0efe8c76a2def21dd4a85bb"))), /different vaults/);
+  await refuses(
+    planFundToEthereum(fundArgs({ fetchImpl: fakeFetch({ edit: onA((q) => (q.expected_amount_out = "2")) }) })),
+    /differ by more than/,
+  );
+
+  // Within the spread, the lowest output sets the limit and the earliest expiry the deadline.
+  const close = onA((q) => {
+    q.expected_amount_out = "1151030"; // 0.5% below node B's 1,156,814
+    q.expiry = 1791302639 - 60;
+  });
+  const agreed = await planExitFromEthereum(exitArgs({ fetchImpl: fakeFetch({ edit: close }) }));
+  assert.equal(agreed.expectedOut, 1_151_030n);
+  assert.equal(agreed.limit, 1_139_519n, "the lower output less 1%");
+  assert.equal(agreed.expiry, 1791302639n - 60n);
+  assert.equal(MAX_QUOTE_LIFE, 3600);
+});
+
+test("CF-8: a memo that names a ticker goes out only once every node resolves that ticker to the asset", async () => {
+  const log = [];
+  const plan = await planFundToEthereum(fundArgs({ fetchImpl: fakeFetch({ log }) }));
+  assert.equal(plan.memo.split(":")[1], "ETH.USDC", "the memo carries the ticker");
+  const proofs = log.filter((u) => u.pathname === "/thorchain/quote/swap" && u.searchParams.get("to_asset") === "ETH.USDC");
+  assert.deepEqual(proofs.map((u) => `${u.protocol}//${u.host}`), NODES, "every node was asked to quote the ticker itself");
+
+  const elsewhere = (node, path, body, u) => {
+    if (node === NODES[1] && path === "/thorchain/quote/swap" && u.searchParams.get("to_asset") === "ETH.USDC") {
+      body.fees.asset = "ETH.USDC-0X0000000000000000000000000000000000000BAD";
+    }
+  };
+  await refuses(planFundToEthereum(fundArgs({ fetchImpl: fakeFetch({ edit: elsewhere }) })), /resolves the memo's ETH.USDC/);
+
+  // An exit's memo fits the full id, so no ticker is quoted.
+  const exitLog = [];
+  await planExitFromEthereum(exitArgs({ fetchImpl: fakeFetch({ log: exitLog }) }));
+  assert.equal(exitLog.filter((u) => u.pathname === "/thorchain/quote/swap").length, NODES.length);
 });

@@ -69,16 +69,19 @@ contract CheckTokenForkTest is Test {
         assertEq(uint8(r.verdict), uint8(CheckToken.Verdict.Listable));
     }
 
-    /// @dev The wide list is what passed the check: none is left for review, and none is refused but one.
-    ///      The one exception is Tether Gold, which the check refuses under the WBT rule and the owner admitted on
-    ///      2026-10-10 regardless; it is pinned here as refused, so a change in what the check says about it shows.
+    /// @dev The wide list is what passed the check, with two exceptions pinned so a change in what the check says
+    ///      about either shows. Tether Gold, which the check refuses under the WBT rule and the owner admitted on
+    ///      2026-10-10 regardless, is pinned as refused. SAND goes to review: the audit of 2026-10-13 (CF-4) added The
+    ///      Sandbox's `setSuperOperator`, whose operators move and burn any holder's balance without an allowance, to
+    ///      the check's names, and the owner's reading of SAND's source decides its listing.
     function testFork_everyWideTokenPassesTheCheck() public {
         ConfigureWeighted.Entry[] memory list = new ConfigureWeighted().wideMainnetList();
         for (uint256 i = 0; i < list.length; ++i) {
             CheckToken.Report memory r = _check(list[i].token);
             assertEq(uint8(r.transfers), uint8(CheckToken.Transfers.Exact), r.symbol);
-            CheckToken.Verdict expected =
-                list[i].token == MainnetAddresses.XAUT ? CheckToken.Verdict.Refused : CheckToken.Verdict.Listable;
+            CheckToken.Verdict expected = CheckToken.Verdict.Listable;
+            if (list[i].token == MainnetAddresses.XAUT) expected = CheckToken.Verdict.Refused;
+            if (list[i].token == MainnetAddresses.SAND) expected = CheckToken.Verdict.Review;
             assertEq(uint8(r.verdict), uint8(expected), r.symbol);
         }
     }
