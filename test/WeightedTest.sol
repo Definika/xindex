@@ -78,9 +78,31 @@ abstract contract WeightedTest is Test {
         specs[2] = _spec(address(usd), 2000, USD_UNITS);
     }
 
+    /// @dev No creator fee, any platform fee the policy charges, the shortest interval, open and listed.
+    function _params() internal pure returns (IWeightedIndexFactory.IndexParams memory) {
+        return IWeightedIndexFactory.IndexParams({
+            creatorFeeBps: 0,
+            creatorStreamingBps: 0,
+            maxPlatformFeeBps: 25,
+            maxPlatformStreamingBps: 100,
+            rebalanceInterval: 7 days,
+            gated: false,
+            listed: true
+        });
+    }
+
     function _create(IWeightedIndexFactory.ComponentSpec[] memory specs) internal returns (WeightedHub) {
+        return _create(specs, _params());
+    }
+
+    function _create(
+        IWeightedIndexFactory.ComponentSpec[] memory specs,
+        IWeightedIndexFactory.IndexParams memory params
+    ) internal returns (WeightedHub) {
+        uint256 fee = factory.creationFee();
+        vm.deal(creator, creator.balance + fee);
         vm.prank(creator);
-        return WeightedHub(factory.createIndex("Weighted", "WGT", specs));
+        return WeightedHub(factory.createIndex{value: fee}("Weighted", "WGT", specs, params));
     }
 
     /// @dev Mints the basket for `shares` to `to` and issues them there.

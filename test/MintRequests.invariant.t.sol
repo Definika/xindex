@@ -269,7 +269,22 @@ contract MintRequestsInvariantTest is Test {
         for (uint256 i = 0; i < 2; ++i) {
             specs[i] = IWeightedIndexFactory.ComponentSpec({token: components[i], weight: 5000, units: 100e18});
         }
-        index = WeightedHub(factory.createIndex("Requested", "REQ", specs));
+        index = WeightedHub(
+            factory.createIndex(
+                "Requested",
+                "REQ",
+                specs,
+                IWeightedIndexFactory.IndexParams({
+                    creatorFeeBps: 0,
+                    creatorStreamingBps: 0,
+                    maxPlatformFeeBps: 25,
+                    maxPlatformStreamingBps: 100,
+                    rebalanceInterval: 7 days,
+                    gated: false,
+                    listed: true
+                })
+            )
+        );
         handler = new RequestsHandler(factory, index, new MockERC20("USD Coin", "USDC", 6), components);
         requests = handler.REQUESTS();
         targetContract(address(handler));

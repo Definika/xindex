@@ -5,6 +5,7 @@ import {console2} from "forge-std/Script.sol";
 import {WeightedIndexFactory} from "../src/WeightedIndexFactory.sol";
 import {WeightedHub} from "../src/WeightedHub.sol";
 import {IndexZap} from "../src/IndexZap.sol";
+import {BasketBuilder} from "../src/BasketBuilder.sol";
 import {MintRequests} from "../src/MintRequests.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
@@ -12,7 +13,7 @@ import {DeployChecks} from "./DeployChecks.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
 
 /// @notice Deploys Xindex: `WeightedIndexFactory`, which deploys the `WeightedHub` implementation every index is a
-///         clone of, then a zap and MintRequests for that factory. Run once, on Ethereum, with the owner Safe and the
+///         clone of, then a zap, a basket builder and MintRequests for that factory. Run once, on Ethereum, with the owner Safe and the
 ///         guardian (`design/2026-10-10-one-index-wormhole-legs.md`). The owner, the guardian and the market are
 ///         checked by `DeployChecks`, and neither role may be the Pyth contract.
 ///
@@ -39,20 +40,25 @@ contract DeployWeighted is DeployChecks {
     ///         mainnet broadcast is bound to (CF-5): `deploy` refuses to broadcast on Ethereum from any other build (a
     ///         local edit, a lib/ checkout off foundry.lock, a FOUNDRY_* override), and `test_CF5_*` in
     ///         test/Scripts.t.sol fails until these equal the build, so only a reviewed, CI-green commit moves them.
-    bytes32 public constant FACTORY_INITCODE_HASH = 0x861f26a723d77ea886c5cb410dddc28f3eb20245d0c3402914d043913b6a63b0;
+    bytes32 public constant FACTORY_INITCODE_HASH = 0xfe0100540ab9c71855e1215dd1f4d13da35ad52fa46fc81df7363d267ea5ed5b;
     /// @notice keccak256 of `IndexZap`'s init code, as above.
-    bytes32 public constant ZAP_INITCODE_HASH = 0xefd5c70921786723ddb4ade5681787fe722e5753f977534143a8dcb2becfe38d;
+    bytes32 public constant ZAP_INITCODE_HASH = 0x784c0c729ebe8e7a77d68c509417b72a08f55fc4089810c507dd4d9e96d9b13b;
+    /// @notice keccak256 of `BasketBuilder`'s init code, as above.
+    bytes32 public constant BUILDER_INITCODE_HASH = 0xad0081398c2ee9ffd95211caa1f3b21562fff1d247cfb04c75df123b6f03954e;
     /// @notice keccak256 of `MintRequests`' init code, as above.
-    bytes32 public constant REQUESTS_INITCODE_HASH = 0xac5cf69355ae8a1c008e465e5a8bb980e8ae060b123f2851c4fd7914f74d7d4e;
+    bytes32 public constant REQUESTS_INITCODE_HASH = 0x91eb8dc953a2cee5ab873ca6953b4bdb47635016cb3a578d23fa597aa00e60a3;
 
-    /// @dev How many contracts the release record covers: the factory, the zap and MintRequests.
-    uint256 private constant RELEASED = 3;
+    /// @dev How many contracts the release record covers: the factory, the zap, the builder and MintRequests.
+    uint256 private constant RELEASED = 4;
 
     /// @notice The local build of `name` is not the one this commit records: its init code hashes to `actual`.
     error BuildNotReleased(string name, bytes32 expected, bytes32 actual);
 
     /// @notice Reads OWNER, GUARDIAN, PYTH and the optional market addresses from the environment and calls {deploy}.
-    function run() external returns (WeightedIndexFactory factory, IndexZap zap, MintRequests requests) {
+    function run()
+        external
+        returns (WeightedIndexFactory factory, IndexZap zap, BasketBuilder builder, MintRequests requests)
+    {
         return deploy(
             vm.envAddress("OWNER"),
             vm.envAddress("GUARDIAN"),
@@ -64,20 +70,21 @@ contract DeployWeighted is DeployChecks {
     }
 
     /// @notice Checks the owner and guardian, resolves Pyth and the market, and broadcasts the factory (which deploys
-    ///         the `WeightedHub` implementation), the zap and MintRequests. Logs every address and the release record's
-    ///         code hashes.
+    ///         the `WeightedHub` implementation), the zap, the basket builder and MintRequests. Logs every address and
+    ///         the release record's code hashes.
     /// @param owner Factory owner; see {checkOwner}.
     /// @param guardian Initial guardian; see {checkGuardian}.
     /// @param pyth Pyth's contract; see {resolvePyth}.
-    /// @param router Uniswap's Universal Router, through which the zap swaps; see {resolveRouter}.
+    /// @param router Uniswap's Universal Router, through which the zap and the builder swap; see {resolveRouter}.
     /// @param usdc USDC for MintRequests; see {resolveStable}.
     /// @param usdt USDT for MintRequests; see {resolveStable}.
     /// @return factory The deployed factory.
     /// @return zap The deployed zap.
+    /// @return builder The deployed basket builder.
     /// @return requests The deployed MintRequests.
     function deploy(address owner, address guardian, address pyth, address router, address usdc, address usdt)
         public
-        returns (WeightedIndexFactory factory, IndexZap zap, MintRequests requests)
+        returns (WeightedIndexFactory factory, IndexZap zap, BasketBuilder builder, MintRequests requests)
     {
         checkOwner(owner);
         checkGuardian(owner, guardian);
@@ -95,6 +102,7 @@ contract DeployWeighted is DeployChecks {
         factory = new WeightedIndexFactory(owner, guardian, pyth);
         // The zap types its factory as `IIndexFactory`, and calls only `isIndex` on it, which this factory answers.
         zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(router));
+        builder = new BasketBuilder(IIndexFactory(address(factory)), IUniversalRouter(router));
         requests = new MintRequests(address(factory), usdc, usdt);
         vm.stopBroadcast();
 
@@ -102,6 +110,7 @@ contract DeployWeighted is DeployChecks {
         console2.log("WeightedHub impl:        ", factory.IMPLEMENTATION());
         console2.log("Pyth:                    ", pyth);
         console2.log("IndexZap:                ", address(zap));
+        console2.log("BasketBuilder:           ", address(builder));
         console2.log("Factory owner:           ", owner);
         console2.log("Guardian:                ", guardian);
         console2.log("Universal Router:        ", router);
@@ -110,22 +119,23 @@ contract DeployWeighted is DeployChecks {
         console2.log("USDC:                    ", usdc);
         console2.log("USDT:                    ", usdt);
 
-        bytes32[4] memory codehashes = checkDeployment(factory, zap, requests);
+        bytes32[5] memory codehashes = checkDeployment(factory, zap, builder, requests);
         console2.log("WeightedIndexFactory hash:", vm.toString(codehashes[0]));
         console2.log("WeightedHub impl hash:   ", vm.toString(codehashes[1]));
         console2.log("IndexZap hash:           ", vm.toString(codehashes[2]));
-        console2.log("MintRequests hash:       ", vm.toString(codehashes[3]));
+        console2.log("BasketBuilder hash:      ", vm.toString(codehashes[3]));
+        console2.log("MintRequests hash:       ", vm.toString(codehashes[4]));
     }
 
-    /// @notice Checks that a factory, its implementation, a zap and MintRequests are one deployment reading one Pyth,
-    ///         and returns the runtime code hashes to freeze in the release record. Run it again later against the
-    ///         recorded addresses: equal hashes prove the deployed code is unchanged.
-    /// @return codehashes keccak256 of the runtime code of the factory, the `WeightedHub` implementation, the zap and
-    ///         MintRequests.
-    function checkDeployment(WeightedIndexFactory factory, IndexZap zap, MintRequests requests)
+    /// @notice Checks that a factory, its implementation, a zap, a basket builder and MintRequests are one deployment
+    ///         reading one Pyth, and returns the runtime code hashes to freeze in the release record. Run it again
+    ///         later against the recorded addresses: equal hashes prove the deployed code is unchanged.
+    /// @return codehashes keccak256 of the runtime code of the factory, the `WeightedHub` implementation, the zap, the
+    ///         builder and MintRequests.
+    function checkDeployment(WeightedIndexFactory factory, IndexZap zap, BasketBuilder builder, MintRequests requests)
         public
         view
-        returns (bytes32[4] memory codehashes)
+        returns (bytes32[5] memory codehashes)
     {
         WeightedHub implementation = WeightedHub(factory.IMPLEMENTATION());
         address implementationFactory = implementation.FACTORY();
@@ -138,6 +148,13 @@ contract DeployWeighted is DeployChecks {
         }
         address zapFactory = address(zap.FACTORY());
         if (zapFactory != address(factory)) revert WrongWiring("IndexZap.FACTORY", address(factory), zapFactory);
+        address builderFactory = address(builder.FACTORY());
+        if (builderFactory != address(factory)) {
+            revert WrongWiring("BasketBuilder.FACTORY", address(factory), builderFactory);
+        }
+        if (address(builder.ROUTER()) != address(zap.ROUTER())) {
+            revert WrongWiring("BasketBuilder.ROUTER", address(zap.ROUTER()), address(builder.ROUTER()));
+        }
         address requestsFactory = requests.FACTORY();
         if (requestsFactory != address(factory)) {
             revert WrongWiring("MintRequests.FACTORY", address(factory), requestsFactory);
@@ -146,20 +163,23 @@ contract DeployWeighted is DeployChecks {
             address(factory).codehash,
             address(implementation).codehash,
             address(zap).codehash,
+            address(builder).codehash,
             address(requests).codehash
         ];
     }
 
-    /// @notice The init-code hashes a mainnet broadcast must match: the factory's, the zap's and MintRequests'.
+    /// @notice The init-code hashes a mainnet broadcast must match: the factory's, the zap's, the builder's and
+    ///         MintRequests'.
     function releaseInitCodeHashes() public pure virtual returns (bytes32[RELEASED] memory) {
-        return [FACTORY_INITCODE_HASH, ZAP_INITCODE_HASH, REQUESTS_INITCODE_HASH];
+        return [FACTORY_INITCODE_HASH, ZAP_INITCODE_HASH, BUILDER_INITCODE_HASH, REQUESTS_INITCODE_HASH];
     }
 
-    /// @notice The init-code hashes of the factory, the zap and MintRequests as this build compiled them.
+    /// @notice The init-code hashes of the factory, the zap, the builder and MintRequests as this build compiled them.
     function buildInitCodeHashes() public pure returns (bytes32[RELEASED] memory) {
         return [
             keccak256(type(WeightedIndexFactory).creationCode),
             keccak256(type(IndexZap).creationCode),
+            keccak256(type(BasketBuilder).creationCode),
             keccak256(type(MintRequests).creationCode)
         ];
     }
@@ -168,7 +188,7 @@ contract DeployWeighted is DeployChecks {
     ///         {releaseInitCodeHashes}.
     function checkBuild(bytes32[RELEASED] memory expected) public pure {
         bytes32[RELEASED] memory actual = buildInitCodeHashes();
-        string[RELEASED] memory names = ["WeightedIndexFactory", "IndexZap", "MintRequests"];
+        string[RELEASED] memory names = ["WeightedIndexFactory", "IndexZap", "BasketBuilder", "MintRequests"];
         for (uint256 i = 0; i < actual.length; ++i) {
             if (actual[i] != expected[i]) revert BuildNotReleased(names[i], expected[i], actual[i]);
         }

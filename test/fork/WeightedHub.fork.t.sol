@@ -11,6 +11,7 @@ import {WeightedHub} from "../../src/WeightedHub.sol";
 import {IndexZap} from "../../src/IndexZap.sol";
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
+import {IUniversalRouterSwaps} from "../../src/interfaces/IUniversalRouterSwaps.sol";
 import {IWeightedHub} from "../../src/interfaces/IWeightedHub.sol";
 import {IWeightedIndexFactory} from "../../src/interfaces/IWeightedIndexFactory.sol";
 import {IRebalanceExecutor} from "../../src/interfaces/IRebalanceExecutor.sol";
@@ -282,7 +283,22 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
             specs[i].units *= scale;
         }
         vm.prank(creator);
-        return WeightedHub(factory.createIndex(name, name, specs));
+        return WeightedHub(
+            factory.createIndex(
+                name,
+                name,
+                specs,
+                IWeightedIndexFactory.IndexParams({
+                    creatorFeeBps: 0,
+                    creatorStreamingBps: 0,
+                    maxPlatformFeeBps: 25,
+                    maxPlatformStreamingBps: 100,
+                    rebalanceInterval: 7 days,
+                    gated: false,
+                    listed: true
+                })
+            )
+        );
     }
 
     function _flat(uint256 n) internal pure returns (uint256[] memory skew) {
@@ -462,9 +478,9 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         WeightedHub index = _create("Liquid", picked, skew);
 
         // Alice mints two tokens, 2 * VALUE dollars at the pools, with USDC.
-        IIndexZap.MintLeg[] memory legs = new IIndexZap.MintLeg[](picked.length);
+        IUniversalRouterSwaps.MintLeg[] memory legs = new IUniversalRouterSwaps.MintLeg[](picked.length);
         for (uint256 i = 0; i < picked.length; ++i) {
-            legs[i] = IIndexZap.MintLeg({v3Path: picked[i].route, v4Path: new PathKey[](0), maxAmountIn: 0});
+            legs[i] = IUniversalRouterSwaps.MintLeg({v3Path: picked[i].route, v4Path: new PathKey[](0), maxAmountIn: 0});
         }
         deal(A.USDC, alice, 3 * VALUE * 1e6);
         vm.startPrank(alice);
@@ -478,7 +494,8 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
                 shares: 2e18,
                 legs: legs,
                 to: alice,
-                deadline: block.timestamp
+                deadline: block.timestamp,
+                referrer: address(0)
             })
         );
         vm.stopPrank();
@@ -503,9 +520,10 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         _assertBacked(index);
 
         // Alice burns both tokens to USDC.
-        IIndexZap.BurnLeg[] memory burnLegs = new IIndexZap.BurnLeg[](picked.length);
+        IUniversalRouterSwaps.BurnLeg[] memory burnLegs = new IUniversalRouterSwaps.BurnLeg[](picked.length);
         for (uint256 i = 0; i < picked.length; ++i) {
-            burnLegs[i] = IIndexZap.BurnLeg({v3Path: picked[i].route, v4Path: new PathKey[](0), minAmountOut: 0});
+            burnLegs[i] =
+                IUniversalRouterSwaps.BurnLeg({v3Path: picked[i].route, v4Path: new PathKey[](0), minAmountOut: 0});
         }
         vm.startPrank(alice);
         index.approve(address(zap), 2e18);

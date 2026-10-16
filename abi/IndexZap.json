@@ -91,7 +91,7 @@
           {
             "name": "legs",
             "type": "tuple[]",
-            "internalType": "struct IIndexZap.BurnLeg[]",
+            "internalType": "struct IUniversalRouterSwaps.BurnLeg[]",
             "components": [
               {
                 "name": "v3Path",
@@ -196,7 +196,7 @@
           {
             "name": "legs",
             "type": "tuple[]",
-            "internalType": "struct IIndexZap.BurnLeg[]",
+            "internalType": "struct IUniversalRouterSwaps.BurnLeg[]",
             "components": [
               {
                 "name": "v3Path",
@@ -316,7 +316,7 @@
           {
             "name": "legs",
             "type": "tuple[]",
-            "internalType": "struct IIndexZap.MintLeg[]",
+            "internalType": "struct IUniversalRouterSwaps.MintLeg[]",
             "components": [
               {
                 "name": "v3Path",
@@ -371,6 +371,11 @@
             "name": "deadline",
             "type": "uint256",
             "internalType": "uint256"
+          },
+          {
+            "name": "referrer",
+            "type": "address",
+            "internalType": "address"
           }
         ]
       }

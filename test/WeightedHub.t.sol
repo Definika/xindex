@@ -35,6 +35,18 @@ contract WeightedHubTest is WeightedTest {
         inits[2] = IWeightedHub.ComponentInit(address(usd), USD_UNITS, 2000, USD_ID, 6);
     }
 
+    /// @dev A valid config: no fee, the shortest interval.
+    function _cfg() internal pure returns (IWeightedHub.Config memory) {
+        return IWeightedHub.Config({
+            creatorFeeBps: 0,
+            platformFeeBps: 0,
+            referralShareBps: 0,
+            creatorStreamingBps: 0,
+            platformStreamingBps: 0,
+            rebalanceInterval: 7 days
+        });
+    }
+
     function _clone() internal returns (WeightedHub) {
         return WeightedHub(Clones.clone(factory.IMPLEMENTATION()));
     }
@@ -43,7 +55,7 @@ contract WeightedHubTest is WeightedTest {
         WeightedHub clone = _clone();
         IWeightedHub.ComponentInit[] memory inits = _inits();
         vm.expectRevert(IWeightedHub.NotFactory.selector);
-        clone.initialize("X", "X", inits);
+        clone.initialize("X", "X", inits, _cfg());
     }
 
     function test_theImplementationCannotBeInitialized() public {
@@ -51,21 +63,21 @@ contract WeightedHubTest is WeightedTest {
         IWeightedHub.ComponentInit[] memory inits = _inits();
         vm.expectRevert(Initializable.InvalidInitialization.selector);
         vm.prank(address(factory));
-        implementation.initialize("X", "X", inits);
+        implementation.initialize("X", "X", inits, _cfg());
     }
 
     function test_initializeRunsOnce() public {
         IWeightedHub.ComponentInit[] memory inits = _inits();
         vm.expectRevert(Initializable.InvalidInitialization.selector);
         vm.prank(address(factory));
-        index.initialize("X", "X", inits);
+        index.initialize("X", "X", inits, _cfg());
     }
 
     function _expectInvalid(IWeightedHub.ComponentInit[] memory inits) internal {
         WeightedHub clone = _clone();
         vm.expectRevert(IWeightedHub.InvalidComponents.selector);
         vm.prank(address(factory));
-        clone.initialize("X", "X", inits);
+        clone.initialize("X", "X", inits, _cfg());
     }
 
     function test_initializeRefusesBadComponents() public {
@@ -124,7 +136,7 @@ contract WeightedHubTest is WeightedTest {
         WeightedHub clone = _clone();
         vm.expectRevert(abi.encodeWithSelector(SafeCast.SafeCastOverflowedUintDowncast.selector, 96, inits[0].units));
         vm.prank(address(factory));
-        clone.initialize("X", "X", inits);
+        clone.initialize("X", "X", inits, _cfg());
     }
 
     function test_DA22_CRI25_CRI33_anUninitializedCloneDoesNothing() public {
@@ -204,7 +216,7 @@ contract WeightedHubTest is WeightedTest {
         specs[0] = _spec(address(eth), 5000, ETH_UNITS);
         specs[1] = _spec(address(fee), 5000, 1e18);
         vm.prank(creator);
-        WeightedHub feeIndex = WeightedHub(factory.createIndex("Fee", "FEE", specs));
+        WeightedHub feeIndex = WeightedHub(factory.createIndex("Fee", "FEE", specs, _params()));
         fee.mint(alice, 10e18);
         eth.mint(alice, ETH_UNITS);
         vm.startPrank(alice);
@@ -227,7 +239,7 @@ contract WeightedHubTest is WeightedTest {
         specs[0] = _spec(address(eth), 5000, ETH_UNITS);
         specs[1] = _spec(address(fee), 5000, 1e18);
         vm.prank(creator);
-        WeightedHub feeIndex = WeightedHub(factory.createIndex("Fee", "FEE", specs));
+        WeightedHub feeIndex = WeightedHub(factory.createIndex("Fee", "FEE", specs, _params()));
 
         fee.mint(stranger, 10e18);
         vm.prank(stranger);
@@ -329,7 +341,7 @@ contract WeightedHubTest is WeightedTest {
         specs[0] = _spec(address(eth), 5000, ETH_UNITS);
         specs[1] = _spec(address(paused), 5000, 1e18);
         vm.prank(creator);
-        WeightedHub two = WeightedHub(factory.createIndex("Two", "TWO", specs));
+        WeightedHub two = WeightedHub(factory.createIndex("Two", "TWO", specs, _params()));
         _issue(two, alice, 1e18);
 
         paused.setPaused(true);

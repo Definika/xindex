@@ -10,6 +10,7 @@ import {WeightedHub} from "../src/WeightedHub.sol";
 import {IIndexHub} from "../src/interfaces/IIndexHub.sol";
 import {IWeightedHub} from "../src/interfaces/IWeightedHub.sol";
 import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
+import {IWeightedMath} from "../src/interfaces/IWeightedMath.sol";
 import {IRebalanceExecutor} from "../src/interfaces/IRebalanceExecutor.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {PythStructs} from "../src/interfaces/pyth/PythStructs.sol";
@@ -547,7 +548,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
         specs[0] = _spec(address(x), 5000, 1000e18);
         specs[1] = _spec(address(y), 5000, 1000e18);
         vm.prank(creator);
-        WeightedHub pair = WeightedHub(factory.createIndex("Pair", "PAIR", specs));
+        WeightedHub pair = WeightedHub(factory.createIndex("Pair", "PAIR", specs, _params()));
         _issue(pair, alice, 1e18);
         vm.warp(pair.lastRebalance() + pair.MIN_REBALANCE_INTERVAL());
         pair.startRebalance(0);
@@ -593,7 +594,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
         specs[0] = _spec(address(a), 100, 99e18);
         specs[1] = _spec(address(b), 9900, 1e18);
         vm.prank(creator);
-        WeightedHub skewed = WeightedHub(factory.createIndex("Skewed", "SKW", specs));
+        WeightedHub skewed = WeightedHub(factory.createIndex("Skewed", "SKW", specs, _params()));
         _issue(skewed, alice, 100e18);
         vm.warp(skewed.lastRebalance() + skewed.MIN_REBALANCE_INTERVAL());
         skewed.startRebalance(0);
@@ -621,6 +622,17 @@ contract WeightedHubRebalanceTest is WeightedTest {
         assertEq(in_[1], 0);
         _fill(2500e8, BTC_PRICE, USD_PRICE);
         assertEq(_units()[1], BTC_UNITS + 6375);
+    }
+
+    /// @dev The settlement arithmetic lives in `WeightedMath`, deployed by the factory with the implementation and
+    ///      fixed in it; its constants are the hub's own, which every executor reads from the hub.
+    function test_theMathConstantsAreTheHubs() public view {
+        IWeightedMath math = IWeightedMath(index.MATH());
+        assertEq(index.MATH(), WeightedHub(factory.IMPLEMENTATION()).MATH());
+        assertGt(index.MATH().code.length, 0);
+        assertEq(math.MU_MAX(), index.MU_MAX());
+        assertEq(math.MAX_TURNOVER(), index.MAX_TURNOVER());
+        assertEq(math.MIN_TRADE(), index.MIN_TRADE());
     }
 
     function test_previewMatchesTheFill() public {
@@ -654,7 +666,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
         specs[1] = _spec(address(btc), 3000, BTC_UNITS);
         specs[2] = _spec(address(frozen), 2000, 20e18);
         vm.prank(creator);
-        WeightedHub three = WeightedHub(factory.createIndex("Three", "THR", specs));
+        WeightedHub three = WeightedHub(factory.createIndex("Three", "THR", specs, _params()));
         _issue(three, alice, SHARES);
         frozen.setReadsBroken(true);
 
@@ -855,7 +867,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
     ///      empty executor cannot deliver.
     function test_RT12_SA07_anEmptyExecutorIsPaidNothingOnASubTokenSupply() public {
         vm.prank(creator);
-        WeightedHub dust = WeightedHub(factory.createIndex("Dust", "DUST", _defaultSpecs()));
+        WeightedHub dust = WeightedHub(factory.createIndex("Dust", "DUST", _defaultSpecs(), _params()));
         // Forty wei of shares: exactly one raw unit of ETH, and one of BTC and USD, rounded up. A tenth of the ETH
         // leaves, which as a difference of floored backings, 1 - 0, was the whole raw unit.
         _issue(dust, alice, 40);
@@ -954,7 +966,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
         specs[0].units = bound(ethUnits, 1e4, 1e24);
         specs[1].units = bound(btcUnits, 1e4, 1e12);
         vm.prank(alice);
-        WeightedHub skewed = WeightedHub(factory.createIndex("Skewed", "SKW", specs));
+        WeightedHub skewed = WeightedHub(factory.createIndex("Skewed", "SKW", specs, _params()));
         _issue(skewed, alice, 7e18);
         vm.warp(skewed.lastRebalance() + skewed.MIN_REBALANCE_INTERVAL());
         skewed.startRebalance(0);
@@ -1046,7 +1058,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
         _coolAll(tokens, address(0));
         uint256 before = gasleft();
         vm.prank(creator);
-        WeightedHub wide = WeightedHub(factory.createIndex("Wide", "WIDE", specs));
+        WeightedHub wide = WeightedHub(factory.createIndex("Wide", "WIDE", specs, _params()));
         _fits("createIndex", before - gasleft());
 
         uint256 shares = 2e18;

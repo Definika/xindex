@@ -5,6 +5,11 @@
 deployment is shelved. Its scripts, address book and fork suite stay in the tree; no deploy there is planned.
 **Update, 2026-10-13:** the owner deleted the BNB Chain deployment, and with it the two-chain record; both are in git at
 `f83dcab`.
+**Update, 2026-10-14:** the owner took DOGE's copy off the list for now, leaving 92, 13 of them Wormhole copies, and 74
+coins that count toward the hundred. Pyth prices DOGE, not the copy, so a broken Binance peg or bridge would leave the
+copy priced as DOGE; and Binance-Peg DOGE is a proxy whose admin, one externally owned key on BNB Chain, can replace
+its code (read that day). Its address stays recorded in `script/MainnetAddresses.sol`. The sections below are as
+written on 2026-10-10.
 
 ## 1. The decision
 

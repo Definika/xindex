@@ -626,7 +626,22 @@ contract MocksTest is Test {
             f.executeListing(t[i]);
             specs[i] = IWeightedIndexFactory.ComponentSpec({token: t[i], weight: 5000, units: 100e18});
         }
-        WeightedHub idx = WeightedHub(f.createIndex("Executor", "EXEC", specs));
+        WeightedHub idx = WeightedHub(
+            f.createIndex(
+                "Executor",
+                "EXEC",
+                specs,
+                IWeightedIndexFactory.IndexParams({
+                    creatorFeeBps: 0,
+                    creatorStreamingBps: 0,
+                    maxPlatformFeeBps: 25,
+                    maxPlatformStreamingBps: 100,
+                    rebalanceInterval: 7 days,
+                    gated: false,
+                    listed: true
+                })
+            )
+        );
         shrinking.mint(address(this), 100e18);
         growing.mint(address(this), 100e18);
         shrinking.approve(address(idx), 100e18);

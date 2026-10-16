@@ -8,7 +8,10 @@
 //   2. the most profitable fill whose profit, after gas and valued stock, reaches MIN_PROFIT_USD is sent with a USDC
 //      floor at least what that decision needs, and a deadline of T;
 //   3. every 25 blocks, an index anyone may restart is started only when a simulation of its auction at its best
-//      price (μ = MU_MIN) would pay.
+//      price (μ = MU_MIN) would pay;
+//   4. with FILL_REQUESTS on and nothing else to send, each open `MintRequests` request is simulated the same way and
+//      the most profitable fill sent: a mint request at exactly its limit in shares, a redeem request at exactly its
+//      limit in its stablecoin.
 
 import { encodeFunctionData, getAddress } from "viem";
 import { HUB_SLOTS, MAINNET, TX_GAS_CAP, parseConfig } from "./bot/config.mjs";
@@ -16,6 +19,7 @@ import { ABI, createChain, revertReason } from "./bot/chain.mjs";
 import { createHermes, priceKey } from "./bot/hermes.mjs";
 import * as M from "./bot/math.mjs";
 import { TxTracker } from "./bot/nonce.mjs";
+import { createRequestFiller } from "./bot/requests.mjs";
 import { createRoutes } from "./bot/routes.mjs";
 
 const START_EVERY_BLOCKS = 25n;
@@ -41,9 +45,11 @@ const started = new Map(); // index -> timestamp of a start of ours not yet fill
 const said = new Map(); // index -> the last reason logged, so a waiting index is not logged every block
 const worth = new Map(); // `index:proposal` -> {supply, tvl, block}: an open auction's index, valued every 25 blocks
 let setup;
+let filler = null;
 let indexes = [];
 let lastRefresh = null;
 let lastStartCheck = null;
+let lastRequestScan = null;
 let ethUsd = null;
 let stopping = false;
 
@@ -354,6 +360,7 @@ async function onBlock(L) {
       started.delete(index);
       said.delete(index);
     }
+    if (kind === "request" && ok) filler?.forget(BigInt(index));
   }
   if (tracker.busy()) return;
   if (await tracker.clearStuck(Number(L.number), nextBase, tip)) return;
@@ -374,7 +381,7 @@ async function onBlock(L) {
       open.set(index, { keepMask: p.result[1], proposal: pending[2 * k + 1].result });
     }
   });
-  routes.forget([...open].map(([index, a]) => `${index}:${a.proposal}`));
+  routes.forget([...[...open].map(([index, a]) => `${index}:${a.proposal}`), ...(filler ? filler.keys() : [])]);
 
   const checks = await worthChecking(open, L);
   const fills = await Promise.all(
@@ -394,13 +401,31 @@ async function onBlock(L) {
     lastStartCheck = L.number;
     await startChecks(L, open);
   }
+  if (filler && !tracker.busy()) await requestChecks(L);
+}
+
+/// Every 25 blocks the open requests are read again; every block, with nothing else in flight, the most profitable
+/// of them is filled, if any pays.
+async function requestChecks(L) {
+  if (lastRequestScan === null || L.number - lastRequestScan >= START_EVERY_BLOCKS) {
+    lastRequestScan = L.number;
+    await filler.scan(L);
+  }
+  const pick = await filler.best(L, indexes, ethUsd, tip, feeCap);
+  if (!pick) return;
+  if ((await chain.blockNumber()) !== L.number) return log(`request ${pick.id}`, "block passed before sending; next block");
+  log(`request ${pick.id}`, `filling: profit ${pick.profit.toFixed(2)} USD (float ${(Number(pick.usdcDelta) / 1e6).toFixed(2)}, stock ${pick.inventoryUsd.toFixed(2)}, gas ${pick.gasUsd.toFixed(2)})`);
+  await tracker.send(pick.tx, { label: `request ${pick.id}`, targetBlock: Number(L.number) + 1 });
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => (stopping = true));
 
 setup = await chain.checkSetup();
-log(`keeper ${chain.account.address}, executor ${cfg.executor}, factory ${cfg.factory}`);
+if (cfg.fillRequests) {
+  filler = createRequestFiller({ chain, cfg, hermes, routes, requests: setup.requests, staticsOf, log });
+}
+log(`keeper ${chain.account.address}, executor ${cfg.executor}, factory ${cfg.factory}, requests ${cfg.fillRequests ? setup.requests : "off"}`);
 let last = -1n;
 while (!stopping) {
   const n = await chain.blockNumber().catch(() => last);

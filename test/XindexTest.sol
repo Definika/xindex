@@ -51,12 +51,25 @@ abstract contract XindexTest is Test {
         }
     }
 
+    /// @dev No creator fee, any platform fee the policy charges, the shortest interval, open and listed.
+    function _params() internal pure returns (IWeightedIndexFactory.IndexParams memory) {
+        return IWeightedIndexFactory.IndexParams({
+            creatorFeeBps: 0,
+            creatorStreamingBps: 0,
+            maxPlatformFeeBps: 25,
+            maxPlatformStreamingBps: 100,
+            rebalanceInterval: 7 days,
+            gated: false,
+            listed: true
+        });
+    }
+
     /// @dev Creates an index of `tokens` at `units`, from this contract.
     function _createIndex(string memory name, string memory symbol, address[] memory tokens, uint256[] memory units)
         internal
         returns (WeightedHub)
     {
-        return WeightedHub(factory.createIndex(name, symbol, _specs(tokens, units)));
+        return WeightedHub(factory.createIndex(name, symbol, _specs(tokens, units), _params()));
     }
 
     /// @dev Two-element arrays, for the many two-component indexes the suites build.

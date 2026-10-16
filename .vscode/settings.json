@@ -26,5 +26,5 @@
         "keeper"
     ],
     "wake.compiler.solc.optimizer.enabled": true,
-    "wake.compiler.solc.optimizer.runs": 1000
+    "wake.compiler.solc.optimizer.runs": 100
 }

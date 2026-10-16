@@ -57,7 +57,9 @@ contract ConfigureWeightedTest is Test {
         (address[] memory tokens, bytes32[] memory ids) = PythIds.all();
         assertEq(first.length, configure.DEFAULT_COUNT());
         assertEq(first.length + wide.length, tokens.length);
-        assertEq(tokens.length, 93, "the owner's list of 2026-10-06, and the additions of 2026-10-10");
+        assertEq(
+            tokens.length, 92, "the owner's list of 2026-10-06, the additions of 2026-10-10, less DOGE of 2026-10-14"
+        );
         for (uint256 i = 0; i < tokens.length; ++i) {
             ConfigureWeighted.Entry memory entry = i < 4 ? first[i] : wide[i - 4];
             assertEq(entry.token, tokens[i]);
@@ -94,7 +96,7 @@ contract ConfigureWeightedTest is Test {
         }
         assertEq(count[uint256(PythIds.Tier.Native)], 51, "22 of the wide list and 29 of the hundred-coin list");
         assertEq(count[uint256(PythIds.Tier.Bridged)], 17, "8, BTT and W, and 7 Wormhole copies");
-        assertEq(count[uint256(PythIds.Tier.Custodial)], 25, "19, and 6 Wormhole copies of Binance-Peg coins");
+        assertEq(count[uint256(PythIds.Tier.Custodial)], 24, "19, and 5 Wormhole copies of Binance-Peg coins");
         assertEq(uint8(PythIds.tierOf(MainnetAddresses.WBTC)), uint8(PythIds.Tier.Custodial));
         assertEq(uint8(PythIds.tierOf(MainnetAddresses.ARB)), uint8(PythIds.Tier.Bridged));
         assertEq(uint8(PythIds.tierOf(MainnetAddresses.INJ)), uint8(PythIds.Tier.Bridged));
@@ -110,6 +112,11 @@ contract ConfigureWeightedTest is Test {
             uint8(PythIds.tierOf(MainnetAddresses.XRP)),
             uint8(PythIds.Tier.Custodial),
             "a Wormhole copy of a Binance-Peg coin carries Binance's custody"
+        );
+        assertEq(
+            uint8(PythIds.tierOf(0xd881A7F17Ed2c71FD671AfbA3A9b30Eb914Aea5F)),
+            uint8(PythIds.Tier.Unrecorded),
+            "DOGE's copy, off the list since 2026-10-14"
         );
         assertEq(uint8(PythIds.tierOf(MainnetAddresses.ATOM)), uint8(PythIds.Tier.Custodial));
         assertEq(uint8(PythIds.tierOf(MainnetAddresses.VON)), uint8(PythIds.Tier.Custodial));
@@ -127,7 +134,7 @@ contract ConfigureWeightedTest is Test {
     function test_CRL08_theListsAreTheReleaseRecord() public view {
         ConfigureWeighted.Entry[] memory first = configure.defaultMainnetList();
         ConfigureWeighted.Entry[] memory wide = configure.wideMainnetList();
-        address[93] memory tokens = [
+        address[92] memory tokens = [
             0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2, // WETH
             0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599, // WBTC
             0x514910771AF9Ca656af840dff83E8264EcF986CA, // LINK
@@ -209,7 +216,6 @@ contract ConfigureWeightedTest is Test {
             0xB0fFa8000886e57F86dd5264b9582b2Ad87b2b91, // W
             0x320623b8E4fF03373931769A31Fc52A4E78B5d70, // RSR
             0xc730d8256B8A1030eEA67f1Bc7ebed3898f7A535, // XRP
-            0xd881A7F17Ed2c71FD671AfbA3A9b30Eb914Aea5F, // DOGE
             0x8EfFbF747d4A60Bc6b68D9A1bE4c4188bA8A3a0b, // ADA
             0x1cA1Ef3fB8Ff4a480C0ae7eea5f91A24a5BB3344, // LTC
             0x85f138bfEE4ef8e540890CFb48F620571d67Eda3, // AVAX
@@ -222,7 +228,7 @@ contract ConfigureWeightedTest is Test {
             0xeFc0CED4B3D536103e76a1c4c74F0385C8F4Bdd3, // PYTH
             0x1df721D242E0783F8fCab4A9FfE4F35bdf329909 // OP
         ];
-        bytes32[93] memory ids = [
+        bytes32[92] memory ids = [
             bytes32(0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace), // WETH
             0xc9d8b075a5c69303365ae23633d4e085199bf5c520a3b90fed1322a0342ffc33, // WBTC
             0x8ac0c70fff57e9aefdf5edf44b51d62c2d433653cbb2cf5cc06bb115af04d221, // LINK
@@ -304,7 +310,6 @@ contract ConfigureWeightedTest is Test {
             0xeff7446475e218517566ea99e72a4abec2e1bd8498b43b7d8331e29dcb059389, // W
             0xfb7565b77267ba3f6ef770bed5d7f9b22b8542db676dbd9b934a2fcf945f4371, // RSR
             0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8, // XRP
-            0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c, // DOGE
             0x2a01deaec9e51a579277b34b122399984d0bbf57e2458a7e42fecd2829867a0d, // ADA
             0x6e3f3fa8253588df9326580180233eb791e03b443a3ba7a1d892e73874e19a54, // LTC
             0x93da3352f9f1d105fdfe4971cfa80e9dd777bfc5d0f683ebb6e1294b92137bb7, // AVAX
@@ -318,7 +323,7 @@ contract ConfigureWeightedTest is Test {
             0x385f64d993f7b77d8182ed5003d97c60aa3361f3cecfe711544d2d59165e9bdf // OP
         ];
         assertEq(first.length, 4);
-        assertEq(wide.length, 89);
+        assertEq(wide.length, 88);
         for (uint256 i = 0; i < tokens.length; ++i) {
             ConfigureWeighted.Entry memory entry = i < 4 ? first[i] : wide[i - 4];
             assertEq(entry.token, tokens[i]);

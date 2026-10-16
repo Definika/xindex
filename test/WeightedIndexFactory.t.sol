@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Errors} from "@openzeppelin/contracts/utils/Errors.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {WeightedIndexFactory} from "../src/WeightedIndexFactory.sol";
 import {WeightedHub} from "../src/WeightedHub.sol";
@@ -47,7 +48,9 @@ contract WeightedIndexFactoryTest is WeightedTest {
 
     function test_hubConstructorRefusesAZeroPyth() public {
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new WeightedHub(address(0));
+        new WeightedHub(address(0), address(1));
+        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
+        new WeightedHub(address(1), address(0));
     }
 
     function test_aZeroGuardianIsNone() public {
@@ -286,7 +289,7 @@ contract WeightedIndexFactoryTest is WeightedTest {
         assertEq(factory.priceIdOf(address(eth)), newId);
 
         vm.prank(alice);
-        WeightedHub later = WeightedHub(factory.createIndex("Weighted", "WGT", _defaultSpecs()));
+        WeightedHub later = WeightedHub(factory.createIndex("Weighted", "WGT", _defaultSpecs(), _params()));
 
         (, bytes32[] memory oldIds,) = before.componentTerms();
         (, bytes32[] memory newIds,) = later.componentTerms();
@@ -301,14 +304,22 @@ contract WeightedIndexFactoryTest is WeightedTest {
     function test_createIndexCopiesEverything() public {
         _listAll();
         IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
-        address predicted = factory.predictIndexAddress(creator, "Weighted", "WGT", specs);
+        address predicted = factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _params());
 
         IWeightedHub.ComponentInit[] memory inits = new IWeightedHub.ComponentInit[](3);
         inits[0] = IWeightedHub.ComponentInit(address(eth), ETH_UNITS, 5000, ETH_ID, 18);
         inits[1] = IWeightedHub.ComponentInit(address(btc), BTC_UNITS, 3000, BTC_ID, 8);
         inits[2] = IWeightedHub.ComponentInit(address(usd), USD_UNITS, 2000, USD_ID, 6);
+        IWeightedHub.Config memory cfg = IWeightedHub.Config({
+            creatorFeeBps: 0,
+            platformFeeBps: 0,
+            referralShareBps: 0,
+            creatorStreamingBps: 0,
+            platformStreamingBps: 0,
+            rebalanceInterval: 7 days
+        });
         vm.expectEmit(address(factory));
-        emit IWeightedIndexFactory.IndexCreated(predicted, creator, "Weighted", "WGT", inits);
+        emit IWeightedIndexFactory.IndexCreated(predicted, creator, "Weighted", "WGT", inits, cfg, true);
         WeightedHub index = _create(specs);
 
         assertEq(address(index), predicted);
@@ -335,17 +346,17 @@ contract WeightedIndexFactoryTest is WeightedTest {
         _listAll();
         IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
         vm.expectRevert(IWeightedIndexFactory.EmptyString.selector);
-        factory.createIndex("", "WGT", specs);
+        factory.createIndex("", "WGT", specs, _params());
         vm.expectRevert(IWeightedIndexFactory.EmptyString.selector);
-        factory.createIndex("Weighted", "", specs);
+        factory.createIndex("Weighted", "", specs, _params());
     }
 
     function test_createIndexRefusesAnEmptyOrOversizedBasket() public {
         vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.InvalidComponentCount.selector, 0));
-        factory.createIndex("Weighted", "WGT", new IWeightedIndexFactory.ComponentSpec[](0));
+        factory.createIndex("Weighted", "WGT", new IWeightedIndexFactory.ComponentSpec[](0), _params());
 
         vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.InvalidComponentCount.selector, 101));
-        factory.createIndex("Weighted", "WGT", new IWeightedIndexFactory.ComponentSpec[](101));
+        factory.createIndex("Weighted", "WGT", new IWeightedIndexFactory.ComponentSpec[](101), _params());
     }
 
     function test_createIndexRefusesAnUnlistedOrDelistedToken() public {
@@ -353,13 +364,13 @@ contract WeightedIndexFactoryTest is WeightedTest {
         _list(address(btc), BTC_ID);
         IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
         vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.TokenNotWhitelisted.selector, address(usd)));
-        factory.createIndex("Weighted", "WGT", specs);
+        factory.createIndex("Weighted", "WGT", specs, _params());
 
         _list(address(usd), USD_ID);
         vm.prank(owner);
         factory.delist(address(btc));
         vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.TokenNotWhitelisted.selector, address(btc)));
-        factory.createIndex("Weighted", "WGT", specs);
+        factory.createIndex("Weighted", "WGT", specs, _params());
     }
 
     function test_DA09_createIndexChecksTheUnits() public {
@@ -370,15 +381,15 @@ contract WeightedIndexFactoryTest is WeightedTest {
 
         specs[1].units = min - 1;
         vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.UnitsOutOfRange.selector, address(btc), min - 1));
-        factory.createIndex("Weighted", "WGT", specs);
+        factory.createIndex("Weighted", "WGT", specs, _params());
 
         specs[1].units = max + 1;
         vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.UnitsOutOfRange.selector, address(btc), max + 1));
-        factory.createIndex("Weighted", "WGT", specs);
+        factory.createIndex("Weighted", "WGT", specs, _params());
 
         specs[1].units = min;
         specs[2].units = max;
-        factory.createIndex("Weighted", "WGT", specs);
+        factory.createIndex("Weighted", "WGT", specs, _params());
     }
 
     function test_createIndexChecksTheWeights() public {
@@ -388,24 +399,24 @@ contract WeightedIndexFactoryTest is WeightedTest {
         specs[2].weight = 0;
         specs[0].weight = 7000;
         vm.expectRevert(IWeightedIndexFactory.InvalidWeights.selector);
-        factory.createIndex("Weighted", "WGT", specs);
+        factory.createIndex("Weighted", "WGT", specs, _params());
 
         specs = _defaultSpecs();
         specs[0].weight = 10_001;
         vm.expectRevert(IWeightedIndexFactory.InvalidWeights.selector);
-        factory.createIndex("Weighted", "WGT", specs);
+        factory.createIndex("Weighted", "WGT", specs, _params());
 
         specs = _defaultSpecs();
         specs[2].weight = 1999;
         vm.expectRevert(IWeightedIndexFactory.InvalidWeights.selector);
-        factory.createIndex("Weighted", "WGT", specs);
+        factory.createIndex("Weighted", "WGT", specs, _params());
 
         specs[2].weight = 2001;
         vm.expectRevert(IWeightedIndexFactory.InvalidWeights.selector);
-        factory.createIndex("Weighted", "WGT", specs);
+        factory.createIndex("Weighted", "WGT", specs, _params());
 
         specs[2].weight = 2000;
-        factory.createIndex("Weighted", "WGT", specs);
+        factory.createIndex("Weighted", "WGT", specs, _params());
     }
 
     function test_createIndexRefusesADuplicate() public {
@@ -413,7 +424,7 @@ contract WeightedIndexFactoryTest is WeightedTest {
         IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
         specs[2] = _spec(address(eth), 2000, ETH_UNITS);
         vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.DuplicateToken.selector, address(eth)));
-        factory.createIndex("Weighted", "WGT", specs);
+        factory.createIndex("Weighted", "WGT", specs, _params());
     }
 
     /// @dev One component alone is always on its weight, so an index needs two (V5-L2).
@@ -422,7 +433,7 @@ contract WeightedIndexFactoryTest is WeightedTest {
         IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](1);
         specs[0] = _spec(address(btc), 10_000, BTC_UNITS);
         vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.InvalidComponentCount.selector, 1));
-        factory.createIndex("Weighted", "WGT", specs);
+        factory.createIndex("Weighted", "WGT", specs, _params());
         assertEq(factory.MIN_COMPONENTS(), WeightedHub(factory.IMPLEMENTATION()).MIN_COMPONENTS());
     }
 
@@ -435,7 +446,7 @@ contract WeightedIndexFactoryTest is WeightedTest {
         IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
         specs[2] = _spec(address(twin), 2000, ETH_UNITS);
         vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.DuplicatePriceId.selector, address(twin)));
-        factory.createIndex("Weighted", "WGT", specs);
+        factory.createIndex("Weighted", "WGT", specs, _params());
 
         specs[0] = _spec(address(twin), 5000, ETH_UNITS);
         specs[2] = _spec(address(usd), 2000, USD_UNITS);
@@ -466,7 +477,7 @@ contract WeightedIndexFactoryTest is WeightedTest {
         IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
         vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.IndexAlreadyExists.selector, address(index)));
         vm.prank(creator);
-        factory.createIndex("Weighted", "WGT", specs);
+        factory.createIndex("Weighted", "WGT", specs, _params());
     }
 
     /// @dev Each field of the salt, varied alone, moves the address: the creator, the name, the symbol, and each
@@ -476,44 +487,46 @@ contract WeightedIndexFactoryTest is WeightedTest {
         MockERC20 other = new MockERC20("Other", "OTH", 18);
         _list(address(other), ETH_ID);
         IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
-        address base = factory.predictIndexAddress(creator, "Weighted", "WGT", specs);
+        address base = factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _params());
 
-        assertTrue(factory.predictIndexAddress(alice, "Weighted", "WGT", specs) != base, "creator");
-        assertTrue(factory.predictIndexAddress(creator, "Weighted2", "WGT", specs) != base, "name");
-        assertTrue(factory.predictIndexAddress(creator, "Weighted", "WGT2", specs) != base, "symbol");
+        assertTrue(factory.predictIndexAddress(alice, "Weighted", "WGT", specs, _params()) != base, "creator");
+        assertTrue(factory.predictIndexAddress(creator, "Weighted2", "WGT", specs, _params()) != base, "name");
+        assertTrue(factory.predictIndexAddress(creator, "Weighted", "WGT2", specs, _params()) != base, "symbol");
 
         specs[0].token = address(other);
-        assertTrue(factory.predictIndexAddress(creator, "Weighted", "WGT", specs) != base, "token");
+        assertTrue(factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _params()) != base, "token");
 
         specs = _defaultSpecs();
         specs[0].weight = 4999;
         specs[1].weight = 3001;
-        assertTrue(factory.predictIndexAddress(creator, "Weighted", "WGT", specs) != base, "weight");
+        assertTrue(factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _params()) != base, "weight");
 
         specs = _defaultSpecs();
         specs[0].units = ETH_UNITS + 1;
-        assertTrue(factory.predictIndexAddress(creator, "Weighted", "WGT", specs) != base, "units");
+        assertTrue(factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _params()) != base, "units");
 
         specs = _defaultSpecs();
-        assertEq(factory.predictIndexAddress(creator, "Weighted", "WGT", specs), base, "unchanged");
+        assertEq(factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _params()), base, "unchanged");
 
         // The same token relisted under another price id moves the address.
         vm.prank(owner);
         factory.delist(address(eth));
         _list(address(eth), keccak256("ETH/USD, another feed"));
-        assertTrue(factory.predictIndexAddress(creator, "Weighted", "WGT", specs) != base, "price id");
+        assertTrue(factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _params()) != base, "price id");
 
         // And under its old id but other decimals, as a token that changed them would carry.
         vm.prank(owner);
         factory.delist(address(eth));
         eth.setDecimals(17);
         _list(address(eth), ETH_ID);
-        assertTrue(factory.predictIndexAddress(creator, "Weighted", "WGT", specs) != base, "decimals");
+        assertTrue(factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _params()) != base, "decimals");
         eth.setDecimals(18);
         vm.prank(owner);
         factory.delist(address(eth));
         _list(address(eth), ETH_ID);
-        assertEq(factory.predictIndexAddress(creator, "Weighted", "WGT", specs), base, "back to the same terms");
+        assertEq(
+            factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _params()), base, "back to the same terms"
+        );
     }
 
     function test_theCloneIsTheImplementations() public {
@@ -664,4 +677,222 @@ contract WeightedIndexFactoryTest is WeightedTest {
         assertTrue(factory.isOwnerOrGuardian(alice));
         assertFalse(factory.isOwnerOrGuardian(owner));
     }
+    // ---------------------------------------------------------------------
+    // Params, fee policy and creators
+    // ---------------------------------------------------------------------
+
+    function _p(uint16 creatorFeeBps, uint16 maxPlatform, uint32 interval)
+        internal
+        pure
+        returns (IWeightedIndexFactory.IndexParams memory p)
+    {
+        p = _params();
+        p.creatorFeeBps = creatorFeeBps;
+        p.maxPlatformFeeBps = maxPlatform;
+        p.rebalanceInterval = interval;
+    }
+
+    function test_theFeeConstantsAgreeWithTheHub() public view {
+        WeightedHub implementation = WeightedHub(factory.IMPLEMENTATION());
+        assertEq(factory.MIN_REBALANCE_INTERVAL(), implementation.MIN_REBALANCE_INTERVAL());
+
+        assertEq(factory.MAX_CREATOR_FEE_BPS(), 100);
+        assertEq(factory.MAX_PLATFORM_FEE_BPS(), 25);
+        assertEq(factory.MIN_REBALANCE_INTERVAL(), 7 days);
+        assertEq(factory.MAX_REBALANCE_INTERVAL(), 91 days);
+        assertEq(factory.platformFeeBps() | factory.referralShareBps() | factory.creationFee(), 0, "no policy at first");
+        assertEq(factory.platformFeeRecipient(), address(0));
+    }
+
+    function test_createIndexChecksTheParams() public {
+        _listAll();
+        IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
+        vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.CreatorFeeTooHigh.selector, 101));
+        factory.createIndex("Weighted", "WGT", specs, _p(101, 25, 7 days));
+        vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.IntervalOutOfRange.selector, 7 days - 1));
+        factory.createIndex("Weighted", "WGT", specs, _p(0, 25, 7 days - 1));
+        vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.IntervalOutOfRange.selector, 91 days + 1));
+        factory.createIndex("Weighted", "WGT", specs, _p(0, 25, 91 days + 1));
+
+        // The policy charges more than the creator accepts: the quote the creator saw no longer holds.
+        vm.prank(owner);
+        factory.setFeePolicy(25, 0, 0, alice, 0);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.PlatformFeeTooHigh.selector, 25, 24));
+        factory.createIndex("Weighted", "WGT", specs, _p(0, 24, 7 days));
+        vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.PlatformFeeTooHigh.selector, 25, 24));
+        factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _p(0, 24, 7 days));
+
+        WeightedHub a = _create(specs, _p(100, 25, 7 days));
+        WeightedHub b = _create(specs, _p(0, 25, 91 days));
+        assertEq(a.config().creatorFeeBps, 100);
+        assertEq(a.config().platformFeeBps, 25);
+        assertEq(b.config().rebalanceInterval, 91 days);
+    }
+
+    function test_setFeePolicyIsTheOwnersWithinTheCaps() public {
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
+        factory.setFeePolicy(25, 0, 5000, alice, 1 ether);
+
+        vm.startPrank(owner);
+        vm.expectRevert(IWeightedIndexFactory.InvalidFeePolicy.selector);
+        factory.setFeePolicy(26, 0, 5000, alice, 0);
+        vm.expectRevert(IWeightedIndexFactory.InvalidFeePolicy.selector);
+        factory.setFeePolicy(25, 0, 10_001, alice, 0);
+        vm.expectRevert(IWeightedIndexFactory.InvalidFeePolicy.selector);
+        factory.setFeePolicy(25, 0, 5000, address(0), 0);
+        vm.expectRevert(IWeightedIndexFactory.InvalidFeePolicy.selector);
+        factory.setFeePolicy(25, 0, 5000, address(factory), 0);
+        vm.stopPrank();
+        _listAll();
+        WeightedHub index = _create(_defaultSpecs());
+        vm.prank(owner);
+        vm.expectRevert(IWeightedIndexFactory.InvalidFeePolicy.selector);
+        factory.setFeePolicy(25, 0, 5000, address(index), 0);
+
+        vm.prank(owner);
+        vm.expectEmit(address(factory));
+        emit IWeightedIndexFactory.FeePolicySet(25, 0, 10_000, alice, 1 ether);
+        factory.setFeePolicy(25, 0, 10_000, alice, 1 ether);
+        assertEq(factory.platformFeeBps(), 25);
+        assertEq(factory.referralShareBps(), 10_000);
+        assertEq(factory.platformFeeRecipient(), alice);
+        assertEq(factory.creationFee(), 1 ether);
+        (bool allowed, address c, address p) = factory.feeTerms(address(index), stranger);
+        assertTrue(allowed, "an open index issues to anyone");
+        assertEq(c, creator);
+        assertEq(p, alice);
+    }
+
+    function test_anIndexKeepsTheRatesOfItsCreation() public {
+        _listAll();
+        WeightedHub before = _create(_defaultSpecs());
+        vm.prank(owner);
+        factory.setFeePolicy(25, 0, 5000, alice, 0);
+        IWeightedIndexFactory.IndexParams memory p = _params();
+        p.listed = false;
+        address predicted = factory.predictIndexAddress(creator, "Weighted", "WGT", _defaultSpecs(), p);
+        IWeightedHub.Config memory cfg = IWeightedHub.Config({
+            creatorFeeBps: 0,
+            platformFeeBps: 25,
+            referralShareBps: 5000,
+            creatorStreamingBps: 0,
+            platformStreamingBps: 0,
+            rebalanceInterval: 7 days
+        });
+        IWeightedHub.ComponentInit[] memory inits = new IWeightedHub.ComponentInit[](3);
+        inits[0] = IWeightedHub.ComponentInit(address(eth), ETH_UNITS, 5000, ETH_ID, 18);
+        inits[1] = IWeightedHub.ComponentInit(address(btc), BTC_UNITS, 3000, BTC_ID, 8);
+        inits[2] = IWeightedHub.ComponentInit(address(usd), USD_UNITS, 2000, USD_ID, 6);
+        vm.prank(creator);
+        vm.expectEmit(address(factory));
+        emit IWeightedIndexFactory.IndexCreated(predicted, creator, "Weighted", "WGT", inits, cfg, false);
+        WeightedHub later = WeightedHub(factory.createIndex("Weighted", "WGT", _defaultSpecs(), p));
+        assertEq(address(later), predicted);
+        assertTrue(address(before) != address(later), "the policy is part of the address");
+        assertEq(before.config().platformFeeBps, 0);
+        assertEq(before.config().referralShareBps, 0);
+        assertEq(later.config().platformFeeBps, 25);
+        assertEq(later.config().referralShareBps, 5000);
+    }
+
+    function test_theCreationFeeIsForwardedWhole() public {
+        _listAll();
+        vm.prank(owner);
+        factory.setFeePolicy(0, 0, 0, alice, 0.01 ether);
+        IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
+        vm.deal(creator, 1 ether);
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.WrongCreationFee.selector, 0, 0.01 ether));
+        factory.createIndex("Weighted", "WGT", specs, _params());
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.WrongCreationFee.selector, 0.02 ether, 0.01 ether));
+        factory.createIndex{value: 0.02 ether}("Weighted", "WGT", specs, _params());
+        vm.prank(creator);
+        factory.createIndex{value: 0.01 ether}("Weighted", "WGT", specs, _params());
+        assertEq(alice.balance, 0.01 ether, "the recipient has it");
+        assertEq(address(factory).balance, 0, "the factory holds no ether");
+        assertEq(creator.balance, 0.99 ether);
+
+        Refuser refuser = new Refuser();
+        vm.prank(owner);
+        factory.setFeePolicy(0, 0, 0, address(refuser), 0.01 ether);
+        vm.prank(creator);
+        vm.expectRevert(Errors.FailedCall.selector);
+        factory.createIndex{value: 0.01 ether}("Weighted2", "WGT", specs, _params());
+    }
+
+    function test_theCreatorRoleCanBeHandedOn() public {
+        _listAll();
+        WeightedHub index = _create(_defaultSpecs());
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, stranger));
+        factory.transferCreator(address(index), stranger);
+        vm.startPrank(creator);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotIndex.selector, alice));
+        factory.transferCreator(alice, stranger);
+        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
+        factory.transferCreator(address(index), address(0));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(factory)));
+        factory.transferCreator(address(index), address(factory));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(index)));
+        factory.transferCreator(address(index), address(index));
+        vm.expectEmit(address(factory));
+        emit IWeightedIndexFactory.CreatorTransferred(address(index), creator, alice);
+        factory.transferCreator(address(index), alice);
+        vm.stopPrank();
+        assertEq(factory.creatorOf(address(index)), alice);
+
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, creator));
+        factory.setAllowedMinter(address(index), stranger, true);
+        vm.startPrank(alice);
+        factory.setAllowedMinter(address(index), stranger, true);
+        assertTrue(factory.isAllowedMinter(address(index), stranger));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotIndex.selector, stranger));
+        factory.setAllowedMinter(stranger, stranger, true);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotIndex.selector, stranger));
+        factory.openMinting(stranger);
+        vm.stopPrank();
+    }
+
+    function test_LR05_theAddressCommitsToTheConfig() public {
+        _listAll();
+        IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
+        address base = factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _params());
+        assertTrue(
+            factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _p(1, 25, 7 days)) != base, "creator fee"
+        );
+        assertTrue(
+            factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _p(0, 25, 8 days)) != base, "interval"
+        );
+        IWeightedIndexFactory.IndexParams memory p = _params();
+        p.listed = false;
+        p.maxPlatformFeeBps = 0;
+        p.gated = true;
+        assertEq(
+            factory.predictIndexAddress(creator, "Weighted", "WGT", specs, p),
+            base,
+            "the listing, the gate and the accepted maximum are not terms of the index"
+        );
+
+        vm.prank(owner);
+        factory.setFeePolicy(1, 0, 0, alice, 0);
+        address withPlatform = factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _params());
+        assertTrue(withPlatform != base, "platform fee");
+        vm.prank(owner);
+        factory.setFeePolicy(1, 0, 1, alice, 0);
+        address withReferral = factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _params());
+        assertTrue(withReferral != withPlatform, "referral share");
+        vm.prank(owner);
+        factory.setFeePolicy(1, 0, 1, stranger, 1 ether);
+        assertEq(
+            factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _params()),
+            withReferral,
+            "the recipient and the creation fee are not terms of the index"
+        );
+    }
 }
+
+/// @dev Holds no `receive`, so ether sent to it fails.
+contract Refuser {}

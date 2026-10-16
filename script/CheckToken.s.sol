@@ -157,6 +157,12 @@ contract CheckToken is Script {
     uint256 public constant DESTROY = 1 << 3;
     uint256 public constant BURN_OTHERS = 1 << 4;
     uint256 public constant UPGRADE = 1 << 5;
+
+    /// @dev The opcodes {powersOf} reads, and how far a selector sits from the low end of a word.
+    uint256 private constant PUSH1 = 0x60;
+    uint256 private constant PUSH32 = 0x7f;
+    uint256 private constant SHL = 0x1b;
+    uint256 private constant SELECTOR_SHIFT = 224;
     uint256 public constant CALLBACK = 1 << 6;
     uint256 public constant ROLES = 1 << 7;
     uint256 private constant POWER_COUNT = 8;
@@ -528,17 +534,24 @@ contract CheckToken is Script {
         if (admin == address(0)) admin = _addressAnswer(token, abi.encodeCall(IAdminReads.proxyOwner, ()));
     }
 
-    /// @notice The admin powers whose selectors `code` pushes, as a dispatcher compares them (PUSH1 to PUSH4) or as a
-    ///         bytes4 constant left-aligned in a PUSH32 (a `msg.sig` comparison, OpenZeppelin's transparent proxy).
-    ///         Every push's data is skipped, so data never reads as an instruction.
+    /// @notice The admin powers whose selectors `code` pushes, as a dispatcher compares them (PUSH1 to PUSH4), as a
+    ///         bytes4 constant left-aligned in a PUSH32 (a `msg.sig` comparison, OpenZeppelin's transparent proxy), or
+    ///         as a push shifted left into place by the `PUSH1 n SHL` that follows it, with n at least 224: solc's
+    ///         constant optimizer writes `0x4f1ef286 << 224` as `0x278f7943 << 225` at 200 runs. Every push's data is
+    ///         skipped, so data never reads as an instruction.
     function powersOf(bytes memory code) public pure returns (uint256 powers) {
         for (uint256 i = 0; i < code.length; ++i) {
             uint256 op = uint8(code[i]);
-            // PUSH1 is 0x60 and PUSH32 0x7f; nothing else carries data.
-            if (op < 0x60 || op > 0x7f) continue;
-            uint256 size = op - 0x5f;
+            // Nothing but a push carries data.
+            if (op < PUSH1 || op > PUSH32) continue;
+            uint256 size = op - (PUSH1 - 1);
             uint256 value = _pushed(code, i + 1, size);
-            if (size == ScriptUtils.WORD && value << 32 == 0) value >>= 224;
+            if (size == ScriptUtils.WORD && value << 32 == 0) value >>= SELECTOR_SHIFT;
+            uint256 next = i + 1 + size;
+            if (next + 2 < code.length && uint8(code[next]) == PUSH1 && uint8(code[next + 2]) == SHL) {
+                uint256 shift = uint8(code[next + 1]);
+                if (shift >= SELECTOR_SHIFT) value = (value << (shift - SELECTOR_SHIFT)) & type(uint32).max;
+            }
             powers |= powerOf(value);
             i += size;
         }

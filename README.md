@@ -10,13 +10,14 @@ permissionless auction, and that settlement is the only place any contract reads
 of 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). `WeightedIndexFactory`, `WeightedHub`, `IndexZap` and
 `MintRequests` hold Ethereum ERC-20s in kind: the issuer's own contract where Ethereum has one, and otherwise the copy
 Wormhole's token bridge wraps from the chain that has it, priced at the coin's Pyth feed and labelled Bridged, or
-Custodial when the source is a Binance-Peg coin. The list stands at 93 (`script/PythIds.sol`), 14 of them Wormhole
-copies, with 34 more copies to attest. Nothing crosses a chain inside a contract: the app and the fillers bridge. The
+Custodial when the source is a Binance-Peg coin. The list stands at 92 (`script/PythIds.sol`), 13 of them Wormhole
+copies, with 34 more copies to attest; DOGE's copy left it on 2026-10-14, the owner's call. Nothing crosses a chain inside a contract: the app and the fillers bridge. The
 BNB Chain deployment of 2026-10-07 was shelved on 2026-10-10 and deleted on 2026-10-13.
 
 **Status (2026-10-13): v5, deployed nowhere yet.** The weighted index is built and reviewed twice
 (`audit/2026-10-05-v5-review.md`, `audit/2026-10-07-v5-logic-review.md`); the Ethereum deployment's scripts are built,
-and so is a keeper bot that starts and fills auctions (`keeper/`), which holds no role in the protocol. Before any
+and so is a keeper bot that starts and fills auctions and fills `MintRequests` requests (`keeper/`), which holds no
+role in the protocol. Before any
 mainnet: Pyth's parameter replay, a settlement on a real update from Pyth's Hermes service (which needs Pyth's API key),
 and an external audit.
 
@@ -75,9 +76,10 @@ The history, in one paragraph each:
 | Rebalancing | Anyone starts a rebalance 7 days after the last one or after creation (`MIN_REBALANCE_INTERVAL`), then 2 hours of notice (`REBALANCE_DELAY`), then a 24-hour auction (`AUCTION_DURATION`) in which any contract can fill. The fill reads Pyth's prices, sets each moving component's target from its weight, and moves every leg the same share of the way. The growing legs ask `μ` times their step, `μ` falling from `MU_MAX` (1.02) to `MU_MIN` (0.98). One fill sends out at most `MAX_TURNOVER` (20%) of each component's own units, and must trade at least `MIN_TRADE` (0.1%) of the moving value. |
 | Prices | Pyth only, read only by the settlement and only for the moving components. One price per block: each feed's first update at or after `priceTime()`, 12 seconds (`PRICE_LAG`) before the block. Refused: a non-positive price, an exponent outside [-18, 0], a price above `MAX_PRICE`, a confidence interval wider than `MAX_CONFIDENCE` (2%). Issue, redeem and claims read none. The app values an index off chain. |
 | Swaps | Uniswap's Universal Router 2.0.0 alone, V3 or V4, one venue per leg, chosen by the caller. PancakeSwap and THORChain were removed on 2026-10-14. The app offers the one-click zap only up to about 35 components (EIP-7825's 16.78M gas per transaction). |
-| Fees | None: v5 is funded from outside (the owner's call on 2026-09-30). Every amount the hub moves goes through one helper, `_backing`, so a fee in a later version would land in one reviewed change. |
+| Fees | In shares, never in components: the creator's rate (0 to 100 bps, the creator's choice at creation) plus the platform's (0 to 25 bps, the factory's policy at creation) on every issue and every redeem. A minter's deposit backs the fee's shares on top of its own; a burner's fee is minted to the recipients out of what it burns. The recipients are read from the factory at each call: the index's creator and the platform recipient, and a referrer named at mint takes the policy's share of the platform's part. The policy starts at zero and reaches only indexes created after it is set. A streaming fee, the creator's yearly rate (0 to 500 bps) plus the platform's (0 to 100 bps, the policy at creation), accrues in shares at every issue, redeem, settlement and `accrueFees`, and shrinks every share's units by the same factor: it moves no tokens. |
+| Cadence and gate | Each index fixes its rebalance interval at creation, 7 to 91 days. A gated index issues only to recipients its creator allows, until the creator opens it for good; the app does not list an index created unlisted. |
 | Coins | Ethereum ERC-20s: the issuer's own contract where Ethereum has one, Bitcoin as WBTC, and otherwise the copy Wormhole's token bridge wraps from the coin's home chain, labelled Bridged (and Custodial from a Binance-Peg source). Tether Gold and Ondo's stock tokens are listed too, labelled Custodial. 93 are listed in `script/PythIds.sol`, 14 of them Wormhole copies (SOL and the 13 added on 2026-10-10), with 34 more copies to attest. |
-| Stable in / out | Mint with USDC or USDT through the zap, or through `MintRequests` at a limit of the requester's own, filled by anyone who holds shares. The burner chooses USDC, USDT or any other token at exit, or asks for USDC or USDT at a limit through `MintRequests`. Index tokens are fungible, so the protocol cannot know which stable a holder used. |
+| Stable in / out | Mint with USDC or USDT through the zap, through `MintRequests` at a limit of the requester's own, filled by anyone who holds shares, or, for a basket too wide for one transaction, through the basket builder, leg by leg over several transactions into an escrow of the minter's own. The burner chooses USDC, USDT or any other token at exit, sells leg by leg through the builder, or asks for USDC or USDT at a limit through `MintRequests`. Index tokens are fungible, so the protocol cannot know which stable a holder used. |
 | Decentralization | No admin can move an index's funds, mint or burn its shares, pause or upgrade it, or set its units or weights. The owner proposes listings, which take effect after 2 days, and guardian changes, which take 7; a proposal not executed within 7 days of becoming ready expires. Owner and guardian both cancel pending listings, delist, cancel a rebalance, and start one with a keep mask or before strangers may. The guardian can cancel a change that would remove it, not one that replaces it. Ownership moves in two steps with no delay, and cannot be renounced. |
 | Frozen components | If a component's issuer pauses or blacklists transfers, holders take every other component out with `redeemSkipping` and collect the frozen one later with `claim`; the guardian rebalances around it with a keep mask, which neither transfers the component nor reads its balance or its price. |
 
@@ -120,6 +122,10 @@ The history, in one paragraph each:
   `mintWithToken` buys exactly the basket with exact-output swaps and issues; `burnToToken` redeems and sells every
   component into the chosen token; `burnToTokenWithPermit` does it in one transaction. It is the only contract here that
   knows about Uniswap.
+- `BasketBuilder` (`src/BasketBuilder.sol`) is the zap's stateful sibling for baskets beyond one transaction: `buy`
+  swaps the named legs into an escrow per caller and token, as many calls as the gas cap needs, `mint` issues out of
+  it, and `redeem`, `sell` and `withdraw` mirror that; `deposit` puts in a coin that has no route. Both swap through
+  `UniversalRouterSwaps` (`src/UniversalRouterSwaps.sol`), the engine they share, and encode a leg the same way.
 - `MintRequests` (`src/MintRequests.sol`) is an ownerless escrow. `requestMint(index, stable, amount, minShares,
   deadline)` escrows USDC or USDT for at least `minShares` shares; `requestRedeem(index, shares, stable, minOut,
   deadline)` escrows shares for at least `minOut` of a stablecoin. Anyone `fill`s a request before its deadline by
@@ -225,7 +231,8 @@ at any time) or `refund` (anyone, after the deadline).
   `InvalidComponentCount` outside 2 to `MAX_COMPONENTS` (100), `InvalidWeights` unless every weight is non-zero and
   they sum to 10,000, and `DuplicatePriceId` when two components share a Pyth price id, since Pyth fills only the first
   of two equal ids and such an index could never settle (V5-M1). Offer the one-click zap only up to about 35
-  components; a larger index mints in kind or through `MintRequests`.
+  components; a larger index mints in kind, through `MintRequests`, or through the basket builder over several
+  transactions.
 - **Names and symbols are not unique.** `createIndex` requires only that they are non-empty. The CREATE2 salt commits
   to the creator, the name, the symbol and every component's token, units, weight, price id and decimals, so two
   look-alike indexes have different addresses: key every index by its address, show `creatorOf`, and mark a name or
@@ -288,7 +295,8 @@ at any time) or `refund` (anyone, after the deadline).
   a mint 5.3M to 6.2M, a burn 5.1M with two V3 hops a leg to 8.6M with four). EIP-7825 caps a transaction at 2^24
   gas, so disable the zap above about 35 components, keep routes to two or three hops, and refuse or reroute any zap
   call whose simulated gas exceeds about 14M. The in-kind paths fit at 100 components (about 3.7M for `redeem`, 5.1M
-  for `redeemSkipping` with every component skipped).
+  for `redeemSkipping` with every component skipped), and so does the basket builder: three `buy` calls of about 34
+  legs and one `mint` (`test_aHundredLegBasketFitsInThreeBuysAndAMint`, on mock pools, so the buys are a floor).
 - **Approvals.** USDC supports `permit`; USDT does not, and its `approve` reverts when it changes a non-zero allowance
   to another non-zero value: if `allowance(user, zap)` is not 0, send `approve(zap, 0)` first. The same holds for
   `MintRequests`: a filler who lost a race, or a requester whose request reverted, keeps a non-zero USDT allowance. Index tokens support
@@ -310,8 +318,8 @@ at any time) or `refund` (anyone, after the deadline).
   with a `ComponentReturned` event: every hop of a V3 burn leg, and as a rule only the first hop of a V4 burn leg,
   whose intermediate partial fill reverts the whole leg (CR-I07). A returned amount includes anything a stranger had
   left on the router, and a stray balance never makes a burn revert (CR-L02). Show them on the receipt.
-- **ABIs.** `abi/WeightedIndexFactory.json`, `abi/WeightedHub.json`, `abi/IndexZap.json` and `abi/MintRequests.json`
-  are committed and regenerated by CI, which fails on a diff; decode every event and revert with them
+- **ABIs.** `abi/WeightedIndexFactory.json`, `abi/WeightedHub.json`, `abi/IndexZap.json`, `abi/BasketBuilder.json`
+  and `abi/MintRequests.json` are committed and regenerated by CI, which fails on a diff; decode every event and revert with them
   (`forge inspect <contract> abi --json` reproduces them, and the interfaces in `src/interfaces/` carry the NatSpec).
   Read the constants on chain rather than hard-coding them: `LISTING_DELAY`, `PROPOSAL_WINDOW`, `GUARDIAN_DELAY`,
   `MIN_COMPONENTS`, `MAX_COMPONENTS`, `TOTAL_WEIGHT`, `MIN_RAW_UNITS`, `MAX_UNITS` on the factory, and
@@ -323,12 +331,16 @@ at any time) or `refund` (anyone, after the deadline).
   `ListingProposed`, `ListingCancelled`, `TokenTermsSet`, `TokenWhitelisted`, `GuardianProposed`,
   `GuardianChangeCancelled`, `GuardianSet`, `OwnershipTransferStarted`, `OwnershipTransferred`. `WeightedHub`: `Issued`,
   `Redeemed`, `ClaimRecorded`, `Claimed`, `RebalanceStarted`, `RebalanceCancelled`, `Rebalanced`, and the ERC-20 events.
-  `IndexZap`: `ZapMint`, `ZapBurn`, `ComponentReturned`.
+  `IndexZap`: `ZapMint`, `ZapBurn`, `ComponentReturned`. `BasketBuilder`: `Deposited`, `Withdrawn`, `Bought`, `Minted`,
+  `Redeemed`, `Sold`, `Unsold`.
 - **Watch the ownership handover.** `transferOwnership(new owner)` emits `OwnershipTransferStarted` and
   `acceptOwnership()` emits `OwnershipTransferred`. It is the one admin change with no delay and no guardian veto.
 - **Errors.** `IndexZap`: `NotIndex`, `StaleRebalanceNonce`, `Expired`, `ZeroAddress`, `ZeroAmount`, `InvalidRecipient`
   (the zap, the index, the router, the PoolManager or the factory, RT-21), `LegCountMismatch`, `BadRoute(i)`,
-  `ShortFill(i, received, required)`, `InsufficientBudget`, `InsufficientOutput`, `TransferShortfall`. `WeightedHub`:
+  `ShortFill(i, received, required)`, `InsufficientBudget`, `InsufficientOutput`, `TransferShortfall`; the swap errors
+  are declared in `IXindexErrors`, shared with `BasketBuilder`, which adds `LengthMismatch`, `ComponentOutOfRange` and
+  `InsufficientEscrow(token, held, needed)`, and whose `BadRoute` and `ShortFill` name a leg by its position in the
+  call. `WeightedHub`:
   `NotFactory`, `NotInitialized`, `InvalidComponents`, `ZeroShares`, `ZeroAddress`, `InvalidRecipient` (also for a share
   transfer to the index itself or its factory), `InvalidSkipMask`, `NothingToClaim`, `TransferAmountMismatch`,
   `Unauthorized`, `RebalanceTooSoon`, `RebalancePending`, `InvalidKeepMask`, `NoPendingRebalance`, `RebalanceNotReady`,
@@ -378,8 +390,9 @@ creation.
 
 ## The list
 
-`script/PythIds.sol` holds 93 coins, each with its Pyth price id: `default` is the first four (WETH, WBTC, LINK, UNI)
-and `wide` the other 89. 14 of them are Wormhole copies, SOL and the 13 added on 2026-10-10, and 34 more copies await an
+`script/PythIds.sol` holds 92 coins, each with its Pyth price id: `default` is the first four (WETH, WBTC, LINK, UNI)
+and `wide` the other 88. 13 of them are Wormhole copies, SOL and 12 of the 13 added on 2026-10-10 (DOGE's left on
+2026-10-14, the owner's call, since Pyth prices DOGE and not the copy), and 34 more copies await an
 attestation on Wormhole's Portal (section 2a of `design/2026-10-10-one-index-wormhole-legs.md`). Every one went through
 `CheckToken` on a fork, which refuses only Tether Gold, admitted on the owner's waiver. On a fork of 2026-10-11, the 92
 coins forge-std can fund issued, rebalanced with real transfers and redeemed in one index, and 45 of them traded through
@@ -476,7 +489,8 @@ stock, Wormhole for every wrapped copy, and both Binance and Wormhole for a copy
   requester after they sign, for instance every component pausing, a filler can still deliver at the old limit, and a
   cancel sent to the public mempool can be overtaken by a fill. The loss is bounded by the requester's own limit. The
   app should default to short deadlines and send cancels through a private relay.
-- **No fees.** Audits, a bug bounty and watchers are paid from outside (the owner's call on 2026-09-30).
+- **Fees in shares only.** Mint and redeem fees are minted as shares to the creator, the platform and a referrer; no
+  fee ever moves a component, and the platform's policy is zero until the owner sets one.
 - **Airdrops, rewards and governance votes** that accrue to tokens held by an index cannot be claimed or used; by design
   there is no admin who could sweep them.
 - **A hooked V4 pool cannot be routed through.** The zap rejects any V4 route whose hops carry hooks or hook data, so a
@@ -509,7 +523,7 @@ Ethereum (`script/MainnetAddresses.sol`):
 | Uniswap V4 Quoter | `0x52F0E24D1c21C8A0cB1e5a5dD6198556BD9E1203` |
 | Uniswap V4 StateView | `0x7fFE42C4a5DEeA5b0feC41C94C136Cf115597227` |
 | Pyth | `0x4305FB66699C3B2702D4d05CF36551390A4c69C6` |
-| WeightedIndexFactory / IndexZap / MintRequests | not deployed |
+| WeightedIndexFactory / IndexZap / BasketBuilder / MintRequests | not deployed |
 
 The scripts read these addresses from the address book, and `test/fork/MainnetAddresses.fork.t.sol` checks it on
 chain: tokens by symbol and decimals, the router and the PoolManager by their runtime code hashes (every Universal
@@ -556,7 +570,7 @@ source .env
 ```
 
 `DeployWeighted` deploys `WeightedIndexFactory`, which deploys the `WeightedHub` implementation every index is a clone
-of, then the zap and `MintRequests` for that factory. It runs once, on Ethereum. Listings follow through the factory's
+of, then the zap, the basket builder and `MintRequests` for that factory. It runs once, on Ethereum. Listings follow through the factory's
 timelock.
 
 ```bash
@@ -579,9 +593,10 @@ the git commit, each transaction with its init code, and the addresses. Broadcas
 recorded commit is the deployed source, commit the record with the README address table (on a mainnet with `git add
 -f`: `.gitignore` keeps chain-1 records out, because fork rehearsals keep chain id 1), and verify the source on the
 explorer (`--verify` needs `ETHERSCAN_API_KEY`). The deploy log ends with the runtime code hashes of the factory, the
-`WeightedHub` implementation, the zap and `MintRequests`: record them with the addresses, and
-`DeployWeighted.checkDeployment(factory, zap, requests)` re-reads them later (it also refuses a zap or a
-`MintRequests` that does not point at that factory, and an implementation reading another Pyth).
+`WeightedHub` implementation, the zap, the basket builder and `MintRequests`: record them with the addresses, and
+`DeployWeighted.checkDeployment(factory, zap, builder, requests)` re-reads them later (it also refuses a zap, a
+builder or a `MintRequests` that does not point at that factory, a builder on another router, and an implementation
+reading another Pyth).
 
 **The admission check** comes first: `script/CheckToken.s.sol` is read-only and prints one report per token for the
 Safe's signers (transfers simulated on a fork, transfer hooks, admin powers and who holds them, Uniswap depth on
@@ -645,6 +660,7 @@ No bot holds a role in Xindex, so these duties have owners and deadlines. Watch 
 | Check each rebalance | `RebalanceStarted` | before the fill | guardian | watch the moving components' Pyth feeds; `cancelRebalance()` on a feed that is wrong or stopped, then a keep mask |
 | Watch keep-mask rebalances | `RebalanceStarted` with a non-zero `keepMask` | before `eta` (2 hours) | owner signers | while a guardian replacement is pending, cancel the outgoing guardian's keep-mask proposals (RT-07) |
 | Fill auctions | the auction opens at `eta` | `eta + AUCTION_DURATION` | any executor contract | anyone may run the keeper in `keeper/`, which holds no role; competition is what keeps a fill near break-even |
+| Fill requests | a `MintRequested` or `RedeemRequested` event | the request's `deadline` | anyone who holds or can issue the shares, or the stablecoin | the keeper in `keeper/` fills at the request's limit when that pays; the surplus over the limit is the filler's |
 | Restock the wrapped and real-world legs | the keeper's `restock <coins>` log | before the auction that needs them | the keeper's operator | bridge through Wormhole's Portal, or acquire the token, and send it to the executor |
 | Rebalance around a frozen component | a paused or blacklisting component, or a stopped feed | each auction | guardian | `cancelRebalance()`, then `startRebalance(keepMask)` |
 | Restart after an unfilled auction | `eta + AUCTION_DURATION` passed with no `Rebalanced` | anyone after `REBALANCE_DELAY` more | guardian first, then anyone | `canStartRebalance()`, then `startRebalance(0)` |
@@ -674,7 +690,7 @@ Router's encoding, not on Sepolia.
 | Uniswap QuoterV2 | `0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3` |
 | Uniswap V3 factory | `0x0227628f3F023bb0B980b67D528571c95c6DaC1c` |
 | Uniswap NonfungiblePositionManager | `0x1238536071E1c677A632429e3655c799b22cDA52` |
-| WeightedIndexFactory / WeightedHub implementation / IndexZap / MintRequests (v5) | not deployed |
+| WeightedIndexFactory / WeightedHub implementation / IndexZap / BasketBuilder / MintRequests (v5) | not deployed |
 
 ```bash
 export SEPOLIA_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com
@@ -684,7 +700,7 @@ DEPLOYER=$(cast wallet address --account sepolia-deployer)
 MARKET_MODE=create forge script script/testnet/SetupTestMarket.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast
 MARKET_MODE=seed MARKET_TOKENS=<logged by create> forge script script/testnet/SetupTestMarket.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast
 
-# 2. the factory (which deploys the WeightedHub implementation), the zap and MintRequests; the test market has no
+# 2. the factory (which deploys the WeightedHub implementation), the zap, the basket builder and MintRequests; the test market has no
 #    USDT, so USDT is any second 6-decimal test token, a FaucetToken for instance; off a mainnet PYTH is required
 OWNER=<Safe> GUARDIAN=<guardian> PYTH=<Pyth's Sepolia contract> UNIVERSAL_ROUTER=0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b \
   USDC=<tUSDC logged by create> USDT=<a second test stablecoin> \
@@ -711,6 +727,8 @@ src/WeightedHub.sol           v5 index implementation (ERC20 + permit, in-kind i
                               to fixed weights at Pyth prices), cloned
 src/WeightedIndexFactory.sol  v5 listings (each token with its Pyth price id), guardian, registry, CREATE2 clone deployer
 src/IndexZap.sol              mint/burn router over Uniswap's Universal Router, one venue per leg, per-leg limits, nonce check
+src/BasketBuilder.sol         the zap's stateful sibling: legs bought or sold over several transactions through an escrow per caller
+src/UniversalRouterSwaps.sol  the swap engine the zap and the builder share: pre-fund, swap, sweep, measure, per leg
 src/MintRequests.sol          ownerless escrow of USDC/USDT-for-shares requests at the requester's own limit
 src/interfaces/               every contract's interface, the shared errors (IXindexErrors), the vendored IUniversalRouter and
                               Pyth's IPyth, IPythEvents and PythStructs
@@ -740,7 +758,7 @@ A fee in a later index version, ETH in/out (`mintWithETH` / `burnToETH`), `creat
 `mintWithTokenPermit` for USDC, creator fees (attributed by `creatorOf`), constituent changes (a new list is a new
 index), mixed-venue legs that split one leg across V3 and V4, per-pair partial-fill auctions, a backstop for auctions
 too small to pay (the keeper in `keeper/` fills only what pays, unless its operator sets a subsidy with a negative
-`MIN_PROFIT_USD`), an aggregator or Universal Router 2.1 zap, a zap that accumulates a hundred legs over several
-transactions, V4 pools on the Sepolia market, and one L2 deployment if cheap minting for small buyers matters after
+`MIN_PROFIT_USD`), an aggregator or Universal Router 2.1 zap, V4 pools on the Sepolia market, and one L2 deployment
+if cheap minting for small buyers matters after
 launch. Other chains' coins come in only as Ethereum tokens: the issuer's own, or the copy Wormhole's token bridge
 wraps (`design/2026-10-10-one-index-wormhole-legs.md`).

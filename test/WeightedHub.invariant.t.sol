@@ -27,8 +27,20 @@ contract WeightedHandler is Test {
     int64[] public prices;
     int64[] internal _start;
 
+    /// @dev The fee recipients: none is an actor, so what they hold moves only with fees.
+    address public feeCreator;
+    address public platform;
+    address public referrer;
+
     uint256 public ghostIssued;
     uint256 public ghostRedeemed;
+    uint256 public ghostFees;
+    bool public feeMisjudged;
+    /// @dev The streaming rates the index was created with, and when its clock last restarted, as the handler
+    ///      models it: at every accrual that minted, and at every call on an empty index.
+    uint256 internal constant STREAMING = 600;
+    uint256 internal constant WHOLE = 365 days * 10_000;
+    uint256 internal _lastAccrual;
     uint256 public ghostExecutions;
     bool public shortFillSucceeded;
     bool public holdOffMisjudged;
@@ -44,7 +56,8 @@ contract WeightedHandler is Test {
         bytes32[] memory ids_,
         int64[] memory prices_,
         address[] memory actors_,
-        address guardian_
+        address guardian_,
+        address[3] memory recipients_
     ) {
         index = index_;
         pyth = pyth_;
@@ -54,7 +67,36 @@ contract WeightedHandler is Test {
         _start = prices_;
         actors = actors_;
         guardian = guardian_;
+        (feeCreator, platform, referrer) = (recipients_[0], recipients_[1], recipients_[2]);
         executor = new MockWeightedExecutor();
+        _lastAccrual = block.timestamp;
+    }
+
+    /// @dev What the streaming fee mints on a call now: the rate times the time since the clock last restarted, as a
+    ///      share `f` of the index, is `supply · f / (1 − f)` shares rounded down, capped just under the whole.
+    function _streamingFee() internal view returns (uint256) {
+        uint256 supply = index.totalSupply();
+        uint256 part = STREAMING * (block.timestamp - _lastAccrual);
+        if (part >= WHOLE) part = WHOLE - 1;
+        return Math.mulDiv(supply, part, WHOLE - part);
+    }
+
+    /// @dev Restarts the modelled clock as the hub does: when a fee was minted, and when the index was empty.
+    function _clock(uint256 feeShares, uint256 supplyBefore) internal {
+        if (feeShares != 0 || supplyBefore == 0) _lastAccrual = block.timestamp;
+    }
+
+    /// @dev What the three fee recipients hold between them.
+    function _recipientsHold() internal view returns (uint256) {
+        return index.balanceOf(feeCreator) + index.balanceOf(platform) + index.balanceOf(referrer);
+    }
+
+    /// @dev The fee a call minted, against what the index's rates say it should have: 100 bps to the creator and 25
+    ///      to the platform, on top of an issue rounded up and out of a redeem rounded down.
+    function _accountFee(uint256 heldBefore, uint256 expected) internal {
+        uint256 minted = _recipientsHold() - heldBefore;
+        ghostFees += minted;
+        feeMisjudged = feeMisjudged || minted != expected;
     }
 
     function _actor(uint256 seed) internal view returns (address) {
@@ -84,9 +126,25 @@ contract WeightedHandler is Test {
             vm.prank(from);
             comps[i].approve(address(index), need[i]);
         }
+        uint256 held = _recipientsHold();
+        uint256 supply = index.totalSupply();
+        uint256 streaming = _streamingFee();
         vm.prank(from);
-        index.issue(shares, _actor(toSeed));
+        index.issue(shares, _actor(toSeed), seed % 2 == 0 ? referrer : address(0));
         ghostIssued += shares;
+        _accountFee(held, streaming + (shares * 10_000 + 9874) / 9875 - shares);
+        _clock(streaming, supply);
+    }
+
+    /// @dev Anyone mints the streaming fee accrued so far.
+    function accrueFees(uint256 seed) external {
+        uint256 held = _recipientsHold();
+        uint256 supply = index.totalSupply();
+        uint256 streaming = _streamingFee();
+        vm.prank(_actor(seed));
+        index.accrueFees();
+        _accountFee(held, streaming);
+        _clock(streaming, supply);
     }
 
     function redeem(uint256 seed, uint256 toSeed, uint256 shares) external {
@@ -94,9 +152,14 @@ contract WeightedHandler is Test {
         uint256 bal = index.balanceOf(from);
         if (bal == 0) return;
         shares = bound(shares, 1, bal);
+        uint256 held = _recipientsHold();
+        uint256 supply = index.totalSupply();
+        uint256 streaming = _streamingFee();
         vm.prank(from);
         index.redeem(shares, _actor(toSeed));
         ghostRedeemed += shares;
+        _accountFee(held, streaming + shares * 125 / 10_000);
+        _clock(streaming, supply);
     }
 
     function redeemSkipping(uint256 seed, uint256 toSeed, uint256 shares, uint256 mask) external {
@@ -105,9 +168,14 @@ contract WeightedHandler is Test {
         if (bal == 0) return;
         shares = bound(shares, 1, bal);
         mask = bound(mask, 1, (1 << comps.length) - 1);
+        uint256 held = _recipientsHold();
+        uint256 supply = index.totalSupply();
+        uint256 streaming = _streamingFee();
         vm.prank(from);
         index.redeemSkipping(shares, _actor(toSeed), mask);
         ghostRedeemed += shares;
+        _accountFee(held, streaming + shares * 125 / 10_000);
+        _clock(streaming, supply);
     }
 
     /// @dev Pays the first outstanding claim found from the seeded actor and component on, if there is one.
@@ -241,10 +309,16 @@ contract WeightedHandler is Test {
         _checkValue(mu, out, in_);
 
         bytes[] memory data = _updates();
+        uint256 held = _recipientsHold();
+        uint256 supply = index.totalSupply();
+        uint256 streaming = _streamingFee();
         executor.setMode(MockWeightedExecutor.Mode.Honest);
         if (bounded) executor.executeBounded(index, "", data, in_);
         else executor.execute(index, "", data);
         ++ghostExecutions;
+        // The fill accrues the streaming fee first, like every issue and redeem.
+        _accountFee(held, streaming);
+        _clock(streaming, supply);
 
         (, uint256[] memory afterwards) = index.components();
         for (uint256 i = 0; i < afterwards.length; ++i) {
@@ -260,7 +334,8 @@ contract WeightedHandler is Test {
         (,, uint8[] memory decimals) = index.componentTerms();
         uint256 valueOut = 0;
         uint256 valueIn = 0;
-        uint256 supply = index.totalSupply();
+        // The settlement's supply: the fee the fill accrues first is minted on top of today's.
+        uint256 supply = index.totalSupply() + _streamingFee();
         for (uint256 i = 0; i < comps.length; ++i) {
             if ((keepMask >> i) & 1 == 1) continue;
             // forge-lint: disable-next-line(unsafe-typecast)
@@ -298,6 +373,8 @@ contract WeightedHubInvariantTest is Test {
     WeightedHandler handler;
     MockERC20[] comps;
     address[] actors;
+    /// @dev The creator, the platform and the referrer, outside the actors.
+    address[3] recipients = [makeAddr("feeCreator"), makeAddr("platform"), makeAddr("referrer")];
 
     function setUp() public {
         vm.warp(1_800_000_000);
@@ -330,12 +407,32 @@ contract WeightedHubInvariantTest is Test {
         for (uint256 i = 0; i < comps.length; ++i) {
             factory.executeListing(address(comps[i]));
         }
-        index = WeightedHub(factory.createIndex("Inv", "INV", specs));
+        // The creator's caps and the platform's, with half of the platform's mint fee to a referrer, so every fee
+        // path carries value under the invariants: 100 and 25 bps on every issue and redeem, 500 and 100 bps a year.
+        vm.prank(owner);
+        factory.setFeePolicy(25, 100, 5000, recipients[1], 0);
+        index = WeightedHub(
+            factory.createIndex(
+                "Inv",
+                "INV",
+                specs,
+                IWeightedIndexFactory.IndexParams({
+                    creatorFeeBps: 100,
+                    creatorStreamingBps: 500,
+                    maxPlatformFeeBps: 25,
+                    maxPlatformStreamingBps: 100,
+                    rebalanceInterval: 7 days,
+                    gated: false,
+                    listed: true
+                })
+            )
+        );
+        factory.transferCreator(address(index), recipients[0]);
 
         for (uint256 i = 0; i < 5; ++i) {
             actors.push(makeAddr(string(abi.encodePacked("actor", i))));
         }
-        handler = new WeightedHandler(index, pyth, comps, ids, prices, actors, guardian);
+        handler = new WeightedHandler(index, pyth, comps, ids, prices, actors, guardian, recipients);
         targetContract(address(handler));
     }
 
@@ -349,6 +446,7 @@ contract WeightedHubInvariantTest is Test {
         handler.executeRebalance(0, false);
         handler.executeRebalanceShort(0);
         handler.warp(1 hours);
+        handler.accrueFees(0);
 
         // An empty index: nothing to shortchange, and an honest fill settles at MU_MAX.
         handler.startRebalance(0, 0, false);
@@ -408,6 +506,12 @@ contract WeightedHubInvariantTest is Test {
         assertFalse(handler.turnoverBroken());
         assertFalse(handler.previewMisled());
         assertFalse(handler.shortFillSucceeded());
+
+        // A lifetime without an accrual: the fee's share is capped just under the whole, in the hub and in the model.
+        handler.issue(0, 0, 1e18);
+        vm.warp(block.timestamp + 20 * 365 days);
+        handler.accrueFees(0);
+        assertFalse(handler.feeMisjudged(), "the capped accrual is what the model says");
     }
 
     function invariant_everyComponentBackedIncludingClaims() public view {
@@ -420,12 +524,19 @@ contract WeightedHubInvariantTest is Test {
     }
 
     function invariant_supplyMatchesGhostAndHolders() public view {
-        assertEq(index.totalSupply(), handler.ghostIssued() - handler.ghostRedeemed());
+        assertEq(index.totalSupply(), handler.ghostIssued() + handler.ghostFees() - handler.ghostRedeemed());
         uint256 sum = 0;
         for (uint256 i = 0; i < actors.length; ++i) {
             sum += index.balanceOf(actors[i]);
         }
+        for (uint256 i = 0; i < recipients.length; ++i) {
+            sum += index.balanceOf(recipients[i]);
+        }
         assertEq(sum, index.totalSupply());
+    }
+
+    function invariant_feesAreExactlyTheRates() public view {
+        assertFalse(handler.feeMisjudged(), "every fee minted is what the rates say, no more and no less");
     }
 
     function invariant_claimsAddUp() public view {

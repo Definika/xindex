@@ -11,11 +11,16 @@ import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC2
 ///         deleted (audit/2026-10-06-v4-retirement.md).
 /// @dev Only the factory's `isIndex` proves an address is an index.
 interface IIndexHub is IERC20, IERC20Permit {
-    /// @notice Pulls the exact basket for `shares` from msg.sender and mints `shares` to `to`.
-    ///         Amounts are rounded up per component. Caller must have approved every component. Reads no price.
-    /// @param shares Shares to mint; 1e18 is one whole index token.
+    /// @notice Pulls the basket for `shares` and the index's fee from msg.sender and mints `shares` to `to`; the fee's
+    ///         shares go to the index's fee recipients. Amounts are rounded up per component. Caller must have approved
+    ///         every component. Reads no price.
+    /// @param shares Shares `to` receives; 1e18 is one whole index token.
     /// @param to Receives the shares.
     function issue(uint256 shares, address to) external;
+
+    /// @notice As {issue}, naming `referrer`, who takes the referral share of the platform's part of the fee. Zero
+    ///         names nobody.
+    function issue(uint256 shares, address to, address referrer) external;
 
     /// @notice Burns `shares` from msg.sender and sends the pro-rata basket to `to`, rounded down. Reads no price.
     ///         Reverts if any component transfer reverts; `IWeightedHub.redeemSkipping` exits around a frozen one.
@@ -26,10 +31,10 @@ interface IIndexHub is IERC20, IERC20Permit {
     /// @notice Component token addresses, in the order every array of this index uses.
     function componentTokens() external view returns (address[] memory tokens);
 
-    /// @notice Exact amounts `issue(shares)` will pull for each component (rounded up).
+    /// @notice Exact amounts `issue(shares)` will pull for each component (rounded up), the fee's shares included.
     function previewIssue(uint256 shares) external view returns (uint256[] memory amountsIn);
 
-    /// @notice Exact amounts `redeem(shares)` will push for each component (rounded down).
+    /// @notice Exact amounts `redeem(shares)` will push for each component (rounded down), the fee's shares taken.
     function previewRedeem(uint256 shares) external view returns (uint256[] memory amountsOut);
 
     /// @notice Number of executed rebalances. It changes exactly when the units change, so a caller that quoted a

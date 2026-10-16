@@ -16,8 +16,9 @@ of 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). `WeightedIndexFa
 `MintRequests` hold Ethereum ERC-20s in kind: the issuer's own contract where Ethereum has one (71 candidates of the
 top 300 today), and otherwise a copy wrapped by Wormhole's token bridge from the chain that has it (17 from BNB Chain,
 nine of them Binance-Peg; 31 from Solana, Sui, Aptos, Base and the other chains Wormhole serves), priced at the coin's
-Pyth feed and labelled Bridged, Custodial as well when the source is Binance-Peg. The list stands at 93
-(`script/PythIds.sol`), 14 of them Wormhole copies, with 34 more copies to attest. The wrapping adds Wormhole's
+Pyth feed and labelled Bridged, Custodial as well when the source is Binance-Peg. The list stands at 92
+(`script/PythIds.sol`), 13 of them Wormhole copies, with 34 more copies to attest; DOGE's copy left it on 2026-10-14
+(the owner's call, below). The wrapping adds Wormhole's
 guardians as a party whose reach is the whole of each wrapped leg, and the app shows every index's wrapped share of
 value. They do not sign Pyth's prices: since Pyth's OP-PIP-132 of 2026-08-26, Pyth's contract on Ethereum verifies
 updates against Pyth's own set of five keys (read on chain on 2026-10-12). Nothing crosses a chain inside a contract:
@@ -33,8 +34,8 @@ Where it stands (2026-10-13):
 - The weighted index is built and reviewed twice (`audit/2026-10-05-v5-review.md`, `audit/2026-10-07-v5-logic-review.md`).
 - The Ethereum deployment's scripts are built: `DeployWeighted`, `ConfigureWeighted` over `PythIds`, `CheckToken`.
 - The hundred-coin list is built as far as Ethereum holds it: 93 listed on 2026-10-10 (the 49 of before, 31 more
-  Ethereum-issued coins and 13 Wormhole copies that already existed, every one through `CheckToken` on a fork), 75 of
-  them coins that count toward the hundred. 34 copies await an attestation on Wormhole's Portal, a transaction on each
+  Ethereum-issued coins and 13 Wormhole copies that already existed, every one through `CheckToken` on a fork), and
+  92 since DOGE's copy left on 2026-10-14, 74 of them coins that count toward the hundred. 34 copies await an attestation on Wormhole's Portal, a transaction on each
   home chain the owner sends (section 2a of the 2026-10-10 record lists them with the procedure); each then goes
   through the check and the lists. A hundred-coin index is minted in kind or through `MintRequests`, since the zap
   stops near 35 legs. On a fork of 2026-10-11, the 92 coins forge-std can fund issue, rebalance with real transfers
@@ -42,8 +43,20 @@ Where it stands (2026-10-13):
   because its balances live in its `TokenState`, beyond forge-std's `deal`. That test's 14.9M gas for the fill counts
   its executor's own `deal` calls; on an anvil fork of 2026-10-12, with Pyth's real contract verifying an update signed
   by keys the test installed in Pyth's receiver, a fill of 93 legs cost 7.26M, Pyth's parse 2.34M of it.
+- The engine the website needs was built on 2026-10-14 from the clean-sheet research record
+  (`design/2026-10-14-mainnet-engine-research.md`): fees in shares (creator, platform, referrer), a rebalance interval
+  per index, gated and unlisted indexes, a creator role in the factory, and `createIndex(..., params)`; the platform's
+  policy is zero until the owner sets one. On 2026-10-16 the streaming fee was built as a unit scale, with the
+  settlement arithmetic moved to `WeightedMath` for the hub's size (23.8 KB of 24.6 at 100 optimizer runs, down from
+  1000 on 2026-10-14 and 200 after). The basket builder was built the same day (`src/BasketBuilder.sol`): a basket
+  beyond the zap's 35 legs is bought over several transactions into an escrow of the minter's own, then issued in
+  one, and sold the same way; it shares the zap's swap engine, `UniversalRouterSwaps`. The record's section 9
+  decisions are still the owner's.
 - The keeper bot is built (`keeper/`, the keeper's own Foundry project and Node bot, with unit and end-to-end tests):
-  it starts and fills auctions, serves coins without a Uniswap route from its executor's stock, and holds no role.
+  it starts and fills auctions, fills `MintRequests` requests at their limits (the record's step 2, built 2026-10-16:
+  `fillMint` and `fillRedeem` on the executor, which buys or sells the basket in the fill's own transaction, so a
+  request wider than one transaction's swaps waits for stock), serves coins without a Uniswap route from its
+  executor's stock, and holds no role. Its end-to-end test was not run after that (no archive RPC).
 - The security audit of 2026-10-13 (`audit/2026-10-13-security-audit.md`, Cloudflare's security-audit skill, ids
   `CF-1`..`CF-8`) found no exploitable path in the four contracts that hold index funds; its findings in the keeper,
   CheckToken, the deploy script and CI are fixed, CF-3 is a known limitation below, and CF-2 and CF-8 went with the
@@ -75,7 +88,7 @@ forge test                   # unit + fuzz + invariant tests, no RPC needed; for
                              # an RPC that cannot serve the pinned block fails with that sentence, not a raw fork error
 forge coverage               # must stay at 100% for every file (lines, statements, branches, functions)
 aderyn .                     # Aderyn on src/, configured by aderyn.toml: must report nothing; CI does not run it
-for c in IndexZap MintRequests WeightedIndexFactory WeightedHub; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
+for c in IndexZap BasketBuilder MintRequests WeightedIndexFactory WeightedHub; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
 forge test --root keeper     # the keeper's executor, its own Foundry project; CI also runs its fmt, build and lint
 node --test keeper/test/unit/*.test.mjs  # the keeper bot's arithmetic, settings, Hermes client and tx tracker (no dependency)
 
@@ -91,7 +104,7 @@ CHECK=wide forge script script/CheckToken.s.sol --fork-url $MAINNET_RPC_URL
 
 Deployment, once, on Ethereum: `script/DeployWeighted.s.sol`, then `script/ConfigureWeighted.s.sol`, which lists each
 coin with its Pyth price id (`script/PythIds.sol`). `script/CheckToken.s.sol` reports on every token before its first
-listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 93 in all. On chain 1 the
+listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 92 in all. On chain 1 the
 deploy script resolves Pyth, the router and the stablecoins from the address book and refuses any other address
 (`DeployChecks.isPinnedChain`). Sepolia first needs its test market from
 `script/testnet/SetupTestMarket.s.sol`.
@@ -107,14 +120,15 @@ deploy script resolves Pyth, the router and the stablecoins from the address boo
 3. `forge test` green. `forge coverage` at 100% for every file, including mocks and scripts.
 4. Fork tests green if the change touches `IndexZap`, the hub's rebalancing, routes, token behaviour, or anything
    router- or pool-related, `WeightedHub` and its price ids included. Their summary must list the five Ethereum
-   `test/fork/` suites and 0 skipped. `WeightedHub.fork.t.sol` alone takes about an hour at 93 coins on an archive RPC
+   `test/fork/` suites and 0 skipped. `WeightedHub.fork.t.sol` alone takes about an hour at 92 coins on an archive RPC
    (Alchemy, Tenderly), nearly all of it the admission quotes on a cold RPC cache; a public endpoint prunes the state
    before it ends. They are also required when the deploy checks or `script/MainnetAddresses.sol` change, which
    `MainnetAddresses.fork.t.sol` and `Security.fork.t.sol` exercise.
 5. The Wake VS Code analyzer reports no errors or warnings on `src/`. Its reentrancy detector does not model reentrancy
-   guards; the two documented suppressions are on the `redeem` call in `IndexZap._burnBasket` and the `permit` call in
-   `IndexZap.burnToTokenWithPermit`. v5 adds the executor callback and Pyth's parse in `WeightedHub`, and the two
-   events of the vendored `IPythEvents`, which only Pyth emits.
+   guards; the documented suppressions are on the `redeem` call in `IndexZap._burnBasket`, the `permit` call in
+   `IndexZap.burnToTokenWithPermit`, the `redeem` call in `BasketBuilder.redeem`, and the clone's `initialize` call in
+   `WeightedIndexFactory._initializeIndex`, which the creation fee's transfer now follows. v5 adds the executor callback and Pyth's parse in `WeightedHub`, and
+   the two events of the vendored `IPythEvents`, which only Pyth emits.
    Aderyn (Cyfrin's analyzer, `aderyn .`, and its VS Code extension) reports nothing on `src/` either. `aderyn.toml`
    excludes the rules the design rejects, each with its reason, as `foundry.toml` does for lint; a verified false
    positive is marked where it stands with `// aderyn-fp-next-line(<detector>)` and its reason on the line above, or
@@ -209,8 +223,9 @@ and a maintainer re-runs them before merging.
 
 `ls` and each file's header comments show what lives where, and README.md's Layout section gives the tour. Two things
 the tree does not say: `script/testnet/` (the Sepolia test market) never deploys to a mainnet; and `keeper/` is the keeper bot with its executor contract, a Foundry project of
-its own with its own tests (`keeper/README.md`): it starts and fills auctions, serves coins without a Uniswap route from
-the executor's stock, and holds no role in the protocol. Anyone may run one; its key is the keeper's own hot key, never
+its own with its own tests (`keeper/README.md`): it starts and fills auctions, fills `MintRequests` requests at their
+limits (since 2026-10-16), serves coins without a Uniswap route from the executor's stock, and holds no role in the
+protocol. Anyone may run one; its key is the keeper's own hot key, never
 the owner's or the guardian's.
 
 Deleted on 2026-10-13 as unused, and recoverable from git at `f83dcab`: the v4 hackathon demo (`demo/`), the reviews'
@@ -242,7 +257,8 @@ records also cite.
   price, an exponent outside [-18, 0], a result above `MAX_PRICE`, a confidence interval wider than `MAX_CONFIDENCE`.
 - **Weights and constituents are fixed at creation,** two to a hundred components, and an index copies its price ids
   and decimals then, so no relisting reaches an existing index. The CREATE2 salt commits to every component's token,
-  units, weight, price id and decimals (LR-05: never switch back to CREATE).
+  units, weight, price id and decimals, and to the index's config: its fee rates, referral share and rebalance interval
+  (LR-05: never switch back to CREATE). The gate and the listing flag are not terms of the index and not in the salt.
 - **The cap counts units, never value.** A fill sends out at most `MAX_TURNOVER` (20%) of each component's own units,
   every leg moving the same share of the way, so a wrong or malicious price takes at most that, once a week. A value
   cap measured in the reported prices let two wrong feeds take 89% of an index far from its weights (V5-M2); do not
@@ -265,17 +281,52 @@ records also cite.
   share, and a burn leaves that leg below its backing; a token that stops being one share misprices a leg priced at the
   share's feed (CF-3, a known limitation). Do not add a path that pays out balances to cover it.
 - **The notice is 2 hours.** `WeightedHub`'s `REBALANCE_DELAY` is 2 hours: targets come from the settlement's prices,
-  so the notice is for executors, not for holders' exits (the spec's section 8). `AUCTION_DURATION` is 24 hours and
-  `MIN_REBALANCE_INTERVAL` 7 days (V5R-I2). A cancel, or an auction that expired unfilled, holds strangers off for
-  `REBALANCE_DELAY`, so the owner and guardian get the first restart; `canStartRebalance` answers whether strangers
-  may, and false for a clone that was never initialized (DA-22; CR-I02 for the second after an expiry).
+  so the notice is for executors, not for holders' exits (the spec's section 8). `AUCTION_DURATION` is 24 hours. The
+  rebalance interval is the index's own, chosen at creation within [`MIN_REBALANCE_INTERVAL`, `MAX_REBALANCE_INTERVAL`]
+  = [7, 91] days (the website's weekly to quarterly cadences; V5R-I2 set the floor). A cancel, or an auction that
+  expired unfilled, holds strangers off for `REBALANCE_DELAY`, so the owner and guardian get the first restart;
+  `canStartRebalance` answers whether strangers may, and false for a clone that was never initialized (DA-22; CR-I02
+  for the second after an expiry).
 - **Value-bearing amounts are in-kind.** The hub only ever moves amounts derived from supply and units: issue, redeem,
   claims and rebalance settlements. Never compute an amount from balances (balances only verify), and never add a
-  share price to the hub. `_backing(shares, units, rounding)` is the one place that turns shares and units into an
-  amount, and the seam a fee model would change. There is no fee (the owner's call on 2026-09-30), so no fee code goes
-  in. No share can be sent to the index itself or its factory: `_update` refuses both (CR-I01, RT-21).
+  share price to the hub. `_backing(shares, units, scale, rounding)` is the one place that turns shares and units
+  into an amount. No share can be sent to the index itself or its factory: `_update` refuses both (CR-I01, RT-21).
+- **Fees are shares, never components** (built 2026-10-14, `design/2026-10-14-mainnet-engine-research.md`, section
+  5.6, overturning the no-fee call of 2026-09-30 because the website charges them). An index charges its creator's rate
+  (0 to `MAX_CREATOR_FEE_BPS`, 100, the creator's choice) plus the platform's (0 to `MAX_PLATFORM_FEE_BPS`, 25, the
+  factory's policy when the index was created) on every issue and every redeem, in basis points of the shares. A
+  minter's deposit backs the fee's shares on top of its own (`previewIssue` sizes for the gross, rounded up); a burner's
+  fee is minted to the recipients out of the shares it burns and it is paid the net backing, rounded down. Every share
+  stays backed by the deposit that minted it, so the invariant is untouched. The recipients come from the factory at
+  each call (`feeTerms`): the index's creator (`creatorOf`, which the creator can hand on) and the platform recipient;
+  a referrer named at mint takes `referralShareBps` of the platform's part, so a self-referral discounts only the
+  platform's. A recipient that could not hold shares is replaced (the creator by the call's `to`, the platform's part
+  folded into the creator's), so no recipient can block a mint or an exit. Rates are fixed per index; the policy
+  reaches only later indexes, and a creator names the highest platform fee it accepts (`PlatformFeeTooHigh`). The
+  creation fee, in ether, is forwarded whole in the same call.
+- **A streaming fee is a unit scale** (built 2026-10-16, the record's option B). An index charges its creator's yearly
+  rate (0 to `MAX_CREATOR_STREAMING_BPS`, 500, the creator's choice) plus the platform's (0 to
+  `MAX_PLATFORM_STREAMING_BPS`, 100, the policy when the index was created; a creator names the highest it accepts,
+  `PlatformStreamingFeeTooHigh`), in basis points of the index's value per year, and in shares: every issue, redeem,
+  settlement and `accrueFees` first mints the fee accrued since the last accrual, `supply · f / (1 − f)` shares for
+  `f` the rate times the elapsed part of a year, split by the two rates and never to a referrer, and lowers `_scale`,
+  the factor every share's recorded units carry, by `supply / (supply + minted)`; both round down, so the invariant
+  holds and the dust stays with the holders. Nothing moves: the fee is ownership. `_backing(shares, units, scale,
+  rounding)` is `shares · units · scale / 1e36`, and the previews and `components()` report at the scale an accrual
+  now would leave (`pendingStreamingFee`). A settlement works on the scaled units, rounded down, and writes units that
+  carry the scale, so the scale starts from one again. An empty index accrues nothing and restarts the clock, so the
+  first minter owes nothing for the time before it; a supply too small for one share of fee keeps the clock; a gap
+  long enough for `f` to reach one is capped just under it, so the arithmetic answers and the last holder can leave.
+  The scale pushed the settlement arithmetic out of the hub's EIP-170 budget into `WeightedMath`, a stateless contract
+  the factory deploys with the implementation and the hub calls by STATICCALL (`MATH`); its constants are the hub's
+  (`test_theMathConstantsAreTheHubs`), and the optimizer runs are 100 for the same reason.
+- **A gated index issues only to allowed recipients.** The factory keeps the gate (`isGated`) and the allowlist
+  (`isAllowedMinter`), both the creator's; the creator can open the gate for good (`openMinting`), never close it.
+  Transfers and burns never read the gate, so the token stays an ERC-20 the zap and `MintRequests` can handle. The
+  creator has no other power: not over components, rates, or anyone's shares.
 - **Invariant:** for every component `i`,
-  `token_i.balanceOf(index) >= floor(totalSupply * units_i / 1e18) + totalClaims[token_i]`. Rounding always goes the
+  `token_i.balanceOf(index) >= floor(totalSupply * units_i * scale / 1e36) + totalClaims[token_i]`, with `scale` the
+  streaming fee's factor (1e18 until a fee accrues). Rounding always goes the
   holders' way: issue rounds up and redeem rounds down; new units round up (DA-01); a claim is recorded only for an
   amount that stayed in the index; a rebalance moves each leg's change in required backing, rounded down when it
   leaves and up when it comes back, so an executor never collects rounding dust (SA-07). The rebalance post-check is the
@@ -289,7 +340,9 @@ records also cite.
 - **No admin power over funds, no rebalancing key.**
   - The factory owner proposes listings (behind `LISTING_DELAY`, 2 days) and guardian changes (behind
     `GUARDIAN_DELAY`, 7 days). Anyone can execute a proposal, but only within `PROPOSAL_WINDOW` (7 days) after its
-    delay. The owner also delists and transfers ownership.
+    delay. The owner also delists, transfers ownership, and sets the fee policy (`setFeePolicy`: the platform's rate,
+    the referral share, the recipient, the creation fee), which reaches only indexes created afterwards; the recipient
+    can be neither zero, the factory nor an index.
   - The guardian can: cancel pending listings; delist; cancel a rebalance; start one with a keep mask; start one before
     strangers may; and cancel a guardian change that would remove the role. It cannot block its own replacement.
   - There is no pause, no upgrade, no sweep, no renounce, no instant guardian change, and no keeper or bot role. Keep
@@ -333,7 +386,9 @@ records also cite.
 - **Every payable path forwards the whole of `msg.value` to Pyth;** the hub never holds ether.
 - **The zap is stateless and replaceable.** New UX features (ETH in/out, aggregators, mixed-venue legs) go in a new or
   extended zap, never in the hub or factory. The app caps a zap basket at about 35 components, which is where 16.78M gas
-  runs out.
+  runs out. Since 2026-10-16 the zap's swaps run through `UniversalRouterSwaps`, the engine it shares with the basket
+  builder: the venue, command, payment, spend-bound, unsold-input, V4-route and check rules below are the engine's,
+  and the swap errors both raise are declared in `IXindexErrors`.
   - **Venue.** It swaps through Uniswap's Universal Router, pinned to the 2.0.0 deployment, and nothing else (the
     owner's call on 2026-10-14). Each leg names exactly one venue: a packed `v3Path` or a hookless `PathKey[] v4Path`,
     never both and never neither, else `BadRoute(i)`; the pass-through leg names none.
@@ -360,6 +415,18 @@ records also cite.
     hop too, returned the same way (CR-I07). Unsold `tokenOut` stays in the zap and is paid out.
   - **Never.** It must revert on transfer shortfalls, and never call `redeemSkipping` or `executeRebalance`. With
     `redeemSkipping` the zap receives the basket, so the claim would be booked to the zap and could never be collected.
+- **The basket builder is the zap's stateful sibling** (built 2026-10-16, `src/BasketBuilder.sol`, the record's
+  self-serve path for any size). The legs of a basket too wide for one transaction are bought over several `buy`
+  calls into an escrow per caller and token (`escrowOf`), then issued in one `mint`; selling mirrors it: `redeem`
+  into the escrow, `sell` the legs over several calls, `withdraw` what has no route, and `deposit` what has none to
+  begin with. It has no owner, no upgrade and nothing to configure; a token in an escrow moves only on its owner's
+  call; every amount is measured where it lands (a deposit and a redeem credit the balance increase, a buy what the
+  engine measured delivered, a sale debits what it gave the router and credits back what the sweep returned), so the
+  builder's balance of every token covers the escrows. A buy is sized by `previewIssue` at the call less the escrow, a
+  stale quote reverts `StaleRebalanceNonce`, and a leg a rebalance left short is named by `InsufficientEscrow` for one
+  more buy. The pass-through legs honour their limits (DA-15), the recipients are checked as the zap's (RT-21), and
+  the builder never calls `redeemSkipping` or `executeRebalance` either. A hundred-leg basket fits three buys and one
+  mint under EIP-7825 (`test_aHundredLegBasketFitsInThreeBuysAndAMint`, on mock pools).
   - **Errors.** Swap failures reach the caller unchanged. The router wraps a command in `ExecutionFailed` only when it
     dispatched it with a low-level call; swaps are internal calls, so what surfaces is the pool's own revert
     (`V3TooMuchRequested`, `V4TooLittleReceived` and their neighbours), which is why `IUniversalRouter` does not declare
@@ -531,6 +598,11 @@ cost the owner weighs before launch.
 - TRX was held as the BEP-20 TRX of TRON's closed BTTC bridge, on BNB Chain; with that deployment deleted it is not
   listed, and its Ethereum copy is not either.
 - Bitcoin is held as WBTC (the owner's call on 2026-09-29; do not reopen it).
+- DOGE is off the list for now (the owner's call on 2026-10-14). Its only listable form was Wormhole's copy of
+  Binance-Peg DOGE, and Pyth prices DOGE, not the copy: a broken peg or bridge would leave the copy priced as DOGE.
+  Binance-Peg DOGE is a proxy whose admin, one externally owned key on BNB Chain, can replace its code (read that
+  day). The copy's address stays recorded in `script/MainnetAddresses.sol` for a relisting. XRP, whose Binance-Peg
+  source answers `mint(uint256)` to one key but cannot change its code, stays listed.
 
 **Swap venues** (the owner's call on 2026-10-14): the zap swaps through Uniswap's Universal Router 2.0.0 alone, V3 or
 V4 per leg, chosen by the caller. PancakeSwap's v3 Universal Router, a third venue per leg since 2026-10-06 (chiefly
@@ -538,16 +610,19 @@ for CAKE), and THORChain, an app-side rail added the same day (`design/2026-10-0
 2026-10-14: users come with USDC or USDT. CAKE stays listed; its legs route through Uniswap's pools, or it mints in
 kind or through `MintRequests`.
 
-**Unchanged from earlier versions:** no fee (the owner's call on 2026-09-30; audits, the bounty and watchers are
-funded from outside; a later version could add one through `_backing`); an owner Safe of at least three signatures;
-fixed constituents; no protocol bots or hot keys; component whitelist only; the burner chooses the exit token; the
-mint currency is not tracked per holder; up to `MAX_COMPONENTS` (100) per index.
+**Fees, cadence and private indexes** (built 2026-10-14 on the research record's defaults, the owner's decisions of
+its section 9 still open): fees in shares with the platform's policy at zero until the owner sets one, so the no-fee
+call of 2026-09-30 survives as a configuration; a rebalance interval per index from 7 to 91 days; a private index is
+one the app does not list plus, if the creator chose it, a mint allowlist the creator keeps.
+
+**Unchanged from earlier versions:** an owner Safe of at least three signatures; fixed constituents; no protocol bots
+or hot keys; component whitelist only; the burner chooses the exit token; the mint currency is not tracked per holder;
+up to `MAX_COMPONENTS` (100) per index.
 
 If a change would alter any of these, say so explicitly.
 
 ## Not built (candidate backlog)
 
-- A fee, in a later index version.
 - `mintWithETH` / `burnToETH`, `createAndMint`, `mintWithTokenPermit` for USDC.
 - Creator fees (attribute them by `creatorOf`, never by name).
 - Constituent changes (a new list is a new index).

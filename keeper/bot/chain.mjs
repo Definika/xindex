@@ -30,6 +30,7 @@ function executorAbi() {
 export const ABI = {
   hub: load("../../abi/WeightedHub.json"),
   factory: load("../../abi/WeightedIndexFactory.json"),
+  requests: load("../../abi/MintRequests.json"),
   executor: executorAbi(),
   erc20: parseAbi(["function balanceOf(address) view returns (uint256)", "function symbol() view returns (string)"]),
   quoter: parseAbi([
@@ -47,7 +48,7 @@ export const ABI = {
     "error PriceFeedNotFound()",
   ]),
 };
-const ERRORS = [...ABI.hub, ...ABI.factory, ...ABI.executor, ...ABI.pyth].filter((x) => x.type === "error");
+const ERRORS = [...ABI.hub, ...ABI.factory, ...ABI.requests, ...ABI.executor, ...ABI.pyth].filter((x) => x.type === "error");
 
 /// The revert data inside a viem error, if any.
 function revertData(error) {
@@ -142,12 +143,15 @@ export function createChain(cfg) {
     if (chainId !== MAINNET.chainId) throw new Error(`chain ${chainId} is not Ethereum`);
     const at = await client.getBlockNumber();
     const ex = (fn) => read(cfg.executor, ABI.executor, fn, [], at);
-    const [keeper, router, usdc, factory] = await Promise.all([ex("keeper"), ex("ROUTER"), ex("USDC"), ex("FACTORY")]);
+    const [keeper, router, usdc, factory, requests] =
+      await Promise.all([ex("keeper"), ex("ROUTER"), ex("USDC"), ex("FACTORY"), ex("REQUESTS")]);
     const same = (a, b) => a.toLowerCase() === b.toLowerCase();
     if (!same(keeper, account.address)) throw new Error(`the executor's keeper is ${keeper}, not this bot's ${account.address}`);
     if (!same(router, MAINNET.swapRouter02)) throw new Error(`the executor routes through ${router}, not SwapRouter02`);
     if (!same(usdc, MAINNET.usdc)) throw new Error(`the executor's float is ${usdc}, not USDC`);
     if (!same(factory, cfg.factory)) throw new Error(`the executor fills ${factory}'s indexes, not FACTORY's`);
+    const requestsFactory = await read(requests, ABI.requests, "FACTORY", [], at);
+    if (!same(requestsFactory, factory)) throw new Error(`the executor's request escrow ${requests} is on another factory`);
 
     const implementation = await read(cfg.factory, ABI.factory, "IMPLEMENTATION", [], at);
     const pyth = await read(cfg.factory, ABI.factory, "PYTH", [], at);
@@ -162,7 +166,7 @@ export function createChain(cfg) {
       state: { [implementation]: { [HUB_SLOTS.eta]: 1234n, [HUB_SLOTS.keepMask]: 5n } },
     });
     if (eta !== 1234n || keepMask !== 5n) throw new Error("WeightedHub's storage layout is not the one the keeper knows");
-    return { implementation, pyth, duration };
+    return { implementation, pyth, duration, requests };
   }
 
   return {

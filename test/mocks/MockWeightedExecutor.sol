@@ -84,7 +84,7 @@ contract MockWeightedExecutor is IRebalanceExecutor {
     function _reenter(IWeightedHub index) internal {
         delete _reentryErrors;
         bytes[8] memory attempts = [
-            abi.encodeCall(IIndexHub.issue, (1, address(this))),
+            abi.encodeWithSignature("issue(uint256,address)", 1, address(this)),
             abi.encodeCall(IIndexHub.redeem, (1, address(this))),
             abi.encodeCall(IWeightedHub.redeemSkipping, (1, address(this), 1)),
             abi.encodeCall(IWeightedHub.claim, (address(0), address(this))),

@@ -427,6 +427,10 @@ contract CheckTokenTest is Test {
         assertEq(checker.powersOf(hex"630ecb93c0"), checker.BLACKLIST());
         // A bytes4 constant, left-aligned in a PUSH32: upgradeToAndCall, as OpenZeppelin's transparent proxy holds it.
         assertEq(checker.powersOf(abi.encodePacked(hex"7f", bytes32(bytes4(0x4f1ef286)))), checker.UPGRADE());
+        // solc at 200 runs: upgradeToAndCall as its half, 0x278f7943, shifted left by 225 (PUSH1 0xe1, SHL).
+        assertEq(checker.powersOf(hex"63278f794360e11b"), checker.UPGRADE(), "a selector shifted into place");
+        assertEq(checker.powersOf(hex"63278f794360101b"), 0, "a shift below 224 is not a selector");
+        assertEq(checker.powersOf(hex"63278f794360e1"), 0, "no SHL follows");
         assertEq(checker.powersOf(hex"00"), 0);
         assertEq(checker.powersOf(""), 0);
     }

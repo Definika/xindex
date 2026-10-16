@@ -132,11 +132,12 @@ contract RepoTest is Test {
     }
 
     /// @dev XA-44: the ABIs the web app decodes with are committed, and CI regenerates them and fails on a diff: the zap,
-    ///      `MintRequests`, and v5's weighted factory and index. v4's market-cap factory and hub are deleted, and their
+    ///      the basket builder, `MintRequests`, and v5's weighted factory and index. v4's market-cap factory and hub are deleted, and their
     ///      ABIs with them; so are Stage B's hybrid factory, hybrid index and vault
     ///      (`audit/2026-10-07-stage-b-retirement.md`).
     function test_XA44_theAbisAreCommittedAndChecked() public view {
-        string[4] memory contracts = ["IndexZap", "MintRequests", "WeightedIndexFactory", "WeightedHub"];
+        string[5] memory contracts =
+            ["IndexZap", "BasketBuilder", "MintRequests", "WeightedIndexFactory", "WeightedHub"];
         for (uint256 i = 0; i < contracts.length; ++i) {
             assertTrue(
                 _contains(_read(string.concat("abi/", contracts[i], ".json")), '"type": "function"'),
@@ -145,7 +146,9 @@ contract RepoTest is Test {
         }
         string memory workflow = _read(".github/workflows/test.yml");
         assertTrue(
-            _contains(workflow, "for contract in IndexZap MintRequests WeightedIndexFactory WeightedHub; do"),
+            _contains(
+                workflow, "for contract in IndexZap BasketBuilder MintRequests WeightedIndexFactory WeightedHub; do"
+            ),
             "CI regenerates every ABI"
         );
         assertTrue(_contains(workflow, "git diff --exit-code abi/"), "a stale ABI fails CI");

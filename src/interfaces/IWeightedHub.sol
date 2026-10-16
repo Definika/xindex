@@ -8,9 +8,21 @@ import {PythStructs} from "./pyth/PythStructs.sol";
 /// @title IWeightedHub
 /// @notice An index whose creator chose each component's share of its value. It is a plain ERC-20 fully backed, in
 ///         kind, by a basket of component tokens: 1e18 shares (one whole index token) are always redeemable for exactly
-///         `units_i` raw units of each component. The constituents and their weights never change. A rebalance brings
-///         the units back to the weights at Pyth prices read in the settling transaction, through an auction on the
-///         growing legs; issue, redeem and claims never read a price.
+///         `units_i` raw units of each component, less the index's fee. The constituents and their weights never
+///         change. A rebalance brings the units back to the weights at Pyth prices read in the settling transaction,
+///         through an auction on the growing legs; issue, redeem and claims never read a price.
+///
+///         Fees are paid in shares and never move a component: a minter's deposit backs the fee's shares on top of its
+///         own, and a burner's fee is minted to the recipients out of the shares it burns, so every share is backed by
+///         the deposit that minted it. The rates are fixed at creation: the creator's, chosen by the creator up to
+///         the factory's caps, and the platform's, the factory's policy of that moment, of which a referrer named at
+///         mint takes the policy's referral share. A streaming fee, a yearly rate of the index's value, accrues as
+///         time passes: on every issue, redeem and settlement, and on {accrueFees}, the shares that give the
+///         recipients that share of the index are minted to them and every share's units shrink by the same factor
+///         ({pendingStreamingFee}), so the backing of every share stays exactly what the index holds. The recipients, the creator
+///         and the platform, are read from the factory at each call (`feeTerms`), as is whether `to` may be issued
+///         shares of a gated index; the factory's creator keeps that list and can hand the role on. A recipient that
+///         could not hold shares is replaced, so no recipient can ever block a mint or an exit.
 /// @dev Integrators: value an index as the sum of `units_i * price_i` from {components} and an independent price
 ///      source. Never derive a price from `balanceOf(index)` and `totalSupply()`: inside `issue`, `redeem` and
 ///      `executeRebalance` they change at different moments. Only the factory's `isIndex` proves an address is an index.
@@ -35,6 +47,26 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
         uint8 decimals;
     }
 
+    /// @notice What the factory fixed for the index at creation, besides its components. None of it ever changes.
+    /// @param creatorFeeBps The creator's fee on every issue and on every redeem, in basis points of the shares, at
+    ///        most the factory's MAX_CREATOR_FEE_BPS.
+    /// @param platformFeeBps The platform's fee, likewise, at most the factory's MAX_PLATFORM_FEE_BPS.
+    /// @param referralShareBps The referrer's share of the platform's fee, in basis points, at most 10,000.
+    /// @param creatorStreamingBps The creator's streaming fee, in basis points of the index's value per year, at most
+    ///        the factory's MAX_CREATOR_STREAMING_BPS.
+    /// @param platformStreamingBps The platform's streaming fee, likewise, at most the factory's
+    ///        MAX_PLATFORM_STREAMING_BPS.
+    /// @param rebalanceInterval Seconds between rebalances, at least MIN_REBALANCE_INTERVAL and at most the
+    ///        factory's MAX_REBALANCE_INTERVAL.
+    struct Config {
+        uint16 creatorFeeBps;
+        uint16 platformFeeBps;
+        uint16 referralShareBps;
+        uint16 creatorStreamingBps;
+        uint16 platformStreamingBps;
+        uint32 rebalanceInterval;
+    }
+
     /// @notice `sender` paid `amounts` (per component, in component order, rounded up) and `to` received `shares`.
     event Issued(address indexed sender, address indexed to, uint256 shares, uint256[] amounts);
     /// @notice `sender` burned `shares` for `amounts` (per component, in component order, rounded down). With
@@ -45,6 +77,22 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     event ClaimRecorded(address indexed account, address indexed token, uint256 amount);
     /// @notice `account`'s claim of `amount` of `token` was paid to `to`.
     event Claimed(address indexed account, address indexed to, address indexed token, uint256 amount);
+    /// @notice The streaming fee of `feeShares` shares was minted to the recipients for the time since the last
+    ///         accrual, and every share's units now carry `scale` (1e18 = none) until the next settlement folds it in.
+    event StreamingFeeAccrued(uint256 feeShares, uint256 scale);
+    /// @notice An issue, a redeem or a streaming accrual minted its fee: `creatorShares` to `creator`,
+    ///         `platformShares` to `platform` and `referrerShares` to `referrer`, zero when none was named. The
+    ///         recipients are the factory's answer; a creator that could not hold shares is replaced by the call's own
+    ///         `to` (the caller, for an accrual), and a platform that could not is reported as zero, its part folded
+    ///         into the creator's.
+    event FeeSharesMinted(
+        address indexed referrer,
+        address creator,
+        address platform,
+        uint256 creatorShares,
+        uint256 platformShares,
+        uint256 referrerShares
+    );
 
     /// @notice A rebalance proposal, replacing any earlier one. No event marks an expiry: a proposal nobody filled
     ///         expires after `eta + AUCTION_DURATION`, and the next `RebalanceStarted` is the first sign of it.
@@ -88,6 +136,12 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     ///         units, a zero weight, weights that do not sum to TOTAL_WEIGHT, a zero price id, more than 18 decimals, or
     ///         two components with the same token or the same price id.
     error InvalidComponents();
+    /// @notice {initialize} got fee rates summing to more than 125 basis points, streaming rates summing to more than
+    ///         600, a referral share above basis points, or an interval below MIN_REBALANCE_INTERVAL. The factory
+    ///         bounds each rate and the interval more tightly.
+    error InvalidConfig();
+    /// @notice The index is gated and `to` is not on the factory's allowlist for it.
+    error NotAllowedMinter(address to);
     /// @notice `shares` is zero.
     error ZeroShares();
     /// @notice `skipMask` is zero or sets a bit at or above {componentCount}.
@@ -96,7 +150,7 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     error NothingToClaim(address token);
     /// @notice {issue} received less `token` than it pulled, as with a fee-on-transfer token.
     error TransferAmountMismatch(address token);
-    /// @notice MIN_REBALANCE_INTERVAL has not passed since the last rebalance; it does at `earliest`.
+    /// @notice The index's rebalance interval has not passed since the last rebalance; it does at `earliest`.
     error RebalanceTooSoon(uint256 earliest);
     /// @notice A rebalance is pending until `deadline`, the end of its auction.
     error RebalancePending(uint256 deadline);
@@ -146,7 +200,8 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     ///         the notice lets executors prepare; it does not fix anything a holder would need to leave over.
     function REBALANCE_DELAY() external view returns (uint256);
 
-    /// @notice Time that must pass after the last executed rebalance, or after creation, before {startRebalance}.
+    /// @notice Shortest rebalance interval an index can be created with: the least time that passes after the last
+    ///         executed rebalance, or after creation, before {startRebalance}. The factory bounds it above.
     function MIN_REBALANCE_INTERVAL() external view returns (uint256);
 
     /// @notice Length of the auction. Afterwards the pending rebalance has expired: the factory owner and guardian can
@@ -191,11 +246,33 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     /// @notice The Pyth contract every settlement reads its prices from, fixed in the implementation.
     function PYTH() external view returns (address);
 
+    /// @notice The settlement arithmetic every fill and preview runs, `IWeightedMath`, deployed by the factory with
+    ///         this implementation and fixed in it.
+    function MATH() external view returns (address);
+
     /// @notice One-time initializer called by the factory in the same transaction as the clone.
     /// @param name_ ERC-20 name, also the EIP-712 domain name for permits.
     /// @param symbol_ ERC-20 symbol.
     /// @param components_ The components, in the order every array of this index uses.
-    function initialize(string calldata name_, string calldata symbol_, ComponentInit[] calldata components_) external;
+    /// @param config_ The fee rates and the rebalance interval.
+    function initialize(
+        string calldata name_,
+        string calldata symbol_,
+        ComponentInit[] calldata components_,
+        Config calldata config_
+    ) external;
+
+    /// @notice The fee rates and the rebalance interval, fixed at creation.
+    function config() external view returns (Config memory);
+
+    /// @notice Mints the streaming fee accrued since the last accrual, as every issue, redeem and settlement does
+    ///         first. Anyone may call it; it reads no price.
+    function accrueFees() external;
+
+    /// @notice What {accrueFees} would mint now, and the factor, 1e18 = one, every share's units would then carry
+    ///         until the next settlement folds it into the recorded units. The previews and {components} already
+    ///         reflect both.
+    function pendingStreamingFee() external view returns (uint256 feeShares, uint256 scale);
 
     /// @notice Burns `shares` from msg.sender, sends every component whose bit is clear in `skipMask` to `to`,
     ///         and records the skipped amounts as claims that `to` can collect later with {claim}.
@@ -215,7 +292,9 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     /// @notice Number of components, fixed at initialization.
     function componentCount() external view returns (uint256);
 
-    /// @notice Component tokens and the raw units of each backing one whole index token (1e18 shares).
+    /// @notice Component tokens and the raw units of each backing one whole index token (1e18 shares), with the
+    ///         streaming fee accrued to now applied and rounded down; an issue of one whole token pulls these rounded
+    ///         up.
     function components() external view returns (address[] memory tokens, uint256[] memory units);
 
     /// @notice What the creator fixed for each component, in component order.
@@ -237,8 +316,8 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     ///         {canStartRebalance} rather than this alone.
     function restartAllowedAt() external view returns (uint256);
 
-    /// @notice Starts the notice period. Anyone can call it once MIN_REBALANCE_INTERVAL has passed since the last
-    ///         rebalance, while no unexpired rebalance is pending, and once the waits after a cancel and after an
+    /// @notice Starts the notice period. Anyone can call it once the index's rebalance interval has passed since the
+    ///         last rebalance, while no unexpired rebalance is pending, and once the waits after a cancel and after an
     ///         auction nobody filled are over ({canStartRebalance} answers all of this); before those the factory owner
     ///         or guardian can start it and nobody else. It reads no price and calls nothing on any component.
     /// @param keepMask Bit i set leaves component i untouched, for example while it is paused or its price feed has
@@ -284,8 +363,8 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     ///         would send nothing out uses MU_MAX instead.
     function currentMu() external view returns (uint256);
 
-    /// @notice Whether anyone can start a rebalance now: MIN_REBALANCE_INTERVAL has passed, no auction is live, and the
-    ///         waits after a cancel and after an unfilled auction are over.
+    /// @notice Whether anyone can start a rebalance now: the index's rebalance interval has passed, no auction is live,
+    ///         and the waits after a cancel and after an unfilled auction are over.
     function canStartRebalance() external view returns (bool);
 
     /// @notice Exact settlement an execution in this block would use with `prices`. Reverts like {executeRebalance}

@@ -17,10 +17,10 @@ import {MainnetAddresses as M} from "./MainnetAddresses.sol";
 ///         price for the share, else at the US-hours feed, which publishes nothing while the market is closed. The
 ///         hundred-coin list of 2026-10-10 (design/2026-10-10-one-index-wormhole-legs.md) adds 31 Ethereum-issued
 ///         coins and 13 Wormhole copies, each at its coin's feed, read from Hermes that day; a Wormhole copy is priced
-///         as the coin it wraps, as SOL's is.
+///         as the coin it wraps, as SOL's is. DOGE's copy left on 2026-10-14, the owner's call (`MainnetAddresses`).
 library PythIds {
     /// @notice How many coins the table names.
-    uint256 internal constant COUNT = 93;
+    uint256 internal constant COUNT = 92;
 
     /// @dev ETHEREUM / US DOLLAR.
     bytes32 internal constant WETH = 0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace;
@@ -185,8 +185,6 @@ library PythIds {
     bytes32 internal constant RSR = 0xfb7565b77267ba3f6ef770bed5d7f9b22b8542db676dbd9b934a2fcf945f4371;
     /// @dev RIPPLE / US DOLLAR, read from Hermes on 2026-10-10.
     bytes32 internal constant XRP = 0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8;
-    /// @dev DOGECOIN / US DOLLAR, read from Hermes on 2026-10-10.
-    bytes32 internal constant DOGE = 0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c;
     /// @dev CARDANO / US DOLLAR, read from Hermes on 2026-10-10.
     bytes32 internal constant ADA = 0x2a01deaec9e51a579277b34b122399984d0bbf57e2458a7e42fecd2829867a0d;
     /// @dev LITECOIN / US DOLLAR, read from Hermes on 2026-10-10.
@@ -230,7 +228,7 @@ library PythIds {
                 || token == M.MSFTON || token == M.AMZNON || token == M.TSMON || token == M.SPCXON || token == M.METAON
                 || token == M.AVGOON || token == M.TSLAON || token == M.SKHYON || token == M.MUON || token == M.LLYON
                 || token == M.AMDON || token == M.JPMON || token == M.WMTON || token == M.VON || token == M.XRP
-                || token == M.DOGE || token == M.ADA || token == M.LTC || token == M.DOT || token == M.ATOM
+                || token == M.ADA || token == M.LTC || token == M.DOT || token == M.ATOM
         ) return Tier.Custodial;
         if (
             token == M.CRO || token == M.ICP || token == M.ARB || token == M.RENDER || token == M.CAKE || token == M.ZRO
@@ -263,7 +261,7 @@ library PythIds {
 
     /// @notice Every coin of the table and its id: WETH, WBTC, LINK and UNI first, the `default` list, then the wide
     ///         list: the 45 of 2026-10-06 and 2026-10-10's first additions, then the hundred-coin list's 31
-    ///         Ethereum-issued coins and 13 Wormhole copies, each group by market cap.
+    ///         Ethereum-issued coins and 12 Wormhole copies, each group by market cap.
     function all() internal pure returns (address[] memory tokens, bytes32[] memory ids) {
         tokens = new address[](COUNT);
         ids = new bytes32[](COUNT);
@@ -348,17 +346,16 @@ library PythIds {
         (tokens[78], ids[78]) = (M.W, W);
         (tokens[79], ids[79]) = (M.RSR, RSR);
         (tokens[80], ids[80]) = (M.XRP, XRP);
-        (tokens[81], ids[81]) = (M.DOGE, DOGE);
-        (tokens[82], ids[82]) = (M.ADA, ADA);
-        (tokens[83], ids[83]) = (M.LTC, LTC);
-        (tokens[84], ids[84]) = (M.AVAX, AVAX);
-        (tokens[85], ids[85]) = (M.DOT, DOT);
-        (tokens[86], ids[86]) = (M.JUP, JUP);
-        (tokens[87], ids[87]) = (M.ALGO, ALGO);
-        (tokens[88], ids[88]) = (M.ATOM, ATOM);
-        (tokens[89], ids[89]) = (M.AERO, AERO);
-        (tokens[90], ids[90]) = (M.APT, APT);
-        (tokens[91], ids[91]) = (M.PYTH_TOKEN, PYTH_TOKEN);
-        (tokens[92], ids[92]) = (M.OP, OP);
+        (tokens[81], ids[81]) = (M.ADA, ADA);
+        (tokens[82], ids[82]) = (M.LTC, LTC);
+        (tokens[83], ids[83]) = (M.AVAX, AVAX);
+        (tokens[84], ids[84]) = (M.DOT, DOT);
+        (tokens[85], ids[85]) = (M.JUP, JUP);
+        (tokens[86], ids[86]) = (M.ALGO, ALGO);
+        (tokens[87], ids[87]) = (M.ATOM, ATOM);
+        (tokens[88], ids[88]) = (M.AERO, AERO);
+        (tokens[89], ids[89]) = (M.APT, APT);
+        (tokens[90], ids[90]) = (M.PYTH_TOKEN, PYTH_TOKEN);
+        (tokens[91], ids[91]) = (M.OP, OP);
     }
 }

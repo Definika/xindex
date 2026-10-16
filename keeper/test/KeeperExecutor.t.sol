@@ -5,6 +5,9 @@ import {IWeightedHub} from "xindex/src/interfaces/IWeightedHub.sol";
 import {PythStructs} from "xindex/src/interfaces/pyth/PythStructs.sol";
 import {IWeightedIndexFactory} from "xindex/src/interfaces/IWeightedIndexFactory.sol";
 import {WeightedHub} from "xindex/src/WeightedHub.sol";
+import {WeightedIndexFactory} from "xindex/src/WeightedIndexFactory.sol";
+import {MintRequests} from "xindex/src/MintRequests.sol";
+import {IMintRequests} from "xindex/src/interfaces/IMintRequests.sol";
 import {WeightedTest} from "xindex/test/WeightedTest.sol";
 import {MockERC20} from "xindex/test/mocks/MockERC20.sol";
 import {MockPyth} from "xindex/test/mocks/MockPyth.sol";
@@ -19,7 +22,9 @@ contract KeeperExecutorTest is WeightedTest {
     int64 constant ETH_UP = 2400e8;
 
     MockERC20 usdc;
+    MockERC20 usdt;
     MockSwapRouter router;
+    MintRequests requests;
     WeightedHub index;
     KeeperExecutor executor;
     address execOwner = makeAddr("execOwner");
@@ -29,15 +34,19 @@ contract KeeperExecutorTest is WeightedTest {
         _deploy();
         _listAll();
         usdc = new MockERC20("USD Coin", "USDC", 6);
+        usdt = new MockERC20("Tether", "USDT", 6);
         router = new MockSwapRouter();
         router.setPrice(address(eth), 2400e18);
         router.setPrice(address(btc), 60_000e18);
         router.setPrice(address(usd), 1e18);
         router.setPrice(address(usdc), 1e18);
+        router.setPrice(address(usdt), 1e18);
         eth.mint(address(router), 1000e18);
         btc.mint(address(router), 100e8);
         usd.mint(address(router), 1e12);
         usdc.mint(address(router), 1e12);
+        usdt.mint(address(router), 1e12);
+        requests = new MintRequests(address(factory), address(usdc), address(usdt));
 
         index = _create(_defaultSpecs());
         _issue(index, alice, 100e18);
@@ -47,8 +56,52 @@ contract KeeperExecutorTest is WeightedTest {
 
     function _executor(address float) internal returns (KeeperExecutor) {
         return new KeeperExecutor(
-            IV3SwapRouter(address(router)), float, IWeightedIndexFactory(address(factory)), execOwner, keeper
+            IV3SwapRouter(address(router)),
+            float,
+            IWeightedIndexFactory(address(factory)),
+            IMintRequests(address(requests)),
+            execOwner,
+            keeper
         );
+    }
+
+    /// @dev `who` escrows `amount` of `stable` for at least `minShares` shares of the index, a day away.
+    function _requestMint(address who, address stable, uint256 amount, uint256 minShares) internal returns (uint256) {
+        MockERC20(stable).mint(who, amount);
+        vm.startPrank(who);
+        MockERC20(stable).approve(address(requests), amount);
+        uint256 id = requests.requestMint(address(index), stable, amount, minShares, block.timestamp + 1 days);
+        vm.stopPrank();
+        return id;
+    }
+
+    /// @dev `who` escrows `shares` of the index for at least `minOut` of `stable`, a day away.
+    function _requestRedeem(address who, uint256 shares, address stable, uint256 minOut) internal returns (uint256) {
+        vm.startPrank(who);
+        index.approve(address(requests), shares);
+        uint256 id = requests.requestRedeem(address(index), shares, stable, minOut, block.timestamp + 1 days);
+        vm.stopPrank();
+        return id;
+    }
+
+    function _stableRoute(address stable) internal view returns (bytes memory) {
+        return stable == address(usdc) ? bytes("") : abi.encodePacked(stable, uint24(100), address(usdc));
+    }
+
+    /// @dev What the basket for `shares` costs through the routes, at the router's prices.
+    function _basketCost(uint256 shares) internal view returns (uint256 cost) {
+        uint256[] memory need = index.previewIssue(shares);
+        cost = router.quoteIn(address(usdc), address(eth), need[0])
+            + router.quoteIn(address(usdc), address(btc), need[1])
+            + router.quoteIn(address(usdc), address(usd), need[2]);
+    }
+
+    /// @dev What the basket of `shares` sells for through the routes, at the router's prices.
+    function _basketProceeds(uint256 shares) internal view returns (uint256 proceeds) {
+        uint256[] memory got = index.previewRedeem(shares);
+        proceeds = router.quoteOut(address(eth), address(usdc), got[0])
+            + router.quoteOut(address(btc), address(usdc), got[1])
+            + router.quoteOut(address(usd), address(usdc), got[2]);
     }
 
     /// @dev Opens the auction and moves `into` seconds into it.
@@ -257,7 +310,7 @@ contract KeeperExecutorTest is WeightedTest {
         specs[0] = _spec(address(eth), 1, 1e18);
         specs[1] = _spec(address(btc), 9999, factory.MIN_RAW_UNITS());
         vm.prank(keeper);
-        WeightedHub own = WeightedHub(factory.createIndex("Own", "OWN", specs));
+        WeightedHub own = WeightedHub(factory.createIndex("Own", "OWN", specs, _params()));
         _issue(own, keeper, 1e18);
         btc.mint(address(executor), 1e8);
 
@@ -546,6 +599,7 @@ contract KeeperExecutorTest is WeightedTest {
         assertEq(address(executor.ROUTER()), address(router));
         assertEq(executor.USDC(), address(usdc));
         assertEq(address(executor.FACTORY()), address(factory));
+        assertEq(address(executor.REQUESTS()), address(requests));
         assertEq(executor.OWNER(), execOwner);
         assertEq(executor.keeper(), keeper);
         assertEq(usdc.allowance(address(executor), address(router)), type(uint256).max, "USDC approved once");
@@ -554,16 +608,210 @@ contract KeeperExecutorTest is WeightedTest {
     function test_constructorRefusesZeroAddresses() public {
         IV3SwapRouter r = IV3SwapRouter(address(router));
         IWeightedIndexFactory f = IWeightedIndexFactory(address(factory));
+        IMintRequests q = IMintRequests(address(requests));
         address u = address(usdc);
         vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
-        new KeeperExecutor(IV3SwapRouter(address(0)), u, f, execOwner, keeper);
+        new KeeperExecutor(IV3SwapRouter(address(0)), u, f, q, execOwner, keeper);
         vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
-        new KeeperExecutor(r, address(0), f, execOwner, keeper);
+        new KeeperExecutor(r, address(0), f, q, execOwner, keeper);
         vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
-        new KeeperExecutor(r, u, IWeightedIndexFactory(address(0)), execOwner, keeper);
+        new KeeperExecutor(r, u, IWeightedIndexFactory(address(0)), q, execOwner, keeper);
         vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
-        new KeeperExecutor(r, u, f, address(0), keeper);
+        new KeeperExecutor(r, u, f, IMintRequests(address(0)), execOwner, keeper);
         vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
-        new KeeperExecutor(r, u, f, execOwner, address(0));
+        new KeeperExecutor(r, u, f, q, address(0), keeper);
+        vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
+        new KeeperExecutor(r, u, f, q, execOwner, address(0));
+    }
+
+    /// @dev A request escrow for another factory's indexes would let the keeper fill requests the factory check never
+    ///      saw; the executor refuses it at construction.
+    function test_constructorRefusesRequestsOnAnotherFactory() public {
+        WeightedIndexFactory other = new WeightedIndexFactory(owner, guardian, address(pyth));
+        MintRequests elsewhere = new MintRequests(address(other), address(usdc), address(usdt));
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.RequestsMismatch.selector, address(elsewhere)));
+        new KeeperExecutor(
+            IV3SwapRouter(address(router)),
+            address(usdc),
+            IWeightedIndexFactory(address(factory)),
+            IMintRequests(address(elsewhere)),
+            execOwner,
+            keeper
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Requests
+    // ---------------------------------------------------------------------
+
+    function test_fillMintBuysTheBasketIssuesAndTakesTheEscrow() public {
+        uint256 id = _requestMint(stranger, address(usdc), 250e6, 2e18);
+        uint256 cost = _basketCost(2e18);
+        uint256 before = usdc.balanceOf(address(executor));
+
+        vm.prank(keeper);
+        (int256 delta, uint256 gasUsed) = executor.fillMint(id, 2e18, _routes(), "", type(int256).min, block.timestamp);
+
+        assertEq(delta, _int(250e6) - _int(cost), "the escrow less the basket's cost");
+        assertEq(_int(usdc.balanceOf(address(executor))) - _int(before), delta);
+        assertGt(delta, 0, "a request above the basket's cost pays");
+        assertGt(gasUsed, 0);
+        assertEq(index.balanceOf(stranger), 2e18, "the requester got its shares");
+        assertEq(index.balanceOf(address(executor)), 0, "and the executor kept none");
+        assertEq(eth.balanceOf(address(executor)), 0, "nothing of the basket is left over");
+        assertFalse(requests.getRequest(id).open);
+        assertEq(usdc.balanceOf(address(requests)), 0, "the escrow left with the request");
+    }
+
+    function test_fillMintSellsAnEscrowedUsdtIntoTheFloat() public {
+        uint256 id = _requestMint(stranger, address(usdt), 250e6, 2e18);
+        uint256 cost = _basketCost(2e18);
+        vm.prank(keeper);
+        (int256 delta,) =
+            executor.fillMint(id, 2e18, _routes(), _stableRoute(address(usdt)), type(int256).min, block.timestamp);
+        assertEq(delta, _int(router.quoteOut(address(usdt), address(usdc), 250e6)) - _int(cost));
+        assertEq(usdt.balanceOf(address(executor)), 0, "the USDT was sold");
+        assertEq(index.balanceOf(stranger), 2e18);
+
+        // Without the stablecoin's route, or with one for USDC, the fill is refused.
+        id = _requestMint(stranger, address(usdt), 250e6, 2e18);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.BadRoute.selector, address(usdt)));
+        executor.fillMint(id, 2e18, _routes(), "", type(int256).min, block.timestamp);
+        id = _requestMint(stranger, address(usdc), 250e6, 2e18);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.BadRoute.selector, address(usdc)));
+        executor.fillMint(id, 2e18, _routes(), _stableRoute(address(usdt)), type(int256).min, block.timestamp);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.BadRoute.selector, address(usdc)));
+        executor.fillMint(id, 2e18, _routes(), hex"1234", type(int256).min, block.timestamp);
+    }
+
+    function test_fillMintDeliversFromStockFirstWithinTheAllowance() public {
+        uint256 id = _requestMint(stranger, address(usdc), 250e6, 2e18);
+        uint256[] memory need = index.previewIssue(2e18);
+        eth.mint(address(executor), need[0]);
+        _allow(address(eth), need[0] / 2);
+        bytes[] memory routes = _routes();
+        uint256 cost = router.quoteIn(address(usdc), address(eth), need[0] - need[0] / 2)
+            + router.quoteIn(address(usdc), address(btc), need[1])
+            + router.quoteIn(address(usdc), address(usd), need[2]);
+
+        vm.prank(keeper);
+        (int256 delta,) = executor.fillMint(id, 2e18, routes, "", type(int256).min, block.timestamp);
+        assertEq(delta, _int(250e6) - _int(cost), "half the ETH came from stock, the rest was bought");
+        assertEq(eth.balanceOf(address(executor)), need[0] - need[0] / 2, "the stock beyond the allowance stayed");
+        assertEq(executor.stockAllowance(address(eth)), 0, "the delivery spent the allowance");
+
+        // With no route for a coin the stock cannot cover, nothing can be delivered.
+        id = _requestMint(stranger, address(usdc), 250e6, 2e18);
+        routes[0] = "";
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NoRoute.selector, address(eth)));
+        executor.fillMint(id, 2e18, routes, "", type(int256).min, block.timestamp);
+    }
+
+    function test_fillMintChecksTheCall() public {
+        uint256 id = _requestMint(stranger, address(usdc), 250e6, 2e18);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NotKeeper.selector, stranger));
+        vm.prank(stranger);
+        executor.fillMint(id, 2e18, _routes(), "", type(int256).min, block.timestamp);
+
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.Expired.selector, block.timestamp - 1));
+        executor.fillMint(id, 2e18, _routes(), "", type(int256).min, block.timestamp - 1);
+
+        bytes[] memory two = new bytes[](2);
+        vm.prank(keeper);
+        vm.expectRevert(KeeperExecutor.LengthMismatch.selector);
+        executor.fillMint(id, 2e18, two, "", type(int256).min, block.timestamp);
+
+        // The floor binds: the escrow less the cost is the most the fill can promise.
+        int256 cost = _int(_basketCost(2e18));
+        vm.prank(keeper);
+        vm.expectRevert(
+            abi.encodeWithSelector(KeeperExecutor.TooCostly.selector, _int(250e6) - cost, _int(250e6) - cost + 1)
+        );
+        executor.fillMint(id, 2e18, _routes(), "", _int(250e6) - cost + 1, block.timestamp);
+
+        // Fewer shares than the limit: the escrow refuses the delivery.
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IMintRequests.BelowLimit.selector, 2e18 - 1, 2e18));
+        executor.fillMint(id, 2e18 - 1, _routes(), "", type(int256).min, block.timestamp);
+
+        // A redeem request is the other side.
+        _issue(index, stranger, 1e18);
+        uint256 redeemId = _requestRedeem(stranger, 1e18, address(usdc), 90e6);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.WrongSide.selector, redeemId));
+        executor.fillMint(redeemId, 1e18, _routes(), "", type(int256).min, block.timestamp);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.WrongSide.selector, id));
+        executor.fillRedeem(id, 90e6, _routes(), "", type(int256).min, block.timestamp);
+    }
+
+    function test_fillRedeemPaysTheStableRedeemsAndSellsTheBasket() public {
+        _issue(index, stranger, 1e18);
+        uint256 id = _requestRedeem(stranger, 1e18, address(usdc), 90e6);
+        uint256 proceeds = _basketProceeds(1e18);
+        uint256 before = usdc.balanceOf(address(executor));
+
+        vm.prank(keeper);
+        (int256 delta, uint256 gasUsed) =
+            executor.fillRedeem(id, 90e6, _routes(), "", type(int256).min, block.timestamp);
+
+        assertEq(delta, _int(proceeds) - _int(90e6), "the basket's proceeds less what the requester was paid");
+        assertEq(_int(usdc.balanceOf(address(executor))) - _int(before), delta);
+        assertGt(delta, 0, "a request below the basket's worth pays");
+        assertGt(gasUsed, 0);
+        assertEq(usdc.balanceOf(stranger), 90e6, "the requester got its stable");
+        assertEq(index.balanceOf(address(executor)), 0, "the shares were redeemed");
+        assertEq(index.balanceOf(stranger), 0);
+        assertEq(eth.balanceOf(address(executor)), 0, "every component sold");
+        assertFalse(requests.getRequest(id).open);
+    }
+
+    function test_fillRedeemBuysUsdtWithTheFloatAndKeepsUnroutedCoins() public {
+        _issue(index, stranger, 1e18);
+        uint256 id = _requestRedeem(stranger, 1e18, address(usdt), 90e6);
+        uint256[] memory got = index.previewRedeem(1e18);
+        bytes[] memory routes = _routes();
+        routes[1] = "";
+        uint256 proceeds =
+            router.quoteOut(address(eth), address(usdc), got[0]) + router.quoteOut(address(usd), address(usdc), got[2]);
+        uint256 paid = router.quoteIn(address(usdc), address(usdt), 90e6);
+
+        vm.prank(keeper);
+        (int256 delta,) =
+            executor.fillRedeem(id, 90e6, routes, _stableRoute(address(usdt)), type(int256).min, block.timestamp);
+        assertEq(delta, _int(proceeds) - _int(paid));
+        assertEq(usdt.balanceOf(stranger), 90e6);
+        assertEq(btc.balanceOf(address(executor)), got[1], "the unrouted BTC is stock now");
+
+        // The floor binds here too, and a stablecoin needs its route.
+        _issue(index, stranger, 1e18);
+        id = _requestRedeem(stranger, 1e18, address(usdt), 90e6);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.BadRoute.selector, address(usdt)));
+        executor.fillRedeem(id, 90e6, routes, "", type(int256).min, block.timestamp);
+        vm.prank(keeper);
+        vm.expectRevert(
+            abi.encodeWithSelector(KeeperExecutor.TooCostly.selector, _int(proceeds) - _int(paid), _int(proceeds))
+        );
+        executor.fillRedeem(id, 90e6, routes, _stableRoute(address(usdt)), _int(proceeds), block.timestamp);
+    }
+
+    function test_fillRedeemChecksTheCall() public {
+        _issue(index, stranger, 1e18);
+        uint256 id = _requestRedeem(stranger, 1e18, address(usdc), 90e6);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NotKeeper.selector, stranger));
+        vm.prank(stranger);
+        executor.fillRedeem(id, 90e6, _routes(), "", type(int256).min, block.timestamp);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.Expired.selector, block.timestamp - 1));
+        executor.fillRedeem(id, 90e6, _routes(), "", type(int256).min, block.timestamp - 1);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IMintRequests.BelowLimit.selector, 90e6 - 1, 90e6));
+        executor.fillRedeem(id, 90e6 - 1, _routes(), "", type(int256).min, block.timestamp);
     }
 }

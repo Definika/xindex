@@ -10,6 +10,8 @@ import {IndexZap} from "../../src/IndexZap.sol";
 import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {IWeightedIndexFactory} from "../../src/interfaces/IWeightedIndexFactory.sol";
 import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
+import {IUniversalRouterSwaps} from "../../src/interfaces/IUniversalRouterSwaps.sol";
+import {IXindexErrors} from "../../src/interfaces/IXindexErrors.sol";
 import {IUniversalRouter} from "../../src/interfaces/IUniversalRouter.sol";
 import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
@@ -95,7 +97,22 @@ contract IndexZapForkTest is Test {
         specs[0] = IWeightedIndexFactory.ComponentSpec({token: A.WBTC, weight: 3334, units: U_WBTC});
         specs[1] = IWeightedIndexFactory.ComponentSpec({token: A.WETH, weight: 3333, units: U_WETH});
         specs[2] = IWeightedIndexFactory.ComponentSpec({token: A.LINK, weight: 3333, units: U_LINK});
-        index = WeightedHub(factory.createIndex("Blue Chip", "BLUE", specs));
+        index = WeightedHub(
+            factory.createIndex(
+                "Blue Chip",
+                "BLUE",
+                specs,
+                IWeightedIndexFactory.IndexParams({
+                    creatorFeeBps: 0,
+                    creatorStreamingBps: 0,
+                    maxPlatformFeeBps: 25,
+                    maxPlatformStreamingBps: 100,
+                    rebalanceInterval: 7 days,
+                    gated: false,
+                    listed: true
+                })
+            )
+        );
     }
 
     // ---------------------------------------------------------------------
@@ -137,40 +154,43 @@ contract IndexZapForkTest is Test {
 
     /// @dev The basket as an app would route it today: WBTC and WETH are deeper on V3, LINK on V4. Only LINK has a
     ///      V4 pool worth using here, and it is native-ether-paired, which is why the route crosses `address(0)`.
-    function _mixedMintLegs() internal pure returns (IIndexZap.MintLeg[] memory legs) {
+    function _mixedMintLegs() internal pure returns (IUniversalRouterSwaps.MintLeg[] memory legs) {
         bytes[] memory p = _mintPaths(A.USDC);
-        legs = new IIndexZap.MintLeg[](3);
-        legs[0] = IIndexZap.MintLeg({v3Path: p[0], v4Path: new PathKey[](0), maxAmountIn: 0});
-        legs[1] = IIndexZap.MintLeg({v3Path: p[1], v4Path: new PathKey[](0), maxAmountIn: 0});
-        legs[2] = IIndexZap.MintLeg({v3Path: "", v4Path: _v4MintPathLink(), maxAmountIn: 0});
+        legs = new IUniversalRouterSwaps.MintLeg[](3);
+        legs[0] = IUniversalRouterSwaps.MintLeg({v3Path: p[0], v4Path: new PathKey[](0), maxAmountIn: 0});
+        legs[1] = IUniversalRouterSwaps.MintLeg({v3Path: p[1], v4Path: new PathKey[](0), maxAmountIn: 0});
+        legs[2] = IUniversalRouterSwaps.MintLeg({v3Path: "", v4Path: _v4MintPathLink(), maxAmountIn: 0});
     }
 
-    function _mixedBurnLegs() internal pure returns (IIndexZap.BurnLeg[] memory legs) {
+    function _mixedBurnLegs() internal pure returns (IUniversalRouterSwaps.BurnLeg[] memory legs) {
         bytes[] memory p = _burnPaths(A.USDC);
-        legs = new IIndexZap.BurnLeg[](3);
-        legs[0] = IIndexZap.BurnLeg({v3Path: p[0], v4Path: new PathKey[](0), minAmountOut: 0});
-        legs[1] = IIndexZap.BurnLeg({v3Path: p[1], v4Path: new PathKey[](0), minAmountOut: 0});
-        legs[2] = IIndexZap.BurnLeg({v3Path: "", v4Path: _v4BurnPathLink(), minAmountOut: 0});
+        legs = new IUniversalRouterSwaps.BurnLeg[](3);
+        legs[0] = IUniversalRouterSwaps.BurnLeg({v3Path: p[0], v4Path: new PathKey[](0), minAmountOut: 0});
+        legs[1] = IUniversalRouterSwaps.BurnLeg({v3Path: p[1], v4Path: new PathKey[](0), minAmountOut: 0});
+        legs[2] = IUniversalRouterSwaps.BurnLeg({v3Path: "", v4Path: _v4BurnPathLink(), minAmountOut: 0});
     }
 
-    function _mintLegs(bytes[] memory paths) internal pure returns (IIndexZap.MintLeg[] memory legs) {
-        legs = new IIndexZap.MintLeg[](paths.length);
+    function _mintLegs(bytes[] memory paths) internal pure returns (IUniversalRouterSwaps.MintLeg[] memory legs) {
+        legs = new IUniversalRouterSwaps.MintLeg[](paths.length);
         for (uint256 i = 0; i < paths.length; ++i) {
-            legs[i] = IIndexZap.MintLeg({v3Path: paths[i], v4Path: new PathKey[](0), maxAmountIn: 0});
+            legs[i] = IUniversalRouterSwaps.MintLeg({v3Path: paths[i], v4Path: new PathKey[](0), maxAmountIn: 0});
         }
     }
 
-    function _burnLegs(bytes[] memory paths) internal pure returns (IIndexZap.BurnLeg[] memory legs) {
-        legs = new IIndexZap.BurnLeg[](paths.length);
+    function _burnLegs(bytes[] memory paths) internal pure returns (IUniversalRouterSwaps.BurnLeg[] memory legs) {
+        legs = new IUniversalRouterSwaps.BurnLeg[](paths.length);
         for (uint256 i = 0; i < paths.length; ++i) {
-            legs[i] = IIndexZap.BurnLeg({v3Path: paths[i], v4Path: new PathKey[](0), minAmountOut: 0});
+            legs[i] = IUniversalRouterSwaps.BurnLeg({v3Path: paths[i], v4Path: new PathKey[](0), minAmountOut: 0});
         }
     }
 
-    function _mintCall(WeightedHub idx, address tokenIn, uint256 maxIn, uint256 shares, IIndexZap.MintLeg[] memory legs)
-        internal
-        returns (uint256)
-    {
+    function _mintCall(
+        WeightedHub idx,
+        address tokenIn,
+        uint256 maxIn,
+        uint256 shares,
+        IUniversalRouterSwaps.MintLeg[] memory legs
+    ) internal returns (uint256) {
         return zap.mintWithToken(
             IIndexZap.MintParams({
                 index: address(idx),
@@ -180,7 +200,8 @@ contract IndexZapForkTest is Test {
                 shares: shares,
                 legs: legs,
                 to: alice,
-                deadline: block.timestamp
+                deadline: block.timestamp,
+                referrer: address(0)
             })
         );
     }
@@ -190,7 +211,7 @@ contract IndexZapForkTest is Test {
         uint256 shares,
         address tokenOut,
         uint256 minOut,
-        IIndexZap.BurnLeg[] memory legs
+        IUniversalRouterSwaps.BurnLeg[] memory legs
     ) internal returns (uint256) {
         return zap.burnToToken(
             IIndexZap.BurnParams({
@@ -346,7 +367,7 @@ contract IndexZapForkTest is Test {
     function testFork_v4LegRevertsWhenItsCapIsTooLow() public {
         uint256 v3Quote = _quoteMint(A.USDC, 1e18);
         deal(A.USDC, alice, v3Quote * 2);
-        IIndexZap.MintLeg[] memory legs = _mixedMintLegs();
+        IUniversalRouterSwaps.MintLeg[] memory legs = _mixedMintLegs();
         legs[2].maxAmountIn = 1e6; // a dollar, far under what one LINK costs
 
         vm.startPrank(alice);
@@ -362,11 +383,11 @@ contract IndexZapForkTest is Test {
     function testFork_mintAndBurnWithPerLegLimits() public {
         uint256[] memory need = index.previewIssue(1e18);
         bytes[] memory mintPaths = _mintPaths(A.USDC);
-        IIndexZap.MintLeg[] memory mintLegs = new IIndexZap.MintLeg[](3);
+        IUniversalRouterSwaps.MintLeg[] memory mintLegs = new IUniversalRouterSwaps.MintLeg[](3);
         uint256 total;
         for (uint256 i = 0; i < 3; ++i) {
             (uint256 legQuote,,,) = quoter.quoteExactOutput(mintPaths[i], need[i]);
-            mintLegs[i] = IIndexZap.MintLeg({
+            mintLegs[i] = IUniversalRouterSwaps.MintLeg({
                 v3Path: mintPaths[i], v4Path: new PathKey[](0), maxAmountIn: legQuote + legQuote / 200
             });
             total += legQuote;
@@ -381,11 +402,11 @@ contract IndexZapForkTest is Test {
 
         uint256[] memory got = index.previewRedeem(1e18);
         bytes[] memory burnPaths = _burnPaths(A.USDC);
-        IIndexZap.BurnLeg[] memory burnLegs = new IIndexZap.BurnLeg[](3);
+        IUniversalRouterSwaps.BurnLeg[] memory burnLegs = new IUniversalRouterSwaps.BurnLeg[](3);
         uint256 quoteOut;
         for (uint256 i = 0; i < 3; ++i) {
             (uint256 legOut,,,) = quoter.quoteExactInput(burnPaths[i], got[i]);
-            burnLegs[i] = IIndexZap.BurnLeg({
+            burnLegs[i] = IUniversalRouterSwaps.BurnLeg({
                 v3Path: burnPaths[i], v4Path: new PathKey[](0), minAmountOut: legOut - legOut / 200
             });
             quoteOut += legOut;
@@ -417,12 +438,12 @@ contract IndexZapForkTest is Test {
     function testFork_burnToWBTC() public {
         _mint(A.USDC, 1e18, 100);
 
-        IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](3);
-        legs[0] = IIndexZap.BurnLeg({v3Path: "", v4Path: new PathKey[](0), minAmountOut: 0}); // WBTC is the payout token
-        legs[1] = IIndexZap.BurnLeg({
+        IUniversalRouterSwaps.BurnLeg[] memory legs = new IUniversalRouterSwaps.BurnLeg[](3);
+        legs[0] = IUniversalRouterSwaps.BurnLeg({v3Path: "", v4Path: new PathKey[](0), minAmountOut: 0}); // WBTC is the payout token
+        legs[1] = IUniversalRouterSwaps.BurnLeg({
             v3Path: abi.encodePacked(A.WETH, F500, A.WBTC), v4Path: new PathKey[](0), minAmountOut: 0
         });
-        legs[2] = IIndexZap.BurnLeg({
+        legs[2] = IUniversalRouterSwaps.BurnLeg({
             v3Path: abi.encodePacked(A.LINK, F3000, A.WETH, F500, A.WBTC), v4Path: new PathKey[](0), minAmountOut: 0
         });
 
@@ -446,7 +467,7 @@ contract IndexZapForkTest is Test {
         uint256 quote = _quoteBurn(A.USDC, 1e18);
         vm.startPrank(alice);
         index.approve(address(zap), 1e18);
-        vm.expectPartialRevert(IIndexZap.InsufficientOutput.selector);
+        vm.expectPartialRevert(IXindexErrors.InsufficientOutput.selector);
         _burnCall(index, 1e18, A.USDC, quote + 1, _burnLegs(_burnPaths(A.USDC)));
         vm.stopPrank();
         assertEq(index.balanceOf(alice), 1e18);
@@ -467,7 +488,22 @@ contract IndexZapForkTest is Test {
         IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](2);
         specs[0] = IWeightedIndexFactory.ComponentSpec({token: t[0], weight: 5000, units: 50_000});
         specs[1] = IWeightedIndexFactory.ComponentSpec({token: t[1], weight: 5000, units: 5e14});
-        WeightedHub btc = WeightedHub(factory.createIndex("BTC Basket", "BTC2", specs));
+        WeightedHub btc = WeightedHub(
+            factory.createIndex(
+                "BTC Basket",
+                "BTC2",
+                specs,
+                IWeightedIndexFactory.IndexParams({
+                    creatorFeeBps: 0,
+                    creatorStreamingBps: 0,
+                    maxPlatformFeeBps: 25,
+                    maxPlatformStreamingBps: 100,
+                    rebalanceInterval: 7 days,
+                    gated: false,
+                    listed: true
+                })
+            )
+        );
 
         bytes[] memory mintPaths = new bytes[](2);
         mintPaths[0] = abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDC);

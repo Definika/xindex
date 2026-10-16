@@ -12,6 +12,8 @@ import {IndexZap} from "../../src/IndexZap.sol";
 import {MintRequests} from "../../src/MintRequests.sol";
 import {IMintRequests} from "../../src/interfaces/IMintRequests.sol";
 import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
+import {IUniversalRouterSwaps} from "../../src/interfaces/IUniversalRouterSwaps.sol";
+import {IXindexErrors} from "../../src/interfaces/IXindexErrors.sol";
 import {IUniversalRouter} from "../../src/interfaces/IUniversalRouter.sol";
 import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
@@ -143,7 +145,22 @@ contract SecurityForkTest is Test {
         IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](2);
         specs[0] = IWeightedIndexFactory.ComponentSpec({token: a, weight: 5000, units: _units(a)});
         specs[1] = IWeightedIndexFactory.ComponentSpec({token: b, weight: 5000, units: _units(b)});
-        idx = WeightedHub(factory.createIndex("Fork Security", "FSEC", specs));
+        idx = WeightedHub(
+            factory.createIndex(
+                "Fork Security",
+                "FSEC",
+                specs,
+                IWeightedIndexFactory.IndexParams({
+                    creatorFeeBps: 0,
+                    creatorStreamingBps: 0,
+                    maxPlatformFeeBps: 25,
+                    maxPlatformStreamingBps: 100,
+                    rebalanceInterval: 7 days,
+                    gated: false,
+                    listed: true
+                })
+            )
+        );
     }
 
     /// @dev The suite's units per index token for each of its components.
@@ -199,16 +216,16 @@ contract SecurityForkTest is Test {
         vm.prank(IUsdtAdmin(A.USDT).owner());
         IUsdtAdmin(A.USDT).setParams(10, 5); // Tether switches on a 0.10% transfer fee
 
-        IIndexZap.BurnLeg[] memory burnLegs = new IIndexZap.BurnLeg[](2);
-        burnLegs[0] = IIndexZap.BurnLeg({
+        IUniversalRouterSwaps.BurnLeg[] memory burnLegs = new IUniversalRouterSwaps.BurnLeg[](2);
+        burnLegs[0] = IUniversalRouterSwaps.BurnLeg({
             v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDT), v4Path: new PathKey[](0), minAmountOut: 0
         });
-        burnLegs[1] = IIndexZap.BurnLeg({
+        burnLegs[1] = IUniversalRouterSwaps.BurnLeg({
             v3Path: abi.encodePacked(A.WETH, F500, A.USDT), v4Path: new PathKey[](0), minAmountOut: 0
         });
         vm.startPrank(user);
         idx.approve(address(zap), 1e18);
-        vm.expectRevert(abi.encodeWithSelector(IIndexZap.TransferShortfall.selector, A.USDT));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.TransferShortfall.selector, A.USDT));
         zap.burnToToken(
             IIndexZap.BurnParams({
                 index: address(idx),
@@ -227,16 +244,16 @@ contract SecurityForkTest is Test {
 
         // Minting with fee-charging USDT stops before any swap.
         deal(A.USDT, user, 100e6);
-        IIndexZap.MintLeg[] memory mintLegs = new IIndexZap.MintLeg[](2);
-        mintLegs[0] = IIndexZap.MintLeg({
+        IUniversalRouterSwaps.MintLeg[] memory mintLegs = new IUniversalRouterSwaps.MintLeg[](2);
+        mintLegs[0] = IUniversalRouterSwaps.MintLeg({
             v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDT), v4Path: new PathKey[](0), maxAmountIn: 0
         });
-        mintLegs[1] = IIndexZap.MintLeg({
+        mintLegs[1] = IUniversalRouterSwaps.MintLeg({
             v3Path: abi.encodePacked(A.WETH, F500, A.USDT), v4Path: new PathKey[](0), maxAmountIn: 0
         });
         vm.startPrank(user);
         IERC20(A.USDT).forceApprove(address(zap), 100e6);
-        vm.expectRevert(abi.encodeWithSelector(IIndexZap.TransferShortfall.selector, A.USDT));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.TransferShortfall.selector, A.USDT));
         zap.mintWithToken(
             IIndexZap.MintParams({
                 index: address(idx),
@@ -246,7 +263,8 @@ contract SecurityForkTest is Test {
                 shares: 1e17,
                 legs: mintLegs,
                 to: user,
-                deadline: block.timestamp
+                deadline: block.timestamp,
+                referrer: address(0)
             })
         );
         vm.stopPrank();
@@ -254,11 +272,11 @@ contract SecurityForkTest is Test {
 
     function test_I03_strayRouterEthIsRefundedNotLocked() public {
         WeightedHub idx = _create(A.WBTC, A.LINK);
-        IIndexZap.MintLeg[] memory legs = new IIndexZap.MintLeg[](2);
-        legs[0] = IIndexZap.MintLeg({
+        IUniversalRouterSwaps.MintLeg[] memory legs = new IUniversalRouterSwaps.MintLeg[](2);
+        legs[0] = IUniversalRouterSwaps.MintLeg({
             v3Path: abi.encodePacked(A.WBTC, F500, A.WETH), v4Path: new PathKey[](0), maxAmountIn: 0
         });
-        legs[1] = IIndexZap.MintLeg({
+        legs[1] = IUniversalRouterSwaps.MintLeg({
             v3Path: abi.encodePacked(A.LINK, F3000, A.WETH), v4Path: new PathKey[](0), maxAmountIn: 0
         });
 
@@ -276,7 +294,8 @@ contract SecurityForkTest is Test {
                 shares: 1e18,
                 legs: legs,
                 to: user,
-                deadline: block.timestamp
+                deadline: block.timestamp,
+                referrer: address(0)
             })
         );
         vm.stopPrank();
@@ -293,11 +312,11 @@ contract SecurityForkTest is Test {
         WeightedHub idx = _create(A.WBTC, A.WETH);
         _issue(idx, 1e18);
 
-        IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](2);
-        legs[0] = IIndexZap.BurnLeg({
+        IUniversalRouterSwaps.BurnLeg[] memory legs = new IUniversalRouterSwaps.BurnLeg[](2);
+        legs[0] = IUniversalRouterSwaps.BurnLeg({
             v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDC), v4Path: new PathKey[](0), minAmountOut: 0
         });
-        legs[1] = IIndexZap.BurnLeg({
+        legs[1] = IUniversalRouterSwaps.BurnLeg({
             v3Path: abi.encodePacked(A.WETH, F500, A.USDC), v4Path: new PathKey[](0), minAmountOut: 0
         });
 
@@ -327,7 +346,7 @@ contract SecurityForkTest is Test {
         assertEq(A.UNIVERSAL_ROUTER.balance, 10 ether, "and the stray ether is untouched: nothing here wraps it");
     }
 
-    function _burnToUsdc(WeightedHub idx, IIndexZap.BurnLeg[] memory legs) internal returns (uint256 out) {
+    function _burnToUsdc(WeightedHub idx, IUniversalRouterSwaps.BurnLeg[] memory legs) internal returns (uint256 out) {
         vm.startPrank(user);
         idx.approve(address(zap), 1e18);
         out = zap.burnToToken(
@@ -353,11 +372,11 @@ contract SecurityForkTest is Test {
     function test_FR01_CRL02_aStrayTokenInTheRouterNoLongerBlocksABurn() public {
         WeightedHub idx = _create(A.WBTC, A.WETH);
         _issue(idx, 1e18);
-        IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](2);
-        legs[0] = IIndexZap.BurnLeg({
+        IUniversalRouterSwaps.BurnLeg[] memory legs = new IUniversalRouterSwaps.BurnLeg[](2);
+        legs[0] = IUniversalRouterSwaps.BurnLeg({
             v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDC), v4Path: new PathKey[](0), minAmountOut: 0
         });
-        legs[1] = IIndexZap.BurnLeg({
+        legs[1] = IUniversalRouterSwaps.BurnLeg({
             v3Path: abi.encodePacked(A.WETH, F500, A.USDC), v4Path: new PathKey[](0), minAmountOut: 0
         });
 
@@ -381,9 +400,9 @@ contract SecurityForkTest is Test {
         route[0] =
             PathKey({intermediateCurrency: address(0), fee: F3000, tickSpacing: 60, hooks: address(0), hookData: ""});
         route[1] = PathKey({intermediateCurrency: A.USDC, fee: F500, tickSpacing: 10, hooks: address(0), hookData: ""});
-        IIndexZap.BurnLeg[] memory legs = new IIndexZap.BurnLeg[](2);
-        legs[0] = IIndexZap.BurnLeg({v3Path: "", v4Path: route, minAmountOut: 0});
-        legs[1] = IIndexZap.BurnLeg({
+        IUniversalRouterSwaps.BurnLeg[] memory legs = new IUniversalRouterSwaps.BurnLeg[](2);
+        legs[0] = IUniversalRouterSwaps.BurnLeg({v3Path: "", v4Path: route, minAmountOut: 0});
+        legs[1] = IUniversalRouterSwaps.BurnLeg({
             v3Path: abi.encodePacked(A.WETH, F500, A.USDC), v4Path: new PathKey[](0), minAmountOut: 0
         });
 

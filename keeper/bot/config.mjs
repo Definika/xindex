@@ -31,6 +31,7 @@ const DEFAULTS = {
   ROUTE_MAX_LOSS_BPS: "100",
   MAX_FEE_GWEI: "100",
   PRIORITY_FEE_GWEI: "2",
+  FILL_REQUESTS: "1",
 };
 
 /// Parses and checks `env`. Throws one Error naming every problem, so a misconfigured keeper never starts.
@@ -76,7 +77,9 @@ export function parseConfig(env) {
     routeMaxLossBps: bps("ROUTE_MAX_LOSS_BPS"),
     maxFeeGwei: number("MAX_FEE_GWEI", { positive: true }),
     priorityFeeGwei: number("PRIORITY_FEE_GWEI", { min: 0 }),
+    fillRequests: get("FILL_REQUESTS") === "1",
   };
+  if (!["0", "1"].includes(get("FILL_REQUESTS"))) problems.push("FILL_REQUESTS must be 0 or 1");
 
   const list = get("INDEXES");
   if (list) {

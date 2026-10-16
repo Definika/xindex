@@ -3,11 +3,13 @@ pragma solidity 0.8.28;
 
 import {Ownable, Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
+import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IWeightedIndexFactory} from "./interfaces/IWeightedIndexFactory.sol";
 import {IWeightedHub} from "./interfaces/IWeightedHub.sol";
 import {WeightedHub} from "./WeightedHub.sol";
+import {WeightedMath} from "./WeightedMath.sol";
 
 /// @title WeightedIndexFactory
 /// @notice Permissionless creation of indexes whose creators choose each component's weight, from a curated whitelist
@@ -24,14 +26,28 @@ import {WeightedHub} from "./WeightedHub.sol";
 ///      copies both at creation, so no later listing, relisting or delisting can repoint an existing index's prices:
 ///      its executors bring Pyth's signed updates and it checks them itself.
 ///
-///      Addresses. Each index is deployed with CREATE2 from a salt over the creator, the name, the symbol and every
-///      component's token, starting units, weight, price id and decimals, so an address can never hold a different
-///      basket, even after a re-org, and an app can show the address before the transaction confirms.
+///      Addresses. Each index is deployed with CREATE2 from a salt over the creator, the name, the symbol, every
+///      component's token, starting units, weight, price id and decimals, and the index's config (its fee rates, its
+///      rebalance interval and its gate), so an address can never hold a different basket or different terms, even
+///      after a re-org, and an app can show the address before the transaction confirms.
+///
+///      Fees. The owner sets a policy: the platform's fee, the referrer's share of it, the recipient and a creation
+///      fee in ether. An index copies the rates in force when it is created and keeps them, so a later policy reaches
+///      only later indexes; a creator names the highest platform fee it accepts, so a policy change cannot land on an
+///      index between its quote and its creation. The recipients are read live, through `feeTerms`, so a rotation
+///      strands nothing. The creation fee is forwarded to the recipient in the same call; the factory holds no ether.
+///
+///      Creators. The factory keeps each index's creator, who receives the creator's fee shares, can hand the role on,
+///      and on a gated index keeps the list of who may be issued shares and can open it for good. None of that
+///      reaches an index's components or its rates.
 ///
 ///      Whitelist policy (enforced socially, not on-chain): standard ERC-20s only. No fee-on-transfer, rebasing or
 ///      callback (ERC-777 style) tokens; 6-18 decimals; a Pyth feed checked to name the same asset. Components that an
 ///      issuer can pause or blacklist, such as WBTC, must be labelled in the app; while one is frozen, holders can still
 ///      take the other components out with `WeightedHub.redeemSkipping`.
+// The one payable entry point, `createIndex`, forwards the whole of msg.value to the platform recipient in the same
+// call (`test_theCreationFeeIsForwardedWhole`), so no ether stays here.
+// aderyn-fp-next-line(contract-locks-ether)
 contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, ReentrancyGuard {
     uint256 public constant MIN_COMPONENTS = 2;
     uint256 public constant MAX_COMPONENTS = 100;
@@ -41,10 +57,17 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
     uint256 public constant LISTING_DELAY = 2 days;
     uint256 public constant GUARDIAN_DELAY = 7 days;
     uint256 public constant PROPOSAL_WINDOW = 7 days;
+    uint256 public constant MAX_CREATOR_FEE_BPS = 100;
+    uint256 public constant MAX_PLATFORM_FEE_BPS = 25;
+    uint256 public constant MAX_CREATOR_STREAMING_BPS = 500;
+    uint256 public constant MAX_PLATFORM_STREAMING_BPS = 100;
+    uint256 public constant MIN_REBALANCE_INTERVAL = 7 days;
+    uint256 public constant MAX_REBALANCE_INTERVAL = 91 days;
     address public immutable IMPLEMENTATION;
     address public immutable PYTH;
 
     uint8 private constant MAX_DECIMALS = 18;
+    uint256 private constant BPS = 1e4;
 
     /// @dev A token's Pyth price id and its decimals, as an index copies them.
     struct Terms {
@@ -68,6 +91,21 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
     mapping(address => bool) public isIndex;
     mapping(address => address) public creatorOf;
     address[] public allIndexes;
+    /// @inheritdoc IWeightedIndexFactory
+    mapping(address index => bool gated) public isGated;
+    /// @inheritdoc IWeightedIndexFactory
+    mapping(address index => mapping(address account => bool allowed)) public isAllowedMinter;
+
+    /// @inheritdoc IWeightedIndexFactory
+    uint16 public platformFeeBps;
+    /// @inheritdoc IWeightedIndexFactory
+    uint16 public platformStreamingBps;
+    /// @inheritdoc IWeightedIndexFactory
+    uint16 public referralShareBps;
+    /// @inheritdoc IWeightedIndexFactory
+    address public platformFeeRecipient;
+    /// @inheritdoc IWeightedIndexFactory
+    uint256 public creationFee;
 
     modifier onlyOwnerOrGuardian() {
         _checkOwnerOrGuardian();
@@ -84,7 +122,7 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         guardian = initialGuardian;
         emit GuardianSet(address(0), initialGuardian);
         PYTH = pyth;
-        IMPLEMENTATION = address(new WeightedHub(pyth));
+        IMPLEMENTATION = address(new WeightedHub(pyth, address(new WeightedMath())));
     }
 
     // ---------------------------------------------------------------------
@@ -92,32 +130,138 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
     // ---------------------------------------------------------------------
 
     /// @inheritdoc IWeightedIndexFactory
-    function createIndex(string calldata name, string calldata symbol, ComponentSpec[] calldata components)
-        external
-        nonReentrant
-        returns (address index)
-    {
-        // The guard is defensive: nothing here runs untrusted code, since validation reads storage and `initialize` of
-        // an EIP-1167 clone of our own implementation makes no external call.
+    function createIndex(
+        string calldata name,
+        string calldata symbol,
+        ComponentSpec[] calldata components,
+        IndexParams calldata params
+    ) external payable nonReentrant returns (address index) {
+        // The guard is for the creation fee's transfer at the end, the one call here into an address the factory did
+        // not deploy; validation reads storage and `initialize` of an EIP-1167 clone of our own implementation makes
+        // no external call.
         if (bytes(name).length == 0 || bytes(symbol).length == 0) revert EmptyString();
+        if (msg.value != creationFee) revert WrongCreationFee(msg.value, creationFee);
+        // Read before the clone is initialized, so nothing of the factory's state is read after an external call.
+        address recipient = platformFeeRecipient;
         _validateComponents(components);
+        IWeightedHub.Config memory config = _config(params);
         IWeightedHub.ComponentInit[] memory inits = _inits(components);
 
-        address template = _template(components);
-        bytes32 salt = _salt(msg.sender, name, symbol, inits);
+        bytes32 salt = _salt(msg.sender, keccak256(bytes(name)), keccak256(bytes(symbol)), _contents(inits, config));
+        // Effects before interaction: register the clone, then initialize it in the same tx.
+        index = _deploy(_template(components), salt);
+        if (params.gated) isGated[index] = true;
+        // Only the clone's CREATE2, which runs no code, precedes this.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit IndexCreated(index, msg.sender, name, symbol, inits, config, params.listed);
+
+        _initializeIndex(index, salt, name, symbol, inits, config);
+
+        // Last, and only when the policy charges one: the recipient is the owner's choice, and a recipient that
+        // refuses ether (OpenZeppelin's FailedCall) blocks creation until the owner names another, nothing else.
+        // forge-lint: disable-next-line(arbitrary-send-eth)
+        if (msg.value != 0) Address.sendValue(payable(recipient), msg.value);
+    }
+
+    /// @dev Deploys the clone at `salt` and registers it; reverts if that address already holds one.
+    function _deploy(address template, bytes32 salt) private returns (address index) {
         address predicted = Clones.predictDeterministicAddress(template, salt);
         if (predicted.code.length != 0) revert IndexAlreadyExists(predicted);
-
-        // Effects before interaction: register the clone, then initialize it in the same tx.
         index = Clones.cloneDeterministic(template, salt);
         isIndex[index] = true;
         creatorOf[index] = msg.sender;
         allIndexes.push(index);
-        // Only the clone's CREATE2, which runs no code, precedes this.
-        // forge-lint: disable-next-line(reentrancy-events)
-        emit IndexCreated(index, msg.sender, name, symbol, inits);
+    }
 
-        _initializeIndex(index, salt, name, symbol, inits);
+    /// @dev The index's config from the creator's params and the policy in force, each checked.
+    function _config(IndexParams calldata params) private view returns (IWeightedHub.Config memory) {
+        if (params.creatorFeeBps > MAX_CREATOR_FEE_BPS) revert CreatorFeeTooHigh(params.creatorFeeBps);
+        if (params.creatorStreamingBps > MAX_CREATOR_STREAMING_BPS) {
+            revert StreamingFeeTooHigh(params.creatorStreamingBps);
+        }
+        if (params.rebalanceInterval < MIN_REBALANCE_INTERVAL || params.rebalanceInterval > MAX_REBALANCE_INTERVAL) {
+            revert IntervalOutOfRange(params.rebalanceInterval);
+        }
+        uint16 platform = platformFeeBps;
+        if (platform > params.maxPlatformFeeBps) revert PlatformFeeTooHigh(platform, params.maxPlatformFeeBps);
+        uint16 streaming = platformStreamingBps;
+        if (streaming > params.maxPlatformStreamingBps) {
+            revert PlatformStreamingFeeTooHigh(streaming, params.maxPlatformStreamingBps);
+        }
+        return IWeightedHub.Config({
+            creatorFeeBps: params.creatorFeeBps,
+            platformFeeBps: platform,
+            referralShareBps: referralShareBps,
+            creatorStreamingBps: params.creatorStreamingBps,
+            platformStreamingBps: streaming,
+            rebalanceInterval: params.rebalanceInterval
+        });
+    }
+
+    // ---------------------------------------------------------------------
+    // Creators
+    // ---------------------------------------------------------------------
+
+    /// @inheritdoc IWeightedIndexFactory
+    function transferCreator(address index, address newCreator) external {
+        _checkCreator(index);
+        if (newCreator == address(0)) revert ZeroAddress();
+        if (newCreator == address(this) || isIndex[newCreator]) revert InvalidRecipient(newCreator);
+        // CreatorTransferred, two lines down, records the change the lint asks an event for.
+        // forge-lint: disable-next-line(missing-events-access-control)
+        creatorOf[index] = newCreator;
+        emit CreatorTransferred(index, msg.sender, newCreator);
+    }
+
+    /// @inheritdoc IWeightedIndexFactory
+    function setAllowedMinter(address index, address account, bool allowed) external {
+        _checkCreator(index);
+        isAllowedMinter[index][account] = allowed;
+        emit MinterAllowed(index, account, allowed);
+    }
+
+    /// @inheritdoc IWeightedIndexFactory
+    function openMinting(address index) external {
+        _checkCreator(index);
+        if (!isGated[index]) revert NotGated(index);
+        isGated[index] = false;
+        emit MintingOpened(index);
+    }
+
+    /// @dev An address the factory did not deploy has no creator, so it is refused before the caller is compared.
+    function _checkCreator(address index) private view {
+        if (!isIndex[index]) revert NotIndex(index);
+        if (msg.sender != creatorOf[index]) revert Unauthorized(msg.sender);
+    }
+
+    /// @inheritdoc IWeightedIndexFactory
+    function feeTerms(address index, address to)
+        external
+        view
+        returns (bool allowed, address creator, address platform)
+    {
+        return (!isGated[index] || isAllowedMinter[index][to], creatorOf[index], platformFeeRecipient);
+    }
+
+    /// @inheritdoc IWeightedIndexFactory
+    function setFeePolicy(
+        uint16 platformFeeBps_,
+        uint16 platformStreamingBps_,
+        uint16 referralShareBps_,
+        address recipient,
+        uint256 creationFee_
+    ) external onlyOwner {
+        if (
+            platformFeeBps_ > MAX_PLATFORM_FEE_BPS || platformStreamingBps_ > MAX_PLATFORM_STREAMING_BPS
+                || referralShareBps_ > BPS || recipient == address(0) || recipient == address(this)
+                || isIndex[recipient]
+        ) revert InvalidFeePolicy();
+        platformFeeBps = platformFeeBps_;
+        platformStreamingBps = platformStreamingBps_;
+        referralShareBps = referralShareBps_;
+        platformFeeRecipient = recipient;
+        creationFee = creationFee_;
+        emit FeePolicySet(platformFeeBps_, platformStreamingBps_, referralShareBps_, recipient, creationFee_);
     }
 
     /// @dev The template an index of `components` is a clone of: `WeightedHub`. A factory listing another kind of
@@ -132,9 +276,13 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         bytes32,
         string calldata name,
         string calldata symbol,
-        IWeightedHub.ComponentInit[] memory inits
+        IWeightedHub.ComponentInit[] memory inits,
+        IWeightedHub.Config memory config
     ) internal virtual {
-        IWeightedHub(index).initialize(name, symbol, inits);
+        // `createIndex` is nonReentrant, the clone runs this factory's own implementation, and the one interaction after
+        // it, the creation fee's transfer, reads no state. Wake's reentrancy detector does not model the guard.
+        // wake-disable-next-line reentrancy
+        IWeightedHub(index).initialize(name, symbol, inits, config);
     }
 
     /// @inheritdoc IWeightedIndexFactory
@@ -142,11 +290,22 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         address creator,
         string calldata name,
         string calldata symbol,
-        ComponentSpec[] calldata components
+        ComponentSpec[] calldata components,
+        IndexParams calldata params
     ) external view returns (address) {
-        return Clones.predictDeterministicAddress(
-            _template(components), _salt(creator, name, symbol, _inits(components))
-        );
+        return _predict(creator, keccak256(bytes(name)), keccak256(bytes(symbol)), components, _config(params));
+    }
+
+    /// @dev As {predictIndexAddress}, with the names already hashed, for the stack.
+    function _predict(
+        address creator,
+        bytes32 nameHash,
+        bytes32 symbolHash,
+        ComponentSpec[] calldata components,
+        IWeightedHub.Config memory config
+    ) private view returns (address) {
+        bytes32 contents = _contents(_inits(components), config);
+        return Clones.predictDeterministicAddress(_template(components), _salt(creator, nameHash, symbolHash, contents));
     }
 
     /// @inheritdoc IWeightedIndexFactory
@@ -200,16 +359,24 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         }
     }
 
-    /// @dev Over the creator, the name, the symbol and every component's token, units, weight, price id and decimals.
-    function _salt(
-        address creator,
-        string calldata name,
-        string calldata symbol,
-        IWeightedHub.ComponentInit[] memory inits
-    ) private pure returns (bytes32) {
-        return keccak256(
-            abi.encode(creator, keccak256(bytes(name)), keccak256(bytes(symbol)), keccak256(abi.encode(inits)))
-        );
+    /// @dev Over the creator, the hashed name and symbol, and the hashed contents: every component's token, units,
+    ///      weight, price id and decimals, and the config.
+    function _salt(address creator, bytes32 nameHash, bytes32 symbolHash, bytes32 contents)
+        private
+        pure
+        returns (bytes32)
+    {
+        return keccak256(abi.encode(creator, nameHash, symbolHash, contents));
+    }
+
+    /// @dev What the salt commits to besides the names: the components, and the config with its fee rates, referral
+    ///      share, interval and gate.
+    function _contents(IWeightedHub.ComponentInit[] memory inits, IWeightedHub.Config memory config)
+        private
+        pure
+        returns (bytes32)
+    {
+        return keccak256(abi.encode(keccak256(abi.encode(inits)), keccak256(abi.encode(config))));
     }
 
     // ---------------------------------------------------------------------

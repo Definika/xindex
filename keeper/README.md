@@ -1,8 +1,9 @@
 # Xindex keeper
 
-Starts and fills `WeightedHub` auctions on Ethereum through its own executor, `src/KeeperExecutor.sol`. It holds **no
-role in the protocol**: starting a rebalance and filling an auction are open to anyone, and anyone may run a keeper.
-Its key is the keeper's own hot key, not the owner's or the guardian's.
+Starts and fills `WeightedHub` auctions on Ethereum, and fills `MintRequests` requests, through its own executor,
+`src/KeeperExecutor.sol`. It holds **no role in the protocol**: starting a rebalance, filling an auction and filling a
+request are open to anyone, and anyone may run a keeper. Its key is the keeper's own hot key, not the owner's or the
+guardian's.
 
 ## What it does
 
@@ -20,7 +21,15 @@ Every block L, with T = L's timestamp + 12 (the one block a fill sent now can la
    (μ = MU_MIN, by overriding the hub's pending slot) and starts it only when that would pay, every feed has published
    in the last minute (US-hours stock feeds close), the index is worth `MIN_TVL_USD`, and the executor can deliver
    every coin the auction may ask for.
-3. **One transaction in flight.** A transaction that misses its block is replaced on the same nonce by a 0-value
+3. **Requests.** With `FILL_REQUESTS` on and nothing else to send, the open `MintRequests` requests on the indexes it
+   serves (read every 25 blocks, the 8 largest escrows simulated per block) are each simulated as block L+1 would
+   fill them. A mint request is filled with exactly its limit in shares: the basket for them comes from stock and the
+   routes, is issued to the executor and delivered, and the escrowed stablecoin is taken, USDT sold into USDC along a
+   quoted route. A redeem request is paid exactly its limit in its stablecoin, USDT bought with USDC: the escrowed
+   shares are redeemed and the basket sold along the routes, a coin with no route kept as stock. Profit and the floor
+   are priced as a fill's, and the most profitable request whose profit reaches `MIN_PROFIT_USD` is sent. The surplus
+   over a limit is the filler's, which is why the app suggests limits.
+4. **One transaction in flight.** A transaction that misses its block is replaced on the same nonce by a 0-value
    transfer to itself, its fees raised each block until something on that nonce is mined; a nonce left pending by an
    earlier run is cleared the same way at startup.
 
@@ -40,11 +49,12 @@ routed coin too; only the rest is bought. The executor's address must be able to
 
 - `OWNER`, a cold key, withdraws float and stock, rotates the keeper (`setKeeper`) and sets each coin's stock allowance
   (`setStockAllowance`). Keep it off the bot's machine.
-- `keeper`, the bot's hot key, can only `fill`, and only an index the factory created. Anyone can create a factory index
-  and hold all its shares, so that check does not keep the stock from an index the key's thief owns (CF-1): what bounds
-  the stock a stolen key can move is the allowance `OWNER` left, so keep each allowance to what the next fills need. The
-  key can also trade the USDC float badly within the floor it sets itself: keep the float to what fills need, and the
-  key's ETH to a few days of gas.
+- `keeper`, the bot's hot key, can only `fill`, `fillMint` and `fillRedeem`, and only for an index the factory
+  created, through the request escrow the executor was built with. Anyone can create a factory index and hold all its
+  shares, or request a mint of one, so that check does not keep the stock from an index the key's thief owns (CF-1):
+  what bounds the stock a stolen key can move is the allowance `OWNER` left, which a request fill spends like an
+  auction fill, so keep each allowance to what the next fills need. The key can also trade the USDC float badly within
+  the floor it sets itself: keep the float to what fills need, and the key's ETH to a few days of gas.
 - Fills go through the public mempool: anyone can see a fill and its price update before it lands. The floor bounds
   what a sandwich can take; a copier who fills first leaves this bot's transaction to revert cheaply.
 
@@ -54,7 +64,7 @@ From the repo root:
 
     forge build                          # the hub and factory ABIs come from abi/, the executor's from keeper/out
     forge build --root keeper
-    # deploy src/KeeperExecutor.sol: (SwapRouter02, USDC, FACTORY, OWNER, keeper address); send it a USDC float
+    # deploy src/KeeperExecutor.sol: (SwapRouter02, USDC, FACTORY, MintRequests, OWNER, keeper address); send it a USDC float
 
 Then in `keeper/`:
 
@@ -79,11 +89,14 @@ The RPC must honour `eth_call` block overrides (Tenderly, publicnode and geth do
 | `ROUTE_MAX_LOSS_BPS` | `100` | Most a route may lose against Pyth; the auction's whole edge is 200. |
 | `MAX_FEE_GWEI` | `100` | No transaction while the base fee and tip exceed this. |
 | `PRIORITY_FEE_GWEI` | `2` | Tip. |
+| `FILL_REQUESTS` | `1` | `1` fills `MintRequests` requests too, `0` serves auctions only. The escrow is the one the executor was built with. |
 
 ## Tests
 
-- `forge test --root keeper` (from the repo root): the executor against the real hub and factory with mocks.
-- `node --test keeper/test/unit/*.test.mjs`: arithmetic, settings, the Hermes client and the transaction tracker; no install.
+- `forge test --root keeper` (from the repo root): the executor against the real hub, factory and request escrow with
+  mocks, request fills included.
+- `node --test keeper/test/unit/*.test.mjs`: arithmetic, settings, the request filter, the Hermes client and the
+  transaction tracker; no install.
 - `MAINNET_RPC_URL=<archive> npm run e2e` (in `keeper/`): an anvil fork with the real Pyth contract verifying updates
   this test signs, real pools and tokens, and `keeper.mjs` as its own process. It covers a start held back by a quiet
   feed and by missing stock, an index never started, fills only once profitable, stock kept and delivered, a two-hop

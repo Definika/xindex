@@ -50,6 +50,7 @@ const PYTH = "0x4305FB66699C3B2702D4d05CF36551390A4c69C6";
 const SWAP_ROUTER02 = "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45";
 const V3_FACTORY = "0x1F98431c8aD98523631AE4a59f267346ea31F984";
 const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
+const USDT = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
 const T = {
   WETH: { a: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", id: "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace", d: 18 },
   WBTC: { a: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599", id: "0xc9d8b075a5c69303365ae23633d4e085199bf5c520a3b90fed1322a0342ffc33", d: 8 },
@@ -142,6 +143,7 @@ for (const args of [["build"], ["build", "--root", KEEPER_DIR]]) {
 const FACTORY = json(`${ROOT}out/WeightedIndexFactory.sol/WeightedIndexFactory.json`);
 const HUB = json(`${ROOT}abi/WeightedHub.json`);
 const EXECUTOR = json(`${KEEPER_DIR}out/KeeperExecutor.sol/KeeperExecutor.json`);
+const REQUESTS = json(`${ROOT}out/MintRequests.sol/MintRequests.json`);
 
 step("anvil fork");
 const head = await createPublicClient({ transport: transport(UPSTREAM) }).getBlockNumber();
@@ -258,7 +260,17 @@ async function createIndex(name, coins, weights, value, shares) {
     weight: BigInt(weights[i]),
     units: BigInt(Math.max(10_000, Math.ceil(((weights[i] / 1e4) * value * 10 ** c.d) / usdOf(c)))),
   }));
-  const receipt = await send(creator, factory, FACTORY.abi, "createIndex", [name, name, specs]);
+  // No creator fee, any platform fee the policy charges, the shortest interval, open and listed.
+  const params = {
+    creatorFeeBps: 0,
+    creatorStreamingBps: 0,
+    maxPlatformFeeBps: 25,
+    maxPlatformStreamingBps: 100,
+    rebalanceInterval: 7 * 24 * 3600,
+    gated: false,
+    listed: true,
+  };
+  const receipt = await send(creator, factory, FACTORY.abi, "createIndex", [name, name, specs, params]);
   const index = receipt.logs
     .map((l) => {
       try {
@@ -283,11 +295,19 @@ const SHR = await createIndex("SHR", [T.WETH, T.JUP], [5000, 5000], 1000, 100n *
 const names = { [LQ]: "LQ", [MIX]: "MIX", [DRY]: "DRY", [SHR]: "SHR" };
 console.log(`  factory ${factory}; LQ ${LQ}, MIX ${MIX}, DRY ${DRY}, SHR ${SHR}`);
 
+const requestsHash = await wallet.deployContract({
+  account: deployer,
+  abi: REQUESTS.abi,
+  bytecode: REQUESTS.bytecode.object,
+  args: [factory, USDC, USDT],
+  chain,
+});
+const requests = (await pub.waitForTransactionReceipt({ hash: requestsHash })).contractAddress;
 const exHash = await wallet.deployContract({
   account: deployer,
   abi: EXECUTOR.abi,
   bytecode: EXECUTOR.bytecode.object,
-  args: [SWAP_ROUTER02, USDC, factory, execOwner, keeperAccount.address],
+  args: [SWAP_ROUTER02, USDC, factory, requests, execOwner, keeperAccount.address],
   chain,
 });
 const executor = (await pub.waitForTransactionReceipt({ hash: exHash })).contractAddress;
@@ -328,6 +348,7 @@ const keeper = spawn(process.execPath, ["keeper.mjs"], {
     KEEPER_KEY: key("keeper"),
     FACTORY: factory,
     EXECUTOR: executor,
+    REQUESTS: requests,
     PYTH_API_KEY: "e2e",
     HERMES_URL: `http://127.0.0.1:${HERMES_PORT}`,
     INDEXES: "",

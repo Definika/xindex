@@ -33,11 +33,12 @@ nothing is deployed on a mainnet.
 | Trade the index into other coins | Standard ERC-20 (transferable, listable) plus `burnToToken` into any token |
 | USDC/USDT in, USDC/USDT out | The zap mints from either stable; the burner chooses the payout token |
 | Rebalancing and index price | The units are brought back to the weights at Pyth prices, at most once a week, through an auction on a multiplier μ (section 3); the index price is the basket's value, computed off chain |
-| Layer-1 coins | Ethereum tokens, Bitcoin as WBTC, and the coins Ethereum lacks as Wormhole-wrapped copies priced at the coin's own feed: SOL, XRP, DOGE, ADA, AVAX and others |
+| Layer-1 coins | Ethereum tokens, Bitcoin as WBTC, and the coins Ethereum lacks as Wormhole-wrapped copies priced at the coin's own feed: SOL, XRP, ADA, AVAX and others |
 
 Constraints kept from v3 and v4: in-kind backing, CREATE2 addresses that commit to their contents, fixed constituents,
-reentrancy-guarded untrusted executors, standard ERC-20s only, no admin over funds, no fee (the owner's call on
-2026-09-30), and an owner Safe of at least three signatures. Changed by the owner's calls of 2026-10-05: creators choose
+reentrancy-guarded untrusted executors, standard ERC-20s only, no admin over funds, and an owner Safe of at least three
+signatures. Added on 2026-10-14 (`design/2026-10-14-mainnet-engine-research.md`): fees in shares, a rebalance interval
+per index and gated indexes, each described below; on 2026-10-16 the streaming fee, as a unit scale. Changed by the owner's calls of 2026-10-05: creators choose
 fixed percentages, the market-cap index is retired, and Pyth is the one oracle, read only by the settlement.
 
 ## 2. Components
@@ -70,7 +71,9 @@ OpenZeppelin's upgradeable ERC20 and ERC20Permit (clones skip constructors, so n
 - **State:** `Component[] {address token; uint96 units}` and beside it `Terms[] {bytes32 priceId; uint16 weight;
   uint8 decimals}`, both set at `initialize`. Only `executeRebalance` changes units, and nothing changes the terms.
   `units_i` is the raw amount of component `i` (in that token's own decimals) backing one whole index token (`1e18`
-  shares). Open claims live in `claimOf[account][token]`, their sum per token in `totalClaims[token]`. A pending
+  shares), times `_scale`, the streaming fee's factor (1e18 = one, lowered by each accrual, back to one at each fill),
+  beside which `_lastAccrual` is the fee's clock. Open claims live in `claimOf[account][token]`, their sum per token
+  in `totalClaims[token]`. A pending
   rebalance is its `eta` and keep mask; beside them `proposalCount`, `rebalanceNonce`, `lastRebalance` (creation, then
   each fill) and `restartAllowedAt`.
 - **initialize(name, symbol, components):** `FACTORY` only, once. 2 to 100 components, each with a non-zero token,
@@ -111,7 +114,9 @@ OpenZeppelin's upgradeable ERC20 and ERC20Permit (clones skip constructors, so n
   (7 days); it records the price id and decimals and whitelists the token. `cancelListing` and `delist` are owner or
   guardian; delisting is immediate, keeps the token's terms, and affects only indexes created afterwards. A relisting
   may carry a new price id, which reaches only indexes created after it (`test_aRelistingReachesOnlyNewIndexes`).
-- **Creation.** `createIndex(name, symbol, components)`, permissionless, each component a
+- **Creation.** `createIndex(name, symbol, components, params)`, permissionless and payable for the policy's creation
+  fee, with `params` the creator's fee rate, the highest platform fee it accepts, the rebalance interval (7 to 91
+  days), the gate and the listing flag; each component a
   `ComponentSpec {token, weight, units}`: a non-empty name and symbol, 2 to 100 whitelisted components, units in
   `[MIN_RAW_UNITS, MAX_UNITS]` = `[10,000, (2^96 − 1) >> 10]` (`UnitsOutOfRange`), weights of at least one basis point
   summing to exactly 10,000 (`InvalidWeights`), no token twice (`DuplicateToken`) and no two tokens on one price id
@@ -134,8 +139,11 @@ OpenZeppelin's upgradeable ERC20 and ERC20Permit (clones skip constructors, so n
 
 ### IndexZap (`src/IndexZap.sol`)
 
-v3's user-facing convenience layer, unchanged by v5. Stateless, ownerless, holds no funds between transactions, and
-the only contract here that knows about Uniswap. PancakeSwap's legs, added on 2026-10-06, were removed on 2026-10-14,
+v3's user-facing convenience layer, unchanged by v5. Stateless, ownerless, holds no funds between transactions, and,
+with the basket builder, the only contract here that knows about Uniswap: since 2026-10-16 its swaps run through
+`UniversalRouterSwaps` (`src/UniversalRouterSwaps.sol`), the abstract engine both inherit, which holds the exact-output
+buy, the hop-by-hop V3 and one-swap V4 sales, the route checks and the pre-fund-and-sweep payment, and hands what a hop
+did not sell to a hook each contract implements; the swap errors are declared once in `IXindexErrors`. PancakeSwap's legs, added on 2026-10-06, were removed on 2026-10-14,
 which returned the zap to its earlier Uniswap-only build. The zap types its calls with `IIndexFactory` and `IIndexHub`, which declare exactly what it calls: `isIndex` on the factory, and
 `issue`, `redeem`, the previews, `componentTokens` and `rebalanceNonce` on an index. `IWeightedIndexFactory` and
 `IWeightedHub` extend them, so the compiler holds the weighted contracts to that surface.
@@ -169,8 +177,37 @@ which returned the zap to its earlier Uniswap-only build. The zap types its call
   command inputs carry an extra per-hop price array; `POOL_MANAGER` is read from the router's own `poolManager()`.
 - **Scale.** The zap costs 265k to 430k gas per component (v3's fork measurement at 20 components, CR-I08), so
   EIP-7825's 2^24-gas cap stops it at 39 to 63 components; the app offers it up to about 35. Larger indexes, and coins
-  without a route (most Wormhole copies, Tether Gold, Ondo's stocks), are minted and redeemed in kind or through
-  `MintRequests`.
+  without a route (most Wormhole copies, Tether Gold, Ondo's stocks), are minted and redeemed in kind, through
+  `MintRequests`, or through the basket builder.
+
+### BasketBuilder (`src/BasketBuilder.sol`)
+
+The zap's stateful sibling, built on 2026-10-16 for the basket one transaction cannot swap: the legs are bought over
+several calls into an escrow the caller owns here and issued in one, and selling mirrors it. Ownerless, no upgrade,
+nothing to configure, and nobody else needed: no filler.
+
+- **State:** `escrowOf[user][token]`, the only storage. A token in it moves on its owner's call alone: into an issue,
+  a sale or a withdrawal.
+- `deposit(token, amount)` credits the balance increase it caused, so a fee-on-transfer token credits what arrived;
+  `withdraw(token, amount, to)` debits first and then transfers, `amount` 0 meaning the whole escrow.
+- `buy(BuyParams{index, expectedNonce, shares, tokenIn, maxAmountIn, components, legs, deadline})` pulls the whole
+  `maxAmountIn` (refusing a fee-on-transfer currency), buys each named component up to what `previewIssue(shares)`
+  needs beyond the escrow through the engine, credits the escrow, keeps the basket's own `tokenIn` out of the refund,
+  and refunds the rest. A component the escrow already covers is skipped; a stale quote reverts
+  `StaleRebalanceNonce`. About 35 legs fit a call.
+- `mint(index, shares, to, referrer, deadline)` debits exactly `previewIssue(shares)` of every component, approves
+  the index for that much and no more, and issues; a leg short of it is named by `InsufficientEscrow`, so one more
+  buy completes a basket a rebalance changed. A gated index issues only to a `to` its creator allows.
+- `redeem(index, shares)` pulls the shares, redeems them here and credits each component's balance increase.
+  `sell(SellParams{tokenOut, minAmountOut, tokens, amounts, legs, to, deadline})` debits each named leg, sells it
+  through the engine or, when it is `tokenOut`, counts it toward the payout against its leg's minimum (DA-15), credits
+  what a hop did not sell back to the escrow (`Unsold`), measures the payout as its `tokenOut` balance change and pays
+  `to`, refusing a fee-on-transfer payout.
+- **Invariant:** for every token the builder's balance covers the sum of the escrows, since every credit is a
+  measured arrival and every debit precedes the transfer it pays for; what strangers send stays, as in `MintRequests`.
+  Recipients are checked as the zap's, plus any index (RT-21); every entry point shares one reentrancy guard; it never
+  calls `redeemSkipping` or `executeRebalance`. A hundred-leg basket fits three buys and one mint under EIP-7825
+  (`test/BasketBuilder.t.sol`, on mock pools).
 
 ### MintRequests (`src/MintRequests.sol`)
 
@@ -367,11 +404,24 @@ invariant with the new units plus the whole of `amountsIn` on top of what the in
 balances, so there is no share price to manipulate and no first-depositor attack; donations only add surplus that no
 holder can redeem and no executor can use.
 
-**The fee seam.** Every conversion of shares into an amount of a component goes through one private helper,
-`_backing(shares, units, rounding) = mulDiv(shares, units, 1e18, rounding)`: issue, redeem, the settlement and its
-backing check. A fee model therefore changes that helper and its callers and nothing else: a minter fee in shares
-changes issue and redeem; a management fee is a unit scale inside `_backing`. Neither is built: there is no fee (the
-owner's call on 2026-09-30), and a fee, if one comes, arrives with a later index version through this seam.
+**Fees.** Every conversion of shares into an amount of a component goes through one private helper,
+`_backing(shares, units, scale, rounding) = mulDiv(shares, units · scale, 1e36, rounding)`: issue, redeem, the
+settlement and its backing check. The fees built on 2026-10-14 are paid in shares. `issue(shares, to, referrer)`
+pulls the basket for `gross = ceil(shares · 10,000 / (10,000 − fee))`, mints `shares` to `to` and `gross − shares` to
+the recipients; `redeem` burns `shares`, mints `floor(shares · fee / 10,000)` to the recipients and pays the backing of
+the rest, rounded down. `fee` is the creator's rate plus the platform's, both in `config()` and fixed at creation. The
+recipients come from the factory's `feeTerms(index, to)` at each call: the index's creator, who can hand the role on,
+and the platform recipient of the moment; a referrer named at mint takes `referralShareBps` of the platform's part,
+rounded down. A recipient that could not hold shares is replaced, so no fee can block a mint or an exit
+(`test/WeightedHub.fees.t.sol`). The streaming fee built on 2026-10-16 is the `scale`: a yearly rate, the creator's (0
+to 500 bps) plus the platform's (0 to 100 bps), accrues in shares before every issue, redeem and settlement, and on
+`accrueFees`, as `supply · f / (1 − f)` shares for `f` the rate times the elapsed part of a year, and the scale every
+share's units carry falls by `supply / (supply + minted)`, both rounded down. The previews and `components()` report
+at the scale an accrual now would leave (`pendingStreamingFee`); a settlement reads the scaled units and writes units
+that carry the scale, so it starts from one again (`_applyRebalance`). The settlement arithmetic itself lives in
+`WeightedMath`, a stateless contract the factory deploys with the implementation and the hub reaches by STATICCALL
+through its `MATH` immutable, because the scale pushed the hub past EIP-170; the hub still reads every price and every
+balance, and the math holds nothing and reads nothing.
 
 ## 5. Flows
 
@@ -379,8 +429,9 @@ The README's "How the flows work" walks through each flow for an app. In short:
 
 - **Create.** The creator picks 2 to 100 listed coins and their percentages; the app derives the units at current
   prices and shows the address and the index's wrapped share of value, and the creator creates.
-- **Mint and burn** through the zap (up to about 35 components, on coins with a route), in kind (up to 100), or at a
-  limit through `MintRequests`, filled by anyone who holds or can issue the shares.
+- **Mint and burn** through the zap (up to about 35 components, on coins with a route), through the basket builder
+  over several transactions (any size, on coins with a route, the rest deposited in kind), in kind (up to 100), or at
+  a limit through `MintRequests`, filled by anyone who holds or can issue the shares.
 - **Rebalance.** At most once every 7 days: anyone starts, 2 hours of notice, then a 24-hour auction in which an
   executor brings a signed Pyth update for `priceTime()`, previews the fill with `previewRebalance`, and settles,
   preferably through the bounded overload. Hermes, Pyth's service for signed updates, needs an API key since
@@ -413,9 +464,10 @@ address (LR-05).
 **One deployment, the missing coins wrapped.** About 71 of the top-300 candidates exist on Ethereum through their
 issuer; held on BNB Chain instead, the same universe would have wrapped 71 legs. Wormhole is the one bridge accepted
 for wrapping: anyone attests a coin on its home chain and the bridge deploys the copy on Ethereum. The cost is a new
-trusted party over every wrapped leg (section 7). The list (`script/PythIds.sol`) stands at 93, 14 of them Wormhole
-copies: SOL, listed first, and 13 added on 2026-10-10. Tether Gold and the 17 Ondo stocks do not count toward the
-hundred, so 75 coins of the top 300 are listed; 34 more copies await an attestation on Wormhole's Portal
+trusted party over every wrapped leg (section 7). The list (`script/PythIds.sol`) stands at 92, 13 of them Wormhole
+copies: SOL, listed first, and 12 added on 2026-10-10; a 13th, DOGE's, left on 2026-10-14 on the owner's call, since
+Pyth prices DOGE and not the copy. Tether Gold and the 17 Ondo stocks do not count toward the hundred, so 74 coins of
+the top 300 are listed; 34 more copies await an attestation on Wormhole's Portal
 (`design/2026-10-10-one-index-wormhole-legs.md`, section 2a).
 
 **Up to 100 components.** Every path of the hub and the factory fits EIP-7825's per-transaction cap of 2^24 gas at

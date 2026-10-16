@@ -170,7 +170,6 @@ contract MainnetAddressesForkTest is Test {
         _assertToken(M.W, "W", 18);
         _assertToken(M.RSR, "RSR", 18);
         _assertToken(M.XRP, "XRP", 18);
-        _assertToken(M.DOGE, "DOGE", 8);
         _assertToken(M.ADA, "ADA", 18);
         _assertToken(M.LTC, "LTC", 18);
         _assertToken(M.AVAX, "WAVAX", 18);
@@ -198,7 +197,6 @@ contract MainnetAddressesForkTest is Test {
         assertEq(M.WORMHOLE_TOKEN_BRIDGE.codehash, WORMHOLE_BRIDGE_PROXY_CODEHASH);
         _assertWrapped(M.SOL, 1, 0x069b8857feab8184fb687f634618c035dac439dc1aeb3b5598a0f00000000001); // SOL from Solana
         _assertWrapped(M.XRP, 4, 0x0000000000000000000000001d2f0da169ceb9fc7b3144628db156f3f6c60dbe); // XRP from BNB Chain
-        _assertWrapped(M.DOGE, 4, 0x000000000000000000000000ba2ae424d960c26247dd6c32edc70b295c744c43); // DOGE from BNB Chain
         _assertWrapped(M.ADA, 4, 0x0000000000000000000000003ee2200efb3400fabb9aacf31297cbdd1d435d47); // ADA from BNB Chain
         _assertWrapped(M.LTC, 4, 0x0000000000000000000000004338665cbb7b2485a8855a139b75d5e34ab0db94); // LTC from BNB Chain
         _assertWrapped(M.AVAX, 6, 0x000000000000000000000000b31f66aa3c1e785363f0875a1b74e27b85fd66c7); // AVAX from Avalanche
@@ -231,7 +229,7 @@ contract MainnetAddressesForkTest is Test {
     /// @dev Every wide entry lists on a fresh factory with its price id and its token's own decimals.
     function testFork_wideWhitelistMatchesMainnet() public {
         ConfigureWeighted.Entry[] memory list = new ConfigureWeighted().wideMainnetList();
-        assertEq(list.length, 89);
+        assertEq(list.length, 88);
         _listOnAFreshFactory(list);
     }
 

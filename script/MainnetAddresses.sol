@@ -199,12 +199,14 @@ library MainnetAddresses {
     // Binance-Peg BEP-20, since Binance's custody stands under the bridge's; `Bridged` otherwise. None has Uniswap
     // depth: they mint in kind or through `MintRequests`, and a fill needs an executor that bridged them beforehand.
     // Each address was read on 2026-10-10 from the bridge's `wrappedAsset(chain, source)`, which
-    // `test/fork/MainnetAddresses.fork.t.sol` repeats, and each passed `CheckToken` at block 26,163,788.
+    // `test/fork/MainnetAddresses.fork.t.sol` repeats, and each passed `CheckToken` at block 26,163,788. DOGE's copy
+    // (0xd881A7F17Ed2c71FD671AfbA3A9b30Eb914Aea5F, from Binance-Peg DOGE 0xba2ae424d960c26247dd6c32edc70b295c744c43 on
+    // BNB Chain) was taken off the list on 2026-10-14, the owner's call, for now: Pyth prices DOGE, not the copy, so
+    // a broken peg or bridge leaves the copy priced as DOGE, and the source is a proxy whose admin, one externally
+    // owned key, can replace its code (read on BNB Chain that day).
     // ---------------------------------------------------------------------
     /// @dev XRP as the bridge wraps Binance-Peg XRP (0x1d2f0da169ceb9fc7b3144628db156f3f6c60dbe on BNB Chain, Wormhole chain 4): symbol XRP, 18 decimals.
     address internal constant XRP = 0xc730d8256B8A1030eEA67f1Bc7ebed3898f7A535;
-    /// @dev DOGE as the bridge wraps Binance-Peg DOGE (0xba2ae424d960c26247dd6c32edc70b295c744c43 on BNB Chain, Wormhole chain 4): symbol DOGE, 8 decimals.
-    address internal constant DOGE = 0xd881A7F17Ed2c71FD671AfbA3A9b30Eb914Aea5F;
     /// @dev ADA as the bridge wraps Binance-Peg ADA (0x3ee2200efb3400fabb9aacf31297cbdd1d435d47 on BNB Chain, Wormhole chain 4): symbol ADA, 18 decimals.
     address internal constant ADA = 0x8EfFbF747d4A60Bc6b68D9A1bE4c4188bA8A3a0b;
     /// @dev LTC as the bridge wraps Binance-Peg LTC (0x4338665cbb7b2485a8855a139b75d5e34ab0db94 on BNB Chain, Wormhole chain 4): symbol LTC, 18 decimals.

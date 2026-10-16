@@ -122,3 +122,29 @@ export function routeLossBps(side, usdc, fairUsd) {
   const loss = side === "sell" ? (fairUsd - got) / fairUsd : (got - fairUsd) / fairUsd;
   return loss * 10_000;
 }
+
+// ---------------------------------------------------------------------
+// Requests
+// ---------------------------------------------------------------------
+
+/// Open requests simulated per block, largest escrows first (as CF-7 bounds the auction checks).
+export const MAX_REQUEST_CHECKS = 8;
+
+/// The open requests fillable at second T on an index this bot serves, largest escrow first, at most `cap` of them.
+/// `entries` are `{id, request}` with the request as `getRequest` returns it.
+export function fillableRequests(entries, T, indexes, cap = MAX_REQUEST_CHECKS) {
+  const served = new Set(indexes.map((a) => a.toLowerCase()));
+  return entries
+    .filter(({ request: r }) => r.open && BigInt(r.deadline) >= T && served.has(r.index.toLowerCase()))
+    .sort((a, b) => (b.request.escrow > a.request.escrow ? 1 : b.request.escrow < a.request.escrow ? -1 : 0))
+    .slice(0, cap);
+}
+
+/// Whether a request's stablecoin needs a route to or from USDC, and which side of the quote that is: the escrow of a
+/// mint request is sold into USDC, the payment of a redeem request bought with it.
+export function stableLeg(request, usdc) {
+  if (request.stable.toLowerCase() === usdc.toLowerCase()) return null;
+  return request.isMint
+    ? { token: request.stable, side: "sell", amount: request.escrow }
+    : { token: request.stable, side: "buy", amount: request.limit };
+}
