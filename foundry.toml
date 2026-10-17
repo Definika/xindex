@@ -11,6 +11,11 @@ remappings = [
     "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
     "@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/",
 ]
+# Off on purpose: only the three remappings above are used. Forge's default adds remappings it detects in the
+# dependencies' nested submodules, some carrying this checkout's absolute path. Every remapping goes into each
+# contract's metadata, so the init-code hashes DeployWeighted pins as the release record (CF-5) would differ on every
+# machine, CI included.
+auto_detect_remappings = false
 # Off on purpose. Forge's default rewrites `new X(...)` in tests into `vm.deployCode`, and an expected revert inside
 # that cheatcode ends the test function there, still reported as a pass: every check after `vm.expectRevert` and a
 # constructor call was silently skipped (LR-01). With it off, a constructor is an ordinary CREATE and the test goes on.

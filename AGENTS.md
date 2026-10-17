@@ -563,10 +563,13 @@ records also cite.
     currency in the address book (CR-I37).
   - On chain 1 the market addresses are the address book's and nothing else (`MainnetOverride`); elsewhere they come
     from the environment.
-  - On chain 1 `deploy` broadcasts only the build `DeployWeighted`'s `FACTORY_INITCODE_HASH`, `ZAP_INITCODE_HASH` and
-    `REQUESTS_INITCODE_HASH` record (`BuildNotReleased`, CF-5). A change to `src/`, a dependency or the compiler
-    settings fails `test_CF5_theReleaseHashesAreThisBuilds` until those three are set to the values it prints, in the
-    same commit.
+  - On chain 1 `deploy` broadcasts only the build `DeployWeighted`'s `FACTORY_INITCODE_HASH`, `ZAP_INITCODE_HASH`,
+    `BUILDER_INITCODE_HASH` and `REQUESTS_INITCODE_HASH` record (`BuildNotReleased`, CF-5). A change to `src/`, a
+    dependency or the compiler settings fails `test_CF5_theReleaseHashesAreThisBuilds` until those four are set to the
+    values it prints, in the same commit. The test stops at the first mismatch; `cast keccak` of each artifact's
+    `bytecode.object` gives all four. `foundry.toml` keeps `auto_detect_remappings = false`: the detected remappings
+    carry the checkout's absolute path into the metadata, so the hashes differed between machines and CI. After
+    changing `foundry.toml`, rebuild with `forge build --force`, since the cache can keep the old artifacts.
 - **Mainnet addresses** are verified on-chain before being committed: tokens by symbol and decimals, and the router
   and the PoolManager by their runtime code hashes, since every Universal Router build answers `poolManager()` alike
   (CR-I35). `test/fork/MainnetAddresses.fork.t.sol` checks `script/MainnetAddresses.sol` that way and lists both lists

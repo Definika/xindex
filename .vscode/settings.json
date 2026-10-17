@@ -3,18 +3,7 @@
     "wake.compiler.solc.remappings": [
         "forge-std/=lib/forge-std/src/",
         "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
-        "@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/",
-        "lib/openzeppelin-contracts-upgradeable/lib/openzeppelin-contracts/:erc4626-tests/=lib/openzeppelin-contracts-upgradeable/lib/openzeppelin-contracts/lib/erc4626-tests/",
-        "lib/openzeppelin-contracts-upgradeable/lib/openzeppelin-contracts/:halmos-cheatcodes/=lib/openzeppelin-contracts-upgradeable/lib/openzeppelin-contracts/lib/halmos-cheatcodes/src/",
-        "lib/openzeppelin-contracts-upgradeable/:erc4626-tests/=lib/openzeppelin-contracts-upgradeable/lib/erc4626-tests/",
-        "lib/openzeppelin-contracts-upgradeable/:halmos-cheatcodes/=lib/openzeppelin-contracts-upgradeable/lib/halmos-cheatcodes/src/",
-        "lib/openzeppelin-contracts-upgradeable/:openzeppelin-contracts/=lib/openzeppelin-contracts-upgradeable/lib/openzeppelin-contracts/",
-        "lib/openzeppelin-contracts/:erc4626-tests/=lib/openzeppelin-contracts/lib/erc4626-tests/",
-        "lib/openzeppelin-contracts/:halmos-cheatcodes/=lib/openzeppelin-contracts/lib/halmos-cheatcodes/src/",
-        "erc4626-tests/=lib/openzeppelin-contracts/lib/erc4626-tests/",
-        "halmos-cheatcodes/=lib/openzeppelin-contracts/lib/halmos-cheatcodes/src/",
-        "openzeppelin-contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/",
-        "openzeppelin-contracts/=lib/openzeppelin-contracts/"
+        "@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/"
     ],
     "wake.compiler.solc.exclude_paths": [
         "node_modules",
