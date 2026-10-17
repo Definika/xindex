@@ -12,41 +12,53 @@ import {WeightedHub} from "./WeightedHub.sol";
 import {WeightedMath} from "./WeightedMath.sol";
 
 /// @title WeightedIndexFactory
-/// @notice Permissionless creation of indexes whose creators choose each component's weight, from a curated whitelist
-///         whose tokens each carry a Pyth price id. See {IWeightedIndexFactory}.
-/// @dev Roles. The owner proposes listings and guardian changes, delists, and hands over ownership. A listing takes
-///      effect only LISTING_DELAY after it is proposed and a guardian change only GUARDIAN_DELAY after, and either must
-///      be executed within PROPOSAL_WINDOW of becoming ready or proposed again. The guardian can cancel pending listings
-///      and delist, and keeps that power for the whole time its replacement is pending; it can also cancel its own
-///      removal, though the owner can still replace it with another address. Owner and guardian can also cancel a
-///      pending rebalance on any index and start one that leaves chosen components untouched. Neither role can pause,
-///      upgrade, set units, weights or prices, or touch funds held by any index, and ownership cannot be renounced.
+/// @notice Anyone can create an index here, choosing each component's weight. Components come from a curated
+///         whitelist, and each listed token carries a Pyth price id. See {IWeightedIndexFactory}.
+/// @dev Roles
+///      - The owner proposes listings and guardian changes, delists, and hands over ownership.
+///      - A listing takes effect LISTING_DELAY after it is proposed; a guardian change, GUARDIAN_DELAY after. Either
+///        must be executed within PROPOSAL_WINDOW of becoming ready, or proposed again.
+///      - The guardian can cancel pending listings and delist. It keeps that power while its replacement is pending.
+///        It can cancel its own removal, but the owner can still replace it with another address.
+///      - Owner and guardian can cancel a pending rebalance on any index, and start one that leaves chosen components
+///        untouched.
+///      - Neither role can pause, upgrade, set units, weights or prices, or touch funds held by any index. Ownership
+///        cannot be renounced.
 ///
-///      Prices. The factory never reads one. A listing records the token's Pyth price id and its decimals, and an index
-///      copies both at creation, so no later listing, relisting or delisting can repoint an existing index's prices:
-///      its executors bring Pyth's signed updates and it checks them itself.
+///      Prices
+///      - The factory never reads a price.
+///      - A listing records the token's Pyth price id and decimals. An index copies both at creation. So no later
+///        listing, relisting or delisting can repoint an existing index's prices.
 ///
-///      Addresses. Each index is deployed with CREATE2 from a salt over the creator, the name, the symbol, every
-///      component's token, starting units, weight, price id and decimals, and the index's config (its fee rates, its
-///      rebalance interval and its gate), so an address can never hold a different basket or different terms, even
-///      after a re-org, and an app can show the address before the transaction confirms.
+///      Addresses
+///      - Each index is deployed with CREATE2. The salt covers the creator, the name, the symbol, every component's
+///        token, starting units, weight, price id and decimals, and the index's config (fee rates, referral share,
+///        rebalance interval). The gate and the listed flag are not in it.
+///      - So an address can never hold a different basket or different terms, even after a re-org. An app can show
+///        the address before the transaction confirms.
 ///
-///      Fees. The owner sets a policy: the platform's fee, the referrer's share of it, the recipient and a creation
-///      fee in ether. An index copies the rates in force when it is created and keeps them, so a later policy reaches
-///      only later indexes; a creator names the highest platform fee it accepts, so a policy change cannot land on an
-///      index between its quote and its creation. The recipients are read live, through `feeTerms`, so a rotation
-///      strands nothing. The creation fee is forwarded to the recipient in the same call; the factory holds no ether.
+///      Fees
+///      - The owner sets a policy: the platform's fee, the referrer's share of it, the recipient, and a creation fee
+///        in ether.
+///      - An index copies the rates in force at creation and keeps them. A later policy reaches only later indexes.
+///      - A creator names the highest platform fee it accepts. So a policy change cannot land between its quote and
+///        its creation.
+///      - The recipients are read live, through `feeTerms`, so changing a recipient strands nothing.
+///      - The creation fee is forwarded to the recipient in the same call. The factory holds no ether.
 ///
-///      Creators. The factory keeps each index's creator, who receives the creator's fee shares, can hand the role on,
-///      and on a gated index keeps the list of who may be issued shares and can open it for good. None of that
-///      reaches an index's components or its rates.
+///      Creators
+///      - The factory records each index's creator. The creator receives the creator's fee shares and can hand the
+///        role on.
+///      - On a gated index, the creator keeps the allowlist of who may receive new shares, and can open the index for
+///        good. The creator has no power over components or rates.
 ///
-///      Whitelist policy (enforced socially, not on-chain): standard ERC-20s only. No fee-on-transfer, rebasing or
-///      callback (ERC-777 style) tokens; 6-18 decimals; a Pyth feed checked to name the same asset. Components that an
-///      issuer can pause or blacklist, such as WBTC, must be labelled in the app; while one is frozen, holders can still
-///      take the other components out with `WeightedHub.redeemSkipping`.
-// The one payable entry point, `createIndex`, forwards the whole of msg.value to the platform recipient in the same
-// call (`test_theCreationFeeIsForwardedWhole`), so no ether stays here.
+///      Whitelist policy (enforced by the listing process, not on chain)
+///      - Standard ERC-20s only: no fee-on-transfer, rebasing or callback (ERC-777 style) tokens; 6 to 18 decimals; a
+///        Pyth feed checked to price the same asset.
+///      - Components an issuer can pause or blacklist, such as WBTC, must be labelled in the app. While one is frozen,
+///        holders can still take the other components out with `WeightedHub.redeemSkipping`.
+// The one payable entry point, `createIndex`, forwards all of msg.value to the platform recipient in the same call
+// (`test_theCreationFeeIsForwardedWhole`), so no ether stays here.
 // aderyn-fp-next-line(contract-locks-ether)
 contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, ReentrancyGuard {
     uint256 public constant MIN_COMPONENTS = 2;
@@ -81,7 +93,7 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
 
     mapping(address => bool) public isWhitelisted;
     address[] private _whitelist;
-    /// @dev position in `_whitelist` + 1 (0 = absent), for O(1) removal.
+    /// @dev Position in `_whitelist` plus one (0 = absent), for O(1) removal.
     mapping(address => uint256) private _whitelistPos;
     mapping(address token => Terms) private _terms;
     /// @inheritdoc IWeightedIndexFactory
@@ -136,20 +148,19 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         ComponentSpec[] calldata components,
         IndexParams calldata params
     ) external payable nonReentrant returns (address index) {
-        // The guard is for the creation fee's transfer at the end, the one call here into an address the factory did
-        // not deploy; validation reads storage and `initialize` of an EIP-1167 clone of our own implementation makes
-        // no external call.
+        // The reentrancy guard covers the creation fee's transfer at the end: the only call here into an address the
+        // factory did not deploy. Validation only reads storage, and initializing our own clone makes no external call.
         if (bytes(name).length == 0 || bytes(symbol).length == 0) revert EmptyString();
         if (msg.value != creationFee) revert WrongCreationFee(msg.value, creationFee);
-        // Read before the clone is initialized, so nothing of the factory's state is read after an external call.
+        // Read before the clone is initialized, so no factory state is read after an external call.
         address recipient = platformFeeRecipient;
         _validateComponents(components);
-        IWeightedHub.Config memory config = _config(params);
-        IWeightedHub.ComponentInit[] memory inits = _inits(components);
+        IWeightedHub.Config memory config = _checkedConfig(params);
+        IWeightedHub.ComponentInit[] memory inits = _componentInits(components);
 
-        bytes32 salt = _salt(msg.sender, keccak256(bytes(name)), keccak256(bytes(symbol)), _contents(inits, config));
-        // Effects before interaction: register the clone, then initialize it in the same tx.
-        index = _deploy(_template(components), salt);
+        bytes32 salt = _salt(msg.sender, keccak256(bytes(name)), keccak256(bytes(symbol)), _contentsHash(inits, config));
+        // Effects before interaction: register the clone, then initialize it in the same transaction.
+        index = _deployClone(_template(components), salt);
         if (params.gated) isGated[index] = true;
         // Only the clone's CREATE2, which runs no code, precedes this.
         // forge-lint: disable-next-line(reentrancy-events)
@@ -157,14 +168,14 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
 
         _initializeIndex(index, salt, name, symbol, inits, config);
 
-        // Last, and only when the policy charges one: the recipient is the owner's choice, and a recipient that
-        // refuses ether (OpenZeppelin's FailedCall) blocks creation until the owner names another, nothing else.
+        // Last, and only if the policy charges a fee. The owner picks the recipient. One that refuses ether
+        // (OpenZeppelin's FailedCall) blocks only creation, until the owner names another.
         // forge-lint: disable-next-line(arbitrary-send-eth)
         if (msg.value != 0) Address.sendValue(payable(recipient), msg.value);
     }
 
-    /// @dev Deploys the clone at `salt` and registers it; reverts if that address already holds one.
-    function _deploy(address template, bytes32 salt) private returns (address index) {
+    /// @dev Deploys the clone at `salt` and registers it. Reverts if that address already holds one.
+    function _deployClone(address template, bytes32 salt) private returns (address index) {
         address predicted = Clones.predictDeterministicAddress(template, salt);
         if (predicted.code.length != 0) revert IndexAlreadyExists(predicted);
         index = Clones.cloneDeterministic(template, salt);
@@ -173,8 +184,9 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         allIndexes.push(index);
     }
 
-    /// @dev The index's config from the creator's params and the policy in force, each checked.
-    function _config(IndexParams calldata params) private view returns (IWeightedHub.Config memory) {
+    /// @dev Builds the index's config from the creator's params and the current policy, checking each against its
+    ///      bound.
+    function _checkedConfig(IndexParams calldata params) private view returns (IWeightedHub.Config memory) {
         if (params.creatorFeeBps > MAX_CREATOR_FEE_BPS) revert CreatorFeeTooHigh(params.creatorFeeBps);
         if (params.creatorStreamingBps > MAX_CREATOR_STREAMING_BPS) {
             revert StreamingFeeTooHigh(params.creatorStreamingBps);
@@ -228,7 +240,8 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         emit MintingOpened(index);
     }
 
-    /// @dev An address the factory did not deploy has no creator, so it is refused before the caller is compared.
+    /// @dev Reverts unless the caller is `index`'s creator. An address the factory did not deploy has no creator, so it
+    ///      is refused first.
     function _checkCreator(address index) private view {
         if (!isIndex[index]) revert NotIndex(index);
         if (msg.sender != creatorOf[index]) revert Unauthorized(msg.sender);
@@ -264,13 +277,13 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         emit FeePolicySet(platformFeeBps_, platformStreamingBps_, referralShareBps_, recipient, creationFee_);
     }
 
-    /// @dev The template an index of `components` is a clone of: `WeightedHub`. A factory listing another kind of
-    ///      component would override this and `_initializeIndex`.
+    /// @dev The implementation an index of `components` clones: `WeightedHub`. A factory for another kind of component
+    ///      would override this and `_initializeIndex`.
     function _template(ComponentSpec[] calldata) internal view virtual returns (address) {
         return IMPLEMENTATION;
     }
 
-    /// @dev Initializes a fresh clone. The salt is unused here, and kept for a factory that records it.
+    /// @dev Initializes a fresh clone. The salt is unused here; it is kept for an override that records it.
     function _initializeIndex(
         address index,
         bytes32,
@@ -279,8 +292,9 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         IWeightedHub.ComponentInit[] memory inits,
         IWeightedHub.Config memory config
     ) internal virtual {
-        // `createIndex` is nonReentrant, the clone runs this factory's own implementation, and the one interaction after
-        // it, the creation fee's transfer, reads no state. Wake's reentrancy detector does not model the guard.
+        // Safe: `createIndex` is nonReentrant, the clone runs this factory's own implementation, and the only later
+        // interaction (the creation fee's transfer) reads no state. Wake's reentrancy detector does not model the
+        // guard.
         // wake-disable-next-line reentrancy
         IWeightedHub(index).initialize(name, symbol, inits, config);
     }
@@ -293,18 +307,20 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         ComponentSpec[] calldata components,
         IndexParams calldata params
     ) external view returns (address) {
-        return _predict(creator, keccak256(bytes(name)), keccak256(bytes(symbol)), components, _config(params));
+        return _predictAddress(
+            creator, keccak256(bytes(name)), keccak256(bytes(symbol)), components, _checkedConfig(params)
+        );
     }
 
-    /// @dev As {predictIndexAddress}, with the names already hashed, for the stack.
-    function _predict(
+    /// @dev {predictIndexAddress} with the name and symbol already hashed, to save stack slots.
+    function _predictAddress(
         address creator,
         bytes32 nameHash,
         bytes32 symbolHash,
         ComponentSpec[] calldata components,
         IWeightedHub.Config memory config
     ) private view returns (address) {
-        bytes32 contents = _contents(_inits(components), config);
+        bytes32 contents = _contentsHash(_componentInits(components), config);
         return Clones.predictDeterministicAddress(_template(components), _salt(creator, nameHash, symbolHash, contents));
     }
 
@@ -334,7 +350,7 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
             priceIds[i] = priceId;
             for (uint256 j = 0; j < i; ++j) {
                 if (components[j].token == token) revert DuplicateToken(token);
-                // Pyth fills only the first of two equal ids, so two components on one feed, such as two wrappers of
+                // Pyth fills only the first of two equal ids. So two components on one feed, such as two wrappers of
                 // one coin, would make every fill revert (V5-M1).
                 if (priceIds[j] == priceId) revert DuplicatePriceId(token);
             }
@@ -342,8 +358,8 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         if (total != TOTAL_WEIGHT) revert InvalidWeights();
     }
 
-    /// @dev The components as the index's initializer takes them, with each token's price id and decimals in force.
-    function _inits(ComponentSpec[] calldata components)
+    /// @dev The components in the form the index's initializer takes, with each token's current price id and decimals.
+    function _componentInits(ComponentSpec[] calldata components)
         private
         view
         returns (IWeightedHub.ComponentInit[] memory inits)
@@ -359,8 +375,7 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         }
     }
 
-    /// @dev Over the creator, the hashed name and symbol, and the hashed contents: every component's token, units,
-    ///      weight, price id and decimals, and the config.
+    /// @dev The CREATE2 salt: a hash of the creator, the hashed name and symbol, and {_contentsHash}.
     function _salt(address creator, bytes32 nameHash, bytes32 symbolHash, bytes32 contents)
         private
         pure
@@ -369,9 +384,9 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         return keccak256(abi.encode(creator, nameHash, symbolHash, contents));
     }
 
-    /// @dev What the salt commits to besides the names: the components, and the config with its fee rates, referral
-    ///      share, interval and gate.
-    function _contents(IWeightedHub.ComponentInit[] memory inits, IWeightedHub.Config memory config)
+    /// @dev The hash of the index's terms: every component's token, units, weight, price id and decimals, and the
+    ///      config (fee rates, referral share, rebalance interval).
+    function _contentsHash(IWeightedHub.ComponentInit[] memory inits, IWeightedHub.Config memory config)
         private
         pure
         returns (bytes32)
@@ -386,15 +401,15 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
     /// @inheritdoc IWeightedIndexFactory
     function proposeListing(address token, bytes32 priceId) external onlyOwner {
         if (token.code.length == 0) revert NotAContract(token);
-        // Read once, here, and never again: every price of this token is scaled by this figure, so no index ever calls
-        // the token to price it (RT-01). The owner's proposal and the delay put it in public view before it counts.
+        // Read once, here, and never again. Every price of this token is scaled by this figure, so no index ever calls
+        // the token to price it (RT-01). The proposal's delay makes it public before it counts.
         // aderyn-fp-next-line(reentrancy-state-change)
         uint8 decimals = IERC20Metadata(token).decimals();
         if (decimals > MAX_DECIMALS) revert InvalidDecimals(token, decimals);
         _proposeListing(token, priceId, decimals);
     }
 
-    /// @dev The listing flow, with the token's decimals just read from it.
+    /// @dev Records a listing proposal, with the decimals the caller just read from the token.
     function _proposeListing(address token, bytes32 priceId, uint8 decimals) internal {
         if (priceId == bytes32(0)) revert InvalidPriceId(token);
         if (isWhitelisted[token]) revert AlreadyListed(token);
@@ -428,8 +443,8 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         _terms[token] = terms;
         emit TokenTermsSet(token, terms.priceId, terms.decimals);
 
-        // A proposal is refused for a whitelisted token (AlreadyListed), and nothing whitelists a token but this
-        // function, which clears the proposal, so the token is never already whitelisted here.
+        // The token is never already whitelisted here: a proposal is refused for a whitelisted token (AlreadyListed),
+        // and only this function whitelists one, clearing its proposal as it does.
         isWhitelisted[token] = true;
         _whitelist.push(token);
         _whitelistPos[token] = _whitelist.length;
@@ -474,9 +489,9 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
     function cancelGuardianChange() external {
         if (pendingGuardianEta == 0) revert NoPendingGuardianChange();
         address cancelled = pendingGuardian;
-        // The owner can cancel any guardian change. The guardian can cancel only its own removal: the owner must stay
-        // able to replace a guardian that turned hostile or lost its keys, but it cannot leave the factory without one
-        // over the guardian's objection.
+        // The owner can cancel any guardian change. The guardian can cancel only its own removal. So the owner can
+        // still replace a hostile or keyless guardian, but cannot leave the factory with no guardian over its
+        // objection.
         if (msg.sender != owner() && !(cancelled == address(0) && msg.sender == guardian && msg.sender != address(0))) {
             revert Unauthorized(msg.sender);
         }

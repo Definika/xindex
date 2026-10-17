@@ -6,10 +6,10 @@ import {IXindexErrors} from "./IXindexErrors.sol";
 import {IWeightedHub} from "./IWeightedHub.sol";
 
 /// @title IWeightedIndexFactory
-/// @notice Creates indexes whose creators choose each component's weight, from a whitelist of tokens the owner lists
-///         behind a timelock, each with the Pyth price id its indexes will be rebalanced at.
-/// @dev "Owner only" functions revert with OpenZeppelin's `OwnableUnauthorizedAccount` for any other caller, and
-///      "owner or guardian" functions with `Unauthorized`. The factory stores price ids and never reads a price.
+/// @notice Creates indexes whose creators choose each component's weight. Components come from a whitelist that the
+///         owner lists behind a timelock. Each listed token carries the Pyth price id its indexes rebalance at.
+/// @dev "Owner only" functions revert with OpenZeppelin's `OwnableUnauthorizedAccount` for any other caller.
+///      "Owner or guardian" functions revert with `Unauthorized`. The factory stores price ids and never reads a price.
 interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     /// @notice One component of an index to create.
     /// @param token A whitelisted token.
@@ -26,8 +26,8 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     ///        MAX_CREATOR_FEE_BPS.
     /// @param creatorStreamingBps The creator's streaming fee, in basis points of the index's value per year, at most
     ///        MAX_CREATOR_STREAMING_BPS.
-    /// @param maxPlatformFeeBps The highest platform fee the creator accepts: the creation reverts if the policy in
-    ///        force charges more, so a policy change cannot land on an index between its quote and its creation.
+    /// @param maxPlatformFeeBps The highest platform fee the creator accepts. The creation reverts if the current
+    ///        policy charges more, so a policy change cannot land between the creator's quote and the creation.
     /// @param maxPlatformStreamingBps The highest platform streaming fee the creator accepts, likewise.
     /// @param rebalanceInterval Seconds between rebalances, within [MIN_REBALANCE_INTERVAL, MAX_REBALANCE_INTERVAL].
     /// @param gated Whether only recipients the creator allows ({setAllowedMinter}) may be issued shares, until the
@@ -44,9 +44,11 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
         bool listed;
     }
 
-    /// @notice `creator` created `index` with `components`: each one's token, starting units, weight in basis points,
-    ///         and the Pyth price id and decimals it copied from its listing; `config` is what else the index fixed,
-    ///         and `listed` whether the creator meant it to be shown.
+    /// @notice `creator` created `index`.
+    ///         - `components`: each one's token, starting units, weight in basis points, and the Pyth price id and
+    ///           decimals copied from its listing.
+    ///         - `config`: the index's other fixed terms.
+    ///         - `listed`: whether the creator wants the app to show it.
     event IndexCreated(
         address indexed index,
         address indexed creator,
@@ -56,9 +58,9 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
         IWeightedHub.Config config,
         bool listed
     );
-    /// @notice The owner set the fee policy every index created from here on copies: the platform's fee, its
-    ///         streaming fee per year, the referrer's share of the platform's fee, where the platform's shares and
-    ///         creation fees go, and the creation fee in wei.
+    /// @notice The owner set the fee policy that every index created from now on copies: the platform's fee, its
+    ///         yearly streaming fee, the referrer's share of the platform's fee, the recipient of the platform's shares
+    ///         and creation fees, and the creation fee in wei.
     event FeePolicySet(
         uint16 platformFeeBps,
         uint16 platformStreamingBps,
@@ -144,9 +146,9 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     /// @notice {createIndex} was sent `sent` wei; the creation fee is `required`. A recipient that refuses the fee
     ///         fails the creation with OpenZeppelin's `FailedCall`.
     error WrongCreationFee(uint256 sent, uint256 required);
-    /// @notice A platform fee above MAX_PLATFORM_FEE_BPS, a platform streaming fee above MAX_PLATFORM_STREAMING_BPS, a
-    ///         referral share above BPS, or a recipient that is zero, the factory or one of its indexes, which could
-    ///         not hold shares.
+    /// @notice The policy has a platform fee above MAX_PLATFORM_FEE_BPS, a platform streaming fee above
+    ///         MAX_PLATFORM_STREAMING_BPS, a referral share above 10,000 basis points, or a recipient that cannot hold
+    ///         shares: zero, the factory, or one of its indexes.
     error InvalidFeePolicy();
     /// @notice {openMinting} on `index`, which is not gated.
     error NotGated(address index);
@@ -240,8 +242,8 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     /// @notice Whether a guardian change can still be executed or is waiting out its delay.
     function guardianChangePending() external view returns (bool);
 
-    /// @notice `index`'s creator: who created it, or whoever the role was handed to since ({transferCreator}). It
-    ///         receives the creator's fee shares and keeps the allowlist of a gated index; it has no power over the
+    /// @notice `index`'s creator: who created it, or whoever the role was handed to since ({transferCreator}). The
+    ///         creator receives the creator's fee shares and keeps a gated index's allowlist. It has no power over the
     ///         index's components.
     function creatorOf(address index) external view returns (address);
 
@@ -251,8 +253,8 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     /// @notice Whether `account` may be issued shares of `index` while it is gated.
     function isAllowedMinter(address index, address account) external view returns (bool);
 
-    /// @notice What `index` reads at each issue and redeem: whether `to` may be issued its shares (true for an index
-    ///         that is not gated), its creator, and the platform recipient.
+    /// @notice What `index` reads at each issue and redeem: whether `to` may receive new shares (always true when the
+    ///         index is not gated), its creator, and the platform recipient.
     function feeTerms(address index, address to) external view returns (bool allowed, address creator, address platform);
 
     /// @notice The platform's fee an index created now copies, in basis points of the shares on every issue and
@@ -265,13 +267,14 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     /// @notice The referrer's share of the platform's fee an index created now copies, in basis points.
     function referralShareBps() external view returns (uint16);
 
-    /// @notice Where every index mints the platform's fee shares, read at each issue and redeem, and where creation
-    ///         fees go. Zero until the owner sets a policy; an index then mints the platform's part to its creator.
+    /// @notice Where every index mints the platform's fee shares (read at each issue and redeem), and where creation
+    ///         fees go. Zero until the owner sets a policy; until then an index mints the platform's part to its
+    ///         creator.
     function platformFeeRecipient() external view returns (address);
 
-    /// @notice `index`'s creator only. Hands the creator role to `newCreator`: neither zero (ZeroAddress) nor the
-    ///         factory or an index (InvalidRecipient), which could not hold the shares. Reverts NotIndex for an
-    ///         address the factory did not deploy.
+    /// @notice `index`'s creator only. Hands the creator role to `newCreator`. `newCreator` cannot be zero
+    ///         (ZeroAddress), the factory or an index (InvalidRecipient), since those could not hold the shares.
+    ///         Reverts NotIndex for an address the factory did not deploy.
     function transferCreator(address index, address newCreator) external;
 
     /// @notice `index`'s creator only. Lets `account` be issued shares of `index` (`allowed`), or no longer. Only a
@@ -290,8 +293,8 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     /// @notice Number of indexes ever created.
     function allIndexesLength() external view returns (uint256);
 
-    /// @notice The address {createIndex} would deploy to for these arguments, from the price ids and the fee policy
-    ///         in force now. Reverts as {createIndex} would on `params`.
+    /// @notice The address {createIndex} would deploy to for these arguments, with the current price ids and fee
+    ///         policy. Reverts as {createIndex} would on `params`.
     function predictIndexAddress(
         address creator,
         string calldata name,
@@ -300,10 +303,12 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
         IndexParams calldata params
     ) external view returns (address);
 
-    /// @notice Creates an index of `components` and copies each token's price id and decimals into it, with the
-    ///         caller as its creator, its fee rates from `params` and the policy in force, and the policy's
-    ///         creation fee as `msg.value`, forwarded to the platform recipient. Reads no price: the app derives the
-    ///         units from the weights at current prices, and the first rebalance brings any index to its weights.
+    /// @notice Creates an index of `components`, with the caller as its creator.
+    ///         - Copies each token's current price id and decimals into the index.
+    ///         - Takes the fee rates from `params` and the current policy.
+    ///         - `msg.value` must equal the policy's creation fee; it is forwarded to the platform recipient.
+    ///         Reads no price. The app derives the units from the weights at current prices, and the first rebalance
+    ///         brings any index to its weights.
     /// @param components Between MIN_COMPONENTS and MAX_COMPONENTS distinct whitelisted tokens, no two sharing a price
     ///        id, with their weights and units.
     /// @param params The creator's fee, the platform fee it accepts, the rebalance interval, and the gate and listing
@@ -315,12 +320,12 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
         IndexParams calldata params
     ) external payable returns (address index);
 
-    /// @notice Owner only. Sets the fee policy indexes created from here on copy, and the recipient every index reads
-    ///         at each issue and redeem. It reaches no existing index's rates. The recipient can be neither zero, the
-    ///         factory nor an index (InvalidFeePolicy): none could hold the shares.
+    /// @notice Owner only. Sets the fee policy that indexes created from now on copy, and the recipient every index
+    ///         reads at each issue and redeem. It does not change any existing index's rates. The recipient cannot be
+    ///         zero, the factory or an index (InvalidFeePolicy), since none could hold the shares.
     /// @param platformFeeBps_ The platform's fee on every issue and redeem, at most MAX_PLATFORM_FEE_BPS.
     /// @param platformStreamingBps_ The platform's streaming fee per year, at most MAX_PLATFORM_STREAMING_BPS.
-    /// @param referralShareBps_ The referrer's share of the platform's fee, at most BPS.
+    /// @param referralShareBps_ The referrer's share of the platform's fee, at most 10,000 basis points.
     /// @param recipient Receives the platform's fee shares and the creation fees.
     /// @param creationFee_ What {createIndex} must be sent from now on, in wei.
     function setFeePolicy(
@@ -331,9 +336,9 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
         uint256 creationFee_
     ) external;
 
-    /// @notice Owner only. Proposes listing `token` with Pyth price id `priceId`; its decimals are read and recorded
-    ///         now. Executable by anyone from LISTING_DELAY later, within PROPOSAL_WINDOW. A relisting may carry a new
-    ///         price id: it reaches only indexes created afterwards, since every index copies its ids at creation.
+    /// @notice Owner only. Proposes listing `token` with Pyth price id `priceId`. Its decimals are read and recorded
+    ///         now. Anyone can execute it from LISTING_DELAY later, within PROPOSAL_WINDOW. A relisting may carry a new
+    ///         price id. It reaches only indexes created afterwards, since every index copies its ids at creation.
     function proposeListing(address token, bytes32 priceId) external;
 
     /// @notice Owner or guardian. Cancels `token`'s pending listing.

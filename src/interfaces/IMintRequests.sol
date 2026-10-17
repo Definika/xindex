@@ -3,14 +3,15 @@ pragma solidity 0.8.28;
 
 import {IXindexErrors} from "./IXindexErrors.sol";
 
-/// @notice Escrowed requests to mint or redeem an index's shares for USDC or USDT, filled by anyone who holds the other
-///         side. A requester names their own limit; nothing reads a price. The contract has no owner and nothing to
-///         configure. Every escrow leaves with its request, unless the stablecoin's issuer freezes or destroys it;
-///         tokens sent here outside a request stay here.
+/// @notice Escrowed requests to mint or redeem an index's shares for USDC or USDT. Anyone who holds the other side can
+///         fill one. A requester names their own limit; nothing reads a price. The contract has no owner and nothing
+///         to configure. Every escrow leaves with its request, unless the stablecoin's issuer freezes or destroys it.
+///         Tokens sent here outside a request stay here.
 interface IMintRequests is IXindexErrors {
-    /// @notice A request: `escrow` is what the contract holds for it, measured as the balance increase when it was
-    ///         made, in `stable` for a mint and in `index` shares for a redemption; `limit` is the least the requester
-    ///         must receive, in shares for a mint and in `stable` for a redemption.
+    /// @notice A request.
+    ///         - `escrow`: what the contract holds for it, measured as the balance increase when it was made. In
+    ///           `stable` for a mint, in `index` shares for a redemption.
+    ///         - `limit`: the least the requester must receive. In shares for a mint, in `stable` for a redemption.
     struct Request {
         address requester;
         uint40 deadline;
@@ -84,25 +85,27 @@ interface IMintRequests is IXindexErrors {
     /// @notice Request `id`; all zero for one never made.
     function getRequest(uint256 id) external view returns (Request memory);
 
-    /// @notice Escrows `amount` of `stable` (USDC or USDT) from the caller for at least `minShares` shares of `index`,
-    ///         a factory index, fillable until `deadline`. The escrow is the balance increase this transfer caused,
-    ///         which is less than `amount` when USDT charges a fee. Needs an allowance of `amount` on `stable`.
+    /// @notice Escrows `amount` of `stable` (USDC or USDT) from the caller, for at least `minShares` shares of the
+    ///         factory index `index`, fillable until `deadline`. The escrow is the balance increase this transfer
+    ///         caused: less than `amount` if USDT charges a fee. Needs an allowance of `amount` on `stable`.
     /// @return id The new request's id.
     function requestMint(address index, address stable, uint256 amount, uint256 minShares, uint256 deadline)
         external
         returns (uint256 id);
 
-    /// @notice Escrows `shares` of `index`, a factory index, from the caller for at least `minOut` of `stable`
+    /// @notice Escrows `shares` of the factory index `index` from the caller, for at least `minOut` of `stable`
     ///         (USDC or USDT), fillable until `deadline`. Needs an allowance of `shares` on `index`.
     /// @return id The new request's id.
     function requestRedeem(address index, uint256 shares, address stable, uint256 minOut, uint256 deadline)
         external
         returns (uint256 id);
 
-    /// @notice Anyone, before the deadline. For a mint, sends `amount` shares of the index from the caller to the
-    ///         requester, who must receive at least the request's limit, and pays the caller the escrowed stablecoin.
-    ///         For a redemption, sends `amount` of the stablecoin from the caller to the requester, who must receive at
-    ///         least the limit after any fee, and pays the caller the escrowed shares. The request is closed before
+    /// @notice Anyone, before the deadline. Fills request `id`:
+    ///         - Mint: sends `amount` shares of the index from the caller to the requester, and pays the caller the
+    ///           escrowed stablecoin.
+    ///         - Redemption: sends `amount` of the stablecoin from the caller to the requester, and pays the caller the
+    ///           escrowed shares.
+    ///         The requester must receive at least the request's limit, after any fee. The request is closed before
     ///         any token moves. Needs the caller's allowance of `amount` on what it sends.
     function fill(uint256 id, uint256 amount) external;
 

@@ -13,26 +13,27 @@ import {IUniversalRouter} from "./interfaces/IUniversalRouter.sol";
 import {UniversalRouterSwaps} from "./UniversalRouterSwaps.sol";
 
 /// @title IndexZap
-/// @notice Stateless convenience router: mint any index with a single token (USDC, USDT, ...) and burn any index
+/// @notice Stateless convenience router: mint any index with a single token (USDC, USDT, ...), and burn any index
 ///         straight into a single token, swapping through Uniswap's Universal Router.
 /// @dev Design notes
-///      - The contract holds no state and no funds between transactions. Anyone can deploy a competing zap; the index
-///        contracts do not know or care about this one.
-///      - Every swap runs through {UniversalRouterSwaps}, the engine it shares with `BasketBuilder` since 2026-10-16,
-///        whose notes cover the venues, the commands, the pre-fund and sweep, the spend bound, the measurement, the
-///        hookless V4 routes and the hop-by-hop V3 sales. The zap's own rules follow.
-///      - Minting uses exact-output swaps so the zap buys precisely the basket for `shares` and the only leftover is
+///      - The zap holds no state and no funds between transactions. Anyone can deploy a competing zap; the indexes do
+///        not depend on this one.
+///      - Every swap runs through {UniversalRouterSwaps}, the engine shared with `BasketBuilder`. Its notes cover
+///        venues, commands, pre-fund and sweep, the spend bound, measurement, hookless V4 routes and hop-by-hop V3
+///        sales. The zap's own rules follow.
+///      - Minting uses exact-output swaps, so the zap buys exactly the basket for `shares`. The only leftover is
 ///        `tokenIn`, refunded in one transfer.
-///      - Each leg can carry its own limit on top of the overall `maxAmountIn` / `minAmountOut`, so a sandwich cannot
+///      - Each leg can carry its own limit on top of the overall `maxAmountIn` / `minAmountOut`. So a sandwich cannot
 ///        spend the whole tolerance on one thin pool. A zero leg limit means "overall limit only". The overall burn
 ///        limit must be non-zero.
-///      - What the user pays and receives is measured as balance changes inside the call, so tokens already sitting in
-///        the zap are never used. A fee-on-transfer currency reverts with `TransferShortfall`. What a burn hop did not
-///        sell goes to the recipient with a ComponentReturned event; unsold `tokenOut` is paid out with the rest.
+///      - What the user pays and receives is measured as balance changes inside the call, so tokens already in the
+///        zap are never used. A fee-on-transfer currency reverts with `TransferShortfall`.
+///      - What a burn hop did not sell goes to the recipient, with a ComponentReturned event. Unsold `tokenOut` is
+///        paid out with the rest.
 ///      - The zap never calls `redeemSkipping`: a claim recorded for the zap could never be collected. While a
 ///        component is frozen, holders exit directly through the index.
-///      - Every call names the index's `rebalanceNonce` its quote was taken at. A rebalance changes the units, so a
-///        stale quote reverts with `StaleRebalanceNonce` instead of buying or selling a different basket.
+///      - Every call names the `rebalanceNonce` its quote was taken at. A rebalance changes the units, so a stale
+///        quote reverts with `StaleRebalanceNonce` instead of buying or selling a different basket.
 ///      - The zap never calls `executeRebalance`.
 contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
     using SafeERC20 for IERC20;
@@ -51,7 +52,7 @@ contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
 
     /// @inheritdoc IIndexZap
     function mintWithToken(MintParams calldata p) external nonReentrant returns (uint256 amountSpent) {
-        _checkCommon(p.index, p.expectedNonce, p.to, p.deadline);
+        _checkIndexCall(p.index, p.expectedNonce, p.to, p.deadline);
         if (p.tokenIn == address(0)) revert ZeroAddress();
         if (p.shares == 0 || p.maxAmountIn == 0) revert ZeroAmount();
 
@@ -63,26 +64,27 @@ contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
 
         uint256 reserved = _buyBasket(p);
 
-        // Whatever of this call's tokenIn the swaps did not take goes back, except the part the basket itself holds,
-        // which issue() pulls below. A balance the router happened to hold arrives through the sweep and enlarges the
-        // refund rather than underflowing it.
+        // Refund this call's tokenIn that the swaps did not take, except the part the basket itself holds, which
+        // issue() pulls below. A balance the router already held arrives through the sweep and enlarges the refund;
+        // it cannot underflow it.
         uint256 refund = Math.saturatingSub(tokenIn.balanceOf(address(this)) - balanceBefore, reserved);
         amountSpent = Math.saturatingSub(received, refund);
         if (refund != 0) tokenIn.safeTransfer(msg.sender, refund);
 
-        // The amount is only known after the swaps; the function is nonReentrant so the log cannot
-        // be reordered by a reentrant call.
+        // The amount is only known after the swaps. The function is nonReentrant, so no reentrant call can reorder
+        // the log.
         // forge-lint: disable-next-line(reentrancy-events)
         emit ZapMint(p.index, msg.sender, p.to, p.tokenIn, amountSpent, p.shares);
 
-        // The swaps and the refund run outside the index's guard, so a token callback could have settled a rebalance
-        // since the check on entry; issuing then would buy a basket the legs were not quoted for.
+        // Check the nonce again. The swaps and the refund run outside the index's guard, so a token callback could
+        // have settled a rebalance since the check on entry. Issuing then would buy a basket the legs were not quoted
+        // for.
         _checkNonce(p.index, p.expectedNonce);
         IIndexHub(p.index).issue(p.shares, p.to, p.referrer);
     }
 
-    /// @dev Buys every component that is not `tokenIn`, approves the index for the whole basket and
-    ///      returns the amount of `tokenIn` that the basket holds directly.
+    /// @dev Buys every component that is not `tokenIn`, and approves the index for the whole basket. Returns the amount
+    ///      of `tokenIn` the basket itself needs, which is kept out of the refund.
     function _buyBasket(MintParams calldata p) private returns (uint256) {
         address[] memory tokens = IIndexHub(p.index).componentTokens();
         uint256 n = tokens.length;
@@ -131,15 +133,16 @@ contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
         returns (uint256 amountOut)
     {
         _checkBurn(p);
-        // A permit front-run by someone else leaves the allowance already set, which is the state this needed anyway,
-        // so a failed permit is not a failed burn. The transfer below is what actually enforces the approval, and the
-        // checks above have already run.
+        // A failed permit is not a failed burn: if someone front-ran it, the allowance is already set. The transfer
+        // below is what enforces the approval, and the checks above have already run.
         // forge-lint: disable-next-line(erc20-unchecked-transfer)
         // wake-disable-next-line reentrancy
         try IERC20Permit(p.index).permit(msg.sender, address(this), p.shares, p.deadline, v, r, s) {} catch {}
         return _burnBasket(p);
     }
 
+    /// @dev Pulls the caller's shares, redeems them to this contract, sells the basket into `tokenOut`, checks the
+    ///      minimum, and pays the recipient.
     function _burnBasket(BurnParams calldata p) private returns (uint256 amountOut) {
         address[] memory tokens = IIndexHub(p.index).componentTokens();
         if (p.legs.length != tokens.length) revert LegCountMismatch();
@@ -149,9 +152,8 @@ contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
         IERC20(p.index).safeTransferFrom(msg.sender, address(this), p.shares);
         // redeem() rounds down deterministically, so the preview is the exact amount received.
         uint256[] memory got = IIndexHub(p.index).previewRedeem(p.shares);
-        // The basket has to be in hand before it can be sold, so this interaction cannot be the last
-        // one. The function is nonReentrant and the zap keeps no state; Wake's reentrancy detector
-        // does not model reentrancy guards, hence the suppression.
+        // The basket must be in hand before it can be sold, so this cannot be the last interaction. It is safe: the
+        // function is nonReentrant and the zap keeps no state. Wake's reentrancy detector does not model the guard.
         // wake-disable-next-line reentrancy
         IIndexHub(p.index).redeem(p.shares, address(this));
 
@@ -163,12 +165,12 @@ contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
         emit ZapBurn(p.index, msg.sender, p.to, p.tokenOut, p.shares, amountOut);
         uint256 paidBefore = tokenOut.balanceOf(p.to);
         tokenOut.safeTransfer(p.to, amountOut);
-        // A fee-on-transfer payout would leave the recipient short of what this call reported paying them.
+        // Reject a fee-on-transfer payout: it would leave the recipient short of what this call reported paying.
         if (tokenOut.balanceOf(p.to) - paidBefore < amountOut) revert TransferShortfall(p.tokenOut);
     }
 
-    /// @dev Sells every component held by this contract into `tokenOut`, counting components that already are
-    ///      `tokenOut`. Nothing is returned: the payout is the contract's own `tokenOut` balance change.
+    /// @dev Sells every redeemed component into `tokenOut`; a component that is `tokenOut` passes through. Returns
+    ///      nothing: the payout is this contract's `tokenOut` balance change.
     function _sellBasket(BurnParams calldata p, address[] memory tokens, uint256[] memory got) private {
         uint256 n = tokens.length;
         bytes memory ctx = abi.encode(p.index, p.to);
@@ -176,18 +178,17 @@ contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
             address component = tokens[i];
             if (component == p.tokenOut) {
                 if (p.legs[i].v3Path.length != 0 || p.legs[i].v4Path.length != 0) revert BadRoute(i);
-                // The pass-through leg carries no swap, but its limit is still the caller's and is still checked, so
-                // every leg honours the limit its NatSpec promises (DA-15).
+                // The pass-through leg carries no swap, but its limit is still checked, as for every leg (DA-15).
                 if (got[i] < p.legs[i].minAmountOut) revert InsufficientOutput(got[i], p.legs[i].minAmountOut);
                 continue;
             }
-            // Every leg is validated, including one that sells nothing, whose minimum then cannot be met.
+            // Every leg is validated, even one that sells nothing (its non-zero minimum then reverts).
             _sell(p.tokenOut, component, got[i], p.legs[i], i, ctx);
         }
     }
 
-    /// @dev What a hop did not sell goes to the burn's recipient, with any balance of it the router already held.
-    function _unsold(address token, uint256 amount, bytes memory ctx) internal override {
+    /// @dev Pays what a hop did not sell (plus any balance of it the router already held) to the burn's recipient.
+    function _onUnsold(address token, uint256 amount, bytes memory ctx) internal override {
         (address index, address to) = abi.decode(ctx, (address, address));
         // forge-lint: disable-next-line(reentrancy-events)
         emit ComponentReturned(index, to, token, amount);
@@ -198,25 +199,29 @@ contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
     // Checks
     // ---------------------------------------------------------------------
 
+    /// @dev The checks a burn runs before anything moves.
     function _checkBurn(BurnParams calldata p) private view {
-        _checkCommon(p.index, p.expectedNonce, p.to, p.deadline);
+        _checkIndexCall(p.index, p.expectedNonce, p.to, p.deadline);
         if (p.tokenOut == address(0)) revert ZeroAddress();
         if (p.shares == 0 || p.minAmountOut == 0) revert ZeroAmount();
     }
 
-    function _checkCommon(address index, uint256 expectedNonce, address to, uint256 deadline) private view {
+    /// @dev The checks every mint and burn share: deadline, a factory index, the expected nonce, and a recipient that
+    ///      can keep what it is sent.
+    function _checkIndexCall(address index, uint256 expectedNonce, address to, uint256 deadline) private view {
         if (block.timestamp > deadline) revert Expired();
         if (!FACTORY.isIndex(index)) revert NotIndex(index);
         _checkNonce(index, expectedNonce);
         if (to == address(0)) revert ZeroAddress();
-        // Tokens left in the router can be swept by anyone, and anything sent to the pool manager is a donation. The
-        // factory can never move a token on either, so a burn paid to it is lost (RT-21).
+        // Each of these would lose what it is sent: anyone can sweep tokens left in the router, anything sent to the
+        // pool manager is a donation, and the factory and the index can never move a token they receive (RT-21).
         if (to == address(this) || to == index || to == address(ROUTER) || to == POOL_MANAGER || to == address(FACTORY))
         {
             revert InvalidRecipient(to);
         }
     }
 
+    /// @dev Reverts if a rebalance settled since the caller's quote, which changed the basket.
     function _checkNonce(address index, uint256 expectedNonce) private view {
         uint256 nonce = IIndexHub(index).rebalanceNonce();
         if (nonce != expectedNonce) revert StaleRebalanceNonce(expectedNonce, nonce);

@@ -8,17 +8,19 @@ import {IUniversalRouterSwaps} from "./IUniversalRouterSwaps.sol";
 /// @notice Stateless convenience router: mint any index with a single token (USDC, USDT, ...) and burn any index
 ///         straight into a single token, swapping through Uniswap's Universal Router. Apps encode calls against this
 ///         interface.
-/// @dev Each leg names its own venue, in the `MintLeg` and `BurnLeg` of {IUniversalRouterSwaps}, which the basket
-///      builder encodes alike. Depth still favours V3 for some components and V4 for others, so the app picks per leg
-///      and the zap builds the router commands for whichever it finds. A leg carries a V3 path or a V4 route, never
-///      both and never neither, except the pass-through leg whose component is already the token being paid or
-///      received.
+/// @dev Legs
+///      - Each leg names its own venue, in the `MintLeg` and `BurnLeg` of {IUniversalRouterSwaps}. The basket
+///        builder uses the same format.
+///      - Depth favours V3 for some components and V4 for others, so the app picks per leg.
+///      - A leg carries a V3 path or a V4 route: never both, and never neither. The exception is the pass-through leg,
+///        whose component is already the token being paid or received; it carries none.
 ///
-///      Of the shared errors, the zap raises NotIndex for an index the factory did not deploy, ZeroAddress for a zero
-///      factory, router, recipient, `tokenIn` or `tokenOut`, InvalidRecipient for a recipient that is the zap, the
-///      index, the router, the PoolManager or the factory (RT-21), and the swap errors StaleRebalanceNonce,
-///      Expired, ZeroAmount, BadRoute, ShortFill, InsufficientBudget, InsufficientOutput and TransferShortfall, which
-///      `BasketBuilder` raises too.
+///      Errors the zap raises, of the shared ones:
+///      - NotIndex: an index the factory did not deploy.
+///      - ZeroAddress: a zero factory, router, recipient, `tokenIn` or `tokenOut`.
+///      - InvalidRecipient: a recipient that is the zap, the index, the router, the PoolManager or the factory (RT-21).
+///      - The swap errors, shared with `BasketBuilder`: StaleRebalanceNonce, Expired, ZeroAmount, BadRoute, ShortFill,
+///        InsufficientBudget, InsufficientOutput and TransferShortfall.
 interface IIndexZap is IUniversalRouterSwaps {
     /// @param index Index to mint; must be registered in the factory.
     /// @param expectedNonce The index's `rebalanceNonce` when the legs were quoted.
@@ -74,11 +76,11 @@ interface IIndexZap is IUniversalRouterSwaps {
         uint256 amountSpent,
         uint256 shares
     );
-    /// @notice The router sold less of `component` than the zap gave it; `amount` went to `to` instead. `component`
-    ///         is the input of the hop that was not filled, so on a multi-hop leg it can be an intermediate token.
-    ///         `amount` is everything the hop's sweep brought back, so it also includes any balance of that token the
-    ///         router was already holding, which anyone could have swept. Unsold `tokenOut` raises the payout instead
-    ///         and is not reported here.
+    /// @notice The router sold less of `component` than the zap gave it, and `amount` went to `to` instead.
+    ///         - `component` is the input of the hop that was not filled; on a multi-hop leg it can be a middle token.
+    ///         - `amount` is everything the hop's sweep brought back. It includes any balance of that token the router
+    ///           already held, which anyone could have swept.
+    ///         Unsold `tokenOut` raises the payout instead, and is not reported here.
     event ComponentReturned(address indexed index, address indexed to, address indexed component, uint256 amount);
     /// @notice `user` burned `shares` of `index` and `to` received `amountOut` of `tokenOut`.
     /// @param user The caller whose shares were burned.
@@ -104,9 +106,9 @@ interface IIndexZap is IUniversalRouterSwaps {
     /// @return amountSpent `tokenIn` used: the swaps' input plus any `tokenIn` the basket holds directly.
     function mintWithToken(MintParams calldata p) external returns (uint256 amountSpent);
 
-    /// @notice Burns `p.shares` of `p.index` (pulled from msg.sender, which must have approved the zap) and delivers at
-    ///         least `p.minAmountOut` of `p.tokenOut` to `p.to`. Any part of a hop's input the router did not take also
-    ///         goes to `p.to`, with a ComponentReturned event.
+    /// @notice Burns `p.shares` of `p.index` and delivers at least `p.minAmountOut` of `p.tokenOut` to `p.to`. The
+    ///         shares are pulled from msg.sender, which must have approved the zap. Any part of a hop's input the
+    ///         router did not take also goes to `p.to`, with a ComponentReturned event.
     /// @param p The burn; see {BurnParams}.
     /// @return amountOut `tokenOut` delivered.
     function burnToToken(BurnParams calldata p) external returns (uint256 amountOut);
