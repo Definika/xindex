@@ -149,7 +149,6 @@ contract MainnetAddressesForkTest is Test {
         _assertToken(M.COMP, "COMP", 18);
         _assertToken(M.EIGEN, "EIGEN", 18);
         _assertToken(M.AXS, "AXS", 18);
-        _assertToken(M.SAND, "SAND", 18);
         _assertToken(M.BAT, "BAT", 18);
         _assertToken(M.CVX, "CVX", 18);
         _assertToken(M.MANA, "MANA", 18);
@@ -166,7 +165,6 @@ contract MainnetAddressesForkTest is Test {
         _assertToken(M.H, "H", 18);
         _assertToken(M.PLUME, "PLUME", 18);
         _assertToken(M.GALA, "GALA", 8);
-        _assertToken(M.RLB, "RLB", 18);
         _assertToken(M.W, "W", 18);
         _assertToken(M.RSR, "RSR", 18);
         _assertToken(M.XRP, "XRP", 18);
@@ -181,6 +179,9 @@ contract MainnetAddressesForkTest is Test {
         _assertToken(M.APT, "APT", 8);
         _assertToken(M.PYTH_TOKEN, "PYTH", 6);
         _assertToken(M.OP, "OP", 18);
+        _assertToken(M.BNB, "WBNB", 18);
+        _assertToken(M.SUI, "SUI", 9);
+        _assertToken(M.SEI, "SEI", 6);
     }
 
     function _assertWrapped(address token, uint16 chain, bytes32 source) internal view {
@@ -192,7 +193,9 @@ contract MainnetAddressesForkTest is Test {
     /// @dev Every Wormhole copy on the list is the one the bridge deployed for its source token, by the bridge's own
     ///      registry, with the source written out here: a Binance-Peg BEP-20's address on BNB Chain (Wormhole chain
     ///      4), a Solana mint (chain 1), Avalanche's WAVAX (chain 6), Algorand's ALGO (chain 8, asset 0), Aptos's APT
-    ///      (chain 22, the hash of its coin type), Base's AERO (chain 30) and Optimism's OP (chain 24).
+    ///      (chain 22, the hash of its coin type), Base's AERO (chain 30), Optimism's OP (chain 24), BNB Chain's WBNB
+    ///      (chain 4), Sui's SUI (chain 21, its CoinMetadata object) and Sei's usei (chain 32, its keccak256 with the
+    ///      first byte set to 1).
     function testFork_theWormholeCopiesAreTheBridges() public view {
         assertEq(M.WORMHOLE_TOKEN_BRIDGE.codehash, WORMHOLE_BRIDGE_PROXY_CODEHASH);
         _assertWrapped(M.SOL, 1, 0x069b8857feab8184fb687f634618c035dac439dc1aeb3b5598a0f00000000001); // SOL from Solana
@@ -208,6 +211,9 @@ contract MainnetAddressesForkTest is Test {
         _assertWrapped(M.APT, 22, 0xa867703f5395cb2965feb7ebff5cdf39b771fc6156085da3ae4147a00be91b38); // APT from Aptos
         _assertWrapped(M.PYTH_TOKEN, 1, 0xf5edec8471c75624ebc4079a634326d96a689e6157d79abe8f5a6f94472853bc); // PYTH from Solana
         _assertWrapped(M.OP, 24, 0x0000000000000000000000004200000000000000000000000000000000000042); // OP from Optimism
+        _assertWrapped(M.BNB, 4, 0x000000000000000000000000bb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c); // WBNB from BNB Chain
+        _assertWrapped(M.SUI, 21, 0x9258181f5ceac8dbffb7030890243caed69a9599d2886d957a9cb7656af3bdb3); // SUI from Sui
+        _assertWrapped(M.SEI, 32, 0x01881043998ff2b738519d444d2dd0da3da4545de08290c1076746538d5333df); // SEI from Sei
     }
 
     /// @dev Every entry, as the listing script builds it, listed on a fresh v5 factory over Pyth's own contract, which
@@ -229,7 +235,7 @@ contract MainnetAddressesForkTest is Test {
     /// @dev Every wide entry lists on a fresh factory with its price id and its token's own decimals.
     function testFork_wideWhitelistMatchesMainnet() public {
         ConfigureWeighted.Entry[] memory list = new ConfigureWeighted().wideMainnetList();
-        assertEq(list.length, 88);
+        assertEq(list.length, 89);
         _listOnAFreshFactory(list);
     }
 

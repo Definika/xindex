@@ -8,8 +8,13 @@ deployment is shelved. Its scripts, address book and fork suite stay in the tree
 **Update, 2026-10-14:** the owner took DOGE's copy off the list for now, leaving 92, 13 of them Wormhole copies, and 74
 coins that count toward the hundred. Pyth prices DOGE, not the copy, so a broken Binance peg or bridge would leave the
 copy priced as DOGE; and Binance-Peg DOGE is a proxy whose admin, one externally owned key on BNB Chain, can replace
-its code (read that day). Its address stays recorded in `script/MainnetAddresses.sol`. The sections below are as
-written on 2026-10-10.
+its code (read that day). Its address stays recorded in `script/MainnetAddresses.sol`.
+**Update, 2026-10-18:** three of the 34 copies of section 2a already existed: BNB (as BNB Chain's WBNB), SUI and SEI.
+The count of 2026-10-10 missed them; asked again, the bridge's `wrappedAsset` names all three. They passed `CheckToken`
+and are listed (`design/2026-10-18-pre-mainnet-readings.md`, section 3). The same day the owner took two of the 31
+Ethereum-issued coins of section 2a, SAND and RLB, off the list after the source reading
+(`design/2026-10-18-token-source-reading.md`), leaving 93, 16 of them Wormhole copies, 75 coins that count toward the
+hundred, and 31 copies to attest. The sections below are as written on 2026-10-10.
 
 ## 1. The decision
 

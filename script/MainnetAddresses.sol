@@ -126,7 +126,11 @@ library MainnetAddresses {
     // (ERC-1363 callbacks) and NEAR's Rainbow bridge copy (24 decimals). Left for the owner's call: Binance's 2017 BNB
     // ERC-20 (0xB8c77482e45F1F44dE1745F52C74426C631bDD52), which Binance alone redeems; U (United Stables, which may
     // be a stablecoin); and EDGE and BEAM, whose Pyth feeds (EDGEX, BEAM) may name other coins. LEO, WLFI and GRAM
-    // stay out under the earlier calls.
+    // stay out under the earlier calls. Two of the 31 left on 2026-10-18, the owner's call after the source reading
+    // (design/2026-10-18-token-source-reading.md): The Sandbox's SAND (0x3845badAde8e6dFF049820680d1F14bD3903a5d0),
+    // whose two multisig admins and 22 operator contracts can move or burn any holder's balance with no timelock, and
+    // Rollbit's RLB (0x046EeE2cc3188071C02BfC1745A6b17c656e3f3d), whose implementation is unverified and upgradeable by
+    // one externally owned key.
     // ---------------------------------------------------------------------
     /// @dev Falcon Finance; no owner and no admin power.
     address internal constant FF = 0xFA1C09fC8B491B6A4d3Ff53A10CAd29381b3F949;
@@ -146,12 +150,11 @@ library MainnetAddresses {
     address internal constant JASMY = 0x7420B4b9a0110cdC71fB720908340C03F9Bc03EC;
     /// @dev Compound.
     address internal constant COMP = 0xc00e94Cb662C3520282E6f5717214004A7f26888;
-    /// @dev EigenLayer's EIGEN, a proxy upgraded by a 1-of-2 Safe: that key can change the token's code at any time.
+    /// @dev EigenLayer's EIGEN, a proxy upgraded by a 1-of-2 Safe whose owners are a 10-day timelock and a 9-of-13
+    ///      Safe, either able to change the token's code alone (read on 2026-10-18).
     address internal constant EIGEN = 0xec53bF9167f50cDEB3Ae105f56099aaaB9061F83;
     /// @dev Axie Infinity.
     address internal constant AXS = 0xBB0E17EF65F82Ab018d8EDd776e8DD940327B28b;
-    /// @dev The Sandbox.
-    address internal constant SAND = 0x3845badAde8e6dFF049820680d1F14bD3903a5d0;
     /// @dev Basic Attention Token.
     address internal constant BAT = 0x0D8775F648430679A709E98d2b0Cb6250d2887EF;
     /// @dev Convex Finance.
@@ -184,8 +187,6 @@ library MainnetAddresses {
     address internal constant PLUME = 0x4C1746A800D224393fE2470C70A35717eD4eA5F1;
     /// @dev Gala, 8 decimals.
     address internal constant GALA = 0xd1d2Eb1B1e90B638588728b4130137D262C87cae;
-    /// @dev Rollbit Coin, a proxy upgraded by a contract owned by one externally owned key: that key can change the token's code at any time.
-    address internal constant RLB = 0x046EeE2cc3188071C02BfC1745A6b17c656e3f3d;
     /// @dev Wormhole's W, the Ethereum peer of its native-token-transfer mesh, owned by its transfer manager; the coin's home is Solana.
     address internal constant W = 0xB0fFa8000886e57F86dd5264b9582b2Ad87b2b91;
     /// @dev Reserve Rights.
@@ -199,7 +200,10 @@ library MainnetAddresses {
     // Binance-Peg BEP-20, since Binance's custody stands under the bridge's; `Bridged` otherwise. None has Uniswap
     // depth: they mint in kind or through `MintRequests`, and a fill needs an executor that bridged them beforehand.
     // Each address was read on 2026-10-10 from the bridge's `wrappedAsset(chain, source)`, which
-    // `test/fork/MainnetAddresses.fork.t.sol` repeats, and each passed `CheckToken` at block 26,163,788. DOGE's copy
+    // `test/fork/MainnetAddresses.fork.t.sol` repeats, and each passed `CheckToken` at block 26,163,788. BNB's, SUI's
+    // and SEI's copies, which that day's count missed, were read the same way on 2026-10-18 and passed `CheckToken` at
+    // block 26,215,111; Sui names a coin by its CoinMetadata object, and Sei's bridge a native denom by its keccak256
+    // with the first byte set to 1. DOGE's copy
     // (0xd881A7F17Ed2c71FD671AfbA3A9b30Eb914Aea5F, from Binance-Peg DOGE 0xba2ae424d960c26247dd6c32edc70b295c744c43 on
     // BNB Chain) was taken off the list on 2026-10-14, the owner's call, for now: Pyth prices DOGE, not the copy, so
     // a broken peg or bridge leaves the copy priced as DOGE, and the source is a proxy whose admin, one externally
@@ -229,6 +233,12 @@ library MainnetAddresses {
     address internal constant PYTH_TOKEN = 0xeFc0CED4B3D536103e76a1c4c74F0385C8F4Bdd3;
     /// @dev OP as the bridge wraps Optimism's 0x4200000000000000000000000000000000000042 (Wormhole chain 24): symbol OP, 18 decimals.
     address internal constant OP = 0x1df721D242E0783F8fCab4A9FfE4F35bdf329909;
+    /// @dev BNB as the bridge wraps BNB Chain's WBNB (0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c, Wormhole chain 4), the wrapper of BNB itself rather than a Binance-Peg token: symbol WBNB, 18 decimals.
+    address internal constant BNB = 0x418D75f65a02b3D53B2418FB8E1fe493759c7605;
+    /// @dev SUI as the bridge wraps Sui's SUI itself (0x2::sui::SUI, its CoinMetadata object 0x9258181f5ceac8dbffb7030890243caed69a9599d2886d957a9cb7656af3bdb3, Wormhole chain 21): symbol SUI, 9 decimals.
+    address internal constant SUI = 0x84074EA631dEc7a4edcD5303d164D5dEa4c653D6;
+    /// @dev SEI as the bridge wraps Sei's native usei (Wormhole chain 32): symbol SEI, 6 decimals.
+    address internal constant SEI = 0xf91e605af079384cc7077B3914A4a36019a89EE8;
 
     // ---------------------------------------------------------------------
     // Mint and burn currencies. Never components; see the whitelist policy.

@@ -10,8 +10,9 @@ permissionless auction, and that settlement is the only place any contract reads
 of 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). `WeightedIndexFactory`, `WeightedHub`, `IndexZap` and
 `MintRequests` hold Ethereum ERC-20s in kind: the issuer's own contract where Ethereum has one, and otherwise the copy
 Wormhole's token bridge wraps from the chain that has it, priced at the coin's Pyth feed and labelled Bridged, or
-Custodial when the source is a Binance-Peg coin. The list stands at 92 (`script/PythIds.sol`), 13 of them Wormhole
-copies, with 34 more copies to attest; DOGE's copy left it on 2026-10-14, the owner's call. Nothing crosses a chain inside a contract: the app and the fillers bridge. The
+Custodial when the source is a Binance-Peg coin. The list stands at 93 (`script/PythIds.sol`), 16 of them Wormhole
+copies, with 31 more copies to attest; DOGE's copy left it on 2026-10-14, and SAND and RLB on 2026-10-18, the owner's
+calls. Nothing crosses a chain inside a contract: the app and the fillers bridge. The
 BNB Chain deployment of 2026-10-07 was shelved on 2026-10-10 and deleted on 2026-10-13.
 
 **Status (2026-10-13): v5, deployed nowhere yet.** The weighted index is built and reviewed twice
@@ -78,7 +79,7 @@ The history, in one paragraph each:
 | Swaps | Uniswap's Universal Router 2.0.0 alone, V3 or V4, one venue per leg, chosen by the caller. PancakeSwap and THORChain were removed on 2026-10-14. The app offers the one-click zap only up to about 35 components (EIP-7825's 16.78M gas per transaction). |
 | Fees | In shares, never in components: the creator's rate (0 to 100 bps, the creator's choice at creation) plus the platform's (0 to 25 bps, the factory's policy at creation) on every issue and every redeem. A minter's deposit backs the fee's shares on top of its own; a burner's fee is minted to the recipients out of what it burns. The recipients are read from the factory at each call: the index's creator and the platform recipient, and a referrer named at mint takes the policy's share of the platform's part. The policy starts at zero and reaches only indexes created after it is set. A streaming fee, the creator's yearly rate (0 to 500 bps) plus the platform's (0 to 100 bps, the policy at creation), accrues in shares at every issue, redeem, settlement and `accrueFees`, and shrinks every share's units by the same factor: it moves no tokens. |
 | Cadence and gate | Each index fixes its rebalance interval at creation, 7 to 91 days. A gated index issues only to recipients its creator allows, until the creator opens it for good; the app does not list an index created unlisted. |
-| Coins | Ethereum ERC-20s: the issuer's own contract where Ethereum has one, Bitcoin as WBTC, and otherwise the copy Wormhole's token bridge wraps from the coin's home chain, labelled Bridged (and Custodial from a Binance-Peg source). Tether Gold and Ondo's stock tokens are listed too, labelled Custodial. 93 are listed in `script/PythIds.sol`, 14 of them Wormhole copies (SOL and the 13 added on 2026-10-10), with 34 more copies to attest. |
+| Coins | Ethereum ERC-20s: the issuer's own contract where Ethereum has one, Bitcoin as WBTC, and otherwise the copy Wormhole's token bridge wraps from the coin's home chain, labelled Bridged (and Custodial from a Binance-Peg source). Tether Gold and Ondo's stock tokens are listed too, labelled Custodial. 93 are listed in `script/PythIds.sol`, 16 of them Wormhole copies (SOL, 12 of the 13 added on 2026-10-10, DOGE's having left on 2026-10-14, and BNB, SUI and SEI, added on 2026-10-18), with 31 more copies to attest. |
 | Stable in / out | Mint with USDC or USDT through the zap, through `MintRequests` at a limit of the requester's own, filled by anyone who holds shares, or, for a basket too wide for one transaction, through the basket builder, leg by leg over several transactions into an escrow of the minter's own. The burner chooses USDC, USDT or any other token at exit, sells leg by leg through the builder, or asks for USDC or USDT at a limit through `MintRequests`. Index tokens are fungible, so the protocol cannot know which stable a holder used. |
 | Decentralization | No admin can move an index's funds, mint or burn its shares, pause or upgrade it, or set its units or weights. The owner proposes listings, which take effect after 2 days, and guardian changes, which take 7; a proposal not executed within 7 days of becoming ready expires. Owner and guardian both cancel pending listings, delist, cancel a rebalance, and start one with a keep mask or before strangers may. The guardian can cancel a change that would remove it, not one that replaces it. Ownership moves in two steps with no delay, and cannot be renounced. |
 | Frozen components | If a component's issuer pauses or blacklists transfers, holders take every other component out with `redeemSkipping` and collect the frozen one later with `claim`; the guardian rebalances around it with a keep mask, which neither transfers the component nor reads its balance or its price. |
@@ -398,11 +399,13 @@ creation.
 
 ## The list
 
-`script/PythIds.sol` holds 92 coins, each with its Pyth price id: `default` is the first four (WETH, WBTC, LINK, UNI)
-and `wide` the other 88. 13 of them are Wormhole copies, SOL and 12 of the 13 added on 2026-10-10 (DOGE's left on
-2026-10-14, the owner's call, since Pyth prices DOGE and not the copy), and 34 more copies await an
-attestation on Wormhole's Portal (section 2a of `design/2026-10-10-one-index-wormhole-legs.md`). Every one went through
-`CheckToken` on a fork, which refuses only Tether Gold, admitted on the owner's waiver. On a fork of 2026-10-11, the 92
+`script/PythIds.sol` holds 93 coins, each with its Pyth price id: `default` is the first four (WETH, WBTC, LINK, UNI)
+and `wide` the other 89; SAND and RLB left on 2026-10-18 after the source reading
+(`design/2026-10-18-token-source-reading.md`), the owner's call. 16 of them are Wormhole copies: SOL, 12 of the 13 added on 2026-10-10 (DOGE's left on
+2026-10-14, the owner's call, since Pyth prices DOGE and not the copy), and BNB, SUI and SEI, whose copies already
+existed and joined on 2026-10-18. 31 more copies await an attestation on Wormhole's Portal (section 2a of
+`design/2026-10-10-one-index-wormhole-legs.md`, and section 3 of `design/2026-10-18-pre-mainnet-readings.md`). Every
+one went through `CheckToken` on a fork, which refuses only Tether Gold, admitted on the owner's waiver. On a fork of 2026-10-11, the 92
 coins forge-std can fund issued, rebalanced with real transfers and redeemed in one index, and 45 of them traded through
 the zap within 2% on $1,000; SNX was left out only because its balances live in its `TokenState`, beyond forge-std's
 `deal`.
@@ -431,10 +434,14 @@ stock, Wormhole for every wrapped copy, and both Binance and Wormhole for a copy
   component's own units, at most once every `MIN_REBALANCE_INTERVAL` (V5-M2); the guardian can cancel, and a confidence
   interval wider than 2% is refused. Pyth's contract on Ethereum is upgradeable by Pyth's governance, which upgraded it
   in place on 2026-08-26, and since then (OP-PIP-132) verifies updates against Pyth's own set of five signing keys, not
-  Wormhole's guardians. The app says so on every index.
+  Wormhole's guardians. Three of the five suffice, for a price and for a governance message alike, so those three can
+  also upgrade Pyth's contract (`design/2026-10-18-pre-mainnet-readings.md`, section 1). The app says so on every
+  index.
 - **Rebalancing needs Pyth's Hermes, and Hermes needs a key.** Signed updates come from Hermes, which has required an
   API key since 2026-08-26. The contract does not care who fetches an update, so one keyed service can hand updates to
-  any executor, but without one no index rebalances. Six of Ondo's stocks (TSM, AVGO, LLY, JPM, WMT, V) have only
+  any executor, but without one no index rebalances. Pyth sells the key as a data plan: $500 a month for crypto feeds,
+  Tether Gold's and the five Ondo tokens' own among them, and $2,500 and up for the share feeds twelve Ondo legs use.
+  Six of Ondo's stocks (TSM, AVGO, LLY, JPM, WMT, V) have only
   US-hours feeds, so an index holding one settles only while that market is open, or with the stock kept.
 - **Wrapped legs rest on Wormhole.** Wormhole's guardians (13 of 19) can forge a bridge message, minting unbacked
   wrapped tokens or upgrading every wrapped token's code at once, with no timelock; that reaches the whole of every
@@ -445,10 +452,13 @@ stock, Wormhole for every wrapped copy, and both Binance and Wormhole for a copy
   `uint96` stop the fill rather than wrap, until the guardian keeps it (V5-L3).
 - **An issuer's corporate action is not accounted for.** An index holds fixed units per share and pays out only those.
   If an issuer mints tokens to every holder, as a stock split paid in tokens would, the index's new tokens belong to no
-  share; if it burns them, that leg falls below its backing; and if one of Ondo's stock tokens stops being exactly one
-  share, the legs priced at the share's own feed are mispriced at every rebalance. How Ondo applies splits and
-  dividends is to be confirmed before mainnet; until then the guardian keeps an Ondo leg out of any rebalance around a
-  corporate action (CF-3, `audit/2026-10-13-security-audit.md`).
+  share; if it burns them, that leg falls below its backing. Ondo does neither: its token's balance never changes,
+  and each token tracks a multiplier of shares (`sValue`) that reinvested dividends raise and a split multiplies. So the
+  five Ondo legs priced at the token's own feed are priced right, and the twelve priced at the share's feed are worth
+  `sValue` times what the hub thinks: a small drift from dividends, which the turnover cap bounds, and after a split a
+  rebalance that cannot clear until the guardian keeps that leg. The guardian keeps an affected leg out of any
+  rebalance around a corporate action, which Ondo announces at least 24 hours ahead (CF-3,
+  `design/2026-10-18-pre-mainnet-readings.md`, section 2).
 - **Price ids are data the owner maintains.** The contracts cannot tell a wrong price id from a right one. Check each
   listing's feed description during its 2 days, while it can still be cancelled. An index copies its ids at creation,
   so a wrong id reaches only indexes created while it stood, and the guardian can keep that component at each
@@ -471,9 +481,12 @@ stock, Wormhole for every wrapped copy, and both Binance and Wormhole for a copy
   the new guardian can start a keep-mask rebalance then too, for an index that only settles with a component kept. While a replacement is pending, the owner cancels the outgoing guardian's
   keep-mask proposals, and monitors alert on `RebalanceStarted` with a non-zero `keepMask` (RT-07). The owner has only
   `REBALANCE_DELAY`, 2 hours, to cancel one before the guardian's own executor can fill it at `eta`.
-- **Issuers can freeze components, and some can burn them.** WBTC can be paused by its custodian. Tether Gold and
-  Ondo's stocks can blacklist a holder, an index included, and destroy its balance; the owner accepted that on
-  2026-10-10. A paused component makes `redeem`, the zap and any fill that moves it revert; `redeemSkipping`, `claim`
+- **Issuers can freeze components, and some can burn them.** WBTC can be paused by its custodian, and so can MANA,
+  CHZ, SENT and FLUID by theirs. Tether Gold and Ondo's stocks can blacklist a holder, an index included, and destroy
+  its balance; the owner accepted that on 2026-10-10. The source reading of 2026-10-18
+  (`design/2026-10-18-token-source-reading.md`) found admins who can burn or move any holder's balance without a
+  blacklist on SAND, H, PLUME, SNX and SYRUP; the owner took SAND off the list and kept the others, whose admins the
+  app names. A paused component makes `redeem`, the zap and any fill that moves it revert; `redeemSkipping`, `claim`
   and the guardian's keep mask are the recourse, and a permanently frozen component needs the keep mask at every
   rebalance. A destroyed balance is lost to the index's holders.
 - **A request's surplus goes to the fastest filler.** A fill delivers what the filler sends and at least the

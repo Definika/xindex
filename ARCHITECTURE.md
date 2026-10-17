@@ -475,11 +475,12 @@ address (LR-05).
 **One deployment, the missing coins wrapped.** About 71 of the top-300 candidates exist on Ethereum through their
 issuer; held on BNB Chain instead, the same universe would have wrapped 71 legs. Wormhole is the one bridge accepted
 for wrapping: anyone attests a coin on its home chain and the bridge deploys the copy on Ethereum. The cost is a new
-trusted party over every wrapped leg (section 7). The list (`script/PythIds.sol`) stands at 92, 13 of them Wormhole
-copies: SOL, listed first, and 12 added on 2026-10-10; a 13th, DOGE's, left on 2026-10-14 on the owner's call, since
-Pyth prices DOGE and not the copy. Tether Gold and the 17 Ondo stocks do not count toward the hundred, so 74 coins of
-the top 300 are listed; 34 more copies await an attestation on Wormhole's Portal
-(`design/2026-10-10-one-index-wormhole-legs.md`, section 2a).
+trusted party over every wrapped leg (section 7). The list (`script/PythIds.sol`) stands at 93, 16 of them Wormhole
+copies: SOL, listed first, 12 added on 2026-10-10, and BNB, SUI and SEI, whose copies the count of that day missed,
+added on 2026-10-18; a 13th of 2026-10-10, DOGE's, left on 2026-10-14 on the owner's call, since Pyth prices DOGE and
+not the copy, and SAND and RLB left on 2026-10-18 after the source reading. Tether Gold and the 17 Ondo stocks do not
+count toward the hundred, so 75 coins of the top 300 are listed; 31 more copies await an attestation on Wormhole's Portal (`design/2026-10-10-one-index-wormhole-legs.md`,
+section 2a, and `design/2026-10-18-pre-mainnet-readings.md`, section 3).
 
 **Up to 100 components.** Every path of the hub and the factory fits EIP-7825's per-transaction cap of 2^24 gas at
 100, measured on mock tokens with every account cold (`test_aHundredComponentsFitOneTransaction`):
@@ -515,8 +516,9 @@ components (section 2).
     rebalance with a keep mask or before strangers may, and cancel its own removal but not its replacement.
   - Pyth: its publishers' aggregate, the keys that sign its updates, and its DAO, which upgrades Pyth's contract on
     Ethereum in place. Since Pyth's OP-PIP-132 of 2026-08-26, that contract verifies updates against Pyth's own set of
-    five signing keys (guardian set 1 of its receiver), not Wormhole's 19 guardians. A wrong price, from any of them,
-    takes at most `MAX_TURNOVER` of each component sold, once a week (section 3.7).
+    five signing keys (guardian set 1 of its receiver), not Wormhole's 19 guardians, and three of the five suffice
+    (`ReceiverImplementationHalf`), for a price or for a governance message that upgrades the contract. A wrong price,
+    from any of them, takes at most `MAX_TURNOVER` of each component sold, once a week (section 3.7).
   - Wormhole's guardians, for the wrapped legs: a quorum (13 of 19) can forge a bridge message, minting unbacked copies
     or upgrading every wrapped token's code at once, with no timelock. That party is separate from Pyth's signers, and
     its reach is the whole of every wrapped leg, not a capped haircut, so the app shows every index's wrapped share of
@@ -625,8 +627,9 @@ quoter serve scripts and tests, and no contract calls the Wormhole bridge.
 
 ## 10. Roadmap
 
-**What remains before a mainnet**, in the order of `design/2026-10-10-one-index-wormhole-legs.md`, section 5: the 34
-Wormhole copies still to attest on Portal, each then through `CheckToken` and onto the lists; the settlement against
+**What remains before a mainnet**, in the order of `design/2026-10-10-one-index-wormhole-legs.md`, section 5, as
+`design/2026-10-18-pre-mainnet-readings.md`, section 7, updates it: the 31 Wormhole copies still to attest on Portal,
+each then through `CheckToken` and onto the lists; the settlement against
 Pyth's real contract on a real update from Hermes, which needs the API key; Pyth's parameter replay (the spec, section
 8), which sets `MU_MIN`, `MAX_TURNOVER` and `MAX_CONFIDENCE` from evidence; the external audit; the owner Safe (3 of 5)
 and the guardian on Ethereum, then `DeployWeighted` and `ConfigureWeighted` over the list; and the app side: Wormhole

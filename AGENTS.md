@@ -16,12 +16,14 @@ of 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). `WeightedIndexFa
 `MintRequests` hold Ethereum ERC-20s in kind: the issuer's own contract where Ethereum has one (71 candidates of the
 top 300 today), and otherwise a copy wrapped by Wormhole's token bridge from the chain that has it (17 from BNB Chain,
 nine of them Binance-Peg; 31 from Solana, Sui, Aptos, Base and the other chains Wormhole serves), priced at the coin's
-Pyth feed and labelled Bridged, Custodial as well when the source is Binance-Peg. The list stands at 92
-(`script/PythIds.sol`), 13 of them Wormhole copies, with 34 more copies to attest; DOGE's copy left it on 2026-10-14
-(the owner's call, below). The wrapping adds Wormhole's
+Pyth feed and labelled Bridged, Custodial as well when the source is Binance-Peg. The list stands at 93
+(`script/PythIds.sol`), 16 of them Wormhole copies, with 31 more copies to attest; DOGE's copy left it on 2026-10-14
+(the owner's call, below); on 2026-10-18 the copies of BNB, SUI and SEI, which the count of 2026-10-10 missed, joined
+it, and SAND and RLB left it after the source reading (the owner's call). The wrapping adds Wormhole's
 guardians as a party whose reach is the whole of each wrapped leg, and the app shows every index's wrapped share of
 value. They do not sign Pyth's prices: since Pyth's OP-PIP-132 of 2026-08-26, Pyth's contract on Ethereum verifies
-updates against Pyth's own set of five keys (read on chain on 2026-10-12). Nothing crosses a chain inside a contract:
+updates against Pyth's own set of five keys (read on chain on 2026-10-12), three of which suffice for a price or for
+an upgrade of Pyth's contract (`design/2026-10-18-pre-mainnet-readings.md`). Nothing crosses a chain inside a contract:
 the app and the fillers bridge. The BNB Chain deployment of 2026-10-07, shelved on 2026-10-10, was deleted on
 2026-10-13 with its address book, list and fork suite. No vault, no proof, no
 bridge of our own, no speed limit and no freezer exist any more: Stage B (six vaults, eight state verifiers, the P1
@@ -30,14 +32,17 @@ and P2 proofs of Ethereum's finality, the hybrid index) is tagged `stage-b-2026-
 v4's market-cap index (reference supplies and a price-free λ auction, deleted on 2026-10-06,
 `audit/2026-10-06-v4-retirement.md`). Nothing is deployed on a mainnet yet.
 
-Where it stands (2026-10-13):
+Where it stands (2026-10-18):
 - The weighted index is built and reviewed twice (`audit/2026-10-05-v5-review.md`, `audit/2026-10-07-v5-logic-review.md`).
 - The Ethereum deployment's scripts are built: `DeployWeighted`, `ConfigureWeighted` over `PythIds`, `CheckToken`.
 - The hundred-coin list is built as far as Ethereum holds it: 93 listed on 2026-10-10 (the 49 of before, 31 more
   Ethereum-issued coins and 13 Wormhole copies that already existed, every one through `CheckToken` on a fork), and
-  92 since DOGE's copy left on 2026-10-14, 74 of them coins that count toward the hundred. 34 copies await an attestation on Wormhole's Portal, a transaction on each
-  home chain the owner sends (section 2a of the 2026-10-10 record lists them with the procedure); each then goes
-  through the check and the lists. A hundred-coin index is minted in kind or through `MintRequests`, since the zap
+  93 since DOGE's copy left on 2026-10-14, and on 2026-10-18 the copies of BNB, SUI and SEI, found already attested,
+  joined and SAND and RLB left, 75 of them coins that count toward the hundred. 31 copies await an attestation on
+  Wormhole's Portal, a
+  transaction on each home chain the owner sends (section 2a of the 2026-10-10 record lists them with the procedure,
+  section 3 of `design/2026-10-18-pre-mainnet-readings.md` what is left); each then goes through the check and the
+  lists. A hundred-coin index is minted in kind or through `MintRequests`, since the zap
   stops near 35 legs. On a fork of 2026-10-11, the 92 coins forge-std can fund issue, rebalance with real transfers
   and redeem in one index, and 45 of them trade through the zap within 2% on $1,000; SNX is out of that test only
   because its balances live in its `TokenState`, beyond forge-std's `deal`. That test's 14.9M gas for the fill counts
@@ -50,8 +55,10 @@ Where it stands (2026-10-13):
   settlement arithmetic moved to `WeightedMath` for the hub's size (23.8 KB of 24.6 at 100 optimizer runs, down from
   1000 on 2026-10-14 and 200 after). The basket builder was built the same day (`src/BasketBuilder.sol`): a basket
   beyond the zap's 35 legs is bought over several transactions into an escrow of the minter's own, then issued in
-  one, and sold the same way; it shares the zap's swap engine, `UniversalRouterSwaps`. The record's section 9
-  decisions are still the owner's.
+  one, and sold the same way; it shares the zap's swap engine, `UniversalRouterSwaps`. On 2026-10-18 the owner took
+  items 4 to 10 of the record's section 9 as proposed, with a creation fee of zero; the platform's fee, the referrer's
+  share and the platform's streaming rate (items 1 to 3) are still open, so the policy stays at zero, and the legal
+  reading (item 11) is counsel's.
 - The keeper bot is built (`keeper/`, the keeper's own Foundry project and Node bot, with unit and end-to-end tests):
   it starts and fills auctions, fills `MintRequests` requests at their limits (the record's step 2, built 2026-10-16:
   `fillMint` and `fillRedeem` on the executor, which buys or sells the basket in the fill's own transaction, so a
@@ -67,15 +74,21 @@ Where it stands (2026-10-13):
   keeps the scale rather than folding it into floored units (XS-2), a keep-mask fill restarts only
   `MIN_REBALANCE_INTERVAL` for a start without a mask (XS-3), the builder checks its way out before crediting an escrow
   (XS-10), and the keeper's five medium findings and three low ones are fixed in `keeper/`.
-- Before any mainnet: Pyth's parameter replay (`design/2026-10-05-custom-weights.md`, section 8), a settlement on a
-  real update from Hermes (which needs Pyth's API key), a reading of OP-PIP-132 for what it means for Pyth on Ethereum,
-  Ondo's corporate-action mechanism for its stock tokens (CF-3), the owner's reading of the verified source of the 44
-  tokens listed on 2026-10-10, SAND's first, which `CheckToken` alone admitted (CF-4), the five fork suites run again
-  (CF-4 re-pins SAND as review without a fork run), and an external audit; then `DeployWeighted`'s release hashes
-  fixed at the audited commit (CF-5).
+- The readings of 2026-10-18 (`design/2026-10-18-pre-mainnet-readings.md`): OP-PIP-132 is read (three of Pyth's
+  five keys sign any price and any upgrade of its contract, and Hermes is a paid data plan), Ondo's corporate-action
+  mechanism is read (CF-3: a multiplier of shares, never a balance change), the five fork suites ran again (CF-4's
+  SAND pin among them), and the tokens listed on 2026-10-10 had their source read
+  (`design/2026-10-18-token-source-reading.md`, CF-4). The owner's calls on it: SAND and RLB delisted, H, PLUME, SNX,
+  SYRUP, GALA and MANA kept, and the twelve Ondo legs priced at their share's feed kept under the procedure of CF-3.
+- Before any mainnet: Pyth's parameter replay (`design/2026-10-05-custom-weights.md`, section 8) and a settlement on a
+  real update from Hermes, both waiting on Pyth's API key in `.env` (`PYTH_API_KEY`); the 31 attestations and RAY's
+  update; Pyth's confirmation that Ethereum stays served; the platform's fee policy and the legal reading; and an
+  external audit, then `DeployWeighted`'s release hashes fixed at the audited commit (CF-5).
 
 For more:
 - `design/2026-10-05-custom-weights.md`: the v5 spec.
+- `design/2026-10-18-pre-mainnet-readings.md`: OP-PIP-132, Ondo's corporate actions, the copies left to attest, the
+  owner's calls of 2026-10-18 and the source reading of the 2026-10-10 cohort.
 - `design/2026-10-10-one-index-wormhole-legs.md`: the one-index decision, the count of the top 300, the trust table
   and the steps to mainnet.
 - `design/2026-10-05-wide-asset-support.md` and `design/2026-10-05-token-admission-report.md`: the lists and the
@@ -110,7 +123,7 @@ CHECK=wide forge script script/CheckToken.s.sol --fork-url $MAINNET_RPC_URL
 
 Deployment, once, on Ethereum: `script/DeployWeighted.s.sol`, then `script/ConfigureWeighted.s.sol`, which lists each
 coin with its Pyth price id (`script/PythIds.sol`). `script/CheckToken.s.sol` reports on every token before its first
-listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 92 in all. On chain 1 the
+listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 93 in all. On chain 1 the
 deploy script resolves Pyth, the router and the stablecoins from the address book and refuses any other address
 (`DeployChecks.isPinnedChain`). Sepolia first needs its test market from
 `script/testnet/SetupTestMarket.s.sol`.
@@ -126,7 +139,7 @@ deploy script resolves Pyth, the router and the stablecoins from the address boo
 3. `forge test` green. `forge coverage` at 100% for every file, including mocks and scripts.
 4. Fork tests green if the change touches `IndexZap`, the hub's rebalancing, routes, token behaviour, or anything
    router- or pool-related, `WeightedHub` and its price ids included. Their summary must list the five Ethereum
-   `test/fork/` suites and 0 skipped. `WeightedHub.fork.t.sol` alone takes about an hour at 92 coins on an archive RPC
+   `test/fork/` suites and 0 skipped. `WeightedHub.fork.t.sol` alone takes about an hour at 93 coins on an archive RPC
    (Alchemy, Tenderly), nearly all of it the admission quotes on a cold RPC cache; a public endpoint prunes the state
    before it ends. They are also required when the deploy checks or `script/MainnetAddresses.sol` change, which
    `MainnetAddresses.fork.t.sol` and `Security.fork.t.sol` exercise.
@@ -164,7 +177,8 @@ deploy script resolves Pyth, the router and the stablecoins from the address boo
      named `test_V5R1_...` in `test/WeightedHub.rebalance.t.sol`. The informational ids are recorded by documentation;
      V5R-I1 is retired with Stage B.
    - The security audit of 2026-10-13: `CF-1`..`CF-8` (`audit/2026-10-13-security-audit.md`). CF-1's tests are
-     `test_CF1_...` in `keeper/test/KeeperExecutor.t.sol`; CF-4's `test_CF4_...` in `test/CheckToken.t.sol`; CF-5's
+     `test_CF1_...` in `keeper/test/KeeperExecutor.t.sol`; CF-4's `test_CF4_...` in `test/CheckToken.t.sol` and
+     `testFork_CF4_...` in `test/fork/CheckToken.fork.t.sol`; CF-5's
      `test_CF5_...` in `test/Scripts.t.sol`; CF-6's `test_CF6_...` in `test/Repo.t.sol`; CF-7's the node test named
      `CF-7: ...` in `keeper/test/unit/math.test.mjs`. CF-3 is recorded by documentation alone. CF-2 and CF-8 are
      retired with THORChain.
@@ -474,8 +488,11 @@ records also cite.
   `CheckToken`, and the WBT rule (a token that can both blacklist a holder and destroy its balance is refused) stays its
   default. On 2026-10-10 the owner ruled that a blacklist is no bar to listing and admitted Tether Gold, which the rule
   refuses, and Ondo's stock tokens, whose compliance contract and burner role amount to the same power;
-  `testFork_everyWideTokenPassesTheCheck` pins Tether Gold as the one refused entry and SAND, whose admin's super
-  operators move any holder's balance, as the one for review (CF-4). Pausable components such as WBTC
+  `testFork_everyWideTokenPassesTheCheck` pins Tether Gold as the one refused entry and GALA, whose blocklist sits
+  beside a `burnFrom`, as the one for review (CF-4). SAND, whose two admins' operators move any holder's balance, and
+  RLB, whose code is unverified, left the list on 2026-10-18 after the source reading
+  (`design/2026-10-18-token-source-reading.md`), the owner's call; `testFork_CF4_sandGoesToReviewWithItsAdmin` still
+  pins SAND as review. Pausable components such as WBTC, MANA, CHZ, SENT and FLUID
   must be labelled in the app, and so must every other issuer a component adds: BitGo for WBTC, Binance for BTCB and
   every Binance-Peg coin, Tether for Tether Gold, Ondo for every `<ticker>on` stock, Wormhole for every wrapped copy,
   and both Binance and Wormhole for a copy wrapped from a Binance-Peg coin.
@@ -626,6 +643,14 @@ cost the owner weighs before launch.
   Binance-Peg DOGE is a proxy whose admin, one externally owned key on BNB Chain, can replace its code (read that
   day). The copy's address stays recorded in `script/MainnetAddresses.sol` for a relisting. XRP, whose Binance-Peg
   source answers `mint(uint256)` to one key but cannot change its code, stays listed.
+- The owner's calls of 2026-10-18 on the source reading (`design/2026-10-18-token-source-reading.md`): SAND and RLB
+  are off the list. SAND's two multisig admins and 22 operator contracts can move or burn any holder's balance with no
+  timelock, which the WBT rule exists to stop even without a blacklist; RLB's implementation is unverified and one
+  externally owned key can upgrade it. H, PLUME, SNX, SYRUP, GALA and MANA stay, their admins' powers named by the app;
+  MANA, CHZ, SENT and FLUID are labelled Pausable. Wormhole's copies of BNB, SUI and SEI joined the list the same day.
+- The twelve Ondo legs priced at their share's feed stay (the owner's call of 2026-10-18), under the procedure of
+  `design/2026-10-18-pre-mainnet-readings.md`, section 2: the guardian keeps an affected leg around a corporate action,
+  and a leg is relisted at its token's own feed once Pyth publishes one.
 
 **Swap venues** (the owner's call on 2026-10-14): the zap swaps through Uniswap's Universal Router 2.0.0 alone, V3 or
 V4 per leg, chosen by the caller. PancakeSwap's v3 Universal Router, a third venue per leg since 2026-10-06 (chiefly
@@ -633,10 +658,14 @@ for CAKE), and THORChain, an app-side rail added the same day (`design/2026-10-0
 2026-10-14: users come with USDC or USDT. CAKE stays listed; its legs route through Uniswap's pools, or it mints in
 kind or through `MintRequests`.
 
-**Fees, cadence and private indexes** (built 2026-10-14 on the research record's defaults, the owner's decisions of
-its section 9 still open): fees in shares with the platform's policy at zero until the owner sets one, so the no-fee
-call of 2026-09-30 survives as a configuration; a rebalance interval per index from 7 to 91 days; a private index is
-one the app does not list plus, if the creator chose it, a mint allowlist the creator keeps.
+**Fees, cadence and private indexes** (built 2026-10-14 on the research record's defaults): fees in shares with the
+platform's policy at zero until the owner sets one, so the no-fee call of 2026-09-30 survives as a configuration; a
+rebalance interval per index from 7 to 91 days; a private index is one the app does not list plus, if the creator
+chose it, a mint allowlist the creator keeps. The owner's calls of 2026-10-18 on the record's section 9: the cadence
+menu is {7, 14, 30, 91} days; private indexes are unlisted and mint-gated, both opt-in; Xindex runs the first filler;
+the basket builder ships at launch; the replay decides the hardenings; the coin pages show the listed set and tiers;
+no Base deployment for now; the creation fee is zero. The platform's fee, the referrer's share and the platform's
+streaming rate are not decided yet; the legal reading is counsel's.
 
 **Unchanged from earlier versions:** an owner Safe of at least three signatures; fixed constituents; no protocol bots
 or hot keys; component whitelist only; the burner chooses the exit token; the mint currency is not tracked per holder;

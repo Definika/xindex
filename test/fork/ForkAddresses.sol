@@ -22,6 +22,10 @@ library ForkAddresses {
     ///      owner blacklists and reallocates any holder's balance.
     address internal constant LEO = 0x2AF5D2aD76741191D15Dfe7bF6aC92d4Bd912Ca3;
     address internal constant WLFI = 0xdA5e1988097297dCdc1f90D4dFE7909e847CBeF6;
+    /// @dev The Sandbox's SAND, off the list since 2026-10-18 (the owner's call after the source reading): its admins
+    ///      appoint operators that move or burn any holder's balance. The check's fork test still proves it goes to
+    ///      review (CF-4).
+    address internal constant SAND = 0x3845badAde8e6dFF049820680d1F14bD3903a5d0;
 
     /// @dev Uniswap SwapRouter02. The zap swaps through the Universal Router; this is only the fork tests' own rebalance
     ///      executor, a fixture whose venue is independent of anything Xindex deploys.

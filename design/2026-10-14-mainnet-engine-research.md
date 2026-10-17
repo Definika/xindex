@@ -426,6 +426,11 @@ minus the declared fee, with no key, feed, bridge or bot in the way.
 
 ## 9. Decisions for the owner
 
+**Update, 2026-10-18:** the owner took items 4 to 10 as proposed, the hardenings of item 8 to be decided by the replay
+and no Base deployment for now, with a creation fee of zero. Items 1 to 3 (the platform's fee, the referrer's share,
+the platform's streaming rate) are not yet decided, so the deployed policy stays at zero; item 11 is counsel's
+(`design/2026-10-18-pre-mainnet-readings.md`, section 5).
+
 1. Fees at launch: in shares at mint and burn (5.6 A), with the creator's rate 0 to 100 bps per side and the
    platform's rate 0 to 25 bps per side at creation; or no fee after all.
 2. The platform's launch policy: its rate, the referrer's share of it (50% proposed), the creation fee in ETH.
