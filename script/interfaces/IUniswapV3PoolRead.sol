@@ -2,10 +2,13 @@
 pragma solidity 0.8.28;
 
 /// @title IUniswapV3PoolRead
-/// @notice Minimal subset of a Uniswap V3 pool: the reads the Sepolia test-market script makes.
+/// @notice Minimal subset of a Uniswap V3 pool: the reads the Sepolia test-market script and `CheckToken` make.
 interface IUniswapV3PoolRead {
     /// @notice The pool's fee tier in hundredths of a basis point, for example 3000 for 0.3%.
     function fee() external view returns (uint24);
+
+    /// @notice The liquidity active at the pool's current price.
+    function liquidity() external view returns (uint128);
 
     /// @notice The pool's current state.
     /// @return sqrtPriceX96 Square root of the price, token1 raw units per token0 raw unit, in Q64.96.

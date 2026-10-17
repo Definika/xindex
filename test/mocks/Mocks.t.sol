@@ -20,12 +20,15 @@ import {MockUniswapV3Factory, MockUniswapV3Pool} from "./MockUniswapV3.sol";
 import {MockWETH} from "./MockWETH.sol";
 import {MockPositionManager} from "./MockPositionManager.sol";
 import {INonfungiblePositionManager} from "../../script/interfaces/INonfungiblePositionManager.sol";
-import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {MockMarket} from "./MockMarket.sol";
-import {IndexFactory} from "../../src/IndexFactory.sol";
-import {IndexHub} from "../../src/IndexHub.sol";
-import {RebalanceExecutorV3} from "../fork/RebalanceExecutorV3.sol";
+import {MockPyth} from "./MockPyth.sol";
+import {WeightedIndexFactory} from "../../src/WeightedIndexFactory.sol";
+import {WeightedHub} from "../../src/WeightedHub.sol";
 import {IIndexHub} from "../../src/interfaces/IIndexHub.sol";
+import {IWeightedHub} from "../../src/interfaces/IWeightedHub.sol";
+import {IWeightedIndexFactory} from "../../src/interfaces/IWeightedIndexFactory.sol";
+import {PythStructs} from "../../src/interfaces/pyth/PythStructs.sol";
+import {WeightedExecutorV3} from "../fork/WeightedExecutorV3.sol";
 
 /// @notice Exercises the mocks' own guard rails so their behaviour in the real tests is trustworthy.
 contract MocksTest is Test {
@@ -597,7 +600,7 @@ contract MocksTest is Test {
     }
 
     // ---------------------------------------------------------------------
-    // RebalanceExecutorV3 (used by the fork tests), driven through the mock router
+    // WeightedExecutorV3 (used by the fork tests), driven through the mock router
     // ---------------------------------------------------------------------
 
     function test_market_holdsWethUsdcAndTheirSupplies() public {
@@ -608,119 +611,117 @@ contract MocksTest is Test {
         assertEq(m.supplyOf(address(m.usdc())), m.DEFAULT_SUPPLY(), "anything else with the default");
     }
 
-    function test_rebalanceExecutorV3_sellsBuysAndSettlesThroughARouter() public {
-        MockMarket m = new MockMarket();
-        IndexFactory f = new IndexFactory(address(this), address(0));
+    function test_weightedExecutorV3_sellsBuysAndSettlesThroughARouter() public {
+        MockPyth pyth = new MockPyth();
+        WeightedIndexFactory f = new WeightedIndexFactory(address(this), address(0), address(pyth));
         MockERC20 shrinking = new MockERC20("Shrinking", "SHR", 18);
         MockERC20 growing = new MockERC20("Growing", "GRO", 18);
-        MockERC20 mWeth = m.weth();
-        address[] memory t = new address[](3);
-        (t[0], t[1], t[2]) = (address(shrinking), address(mWeth), address(growing));
-        for (uint256 i = 0; i < 3; ++i) {
-            f.proposeListing(t[i], 100e18);
+        address[2] memory t = [address(shrinking), address(growing)];
+        for (uint256 i = 0; i < 2; ++i) {
+            f.proposeListing(t[i], keccak256(abi.encode(t[i])));
         }
         vm.warp(block.timestamp + f.LISTING_DELAY());
-        for (uint256 i = 0; i < 3; ++i) {
+        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](2);
+        for (uint256 i = 0; i < 2; ++i) {
             f.executeListing(t[i]);
+            specs[i] = IWeightedIndexFactory.ComponentSpec({token: t[i], weight: 5000, units: 100e18});
         }
-        IndexHub idx = IndexHub(f.createIndex("Executor", "EXEC", t, 1e36)); // 100e18 units each
+        WeightedHub idx = WeightedHub(
+            f.createIndex(
+                "Executor",
+                "EXEC",
+                specs,
+                IWeightedIndexFactory.IndexParams({
+                    creatorFeeBps: 0,
+                    creatorStreamingBps: 0,
+                    maxPlatformFeeBps: 25,
+                    maxPlatformStreamingBps: 100,
+                    rebalanceInterval: 7 days,
+                    gated: false,
+                    listed: true
+                })
+            )
+        );
         shrinking.mint(address(this), 100e18);
-        mWeth.mint(address(this), 100e18);
         growing.mint(address(this), 100e18);
         shrinking.approve(address(idx), 100e18);
-        mWeth.approve(address(idx), 100e18);
         growing.approve(address(idx), 100e18);
         idx.issue(1e18, address(this));
 
-        // The growing component's supply rises a step and the shrinking one's falls a step: a band of about 1%.
-        address[] memory batch = new address[](2);
-        uint256[] memory supplies = new uint256[](2);
-        bool growingFirst = address(growing) < address(shrinking);
-        (batch[0], batch[1]) =
-            growingFirst ? (address(growing), address(shrinking)) : (address(shrinking), address(growing));
-        (supplies[0], supplies[1]) = growingFirst ? (100.5e18, 99.5e18) : (99.5e18, 100.5e18);
-        f.proposeSupplies(batch, supplies);
-        vm.warp(block.timestamp + f.LISTING_DELAY());
-        f.executeSupplies();
-
-        MockSwapRouter r = new MockSwapRouter();
-        r.setPrice(address(shrinking), 1e18);
-        r.setPrice(address(mWeth), 1e18);
-        r.setPrice(address(growing), 1e18);
-        mWeth.mint(address(r), 1_000e18);
-        growing.mint(address(r), 1_000e18);
-
-        RebalanceExecutorV3 executor = new RebalanceExecutorV3(f, r, address(mWeth));
-        executor.setFee(address(shrinking), 3000);
-        executor.setFee(address(growing), 3000);
-        assertEq(executor.feeOf(address(growing)), 3000);
-        mWeth.mint(address(executor), 1e18); // a float for what the fill does not pay for itself
+        // The shrinking component trades at $2 and the growing one at $1: half and half by weight, a fill sells the
+        // first and buys the second.
+        router.setPrice(address(shrinking), 2e18);
+        router.setPrice(address(growing), 1e18);
+        growing.mint(address(router), 1_000e18);
+        WeightedExecutorV3 executor = new WeightedExecutorV3(router, address(usdc));
+        executor.setRoute(address(shrinking), _path(address(shrinking), address(usdc)));
+        executor.setRoute(address(growing), _path(address(growing), address(usdc)));
+        assertEq(executor.routeOf(address(growing)), _path(address(growing), address(usdc)));
+        usdc.mint(address(executor), 100e6); // a float for what the fill does not pay for itself
 
         vm.warp(idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL());
         idx.startRebalance(0);
-        (uint256 eta,,,,) = idx.pendingRebalance();
+        (uint256 eta,) = idx.pendingRebalance();
         vm.warp(eta + idx.AUCTION_DURATION() / 2);
-        (, uint256[] memory next, uint256[] memory amountsOut, uint256[] memory amountsIn) = idx.previewRebalance();
-        executor.fill(idx);
+        uint64 time = uint64(idx.priceTime());
+        bytes[] memory updates = new bytes[](2);
+        updates[0] = pyth.update(keccak256(abi.encode(t[0])), 2e8, 0, -8, time, time - 1);
+        updates[1] = pyth.update(keccak256(abi.encode(t[1])), 1e8, 0, -8, time, time - 1);
+        PythStructs.Price[] memory prices = new PythStructs.Price[](2);
+        prices[0] = PythStructs.Price({price: 2e8, conf: 0, expo: -8, publishTime: time});
+        prices[1] = PythStructs.Price({price: 1e8, conf: 0, expo: -8, publishTime: time});
+        (, uint256[] memory next, uint256[] memory amountsOut, uint256[] memory amountsIn) =
+            idx.previewRebalance(prices);
+        executor.fill(idx, updates);
 
         (, uint256[] memory units) = idx.components();
         assertEq(units, next, "the settlement is the preview's");
-        assertLt(units[0], 100e18, "the component whose supply fell shrank");
-        assertGt(units[2], 100e18, "the one whose supply grew was bought with WETH");
-        assertEq(shrinking.balanceOf(address(r)), amountsOut[0], "what the index sent was sold through the router");
-        assertEq(growing.balanceOf(address(idx)), 100e18 + amountsIn[2], "and what it asked for was delivered");
+        assertLt(units[0], 100e18, "the component worth more than its weight shrank");
+        assertGt(units[1], 100e18, "the one worth less was bought with USDC");
+        assertEq(shrinking.balanceOf(address(router)), amountsOut[0], "what the index sent was sold through the router");
+        assertEq(growing.balanceOf(address(idx)), 100e18 + amountsIn[1], "and what it asked for was delivered");
     }
 
-    function test_XA12_rebalanceExecutorV3_takesCallbacksOnlyFromTheIndexItFills() public {
-        MockERC20 mWeth = new MockERC20("Wrapped Ether", "WETH", 18);
-        RebalanceExecutorV3 executor =
-            new RebalanceExecutorV3(IIndexFactory(makeAddr("factory")), new MockSwapRouter(), address(mWeth));
-        mWeth.mint(address(executor), 10e18); // the operator's float
+    function test_XA12_weightedExecutorV3_takesCallbacksOnlyFromTheIndexItFills() public {
+        WeightedExecutorV3 executor = new WeightedExecutorV3(router, address(usdc));
+        usdc.mint(address(executor), 10_000e6); // the operator's float
+        executor.setRoute(address(weth), _path(address(weth), address(usdc)));
 
-        // A contract posing as an index that holds only WETH asks for the whole float.
+        // A contract posing as an index that holds only WETH asks for as much as the whole float buys.
         address fake = makeAddr("fake index");
         vm.etch(fake, hex"00");
         address[] memory onlyWeth = new address[](1);
-        onlyWeth[0] = address(mWeth);
+        onlyWeth[0] = address(weth);
         vm.mockCall(fake, abi.encodeWithSelector(IIndexHub.componentTokens.selector), abi.encode(onlyWeth));
         uint256[] memory nothing = new uint256[](1);
         uint256[] memory everything = new uint256[](1);
-        everything[0] = 10e18;
+        everything[0] = 3e18;
         vm.prank(fake);
-        vm.expectRevert(abi.encodeWithSelector(RebalanceExecutorV3.UnexpectedCaller.selector, fake));
+        vm.expectRevert(abi.encodeWithSelector(WeightedExecutorV3.UnexpectedCaller.selector, fake));
         executor.onXindexRebalance(nothing, everything, "");
-        assertEq(mWeth.balanceOf(address(executor)), 10e18, "the float stays");
+        assertEq(usdc.balanceOf(address(executor)), 10_000e6, "the float stays");
 
-        address stranger = makeAddr("stranger");
-        vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(RebalanceExecutorV3.NotOwner.selector, stranger));
-        executor.setFee(address(mWeth), 3000);
+        vm.prank(bob);
+        vm.expectRevert(abi.encodeWithSelector(WeightedExecutorV3.NotOwner.selector, bob));
+        executor.setRoute(address(weth), _path(address(weth), address(usdc)));
     }
 
     /// @dev LR-04: the XA-12 check trusted whatever index `fill` was pointed at, and anyone could call `fill`. A
     ///      contract posing as an index then called back from its own `executeRebalance` and asked for the whole
-    ///      float, which the executor paid. Only the deployer starts a fill now, and only on one of the factory's
-    ///      indexes.
-    function test_LR04_rebalanceExecutorV3_fillCannotBePointedAtAFakeIndex() public {
-        MockMarket m = new MockMarket();
-        IndexFactory f = new IndexFactory(address(this), address(0));
-        MockERC20 mWeth = m.weth();
-        RebalanceExecutorV3 executor = new RebalanceExecutorV3(f, new MockSwapRouter(), address(mWeth));
-        mWeth.mint(address(executor), 10e18); // the operator's float
-        FakeIndex fake = new FakeIndex(address(mWeth), address(executor));
+    ///      float, which the executor paid. Only the deployer starts a fill now, and a callback outside one is refused.
+    function test_LR04_weightedExecutorV3_fillCannotBePointedAtAFakeIndex() public {
+        WeightedExecutorV3 executor = new WeightedExecutorV3(router, address(usdc));
+        usdc.mint(address(executor), 10_000e6); // the operator's float
+        FakeIndex fake = new FakeIndex(address(usdc), address(executor));
 
-        address stranger = makeAddr("stranger");
-        vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(RebalanceExecutorV3.NotOwner.selector, stranger));
-        executor.fill(IIndexHub(address(fake)));
+        vm.prank(bob);
+        vm.expectRevert(abi.encodeWithSelector(WeightedExecutorV3.NotOwner.selector, bob));
+        executor.fill(IWeightedHub(address(fake)), new bytes[](0));
+        assertEq(usdc.balanceOf(address(executor)), 10_000e6, "the float stays");
 
-        vm.expectRevert(abi.encodeWithSelector(RebalanceExecutorV3.NotIndex.selector, address(fake)));
-        executor.fill(IIndexHub(address(fake)));
-        assertEq(mWeth.balanceOf(address(executor)), 10e18, "the float stays");
-
-        // The fake does what the finding describes: without the two checks above, this callback emptied the float.
-        vm.expectRevert(abi.encodeWithSelector(RebalanceExecutorV3.UnexpectedCaller.selector, address(fake)));
-        fake.executeRebalance("");
+        // The fake does what the finding describes: without the checks above, this callback emptied the float.
+        vm.expectRevert(abi.encodeWithSelector(WeightedExecutorV3.UnexpectedCaller.selector, address(fake)));
+        fake.executeRebalance("", new bytes[](0));
     }
 
     // ---------------------------------------------------------------------
@@ -728,7 +729,7 @@ contract MocksTest is Test {
     // ---------------------------------------------------------------------
 
     /// @dev `ISwapRouter02` is a hand-written subset of Uniswap's `IV3SwapRouter`. The zap no longer uses it -- it
-    ///      swaps through the Universal Router -- so what encodes against it now is `test/fork/RebalanceExecutorV3`,
+    ///      swaps through the Universal Router -- so what encodes against it now is `test/fork/WeightedExecutorV3`,
     ///      the fixture that fills auctions through the real SwapRouter02 at
     ///      0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45. A field reordered or retyped here would still compile and
     ///      still pass every other local test, because `MockSwapRouter` is written against the same declaration, and
@@ -781,21 +782,21 @@ contract MocksTest is Test {
     }
 }
 
-/// @dev Poses as an index whose only component is WETH: its `executeRebalance` calls the executor back and asks for
-///      everything the executor holds.
+/// @dev Poses as an index whose only component is the executor's float token: its `executeRebalance` calls the
+///      executor back and asks for everything the executor holds.
 contract FakeIndex {
-    address internal immutable WETH;
+    address internal immutable FLOAT;
     address internal immutable EXECUTOR;
 
-    constructor(address weth, address executor) {
-        WETH = weth;
+    constructor(address float, address executor) {
+        FLOAT = float;
         EXECUTOR = executor;
     }
 
-    function executeRebalance(bytes calldata data) external {
+    function executeRebalance(bytes calldata data, bytes[] calldata) external {
         uint256[] memory nothing = new uint256[](1);
         uint256[] memory everything = new uint256[](1);
-        everything[0] = MockERC20(WETH).balanceOf(EXECUTOR);
-        RebalanceExecutorV3(EXECUTOR).onXindexRebalance(nothing, everything, data);
+        everything[0] = MockERC20(FLOAT).balanceOf(EXECUTOR);
+        WeightedExecutorV3(EXECUTOR).onXindexRebalance(nothing, everything, data);
     }
 }

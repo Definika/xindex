@@ -1,0 +1,31 @@
+# The keeper bot's executor, built and tested on its own: it is not part of the protocol, and holds no role in it.
+# From the repo root: `forge build --root keeper`, `forge test --root keeper`.
+[profile.default]
+src = "src"
+out = "out"
+test = "test"
+libs = ["../lib"]
+solc = "0.8.28"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 1000
+remappings = [
+    "forge-std/=../lib/forge-std/src/",
+    "@openzeppelin/contracts/=../lib/openzeppelin-contracts/contracts/",
+    "@openzeppelin/contracts-upgradeable/=../lib/openzeppelin-contracts-upgradeable/contracts/",
+    "xindex/=../",
+]
+allow_paths = [".."]
+# Off on purpose, as at the root: with forge's default, an expected revert on a `new` in a test ends the test there,
+# still reported as a pass, and every check after it is skipped (LR-01).
+dynamic_test_linking = false
+# The executor's test reads the bot's hub slots, to pin them against a real hub (XS-8).
+fs_permissions = [{ access = "read", path = "./bot/config.mjs" }]
+
+[lint]
+# Tests are exercised by `forge test`, not linted, as at the root.
+ignore = ["test/**/*"]
+# Rules that conflict with the design rather than flag mistakes, as at the root:
+#   calls-loop / require-revert-in-loop / costly-loop  a basket is processed component by component
+#   block-timestamp                                    the fill's deadline is compared to block.timestamp
+exclude_lints = ["calls-loop", "require-revert-in-loop", "costly-loop", "block-timestamp"]

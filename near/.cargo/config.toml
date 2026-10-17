@@ -1,6 +1,0 @@
-# The contract's Wasm runs near-sdk on NEAR's host functions only with `--cfg near`, which `cargo near build` sets.
-# Without it, near-sdk-env compiles its off-chain fallbacks into the contract: hashing in pure Rust instead of the host's
-# keccak256 and sha256, and `panic_str` as a bare `panic!()`, which traps as `unreachable` and drops every error's name.
-# Set here, a plain `cargo build --target wasm32-unknown-unknown --release` builds what `cargo near` would.
-[target.wasm32-unknown-unknown]
-rustflags = ["--cfg", "near"]

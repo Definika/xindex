@@ -10,8 +10,8 @@ src = "src/"
 # Rules that conflict with the design rather than flag mistakes, as in foundry.toml's [lint]:
 #   costly-loop / require-revert-in-loop  a basket is processed component by component, and a component that fails
 #                                         a check fails the whole operation (forge lint excludes the same two)
-#   internal-function-used-once           a library function is the unit its own tests pin (test/Bls12381.t.sol,
-#                                         test/MerklePatricia.t.sol), whatever number of callers src/ has
+#   internal-function-used-once           a library function is the unit its own tests pin (PathLib's, shared with the
+#                                         test mocks), whatever number of callers src/ has
 #   centralization-risk                   the owner's powers are the design's: every one is a proposal behind a public
 #                                         delay and the guardian's veto, none touches funds, and AGENTS.md ("No admin
 #                                         power over funds") lists them all

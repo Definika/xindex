@@ -11,10 +11,16 @@ contract MockUniswapV3Pool {
 
     uint160 public sqrtPriceX96;
     int24 public tick;
+    /// @notice The liquidity active at the price, which `CheckToken` reads to record depth.
+    uint128 public liquidity;
 
     constructor(address tokenA, address tokenB, uint24 fee_) {
         (token0, token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
         fee = fee_;
+    }
+
+    function setLiquidity(uint128 liquidity_) external {
+        liquidity = liquidity_;
     }
 
     /// @notice Pool tick: log base 1.0001 of token1 raw units per token0 raw unit.

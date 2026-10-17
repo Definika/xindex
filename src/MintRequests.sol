@@ -9,14 +9,17 @@ import {IMintRequests} from "./interfaces/IMintRequests.sol";
 import {IIndexFactory} from "./interfaces/IIndexFactory.sol";
 
 /// @title MintRequests
-/// @notice Escrowed requests to mint or redeem an index's shares for USDC or USDT. A holder of stablecoins who cannot
-///         assemble a basket asks for shares at a limit of their own; a minter who holds shares, or can issue them in
-///         kind, fills the request and takes the stablecoins. Redemptions are the mirror image. Nothing here reads a
-///         price: the requester's limit is the only valuation, and the app suggests it.
-/// @dev No owner, no upgrade, nothing to configure. Every entry point shares one reentrancy guard. The contract holds
-///      only open escrows, each measured as the balance increase its request caused, so a USDT fee switched on at any
-///      time can never leave the last refund short; stray tokens sent here stay here. A request is closed before any
-///      token moves, fillers pay requesters directly, and the contract never calls `approve`.
+/// @notice Escrowed requests to mint or redeem an index's shares for USDC or USDT.
+///         - Mint: a stablecoin holder who cannot assemble a basket asks for shares at their own limit. Anyone who
+///           holds shares, or can issue them in kind, fills the request and takes the stablecoins.
+///         - Redeem: the mirror image.
+///         Nothing here reads a price. The requester's limit is the only valuation; the app suggests it.
+/// @dev - No owner, no upgrade, nothing to configure. Every entry point shares one reentrancy guard.
+///      - The contract holds only open escrows. Each is measured as the balance increase its request caused, so a USDT
+///        fee switched on at any time can never leave the last refund short.
+///      - Stray tokens sent here stay here.
+///      - A request is closed before any token moves. Fillers pay requesters directly. The contract never calls
+///        `approve`.
 contract MintRequests is IMintRequests, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -54,12 +57,13 @@ contract MintRequests is IMintRequests, ReentrancyGuard {
         returns (uint256 id)
     {
         _checkRequest(index, stable, amount, minShares, deadline);
-        // Tether checks only the sender of a `transferFrom`, so it would hand a contract it has blacklisted an escrow
-        // that `cancel`, `refund` and every fill could then never pay out. Sending itself nothing fails exactly when
-        // the way out is shut, blacklisted or paused, so the deposit is refused instead of trapped (SA-01).
+        // Check that this contract can still send `stable` out, by sending itself nothing. Tether's `transferFrom`
+        // checks only the sender, so a blacklisted contract would still receive an escrow that `cancel`, `refund` and
+        // every fill could never pay out. The self-transfer fails when blacklisted or paused, so the deposit is
+        // refused instead of trapped (SA-01).
         IERC20(stable).safeTransfer(address(this), 0);
         uint256 escrow = _pull(stable, amount);
-        id = _record(true, index, stable, escrow, minShares, deadline);
+        id = _openRequest(true, index, stable, escrow, minShares, deadline);
         emit MintRequested(id, msg.sender, index, stable, escrow, minShares, deadline);
     }
 
@@ -71,7 +75,7 @@ contract MintRequests is IMintRequests, ReentrancyGuard {
     {
         _checkRequest(index, stable, shares, minOut, deadline);
         uint256 escrow = _pull(index, shares);
-        id = _record(false, index, stable, escrow, minOut, deadline);
+        id = _openRequest(false, index, stable, escrow, minOut, deadline);
         emit RedeemRequested(id, msg.sender, index, stable, escrow, minOut, deadline);
     }
 
@@ -86,7 +90,7 @@ contract MintRequests is IMintRequests, ReentrancyGuard {
         address requester = request.requester;
         (address delivered, address paid) =
             request.isMint ? (request.index, request.stable) : (request.stable, request.index);
-        // What the requester gets is measured where it lands, so a fee on the way cannot pass under their limit.
+        // Measure what the requester actually received, so a transfer fee cannot push it below their limit.
         uint256 before = IERC20(delivered).balanceOf(requester);
         IERC20(delivered).safeTransferFrom(msg.sender, requester, amount);
         uint256 received = IERC20(delivered).balanceOf(requester) - before;
@@ -103,7 +107,7 @@ contract MintRequests is IMintRequests, ReentrancyGuard {
         if (msg.sender != request.requester) revert Unauthorized(msg.sender);
         request.open = false;
         emit RequestCancelled(id);
-        _return(request);
+        _refundEscrow(request);
     }
 
     /// @inheritdoc IMintRequests
@@ -114,13 +118,15 @@ contract MintRequests is IMintRequests, ReentrancyGuard {
         if (block.timestamp <= deadline) revert RequestNotExpired(id, deadline);
         request.open = false;
         emit RequestRefunded(id, msg.sender);
-        _return(request);
+        _refundEscrow(request);
     }
 
     // ---------------------------------------------------------------------
     // Internals
     // ---------------------------------------------------------------------
 
+    /// @dev Checks a new request: a factory index, USDC or USDT, non-zero amounts, and a deadline in the future but at
+    ///      most MAX_REQUEST_DURATION away.
     function _checkRequest(address index, address stable, uint256 amount, uint256 limit, uint256 deadline)
         private
         view
@@ -133,7 +139,7 @@ contract MintRequests is IMintRequests, ReentrancyGuard {
         }
     }
 
-    /// @dev Takes `amount` of `token` from the caller and returns what actually arrived.
+    /// @dev Takes `amount` of `token` from the caller and returns what actually arrived. Reverts if nothing arrived.
     function _pull(address token, uint256 amount) private returns (uint256 escrow) {
         uint256 before = IERC20(token).balanceOf(address(this));
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
@@ -141,7 +147,8 @@ contract MintRequests is IMintRequests, ReentrancyGuard {
         if (escrow == 0) revert NothingEscrowed();
     }
 
-    function _record(bool isMint, address index, address stable, uint256 escrow, uint256 limit, uint256 deadline)
+    /// @dev Stores a new open request from the caller and returns its id.
+    function _openRequest(bool isMint, address index, address stable, uint256 escrow, uint256 limit, uint256 deadline)
         private
         returns (uint256 id)
     {
@@ -159,7 +166,7 @@ contract MintRequests is IMintRequests, ReentrancyGuard {
     }
 
     /// @dev Sends a closed request's escrow back to its requester.
-    function _return(Request storage request) private {
+    function _refundEscrow(Request storage request) private {
         IERC20(request.isMint ? request.stable : request.index).safeTransfer(request.requester, request.escrow);
     }
 

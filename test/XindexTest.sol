@@ -2,39 +2,84 @@
 pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
-import {IndexFactory} from "../src/IndexFactory.sol";
+import {WeightedIndexFactory} from "../src/WeightedIndexFactory.sol";
+import {WeightedHub} from "../src/WeightedHub.sol";
+import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
 import {MockMarket} from "./mocks/MockMarket.sol";
+import {MockPyth} from "./mocks/MockPyth.sol";
 
-/// @notice State and helpers the factory, hub, zap and security suites share.
+/// @notice State and helpers the zap, MintRequests and security suites share: a weighted factory over a stand-in Pyth,
+///         and indexes built from explicit units with the weights shared equally. Nothing these suites drive reads a
+///         weight before a rebalance, so the units alone shape every basket.
 abstract contract XindexTest is Test {
     MockMarket market;
-    IndexFactory factory;
+    MockPyth pyth;
+    WeightedIndexFactory factory;
     address owner = makeAddr("owner");
 
-    /// @dev Lists `token` with `supply`, through the full listing delay.
-    function _listWith(address token, uint256 supply) internal {
+    /// @dev Deploys the stand-in Pyth and a weighted factory owned by `owner`, with `guardian` (zero for none).
+    function _deployFactory(address guardian) internal {
+        pyth = new MockPyth();
+        factory = new WeightedIndexFactory(owner, guardian, address(pyth));
+    }
+
+    /// @dev The Pyth price id `token` is listed under: one per token, so no two components share a feed (V5-M1).
+    function _priceId(address token) internal pure returns (bytes32) {
+        return keccak256(abi.encode(token));
+    }
+
+    /// @dev Lists `token` under its own price id, through the full listing delay.
+    function _listWith(address token) internal {
         vm.prank(owner);
-        factory.proposeListing(token, supply);
+        factory.proposeListing(token, _priceId(token));
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(token);
     }
 
-    /// @dev Puts `supplies` in force for `tokens` (ascending) through a supply batch, warping to its eta: LISTING_DELAY
-    ///      away, or MIN_SUPPLY_INTERVAL after the last batch when that is later.
-    function _revise(address[] memory tokens, uint256[] memory supplies) internal {
-        vm.prank(owner);
-        factory.proposeSupplies(tokens, supplies);
-        (, uint256 eta,,) = factory.pendingSupplies();
-        vm.warp(eta);
-        factory.executeSupplies();
+    /// @dev `tokens` at `units` per whole index token, the weights shared equally, the remainder to the first.
+    function _specs(address[] memory tokens, uint256[] memory units)
+        internal
+        view
+        returns (IWeightedIndexFactory.ComponentSpec[] memory specs)
+    {
+        uint256 n = tokens.length;
+        uint256 total = factory.TOTAL_WEIGHT();
+        specs = new IWeightedIndexFactory.ComponentSpec[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            uint256 weight = total / n + (i == 0 ? total % n : 0);
+            specs[i] = IWeightedIndexFactory.ComponentSpec({token: tokens[i], weight: weight, units: units[i]});
+        }
     }
 
-    /// @dev Revises the supply of the single token `token` to `supply` through a one-entry batch.
-    function _revise(address token, uint256 supply) internal {
-        address[] memory tokens = new address[](1);
-        tokens[0] = token;
-        uint256[] memory supplies = new uint256[](1);
-        supplies[0] = supply;
-        _revise(tokens, supplies);
+    /// @dev No creator fee, any platform fee the policy charges, the shortest interval, open and listed.
+    function _params() internal pure returns (IWeightedIndexFactory.IndexParams memory) {
+        return IWeightedIndexFactory.IndexParams({
+            creatorFeeBps: 0,
+            creatorStreamingBps: 0,
+            maxPlatformFeeBps: 25,
+            maxPlatformStreamingBps: 100,
+            rebalanceInterval: 7 days,
+            gated: false,
+            listed: true
+        });
+    }
+
+    /// @dev Creates an index of `tokens` at `units`, from this contract.
+    function _createIndex(string memory name, string memory symbol, address[] memory tokens, uint256[] memory units)
+        internal
+        returns (WeightedHub)
+    {
+        return WeightedHub(factory.createIndex(name, symbol, _specs(tokens, units), _params()));
+    }
+
+    /// @dev Two-element arrays, for the many two-component indexes the suites build.
+    function _pair(address a, address b) internal pure returns (address[] memory t) {
+        t = new address[](2);
+        (t[0], t[1]) = (a, b);
+    }
+
+    function _pair(uint256 a, uint256 b) internal pure returns (uint256[] memory u) {
+        u = new uint256[](2);
+        (u[0], u[1]) = (a, b);
     }
 }

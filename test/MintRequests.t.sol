@@ -3,8 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {IndexFactory} from "../src/IndexFactory.sol";
-import {IndexHub} from "../src/IndexHub.sol";
+import {WeightedHub} from "../src/WeightedHub.sol";
 import {MintRequests} from "../src/MintRequests.sol";
 import {IMintRequests} from "../src/interfaces/IMintRequests.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
@@ -45,7 +44,7 @@ contract ReentrantFiller {
 ///      each. USDC is the market's 6-decimal mock and USDT the mainnet-shaped mock with its fee switch.
 contract MintRequestsTest is XindexTest {
     MintRequests requests;
-    IndexHub index;
+    WeightedHub index;
     MockERC20 usdc;
     MockUSDT usdt;
     address[] components;
@@ -54,21 +53,21 @@ contract MintRequestsTest is XindexTest {
     address minter = makeAddr("minter");
     address stranger = makeAddr("stranger");
 
-    uint256 constant K = 1e36;
-    uint256 constant SUPPLY = 100e18;
+    /// @dev Each component's units per whole index token.
+    uint256 constant UNITS = 100e18;
     uint256 constant DAY = 1 days;
 
     function setUp() public {
         market = new MockMarket();
-        factory = new IndexFactory(owner, makeAddr("guardian"));
+        _deployFactory(makeAddr("guardian"));
         usdc = market.usdc();
         usdt = new MockUSDT();
         requests = new MintRequests(address(factory), address(usdc), address(usdt));
         for (uint256 i = 0; i < 2; ++i) {
             components.push(address(new MockERC20("C", "C", 18)));
-            _listWith(components[i], SUPPLY);
+            _listWith(components[i]);
         }
-        index = IndexHub(factory.createIndex("Requested", "REQ", components, K));
+        index = _createIndex("Requested", "REQ", components, _pair(UNITS, UNITS));
         _issueTo(minter, 10e18);
     }
 
@@ -203,13 +202,13 @@ contract MintRequestsTest is XindexTest {
         vm.expectRevert(abi.encodeWithSelector(IMintRequests.NotAStable.selector, address(index)));
         requests.requestRedeem(address(index), 1e18, address(index), 1e6, deadline);
 
-        vm.expectRevert(IMintRequests.ZeroAmount.selector);
+        vm.expectRevert(IXindexErrors.ZeroAmount.selector);
         requests.requestMint(address(index), address(usdc), 0, 1e18, deadline);
-        vm.expectRevert(IMintRequests.ZeroAmount.selector);
+        vm.expectRevert(IXindexErrors.ZeroAmount.selector);
         requests.requestMint(address(index), address(usdc), 100e6, 0, deadline);
-        vm.expectRevert(IMintRequests.ZeroAmount.selector);
+        vm.expectRevert(IXindexErrors.ZeroAmount.selector);
         requests.requestRedeem(address(index), 0, address(usdc), 1e6, deadline);
-        vm.expectRevert(IMintRequests.ZeroAmount.selector);
+        vm.expectRevert(IXindexErrors.ZeroAmount.selector);
         requests.requestRedeem(address(index), 1e18, address(usdc), 0, deadline);
 
         vm.expectRevert(abi.encodeWithSelector(IMintRequests.InvalidDeadline.selector, block.timestamp));

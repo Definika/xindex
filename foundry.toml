@@ -5,20 +5,23 @@ libs = ["lib"]
 solc = "0.8.28"
 evm_version = "cancun"
 optimizer = true
-optimizer_runs = 1000
+optimizer_runs = 100
 remappings = [
     "forge-std/=lib/forge-std/src/",
     "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
     "@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/",
 ]
+# Off on purpose: only the three remappings above are used. Forge's default adds remappings it detects in the
+# dependencies' nested submodules, some carrying this checkout's absolute path. Every remapping goes into each
+# contract's metadata, so the init-code hashes DeployWeighted pins as the release record (CF-5) would differ on every
+# machine, CI included.
+auto_detect_remappings = false
 # Off on purpose. Forge's default rewrites `new X(...)` in tests into `vm.deployCode`, and an expected revert inside
 # that cheatcode ends the test function there, still reported as a pass: every check after `vm.expectRevert` and a
 # constructor call was silently skipped (LR-01). With it off, a constructor is an ordinary CREATE and the test goes on.
 dynamic_test_linking = false
 
-# Storage layouts in the artifacts, so test/Repo.t.sol can check that HybridHub and the module it delegates to agree
-# slot for slot. It changes no bytecode.
-extra_output = ["storageLayout"]
+
 
 # Read-only access for test/Repo.t.sol, which checks the repository files review findings rest on: the pinned compiler,
 # the CI gates and toolchain, the dependency lock against .gitmodules, the ABIs and the docs.

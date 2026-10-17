@@ -1,0 +1,15 @@
+{
+  "name": "xindex-keeper",
+  "private": true,
+  "description": "Starts and fills WeightedHub auctions through KeeperExecutor",
+  "type": "module",
+  "scripts": {
+    "start": "node keeper.mjs",
+    "once": "node keeper.mjs --once",
+    "test": "node --test test/unit/*.test.mjs",
+    "e2e": "node test/e2e/run.mjs"
+  },
+  "dependencies": {
+    "viem": "2.21.54"
+  }
+}

@@ -14,6 +14,14 @@ library ForkAddresses {
     address internal constant UNI = MainnetAddresses.UNI;
     /// @dev tBTC is not on the Stage A whitelist; the zap fork tests still route through its pool.
     address internal constant TBTC = 0x18084fbA666a33d37592fA2633fD49a74DD93a88;
+    /// @dev WhiteBIT's WBT, kept off every list by the WBT rule (design/2026-09-30-wbt-check.md); the admission check's
+    ///      fork test proves the check refuses it.
+    address internal constant WBT = 0x925206b8a707096Ed26ae47C84747fE0bb734F59;
+    /// @dev The two top-100 Ethereum coins the WBT rule keeps off the wide list (design/2026-10-05-token-admission-
+    ///      report.md): LEO, whose MiniMe controller destroys any balance and approves every transfer, and WLFI, whose
+    ///      owner blacklists and reallocates any holder's balance.
+    address internal constant LEO = 0x2AF5D2aD76741191D15Dfe7bF6aC92d4Bd912Ca3;
+    address internal constant WLFI = 0xdA5e1988097297dCdc1f90D4dFE7909e847CBeF6;
 
     /// @dev Uniswap SwapRouter02. The zap swaps through the Universal Router; this is only the fork tests' own rebalance
     ///      executor, a fixture whose venue is independent of anything Xindex deploys.
@@ -21,12 +29,8 @@ library ForkAddresses {
     address internal constant UNIVERSAL_ROUTER = MainnetAddresses.UNIVERSAL_ROUTER;
     address internal constant POOL_MANAGER = MainnetAddresses.POOL_MANAGER;
     address internal constant QUOTER_V2 = 0x61fFE014bA17989E743c5F6cB21bF9697530B21e;
-
-    /// @dev The reference supplies of the default whitelist.
-    uint256 internal constant BTC_SUPPLY = MainnetAddresses.BTC_SUPPLY;
-    uint256 internal constant ETH_SUPPLY = MainnetAddresses.ETH_SUPPLY;
-    uint256 internal constant LINK_SUPPLY = MainnetAddresses.LINK_SUPPLY;
-    uint256 internal constant UNI_SUPPLY = MainnetAddresses.UNI_SUPPLY;
+    /// @dev Pyth's proxy, which a v5 factory needs at construction; the zap suites never ask it for a price.
+    address internal constant PYTH = MainnetAddresses.PYTH;
 
     /// @dev Block the fork tests pin to. Bump deliberately; a pinned block keeps quotes deterministic
     ///      and lets the RPC cache.
