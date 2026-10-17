@@ -73,7 +73,7 @@ The history, in one paragraph each:
 | Chain | Ethereum mainnet, one deployment (the owner's decision of 2026-10-10). The BNB Chain deployment was deleted on 2026-10-13; nothing crosses a chain inside a contract. |
 | Composition | Constituents and weights fixed at creation, 2 to 100 per index (`MIN_COMPONENTS`, `MAX_COMPONENTS`). Weights are in basis points and sum to `TOTAL_WEIGHT` (10,000). A new list or new weights is a new index. |
 | Creation | `createIndex(name, symbol, components)` with one `ComponentSpec {token, weight, units}` per component. The app derives the starting units from the weights at its own prices; each lies between `MIN_RAW_UNITS` (10,000) and `MAX_UNITS` (`(2^96 − 1) >> 10`). The factory reads no price, and the first rebalance brings an index to its weights. Every component copies its listing's Pyth price id and decimals. |
-| Rebalancing | Anyone starts a rebalance 7 days after the last one or after creation (`MIN_REBALANCE_INTERVAL`), then 2 hours of notice (`REBALANCE_DELAY`), then a 24-hour auction (`AUCTION_DURATION`) in which any contract can fill. The fill reads Pyth's prices, sets each moving component's target from its weight, and moves every leg the same share of the way. The growing legs ask `μ` times their step, `μ` falling from `MU_MAX` (1.02) to `MU_MIN` (0.98). One fill sends out at most `MAX_TURNOVER` (20%) of each component's own units, and must trade at least `MIN_TRADE` (0.1%) of the moving value. |
+| Rebalancing | Anyone starts a rebalance once the index's own interval, 7 to 91 days chosen at creation, has passed since the last one or creation (`earliestRebalance()`), then 2 hours of notice (`REBALANCE_DELAY`), then a 24-hour auction (`AUCTION_DURATION`) in which any contract can fill. The fill reads Pyth's prices, sets each moving component's target from its weight, and moves every leg the same share of the way. The growing legs ask `μ` times their step, `μ` falling from `MU_MAX` (1.02) to `MU_MIN` (0.98). One fill sends out at most `MAX_TURNOVER` (20%) of each component's own units, and must trade at least `MIN_TRADE` (0.1%) of the moving value. |
 | Prices | Pyth only, read only by the settlement and only for the moving components. One price per block: each feed's first update at or after `priceTime()`, 12 seconds (`PRICE_LAG`) before the block. Refused: a non-positive price, an exponent outside [-18, 0], a price above `MAX_PRICE`, a confidence interval wider than `MAX_CONFIDENCE` (2%). Issue, redeem and claims read none. The app values an index off chain. |
 | Swaps | Uniswap's Universal Router 2.0.0 alone, V3 or V4, one venue per leg, chosen by the caller. PancakeSwap and THORChain were removed on 2026-10-14. The app offers the one-click zap only up to about 35 components (EIP-7825's 16.78M gas per transaction). |
 | Fees | In shares, never in components: the creator's rate (0 to 100 bps, the creator's choice at creation) plus the platform's (0 to 25 bps, the factory's policy at creation) on every issue and every redeem. A minter's deposit backs the fee's shares on top of its own; a burner's fee is minted to the recipients out of what it burns. The recipients are read from the factory at each call: the index's creator and the platform recipient, and a referrer named at mint takes the policy's share of the platform's part. The policy starts at zero and reaches only indexes created after it is set. A streaming fee, the creator's yearly rate (0 to 500 bps) plus the platform's (0 to 100 bps, the policy at creation), accrues in shares at every issue, redeem, settlement and `accrueFees`, and shrinks every share's units by the same factor: it moves no tokens. |
@@ -105,8 +105,9 @@ The history, in one paragraph each:
 ```
 
 - `WeightedHub` (`src/WeightedHub.sol`) only ever moves amounts derived from supply and units. `issue(shares)` pulls
-  `ceil(shares × units_i / 1e18)` of every component and mints; `redeem(shares)` burns and pushes
-  `floor(shares × units_i / 1e18)`; `redeemSkipping` leaves chosen components as claims for the recipient. A rebalance
+  `ceil(shares × units_i × scale / 1e36)` of every component and mints; `redeem(shares)` burns and pushes
+  `floor(shares × units_i × scale / 1e36)`, with `units_i` as recorded and `scale` the streaming fee's factor (1e18
+  until a fee accrues; `components()` reports the units with it applied); `redeemSkipping` leaves chosen components as claims for the recipient. A rebalance
   is `startRebalance`, 2 hours of notice, and a 24-hour auction whose fill reads Pyth's prices and stands only if every
   component still backs the new units. Issue, redeem and claims read no price, and nothing computes an amount from a
   balance, so there is no share price to manipulate and no first-depositor attack. Share transfers to the hub itself or
@@ -136,16 +137,19 @@ The history, in one paragraph each:
 Invariant, for every component `i` of every index, forever:
 
 ```
-token_i.balanceOf(index) >= floor(totalSupply × units_i / 1e18) + totalClaims[token_i]
+token_i.balanceOf(index) >= floor(totalSupply × units_i × scale / 1e36) + totalClaims[token_i]
 ```
+
+with `units_i` as recorded and `scale` the streaming fee's factor, 1e18 until a fee accrues. No settlement resets the
+scale, so no leg's units are ever rounded to fold it in (XS-2).
 
 ## How the flows work
 
 **Create.** The creator picks whitelisted tokens, a weight for each in basis points summing to 10,000, and the value
 one index token should start at. The app turns each weight into starting units at its own prices, `units_i = w_i /
 10,000 × value / price_i` in the token's raw units, calls `predictIndexAddress` to show the address, and calls
-`createIndex`. The factory reads no price, so units a little off the weights cost nothing: the first rebalance, 7 days
-after creation, brings the index to its weights. Every unit has to lie in `[MIN_RAW_UNITS, MAX_UNITS]` or the call
+`createIndex`. The factory reads no price, so units a little off the weights cost nothing: the first rebalance, the
+index's interval after creation, brings the index to its weights. Every unit has to lie in `[MIN_RAW_UNITS, MAX_UNITS]` or the call
 reverts `UnitsOutOfRange(token, units)`. For WBTC, whose raw unit is a satoshi, 10,000 raw units is 0.0001 BTC, about
 11 dollars at BTC 110k, so WBTC's weight times the index token's value must reach that: an index token worth $100 can
 hold WBTC at 11% or more, one worth $1,000 at 1.1% or more. For an 18-decimal component the floor binds on nothing.
@@ -163,7 +167,8 @@ non-zero overall `minAmountOut`, passes `rebalanceNonce()`, and calls `burnToTok
 `burnToTokenWithPermit`.
 
 **Rebalance.**
-1. Once 7 days have passed since the index's creation or last rebalance, anyone calls `startRebalance(0)`. It reads no
+1. Once the index's interval has passed since its creation or last rebalance (`earliestRebalance()`; a week after a
+   guardian's keep-mask fill, XS-3), anyone calls `startRebalance(0)`. It reads no
    price and calls no component: it only sets the auction's start, `eta`, 2 hours ahead.
 2. For 2 hours nothing changes. The targets come from the settlement's own prices, so the notice is for executors to
    ready their stock, routes and price update, not a window holders need. Issue and redeem stay open throughout.
@@ -237,7 +242,8 @@ at any time) or `refund` (anyone, after the deadline).
   to the creator, the name, the symbol and every component's token, units, weight, price id and decimals, so two
   look-alike indexes have different addresses: key every index by its address, show `creatorOf`, and mark a name or
   symbol an existing index already uses.
-- **Rebalance status.** Show `lastRebalance + MIN_REBALANCE_INTERVAL`, and a "rebalance due" button when
+- **Rebalance status.** Show `earliestRebalance()`, the index's own interval after `lastRebalance` (a week after a
+  keep-mask fill), and a "rebalance due" button when
   `canStartRebalance()` is true and the index has drifted. `previewRebalance` reverts outside an auction, so compute
   the drift off chain from `components()`, `componentTerms()` and Pyth's prices, as the settlement does: a start whose
   fill would release, after the 20% cap, less than 0.1% of the moving value ends in `NothingToRebalance`.
@@ -251,7 +257,9 @@ at any time) or `refund` (anyone, after the deadline).
   alone reflects cancels only (RT-08, RT-09).
 - **During a rebalance.** In the notice, show `pendingRebalance()`, which returns `(eta, keepMask)`. In the auction,
   show `currentMu()` (0 outside an auction) and `previewRebalance(prices)`, which returns `(mu, units, amountsOut,
-  amountsIn)` for this block at the Pyth prices the app passes. While a rebalance is pending, warn before a mint that
+  amountsIn)` for this block at the Pyth prices the app passes. Its `units` are recorded units, which carry the
+  index's scale: show them as units per index token only after multiplying by the scale `pendingStreamingFee()`
+  reports, divided by 1e18. While a rebalance is pending, warn before a mint that
   the new shares share the coming settlement's outcome; during the auction, also warn before a burn that the fill can
   be ordered ahead of it, and that a private relay is the protection (RT-02).
 - **Rebalance events.** `RebalanceStarted(proposalId, id, caller, keepMask, eta)`, `RebalanceCancelled(proposalId,
@@ -417,10 +425,10 @@ stock, Wormhole for every wrapped copy, and both Binance and Wormhole for a copy
 - **A lone executor can take up to 2% of what it trades.** At the auction's end `μ` reaches `MU_MIN` (0.98), so an
   executor with no competition that waits for it delivers 98% of the value it takes, at the settling prices.
   Competition fills earlier, at the `μ` that just covers an executor's swap costs. What a fill trades is only the drift
-  since the last rebalance, at most 20% of each component's units, once a week.
+  since the last rebalance, at most 20% of each component's units, at most once a week.
 - **A wrong price costs at most the turnover cap.** A fill at a wrong or forged Pyth price trades the index toward
   wrong targets. The cap counts units, not value, so whatever the price says, one fill sends out at most 20% of each
-  component's own units, once every `MIN_REBALANCE_INTERVAL` (V5-M2); the guardian can cancel, and a confidence
+  component's own units, at most once every `MIN_REBALANCE_INTERVAL` (V5-M2); the guardian can cancel, and a confidence
   interval wider than 2% is refused. Pyth's contract on Ethereum is upgradeable by Pyth's governance, which upgraded it
   in place on 2026-08-26, and since then (OP-PIP-132) verifies updates against Pyth's own set of five signing keys, not
   Wormhole's guardians. The app says so on every index.
@@ -446,7 +454,7 @@ stock, Wormhole for every wrapped copy, and both Binance and Wormhole for a copy
   so a wrong id reaches only indexes created while it stood, and the guardian can keep that component at each
   rebalance.
 - **Rebalances clear only when the moving value pays for the fill.** Small indexes on mainnet rarely rebalance, and a
-  fresh index cannot rebalance until 7 days after its creation. An unfilled auction expires, and for `REBALANCE_DELAY`
+  fresh index cannot rebalance until its own interval, 7 to 91 days, has passed since its creation. An unfilled auction expires, and for `REBALANCE_DELAY`
   afterwards (less a second, CR-I02) only the owner and guardian can restart it. A fill that would send nothing out, as
   on an empty or dust index, settles at `MU_MAX`, so nobody is paid for it (R14, XA-27).
 - **An exit sent during the auction can be overtaken by the fill.** The executor picks the block, so it can order its
@@ -458,8 +466,9 @@ stock, Wormhole for every wrapped copy, and both Binance and Wormhole for a copy
   index drifts from its weights. It moves no funds, holders redeem throughout, and the owner ends it by replacing that
   guardian: 7 days of notice the guardian cannot cancel, since it may only cancel its own removal (DA-12). A guardian
   can also stall without a cancel: a keep-mask rebalance that leaves a pair of components moving can clear `MIN_TRADE`
-  on a sliver of the index, and its fill restarts `MIN_REBALANCE_INTERVAL` for everyone, so the stall can outlast the
-  guardian's replacement by up to a week. While a replacement is pending, the owner cancels the outgoing guardian's
+  on a sliver of the index. Its fill restarts only `MIN_REBALANCE_INTERVAL` for a rebalance without a keep mask, not
+  the index's own interval, so the stall can outlast the guardian's replacement by up to a week (XS-3); the owner and
+  the new guardian can start a keep-mask rebalance then too, for an index that only settles with a component kept. While a replacement is pending, the owner cancels the outgoing guardian's
   keep-mask proposals, and monitors alert on `RebalanceStarted` with a non-zero `keepMask` (RT-07). The owner has only
   `REBALANCE_DELAY`, 2 hours, to cancel one before the guardian's own executor can fill it at `eta`.
 - **Issuers can freeze components, and some can burn them.** WBTC can be paused by its custodian. Tether Gold and
@@ -491,6 +500,20 @@ stock, Wormhole for every wrapped copy, and both Binance and Wormhole for a copy
   app should default to short deadlines and send cancels through a private relay.
 - **Fees in shares only.** Mint and redeem fees are minted as shares to the creator, the platform and a referrer; no
   fee ever moves a component, and the platform's policy is zero until the owner sets one.
+- **The streaming fee is charged on the supply that was there.** Every issue, redeem, settlement and `accrueFees` first
+  mints the fee accrued since the last accrual, and the clock restarts on every one of them, one that mints nothing
+  included, so a dust supply left idle never charges that time to the next minter (XS-1); what that forgoes is under
+  one share per call. An integer scale backs the supply by up to `supply · units / 1e36` raw units less per accrual, a
+  part in 1e18 of a leg, which stays in the index. A lifetime's gap is capped just under the whole index, and a second
+  one, which would shrink the scale to zero, is not charged. `lastAccrual()` and `pendingStreamingFee()` show the clock
+  and what an accrual now would mint.
+- **The basket builder is one custody point.** Every user's escrow of a token sits in one address. An issuer that
+  blacklists or pauses the builder freezes every escrow of that token until it lifts the block, and one that can
+  destroy a blacklisted balance, as Tether's contracts can, can take them all. The builder sends itself one unit of a
+  token before it credits an escrow of it, so a deposit, a buy or a redeem into a builder already blocked is refused
+  (XS-10); a block that comes later traps what is already there. The app should check `isBlackListed(builder)` on
+  Tether-pattern tokens (USDT, XAUT) before offering the builder, and a holder whose exit through the builder is refused
+  redeems on the index itself, with `redeemSkipping` and `claim` for a frozen leg.
 - **Airdrops, rewards and governance votes** that accrue to tokens held by an index cannot be claimed or used; by design
   there is no admin who could sweep them.
 - **A hooked V4 pool cannot be routed through.** The zap rejects any V4 route whose hops carry hooks or hook data, so a
@@ -656,7 +679,7 @@ No bot holds a role in Xindex, so these duties have owners and deadlines. Watch 
 | Veto a wrong listing | `ListingProposed` | before `eta` (2 days) | guardian or owner | check the price id against its feed's description and the decimals against the token; `cancelListing(token)` |
 | Execute a listing | its `eta` | `eta + PROPOSAL_WINDOW`, or it expires silently | anyone, owner signers first | `V5_MODE=execute` at the eta; `listingPending(token)` says whether it can still run |
 | Keep a Hermes key | before the first rebalance | none, but without one no index rebalances | executors, or one keyed service that hands updates to them | Hermes has required an API key since 2026-08-26 |
-| Trigger the weekly rebalance | `lastRebalance + MIN_REBALANCE_INTERVAL` | none, but the index drifts from its weights | anyone; the keeper in `keeper/` does it when a fill would pay | `canStartRebalance()`, then `startRebalance(0)`; a fill ending in `NothingToRebalance` means the index is on its weights |
+| Trigger the rebalance | `earliestRebalance()`: the index's interval after `lastRebalance`, a week after a keep-mask fill | none, but the index drifts from its weights | anyone; the keeper in `keeper/` does it when a fill would pay | `canStartRebalance()`, then `startRebalance(0)`; a fill ending in `NothingToRebalance` means the index is on its weights |
 | Check each rebalance | `RebalanceStarted` | before the fill | guardian | watch the moving components' Pyth feeds; `cancelRebalance()` on a feed that is wrong or stopped, then a keep mask |
 | Watch keep-mask rebalances | `RebalanceStarted` with a non-zero `keepMask` | before `eta` (2 hours) | owner signers | while a guardian replacement is pending, cancel the outgoing guardian's keep-mask proposals (RT-07) |
 | Fill auctions | the auction opens at `eta` | `eta + AUCTION_DURATION` | any executor contract | anyone may run the keeper in `keeper/`, which holds no role; competition is what keeps a fill near break-even |
@@ -715,7 +738,7 @@ V5_MODE=execute V5_FACTORY=<factory> V5_WHITELIST=<same> forge script script/Con
 
 Add `--verify` with `ETHERSCAN_API_KEY` set to verify the contracts, so testers can call `drip()` from Etherscan.
 `USD_POOL_WETH` and `TOKEN_POOL_WETH` (in wei) change the liquidity `seed` adds. Timing is mainnet's: listings take 2
-days, and a rebalance can start 7 days after an index's creation, followed by 2 hours of notice and a 24-hour auction
+days, and a rebalance can start an index's interval, at least 7 days, after its creation, followed by 2 hours of notice and a 24-hour auction
 whose fill needs a signed Pyth update, as on mainnet. The test pools are shallow and nobody arbitrages them, so zap
 prices on this market say nothing about mainnet. `test/fork/WeightedExecutorV3.sol` fills auctions through
 SwapRouter02; it is a test fixture without slippage limits, so never fund it on mainnet.

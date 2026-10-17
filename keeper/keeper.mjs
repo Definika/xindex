@@ -6,7 +6,8 @@
 //   1. each open auction is simulated exactly as block L+1 would run it (eth_call with block overrides), with Hermes'
 //      update for second t_L, the routes quoted for each leg, and the executor's stock;
 //   2. the most profitable fill whose profit, after gas and valued stock, reaches MIN_PROFIT_USD is sent with a USDC
-//      floor at least what that decision needs, and a deadline of T;
+//      floor at least what that decision needs, a supply bound, and a deadline of T; an auction whose fills revert
+//      on chain is backed off, and left after MAX_REVERTED_FILLS;
 //   3. every 25 blocks, an index anyone may restart is started only when a simulation of its auction at its best
 //      price (μ = MU_MIN) would pay;
 //   4. with FILL_REQUESTS on and nothing else to send, each open `MintRequests` request is simulated the same way and
@@ -15,6 +16,7 @@
 
 import { encodeFunctionData, getAddress } from "viem";
 import { HUB_SLOTS, MAINNET, TX_GAS_CAP, parseConfig } from "./bot/config.mjs";
+import { MAX_REVERTED_FILLS, MAX_REVERTED_REQUEST_FILLS, revertedFills } from "./bot/backoff.mjs";
 import { ABI, createChain, revertReason } from "./bot/chain.mjs";
 import { createHermes, priceKey } from "./bot/hermes.mjs";
 import * as M from "./bot/math.mjs";
@@ -34,10 +36,11 @@ const log = (...args) => console.log(new Date().toISOString(), ...args);
 const cfg = parseConfig(process.env);
 const chain = createChain(cfg);
 const hermes = createHermes({ url: cfg.hermesUrl, apiKey: cfg.pythApiKey });
-const routes = createRoutes(chain, cfg);
-const tracker = new TxTracker(chain.txIo, log);
+const routes = createRoutes(chain, cfg, ABI);
 const tip = M.gweiToWei(cfg.priorityFeeGwei);
 const feeCap = M.gweiToWei(cfg.maxFeeGwei);
+const tracker = new TxTracker(chain.txIo, log, { feeCap });
+const reverted = revertedFills(); // `index:proposal` -> fills that reverted on chain (XS-4)
 const isUsdc = (token) => token.toLowerCase() === MAINNET.usdc.toLowerCase();
 
 const statics = new Map(); // index -> {tokens, ids, decimals}
@@ -90,7 +93,9 @@ async function refresh(L) {
 }
 
 /// The auction of `index` as block L+1 would settle it, at Hermes' update for second t_L. `eta`, when given, is
-/// written into the hub for the call, to see an auction that is not open yet.
+/// written into the hub for the call, to see an auction that is not open yet. `maxSupply` is the most shares the fill
+/// accepts: the supply now, plus the streaming fee an accrual would mint by T, which leaves the settlement unchanged,
+/// plus SUPPLY_TOLERANCE_BPS (XS-4).
 async function preview(index, st, L, keepMask, eta) {
   const T = L.timestamp + 12n;
   const moving = st.ids.map((_, i) => i).filter((i) => ((keepMask >> BigInt(i)) & 1n) === 0n);
@@ -110,7 +115,10 @@ async function preview(index, st, L, keepMask, eta) {
   const at = (o) =>
     chain.call({ to: index, abi: ABI.hub, functionName: "previewRebalance", args: [structs] }, L.number, o);
   const [mu, , out, need] = await at(over);
-  return { T, moving, updates, priceOf, over, mu, out, in: need, again: at };
+  const supply = await chain.read(index, ABI.hub, "totalSupply", [], L.number);
+  const [feeShares] = await chain.call({ to: index, abi: ABI.hub, functionName: "pendingStreamingFee", args: [] }, L.number, over);
+  const maxSupply = M.withTolerance(supply + feeShares, cfg.supplyToleranceBps);
+  return { T, moving, updates, priceOf, over, mu, out, in: need, maxSupply, again: at };
 }
 
 /// The routes, stock change and routed volume of a settlement, or `short` naming coins the executor can neither buy
@@ -154,7 +162,9 @@ async function legs(index, st, sim, maxIn, L, key) {
       routedUsd += M.amountUsd(M.max(need - h, 0n), dec, p);
     }
     if (route) routeOf[i] = route;
-    inventoryUsd += M.amountUsd(M.inventoryDelta({ out, in: need, held: h, routed: route !== null }), dec, p);
+    // A kept coin counts at no more than its best quote (XS-5).
+    const quoteUsdc = out > 0n ? routes.quoteOf({ key, token, side: "sell", amount: out }) : null;
+    inventoryUsd += M.stockChangeUsd({ out, in: need, held: h, routed: route !== null, decimals: dec, price: p, quoteUsdc });
   }
   return { routes: routeOf, inventoryUsd, routedVolumeUsdc: M.usdToUsdcCeil(routedUsd), short };
 }
@@ -163,7 +173,7 @@ async function legs(index, st, sim, maxIn, L, key) {
 async function priceFill(index, sim, leg, maxIn, L) {
   if (ethUsd === null) return { skip: "no ETH price to value gas" };
   const fee = await chain.read(setup.pyth, ABI.pyth, "getUpdateFee", [sim.updates], L.number);
-  const args = [index, sim.updates, leg.routes, maxIn, INT256_MIN, sim.T];
+  const args = [index, sim.updates, leg.routes, maxIn, sim.maxSupply, INT256_MIN, sim.T];
   let usdcDelta;
   let inner;
   try {
@@ -193,7 +203,7 @@ async function priceFill(index, sim, leg, maxIn, L) {
   const data = encodeFunctionData({
     abi: ABI.executor,
     functionName: "fill",
-    args: [index, sim.updates, leg.routes, maxIn, floor, sim.T],
+    args: [index, sim.updates, leg.routes, maxIn, sim.maxSupply, floor, sim.T],
   });
   const tx = {
     to: cfg.executor,
@@ -267,7 +277,7 @@ async function evaluateFill(index, keepMask, proposal, L) {
   if (priced.skip) return say(index, priced.skip);
   const mu = Number(sim.mu) / 1e18;
   if (priced.profit < cfg.minProfitUsd) return say(index, `waiting: profit below ${cfg.minProfitUsd} USD at mu ${mu.toFixed(4)}`);
-  return { index, mu, ...priced };
+  return { index, proposal, mu, ...priced };
 }
 
 /// Whether to start `index`: its auction, simulated at its best price, must pay.
@@ -353,14 +363,32 @@ async function onBlock(L) {
   const nextBase = M.nextBaseFee(L);
   const done = await tracker.onBlock(Number(L.number), nextBase);
   if (done) {
-    const [kind, index] = done.label.split(" ");
+    const [kind, index, proposal] = done.label.split(" ");
     const ok = done.receipt?.status === "success" && !done.replaced;
     if (kind === "start" && ok) started.set(index, L.timestamp);
     if (kind === "fill" && ok) {
       started.delete(index);
       said.delete(index);
     }
+    if (kind === "fill" && done.receipt?.status === "reverted" && !done.replaced) {
+      const b = reverted.fail(`${index}:${proposal}`, L.number);
+      log(
+        index,
+        b.stopped
+          ? `fill reverted on chain after its simulation passed, ${b.failures} times this auction: leaving it (a front-run, or an RPC whose simulation cannot be trusted)`
+          : `fill reverted on chain after its simulation passed (${b.failures} of ${MAX_REVERTED_FILLS}): backing off until block ${b.until}`,
+      );
+    }
     if (kind === "request" && ok) filler?.forget(BigInt(index));
+    if (kind === "request" && filler && done.receipt?.status === "reverted" && !done.replaced) {
+      const b = filler.reverted(BigInt(index), L.number);
+      log(
+        `request ${index}`,
+        b.stopped
+          ? `fill reverted on chain after its simulation passed, ${b.failures} times: leaving it (a front-run, or an RPC whose simulation cannot be trusted)`
+          : `fill reverted on chain after its simulation passed (${b.failures} of ${MAX_REVERTED_REQUEST_FILLS}): backing off until block ${b.until}`,
+      );
+    }
   }
   if (tracker.busy()) return;
   if (await tracker.clearStuck(Number(L.number), nextBase, tip)) return;
@@ -381,9 +409,16 @@ async function onBlock(L) {
       open.set(index, { keepMask: p.result[1], proposal: pending[2 * k + 1].result });
     }
   });
-  routes.forget([...[...open].map(([index, a]) => `${index}:${a.proposal}`), ...(filler ? filler.keys() : [])]);
+  const auctions = [...open].map(([index, a]) => `${index}:${a.proposal}`);
+  routes.forget([...auctions, ...(filler ? filler.keys() : [])]);
+  reverted.keep(auctions);
 
-  const checks = await worthChecking(open, L);
+  const checks = (await worthChecking(open, L)).filter(({ index }) => {
+    const key = `${index}:${open.get(index).proposal}`;
+    if (!reverted.blocked(key, L.number)) return true;
+    say(index, `no fill check: ${reverted.failures(key)} fills of this auction reverted on chain`);
+    return false;
+  });
   const fills = await Promise.all(
     checks.map(({ index }) => {
       const a = open.get(index);
@@ -394,7 +429,7 @@ async function onBlock(L) {
   if (best) {
     if ((await chain.blockNumber()) !== L.number) return log(best.index, "block passed before sending; next block");
     log(best.index, `filling at mu ${best.mu.toFixed(4)}: profit ${best.profit.toFixed(2)} USD (float ${(Number(best.usdcDelta) / 1e6).toFixed(2)}, stock ${best.inventoryUsd.toFixed(2)}, gas ${best.gasUsd.toFixed(2)})`);
-    await tracker.send(best.tx, { label: `fill ${best.index}`, targetBlock: Number(L.number) + 1 });
+    await tracker.send(best.tx, { label: `fill ${best.index} ${best.proposal}`, targetBlock: Number(L.number) + 1 });
     return;
   }
   if (lastStartCheck === null || L.number - lastStartCheck >= START_EVERY_BLOCKS) {
@@ -409,7 +444,7 @@ async function onBlock(L) {
 async function requestChecks(L) {
   if (lastRequestScan === null || L.number - lastRequestScan >= START_EVERY_BLOCKS) {
     lastRequestScan = L.number;
-    await filler.scan(L);
+    await filler.scan(L, indexes);
   }
   const pick = await filler.best(L, indexes, ethUsd, tip, feeCap);
   if (!pick) return;

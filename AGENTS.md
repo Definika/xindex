@@ -61,6 +61,11 @@ Where it stands (2026-10-13):
   `CF-1`..`CF-8`) found no exploitable path in the four contracts that hold index funds; its findings in the keeper,
   CheckToken, the deploy script and CI are fixed, CF-3 is a known limitation below, and CF-2 and CF-8 went with the
   THORChain planner on 2026-10-14 (`audit/2026-10-14-thorchain-retirement.md`).
+- The security audit of 2026-10-16 (`audit/2026-10-16-security-audit.md`, ids `XS-1`..`XS-18`) reviewed the engine
+  of 2026-10-14 to 16. Its findings are fixed: the streaming fee's clock restarts on every accrual (XS-1), a settlement
+  keeps the scale rather than folding it into floored units (XS-2), a keep-mask fill restarts only
+  `MIN_REBALANCE_INTERVAL` for a start without a mask (XS-3), the builder checks its way out before crediting an escrow
+  (XS-10), and the keeper's five medium findings and three low ones are fixed in `keeper/`.
 - Before any mainnet: Pyth's parameter replay (`design/2026-10-05-custom-weights.md`, section 8), a settlement on a
   real update from Hermes (which needs Pyth's API key), a reading of OP-PIP-132 for what it means for Pyth on Ethereum,
   Ondo's corporate-action mechanism for its stock tokens (CF-3), the owner's reading of the verified source of the 44
@@ -162,6 +167,12 @@ deploy script resolves Pyth, the router and the stablecoins from the address boo
      `test_CF5_...` in `test/Scripts.t.sol`; CF-6's `test_CF6_...` in `test/Repo.t.sol`; CF-7's the node test named
      `CF-7: ...` in `keeper/test/unit/math.test.mjs`. CF-3 is recorded by documentation alone. CF-2 and CF-8 are
      retired with THORChain.
+   - The security audit of 2026-10-16: `XS-1`..`XS-18` (`audit/2026-10-16-security-audit.md`), a test named
+     `test_XS1_...`. The record's status column names every test: the hub's in `test/WeightedHub.fees.t.sol`,
+     `test/WeightedHub.rebalance.t.sol` and `test/WeightedHub.invariant.t.sol`, the builder's in
+     `test/BasketBuilder.t.sol`, XS-17's in `test/Repo.t.sol`, the keeper's in `keeper/test/KeeperExecutor.t.sol` and
+     the node tests named `XS-5: ...` and so on in `keeper/test/unit/`. XS-18 is recorded by documentation and the R11
+     test's ten entry points.
    - Stage B's families are retired in full with Stage B (`audit/2026-10-07-stage-b-retirement.md`): the Stage B red
      team's `VLT`, `HUB`, `MOD`, `BNB`, `FAC` and `SOL` ids, the TRON review's `TRN`, the logic review of 2026-10-02's
      `LG`, and `BLS-1`. No test carries them, and none may be restored.
@@ -260,12 +271,12 @@ records also cite.
   units, weight, price id and decimals, and to the index's config: its fee rates, referral share and rebalance interval
   (LR-05: never switch back to CREATE). The gate and the listing flag are not terms of the index and not in the salt.
 - **The cap counts units, never value.** A fill sends out at most `MAX_TURNOVER` (20%) of each component's own units,
-  every leg moving the same share of the way, so a wrong or malicious price takes at most that, once a week. A value
+  every leg moving the same share of the way, so a wrong or malicious price takes at most that, at most once a week. A value
   cap measured in the reported prices let two wrong feeds take 89% of an index far from its weights (V5-M2); do not
   bring one back as the only cap.
 - **A fill must trade.** One whose release, after the turnover cap, is worth less than `MIN_TRADE` (0.1%) of the
   moving value reverts `NothingToRebalance`, and a keep mask must leave two components moving, so a fill that changes
-  nothing cannot restart `MIN_REBALANCE_INTERVAL` (V5-L2). The minimum is checked on the capped release: checked before
+  nothing cannot restart the rebalance interval (V5-L2). The minimum is checked on the capped release: checked before
   the cap, a fill could trade a fifth of it (V5R-1). The guardian's cancel remains the trust assumption DA-12 records.
 - **The settlement's rounding.** Targets round up; a shrinking leg's step rounds down; a growing leg's rounds up, by the
   factor `μ · s` rounded up, with `μ` falling from `MU_MAX` to `MU_MIN` and rounding up. At the settling prices the
@@ -283,7 +294,10 @@ records also cite.
 - **The notice is 2 hours.** `WeightedHub`'s `REBALANCE_DELAY` is 2 hours: targets come from the settlement's prices,
   so the notice is for executors, not for holders' exits (the spec's section 8). `AUCTION_DURATION` is 24 hours. The
   rebalance interval is the index's own, chosen at creation within [`MIN_REBALANCE_INTERVAL`, `MAX_REBALANCE_INTERVAL`]
-  = [7, 91] days (the website's weekly to quarterly cadences; V5R-I2 set the floor). A cancel, or an auction that
+  = [7, 91] days (the website's weekly to quarterly cadences; V5R-I2 set the floor). A fill with a keep mask restarts
+  only `MIN_REBALANCE_INTERVAL`, for any start (`earliestRebalance()`, XS-3): a guardian's sliver cannot hold the index
+  off for a quarter, and a keep around a frozen component can be renewed a week on. The cost, accepted: the owner or
+  guardian can run keep-mask fills weekly on a quarterly index, each within the turnover cap at Pyth prices. A cancel, or an auction that
   expired unfilled, holds strangers off for `REBALANCE_DELAY`, so the owner and guardian get the first restart;
   `canStartRebalance` answers whether strangers may, and false for a clone that was never initialized (DA-22; CR-I02
   for the second after an expiry).
@@ -313,10 +327,14 @@ records also cite.
   the factor every share's recorded units carry, by `supply / (supply + minted)`; both round down, so the invariant
   holds and the dust stays with the holders. Nothing moves: the fee is ownership. `_backing(shares, units, scale,
   rounding)` is `shares · units · scale / 1e36`, and the previews and `components()` report at the scale an accrual
-  now would leave (`pendingStreamingFee`). A settlement works on the scaled units, rounded down, and writes units that
-  carry the scale, so the scale starts from one again. An empty index accrues nothing and restarts the clock, so the
-  first minter owes nothing for the time before it; a supply too small for one share of fee keeps the clock; a gap
-  long enough for `f` to reach one is capped just under it, so the arithmetic answers and the last holder can leave.
+  now would leave (`pendingStreamingFee`). A settlement works on the recorded units, moves each leg's backing at the
+  scale (`IWeightedMath.settlement` takes it), and writes units that carry the scale as the old ones did; no settlement
+  resets the scale, since folding it in floored every leg and stranded up to `supply / 1e18` raw units of each, kept
+  legs included, at every fill (XS-2). Do not bring the fold back. The scale therefore only shrinks, and an accrual
+  that would shrink it to zero is not charged. Every accrual restarts the clock (`lastAccrual()`), one that mints
+  nothing included: a clock kept on a supply too small for one share of fee charged the whole idle time to the next
+  minter's deposit (XS-1); what the restart forgoes is under one share per call. A gap long enough for `f` to reach
+  one is capped just under it, so the arithmetic answers and the last holder can leave.
   The scale pushed the settlement arithmetic out of the hub's EIP-170 budget into `WeightedMath`, a stateless contract
   the factory deploys with the implementation and the hub calls by STATICCALL (`MATH`); its constants are the hub's
   (`test_theMathConstantsAreTheHubs`), and the optimizer runs are 100 for the same reason.
@@ -351,8 +369,9 @@ records also cite.
     last second and hold rebalancing off while the index drifts from its weights. That stall is bounded by the owner
     replacing the guardian, which takes `GUARDIAN_DELAY` and which the guardian cannot cancel. It moves no funds, and
     holders redeem throughout. A cancel budget was considered and rejected (DA-12). A keep-mask start that leaves only
-    a sliver moving can also restart the interval for everyone, so the stall can outlast the guardian's replacement by
-    up to `MIN_REBALANCE_INTERVAL`. While a replacement is pending, the owner cancels the outgoing guardian's keep-mask
+    a sliver moving can also restart `MIN_REBALANCE_INTERVAL` for everyone (XS-3 made that the bound: before, the
+    sliver restarted the index's interval, up to 91 days), so the stall can outlast the guardian's replacement by up
+    to `MIN_REBALANCE_INTERVAL`. While a replacement is pending, the owner cancels the outgoing guardian's keep-mask
     starts, and monitors watch `RebalanceStarted` with a non-zero `keepMask` (RT-07). The owner has only
     `REBALANCE_DELAY`, 2 hours, to cancel one before the guardian's own executor can fill it at `eta`, so that cancel
     needs signers on call.
@@ -624,7 +643,6 @@ If a change would alter any of these, say so explicitly.
 ## Not built (candidate backlog)
 
 - `mintWithETH` / `burnToETH`, `createAndMint`, `mintWithTokenPermit` for USDC.
-- Creator fees (attribute them by `creatorOf`, never by name).
 - Constituent changes (a new list is a new index).
 - Mixed-venue legs (a single leg splitting across V3 and V4).
 - Per-pair partial-fill auctions.

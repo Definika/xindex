@@ -611,15 +611,17 @@ contract WeightedHubFeesTest is WeightedTest {
     }
 
     /// @dev What the index holds backs every share at `scale`, the fee's included, to within `dust` raw units of
-    ///      each component: the fee moves ownership, never tokens.
+    ///      each component plus the scale's own floor: an integer scale backs the supply by up to `supply · units /
+    ///      1e36` less, a part in 1e18 of the leg. The fee moves ownership, never tokens.
     function _assertBackedWithin(WeightedHub idx, uint256[] memory units, uint256 scale, uint256 dust) internal view {
         _assertBacked(idx);
         address[] memory tokens = idx.componentTokens();
+        uint256 supply = idx.totalSupply();
         for (uint256 i = 0; i < tokens.length; ++i) {
-            uint256 required = Math.mulDiv(idx.totalSupply(), units[i] * scale, 1e36);
+            uint256 required = Math.mulDiv(supply, units[i] * scale, 1e36);
             uint256 held = MockERC20(tokens[i]).balanceOf(address(idx));
             assertGe(held, required);
-            assertLe(held - required, dust);
+            assertLe(held - required, dust + Math.mulDiv(supply, units[i], 1e36, Math.Rounding.Ceil));
         }
     }
 
@@ -676,9 +678,10 @@ contract WeightedHubFeesTest is WeightedTest {
         _assertBacked(streaming);
     }
 
-    /// @dev A settlement accrues first, works on the units every share then carries, and records units that carry
-    ///      the scale, so the scale starts from one again; its preview shows exactly that.
-    function test_aSettlementAccruesFirstAndStartsTheScaleFromOne() public {
+    /// @dev A settlement accrues first, moves each leg's backing at the scale that leaves, and keeps the scale: the
+    ///      recorded units it writes carry it as the old ones did, so no leg is rounded to fold it in (XS-2). Its
+    ///      preview shows exactly that.
+    function test_XS2_aSettlementAccruesFirstAndKeepsTheScale() public {
         WeightedHub streaming = _streamingIndex();
         _issueWith(streaming, alice, 100e18, address(0));
         uint256 since = block.timestamp;
@@ -710,8 +713,9 @@ contract WeightedHubFeesTest is WeightedTest {
         vm.warp(eta + idx.AUCTION_DURATION() / 2);
     }
 
-    /// @dev After the fill: the preview's units are the index's and carry no scale, ETH shrank and BTC grew from the
-    ///      scaled units, and the executor was paid from those at the supply the accrual left.
+    /// @dev After the fill: the preview's units are the recorded ones and carry the scale the accrual left, which the
+    ///      settlement kept; ETH shrank and BTC grew from the recorded units; the executor was paid each leg's change
+    ///      in backing at that scale; and what the index holds backs every share to within the fill's own rounding.
     function _assertSettledAtScale(
         WeightedHub idx,
         uint256[] memory previewUnits,
@@ -720,19 +724,43 @@ contract WeightedHubFeesTest is WeightedTest {
         uint256 ethOut
     ) internal view {
         (, uint256[] memory afterwards) = idx.components();
-        assertEq(afterwards, previewUnits);
         (uint256 pendingShares, uint256 pendingScale) = idx.pendingStreamingFee();
         assertEq(pendingShares, 0);
-        assertEq(pendingScale, 1e18, "the new units carry the scale");
-        uint256 scaledEth = Math.mulDiv(units[0], scale, 1e18);
-        assertLt(afterwards[0], scaledEth);
-        assertGt(afterwards[1], Math.mulDiv(units[1], scale, 1e18));
-        assertEq(ethOut, Math.mulDiv(idx.totalSupply(), scaledEth - afterwards[0], 1e18));
-        _assertBacked(idx);
+        assertEq(pendingScale, scale, "the settlement keeps the scale");
+        for (uint256 i = 0; i < afterwards.length; ++i) {
+            assertEq(afterwards[i], Math.mulDiv(previewUnits[i], scale, 1e18), "the preview's units, at the scale");
+        }
+        assertLt(previewUnits[0], units[0]);
+        assertGt(previewUnits[1], units[1]);
+        assertEq(ethOut, Math.mulDiv(idx.totalSupply(), (units[0] - previewUnits[0]) * scale, 1e36));
+        _assertBackedWithin(idx, previewUnits, scale, 2);
     }
 
-    /// @dev A supply too small for one share of fee keeps the clock, so the fee is not lost to rounding call by call.
-    function test_aSupplyTooSmallForAFeeShareKeepsTheClock() public {
+    /// @dev The streaming fee's clock is visible: creation starts it, every accrual moves it, one that mints nothing
+    ///      included, and an index without a streaming fee keeps its creation time (XS-9).
+    function test_XS9_theClockIsVisible() public {
+        uint256 created = block.timestamp;
+        WeightedHub streaming = _streamingIndex();
+        assertEq(streaming.lastAccrual(), created);
+        vm.warp(created + 1 days);
+        streaming.accrueFees();
+        assertEq(streaming.lastAccrual(), created + 1 days, "an empty index restarts it");
+        _issueWith(streaming, alice, 1e18, address(0));
+        vm.warp(block.timestamp + 30 days);
+        (uint256 feeShares,) = streaming.pendingStreamingFee();
+        assertGt(feeShares, 0);
+        streaming.accrueFees();
+        assertEq(streaming.lastAccrual(), block.timestamp);
+        (feeShares,) = streaming.pendingStreamingFee();
+        assertEq(feeShares, 0);
+
+        index.accrueFees();
+        assertEq(index.lastAccrual(), created, "no streaming fee, no clock to move");
+    }
+
+    /// @dev An accrual that mints nothing restarts the clock: on a supply too small for a share of fee, the time it
+    ///      covered is forgone rather than carried to whoever mints next (XS-1).
+    function test_XS1_anAccrualThatMintsNothingRestartsTheClock() public {
         WeightedHub streaming = _streamingIndex();
         _issueWith(streaming, alice, 4937, address(0));
         assertEq(streaming.totalSupply(), 5000);
@@ -741,12 +769,170 @@ contract WeightedHubFeesTest is WeightedTest {
         assertEq(feeShares, 0, "a day's fee on 5,000 wei rounds to nothing");
         vm.recordLogs();
         streaming.accrueFees();
-        assertEq(vm.getRecordedLogs().length, 0);
+        assertEq(vm.getRecordedLogs().length, 0, "nothing minted, nothing said");
+        assertEq(streaming.lastAccrual(), block.timestamp, "the clock restarted");
         vm.warp(block.timestamp + 1 days);
-        (uint256 expected,) = _expectedAccrual(5000, 1e18, 2 days);
-        assertEq(expected, 1);
+        (uint256 twoDays,) = _expectedAccrual(5000, 1e18, 2 days);
+        assertEq(twoDays, 1, "two days from the old clock would be a share");
         (feeShares,) = streaming.pendingStreamingFee();
-        assertEq(feeShares, 1, "two days' fee, the clock having kept the first");
+        assertEq(feeShares, 0, "one day from the restart is not");
+    }
+
+    /// @dev A dust supply left idle for a year cannot charge that year to the next minter: the issue accrues first,
+    ///      mints nothing on the dust, restarts the clock, and only then mints, so the next accrual charges a block's
+    ///      fee on the new supply, not a year's (XS-1).
+    function test_XS1_aDustSupplyChargesTheNextMinterNothingForTheIdleTime() public {
+        WeightedHub streaming = _streamingIndex();
+        _issueWith(streaming, creator, 1, address(0));
+        assertEq(streaming.totalSupply(), 2, "one share and its fee: dust");
+        vm.warp(block.timestamp + 365 days);
+        (uint256 feeShares, uint256 scale) = streaming.pendingStreamingFee();
+        assertEq(feeShares, 0);
+        assertEq(scale, 1e18);
+
+        _issueWith(streaming, bob, 1e24, address(0));
+        assertEq(streaming.lastAccrual(), block.timestamp, "the issue restarted the clock before it minted");
+        (feeShares, scale) = streaming.pendingStreamingFee();
+        assertEq(feeShares, 0, "nothing is owed in the block of the mint");
+        assertEq(scale, 1e18);
+
+        uint256 supply = streaming.totalSupply();
+        vm.warp(block.timestamp + 12);
+        (uint256 oneBlock, uint256 oneBlockScale) = _expectedAccrual(supply, 1e18, 12);
+        uint256 recipientsBefore = streaming.balanceOf(creator) + streaming.balanceOf(platform);
+        vm.prank(stranger);
+        streaming.accrueFees();
+        assertEq(
+            streaming.balanceOf(creator) + streaming.balanceOf(platform) - recipientsBefore,
+            oneBlock,
+            "one block's fee, not a year's"
+        );
+        assertLt(oneBlock, supply / 1e6);
+        (, scale) = streaming.pendingStreamingFee();
+        assertEq(scale, oneBlockScale);
+    }
+
+    /// @dev A keep-mask fill on a streaming index leaves the kept leg's recorded units exactly as they were: its
+    ///      backing at the scale still matches what the index holds of it, and once every holder leaves, nothing of it
+    ///      is stranded beyond the exits' own rounding. The fold this replaced stranded about 4.9e5 sat here (XS-2).
+    function test_XS2_aKeepMaskFillLeavesTheKeptLegsUnitsExactly() public {
+        WeightedHub streaming = _xs2Index();
+        _xs2MintThenOpenMidAuction(streaming, 1 << 1);
+        (, uint256 scale) = streaming.pendingStreamingFee();
+        assertLt(scale, 1e18);
+        uint256 btcHeld = btc.balanceOf(address(streaming));
+        (, uint256[] memory before) = streaming.components();
+
+        bytes32[] memory ids = new bytes32[](2);
+        (ids[0], ids[1]) = (ETH_ID, USD_ID);
+        int64[] memory prices = new int64[](2);
+        (prices[0], prices[1]) = (2500e8, USD_PRICE);
+        MockWeightedExecutor executor = new MockWeightedExecutor();
+        executor.execute(streaming, "", _updates(streaming, ids, prices));
+
+        assertEq(executor.lastAmountsOut()[1], 0);
+        assertEq(executor.lastAmountsIn()[1], 0);
+        assertEq(btc.balanceOf(address(streaming)), btcHeld);
+        (, uint256[] memory afterwards) = streaming.components();
+        assertEq(afterwards[1], before[1], "the kept leg reads the same at the same scale");
+        uint256 required = Math.mulDiv(streaming.totalSupply(), XS2_BTC * scale, 1e36);
+        assertLe(btcHeld - required, 1, "the kept leg's recorded units are exactly what they were");
+        uint256[] memory recorded = new uint256[](3);
+        (recorded[0], recorded[1], recorded[2]) = (0.005e18, XS2_BTC, 4e6);
+        _xs2EveryoneLeaves(streaming, recorded, 3);
+    }
+
+    /// @dev A fill of every leg of a streaming index strands nothing: each leg's backing at the scale is what the
+    ///      index holds of it to within the issue's and the fill's rounding, and once every holder leaves, at most the
+    ///      exits' rounding is left (XS-2).
+    function test_XS2_aFillOfAStreamingIndexStrandsNothing() public {
+        WeightedHub streaming = _xs2Index();
+        _xs2MintThenOpenMidAuction(streaming, 0);
+        (, uint256 scale) = streaming.pendingStreamingFee();
+        (, uint256[] memory recorded,,) = streaming.previewRebalance(_structs3(2500e8, BTC_PRICE, USD_PRICE));
+        MockWeightedExecutor executor = new MockWeightedExecutor();
+        executor.execute(streaming, "", _updates(streaming, _ids3(), _prices3(2500e8, BTC_PRICE, USD_PRICE)));
+        for (uint256 i = 0; i < 3; ++i) {
+            assertTrue(executor.lastAmountsOut()[i] != 0 || executor.lastAmountsIn()[i] != 0, "every leg moved");
+        }
+        _assertBackedWithin(streaming, recorded, scale, 2);
+        _xs2EveryoneLeaves(streaming, recorded, 5);
+    }
+
+    uint256 constant XS2_BTC = 10_000;
+
+    /// @dev Three legs, BTC at the least units a listing allows, so a fraction of a unit per share is a basis point of
+    ///      the leg, at both streaming caps and no mint or exit fee.
+    function _xs2Index() internal returns (WeightedHub streaming) {
+        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](3);
+        specs[0] = _spec(address(eth), 5000, 0.005e18);
+        specs[1] = _spec(address(btc), 3000, XS2_BTC);
+        specs[2] = _spec(address(usd), 2000, 4e6);
+        IWeightedIndexFactory.IndexParams memory params = _feeParams(0, 7 days, false);
+        params.maxPlatformFeeBps = 0;
+        params.creatorStreamingBps = uint16(CREATOR_STREAMING);
+        vm.prank(owner);
+        factory.setFeePolicy(0, uint16(PLATFORM_STREAMING), uint16(REFERRAL_SHARE), platform, 0);
+        streaming = _create(specs, params);
+        vm.prank(owner);
+        factory.setFeePolicy(uint16(PLATFORM_FEE), 0, uint16(REFERRAL_SHARE), platform, 0);
+    }
+
+    /// @dev A million whole shares minted, then a week of fee, then the auction at its midpoint.
+    function _xs2MintThenOpenMidAuction(WeightedHub idx, uint256 keepMask) internal {
+        _issueWith(idx, alice, 1e24, address(0));
+        vm.warp(idx.lastRebalance() + 7 days);
+        if (keepMask != 0) vm.prank(guardian);
+        idx.startRebalance(keepMask);
+        (uint256 eta,) = idx.pendingRebalance();
+        vm.warp(eta + idx.AUCTION_DURATION() / 2);
+    }
+
+    /// @dev Every holder redeems; what is left of each component is at most `dust` raw units plus the scale's own
+    ///      floor on the supply that left, `supply · units / 1e36`, at `units` per 1e18 shares as recorded.
+    function _xs2EveryoneLeaves(WeightedHub idx, uint256[] memory units, uint256 dust) internal {
+        uint256 supply = idx.totalSupply();
+        address[3] memory holders = [alice, creator, platform];
+        for (uint256 i = 0; i < holders.length; ++i) {
+            uint256 shares = idx.balanceOf(holders[i]);
+            if (shares == 0) continue;
+            vm.prank(holders[i]);
+            idx.redeem(shares, holders[i]);
+        }
+        assertEq(idx.totalSupply(), 0);
+        address[] memory tokens = idx.componentTokens();
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            uint256 floorOfScale = Math.mulDiv(supply, units[i], 1e36, Math.Rounding.Ceil);
+            assertLe(MockERC20(tokens[i]).balanceOf(address(idx)), dust + floorOfScale, "nothing stranded");
+        }
+    }
+
+    /// @dev The settlement no longer folds the scale back to one, so the scale only ever shrinks; a fee that would
+    ///      shrink it to zero, which only a second lifetime's gap can ask, is not charged, and the clock restarts.
+    function test_XS2_aFeeThatWouldLeaveTheScaleAtZeroIsNotCharged() public {
+        WeightedHub streaming = _streamingIndex();
+        _issueWith(streaming, alice, 1e18, address(0));
+        vm.warp(block.timestamp + 20 * 365 days);
+        streaming.accrueFees();
+        (, uint256 scale) = streaming.pendingStreamingFee();
+        assertGt(scale, 0);
+        assertLt(scale, WHOLE, "a second lifetime's fee would shrink it to zero");
+        uint256 supply = streaming.totalSupply();
+
+        vm.warp(block.timestamp + 20 * 365 days);
+        (uint256 feeShares, uint256 pendingScale) = streaming.pendingStreamingFee();
+        assertEq(feeShares, 0);
+        assertEq(pendingScale, scale);
+        vm.recordLogs();
+        streaming.accrueFees();
+        assertEq(vm.getRecordedLogs().length, 0);
+        assertEq(streaming.totalSupply(), supply);
+        assertEq(streaming.lastAccrual(), block.timestamp);
+        uint256[] memory out = streaming.previewRedeem(1e18);
+        vm.prank(alice);
+        streaming.redeem(1e18, alice);
+        assertEq(eth.balanceOf(alice), out[0]);
+        _assertBacked(streaming);
     }
 
     /// @dev After a lifetime without an accrual the fee's share is capped just under the whole, so the arithmetic
@@ -787,18 +973,43 @@ contract WeightedHubFeesTest is WeightedTest {
         assertEq(eth.balanceOf(alice), Math.mulDiv(1e18 - 1e18 * FEE / BPS, ETH_UNITS, 1e18));
     }
 
-    /// @dev A redeem too small for an exit fee still accrues the streaming fee first.
-    function test_aDustRedeemStillAccruesTheStreamingFee() public {
+    /// @dev A redeem too small for an exit fee still accrues the streaming fee first, to the creator and the
+    ///      platform, not to the redeemer (XS-14).
+    function test_XS14_aDustRedeemStillAccruesTheStreamingFeeToTheRecipients() public {
         WeightedHub streaming = _streamingIndex();
         _issueWith(streaming, alice, 1e18, address(0));
+        _assertRedeemAccruesToTheRecipients(streaming, 10);
+    }
+
+    /// @dev On an index without an exit fee, every redeem still sends the streaming fee it accrues to the creator and
+    ///      the platform (XS-14).
+    function test_XS14_aRedeemWithoutAnExitFeeAccruesTheStreamingFeeToTheRecipients() public {
+        WeightedHub streaming = _xs2Index();
+        _issueWith(streaming, alice, 1e18, address(0));
+        _assertRedeemAccruesToTheRecipients(streaming, 4e17);
+    }
+
+    /// @dev Alice redeems `shares` ten days on: the accrual's shares go to the creator and the platform by their
+    ///      rates, alice loses exactly `shares` and gains none.
+    function _assertRedeemAccruesToTheRecipients(WeightedHub streaming, uint256 shares) internal {
         uint256 supply = streaming.totalSupply();
+        uint256 aliceBefore = streaming.balanceOf(alice);
+        uint256 creatorBefore = streaming.balanceOf(creator);
+        uint256 platformBefore = streaming.balanceOf(platform);
+        uint256 exitFee = Math.mulDiv(shares, streaming.config().creatorFeeBps + streaming.config().platformFeeBps, BPS);
         vm.warp(block.timestamp + 10 days);
         (uint256 feeShares, uint256 scale) = _expectedAccrual(supply, 1e18, 10 days);
+        uint256 platformShares = feeShares * PLATFORM_STREAMING / STREAMING;
         vm.expectEmit(address(streaming));
         emit IWeightedHub.StreamingFeeAccrued(feeShares, scale);
+        vm.expectEmit(address(streaming));
+        emit IWeightedHub.FeeSharesMinted(address(0), creator, platform, feeShares - platformShares, platformShares, 0);
         vm.prank(alice);
-        streaming.redeem(10, alice);
-        assertEq(streaming.totalSupply(), supply + feeShares - 10);
+        streaming.redeem(shares, alice);
+        assertEq(streaming.totalSupply(), supply + feeShares - shares + exitFee);
+        assertEq(streaming.balanceOf(alice), aliceBefore - shares, "the redeemer gets no fee share");
+        assertGe(streaming.balanceOf(creator) - creatorBefore, feeShares - platformShares);
+        assertGe(streaming.balanceOf(platform) - platformBefore, platformShares);
     }
 
     /// @dev The accrual's fallbacks are the mint's: a creator that could not hold shares hands its part to the

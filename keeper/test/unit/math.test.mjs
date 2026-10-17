@@ -123,3 +123,36 @@ test("routeLossBps", () => {
   assert.ok(M.routeLossBps("sell", 1_010_000n, 1) < 0, "a route that beats Pyth loses nothing");
   assert.equal(M.routeLossBps("sell", 1n, 0), Infinity);
 });
+
+test("XS-5: a kept coin counts at the lower of Pyth and its best quote", () => {
+  // The audit's Z: $2 at Pyth, $1 in its pools, so no route takes it; the index sells 2,000 of it.
+  const z = { price: 2_00000000n, expo: -8 };
+  const out = 2_000n * 10n ** 18n;
+  const leg = { out, in: 0n, held: 0n, decimals: 18, price: z };
+  assert.equal(M.stockChangeUsd({ ...leg, routed: false, quoteUsdc: 2_000n * 10n ** 6n }), 2_000, "at its pools' $1, not Pyth's $2");
+  assert.equal(M.stockChangeUsd({ ...leg, routed: false, quoteUsdc: 9_000n * 10n ** 6n }), 4_000, "never above Pyth");
+  assert.equal(M.stockChangeUsd({ ...leg, routed: false }), 4_000, "with no pool to quote, at Pyth");
+  assert.equal(M.stockChangeUsd({ ...leg, routed: true, quoteUsdc: 2_000n * 10n ** 6n }), 0, "a routed sale leaves stock");
+  const eth = { price: 2_000_00000000n, expo: -8 };
+  assert.equal(
+    M.stockChangeUsd({ out: 0n, in: 5n * 10n ** 18n, held: 2n * 10n ** 18n, routed: true, decimals: 18, price: eth }),
+    -4_000,
+    "a delivery from stock costs its Pyth value",
+  );
+  assert.equal(M.keptUsd(10, null), 10);
+  assert.equal(M.keptUsd(10, 4_000_000n), 4);
+});
+
+test("XS-13: replacement fees never pass MAX_FEE_GWEI", () => {
+  assert.deepEqual(M.replacementFees({ maxFeePerGas: 100n, maxPriorityFeePerGas: 10n }, 50n, 105n), {
+    maxFeePerGas: 105n,
+    maxPriorityFeePerGas: 12n,
+  });
+  assert.deepEqual(M.replacementFees({ maxFeePerGas: 105n, maxPriorityFeePerGas: 100n }, 50n, 105n), {
+    maxFeePerGas: 105n,
+    maxPriorityFeePerGas: 105n,
+  }, "the tip stops at the cap too, and never above the ceiling");
+  let fees = { maxFeePerGas: 100n, maxPriorityFeePerGas: 10n };
+  for (let i = 0; i < 100; i++) fees = M.replacementFees(fees, 50n, 150n);
+  assert.deepEqual(fees, { maxFeePerGas: 150n, maxPriorityFeePerGas: 150n }, "a hundred bumps stay at the cap");
+});

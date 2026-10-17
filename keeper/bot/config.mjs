@@ -13,8 +13,9 @@ export const MAINNET = Object.freeze({
 });
 
 /// WeightedHub's storage slots for the pending auction (`forge inspect WeightedHub storageLayout`), which the start
-/// check overrides to simulate an auction before opening one. The keeper verifies them at startup.
-export const HUB_SLOTS = Object.freeze({ eta: 4n, keepMask: 5n });
+/// check overrides to simulate an auction before opening one. The keeper verifies them at startup, and
+/// `test_XS8_theBotsHubSlotsAreTheHubs` (keeper/test/KeeperExecutor.t.sol) pins them against a real hub.
+export const HUB_SLOTS = Object.freeze({ eta: 6n, keepMask: 7n });
 
 /// EIP-7825's cap on a transaction's gas.
 export const TX_GAS_CAP = 16_777_216n;

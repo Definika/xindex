@@ -19,6 +19,7 @@ import {MockFeeToken} from "./mocks/MockFeeToken.sol";
 import {MockHookToken, ITokenReceiverHook} from "./mocks/MockHookToken.sol";
 import {MockMarket} from "./mocks/MockMarket.sol";
 import {MockUniversalRouter} from "./mocks/MockUniversalRouter.sol";
+import {MockUSDT} from "./mocks/MockUSDT.sol";
 import {PathKey} from "../src/libraries/UniswapV4Types.sol";
 
 /// @notice The basket builder: an escrow per caller that the legs of a basket are bought into over several calls and
@@ -637,6 +638,124 @@ contract BasketBuilderTest is XindexTest {
         builder.redeem(address(index), 0);
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotIndex.selector, address(weth)));
         builder.redeem(address(weth), 1e18);
+    }
+
+    /// @dev A Tether-pattern component checks only the sender, so a deposit into a builder it has blacklisted, or a
+    ///      redeem paying the builder, would land in an escrow nothing could pay out. The builder sends itself one unit
+    ///      first, so both are refused while the way out is shut, and resume once it is open (XS-10).
+    function test_XS10_aBlacklistedBuilderTakesNoNewEscrow() public {
+        MockUSDT tether = new MockUSDT();
+        _listWith(address(tether));
+        WeightedHub idx = _createIndex("Tether pair", "TP", _pair(address(tether), address(weth)), _units2(10e6, 1e16));
+        uint256[] memory need = idx.previewIssue(2e18);
+        tether.mint(alice, 2 * need[0]);
+        weth.mint(alice, need[1]);
+        vm.startPrank(alice);
+        tether.approve(address(idx), need[0]);
+        weth.approve(address(idx), need[1]);
+        idx.issue(2e18, alice);
+        tether.approve(address(builder), need[0]);
+        idx.approve(address(builder), 2e18);
+        vm.stopPrank();
+
+        tether.addBlackList(address(builder));
+        vm.prank(alice);
+        vm.expectRevert("USDT: blacklisted");
+        builder.deposit(address(tether), need[0]);
+        vm.prank(alice);
+        vm.expectRevert("USDT: blacklisted");
+        builder.redeem(address(idx), 1e18);
+        assertEq(tether.balanceOf(address(builder)), 0, "nothing was taken");
+        assertEq(idx.balanceOf(alice), 2e18, "alice keeps her shares and can redeem on the index");
+
+        tether.removeBlackList(address(builder));
+        vm.startPrank(alice);
+        // A redeem too small to pay any component credits nothing and probes nothing, while the builder holds none.
+        builder.redeem(address(idx), 1);
+        assertEq(tether.balanceOf(address(builder)), 0);
+        builder.deposit(address(tether), need[0]);
+        builder.redeem(address(idx), 1e18);
+        vm.stopPrank();
+        assertEq(builder.escrowOf(alice, address(tether)), need[0] + idx.previewRedeem(1e18)[0]);
+        assertEq(tether.balanceOf(address(builder)), builder.escrowOf(alice, address(tether)));
+    }
+
+    /// @dev The buy path, both ways a leg reaches the builder: bought through the router, whose sweep Tether lets
+    ///      land, and passed through from the buyer's own Tether. A builder already blocked takes neither (XS-10).
+    function test_XS10_aBlockedBuilderBuysNothing() public {
+        MockUSDT tether = new MockUSDT();
+        _listWith(address(tether));
+        WeightedHub idx = _createIndex("Tether pair", "TP", _pair(address(tether), address(weth)), _units2(10e6, 1e16));
+        router.setPrice(address(tether), 1e18, 6);
+        tether.mint(address(router.inventory()), 1_000_000e6);
+        tether.mint(alice, 100e6);
+        usdc.mint(alice, 100e6);
+        tether.addBlackList(address(builder));
+
+        IBasketBuilder.BuyParams memory bought = _buyParams(idx, 1e18, address(usdc), 100e6, _one(uint256(0)));
+        bought.legs[0] = _mintLeg(_path2(address(tether), address(usdc)));
+        IBasketBuilder.BuyParams memory passed = _buyParams(idx, 1e18, address(tether), 100e6, _one(uint256(0)));
+        passed.legs[0] = _mintLeg("");
+        vm.startPrank(alice);
+        usdc.approve(address(builder), 100e6);
+        tether.approve(address(builder), 100e6);
+        vm.expectRevert("USDT: blacklisted");
+        builder.buy(bought);
+        vm.expectRevert("USDT: blacklisted");
+        builder.buy(passed);
+        vm.stopPrank();
+        assertEq(tether.balanceOf(address(builder)), 0, "nothing was taken");
+
+        tether.removeBlackList(address(builder));
+        vm.prank(alice);
+        builder.buy(bought);
+        assertEq(builder.escrowOf(alice, address(tether)), idx.previewIssue(1e18)[0]);
+    }
+
+    /// @dev The probe is measured: a token whose one-unit self-transfer costs the builder anything, here Tether's fee
+    ///      switch at its whole rate, is refused, so the builder's balance still covers every escrow (XS-10).
+    function test_XS10_aTokenWhoseSelfTransferCostsTheBuilderIsRefused() public {
+        MockUSDT tether = new MockUSDT();
+        tether.mint(alice, 10e6);
+        vm.startPrank(alice);
+        tether.approve(address(builder), 10e6);
+        builder.deposit(address(tether), 4e6);
+        vm.stopPrank();
+        tether.setParams(10_000, 1);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.TransferShortfall.selector, address(tether)));
+        builder.deposit(address(tether), 2e6);
+        assertEq(builder.escrowOf(alice, address(tether)), 4e6);
+        assertEq(tether.balanceOf(address(builder)), 4e6);
+    }
+
+    function _units2(uint256 a, uint256 b) internal pure returns (uint256[] memory u) {
+        u = new uint256[](2);
+        (u[0], u[1]) = (a, b);
+    }
+
+    /// @dev A redeem credits only what it delivered, never what the builder already held for others: bob's escrow of
+    ///      every component stays his, alice's is exactly her redemption, and the builder covers both (XS-15).
+    function test_XS15_aRedeemCreditsOnlyWhatItDelivered() public {
+        _depositBasket(bob, 3e18);
+        address[] memory tokens = index.componentTokens();
+        uint256[] memory bobs = new uint256[](tokens.length);
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            bobs[i] = builder.escrowOf(bob, tokens[i]);
+            assertGt(bobs[i], 0);
+        }
+        uint256[] memory got = index.previewRedeem(1e18);
+        _redeemFor(alice, 1e18);
+        _redeemFor(alice, 1e18);
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            assertEq(builder.escrowOf(alice, tokens[i]), 2 * got[i], "alice: her two redemptions");
+            assertEq(builder.escrowOf(bob, tokens[i]), bobs[i], "bob: untouched");
+            _assertCovered(tokens[i]);
+            assertEq(IERC20(tokens[i]).balanceOf(address(builder)), bobs[i] + 2 * got[i]);
+        }
+        vm.prank(bob);
+        builder.withdraw(tokens[1], 0, bob);
+        assertEq(MockERC20(tokens[1]).balanceOf(bob), bobs[1]);
     }
 
     function test_sellSellsTheNamedLegsAndPaysTheRecipient() public {

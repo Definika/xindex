@@ -57,6 +57,7 @@ contract BasketBuilder is ReentrancyGuard, UniversalRouterSwaps, IBasketBuilder 
         if (amount == 0) revert ZeroAmount();
         uint256 received = _pull(IERC20(token), amount);
         escrowOf[msg.sender][token] += received;
+        _checkWayOut(IERC20(token));
         // The guard holds; the amount is only known once the token has answered.
         // forge-lint: disable-next-line(reentrancy-events)
         emit Deposited(msg.sender, token, received);
@@ -115,6 +116,7 @@ contract BasketBuilder is ReentrancyGuard, UniversalRouterSwaps, IBasketBuilder 
             spent += _leg(p, component, amountOut, p.maxAmountIn - spent, k);
             if (component == p.tokenIn) reserved += amountOut;
             escrowOf[msg.sender][component] += amountOut;
+            _checkWayOut(IERC20(component));
         }
         return reserved;
     }
@@ -200,7 +202,12 @@ contract BasketBuilder is ReentrancyGuard, UniversalRouterSwaps, IBasketBuilder 
         // wake-disable-next-line reentrancy
         IIndexHub(index).redeem(shares, address(this)); // aderyn-fp(reentrancy-state-change)
         for (uint256 i = 0; i < n; ++i) {
-            escrowOf[msg.sender][tokens[i]] += IERC20(tokens[i]).balanceOf(address(this)) - before[i];
+            // A view, after the previous leg's self-transfer, under the guard; a probe that fails reverts every credit.
+            // aderyn-fp-next-line(reentrancy-state-change)
+            uint256 got = IERC20(tokens[i]).balanceOf(address(this)) - before[i];
+            if (got == 0) continue;
+            escrowOf[msg.sender][tokens[i]] += got;
+            _checkWayOut(IERC20(tokens[i]));
         }
         // The guard holds; the escrow is credited from what arrived.
         // forge-lint: disable-next-line(reentrancy-events)
@@ -272,6 +279,20 @@ contract BasketBuilder is ReentrancyGuard, UniversalRouterSwaps, IBasketBuilder 
         uint256 before = token.balanceOf(address(this));
         token.safeTransferFrom(msg.sender, address(this), amount);
         received = token.balanceOf(address(this)) - before;
+    }
+
+    /// @dev Sends the builder one raw unit of `token`, from itself to itself, as an escrow of it is credited. It
+    ///      fails exactly when the way out is shut for the builder, as when its issuer has blacklisted it or paused,
+    ///      so nothing is taken into an escrow that no withdrawal, sale or mint could pay out: Tether's pattern checks
+    ///      only the sender, so a deposit, a swap's sweep and a redeem would all still land (XS-10, as SA-01 in
+    ///      `MintRequests`). The credit is written first and the whole call reverts with the probe. One unit rather
+    ///      than none, since a component need not accept a transfer of zero. The probe is measured like every other
+    ///      movement: a token whose self-transfer costs the builder anything is refused, so the builder's balance
+    ///      still covers the escrows whatever a token does on transfer.
+    function _checkWayOut(IERC20 token) private {
+        uint256 before = token.balanceOf(address(this));
+        token.safeTransfer(address(this), 1);
+        if (token.balanceOf(address(this)) < before) revert TransferShortfall(address(token));
     }
 
     function _checkIndex(address index, uint256 expectedNonce, uint256 deadline) private view {

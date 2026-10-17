@@ -36,10 +36,11 @@ import {PythStructs} from "./interfaces/pyth/PythStructs.sol";
 ///      Only an initialized clone can issue, redeem or rebalance. The implementation and any clone deployed outside the
 ///      factory have no components and would otherwise mint unbacked shares.
 ///
-///      Invariant, for every component i:
-///          token_i.balanceOf(index) >= floor(totalSupply * units_i / 1e18) + totalClaims[token_i]
-///      Issue rounds up and redeem rounds down, so rounding drift is at most one raw unit per call and is always in
-///      favour of the remaining holders. A claim is recorded only for an amount that stayed in the index, so claims
+///      Invariant, for every component i, with units_i as recorded and `scale` the streaming fee's factor (1e18 = one):
+///          token_i.balanceOf(index) >= floor(totalSupply * units_i * scale / 1e36) + totalClaims[token_i]
+///      Issue rounds up and redeem rounds down, and each settlement leg moves its change in backing rounded the same
+///      way, so their drift is at most one raw unit per leg per call; an accrual's integer scale leaves at most
+///      supply * units / 1e36 raw units more. All of it is in favour of the remaining holders. A claim is recorded only for an amount that stayed in the index, so claims
 ///      never dilute other holders. Nothing is ever computed from balances, so there is no share price to manipulate
 ///      and no first-depositor attack.
 ///
@@ -73,7 +74,9 @@ import {PythStructs} from "./interfaces/pyth/PythStructs.sol";
 ///      shrinking leg would give up more than MAX_TURNOVER of its own units, every leg moves the same smaller share of
 ///      the way, so one fill sends out at most MAX_TURNOVER of each component it sells, whatever a price says (V5-M2).
 ///      A fill that would trade less than MIN_TRADE of the moving value at its prices reverts, so a fill that changes
-///      nothing cannot restart MIN_REBALANCE_INTERVAL (V5-L2). Transfer amounts come from supply and units alone, and
+///      nothing cannot restart the rebalance interval (V5-L2). A fill with a keep mask restarts only
+///      MIN_REBALANCE_INTERVAL, so a sliver the owner or guardian fills cannot hold the index off for its whole
+///      interval, and a keep can be renewed a week on (XS-3). Transfer amounts come from supply and units alone, and
 ///      the settlement stands only if the invariant holds with the new units and the whole of `amountsIn` arrived on
 ///      top of what the index held.
 // Every payable entry point forwards the whole of msg.value to Pyth as its fee in the same call, so no ether stays here
@@ -139,10 +142,14 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
     Component[] private _components;
     Terms[] private _terms;
     Config private _config;
-    /// @dev The factor every component's recorded units carry since the last settlement folded the streaming fee in,
-    ///      1e18 = one, and when the fee was last accrued.
+    /// @dev The factor every component's recorded units carry, 1e18 = one: the product of every streaming accrual's
+    ///      shrink since creation. A settlement keeps it, so no leg's units are ever rounded to fold it in (XS-2).
     uint128 private _scale;
+    /// @dev When the streaming fee was last accrued, or last found to owe nothing.
     uint40 private _lastAccrual;
+    /// @dev Whether the last settlement had a keep mask: the next rebalance may then start MIN_REBALANCE_INTERVAL
+    ///      after it rather than the index's interval (XS-3).
+    bool private _maskedFill;
 
     /// @inheritdoc IWeightedHub
     mapping(address account => mapping(address token => uint256 amount)) public claimOf;
@@ -389,19 +396,17 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
     }
 
     /// @dev Mints the streaming fee accrued since the last accrual and shrinks every share's units by the same factor,
-    ///      so the recipients come to own that share of the index and nothing else changes. An empty index accrues
-    ///      nothing and restarts the clock; a supply too small for one share of fee keeps it, so the fee is not lost to
-    ///      rounding on every call.
+    ///      so the recipients come to own that share of the index and nothing else changes. The clock restarts on every
+    ///      accrual, one that mints nothing included: kept on a supply too small for a share of fee, it charged the
+    ///      whole idle time to the next minter's deposit (XS-1). What that forgoes is under one share per call, and
+    ///      nothing at all once the supply holds a share of fee per block.
     function _accrue(address to, address creator, address platform, Config memory cfg) private {
         uint256 rate = _streaming(cfg);
         if (rate == 0) return;
         (uint256 scale, uint256 feeShares) = _pending(rate);
-        if (feeShares == 0) {
-            if (totalSupply() == 0) _lastAccrual = SafeCast.toUint40(block.timestamp);
-            return;
-        }
-        _scale = SafeCast.toUint128(scale);
         _lastAccrual = SafeCast.toUint40(block.timestamp);
+        if (feeShares == 0) return;
+        _scale = SafeCast.toUint128(scale);
         // Only a view on the factory, in the caller, precedes this event.
         // forge-lint: disable-next-line(reentrancy-events)
         emit StreamingFeeAccrued(feeShares, scale);
@@ -419,7 +424,8 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
     ///      a year, times `rate`, is the share `f` of the index the recipients are owed, so they are minted
     ///      `supply · f / (1 − f)` shares and every share's units shrink to `supply / (supply + minted)` of what they
     ///      were, both rounded down. A gap of a lifetime is capped just under the whole, so the arithmetic always
-    ///      answers and an exit is never blocked.
+    ///      answers and an exit is never blocked. A fee that would shrink the scale to zero, which only a second such
+    ///      gap could, is not charged, so no share is ever left backed by nothing.
     function _pending(uint256 rate) private view returns (uint256 scale, uint256 feeShares) {
         scale = _scale;
         uint256 supply = totalSupply();
@@ -428,7 +434,9 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         if (supply == 0 || part == 0) return (scale, 0);
         if (part >= whole) part = whole - 1;
         feeShares = Math.mulDiv(supply, part, whole - part);
-        scale = Math.mulDiv(scale, supply, supply + feeShares);
+        uint256 next = Math.mulDiv(scale, supply, supply + feeShares);
+        if (next == 0) return (scale, 0);
+        scale = next;
     }
 
     /// @dev The scale the previews and {components} use: what an accrual now would leave.
@@ -481,7 +489,7 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
 
     /// @inheritdoc IWeightedHub
     function startRebalance(uint256 keepMask) external nonReentrant onlyInitialized {
-        uint256 earliest = lastRebalance + _config.rebalanceInterval;
+        uint256 earliest = _earliest();
         if (block.timestamp < earliest) revert RebalanceTooSoon(earliest);
         uint256 pendingEta = _eta;
         if (pendingEta != 0 && block.timestamp <= pendingEta + AUCTION_DURATION) {
@@ -505,6 +513,14 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         // The call above is a view on the factory; nothing external can run in between.
         // forge-lint: disable-next-line(reentrancy-events)
         emit RebalanceStarted(proposalId, rebalanceNonce + 1, msg.sender, keepMask, eta);
+    }
+
+    /// @dev The first moment the interval lets a rebalance start: the index's interval after the last settlement, or
+    ///      MIN_REBALANCE_INTERVAL after one that had a keep mask, whatever mask the next start names (XS-3). A sliver
+    ///      then holds the index off a week at most, and the guardian can renew a keep around a frozen component as
+    ///      soon as anyone could start without one.
+    function _earliest() private view returns (uint256) {
+        return lastRebalance + (_maskedFill ? MIN_REBALANCE_INTERVAL : _config.rebalanceInterval);
     }
 
     /// @dev How many bits `mask` sets. A single moving component already sits on its weight among the moving ones, so a
@@ -565,14 +581,15 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
     }
 
     function _settle(bytes calldata data, bytes[] calldata priceUpdate, uint256[] memory maxAmountsIn) private {
-        // The streaming fee first, so the settlement works on the units every share carries after it, scale folded in,
-        // and writes new units that carry none.
+        // The streaming fee first, so the settlement moves each leg's backing at the scale every share carries after
+        // it. The units it writes carry that same scale, so nothing is rounded to fold it in (XS-2).
         Config memory cfg = _config;
         if (_streaming(cfg) != 0) {
             (, address creator, address platform) = _feeTerms(msg.sender);
             _accrue(msg.sender, creator, platform, cfg);
         }
-        Settlement memory settlement = _priced(priceUpdate);
+        uint256 scale = _scale;
+        Settlement memory settlement = _priced(priceUpdate, scale);
         _checkBounds(settlement.amountsIn, maxAmountsIn);
         uint256[] memory held = _held(settlement.amountsOut, settlement.amountsIn);
 
@@ -604,17 +621,17 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         // reads only the final state. Wake's reentrancy detector does not model the guard, hence the suppression.
         // wake-disable-next-line reentrancy
         IRebalanceExecutor(msg.sender).onXindexRebalance(settlement.amountsOut, settlement.amountsIn, data);
-        _checkBacking(settlement.units, settlement.amountsOut, settlement.amountsIn, held);
+        _checkBacking(settlement.units, scale, settlement.amountsOut, settlement.amountsIn, held);
     }
 
     /// @dev The settlement for this block: the auction checked open, the prices read through Pyth at {priceTime}, and
-    ///      the amounts at the supply now.
-    function _priced(bytes[] calldata priceUpdate) private returns (Settlement memory settlement) {
+    ///      the amounts at the supply and `scale` now.
+    function _priced(bytes[] calldata priceUpdate, uint256 scale) private returns (Settlement memory settlement) {
         uint256 mu = _openMu();
         settlement.time = _priceTime();
         settlement.prices = _readPrices(priceUpdate, settlement.time);
         (settlement.mu, settlement.units, settlement.amountsOut, settlement.amountsIn) =
-            _settlement(mu, settlement.prices, totalSupply(), _unitsAt(_scale));
+            _settlement(mu, settlement.prices, totalSupply(), scale);
     }
 
     /// @dev Settlement amounts scale with the supply at execution time, and issue stays open through the auction, so a
@@ -706,13 +723,14 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         return value;
     }
 
-    /// @dev Records the settlement's units, which carry the scale folded in, so the scale starts from one again.
+    /// @dev Records the settlement's units, which carry the index's scale as the old ones did, and whether it had a
+    ///      keep mask.
     function _applyRebalance(uint256[] memory units) private returns (uint256 id) {
         uint256 n = units.length;
         for (uint256 i = 0; i < n; ++i) {
             _components[i].units = SafeCast.toUint96(units[i]);
         }
-        _scale = SCALE_ONE;
+        _maskedFill = _keepMask != 0;
         id = ++rebalanceNonce;
         lastRebalance = block.timestamp;
         _clearPending();
@@ -723,10 +741,11 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         delete _keepMask;
     }
 
-    /// @dev The backing invariant with the new units, and the whole of `amountsIn` on top of what the index held
-    ///      before it paid out, checked after the executor has returned.
+    /// @dev The backing invariant with the new units at `scale`, and the whole of `amountsIn` on top of what the index
+    ///      held before it paid out, checked after the executor has returned.
     function _checkBacking(
         uint256[] memory units,
+        uint256 scale,
         uint256[] memory amountsOut,
         uint256[] memory amountsIn,
         uint256[] memory held
@@ -737,7 +756,7 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
             // Nothing moved and nothing was required to: see the note in `_settle` (DA-14).
             if (amountsOut[i] == 0 && amountsIn[i] == 0) continue;
             address token = _components[i].token;
-            uint256 required = _backing(supply, units[i], WAD, Math.Rounding.Floor) + totalClaims[token];
+            uint256 required = _backing(supply, units[i], scale, Math.Rounding.Floor) + totalClaims[token];
             uint256 delivered = held[i] - amountsOut[i] + amountsIn[i];
             if (delivered > required) required = delivered;
             uint256 balance = IERC20(token).balanceOf(address(this));
@@ -755,19 +774,22 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         return MU_MAX - Math.mulDiv(MU_MAX - MU_MIN, block.timestamp - eta, AUCTION_DURATION);
     }
 
-    /// @dev The settlement for these prices at the supply and units given, by STATICCALL into the arithmetic the
-    ///      factory deployed with this implementation ({IWeightedMath}): the weights go along, the keep mask too.
-    function _settlement(uint256 mu, uint256[] memory prices, uint256 supply, uint256[] memory currentUnits)
+    /// @dev The settlement for these prices at the supply and scale given, on the recorded units, by STATICCALL into
+    ///      the arithmetic the factory deployed with this implementation ({IWeightedMath}): the weights go along, the
+    ///      keep mask too.
+    function _settlement(uint256 mu, uint256[] memory prices, uint256 supply, uint256 scale)
         private
         view
         returns (uint256, uint256[] memory, uint256[] memory, uint256[] memory)
     {
-        uint256 n = currentUnits.length;
+        uint256 n = _components.length;
+        uint256[] memory currentUnits = new uint256[](n);
         uint256[] memory weights = new uint256[](n);
         for (uint256 i = 0; i < n; ++i) {
+            currentUnits[i] = _components[i].units;
             weights[i] = _terms[i].weight;
         }
-        return IWeightedMath(MATH).settlement(mu, prices, supply, currentUnits, weights, _keepMask);
+        return IWeightedMath(MATH).settlement(mu, prices, supply, scale, currentUnits, weights, _keepMask);
     }
 
     /// @dev The second whose prices a settlement in this block reads: one slot back, PRICE_LAG before the block, so Pyth
@@ -867,6 +889,16 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
     }
 
     /// @inheritdoc IWeightedHub
+    function lastAccrual() external view returns (uint256) {
+        return _lastAccrual;
+    }
+
+    /// @inheritdoc IWeightedHub
+    function earliestRebalance() external view returns (uint256) {
+        return _earliest();
+    }
+
+    /// @inheritdoc IWeightedHub
     function priceTime() external view returns (uint256) {
         return _priceTime();
     }
@@ -888,7 +920,7 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         // The implementation and any clone deployed outside the factory hold no components and cannot rebalance at
         // all (DA-22).
         if (_getInitializedVersion() != 1) return false;
-        if (block.timestamp < lastRebalance + _config.rebalanceInterval) return false;
+        if (block.timestamp < _earliest()) return false;
         uint256 pendingEta = _eta;
         if (pendingEta != 0 && block.timestamp <= pendingEta + AUCTION_DURATION) return false;
         return block.timestamp >= _permissionlessAt(pendingEta);
@@ -908,13 +940,12 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         for (uint256 i = 0; i < n; ++i) {
             if ((keepMask & (1 << i)) == 0) read[i] = _price(prices[i], i);
         }
-        // As the fill will see it: the streaming fee accrued and its scale folded into the units.
+        // As the fill will see it: the streaming fee accrued first, at the scale it leaves.
         (uint256 pendingScale, uint256 feeShares) = _pending(_storedStreaming());
-        return _settlement(mu, read, totalSupply() + feeShares, _unitsAt(pendingScale));
+        return _settlement(mu, read, totalSupply() + feeShares, pendingScale);
     }
 
-    /// @dev Every component's units with `scale` applied, rounded down: the units a settlement works on once the
-    ///      scale is folded in, and what {components} reports.
+    /// @dev Every component's units with `scale` applied, rounded down: what {components} reports.
     function _unitsAt(uint256 scale) private view returns (uint256[] memory units) {
         uint256 n = _components.length;
         units = new uint256[](n);
@@ -937,8 +968,8 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
     }
 
     /// @dev The one place a share count turns into an amount of a component, at `scale` (1e18 = the units as
-    ///      recorded; the settlement works at that, having folded the scale in): issue, redeem, the settlement and its
-    ///      backing check all go through it.
+    ///      recorded): issue, redeem and the settlement's backing check go through it, and {IWeightedMath} moves each
+    ///      leg by the same formula.
     function _backing(uint256 shares, uint256 units, uint256 scale, Math.Rounding rounding)
         private
         pure

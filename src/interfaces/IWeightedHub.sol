@@ -78,7 +78,7 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     /// @notice `account`'s claim of `amount` of `token` was paid to `to`.
     event Claimed(address indexed account, address indexed to, address indexed token, uint256 amount);
     /// @notice The streaming fee of `feeShares` shares was minted to the recipients for the time since the last
-    ///         accrual, and every share's units now carry `scale` (1e18 = none) until the next settlement folds it in.
+    ///         accrual, and every component's recorded units now carry `scale` (1e18 = none).
     event StreamingFeeAccrued(uint256 feeShares, uint256 scale);
     /// @notice An issue, a redeem or a streaming accrual minted its fee: `creatorShares` to `creator`,
     ///         `platformShares` to `platform` and `referrerShares` to `referrer`, zero when none was named. The
@@ -113,7 +113,9 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     /// @param mu The multiplier on the growing legs the settlement used (1e18 = parity).
     /// @param priceTime The second the prices were read at: each is Pyth's first update at or after it.
     /// @param prices Each moving component's price, in USD per raw unit scaled by 1e36; zero for a kept one.
-    /// @param units New units per component, in component order.
+    /// @param units New recorded units per component, in component order. They carry the index's scale, the last
+    ///        `StreamingFeeAccrued` one, as the old ones did; {components} reports them with it applied. A kept
+    ///        component's are exactly what they were.
     /// @param amountsOut What the index sent `executor` per component.
     /// @param amountsIn What the index needed back per component; see `IRebalanceExecutor`.
     event Rebalanced(
@@ -164,15 +166,15 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     /// @notice The auction closed at `deadline`; start a new rebalance.
     error RebalanceExpired(uint256 deadline);
     /// @notice After the executor returned, the index held `balance` of `token`, below `required`: the higher of the
-    ///         backing (totalSupply * new units / 1e18, plus open claims on `token`) and what the index held before the
-    ///         settlement, less what it sent out and plus the whole of what it asked back.
+    ///         backing (totalSupply * new units * scale / 1e36, plus open claims on `token`) and what the index held
+    ///         before the settlement, less what it sent out and plus the whole of what it asked back.
     error RebalanceUnderfunded(address token, uint256 balance, uint256 required);
     /// @notice The settlement needs more of `token` than the caller said it would fill. Only raised by the bounded
     ///         `executeRebalance`.
     error RebalanceMovedOn(address token, uint256 required, uint256 maxAmountIn);
     /// @notice What the shrinking legs release, after the turnover cap, is worth less than MIN_TRADE of the moving
-    ///         value at these prices: the index is on its weights, and a fill would only restart
-    ///         MIN_REBALANCE_INTERVAL (V5-L2, V5R-1).
+    ///         value at these prices: the index is on its weights, and a fill would only restart the rebalance
+    ///         interval (V5-L2, V5R-1).
     error NothingToRebalance();
     /// @notice `prices` does not have one entry per component. Only raised by {previewRebalance}.
     error PriceCountMismatch(uint256 count);
@@ -201,7 +203,8 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     function REBALANCE_DELAY() external view returns (uint256);
 
     /// @notice Shortest rebalance interval an index can be created with: the least time that passes after the last
-    ///         executed rebalance, or after creation, before {startRebalance}. The factory bounds it above.
+    ///         executed rebalance, or after creation, before {startRebalance}, and what a settlement with a keep mask
+    ///         restarts for a rebalance without one ({earliestRebalance}). The factory bounds the interval above.
     function MIN_REBALANCE_INTERVAL() external view returns (uint256);
 
     /// @notice Length of the auction. Afterwards the pending rebalance has expired: the factory owner and guardian can
@@ -269,10 +272,14 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     ///         first. Anyone may call it; it reads no price.
     function accrueFees() external;
 
-    /// @notice What {accrueFees} would mint now, and the factor, 1e18 = one, every share's units would then carry
-    ///         until the next settlement folds it into the recorded units. The previews and {components} already
-    ///         reflect both.
+    /// @notice What {accrueFees} would mint now, and the factor, 1e18 = one, every component's recorded units would
+    ///         then carry. The previews and {components} already reflect both. Zero shares means an accrual now mints
+    ///         nothing and restarts the clock, so that time is never charged later (XS-1).
     function pendingStreamingFee() external view returns (uint256 feeShares, uint256 scale);
+
+    /// @notice When the streaming fee was last accrued, or last found to owe nothing; the clock {pendingStreamingFee}
+    ///         runs from. The creation time on an index without a streaming fee.
+    function lastAccrual() external view returns (uint256);
 
     /// @notice Burns `shares` from msg.sender, sends every component whose bit is clear in `skipMask` to `to`,
     ///         and records the skipped amounts as claims that `to` can collect later with {claim}.
@@ -312,12 +319,17 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     /// @notice Time of the last executed rebalance, or of creation.
     function lastRebalance() external view returns (uint256);
 
+    /// @notice The first moment the interval lets a rebalance start: the index's rebalance interval after
+    ///         {lastRebalance}, or MIN_REBALANCE_INTERVAL after it when that settlement had a keep mask (XS-3).
+    ///         {canStartRebalance} also checks the waits after a cancel and after an auction nobody filled.
+    function earliestRebalance() external view returns (uint256);
+
     /// @notice After {cancelRebalance}, only the factory owner or guardian can start a rebalance before this time. Read
     ///         {canStartRebalance} rather than this alone.
     function restartAllowedAt() external view returns (uint256);
 
-    /// @notice Starts the notice period. Anyone can call it once the index's rebalance interval has passed since the
-    ///         last rebalance, while no unexpired rebalance is pending, and once the waits after a cancel and after an
+    /// @notice Starts the notice period. Anyone can call it once {earliestRebalance} has passed, while no unexpired
+    ///         rebalance is pending, and once the waits after a cancel and after an
     ///         auction nobody filled are over ({canStartRebalance} answers all of this); before those the factory owner
     ///         or guardian can start it and nobody else. It reads no price and calls nothing on any component.
     /// @param keepMask Bit i set leaves component i untouched, for example while it is paused or its price feed has
@@ -363,15 +375,17 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     ///         would send nothing out uses MU_MAX instead.
     function currentMu() external view returns (uint256);
 
-    /// @notice Whether anyone can start a rebalance now: the index's rebalance interval has passed, no auction is live,
-    ///         and the waits after a cancel and after an unfilled auction are over.
+    /// @notice Whether anyone can start a rebalance now: {earliestRebalance} has passed, no auction is live, and the
+    ///         waits after a cancel and after an unfilled auction are over.
     function canStartRebalance() external view returns (bool);
 
     /// @notice Exact settlement an execution in this block would use with `prices`. Reverts like {executeRebalance}
     ///         outside an auction and on a price it would refuse; it does not check publish times.
     /// @param prices One Pyth price per component, in component order; a kept component's entry is ignored.
     /// @return mu The multiplier on the growing legs (1e18 = parity).
-    /// @return units New units per component, in component order.
+    /// @return units New recorded units per component, in component order. They carry the index's scale, the one
+    ///         {pendingStreamingFee} reports, as {components} does not: units per whole index token are these times
+    ///         that scale / 1e18. A kept component's are exactly its current recorded units.
     /// @return amountsOut What the index would send the executor per component.
     /// @return amountsIn What the index would need back per component, in full.
     function previewRebalance(PythStructs.Price[] calldata prices)

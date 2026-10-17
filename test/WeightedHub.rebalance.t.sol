@@ -777,7 +777,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
         executor.setMode(MockWeightedExecutor.Mode.Reentrant);
         _fill(2500e8, BTC_PRICE, USD_PRICE);
         bytes[] memory errors = executor.reentryErrors();
-        assertEq(errors.length, 8);
+        assertEq(errors.length, 10, "every entry point that mints, burns, pays, accrues or rebalances (XS-18)");
         for (uint256 i = 0; i < errors.length; ++i) {
             assertEq(errors[i], abi.encodeWithSelector(ReentrancyGuard.ReentrancyGuardReentrantCall.selector));
         }
@@ -1141,5 +1141,93 @@ contract WeightedHubRebalanceTest is WeightedTest {
 
     function _fits(string memory path, uint256 used) private pure {
         assertLt(used, TX_GAS_CAP, path);
+    }
+
+    // ---------------------------------------------------------------------
+    // XS-3: a keep-mask fill restarts only MIN_REBALANCE_INTERVAL for a rebalance without a mask
+    // ---------------------------------------------------------------------
+
+    /// @dev A quarterly index of three legs, BTC at 9,998 bps and two slivers, a million whole shares: a guardian's
+    ///      keep-mask fill of the two slivers trades about $25 of a $100M index.
+    function _xs3Index() internal returns (WeightedHub quarterly, uint256 interval) {
+        interval = factory.MAX_REBALANCE_INTERVAL();
+        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](3);
+        specs[0] = _spec(address(btc), 9998, 166_633);
+        specs[1] = _spec(address(eth), 1, 5e12);
+        specs[2] = _spec(address(usd), 1, 10_000);
+        IWeightedIndexFactory.IndexParams memory params = _params();
+        params.rebalanceInterval = SafeCast.toUint32(interval);
+        quarterly = _create(specs, params);
+        _issue(quarterly, alice, 1_000_000e18);
+    }
+
+    /// @dev The guardian keeps BTC and its executor fills the two slivers at `eta`; returns the fill's time.
+    function _xs3SliverFill(WeightedHub quarterly, uint256 interval) internal returns (uint256 fillTime) {
+        vm.warp(quarterly.lastRebalance() + interval);
+        vm.prank(guardian);
+        quarterly.startRebalance(1);
+        (uint256 eta,) = quarterly.pendingRebalance();
+        vm.warp(eta);
+        uint64 time = uint64(quarterly.priceTime());
+        bytes[] memory data = new bytes[](2);
+        data[0] = pyth.update(ETH_ID, 2010e8, 0, EXPO, time, time - 1);
+        data[1] = pyth.update(USD_ID, USD_PRICE, 0, EXPO, time, time - 1);
+        executor.execute(quarterly, "", data);
+        fillTime = block.timestamp;
+        assertEq(quarterly.lastRebalance(), fillTime);
+    }
+
+    /// @dev After a sliver fill, anyone may start a rebalance without a mask MIN_REBALANCE_INTERVAL later, not the
+    ///      index's 91 days, so the stall outlasts a guardian's replacement by at most that week, as documented.
+    function test_XS3_aKeepMaskFillRestartsOnlyTheMinimumIntervalForStrangers() public {
+        (WeightedHub quarterly, uint256 interval) = _xs3Index();
+        uint256 fillTime = _xs3SliverFill(quarterly, interval);
+        uint256 earliest = fillTime + quarterly.MIN_REBALANCE_INTERVAL();
+        assertEq(quarterly.earliestRebalance(), earliest);
+
+        vm.warp(earliest - 1);
+        assertFalse(quarterly.canStartRebalance());
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalanceTooSoon.selector, earliest));
+        quarterly.startRebalance(0);
+
+        vm.warp(earliest);
+        assertTrue(quarterly.canStartRebalance(), "a week after the sliver, not a quarter");
+        vm.prank(stranger);
+        quarterly.startRebalance(0);
+        (uint256 eta, uint256 keepMask) = quarterly.pendingRebalance();
+        assertEq(eta, earliest + quarterly.REBALANCE_DELAY());
+        assertEq(keepMask, 0);
+    }
+
+    /// @dev The short restart holds for a start with a mask too, so the guardian can renew a keep around a component
+    ///      that cannot move as soon as a stranger could start without one, and not a second before; a fill without a
+    ///      mask then restores the index's own interval.
+    function test_XS3_theGuardianCanRenewAKeepAWeekOn() public {
+        (WeightedHub quarterly, uint256 interval) = _xs3Index();
+        uint256 fillTime = _xs3SliverFill(quarterly, interval);
+        uint256 earliest = fillTime + quarterly.MIN_REBALANCE_INTERVAL();
+        vm.warp(earliest - 1);
+        vm.prank(guardian);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalanceTooSoon.selector, earliest));
+        quarterly.startRebalance(1);
+        vm.warp(earliest);
+        vm.prank(guardian);
+        quarterly.startRebalance(1);
+        (, uint256 keepMask) = quarterly.pendingRebalance();
+        assertEq(keepMask, 1, "the keep is renewed a week on");
+        vm.prank(guardian);
+        quarterly.cancelRebalance();
+
+        // A full fill, after ETH rose a thousandfold, puts the index back on its own interval.
+        vm.warp(block.timestamp + quarterly.REBALANCE_DELAY());
+        vm.prank(stranger);
+        quarterly.startRebalance(0);
+        (uint256 eta,) = quarterly.pendingRebalance();
+        vm.warp(eta);
+        executor.execute(quarterly, "", _updates(quarterly, _ids3(), _prices3(2_010_000e8, BTC_PRICE, USD_PRICE)));
+        assertEq(quarterly.earliestRebalance(), block.timestamp + interval, "a fill without a mask: the full interval");
+        vm.warp(block.timestamp + quarterly.MIN_REBALANCE_INTERVAL());
+        assertFalse(quarterly.canStartRebalance());
     }
 }

@@ -15,23 +15,32 @@ Every block L, with T = L's timestamp + 12 (the one block a fill sent now can la
    simulates the executor's whole fill exactly as block L+1 would run it (`eth_call` with block overrides), with the
    routes it quoted and the executor's stock. Profit = the USDC float's change + the stock's change valued at Pyth −
    gas. It sends the most profitable fill whose profit reaches `MIN_PROFIT_USD`, with a USDC floor no lower than that
-   decision needs (a sandwich can take nothing below it), `maxAmountsIn` a hair above the preview, and a deadline of T:
-   a fill mined late reverts in its first lines, before Pyth's parse.
+   decision needs (a sandwich can take nothing below it), `maxAmountsIn` and the index's supply a hair above the
+   preview's, and a deadline of T: a fill mined late, or after an issue that grew the supply past its bound, reverts in
+   its first lines, before Pyth's parse. A fill that reverts on chain all the same, after its simulation passed, holds
+   its auction off for 5 blocks, then 10, and after the third this bot leaves that auction.
 2. **Starts.** Every 25 blocks, for each index anyone may restart, it simulates the auction at its best price
    (μ = MU_MIN, by overriding the hub's pending slot) and starts it only when that would pay, every feed has published
    in the last minute (US-hours stock feeds close), the index is worth `MIN_TVL_USD`, and the executor can deliver
    every coin the auction may ask for.
 3. **Requests.** With `FILL_REQUESTS` on and nothing else to send, the open `MintRequests` requests on the indexes it
-   serves (read every 25 blocks, the 8 largest escrows simulated per block) are each simulated as block L+1 would
-   fill them. A mint request is filled with exactly its limit in shares: the basket for them comes from stock and the
-   routes, is issued to the executor and delivered, and the escrowed stablecoin is taken, USDT sold into USDC along a
-   quoted route. A redeem request is paid exactly its limit in its stablecoin, USDT bought with USDC: the escrowed
-   shares are redeemed and the basket sold along the routes, a coin with no route kept as stock. Profit and the floor
-   are priced as a fill's, and the most profitable request whose profit reaches `MIN_PROFIT_USD` is sent. The surplus
-   over a limit is the filler's, which is why the app suggests limits.
+   serves are read every 25 blocks, with each index's gate and a Hermes value of one of its shares; a request whose read
+   fails is kept as it was and read again. A request is skipped before any simulation when its limit is worth more than
+   its escrow at Pyth, or when it is a mint on an index whose gate would not issue to the executor. Of the rest, the 8
+   largest in dollars are simulated per block, at most 4 of them on one side while the other side has requests, and a
+   request whose simulation reverts waits 2, 4, 8... blocks, at most 200, before the next; one whose fill reverts on
+   chain waits 5, then 10, and is left after the third. Each is simulated as block L+1 would fill it. A mint request is
+   filled with exactly its limit in shares: the basket for them comes from stock and the routes, is issued to the
+   executor and delivered, and the escrowed stablecoin is taken, USDT sold into USDC along a quoted route. A redeem
+   request is paid exactly its limit in its stablecoin, USDT bought with USDC: the escrowed shares are redeemed and the
+   basket sold along the routes, a coin with no route kept as stock. Profit and the floor are priced as a fill's, and
+   the most profitable request whose profit reaches `MIN_PROFIT_USD` is sent. The surplus over a limit is the filler's,
+   which is why the app suggests limits.
 4. **One transaction in flight.** A transaction that misses its block is replaced on the same nonce by a 0-value
-   transfer to itself, its fees raised each block until something on that nonce is mined; a nonce left pending by an
-   earlier run is cleared the same way at startup.
+   transfer to itself, its fees raised each block, never above `MAX_FEE_GWEI` and at most 10 times, until something on
+   that nonce is mined; after the tenth it only waits, and logs it. A nonce left pending by an earlier run is cleared
+   the same way at startup, at most 4 of them, and so is one whose send failed with its outcome unknown; a pending
+   nonce the RPC reports beyond those is logged and left alone, so an RPC cannot make the bot cancel every block.
 
 ## Inventory
 
@@ -55,8 +64,23 @@ routed coin too; only the rest is bought. The executor's address must be able to
   what bounds the stock a stolen key can move is the allowance `OWNER` left, which a request fill spends like an
   auction fill, so keep each allowance to what the next fills need. The key can also trade the USDC float badly within
   the floor it sets itself: keep the float to what fills need, and the key's ETH to a few days of gas.
+- **Kept coins are adverse selection.** A coin no route takes is kept as stock, and the worse its pools pay against
+  Pyth, the surer no route takes it. The bot values a kept coin at the lower of Pyth and the best quote its route
+  search found, for at least the amount kept and at most 25 blocks old, so a coin trading under its feed (a depegged
+  Wormhole or Binance-Peg copy) counts at what its pools pay. A coin whose pools exist but quote nothing, their sell
+  side emptied as a depegged copy's is, counts as nothing; a quote the RPC failed to answer fails the check rather
+  than counting. Only a coin with no pool at all counts at Pyth: that is the Wormhole copies', Ondo stocks' and Tether
+  Gold's case, and a bridge incident or a copy trading under its coin's feed then turns float into a coin worth less
+  than the bot booked. An index's creator can build one to make the bot buy its other legs with the float, up to the
+  auction's turnover cap each interval, and a redeem request has no cap at all. Keep the float to what fills need, and
+  serve such coins (`INDEXES`) only where the operator has a market for them.
 - Fills go through the public mempool: anyone can see a fill and its price update before it lands. The floor bounds
-  what a sandwich can take; a copier who fills first leaves this bot's transaction to revert cheaply.
+  what a sandwich can take. An auction fill whose auction a copier filled first, or that an issue past
+  `SUPPLY_TOLERANCE_BPS` reached first, reverts in its first lines; so does a request fill whose request its requester
+  cancelled or another filler filled first, or a mint fill on a gated index whose creator disallowed the executor
+  ahead of it, before any swap. A request fill that reverts on chain all the same holds that request off for 5 blocks,
+  then 10, and after the third this bot leaves it. Anything else that moves between the simulation and the
+  block, a pool or a stock balance, shows only at the floor, after the swaps.
 
 ## Running
 
@@ -85,9 +109,9 @@ The RPC must honour `eth_call` block overrides (Tenderly, publicnode and geth do
 | `MIN_PROFIT_USD` | `5` | Least profit a fill or a start must promise; negative is a subsidy the operator accepts. |
 | `MIN_TVL_USD` | `1000` | Smallest index the bot starts or simulates a fill for (anyone can open an empty one's). |
 | `SLIPPAGE_BPS` | `30` | Room the floor leaves for the pools to move, on the volume the routes trade. |
-| `SUPPLY_TOLERANCE_BPS` | `10` | How much an issue may grow the settlement before the fill reverts. |
+| `SUPPLY_TOLERANCE_BPS` | `10` | How much an issue may grow the index's supply, and with it the settlement, before the fill reverts, before Pyth's parse. It is also the griefing threshold: an issue of more than this share of the supply ahead of a fill makes it revert, though cheaply, and the bot leaves an auction after three such reverts. |
 | `ROUTE_MAX_LOSS_BPS` | `100` | Most a route may lose against Pyth; the auction's whole edge is 200. |
-| `MAX_FEE_GWEI` | `100` | No transaction while the base fee and tip exceed this. |
+| `MAX_FEE_GWEI` | `100` | No transaction while the base fee and tip exceed this, and no replacement's fees above it. |
 | `PRIORITY_FEE_GWEI` | `2` | Tip. |
 | `FILL_REQUESTS` | `1` | `1` fills `MintRequests` requests too, `0` serves auctions only. The escrow is the one the executor was built with. |
 
@@ -95,8 +119,8 @@ The RPC must honour `eth_call` block overrides (Tenderly, publicnode and geth do
 
 - `forge test --root keeper` (from the repo root): the executor against the real hub, factory and request escrow with
   mocks, request fills included.
-- `node --test keeper/test/unit/*.test.mjs`: arithmetic, settings, the request filter, the Hermes client and the
-  transaction tracker; no install.
+- `node --test keeper/test/unit/*.test.mjs`: arithmetic, settings, the route search, the request filter and scan, the
+  back-offs, the Hermes client and the transaction tracker; no install.
 - `MAINNET_RPC_URL=<archive> npm run e2e` (in `keeper/`): an anvil fork with the real Pyth contract verifying updates
   this test signs, real pools and tokens, and `keeper.mjs` as its own process. It covers a start held back by a quiet
   feed and by missing stock, an index never started, fills only once profitable, stock kept and delivered, a two-hop

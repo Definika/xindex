@@ -9,9 +9,11 @@ import {IWeightedMath} from "./interfaces/IWeightedMath.sol";
 /// @notice The settlement arithmetic of `WeightedHub`, in a contract of its own so that the hub fits EIP-170. See
 ///         {IWeightedMath}. It was the hub's own private functions until 2026-10-14 and is tested through the hub's
 ///         rebalance and invariant suites; `test_theMathConstantsAreTheHubs` pins its constants to the hub's.
-/// @dev Pure: nothing here reads storage or calls anything. The hub's `_backing` at a scale of one is the formula
+/// @dev Pure: nothing here reads storage or calls anything. The hub's `_backing` at the index's scale is the formula
 ///      {_amount} applies, so the settlement moves each leg's change in required backing exactly as issue and redeem
-///      measure it. The arrays come in memory, one stack slot each, which keeps the compiler's stack in reach.
+///      measure it. It works on the recorded units and leaves the scale to the amounts: targets, the turnover cap and
+///      the minimum trade are ratios, the same whatever one factor every leg carries, so no leg is rounded to fold
+///      the scale in (XS-2). The arrays come in memory, one stack slot each, which keeps the compiler's stack in reach.
 contract WeightedMath is IWeightedMath {
     /// @inheritdoc IWeightedMath
     uint256 public constant MU_MAX = 1.02e18;
@@ -28,19 +30,31 @@ contract WeightedMath is IWeightedMath {
         uint256 mu,
         uint256[] memory prices,
         uint256 supply,
+        uint256 scale,
         uint256[] memory currentUnits,
         uint256[] memory weights,
         uint256 keepMask
-    ) external pure returns (uint256, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn) {
+    ) external pure returns (uint256, uint256[] memory, uint256[] memory, uint256[] memory) {
         (uint256[] memory targets, uint256 share) = _targets(keepMask, prices, currentUnits, weights);
-        uint256 growth = _growth(mu, share);
-        units = _move(currentUnits, targets, share, growth);
-        (amountsOut, amountsIn) = _amounts(supply, currentUnits, units);
+        return _fill(mu, supply, scale, currentUnits, targets, share);
+    }
+
+    /// @dev Every leg moved `share` of the way to `targets` at `mu`, and the amounts that takes at `supply` and
+    ///      `scale`; at MU_MAX when nothing would go out.
+    function _fill(
+        uint256 mu,
+        uint256 supply,
+        uint256 scale,
+        uint256[] memory currentUnits,
+        uint256[] memory targets,
+        uint256 share
+    ) private pure returns (uint256, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn) {
+        units = _move(currentUnits, targets, share, _growth(mu, share));
+        (amountsOut, amountsIn) = _amounts(supply, scale, currentUnits, units);
         if (mu != MU_MAX && !_any(amountsOut)) {
             mu = MU_MAX;
-            growth = _growth(mu, share);
-            units = _move(currentUnits, targets, share, growth);
-            (amountsOut, amountsIn) = _amounts(supply, currentUnits, units);
+            units = _move(currentUnits, targets, share, _growth(mu, share));
+            (amountsOut, amountsIn) = _amounts(supply, scale, currentUnits, units);
         }
         return (mu, units, amountsOut, amountsIn);
     }
@@ -82,9 +96,9 @@ contract WeightedMath is IWeightedMath {
         }
     }
 
-    /// @dev What each leg sends out or asks back at `supply`, moving from `currentUnits` to `units`: its change in
-    ///      required backing, rounded down when it leaves and up when it comes back (SA-07).
-    function _amounts(uint256 supply, uint256[] memory currentUnits, uint256[] memory units)
+    /// @dev What each leg sends out or asks back at `supply` and `scale`, moving from `currentUnits` to `units`: its
+    ///      change in required backing, rounded down when it leaves and up when it comes back (SA-07).
+    function _amounts(uint256 supply, uint256 scale, uint256[] memory currentUnits, uint256[] memory units)
         private
         pure
         returns (uint256[] memory amountsOut, uint256[] memory amountsIn)
@@ -95,8 +109,8 @@ contract WeightedMath is IWeightedMath {
         for (uint256 i = 0; i < n; ++i) {
             uint256 current = currentUnits[i];
             uint256 next = units[i];
-            if (next < current) amountsOut[i] = _amount(supply, current - next, Math.Rounding.Floor);
-            else if (next > current) amountsIn[i] = _amount(supply, next - current, Math.Rounding.Ceil);
+            if (next < current) amountsOut[i] = _amount(supply, current - next, scale, Math.Rounding.Floor);
+            else if (next > current) amountsIn[i] = _amount(supply, next - current, scale, Math.Rounding.Ceil);
         }
     }
 
@@ -143,9 +157,13 @@ contract WeightedMath is IWeightedMath {
         }
     }
 
-    /// @dev The amount of a component `shares` are backed by at `units` per 1e18 shares: the hub's `_backing` at a
-    ///      scale of one.
-    function _amount(uint256 shares, uint256 units, Math.Rounding rounding) private pure returns (uint256) {
-        return Math.mulDiv(shares, units, SHARE_UNIT, rounding);
+    /// @dev The amount of a component `shares` are backed by at `units` per 1e18 shares and `scale`: the hub's
+    ///      `_backing`, `shares · units · scale / 1e36`. Units fit 96 bits and the scale 128, so their product fits.
+    function _amount(uint256 shares, uint256 units, uint256 scale, Math.Rounding rounding)
+        private
+        pure
+        returns (uint256)
+    {
+        return Math.mulDiv(shares, units * scale, SHARE_UNIT * WAD, rounding);
     }
 }

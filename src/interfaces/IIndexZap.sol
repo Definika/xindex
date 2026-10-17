@@ -16,7 +16,7 @@ import {IUniversalRouterSwaps} from "./IUniversalRouterSwaps.sol";
 ///
 ///      Of the shared errors, the zap raises NotIndex for an index the factory did not deploy, ZeroAddress for a zero
 ///      factory, router, recipient, `tokenIn` or `tokenOut`, InvalidRecipient for a recipient that is the zap, the
-///      index, the router, the PoolManager, the factory or the rule (RT-21), and the swap errors StaleRebalanceNonce,
+///      index, the router, the PoolManager or the factory (RT-21), and the swap errors StaleRebalanceNonce,
 ///      Expired, ZeroAmount, BadRoute, ShortFill, InsufficientBudget, InsufficientOutput and TransferShortfall, which
 ///      `BasketBuilder` raises too.
 interface IIndexZap is IUniversalRouterSwaps {
@@ -26,8 +26,8 @@ interface IIndexZap is IUniversalRouterSwaps {
     /// @param maxAmountIn Most `tokenIn` the whole mint may spend; non-zero.
     /// @param shares Exact index shares to mint (1e18 is one index token); non-zero.
     /// @param legs One entry per component, in component order.
-    /// @param to Receives the shares; not zero, the zap, the index, the router, the PoolManager, the factory or the
-    ///        rule (RT-21).
+    /// @param to Receives the shares; not zero, the zap, the index, the router, the PoolManager or the factory
+    ///        (RT-21).
     /// @param deadline Last timestamp at which the call is valid.
     /// @param referrer Takes the referral share of the platform's part of the index's fee; zero names nobody.
     struct MintParams {
@@ -49,7 +49,7 @@ interface IIndexZap is IUniversalRouterSwaps {
     /// @param minAmountOut Least `tokenOut` the whole burn must return; non-zero.
     /// @param legs One entry per component, in component order.
     /// @param to Receives `tokenOut` and any unsold component; not zero, the zap, the index, the router, the
-    ///        PoolManager, the factory or the rule (RT-21).
+    ///        PoolManager or the factory (RT-21).
     /// @param deadline Last timestamp at which the call is valid; also the permit's deadline.
     struct BurnParams {
         address index;

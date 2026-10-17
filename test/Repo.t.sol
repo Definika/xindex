@@ -88,10 +88,69 @@ contract RepoTest is Test {
         assertTrue(_contains(lock, '"name": "v1.16.2"'), "forge-std stays on the reviewed release");
     }
 
-    /// @dev I09: the residual risks the reviews accepted are written down for users.
-    function test_I09_theKnownLimitationsAreDocumented() public view {
-        string memory readme = _read("README.md");
-        assertTrue(_contains(readme, "Known limitations"), "the README keeps its known limitations section");
+    /// @dev I09: the residual risks the reviews accepted are written down for users. XS-17: each one is pinned by its
+    ///      anchor inside the section itself, so a limitation cannot go missing while a cross-reference to the heading
+    ///      keeps the old check green.
+    function test_I09_XS17_theKnownLimitationsAreDocumented() public view {
+        string memory section = _section(_read("README.md"), "\n## Known limitations\n");
+        string[21] memory anchors = [
+            "**A lone executor can take up to 2% of what it trades.**",
+            "**A wrong price costs at most the turnover cap.**",
+            "**Rebalancing needs Pyth's Hermes, and Hermes needs a key.**",
+            "**Wrapped legs rest on Wormhole.**",
+            "**A collapsing coin can stop the fills.**",
+            "**An issuer's corporate action is not accounted for.**",
+            "**Price ids are data the owner maintains.**",
+            "**Rebalances clear only when the moving value pays for the fill.**",
+            "**An exit sent during the auction can be overtaken by the fill.**",
+            "**The guardian can stall rebalancing.**",
+            "**Issuers can freeze components, and some can burn them.**",
+            "**A request's surplus goes to the fastest filler.**",
+            "**Circle and Tether freeze differently, and `MintRequests` cannot tell.**",
+            "**A request is an option held by every filler until it closes.**",
+            "**Fees in shares only.**",
+            "**The streaming fee is charged on the supply that was there.**",
+            "**The basket builder is one custody point.**",
+            "**Airdrops, rewards and governance votes**",
+            "**A hooked V4 pool cannot be routed through.**",
+            "**A `tokenIn` that calls back into the zap is unsupported**",
+            "**Zap gas grows with components and hops, and nothing on chain bounds it.**"
+        ];
+        for (uint256 i = 0; i < anchors.length; ++i) {
+            assertTrue(_contains(section, anchors[i]), anchors[i]);
+        }
+        assertEq(_count(section, "\n- **"), anchors.length, "every limitation is pinned here, and only those");
+        assertTrue(_contains(section, "until its own interval, 7 to 91 days"), "a fresh index waits its own interval");
+        assertTrue(_contains(section, "restarts only `MIN_REBALANCE_INTERVAL` for a rebalance without a keep mask"));
+    }
+
+    /// @dev The text of `text` from `heading` up to the next second-level heading, or to its end.
+    function _section(string memory text, string memory heading) internal pure returns (string memory) {
+        bytes memory t = bytes(text);
+        bytes memory h = bytes(heading);
+        uint256 start = type(uint256).max;
+        for (uint256 i = 0; i + h.length <= t.length; ++i) {
+            if (keccak256(_slice(t, i, i + h.length)) == keccak256(h)) {
+                start = i + h.length;
+                break;
+            }
+        }
+        assertTrue(start != type(uint256).max, heading);
+        uint256 end = t.length;
+        for (uint256 i = start; i + 4 <= t.length; ++i) {
+            if (t[i] == "\n" && t[i + 1] == "#" && t[i + 2] == "#" && t[i + 3] == " ") {
+                end = i;
+                break;
+            }
+        }
+        return string(_slice(t, start, end));
+    }
+
+    function _slice(bytes memory b, uint256 from, uint256 to) internal pure returns (bytes memory out) {
+        out = new bytes(to - from);
+        for (uint256 i = from; i < to; ++i) {
+            out[i - from] = b[i];
+        }
     }
 
     /// @dev XA-10: CI runs every gate of the definition of done. Wake's generated config must leave out `keeper/`, the

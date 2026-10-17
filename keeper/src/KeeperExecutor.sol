@@ -75,6 +75,10 @@ contract KeeperExecutor is IRebalanceExecutor {
     error UnexpectedCaller(address caller);
     /// @notice The fill changed the float by `usdcDelta`, below `minUsdcDelta`.
     error TooCostly(int256 usdcDelta, int256 minUsdcDelta);
+    /// @notice The index's supply is `supply`, above the `maxSupply` the fill was quoted for: an issue since the quote
+    ///         grew the settlement past what the bot accepts, so the fill stops before the hub parses Pyth's update
+    ///         (XS-4).
+    error SupplyMovedOn(uint256 supply, uint256 maxSupply);
 
     constructor(
         IV3SwapRouter router,
@@ -128,6 +132,9 @@ contract KeeperExecutor is IRebalanceExecutor {
     /// @param routes One per component: an exact-input Uniswap V3 path from the component to USDC, which read as an
     ///        exact-output path buys the component with USDC; empty for a coin served from inventory, and for USDC.
     /// @param maxAmountsIn Passed to the hub: the fill reverts if the index asks for more of any component.
+    /// @param maxSupply The most shares the index may have when the fill runs. The settlement grows with the supply,
+    ///        so an issue ahead of the fill that would break `maxAmountsIn` is refused here, for one read, rather than
+    ///        by the hub after Pyth's parse (XS-4).
     /// @param minUsdcDelta The least the USDC float may change by: negative accepts a cost, positive requires a gain.
     /// @param deadline The latest block timestamp the fill may be mined at.
     /// @return usdcDelta What the fill changed the float by.
@@ -137,6 +144,7 @@ contract KeeperExecutor is IRebalanceExecutor {
         bytes[] calldata priceUpdate,
         bytes[] calldata routes,
         uint256[] calldata maxAmountsIn,
+        uint256 maxSupply,
         int256 minUsdcDelta,
         uint256 deadline
     ) external payable returns (int256 usdcDelta, uint256 gasUsed) {
@@ -144,20 +152,32 @@ contract KeeperExecutor is IRebalanceExecutor {
         _checkKeeper();
         if (block.timestamp > deadline) revert Expired(deadline);
         if (!FACTORY.isIndex(address(index))) revert NotIndex(address(index));
+        _checkSupply(index, maxSupply);
         _checkRoutes(index.componentTokens(), routes);
 
         uint256 before = IERC20(USDC).balanceOf(address(this));
+        _settle(index, priceUpdate, routes, maxAmountsIn);
+        usdcDelta = SafeCast.toInt256(IERC20(USDC).balanceOf(address(this))) - SafeCast.toInt256(before);
+        if (usdcDelta < minUsdcDelta) revert TooCostly(usdcDelta, minUsdcDelta);
+        gasUsed = gasStart - gasleft();
+    }
+
+    /// @dev The hub's bounded settlement of `index`, with this contract marked as filling it for the callback.
+    function _settle(
+        IWeightedHub index,
+        bytes[] calldata priceUpdate,
+        bytes[] calldata routes,
+        uint256[] calldata maxAmountsIn
+    ) private {
         // Transient, for this transaction's callback only: an event per fill would say nothing the hub's does not.
         // forge-lint: disable-next-line(missing-events-access-control)
         _filling = address(index);
-        // `index` is one the factory created, checked above, and msg.value is Pyth's fee, which the hub forwards whole.
+        // `index` is one the factory created, checked by {fill}, and msg.value is Pyth's fee, which the hub forwards
+        // whole.
         // forge-lint: disable-next-line(arbitrary-send-eth)
         index.executeRebalance{value: msg.value}(abi.encode(routes), priceUpdate, maxAmountsIn);
         // forge-lint: disable-next-line(missing-events-access-control)
         _filling = address(0);
-        usdcDelta = SafeCast.toInt256(IERC20(USDC).balanceOf(address(this))) - SafeCast.toInt256(before);
-        if (usdcDelta < minUsdcDelta) revert TooCostly(usdcDelta, minUsdcDelta);
-        gasUsed = gasStart - gasleft();
     }
 
     /// @inheritdoc IRebalanceExecutor
@@ -212,9 +232,10 @@ contract KeeperExecutor is IRebalanceExecutor {
     /// @dev The basket for `shares` of the request's index, from stock and along `routes`, issued here and delivered
     ///      for the escrow, which `stableRoute` turns into USDC when it is not.
     function _mintFor(uint256 id, uint256 shares, bytes[] calldata routes, bytes calldata stableRoute) private {
-        IMintRequests.Request memory request = REQUESTS.getRequest(id);
+        IMintRequests.Request memory request = _openRequest(id);
         if (!request.isMint) revert WrongSide(id);
         IWeightedHub index = IWeightedHub(request.index);
+        _checkMintable(index);
         address[] memory tokens = index.componentTokens();
         _checkRoutes(tokens, routes);
         _checkStableRoute(request.stable, stableRoute);
@@ -262,7 +283,7 @@ contract KeeperExecutor is IRebalanceExecutor {
     /// @dev Pays `amount` of the request's stablecoin, bought along `stableRoute` when it is not USDC, for the
     ///      escrowed shares, which are redeemed here and sold along `routes`; what has no route stays as stock.
     function _redeemFor(uint256 id, uint256 amount, bytes[] calldata routes, bytes calldata stableRoute) private {
-        IMintRequests.Request memory request = REQUESTS.getRequest(id);
+        IMintRequests.Request memory request = _openRequest(id);
         if (request.isMint) revert WrongSide(id);
         IWeightedHub index = IWeightedHub(request.index);
         address[] memory tokens = index.componentTokens();
@@ -282,6 +303,25 @@ contract KeeperExecutor is IRebalanceExecutor {
             got[i] = IERC20(tokens[i]).balanceOf(address(this)) - held[i];
         }
         _sell(tokens, got, routes);
+    }
+
+    /// @dev Request `id`, refused before any swap unless the escrow would still take a fill of it: open, and not past
+    ///      its deadline. A request its requester cancelled, or another filler filled, between the bot's simulation and
+    ///      this transaction then costs one read rather than the whole basket (XS-6); the escrow checks both again.
+    function _openRequest(uint256 id) private view returns (IMintRequests.Request memory request) {
+        request = REQUESTS.getRequest(id);
+        if (!request.open) revert IMintRequests.RequestNotOpen(id);
+        if (block.timestamp > request.deadline) revert IMintRequests.RequestExpired(id, request.deadline);
+    }
+
+    /// @dev The gate the hub reads when it issues here, read first: a gated index whose creator has not allowed this
+    ///      contract, or has just disallowed it ahead of the fill, refuses the issue only after every swap, so the fill
+    ///      stops here instead, before any (XS-6).
+    function _checkMintable(IWeightedHub index) private view {
+        // The factory's `feeTerms` rule, which the hub applies: open, or this contract allowed.
+        if (FACTORY.isGated(address(index)) && !FACTORY.isAllowedMinter(address(index), address(this))) {
+            revert IWeightedHub.NotAllowedMinter(address(this));
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -385,6 +425,12 @@ contract KeeperExecutor is IRebalanceExecutor {
                     || PathLib.lastToken(route) != USDC
             ) revert BadRoute(tokens[i]);
         }
+    }
+
+    /// @dev The fill's supply bound, before the hub is called (XS-4).
+    function _checkSupply(IWeightedHub index, uint256 maxSupply) private view {
+        uint256 supply = index.totalSupply();
+        if (supply > maxSupply) revert SupplyMovedOn(supply, maxSupply);
     }
 
     function _checkOwner() private view {

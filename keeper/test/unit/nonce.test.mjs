@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TxTracker } from "../../bot/nonce.mjs";
+import { MAX_REPLACEMENTS, TxTracker } from "../../bot/nonce.mjs";
 
 const ME = "0x000000000000000000000000000000000000beef";
 
@@ -122,4 +122,65 @@ test("a nonce stuck from before a restart is cleared, one at a time", async () =
   chain.mine(`0x${(2).toString(16).padStart(64, "0")}`);
   await t.onBlock(23, 50n);
   assert.equal(await t.clearStuck(24, 50n, 2_000_000_000n), false, "nothing left");
+});
+
+test("XS-12: a pending nonce the bot did not send is cleared at most once per start, not every block", async () => {
+  const chain = fakeChain();
+  // An RPC that always reports one more nonce pending than mined.
+  chain.pendingNonce = async () => chain.latest + 1n;
+  const lines = [];
+  const t = new TxTracker(chain, (line) => lines.push(line));
+  assert.equal(await t.clearStuck(20, 50n, 2_000_000_000n), true, "at startup, the nonce the node holds is cleared");
+  assert.equal(chain.sent.length, 1);
+  chain.mine(`0x${(1).toString(16).padStart(64, "0")}`);
+  assert.equal((await t.onBlock(21, 50n)).label, "clear stuck nonce");
+  for (let block = 22; block < 40; block++) {
+    assert.equal(await t.clearStuck(block, 50n, 2_000_000_000n), false, "a nonce reported pending again is left alone");
+  }
+  assert.equal(chain.sent.length, 1, "one cancel, not one a block");
+  assert.equal(lines.filter((l) => /not clearing it/.test(l)).length, 1, "logged once");
+});
+
+test("XS-12: a send whose outcome is unknown is cleared later; a nonce the RPC invents is not", async () => {
+  const chain = fakeChain();
+  const t = new TxTracker(chain);
+  assert.equal(await t.clearStuck(20, 50n, 2_000_000_000n), false, "nothing pending at startup");
+  chain.pending = 6n; // the RPC now reports a nonce this bot never sent
+  assert.equal(await t.clearStuck(21, 50n, 2_000_000_000n), false);
+  assert.equal(chain.sent.length, 0);
+
+  // The node takes a fill, then the send times out: the tracker cannot know it was sent.
+  const send = chain.send;
+  chain.send = async (tx) => {
+    await send(tx);
+    throw new Error("request timed out");
+  };
+  chain.pending = 5n;
+  await assert.rejects(t.send(FILL, { label: "fill", targetBlock: 22 }), /timed out/);
+  assert.equal(t.busy(), false);
+  chain.send = send;
+  assert.equal(await t.clearStuck(23, 50n, 2_000_000_000n), true, "its nonce is cleared");
+  assert.deepEqual({ nonce: chain.sent[1].nonce, to: chain.sent[1].to }, { nonce: 5n, to: ME });
+});
+
+test("XS-13: replacements stay under MAX_FEE_GWEI and stop after MAX_REPLACEMENTS", async () => {
+  const chain = fakeChain();
+  const lines = [];
+  const t = new TxTracker(chain, (line) => lines.push(line), { feeCap: 150n });
+  await t.send(FILL, { label: "fill", targetBlock: 11 });
+  for (let block = 12; block < 60; block++) assert.equal(await t.onBlock(block, 50n), null);
+  const replacements = chain.sent.slice(1);
+  assert.equal(replacements.length, MAX_REPLACEMENTS, "no more bumps after the last allowed");
+  for (const tx of replacements) {
+    assert.ok(tx.maxFeePerGas <= 150n && tx.maxPriorityFeePerGas <= 150n, "every version within the cap");
+  }
+  assert.ok(t.busy(), "the nonce is still the one in flight");
+  assert.equal(lines.filter((l) => /no more bumps/.test(l)).length, 1);
+
+  // A stuck nonce's seed and its bumps obey the cap too.
+  const other = fakeChain();
+  other.pending = 6n;
+  const u = new TxTracker(other, () => {}, { feeCap: 150n });
+  await u.clearStuck(20, 50n, 2_000_000_000n);
+  assert.ok(other.sent[0].maxFeePerGas <= 150n && other.sent[0].maxPriorityFeePerGas <= 150n);
 });

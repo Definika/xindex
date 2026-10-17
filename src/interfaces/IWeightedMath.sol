@@ -12,17 +12,21 @@ interface IWeightedMath {
     /// @param mu The multiplier on the growing legs the auction is at (1e18 = parity).
     /// @param prices Each moving component's price, in USD per raw unit scaled by 1e36; a kept one's is ignored.
     /// @param supply The share supply the amounts are for.
-    /// @param currentUnits Each component's units per 1e18 shares, carrying no scale.
+    /// @param scale The factor every component's recorded units carry (1e18 = one): the amounts are each leg's change
+    ///        in `supply · units · scale / 1e36`.
+    /// @param currentUnits Each component's recorded units per 1e18 shares, which carry `scale`.
     /// @param weights Each component's weight in basis points.
     /// @param keepMask Bit i set leaves component i untouched.
     /// @return muUsed The multiplier the settlement used.
-    /// @return units New units per component.
+    /// @return units New recorded units per component, carrying `scale` as `currentUnits` do; a kept leg's are its
+    ///         current units exactly.
     /// @return amountsOut What the index sends out per component.
     /// @return amountsIn What the index needs back per component.
     function settlement(
         uint256 mu,
         uint256[] memory prices,
         uint256 supply,
+        uint256 scale,
         uint256[] memory currentUnits,
         uint256[] memory weights,
         uint256 keepMask

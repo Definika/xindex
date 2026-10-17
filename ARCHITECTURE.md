@@ -70,19 +70,21 @@ OpenZeppelin's upgradeable ERC20 and ERC20Permit (clones skip constructors, so n
 
 - **State:** `Component[] {address token; uint96 units}` and beside it `Terms[] {bytes32 priceId; uint16 weight;
   uint8 decimals}`, both set at `initialize`. Only `executeRebalance` changes units, and nothing changes the terms.
-  `units_i` is the raw amount of component `i` (in that token's own decimals) backing one whole index token (`1e18`
-  shares), times `_scale`, the streaming fee's factor (1e18 = one, lowered by each accrual, back to one at each fill),
-  beside which `_lastAccrual` is the fee's clock. Open claims live in `claimOf[account][token]`, their sum per token
+  `units_i` is the recorded amount of component `i` (in that token's own decimals) per whole index token (`1e18`
+  shares); times `_scale / 1e18` it is the raw amount backing one whole index token. `_scale` is the streaming fee's
+  factor (1e18 = one, lowered by each accrual and by nothing else; no
+  fill resets it, XS-2), beside which `_lastAccrual` is the fee's clock (`lastAccrual()`), restarted by every accrual,
+  one that mints nothing included (XS-1), and `_maskedFill`, whether the last fill had a keep mask (XS-3). Open claims live in `claimOf[account][token]`, their sum per token
   in `totalClaims[token]`. A pending
   rebalance is its `eta` and keep mask; beside them `proposalCount`, `rebalanceNonce`, `lastRebalance` (creation, then
   each fill) and `restartAllowedAt`.
-- **initialize(name, symbol, components):** `FACTORY` only, once. 2 to 100 components, each with a non-zero token,
+- **initialize(name, symbol, components, config):** `FACTORY` only, once. 2 to 100 components, each with a non-zero token,
   non-zero units within `uint96`, a weight from 1 to `TOTAL_WEIGHT`, a non-zero price id and at most 18 decimals; the
   weights sum to `TOTAL_WEIGHT` (10,000), and no two components share a token or a price id (V5-M1). Anything else is
   `InvalidComponents`.
-- **issue(shares, to):** computes `ceil(shares × units_i / 1e18)` per component, mints, emits, then pulls each
+- **issue(shares, to):** computes `ceil(shares × units_i × scale / 1e36)` per component, mints, emits, then pulls each
   component from `msg.sender` and reverts `TransferAmountMismatch` unless the balance grew by at least that amount
-  (rejects fee-on-transfer tokens). **redeem(shares, to):** computes `floor(shares × units_i / 1e18)`, burns, emits,
+  (rejects fee-on-transfer tokens). **redeem(shares, to):** computes `floor(shares × units_i × scale / 1e36)`, burns, emits,
   then pushes every component. Neither reads a price.
 - **redeemSkipping(shares, to, skipMask):** the same, except each component whose bit is set stays in the index and is
   booked as a claim for `to`, the account that receives every other component (DA-17), before any token moves.
@@ -148,7 +150,7 @@ which returned the zap to its earlier Uniswap-only build. The zap types its call
 `issue`, `redeem`, the previews, `componentTokens` and `rebalanceNonce` on an index. `IWeightedIndexFactory` and
 `IWeightedHub` extend them, so the compiler holds the weighted contracts to that surface.
 
-- `mintWithToken(MintParams{index, expectedNonce, tokenIn, maxAmountIn, shares, legs, to, deadline})` and
+- `mintWithToken(MintParams{index, expectedNonce, tokenIn, maxAmountIn, shares, legs, to, deadline, referrer})` and
   `burnToToken(BurnParams{index, expectedNonce, shares, tokenOut, minAmountOut, legs, to, deadline})`: route endpoints
   validated, per-leg limits, balance-measured accounting, shortfalls reverted, `issue` as the final interaction of a
   mint. The leg whose component is already the mint's `tokenIn` or the burn's `tokenOut` carries no swap and honours
@@ -216,7 +218,8 @@ requester escrows USDC or USDT for at least `minShares` shares of a factory inde
 least `minOut` of a stablecoin (`requestRedeem`), fillable until a deadline at most `MAX_REQUEST_DURATION` (30 days)
 away. Anyone fills by sending the requester what they asked for, and takes the escrow; the requester cancels at any
 time, and anyone refunds the escrow to the requester after the deadline. It is how a hundred-coin index is bought with
-USDC: a filler assembles the basket, wrapped legs included, and bridges on its own account. No filler is built yet.
+USDC: a filler assembles the basket, wrapped legs included, and bridges on its own account. The keeper in `keeper/`
+fills requests at their limits (`fillMint`, `fillRedeem`), and anyone else may.
 
 The contract reads no price: the requester's own limit is the valuation, and the app suggests it. Three rules keep the
 escrow exact:
@@ -241,18 +244,21 @@ Decodes Uniswap V3 packed paths (`token(20) | fee(3) | token(20) ...`): shape ch
 An index holds amounts of coins, and a weight is a share of value, so bringing the units back to the weights needs
 prices. The hub reads them in one place, the settlement, from a signed Pyth update its executor brings, and only for
 the moving components. Issue, redeem, `redeemSkipping` and claims never read one (`test_issueAndRedeemNeverCallPyth`),
-so no feed can block an exit or misprice a mint. Notation: `u_i` a component's units, `w_i` its weight, `p_i` its price
+so no feed can block an exit or misprice a mint. Notation: `u_i` a component's recorded units, `σ` the index's scale
+after the settlement's own accrual (1e18 = one), `w_i` its weight, `p_i` its price
 in USD per raw unit scaled by 1e36, `M` the moving components (all but the kept ones), `S = totalSupply()` in the
 settling block. `s`, `μ`, `MAX_TURNOVER` and `MIN_TRADE` are fractions held to 18 decimals (`WAD = 1e18`), and `⌊ ⌋`
 and `⌈ ⌉` round at that precision.
 
 ### 3.1 Start, notice and auction
 
-`startRebalance(keepMask)` is open to anyone once `MIN_REBALANCE_INTERVAL` (7 days) has passed since the last fill or
-the creation (`RebalanceTooSoon`), while no proposal is pending or in its auction (`RebalancePending`). A non-zero keep
+`startRebalance(keepMask)` is open to anyone once the index's own rebalance interval, 7 to 91 days chosen at creation,
+has passed since the last fill or the creation (`RebalanceTooSoon`, `earliestRebalance()`), while no proposal is pending or in its auction (`RebalancePending`). A non-zero keep
 mask, and any start before strangers may, needs the factory owner or guardian (`Unauthorized`, R16). The mask must fit
 the components and leave at least two moving (`InvalidKeepMask`, V5-L2), since a single moving component is already on
-its weight among the moving ones. A start reads no price and calls nothing on any component. It stores
+its weight among the moving ones. After a fill with a keep mask, a start without one waits only
+`MIN_REBALANCE_INTERVAL`, so a sliver the guardian fills cannot hold everyone else off for a quarter; a start with a
+mask may start then too, so the guardian can renew a keep around a frozen component (XS-3). A start reads no price and calls nothing on any component. It stores
 `eta = now + REBALANCE_DELAY` and the mask, and emits `RebalanceStarted`.
 
 `REBALANCE_DELAY` is 2 hours. The notice is for executors to prepare, not for holders' exits: targets come from the
@@ -319,8 +325,8 @@ At `μ = μ(t)`:
 
 ```
 growth = ⌈μ · s⌉
-shrinking, t_i < u_i:   step = ⌊s · (u_i − t_i)⌋        u'_i = u_i − step    out_i = ⌊S · step / 1e18⌋
-growing,   t_i > u_i:   step = ⌈growth · (t_i − u_i)⌉   u'_i = u_i + step    in_i  = ⌈S · step / 1e18⌉
+shrinking, t_i < u_i:   step = ⌊s · (u_i − t_i)⌋        u'_i = u_i − step    out_i = ⌊S · step · σ / 1e36⌋
+growing,   t_i > u_i:   step = ⌈growth · (t_i − u_i)⌉   u'_i = u_i + step    in_i  = ⌈S · step · σ / 1e36⌉
 kept, or t_i = u_i:                                     u'_i = u_i
 ```
 
@@ -339,7 +345,7 @@ component that sends or receives something, and of no other, not even its balanc
 `rebalanceNonce`, sets `lastRebalance`, clears the proposal and emits `Rebalanced` with μ, the price time, the prices,
 the units and the amounts; sends each `out_i` to `msg.sender` and calls
 `IRebalanceExecutor.onXindexRebalance(amountsOut, amountsIn, data)` on it, so only a contract can execute; and then
-requires, for every component that moved, a balance of at least the larger of `⌊S · u'_i / 1e18⌋ + totalClaims` and
+requires, for every component that moved, a balance of at least the larger of `⌊S · u'_i · σ / 1e36⌋ + totalClaims` and
 what it held before, less `out_i`, plus the whole of `in_i` (`RebalanceUnderfunded`). Surplus the index already held,
 from rounding or a donation, therefore stays with the holders instead of paying for part of the fill (R21, XA-28).
 
@@ -359,7 +365,7 @@ settling prices the executor delivers at least μ times the value it takes
 favour to the holders when executors compete. After a fill below `μ = 1` the growing legs sit slightly under target,
 and the next rebalance closes the gap (`test_repeatedFillsFollowThePrices`).
 
-**At wrong prices.** A broken or malicious feed set takes at most a fifth of each component sold, once every
+**At wrong prices.** A broken or malicious feed set takes at most a fifth of each component sold, at most once every
 `MIN_REBALANCE_INTERVAL`, and the index may receive little for it. A bad price can be used in the auction's first
 block, before the guardian can cancel, so the bound is the protection. Holders redeem in kind throughout.
 
@@ -371,7 +377,7 @@ most a fifth of A (`test_V5M2_wrongPricesTakeAtMostAFifthOfEachLeg`, `testFuzz_V
 A value cap must not come back as the only cap.
 
 **Why the minimum is checked after the cap (V5R-1).** The minimum keeps a fill that changes nothing from restarting
-`MIN_REBALANCE_INTERVAL`; without it the guardian could keep all but one component and stall rebalancing at no cost
+the rebalance interval; without it the guardian could keep all but one component and stall rebalancing at no cost
 (V5-L2). Checked on the whole release before the cap, it let a capped fill trade a fifth of the minimum, since `s` falls
 to about 0.2 when a target is near zero, and still restart the interval. It is checked on `s` times the release
 (`test_V5R1_theMinimumTradeIsMeasuredAfterTheCap`).
@@ -393,11 +399,11 @@ moving components settle to their own weights among themselves. The limits it an
 Invariant, for every component, forever:
 
 ```
-token_i.balanceOf(index) >= floor(totalSupply × units_i / 1e18) + totalClaims[token_i]
+token_i.balanceOf(index) >= floor(totalSupply × units_i × scale / 1e36) + totalClaims[token_i]
 ```
 
-Ceil-on-issue and floor-on-redeem mean rounding drift is at most one raw unit per call, always in favour of the
-remaining holders. A claim is recorded only for an amount that stayed in the index, and because `floor(a) + floor(b)
+with `units_i` as recorded and `scale` the streaming fee's factor. Ceil-on-issue and floor-on-redeem mean rounding drift is at most one raw unit per call and leg, and an accrual's
+integer scale leaves at most `supply · units / 1e36` raw units more, all in favour of the remaining holders. A claim is recorded only for an amount that stayed in the index, and because `floor(a) + floor(b)
 ≤ floor(a + b)`, burning shares always frees at least that much required backing, so claims never dilute anyone. A
 rebalance moves each leg's change in required backing rounded the holders' way (SA-07), and its post-check is the
 invariant with the new units plus the whole of `amountsIn` on top of what the index held. Nothing is computed from
@@ -417,8 +423,13 @@ rounded down. A recipient that could not hold shares is replaced, so no fee can 
 to 500 bps) plus the platform's (0 to 100 bps), accrues in shares before every issue, redeem and settlement, and on
 `accrueFees`, as `supply · f / (1 − f)` shares for `f` the rate times the elapsed part of a year, and the scale every
 share's units carry falls by `supply / (supply + minted)`, both rounded down. The previews and `components()` report
-at the scale an accrual now would leave (`pendingStreamingFee`); a settlement reads the scaled units and writes units
-that carry the scale, so it starts from one again (`_applyRebalance`). The settlement arithmetic itself lives in
+at the scale an accrual now would leave (`pendingStreamingFee`). A settlement works on the recorded units and moves
+each leg's backing at the scale, and the units it writes carry the scale as the old ones did: no leg is rounded to fold
+it in, so a kept leg's units stay exact and nothing is stranded (XS-2; the fold it replaced left up to `supply / 1e18`
+raw units of each leg owned by no share at every fill). The scale therefore only shrinks; an accrual that would shrink
+it to zero, which only a second lifetime's gap could ask, is not charged. Its integer floor leaves at most `supply ·
+units / 1e36` raw units of a leg per accrual, a part in 1e18. Every accrual restarts the clock, so a dust supply cannot
+carry idle time over to the next minter (XS-1). The settlement arithmetic itself lives in
 `WeightedMath`, a stateless contract the factory deploys with the implementation and the hub reaches by STATICCALL
 through its `MATH` immutable, because the scale pushed the hub past EIP-170; the hub still reads every price and every
 balance, and the math holds nothing and reads nothing.
@@ -432,7 +443,7 @@ The README's "How the flows work" walks through each flow for an app. In short:
 - **Mint and burn** through the zap (up to about 35 components, on coins with a route), through the basket builder
   over several transactions (any size, on coins with a route, the rest deposited in kind), in kind (up to 100), or at
   a limit through `MintRequests`, filled by anyone who holds or can issue the shares.
-- **Rebalance.** At most once every 7 days: anyone starts, 2 hours of notice, then a 24-hour auction in which an
+- **Rebalance.** At most once per the index's interval, 7 to 91 days: anyone starts, 2 hours of notice, then a 24-hour auction in which an
   executor brings a signed Pyth update for `priceTime()`, previews the fill with `previewRebalance`, and settles,
   preferably through the bounded overload. Hermes, Pyth's service for signed updates, needs an API key since
   2026-08-26. The bot in `keeper/` is one such executor and holds no role; anyone may run one.
@@ -522,11 +533,11 @@ components (section 2).
 - **The guardian's stalls.** `cancelRebalance` has no window and no rate limit, so a hostile or compromised guardian can
   cancel every auction at its last second until the owner replaces it, after `GUARDIAN_DELAY`, which the guardian
   cannot cancel: a trust assumption of the role (DA-12). A keep-mask rebalance that leaves a pair moving can also clear
-  `MIN_TRADE` on a sliver of the index and restart `MIN_REBALANCE_INTERVAL` for everyone, so the stall can outlast the
-  replacement by up to a week. While a replacement is pending the owner cancels the outgoing guardian's keep-mask
+  `MIN_TRADE` on a sliver of the index, and its fill restarts `MIN_REBALANCE_INTERVAL` for a start without a mask
+  rather than the index's interval (XS-3), so the stall can outlast the replacement by up to a week. While a replacement is pending the owner cancels the outgoing guardian's keep-mask
   proposals, within the 2 hours of `REBALANCE_DELAY`, and monitors watch `RebalanceStarted` with a non-zero `keepMask`
   (RT-07). Neither stall moves funds; holders redeem throughout.
-- **Reentrancy.** `nonReentrant` on the hub's eight entry points (`test_R11_everyEntryPointIsGuardedDuringTheCallback`),
+- **Reentrancy.** `nonReentrant` on the hub's ten entry points that mint, burn, pay, accrue or rebalance (`test_R11_everyEntryPointIsGuardedDuringTheCallback`),
   on `createIndex`, on the zap's three (CR-I26) and on every entry point of `MintRequests`. The new units, the nonce and
   the cleared proposal are written before any rebalance transfer, and the callback goes only to `msg.sender`. Wake's
   reentrancy detector does not model the guard; its four documented suppressions are the `redeem` call in
@@ -622,8 +633,7 @@ and the guardian on Ethereum, then `DeployWeighted` and `ConfigureWeighted` over
 Connect for bridging in and out, the wrapped share and the Bridged and Custodial labels on every index, and a filler
 for `MintRequests`.
 
-**Backlog.** A fee in a later index version, ETH in/out, `createAndMint`, `mintWithTokenPermit` (USDC only), creator
-fees by `creatorOf`, a multi-transaction zap that accumulates legs before issuing, mixed-venue legs that split one leg
+**Backlog.** ETH in/out, `createAndMint`, `mintWithTokenPermit` (USDC only), mixed-venue legs that split one leg
 across V3 and V4, per-pair partial-fill auctions, a backstop for auctions too small to pay (the keeper fills only what
 pays unless its operator sets a subsidy), an aggregator or Universal Router 2.1 zap, V4 pools on the Sepolia market,
 and one L2 deployment if cheap minting for small buyers matters after launch.

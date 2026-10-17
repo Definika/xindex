@@ -20,6 +20,8 @@ import {IV3SwapRouter} from "../src/interfaces/IV3SwapRouter.sol";
 ///      float change is exactly what its quotes say, which pins the direction of every swap and the inventory rule.
 contract KeeperExecutorTest is WeightedTest {
     int64 constant ETH_UP = 2400e8;
+    /// @dev A supply bound that binds nothing, for the fills whose test is about something else.
+    uint256 constant ANY_SUPPLY = type(uint256).max;
 
     MockERC20 usdc;
     MockERC20 usdt;
@@ -135,7 +137,7 @@ contract KeeperExecutorTest is WeightedTest {
         bytes[] memory update = _update();
         uint256 deadline = block.timestamp;
         vm.prank(keeper);
-        return ex.fill(index, update, routes, maxIn, minDelta, deadline);
+        return ex.fill(index, update, routes, maxIn, ANY_SUPPLY, minDelta, deadline);
     }
 
     function _int(uint256 x) internal pure returns (int256) {
@@ -203,7 +205,7 @@ contract KeeperExecutorTest is WeightedTest {
         uint256 deadline = block.timestamp;
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.TooCostly.selector, expected, expected + 1));
         vm.prank(keeper);
-        executor.fill(index, update, routes, in_, expected + 1, deadline);
+        executor.fill(index, update, routes, in_, ANY_SUPPLY, expected + 1, deadline);
     }
 
     function test_unroutedOutIsKeptAsInventory() public {
@@ -262,7 +264,7 @@ contract KeeperExecutorTest is WeightedTest {
         uint256 deadline = block.timestamp;
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NoRoute.selector, address(btc)));
         vm.prank(keeper);
-        executor.fill(index, update, routes, in_, type(int256).min, deadline);
+        executor.fill(index, update, routes, in_, ANY_SUPPLY, type(int256).min, deadline);
     }
 
     function test_maxAmountsInBindsTheSettlement() public {
@@ -277,7 +279,41 @@ contract KeeperExecutorTest is WeightedTest {
             abi.encodeWithSelector(IWeightedHub.RebalanceMovedOn.selector, address(btc), in_[1], in_[1] - 1)
         );
         vm.prank(keeper);
-        executor.fill(index, update, routes, maxIn, type(int256).min, deadline);
+        executor.fill(index, update, routes, maxIn, ANY_SUPPLY, type(int256).min, deadline);
+    }
+
+    /// @dev XS-4: the bot bounds the supply at its quote plus SUPPLY_TOLERANCE_BPS (10). A griefer's issue of 0.11% of
+    ///      the supply ahead of the fill would have the hub revert `RebalanceMovedOn` after Pyth's parse; the
+    ///      executor refuses it on the supply alone, before the hub is called. Pyth's fee is set and left unpaid, so a
+    ///      fill that reached the hub would die inside the parse instead: the revert names the order.
+    function test_XS4_aSupplyAboveTheQuoteRevertsBeforeTheHub() public {
+        _open(index.AUCTION_DURATION());
+        (, uint256[] memory in_) = _preview();
+        uint256 supply = index.totalSupply();
+        uint256 maxSupply = (supply * 10_010 + 9999) / 10_000;
+        uint256[] memory maxIn = new uint256[](3);
+        for (uint256 i = 0; i < 3; ++i) {
+            maxIn[i] = (in_[i] * 10_010 + 9999) / 10_000;
+        }
+        pyth.setFee(1);
+        bytes[] memory update = _update();
+        bytes[] memory routes = _routes();
+        uint256 deadline = block.timestamp;
+
+        // Unmoved, the bounded fill settles.
+        uint256 snapshot = vm.snapshotState();
+        vm.deal(keeper, 3);
+        vm.prank(keeper);
+        executor.fill{value: 3}(index, update, routes, maxIn, maxSupply, type(int256).min, deadline);
+        assertEq(index.rebalanceNonce(), 1, "a fill within its bounds settles");
+        vm.revertToState(snapshot);
+
+        _issue(index, stranger, supply * 11 / 10_000);
+        uint256 griefed = index.totalSupply();
+        assertGt(griefed, maxSupply, "the issue is past the tolerance");
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.SupplyMovedOn.selector, griefed, maxSupply));
+        vm.prank(keeper);
+        executor.fill(index, update, routes, maxIn, maxSupply, type(int256).min, deadline);
     }
 
     function test_pythFeeIsForwarded() public {
@@ -290,10 +326,10 @@ contract KeeperExecutorTest is WeightedTest {
         vm.deal(keeper, 3);
         vm.expectRevert(MockPyth.InsufficientFee.selector);
         vm.prank(keeper);
-        executor.fill(index, update, routes, in_, type(int256).min, deadline);
+        executor.fill(index, update, routes, in_, ANY_SUPPLY, type(int256).min, deadline);
 
         vm.prank(keeper);
-        executor.fill{value: 3}(index, update, routes, in_, type(int256).min, deadline);
+        executor.fill{value: 3}(index, update, routes, in_, ANY_SUPPLY, type(int256).min, deadline);
         assertEq(address(pyth).balance, 3, "the whole fee reached Pyth");
         assertEq(address(executor).balance, 0, "the executor kept no ether");
     }
@@ -335,7 +371,7 @@ contract KeeperExecutorTest is WeightedTest {
         uint256 deadline = block.timestamp;
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NoRoute.selector, address(btc)));
         vm.prank(keeper);
-        executor.fill(own, update, routes, in_, type(int256).min, deadline);
+        executor.fill(own, update, routes, in_, ANY_SUPPLY, type(int256).min, deadline);
         assertEq(btc.balanceOf(address(executor)), 1e8, "the stock stayed");
     }
 
@@ -434,7 +470,7 @@ contract KeeperExecutorTest is WeightedTest {
         bytes[] memory update = _updates(index, _ids3(), _prices3(ETH_PRICE, BTC_PRICE, 1.25e8));
         uint256 deadline = block.timestamp;
         vm.prank(keeper);
-        (int256 delta,) = ex.fill(index, update, routes, in_, type(int256).min, deadline);
+        (int256 delta,) = ex.fill(index, update, routes, in_, ANY_SUPPLY, type(int256).min, deadline);
         assertEq(
             delta,
             _int(out[2]) - _int(router.quoteIn(address(usd), address(eth), in_[0]))
@@ -453,7 +489,7 @@ contract KeeperExecutorTest is WeightedTest {
         uint256 deadline = block.timestamp;
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.BadRoute.selector, address(usd)));
         vm.prank(keeper);
-        ex.fill(index, update, routes, in_, type(int256).min, deadline);
+        ex.fill(index, update, routes, in_, ANY_SUPPLY, type(int256).min, deadline);
     }
 
     // ---------------------------------------------------------------------
@@ -471,7 +507,7 @@ contract KeeperExecutorTest is WeightedTest {
         bytes[] memory update = _update();
         vm.expectRevert(err);
         vm.prank(caller);
-        executor.fill(IWeightedHub(target), update, routes, in_, type(int256).min, deadline);
+        executor.fill(IWeightedHub(target), update, routes, in_, ANY_SUPPLY, type(int256).min, deadline);
     }
 
     function test_onlyTheKeeperFills() public {
@@ -579,7 +615,7 @@ contract KeeperExecutorTest is WeightedTest {
         bytes[] memory routes = _routes();
         uint256 deadline = block.timestamp;
         vm.prank(next);
-        executor.fill(index, update, routes, in_, type(int256).min, deadline);
+        executor.fill(index, update, routes, in_, ANY_SUPPLY, type(int256).min, deadline);
         assertEq(index.rebalanceNonce(), 1, "the new keeper filled");
     }
 
@@ -750,6 +786,78 @@ contract KeeperExecutorTest is WeightedTest {
         executor.fillRedeem(id, 90e6, _routes(), "", type(int256).min, block.timestamp);
     }
 
+    /// @dev XS-6: a mint request its requester cancelled after the bot's simulation, or one past its deadline, is
+    ///      refused before the basket is bought. Every call to the router reverts here, so a fill that bought anything
+    ///      would fail with the router's revert, not the escrow's error.
+    function test_XS6_aClosedMintRequestRevertsBeforeAnySwap() public {
+        uint256 id = _requestMint(stranger, address(usdc), 250e6, 2e18);
+        uint256 late = _requestMint(stranger, address(usdc), 250e6, 2e18);
+        uint256 deadline = requests.getRequest(late).deadline;
+        vm.prank(stranger);
+        requests.cancel(id);
+        vm.mockCallRevert(address(router), bytes(""), bytes("a swap ran"));
+
+        bytes[] memory routes = _routes();
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IMintRequests.RequestNotOpen.selector, id));
+        executor.fillMint(id, 2e18, routes, "", type(int256).min, block.timestamp);
+
+        vm.warp(deadline + 1);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IMintRequests.RequestExpired.selector, late, deadline));
+        executor.fillMint(late, 2e18, routes, "", type(int256).min, block.timestamp);
+    }
+
+    /// @dev XS-6, the redeem side: a USDT request, whose fill buys the stablecoin first, is refused before that swap.
+    function test_XS6_aClosedRedeemRequestRevertsBeforeAnySwap() public {
+        _issue(index, stranger, 2e18);
+        uint256 id = _requestRedeem(stranger, 1e18, address(usdt), 90e6);
+        uint256 late = _requestRedeem(stranger, 1e18, address(usdt), 90e6);
+        uint256 deadline = requests.getRequest(late).deadline;
+        vm.prank(stranger);
+        requests.cancel(id);
+        vm.mockCallRevert(address(router), bytes(""), bytes("a swap ran"));
+
+        bytes[] memory routes = _routes();
+        bytes memory stableRoute = _stableRoute(address(usdt));
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IMintRequests.RequestNotOpen.selector, id));
+        executor.fillRedeem(id, 90e6, routes, stableRoute, type(int256).min, block.timestamp);
+
+        vm.warp(deadline + 1);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IMintRequests.RequestExpired.selector, late, deadline));
+        executor.fillRedeem(late, 90e6, routes, stableRoute, type(int256).min, block.timestamp);
+    }
+
+    /// @dev XS-6, the gate: on a gated index that does not allow the executor, a creator who disallows it just ahead
+    ///      of the fill included, the hub would refuse the issue only after every swap. The executor reads the gate
+    ///      first; once the creator allows it, the same request fills.
+    function test_XS6_aGatedIndexRefusesTheExecutorBeforeAnySwap() public {
+        IWeightedIndexFactory.IndexParams memory params = _params();
+        params.gated = true;
+        params.rebalanceInterval = 8 days; // another salt than `index`'s
+        WeightedHub gated = _create(_defaultSpecs(), params);
+        usdc.mint(stranger, 250e6);
+        vm.startPrank(stranger);
+        usdc.approve(address(requests), 250e6);
+        uint256 id = requests.requestMint(address(gated), address(usdc), 250e6, 2e18, block.timestamp + 1 days);
+        vm.stopPrank();
+        bytes[] memory routes = _routes();
+
+        vm.mockCallRevert(address(router), bytes(""), bytes("a swap ran"));
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.NotAllowedMinter.selector, address(executor)));
+        executor.fillMint(id, 2e18, routes, "", type(int256).min, block.timestamp);
+        vm.clearMockedCalls();
+
+        vm.prank(creator);
+        factory.setAllowedMinter(address(gated), address(executor), true);
+        vm.prank(keeper);
+        executor.fillMint(id, 2e18, routes, "", type(int256).min, block.timestamp);
+        assertEq(gated.balanceOf(stranger), 2e18, "allowed, the executor fills the request");
+    }
+
     function test_fillRedeemPaysTheStableRedeemsAndSellsTheBasket() public {
         _issue(index, stranger, 1e18);
         uint256 id = _requestRedeem(stranger, 1e18, address(usdc), 90e6);
@@ -813,5 +921,46 @@ contract KeeperExecutorTest is WeightedTest {
         vm.prank(keeper);
         vm.expectRevert(abi.encodeWithSelector(IMintRequests.BelowLimit.selector, 90e6 - 1, 90e6));
         executor.fillRedeem(id, 90e6 - 1, _routes(), "", type(int256).min, block.timestamp);
+    }
+
+    // ---------------------------------------------------------------------
+    // The bot's view of the hub (XS-8)
+    // ---------------------------------------------------------------------
+
+    /// @dev `WeightedHub`'s `_eta` and `_keepMask` slots, which the bot overrides by `eth_call` state to see an auction
+    ///      before it opens.
+    uint256 constant ETA_SLOT = 6;
+    uint256 constant KEEP_MASK_SLOT = 7;
+
+    /// @dev XS-8: keeper/bot/config.mjs names these slots, and on a real hub they are the pending auction's: writing
+    ///      them is what `pendingRebalance` reports, on a clone and on the implementation the bot's startup check
+    ///      probes, and a live auction lands in them. The next layout change fails here rather than at the bot's
+    ///      startup.
+    function test_XS8_theBotsHubSlotsAreTheHubs() public {
+        string memory config = vm.readFile("bot/config.mjs");
+        string memory pinned = string.concat(
+            "HUB_SLOTS = Object.freeze({ eta: ",
+            vm.toString(ETA_SLOT),
+            "n, keepMask: ",
+            vm.toString(KEEP_MASK_SLOT),
+            "n });"
+        );
+        assertTrue(vm.indexOf(config, pinned) != type(uint256).max, "config.mjs names slots 6 and 7");
+
+        vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
+        vm.prank(guardian);
+        index.startRebalance(1);
+        (uint256 liveEta, uint256 liveMask) = index.pendingRebalance();
+        assertEq(uint256(vm.load(address(index), bytes32(ETA_SLOT))), liveEta, "a live auction's eta is in slot 6");
+        assertEq(uint256(vm.load(address(index), bytes32(KEEP_MASK_SLOT))), liveMask, "and its keep mask in slot 7");
+
+        address[2] memory hubs = [address(index), factory.IMPLEMENTATION()];
+        for (uint256 i = 0; i < 2; ++i) {
+            vm.store(hubs[i], bytes32(ETA_SLOT), bytes32(uint256(1234)));
+            vm.store(hubs[i], bytes32(KEEP_MASK_SLOT), bytes32(uint256(5)));
+            (uint256 eta, uint256 keepMask) = IWeightedHub(hubs[i]).pendingRebalance();
+            assertEq(eta, 1234, "the eta slot is the hub's");
+            assertEq(keepMask, 5, "the keepMask slot is the hub's");
+        }
     }
 }

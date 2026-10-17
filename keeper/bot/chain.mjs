@@ -58,6 +58,14 @@ function revertData(error) {
   return null;
 }
 
+/// Whether a call failed because the contract reverted, as opposed to the RPC failing (a timeout, a rate limit): only
+/// a revert says something about the chain.
+export function isRevert(error) {
+  if (revertData(error) !== null) return true;
+  for (let e = error; e; e = e.cause) if (/revert/i.test(String(e.shortMessage ?? e.details ?? e.message ?? ""))) return true;
+  return false;
+}
+
 /// A readable name for why a call reverted: the decoded custom error, the raw selector, or the node's message.
 export function revertReason(error) {
   const data = revertData(error);
@@ -177,6 +185,7 @@ export function createChain(cfg) {
     call,
     txIo,
     checkSetup,
+    isRevert,
     blockNumber: () => client.getBlockNumber({ cacheTime: 0 }),
     block: (blockNumber) => client.getBlock({ blockNumber }),
   };

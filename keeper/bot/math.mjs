@@ -49,6 +49,23 @@ export const auctionOpen = (eta, T, duration) => eta !== 0n && eta <= T && T <= 
 /// needs comes from stock first. Routed sales go straight to USDC, so they leave stock unchanged.
 export const inventoryDelta = ({ out, in: need, held, routed }) => (routed ? 0n : out) - min(held, need);
 
+/// What a kept coin is worth to the bot: its value at Pyth, or the best quote the route search found for selling it,
+/// in USDC's raw units, when that is lower (XS-5). A coin whose pools pay too far below Pyth for any route is exactly
+/// the coin the bot keeps, so its Pyth value is the one it could not get. A coin whose pools exist but quoted nothing
+/// (their sell side emptied, as a depegged copy's is) has a quote of 0n and counts as nothing. Only a coin with no
+/// pool at all, `quoteUsdc` null, counts at Pyth.
+export const keptUsd = (pythUsd, quoteUsdc) =>
+  quoteUsdc === null || quoteUsdc === undefined ? pythUsd : Math.min(pythUsd, Number(quoteUsdc) / 1e6);
+
+/// The dollar change one leg makes to the executor's stock: a coin the index sends out and no route sells is kept, at
+/// {keptUsd}, and a coin the index needs comes out of stock first, at Pyth price `price`. `quoteUsdc` is the best
+/// quote for selling `out`, or null.
+export function stockChangeUsd({ out, in: need, held, routed, decimals, price, quoteUsdc = null }) {
+  const delivered = amountUsd(inventoryDelta({ out: 0n, in: need, held, routed }), decimals, price);
+  const kept = routed ? 0n : out;
+  return kept > 0n ? delivered + keptUsd(amountUsd(kept, decimals, price), quoteUsdc) : delivered;
+}
+
 /// Calldata tokens as EIP-7623 counts them: a zero byte is one token, any other byte four.
 export function calldataTokens(hex) {
   const body = hex.startsWith("0x") ? hex.slice(2) : hex;
@@ -89,11 +106,13 @@ export function feesFor(nextBase, priorityFeeGwei) {
 }
 
 /// Fees that may replace `prev` on the same nonce: both fields up by at least 12.5% (geth wants 10%), and the ceiling
-/// above what the next block charges.
-export function replacementFees(prev, nextBase) {
+/// above what the next block charges, neither above `feeCap` (MAX_FEE_GWEI in wei) when one is given (XS-13). At the
+/// cap a replacement no longer rises, and the node refuses it as underpriced: the bump stops there.
+export function replacementFees(prev, nextBase, feeCap = null) {
   const bump = (x) => max(ceilDiv(x * 1125n, 1000n), x + 1n);
-  const tip = bump(prev.maxPriorityFeePerGas);
-  return { maxFeePerGas: max(bump(prev.maxFeePerGas), 2n * nextBase + tip), maxPriorityFeePerGas: tip };
+  const cap = (x) => (feeCap === null ? x : min(x, feeCap));
+  const tip = cap(bump(prev.maxPriorityFeePerGas));
+  return { maxFeePerGas: cap(max(bump(prev.maxFeePerGas), 2n * nextBase + tip)), maxPriorityFeePerGas: tip };
 }
 
 export function gweiToWei(gwei) {
@@ -127,17 +146,80 @@ export function routeLossBps(side, usdc, fairUsd) {
 // Requests
 // ---------------------------------------------------------------------
 
-/// Open requests simulated per block, largest escrows first (as CF-7 bounds the auction checks).
+/// Open requests simulated per block, the largest in dollars first and at most half of them on one side, as CF-7
+/// bounds the auction checks.
 export const MAX_REQUEST_CHECKS = 8;
 
-/// The open requests fillable at second T on an index this bot serves, largest escrow first, at most `cap` of them.
-/// `entries` are `{id, request}` with the request as `getRequest` returns it.
-export function fillableRequests(entries, T, indexes, cap = MAX_REQUEST_CHECKS) {
+/// A request's escrow and limit in dollars (XS-7): a mint escrows a stablecoin, counted at 6 decimals and one dollar,
+/// for shares; a redemption escrows shares for a stablecoin. `shareUsd` is one share's worth at Pyth.
+export function requestUsd(request, shareUsd) {
+  const stable = (x) => Number(x) / 1e6;
+  const shares = (x) => (Number(x) / 1e18) * shareUsd;
+  return request.isMint
+    ? { escrowUsd: stable(request.escrow), limitUsd: shares(request.limit) }
+    : { escrowUsd: shares(request.escrow), limitUsd: stable(request.limit) };
+}
+
+/// The open requests worth simulating at second T on an index this bot serves (XS-7). `info` maps a lowercased index
+/// to `{shareUsd, mintAllowed}`: one share's worth at Pyth (null when unpriced) and whether the index would issue to
+/// the executor (null when unread). A request is skipped before any simulation when its index is unpriced, when it is
+/// a mint the index's gate would refuse the executor, or when its limit is worth more than its escrow, which no fill
+/// at Pyth prices meets. The rest are ranked by their escrow's dollars, not its raw amount, which is in a stablecoin's
+/// units for a mint and in shares for a redemption; each side keeps half of the `cap` slots, so one side's requests
+/// cannot crowd out the other's, and slots one side leaves go to the other. Returns `{chosen, skipped}`, the chosen
+/// entries with `usd` added, the skipped ones as `{id, reason}`.
+export function fillableRequests(entries, T, indexes, info, cap = MAX_REQUEST_CHECKS) {
   const served = new Set(indexes.map((a) => a.toLowerCase()));
-  return entries
-    .filter(({ request: r }) => r.open && BigInt(r.deadline) >= T && served.has(r.index.toLowerCase()))
-    .sort((a, b) => (b.request.escrow > a.request.escrow ? 1 : b.request.escrow < a.request.escrow ? -1 : 0))
-    .slice(0, cap);
+  const skipped = [];
+  const ranked = [];
+  for (const entry of entries) {
+    const r = entry.request;
+    if (!r.open || BigInt(r.deadline) < T || !served.has(r.index.toLowerCase())) continue;
+    const at = info.get(r.index.toLowerCase());
+    if (!at || at.shareUsd === null) {
+      skipped.push({ id: entry.id, reason: "no Pyth value for its index yet" });
+      continue;
+    }
+    if (r.isMint && at.mintAllowed !== true) {
+      skipped.push({ id: entry.id, reason: "its index is gated and does not issue to the executor" });
+      continue;
+    }
+    const { escrowUsd, limitUsd } = requestUsd(r, at.shareUsd);
+    if (limitUsd > escrowUsd) {
+      skipped.push({ id: entry.id, reason: `its limit, worth ${limitUsd.toFixed(2)} USD, is above its escrow's ${escrowUsd.toFixed(2)} USD` });
+      continue;
+    }
+    ranked.push({ ...entry, usd: escrowUsd });
+  }
+  ranked.sort((a, b) => b.usd - a.usd);
+  const half = Math.floor(cap / 2);
+  const first = [...ranked.filter((e) => e.request.isMint).slice(0, cap - half), ...ranked.filter((e) => !e.request.isMint).slice(0, half)];
+  const chosen = [...first, ...ranked.filter((e) => !first.includes(e)).slice(0, cap - first.length)].sort((a, b) => b.usd - a.usd);
+  for (const e of ranked) if (!chosen.includes(e)) skipped.push({ id: e.id, reason: `past the ${cap} largest open requests` });
+  return { chosen, skipped };
+}
+
+/// Folds a scan's reads into `known`, the open requests by id (XS-11). `ids` are the ids read, `results` their
+/// multicall entries, `count` the requests made so far and `scanned` the last id read before. A read that failed is
+/// unknown, not closed: a known request stays known, and `scanned` advances only past the ids from `scanned + 1` read
+/// without a gap, so a failed one is read again at the next scan. Returns `{scanned, failed, closed}`.
+export function applyScan({ known, scanned, count, ids, results, T }) {
+  const read = new Set();
+  const failed = [];
+  const closed = [];
+  ids.forEach((id, k) => {
+    const r = results[k];
+    if (r?.status !== "success") {
+      failed.push(id);
+      return;
+    }
+    read.add(id);
+    if (r.result.open && BigInt(r.result.deadline) >= T) known.set(id, r.result);
+    else if (known.delete(id)) closed.push(id);
+  });
+  let next = scanned;
+  while (next < count && read.has(next + 1n)) next++;
+  return { scanned: next, failed, closed };
 }
 
 /// Whether a request's stablecoin needs a route to or from USDC, and which side of the quote that is: the escrow of a
