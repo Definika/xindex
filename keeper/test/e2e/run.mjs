@@ -6,14 +6,17 @@
 //   forge build && forge build --root keeper        # at the repo root
 //   MAINNET_RPC_URL=https://... npm run e2e          # in keeper/; FORK_BLOCK optional (default: head - 8)
 //
-// Four indexes, each a scenario:
+// Five indexes, each a scenario:
 //   LQ   WETH/WBTC/LINK/UNI. LINK's own pool is pushed up 12%. Held back while WBTC's feed is quiet; then started,
 //        filled only once the auction pays, through routes that include a two-hop buy. Its first fill is mined one
 //        slot late on purpose: it must revert cheaply (Expired) and be sent again.
-//   MIX  WETH/SOL/NVDAon. SOL up 20%: the index sells SOL, which has no route (kept as stock), and buys NVDAon, which
-//        has none either: not started until the executor holds NVDAon, then filled from that stock.
+//   MIX  WETH/JUP/NVDAon. JUP up 20%: the index sells JUP, which has no pool (kept as stock, at Pyth), and buys
+//        NVDAon, which has none either: not started until the executor holds NVDAon and its owner allows that stock
+//        (CF-1), then filled from it.
 //   DRY  WETH/APT. APT down 20%: the index would buy APT, which nobody routes or holds: never started.
 //   SHR  WETH/JUP. JUP up 20%: the index sells JUP, kept as stock, and buys WETH: started and filled.
+//   ADV  WETH/SOL. SOL's feed up 20% while its own pool stays where mainnet has it, far below: the SOL a fill would
+//        keep counts at what that pool pays, not at Pyth (XS-5), so the auction never pays and is never started.
 
 import { execFileSync, spawn } from "node:child_process";
 import http from "node:http";
@@ -289,10 +292,11 @@ async function createIndex(name, coins, weights, value, shares) {
   return index;
 }
 const LQ = await createIndex("LQ", [T.WETH, T.WBTC, T.LINK, T.UNI], [4000, 3000, 1500, 1500], 1000, 1000n * 10n ** 18n);
-const MIX = await createIndex("MIX", [T.WETH, T.SOL, T.NVDAON], [5000, 2500, 2500], 1000, 200n * 10n ** 18n);
+const MIX = await createIndex("MIX", [T.WETH, T.JUP, T.NVDAON], [5000, 2500, 2500], 1000, 200n * 10n ** 18n);
 const DRY = await createIndex("DRY", [T.WETH, T.APT], [5000, 5000], 1000, 100n * 10n ** 18n);
 const SHR = await createIndex("SHR", [T.WETH, T.JUP], [5000, 5000], 1000, 100n * 10n ** 18n);
-const names = { [LQ]: "LQ", [MIX]: "MIX", [DRY]: "DRY", [SHR]: "SHR" };
+const ADV = await createIndex("ADV", [T.WETH, T.SOL], [5000, 5000], 1000, 100n * 10n ** 18n);
+const names = { [LQ]: "LQ", [MIX]: "MIX", [DRY]: "DRY", [SHR]: "SHR", [ADV]: "ADV" };
 console.log(`  factory ${factory}; LQ ${LQ}, MIX ${MIX}, DRY ${DRY}, SHR ${SHR}`);
 
 const requestsHash = await wallet.deployContract({
@@ -423,12 +427,19 @@ const [mixTokens, mixUnits] = await read(MIX, HUB, "components");
 const mixSupply = await read(MIX, HUB, "totalSupply");
 const nvdaStock = (mixSupply * mixUnits[2]) / 10n ** 18n / 2n;
 await deal(T.NVDAON.a, executor, nvdaStock);
+// The executor delivers from stock only within the owner's allowance (CF-1), so the owner grants it for this stock.
+await send(execOwner, executor, EXECUTOR.abi, "setStockAllowance", [T.NVDAON.a, nvdaStock]);
 await mineBlocks(25);
 ok((await proposals(LQ)) === 1n, "LQ started");
 await mineBlocks(25);
 ok((await proposals(MIX)) === 1n, "MIX started from stock");
 await mineBlocks(25);
 ok((await proposals(DRY)) === 0n, "DRY still not started");
+// The keeper starts one index a block, so ADV, created last, is first judged here.
+ok(
+  (await proposals(ADV)) === 0n && logged("ADV not starting: best case pays -"),
+  "ADV held back: the SOL it would keep counts at what SOL's pool pays, not at Pyth (XS-5)",
+);
 
 // ---------------------------------------------------------------------
 // Fills
@@ -437,7 +448,7 @@ ok((await proposals(DRY)) === 0n, "DRY still not started");
 step("auctions: every block a step further; one fill mined a slot late on purpose");
 const [shrEta] = await read(SHR, HUB, "pendingRebalance");
 const balances = async (coins) => Promise.all(coins.map((c) => read(c.a, erc20, "balanceOf", [executor])));
-const [jup0, sol0, nvda0] = await balances([T.JUP, T.SOL, T.NVDAON]);
+const [jup0, nvda0] = await balances([T.JUP, T.NVDAON]);
 const usdc0 = await read(USDC, erc20, "balanceOf", [executor]);
 await test.request({ method: "evm_setAutomine", params: [false] });
 let lateHash = null;
@@ -463,6 +474,7 @@ const late = lateHash && (await pub.getTransactionReceipt({ hash: lateHash }));
 ok(late && late.status === "reverted" && late.gasUsed < 150_000n, `a fill mined a slot late reverts early (${late?.gasUsed} gas)`);
 for (const index of [LQ, MIX, SHR]) ok((await nonceOf(index)) === 1n, `${names[index]} filled`);
 ok((await nonceOf(DRY)) === 0n && (await proposals(DRY)) === 0n, "DRY never started");
+ok((await proposals(ADV)) === 0n, "ADV never started: a coin trading under its feed is not booked at the feed");
 
 /// The settlement of `index`'s fill, from its Rebalanced event, and the keeper's transaction that made it.
 async function settlement(index) {
@@ -484,9 +496,8 @@ ok(
 );
 const mix = await settlement(MIX);
 const shr = await settlement(SHR);
-const [jup1, sol1, nvda1] = await balances([T.JUP, T.SOL, T.NVDAON]);
-ok(jup1 - jup0 === shr.amountsOut[1], "SHR's JUP is kept as stock");
-ok(sol1 - sol0 === mix.amountsOut[1], "MIX's SOL is kept as stock");
+const [jup1, nvda1] = await balances([T.JUP, T.NVDAON]);
+ok(jup1 - jup0 === shr.amountsOut[1] + mix.amountsOut[1], "SHR's and MIX's JUP are kept as stock");
 ok(nvda0 - nvda1 === mix.amountsIn[2], "MIX's NVDAon came out of stock");
 const usdc1 = await read(USDC, erc20, "balanceOf", [executor]);
 console.log(`  executor USDC float ${Number(usdc0) / 1e6} -> ${Number(usdc1) / 1e6}`);

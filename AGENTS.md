@@ -56,7 +56,8 @@ Where it stands (2026-10-13):
   it starts and fills auctions, fills `MintRequests` requests at their limits (the record's step 2, built 2026-10-16:
   `fillMint` and `fillRedeem` on the executor, which buys or sells the basket in the fill's own transaction, so a
   request wider than one transaction's swaps waits for stock), serves coins without a Uniswap route from its
-  executor's stock, and holds no role. Its end-to-end test was not run after that (no archive RPC).
+  executor's stock, and holds no role. Its end-to-end test passed on 2026-10-17 (20/0, Tenderly's public archive)
+  after the fixes of the audit of 2026-10-16.
 - The security audit of 2026-10-13 (`audit/2026-10-13-security-audit.md`, Cloudflare's security-audit skill, ids
   `CF-1`..`CF-8`) found no exploitable path in the four contracts that hold index funds; its findings in the keeper,
   CheckToken, the deploy script and CI are fixed, CF-3 is a known limitation below, and CF-2 and CF-8 went with the

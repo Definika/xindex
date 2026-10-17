@@ -107,9 +107,21 @@ In the keeper, the kept-coin quote now follows the amount, a pool that quotes no
 index's creator can no longer make every request fill burn its swaps. The rest were docs: ARCHITECTURE's settlement
 formulas and `units_i`, `previewRebalance`'s units, and the rounding-drift sentence, all now with the scale.
 
-Not done, for want of an RPC: the five fork suites and the keeper's end-to-end test. The builder's probe on the 92
-listed tokens (a token that refused a one-unit self-transfer would refuse the builder) is therefore unproven on mainnet
-state, and so is the keeper's wiring in `keeper.mjs`, which no unit test reaches. `KeeperExecutor.fill`'s ABI changed.
+Run on 2026-10-17 against Tenderly's public archive (`gateway.tenderly.co/public/mainnet`):
+- The five fork suites, at their pinned block 26,033,838: 40 passed, 0 failed, 0 skipped.
+- The keeper's end-to-end test, on an anvil fork at block 26,212,940: 20 passed, 0 failed. It runs `keeper.mjs`
+  against the real Pyth contract, Uniswap's pools and the protocol's own factory and hubs.
+
+The end-to-end run first failed for two reasons in the test's driver, neither in the contracts or the bot:
+- The driver gave the executor NVDAon stock without the owner's `stockAllowance`, which CF-1 added on 2026-10-13 and
+  which the driver had not been run against since. It now grants it.
+- Its MIX index sold Wormhole SOL at a fake Pyth price of $180 while SOL's own Ethereum pool paid $103.79, and
+  expected the keeper to keep that SOL at Pyth. That is the adverse selection XS-5 refuses, so the keeper rightly
+  declined. MIX now sells JUP, which has no pool, and a fifth index, ADV, keeps the SOL setup and asserts that it is
+  never started, the XS-5 regression on mainnet state.
+
+Still unproven: the builder's probe on the 92 listed tokens, since the builder has no fork test (a token that refused
+a one-unit self-transfer would refuse the builder). `KeeperExecutor.fill`'s ABI changed.
 
 ## XS-1: the streaming clock kept at dust supply (F-01, high, PoC confirmed)
 
