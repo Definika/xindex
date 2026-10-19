@@ -73,6 +73,7 @@ contract MockUniversalRouter is IUniversalRouter {
     /// @notice The commands of the last `execute`, so a test can assert the bytes the zap emitted rather than only
     ///         the effect they had.
     bytes public lastCommands;
+    uint256[] internal prefunded;
     bytes[] private _lastInputs;
 
     constructor(address poolManager_) {
@@ -81,6 +82,11 @@ contract MockUniversalRouter is IUniversalRouter {
     }
 
     /// @notice The input of the last `execute`'s command at `i`.
+    /// @notice The router's balance of the token spent at the start of each exact-output leg, in order.
+    function prefundedLog() external view returns (uint256[] memory) {
+        return prefunded;
+    }
+
     function lastInput(uint256 i) external view returns (bytes memory) {
         return _lastInputs[i];
     }
@@ -152,6 +158,8 @@ contract MockUniversalRouter is IUniversalRouter {
         // An exact-output path is reversed: it runs from the token being bought back to the token being spent.
         (address tokenOut, address tokenIn) = (_firstToken(path), _lastToken(path));
 
+        // What the zap pre-funded for this leg: the router holds nothing else between calls (RX-52).
+        prefunded.push(IERC20(tokenIn).balanceOf(address(this)));
         uint256 needed = quoteIn(tokenIn, tokenOut, amountOut);
         if (needed > amountInMax) _fail(index, abi.encodeWithSignature("V3TooMuchRequested()"));
         uint256 delivered = mode == Mode.UnderDeliverExactOut ? amountOut - 1 : amountOut;

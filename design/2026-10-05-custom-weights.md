@@ -147,7 +147,10 @@ reads Pyth.
 ## 6. What a wrong price can cost
 
 - **A lagging price** (the market moved, Pyth has not yet): bounded by the auction. With competition the fill lands
-  where the market is; a lone executor gains the lag on the traded value only. An executor also holds a free option of
+  where the market is; a lone executor gains the lag on the traded value only. Not so for an index holding a US-hours
+  stock: μ falls on the clock while its feed is shut, so its first fillable block is the next open, near `MU_MIN`, and
+  holders pay about 1.65% of the traded value per fill instead of competition's 0.3% (the red team's RX-3, documented,
+  not changed in the hub). A price more than `MAX_EMA_DEVIATION` from its own moving average is refused (RX-27). An executor also holds a free option of
   a slot: it sees each block's price twelve seconds before it chooses whether to fill in it (V5-L1).
 - **A wrong price on one coin of an index on its weights** trades against itself: the index sells what a price
   overstates and buys what it understates. Off its weights it need not (V5-M2), which is why the cap counts units.
@@ -157,9 +160,10 @@ reads Pyth.
   protection. Holders redeem in kind throughout, since redeem reads no price.
 - **No price** (a feed stops, confidence too wide): the fill waits. The owner or guardian starts a rebalance that keeps
   the dead component; nothing else is affected.
-- **A collapsing coin**: fixed weights keep buying it, so its units grow; a coin that falls about a thousand times
-  from units near `MAX_UNITS` asks for more than `uint96` holds, and the fill stops rather than wraps until the
-  guardian keeps it (V5-L3, a known limitation).
+- **A collapsing coin**: fixed weights keep buying it, so its units grow, at most doubling per fill since 2026-10-19
+  (`MAX_GROWTH`, RX-15), so a coin whose issuer mints and dumps it draws about its own value from the rest per fill, not
+  a fifth of every other leg. A coin that falls far enough leaves the fill below `MIN_TRADE`, and units that would pass
+  `uint96` stop the fill and its preview rather than wrap, until the guardian keeps it (V5-L3, RX-61).
 - **A 24-decimal coin needs an exponent of at least −12.** `WeightedPricing` scales a price by
   `10^(36 + expo − decimals)` and refuses one that would need a negative power, so a vault coin with 24 decimals,
   NEAR's, cannot be priced from a feed whose exponent falls to −13 or lower. Pyth's crypto feeds use −8. Should one
@@ -189,13 +193,16 @@ reads Pyth.
 | `AUCTION_DURATION` | 24 hours | As v4 |
 | `MU_MAX` / `MU_MIN` | 1.02 / 0.98 | 2% for swap costs and Pyth's lag either way |
 | `MAX_TURNOVER` | 20% of each component's units | A coin doubling at a 50% weight sheds a quarter, so two fills; a lying feed takes at most this |
+| `MAX_GROWTH` | 100% of each growing component's units, times μ | A coin halving at a 50% weight grows by a half, so one fill; an issuer's dump draws about its own leg's value (RX-15) |
+| `MAX_EMA_DEVIATION` | 5% of the update's own moving average | Refuses a price a push of a few seconds set (RX-27) |
 | `MIN_TRADE` | 0.1% of moving value | Below it the index is on its weights; v4's `MIN_BAND` |
 | `MAX_CONFIDENCE` | 2% of price | Refuses prices Pyth itself is unsure of |
 | `PRICE_LAG` | 12 seconds | One Ethereum slot: one price per block, seen at most a slot ahead |
 | `MIN_COMPONENTS` | 2 | One component alone is always on its weight |
 
 Before launch, a replay of Pyth's history against market minute closes on the listed coins (as v3's L-06 replay did
-with Chainlink) sets `MU_MIN`, `MAX_TURNOVER` and `MAX_CONFIDENCE` from evidence. It needs a Pyth API key.
+with Chainlink) sets `MU_MIN`, `MAX_TURNOVER`, `MAX_GROWTH`, `MAX_EMA_DEVIATION` and `MAX_CONFIDENCE` from evidence,
+and sizes `MU_MIN` and `AUCTION_DURATION` against the US-hours stocks' session gaps (RX-3). It needs a Pyth API key.
 
 ## 9. Phase 2: vault coins
 

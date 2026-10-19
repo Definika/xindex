@@ -72,6 +72,13 @@ How Ondo applies splits and dividends is not in the repository.
 **Status.** Documented as a known limitation in `AGENTS.md` and `README.md`, and added to the steps before mainnet. No
 contract change: paying out balances would break the rule that keeps share prices out of the hub.
 
+**Update, 2026-10-18.** Ondo's mechanism is read (`design/2026-10-18-pre-mainnet-readings.md`, section 2): a token's
+balance never changes; each token tracks a multiplier of shares (`sValue`) in a separate oracle, which reinvested
+dividends raise and a split multiplies. The first two bullets above therefore do not arise from Ondo's corporate
+actions. The third does, for the twelve legs priced at the share's feed: a drift from dividends that the turnover cap
+bounds, and after a split a rebalance that cannot clear until the guardian keeps the leg. Still a known limitation,
+with a procedure; whether to keep those twelve listed is the owner's call.
+
 ## CF-4: names the admission check did not know (needs validation)
 
 `CheckToken` raised review or refusal only from a fixed table of selector names, and read an admin only through
@@ -86,6 +93,14 @@ named. `testFork_everyWideTokenPassesTheCheck` now pins SAND as review. That exp
 and has not yet run against mainnet: the five fork suites must run again.
 
 **Owed.** The owner's reading of the verified source of every token listed on 2026-10-10, SAND's first.
+
+**Update, 2026-10-18.** The five fork suites ran on 2026-10-17 (40/0/0 at `2919b2f`) and in CI on `main` (496/0/0),
+SAND's pin among them. The source reading is prepared for the owner's sign-off in
+`design/2026-10-18-token-source-reading.md`: none of the 43 is refused by the rule's letter, eight need the owner's
+call, SAND and RLB recommended out. It found three names the check lacked, now in its table: GALA's `blocklist` and
+`isBlocklisted`, and SAND's `setExecutionOperator` (`test_CF4_theSourceReadingsNamesAreInTheTable`); GALA is pinned as
+review. The owner then took SAND and RLB off the list; SAND's review pin is now
+`testFork_CF4_sandGoesToReviewWithItsAdmin`.
 
 ## CF-5: the deploy and the reviewed build (needs validation)
 

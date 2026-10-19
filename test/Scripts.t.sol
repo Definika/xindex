@@ -283,8 +283,9 @@ contract ScriptsTest is Test {
         deployer.resolveRouter(owner);
 
         assertFalse(deployer.isPinnedChain(), "a local chain is not pinned");
-        vm.chainId(1);
         vm.etch(MAINNET_UNIVERSAL_ROUTER, hex"00");
+        assertTrue(deployer.isPinnedChain(), "RX-23: Ethereum's state is pinned whatever the script's chain id says");
+        vm.chainId(1);
         assertTrue(deployer.isPinnedChain());
         assertEq(deployer.pinnedRouter(), MAINNET_UNIVERSAL_ROUTER);
         assertEq(deployer.pinnedUsdc(), MainnetAddresses.USDC);
@@ -587,6 +588,20 @@ contract ScriptsTest is Test {
             )
         );
         deployer.checkDeployment(other, otherZap, otherBuilder, requests);
+    }
+
+    /// @dev With `--account` and no `--sender`, a script's msg.sender is Foundry's default sender while the keystore
+    ///      signs, and every check of the broadcasting key would compare the wrong address. On a pinned chain the
+    ///      deploy refuses to run that way (RX-37); elsewhere it does not care.
+    function test_RX37_aMainnetDeployNeedsItsSender() public {
+        vm.chainId(1);
+        vm.prank(DEFAULT_SENDER);
+        vm.expectRevert(DeployChecks.BroadcasterRequired.selector);
+        deployer.deploy(owner, guardian, pyth, address(router), usdc, usdt);
+        deployer.checkBroadcaster();
+        vm.chainId(31337);
+        vm.prank(DEFAULT_SENDER);
+        deployer.checkBroadcaster();
     }
 
     /// @dev CR-I36. `deploy` itself runs every owner and guardian gate.

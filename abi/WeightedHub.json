@@ -95,6 +95,19 @@
   },
   {
     "type": "function",
+    "name": "MAX_EMA_DEVIATION",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "MAX_PRICE",
     "inputs": [],
     "outputs": [
@@ -1587,6 +1600,17 @@
   },
   {
     "type": "error",
+    "name": "CannotSendOut",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "ECDSAInvalidSignature",
     "inputs": []
   },
@@ -1918,6 +1942,27 @@
   },
   {
     "type": "error",
+    "name": "PriceOffAverage",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "price",
+        "type": "int64",
+        "internalType": "int64"
+      },
+      {
+        "name": "emaPrice",
+        "type": "int64",
+        "internalType": "int64"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "PriceOutOfRange",
     "inputs": [
       {
@@ -2143,6 +2188,27 @@
         "name": "account",
         "type": "address",
         "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "Underbacked",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "balance",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "required",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ]
   },

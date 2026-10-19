@@ -58,7 +58,9 @@ contract ConfigureWeightedTest is Test {
         assertEq(first.length, configure.DEFAULT_COUNT());
         assertEq(first.length + wide.length, tokens.length);
         assertEq(
-            tokens.length, 92, "the owner's list of 2026-10-06, the additions of 2026-10-10, less DOGE of 2026-10-14"
+            tokens.length,
+            91,
+            "the list of 2026-10-06, 2026-10-10's additions, less DOGE (10-14), with BNB and SUI, less SAND, RLB, BTT, SEI"
         );
         for (uint256 i = 0; i < tokens.length; ++i) {
             ConfigureWeighted.Entry memory entry = i < 4 ? first[i] : wide[i - 4];
@@ -66,6 +68,16 @@ contract ConfigureWeightedTest is Test {
             assertEq(entry.priceId, ids[i]);
         }
         assertEq(first[0].token, MainnetAddresses.WETH);
+    }
+
+    /// @dev PYTH is pinned here too, written out independently of the address book like the table below, since every
+    ///      settlement of every index parses at it and no test reaching only the address book would catch a wrong one
+    ///      (RX-33).
+    function test_RX33_pythIsPinnedIndependently() public pure {
+        assertEq(MainnetAddresses.PYTH, 0x4305FB66699C3B2702D4d05CF36551390A4c69C6, "Pyth's proxy on Ethereum");
+        assertEq(
+            MainnetAddresses.UNIVERSAL_ROUTER, 0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af, "Universal Router 2.0.0"
+        );
     }
 
     /// @dev Every coin of the table has a price id of its own, none zero, and the first three are pinned to the feeds
@@ -94,8 +106,8 @@ contract ConfigureWeightedTest is Test {
             assertTrue(tier != PythIds.Tier.Unrecorded, "every listed coin is recorded");
             ++count[uint256(tier)];
         }
-        assertEq(count[uint256(PythIds.Tier.Native)], 51, "22 of the wide list and 29 of the hundred-coin list");
-        assertEq(count[uint256(PythIds.Tier.Bridged)], 17, "8, BTT and W, and 7 Wormhole copies");
+        assertEq(count[uint256(PythIds.Tier.Native)], 48, "22 of the wide list and 26 of the hundred-coin list");
+        assertEq(count[uint256(PythIds.Tier.Bridged)], 19, "8, ZK and W, and 9 Wormhole copies");
         assertEq(count[uint256(PythIds.Tier.Custodial)], 24, "19, and 5 Wormhole copies of Binance-Peg coins");
         assertEq(uint8(PythIds.tierOf(MainnetAddresses.WBTC)), uint8(PythIds.Tier.Custodial));
         assertEq(uint8(PythIds.tierOf(MainnetAddresses.ARB)), uint8(PythIds.Tier.Bridged));
@@ -104,10 +116,14 @@ contract ConfigureWeightedTest is Test {
         assertEq(uint8(PythIds.tierOf(MainnetAddresses.XAUT)), uint8(PythIds.Tier.Custodial));
         assertEq(uint8(PythIds.tierOf(MainnetAddresses.GNO)), uint8(PythIds.Tier.Native));
         assertEq(uint8(PythIds.tierOf(MainnetAddresses.ONEINCH)), uint8(PythIds.Tier.Native));
-        assertEq(uint8(PythIds.tierOf(MainnetAddresses.BTT)), uint8(PythIds.Tier.Bridged), "BTTC's bridge issues it");
+        assertEq(
+            uint8(PythIds.tierOf(MainnetAddresses.ZK)), uint8(PythIds.Tier.Bridged), "ZKsync's bridge issues it (RX-19)"
+        );
         assertEq(uint8(PythIds.tierOf(MainnetAddresses.W)), uint8(PythIds.Tier.Bridged), "a mesh peer, home Solana");
         assertEq(uint8(PythIds.tierOf(MainnetAddresses.JUP)), uint8(PythIds.Tier.Bridged), "a Wormhole copy");
         assertEq(uint8(PythIds.tierOf(MainnetAddresses.OP)), uint8(PythIds.Tier.Bridged));
+        assertEq(uint8(PythIds.tierOf(MainnetAddresses.BNB)), uint8(PythIds.Tier.Bridged), "WBNB, not Binance-Peg");
+        assertEq(uint8(PythIds.tierOf(MainnetAddresses.SUI)), uint8(PythIds.Tier.Bridged));
         assertEq(
             uint8(PythIds.tierOf(MainnetAddresses.XRP)),
             uint8(PythIds.Tier.Custodial),
@@ -117,6 +133,26 @@ contract ConfigureWeightedTest is Test {
             uint8(PythIds.tierOf(0xd881A7F17Ed2c71FD671AfbA3A9b30Eb914Aea5F)),
             uint8(PythIds.Tier.Unrecorded),
             "DOGE's copy, off the list since 2026-10-14"
+        );
+        assertEq(
+            uint8(PythIds.tierOf(0x3845badAde8e6dFF049820680d1F14bD3903a5d0)),
+            uint8(PythIds.Tier.Unrecorded),
+            "SAND, off the list since 2026-10-18"
+        );
+        assertEq(
+            uint8(PythIds.tierOf(0xC669928185DbCE49d2230CC9B0979BE6DC797957)),
+            uint8(PythIds.Tier.Unrecorded),
+            "BTT, off the list since 2026-10-19 (RX-28)"
+        );
+        assertEq(
+            uint8(PythIds.tierOf(0xf91e605af079384cc7077B3914A4a36019a89EE8)),
+            uint8(PythIds.Tier.Unrecorded),
+            "SEI's copy, off the list since 2026-10-19 (RX-32)"
+        );
+        assertEq(
+            uint8(PythIds.tierOf(0x046EeE2cc3188071C02BfC1745A6b17c656e3f3d)),
+            uint8(PythIds.Tier.Unrecorded),
+            "RLB, off the list since 2026-10-18"
         );
         assertEq(uint8(PythIds.tierOf(MainnetAddresses.ATOM)), uint8(PythIds.Tier.Custodial));
         assertEq(uint8(PythIds.tierOf(MainnetAddresses.VON)), uint8(PythIds.Tier.Custodial));
@@ -134,7 +170,7 @@ contract ConfigureWeightedTest is Test {
     function test_CRL08_theListsAreTheReleaseRecord() public view {
         ConfigureWeighted.Entry[] memory first = configure.defaultMainnetList();
         ConfigureWeighted.Entry[] memory wide = configure.wideMainnetList();
-        address[92] memory tokens = [
+        address[91] memory tokens = [
             0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2, // WETH
             0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599, // WBTC
             0x514910771AF9Ca656af840dff83E8264EcF986CA, // LINK
@@ -185,7 +221,6 @@ contract ConfigureWeightedTest is Test {
             0x82106347dDbB23cE44Cf4cE4053Ef1adf8b9323B, // WMTon
             0xaC37c20C1d0E5285035e056101a64e263Ff94a41, // Von
             0xFA1C09fC8B491B6A4d3Ff53A10CAd29381b3F949, // FF
-            0xC669928185DbCE49d2230CC9B0979BE6DC797957, // BTT
             0x6810e776880C02933D47DB1b9fc05908e5386b96, // GNO
             0x64aa3364F17a4D01c6f1751Fd97C2BD3D7e7f1D5, // OHM
             0xc944E90C64B2c07662A292be6244BDf05Cda44a7, // GRT
@@ -195,7 +230,6 @@ contract ConfigureWeightedTest is Test {
             0xc00e94Cb662C3520282E6f5717214004A7f26888, // COMP
             0xec53bF9167f50cDEB3Ae105f56099aaaB9061F83, // EIGEN
             0xBB0E17EF65F82Ab018d8EDd776e8DD940327B28b, // AXS
-            0x3845badAde8e6dFF049820680d1F14bD3903a5d0, // SAND
             0x0D8775F648430679A709E98d2b0Cb6250d2887EF, // BAT
             0x4e3FBD56CD56c3e72c1403e103b45Db9da5B9D2B, // CVX
             0x0F5D2fB29fb7d3CFeE444a200298f468908cC942, // MANA
@@ -212,7 +246,6 @@ contract ConfigureWeightedTest is Test {
             0xE76c5b78f93909d34404E9eb4C1f19e7582a5dE1, // H
             0x4C1746A800D224393fE2470C70A35717eD4eA5F1, // PLUME
             0xd1d2Eb1B1e90B638588728b4130137D262C87cae, // GALA
-            0x046EeE2cc3188071C02BfC1745A6b17c656e3f3d, // RLB
             0xB0fFa8000886e57F86dd5264b9582b2Ad87b2b91, // W
             0x320623b8E4fF03373931769A31Fc52A4E78B5d70, // RSR
             0xc730d8256B8A1030eEA67f1Bc7ebed3898f7A535, // XRP
@@ -226,9 +259,11 @@ contract ConfigureWeightedTest is Test {
             0x750525C1877E30304F1E22b1b49b4C9DdE674ddF, // AERO
             0x8CDf7AF57E4c8B930e1B23c477c22f076530585e, // APT
             0xeFc0CED4B3D536103e76a1c4c74F0385C8F4Bdd3, // PYTH
-            0x1df721D242E0783F8fCab4A9FfE4F35bdf329909 // OP
+            0x1df721D242E0783F8fCab4A9FfE4F35bdf329909, // OP
+            0x418D75f65a02b3D53B2418FB8E1fe493759c7605, // BNB (WBNB)
+            0x84074EA631dEc7a4edcD5303d164D5dEa4c653D6 // SUI
         ];
-        bytes32[92] memory ids = [
+        bytes32[91] memory ids = [
             bytes32(0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace), // WETH
             0xc9d8b075a5c69303365ae23633d4e085199bf5c520a3b90fed1322a0342ffc33, // WBTC
             0x8ac0c70fff57e9aefdf5edf44b51d62c2d433653cbb2cf5cc06bb115af04d221, // LINK
@@ -279,7 +314,6 @@ contract ConfigureWeightedTest is Test {
             0x327ae981719058e6fb44e132fb4adbf1bd5978b43db0661bfdaefd9bea0c82dc, // WMTon
             0xc719eb7bab9b2bc060167f1d1680eb34a29c490919072513b545b9785b73ee90, // Von
             0xf9597faf41a8d91fcc4dc95e9b4f408ea391cf17ec26955ae2055b6dbda5ec89, // FF
-            0x097d687437374051c75160d648800f021086bc8edf469f11284491fda8192315, // BTT
             0xc5f60d00d926ee369ded32a38a6bd5c1e0faa936f91b987a5d0dcf3c5d8afab0, // GNO
             0x3a8c0214e4fb7f1dd7792ed4d5b2971372e52f088fcd9cc02309253cbdc4a70e, // OHM
             0x4d1f8dae0d96236fb98e8f47471a366ec3b1732b47041781934ca3a9bb2f35e7, // GRT
@@ -289,7 +323,6 @@ contract ConfigureWeightedTest is Test {
             0x4a8e42861cabc5ecb50996f92e7cfa2bce3fd0a2423b0c44c9b423fb2bd25478, // COMP
             0xc65db025687356496e8653d0d6608eec64ce2d96e2e28c530e574f0e4f712380, // EIGEN
             0xb7e3904c08ddd9c0c10c6d207d390fd19e87eb6aab96304f571ed94caebdefa0, // AXS
-            0xcb7a1d45139117f8d3da0a4b67264579aa905e3b124efede272634f094e1e9d1, // SAND
             0x8e860fb74e60e5736b455d82f60b3728049c348e94961add5f961b02fdee2535, // BAT
             0x6aac625e125ada0d2a6b98316493256ca733a5808cd34ccef79b0e28c64d1e76, // CVX
             0x1dfffdcbc958d732750f53ff7f06d24bb01364b3f62abea511a390c74b8d16a5, // MANA
@@ -306,7 +339,6 @@ contract ConfigureWeightedTest is Test {
             0x807df1ed343907c4d97790334338c5df6e360036b3c95f880450d078569b5481, // H
             0xded84d57dbf810bf86b97936f12e1f01b8d6d01c251a4d6eac592147988d475c, // PLUME
             0x0781209c28fda797616212b7f94d77af3a01f3e94a5d421760aef020cf2bcb51, // GALA
-            0x2f2d17abbc1e781bd87b4a5d52c8b2856886f5c482fa3593cebf6795040ab0b6, // RLB
             0xeff7446475e218517566ea99e72a4abec2e1bd8498b43b7d8331e29dcb059389, // W
             0xfb7565b77267ba3f6ef770bed5d7f9b22b8542db676dbd9b934a2fcf945f4371, // RSR
             0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8, // XRP
@@ -320,10 +352,12 @@ contract ConfigureWeightedTest is Test {
             0x9db37f4d5654aad3e37e2e14ffd8d53265fb3026d1d8f91146539eebaa2ef45f, // AERO
             0x03ae4db29ed4ae33d323568895aa00337e658e348b37509f5372ae51f0af00d5, // APT
             0x0bbf28e9a841a1cc788f6a361b17ca072d0ea3098a1e5df1c3922d06719579ff, // PYTH
-            0x385f64d993f7b77d8182ed5003d97c60aa3361f3cecfe711544d2d59165e9bdf // OP
+            0x385f64d993f7b77d8182ed5003d97c60aa3361f3cecfe711544d2d59165e9bdf, // OP
+            0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f, // BNB
+            0x23d7315113f5b1d3ba7a83604c44b94d79f4fd69af77f804fc7f920a6dc65744 // SUI
         ];
         assertEq(first.length, 4);
-        assertEq(wide.length, 88);
+        assertEq(wide.length, 87);
         for (uint256 i = 0; i < tokens.length; ++i) {
             ConfigureWeighted.Entry memory entry = i < 4 ? first[i] : wide[i - 4];
             assertEq(entry.token, tokens[i]);
@@ -434,6 +468,20 @@ contract ConfigureWeightedTest is Test {
         assertEq(factory.listingEta(address(b)), 0, "delisted, and only V5_LIST named it");
         configure.propose(factory, _list(), _none(), _all());
         assertGt(factory.listingEta(address(b)), 0, "named in V5_RELIST");
+    }
+
+    /// @dev An expired first listing is the owner's own proposal run out, not a veto: a routine run proposes it again,
+    ///      while a cancelled one still waits to be named (RX-39).
+    function test_RX39_anExpiredFirstListingIsProposedAgainButACancelledOneIsNot() public {
+        configure.propose(factory, _list(), _all(), _none());
+        vm.prank(guardian);
+        factory.cancelListing(address(a));
+        vm.warp(block.timestamp + factory.LISTING_DELAY() + factory.PROPOSAL_WINDOW() + 1);
+        assertFalse(factory.listingPending(address(b)), "b's proposal expired unexecuted");
+
+        configure.propose(factory, _list(), _none(), _none());
+        assertTrue(factory.listingPending(address(b)), "proposed again without V5_LIST");
+        assertEq(factory.listingEta(address(a)), 0, "the cancelled one is not");
     }
 
     function test_XA40_proposeSkipsWhatThePolicyOrTheFactoryWouldRefuse() public {

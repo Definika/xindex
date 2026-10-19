@@ -41,6 +41,11 @@ interface IWeightedMath {
     /// @notice The most of any component's own units one settlement sends out. Equal to the hub's MAX_TURNOVER.
     function MAX_TURNOVER() external view returns (uint256);
 
+    /// @notice The most of a growing component's own units one settlement adds, before mu (1e18 = 100%): beyond it,
+    ///         every leg moves the same smaller share of the way. So a coin whose price an issuer drives down by
+    ///         minting draws at most about its own value from the other legs per fill (RX-15).
+    function MAX_GROWTH() external view returns (uint256);
+
     /// @notice The least a fill must trade, as a share of the moving value. Equal to the hub's MIN_TRADE.
     function MIN_TRADE() external view returns (uint256);
 }

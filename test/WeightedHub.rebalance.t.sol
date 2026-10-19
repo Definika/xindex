@@ -17,6 +17,7 @@ import {PythStructs} from "../src/interfaces/pyth/PythStructs.sol";
 import {WeightedTest} from "./WeightedTest.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockPausableToken} from "./mocks/MockPausableToken.sol";
+import {MockSenderBlockToken} from "./mocks/MockAdminTokens.sol";
 import {MockPyth} from "./mocks/MockPyth.sol";
 import {MockWeightedExecutor} from "./mocks/MockWeightedExecutor.sol";
 
@@ -450,9 +451,10 @@ contract WeightedHubRebalanceTest is WeightedTest {
         _open(0, _midpoint());
         PythStructs.Price[] memory prices = _structs3(ETH_PRICE, BTC_PRICE, USD_PRICE);
         prices[1] = PythStructs.Price({price: 1e17, conf: 0, expo: 0, publishTime: 0});
-        // 1e17 · 10^(36 − 8) = 1e45 = MAX_PRICE: accepted, and the index then buys every other component.
-        (, uint256[] memory units,,) = index.previewRebalance(prices);
-        assertLt(units[1], BTC_UNITS);
+        // 1e17 · 10^(36 − 8) = 1e45 = MAX_PRICE: the price is accepted, not PriceOutOfRange. Every other leg would have
+        // to grow a trillionfold, and a growing leg at most doubles per fill, so the fill trades too little (RX-15).
+        vm.expectRevert(IWeightedHub.NothingToRebalance.selector);
+        index.previewRebalance(prices);
     }
 
     function test_theFeeGoesToPyth() public {
@@ -572,10 +574,11 @@ contract WeightedHubRebalanceTest is WeightedTest {
         _open(0, _midpoint());
         (, uint256[] memory units, uint256[] memory out, uint256[] memory in_) =
             index.previewRebalance(_structs3(20_000e8, BTC_PRICE, USD_PRICE));
-        assertEq(units[0], 20_000_000_000_000_001, "0.025 less 0.01125 times 0.444..., rounded down");
-        // BTC's target is 165 / 60,000 = 0.00275, 0.00225 above; USD's 110, 90 above; both move 4/9 of the way.
-        assertEq(units[1], BTC_UNITS + 100_000);
-        assertEq(units[2], USD_UNITS + 40e6);
+        assertEq(units[0], 22_500_000_000_000_001, "0.025 less 0.01125 times 2/9, rounded down");
+        // BTC's target is 165 / 60,000 = 0.00275, 4.5 times its units above; USD's 110, 90 above. The turnover cap
+        // alone would move every leg 4/9 of the way; the growth cap lets each grower at most double, so 2/9 (RX-15).
+        assertEq(units[1], 2 * BTC_UNITS);
+        assertEq(units[2], 2 * USD_UNITS);
         assertLe(out[0], ETH_UNITS * 100 / 5, "never more than a fifth of the component's units");
         assertEq(out[0], (ETH_UNITS - units[0]) * 100);
         assertGt(in_[1], 0);
@@ -796,13 +799,110 @@ contract WeightedHubRebalanceTest is WeightedTest {
     /// @dev V5-L3: units grow as a component's relative price falls, and fixed weights keep buying it, so a coin that
     ///      collapses far enough asks for more units than uint96 holds. That stops the fill rather than wrapping; the
     ///      guardian then keeps the component, and holders can move to a new index. A known limitation, documented.
-    function test_V5L3_unitsBeyondUint96StopTheFill() public {
+    /// @dev A growing leg at most doubles per fill (RX-15), so no single fill takes a component created within MAX_UNITS
+    ///      past 96 bits. Units already near the top still stop the fill rather than wrap, and the math itself stops,
+    ///      so previewRebalance never returns units executeRebalance could not write (V5-L3, RX-61).
+    function test_V5L3_RX61_unitsBeyondUint96StopTheFill() public {
+        uint256 top = type(uint96).max;
+        uint256[] memory prices = new uint256[](2);
+        prices[0] = 10e18;
+        prices[1] = 1e18;
+        uint256[] memory units = new uint256[](2);
+        units[0] = top / 2;
+        units[1] = top * 9 / 10;
+        uint256[] memory weights = new uint256[](2);
+        weights[0] = 5000;
+        weights[1] = 5000;
+        IWeightedMath math = IWeightedMath(index.MATH());
+        uint256 mu = index.MU_MAX();
+        vm.expectPartialRevert(SafeCast.SafeCastOverflowedUintDowncast.selector);
+        math.settlement(mu, prices, 1e18, 1e18, units, weights, 0);
+    }
+
+    /// @dev Tether Gold blocks only its sender. Once it blocks the index, the index's XAUT cannot leave, yet an executor
+    ///      can still deliver more of it. A fill that grows that leg would move good legs into a leg no holder can take
+    ///      out, so it reverts; the guardian keeps the leg instead (RX-12).
+    function test_RX12_aFillCannotBuyALegTheIndexCannotSend() public {
+        MockSenderBlockToken gold = new MockSenderBlockToken(owner);
+        _list(address(gold), keccak256("XAU/USD"));
+        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](3);
+        specs[0] = _spec(address(eth), 5000, ETH_UNITS);
+        specs[1] = _spec(address(btc), 3000, BTC_UNITS);
+        specs[2] = _spec(address(gold), 2000, 20e18);
+        vm.prank(creator);
+        WeightedHub three = WeightedHub(factory.createIndex("Gold", "GLD", specs, _params()));
+        _issue(three, alice, SHARES);
+        gold.addBlackList(address(three));
+
+        vm.warp(three.lastRebalance() + three.MIN_REBALANCE_INTERVAL());
+        three.startRebalance(0);
+        (uint256 eta,) = three.pendingRebalance();
+        vm.warp(eta + three.AUCTION_DURATION() / 2);
+        bytes32[] memory ids = new bytes32[](3);
+        ids[0] = ETH_ID;
+        ids[1] = BTC_ID;
+        ids[2] = keccak256("XAU/USD");
+        int64[] memory prices = new int64[](3);
+        prices[0] = 2200e8;
+        prices[1] = BTC_PRICE;
+        prices[2] = 0.9e8;
+        bytes[] memory data = _updates(three, ids, prices);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.CannotSendOut.selector, address(gold)));
+        executor.execute(three, "", data);
+
+        // Unblocked, the same fill settles.
+        gold.removeBlackList(address(three));
+        executor.execute(three, "", data);
+        assertEq(three.rebalanceNonce(), 1);
+    }
+
+    /// @dev A price further than MAX_EMA_DEVIATION from the update's own moving average, as a push of a few seconds on
+    ///      thin venues leaves it, cannot set a fill's price; at the bound it can (RX-27).
+    function test_RX27_aPriceFarFromItsAverageIsRefused() public {
         _open(0, _midpoint());
         uint64 time = uint64(index.priceTime());
         bytes[] memory data = _updates(index, _ids3(), _prices3(ETH_PRICE, BTC_PRICE, USD_PRICE));
-        data[0] = pyth.update(ETH_ID, 1, 0, -18, time, time - 1);
-        vm.expectPartialRevert(SafeCast.SafeCastOverflowedUintDowncast.selector);
+        int64 average = 2000e8;
+        int64 high = 2100e8 + 1; // 5% above the average, and one more
+        data[0] = pyth.updateWithEma(ETH_ID, high, EXPO, average, EXPO, time, time - 1);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.PriceOffAverage.selector, address(eth), high, average));
         executor.execute(index, "", data);
+
+        int64 low = 1900e8 - 1;
+        data[0] = pyth.updateWithEma(ETH_ID, low, EXPO, average, EXPO, time, time - 1);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.PriceOffAverage.selector, address(eth), low, average));
+        executor.execute(index, "", data);
+
+        data[0] = pyth.updateWithEma(ETH_ID, ETH_PRICE, EXPO, ETH_PRICE, EXPO - 1, time, time - 1);
+        vm.expectRevert(
+            abi.encodeWithSelector(IWeightedHub.PriceOffAverage.selector, address(eth), ETH_PRICE, ETH_PRICE)
+        );
+        executor.execute(index, "", data);
+
+        data[0] = pyth.updateWithEma(ETH_ID, ETH_PRICE, EXPO, 0, EXPO, time, time - 1);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.PriceOffAverage.selector, address(eth), ETH_PRICE, 0));
+        executor.execute(index, "", data);
+
+        data[0] = pyth.updateWithEma(ETH_ID, 2100e8, EXPO, average, EXPO, time, time - 1);
+        executor.execute(index, "", data);
+        assertEq(index.rebalanceNonce(), 1, "exactly 5% off settles");
+    }
+
+    /// @dev ETH falls 90%, as a coin whose issuer mints and dumps it would. Its target is 5.5 times its units, but a
+    ///      growing leg at most doubles per fill, so every leg moves 2/9 of the way: the others give up a tenth of their
+    ///      units, where the turnover cap alone would have let the fill take a fifth (RX-15).
+    function test_RX15_aCollapsedLegDrawsAtMostItsOwnValuePerFill() public {
+        _open(0, _midpoint());
+        (, uint256[] memory units, uint256[] memory out,) =
+            index.previewRebalance(_structs3(200e8, BTC_PRICE, USD_PRICE));
+        assertEq(units[0], 2 * ETH_UNITS, "ETH at most doubles");
+        assertEq(units[1], 45_001, "BTC gives up a tenth, not a fifth");
+        assertEq(units[2], 18_000_001, "USD likewise");
+        assertEq(out[0], 0);
+        // For 100 tokens the index gives up about the $500 of ETH it held, in micro-dollars, where the turnover cap
+        // alone would have let one fill take twice that.
+        uint256 valueOut = out[1] * 60_000e6 / 1e8 + out[2];
+        assertApproxEqRel(valueOut, 500e6, 0.001e18);
     }
 
     // ---------------------------------------------------------------------

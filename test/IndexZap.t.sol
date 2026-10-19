@@ -436,6 +436,26 @@ contract IndexZapTest is XindexTest {
         assertEq(spent, NAV_USD6);
     }
 
+    /// @dev CR-I06's bound is the pre-fund: the router can spend only what it holds, since the pinned V4 router checks
+    ///      `amountInMaximum` only on the last hop. So each leg pre-funds exactly its cap, or what is left of the budget
+    ///      when that is less, and never the whole budget (RX-52).
+    function test_RX52_eachLegPrefundsExactlyItsCap() public {
+        IUniversalRouterSwaps.MintLeg[] memory legs = _mintLegs(address(usdc));
+        legs[0].maxAmountIn = 60e6;
+        legs[1].maxAmountIn = 30e6;
+        legs[2].maxAmountIn = 15e6;
+        usdc.mint(alice, 200e6);
+        vm.startPrank(alice);
+        usdc.approve(address(zap), 200e6);
+        zap.mintWithToken(_mintParams(address(index), address(usdc), 200e6, 1e18, legs, alice));
+        vm.stopPrank();
+        uint256[] memory funded = router.prefundedLog();
+        assertEq(funded.length, 3);
+        assertEq(funded[0], 60e6, "the leg's cap, below the budget");
+        assertEq(funded[1], 30e6);
+        assertEq(funded[2], 15e6);
+    }
+
     function test_mint_legCapStopsOverpayingOneLeg() public {
         uint256 maxIn = NAV_USD6 + NAV_USD6 / 100; // 1% overall
         IUniversalRouterSwaps.MintLeg[] memory legs = _mintLegs(address(usdc));

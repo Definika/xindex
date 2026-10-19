@@ -82,18 +82,30 @@ export function createHermes({ url, apiKey, fetchImpl = fetch, now = Date.now, r
     return { updates, prices };
   }
 
-  /// The latest price of each of `ids`, by id, in chunks of 50 to keep each URL short.
+  /// The latest price of each of `ids`, by id, in chunks of 50 to keep each URL short. An id Hermes does not serve is
+  /// left out of the map, rather than failing every id asked with it (RX-30): callers treat it as unpriced.
   async function latest(ids, deadline) {
-    const prices = new Map();
-    for (let i = 0; i < ids.length; i += 50) {
-      const chunk = ids.slice(i, i + 50);
-      const body = await get(`/v2/updates/price/latest?${query(chunk)}&parsed=true`, deadline);
-      for (const entry of body.parsed ?? []) prices.set(key(entry.id), parsePrice(entry));
-    }
-    return prices;
+    return (await latestSigned(ids, deadline)).prices;
   }
 
-  return { at, latest, key };
+  /// {latest}, with the signed update bytes Hermes served for them (0x hex), so a caller can have Pyth's contract
+  /// verify the prices before it values anything at them (RX-9).
+  async function latestSigned(ids, deadline) {
+    const prices = new Map();
+    const updates = [];
+    for (let i = 0; i < ids.length; i += 50) {
+      const chunk = ids.slice(i, i + 50);
+      const body = await get(
+        `/v2/updates/price/latest?${query(chunk)}&parsed=true&encoding=hex&ignore_invalid_price_ids=true`,
+        deadline,
+      );
+      for (const entry of body.parsed ?? []) prices.set(key(entry.id), parsePrice(entry));
+      for (const hex of body.binary?.data ?? []) updates.push(hex.startsWith("0x") ? hex : `0x${hex}`);
+    }
+    return { prices, updates };
+  }
+
+  return { at, latest, latestSigned, key };
 }
 
 export const priceKey = key;

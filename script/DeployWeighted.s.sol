@@ -40,13 +40,13 @@ contract DeployWeighted is DeployChecks {
     ///         mainnet broadcast is bound to (CF-5): `deploy` refuses to broadcast on Ethereum from any other build (a
     ///         local edit, a lib/ checkout off foundry.lock, a FOUNDRY_* override), and `test_CF5_*` in
     ///         test/Scripts.t.sol fails until these equal the build, so only a reviewed, CI-green commit moves them.
-    bytes32 public constant FACTORY_INITCODE_HASH = 0x9ba3c88e71886469cf2870beb2ec73e03e39f1836ca172c5f1f787c7a207673c;
+    bytes32 public constant FACTORY_INITCODE_HASH = 0xca63f0e12a0710949a176e9fdf276e6c30e70f67bfdca87a3f37752d3e2cf9b4;
     /// @notice keccak256 of `IndexZap`'s init code, as above.
-    bytes32 public constant ZAP_INITCODE_HASH = 0x74146cd21877380e264bad58eeaca5f065269d46a617831a1bf5e726989237f5;
+    bytes32 public constant ZAP_INITCODE_HASH = 0xf2130eb5f485f0a30a346f34906b3690c9cd2473db92b57d8c29a5f7ad6b2660;
     /// @notice keccak256 of `BasketBuilder`'s init code, as above.
-    bytes32 public constant BUILDER_INITCODE_HASH = 0xe782f2394c4a8ae1289c4aea0ad9b0e9796cd015eac9901e4f61310b18d8d55f;
+    bytes32 public constant BUILDER_INITCODE_HASH = 0x88d3ac96b174d7028afb8da1d2f51f430f854e7d6897f25d98e19d43fb6cf582;
     /// @notice keccak256 of `MintRequests`' init code, as above.
-    bytes32 public constant REQUESTS_INITCODE_HASH = 0x7bdadaa9f27f7ef3c9d1a80684548516def3c4d1fca9da41ebb984e0d0860304;
+    bytes32 public constant REQUESTS_INITCODE_HASH = 0x1d212dbc4fd7daa5bcf551869e2461c977273e553faad227de93615b154cd417;
 
     /// @dev How many contracts the release record covers: the factory, the zap, the builder and MintRequests.
     uint256 private constant RELEASED = 4;
@@ -86,6 +86,7 @@ contract DeployWeighted is DeployChecks {
         public
         returns (WeightedIndexFactory factory, IndexZap zap, BasketBuilder builder, MintRequests requests)
     {
+        checkBroadcaster();
         checkOwner(owner);
         checkGuardian(owner, guardian);
         pyth = resolvePyth(pyth);

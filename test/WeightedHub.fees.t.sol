@@ -266,6 +266,8 @@ contract WeightedHubFeesTest is WeightedTest {
         address newPlatform = makeAddr("newPlatform");
         vm.prank(creator);
         factory.transferCreator(address(index), newCreator);
+        vm.prank(newCreator);
+        factory.acceptCreator(address(index));
         vm.prank(owner);
         factory.setFeePolicy(uint16(PLATFORM_FEE), 0, uint16(REFERRAL_SHARE), newPlatform, 0);
         uint256 feeShares = _gross(1e18) - 1e18;

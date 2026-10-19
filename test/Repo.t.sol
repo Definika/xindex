@@ -93,7 +93,7 @@ contract RepoTest is Test {
     ///      keeps the old check green.
     function test_I09_XS17_theKnownLimitationsAreDocumented() public view {
         string memory section = _section(_read("README.md"), "\n## Known limitations\n");
-        string[21] memory anchors = [
+        string[23] memory anchors = [
             "**A lone executor can take up to 2% of what it trades.**",
             "**A wrong price costs at most the turnover cap.**",
             "**Rebalancing needs Pyth's Hermes, and Hermes needs a key.**",
@@ -113,6 +113,8 @@ contract RepoTest is Test {
             "**The basket builder is one custody point.**",
             "**Airdrops, rewards and governance votes**",
             "**A hooked V4 pool cannot be routed through.**",
+            "**`PYTH` cannot be repointed.**",
+            "**An executor that also builds the block sees further.**",
             "**A `tokenIn` that calls back into the zap is unsupported**",
             "**Zap gas grows with components and hops, and nothing on chain bounds it.**"
         ];
@@ -122,6 +124,10 @@ contract RepoTest is Test {
         assertEq(_count(section, "\n- **"), anchors.length, "every limitation is pinned here, and only those");
         assertTrue(_contains(section, "until its own interval, 7 to 91 days"), "a fresh index waits its own interval");
         assertTrue(_contains(section, "restarts only `MIN_REBALANCE_INTERVAL` for a rebalance without a keep mask"));
+        assertTrue(
+            _contains(section, "first fillable block is the next open, near `MU_MIN`"), "RX-3, as the owner chose"
+        );
+        assertTrue(_contains(section, "five of seven named guardians suffice to mint"), "RX-6");
     }
 
     /// @dev The text of `text` from `heading` up to the next second-level heading, or to its end.

@@ -8,7 +8,8 @@ libs = ["../lib"]
 solc = "0.8.28"
 evm_version = "cancun"
 optimizer = true
-optimizer_runs = 1000
+# The release build's runs, so the hub tested here is the one deployed, inside EIP-170 (RX-50).
+optimizer_runs = 100
 remappings = [
     "forge-std/=../lib/forge-std/src/",
     "@openzeppelin/contracts/=../lib/openzeppelin-contracts/contracts/",

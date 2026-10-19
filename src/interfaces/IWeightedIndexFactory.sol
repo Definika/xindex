@@ -14,7 +14,7 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     /// @notice One component of an index to create.
     /// @param token A whitelisted token.
     /// @param weight Its share of the index's value, in basis points, non-zero; all of them sum to TOTAL_WEIGHT.
-    /// @param units Its raw units per whole index token at creation, within [MIN_RAW_UNITS, MAX_UNITS].
+    /// @param units Its raw units per whole index token at creation, within [MIN_RAW_UNITS, {maxUnitsOf} the token].
     struct ComponentSpec {
         address token;
         uint256 weight;
@@ -68,6 +68,8 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
         address indexed recipient,
         uint256 creationFee
     );
+    /// @notice `index`'s creator offered the role to `pendingCreator`, who takes it with {acceptCreator}.
+    event CreatorTransferStarted(address indexed index, address indexed creator, address indexed pendingCreator);
     /// @notice `index`'s creator role, and with it its creator's fee shares and allowlist, moved to `newCreator`.
     event CreatorTransferred(address indexed index, address indexed previousCreator, address indexed newCreator);
     /// @notice `account` may (`allowed`) or may no longer be issued shares of the gated `index`.
@@ -100,7 +102,7 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     /// @notice `token` carries the same Pyth price id as an earlier component. Pyth fills only the first of two equal
     ///         ids, so such an index could never settle a rebalance (V5-M1).
     error DuplicatePriceId(address token);
-    /// @notice `units` for `token` lie outside [MIN_RAW_UNITS, MAX_UNITS].
+    /// @notice `units` for `token` lie outside [MIN_RAW_UNITS, {maxUnitsOf} `token`].
     error UnitsOutOfRange(address token, uint256 units);
     /// @notice A weight is zero or above TOTAL_WEIGHT, or the weights do not sum to TOTAL_WEIGHT.
     error InvalidWeights();
@@ -165,14 +167,19 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     /// @notice Fewest raw units a component may start with, so no component starts coarse.
     function MIN_RAW_UNITS() external view returns (uint256);
 
-    /// @notice Most raw units a component may start with, leaving rebalances room to grow it within uint96.
+    /// @notice Most raw units any component may start with, leaving rebalances room to grow it within uint96.
     function MAX_UNITS() external view returns (uint256);
 
-    /// @notice Most a creator can charge on an issue or a redeem, in basis points of the shares; the hub holds the
-    ///         same.
+    /// @notice Most whole tokens of a component one index token may start with. With it, one wei-share backs a
+    ///         negligible amount of every component, so no fee's rounding is worth anything (RX-5).
+    function MAX_WHOLE_TOKENS() external view returns (uint256);
+
+    /// @notice Most a creator can charge on an issue or a redeem, in basis points of the shares. The hub checks only
+    ///         that the two rates sum to at most 125.
     function MAX_CREATOR_FEE_BPS() external view returns (uint256);
 
-    /// @notice Most the platform's policy can charge on an issue or a redeem, in basis points; the hub holds the same.
+    /// @notice Most the platform's policy can charge on an issue or a redeem, in basis points. The hub checks only
+    ///         the sum, as above.
     function MAX_PLATFORM_FEE_BPS() external view returns (uint256);
 
     /// @notice Most a creator can charge as a streaming fee, in basis points of the index's value per year.
@@ -184,7 +191,7 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     /// @notice Shortest rebalance interval an index can be created with; the hub holds the same.
     function MIN_REBALANCE_INTERVAL() external view returns (uint256);
 
-    /// @notice Longest rebalance interval an index can be created with; the hub holds the same.
+    /// @notice Longest rebalance interval an index can be created with. Only the factory checks it.
     function MAX_REBALANCE_INTERVAL() external view returns (uint256);
 
     /// @notice Delay before a listing can be executed.
@@ -229,6 +236,10 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     /// @notice `token`'s decimals as read when its listing was proposed, which a new index copies.
     function decimalsOf(address token) external view returns (uint8);
 
+    /// @notice Most raw units of `token` an index may start with: MAX_WHOLE_TOKENS whole tokens at its listed decimals,
+    ///         capped at MAX_UNITS.
+    function maxUnitsOf(address token) external view returns (uint256);
+
     /// @notice When `token`'s pending listing becomes executable; zero when none was proposed. Stays set after it
     ///         expires: read {listingPending}.
     function listingEta(address token) external view returns (uint256);
@@ -242,7 +253,7 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     /// @notice Whether a guardian change can still be executed or is waiting out its delay.
     function guardianChangePending() external view returns (bool);
 
-    /// @notice `index`'s creator: who created it, or whoever the role was handed to since ({transferCreator}). The
+    /// @notice `index`'s creator: who created it, or whoever accepted the role since ({acceptCreator}). The
     ///         creator receives the creator's fee shares and keeps a gated index's allowlist. It has no power over the
     ///         index's components.
     function creatorOf(address index) external view returns (address);
@@ -272,10 +283,18 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     ///         creator.
     function platformFeeRecipient() external view returns (address);
 
-    /// @notice `index`'s creator only. Hands the creator role to `newCreator`. `newCreator` cannot be zero
+    /// @notice `index`'s creator only. Offers the creator role to `newCreator`, who takes it with {acceptCreator};
+    ///         until then the creator keeps it, and a later offer replaces this one. `newCreator` cannot be zero
     ///         (ZeroAddress), the factory or an index (InvalidRecipient), since those could not hold the shares.
     ///         Reverts NotIndex for an address the factory did not deploy.
     function transferCreator(address index, address newCreator) external;
+
+    /// @notice The account `index`'s creator offered the role to, which only it can accept; zero if none.
+    function pendingCreatorOf(address index) external view returns (address);
+
+    /// @notice The pending creator of `index` only (Unauthorized otherwise). Takes the creator role, so `creatorOf`
+    ///         never names an account that did not agree to it (RX-22).
+    function acceptCreator(address index) external;
 
     /// @notice `index`'s creator only. Lets `account` be issued shares of `index` (`allowed`), or no longer. Only a
     ///         gated index reads it.

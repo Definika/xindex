@@ -429,6 +429,8 @@ const nvdaStock = (mixSupply * mixUnits[2]) / 10n ** 18n / 2n;
 await deal(T.NVDAON.a, executor, nvdaStock);
 // The executor delivers from stock only within the owner's allowance (CF-1), so the owner grants it for this stock.
 await send(execOwner, executor, EXECUTOR.abi, "setStockAllowance", [T.NVDAON.a, nvdaStock]);
+// What request fills may turn of the float into stock (RX-1, RX-9): the whole float, for this rehearsal.
+await send(execOwner, executor, EXECUTOR.abi, "setRequestUsdcAllowance", [2n ** 256n - 1n]);
 await mineBlocks(25);
 ok((await proposals(LQ)) === 1n, "LQ started");
 await mineBlocks(25);

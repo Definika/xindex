@@ -615,6 +615,8 @@ contract CheckToken is Script {
                 || selector == 0x16c02129 // blacklists(address): a blacklist's view (PEPE)
                 || selector == 0xe5839836 // isFrozen(address): a freeze list's view (Paxos)
                 || selector == 0x4a393149 // onTransfer(address,address,uint256): MiniMe (LEO) asks its controller
+                || selector == 0xe5c7160b // blocklist(address): Gala (GALA), the source reading of 2026-10-18 (CF-4)
+                || selector == 0x8e204c43 // isBlocklisted(address): a blocklist's view (GALA)
         ) {
             return BLACKLIST;
         }
@@ -631,6 +633,7 @@ contract CheckToken is Script {
                 || selector == 0x7df9a674 // ownerReallocateFrom(address,address,uint256): WLFI, burns from any holder
                 || selector == 0x7adf1239 // ownerBatchReallocateFrom(address[],address[],uint256[]): WLFI, the same
                 || selector == 0xac9fe421 // setSuperOperator(address,bool): SAND, operators that need no allowance (CF-4)
+                || selector == 0x699c834b // setExecutionOperator(address,bool): SAND's second admin, the same (CF-4)
         ) {
             return DESTROY;
         }

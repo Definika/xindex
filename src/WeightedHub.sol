@@ -105,6 +105,7 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
     uint256 public constant MAX_TURNOVER = 0.2e18;
     uint256 public constant MIN_TRADE = 0.001e18;
     uint256 public constant MAX_CONFIDENCE = 0.02e18;
+    uint256 public constant MAX_EMA_DEVIATION = 0.05e18;
     uint256 public constant PRICE_LAG = 12;
     uint256 public constant MAX_PRICE = 1e45;
     int256 public constant MIN_EXPO = -18;
@@ -263,10 +264,12 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         Config memory cfg = _config;
         _accrueStreamingFee(to, creator, platform, cfg);
 
-        // Effects and event first, then pull the basket. The check in the loop below reverts the whole mint unless
-        // every component arrives in full.
+        // Effects and event first, then pull the basket. The checks in the loop below revert the whole mint unless
+        // every leg already backs the existing supply and every component arrives in full.
+        uint256 supply = totalSupply();
+        uint256 scale = _scale;
         uint256 gross = _grossShares(shares, cfg);
-        uint256[] memory amounts = _basketAmounts(gross, _scale, Math.Rounding.Ceil);
+        uint256[] memory amounts = _basketAmounts(gross, scale, Math.Rounding.Ceil);
         _mint(to, shares);
         // The factory call above is a view; nothing external can run in between.
         // forge-lint: disable-next-line(reentrancy-events)
@@ -284,6 +287,11 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         for (uint256 i = 0; i < n; ++i) {
             IERC20 token = IERC20(_components[i].token);
             uint256 before = token.balanceOf(address(this));
+            // A leg below what the existing supply needs, as after an issuer burned the index's balance, would hand
+            // this deposit to earlier holders. The balance only verifies; no amount comes from it (RX-8).
+            uint256 required =
+                _backing(supply, _components[i].units, scale, Math.Rounding.Floor) + totalClaims[address(token)];
+            if (before < required) revert Underbacked(address(token), before, required);
             token.safeTransferFrom(msg.sender, address(this), amounts[i]);
             // Rejects fee-on-transfer tokens, even a listed token that starts charging a fee later.
             if (token.balanceOf(address(this)) - before < amounts[i]) {
@@ -719,6 +727,7 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
                 revert PriceMismatch(feed.id, published);
             }
             prices[i] = _scaledPrice(feed.price, i);
+            _checkEma(feed.price, feed.emaPrice, i);
             ++k;
         }
     }
@@ -748,6 +757,21 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         return value;
     }
 
+    /// @dev Reverts unless `p` is within MAX_EMA_DEVIATION of `ema`, the moving average Pyth publishes in the same
+    ///      update, at the same exponent. A push of a few seconds on thin venues moves the price far more than its
+    ///      average, so it cannot set the price of a fill (RX-27). `p` is positive, checked by {_scaledPrice}.
+    function _checkEma(PythStructs.Price memory p, PythStructs.Price memory ema, uint256 i) private view {
+        // Both positive, checked here and in {_scaledPrice}, so the casts keep the values.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        uint256 price = uint256(int256(p.price));
+        // forge-lint: disable-next-line(unsafe-typecast)
+        uint256 average = ema.price > 0 ? uint256(int256(ema.price)) : 0;
+        uint256 gap = price > average ? price - average : average - price;
+        if (ema.expo != p.expo || average == 0 || gap * WAD > average * MAX_EMA_DEVIATION) {
+            revert PriceOffAverage(_components[i].token, p.price, ema.price);
+        }
+    }
+
     /// @dev Writes the settlement's new units (they carry the same scale as the old ones), records whether it had a
     ///      keep mask, bumps the nonce and clears the pending rebalance.
     function _applyRebalance(uint256[] memory units) private returns (uint256 id) {
@@ -769,13 +793,16 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
     /// @dev Runs after the executor returns. For every leg that moved, requires the index's balance to cover both:
     ///      - the backing invariant with the new units at `scale`;
     ///      - what it held before paying out, minus `amountsOut`, plus the whole of `amountsIn`.
+    ///      And every leg the index bought must still be able to leave it: the index sends itself one raw unit of it,
+    ///      measured. A token that blocks only its sender, as Tether Gold does, would otherwise let a fill move good
+    ///      legs into a leg no holder can take out (RX-12).
     function _checkBacking(
         uint256[] memory units,
         uint256 scale,
         uint256[] memory amountsOut,
         uint256[] memory amountsIn,
         uint256[] memory held
-    ) private view {
+    ) private {
         uint256 supply = totalSupply();
         uint256 n = units.length;
         for (uint256 i = 0; i < n; ++i) {
@@ -787,6 +814,11 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
             if (delivered > required) required = delivered;
             uint256 balance = IERC20(token).balanceOf(address(this));
             if (balance < required) revert RebalanceUnderfunded(token, balance, required);
+            if (amountsIn[i] == 0) continue;
+            // Under the guard, and after every check of the settlement has read its balances.
+            if (!IERC20(token).trySafeTransfer(address(this), 1) || IERC20(token).balanceOf(address(this)) < balance) {
+                revert CannotSendOut(token);
+            }
         }
     }
 

@@ -156,3 +156,90 @@ test("XS-13: replacement fees never pass MAX_FEE_GWEI", () => {
   for (let i = 0; i < 100; i++) fees = M.replacementFees(fees, 50n, 150n);
   assert.deepEqual(fees, { maxFeePerGas: 150n, maxPriorityFeePerGas: 150n }, "a hundred bumps stay at the cap");
 });
+
+test("RX-1: a price values anything only while fresh and narrow", () => {
+  const p = { price: 100_00000000n, conf: 2_00000000n, expo: -8, publishTime: 1_000 };
+  assert.equal(M.freshPrice(p, 1_060, 60n, 200n), true, "60 s old, conf at 2%");
+  assert.equal(M.freshPrice(p, 1_061, 60n, 200n), false, "a closed feed's last close is refused");
+  assert.equal(M.freshPrice({ ...p, conf: 2_00000001n }, 1_000, 60n, 200n), false, "a wider interval is refused");
+  assert.equal(M.freshPrice({ ...p, price: 0n }, 1_000, 60n, 200n), false);
+  assert.equal(M.freshPrice(undefined, 1_000, 60n, 200n), false);
+});
+
+test("RX-2: share-priced Ondo stock is never delivered, and counts as nothing when kept", () => {
+  const price = { price: 170_00000000n, expo: -8 };
+  const kept = M.stockChangeUsd({ out: 100n * 10n ** 18n, in: 0n, held: 0n, routed: false, decimals: 18, price, quoteUsdc: null, sharePriced: true });
+  assert.equal(kept, 0, "a token worth sValue shares is not booked at the share's price");
+  const plain = M.stockChangeUsd({ out: 100n * 10n ** 18n, in: 0n, held: 0n, routed: false, decimals: 18, price, quoteUsdc: null });
+  assert.equal(plain, 17_000);
+  assert.equal(M.deliversSharePricedStock({ need: 1n, held: 1n, sharePriced: true }), true);
+  assert.equal(M.deliversSharePricedStock({ need: 1n, held: 0n, sharePriced: true }), false, "bought, not delivered");
+  assert.equal(M.deliversSharePricedStock({ need: 1n, held: 5n, sharePriced: false }), false);
+});
+
+test("RX-3, RX-31: Pyth's schedule decides when a share feed publishes, holidays and half days included", async () => {
+  const { US_EQUITY_SCHEDULE: S } = await import("../../bot/config.mjs");
+  // Eastern Standard Time is UTC-5, Eastern Daylight Time UTC-4.
+  const est = (y, mo, d, h, m) => Date.UTC(y, mo - 1, d, h + 5, m, 0) / 1000;
+  const edt = (y, mo, d, h, m) => Date.UTC(y, mo - 1, d, h + 4, m, 0) / 1000;
+  assert.equal(M.inSchedule(est(2027, 2, 16, 9, 30), S), true, "a Tuesday's open");
+  assert.equal(M.inSchedule(est(2027, 2, 16, 15, 59), S), true);
+  assert.equal(M.inSchedule(est(2027, 2, 16, 16, 0), S), false, "the close is excluded");
+  assert.equal(M.inSchedule(est(2027, 2, 16, 9, 29), S), false);
+  assert.equal(M.inSchedule(est(2027, 2, 13, 12, 0), S), false, "a Saturday");
+  assert.equal(M.inSchedule(est(2027, 2, 15, 12, 0), S), false, "Presidents' Day");
+  assert.equal(M.inSchedule(est(2026, 11, 26, 12, 0), S), false, "Thanksgiving");
+  assert.equal(M.inSchedule(est(2026, 11, 27, 12, 59), S), true, "the half day after it");
+  assert.equal(M.inSchedule(est(2026, 11, 27, 13, 0), S), false);
+  assert.equal(M.inSchedule(edt(2027, 6, 1, 10, 0), S), true, "summer time");
+  // 2 h of notice and a 24 h auction: μ reaches 1 at the start plus 14 h.
+  assert.equal(M.sessionStartOk(est(2027, 2, 16, 0, 0), 7_200, 86_400, S), true, "a 00:00 start puts μ = 1 at 14:00");
+  assert.equal(M.sessionStartOk(est(2027, 2, 16, 9, 35), 7_200, 86_400, S), false, "an in-session start puts μ = 1 at 23:35");
+  assert.equal(M.sessionStartOk(est(2026, 11, 26, 0, 0), 7_200, 86_400, S), false, "μ = 1 on Thanksgiving");
+});
+
+test("RX-16: a subsidised fill fits only what is left of the day's budget", () => {
+  const spent = [{ at: 100n, usd: 40 }, { at: 90_000n, usd: 30 }];
+  assert.deepEqual(M.subsidyFits(spent, 5, 90_100n, 50), { ok: true, window: [spent[1]] }, "profit needs no budget");
+  assert.equal(M.subsidyFits(spent, -20, 90_100n, 50).ok, true, "30 of the last day and 20 more is 50");
+  assert.equal(M.subsidyFits(spent, -21, 90_100n, 50).ok, false);
+  assert.equal(M.subsidyFits(spent, -21, 86_499n, 90).ok, false, "the first is still inside the day");
+  assert.equal(M.subsidyFits([], -0.01, 0n, 0).ok, false, "with no budget, no subsidy");
+});
+
+test("RX-10: a reverted request fill strikes the request, its requester and its index", () => {
+  const r = { requester: "0xABcd000000000000000000000000000000000001", index: "0xEF00000000000000000000000000000000000002" };
+  assert.deepEqual(M.requestStrikeKeys(7n, r), [
+    "request:7",
+    "requester:0xabcd000000000000000000000000000000000001",
+    "index:0xef00000000000000000000000000000000000002",
+  ]);
+  assert.deepEqual(M.requestStrikeKeys(7n, undefined), ["request:7"], "a request no longer known strikes only itself");
+});
+
+test("RX-34: the start checks take the richest ready indexes, at most the cap", () => {
+  const ready = [{ index: "a", tvl: 5 }, { index: "b", tvl: 50 }, { index: "c", tvl: 20 }];
+  const { chosen, rest } = M.startsToCheck(ready, 2);
+  assert.deepEqual(chosen.map((r) => r.index), ["b", "c"]);
+  assert.deepEqual(rest.map((r) => r.index), ["a"]);
+});
+
+test("RX-18: Pyth's update fee counts against a fill like its gas", () => {
+  const gwei = 1_000_000_000n;
+  const base = M.fillCostUsd({ used: 1_000_000n, nextBase: 10n * gwei, tip: 2n * gwei, ethUsd: 3_000 });
+  assert.equal(base, 36, "1M gas at 12 gwei and $3,000");
+  assert.equal(M.fillCostUsd({ used: 1_000_000n, nextBase: 10n * gwei, tip: 2n * gwei, ethUsd: 3_000, pythFee: 10n ** 15n }), 39);
+});
+
+test("RX-9: only prices Pyth's contract returned identically from the signed update are kept", () => {
+  const key = (id) => id.toLowerCase().replace(/^0x/, "");
+  const p = { price: 300_00000000n, conf: 10n, expo: -8, publishTime: 1_000 };
+  const prices = new Map([
+    ["aa", p],
+    ["bb", { ...p, price: 999_00000000n }],
+  ]);
+  const feed = (id, price) => ({ id, price: { price, conf: 10n, expo: -8, publishTime: 1_000n } });
+  const kept = M.verifiedPrices(prices, [feed("0xAA", 300_00000000n), feed("0xbb", 282_00000000n)], key);
+  assert.deepEqual([...kept.keys()], ["aa"], "a price Hermes inflated is dropped");
+  assert.equal(M.verifiedPrices(prices, [], key).size, 0, "nothing Pyth did not return is kept");
+});

@@ -327,6 +327,17 @@ contract MintRequestsTest is XindexTest {
         vm.stopPrank();
     }
 
+    /// @dev A requester filling its own redeem request under a USDT fee lowers its own balance by the fee: that is
+    ///      nothing delivered, refused as BelowLimit, not an arithmetic panic (RX-54).
+    function test_RX54_aSelfFillUnderAUsdtFeeIsBelowTheLimit() public {
+        uint256 id = _requestRedeem(1e18, address(usdt), 1_000e6);
+        usdt.setParams(10, 5);
+        _fund(alice, address(usdt), 2_000e6);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IMintRequests.BelowLimit.selector, 0, 1_000e6));
+        requests.fill(id, 1_000e6);
+    }
+
     function test_fill_windowEndsAtTheDeadline() public {
         uint256 id = _requestMint(address(usdc), 300e6, 1e18);
         uint256 deadline = requests.getRequest(id).deadline;

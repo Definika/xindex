@@ -358,6 +358,23 @@ contract BasketBuilderTest is XindexTest {
         assertEq(builder.escrowOf(alice, address(link)), need[2]);
     }
 
+    /// @dev An escrow above what the basket needs, as after a rebalance shrank a leg, buys nothing more of that leg and
+    ///      keeps every unit: `_stillNeeded` clamps at zero rather than underflowing (RX-67).
+    function test_RX67_anEscrowAboveTheNeedBuysNothingAndKeepsItsSurplus() public {
+        uint256[] memory need = index.previewIssue(1e18);
+        uint256 surplus = need[2] * 3;
+        link.mint(alice, surplus);
+        vm.startPrank(alice);
+        link.approve(address(builder), surplus);
+        builder.deposit(address(link), surplus);
+        vm.stopPrank();
+
+        uint256 spent = _buyFor(alice, 1e18, 200e6, _one(2));
+        assertEq(spent, 0, "nothing bought for a leg the escrow more than covers");
+        assertEq(builder.escrowOf(alice, address(link)), surplus, "and nothing of the surplus is lost");
+        _assertCovered(address(link));
+    }
+
     function test_buyTopsUpALegTheEscrowPartlyCovers() public {
         uint256[] memory need = index.previewIssue(1e18);
         uint256 half = need[2] / 2;

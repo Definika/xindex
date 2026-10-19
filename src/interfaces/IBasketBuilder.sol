@@ -14,9 +14,11 @@ import {IUniversalRouterSwaps} from "./IUniversalRouterSwaps.sol";
 ///
 ///      Errors the builder raises, of the shared ones:
 ///      - NotIndex: an index the factory did not deploy.
-///      - ZeroAddress: a zero factory, router, `tokenIn` or `tokenOut`.
-///      - InvalidRecipient: a recipient that is zero, the builder, the router, the PoolManager, the factory or an
-///        index (RT-21).
+///      - ZeroAddress: a zero factory, router, `tokenIn`, `tokenOut` or recipient.
+///      - InvalidRecipient: a recipient that is the builder, the router, the PoolManager, the factory or an index
+///        (RT-21).
+///      The one-unit send-out probe runs on every credit that brings a token in, by deposit, buy or redeem; a sale's
+///      unsold input, credited back, is a token the builder just sent out (RX-43).
 ///      - LengthMismatch: routes that do not pair with their legs.
 ///      - The engine's swap errors.
 interface IBasketBuilder is IUniversalRouterSwaps {

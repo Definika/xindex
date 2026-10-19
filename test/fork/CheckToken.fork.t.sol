@@ -71,9 +71,9 @@ contract CheckTokenForkTest is Test {
 
     /// @dev The wide list is what passed the check, with two exceptions pinned so a change in what the check says
     ///      about either shows. Tether Gold, which the check refuses under the WBT rule and the owner admitted on
-    ///      2026-10-10 regardless, is pinned as refused. SAND goes to review: the audit of 2026-10-13 (CF-4) added The
-    ///      Sandbox's `setSuperOperator`, whose operators move and burn any holder's balance without an allowance, to
-    ///      the check's names, and the owner's reading of SAND's source decides its listing.
+    ///      2026-10-10 regardless, is pinned as refused. GALA goes to review: the source reading of 2026-10-18 (CF-4)
+    ///      added its `blocklist`, which sits beside a `burnFrom` that spends an allowance
+    ///      (design/2026-10-18-token-source-reading.md), and the owner kept it.
     function testFork_everyWideTokenPassesTheCheck() public {
         ConfigureWeighted.Entry[] memory list = new ConfigureWeighted().wideMainnetList();
         for (uint256 i = 0; i < list.length; ++i) {
@@ -81,9 +81,21 @@ contract CheckTokenForkTest is Test {
             assertEq(uint8(r.transfers), uint8(CheckToken.Transfers.Exact), r.symbol);
             CheckToken.Verdict expected = CheckToken.Verdict.Listable;
             if (list[i].token == MainnetAddresses.XAUT) expected = CheckToken.Verdict.Refused;
-            if (list[i].token == MainnetAddresses.SAND) expected = CheckToken.Verdict.Review;
+            if (list[i].token == MainnetAddresses.GALA) expected = CheckToken.Verdict.Review;
             assertEq(uint8(r.verdict), uint8(expected), r.symbol);
         }
+    }
+
+    /// @dev CF-4: SAND goes to review with its admin named. The audit of 2026-10-13 added The Sandbox's
+    ///      `setSuperOperator`, whose operators move and burn any holder's balance without an allowance, to the check's
+    ///      names; the source reading of 2026-10-18 added its second admin's `setExecutionOperator`, and the owner then
+    ///      took SAND off the list.
+    function testFork_CF4_sandGoesToReviewWithItsAdmin() public {
+        CheckToken.Report memory r = _check(A.SAND);
+        assertEq(r.symbol, "SAND");
+        assertEq(r.powers & checker.DESTROY(), checker.DESTROY(), "the operators' powers");
+        assertEq(uint8(r.owner.kind), uint8(CheckToken.Kind.Safe), "the admin, read through getAdmin()");
+        assertEq(uint8(r.verdict), uint8(CheckToken.Verdict.Review));
     }
 
     /// @dev The two the WBT rule kept off the wide list. LEO is a MiniMe token: its controller destroys any balance

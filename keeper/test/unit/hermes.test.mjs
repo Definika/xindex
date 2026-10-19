@@ -119,3 +119,14 @@ test("latest(): chunks of 50 ids, merged", async () => {
   assert.equal(prices.size, 120);
   assert.equal(prices.get(ids[119].slice(2)).publishTime, 7);
 });
+
+test("RX-9, RX-30: latestSigned() returns the signed update, and asks Hermes to leave out ids it does not serve", async () => {
+  reset((req, res, url) => {
+    assert.equal(url.searchParams.get("ignore_invalid_price_ids"), "true");
+    assert.equal(url.searchParams.get("encoding"), "hex");
+    json(res, { parsed: [entry(A, 9)], binary: { data: ["abcd"] } });
+  });
+  const { prices, updates } = await hermes().latestSigned([A, `0x${"ee".repeat(32)}`], soon());
+  assert.equal(prices.size, 1, "the unserved id is simply absent");
+  assert.deepEqual(updates, ["0xabcd"]);
+});

@@ -477,7 +477,7 @@ contract CheckTokenTest is Test {
         for (uint256 i = 0; i < pauses.length; ++i) {
             _assertPower(pauses[i], checker.PAUSE());
         }
-        string[25] memory blacklists = [
+        string[27] memory blacklists = [
             "addBlackList(address)",
             "blacklist(address)",
             "freeze(address)",
@@ -502,12 +502,14 @@ contract CheckTokenTest is Test {
             "isBlackListed(address)",
             "blacklists(address)",
             "isFrozen(address)",
-            "onTransfer(address,address,uint256)"
+            "onTransfer(address,address,uint256)",
+            "blocklist(address)",
+            "isBlocklisted(address)"
         ];
         for (uint256 i = 0; i < blacklists.length; ++i) {
             _assertPower(blacklists[i], checker.BLACKLIST());
         }
-        string[12] memory destroys = [
+        string[13] memory destroys = [
             "destroyBlackFunds(address)",
             "wipeFrozenAddress(address)",
             "wipeBlacklistedAccount(address)",
@@ -519,7 +521,8 @@ contract CheckTokenTest is Test {
             "destroyTokens(address,uint256)",
             "ownerReallocateFrom(address,address,uint256)",
             "ownerBatchReallocateFrom(address[],address[],uint256[])",
-            "setSuperOperator(address,bool)"
+            "setSuperOperator(address,bool)",
+            "setExecutionOperator(address,bool)"
         ];
         for (uint256 i = 0; i < destroys.length; ++i) {
             _assertPower(destroys[i], checker.DESTROY());
@@ -540,6 +543,20 @@ contract CheckTokenTest is Test {
         _assertPower("transferAndCall(address,uint256,bytes)", checker.CALLBACK());
         _assertPower("transferAndCall(address,uint256)", checker.CALLBACK());
         _assertPower("hasRole(bytes32,address)", checker.ROLES());
+    }
+
+    /// @dev CF-4: the names the owed source reading of 2026-10-18 found outside the table. GALA's blocklist beside its
+    ///      `burnFrom` goes to review, since the check cannot tell whether that burn needs an allowance; SAND's second
+    ///      admin appoints operators that move any balance, as its first does.
+    function test_CF4_theSourceReadingsNamesAreInTheTable() public view {
+        assertEq(checker.powerOf(0xe5c7160b), checker.BLACKLIST(), "blocklist(address), GALA");
+        assertEq(checker.powerOf(0x8e204c43), checker.BLACKLIST(), "isBlocklisted(address), GALA");
+        assertEq(checker.powerOf(0x699c834b), checker.DESTROY(), "setExecutionOperator(address,bool), SAND");
+
+        CheckToken.Report memory gala = _listable();
+        gala.powers = checker.powerOf(0xe5c7160b) | checker.powerOf(0x79cc6790);
+        (CheckToken.Verdict v,) = _verdict(gala);
+        assertEq(uint8(v), uint8(CheckToken.Verdict.Review), "a blocklist beside burnFrom is read by a person");
     }
 
     function _assertPower(string memory signature, uint256 power) internal view {

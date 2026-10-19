@@ -403,10 +403,10 @@ ignored, a fee raised after creation, the referrer paid from the creator's part)
 |---|---|---|---|
 | The contracts | Have a bug | Everything | Five reviews, the invariant suite, the mutants, the external audit before mainnet |
 | Pyth's five keys, Pyth's governance | Sign or install a forged price | One fill's turnover | 20% of each moving coin's units per fill, once per cadence; the auction floor; the guardian's cancel; hardening 1 of 5.4 if adopted |
-| Wormhole's guardians (13 of 19) | Mint unbacked copies, upgrade every copy | Every Bridged leg | The creator chose the legs; the app shows the wrapped share of value |
+| Wormhole's guardians (13 of 19; 5 of 7 named ones to mint copies from chains on delegated guardian sets, RX-6) | Mint unbacked copies, upgrade every copy | Every Bridged leg | The creator chose the legs; the app shows the wrapped share of value and each copy's quorum |
 | A custodian (BitGo, Coinbase, Binance, Tether, Ondo) | Freeze, blacklist, burn | That leg | Skipped on exit, claimable later; rebalanced around |
 | The creator | Set fees at creation, keep an allowlist | Nothing over coins | Fees capped and immutable |
-| The owner Safe | List coins, set future fee policy, replace the guardian | Nothing over coins | Timelocks; three signatures |
+| The owner Safe | List coins, set future fee policy, replace the guardian, start or cancel a rebalance, delist, hand over ownership | Nothing over coins | Timelocks on listings and the guardian; three signatures for all of it; the rebalance, delist, fee-policy and ownership powers are instant (RX-49) |
 | The guardian | Stall rebalances, rebalance around a coin | Drift | Replaceable behind the guardian delay |
 | An executor or filler | Fill at the auction's price | Bounded by the cap and `μ` | Untrusted by construction |
 | A referrer | Collect part of the platform fee | Nothing | Taken from the platform's part only |
@@ -425,6 +425,11 @@ minus the declared fee, with no key, feed, bridge or bot in the way.
   Bitcoin.
 
 ## 9. Decisions for the owner
+
+**Update, 2026-10-18:** the owner took items 4 to 10 as proposed, the hardenings of item 8 to be decided by the replay
+and no Base deployment for now, with a creation fee of zero. Items 1 to 3 (the platform's fee, the referrer's share,
+the platform's streaming rate) are not yet decided, so the deployed policy stays at zero; item 11 is counsel's
+(`design/2026-10-18-pre-mainnet-readings.md`, section 5).
 
 1. Fees at launch: in shares at mint and burn (5.6 A), with the creator's rate 0 to 100 bps per side and the
    platform's rate 0 to 25 bps per side at creation; or no fee after all.
