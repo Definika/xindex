@@ -93,7 +93,9 @@ contract MintRequests is IMintRequests, ReentrancyGuard {
         // Measure what the requester actually received, so a transfer fee cannot push it below their limit.
         uint256 before = IERC20(delivered).balanceOf(requester);
         IERC20(delivered).safeTransferFrom(msg.sender, requester, amount);
-        uint256 received = IERC20(delivered).balanceOf(requester) - before;
+        uint256 balance = IERC20(delivered).balanceOf(requester);
+        // A self-fill under a transfer fee lowers the balance: that is nothing received, not an underflow (RX-54).
+        uint256 received = balance > before ? balance - before : 0;
         if (received < request.limit) revert BelowLimit(received, request.limit);
         emit RequestFilled(id, msg.sender, received);
 

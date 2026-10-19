@@ -42,6 +42,11 @@ contract KeeperExecutor is IRebalanceExecutor {
     /// @notice How much of each coin the keeper may still deliver from stock, USDC aside, whose float the fill's floor
     ///         bounds. Only the owner sets it, and every delivery from stock spends it (CF-1).
     mapping(address token => uint256 amount) public stockAllowance;
+    /// @notice How much of the USDC float request fills may still turn into anything else: every request fill that
+    ///         ends with less USDC than it started spends the difference. A fill reads no Pyth update on chain, so a
+    ///         price the bot got wrong, stale or forged, could otherwise spend the whole float (RX-1, RX-9). Only the
+    ///         owner sets it.
+    uint256 public requestUsdcAllowance;
     /// @dev The index being filled, for its callback only.
     address private transient _filling;
 
@@ -49,6 +54,34 @@ contract KeeperExecutor is IRebalanceExecutor {
     event KeeperSet(address indexed previous, address indexed next);
     /// @notice The keeper may now deliver up to `amount` of `token` from stock.
     event StockAllowanceSet(address indexed token, uint256 amount);
+    /// @notice Request fills may now spend up to `amount` of the USDC float.
+    event RequestUsdcAllowanceSet(uint256 amount);
+
+    /// @notice A request fill, for {fillMint} and {fillRedeem}.
+    /// @param id The request.
+    /// @param amount {fillMint}: the shares delivered; {fillRedeem}: the stablecoin paid.
+    /// @param routes One per component of the request's index, as {fill}'s.
+    /// @param legLimits Empty, or one per component, zero meaning no bound: {fillMint}'s most USDC a leg's purchase may
+    ///        cost, {fillRedeem}'s least USDC a leg's sale must return. A pool pushed against the fill then stops it at
+    ///        its own leg, before the rest of the basket trades (RX-10).
+    /// @param stableRoute An exact-input path from the request's stablecoin to USDC; empty when that stablecoin is USDC.
+    /// @param stableLimit Zero for no bound: {fillMint}'s least USDC the escrow's sale must return, {fillRedeem}'s most
+    ///        USDC buying the stablecoin may cost.
+    /// @param expectedNonce The index's rebalanceNonce the fill was simulated at: a settlement since then re-sizes the
+    ///        basket, so the fill stops (RX-4).
+    /// @param minUsdcDelta The least the USDC float may change by.
+    /// @param deadline The latest block timestamp the fill may be mined at.
+    struct RequestFill {
+        uint256 id;
+        uint256 amount;
+        bytes[] routes;
+        uint256[] legLimits;
+        bytes stableRoute;
+        uint256 stableLimit;
+        uint256 expectedNonce;
+        int256 minUsdcDelta;
+        uint256 deadline;
+    }
 
     /// @notice An address argument is zero.
     error ZeroAddress();
@@ -79,6 +112,10 @@ contract KeeperExecutor is IRebalanceExecutor {
     ///         grew the settlement past what the bot accepts, so the fill stops before the hub parses Pyth's update
     ///         (XS-4).
     error SupplyMovedOn(uint256 supply, uint256 maxSupply);
+    /// @notice The index settled a rebalance since the fill's simulation: its nonce is `actual`, not `expected` (RX-4).
+    error StaleRebalanceNonce(uint256 expected, uint256 actual);
+    /// @notice A request fill would spend `spent` of the USDC float, above the `allowance` request fills have left.
+    error OverRequestAllowance(uint256 spent, uint256 allowance);
 
     constructor(
         IV3SwapRouter router,
@@ -126,6 +163,13 @@ contract KeeperExecutor is IRebalanceExecutor {
     function setStockAllowance(address token, uint256 amount) external onlyOwner {
         stockAllowance[token] = amount;
         emit StockAllowanceSet(token, amount);
+    }
+
+    /// @notice Owner only. Lets request fills spend up to `amount` of the USDC float from now on, replacing what was
+    ///         left of the previous allowance.
+    function setRequestUsdcAllowance(uint256 amount) external onlyOwner {
+        requestUsdcAllowance = amount;
+        emit RequestUsdcAllowanceSet(amount);
     }
 
     /// @notice Keeper only. Fills `index`'s auction with `priceUpdate`, forwarding all of msg.value to Pyth as its fee.
@@ -190,8 +234,8 @@ contract KeeperExecutor is IRebalanceExecutor {
         if (msg.sender != _filling) revert UnexpectedCaller(msg.sender);
         bytes[] memory routes = abi.decode(data, (bytes[]));
         address[] memory tokens = IWeightedHub(msg.sender).componentTokens();
-        _sell(tokens, amountsOut, routes);
-        _acquire(tokens, amountsIn, routes);
+        _sell(tokens, amountsOut, routes, new uint256[](0));
+        _acquire(tokens, amountsIn, routes, new uint256[](0));
         for (uint256 i = 0; i < tokens.length; ++i) {
             if (amountsIn[i] != 0) SafeERC20.safeTransfer(IERC20(tokens[i]), msg.sender, amountsIn[i]);
         }
@@ -201,117 +245,109 @@ contract KeeperExecutor is IRebalanceExecutor {
     // Requests
     // ---------------------------------------------------------------------
 
-    /// @notice Keeper only. Fills mint request `id` with `shares` of its index, at least its limit: buys the basket
-    ///         for them from stock and along `routes`, issues them here, delivers them to the requester and takes the
-    ///         escrowed stablecoin, which `stableRoute` sells into USDC when it is not USDC itself.
-    /// @param routes One per component of the request's index, as {fill}'s.
-    /// @param stableRoute An exact-input Uniswap V3 path from the request's stablecoin to USDC; empty when that
-    ///        stablecoin is USDC.
-    /// @param minUsdcDelta The least the USDC float may change by, the escrow counted once it is USDC.
-    /// @param deadline The latest block timestamp the fill may be mined at.
+    /// @notice Keeper only. Fills mint request `f.id` with `f.amount` shares of its index, at least its limit: buys the
+    ///         basket for them from stock and along `f.routes`, issues them here, delivers them to the requester and
+    ///         takes the escrowed stablecoin, which `f.stableRoute` sells into USDC when it is not USDC itself.
     /// @return usdcDelta What the fill changed the float by.
     /// @return gasUsed The gas the call used inside this function, for the bot's simulation.
-    function fillMint(
-        uint256 id,
-        uint256 shares,
-        bytes[] calldata routes,
-        bytes calldata stableRoute,
-        int256 minUsdcDelta,
-        uint256 deadline
-    ) external returns (int256 usdcDelta, uint256 gasUsed) {
+    function fillMint(RequestFill calldata f) external returns (int256 usdcDelta, uint256 gasUsed) {
         uint256 gasStart = gasleft();
         _checkKeeper();
-        if (block.timestamp > deadline) revert Expired(deadline);
+        if (block.timestamp > f.deadline) revert Expired(f.deadline);
         uint256 before = IERC20(USDC).balanceOf(address(this));
-        _mintFor(id, shares, routes, stableRoute);
-        usdcDelta = SafeCast.toInt256(IERC20(USDC).balanceOf(address(this))) - SafeCast.toInt256(before);
-        if (usdcDelta < minUsdcDelta) revert TooCostly(usdcDelta, minUsdcDelta);
+        _mintFor(f);
+        usdcDelta = _requestDelta(before, f.minUsdcDelta);
         gasUsed = gasStart - gasleft();
     }
 
-    /// @dev The basket for `shares` of the request's index, from stock and along `routes`, issued here and delivered
-    ///      for the escrow, which `stableRoute` turns into USDC when it is not.
-    function _mintFor(uint256 id, uint256 shares, bytes[] calldata routes, bytes calldata stableRoute) private {
-        IMintRequests.Request memory request = _openRequest(id);
-        if (!request.isMint) revert WrongSide(id);
-        IWeightedHub index = IWeightedHub(request.index);
+    /// @dev The basket for `f.amount` shares of the request's index, from stock and along `f.routes`, issued here and
+    ///      delivered for the escrow, which `f.stableRoute` turns into USDC when it is not.
+    function _mintFor(RequestFill calldata f) private {
+        (IMintRequests.Request memory request, IWeightedHub index, address[] memory tokens) = _openRequest(f, true);
         _checkMintable(index);
-        address[] memory tokens = index.componentTokens();
-        _checkRoutes(tokens, routes);
-        _checkStableRoute(request.stable, stableRoute);
 
-        uint256[] memory need = index.previewIssue(shares);
-        _acquire(tokens, need, routes);
+        uint256[] memory need = index.previewIssue(f.amount);
+        _acquire(tokens, need, f.routes, f.legLimits);
         for (uint256 i = 0; i < tokens.length; ++i) {
             SafeERC20.forceApprove(IERC20(tokens[i]), address(index), need[i]);
         }
-        index.issue(shares, address(this));
-        SafeERC20.forceApprove(IERC20(address(index)), address(REQUESTS), shares);
+        index.issue(f.amount, address(this));
+        SafeERC20.forceApprove(IERC20(address(index)), address(REQUESTS), f.amount);
         uint256 stableBefore = IERC20(request.stable).balanceOf(address(this));
-        REQUESTS.fill(id, shares);
-        _sellStable(request.stable, IERC20(request.stable).balanceOf(address(this)) - stableBefore, stableRoute);
+        REQUESTS.fill(f.id, f.amount);
+        _sellStable(request.stable, IERC20(request.stable).balanceOf(address(this)) - stableBefore, f);
     }
 
-    /// @notice Keeper only. Fills redeem request `id` by paying `amount` of its stablecoin, at least its limit, bought
-    ///         with USDC along `stableRoute` when it is not USDC itself, taking the escrowed shares, redeeming them
-    ///         here and selling the basket along `routes`; a component with no route is kept as stock.
-    /// @param routes One per component of the request's index, as {fill}'s.
-    /// @param stableRoute An exact-input path from the request's stablecoin to USDC, read backwards to buy it; empty
-    ///        when that stablecoin is USDC.
-    /// @param minUsdcDelta The least the USDC float may change by.
-    /// @param deadline The latest block timestamp the fill may be mined at.
+    /// @notice Keeper only. Fills redeem request `f.id` by paying `f.amount` of its stablecoin, at least its limit,
+    ///         bought with USDC along `f.stableRoute` when it is not USDC itself, taking the escrowed shares, redeeming
+    ///         them here and selling the basket along `f.routes`; a component with no route is kept as stock.
     /// @return usdcDelta What the fill changed the float by.
     /// @return gasUsed The gas the call used inside this function, for the bot's simulation.
-    function fillRedeem(
-        uint256 id,
-        uint256 amount,
-        bytes[] calldata routes,
-        bytes calldata stableRoute,
-        int256 minUsdcDelta,
-        uint256 deadline
-    ) external returns (int256 usdcDelta, uint256 gasUsed) {
+    function fillRedeem(RequestFill calldata f) external returns (int256 usdcDelta, uint256 gasUsed) {
         uint256 gasStart = gasleft();
         _checkKeeper();
-        if (block.timestamp > deadline) revert Expired(deadline);
+        if (block.timestamp > f.deadline) revert Expired(f.deadline);
         uint256 before = IERC20(USDC).balanceOf(address(this));
-        _redeemFor(id, amount, routes, stableRoute);
-        usdcDelta = SafeCast.toInt256(IERC20(USDC).balanceOf(address(this))) - SafeCast.toInt256(before);
-        if (usdcDelta < minUsdcDelta) revert TooCostly(usdcDelta, minUsdcDelta);
+        _redeemFor(f);
+        usdcDelta = _requestDelta(before, f.minUsdcDelta);
         gasUsed = gasStart - gasleft();
     }
 
-    /// @dev Pays `amount` of the request's stablecoin, bought along `stableRoute` when it is not USDC, for the
-    ///      escrowed shares, which are redeemed here and sold along `routes`; what has no route stays as stock.
-    function _redeemFor(uint256 id, uint256 amount, bytes[] calldata routes, bytes calldata stableRoute) private {
-        IMintRequests.Request memory request = _openRequest(id);
-        if (request.isMint) revert WrongSide(id);
-        IWeightedHub index = IWeightedHub(request.index);
-        address[] memory tokens = index.componentTokens();
-        _checkRoutes(tokens, routes);
-        _checkStableRoute(request.stable, stableRoute);
+    /// @dev Pays `f.amount` of the request's stablecoin, bought along `f.stableRoute` when it is not USDC, for the
+    ///      escrowed shares, which are redeemed here and sold along `f.routes`; what has no route stays as stock.
+    function _redeemFor(RequestFill calldata f) private {
+        (IMintRequests.Request memory request, IWeightedHub index, address[] memory tokens) = _openRequest(f, false);
 
-        _buyStable(request.stable, amount, stableRoute);
-        SafeERC20.forceApprove(IERC20(request.stable), address(REQUESTS), amount);
+        _buyStable(request.stable, f);
+        SafeERC20.forceApprove(IERC20(request.stable), address(REQUESTS), f.amount);
         uint256[] memory held = new uint256[](tokens.length);
         for (uint256 i = 0; i < tokens.length; ++i) {
             held[i] = IERC20(tokens[i]).balanceOf(address(this));
         }
-        REQUESTS.fill(id, amount);
+        REQUESTS.fill(f.id, f.amount);
         index.redeem(request.escrow, address(this));
         uint256[] memory got = new uint256[](tokens.length);
         for (uint256 i = 0; i < tokens.length; ++i) {
             got[i] = IERC20(tokens[i]).balanceOf(address(this)) - held[i];
         }
-        _sell(tokens, got, routes);
+        _sell(tokens, got, f.routes, f.legLimits);
     }
 
-    /// @dev Request `id`, refused before any swap unless the escrow would still take a fill of it: open, and not past
+    /// @dev A request fill's change to the float, checked against its floor, with what it spent of the float taken
+    ///      from {requestUsdcAllowance} (RX-1, RX-9).
+    function _requestDelta(uint256 before, int256 minUsdcDelta) private returns (int256 usdcDelta) {
+        uint256 afterwards = IERC20(USDC).balanceOf(address(this));
+        usdcDelta = SafeCast.toInt256(afterwards) - SafeCast.toInt256(before);
+        if (usdcDelta < minUsdcDelta) revert TooCostly(usdcDelta, minUsdcDelta);
+        if (afterwards >= before) return usdcDelta;
+        uint256 spent = before - afterwards;
+        uint256 allowance = requestUsdcAllowance;
+        if (spent > allowance) revert OverRequestAllowance(spent, allowance);
+        // forge-lint: disable-next-line(missing-events-arithmetic)
+        requestUsdcAllowance = allowance - spent;
+    }
+
+    /// @dev Request `f.id`, refused before any swap unless the escrow would still take a fill of it: open, and not past
     ///      its deadline. A request its requester cancelled, or another filler filled, between the bot's simulation and
-    ///      this transaction then costs one read rather than the whole basket (XS-6); the escrow checks both again.
-    function _openRequest(uint256 id) private view returns (IMintRequests.Request memory request) {
-        request = REQUESTS.getRequest(id);
-        if (!request.open) revert IMintRequests.RequestNotOpen(id);
-        if (block.timestamp > request.deadline) revert IMintRequests.RequestExpired(id, request.deadline);
+    ///      this transaction then costs one read rather than the whole basket (XS-6); the escrow checks both again. Also
+    ///      refused, as early: the other side's request, an index that settled a rebalance since the simulation (RX-4),
+    ///      and routes or limits that do not fit the index.
+    function _openRequest(RequestFill calldata f, bool isMint)
+        private
+        view
+        returns (IMintRequests.Request memory request, IWeightedHub index, address[] memory tokens)
+    {
+        request = REQUESTS.getRequest(f.id);
+        if (!request.open) revert IMintRequests.RequestNotOpen(f.id);
+        if (block.timestamp > request.deadline) revert IMintRequests.RequestExpired(f.id, request.deadline);
+        if (request.isMint != isMint) revert WrongSide(f.id);
+        index = IWeightedHub(request.index);
+        uint256 nonce = index.rebalanceNonce();
+        if (nonce != f.expectedNonce) revert StaleRebalanceNonce(f.expectedNonce, nonce);
+        tokens = index.componentTokens();
+        _checkRoutes(tokens, f.routes);
+        if (f.legLimits.length != 0 && f.legLimits.length != tokens.length) revert LengthMismatch();
+        _checkStableRoute(request.stable, f.stableRoute);
     }
 
     /// @dev The gate the hub reads when it issues here, read first: a gated index whose creator has not allowed this
@@ -328,8 +364,11 @@ contract KeeperExecutor is IRebalanceExecutor {
     // Swaps and stock
     // ---------------------------------------------------------------------
 
-    /// @dev Sells each routed component's `amounts` into USDC and keeps each unrouted one as stock.
-    function _sell(address[] memory tokens, uint256[] memory amounts, bytes[] memory routes) private {
+    /// @dev Sells each routed component's `amounts` into USDC and keeps each unrouted one as stock. `minOut`, empty or
+    ///      one per component, is the least each sale must return, zero for no bound.
+    function _sell(address[] memory tokens, uint256[] memory amounts, bytes[] memory routes, uint256[] memory minOut)
+        private
+    {
         for (uint256 i = 0; i < tokens.length; ++i) {
             uint256 out = amounts[i];
             // A zero amountIn would make the router swap its own balance instead.
@@ -339,16 +378,24 @@ contract KeeperExecutor is IRebalanceExecutor {
             // forge-lint: disable-next-item(unused-return)
             ROUTER.exactInput(
                 IV3SwapRouter.ExactInputParams({
-                    path: routes[i], recipient: address(this), amountIn: out, amountOutMinimum: 0
+                    path: routes[i], recipient: address(this), amountIn: out, amountOutMinimum: _limit(minOut, i, 0)
                 })
             );
         }
     }
 
+    /// @dev Entry `i` of `limits`, or `otherwise` when `limits` is empty or that entry is zero.
+    function _limit(uint256[] memory limits, uint256 i, uint256 otherwise) private pure returns (uint256) {
+        return limits.length != 0 && limits[i] != 0 ? limits[i] : otherwise;
+    }
+
     /// @dev Makes sure this contract holds `amounts` of each component: from stock first, within the owner's stock
-    ///      allowance, which every delivery from stock spends, then bought with USDC along the route. A USDC
-    ///      component comes out of the float itself, which the allowance does not cover.
-    function _acquire(address[] memory tokens, uint256[] memory amounts, bytes[] memory routes) private {
+    ///      allowance, which every delivery from stock spends, then bought with USDC along the route, for at most
+    ///      `maxIn`'s entry (empty, or zero, for the whole float). A USDC component comes out of the float itself, which
+    ///      the allowance does not cover.
+    function _acquire(address[] memory tokens, uint256[] memory amounts, bytes[] memory routes, uint256[] memory maxIn)
+        private
+    {
         for (uint256 i = 0; i < tokens.length; ++i) {
             uint256 need = amounts[i];
             if (need == 0) continue;
@@ -368,35 +415,38 @@ contract KeeperExecutor is IRebalanceExecutor {
                         path: routes[i],
                         recipient: address(this),
                         amountOut: need - fromStock,
-                        amountInMaximum: IERC20(USDC).balanceOf(address(this))
+                        amountInMaximum: _limit(maxIn, i, IERC20(USDC).balanceOf(address(this)))
                     })
                 );
             }
         }
     }
 
-    /// @dev Sells `amount` of `stable` into USDC along `route`; nothing to do when it is USDC already.
-    function _sellStable(address stable, uint256 amount, bytes calldata route) private {
+    /// @dev Sells `amount` of `stable` into USDC along `f.stableRoute`, for at least `f.stableLimit`; nothing to do
+    ///      when it is USDC already.
+    function _sellStable(address stable, uint256 amount, RequestFill calldata f) private {
         if (stable == USDC || amount == 0) return;
         SafeERC20.forceApprove(IERC20(stable), address(ROUTER), amount);
         // forge-lint: disable-next-item(unused-return)
         ROUTER.exactInput(
             IV3SwapRouter.ExactInputParams({
-                path: route, recipient: address(this), amountIn: amount, amountOutMinimum: 0
+                path: f.stableRoute, recipient: address(this), amountIn: amount, amountOutMinimum: f.stableLimit
             })
         );
     }
 
-    /// @dev Buys `amount` of `stable` with USDC along `route`, read backwards; nothing to do when it is USDC already.
-    function _buyStable(address stable, uint256 amount, bytes calldata route) private {
+    /// @dev Buys `f.amount` of `stable` with USDC along `f.stableRoute`, read backwards, for at most `f.stableLimit`
+    ///      (zero for the whole float); nothing to do when it is USDC already.
+    function _buyStable(address stable, RequestFill calldata f) private {
         if (stable == USDC) return;
+        uint256 float = IERC20(USDC).balanceOf(address(this));
         // forge-lint: disable-next-item(unused-return)
         ROUTER.exactOutput(
             IV3SwapRouter.ExactOutputParams({
-                path: route,
+                path: f.stableRoute,
                 recipient: address(this),
-                amountOut: amount,
-                amountInMaximum: IERC20(USDC).balanceOf(address(this))
+                amountOut: f.amount,
+                amountInMaximum: f.stableLimit != 0 ? f.stableLimit : float
             })
         );
     }

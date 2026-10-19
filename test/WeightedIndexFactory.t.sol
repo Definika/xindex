@@ -383,12 +383,36 @@ contract WeightedIndexFactoryTest is WeightedTest {
         vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.UnitsOutOfRange.selector, address(btc), min - 1));
         factory.createIndex("Weighted", "WGT", specs, _params());
 
-        specs[1].units = max + 1;
-        vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.UnitsOutOfRange.selector, address(btc), max + 1));
+        // An 18-decimal token's cap is MAX_UNITS, below its MAX_WHOLE_TOKENS.
+        assertEq(factory.maxUnitsOf(address(eth)), max);
+        specs[1].units = min;
+        specs[0].units = max + 1;
+        vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.UnitsOutOfRange.selector, address(eth), max + 1));
         factory.createIndex("Weighted", "WGT", specs, _params());
 
-        specs[1].units = min;
-        specs[2].units = max;
+        specs[0].units = max;
+        factory.createIndex("Weighted", "WGT", specs, _params());
+    }
+
+    /// @dev A lower-decimal token is capped at MAX_WHOLE_TOKENS whole tokens per share, so a wei-share of a coarse
+    ///      index still backs under one raw unit of it, and no fee's rounding to whole wei-shares is worth anything.
+    function test_RX5_unitsAreCappedInWholeTokens() public {
+        _listAll();
+        IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
+        uint256 btcMax = factory.MAX_WHOLE_TOKENS() * 1e8;
+        assertEq(factory.maxUnitsOf(address(btc)), btcMax);
+        assertEq(factory.maxUnitsOf(address(usd)), factory.MAX_WHOLE_TOKENS() * 1e6);
+        assertLt(btcMax, factory.MAX_UNITS());
+        // One wei-share of BTC at the cap backs a tenth of a satoshi.
+        assertLt(btcMax, 1e18);
+
+        specs[1].units = btcMax + 1;
+        vm.expectRevert(
+            abi.encodeWithSelector(IWeightedIndexFactory.UnitsOutOfRange.selector, address(btc), btcMax + 1)
+        );
+        factory.createIndex("Weighted", "WGT", specs, _params());
+
+        specs[1].units = btcMax;
         factory.createIndex("Weighted", "WGT", specs, _params());
     }
 
@@ -822,7 +846,8 @@ contract WeightedIndexFactoryTest is WeightedTest {
         factory.createIndex{value: 0.01 ether}("Weighted2", "WGT", specs, _params());
     }
 
-    function test_theCreatorRoleCanBeHandedOn() public {
+    /// @dev The creator role is offered and accepted, so `creatorOf` never names an account that did not agree (RX-22).
+    function test_RX22_theCreatorRoleIsOfferedAndAccepted() public {
         _listAll();
         WeightedHub index = _create(_defaultSpecs());
         vm.prank(stranger);
@@ -838,10 +863,22 @@ contract WeightedIndexFactoryTest is WeightedTest {
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(index)));
         factory.transferCreator(address(index), address(index));
         vm.expectEmit(address(factory));
-        emit IWeightedIndexFactory.CreatorTransferred(address(index), creator, alice);
+        emit IWeightedIndexFactory.CreatorTransferStarted(address(index), creator, stranger);
+        factory.transferCreator(address(index), stranger);
+        // A later offer replaces the first, and the creator keeps the role until it is accepted.
         factory.transferCreator(address(index), alice);
         vm.stopPrank();
+        assertEq(factory.pendingCreatorOf(address(index)), alice);
+        assertEq(factory.creatorOf(address(index)), creator);
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, stranger));
+        factory.acceptCreator(address(index));
+        vm.prank(alice);
+        vm.expectEmit(address(factory));
+        emit IWeightedIndexFactory.CreatorTransferred(address(index), creator, alice);
+        factory.acceptCreator(address(index));
         assertEq(factory.creatorOf(address(index)), alice);
+        assertEq(factory.pendingCreatorOf(address(index)), address(0));
 
         vm.prank(creator);
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, creator));

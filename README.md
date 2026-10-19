@@ -117,13 +117,14 @@ The history, in one paragraph each:
 - `WeightedIndexFactory` (`src/WeightedIndexFactory.sol`) is permissionless `createIndex`, a curated token whitelist
   in which every token carries the Pyth price id and decimals of its timelocked listing, an `Ownable2Step` owner plus a
   guardian whose replacement takes 7 days, and the registry (`isIndex`, `creatorOf`, `allIndexes`). Indexes are
-  EIP-1167 clones deployed with CREATE2 from a salt over the creator, the name, the symbol and every component's token,
-  units, weight, price id and decimals; `predictIndexAddress` returns the address before the transaction is sent. The
+  EIP-1167 clones deployed with CREATE2 from a salt over the creator, the name, the symbol, every component's token,
+  units, weight, price id and decimals, and the index's config (fee and streaming rates, referral share, rebalance
+  interval); `predictIndexAddress` returns the address before the transaction is sent. The
   factory stores price ids and never calls Pyth.
 - `IndexZap` (`src/IndexZap.sol`) is v3's stateless convenience router over Uniswap's Universal Router.
   `mintWithToken` buys exactly the basket with exact-output swaps and issues; `burnToToken` redeems and sells every
-  component into the chosen token; `burnToTokenWithPermit` does it in one transaction. It is the only contract here that
-  knows about Uniswap.
+  component into the chosen token; `burnToTokenWithPermit` does it in one transaction. It and the basket builder are
+  the only contracts here that know about Uniswap, through the engine both inherit, `UniversalRouterSwaps`.
 - `BasketBuilder` (`src/BasketBuilder.sol`) is the zap's stateful sibling for baskets beyond one transaction: `buy`
   swaps the named legs into an escrow per caller and token, as many calls as the gas cap needs, `mint` issues out of
   it, and `redeem`, `sell` and `withdraw` mirror that; `deposit` puts in a coin that has no route. Both swap through
@@ -150,11 +151,14 @@ scale, so no leg's units are ever rounded to fold it in (XS-2).
 one index token should start at. The app turns each weight into starting units at its own prices, `units_i = w_i /
 10,000 × value / price_i` in the token's raw units, calls `predictIndexAddress` to show the address, and calls
 `createIndex`. The factory reads no price, so units a little off the weights cost nothing: the first rebalance, the
-index's interval after creation, brings the index to its weights. Every unit has to lie in `[MIN_RAW_UNITS, MAX_UNITS]` or the call
-reverts `UnitsOutOfRange(token, units)`. For WBTC, whose raw unit is a satoshi, 10,000 raw units is 0.0001 BTC, about
-11 dollars at BTC 110k, so WBTC's weight times the index token's value must reach that: an index token worth $100 can
-hold WBTC at 11% or more, one worth $1,000 at 1.1% or more. For an 18-decimal component the floor binds on nothing.
-Names and symbols are free-form and not unique; the UI must show the index address and `creatorOf` to avoid spoofing.
+index's interval after creation, brings the index to its weights. Every unit has to lie in `[MIN_RAW_UNITS,
+maxUnitsOf(token)]` or the call reverts `UnitsOutOfRange(token, units)`; `maxUnitsOf` is `MAX_WHOLE_TOKENS` (1e9) whole
+tokens per index token, never above `MAX_UNITS`, so a wei-share stays worth nothing (RX-5). The floor binds hardest on
+Tether Gold, whose 10,000 raw units are 0.01 oz, about $30, so an index token worth $100 can hold it at 30% or more;
+for WBTC, 0.0001 BTC, about $11, at 11% or more on a $100 token; for an 18-decimal component the floor binds on nothing
+(RX-38). Names and symbols are free-form and not unique; the UI must show the index address and `creatorOf` to avoid
+spoofing. The creator role is handed on in two steps: `transferCreator` offers it and the new creator takes it with
+`acceptCreator`, so `creatorOf` only ever names an account that agreed (RX-22).
 
 The address commits to every component's token, units, weight, price id and decimals. A relisting that executes
 between the preview and the transaction with a new price id changes the address, never the terms at an address.
@@ -233,16 +237,19 @@ at any time) or `refund` (anyone, after the deadline).
   held (WBTC at WBTC's own market price), and mark a price older than about ten minutes as estimated. Never derive a
   price from `balanceOf(index)` and `totalSupply()`, and never use a thin DEX pool of the index token as an oracle.
 - **Starting units.** The app derives them from the creator's weights at its own prices (see "Create"); the factory
-  takes them as given. `createIndex` reverts `UnitsOutOfRange` unless each lies in `[MIN_RAW_UNITS, MAX_UNITS]`,
+  takes them as given. `createIndex` reverts `UnitsOutOfRange` unless each lies in `[MIN_RAW_UNITS, maxUnitsOf(token)]`,
   `InvalidComponentCount` outside 2 to `MAX_COMPONENTS` (100), `InvalidWeights` unless every weight is non-zero and
   they sum to 10,000, and `DuplicatePriceId` when two components share a Pyth price id, since Pyth fills only the first
   of two equal ids and such an index could never settle (V5-M1). Offer the one-click zap only up to about 35
   components; a larger index mints in kind, through `MintRequests`, or through the basket builder over several
   transactions.
 - **Names and symbols are not unique.** `createIndex` requires only that they are non-empty. The CREATE2 salt commits
-  to the creator, the name, the symbol and every component's token, units, weight, price id and decimals, so two
-  look-alike indexes have different addresses: key every index by its address, show `creatorOf`, and mark a name or
-  symbol an existing index already uses.
+  to the creator, the name, the symbol, every component's token, units, weight, price id and decimals, and the config
+  (fee and streaming rates, referral share, rebalance interval), so two
+  look-alike indexes have different addresses: key every index by its address, show `creatorOf`, which only an account
+  that accepted the role can be (RX-22), and mark a name or symbol an existing index already uses. Flag an index whose
+  starting units and weights disagree by more than a rebalance would fix: a creator can weight a share-priced Ondo leg
+  far below its holdings, so that after a split the hub sells it at a fraction of its worth (RX-7).
 - **Rebalance status.** Show `earliestRebalance()`, the index's own interval after `lastRebalance` (a week after a
   keep-mask fill), and a "rebalance due" button when
   `canStartRebalance()` is true and the index has drifted. `previewRebalance` reverts outside an auction, so compute
@@ -399,12 +406,15 @@ creation.
 
 ## The list
 
-`script/PythIds.sol` holds 93 coins, each with its Pyth price id: `default` is the first four (WETH, WBTC, LINK, UNI)
-and `wide` the other 89; SAND and RLB left on 2026-10-18 after the source reading
-(`design/2026-10-18-token-source-reading.md`), the owner's call. 16 of them are Wormhole copies: SOL, 12 of the 13 added on 2026-10-10 (DOGE's left on
-2026-10-14, the owner's call, since Pyth prices DOGE and not the copy), and BNB, SUI and SEI, whose copies already
-existed and joined on 2026-10-18. 31 more copies await an attestation on Wormhole's Portal (section 2a of
-`design/2026-10-10-one-index-wormhole-legs.md`, and section 3 of `design/2026-10-18-pre-mainnet-readings.md`). Every
+`script/PythIds.sol` holds 91 coins, each with its Pyth price id: `default` is the first four (WETH, WBTC, LINK, UNI)
+and `wide` the other 87; SAND and RLB left on 2026-10-18 after the source reading
+(`design/2026-10-18-token-source-reading.md`), and BTT and SEI's copy on 2026-10-19, their bridges closed or closing
+(`audit/2026-10-18-red-team.md`, RX-28, RX-32), the owner's calls. 15 of them are Wormhole copies: SOL, 12 of the 13
+added on 2026-10-10 (DOGE's left on 2026-10-14, the owner's call, since Pyth prices DOGE and not the copy), and BNB and
+SUI, whose copies already existed and joined on 2026-10-18. ZK is tiered Bridged: Ethereum's ZK is ZKsync's bridge copy
+of a token issued on ZKsync Era (RX-19). 26 more copies await an attestation on Wormhole's Portal, and FIL's waits for a
+reading of its Binance-Peg source (section 2a of `design/2026-10-10-one-index-wormhole-legs.md`, and section 3 of
+`design/2026-10-18-pre-mainnet-readings.md`). Every
 one went through `CheckToken` on a fork, which refuses only Tether Gold, admitted on the owner's waiver. On a fork of 2026-10-11, the 92
 coins forge-std can fund issued, rebalanced with real transfers and redeemed in one index, and 45 of them traded through
 the zap within 2% on $1,000; SNX was left out only because its balances live in its `TokenState`, beyond forge-std's
@@ -427,12 +437,16 @@ stock, Wormhole for every wrapped copy, and both Binance and Wormhole for a copy
 
 - **A lone executor can take up to 2% of what it trades.** At the auction's end `μ` reaches `MU_MIN` (0.98), so an
   executor with no competition that waits for it delivers 98% of the value it takes, at the settling prices.
-  Competition fills earlier, at the `μ` that just covers an executor's swap costs. What a fill trades is only the drift
+  Competition fills earlier, at the `μ` that just covers an executor's swap costs, except on an index holding one of the
+  six US-hours stocks, below. What a fill trades is only the drift
   since the last rebalance, at most 20% of each component's units, at most once a week.
 - **A wrong price costs at most the turnover cap.** A fill at a wrong or forged Pyth price trades the index toward
   wrong targets. The cap counts units, not value, so whatever the price says, one fill sends out at most 20% of each
-  component's own units, at most once every `MIN_REBALANCE_INTERVAL` (V5-M2); the guardian can cancel, and a confidence
-  interval wider than 2% is refused. Pyth's contract on Ethereum is upgradeable by Pyth's governance, which upgraded it
+  component's own units and at most doubles a component it buys, at most once every `MIN_REBALANCE_INTERVAL` (V5-M2,
+  RX-15); the guardian can cancel, a confidence interval wider than 2% is refused, and so is a price more than 5% from
+  the moving average Pyth publishes with it (RX-27), so a push of a few seconds on thin venues moves a fill's price by
+  at most that. An issuer that mints its coin and drives its price down reaches the rest of the index only through the
+  fixed weights, about its own leg's value per fill (RX-15). Pyth's contract on Ethereum is upgradeable by Pyth's governance, which upgraded it
   in place on 2026-08-26, and since then (OP-PIP-132) verifies updates against Pyth's own set of five signing keys, not
   Wormhole's guardians. Three of the five suffice, for a price and for a governance message alike, so those three can
   also upgrade Pyth's contract (`design/2026-10-18-pre-mainnet-readings.md`, section 1). The app says so on every
@@ -442,8 +456,22 @@ stock, Wormhole for every wrapped copy, and both Binance and Wormhole for a copy
   any executor, but without one no index rebalances. Pyth sells the key as a data plan: $500 a month for crypto feeds,
   Tether Gold's and the five Ondo tokens' own among them, and $2,500 and up for the share feeds twelve Ondo legs use.
   Six of Ondo's stocks (TSM, AVGO, LLY, JPM, WMT, V) have only
-  US-hours feeds, so an index holding one settles only while that market is open, or with the stock kept.
-- **Wrapped legs rest on Wormhole.** Wormhole's guardians (13 of 19) can forge a bridge message, minting unbacked
+  US-hours feeds, so an index holding one settles only while that market is open, or with the stock kept. μ keeps
+  falling on the clock while such a feed is shut, so its first fillable block is the next open, near `MU_MIN`: holders
+  pay about 1.65% of each fill's traded value, not the 0.3% competition would leave, and a stranger who starts on a
+  weekend at the right minute leaves only the auction's last block, at exactly `MU_MIN` (RX-3). The app says so at
+  creation; the keeper starts such an index only when the auction's middle falls in a session. Pyth's own catalogue,
+  read on 2026-10-19, gives all six regular hours only, 09:30 to 16:00 New York time on trading days, with the
+  exchange's holidays and half days, and gives the same schedule to the six share feeds named "24/7" (AMZN, SPCX, META,
+  SKHY, MU, AMD); until Hermes' data, which needs the key, shows those six publishing outside it, treat all twelve as
+  session-limited (RX-31).
+  Since OP-PIP-132 an update's previous publish time is its own less a second, so Pyth admits only the message stamped
+  exactly at `priceTime()`, and the hub's window is in effect one second (RX-59).
+- **Wrapped legs rest on Wormhole.** They rest on the chain each copy comes from too. Since April 2026 Wormhole runs delegated
+  guardian sets: for BNB Chain, Kaia, NEAR, Sui, Arbitrum and Monad, five of seven named guardians suffice to mint, so
+  11 of the 15 listed copies and 13 of those queued rest on five keys, not 13 of 19; upgrading a copy's code still
+  takes a governance message (RX-6). A copy whose home chain shuts its bridge side redeems for nothing while priced as
+  its coin: BTT's and SEI's copies left the list for that (RX-28, RX-32). Wormhole's guardians (13 of 19) can forge a bridge message, minting unbacked
   wrapped tokens or upgrading every wrapped token's code at once, with no timelock; that reaches the whole of every
   wrapped leg, beyond the turnover cap. The wrapped copies have no DEX liquidity: redeem pays them, and turning them
   into the coin needs Wormhole live. The app shows every index's wrapped share of value before it is created and to
@@ -477,12 +505,18 @@ stock, Wormhole for every wrapped copy, and both Binance and Wormhole for a copy
   guardian: 7 days of notice the guardian cannot cancel, since it may only cancel its own removal (DA-12). A guardian
   can also stall without a cancel: a keep-mask rebalance that leaves a pair of components moving can clear `MIN_TRADE`
   on a sliver of the index. Its fill restarts only `MIN_REBALANCE_INTERVAL` for a rebalance without a keep mask, not
-  the index's own interval, so the stall can outlast the guardian's replacement by up to a week (XS-3); the owner and
+  the index's own interval, so the stall can outlast the guardian's replacement by up to a week (XS-3), and by a
+  keep-mask auction the outgoing guardian left pending, `REBALANCE_DELAY` + `AUCTION_DURATION` more (RX-44); the owner and
   the new guardian can start a keep-mask rebalance then too, for an index that only settles with a component kept. While a replacement is pending, the owner cancels the outgoing guardian's
   keep-mask proposals, and monitors alert on `RebalanceStarted` with a non-zero `keepMask` (RT-07). The owner has only
   `REBALANCE_DELAY`, 2 hours, to cancel one before the guardian's own executor can fill it at `eta`.
 - **Issuers can freeze components, and some can burn them.** WBTC can be paused by its custodian, and so can MANA,
-  CHZ, SENT and FLUID by theirs. Tether Gold and Ondo's stocks can blacklist a holder, an index included, and destroy
+  CHZ, SENT, FLUID, GALA, FET, SNX, PLUME and the Ondo tokens (through Ondo's pause manager) by theirs (RX-55). After an
+  issuer burns an index's balance, issue refuses until the leg is topped up, so no deposit refills the hole for earlier
+  holders (RX-8). A token that blocks only its sender, as Tether Gold's does, cannot have a fill buy into a leg the index
+  can no longer send: the fill reverts `CannotSendOut` and the guardian keeps the leg (RX-12). Ondo can end a stock
+  token by an issuer redemption paid only to KYC'd redeemers, on at least 30 business days' notice: holders still in at
+  the date lose that leg, so the app tells them to exit first (RX-29). Tether Gold and Ondo's stocks can blacklist a holder, an index included, and destroy
   its balance; the owner accepted that on 2026-10-10. The source reading of 2026-10-18
   (`design/2026-10-18-token-source-reading.md`) found admins who can burn or move any holder's balance without a
   blacklist on SAND, H, PLUME, SNX and SYRUP; the owner took SAND off the list and kept the others, whose admins the
@@ -517,20 +551,30 @@ stock, Wormhole for every wrapped copy, and both Binance and Wormhole for a copy
   mints the fee accrued since the last accrual, and the clock restarts on every one of them, one that mints nothing
   included, so a dust supply left idle never charges that time to the next minter (XS-1); what that forgoes is under
   one share per call. An integer scale backs the supply by up to `supply · units / 1e36` raw units less per accrual, a
-  part in 1e18 of a leg, which stays in the index. A lifetime's gap is capped just under the whole index, and a second
+  part in the scale (1e18 at first, less as fees accrue) of a leg, which stays in the index (RX-62). A lifetime's gap is capped just under the whole index, and a second
   one, which would shrink the scale to zero, is not charged. `lastAccrual()` and `pendingStreamingFee()` show the clock
   and what an accrual now would mint.
 - **The basket builder is one custody point.** Every user's escrow of a token sits in one address. An issuer that
   blacklists or pauses the builder freezes every escrow of that token until it lifts the block, and one that can
   destroy a blacklisted balance, as Tether's contracts can, can take them all. The builder sends itself one unit of a
   token before it credits an escrow of it, so a deposit, a buy or a redeem into a builder already blocked is refused
-  (XS-10); a block that comes later traps what is already there. The app should check `isBlackListed(builder)` on
-  Tether-pattern tokens (USDT, XAUT) before offering the builder, and a holder whose exit through the builder is refused
-  redeems on the index itself, with `redeemSkipping` and `claim` for a frozen leg.
+  (XS-10); a block that comes later traps what is already there. The app should check the builder's blocked status on
+  Tether-pattern tokens before offering it: `isBlackListed(builder)` on USDT, and on Tether Gold its own check,
+  `isBlocked`, since XAUT is not USDT and names it differently (RX-60). A holder whose exit through the builder is refused
+  redeems on the index itself, with `redeemSkipping` and `claim` for a frozen leg. The probe does not catch a token
+  that charges its sender a fee on transfer, which the whitelist excludes (RX-41); router strays swept back during a
+  call are booked to that call (RX-45); and an escrow owner's exit ignores a blacklist on that owner, so an issuer's
+  only lever over an escrow is freezing the whole builder (RX-51).
 - **Airdrops, rewards and governance votes** that accrue to tokens held by an index cannot be claimed or used; by design
   there is no admin who could sweep them.
 - **A hooked V4 pool cannot be routed through.** The zap rejects any V4 route whose hops carry hooks or hook data, so a
   component whose only V4 depth sits behind a hook is reachable on V3 only.
+- **`PYTH` cannot be repointed.** It is an immutable of the one implementation every index clones, and on Ethereum the
+  deploy accepts only `0x4305…`. If that contract stops verifying updates, rebalancing ends for good on every index;
+  issue, redeem, `redeemSkipping` and claims read no price and keep working. Pyth's written confirmation that this
+  address stays served is a pre-mainnet item (RX-25).
+- **An executor that also builds the block sees further.** Under ePBS (EIP-7732) a builder that is also the executor
+  can commit to a block and withhold its payload, seeing past `PRICE_LAG` the way V5-L1 bounds (RX-65).
 - **A `tokenIn` that calls back into the zap is unsupported**, alongside fee-on-transfer currencies. The zap pre-funds
   the Universal Router with exactly a leg's cap and sweeps it back within the same `execute`; the pre-fund is the bound
   (CR-I14, RT-11). Mint and burn currencies are the user's choice, so the app should offer only USDC and USDT.
@@ -614,7 +658,11 @@ OWNER=<safe> GUARDIAN=<guardian> forge script script/DeployWeighted.s.sol --rpc-
   --sender <deployer> --broadcast --verify
 ```
 
-`OWNER` and `GUARDIAN` are required and must differ. On a mainnet the owner must be a contract that is not an EIP-7702
+Always pass `--sender` with the signing key's address: without it the script's msg.sender is Foundry's default sender,
+and on Ethereum the deploy refuses to run (RX-37). Never set a chain-id override (`--chain-id`, `FOUNDRY_CHAIN_ID`,
+`chain_id` in `foundry.toml`): the mainnet checks key on chain 1 or on Ethereum's router having code, so an override
+cannot switch them off against Ethereum's state (RX-23), but the run should not try. `OWNER` and `GUARDIAN` are required
+and must differ. On a mainnet the owner must be a contract that is not an EIP-7702
 delegated account, and a Safe must need at least three signatures (`MIN_OWNER_THRESHOLD`, the design's 3-of-5) and have
 no enabled module, because a module acts as the Safe without signatures (keep it that way after deployment; the script
 cannot see later changes). The guardian must not be the broadcasting key, which must hold no role; when the owner is a
@@ -790,8 +838,8 @@ aderyn.toml                   Aderyn's configuration: the rules the design rejec
 
 ## Not built (candidates for later)
 
-A fee in a later index version, ETH in/out (`mintWithETH` / `burnToETH`), `createAndMint` in one call,
-`mintWithTokenPermit` for USDC, creator fees (attributed by `creatorOf`), constituent changes (a new list is a new
+ETH in/out (`mintWithETH` / `burnToETH`), `createAndMint` in one call,
+`mintWithTokenPermit` for USDC, constituent changes (a new list is a new
 index), mixed-venue legs that split one leg across V3 and V4, per-pair partial-fill auctions, a backstop for auctions
 too small to pay (the keeper in `keeper/` fills only what pays, unless its operator sets a subsidy with a negative
 `MIN_PROFIT_USD`), an aggregator or Universal Router 2.1 zap, V4 pools on the Sepolia market, and one L2 deployment

@@ -130,12 +130,12 @@ library MainnetAddresses {
     // (design/2026-10-18-token-source-reading.md): The Sandbox's SAND (0x3845badAde8e6dFF049820680d1F14bD3903a5d0),
     // whose two multisig admins and 22 operator contracts can move or burn any holder's balance with no timelock, and
     // Rollbit's RLB (0x046EeE2cc3188071C02BfC1745A6b17c656e3f3d), whose implementation is unverified and upgradeable by
-    // one externally owned key.
+    // one externally owned key. BitTorrent's BTT (0xC669928185DbCE49d2230CC9B0979BE6DC797957), as BTTC's bridge issued
+    // it, left on 2026-10-19, the owner's call: that bridge closed in June 2026, so the copy redeems for nothing while
+    // it would be priced as native BTT (audit/2026-10-18-red-team.md, RX-28).
     // ---------------------------------------------------------------------
     /// @dev Falcon Finance; no owner and no admin power.
     address internal constant FF = 0xFA1C09fC8B491B6A4d3Ff53A10CAd29381b3F949;
-    /// @dev BitTorrent's BTT as BTTC's bridge issues it on Ethereum (name "BitTorrent", minted under AccessControl roles); bridged from TRON.
-    address internal constant BTT = 0xC669928185DbCE49d2230CC9B0979BE6DC797957;
     /// @dev Gnosis; no owner.
     address internal constant GNO = 0x6810e776880C02933D47DB1b9fc05908e5386b96;
     /// @dev Olympus's OHM, 9 decimals.
@@ -167,7 +167,8 @@ library MainnetAddresses {
     address internal constant FLUID = 0x6f40d4A6237C257fff2dB00FA0510DeEECd303eb;
     /// @dev Chiliz, symbol CHZ.
     address internal constant CHZ = 0x3506424F91fD33084466F402d5D97f05F8e3b4AF;
-    /// @dev ZKsync's ZK, a proxy upgraded by a contract.
+    /// @dev ZKsync's ZK, a proxy upgraded by a contract, whose only minter is ZKsync's L1 Native Token Vault: ZK is
+    ///      issued on ZKsync Era, so this is the bridge's copy, tiered Bridged, with ZKsync's bridge as its party (RX-19).
     address internal constant ZK = 0x66A5cFB2e9c529f14FE6364Ad1075dF3a649C0A5;
     /// @dev ApeCoin.
     address internal constant APE = 0x4d224452801ACEd8B2F0aebE155379bb5D594381;
@@ -237,8 +238,8 @@ library MainnetAddresses {
     address internal constant BNB = 0x418D75f65a02b3D53B2418FB8E1fe493759c7605;
     /// @dev SUI as the bridge wraps Sui's SUI itself (0x2::sui::SUI, its CoinMetadata object 0x9258181f5ceac8dbffb7030890243caed69a9599d2886d957a9cb7656af3bdb3, Wormhole chain 21): symbol SUI, 9 decimals.
     address internal constant SUI = 0x84074EA631dEc7a4edcD5303d164D5dEa4c653D6;
-    /// @dev SEI as the bridge wraps Sei's native usei (Wormhole chain 32): symbol SEI, 6 decimals.
-    address internal constant SEI = 0xf91e605af079384cc7077B3914A4a36019a89EE8;
+    // SEI's copy (0xf91e605af079384cc7077B3914A4a36019a89EE8, Sei's usei from Wormhole chain 32) left on 2026-10-19, the
+    // owner's call: it redeems only through Sei's CosmWasm side, which Sei is shutting down (RX-32).
 
     // ---------------------------------------------------------------------
     // Mint and burn currencies. Never components; see the whitelist policy.

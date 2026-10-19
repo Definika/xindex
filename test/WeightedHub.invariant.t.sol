@@ -14,6 +14,10 @@ import {MockWeightedExecutor} from "./mocks/MockWeightedExecutor.sol";
 import {MockUniversalRouter} from "./mocks/MockUniversalRouter.sol";
 import {BasketBuilder} from "../src/BasketBuilder.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
+import {IBasketBuilder} from "../src/interfaces/IBasketBuilder.sol";
+import {IUniversalRouterSwaps} from "../src/interfaces/IUniversalRouterSwaps.sol";
+import {PathKey} from "../src/libraries/UniswapV4Types.sol";
+import {MockPausableToken} from "./mocks/MockPausableToken.sol";
 
 /// @dev What the handler drives besides the main index: the factory and its owner, the guardian, a second, gated
 ///      index and its creator, and the basket builder.
@@ -24,6 +28,8 @@ struct Wiring {
     WeightedHub gated;
     address gatedCreator;
     BasketBuilder builder;
+    MockUniversalRouter router;
+    MockERC20 usdc;
 }
 
 contract WeightedHandler is Test {
@@ -52,6 +58,14 @@ contract WeightedHandler is Test {
     WeightedHub public gated;
     address public gatedCreator;
     BasketBuilder public builder;
+    MockUniversalRouter public router;
+    MockERC20 public usdc;
+    /// @dev The last component is pausable, as WBTC, MANA or an Ondo token is: while it is frozen, only paths that do
+    ///      not move it may run, and holders still leave through redeemSkipping (RX-57).
+    uint256 internal constant FROZEN = 3;
+    bool public frozen;
+    /// @dev A bounded fill delivered more of some component than its bound let it (RX-57).
+    bool public boundBroken;
 
     uint256 public ghostIssued;
     uint256 public ghostRedeemed;
@@ -76,6 +90,14 @@ contract WeightedHandler is Test {
     bool public shortFillSucceeded;
     bool public holdOffMisjudged;
     bool public previewMisled;
+    /// @dev The index's restart rule disagreed with the model, or a start before it went through (RX-46).
+    bool public restartMisjudged;
+    /// @dev A fill moved the index's balances by other than its preview's amounts (RX-56).
+    bool public realizedMisled;
+    /// @dev A fill front-run by an issue failed for another reason than its own bound (RX-57).
+    bool public frontRunMisjudged;
+    /// @dev Whether the last settlement carried a keep mask, which shortens the next restart (XS-3).
+    bool public lastFillMasked;
     bool public muBoundBroken;
     bool public turnoverBroken;
     bool public nothingMisjudged;
@@ -104,6 +126,7 @@ contract WeightedHandler is Test {
         }
         (factory, owner, gated, gatedCreator, builder) =
         (wiring_.factory, wiring_.owner, wiring_.gated, wiring_.gatedCreator, wiring_.builder);
+        (router, usdc) = (wiring_.router, wiring_.usdc);
         executor = new MockWeightedExecutor();
         _lastAccrual = block.timestamp;
         (, uint256[] memory units) = index_.components();
@@ -174,10 +197,21 @@ contract WeightedHandler is Test {
     }
 
     // ---------------------------------------------------------------------
+    // a frozen component
+    // ---------------------------------------------------------------------
+
+    /// @dev Its issuer pauses the last component, or lifts the pause.
+    function freeze(bool on) external {
+        MockPausableToken(address(comps[FROZEN])).setPaused(on);
+        frozen = on;
+    }
+
+    // ---------------------------------------------------------------------
     // holders
     // ---------------------------------------------------------------------
 
     function issue(uint256 seed, uint256 toSeed, uint256 shares) external {
+        if (frozen) return;
         address from = _actor(seed);
         shares = bound(shares, 1, 1_000_000e18);
         uint256[] memory need = index.previewIssue(shares);
@@ -208,6 +242,7 @@ contract WeightedHandler is Test {
     }
 
     function redeem(uint256 seed, uint256 toSeed, uint256 shares) external {
+        if (frozen) return;
         address from = _holder(seed);
         uint256 bal = index.balanceOf(from);
         if (bal == 0) return;
@@ -228,6 +263,8 @@ contract WeightedHandler is Test {
         if (bal == 0) return;
         shares = bound(shares, 1, bal);
         mask = bound(mask, 1, (1 << comps.length) - 1);
+        // While the last component is frozen, holders leave around it: this must succeed (RX-57).
+        if (frozen) mask |= 1 << FROZEN;
         uint256 held = _recipientsHold();
         uint256 supply = index.totalSupply();
         uint256 streaming = _streamingFee();
@@ -244,7 +281,7 @@ contract WeightedHandler is Test {
         for (uint256 k = 0; k < actors.length * comps.length; ++k) {
             address from = _actor(seed + k / comps.length);
             address token = address(comps[(compSeed + k) % comps.length]);
-            if (index.claimOf(from, token) == 0) continue;
+            if (index.claimOf(from, token) == 0 || (frozen && token == address(comps[FROZEN]))) continue;
             vm.prank(from);
             index.claim(token, _actor(toSeed));
             return;
@@ -261,6 +298,7 @@ contract WeightedHandler is Test {
     }
 
     function donate(uint256 compSeed, uint256 amount) external {
+        if (frozen && compSeed % comps.length == FROZEN) return;
         amount = bound(amount, 0, 1e30);
         comps[compSeed % comps.length].mint(address(index), amount);
     }
@@ -301,6 +339,7 @@ contract WeightedHandler is Test {
     ///      accounting stays theirs, round after round until the exit fees left behind round to nothing: the supply
     ///      ends as dust, the case a kept clock once charged to the next minter (XS-1).
     function redeemToDust(uint256 keep) external {
+        if (frozen) return;
         keep = bound(keep, 1, 1e9);
         for (uint256 round = 0; round < 24 && index.totalSupply() > keep; ++round) {
             for (uint256 k = 0; k < feeHolders.length; ++k) {
@@ -331,6 +370,8 @@ contract WeightedHandler is Test {
         address next = feeCreator == feeHolders[0] ? feeHolders[3] : feeHolders[0];
         vm.prank(feeCreator);
         factory.transferCreator(address(index), next);
+        vm.prank(next);
+        factory.acceptCreator(address(index));
         feeCreator = next;
     }
 
@@ -368,6 +409,7 @@ contract WeightedHandler is Test {
     /// @dev An issue on the gated index succeeds exactly when its recipient is allowed or the gate is open, and is
     ///      otherwise refused with NotAllowedMinter, whoever pays.
     function issueGated(uint256 seed, uint256 toSeed, uint256 shares) external {
+        if (frozen) return;
         address from = _actor(seed);
         address to = _actor(toSeed);
         shares = bound(shares, 1, 1_000_000e18);
@@ -393,6 +435,7 @@ contract WeightedHandler is Test {
         uint256 bal = gated.balanceOf(from);
         if (bal == 0) return;
         amount = bound(amount, 1, bal);
+        if (burn && frozen) return;
         vm.prank(from);
         if (burn) gated.redeem(amount, _actor(toSeed));
         else gated.transfer(_actor(toSeed), amount);
@@ -403,6 +446,7 @@ contract WeightedHandler is Test {
     // ---------------------------------------------------------------------
 
     function builderDeposit(uint256 seed, uint256 compSeed, uint256 amount) external {
+        if (frozen && compSeed % comps.length == FROZEN) return;
         address from = _actor(seed);
         MockERC20 token = comps[compSeed % comps.length];
         amount = bound(amount, 1, 1e30);
@@ -414,6 +458,7 @@ contract WeightedHandler is Test {
     }
 
     function builderWithdraw(uint256 seed, uint256 compSeed, uint256 toSeed, uint256 amount) external {
+        if (frozen && compSeed % comps.length == FROZEN) return;
         address from = _actor(seed);
         address token = address(comps[compSeed % comps.length]);
         uint256 held = builder.escrowOf(from, token);
@@ -424,6 +469,7 @@ contract WeightedHandler is Test {
 
     /// @dev Tops the actor's escrow up to the basket and mints through the builder, with the issue's fees.
     function builderMint(uint256 seed, uint256 toSeed, uint256 shares) external {
+        if (frozen) return;
         address from = _actor(seed);
         shares = bound(shares, 1, 1_000_000e18);
         uint256[] memory need = index.previewIssue(shares);
@@ -448,6 +494,7 @@ contract WeightedHandler is Test {
 
     /// @dev Redeems through the builder into the actor's escrow, with the redeem's fees.
     function builderRedeem(uint256 seed, uint256 shares) external {
+        if (frozen) return;
         address from = _holder(seed);
         uint256 bal = index.balanceOf(from);
         if (bal == 0) return;
@@ -464,23 +511,106 @@ contract WeightedHandler is Test {
         _clock(streaming, supply);
     }
 
+    /// @dev A component's leg to `tokenOut`, one V3 hop at the router's price.
+    function _path(address component, address tokenOut) internal pure returns (bytes memory) {
+        return abi.encodePacked(component, uint24(500), tokenOut);
+    }
+
+    /// @dev Buys the whole basket for `shares` into the actor's escrow through the router, the escrow it already holds
+    ///      counting toward it, and refunds the rest. It pays in USDC, or in the USD component itself, whose leg then
+    ///      passes through and is kept out of the refund (RX-57).
+    function builderBuy(uint256 seed, uint256 shares) external {
+        if (frozen) return;
+        address from = _actor(seed);
+        shares = bound(shares, 1e15, 1_000e18);
+        MockERC20 payIn = seed % 2 == 0 ? usdc : comps[2];
+        uint256[] memory need = index.previewIssue(shares);
+        uint256 budget = 1e6;
+        uint256[] memory components = new uint256[](comps.length);
+        IUniversalRouterSwaps.MintLeg[] memory legs = new IUniversalRouterSwaps.MintLeg[](comps.length);
+        for (uint256 i = 0; i < comps.length; ++i) {
+            components[i] = i;
+            bool passThrough = address(comps[i]) == address(payIn);
+            budget += passThrough ? need[i] : router.quoteIn(address(payIn), address(comps[i]), need[i]) + 1;
+            legs[i] = IUniversalRouterSwaps.MintLeg({
+                v3Path: passThrough ? bytes("") : _path(address(comps[i]), address(payIn)),
+                v4Path: new PathKey[](0),
+                maxAmountIn: 0
+            });
+        }
+        payIn.mint(from, budget);
+        IBasketBuilder.BuyParams memory p = IBasketBuilder.BuyParams({
+            index: address(index),
+            expectedNonce: index.rebalanceNonce(),
+            shares: shares,
+            tokenIn: address(payIn),
+            maxAmountIn: budget,
+            components: components,
+            legs: legs,
+            deadline: block.timestamp
+        });
+        vm.startPrank(from);
+        payIn.approve(address(builder), budget);
+        builder.buy(p);
+        vm.stopPrank();
+    }
+
+    /// @dev Sells the actor's whole escrow of one component into USDC through the router, paid to the actor (RX-57).
+    function builderSell(uint256 seed, uint256 compSeed) external {
+        uint256 i = compSeed % comps.length;
+        if (frozen && i == FROZEN) return;
+        address from = _actor(seed);
+        address token = address(comps[i]);
+        uint256 held = builder.escrowOf(from, token);
+        if (held == 0 || router.quoteOut(token, address(usdc), held) == 0) return;
+        address[] memory tokens = new address[](1);
+        tokens[0] = token;
+        IUniversalRouterSwaps.BurnLeg[] memory legs = new IUniversalRouterSwaps.BurnLeg[](1);
+        legs[0] = IUniversalRouterSwaps.BurnLeg({
+            v3Path: _path(token, address(usdc)), v4Path: new PathKey[](0), minAmountOut: 0
+        });
+        IBasketBuilder.SellParams memory p = IBasketBuilder.SellParams({
+            tokenOut: address(usdc),
+            minAmountOut: 1,
+            tokens: tokens,
+            amounts: new uint256[](1),
+            legs: legs,
+            to: from,
+            deadline: block.timestamp
+        });
+        vm.prank(from);
+        builder.sell(p);
+    }
+
     // ---------------------------------------------------------------------
     // rebalancing
     // ---------------------------------------------------------------------
 
-    /// @dev Warps to the first moment the caller may start, then starts.
+    /// @dev Tries a start a second early, which must fail, then warps to the first moment the caller may start, or up to
+    ///      three days later, and starts. The earliest moment is the model's: the index's 14-day interval after the
+    ///      last settlement, or only MIN_REBALANCE_INTERVAL after one with a keep mask (XS-3, RX-46).
     function startRebalance(uint256 seed, uint256 maskSeed, bool asGuardian) external {
         (uint256 eta,) = index.pendingRebalance();
         if (eta != 0 && block.timestamp <= eta + index.AUCTION_DURATION()) return;
-        uint256 earliest = index.lastRebalance() + index.MIN_REBALANCE_INTERVAL();
+        uint256 earliest = index.lastRebalance()
+            + (lastFillMasked ? index.MIN_REBALANCE_INTERVAL() : index.config().rebalanceInterval);
+        restartMisjudged = restartMisjudged || index.earliestRebalance() != earliest;
+        if (block.timestamp < earliest - 1) vm.warp(earliest - 1);
+        if (block.timestamp < earliest) {
+            vm.prank(guardian);
+            (bool early,) = address(index).call(abi.encodeCall(IWeightedHub.startRebalance, (0)));
+            restartMisjudged = restartMisjudged || early;
+        }
         if (!asGuardian) {
             uint256 afterExpiry = eta == 0 ? 0 : eta + index.AUCTION_DURATION() + index.REBALANCE_DELAY();
             earliest = Math.max(earliest, Math.max(index.restartAllowedAt(), afterExpiry));
         }
-        if (block.timestamp < earliest) vm.warp(earliest);
+        if (block.timestamp < earliest) vm.warp(earliest + bound(seed, 0, 3 days));
         holdOffMisjudged = holdOffMisjudged || (!asGuardian && !index.canStartRebalance());
 
         uint256 mask = asGuardian ? bound(maskSeed, 0, (1 << comps.length) - 2) : 0;
+        // The guardian's recourse while a component is frozen: keep it (RX-57).
+        if (asGuardian && frozen) mask = 1 << FROZEN;
         // A keep mask must leave two components moving (V5-L2).
         uint256 kept = 0;
         for (uint256 i = 0; i < comps.length; ++i) {
@@ -544,8 +674,14 @@ contract WeightedHandler is Test {
         }
     }
 
+    /// @dev Whether a fill now would have to move the frozen component.
+    function _movesFrozen() internal view returns (bool) {
+        (, uint256 keepMask) = index.pendingRebalance();
+        return frozen && (keepMask >> FROZEN) & 1 == 0;
+    }
+
     function executeRebalance(uint256 offset, bool bounded) external {
-        if (!_toAuction(offset)) return;
+        if (_movesFrozen() || !_toAuction(offset)) return;
         (bool trades, uint256 mu, uint256[] memory preview, uint256[] memory out, uint256[] memory in_) = _preview();
         if (!trades) return;
         _checkValue(mu, out, in_);
@@ -554,10 +690,18 @@ contract WeightedHandler is Test {
         uint256 held = _recipientsHold();
         uint256 supply = index.totalSupply();
         uint256 streaming = _streamingFee();
+        (, uint256 keepMask) = index.pendingRebalance();
+        uint256[] memory before = _balances();
         executor.setMode(MockWeightedExecutor.Mode.Honest);
         if (bounded) executor.executeBounded(index, "", data, in_);
         else executor.execute(index, "", data);
         ++ghostExecutions;
+        lastFillMasked = keepMask != 0;
+        // What the fill moved, measured on the index's balances: exactly the preview's amounts (RX-56).
+        uint256[] memory afterFill = _balances();
+        for (uint256 i = 0; i < comps.length; ++i) {
+            realizedMisled = realizedMisled || afterFill[i] + out[i] != before[i] + in_[i];
+        }
         // The fill accrues the streaming fee first, like every issue and redeem.
         _accountFee(held, streaming);
         _clock(streaming, supply);
@@ -596,6 +740,57 @@ contract WeightedHandler is Test {
     }
 
     /// @dev Delivers one raw unit too little of a growing component. It can never settle.
+    /// @dev The index's balance of every component.
+    function _balances() internal view returns (uint256[] memory b) {
+        b = new uint256[](comps.length);
+        for (uint256 i = 0; i < comps.length; ++i) {
+            b[i] = comps[i].balanceOf(address(index));
+        }
+    }
+
+    /// @dev An executor quotes a fill, an issue lands ahead of it, and its bounded fill goes out with the quote's
+    ///      amounts: it either still fits them or stops at RebalanceMovedOn, never anything else (DA-13, RX-57).
+    function frontRunFill(uint256 offset, uint256 actorSeed, uint256 shares) external {
+        if (frozen || !_toAuction(offset)) return;
+        (bool trades,, uint256[] memory units,, uint256[] memory in_) = _preview();
+        if (!trades) return;
+        shares = bound(shares, 1, 1e18);
+        address who = _actor(actorSeed);
+        uint256[] memory need = index.previewIssue(shares);
+        for (uint256 i = 0; i < comps.length; ++i) {
+            comps[i].mint(who, need[i]);
+            vm.prank(who);
+            comps[i].approve(address(index), need[i]);
+        }
+        uint256 held = _recipientsHold();
+        uint256 supply = index.totalSupply();
+        uint256 streaming = _streamingFee();
+        vm.prank(who);
+        index.issue(shares, who);
+        ghostIssued += shares;
+        _accountFee(held, streaming + (shares * 10_000 + 9874) / 9875 - shares);
+        _clock(streaming, supply);
+
+        // In the same block, so the fill accrues nothing more.
+        (, uint256 keepMask) = index.pendingRebalance();
+        bytes[] memory data = _updates();
+        executor.setMode(MockWeightedExecutor.Mode.Honest);
+        (bool settled, bytes memory reason) =
+            address(executor).call(abi.encodeCall(MockWeightedExecutor.executeBounded, (index, "", data, in_)));
+        if (!settled) {
+            frontRunMisjudged = frontRunMisjudged || bytes4(reason) != IWeightedHub.RebalanceMovedOn.selector;
+            return;
+        }
+        ++ghostExecutions;
+        lastFillMasked = keepMask != 0;
+        _recorded = units;
+        // A bounded fill delivers no more of any component than its bound (DA-13, RX-57).
+        uint256[] memory delivered = executor.lastAmountsIn();
+        for (uint256 i = 0; i < delivered.length; ++i) {
+            boundBroken = boundBroken || delivered[i] > in_[i];
+        }
+    }
+
     function executeRebalanceShort(uint256 offset) external {
         if (!_toAuction(offset)) return;
         (bool trades,,,, uint256[] memory amountsIn) = _preview();
@@ -623,6 +818,8 @@ contract WeightedHubInvariantTest is Test {
     address[] actors;
     WeightedHub gated;
     BasketBuilder builder;
+    MockUniversalRouter router;
+    MockERC20 usdc;
     /// @dev The creator, the platform and the referrer, outside the actors, then the creator and the platform
     ///      recipient the handler can hand the roles on to.
     address[5] recipients = [
@@ -643,13 +840,14 @@ contract WeightedHubInvariantTest is Test {
         comps.push(new MockERC20("BTC", "BTC", 8));
         comps.push(new MockERC20("ETH", "ETH", 18));
         comps.push(new MockERC20("USD", "USD", 6));
-        comps.push(new MockERC20("ODD", "ODD", 13));
+        // Pausable, as WBTC, MANA and the Ondo tokens are; the handler freezes it at times (RX-57).
+        comps.push(MockERC20(address(new MockPausableToken("ODD", "ODD", 13))));
         bytes32[] memory ids = new bytes32[](4);
         int64[] memory prices = new int64[](4);
         (prices[0], prices[1], prices[2], prices[3]) = (60_000e8, 2000e8, 1e8, 0.5e8);
-        // On their weights at those prices but the last, which starts at MIN_RAW_UNITS, so rounding and the turnover
-        // cap both bite.
-        uint256[4] memory units = [uint256(0.0004e8), 0.01e18, 20e6, factory.MIN_RAW_UNITS()];
+        // On their weights at those prices but the last, odd in its decimals, which starts at a quarter of its weight:
+        // the first fill has the turnover cap and the growth cap both bite (RX-15).
+        uint256[4] memory units = [uint256(0.0004e8), 0.01e18, 20e6, 18e13];
         uint256[4] memory weights = [uint256(2400), 2000, 2000, 3600];
 
         IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](4);
@@ -678,13 +876,15 @@ contract WeightedHubInvariantTest is Test {
                     creatorStreamingBps: 500,
                     maxPlatformFeeBps: 25,
                     maxPlatformStreamingBps: 100,
-                    rebalanceInterval: 7 days,
+                    rebalanceInterval: 14 days,
                     gated: false,
                     listed: true
                 })
             )
         );
         factory.transferCreator(address(index), recipients[0]);
+        vm.prank(recipients[0]);
+        factory.acceptCreator(address(index));
 
         _deployGatedAndBuilder(specs);
         for (uint256 i = 0; i < 5; ++i) {
@@ -713,7 +913,20 @@ contract WeightedHubInvariantTest is Test {
             )
         );
         factory.transferCreator(address(gated), makeAddr("gatedCreator"));
-        builder = new BasketBuilder(IIndexFactory(address(factory)), new MockUniversalRouter(makeAddr("poolManager")));
+        vm.prank(makeAddr("gatedCreator"));
+        factory.acceptCreator(address(gated));
+        router = new MockUniversalRouter(makeAddr("poolManager"));
+        builder = new BasketBuilder(IIndexFactory(address(factory)), router);
+        // The router trades every component against USDC at the components' starting prices, from an inventory deep
+        // enough for any buy or sale the handler makes (RX-57).
+        usdc = new MockERC20("USDC", "USDC", 6);
+        uint256[4] memory usd = [uint256(60_000e18), 2000e18, 1e18, 0.5e18];
+        for (uint256 i = 0; i < comps.length; ++i) {
+            router.setPrice(address(comps[i]), usd[i], comps[i].decimals());
+            comps[i].mint(address(router.inventory()), 1e40);
+        }
+        router.setPrice(address(usdc), 1e18, 6);
+        usdc.mint(address(router.inventory()), 1e40);
     }
 
     function _deployHandler(bytes32[] memory ids, int64[] memory prices, address owner, address guardian) internal {
@@ -731,7 +944,9 @@ contract WeightedHubInvariantTest is Test {
                 guardian: guardian,
                 gated: gated,
                 gatedCreator: makeAddr("gatedCreator"),
-                builder: builder
+                builder: builder,
+                router: router,
+                usdc: usdc
             })
         );
     }
@@ -739,6 +954,24 @@ contract WeightedHubInvariantTest is Test {
     /// @dev Walks the handler through every path once, so its coverage does not depend on what the fuzzer calls,
     ///      the engine's included: dust, lifetimes, creators, policies, the gate and the builder (XS-16).
     function test_XS16_handlerReachesEveryPath() public {
+        // The basket builder's buy and sale through the router, and a frozen component held around (RX-57).
+        handler.builderBuy(0, 1e18);
+        handler.builderBuy(1, 1e18);
+        handler.builderSell(0, 0);
+        handler.issue(0, 0, 2e18);
+        handler.openGate();
+        handler.issueGated(0, 0, 1e18);
+        handler.freeze(true);
+        handler.moveGated(0, 1, 1e17, true);
+        handler.issue(0, 0, 1e18);
+        handler.redeem(0, 0, 1e18);
+        handler.redeemSkipping(0, 0, 1e17, 1);
+        handler.claim(0, 0, 0);
+        handler.donate(3, 1);
+        handler.builderBuy(0, 1e18);
+        handler.builderSell(0, 3);
+        handler.freeze(false);
+        handler.claim(0, 3, 0);
         handler.redeem(0, 0, 1e18);
         handler.redeemSkipping(0, 0, 1e18, 1);
         handler.transfer(0, 1, 1e18);
@@ -785,8 +1018,14 @@ contract WeightedHubInvariantTest is Test {
         (, uint256 keepMask) = index.pendingRebalance();
         assertEq(keepMask, 1);
         handler.movePrice(2, 0.5e8);
+        // An issue ahead of a bounded fill: a whole token's stops it at its bound, a wei's lets it settle (RX-57).
+        handler.frontRunFill(0, 0, 1e18);
+        assertEq(index.rebalanceNonce(), 2, "a front-run past the bound stops the fill");
+        handler.frontRunFill(0, 0, 1);
         handler.executeRebalance(0, false);
         assertEq(index.rebalanceNonce(), 3);
+        assertFalse(handler.frontRunMisjudged());
+        assertFalse(handler.boundBroken());
 
         // Fills at μ = 1 bring the index onto its weights within a few rebalances, the unit cap allowing; then the next
         // fill has nothing to trade and is refused (V5-L2), and the handler skips it.
@@ -946,6 +1185,10 @@ contract WeightedHubInvariantTest is Test {
         assertEq(index.rebalanceNonce(), handler.ghostExecutions(), "the nonce counts executed rebalances");
         assertFalse(handler.shortFillSucceeded(), "a short fill never settles, whatever surplus the index holds");
         assertFalse(handler.holdOffMisjudged(), "canStartRebalance says when a stranger may start");
+        assertFalse(handler.restartMisjudged(), "the restart rule is the model's, and no start beats it (XS-3, RX-46)");
+        assertFalse(handler.realizedMisled(), "a fill moves exactly its preview's amounts (RX-56)");
+        assertFalse(handler.frontRunMisjudged(), "a front-run fill fits its bound or stops at it (RX-57)");
+        assertFalse(handler.boundBroken(), "a bounded fill delivers no more than its bound (DA-13, RX-57)");
         assertFalse(handler.previewMisled(), "a fill settles exactly the units its preview showed, none zero");
         assertFalse(handler.muBoundBroken(), "what comes in is worth at least mu times what leaves");
         assertFalse(handler.turnoverBroken(), "a fill sends out no more than MAX_TURNOVER of a component's units");

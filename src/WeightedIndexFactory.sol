@@ -66,6 +66,7 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
     uint256 public constant TOTAL_WEIGHT = 1e4;
     uint256 public constant MIN_RAW_UNITS = 1e4;
     uint256 public constant MAX_UNITS = type(uint96).max >> 10;
+    uint256 public constant MAX_WHOLE_TOKENS = 1e9;
     uint256 public constant LISTING_DELAY = 2 days;
     uint256 public constant GUARDIAN_DELAY = 7 days;
     uint256 public constant PROPOSAL_WINDOW = 7 days;
@@ -102,6 +103,8 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
 
     mapping(address => bool) public isIndex;
     mapping(address => address) public creatorOf;
+    /// @inheritdoc IWeightedIndexFactory
+    mapping(address index => address account) public pendingCreatorOf;
     address[] public allIndexes;
     /// @inheritdoc IWeightedIndexFactory
     mapping(address index => bool gated) public isGated;
@@ -219,10 +222,24 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         _checkCreator(index);
         if (newCreator == address(0)) revert ZeroAddress();
         if (newCreator == address(this) || isIndex[newCreator]) revert InvalidRecipient(newCreator);
+        // CreatorTransferStarted, two lines down, records the change the lint asks an event for.
+        // forge-lint: disable-next-line(missing-events-access-control)
+        pendingCreatorOf[index] = newCreator;
+        emit CreatorTransferStarted(index, msg.sender, newCreator);
+    }
+
+    /// @inheritdoc IWeightedIndexFactory
+    function acceptCreator(address index) external {
+        // The new creator accepts, so creatorOf never names an account that did not agree to it (RX-22).
+        if (pendingCreatorOf[index] != msg.sender) revert Unauthorized(msg.sender);
+        address previous = creatorOf[index];
         // CreatorTransferred, two lines down, records the change the lint asks an event for.
         // forge-lint: disable-next-line(missing-events-access-control)
-        creatorOf[index] = newCreator;
-        emit CreatorTransferred(index, msg.sender, newCreator);
+        creatorOf[index] = msg.sender;
+        // CreatorTransferred, on the next line, records the offer taken.
+        // forge-lint: disable-next-line(missing-events-access-control)
+        delete pendingCreatorOf[index];
+        emit CreatorTransferred(index, previous, msg.sender);
     }
 
     /// @inheritdoc IWeightedIndexFactory
@@ -343,10 +360,11 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
             ComponentSpec calldata c = components[i];
             address token = c.token;
             if (!isWhitelisted[token]) revert TokenNotWhitelisted(token);
-            if (c.units < MIN_RAW_UNITS || c.units > MAX_UNITS) revert UnitsOutOfRange(token, c.units);
+            Terms memory terms = _terms[token];
+            if (c.units < MIN_RAW_UNITS || c.units > _maxUnits(terms.decimals)) revert UnitsOutOfRange(token, c.units);
             if (c.weight == 0 || c.weight > TOTAL_WEIGHT) revert InvalidWeights();
             total += c.weight;
-            bytes32 priceId = _terms[token].priceId;
+            bytes32 priceId = terms.priceId;
             priceIds[i] = priceId;
             for (uint256 j = 0; j < i; ++j) {
                 if (components[j].token == token) revert DuplicateToken(token);
@@ -356,6 +374,14 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
             }
         }
         if (total != TOTAL_WEIGHT) revert InvalidWeights();
+    }
+
+    /// @dev The most units a component of `decimals` may start with: MAX_WHOLE_TOKENS whole tokens per share, and never
+    ///      above MAX_UNITS. So one wei-share backs a negligible amount of every component, and no fee's rounding to
+    ///      whole wei-shares is worth anything (RX-5).
+    function _maxUnits(uint8 decimals) private pure returns (uint256) {
+        uint256 whole = MAX_WHOLE_TOKENS * 10 ** decimals;
+        return whole < MAX_UNITS ? whole : MAX_UNITS;
     }
 
     /// @dev The components in the form the index's initializer takes, with each token's current price id and decimals.
@@ -537,6 +563,11 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
     /// @inheritdoc IWeightedIndexFactory
     function decimalsOf(address token) external view returns (uint8) {
         return _terms[token].decimals;
+    }
+
+    /// @inheritdoc IWeightedIndexFactory
+    function maxUnitsOf(address token) external view returns (uint256) {
+        return _maxUnits(_terms[token].decimals);
     }
 
     /// @inheritdoc IWeightedIndexFactory

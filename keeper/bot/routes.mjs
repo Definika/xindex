@@ -11,17 +11,24 @@ const ZERO = "0x0000000000000000000000000000000000000000";
 const DIRECT_FEES = [100, 500, 3000, 10000];
 const VIA_WETH_FEES = [500, 3000, 10000];
 const WETH_USDC_FEE = 500;
-/// How long a leg without a route keeps its quote: a quote that values a kept coin is never older than this (XS-5).
-export const REQUOTE_BLOCKS = 25n;
+/// How long a leg without a route keeps its quote: a quote that values a kept coin is from the block that uses it
+/// (XS-5, RX-13).
+export const REQUOTE_BLOCKS = 1n;
+/// How long a chosen route serves before it is quoted again, and dropped if it now loses too much: one block of fake
+/// depth pins the bot to a pool for at most this long (RX-13).
+export const ROUTE_REQUOTE_BLOCKS = 25n;
+/// How long the candidate pools found for a token stand: a pool created later, as arbitrageurs make one after a copy
+/// depegs, is seen within this many blocks (RX-17).
+export const POOL_REFRESH_BLOCKS = 25n;
 
 /// A packed Uniswap V3 path: token, fee, token, ... (20 bytes, 3 bytes, 20 bytes ...).
 export const path = (...hops) =>
   `0x${hops.map((h, i) => (i % 2 ? h.toString(16).padStart(6, "0") : h.slice(2).toLowerCase())).join("")}`;
 
 /// `chain` needs `multicall(contracts, blockNumber)`, `call({to, abi, functionName, args}, blockNumber)` and
-/// `isRevert(error)`; `abi` is `{v3Factory, quoter}`.
+/// `isRevert(error)`; `abi` is `{v3Factory, v3Pool, quoter}`.
 export function createRoutes(chain, cfg, abi) {
-  const candidatesOf = new Map(); // token -> paths whose pools exist (pools are never removed)
+  const candidatesOf = new Map(); // token -> {paths, block}: paths whose pools exist and are initialized, read at block
   // `${index}:${proposal}:${token}:${side}` -> {route, amount, usdc, block}, for one auction or request: the route
   // chosen (null when none), and the best quote at `amount`, in USDC's raw units, at `block`; `usdc` is null when no
   // pool exists for the token, and 0n when pools exist but none quoted.
@@ -29,7 +36,8 @@ export function createRoutes(chain, cfg, abi) {
 
   async function candidates(token, blockNumber) {
     const t = token.toLowerCase();
-    if (candidatesOf.has(t)) return candidatesOf.get(t);
+    const known = candidatesOf.get(t);
+    if (known && BigInt(blockNumber) - known.block < POOL_REFRESH_BLOCKS) return known.paths;
     const options = DIRECT_FEES.map((fee) => ({ pool: [token, MAINNET.usdc, fee], path: path(token, fee, MAINNET.usdc) }));
     if (t !== MAINNET.weth.toLowerCase()) {
       for (const fee of VIA_WETH_FEES) {
@@ -42,8 +50,16 @@ export function createRoutes(chain, cfg, abi) {
     );
     // A pool read that failed is not known to be absent: nothing is cached, and the leg is not valued as poolless.
     if (pools.some((p) => p.status !== "success")) throw new Error(`could not read ${token}'s pools`);
-    const found = options.filter((_, i) => pools[i].result !== ZERO).map((o) => o.path);
-    candidatesOf.set(t, found);
+    const existing = options.map((o, i) => ({ ...o, address: pools[i].result })).filter((o) => o.address !== ZERO);
+    // A pool nobody initialized has no price and anyone can create one, so it is no candidate: otherwise one empty pool
+    // would make a coin with no market count as worth nothing (RX-14). An initialized pool whose liquidity is gone still
+    // counts, and quotes nothing, as a depegged copy's does (XS-5).
+    const slots = existing.length
+      ? await chain.multicall(existing.map((o) => ({ address: o.address, abi: abi.v3Pool, functionName: "slot0" })), blockNumber)
+      : [];
+    if (slots.some((p) => p.status !== "success")) throw new Error(`could not read ${token}'s pools`);
+    const found = existing.filter((_, k) => slots[k].result[0] !== 0n).map((o) => o.path);
+    candidatesOf.set(t, { paths: found, block: BigInt(blockNumber) });
     return found;
   }
 
@@ -61,13 +77,23 @@ export function createRoutes(chain, cfg, abi) {
   }
 
   /// The route for selling (`side` "sell") or buying ("buy") `amount` of `token`, worth `fairUsd` at Pyth, in the
-  /// auction or request `key`; null when none loses at most ROUTE_MAX_LOSS_BPS. A route, once chosen, serves the whole
-  /// auction. A leg without one is quoted again whenever its amount grows past the one quoted, or its quote is
-  /// REQUOTE_BLOCKS old, so the quote {quoteOf} reads is recent and covers at least the amount it values (XS-5).
+  /// auction or request `key`; null when none loses at most ROUTE_MAX_LOSS_BPS. A chosen route serves the auction for
+  /// ROUTE_REQUOTE_BLOCKS, then is quoted again and kept only if it still passes; {forgetKey} drops it at once, after
+  /// a simulation or a fill that reverted (RX-13). A leg without one is quoted again whenever its amount grows past the
+  /// one quoted, or in each new block, so the quote {quoteOf} reads is the block's and covers the amount it values.
   async function best({ key, token, side, amount, fairUsd, blockNumber }) {
     const k = `${key}:${token.toLowerCase()}:${side}`;
     const c = chosen.get(k);
-    if (c && (c.route !== null || (amount <= c.amount && BigInt(blockNumber) - c.block < REQUOTE_BLOCKS))) return c.route;
+    const age = c ? BigInt(blockNumber) - c.block : 0n;
+    if (c && c.route !== null && age < ROUTE_REQUOTE_BLOCKS) return c.route;
+    if (c && c.route === null && amount <= c.amount && age < REQUOTE_BLOCKS) return null;
+    if (c && c.route !== null) {
+      const usdc = await quote(side, c.route, amount, blockNumber);
+      if (usdc !== null && routeLossBps(side, usdc, fairUsd) <= cfg.routeMaxLossBps) {
+        chosen.set(k, { route: c.route, amount, usdc, block: BigInt(blockNumber) });
+        return c.route;
+      }
+    }
     const paths = await candidates(token, blockNumber);
     let pick = null;
     let pickUsdc = null;
@@ -100,5 +126,10 @@ export function createRoutes(chain, cfg, abi) {
     for (const k of chosen.keys()) if (!keepKeys.some((key) => k.startsWith(`${key}:`))) chosen.delete(k);
   }
 
-  return { best, quoteOf, forget };
+  /// Forgets the routes of auction or request `key`, so the next look searches again (RX-13).
+  function forgetKey(key) {
+    for (const k of chosen.keys()) if (k.startsWith(`${key}:`)) chosen.delete(k);
+  }
+
+  return { best, quoteOf, forget, forgetKey };
 }

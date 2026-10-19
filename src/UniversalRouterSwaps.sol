@@ -42,7 +42,8 @@ import {PathKey, UniswapV4Types as V4, V4ExactInputParams, V4ExactOutputParams} 
 ///        reverts. The exception is a hop whose input is the component or `tokenOut` again: its leftover nets into
 ///        the settle or the take (CR-I07). So, on a route that never revisits them, only the first hop can leave
 ///        unsold input.
-///      - Native ether never reaches the engine, which cannot receive it: the take only ever takes `tokenOut`.
+///      - Native ether never reaches the engine, which cannot receive it: the take only ever takes the leg's far end,
+///        the component on a buy and `tokenOut` on a sale, neither of which may be native ether (RX-53).
 ///      - What a hop did not sell goes to {_onUnsold}. The zap pays it to the burn's recipient; the builder credits it
 ///        to the user's escrow. Unsold `tokenOut` stays with the proceeds.
 abstract contract UniversalRouterSwaps is IUniversalRouterSwaps {
@@ -75,9 +76,9 @@ abstract contract UniversalRouterSwaps is IUniversalRouterSwaps {
     ///      The router is pre-funded with `cap` and swept clean in the same call. So it never keeps anything, and never
     ///      holds an allowance from here.
     ///      `amountOut` is never zero. This matters: for the V4 router, zero in the amount position means "the full
-    ///      debt" (open delta). A basket's amounts are `ceil(shares * units / 1e18)` with non-zero shares, and units
-    ///      are always at least one raw unit: they start at MIN_RAW_UNITS or more, and a rebalance rounds new units up
-    ///      (CR-I05).
+    ///      debt" (open delta). A basket's amounts are `ceil(gross * units * scale / 1e36)` with non-zero shares, and
+    ///      units are always at least one raw unit: they start at MIN_RAW_UNITS or more, a rebalance rounds new units
+    ///      up, and the scale never reaches zero (CR-I05).
     /// @param i The leg's position, named by the errors.
     function _buy(address tokenIn, address component, uint256 amountOut, uint256 cap, MintLeg calldata leg, uint256 i)
         internal

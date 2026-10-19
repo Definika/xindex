@@ -24,13 +24,13 @@ interface IUniversalRouterSwaps is IXindexErrors {
 
     /// @param v3Path Exact-input Uniswap V3 path from the component to `tokenOut`. Empty for a V4 leg, and for the
     ///        pass-through leg whose component is `tokenOut` itself. Checked even when the component redeems to zero.
-    ///        Each hop is swapped alone, so the unsold input of any hop comes back to `to`. A middle hop that sells
-    ///        nothing reverts with InsufficientOutput.
+    ///        Each hop is swapped alone, so the unsold input of any hop comes back: to the burn's `to` from the zap, to
+    ///        the seller's escrow in the builder. A middle hop that sells nothing reverts with InsufficientOutput.
     /// @param v4Path Uniswap V4 route. Its last entry names `tokenOut`. Empty for a V3 leg and for the pass-through
     ///        leg. The whole route is one swap: a middle hop that fills short reverts the leg. The exception is a hop
     ///        whose input is the component or `tokenOut` again. A leftover component nets against the leg's debt and
-    ///        comes back to `to`; a leftover `tokenOut` is paid out. On a route that revisits neither, only the first
-    ///        hop can leave unsold input, which comes back to `to`.
+    ///        comes back as a V3 hop's does; a leftover `tokenOut` is paid out. On a route that revisits neither, only
+    ///        the first hop can leave unsold input, which comes back the same way (RX-53).
     /// @param minAmountOut Least `tokenOut` this leg must return, or 0 for the overall limit only. It applies to the
     ///        leg's final output. It reverts when non-zero on a leg whose redeemed amount rounds to zero. A middle V3
     ///        hop that produces nothing reverts too, whatever the minimum (RT-11).

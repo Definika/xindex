@@ -16,10 +16,12 @@ of 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). `WeightedIndexFa
 `MintRequests` hold Ethereum ERC-20s in kind: the issuer's own contract where Ethereum has one (71 candidates of the
 top 300 today), and otherwise a copy wrapped by Wormhole's token bridge from the chain that has it (17 from BNB Chain,
 nine of them Binance-Peg; 31 from Solana, Sui, Aptos, Base and the other chains Wormhole serves), priced at the coin's
-Pyth feed and labelled Bridged, Custodial as well when the source is Binance-Peg. The list stands at 93
-(`script/PythIds.sol`), 16 of them Wormhole copies, with 31 more copies to attest; DOGE's copy left it on 2026-10-14
-(the owner's call, below); on 2026-10-18 the copies of BNB, SUI and SEI, which the count of 2026-10-10 missed, joined
-it, and SAND and RLB left it after the source reading (the owner's call). The wrapping adds Wormhole's
+Pyth feed and labelled Bridged, Custodial as well when the source is Binance-Peg. The list stands at 91
+(`script/PythIds.sol`), 15 of them Wormhole copies, with 26 more copies to attest and FIL's held; DOGE's copy left it on
+2026-10-14 (the owner's call, below); on 2026-10-18 the copies of BNB, SUI and SEI, which the count of 2026-10-10
+missed, joined it, and SAND and RLB left it after the source reading (the owner's call); on 2026-10-19 BTT and SEI's
+copy left it, their bridges closed or closing, and ZK moved to Bridged (the owner's calls on the red team's RX-28,
+RX-32 and RX-19). The wrapping adds Wormhole's
 guardians as a party whose reach is the whole of each wrapped leg, and the app shows every index's wrapped share of
 value. They do not sign Pyth's prices: since Pyth's OP-PIP-132 of 2026-08-26, Pyth's contract on Ethereum verifies
 updates against Pyth's own set of five keys (read on chain on 2026-10-12), three of which suffice for a price or for
@@ -38,8 +40,10 @@ Where it stands (2026-10-18):
 - The hundred-coin list is built as far as Ethereum holds it: 93 listed on 2026-10-10 (the 49 of before, 31 more
   Ethereum-issued coins and 13 Wormhole copies that already existed, every one through `CheckToken` on a fork), and
   93 since DOGE's copy left on 2026-10-14, and on 2026-10-18 the copies of BNB, SUI and SEI, found already attested,
-  joined and SAND and RLB left, 75 of them coins that count toward the hundred. 31 copies await an attestation on
-  Wormhole's Portal, a
+  joined and SAND and RLB left; on 2026-10-19 BTT and SEI's copy left, 91 in all, 73 of them coins that count toward
+  the hundred. 26 copies await an attestation on Wormhole's Portal (the queue of 31 less USX and CASH, stablecoins,
+  BP, an exchange's token, S, which Wormhole does not serve, and FIL, held until its Binance-Peg source passes a
+  source reading: RX-11, RX-20, RX-35, RX-64), a
   transaction on each home chain the owner sends (section 2a of the 2026-10-10 record lists them with the procedure,
   section 3 of `design/2026-10-18-pre-mainnet-readings.md` what is left); each then goes through the check and the
   lists. A hundred-coin index is minted in kind or through `MintRequests`, since the zap
@@ -80,8 +84,16 @@ Where it stands (2026-10-18):
   SAND pin among them), and the tokens listed on 2026-10-10 had their source read
   (`design/2026-10-18-token-source-reading.md`, CF-4). The owner's calls on it: SAND and RLB delisted, H, PLUME, SNX,
   SYRUP, GALA and MANA kept, and the twelve Ondo legs priced at their share's feed kept under the procedure of CF-3.
-- Before any mainnet: Pyth's parameter replay (`design/2026-10-05-custom-weights.md`, section 8) and a settlement on a
-  real update from Hermes, both waiting on Pyth's API key in `.env` (`PYTH_API_KEY`); the 31 attestations and RAY's
+- The red team of 2026-10-18 (`audit/2026-10-18-red-team.md`, ids `RX-1`..`RX-67`) found no path that takes funds
+  from holders or escrows outside the documented bounds. Its findings were fixed on 2026-10-19, the owner's call to
+  "fix every finding": in the hub a leg's growth per fill is capped (RX-15), a price far from its own moving average
+  is refused (RX-27), a leg a fill buys must be able to leave (RX-12), and issue refuses a leg below its backing
+  (RX-8); in the factory units are capped in whole tokens (RX-5) and the creator role is handed on in two steps
+  (RX-22); in the keeper, request fills are verified, bounded and pinned (RX-1, RX-2, RX-4, RX-9, RX-10), and the rest
+  are documented. RX-3 is documented, and the keeper times its own starts for it.
+- Before any mainnet: Pyth's parameter replay (`design/2026-10-05-custom-weights.md`, section 8), which also sizes
+  `MAX_EMA_DEVIATION` and `MAX_GROWTH`, and a settlement on a
+  real update from Hermes, both waiting on Pyth's API key in `.env` (`PYTH_API_KEY`); the 26 attestations and RAY's
   update; Pyth's confirmation that Ethereum stays served; the platform's fee policy and the legal reading; and an
   external audit, then `DeployWeighted`'s release hashes fixed at the audited commit (CF-5).
 
@@ -123,7 +135,7 @@ CHECK=wide forge script script/CheckToken.s.sol --fork-url $MAINNET_RPC_URL
 
 Deployment, once, on Ethereum: `script/DeployWeighted.s.sol`, then `script/ConfigureWeighted.s.sol`, which lists each
 coin with its Pyth price id (`script/PythIds.sol`). `script/CheckToken.s.sol` reports on every token before its first
-listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 93 in all. On chain 1 the
+listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 91 in all. On chain 1 the
 deploy script resolves Pyth, the router and the stablecoins from the address book and refuses any other address
 (`DeployChecks.isPinnedChain`). Sepolia first needs its test market from
 `script/testnet/SetupTestMarket.s.sol`.
@@ -188,6 +200,9 @@ deploy script resolves Pyth, the router and the stablecoins from the address boo
      `test/BasketBuilder.t.sol`, XS-17's in `test/Repo.t.sol`, the keeper's in `keeper/test/KeeperExecutor.t.sol` and
      the node tests named `XS-5: ...` and so on in `keeper/test/unit/`. XS-18 is recorded by documentation and the R11
      test's ten entry points.
+   - The red team of 2026-10-18: `RX-1`..`RX-67` (`audit/2026-10-18-red-team.md`), a test named `test_RX8_...`, and a
+     node test named `RX-1: ...` in `keeper/test/unit/`. The record's "Status of the fixes" names every test; the ids
+     fixed by documentation alone, the listing calls and the off-chain readings have none.
    - Stage B's families are retired in full with Stage B (`audit/2026-10-07-stage-b-retirement.md`): the Stage B red
      team's `VLT`, `HUB`, `MOD`, `BNB`, `FAC` and `SOL` ids, the TRON review's `TRN`, the logic review of 2026-10-02's
      `LG`, and `BLS-1`. No test carries them, and none may be restored.
@@ -280,15 +295,23 @@ records also cite.
   fill loop, which `MockPyth` follows.
 - **Prices are scaled from recorded decimals.** A price is `price · 10^(36 + expo − decimals)` with the decimals the
   factory read when the listing was proposed; no component is called to price it (RT-01). Refused: a non-positive
-  price, an exponent outside [-18, 0], a result above `MAX_PRICE`, a confidence interval wider than `MAX_CONFIDENCE`.
+  price, an exponent outside [-18, 0], a result above `MAX_PRICE`, a confidence interval wider than `MAX_CONFIDENCE`,
+  and a price further than `MAX_EMA_DEVIATION` (5%) from the moving average Pyth publishes in the same update, or an
+  average that is not positive or has another exponent: a push of a few seconds on thin venues cannot set a fill's
+  price (RX-27). The bound reads nothing the parse does not return; the replay sizes it.
 - **Weights and constituents are fixed at creation,** two to a hundred components, and an index copies its price ids
   and decimals then, so no relisting reaches an existing index. The CREATE2 salt commits to every component's token,
   units, weight, price id and decimals, and to the index's config: its fee rates, referral share and rebalance interval
   (LR-05: never switch back to CREATE). The gate and the listing flag are not terms of the index and not in the salt.
+  A component starts with at least `MIN_RAW_UNITS` and at most `maxUnitsOf(token)`: `MAX_WHOLE_TOKENS` (1e9) whole
+  tokens per share, never above `MAX_UNITS`, so a wei-share backs a negligible amount and no fee's rounding to whole
+  wei-shares is worth anything (RX-5).
 - **The cap counts units, never value.** A fill sends out at most `MAX_TURNOVER` (20%) of each component's own units,
-  every leg moving the same share of the way, so a wrong or malicious price takes at most that, at most once a week. A value
-  cap measured in the reported prices let two wrong feeds take 89% of an index far from its weights (V5-M2); do not
-  bring one back as the only cap.
+  and adds to a growing one at most `μ` times `MAX_GROWTH` (100%, the math's) of its own units, every leg moving the
+  same share of the way, so a wrong or malicious price takes at most that, at most once a week. The growth cap keeps a
+  coin whose issuer mints and dumps it from drawing a fifth of every other leg into it in one fill: it draws about its
+  own value at most (RX-15). A value cap measured in the reported prices let two wrong feeds take 89% of an index far
+  from its weights (V5-M2); do not bring one back as the only cap.
 - **A fill must trade.** One whose release, after the turnover cap, is worth less than `MIN_TRADE` (0.1%) of the
   moving value reverts `NothingToRebalance`, and a keep mask must leave two components moving, so a fill that changes
   nothing cannot restart the rebalance interval (V5-L2). The minimum is checked on the capped release: checked before
@@ -300,12 +323,17 @@ records also cite.
   mask leaving one, a wider window or the minute, no confidence or publish-time check, a kept feed read, the
   duplicate-id checks removed, and the backing post-check's: the claims dropped from the backing term, only the bought
   legs re-read, and a shrinking leg paid as a difference of floored backings.
-- **A collapsing coin can stop the fills.** Fixed weights keep buying it, and units beyond `uint96` stop the fill rather
-  than wrap, until the guardian keeps it (V5-L3, a known limitation).
+- **A collapsing coin can stop the fills.** Fixed weights keep buying it, at most doubling its units per fill (RX-15);
+  a coin that falls far enough leaves every fill below `MIN_TRADE`, and units beyond `uint96` stop the fill rather than
+  wrap, the preview with it (RX-61), until the guardian keeps it (V5-L3, a known limitation).
 - **An issuer's corporate action is not accounted for.** Units are fixed per share and amounts come only from supply
   and units, so tokens an issuer mints to holders, as a split paid in tokens would be, stay in the index owned by no
   share, and a burn leaves that leg below its backing; a token that stops being one share misprices a leg priced at the
-  share's feed (CF-3, a known limitation). Do not add a path that pays out balances to cover it.
+  share's feed (CF-3, a known limitation). Do not add a path that pays out balances to cover it. What the hub does
+  check: issue refuses while a leg's balance is below the backing of the shares already issued plus its open claims, as
+  after an issuer burned the index's balance, so no new deposit refills the hole for earlier holders (RX-8); and a fill
+  that grows a leg must leave the index able to send that leg, measured by sending itself one raw unit, so a token that
+  blocks only its sender, as Tether Gold's does, cannot have good legs moved into a leg nobody can take out (RX-12).
 - **The notice is 2 hours.** `WeightedHub`'s `REBALANCE_DELAY` is 2 hours: targets come from the settlement's prices,
   so the notice is for executors, not for holders' exits (the spec's section 8). `AUCTION_DURATION` is 24 hours. The
   rebalance interval is the index's own, chosen at creation within [`MIN_REBALANCE_INTERVAL`, `MAX_REBALANCE_INTERVAL`]
@@ -327,7 +355,8 @@ records also cite.
   minter's deposit backs the fee's shares on top of its own (`previewIssue` sizes for the gross, rounded up); a burner's
   fee is minted to the recipients out of the shares it burns and it is paid the net backing, rounded down. Every share
   stays backed by the deposit that minted it, so the invariant is untouched. The recipients come from the factory at
-  each call (`feeTerms`): the index's creator (`creatorOf`, which the creator can hand on) and the platform recipient;
+  each call (`feeTerms`): the index's creator (`creatorOf`, which the creator can offer on and the new creator must
+  accept, RX-22) and the platform recipient;
   a referrer named at mint takes `referralShareBps` of the platform's part, so a self-referral discounts only the
   platform's. A recipient that could not hold shares is replaced (the creator by the call's `to`, the platform's part
   folded into the creator's), so no recipient can block a mint or an exit. Rates are fixed per index; the policy
@@ -492,7 +521,8 @@ records also cite.
   beside a `burnFrom`, as the one for review (CF-4). SAND, whose two admins' operators move any holder's balance, and
   RLB, whose code is unverified, left the list on 2026-10-18 after the source reading
   (`design/2026-10-18-token-source-reading.md`), the owner's call; `testFork_CF4_sandGoesToReviewWithItsAdmin` still
-  pins SAND as review. Pausable components such as WBTC, MANA, CHZ, SENT and FLUID
+  pins SAND as review. Pausable components such as WBTC, MANA, CHZ, SENT, FLUID, GALA, FET, SNX, PLUME and the Ondo
+  tokens (their pause manager, RX-55)
   must be labelled in the app, and so must every other issuer a component adds: BitGo for WBTC, Binance for BTCB and
   every Binance-Peg coin, Tether for Tether Gold, Ondo for every `<ticker>on` stock, Wormhole for every wrapped copy,
   and both Binance and Wormhole for a copy wrapped from a Binance-Peg coin.
@@ -650,7 +680,17 @@ cost the owner weighs before launch.
   MANA, CHZ, SENT and FLUID are labelled Pausable. Wormhole's copies of BNB, SUI and SEI joined the list the same day.
 - The twelve Ondo legs priced at their share's feed stay (the owner's call of 2026-10-18), under the procedure of
   `design/2026-10-18-pre-mainnet-readings.md`, section 2: the guardian keeps an affected leg around a corporate action,
-  and a leg is relisted at its token's own feed once Pyth publishes one.
+  and a leg is relisted at its token's own feed once Pyth publishes one. The procedure also has the guardian cancel each
+  auction of an index that cannot keep such a leg around a split (a two-leg index), the keeper's stock allowance for
+  those legs stays at zero, and Ondo's terminations, paid only to KYC'd redeemers, are a loss for holders still in at
+  the date, so the app tells them to exit first (RX-2, RX-7, RX-29).
+- The owner's calls of 2026-10-19 on the red team (`audit/2026-10-18-red-team.md`): BTT and SEI's Wormhole copy are off
+  the list (BTTC's bridge closed in June 2026; the copy of SEI redeems only through Sei's CosmWasm side, which Sei is
+  shutting down; RX-28, RX-32), their addresses kept in `script/MainnetAddresses.sol` for a relisting; ZK is tiered
+  Bridged, ZKsync's bridge copy (RX-19); the queue drops USX and CASH (stablecoins), BP (an exchange's token) and S
+  (Wormhole does not serve Sonic), and holds FIL until its Binance-Peg source passes a reading (RX-11, RX-20, RX-35,
+  RX-64). An index holding one of the six US-hours stocks first becomes fillable at the next open, near `MU_MIN`: the
+  app says so at creation, and the keeper times its own starts for a session (RX-3); the hub is unchanged.
 
 **Swap venues** (the owner's call on 2026-10-14): the zap swaps through Uniswap's Universal Router 2.0.0 alone, V3 or
 V4 per leg, chosen by the caller. PancakeSwap's v3 Universal Router, a third venue per leg since 2026-10-06 (chiefly

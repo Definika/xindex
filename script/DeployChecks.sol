@@ -53,6 +53,8 @@ abstract contract DeployChecks is Script {
     error AddressHasNoCode(string name, address account);
     /// @notice `name` points at `actual` instead of `expected`, so these contracts are not one deployment.
     error WrongWiring(string name, address expected, address actual);
+    /// @notice A mainnet run's broadcaster is Foundry's default sender: pass `--sender` with the signing key's address.
+    error BroadcasterRequired();
 
     /// @notice Rejects a missing owner and Foundry's default sender. On a pinned chain, a mainnet, the owner must be a
     ///         contract, not an EIP-7702 delegated account, and a Safe must need at least MIN_OWNER_THRESHOLD (3) signatures, the
@@ -185,9 +187,20 @@ abstract contract DeployChecks is Script {
         (list[n], list[n + 1]) = (MainnetAddresses.USDC, MainnetAddresses.USDT);
     }
 
-    /// @notice Whether this chain's market addresses are pinned to an address book: Ethereum's alone.
+    /// @notice Whether this chain's market addresses are pinned to an address book: Ethereum's alone. Keyed on the chain
+    ///         id and, which a chain-id override (`--chain-id`, FOUNDRY_CHAIN_ID, `chain_id` in foundry.toml) cannot
+    ///         change, on Ethereum's router having code here: a run against Ethereum's state keeps every mainnet check
+    ///         however the script's chain id is set, while forge still signs for chain 1 (RX-23).
     function isPinnedChain() public view returns (bool) {
-        return block.chainid == 1;
+        return block.chainid == 1 || MAINNET_UNIVERSAL_ROUTER.code.length != 0;
+    }
+
+    /// @notice On a pinned chain, refuses Foundry's default sender as the broadcaster: with `--account` but no
+    ///         `--sender` the keystore signs while the script's msg.sender is that default, and every check of the
+    ///         broadcasting key would compare against the wrong address (RX-37). Pass `--sender` with the keystore's
+    ///         address.
+    function checkBroadcaster() public view {
+        if (isPinnedChain() && msg.sender == DEFAULT_SENDER) revert BroadcasterRequired();
     }
 
     /// @notice Ethereum's Universal Router, the default on the pinned chain.

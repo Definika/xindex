@@ -169,8 +169,9 @@ hooks [s]; every non-proxy's proxy slots are zero [v].
 - **SYRUP:** with no per-function override for adding a module or setting an implementation, the global delay
   applies [v][s].
 - **PLUME:** every grantee in the log index was checked with `hasRole`; only the Safe still holds a role [v].
-- **SNX:** the resolver's two allowed callers are `0x94f864e5` and `0x3AcF163B`; whether either lets a third party name
-  another account was not read. Balances live in `TokenState` `0x5b1b5fEa`.
+- **SNX:** the resolver's two allowed callers are `0x94f864e5` and `0x3AcF163B`; neither lets a third party name
+  another account (read by the red team of 2026-10-18, RX-47, which also closed the notes on AXS's gateway and RSR's old
+  link: none is reachable by a third party). Balances live in `TokenState` `0x5b1b5fEa`.
 - **RLB:** never upgraded (one `Upgraded` event, at block 17,579,757); `flashFee` is 0 [v].
 - **MANA:** the crowdsale is finalized; `beginContinuousSale()` also succeeds from the key in a simulation, a mint path
   [v].
@@ -178,3 +179,6 @@ hooks [s]; every non-proxy's proxy slots are zero [v].
 - **BTT:** unbacked minting is possible if its predicate is upgraded.
 - **Not done:** no fork, no transaction; event histories from Blockscout; SAND's 22 operator contracts were read only
   for how each constrains `from`.
+
+**Added 2026-10-19 (the red team's RX-66).** Anyone can self-delegate an Xindex address in W through an NTT mint, which
+adds a fixed checkpoint write to every later W transfer of that address: a gas cost on W legs, not a loss.

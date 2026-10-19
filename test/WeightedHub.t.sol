@@ -259,6 +259,36 @@ contract WeightedHubTest is WeightedTest {
         assertEq(fee.balanceOf(address(feeIndex)), 9.9e18, "and the index holds only the donation");
     }
 
+    /// @dev An issuer burns part of the index's balance of a leg. Issue would refill the hole with the next minter's
+    ///      deposit and earlier holders would redeem it, so it refuses while any leg is below the backing of the shares
+    ///      already issued plus open claims (RX-8). Redeem still pays what is there.
+    function test_RX8_issueRefusesALegBelowItsBacking() public {
+        _issue(index, alice, 2e18);
+        vm.prank(alice);
+        index.redeemSkipping(1e18, alice, 2);
+        uint256 required = BTC_UNITS + BTC_UNITS; // one share's backing plus the claim on the other's
+        assertEq(btc.balanceOf(address(index)), required);
+
+        deal(address(btc), address(index), required - 1);
+        uint256[] memory amounts = index.previewIssue(1e18);
+        vm.startPrank(stranger);
+        eth.mint(stranger, amounts[0]);
+        btc.mint(stranger, amounts[1]);
+        usd.mint(stranger, amounts[2]);
+        eth.approve(address(index), amounts[0]);
+        btc.approve(address(index), amounts[1]);
+        usd.approve(address(index), amounts[2]);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.Underbacked.selector, address(btc), required - 1, required));
+        index.issue(1e18, stranger);
+        vm.stopPrank();
+
+        // Topped back up, the same issue goes through.
+        btc.mint(address(index), 1);
+        vm.prank(stranger);
+        index.issue(1e18, stranger);
+        assertEq(index.balanceOf(stranger), 1e18);
+    }
+
     function test_redeemSendsTheBasketRoundedDown() public {
         _issue(index, alice, 3e18);
         uint256 shares = 1e18 - 1;

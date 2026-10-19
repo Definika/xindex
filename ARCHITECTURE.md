@@ -125,10 +125,12 @@ OpenZeppelin's upgradeable ERC20 and ERC20Permit (clones skip constructors, so n
   (`DuplicatePriceId`, V5-M1: Pyth fills only the first of two equal ids, so such an index could never settle). The
   floor is DA-09's granularity rule; the ceiling leaves a 2^10 margin below `uint96` for units to grow (V5-L3). Each
   component copies the price id and decimals in force. The clone is deployed with CREATE2 from a salt over the creator,
-  the name, the symbol and every component's token, units, weight, price id and decimals (LR-05), registered
+  the name, the symbol, every component's token, units, weight, price id and decimals, and the config: fee and
+  streaming rates, referral share and rebalance interval (LR-05), registered
   (`isIndex`, `creatorOf`, `allIndexes`), announced (`IndexCreated`) and initialized in one transaction;
   `predictIndexAddress` gives the address first. No unit is checked against a price: the app derives the units from
-  the percentages at current prices, and rebalances, the first possible seven days later, close any gap within the cap.
+  the percentages at current prices, and rebalances, the first possible after the index's own interval (7 to 91 days),
+  close any gap within the caps.
 - **Guardian and ownership.** `proposeGuardian` is owner only (zero removes the role) and replaces any pending change;
   `executeGuardianChange` is permissionless from `GUARDIAN_DELAY` (7 days) for `PROPOSAL_WINDOW`. The owner can cancel
   any guardian change, the guardian only its own removal, never its replacement (XA-61). `isOwnerOrGuardian(account)`
@@ -338,15 +340,18 @@ backings, a shrinking leg of a sub-token index could release a whole raw unit wh
 non-zero at `μ(t)`, as on an empty index or one so small that every shrinking leg rounds to zero, the settlement is
 taken at `MU_MAX` instead, so nobody is paid for an empty or dust index (R14, XA-27).
 
-In order, `executeRebalance` checks that an auction is open (`NoPendingRebalance`, `RebalanceNotReady`,
-`RebalanceExpired`); reads the moving prices through Pyth at `priceTime()`, forwarding all of `msg.value`; computes the
+In order, `executeRebalance` first accrues the streaming fee, when the index charges one (asking the factory's
+`feeTerms` who receives it); checks that an auction is open (`NoPendingRebalance`, `RebalanceNotReady`,
+`RebalanceExpired`); reads the moving prices through Pyth at `priceTime()`, forwarding all of `msg.value`, and refuses
+one further than `MAX_EMA_DEVIATION` from its moving average (`PriceOffAverage`, RX-27); computes the
 settlement at `S` in this block; for the bounded overload, checks `maxAmountsIn`; reads what the index holds of each
 component that sends or receives something, and of no other, not even its balance (DA-14); writes the new units, bumps
 `rebalanceNonce`, sets `lastRebalance`, clears the proposal and emits `Rebalanced` with μ, the price time, the prices,
 the units and the amounts; sends each `out_i` to `msg.sender` and calls
 `IRebalanceExecutor.onXindexRebalance(amountsOut, amountsIn, data)` on it, so only a contract can execute; and then
 requires, for every component that moved, a balance of at least the larger of `⌊S · u'_i · σ / 1e36⌋ + totalClaims` and
-what it held before, less `out_i`, plus the whole of `in_i` (`RebalanceUnderfunded`). Surplus the index already held,
+what it held before, less `out_i`, plus the whole of `in_i` (`RebalanceUnderfunded`), and, for every component it
+bought, that it can still send that token, a one-unit transfer to itself, measured (`CannotSendOut`, RX-12). Surplus the index already held,
 from rounding or a donation, therefore stays with the holders instead of paying for part of the fill (R21, XA-28).
 
 The amounts are recomputed from `totalSupply()` in the settling block, and issue stays open through the auction, so
@@ -469,8 +474,8 @@ and as a second check on the coins it covers, were both refused (the spec, secti
 
 **Fixed weights and constituents.** Nobody, the creator included, changes them; new weights or a new list mean a new
 index. An index copies its price ids and decimals at creation, so no relisting or delisting reaches it, and its address
-commits to every component's token, units, weight, price id and decimals, so a front-runner's copy lands at its own
-address (LR-05).
+commits to every component's token, units, weight, price id and decimals and to its config, so a front-runner's copy
+lands at its own address (LR-05).
 
 **One deployment, the missing coins wrapped.** About 71 of the top-300 candidates exist on Ethereum through their
 issuer; held on BNB Chain instead, the same universe would have wrapped 71 legs. Wormhole is the one bridge accepted
@@ -520,7 +525,10 @@ components (section 2).
     (`ReceiverImplementationHalf`), for a price or for a governance message that upgrades the contract. A wrong price,
     from any of them, takes at most `MAX_TURNOVER` of each component sold, once a week (section 3.7).
   - Wormhole's guardians, for the wrapped legs: a quorum (13 of 19) can forge a bridge message, minting unbacked copies
-    or upgrading every wrapped token's code at once, with no timelock. That party is separate from Pyth's signers, and
+    or upgrading every wrapped token's code at once, with no timelock. Since April 2026, for the chains on delegated
+    guardian sets (BNB Chain, Kaia, NEAR, Sui, Arbitrum, Monad), five of seven named guardians suffice to mint, so most
+    listed copies rest on five keys (RX-6). The chain a copy comes from is a party too: a copy whose home side closes
+    its bridge redeems for nothing (RX-28, RX-32). That party is separate from Pyth's signers, and
     its reach is the whole of every wrapped leg, not a capped haircut, so the app shows every index's wrapped share of
     value. Redeem always pays the copies out; turning them into the coin needs Wormhole live.
   - The whitelisted tokens and their issuers, each labelled in the app: BitGo for WBTC, Tether for Tether Gold, Ondo
@@ -529,22 +537,25 @@ components (section 2).
 
   Executors and the account that starts a rebalance are untrusted. Users trust no one with custody.
 - **What can move a basket's shape or value.** Only a fill: units move toward fixed weights at the settling prices, at
-  most `MAX_TURNOVER` of each component sold and at most once a week. At honest prices a lone executor keeps at most
+  most `MAX_TURNOVER` of each component sold, at most `μ · MAX_GROWTH` of each one bought (RX-15), at a price within
+  `MAX_EMA_DEVIATION` of its own moving average (RX-27), and at most once a week. At honest prices a lone executor keeps at most
   `1 − MU_MIN` of the traded value, plus Pyth's gap to the market (section 3.7). Weights, constituents, price ids and
   decimals are fixed at creation. Rounding goes the holders' way everywhere.
 - **The guardian's stalls.** `cancelRebalance` has no window and no rate limit, so a hostile or compromised guardian can
   cancel every auction at its last second until the owner replaces it, after `GUARDIAN_DELAY`, which the guardian
   cannot cancel: a trust assumption of the role (DA-12). A keep-mask rebalance that leaves a pair moving can also clear
   `MIN_TRADE` on a sliver of the index, and its fill restarts `MIN_REBALANCE_INTERVAL` for a start without a mask
-  rather than the index's interval (XS-3), so the stall can outlast the replacement by up to a week. While a replacement is pending the owner cancels the outgoing guardian's keep-mask
+  rather than the index's interval (XS-3), so the stall can outlast the replacement by up to a week, and by a keep-mask
+  auction the outgoing guardian left pending, `REBALANCE_DELAY` + `AUCTION_DURATION` more (RX-44). While a replacement is pending the owner cancels the outgoing guardian's keep-mask
   proposals, within the 2 hours of `REBALANCE_DELAY`, and monitors watch `RebalanceStarted` with a non-zero `keepMask`
   (RT-07). Neither stall moves funds; holders redeem throughout.
 - **Reentrancy.** `nonReentrant` on the hub's ten entry points that mint, burn, pay, accrue or rebalance (`test_R11_everyEntryPointIsGuardedDuringTheCallback`),
-  on `createIndex`, on the zap's three (CR-I26) and on every entry point of `MintRequests`. The new units, the nonce and
-  the cleared proposal are written before any rebalance transfer, and the callback goes only to `msg.sender`. Wake's
-  reentrancy detector does not model the guard; its four documented suppressions are the `redeem` call in
-  `IndexZap._burnBasket`, the `permit` call in `burnToTokenWithPermit`, and the executor callback and Pyth's parse in
-  `WeightedHub`. Inside `issue`, `redeem` and `executeRebalance`, supply, units and balances change at different
+  on `createIndex`, on the zap's three (CR-I26), on every entry point of `BasketBuilder` and on every entry point of
+  `MintRequests`. The new units, the nonce and the cleared proposal are written before any rebalance transfer, and the
+  callback goes only to `msg.sender`. Wake's reentrancy detector does not model the guard; its documented suppressions
+  are the `redeem` call in `IndexZap._burnBasket`, the `permit` call in `burnToTokenWithPermit`, the `redeem` call in
+  `BasketBuilder.redeem`, the clone's `initialize` call in `WeightedIndexFactory._initializeIndex`, and the executor
+  callback and Pyth's parse in `WeightedHub` (RX-48). Inside `issue`, `redeem` and `executeRebalance`, supply, units and balances change at different
   moments, so integrators value an index from `components()` and independent prices, never from `balanceOf(index)`
   and `totalSupply()` (VR-05).
 - **Clone safety.** The implementation has initializers disabled; `initialize` is `FACTORY`-only and runs in the same
@@ -597,7 +608,7 @@ components (section 2).
   through the zap and a Uniswap-routed executor, and four drills, a WBTC pause, a silent feed, a price a hundred times
   low and an auction nobody fills (`WeightedHub.fork`).
 - **Gates,** enforced in CI: the submodule check against `foundry.lock`, `forge fmt --check`, `forge build`,
-  `forge lint -D notes`, the ABI diff of the four committed ABIs, `forge test` (fork suites required on pushes to
+  `forge lint -D notes`, the ABI diff of the five committed ABIs, `forge test` (fork suites required on pushes to
   `main` and on pull requests into it from this repository), the swap rail's and the keeper's tests, 100% coverage on
   every file, and the Wake detectors clean on `src/`. Aderyn reports nothing on `src/` (`aderyn.toml` gives each
   excluded rule its reason); CI does not run it yet.

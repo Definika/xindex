@@ -286,6 +286,12 @@ contract ConfigureWeighted is Script {
             return false;
         }
         bool everListed = factory.priceIdOf(token) != bytes32(0);
+        // A proposal that expired unexecuted leaves its eta set, where a cancel clears it. So an expired first listing
+        // is proposed again without V5_LIST, while one the guardian cancelled still needs it (RT-06, RX-39).
+        if (!everListed && eta != 0) {
+            console2.log("expired unexecuted, proposing again", token);
+            return _followsPolicy(token);
+        }
         if (!everListed && !_contains(firstListings, token)) {
             console2.log("skipped, never listed; name it in V5_LIST to propose its listing", token);
             return false;

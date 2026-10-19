@@ -37,6 +37,20 @@ contract MockBlacklistToken is ERC20 {
     }
 }
 
+/// @notice Tether Gold's rule: a blacklisted account cannot send, but anyone can still send to it.
+contract MockSenderBlockToken is MockBlacklistToken {
+    constructor(address owner_) MockBlacklistToken(owner_) {}
+
+    function removeBlackList(address account) external {
+        isBlackListed[account] = false;
+    }
+
+    function _update(address from, address to, uint256 value) internal override {
+        require(!paused && !isBlackListed[from], "blocked");
+        ERC20._update(from, to, value);
+    }
+}
+
 /// @notice A blacklisting token whose owner can also destroy a blacklisted holder's balance, as Tether and WhiteBIT's
 ///         WBT can: what the WBT rule refuses.
 contract MockSeizableToken is MockBlacklistToken {

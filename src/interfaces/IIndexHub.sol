@@ -21,7 +21,8 @@ interface IIndexHub is IERC20, IERC20Permit {
     ///         names nobody.
     function issue(uint256 shares, address to, address referrer) external;
 
-    /// @notice Burns `shares` from msg.sender and sends the pro-rata basket to `to`, rounded down. Reads no price.
+    /// @notice Burns `shares` from msg.sender and sends `to` the basket of those shares less the exit fee's, rounded
+    ///         down ({previewRedeem}). Reads no price.
     ///         Reverts if any component transfer reverts; `IWeightedHub.redeemSkipping` exits around a frozen one.
     /// @param shares Shares to burn.
     /// @param to Receives the components.

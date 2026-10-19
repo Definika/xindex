@@ -62,3 +62,24 @@ test("INDEXES is lowercased and deduplicated", () => {
   const c = parseConfig({ ...VALID, INDEXES: `${a}, ${a.toLowerCase()}` });
   assert.deepEqual(c.indexes, [a.toLowerCase()]);
 });
+
+test("RX-2, RX-3: the share-priced and session-limited ids are PythIds.sol's", async () => {
+  const { SESSION_IDS, SHARE_PRICED_IDS } = await import("../../bot/config.mjs");
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../../../script/PythIds.sol", import.meta.url), "utf8");
+  const idsOf = (pattern) =>
+    [...source.matchAll(new RegExp(`\\((${pattern})[^)]*\\)[^\\n]*\\n\\s*bytes32 internal constant \\w+ = (0x[0-9a-f]{64})`, "g"))].map((m) => m[2]);
+  const share = idsOf("Equity\\.(?:US|Index)\\.");
+  const us = idsOf("Equity\\.US\\.");
+  assert.equal(share.length, 12);
+  assert.equal(us.length, 6);
+  assert.deepEqual([...SHARE_PRICED_IDS].sort(), share.sort());
+  // Pyth's catalogue gives all twelve the regular-hours schedule, the six named 24/7 included (RX-31).
+  assert.deepEqual([...SESSION_IDS].sort(), share.sort());
+});
+
+test("RX-16: SUBSIDY_BUDGET_USD defaults to none and cannot be negative", () => {
+  assert.equal(parseConfig(VALID).subsidyBudgetUsd, 0);
+  assert.equal(parseConfig({ ...VALID, SUBSIDY_BUDGET_USD: "250" }).subsidyBudgetUsd, 250);
+  assert.throws(() => parseConfig({ ...VALID, SUBSIDY_BUDGET_USD: "-1" }), /SUBSIDY_BUDGET_USD must be at least 0/);
+});

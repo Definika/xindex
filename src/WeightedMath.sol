@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IWeightedHub} from "./interfaces/IWeightedHub.sol";
 import {IWeightedMath} from "./interfaces/IWeightedMath.sol";
 
@@ -23,6 +24,8 @@ contract WeightedMath is IWeightedMath {
     uint256 public constant MAX_TURNOVER = 0.2e18;
     /// @inheritdoc IWeightedMath
     uint256 public constant MIN_TRADE = 0.001e18;
+    /// @inheritdoc IWeightedMath
+    uint256 public constant MAX_GROWTH = 1e18;
 
     uint256 private constant WAD = 1e18;
     uint256 private constant SHARE_UNIT = 1e18;
@@ -93,6 +96,9 @@ contract WeightedMath is IWeightedMath {
                 units[i] = current - Math.mulDiv(current - target, share, WAD);
             } else if (target > current) {
                 units[i] = current + Math.mulDiv(target - current, growth, WAD, Math.Rounding.Ceil);
+                // The hub records units in 96 bits. Reverting here, as the hub's write would, keeps previewRebalance
+                // from returning a settlement that executeRebalance cannot apply (RX-61).
+                if (units[i] > type(uint96).max) revert SafeCast.SafeCastOverflowedUintDowncast(96, units[i]);
             } else {
                 units[i] = current;
             }
@@ -120,7 +126,8 @@ contract WeightedMath is IWeightedMath {
     /// @dev Returns each component's target units and the `share` of the way every leg moves toward them.
     ///      - A moving component's target is w · V / (W · p), rounded up. A kept one's is its current units.
     ///      - `share` is 1e18 (all the way), or less so that no shrinking leg gives up more than MAX_TURNOVER of its
-    ///        own units, rounded down. The cap counts units, not value, so a wrong price cannot widen it (V5-M2).
+    ///        own units, and no growing leg's gap times `share` exceeds MAX_GROWTH of its own units, rounded down.
+    ///        The cap counts units, not value, so a wrong price cannot widen it (V5-M2, RX-15).
     ///      - Reverts NothingToRebalance if the shrinking legs' release, after the cap, is worth less than MIN_TRADE
     ///        of V. Do not check before the cap: a fill could then trade a fifth of the minimum and still restart
     ///        the interval (V5R-1).
@@ -150,7 +157,14 @@ contract WeightedMath is IWeightedMath {
             }
             uint256 target = Math.mulDiv(value, weights[i], weight * prices[i], Math.Rounding.Ceil);
             targets[i] = target;
-            if (target >= current) continue;
+            if (target > current) {
+                // A growing leg adds at most mu * MAX_GROWTH of its own units. So a coin whose issuer mints and dumps
+                // it draws at most about its own value from the other legs per fill, whatever its price (RX-15).
+                uint256 growLimit = Math.mulDiv(current, MAX_GROWTH, target - current);
+                if (growLimit < share) share = growLimit;
+                continue;
+            }
+            if (target == current) continue;
             released += (current - target) * prices[i];
             uint256 limit = Math.mulDiv(current, MAX_TURNOVER, current - target);
             if (limit < share) share = limit;

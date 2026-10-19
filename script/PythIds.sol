@@ -14,16 +14,20 @@ import {MainnetAddresses as M} from "./MainnetAddresses.sol";
 ///         2026-10-10, from CoinGecko's top 100 of that day, SHIB and PEPE on the owner's call; Wormhole's SOL the same
 ///         day, in place of BNB Chain's Binance-Peg SOL. Tether Gold and 17 Ondo stock tokens joined the same day, on
 ///         the owner's call; a stock is priced at its Ondo token's own feed where Pyth has one, else at Pyth's 24/7
-///         price for the share, else at the US-hours feed, which publishes nothing while the market is closed. The
+///         price for the share, else at the US-hours feed, which publishes nothing while the market is closed. Pyth's
+///         catalogue, read on 2026-10-19, gives the "24/7" share feeds the same regular-hours schedule as the US-hours
+///         ones, so all twelve are treated as session-limited until Hermes' data says otherwise (RX-31). The
 ///         hundred-coin list of 2026-10-10 (design/2026-10-10-one-index-wormhole-legs.md) adds 31 Ethereum-issued
 ///         coins and 13 Wormhole copies, each at its coin's feed, read from Hermes that day; a Wormhole copy is priced
 ///         as the coin it wraps, as SOL's is. DOGE's copy left on 2026-10-14, the owner's call (`MainnetAddresses`).
 ///         Wormhole's copies of BNB, SUI and SEI, which the count of 2026-10-10 missed, joined on 2026-10-18, each at
 ///         its coin's feed, read from Pyth's catalogue (Benchmarks' `/v1/price_feeds`) that day; SAND and RLB left the
-///         same day, the owner's call after the source reading (design/2026-10-18-token-source-reading.md).
+///         same day, the owner's call after the source reading (design/2026-10-18-token-source-reading.md). BTT and
+///         SEI's copy left on 2026-10-19, the owner's call on the red team's RX-28 and RX-32: the bridge behind each has
+///         closed or is closing, so the copy would be priced as a coin it no longer redeems for.
 library PythIds {
     /// @notice How many coins the table names.
-    uint256 internal constant COUNT = 93;
+    uint256 internal constant COUNT = 91;
 
     /// @dev ETHEREUM / US DOLLAR.
     bytes32 internal constant WETH = 0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace;
@@ -126,8 +130,6 @@ library PythIds {
     bytes32 internal constant VON = 0xc719eb7bab9b2bc060167f1d1680eb34a29c490919072513b545b9785b73ee90;
     /// @dev FALCON FINANCE / US DOLLAR, read from Hermes on 2026-10-10.
     bytes32 internal constant FF = 0xf9597faf41a8d91fcc4dc95e9b4f408ea391cf17ec26955ae2055b6dbda5ec89;
-    /// @dev BITTORRENT / US DOLLAR, read from Hermes on 2026-10-10.
-    bytes32 internal constant BTT = 0x097d687437374051c75160d648800f021086bc8edf469f11284491fda8192315;
     /// @dev GNOSIS / US DOLLAR, read from Hermes on 2026-10-10.
     bytes32 internal constant GNO = 0xc5f60d00d926ee369ded32a38a6bd5c1e0faa936f91b987a5d0dcf3c5d8afab0;
     /// @dev OLYMPUS DAO / US DOLLAR, read from Hermes on 2026-10-10.
@@ -210,8 +212,6 @@ library PythIds {
     bytes32 internal constant BNB = 0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f;
     /// @dev SUI / US DOLLAR, read from Pyth's catalogue on 2026-10-18.
     bytes32 internal constant SUI = 0x23d7315113f5b1d3ba7a83604c44b94d79f4fd69af77f804fc7f920a6dc65744;
-    /// @dev SEI / US DOLLAR, read from Pyth's catalogue on 2026-10-18.
-    bytes32 internal constant SEI = 0x53614f1cb0c031d4af66c04cb9c756234adad0e1cee85303795091499a4084eb;
 
     /// @notice A token's trust tier (design/2026-10-05-wide-asset-support.md, section 1), shown by the app beside every
     ///         index that holds it and by `ConfigureWeighted`'s safe mode beside every listing.
@@ -237,9 +237,9 @@ library PythIds {
         ) return Tier.Custodial;
         if (
             token == M.CRO || token == M.ICP || token == M.ARB || token == M.RENDER || token == M.CAKE || token == M.ZRO
-                || token == M.INJ || token == M.SOL || token == M.W || token == M.BTT || token == M.AVAX
+                || token == M.INJ || token == M.SOL || token == M.W || token == M.ZK || token == M.AVAX
                 || token == M.JUP || token == M.ALGO || token == M.AERO || token == M.APT || token == M.PYTH_TOKEN
-                || token == M.OP || token == M.BNB || token == M.SUI || token == M.SEI
+                || token == M.OP || token == M.BNB || token == M.SUI
         ) return Tier.Bridged;
         if (
             token == M.WETH || token == M.LINK || token == M.UNI || token == M.QNT || token == M.AAVE || token == M.ENA
@@ -249,9 +249,9 @@ library PythIds {
                 || token == M.PEPE || token == M.FF || token == M.GNO || token == M.OHM || token == M.GRT
                 || token == M.SYRUP || token == M.ENS || token == M.JASMY || token == M.COMP || token == M.EIGEN
                 || token == M.AXS || token == M.BAT || token == M.CVX || token == M.MANA || token == M.IMX
-                || token == M.FLUID || token == M.CHZ || token == M.ZK || token == M.APE || token == M.SENT
-                || token == M.SNX || token == M.ONEINCH || token == M.GLM || token == M.ATH || token == M.H
-                || token == M.PLUME || token == M.GALA || token == M.RSR
+                || token == M.FLUID || token == M.CHZ || token == M.APE || token == M.SENT || token == M.SNX
+                || token == M.ONEINCH || token == M.GLM || token == M.ATH || token == M.H || token == M.PLUME
+                || token == M.GALA || token == M.RSR
         ) return Tier.Native;
         return Tier.Unrecorded;
     }
@@ -265,9 +265,9 @@ library PythIds {
     }
 
     /// @notice Every coin of the table and its id: WETH, WBTC, LINK and UNI first, the `default` list, then the wide
-    ///         list: the 45 of 2026-10-06 and 2026-10-10's first additions, then the hundred-coin list's 29
-    ///         Ethereum-issued coins (31, less SAND and RLB) and 12 Wormhole copies, then the 3 copies found on
-    ///         2026-10-18, each group by market cap.
+    ///         list: the 45 of 2026-10-06 and 2026-10-10's first additions, then the hundred-coin list's 28
+    ///         Ethereum-issued coins (31, less SAND, RLB and BTT) and 12 Wormhole copies, then the 2 copies found on
+    ///         2026-10-18 that stayed (BNB and SUI), each group by market cap.
     function all() internal pure returns (address[] memory tokens, bytes32[] memory ids) {
         tokens = new address[](COUNT);
         ids = new bytes32[](COUNT);
@@ -321,48 +321,46 @@ library PythIds {
         (tokens[47], ids[47]) = (M.WMTON, WMTON);
         (tokens[48], ids[48]) = (M.VON, VON);
         (tokens[49], ids[49]) = (M.FF, FF);
-        (tokens[50], ids[50]) = (M.BTT, BTT);
-        (tokens[51], ids[51]) = (M.GNO, GNO);
-        (tokens[52], ids[52]) = (M.OHM, OHM);
-        (tokens[53], ids[53]) = (M.GRT, GRT);
-        (tokens[54], ids[54]) = (M.SYRUP, SYRUP);
-        (tokens[55], ids[55]) = (M.ENS, ENS);
-        (tokens[56], ids[56]) = (M.JASMY, JASMY);
-        (tokens[57], ids[57]) = (M.COMP, COMP);
-        (tokens[58], ids[58]) = (M.EIGEN, EIGEN);
-        (tokens[59], ids[59]) = (M.AXS, AXS);
-        (tokens[60], ids[60]) = (M.BAT, BAT);
-        (tokens[61], ids[61]) = (M.CVX, CVX);
-        (tokens[62], ids[62]) = (M.MANA, MANA);
-        (tokens[63], ids[63]) = (M.IMX, IMX);
-        (tokens[64], ids[64]) = (M.FLUID, FLUID);
-        (tokens[65], ids[65]) = (M.CHZ, CHZ);
-        (tokens[66], ids[66]) = (M.ZK, ZK);
-        (tokens[67], ids[67]) = (M.APE, APE);
-        (tokens[68], ids[68]) = (M.SENT, SENT);
-        (tokens[69], ids[69]) = (M.SNX, SNX);
-        (tokens[70], ids[70]) = (M.ONEINCH, ONEINCH);
-        (tokens[71], ids[71]) = (M.GLM, GLM);
-        (tokens[72], ids[72]) = (M.ATH, ATH);
-        (tokens[73], ids[73]) = (M.H, H);
-        (tokens[74], ids[74]) = (M.PLUME, PLUME);
-        (tokens[75], ids[75]) = (M.GALA, GALA);
-        (tokens[76], ids[76]) = (M.W, W);
-        (tokens[77], ids[77]) = (M.RSR, RSR);
-        (tokens[78], ids[78]) = (M.XRP, XRP);
-        (tokens[79], ids[79]) = (M.ADA, ADA);
-        (tokens[80], ids[80]) = (M.LTC, LTC);
-        (tokens[81], ids[81]) = (M.AVAX, AVAX);
-        (tokens[82], ids[82]) = (M.DOT, DOT);
-        (tokens[83], ids[83]) = (M.JUP, JUP);
-        (tokens[84], ids[84]) = (M.ALGO, ALGO);
-        (tokens[85], ids[85]) = (M.ATOM, ATOM);
-        (tokens[86], ids[86]) = (M.AERO, AERO);
-        (tokens[87], ids[87]) = (M.APT, APT);
-        (tokens[88], ids[88]) = (M.PYTH_TOKEN, PYTH_TOKEN);
-        (tokens[89], ids[89]) = (M.OP, OP);
-        (tokens[90], ids[90]) = (M.BNB, BNB);
-        (tokens[91], ids[91]) = (M.SUI, SUI);
-        (tokens[92], ids[92]) = (M.SEI, SEI);
+        (tokens[50], ids[50]) = (M.GNO, GNO);
+        (tokens[51], ids[51]) = (M.OHM, OHM);
+        (tokens[52], ids[52]) = (M.GRT, GRT);
+        (tokens[53], ids[53]) = (M.SYRUP, SYRUP);
+        (tokens[54], ids[54]) = (M.ENS, ENS);
+        (tokens[55], ids[55]) = (M.JASMY, JASMY);
+        (tokens[56], ids[56]) = (M.COMP, COMP);
+        (tokens[57], ids[57]) = (M.EIGEN, EIGEN);
+        (tokens[58], ids[58]) = (M.AXS, AXS);
+        (tokens[59], ids[59]) = (M.BAT, BAT);
+        (tokens[60], ids[60]) = (M.CVX, CVX);
+        (tokens[61], ids[61]) = (M.MANA, MANA);
+        (tokens[62], ids[62]) = (M.IMX, IMX);
+        (tokens[63], ids[63]) = (M.FLUID, FLUID);
+        (tokens[64], ids[64]) = (M.CHZ, CHZ);
+        (tokens[65], ids[65]) = (M.ZK, ZK);
+        (tokens[66], ids[66]) = (M.APE, APE);
+        (tokens[67], ids[67]) = (M.SENT, SENT);
+        (tokens[68], ids[68]) = (M.SNX, SNX);
+        (tokens[69], ids[69]) = (M.ONEINCH, ONEINCH);
+        (tokens[70], ids[70]) = (M.GLM, GLM);
+        (tokens[71], ids[71]) = (M.ATH, ATH);
+        (tokens[72], ids[72]) = (M.H, H);
+        (tokens[73], ids[73]) = (M.PLUME, PLUME);
+        (tokens[74], ids[74]) = (M.GALA, GALA);
+        (tokens[75], ids[75]) = (M.W, W);
+        (tokens[76], ids[76]) = (M.RSR, RSR);
+        (tokens[77], ids[77]) = (M.XRP, XRP);
+        (tokens[78], ids[78]) = (M.ADA, ADA);
+        (tokens[79], ids[79]) = (M.LTC, LTC);
+        (tokens[80], ids[80]) = (M.AVAX, AVAX);
+        (tokens[81], ids[81]) = (M.DOT, DOT);
+        (tokens[82], ids[82]) = (M.JUP, JUP);
+        (tokens[83], ids[83]) = (M.ALGO, ALGO);
+        (tokens[84], ids[84]) = (M.ATOM, ATOM);
+        (tokens[85], ids[85]) = (M.AERO, AERO);
+        (tokens[86], ids[86]) = (M.APT, APT);
+        (tokens[87], ids[87]) = (M.PYTH_TOKEN, PYTH_TOKEN);
+        (tokens[88], ids[88]) = (M.OP, OP);
+        (tokens[89], ids[89]) = (M.BNB, BNB);
+        (tokens[90], ids[90]) = (M.SUI, SUI);
     }
 }

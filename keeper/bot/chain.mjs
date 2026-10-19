@@ -38,8 +38,14 @@ export const ABI = {
     "function quoteExactOutput(bytes path, uint256 amountOut) returns (uint256 amountIn, uint160[], uint32[], uint256)",
   ]),
   v3Factory: parseAbi(["function getPool(address, address, uint24) view returns (address)"]),
+  v3Pool: parseAbi([
+    "function slot0() view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked)",
+  ]),
   pyth: parseAbi([
     "function getUpdateFee(bytes[] updateData) view returns (uint256)",
+    "struct Price { int64 price; uint64 conf; int32 expo; uint256 publishTime; }",
+    "struct PriceFeed { bytes32 id; Price price; Price emaPrice; }",
+    "function parsePriceFeedUpdates(bytes[] updateData, bytes32[] priceIds, uint64 minPublishTime, uint64 maxPublishTime) payable returns (PriceFeed[] priceFeeds)",
     "error InsufficientFee()",
     "error InvalidUpdateData()",
     "error InvalidUpdateDataSource()",
@@ -94,8 +100,12 @@ export function createChain(cfg) {
 
   /// A call at `blockNumber` with optional overrides: `state` maps an address to `{slot: value}` (stateDiff), and
   /// `block` = {number, time} runs it as if in that block. Returns the decoded outputs of `functionName`.
-  async function call({ to, abi, functionName, args, value = 0n, from = account.address }, blockNumber, over = {}) {
+  async function call({ to, abi, functionName, args, value = 0n, from = account.address, gas }, blockNumber, over = {}) {
     const data = encodeFunctionData({ abi, functionName, args });
+    // With `gas`, the call runs with exactly the limit a transaction would send, so a fill that only fits the node's
+    // default limit is seen to fail (RX-21, RX-36).
+    const tx = { from, to, data, value: hex(value) };
+    if (gas !== undefined) tx.gas = hex(gas);
     const state = {};
     for (const [address, slots] of Object.entries(over.state ?? {})) {
       state[address] = { stateDiff: Object.fromEntries(Object.entries(slots).map(([s, v]) => [word(BigInt(s)), word(v)])) };
@@ -103,7 +113,7 @@ export function createChain(cfg) {
     const block = over.block ? { number: hex(over.block.number), time: hex(over.block.time) } : {};
     const result = await client.request({
       method: "eth_call",
-      params: [{ from, to, data, value: hex(value) }, hex(blockNumber), state, block],
+      params: [tx, hex(blockNumber), state, block],
     });
     return decodeFunctionResult({ abi, functionName, data: result });
   }
@@ -164,6 +174,7 @@ export function createChain(cfg) {
     const implementation = await read(cfg.factory, ABI.factory, "IMPLEMENTATION", [], at);
     const pyth = await read(cfg.factory, ABI.factory, "PYTH", [], at);
     const duration = await read(implementation, ABI.hub, "AUCTION_DURATION", [], at);
+    const delay = await read(implementation, ABI.hub, "REBALANCE_DELAY", [], at);
     const block = await client.getBlock({ blockNumber: at });
     const time = block.timestamp + 1000n;
     const priceTime = await call({ to: implementation, abi: ABI.hub, functionName: "priceTime", args: [] }, at, {
@@ -174,7 +185,7 @@ export function createChain(cfg) {
       state: { [implementation]: { [HUB_SLOTS.eta]: 1234n, [HUB_SLOTS.keepMask]: 5n } },
     });
     if (eta !== 1234n || keepMask !== 5n) throw new Error("WeightedHub's storage layout is not the one the keeper knows");
-    return { implementation, pyth, duration, requests };
+    return { implementation, pyth, duration, delay, requests };
   }
 
   return {

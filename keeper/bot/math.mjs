@@ -59,12 +59,104 @@ export const keptUsd = (pythUsd, quoteUsdc) =>
 
 /// The dollar change one leg makes to the executor's stock: a coin the index sends out and no route sells is kept, at
 /// {keptUsd}, and a coin the index needs comes out of stock first, at Pyth price `price`. `quoteUsdc` is the best
-/// quote for selling `out`, or null.
-export function stockChangeUsd({ out, in: need, held, routed, decimals, price, quoteUsdc = null }) {
+/// quote for selling `out`, or null. A share-priced Ondo leg kept counts as nothing: its feed prices a share, not the
+/// token, which is worth sValue shares the bot cannot read (RX-2).
+export function stockChangeUsd({ out, in: need, held, routed, decimals, price, quoteUsdc = null, sharePriced = false }) {
   const delivered = amountUsd(inventoryDelta({ out: 0n, in: need, held, routed }), decimals, price);
   const kept = routed ? 0n : out;
-  return kept > 0n ? delivered + keptUsd(amountUsd(kept, decimals, price), quoteUsdc) : delivered;
+  if (kept === 0n || sharePriced) return delivered;
+  return delivered + keptUsd(amountUsd(kept, decimals, price), quoteUsdc);
 }
+
+/// Whether a leg would hand over share-priced Ondo stock: the executor delivers from stock first, within the owner's
+/// allowance, and the bot cannot value that stock (RX-2). Such a fill waits until the owner sets that coin's stock
+/// allowance to zero, so the leg is bought instead.
+export const deliversSharePricedStock = ({ need, held, sharePriced }) => sharePriced && need > 0n && held > 0n;
+
+/// Keeps the prices of `prices` (by Hermes key) that Pyth's contract returned identically from `feeds`, its parse of the
+/// same signed update: a price Hermes, or anyone between the bot and Hermes, changed is dropped (RX-9).
+export function verifiedPrices(prices, feeds, keyOf) {
+  const verified = new Map();
+  for (const feed of feeds) {
+    const k = keyOf(feed.id);
+    const p = prices.get(k);
+    const f = feed.price;
+    if (p && p.price === BigInt(f.price) && p.conf === BigInt(f.conf) && p.expo === Number(f.expo) && BigInt(p.publishTime) === BigInt(f.publishTime)) {
+      verified.set(k, p);
+    }
+  }
+  return verified;
+}
+
+/// Whether price `p` ({price, conf, publishTime}) is fit to value something at second `now`: published within
+/// `freshSeconds`, with a confidence interval at most `maxConfBps` of the price. A closed feed's last close and a
+/// disputed price are neither (RX-1).
+export const freshPrice = (p, now, freshSeconds, maxConfBps) =>
+  Boolean(p) &&
+  p.price > 0n &&
+  BigInt(p.publishTime) >= BigInt(now) - BigInt(freshSeconds) &&
+  BigInt(p.conf) * BPS <= BigInt(p.price) * BigInt(maxConfBps);
+
+const zones = new Map(); // time zone -> its Intl formatter
+
+/// Whether unix second `t` falls inside `schedule`, in Pyth's catalogue format: `zone;mon,tue,...,sun;MMDD/x,...`, each
+/// day `hhmm-hhmm` or `C` (closed), and each dated entry overriding its weekday for that date, as exchange holidays and
+/// half days do. A session's end is excluded.
+export function inSchedule(t, schedule) {
+  const [zone, week, dated = ""] = schedule.split(";");
+  if (!zones.has(zone)) {
+    zones.set(
+      zone,
+      new Intl.DateTimeFormat("en-US", { timeZone: zone, weekday: "short", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }),
+    );
+  }
+  const parts = Object.fromEntries(zones.get(zone).formatToParts(new Date(Number(t) * 1000)).map((x) => [x.type, x.value]));
+  const days = { Mon: 0, Tue: 1, Wed: 2, Thu: 3, Fri: 4, Sat: 5, Sun: 6 };
+  let hours = week.split(",")[days[parts.weekday]];
+  for (const entry of dated.split(",").filter(Boolean)) {
+    const [date, value] = entry.split("/");
+    if (date === `${parts.month}${parts.day}`) hours = value;
+  }
+  if (!hours || hours === "C") return false;
+  const [open, close] = hours.split("-").map((h) => Number(h.slice(0, 2)) * 60 + Number(h.slice(2)));
+  const minutes = Number(parts.hour) * 60 + Number(parts.minute);
+  return minutes >= open && minutes < close;
+}
+
+/// Whether a start at second `t` puts an auction's useful part in a session of `schedule`: μ reaches 1.0 halfway
+/// through it, at `t + delay + duration / 2`, and a fill of an index holding a session-limited stock can only land
+/// while that feed publishes. Starting so that this second falls in a session lets competition fill near μ = 1, where a
+/// start at any time lets the first fillable block sit at the next open, near MU_MIN (RX-3).
+export const sessionStartOk = (t, delay, duration, schedule) =>
+  inSchedule(BigInt(t) + BigInt(delay) + BigInt(duration) / 2n, schedule);
+
+/// Whether a fill at `profit` dollars, below zero only when MIN_PROFIT_USD is a subsidy, fits `budget` dollars over the
+/// rolling day before second `t`, given the earlier subsidised fills `spent` ({at, usd}). Returns the fills still in the
+/// window with the verdict (RX-16).
+export function subsidyFits(spent, profit, t, budget, day = 86_400n) {
+  const window = spent.filter((s) => s.at > BigInt(t) - day);
+  if (profit >= 0) return { ok: true, window };
+  const used = window.reduce((sum, s) => sum + s.usd, 0);
+  return { ok: used - profit <= budget, window };
+}
+
+/// The back-off keys a request fill that reverted on chain strikes: the request, its requester and its index, so a
+/// requester cannot start over with a new request id, nor many requests on one index each cost a reverted fill (RX-10).
+export const requestStrikeKeys = (id, request) => [
+  `request:${id}`,
+  ...(request ? [`requester:${request.requester.toLowerCase()}`, `index:${request.index.toLowerCase()}`] : []),
+];
+
+/// The ready indexes whose start is simulated this round: the `cap` richest by `tvl`, and the rest (RX-34).
+export function startsToCheck(ready, cap) {
+  const sorted = [...ready].sort((a, b) => b.tvl - a.tvl);
+  return { chosen: sorted.slice(0, cap), rest: sorted.slice(cap) };
+}
+
+/// What a fill costs in dollars: its gas at the next block's base fee plus the tip, and the Pyth update fee it sends,
+/// which is spent like gas (RX-18).
+export const fillCostUsd = ({ used, nextBase, tip, ethUsd, pythFee = 0n }) =>
+  (Number(used * (nextBase + tip)) / 1e18) * ethUsd + (Number(pythFee) / 1e18) * ethUsd;
 
 /// Calldata tokens as EIP-7623 counts them: a zero byte is one token, any other byte four.
 export function calldataTokens(hex) {

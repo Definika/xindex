@@ -139,7 +139,6 @@ contract MainnetAddressesForkTest is Test {
         _assertToken(M.WMTON, "WMTon", 18);
         _assertToken(M.VON, "Von", 18);
         _assertToken(M.FF, "FF", 18);
-        _assertToken(M.BTT, "BTT", 18);
         _assertToken(M.GNO, "GNO", 18);
         _assertToken(M.OHM, "OHM", 9);
         _assertToken(M.GRT, "GRT", 18);
@@ -181,7 +180,6 @@ contract MainnetAddressesForkTest is Test {
         _assertToken(M.OP, "OP", 18);
         _assertToken(M.BNB, "WBNB", 18);
         _assertToken(M.SUI, "SUI", 9);
-        _assertToken(M.SEI, "SEI", 6);
     }
 
     function _assertWrapped(address token, uint16 chain, bytes32 source) internal view {
@@ -213,7 +211,6 @@ contract MainnetAddressesForkTest is Test {
         _assertWrapped(M.OP, 24, 0x0000000000000000000000004200000000000000000000000000000000000042); // OP from Optimism
         _assertWrapped(M.BNB, 4, 0x000000000000000000000000bb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c); // WBNB from BNB Chain
         _assertWrapped(M.SUI, 21, 0x9258181f5ceac8dbffb7030890243caed69a9599d2886d957a9cb7656af3bdb3); // SUI from Sui
-        _assertWrapped(M.SEI, 32, 0x01881043998ff2b738519d444d2dd0da3da4545de08290c1076746538d5333df); // SEI from Sei
     }
 
     /// @dev Every entry, as the listing script builds it, listed on a fresh v5 factory over Pyth's own contract, which
@@ -235,7 +232,7 @@ contract MainnetAddressesForkTest is Test {
     /// @dev Every wide entry lists on a fresh factory with its price id and its token's own decimals.
     function testFork_wideWhitelistMatchesMainnet() public {
         ConfigureWeighted.Entry[] memory list = new ConfigureWeighted().wideMainnetList();
-        assertEq(list.length, 89);
+        assertEq(list.length, 87);
         _listOnAFreshFactory(list);
     }
 

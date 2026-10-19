@@ -160,6 +160,10 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     error NothingToClaim(address token);
     /// @notice {issue} received less `token` than it pulled, as with a fee-on-transfer token.
     error TransferAmountMismatch(address token);
+    /// @notice {issue} found the index holding `balance` of `token`, below the `required` backing of the shares already
+    ///         issued plus open claims, as after an issuer burned the index's balance. A deposit would pay earlier
+    ///         holders (RX-8).
+    error Underbacked(address token, uint256 balance, uint256 required);
     /// @notice The index's rebalance interval has not passed since the last rebalance; it does at `earliest`.
     error RebalanceTooSoon(uint256 earliest);
     /// @notice A rebalance is pending until `deadline`, the end of its auction.
@@ -194,6 +198,12 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     error PriceOutOfRange(address token, int64 price, int32 expo);
     /// @notice `token`'s confidence interval is wider than MAX_CONFIDENCE of its price: Pyth's publishers disagree.
     error PriceUncertain(address token, int64 price, uint64 conf);
+    /// @notice `token`'s price is further than MAX_EMA_DEVIATION from `emaPrice`, the update's own moving average, or
+    ///         that average is not positive or has another exponent (RX-27).
+    error PriceOffAverage(address token, int64 price, int64 emaPrice);
+    /// @notice After a fill, the index could not send itself one raw unit of `token`, a leg it bought, or lost some
+    ///         doing so: a token that blocks the index as a sender would trap what the fill bought (RX-12).
+    error CannotSendOut(address token);
 
     /// @notice Number of shares that make up one whole index token (1e18).
     function SHARE_UNIT() external view returns (uint256);
@@ -230,7 +240,8 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
 
     /// @notice The most of any component's own units one rebalance sends out (1e18 = 100%). Beyond it, every leg moves
     ///         the same smaller share of the way to its target. It counts units, not value. So whatever a price says, a
-    ///         fill sends out at most this share of each component it sells (V5-M2).
+    ///         fill sends out at most this share of each component it sells (V5-M2). A growing leg is capped too, at
+    ///         μ times the math's MAX_GROWTH of its own units (RX-15).
     function MAX_TURNOVER() external view returns (uint256);
 
     /// @notice The least a fill must trade, as a share of the moving value at its prices (1e18 = 100%). Below it the
@@ -239,6 +250,10 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
 
     /// @notice Widest confidence interval a price may carry, as a share of the price (1e18 = 100%).
     function MAX_CONFIDENCE() external view returns (uint256);
+
+    /// @notice Furthest a price may be from the moving average Pyth publishes in the same update, as a share of the
+    ///         average (1e18 = 100%). A push lasting seconds on thin venues cannot set a fill's price (RX-27).
+    function MAX_EMA_DEVIATION() external view returns (uint256);
 
     /// @notice How far before the settling block its prices are read: one Ethereum slot. It is also the length of the
     ///         window they must be published in, from {priceTime} to the second before the block.
@@ -309,8 +324,8 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     function componentCount() external view returns (uint256);
 
     /// @notice The component tokens, and the raw units of each that back one whole index token (1e18 shares). The
-    ///         streaming fee owed up to now is applied, rounded down. An issue of one whole token pulls these, rounded
-    ///         up.
+    ///         streaming fee owed up to now is applied, rounded down. An issue of one whole token pulls these for its
+    ///         gross shares, the fee's included, rounded up; {previewIssue} gives the exact amounts (RX-42).
     function components() external view returns (address[] memory tokens, uint256[] memory units);
 
     /// @notice What the creator fixed for each component, in component order.

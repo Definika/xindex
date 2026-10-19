@@ -106,7 +106,7 @@ transaction:
 | TRX | BNB Chain (4) | `0xCE7de646e7208a4Ef112cb6ed5038FA6cC6b12e3` | BTTC's bridge |
 | ZEC | BNB Chain (4) | `0x1ba42e5193dfa8b03d15dd1b86a3113bbbef8eeb` | Binance-Peg |
 | BCH | BNB Chain (4) | `0x8ff795a6f4d97e7887c79bea79aba5cc76444adf` | Binance-Peg |
-| FIL | BNB Chain (4) | `0x0d8ce2a99bb6e3b7db580ed848240e4a0f9ae153` | Binance-Peg |
+| FIL | BNB Chain (4) | `0x0d8ce2a99bb6e3b7db580ed848240e4a0f9ae153` | Binance-Peg; held until its source passes step four's reading (2026-10-19, RX-11) |
 | XTZ | BNB Chain (4) | `0x16939ef78684453bfdfb47825f8a5f714f12623a` | Binance-Peg |
 | ASTER | BNB Chain (4) | `0x000ae314e2a2172a039b26378814c252734f556a` | |
 | STABLE | BNB Chain (4) | `0x011ebe7d75e2c9d1e0bd0be0bef5c36f0a90075f` | |
@@ -117,21 +117,21 @@ transaction:
 | SEI | Sei (32) | `usei` | |
 | KAIA | Kaia (13) | `0x19Aac5f612f524B754CA7e7c41cbFa2E981A4432` (WKAIA) | |
 | MON | Monad (48) | `0x760AfE86e5de5fa0Ee542fc7B7B713e1c5425701` (WMON) | |
-| S | Sonic (52) | `0x039e2fB66102314Ce7b64Ce5Ce3E5183bc94aD38` (wS) | |
+| S | Sonic (52) | `0x039e2fB66102314Ce7b64Ce5Ce3E5183bc94aD38` (wS) | dropped 2026-10-19: Wormhole runs no token bridge or guardian watcher on Sonic (RX-64) |
 | RAIN | Arbitrum (23) | `0x25118290e6a5f4139381d072181157035864099d` | |
 | VVV | Base (30) | `0xacfe6019ed1a7dc6f7b508c02d1b04ec88cc21bf` | |
 | ZEN | Base (30) | `0xf43eb8de897fbc7f2502483b2bef7bb9ea179229` | |
 | GRASS | Solana (1) | `Grass7B4RdKfBCjTKgSqnXkqjwiGvQyFbuSCUJr3XXjs` | |
-| BP | Solana (1) | `BPxxfRCXkUVhig4HS1Lh7kZqV6SPJhzfEk4x6fVBjPCy` | |
+| BP | Solana (1) | `BPxxfRCXkUVhig4HS1Lh7kZqV6SPJhzfEk4x6fVBjPCy` | dropped 2026-10-19: a centralized exchange's token, under the exchange-token rule (RX-35) |
 | JTO | Solana (1) | `jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL` | |
 | CARDS | Solana (1) | `CARDSccUMFKoPRZxt5vt3ksUbxEFEcnZ3H2pd3dKxYjp` | |
 | MET | Solana (1) | `METvsvVRapdj9cFLzq4Tr43xK4tAjQfwX76z3n6mWQL` | |
-| USX | Solana (1) | `6FrrzDk5mQARGc1TDYoyVnSyRdds1t4PbtohCD6p3tgG` | |
+| USX | Solana (1) | `6FrrzDk5mQARGc1TDYoyVnSyRdds1t4PbtohCD6p3tgG` | dropped 2026-10-19: a USD stablecoin (RX-20) |
 | KMNO | Solana (1) | `KMNo3nJsBXfcpJTVhZcXLW7RmTwTt4GVFE7suUBo9sS` | |
 | 2Z | Solana (1) | `J6pQQ3FAcJQeWPPGppWRb4nM8jU3wLyYbRrLh7feMfvd` | |
 | ORCA | Solana (1) | `orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE` | |
 | META | Solana (1) | `METAwkXcqyXKy1AtsSgJ8JiUHwGCafnZL38n3vYmeta` | |
-| CASH | Solana (1) | `CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH` | |
+| CASH | Solana (1) | `CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH` | dropped 2026-10-19: a USD stablecoin whose mint has a permanent delegate and a freeze authority (RX-20) |
 | SKR | Solana (1) | `SKRbvo6Gf7GondiT3BbTfuRDPqLWei4j2Qy2NPGZhW3` | |
 | DBR | Solana (1) | `DBRiDgJAMsM95moTzJs7M9LnkGErpbv9v6CUR1DXnUu5` | |
 | STONK | Solana (1) | `6GmAFSYs4gk3FDao5FzzySQpPZaWsa4rUJHacpMpUNgx` | |
@@ -141,8 +141,11 @@ How an attestation goes, in order. First, on the home chain, call the token brid
 (on BNB Chain the bridge is `0xB6F6D86a8f9879A9c87f643768d9efc38c1Da6E7`; on Solana, Sui and Aptos, Portal's own
 interface does the same). Second, wait for the guardians to sign the attestation, which Wormholescan shows as a VAA.
 Third, on Ethereum, call `createWrapped(vaa)` on `MainnetAddresses.WORMHOLE_TOKEN_BRIDGE`; the copy then answers at
-`wrappedAsset(chain, source)`. Fourth, run `CheckToken` on the copy, add it to the address book and to `PythIds` with
-its coin's feed, and extend `testFork_theWormholeCopiesAreTheBridges` with its source. The Binance-Peg sources are
+`wrappedAsset(chain, source)`. Fourth, read the source on its home chain, since `CheckToken` reads only the Ethereum
+copy and every copy is the same `BridgeToken` beacon: apply the WBT rule and the DOGE rule there (a proxy whose admin
+is one externally owned key, or a single key that can mint, means a copy that key can leave unbacked), and record the
+home chain's bridge side as a party (RX-11, RX-32). Fifth, run `CheckToken` on the copy, add it to the address book and
+to `PythIds` with its coin's feed, and extend `testFork_theWormholeCopiesAreTheBridges` with its source. The Binance-Peg sources are
 listed `Custodial`, the rest `Bridged`. Nothing here needs a key of ours beyond gas.
 
 **Fork results, 2026-10-11** (`test/fork/WeightedHub.fork.t.sol` on Alchemy's archive node, blocks 26,167,826 and
@@ -164,7 +167,8 @@ ends the walk after about 10,000 reads.
 | Party | What it can do | Reach |
 |---|---|---|
 | The Xindex contracts | A bug | Everything. Reviewed internally twice; the external audit is before any mainnet. |
-| Wormhole's guardians, 13 of 19 | Forge a bridge message: mint unbacked wrapped tokens, or upgrade every wrapped token's code at once, with no timelock | Every wrapped leg at once. |
+| Wormhole's guardians, 13 of 19; for copies from chains on delegated guardian sets (BNB Chain, Kaia, NEAR, Sui, Arbitrum, Monad), 5 of 7 named guardians to mint (RX-6) | Forge a bridge message: mint unbacked wrapped tokens, or, with 13 of 19, upgrade every wrapped token's code at once, with no timelock | Every wrapped leg at once. |
+| The home chain of each copy, and its side of the bridge | Close the bridge side, so the copy redeems for nothing while priced as its coin (BTT's and SEI's copies left the list for that, RX-28, RX-32) | That copy's leg. |
 | Pyth's five signing keys (since 2026-08-26) and Pyth's governance, which can upgrade its contract | Sign or install a forged price | The turnover cap: 20% of each leg's units per fill, once a week, and the guardian can cancel. |
 | Binance | Stop honouring a Binance-Peg coin | That leg. Nine coins carry Binance and Wormhole both. |
 | BitGo, Ondo, Tether, every other issuer | Pause, blacklist or burn its token | That leg. |

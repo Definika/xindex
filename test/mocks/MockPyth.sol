@@ -60,6 +60,22 @@ contract MockPyth {
         return abi.encode(feed, prevPublishTime);
     }
 
+    /// @notice {update} with the moving average `emaPrice · 10^emaExpo`, which {update} sets to the price itself.
+    function updateWithEma(
+        bytes32 id,
+        int64 price,
+        int32 expo,
+        int64 emaPrice,
+        int32 emaExpo,
+        uint64 publishTime,
+        uint64 prevPublishTime
+    ) external pure returns (bytes memory) {
+        PythStructs.Price memory p = PythStructs.Price({price: price, conf: 0, expo: expo, publishTime: publishTime});
+        PythStructs.Price memory ema =
+            PythStructs.Price({price: emaPrice, conf: 0, expo: emaExpo, publishTime: publishTime});
+        return abi.encode(PythStructs.PriceFeed({id: id, price: p, emaPrice: ema}), prevPublishTime);
+    }
+
     function getUpdateFee(bytes[] calldata updateData) external view returns (uint256) {
         return fee * updateData.length;
     }

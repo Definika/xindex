@@ -29,8 +29,9 @@ calls the API "100% backward-compatible" and names no end-of-life for Pyth Core.
 - Its receiver, `0x3a2DD09B4739D905183D503d594c8FB3e3D41820`, is a proxy over
   `0x8d289cdd60e7f73f352f42c8524a06ef1ad746f8`, verified as `ReceiverImplementationHalf` [s], whose quorum is
   `numGuardians / 2 + 1`: **three of the five keys** verify a message. Its current set, index 1, has the five keys
-  `0x41534bB1…E638`, `0x6502987B…5B41`, `0x44A3e8F6…76C9`, `0x13Edc776…39d4` and `0x3af08885…9aF9`; set 0 holds the
-  same keys. The forum names index 0 and "a 3-of-5 quorum", which the source confirms.
+  `0x41534bB1…E638`, `0x6502987B…5B41`, `0x44A3e8F6…76C9`, `0x13Edc776…39d4` and `0x3af08885…9aF9`. Corrected on
+  2026-10-19 (the red team's RX-63): set 0 held five other keys on chain until 2026-09-05, and each rotation leaves the
+  old set 24 hours of power. The forum names index 0 and "a 3-of-5 quorum", which the source confirms.
 - Hermes and Benchmarks, Pyth's history service, answer 401 to every request without a key, the at-time and
   historical routes included [v, on 2026-10-18]; only Benchmarks' feed catalogue answers.
 
@@ -85,22 +86,33 @@ redemption.
 3. What a mispriced leg costs, at the hub's own prices, which is where it trades:
    - Dividend drift is small, about each stock's yield for each year since Ondo issued the token, zero for the
      non-payers. If the hub sells a leg it undervalues, the executor buys it at that discount, on at most
-     `MAX_TURNOVER` of the leg's units per fill: under a few percent of a fifth of the leg. If it buys one, the
-     executor pays the discount, so fills slow rather than lose.
+     `MAX_TURNOVER` of the leg's units per fill: under a few percent of a fifth of the leg. If it buys one, a rational
+     executor pays the discount, so fills slow rather than lose; Xindex's own keeper is not that executor unless it
+     refuses to value the legs, which it now does (the red team's RX-2: it delivers none from stock and counts any it
+     keeps as nothing, and its stock allowance for the twelve stays at zero).
    - A split makes the leg look ten times cheaper and far underweight, so the hub asks an executor to deliver ten
      times its value: no fill clears, and rebalancing that index stalls until the guardian keeps the leg. A reverse
      split makes it look dearer and overweight, so the hub sells it for ten times its worth: again no fill. Neither
-     moves value out of the index.
+     moves value out of the index, unless the creator weighted the leg far below its holdings, so that after a split
+     it is still overweight and the hub sells it at a tenth of its worth (RX-7).
+   - Ondo can also end a token: its base prospectus of 11 November 2025 (T&C XIV, "Issuer Redemption") lets it
+     terminate a token on at least 30 business days' notice and pay only KYC'd redeemers, and an acquisition is
+     typically a redemption. The hub moves only component tokens and has no sweep, so a payout sent to an index is
+     stranded: holders still in at the date lose that leg (RX-29).
 4. Nothing here adds a path that pays out balances (`AGENTS.md`'s rule).
 
 **Procedure, until Pyth publishes a token feed for each of the twelve:**
 - Price an Ondo leg at the token's own feed wherever Pyth has one; when a token feed appears, the owner relists the
   token with it, which reaches only later indexes.
 - The keeper and the app watch Ondo's notices (`status.ondo.finance`, at least 24 hours ahead of a change over 1%)
-  and the oracle above; the guardian keeps an affected share-priced leg in any rebalance started around the action.
-- The app labels the twelve as priced at their share.
+  and the oracle above; the guardian keeps an affected share-priced leg in any rebalance started around the action,
+  and cancels each auction of an index that cannot keep it, a two-leg index (RX-7).
+- The keeper's stock allowance for the twelve stays at zero (RX-2).
+- On a termination notice, the app tells holders of an index with that leg to exit before its date (RX-29).
+- The app labels the twelve as priced at their share, and flags an index whose starting units and weights disagree.
 - **The owner's call, 2026-10-18:** keep the twelve listed under this procedure, as recommended. The worst case is a
-  stalled rebalance, not a loss, and the drift is bounded by the cap.
+  stalled rebalance, not a loss, and the drift is bounded by the cap; a termination is a loss for those still in, which
+  the procedure's notice exists to avoid (corrected 2026-10-19, RX-29).
 
 ## 3. The Wormhole copies still to attest
 
@@ -120,7 +132,11 @@ bridge's `wrappedAsset(chain, source)` [v, at block 26,215,050], with JUP's list
   Solana. RAY's copy still answers an empty symbol and waits for `updateWrapped` from Solana.
 
 With SAND and RLB off it (section 6), the list is 93: 16 Wormhole copies, and 75 coins that count toward the
-hundred.
+hundred. On 2026-10-19 BTT and SEI's copy left it (the red team's RX-28 and RX-32: BTTC's bridge closed in June 2026,
+and SEI's copy redeems only through Sei's CosmWasm side, which Sei is shutting down), so it is 91, 15 copies and 73
+that count. The queue of 31 lost USX and CASH (stablecoins), BP (an exchange's token) and S (Wormhole does not serve
+Sonic), and FIL is held until its Binance-Peg source passes a reading on BNB Chain: 26 copies to attest (RX-11, RX-20,
+RX-35, RX-64).
 
 ## 4. The fork suites, run again
 
