@@ -25,8 +25,9 @@ RX-32 and RX-19). The wrapping adds Wormhole's
 guardians as a party whose reach is the whole of each wrapped leg, and the app shows every index's wrapped share of
 value. They do not sign Pyth's prices: since Pyth's OP-PIP-132 of 2026-08-26, Pyth's contract on Ethereum verifies
 updates against Pyth's own set of five keys (read on chain on 2026-10-12), three of which suffice for a price or for
-an upgrade of Pyth's contract (`design/2026-10-18-pre-mainnet-readings.md`). Nothing crosses a chain inside a contract:
-the app and the fillers bridge. The BNB Chain deployment of 2026-10-07, shelved on 2026-10-10, was deleted on
+an upgrade of Pyth's contract (`design/2026-10-18-pre-mainnet-readings.md`). Nothing crosses a chain inside a protocol
+contract: the app and the fillers bridge. The keeper's own executor, which is a filler's and holds no role, calls
+Wormhole's Token Bridge to restock (2026-10-19). The BNB Chain deployment of 2026-10-07, shelved on 2026-10-10, was deleted on
 2026-10-13 with its address book, list and fork suite. No vault, no proof, no
 bridge of our own, no speed limit and no freezer exist any more: Stage B (six vaults, eight state verifiers, the P1
 and P2 proofs of Ethereum's finality, the hybrid index) is tagged `stage-b-2026-10-07` and deleted, and
@@ -68,7 +69,15 @@ Where it stands (2026-10-18):
   `fillMint` and `fillRedeem` on the executor, which buys or sells the basket in the fill's own transaction, so a
   request wider than one transaction's swaps waits for stock), serves coins without a Uniswap route from its
   executor's stock, and holds no role. Its end-to-end test passed on 2026-10-17 (20/0, Tenderly's public archive)
-  after the fixes of the audit of 2026-10-16.
+  after the fixes of the audit of 2026-10-16. Since 2026-10-19 (the owner's call: "we need everything automated") a
+  restock service (`keeper/restock.mjs`) keeps that stock filled for the Wormhole copies: it buys a coin on its home
+  chain's DEX, bridges it in through Wormhole's Token Bridge into the executor, whose `redeemBridged` adds what arrived
+  to the coin's stock allowance within the restock allowance the owner sets per coin, so restocking never raises what
+  a stolen keeper key can deliver beyond the owner's figures (RS-1), and bridges spare stock back out, only to
+  home-chain wallets the executor's owner pins, to sell there; USDC moves by CCTP, the treasury holding at most the
+  owner's figure off the float (RS-2). It runs under a key of its own, the treasury, which the owner pins. Built for
+  the seven EVM-homed coins with a market (XRP, ADA, LTC, DOT on BNB Chain; AVAX, OP, AERO); ATOM has none on BNB
+  Chain, and JUP, PYTH, SUI, APT and ALGO wait for their chains' adapters.
 - The security audit of 2026-10-13 (`audit/2026-10-13-security-audit.md`, Cloudflare's security-audit skill, ids
   `CF-1`..`CF-8`) found no exploitable path in the four contracts that hold index funds; its findings in the keeper,
   CheckToken, the deploy script and CI are fixed, CF-3 is a known limitation below, and CF-2 and CF-8 went with the
@@ -203,6 +212,9 @@ deploy script resolves Pyth, the router and the stablecoins from the address boo
    - The red team of 2026-10-18: `RX-1`..`RX-67` (`audit/2026-10-18-red-team.md`), a test named `test_RX8_...`, and a
      node test named `RX-1: ...` in `keeper/test/unit/`. The record's "Status of the fixes" names every test; the ids
      fixed by documentation alone, the listing calls and the off-chain readings have none.
+   - The review of the restock change on 2026-10-25: `RS-…` (`audit/2026-10-25-restock-review.md`), a test named
+     `test_RS1_...` in `keeper/test/KeeperExecutor.t.sol` and a node test named `RS-1: ...` in `keeper/test/unit/`. The
+     record's status table names every test.
    - Stage B's families are retired in full with Stage B (`audit/2026-10-07-stage-b-retirement.md`): the Stage B red
      team's `VLT`, `HUB`, `MOD`, `BNB`, `FAC` and `SOL` ids, the TRON review's `TRN`, the logic review of 2026-10-02's
      `LG`, and `BLS-1`. No test carries them, and none may be restored.
@@ -267,7 +279,8 @@ the tree does not say: `script/testnet/` (the Sepolia test market) never deploys
 its own with its own tests (`keeper/README.md`): it starts and fills auctions, fills `MintRequests` requests at their
 limits (since 2026-10-16), serves coins without a Uniswap route from the executor's stock, and holds no role in the
 protocol. Anyone may run one; its key is the keeper's own hot key, never
-the owner's or the guardian's.
+the owner's or the guardian's. Its restock service (`keeper/restock.mjs`, `keeper/restock/`) runs beside it with the
+treasury's key, also never the owner's or the guardian's.
 
 Deleted on 2026-10-13 as unused, and recoverable from git at `f83dcab`: the v4 hackathon demo (`demo/`), the reviews'
 PoC tests (`audit/poc/`, which the audit records still cite), v4's market-cap analysis scripts (`design/analysis/`), the
@@ -691,6 +704,13 @@ cost the owner weighs before launch.
   (Wormhole does not serve Sonic), and holds FIL until its Binance-Peg source passes a reading (RX-11, RX-20, RX-35,
   RX-64). An index holding one of the six US-hours stocks first becomes fillable at the next open, near `MU_MIN`: the
   app says so at creation, and the keeper times its own starts for a session (RX-3); the hub is unchanged.
+- ATOM stays listed, and the restock service does not serve it (the owner's call of 2026-10-20). Its Wormhole copy is
+  minted only from Binance-Peg ATOM, which has almost no market on BNB Chain (read on 2026-10-19: selling $500 lost
+  305 bps on PancakeSwap v3, $1,000 lost 22% on v2). Ethereum's other ATOM tokens are no way round it: Gravity Bridge's
+  (`0x8D983cb9388EaC77af0474fA441C4815500Cb7BB`, 12,069 ATOM) and Axelar's axlATOM
+  (`0x27292cf0016E5dF1d8b37306B2A98588aCbD6fCA`, 979 ATOM) are other bridges, which the Wormhole-only rule refuses,
+  and neither has a Uniswap market (read on 2026-10-20). An index holding ATOM fills only from stock an operator adds;
+  buying it on Binance, the exchange route the owner turned down on 2026-10-19, is the one automatic source left.
 
 **Swap venues** (the owner's call on 2026-10-14): the zap swaps through Uniswap's Universal Router 2.0.0 alone, V3 or
 V4 per leg, chosen by the caller. PancakeSwap's v3 Universal Router, a third venue per leg since 2026-10-06 (chiefly

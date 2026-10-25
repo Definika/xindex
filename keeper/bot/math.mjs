@@ -226,10 +226,11 @@ export function usdcFloor({ simDelta, minProfitUsd, gasUsd, inventoryUsd, routed
 }
 
 /// How many basis points a route loses against Pyth: a sale that returns `usdc` for coins worth `fairUsd`, or a
-/// purchase that costs `usdc` for them. Negative when the route beats Pyth.
-export function routeLossBps(side, usdc, fairUsd) {
+/// purchase that costs `usdc` for them, `usdc` in `decimals` (a home chain's float may have more than USDC's six).
+/// Negative when the route beats Pyth.
+export function routeLossBps(side, usdc, fairUsd, decimals = 6) {
   if (!(fairUsd > 0)) return Infinity;
-  const got = Number(usdc) / 1e6;
+  const got = Number(usdc) / 10 ** decimals;
   const loss = side === "sell" ? (fairUsd - got) / fairUsd : (got - fairUsd) / fairUsd;
   return loss * 10_000;
 }

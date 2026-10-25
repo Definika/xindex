@@ -20,7 +20,7 @@ const HERMES_MS = 5_000;
 const same = (a, b) => a.toLowerCase() === b.toLowerCase();
 const sharePriced = (id) => SHARE_PRICED_IDS.includes(id.toLowerCase());
 
-export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth, staticsOf, log }) {
+export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth, staticsOf, log, needs }) {
   const known = new Map(); // id -> request, every request seen that was still open at the last scan
   const said = new Map(); // id -> the last reason logged, so a waiting request is not logged every block
   const info = new Map(); // lowercased index -> {shareUsd, mintAllowed}, read at the last scan (XS-7)
@@ -153,7 +153,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
           const shortfall = amount - h;
           route = await routes.best({ key, token, side: "buy", amount: shortfall, fairUsd: M.amountUsd(shortfall, dec, p), blockNumber: L.number });
           if (!route) {
-            short.push(token);
+            short.push({ token, amount });
             continue;
           }
           routedUsd += M.amountUsd(shortfall, dec, p);
@@ -209,7 +209,10 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
     }
     const leg = await legs(id, r, st, amounts, L);
     if (leg.skip) return { ...leg, declined: true };
-    if (leg.short.length) return { skip: `restock: no route and too little stock of ${leg.short.join(", ")}`, declined: true };
+    needs?.report(`request:${id}`, "request", leg.short);
+    if (leg.short.length) {
+      return { skip: `restock: no route and too little stock of ${leg.short.map((s) => s.token).join(", ")}`, declined: true };
+    }
     const over = { block: { number: L.number + 1n, time: T } };
     const fill = (minUsdcDelta) => ({
       id,

@@ -10,6 +10,7 @@ import {IMintRequests} from "xindex/src/interfaces/IMintRequests.sol";
 import {IRebalanceExecutor} from "xindex/src/interfaces/IRebalanceExecutor.sol";
 import {PathLib} from "xindex/src/libraries/PathLib.sol";
 import {IV3SwapRouter} from "./interfaces/IV3SwapRouter.sol";
+import {ITokenBridge} from "./interfaces/ITokenBridge.sol";
 
 /// @title KeeperExecutor
 /// @notice The keeper bot's executor for `WeightedHub` auctions and `MintRequests` requests. It sells what an index
@@ -19,13 +20,20 @@ import {IV3SwapRouter} from "./interfaces/IV3SwapRouter.sol";
 ///         bought and issued to this contract and the shares delivered for the escrowed stablecoin; a redeem request
 ///         by paying the stablecoin, redeeming the escrowed shares here and selling the basket. Every fill reverts
 ///         unless the USDC float ends at least `minUsdcDelta` above where it started, so a swap moved against the
-///         bot's simulation cannot cost more than the bot accepted.
-/// @dev Two keys. The keeper, a hot key, only fills, and the owner, a cold key, withdraws, rotates the keeper and sets
-///      how much of each coin the keeper may still deliver from stock. Anyone can create a factory index and hold all
-///      its shares, so a fill can deliver to an index the keeper itself owns (CF-1): what bounds the stock a compromised
-///      keeper key can move is that allowance, which every delivery from stock spends, not the factory check. The same
-///      key can trade the USDC float badly within the floor it sets. The executor holds no role in the protocol:
-///      filling an auction is open to anyone.
+///         bot's simulation cannot cost more than the bot accepted. A coin Ethereum has only as a Wormhole copy is
+///         restocked through Wormhole's Token Bridge: the treasury bridges it in, what it bridges in is added to that
+///         coin's stock allowance as far as the owner's restock allowance goes, and it bridges kept stock out to the
+///         home-chain addresses the owner pinned.
+/// @dev Three keys. The keeper, a hot key, only fills; the treasury, the restock service's hot key, only bridges stock
+///      in and out and draws or repays USDC; and the owner, a cold key, withdraws, rotates the keeper, pins the
+///      treasury and the home-chain recipients, and sets how much of each coin the keeper may still deliver from stock,
+///      both directly and as restocked coins arrive. Anyone can create a factory index and hold all its shares, so a
+///      fill can deliver to an index the keeper itself owns (CF-1): what bounds the stock a compromised keeper key can
+///      move is that allowance, which every delivery from stock spends and only the owner raises, restocking included
+///      (RS-1), not the factory check. The same key can trade the USDC float badly within the floor it sets. A stolen
+///      treasury key can bridge stock only to the owner's pinned recipients and hold at most the owner's cap of USDC
+///      off the float (RS-2), so the hot keys together can lose the working capital the owner handed the bot, and
+///      nothing beyond it. The executor holds no role in the protocol: filling an auction is open to anyone.
 contract KeeperExecutor is IRebalanceExecutor {
     /// @notice Uniswap's SwapRouter02.
     IV3SwapRouter public immutable ROUTER;
@@ -35,6 +43,8 @@ contract KeeperExecutor is IRebalanceExecutor {
     IWeightedIndexFactory public immutable FACTORY;
     /// @notice The request escrow this executor fills, on the same factory.
     IMintRequests public immutable REQUESTS;
+    /// @notice Wormhole's Token Bridge, through which the treasury restocks the coins Ethereum has only as its copies.
+    ITokenBridge public immutable TOKEN_BRIDGE;
     /// @notice Withdraws and rotates the keeper.
     address public immutable OWNER;
     /// @notice The only account that fills.
@@ -47,6 +57,21 @@ contract KeeperExecutor is IRebalanceExecutor {
     ///         price the bot got wrong, stale or forged, could otherwise spend the whole float (RX-1, RX-9). Only the
     ///         owner sets it.
     uint256 public requestUsdcAllowance;
+    /// @notice The restock service's key, the only account that bridges stock and draws or repays USDC. The owner
+    ///         sets it.
+    address public treasury;
+    /// @notice The most USDC the treasury may hold off the float, counting what it holds. Only the owner sets it.
+    uint256 public treasuryUsdcCap;
+    /// @notice The only recipient {bridgeOut} sends to on each Wormhole chain, as the bridge encodes it. Only the owner
+    ///         sets it.
+    mapping(uint16 chain => bytes32 recipient) public homeRecipient;
+    /// @notice How much more of each coin arriving through the bridge may earn stock allowance: every credit spends it.
+    ///         Only the owner sets it, so the stock a compromised keeper key can deliver stays within what the owner
+    ///         allowed, restocking included (RS-1).
+    mapping(address token => uint256 amount) public restockAllowance;
+    /// @notice The USDC the treasury holds off the float: every draw adds to it, and every repayment takes off what
+    ///         arrived, down to zero, so repaying more than was drawn raises nothing (RS-2).
+    uint256 public treasuryUsdcOut;
     /// @dev The index being filled, for its callback only.
     address private transient _filling;
 
@@ -56,6 +81,22 @@ contract KeeperExecutor is IRebalanceExecutor {
     event StockAllowanceSet(address indexed token, uint256 amount);
     /// @notice Request fills may now spend up to `amount` of the USDC float.
     event RequestUsdcAllowanceSet(uint256 amount);
+    /// @notice The treasury changed from `previous` to `next`.
+    event TreasurySet(address indexed previous, address indexed next);
+    /// @notice The treasury may now hold up to `amount` of USDC off the float.
+    event TreasuryUsdcAllowanceSet(uint256 amount);
+    /// @notice {bridgeOut} now sends to `recipient` on Wormhole chain `chain`.
+    event HomeRecipientSet(uint16 indexed chain, bytes32 recipient);
+    /// @notice `amount` of `token` arrived through the bridge, `credited` of it added to its stock allowance.
+    event BridgedIn(address indexed token, uint256 amount, uint256 credited);
+    /// @notice `amount` more of `token` arriving through the bridge may now earn stock allowance.
+    event RestockAllowanceSet(address indexed token, uint256 amount);
+    /// @notice `amount` of `token` left for `recipient` on Wormhole chain `chain`, as the bridge's message `sequence`.
+    event BridgedOut(address indexed token, uint256 amount, uint16 indexed chain, bytes32 recipient, uint64 sequence);
+    /// @notice The treasury drew `amount` of USDC from the float.
+    event UsdcDrawn(uint256 amount);
+    /// @notice The treasury repaid `amount` of USDC into the float.
+    event UsdcRepaid(uint256 amount);
 
     /// @notice A request fill, for {fillMint} and {fillRedeem}.
     /// @param id The request.
@@ -116,24 +157,37 @@ contract KeeperExecutor is IRebalanceExecutor {
     error StaleRebalanceNonce(uint256 expected, uint256 actual);
     /// @notice A request fill would spend `spent` of the USDC float, above the `allowance` request fills have left.
     error OverRequestAllowance(uint256 spent, uint256 allowance);
+    /// @notice `caller` is not the treasury.
+    error NotTreasury(address caller);
+    /// @notice The owner pinned no recipient on Wormhole chain `chain`.
+    error NoHomeRecipient(uint16 chain);
+    /// @notice USDC is the float, not stock: it does not cross the bridge.
+    error NotStock(address token);
+    /// @notice The bridged transfer carried `actual`, not the `expected` token.
+    error WrongToken(address expected, address actual);
+    /// @notice A draw of `amount` is above the `allowance` the treasury has left.
+    error OverTreasuryAllowance(uint256 amount, uint256 allowance);
 
     constructor(
         IV3SwapRouter router,
         address usdc,
         IWeightedIndexFactory factory,
         IMintRequests requests,
+        ITokenBridge tokenBridge,
         address owner,
         address keeper_
     ) {
         if (
             address(router) == address(0) || usdc == address(0) || address(factory) == address(0)
-                || address(requests) == address(0) || owner == address(0) || keeper_ == address(0)
+                || address(requests) == address(0) || address(tokenBridge) == address(0) || owner == address(0)
+                || keeper_ == address(0)
         ) revert ZeroAddress();
         if (requests.FACTORY() != address(factory)) revert RequestsMismatch(address(requests));
         ROUTER = router;
         USDC = usdc;
         FACTORY = factory;
         REQUESTS = requests;
+        TOKEN_BRIDGE = tokenBridge;
         OWNER = owner;
         keeper = keeper_;
         emit KeeperSet(address(0), keeper_);
@@ -170,6 +224,42 @@ contract KeeperExecutor is IRebalanceExecutor {
     function setRequestUsdcAllowance(uint256 amount) external onlyOwner {
         requestUsdcAllowance = amount;
         emit RequestUsdcAllowanceSet(amount);
+    }
+
+    /// @notice Owner only. Makes `next` the treasury.
+    function setTreasury(address next) external onlyOwner {
+        if (next == address(0)) revert ZeroAddress();
+        address previous = treasury;
+        treasury = next;
+        emit TreasurySet(previous, next);
+    }
+
+    /// @notice Owner only. Lets the treasury hold at most `amount` of USDC off the float from now on, what it already
+    ///         holds counted (RS-2).
+    function setTreasuryUsdcAllowance(uint256 amount) external onlyOwner {
+        treasuryUsdcCap = amount;
+        emit TreasuryUsdcAllowanceSet(amount);
+    }
+
+    /// @notice How much more USDC the treasury may draw: the owner's cap less what it holds off the float.
+    function treasuryUsdcAllowance() public view returns (uint256) {
+        uint256 cap = treasuryUsdcCap;
+        uint256 out = treasuryUsdcOut;
+        return cap > out ? cap - out : 0;
+    }
+
+    /// @notice Owner only. Makes `recipient` the only address {bridgeOut} sends to on Wormhole chain `chain`; zero
+    ///         stops every bridge out to that chain.
+    function setHomeRecipient(uint16 chain, bytes32 recipient) external onlyOwner {
+        homeRecipient[chain] = recipient;
+        emit HomeRecipientSet(chain, recipient);
+    }
+
+    /// @notice Owner only. Lets `amount` more of `token` arriving through the bridge earn stock allowance from now on,
+    ///         replacing what was left; zero stops crediting it (RS-1).
+    function setRestockAllowance(address token, uint256 amount) external onlyOwner {
+        restockAllowance[token] = amount;
+        emit RestockAllowanceSet(token, amount);
     }
 
     /// @notice Keeper only. Fills `index`'s auction with `priceUpdate`, forwarding all of msg.value to Pyth as its fee.
@@ -361,6 +451,92 @@ contract KeeperExecutor is IRebalanceExecutor {
     }
 
     // ---------------------------------------------------------------------
+    // Restock
+    // ---------------------------------------------------------------------
+
+    /// @notice Treasury only. Completes the bridge's transfer `encodedVm` of `token` to this contract, and adds what
+    ///         arrived to `token`'s stock allowance as far as the owner's restock allowance for it goes, which the
+    ///         credit spends (RS-1), and as far as the stock allowance can still hold (RS-6). What arrives beyond it
+    ///         stays here as stock the keeper cannot deliver until the owner allows it. The transfer must carry a
+    ///         payload, which the bridge lets only its recipient complete, so no one can land the coins here first and
+    ///         leave them without the allowance.
+    /// @return amount What arrived, measured as this contract's balance increase.
+    function redeemBridged(bytes calldata encodedVm, address token) external returns (uint256 amount) {
+        _checkTreasury();
+        uint256 before = IERC20(token).balanceOf(address(this));
+        ITokenBridge.TransferWithPayload memory t =
+            TOKEN_BRIDGE.parseTransferWithPayload(TOKEN_BRIDGE.completeTransferWithPayload(encodedVm));
+        address carried = t.tokenChain == TOKEN_BRIDGE.chainId()
+            ? address(uint160(uint256(t.tokenAddress)))
+            : TOKEN_BRIDGE.wrappedAsset(t.tokenChain, t.tokenAddress);
+        if (carried != token) revert WrongToken(token, carried);
+        amount = IERC20(token).balanceOf(address(this)) - before;
+        // The credit: what arrived, within what is left of the restock allowance (RS-1) and of what the stock allowance
+        // can still hold, since it has no unlimited value and an overflow would refuse the coins (RS-6).
+        uint256 room = restockAllowance[token];
+        uint256 stock = stockAllowance[token];
+        uint256 credited = amount < room ? amount : room;
+        if (credited > type(uint256).max - stock) credited = type(uint256).max - stock;
+        restockAllowance[token] = room - credited;
+        stockAllowance[token] = stock + credited;
+        // What arrived is known only after the bridge's transfer; only the treasury calls, through the immutable
+        // bridge.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit BridgedIn(token, amount, credited);
+    }
+
+    /// @notice Treasury only. Bridges `amount` of `token` to the owner's pinned recipient on Wormhole chain `chain`,
+    ///         forwarding all of msg.value to the bridge as Wormhole's message fee. What the bridge cannot carry below
+    ///         its eight decimals stays here. The stock allowance is then capped at what is left, so coins kept later
+    ///         cannot inherit an allowance the coins that left had.
+    /// @return sequence The bridge's message sequence, by which the bot fetches the signed transfer.
+    function bridgeOut(address token, uint256 amount, uint16 chain) external payable returns (uint64 sequence) {
+        _checkTreasury();
+        if (token == USDC) revert NotStock(token);
+        bytes32 recipient = homeRecipient[chain];
+        if (recipient == bytes32(0)) revert NoHomeRecipient(chain);
+        SafeERC20.forceApprove(IERC20(token), address(TOKEN_BRIDGE), amount);
+        // The recipient is the owner's, and msg.value is Wormhole's fee, which the bridge forwards to its core.
+        // forge-lint: disable-next-line(arbitrary-send-eth)
+        sequence = TOKEN_BRIDGE.transferTokens{value: msg.value}(token, amount, chain, recipient, 0, 0);
+        SafeERC20.forceApprove(IERC20(token), address(TOKEN_BRIDGE), 0);
+        uint256 left = IERC20(token).balanceOf(address(this));
+        if (stockAllowance[token] > left) {
+            stockAllowance[token] = left;
+            // What is left is known only after the bridge took its part; only the treasury calls.
+            // forge-lint: disable-next-line(reentrancy-events)
+            emit StockAllowanceSet(token, left);
+        }
+        // The sequence is the bridge's answer, by which the bot fetches the signed transfer; only the treasury calls.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit BridgedOut(token, amount, chain, recipient, sequence);
+    }
+
+    /// @notice Treasury only. Sends `amount` of the USDC float to the treasury, within the owner's cap on what it holds
+    ///         off the float.
+    function drawUsdc(uint256 amount) external {
+        _checkTreasury();
+        uint256 allowance = treasuryUsdcAllowance();
+        if (amount > allowance) revert OverTreasuryAllowance(amount, allowance);
+        treasuryUsdcOut += amount;
+        emit UsdcDrawn(amount);
+        SafeERC20.safeTransfer(IERC20(USDC), msg.sender, amount);
+    }
+
+    /// @notice Treasury only. Takes `amount` of USDC from the treasury, which approved it, into the float. What arrived
+    ///         lowers what the treasury holds off the float, down to zero: what it repays beyond what it drew joins the
+    ///         float and raises nothing (RS-2).
+    function repayUsdc(uint256 amount) external {
+        _checkTreasury();
+        uint256 before = IERC20(USDC).balanceOf(address(this));
+        SafeERC20.safeTransferFrom(IERC20(USDC), msg.sender, address(this), amount);
+        uint256 arrived = IERC20(USDC).balanceOf(address(this)) - before;
+        uint256 out = treasuryUsdcOut;
+        treasuryUsdcOut = arrived < out ? out - arrived : 0;
+        emit UsdcRepaid(arrived);
+    }
+
+    // ---------------------------------------------------------------------
     // Swaps and stock
     // ---------------------------------------------------------------------
 
@@ -489,5 +665,9 @@ contract KeeperExecutor is IRebalanceExecutor {
 
     function _checkKeeper() private view {
         if (msg.sender != keeper) revert NotKeeper(msg.sender);
+    }
+
+    function _checkTreasury() private view {
+        if (msg.sender != treasury) revert NotTreasury(msg.sender);
     }
 }

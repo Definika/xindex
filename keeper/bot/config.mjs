@@ -9,6 +9,8 @@ export const MAINNET = Object.freeze({
   v3Factory: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
   weth: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
   usdc: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+  // Wormhole's Token Bridge, through which the restock service bridges the copies in and out.
+  tokenBridge: "0x3ee18B2214AFF97000D974cf647E7C347E8fa585",
   ethPriceId: "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
 });
 
@@ -59,8 +61,8 @@ export const SESSION_IDS = SHARE_PRICED_IDS;
 export const US_EQUITY_SCHEDULE =
   "America/New_York;0930-1600,0930-1600,0930-1600,0930-1600,0930-1600,C,C;0907/C,1126/C,1127/0930-1300,1224/0930-1300,1225/C,0101/C,0118/C,0215/C,0326/C,0531/C,0618/C,0705/C";
 
-const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
-const KEY = /^0x[0-9a-fA-F]{64}$/;
+export const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+export const KEY = /^0x[0-9a-fA-F]{64}$/;
 
 const DEFAULTS = {
   HERMES_URL: "https://pyth.dourolabs.app/hermes",
@@ -75,11 +77,12 @@ const DEFAULTS = {
   SUBSIDY_BUDGET_USD: "0",
 };
 
-/// Parses and checks `env`. Throws one Error naming every problem, so a misconfigured keeper never starts.
-export function parseConfig(env) {
+/// The checks every setting of `env` goes through, with `defaults` for the ones left unset. Each records what is wrong
+/// in `problems` rather than throwing, so a caller can name every problem at once.
+export function envReader(env, defaults) {
   const problems = [];
   const get = (name) => {
-    const raw = env[name] ?? DEFAULTS[name];
+    const raw = env[name] ?? defaults[name];
     return typeof raw === "string" ? raw.trim() : raw;
   };
   const required = (name, pattern, what) => {
@@ -103,6 +106,13 @@ export function parseConfig(env) {
     return value;
   };
 
+  return { problems, get, required, number, bps };
+}
+
+/// Parses and checks `env`. Throws one Error naming every problem, so a misconfigured keeper never starts.
+export function parseConfig(env) {
+  const { problems, get, required, number, bps } = envReader(env, DEFAULTS);
+
   const config = {
     rpcUrl: required("RPC_URL", /^https?:\/\/\S+$/, "an http(s) URL"),
     keeperKey: required("KEEPER_KEY", KEY, "a 32-byte hex private key"),
@@ -122,6 +132,8 @@ export function parseConfig(env) {
     // What fills below zero profit may cost in all, per rolling day, when MIN_PROFIT_USD is negative; requests are never
     // subsidised (RX-16).
     subsidyBudgetUsd: number("SUBSIDY_BUDGET_USD", { min: 0 }),
+    // Where to write the coins fills are short of, for the restock service; unset, nothing is written.
+    needsFile: get("NEEDS_FILE") || null,
   };
   if (!["0", "1"].includes(get("FILL_REQUESTS"))) problems.push("FILL_REQUESTS must be 0 or 1");
 

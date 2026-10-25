@@ -102,8 +102,10 @@ jobs:
           MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
 
       # The keeper (keeper/) is a Foundry project of its own and holds no role in the protocol; its executor gets the
-      # same gates as the repo's contracts.
+      # same gates as the repo's contracts, its fork test on Wormhole's real Token Bridge included.
       - name: Check, build and test the keeper's executor
+        env:
+          MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
         run: |
           set -euo pipefail
           forge fmt --check --root keeper
