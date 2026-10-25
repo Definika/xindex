@@ -16,8 +16,8 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///
 ///   Listings, for an owner that is a key you hold (testnets and local forks; a contract owner cannot sign, and this
 ///   reverts with OwnerIsContract: use `safe`):
-///     V5_MODE=propose V5_FACTORY=0x... V5_WHITELIST=<entries> V5_LIST=<tokens> forge script \
-///       script/ConfigureWeighted.s.sol --rpc-url <rpc> --account <owner key> --sender <owner> --broadcast
+///     V5_MODE=propose V5_FACTORY=0x... V5_WHITELIST=<entries> V5_LIST=<tokens> V5_USDC=0x... V5_USDT=0x... \
+///       forge script script/ConfigureWeighted.s.sol --rpc-url <rpc> --account <owner key> --sender <owner> --broadcast
 ///   Listings for a Safe owner: log each `proposeListing` calldata to sign in the Safe app, each to the factory with no
 ///   value, under a line naming the token, its address and its price id. Nothing is broadcast:
 ///     V5_MODE=safe V5_FACTORY=0x... V5_WHITELIST=default V5_LIST=all forge script script/ConfigureWeighted.s.sol \
@@ -34,6 +34,9 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///   V5_LIST       Optional. Tokens never listed that propose and safe mode may propose: comma-separated addresses, or
 ///                 `all` for every entry. Leave it unset on a routine run.
 ///   V5_RELIST     Optional. Comma-separated delisted tokens that propose and safe mode may list again.
+///   V5_USDC, V5_USDT  The deployment's mint currencies, the USDC and USDT DeployWeighted was given, which propose and
+///                 safe mode never propose as components (A7-22). Required off Ethereum; on Ethereum they default to
+///                 the address book's, and nothing else is accepted there.
 contract ConfigureWeighted is Script {
     /// @notice A token and the Pyth price id it is listed with.
     struct Entry {
@@ -78,6 +81,10 @@ contract ConfigureWeighted is Script {
     /// @notice Two entries name one price id: no index could hold both, since Pyth fills only the first of two equal
     ///         ids (V5-M1). Listing both is allowed by the factory, but a list that does so is almost always a slip.
     error DuplicatePriceId(bytes32 priceId);
+    /// @notice Off Ethereum the mint currency `name` must be given: only the deployment knows it.
+    error MintCurrencyRequired(string name);
+    /// @notice On Ethereum the mint currencies are the address book's; `name` named another.
+    error MintCurrencyOverride(string name, address given);
 
     /// @notice Reads the V5_ variables and runs the mode.
     function run() external {
@@ -86,10 +93,16 @@ contract ConfigureWeighted is Script {
         address[] memory firstListings = resolveFirstListings(vm.envOr("V5_LIST", string("")), list);
         address[] memory relist = parseAddresses(vm.envOr("V5_RELIST", string("")));
         string memory mode = vm.envString("V5_MODE");
-        if (ScriptUtils.same(mode, "propose")) {
-            propose(factory, list, firstListings, relist);
-        } else if (ScriptUtils.same(mode, "safe")) {
-            (bytes[] memory calls, string[] memory labels) = safeCalldata(factory, list, firstListings, relist);
+        bool proposes = ScriptUtils.same(mode, "propose");
+        if (proposes || ScriptUtils.same(mode, "safe")) {
+            // Both modes propose, so both refuse the same mint currencies as components (A7-22).
+            address[2] memory currencies = _mintCurrencies();
+            if (proposes) {
+                propose(factory, list, firstListings, relist, currencies);
+                return;
+            }
+            (bytes[] memory calls, string[] memory labels) =
+                safeCalldata(factory, list, firstListings, relist, currencies);
             console2.log("Safe transactions to the factory, value 0:", address(factory));
             for (uint256 i = 0; i < calls.length; ++i) {
                 console2.log(labels[i]);
@@ -185,13 +198,14 @@ contract ConfigureWeighted is Script {
         IWeightedIndexFactory factory,
         Entry[] memory list,
         address[] memory firstListings,
-        address[] memory relist
+        address[] memory relist,
+        address[2] memory currencies
     ) public {
         _requireUnique(list);
         _requireSigningOwner(factory);
         vm.startBroadcast();
         for (uint256 i = 0; i < list.length; ++i) {
-            if (!_shouldList(factory, list[i], firstListings, relist)) continue;
+            if (!_shouldList(factory, list[i], firstListings, relist, currencies)) continue;
             factory.proposeListing(list[i].token, list[i].priceId);
             console2.log("proposed a listing", list[i].token);
         }
@@ -205,13 +219,14 @@ contract ConfigureWeighted is Script {
         IWeightedIndexFactory factory,
         Entry[] memory list,
         address[] memory firstListings,
-        address[] memory relist
+        address[] memory relist,
+        address[2] memory currencies
     ) public view returns (bytes[] memory calls, string[] memory labels) {
         _requireUnique(list);
         bool[] memory chosen = new bool[](list.length);
         uint256 count = 0;
         for (uint256 i = 0; i < list.length; ++i) {
-            chosen[i] = _shouldList(factory, list[i], firstListings, relist);
+            chosen[i] = _shouldList(factory, list[i], firstListings, relist, currencies);
             if (chosen[i]) ++count;
         }
         calls = new bytes[](count);
@@ -269,7 +284,8 @@ contract ConfigureWeighted is Script {
         IWeightedIndexFactory factory,
         Entry memory entry,
         address[] memory firstListings,
-        address[] memory relist
+        address[] memory relist,
+        address[2] memory currencies
     ) private view returns (bool) {
         address token = entry.token;
         if (factory.isWhitelisted(token)) return false;
@@ -290,7 +306,7 @@ contract ConfigureWeighted is Script {
         // is proposed again without V5_LIST, while one the guardian cancelled still needs it (RT-06, RX-39).
         if (!everListed && eta != 0) {
             console2.log("expired unexecuted, proposing again", token);
-            return _followsPolicy(token);
+            return _followsPolicy(token, currencies);
         }
         if (!everListed && !_contains(firstListings, token)) {
             console2.log("skipped, never listed; name it in V5_LIST to propose its listing", token);
@@ -300,13 +316,16 @@ contract ConfigureWeighted is Script {
             console2.log("skipped, delisted; name it in V5_RELIST to list it again", token);
             return false;
         }
-        return _followsPolicy(token);
+        return _followsPolicy(token, currencies);
     }
 
     /// @dev The parts of the whitelist policy a script can check: a token with code and 6 to 18 decimals, and no mint
-    ///      currency as a component.
-    function _followsPolicy(address token) private view returns (bool) {
-        if (token == MainnetAddresses.USDC || token == MainnetAddresses.USDT) {
+    ///      currency as a component, neither the deployment's (`currencies`) nor Ethereum's.
+    function _followsPolicy(address token, address[2] memory currencies) private view returns (bool) {
+        if (
+            token == currencies[0] || token == currencies[1] || token == MainnetAddresses.USDC
+                || token == MainnetAddresses.USDT
+        ) {
             console2.log("skipped, a mint currency is not a component", token);
             return false;
         }
@@ -320,6 +339,28 @@ contract ConfigureWeighted is Script {
             return false;
         }
         return true;
+    }
+
+    /// @notice The deployment's two mint currencies, which no whitelist entry may name as a component (A7-22): on
+    ///         Ethereum the address book's USDC and USDT, which may be named but not replaced; elsewhere `usdc` and
+    ///         `usdt`, the V5_USDC and V5_USDT that DeployWeighted was given as USDC and USDT, both required.
+    function mintCurrencies(address usdc, address usdt) public view returns (address[2] memory currencies) {
+        currencies[0] = _mintCurrency("V5_USDC", usdc, MainnetAddresses.USDC);
+        currencies[1] = _mintCurrency("V5_USDT", usdt, MainnetAddresses.USDT);
+    }
+
+    function _mintCurrency(string memory name, address given, address pinned) private view returns (address) {
+        if (block.chainid == 1) {
+            if (given != address(0) && given != pinned) revert MintCurrencyOverride(name, given);
+            return pinned;
+        }
+        if (given == address(0)) revert MintCurrencyRequired(name);
+        return given;
+    }
+
+    /// @dev {mintCurrencies} from V5_USDC and V5_USDT.
+    function _mintCurrencies() private view returns (address[2] memory) {
+        return mintCurrencies(vm.envOr("V5_USDC", address(0)), vm.envOr("V5_USDT", address(0)));
     }
 
     function _requireSigningOwner(IWeightedIndexFactory factory) private view {

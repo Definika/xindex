@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {Script} from "forge-std/Script.sol";
+import {Script, console2} from "forge-std/Script.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
 import {ISafeThreshold} from "./interfaces/ISafeThreshold.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
@@ -32,6 +32,8 @@ abstract contract DeployChecks is Script {
     error OwnerHasModules(address owner, address module);
     /// @notice The owner is a Safe whose module list cannot be read with `getModulesPaginated`.
     error OwnerModulesUnknown(address owner);
+    /// @notice The owner answers no Safe threshold, and OWNER_IS_NOT_A_SAFE does not name it.
+    error OwnerNotASafe(address owner);
     /// @notice GUARDIAN is zero, Foundry's default sender, or the owner.
     error GuardianRequired();
     /// @notice The guardian is the key broadcasting the deployment, or a Safe that key signs for.
@@ -56,27 +58,41 @@ abstract contract DeployChecks is Script {
     /// @notice A mainnet run's broadcaster is Foundry's default sender: pass `--sender` with the signing key's address.
     error BroadcasterRequired();
 
-    /// @notice Rejects a missing owner and Foundry's default sender. On a pinned chain, a mainnet, the owner must be a
-    ///         contract, not an EIP-7702 delegated account, and a Safe must need at least MIN_OWNER_THRESHOLD (3) signatures, the
-    ///         owner's call on 2026-09-30 to match the design's 3-of-5, and have no enabled module,
-    ///         because a module acts as the Safe without signatures. Modules or guards added later are not checked, so
-    ///         the Safe must keep none.
+    /// @notice {checkOwner} with no acknowledgment: on a pinned chain only a Safe passes.
     /// @param owner The intended factory owner.
     function checkOwner(address owner) public view {
+        checkOwner(owner, address(0));
+    }
+
+    /// @notice Rejects a missing owner and Foundry's default sender. On a pinned chain, a mainnet, the owner must be a
+    ///         contract, not an EIP-7702 delegated account. A Safe must need at least MIN_OWNER_THRESHOLD (3)
+    ///         signatures, the owner's call on 2026-09-30 to match the design's 3-of-5, and have no enabled module,
+    ///         because a module acts as the Safe without signatures. Modules or guards added later are not checked, so
+    ///         the Safe must keep none. Any other contract, a timelock as much as a smart account with one key, is
+    ///         refused unless the operator acknowledges it (A7-08): nothing here can tell who signs for it.
+    /// @param owner The intended factory owner.
+    /// @param acknowledged The owner the operator acknowledges is deliberately a contract that is not a Safe, from
+    ///        OWNER_IS_NOT_A_SAFE, or address(0) for none. Only `owner` itself acknowledges `owner`, so one left from
+    ///        an earlier run acknowledges no other owner. It lowers no Safe rule; the owner's code hash is logged.
+    function checkOwner(address owner, address acknowledged) public view {
         if (owner == address(0) || owner == DEFAULT_SENDER) revert OwnerRequired();
         if (!isPinnedChain()) return;
 
         bytes memory code = owner.code;
         if (code.length == 0 || ScriptUtils.isDelegatedAccount(code)) revert OwnerMustBeContract(owner);
-        // A Safe answers getThreshold with one word. A contract that does not, such as a timelock, is accepted as it
-        // is. A static call is used because a typed try/catch would revert on an empty answer from a fallback.
+        // A Safe answers getThreshold with one word. A static call is used because a typed try/catch would revert on an
+        // empty answer from a fallback.
         // forge-lint: disable-next-line(low-level-calls)
         (bool ok, bytes memory data) = owner.staticcall(abi.encodeCall(ISafeThreshold.getThreshold, ()));
         if (ok && data.length == 32) {
             uint256 threshold = abi.decode(data, (uint256));
             if (threshold < MIN_OWNER_THRESHOLD) revert OwnerThresholdTooLow(owner, threshold);
             _checkNoModules(owner);
+            return;
         }
+        if (acknowledged != owner) revert OwnerNotASafe(owner);
+        console2.log("OWNER is not a Safe, as OWNER_IS_NOT_A_SAFE acknowledges. Its code hash:");
+        console2.logBytes32(owner.codehash);
     }
 
     /// @dev Reads the first page of the Safe's module list. A multisig that cannot show one is rejected rather than

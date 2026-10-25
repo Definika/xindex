@@ -13,7 +13,7 @@ import {MockPyth} from "./mocks/MockPyth.sol";
 contract NoDecimals {}
 
 /// @notice v5's listing script against a real `WeightedIndexFactory`. Broadcasts come from DEFAULT_SENDER, the
-///         factory's owner here. The V5_ variables are set by `test_run_readsEnvironment` alone.
+///         factory's owner here. The V5_ variables are set by `test_A722_run_readsEnvironment` alone.
 contract ConfigureWeightedTest is Test {
     ConfigureWeighted configure;
     WeightedIndexFactory factory;
@@ -23,6 +23,9 @@ contract ConfigureWeightedTest is Test {
 
     bytes32 constant A_ID = keccak256("A/USD");
     bytes32 constant B_ID = keccak256("B/USD");
+    /// @dev The deployment's mint currencies here: two addresses no list names.
+    address constant HERE_USDC = address(0xC0FFEE01);
+    address constant HERE_USDT = address(0xC0FFEE02);
 
     function setUp() public {
         configure = new ConfigureWeighted();
@@ -44,6 +47,10 @@ contract ConfigureWeightedTest is Test {
 
     function _none() internal pure returns (address[] memory) {
         return new address[](0);
+    }
+
+    function _currencies() internal pure returns (address[2] memory) {
+        return [HERE_USDC, HERE_USDT];
     }
 
     // ---------------------------------------------------------------------
@@ -406,12 +413,12 @@ contract ConfigureWeightedTest is Test {
         ConfigureWeighted.Entry[] memory list = _list();
         list[1].token = address(a);
         vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.DuplicateEntry.selector, address(a)));
-        configure.safeCalldata(factory, list, _all(), _none());
+        configure.safeCalldata(factory, list, _all(), _none(), _currencies());
 
         list = _list();
         list[1].priceId = A_ID;
         vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.DuplicatePriceId.selector, A_ID));
-        configure.propose(factory, list, _all(), _none());
+        configure.propose(factory, list, _all(), _none(), _currencies());
 
         string memory raw = string.concat(
             vm.toString(address(a)), ":", vm.toString(A_ID), ",", vm.toString(address(a)), ":", vm.toString(B_ID)
@@ -438,12 +445,12 @@ contract ConfigureWeightedTest is Test {
 
     /// @dev RT-06: a token never listed gets a proposal only when named in V5_LIST.
     function test_RT06_aFirstListingIsProposedOnlyWhenNamed() public {
-        configure.propose(factory, _list(), _none(), _none());
+        configure.propose(factory, _list(), _none(), _none(), _currencies());
         assertEq(factory.listingEta(address(a)), 0, "not named, not proposed");
 
         address[] memory onlyA = new address[](1);
         onlyA[0] = address(a);
-        configure.propose(factory, _list(), onlyA, _none());
+        configure.propose(factory, _list(), onlyA, _none(), _currencies());
         assertGt(factory.listingEta(address(a)), 0);
         assertEq(factory.listingEta(address(b)), 0);
         (bytes32 id,) = factory.pendingTerms(address(a));
@@ -453,10 +460,10 @@ contract ConfigureWeightedTest is Test {
     /// @dev RT-06: a listing the guardian cancelled is not proposed again by a routine run, and a delisted token comes
     ///      back only when named in V5_RELIST.
     function test_RT06_XA11_aVetoedOrDelistedTokenStaysOutUnlessNamed() public {
-        configure.propose(factory, _list(), _all(), _none());
+        configure.propose(factory, _list(), _all(), _none(), _currencies());
         vm.prank(guardian);
         factory.cancelListing(address(a));
-        configure.propose(factory, _list(), _none(), _none());
+        configure.propose(factory, _list(), _none(), _none(), _currencies());
         assertEq(factory.listingEta(address(a)), 0, "a routine run does not repropose the vetoed listing");
 
         vm.warp(block.timestamp + factory.LISTING_DELAY());
@@ -464,39 +471,39 @@ contract ConfigureWeightedTest is Test {
         assertTrue(factory.isWhitelisted(address(b)));
         vm.prank(guardian);
         factory.delist(address(b));
-        configure.propose(factory, _list(), _all(), _none());
+        configure.propose(factory, _list(), _all(), _none(), _currencies());
         assertEq(factory.listingEta(address(b)), 0, "delisted, and only V5_LIST named it");
-        configure.propose(factory, _list(), _none(), _all());
+        configure.propose(factory, _list(), _none(), _all(), _currencies());
         assertGt(factory.listingEta(address(b)), 0, "named in V5_RELIST");
     }
 
     /// @dev An expired first listing is the owner's own proposal run out, not a veto: a routine run proposes it again,
     ///      while a cancelled one still waits to be named (RX-39).
     function test_RX39_anExpiredFirstListingIsProposedAgainButACancelledOneIsNot() public {
-        configure.propose(factory, _list(), _all(), _none());
+        configure.propose(factory, _list(), _all(), _none(), _currencies());
         vm.prank(guardian);
         factory.cancelListing(address(a));
         vm.warp(block.timestamp + factory.LISTING_DELAY() + factory.PROPOSAL_WINDOW() + 1);
         assertFalse(factory.listingPending(address(b)), "b's proposal expired unexecuted");
 
-        configure.propose(factory, _list(), _none(), _none());
+        configure.propose(factory, _list(), _none(), _none(), _currencies());
         assertTrue(factory.listingPending(address(b)), "proposed again without V5_LIST");
         assertEq(factory.listingEta(address(a)), 0, "the cancelled one is not");
     }
 
     function test_XA40_proposeSkipsWhatThePolicyOrTheFactoryWouldRefuse() public {
-        configure.propose(factory, _list(), _all(), _none());
+        configure.propose(factory, _list(), _all(), _none(), _currencies());
         // Already pending with the entry's id, or with another: both skipped.
         ConfigureWeighted.Entry[] memory changed = _list();
         changed[0].priceId = keccak256("A, another feed");
-        configure.propose(factory, changed, _all(), _none());
-        configure.propose(factory, _list(), _all(), _none());
+        configure.propose(factory, changed, _all(), _none(), _currencies());
+        configure.propose(factory, _list(), _all(), _none(), _currencies());
         (bytes32 id,) = factory.pendingTerms(address(a));
         assertEq(id, A_ID);
         // Listed: skipped.
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         configure.execute(factory, _list());
-        configure.propose(factory, _list(), _all(), _all());
+        configure.propose(factory, _list(), _all(), _all(), _currencies());
         assertEq(factory.listingEta(address(a)), 0);
 
         // The policy: a mint currency, a token with no code, no decimals, and decimals outside 6 to 18.
@@ -511,7 +518,7 @@ contract ConfigureWeightedTest is Test {
         for (uint256 i = 0; i < 6; ++i) {
             named[i] = odd[i].token;
         }
-        (bytes[] memory calls,) = configure.safeCalldata(factory, odd, named, _none());
+        (bytes[] memory calls,) = configure.safeCalldata(factory, odd, named, _none(), _currencies());
         assertEq(calls.length, 0, "the policy skips every one");
     }
 
@@ -521,16 +528,17 @@ contract ConfigureWeightedTest is Test {
         address[] memory all = _all();
         address[] memory none = _none();
         vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.OwnerIsContract.selector, address(configure)));
-        configure.propose(owned, list, all, none);
+        configure.propose(owned, list, all, none, _currencies());
 
         // A key delegated under EIP-7702 has code but still signs.
         vm.etch(DEFAULT_SENDER, abi.encodePacked(hex"ef0100", address(0x1234)));
-        configure.propose(factory, list, all, none);
+        configure.propose(factory, list, all, none, _currencies());
         assertGt(factory.listingEta(address(a)), 0);
     }
 
     function test_safeModeLabelsEveryProposal() public view {
-        (bytes[] memory calls, string[] memory labels) = configure.safeCalldata(factory, _list(), _all(), _none());
+        (bytes[] memory calls, string[] memory labels) =
+            configure.safeCalldata(factory, _list(), _all(), _none(), _currencies());
         assertEq(calls.length, 2);
         assertEq(calls[0], abi.encodeCall(factory.proposeListing, (address(a), A_ID)));
         assertEq(
@@ -544,7 +552,7 @@ contract ConfigureWeightedTest is Test {
 
     function test_XA06_executeRunsOnlyWhatIsDueAndTheEntrys() public {
         configure.execute(factory, _list()); // nothing pending
-        configure.propose(factory, _list(), _all(), _none());
+        configure.propose(factory, _list(), _all(), _none(), _currencies());
         configure.execute(factory, _list()); // not ready
         assertFalse(factory.isWhitelisted(address(a)));
 
@@ -581,7 +589,7 @@ contract ConfigureWeightedTest is Test {
     }
 
     function test_XA42_statusReportsListingsAndPendingProposals() public {
-        configure.propose(factory, _list(), _all(), _none());
+        configure.propose(factory, _list(), _all(), _none(), _currencies());
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         ConfigureWeighted.Entry[] memory onlyB = new ConfigureWeighted.Entry[](1);
         onlyB[0] = _list()[1];
@@ -606,7 +614,51 @@ contract ConfigureWeightedTest is Test {
     // run
     // ---------------------------------------------------------------------
 
-    function test_run_readsEnvironment() public {
+    /// @dev A7-22: no whitelist entry may name the deployment's own mint currency as a component, off Ethereum too.
+    ///      The check compared against Ethereum's USDC and USDT alone, so a testnet whitelist naming its tUSDC was
+    ///      proposed.
+    function test_A722_theDeploymentsMintCurrencyIsNeverAComponent() public {
+        MockERC20 tUsdc = new MockERC20("Test USDC", "tUSDC", 6);
+        ConfigureWeighted.Entry[] memory list = new ConfigureWeighted.Entry[](2);
+        list[0] = ConfigureWeighted.Entry({token: address(tUsdc), priceId: A_ID});
+        list[1] = ConfigureWeighted.Entry({token: address(b), priceId: B_ID});
+        address[] memory named = new address[](2);
+        (named[0], named[1]) = (address(tUsdc), address(b));
+        address[2] memory currencies = [address(tUsdc), HERE_USDT];
+        (bytes[] memory calls,) = configure.safeCalldata(factory, list, named, _none(), currencies);
+        assertEq(calls.length, 1, "only b is proposed");
+        assertEq(calls[0], abi.encodeCall(WeightedIndexFactory.proposeListing, (address(b), B_ID)));
+        configure.propose(factory, list, named, _none(), currencies);
+        assertEq(factory.listingEta(address(tUsdc)), 0, "nor through propose");
+        assertGt(factory.listingEta(address(b)), 0);
+    }
+
+    /// @dev A7-22: off Ethereum the mint currencies are V5_USDC and V5_USDT, which only the deployment knows, and both
+    ///      are required; on Ethereum they are the address book's, and another address is refused.
+    function test_A722_theMintCurrenciesAreTheDeployments() public {
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.MintCurrencyRequired.selector, "V5_USDC"));
+        configure.mintCurrencies(address(0), HERE_USDT);
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.MintCurrencyRequired.selector, "V5_USDT"));
+        configure.mintCurrencies(HERE_USDC, address(0));
+        address[2] memory here = configure.mintCurrencies(HERE_USDC, HERE_USDT);
+        assertEq(here[0], HERE_USDC);
+        assertEq(here[1], HERE_USDT);
+
+        vm.chainId(1);
+        address[2] memory pinned = configure.mintCurrencies(address(0), address(0));
+        assertEq(pinned[0], MainnetAddresses.USDC);
+        assertEq(pinned[1], MainnetAddresses.USDT);
+        pinned = configure.mintCurrencies(MainnetAddresses.USDC, MainnetAddresses.USDT);
+        assertEq(pinned[1], MainnetAddresses.USDT, "naming the address book's own is no override");
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.MintCurrencyOverride.selector, "V5_USDC", HERE_USDC));
+        configure.mintCurrencies(HERE_USDC, address(0));
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.MintCurrencyOverride.selector, "V5_USDT", HERE_USDT));
+        configure.mintCurrencies(address(0), HERE_USDT);
+    }
+
+    /// @dev The script reads these variables, which only this test sets. A7-22: `run` takes the deployment's mint
+    ///      currencies from V5_USDC and V5_USDT, here `b` and a token no list names, and proposes neither.
+    function test_A722_run_readsEnvironment() public {
         string memory raw = string.concat(
             vm.toString(address(a)), ":", vm.toString(A_ID), ",", vm.toString(address(b)), ":", vm.toString(B_ID)
         );
@@ -614,19 +666,22 @@ contract ConfigureWeightedTest is Test {
         vm.setEnv("V5_WHITELIST", raw);
         vm.setEnv("V5_LIST", "all");
         vm.setEnv("V5_RELIST", "");
+        vm.setEnv("V5_USDC", vm.toString(address(b)));
+        vm.setEnv("V5_USDT", vm.toString(HERE_USDT));
         vm.setEnv("V5_MODE", "safe");
         configure.run();
         assertEq(factory.listingEta(address(a)), 0, "safe mode broadcasts nothing");
         vm.setEnv("V5_MODE", "propose");
         configure.run();
         assertGt(factory.listingEta(address(a)), 0);
+        assertEq(factory.listingEta(address(b)), 0, "the deployment's mint currency is never proposed");
         vm.setEnv("V5_MODE", "status");
         configure.run();
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         vm.setEnv("V5_MODE", "execute");
         configure.run();
         assertTrue(factory.isWhitelisted(address(a)));
-        assertTrue(factory.isWhitelisted(address(b)));
+        assertFalse(factory.isWhitelisted(address(b)), "nor listed");
         vm.setEnv("V5_MODE", "sideways");
         vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.UnknownMode.selector, "sideways"));
         configure.run();

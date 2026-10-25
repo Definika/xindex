@@ -1,3 +1,4 @@
+# test/Repo.t.sol pins this file whole by its hash (A7-12): a change here updates that hash in the same commit.
 name: CI
 
 permissions: {}
@@ -87,8 +88,9 @@ jobs:
       - name: Run Forge fmt
         run: forge fmt --check
 
+      # A compiler warning fails the build (A7-17), as the definition of done asks of a clean build.
       - name: Run Forge build
-        run: forge build --sizes
+        run: forge build --sizes --deny warnings
 
       # `forge build` prints lint findings but still succeeds, so lint runs on its own and fails on notes too.
       - name: Run Forge lint
@@ -123,14 +125,15 @@ jobs:
           MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
 
       # The keeper (keeper/) is a Foundry project of its own and holds no role in the protocol; its executor gets the
-      # same gates as the repo's contracts, its fork test on Wormhole's real Token Bridge included.
+      # same gates as the repo's contracts, a compiler warning failing its build too (A7-17) and its fork test on
+      # Wormhole's real Token Bridge included.
       - name: Check, build and test the keeper's executor
         env:
           MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
         run: |
           set -euo pipefail
           forge fmt --check --root keeper
-          forge build --root keeper
+          forge build --root keeper --deny warnings
           forge lint -D notes --root keeper
           forge test --root keeper -vvv
 

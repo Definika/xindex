@@ -1039,6 +1039,7 @@ contract WeightedHubInvariantTest is Test {
         } while (index.rebalanceNonce() != fills && rounds < 8);
         assertEq(index.rebalanceNonce(), fills, "the last fill found nothing to trade");
         handler.executeRebalanceShort(12 hours);
+        handler.frontRunFill(12 hours, 0, 1); // nor does a front-run fill, which issues nothing ahead of it
         assertEq(index.rebalanceNonce(), fills);
         assertFalse(handler.nothingMisjudged());
 
@@ -1109,6 +1110,47 @@ contract WeightedHubInvariantTest is Test {
         invariant_supplyMatchesGhostAndHolders();
         invariant_theBuilderCoversItsEscrows();
         invariant_theGatedIndexIsBackedAndItsGateHolds();
+    }
+
+    /// @dev The handler's paths the walk above cannot reach once it has issued, walked on a fresh index nobody holds:
+    ///      each holder's path returning before it acts, a gated issue refused while the gate is shut, a short fill
+    ///      with nothing to buy (off its weights the preview trades units, but on no supply every amount is zero), and
+    ///      the guardian's two corrections of a keep mask. They, and the front-run fill with nothing to trade the walk
+    ///      above now makes, were the fuzzer's to find; with some seeds it missed the short fill's or the front-run's
+    ///      return, so CI's coverage gate depended on the seed (XS-16).
+    function test_XS16_handlerReachesEveryPathOnAnEmptyIndex() public {
+        assertEq(index.totalSupply(), 0, "a fresh index");
+        handler.redeem(0, 0, 1);
+        handler.redeemSkipping(0, 0, 1, 1);
+        handler.transfer(0, 1, 1);
+        handler.builderRedeem(0, 1);
+        handler.builderSell(0, 0);
+        handler.claim(0, 0, 0);
+        assertEq(index.totalSupply(), 0, "each holder's path returned before it acted");
+
+        handler.issueGated(0, 1, 1e18);
+        assertEq(gated.totalSupply(), 0, "the shut gate refused the issue");
+        assertFalse(handler.gateMisjudged());
+
+        handler.movePrice(1, 4000e8);
+        handler.startRebalance(0, 0, false);
+        handler.executeRebalanceShort(0);
+        assertEq(index.rebalanceNonce(), 0, "nothing to buy, so no fill");
+        assertEq(index.totalSupply(), 0);
+        assertFalse(handler.nothingMisjudged());
+
+        handler.cancelRebalance();
+        handler.freeze(true);
+        handler.startRebalance(0, 0, true);
+        (, uint256 keepMask) = index.pendingRebalance();
+        assertEq(keepMask, 1 << (comps.length - 1), "the guardian keeps the frozen component, the last");
+        handler.cancelRebalance();
+        handler.freeze(false);
+        handler.startRebalance(0, (1 << comps.length) - 2, true);
+        (, keepMask) = index.pendingRebalance();
+        assertEq(keepMask, 0, "a mask leaving one component moving is dropped");
+        assertFalse(handler.restartMisjudged());
+        assertFalse(handler.holdOffMisjudged());
     }
 
     function invariant_everyComponentBackedIncludingClaims() public view {

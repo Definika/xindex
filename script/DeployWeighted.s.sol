@@ -23,7 +23,11 @@ import {MainnetAddresses} from "./MainnetAddresses.sol";
 /// Env:
 ///   OWNER               Required. Factory owner. On Ethereum it must be a contract that is not an
 ///                       EIP-7702 delegated account, and a Safe must require at least three signatures and have no
-///                       enabled module.
+///                       enabled module. Any other contract needs OWNER_IS_NOT_A_SAFE.
+///   OWNER_IS_NOT_A_SAFE Optional, OWNER's address again or unset. On Ethereum, the operator's acknowledgment that
+///                       OWNER is a contract but not a Safe, such as a timelock; without it such an owner is refused
+///                       (A7-08). Only OWNER's own address acknowledges OWNER, so one left in `.env` from an earlier
+///                       run acknowledges no other owner. It lowers no Safe rule, and the owner's code hash is logged.
 ///   GUARDIAN            Required. Can cancel pending listings and rebalances, start a rebalance that leaves a paused
 ///                       component or one whose price feed stopped untouched, and delist tokens. Must differ from OWNER;
 ///                       replacing it later takes 7 days.
@@ -40,9 +44,9 @@ contract DeployWeighted is DeployChecks {
     ///         mainnet broadcast is bound to (CF-5): `deploy` refuses to broadcast on Ethereum from any other build (a
     ///         local edit, a lib/ checkout off foundry.lock, a FOUNDRY_* override), and `test_CF5_*` in
     ///         test/Scripts.t.sol fails until these equal the build, so only a reviewed, CI-green commit moves them.
-    bytes32 public constant FACTORY_INITCODE_HASH = 0xca63f0e12a0710949a176e9fdf276e6c30e70f67bfdca87a3f37752d3e2cf9b4;
+    bytes32 public constant FACTORY_INITCODE_HASH = 0xd6d906ea60284a6e6e5720f553c7c55838e0d2430ee4dc1d738b95aec07cf0d3;
     /// @notice keccak256 of `IndexZap`'s init code, as above.
-    bytes32 public constant ZAP_INITCODE_HASH = 0xf2130eb5f485f0a30a346f34906b3690c9cd2473db92b57d8c29a5f7ad6b2660;
+    bytes32 public constant ZAP_INITCODE_HASH = 0x69a52ce53fb2f195e1fb74983e9ce13b850985c5782ededfc1a413b47d5f6349;
     /// @notice keccak256 of `BasketBuilder`'s init code, as above.
     bytes32 public constant BUILDER_INITCODE_HASH = 0x88d3ac96b174d7028afb8da1d2f51f430f854e7d6897f25d98e19d43fb6cf582;
     /// @notice keccak256 of `MintRequests`' init code, as above.
@@ -65,7 +69,8 @@ contract DeployWeighted is DeployChecks {
             vm.envOr("PYTH", address(0)),
             vm.envOr("UNIVERSAL_ROUTER", address(0)),
             vm.envOr("USDC", address(0)),
-            vm.envOr("USDT", address(0))
+            vm.envOr("USDT", address(0)),
+            vm.envOr("OWNER_IS_NOT_A_SAFE", address(0))
         );
     }
 
@@ -78,16 +83,22 @@ contract DeployWeighted is DeployChecks {
     /// @param router Uniswap's Universal Router, through which the zap and the builder swap; see {resolveRouter}.
     /// @param usdc USDC for MintRequests; see {resolveStable}.
     /// @param usdt USDT for MintRequests; see {resolveStable}.
+    /// @param acknowledged The owner the operator acknowledges is a contract but not a Safe; see {checkOwner}.
     /// @return factory The deployed factory.
     /// @return zap The deployed zap.
     /// @return builder The deployed basket builder.
     /// @return requests The deployed MintRequests.
-    function deploy(address owner, address guardian, address pyth, address router, address usdc, address usdt)
-        public
-        returns (WeightedIndexFactory factory, IndexZap zap, BasketBuilder builder, MintRequests requests)
-    {
+    function deploy(
+        address owner,
+        address guardian,
+        address pyth,
+        address router,
+        address usdc,
+        address usdt,
+        address acknowledged
+    ) public returns (WeightedIndexFactory factory, IndexZap zap, BasketBuilder builder, MintRequests requests) {
         checkBroadcaster();
-        checkOwner(owner);
+        checkOwner(owner, acknowledged);
         checkGuardian(owner, guardian);
         pyth = resolvePyth(pyth);
         router = resolveRouter(router);

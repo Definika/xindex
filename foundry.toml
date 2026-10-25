@@ -1,3 +1,4 @@
+# test/Repo.t.sol pins this file whole by its hash (A7-12): a change here updates that hash in the same commit.
 [profile.default]
 src = "src"
 out = "out"
@@ -24,8 +25,23 @@ dynamic_test_linking = false
 
 
 # Read-only access for test/Repo.t.sol, which checks the repository files review findings rest on: the pinned compiler,
-# the CI gates and toolchain, the dependency lock against .gitmodules, the ABIs and the docs.
-fs_permissions = [{ access = "read", path = "./" }]
+# the CI workflow and both Foundry configs, the dependency lock against .gitmodules, the ABIs and the docs. Only those
+# (A7-18): no test or script, nor any dependency's code one runs, can read `.env` or the broadcast records.
+fs_permissions = [
+    { access = "read", path = "./src" },
+    { access = "read", path = "./abi" },
+    { access = "read", path = "./script" },
+    { access = "read", path = "./.github" },
+    { access = "read", path = "./.vscode/settings.json" },
+    { access = "read", path = "./foundry.toml" },
+    { access = "read", path = "./keeper/foundry.toml" },
+    { access = "read", path = "./foundry.lock" },
+    { access = "read", path = "./.gitmodules" },
+    { access = "read", path = "./.gitignore" },
+    { access = "read", path = "./.env.example" },
+    { access = "read", path = "./README.md" },
+    { access = "read", path = "./CLAUDE.md" },
+]
 
 [lint]
 # Tests are exercised by `forge test`, not linted: rules like unused-return on `approve` or

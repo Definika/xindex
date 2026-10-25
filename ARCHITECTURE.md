@@ -173,6 +173,8 @@ which returned the zap to its earlier Uniswap-only build. The zap types its call
 - **Burn legs.** A V3 leg is swapped one hop at a time, each hop's unsold input going to the recipient; a V4 leg is one
   action, where an intermediate partial fill reverts the leg (CR-I07). What a hop returns is measured as what its sweep
   brought back, a stray router balance included, so a stray can never revert a burn (CR-L02).
+  Each leg sells what the redeem delivered, measured as the zap's balance change rather than read off `previewRedeem`,
+  so a component paying less than it was sent is sold as it arrived and the zap's own tokens never are (A1a-05).
 - `expectedNonce` is the index's `rebalanceNonce` when the legs were quoted, checked on entry and, for a mint, again
   right before `issue`, so a rebalance in between reverts with `StaleRebalanceNonce` instead of buying another basket.
   Recipients: zero, the zap, the index, the router, the PoolManager and the factory are refused (RT-21). The zap
@@ -468,7 +470,8 @@ price and held a market-cap rule by keeping units proportional to supplies the o
 percentage is a share of value, and with targets that move with the market a price-free band would have to be as wide
 as the market's moves. v5 reads Pyth in the settlement alone and keeps issue, redeem and claims price-free. In `src/`
 and `abi/`, `test_V5I4_onlyTheWeightedHubReadsAPrice` fails if any other file names Pyth's contract, parse, getters,
-pushes or price struct (V5-I4), and `test_noContractReadsAPrice` if any file names a Chainlink feed or a pool's price.
+pushes or price struct (V5-I4), and `test_A713_noContractReadsAPrice` if any file names a Chainlink feed, a pool's
+price or any other common price source (A7-13).
 Chainlink's Ethereum feeds covered 11 of the 52 coins on the list of 2026-10-05 and Pyth all of them; Chainlink alone,
 and as a second check on the coins it covers, were both refused (the spec, sections 1 and 2).
 
@@ -575,6 +578,7 @@ components (section 2).
   must be a contract that is not an EIP-7702 delegated account, and a Safe must need at least three signatures and have
   no enabled module; neither the guardian nor the broadcasting key may be one of its signers (SA-06). Neither role may
   be the router, the PoolManager, Pyth, or any token or mint currency in the chain's address book (XA-39, CR-I37).
+  Any other contract owner, such as a timelock, needs the operator's `OWNER_IS_NOT_A_SAFE`, set to its address (A7-08).
 - **Known limitations** are listed in the README, where users read them.
 
 ## 8. Verification
@@ -608,10 +612,11 @@ components (section 2).
   through the zap and a Uniswap-routed executor, and four drills, a WBTC pause, a silent feed, a price a hundred times
   low and an auction nobody fills (`WeightedHub.fork`).
 - **Gates,** enforced in CI: the submodule check against `foundry.lock`, the check that no committed file names a path
-  on its author's machine, `forge fmt --check`, `forge build`, `forge lint -D notes`, the ABI diff of the five committed
-  ABIs, `forge test` (fork suites required on pushes to `main` and on pull requests into it from this repository), the
-  swap rail's and the keeper's tests, 100% coverage on every file, and the Wake detectors clean on `src/`. Aderyn
-  reports nothing on `src/` (`aderyn.toml` gives each excluded rule its reason); CI does not run it yet.
+  on its author's machine, `forge fmt --check`, `forge build --deny warnings`, `forge lint -D notes`, the ABI diff of
+  the five committed ABIs, `forge test` (fork suites required on pushes to `main` and on pull requests into it from this
+  repository), the swap rail's and the keeper's tests, 100% coverage on every file, and the Wake detectors clean on
+  `src/`, each step pinned whole by `test/Repo.t.sol` (A7-12). Aderyn reports nothing on `src/` (`aderyn.toml` gives
+  each excluded rule its reason); CI does not run it yet.
 
 ## 9. Mainnet addresses
 
