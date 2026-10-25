@@ -1,4 +1,6 @@
-// Uniswap V3 routes between a component and USDC, chosen by quoting each leg at its own size. A route is an
+// Uniswap V3 routes between a component and USDC, chosen by quoting each leg at its own size. The market is Ethereum's
+// by default; the restock service passes a home chain's (its float in place of USDC, its wrapped gas coin in place of
+// WETH, and a Uniswap V3 fork's factory, quoter and fee tiers). A route is an
 // exact-input path from the component to USDC; read as an exact-output path, the same bytes buy the component. A leg
 // whose best route loses more than ROUTE_MAX_LOSS_BPS against Pyth gets none, and the executor's inventory serves it;
 // its best quote is kept all the same, to value a coin kept as stock at no more than its pools pay (XS-5). Chain access
@@ -8,9 +10,18 @@ import { MAINNET } from "./config.mjs";
 import { routeLossBps } from "./math.mjs";
 
 const ZERO = "0x0000000000000000000000000000000000000000";
-const DIRECT_FEES = [100, 500, 3000, 10000];
-const VIA_WETH_FEES = [500, 3000, 10000];
-const WETH_USDC_FEE = 500;
+
+/// Ethereum's Uniswap V3: the market the keeper's fills trade on.
+export const ETHEREUM_MARKET = Object.freeze({
+  usdc: MAINNET.usdc,
+  usdcDecimals: 6,
+  weth: MAINNET.weth,
+  v3Factory: MAINNET.v3Factory,
+  quoterV2: MAINNET.quoterV2,
+  directFees: [100, 500, 3000, 10000],
+  viaWethFees: [500, 3000, 10000],
+  wethUsdcFee: 500,
+});
 /// How long a leg without a route keeps its quote: a quote that values a kept coin is from the block that uses it
 /// (XS-5, RX-13).
 export const REQUOTE_BLOCKS = 1n;
@@ -26,8 +37,9 @@ export const path = (...hops) =>
   `0x${hops.map((h, i) => (i % 2 ? h.toString(16).padStart(6, "0") : h.slice(2).toLowerCase())).join("")}`;
 
 /// `chain` needs `multicall(contracts, blockNumber)`, `call({to, abi, functionName, args}, blockNumber)` and
-/// `isRevert(error)`; `abi` is `{v3Factory, v3Pool, quoter}`.
-export function createRoutes(chain, cfg, abi) {
+/// `isRevert(error)`; `abi` is `{v3Factory, v3Pool, quoter}`; `market` names the pools and the quoter, and "USDC" below
+/// is its `usdc`, in `usdcDecimals`.
+export function createRoutes(chain, cfg, abi, market = ETHEREUM_MARKET) {
   const candidatesOf = new Map(); // token -> {paths, block}: paths whose pools exist and are initialized, read at block
   // `${index}:${proposal}:${token}:${side}` -> {route, amount, usdc, block}, for one auction or request: the route
   // chosen (null when none), and the best quote at `amount`, in USDC's raw units, at `block`; `usdc` is null when no
@@ -38,14 +50,14 @@ export function createRoutes(chain, cfg, abi) {
     const t = token.toLowerCase();
     const known = candidatesOf.get(t);
     if (known && BigInt(blockNumber) - known.block < POOL_REFRESH_BLOCKS) return known.paths;
-    const options = DIRECT_FEES.map((fee) => ({ pool: [token, MAINNET.usdc, fee], path: path(token, fee, MAINNET.usdc) }));
-    if (t !== MAINNET.weth.toLowerCase()) {
-      for (const fee of VIA_WETH_FEES) {
-        options.push({ pool: [token, MAINNET.weth, fee], path: path(token, fee, MAINNET.weth, WETH_USDC_FEE, MAINNET.usdc) });
+    const options = market.directFees.map((fee) => ({ pool: [token, market.usdc, fee], path: path(token, fee, market.usdc) }));
+    if (t !== market.weth.toLowerCase()) {
+      for (const fee of market.viaWethFees) {
+        options.push({ pool: [token, market.weth, fee], path: path(token, fee, market.weth, market.wethUsdcFee, market.usdc) });
       }
     }
     const pools = await chain.multicall(
-      options.map((o) => ({ address: MAINNET.v3Factory, abi: abi.v3Factory, functionName: "getPool", args: o.pool })),
+      options.map((o) => ({ address: market.v3Factory, abi: abi.v3Factory, functionName: "getPool", args: o.pool })),
       blockNumber,
     );
     // A pool read that failed is not known to be absent: nothing is cached, and the leg is not valued as poolless.
@@ -68,7 +80,7 @@ export function createRoutes(chain, cfg, abi) {
   async function quote(side, route, amount, blockNumber) {
     const functionName = side === "sell" ? "quoteExactInput" : "quoteExactOutput";
     try {
-      const [usdc] = await chain.call({ to: MAINNET.quoterV2, abi: abi.quoter, functionName, args: [route, amount] }, blockNumber);
+      const [usdc] = await chain.call({ to: market.quoterV2, abi: abi.quoter, functionName, args: [route, amount] }, blockNumber);
       return usdc;
     } catch (error) {
       if (chain.isRevert(error)) return null;
@@ -89,7 +101,7 @@ export function createRoutes(chain, cfg, abi) {
     if (c && c.route === null && amount <= c.amount && age < REQUOTE_BLOCKS) return null;
     if (c && c.route !== null) {
       const usdc = await quote(side, c.route, amount, blockNumber);
-      if (usdc !== null && routeLossBps(side, usdc, fairUsd) <= cfg.routeMaxLossBps) {
+      if (usdc !== null && routeLossBps(side, usdc, fairUsd, market.usdcDecimals) <= cfg.routeMaxLossBps) {
         chosen.set(k, { route: c.route, amount, usdc, block: BigInt(blockNumber) });
         return c.route;
       }
@@ -105,7 +117,7 @@ export function createRoutes(chain, cfg, abi) {
         pickUsdc = usdc;
       }
     }
-    const result = pick !== null && routeLossBps(side, pickUsdc, fairUsd) <= cfg.routeMaxLossBps ? pick : null;
+    const result = pick !== null && routeLossBps(side, pickUsdc, fairUsd, market.usdcDecimals) <= cfg.routeMaxLossBps ? pick : null;
     chosen.set(k, { route: result, amount, usdc: paths.length === 0 ? null : (pickUsdc ?? 0n), block: BigInt(blockNumber) });
     return result;
   }

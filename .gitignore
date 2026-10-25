@@ -40,3 +40,6 @@ wake.toml
 /keeper/out/
 /keeper/cache/
 __pycache__/
+
+# macOS Finder's folder metadata, binary: test/Repo.t.sol skips it where it reads every file
+.DS_Store

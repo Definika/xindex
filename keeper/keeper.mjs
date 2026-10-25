@@ -14,12 +14,14 @@
 //      the most profitable fill sent: a mint request at exactly its limit in shares, a redeem request at exactly its
 //      limit in its stablecoin.
 
+import { renameSync, writeFileSync } from "node:fs";
 import { encodeFunctionData, getAddress } from "viem";
 import { FRESH_SECONDS, HUB_SLOTS, MAINNET, SESSION_IDS, SHARE_PRICED_IDS, TX_GAS_CAP, US_EQUITY_SCHEDULE, parseConfig } from "./bot/config.mjs";
 import { MAX_REVERTED_FILLS, MAX_REVERTED_REQUEST_FILLS, revertedFills } from "./bot/backoff.mjs";
 import { ABI, createChain, revertReason } from "./bot/chain.mjs";
 import { createHermes, priceKey } from "./bot/hermes.mjs";
 import * as M from "./bot/math.mjs";
+import { createNeeds } from "./bot/needs.mjs";
 import { TxTracker } from "./bot/nonce.mjs";
 import { createRequestFiller } from "./bot/requests.mjs";
 import { createRoutes } from "./bot/routes.mjs";
@@ -42,8 +44,18 @@ const tip = M.gweiToWei(cfg.priorityFeeGwei);
 const feeCap = M.gweiToWei(cfg.maxFeeGwei);
 const tracker = new TxTracker(chain.txIo, log, { feeCap });
 const reverted = revertedFills(); // `index:proposal` -> fills that reverted on chain (XS-4)
+// The coins fills are short of, for the restock service, written whole to a temporary file and renamed into place.
+const needs = cfg.needsFile
+  ? createNeeds({
+      write: (text) => {
+        writeFileSync(`${cfg.needsFile}.tmp`, text);
+        renameSync(`${cfg.needsFile}.tmp`, cfg.needsFile);
+      },
+    })
+  : createNeeds({ write: () => {} });
 const isUsdc = (token) => token.toLowerCase() === MAINNET.usdc.toLowerCase();
 const sharePriced = (id) => SHARE_PRICED_IDS.includes(id.toLowerCase());
+const tokensOf = (short) => short.map((s) => s.token).join(", ");
 let subsidies = []; // {at, usd}: fills sent below zero profit, for SUBSIDY_BUDGET_USD's rolling day (RX-16)
 let startKeys = []; // route keys of the last start round, kept until the next (RX-34)
 
@@ -126,7 +138,8 @@ async function preview(index, st, L, keepMask, eta) {
 }
 
 /// The routes, stock change and routed volume of a settlement, or `short` naming coins the executor can neither buy
-/// nor deliver from stock. `maxIn` is the most of each coin the fill may be asked for.
+/// nor deliver from stock, each with the whole of it the fill may need. `maxIn` is the most of each coin the fill may
+/// be asked for.
 async function legs(index, st, sim, maxIn, L, key) {
   const held = await chain.multicall(
     st.tokens.map((t) => ({ address: t, abi: ABI.erc20, functionName: "balanceOf", args: [cfg.executor] })),
@@ -164,7 +177,7 @@ async function legs(index, st, sim, maxIn, L, key) {
       const shortfall = maxIn[i] - h;
       route = await routes.best({ key, token, side: "buy", amount: shortfall, fairUsd: M.amountUsd(shortfall, dec, p), blockNumber: L.number });
       if (!route) {
-        short.push(token);
+        short.push({ token, amount: maxIn[i] });
         continue;
       }
       routedUsd += M.amountUsd(M.max(need - h, 0n), dec, p);
@@ -317,7 +330,8 @@ async function evaluateFill(index, keepMask, proposal, L) {
   }
   const maxIn = sim.in.map((x) => M.withTolerance(x, cfg.supplyToleranceBps));
   const leg = await legs(index, st, sim, maxIn, L, `${index}:${proposal}`);
-  if (leg.short.length) return say(index, `restock: no route and too little stock of ${leg.short.join(", ")}`);
+  needs.report(`${index}:${proposal}`, "fill", leg.short);
+  if (leg.short.length) return say(index, `restock: no route and too little stock of ${tokensOf(leg.short)}`);
   if (leg.unsafe.length) return say(index, `would deliver share-priced stock of ${leg.unsafe.join(", ")}: set its stock allowance to zero`);
   const priced = await priceFill(index, sim, leg, maxIn, L);
   if (priced.skip) {
@@ -344,7 +358,8 @@ async function evaluateStart(index, proposal, L) {
   const [, , , needMax] = await best.again(atMuMax);
   const maxIn = needMax.map((x) => M.withTolerance(x, cfg.supplyToleranceBps));
   const leg = await legs(index, st, best, maxIn, L, `${index}:${proposal + 1n}`);
-  if (leg.short.length) return say(index, `not starting: restock ${leg.short.join(", ")}`);
+  needs.report(`${index}:${proposal + 1n}`, "start", leg.short);
+  if (leg.short.length) return say(index, `not starting: restock ${tokensOf(leg.short)}`);
   if (leg.unsafe.length) return say(index, `not starting: would deliver share-priced stock of ${leg.unsafe.join(", ")}`);
   const priced = await priceFill(index, best, leg, maxIn, L);
   if (priced.skip) return say(index, `not starting: ${priced.skip}`);
@@ -528,7 +543,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => (stopping =
 
 setup = await chain.checkSetup();
 if (cfg.fillRequests) {
-  filler = createRequestFiller({ chain, cfg, hermes, routes, requests: setup.requests, pyth: setup.pyth, staticsOf, log });
+  filler = createRequestFiller({ chain, cfg, hermes, routes, requests: setup.requests, pyth: setup.pyth, staticsOf, log, needs });
 }
 log(`keeper ${chain.account.address}, executor ${cfg.executor}, factory ${cfg.factory}, requests ${cfg.fillRequests ? setup.requests : "off"}`);
 let last = -1n;
@@ -540,6 +555,11 @@ while (!stopping) {
       await onBlock(await chain.block(n));
     } catch (error) {
       log("block", n, "failed:", revertReason(error));
+    }
+    try {
+      needs.flush();
+    } catch (error) {
+      log("needs file", cfg.needsFile, "not written:", error.message);
     }
     if (process.env.KEEPER_DEBUG) log(`block ${n} done`);
     if (ONCE) {

@@ -317,7 +317,7 @@ contract RepoTest is Test {
         for (uint256 d = 0; d < dirs.length; ++d) {
             VmSafe.DirEntry[] memory entries = vm.readDir(dirs[d], 8);
             for (uint256 i = 0; i < entries.length; ++i) {
-                if (entries[i].isDir) continue;
+                if (entries[i].isDir || _isFinderMetadata(entries[i].path)) continue;
                 ++read;
                 bool exempt = false;
                 for (uint256 a = 0; a < allowed.length; ++a) {
@@ -345,11 +345,18 @@ contract RepoTest is Test {
         return true;
     }
 
-    /// @dev Reads every file under `dir` and fails on any price word; returns how many files it read.
+    /// @dev macOS Finder writes a binary `.DS_Store` into any folder it opens. It is never a source or an ABI, and
+    ///      `vm.readFile` fails on it as invalid UTF-8, so the walks that read every file skip it and nothing else.
+    function _isFinderMetadata(string memory path) internal pure returns (bool) {
+        return _endsWith(path, "/.DS_Store");
+    }
+
+    /// @dev Reads every file under `dir`, Finder's `.DS_Store` aside, and fails on any price word; returns how many files
+    ///      it read.
     function _assertNoPriceIn(string memory dir, string[5] memory priceWords) internal view returns (uint256 read) {
         VmSafe.DirEntry[] memory entries = vm.readDir(dir, 8);
         for (uint256 i = 0; i < entries.length; ++i) {
-            if (entries[i].isDir) continue;
+            if (entries[i].isDir || _isFinderMetadata(entries[i].path)) continue;
             string memory text = vm.readFile(entries[i].path);
             for (uint256 j = 0; j < priceWords.length; ++j) {
                 assertFalse(_contains(text, priceWords[j]), string.concat(entries[i].path, " names ", priceWords[j]));

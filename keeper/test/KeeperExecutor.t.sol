@@ -14,6 +14,8 @@ import {MockPyth} from "xindex/test/mocks/MockPyth.sol";
 import {MockSwapRouter} from "xindex/test/mocks/MockSwapRouter.sol";
 import {KeeperExecutor} from "../src/KeeperExecutor.sol";
 import {IV3SwapRouter} from "../src/interfaces/IV3SwapRouter.sol";
+import {ITokenBridge} from "../src/interfaces/ITokenBridge.sol";
+import {MockTokenBridge} from "./mocks/MockTokenBridge.sol";
 
 /// @dev The executor against the real hub and factory, MockPyth and a fixed-price router. ETH rises 20% after creation,
 ///      so the index sells ETH and buys BTC and USD. The router trades at the same prices Pyth reports, so each fill's
@@ -27,10 +29,12 @@ contract KeeperExecutorTest is WeightedTest {
     MockERC20 usdt;
     MockSwapRouter router;
     MintRequests requests;
+    MockTokenBridge bridge;
     WeightedHub index;
     KeeperExecutor executor;
     address execOwner = makeAddr("execOwner");
     address keeper = makeAddr("keeper");
+    address treasury = makeAddr("treasury");
 
     function setUp() public {
         _deploy();
@@ -49,6 +53,7 @@ contract KeeperExecutorTest is WeightedTest {
         usdc.mint(address(router), 1e12);
         usdt.mint(address(router), 1e12);
         requests = new MintRequests(address(factory), address(usdc), address(usdt));
+        bridge = new MockTokenBridge();
 
         index = _create(_defaultSpecs());
         _issue(index, alice, 100e18);
@@ -64,6 +69,7 @@ contract KeeperExecutorTest is WeightedTest {
             float,
             IWeightedIndexFactory(address(factory)),
             IMintRequests(address(requests)),
+            ITokenBridge(address(bridge)),
             execOwner,
             keeper
         );
@@ -657,11 +663,12 @@ contract KeeperExecutorTest is WeightedTest {
         assertEq(usdc.balanceOf(address(executor)), 6000e6);
     }
 
-    function test_constructor() public {
+    function test_constructor() public view {
         assertEq(address(executor.ROUTER()), address(router));
         assertEq(executor.USDC(), address(usdc));
         assertEq(address(executor.FACTORY()), address(factory));
         assertEq(address(executor.REQUESTS()), address(requests));
+        assertEq(address(executor.TOKEN_BRIDGE()), address(bridge));
         assertEq(executor.OWNER(), execOwner);
         assertEq(executor.keeper(), keeper);
         assertEq(usdc.allowance(address(executor), address(router)), type(uint256).max, "USDC approved once");
@@ -671,19 +678,22 @@ contract KeeperExecutorTest is WeightedTest {
         IV3SwapRouter r = IV3SwapRouter(address(router));
         IWeightedIndexFactory f = IWeightedIndexFactory(address(factory));
         IMintRequests q = IMintRequests(address(requests));
+        ITokenBridge b = ITokenBridge(address(bridge));
         address u = address(usdc);
         vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
-        new KeeperExecutor(IV3SwapRouter(address(0)), u, f, q, execOwner, keeper);
+        new KeeperExecutor(IV3SwapRouter(address(0)), u, f, q, b, execOwner, keeper);
         vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
-        new KeeperExecutor(r, address(0), f, q, execOwner, keeper);
+        new KeeperExecutor(r, address(0), f, q, b, execOwner, keeper);
         vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
-        new KeeperExecutor(r, u, IWeightedIndexFactory(address(0)), q, execOwner, keeper);
+        new KeeperExecutor(r, u, IWeightedIndexFactory(address(0)), q, b, execOwner, keeper);
         vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
-        new KeeperExecutor(r, u, f, IMintRequests(address(0)), execOwner, keeper);
+        new KeeperExecutor(r, u, f, IMintRequests(address(0)), b, execOwner, keeper);
         vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
-        new KeeperExecutor(r, u, f, q, address(0), keeper);
+        new KeeperExecutor(r, u, f, q, ITokenBridge(address(0)), execOwner, keeper);
         vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
-        new KeeperExecutor(r, u, f, q, execOwner, address(0));
+        new KeeperExecutor(r, u, f, q, b, address(0), keeper);
+        vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
+        new KeeperExecutor(r, u, f, q, b, execOwner, address(0));
     }
 
     /// @dev A request escrow for another factory's indexes would let the keeper fill requests the factory check never
@@ -697,6 +707,7 @@ contract KeeperExecutorTest is WeightedTest {
             address(usdc),
             IWeightedIndexFactory(address(factory)),
             IMintRequests(address(elsewhere)),
+            ITokenBridge(address(bridge)),
             execOwner,
             keeper
         );
@@ -1111,5 +1122,386 @@ contract KeeperExecutorTest is WeightedTest {
             assertEq(eta, 1234, "the eta slot is the hub's");
             assertEq(keepMask, 5, "the keepMask slot is the hub's");
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // Restock
+    // ---------------------------------------------------------------------
+
+    /// @dev BTC's stand-in as a Wormhole copy, from Wormhole chain 4.
+    bytes32 constant BTC_SOURCE = bytes32(uint256(0xb7c));
+    uint16 constant HOME = 4;
+    bytes32 constant HOME_WALLET = bytes32(uint256(0xbee));
+
+    function _treasury() internal {
+        vm.startPrank(execOwner);
+        executor.setTreasury(treasury);
+        executor.setHomeRecipient(HOME, HOME_WALLET);
+        vm.stopPrank();
+        bridge.setWrapped(HOME, BTC_SOURCE, address(btc));
+    }
+
+    /// @dev `amount` of BTC bridged to the executor, as the bridge's signed transfer.
+    function _bridgedBtc(uint256 amount) internal returns (bytes memory) {
+        btc.mint(address(bridge), amount);
+        return bridge.vm(HOME, BTC_SOURCE, address(btc), amount, address(executor));
+    }
+
+    /// @dev The owner lets `amount` more of `token` arriving through the bridge earn stock allowance (RS-1).
+    function _restock(address token, uint256 amount) internal {
+        vm.prank(execOwner);
+        executor.setRestockAllowance(token, amount);
+    }
+
+    function test_onlyTheOwnerPinsTheTreasuryAndTheRecipients() public {
+        vm.startPrank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NotOwner.selector, keeper));
+        executor.setTreasury(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NotOwner.selector, keeper));
+        executor.setTreasuryUsdcAllowance(1);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NotOwner.selector, keeper));
+        executor.setHomeRecipient(HOME, HOME_WALLET);
+        vm.stopPrank();
+
+        vm.startPrank(execOwner);
+        vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
+        executor.setTreasury(address(0));
+        vm.expectEmit(address(executor));
+        emit KeeperExecutor.TreasurySet(address(0), treasury);
+        executor.setTreasury(treasury);
+        vm.expectEmit(address(executor));
+        emit KeeperExecutor.TreasuryUsdcAllowanceSet(5);
+        executor.setTreasuryUsdcAllowance(5);
+        vm.expectEmit(address(executor));
+        emit KeeperExecutor.HomeRecipientSet(HOME, HOME_WALLET);
+        executor.setHomeRecipient(HOME, HOME_WALLET);
+        vm.stopPrank();
+        assertEq(executor.treasury(), treasury);
+        assertEq(executor.treasuryUsdcAllowance(), 5);
+        assertEq(executor.homeRecipient(HOME), HOME_WALLET);
+    }
+
+    function test_onlyTheTreasuryRestocks() public {
+        _treasury();
+        bytes memory vm_ = _bridgedBtc(1e8);
+        address[2] memory others = [keeper, execOwner];
+        for (uint256 i = 0; i < 2; ++i) {
+            vm.startPrank(others[i]);
+            vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NotTreasury.selector, others[i]));
+            executor.redeemBridged(vm_, address(btc));
+            vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NotTreasury.selector, others[i]));
+            executor.bridgeOut(address(btc), 1, HOME);
+            vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NotTreasury.selector, others[i]));
+            executor.drawUsdc(0);
+            vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NotTreasury.selector, others[i]));
+            executor.repayUsdc(0);
+            vm.stopPrank();
+        }
+    }
+
+    /// @dev What a bridged transfer brings is added to the stock allowance, measured where it lands: an 18-decimal coin
+    ///      crosses in eight decimals, so the transfer's own amount is not the raw amount that arrives.
+    function test_aBridgedTransferAddsWhatArrivedToTheAllowance() public {
+        _treasury();
+        bytes32 ethSource = bytes32(uint256(0xe7));
+        bridge.setWrapped(HOME, ethSource, address(eth));
+        eth.mint(address(bridge), 5e18);
+        bytes memory vm_ = bridge.vm(HOME, ethSource, address(eth), 5e18, address(executor));
+        eth.mint(address(executor), 1e18); // a coin already held is no part of the credit
+        _allow(address(eth), 2);
+        _restock(address(eth), 5e18);
+
+        vm.expectEmit(address(executor));
+        emit KeeperExecutor.BridgedIn(address(eth), 5e18, 5e18);
+        vm.prank(treasury);
+        uint256 amount = executor.redeemBridged(vm_, address(eth));
+        assertEq(amount, 5e18);
+        assertEq(executor.stockAllowance(address(eth)), 5e18 + 2, "added to what was left");
+        assertEq(eth.balanceOf(address(executor)), 6e18);
+    }
+
+    /// @dev The transfer names its token: a call that names another refuses it, and the transfer stays to be completed.
+    function test_aBridgedTransferOfAnotherTokenIsRefused() public {
+        _treasury();
+        bytes memory vm_ = _bridgedBtc(1e8);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.WrongToken.selector, address(eth), address(btc)));
+        vm.prank(treasury);
+        executor.redeemBridged(vm_, address(eth));
+        assertFalse(bridge.completed(keccak256(vm_)), "the transfer is still there to complete");
+        assertEq(executor.stockAllowance(address(eth)), 0);
+    }
+
+    /// @dev An Ethereum token that comes back through the bridge is named by its own address, not a wrapped one.
+    function test_anEthereumTokenComingBackIsNamedByItsAddress() public {
+        _treasury();
+        _restock(address(btc), 3e8);
+        btc.mint(address(bridge), 3e8);
+        bytes memory vm_ =
+            bridge.vm(bridge.CHAIN(), bytes32(uint256(uint160(address(btc)))), address(btc), 3e8, address(executor));
+        vm.prank(treasury);
+        executor.redeemBridged(vm_, address(btc));
+        assertEq(executor.stockAllowance(address(btc)), 3e8);
+    }
+
+    /// @dev The bridge lets only a payload transfer's recipient complete it, so no one can land the coins here ahead of
+    ///      the treasury and leave them without the allowance.
+    function test_noOneElseCanLandABridgedTransferHere() public {
+        _treasury();
+        _restock(address(btc), 1e8);
+        bytes memory vm_ = _bridgedBtc(1e8);
+        vm.expectRevert(MockTokenBridge.InvalidSender.selector);
+        vm.prank(stranger);
+        bridge.completeTransferWithPayload(vm_);
+        vm.prank(treasury);
+        executor.redeemBridged(vm_, address(btc));
+        assertEq(executor.stockAllowance(address(btc)), 1e8);
+    }
+
+    /// @dev The whole loop on the executor's side: a coin with no route is short, the treasury bridges it in, and the
+    ///      next fill delivers it from stock.
+    function test_bridgedStockFillsTheAuctionItWasShortFor() public {
+        _treasury();
+        _open(index.AUCTION_DURATION());
+        (, uint256[] memory in_) = _preview();
+        bytes[] memory routes = _routes();
+        routes[1] = "";
+        _expectFillReverts(
+            abi.encodeWithSelector(KeeperExecutor.NoRoute.selector, address(btc)),
+            keeper,
+            address(index),
+            routes,
+            block.timestamp
+        );
+
+        _restock(address(btc), in_[1]);
+        bytes memory vm_ = _bridgedBtc(in_[1]);
+        vm.prank(treasury);
+        executor.redeemBridged(vm_, address(btc));
+        _fill(executor, routes, in_, type(int256).min);
+        assertEq(btc.balanceOf(address(executor)), 0, "what was bridged in went to the index");
+        assertEq(executor.stockAllowance(address(btc)), 0);
+    }
+
+    function test_bridgeOutSendsOnlyToThePinnedRecipient() public {
+        _treasury();
+        btc.mint(address(executor), 5e8);
+        vm.startPrank(treasury);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NoHomeRecipient.selector, uint16(21)));
+        executor.bridgeOut(address(btc), 1e8, 21);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NotStock.selector, address(usdc)));
+        executor.bridgeOut(address(usdc), 1e6, HOME);
+        vm.stopPrank();
+
+        bridge.setMessageFee(7);
+        vm.deal(treasury, 7);
+        vm.expectEmit(address(executor));
+        emit KeeperExecutor.BridgedOut(address(btc), 2e8, HOME, HOME_WALLET, 0);
+        vm.prank(treasury);
+        uint64 sequence = executor.bridgeOut{value: 7}(address(btc), 2e8, HOME);
+        assertEq(sequence, 0);
+        (address token, uint256 amount, uint16 chain, bytes32 recipient, uint256 value) = bridge.last();
+        assertEq(token, address(btc));
+        assertEq(amount, 2e8);
+        assertEq(chain, HOME);
+        assertEq(recipient, HOME_WALLET, "the owner's recipient");
+        assertEq(value, 7, "Wormhole's fee forwarded");
+        assertEq(btc.balanceOf(address(executor)), 3e8);
+        assertEq(btc.allowance(address(executor), address(bridge)), 0, "no approval left behind");
+
+        vm.prank(execOwner);
+        executor.setHomeRecipient(HOME, bytes32(0));
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NoHomeRecipient.selector, HOME));
+        vm.prank(treasury);
+        executor.bridgeOut(address(btc), 1e8, HOME);
+    }
+
+    /// @dev What the bridge cannot carry below eight decimals stays here, and no approval of it is left behind.
+    function test_bridgeOutLeavesTheDustBelowEightDecimals() public {
+        _treasury();
+        eth.mint(address(executor), 1e18 + 123);
+        vm.prank(treasury);
+        executor.bridgeOut(address(eth), 1e18 + 123, HOME);
+        assertEq(eth.balanceOf(address(executor)), 123);
+        assertEq(eth.allowance(address(executor), address(bridge)), 0);
+    }
+
+    /// @dev Stock that leaves takes its allowance with it as far as the allowance would outlast the balance, so coins
+    ///      kept by a later fill cannot be delivered on the credit of coins that already left.
+    function test_bridgeOutCapsTheAllowanceAtWhatIsLeft() public {
+        _treasury();
+        btc.mint(address(executor), 10e8);
+        _allow(address(btc), 10e8);
+        vm.expectEmit(address(executor));
+        emit KeeperExecutor.StockAllowanceSet(address(btc), 4e8);
+        vm.prank(treasury);
+        executor.bridgeOut(address(btc), 6e8, HOME);
+        assertEq(executor.stockAllowance(address(btc)), 4e8);
+
+        _allow(address(btc), 1e8);
+        vm.prank(treasury);
+        executor.bridgeOut(address(btc), 2e8, HOME);
+        assertEq(executor.stockAllowance(address(btc)), 1e8, "an allowance below the balance stays as it was");
+
+        btc.mint(address(executor), 5e8); // kept by a later fill
+        assertEq(executor.stockAllowance(address(btc)), 1e8, "and the kept coins earn none");
+    }
+
+    function test_theTreasuryDrawsAndRepaysWithinItsAllowance() public {
+        _treasury();
+        vm.prank(execOwner);
+        executor.setTreasuryUsdcAllowance(1000e6);
+
+        vm.startPrank(treasury);
+        vm.expectEmit(address(executor));
+        emit KeeperExecutor.UsdcDrawn(600e6);
+        executor.drawUsdc(600e6);
+        assertEq(usdc.balanceOf(treasury), 600e6);
+        assertEq(executor.treasuryUsdcAllowance(), 400e6);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.OverTreasuryAllowance.selector, 500e6, 400e6));
+        executor.drawUsdc(500e6);
+
+        usdc.approve(address(executor), 300e6);
+        vm.expectEmit(address(executor));
+        emit KeeperExecutor.UsdcRepaid(300e6);
+        executor.repayUsdc(300e6);
+        vm.stopPrank();
+        assertEq(usdc.balanceOf(treasury), 300e6);
+        assertEq(executor.treasuryUsdcAllowance(), 700e6, "what came back may go out again");
+        assertEq(usdc.balanceOf(address(executor)), 10_000e6 - 300e6);
+    }
+
+    function test_RS1_onlyTheOwnerSetsTheRestockAllowance() public {
+        _treasury();
+        address[2] memory others = [keeper, treasury];
+        for (uint256 i = 0; i < 2; ++i) {
+            vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NotOwner.selector, others[i]));
+            vm.prank(others[i]);
+            executor.setRestockAllowance(address(btc), 1);
+        }
+        vm.expectEmit(address(executor));
+        emit KeeperExecutor.RestockAllowanceSet(address(btc), 7e8);
+        vm.prank(execOwner);
+        executor.setRestockAllowance(address(btc), 7e8);
+        assertEq(executor.restockAllowance(address(btc)), 7e8);
+    }
+
+    /// @dev RS-1: what arrives through the bridge earns stock allowance only within the restock allowance the owner
+    ///      set, which every credit spends. What arrives beyond it is kept here, and the keeper cannot deliver it until
+    ///      the owner allows it, so restocking cannot raise CF-1's bound on its own.
+    function test_RS1_bridgedStockEarnsAllowanceOnlyWithinTheOwnersRestockAllowance() public {
+        _treasury();
+        _restock(address(btc), 3e8);
+
+        bytes memory first = _bridgedBtc(5e8);
+        vm.expectEmit(address(executor));
+        emit KeeperExecutor.BridgedIn(address(btc), 5e8, 3e8);
+        vm.prank(treasury);
+        uint256 arrived = executor.redeemBridged(first, address(btc));
+        assertEq(arrived, 5e8, "all of it arrived");
+        assertEq(executor.stockAllowance(address(btc)), 3e8, "credited up to the restock allowance");
+        assertEq(executor.restockAllowance(address(btc)), 0, "which the credit spent");
+        assertEq(btc.balanceOf(address(executor)), 5e8, "the rest is kept here");
+
+        bytes memory second = _bridgedBtc(1e8);
+        vm.expectEmit(address(executor));
+        emit KeeperExecutor.BridgedIn(address(btc), 1e8, 0);
+        vm.prank(treasury);
+        executor.redeemBridged(second, address(btc));
+        assertEq(executor.stockAllowance(address(btc)), 3e8, "nothing more without the owner");
+        assertEq(btc.balanceOf(address(executor)), 6e8);
+    }
+
+    /// @dev RS-1, end to end: coins bridged in for an auction, beyond the owner's restock allowance, are no stock the
+    ///      keeper can deliver, so the fill finds no way to the coin until the owner allows them.
+    function test_RS1_bridgedStockBeyondTheRestockAllowanceFillsNothing() public {
+        _treasury();
+        _open(index.AUCTION_DURATION());
+        (, uint256[] memory in_) = _preview();
+        bytes[] memory routes = _routes();
+        routes[1] = "";
+        bytes memory vm_ = _bridgedBtc(in_[1]);
+        vm.prank(treasury);
+        executor.redeemBridged(vm_, address(btc));
+        assertEq(btc.balanceOf(address(executor)), in_[1], "it arrived");
+        _expectFillReverts(
+            abi.encodeWithSelector(KeeperExecutor.NoRoute.selector, address(btc)),
+            keeper,
+            address(index),
+            routes,
+            block.timestamp
+        );
+
+        _allow(address(btc), in_[1]);
+        _fill(executor, routes, in_, type(int256).min);
+        assertEq(btc.balanceOf(address(executor)), 0, "delivered once the owner allowed it");
+    }
+
+    /// @dev RS-2: the owner's figure is the most USDC the treasury may hold off the float. A repayment lowers what it
+    ///      holds, never below zero, so repaying more than it drew, from coins it sold at home, raises nothing; the
+    ///      surplus joins the float.
+    function test_RS2_aRepaymentBeyondWhatWasDrawnRaisesNothing() public {
+        _treasury();
+        vm.prank(execOwner);
+        executor.setTreasuryUsdcAllowance(1000e6);
+        vm.prank(treasury);
+        executor.drawUsdc(600e6);
+        usdc.mint(treasury, 300e6); // proceeds of stock it sold at home
+
+        vm.startPrank(treasury);
+        usdc.approve(address(executor), 900e6);
+        vm.expectEmit(address(executor));
+        emit KeeperExecutor.UsdcRepaid(900e6);
+        executor.repayUsdc(900e6);
+        assertEq(executor.treasuryUsdcOut(), 0, "it holds nothing off the float");
+        assertEq(executor.treasuryUsdcAllowance(), 1000e6, "back to the owner's figure, not above it");
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.OverTreasuryAllowance.selector, 1000e6 + 1, 1000e6));
+        executor.drawUsdc(1000e6 + 1);
+        vm.stopPrank();
+        assertEq(usdc.balanceOf(address(executor)), 10_000e6 + 300e6, "the surplus joined the float");
+    }
+
+    /// @dev RS-2: the owner's figure counts what the treasury already holds off the float.
+    function test_RS2_theOwnersFigureCountsWhatTheTreasuryHolds() public {
+        _treasury();
+        vm.prank(execOwner);
+        executor.setTreasuryUsdcAllowance(1000e6);
+        vm.prank(treasury);
+        executor.drawUsdc(600e6);
+        vm.prank(execOwner);
+        executor.setTreasuryUsdcAllowance(500e6);
+        assertEq(executor.treasuryUsdcAllowance(), 0, "it already holds more than the new figure");
+
+        vm.startPrank(treasury);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.OverTreasuryAllowance.selector, 1, 0));
+        executor.drawUsdc(1);
+        usdc.approve(address(executor), 200e6);
+        executor.repayUsdc(200e6);
+        vm.stopPrank();
+        assertEq(executor.treasuryUsdcOut(), 400e6);
+        assertEq(executor.treasuryUsdcAllowance(), 100e6, "the figure less what it holds");
+    }
+
+    /// @dev RS-6: the stock allowance has no "unlimited" value, so an owner who sets it to the most a uint256 holds and
+    ///      grants a restock allowance made every redemption of the coin overflow, its transfer stuck in the bridge.
+    ///      The credit is what the stock allowance can still hold, and what it cannot is left to the restock allowance.
+    function test_RS6_aStockAllowanceAtItsMostDoesNotBlockARedemption() public {
+        _treasury();
+        _restock(address(btc), 5e8);
+        vm.prank(execOwner);
+        executor.setStockAllowance(address(btc), type(uint256).max - 1e8);
+
+        bytes memory transfer = _bridgedBtc(3e8);
+        vm.expectEmit(address(executor));
+        emit KeeperExecutor.BridgedIn(address(btc), 3e8, 1e8);
+        vm.prank(treasury);
+        assertEq(executor.redeemBridged(transfer, address(btc)), 3e8, "the coins arrive");
+        assertEq(executor.stockAllowance(address(btc)), type(uint256).max, "the allowance fills to its most");
+        assertEq(executor.restockAllowance(address(btc)), 4e8, "and spends only what it took of the restock allowance");
+
+        bytes memory more = _bridgedBtc(2e8);
+        vm.prank(treasury);
+        executor.redeemBridged(more, address(btc));
+        assertEq(btc.balanceOf(address(executor)), 5e8, "a full allowance takes in the next arrival too");
+        assertEq(executor.restockAllowance(address(btc)), 4e8, "earning nothing from it");
     }
 }

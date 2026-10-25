@@ -23,6 +23,12 @@ dynamic_test_linking = false
 # The executor's test reads the bot's hub slots, to pin them against a real hub (XS-8).
 fs_permissions = [{ access = "read", path = "./bot/config.mjs" }]
 
+[invariant]
+runs = 64
+depth = 32
+# As at the root: the handler only makes calls that must succeed, so a revert is a liveness regression, not noise.
+fail_on_revert = true
+
 [lint]
 # Tests are exercised by `forge test`, not linted, as at the root.
 ignore = ["test/**/*"]

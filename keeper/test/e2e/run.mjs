@@ -53,6 +53,7 @@ const PYTH = "0x4305FB66699C3B2702D4d05CF36551390A4c69C6";
 const SWAP_ROUTER02 = "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45";
 const V3_FACTORY = "0x1F98431c8aD98523631AE4a59f267346ea31F984";
 const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
+const TOKEN_BRIDGE = "0x3ee18B2214AFF97000D974cf647E7C347E8fa585";
 const USDT = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
 const T = {
   WETH: { a: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", id: "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace", d: 18 },
@@ -311,7 +312,7 @@ const exHash = await wallet.deployContract({
   account: deployer,
   abi: EXECUTOR.abi,
   bytecode: EXECUTOR.bytecode.object,
-  args: [SWAP_ROUTER02, USDC, factory, requests, execOwner, keeperAccount.address],
+  args: [SWAP_ROUTER02, USDC, factory, requests, TOKEN_BRIDGE, execOwner, keeperAccount.address],
   chain,
 });
 const executor = (await pub.waitForTransactionReceipt({ hash: exHash })).contractAddress;
