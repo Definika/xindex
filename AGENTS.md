@@ -120,7 +120,7 @@ For more:
 ## Commands
 
 ```bash
-forge build --sizes          # compile (must print "Compiler run successful!"); it prints lint findings but still succeeds
+forge build --sizes --deny warnings  # compile as CI does: a compiler warning fails it; lint findings print but pass
 forge lint -D notes          # lint gate CI runs: fails on any warning or note
 forge fmt                    # format; CI runs `forge fmt --check`
 forge test                   # unit + fuzz + invariant tests, no RPC needed; forge auto-loads .env, and a MAINNET_RPC_URL
@@ -157,6 +157,7 @@ deploy script resolves Pyth, the router and the stablecoins from the address boo
    add exclusions without a reason there. Prefer fixing code; use `// forge-lint: disable-next-line(<rule>)`
    or `disable-next-item(<rule>)` only for verified false positives, deliberate behaviour, or vendored code, with a
    one-line reason on the line above. The lint reads OpenZeppelin's internal `Math.mulDiv` as an external call.
+   CI builds with `--deny warnings`, so a compiler warning fails it (A7-17).
 3. `forge test` green. `forge coverage` at 100% for every file, including mocks and scripts.
 4. Fork tests green if the change touches `IndexZap`, the hub's rebalancing, routes, token behaviour, or anything
    router- or pool-related, `WeightedHub` and its price ids included. Their summary must list the five Ethereum
@@ -215,6 +216,9 @@ deploy script resolves Pyth, the router and the stablecoins from the address boo
    - The review of the restock change on 2026-10-25: `RS-…` (`audit/2026-10-25-restock-review.md`), a test named
      `test_RS1_...` in `keeper/test/KeeperExecutor.t.sol` and a node test named `RS-1: ...` in `keeper/test/unit/`. The
      record's status table names every test.
+   - The skills audit of 2026-10-04: `A7-08`, `A7-12`, `A7-13`, `A7-17`, `A7-18`, `A7-22`, `A1a-05` and `A1a-06`, the
+     eight of its findings still open on `main`, fixed on 2026-10-25 (`audit/2026-10-25-skills-audit-port.md`), a
+     test named `test_A708_...` or `test_A1a05_...`. The record's status table names every test.
    - Stage B's families are retired in full with Stage B (`audit/2026-10-07-stage-b-retirement.md`): the Stage B red
      team's `VLT`, `HUB`, `MOD`, `BNB`, `FAC` and `SOL` ids, the TRON review's `TRN`, the logic review of 2026-10-02's
      `LG`, and `BLS-1`. No test carries them, and none may be restored.
@@ -228,8 +232,8 @@ deploy script resolves Pyth, the router and the stablecoins from the address boo
    tests that drive the auction directly (R04, R08, R10, R11, R14 to R16, R21) among them. Some ids no contract test
    can reach:
    - L06 and FR06 are `test_L06_checkOwner` and `test_FR06_checkGuardian`, in `test/Scripts.t.sol`, with the other
-     deploy-script ids (XA-07, XA-25, XA-38, XA-39, XA-47, SA-06, CR-I36, CR-I37) and RT-25; FR05 is `test_FR05_*` in
-     `test/ConfigureWeighted.t.sol`.
+     deploy-script ids (XA-07, XA-25, XA-38, XA-39, XA-47, SA-06, CR-I36, CR-I37, A7-08) and RT-25; FR05 is
+     `test_FR05_*` and A7-22 `test_A722_*`, in `test/ConfigureWeighted.t.sol`.
    - I09, I10, I11, L08 and FR04 are in `test/Repo.t.sol`: the known-limitations section, the pinned compiler, the
      pinned CI toolchain and required fork RPC, and the dependency lock against `.gitmodules`. CI also compares the
      committed submodule commits, which needs git.
@@ -295,8 +299,8 @@ records also cite.
   components. Issue, redeem, `redeemSkipping` and claims never read a price, so no feed can block an exit or misprice a
   mint (`test_issueAndRedeemNeverCallPyth`). The factory stores price ids and never calls Pyth;
   `test_V5I4_onlyTheWeightedHubReadsAPrice` fails if any other file names Pyth's contract, parse, getters, pushes or
-  price struct. No Chainlink feed or pool price anywhere (`test_noContractReadsAPrice`). Valuing an index is the app's
-  job, off-chain. The zap swaps, but it reads no price either: it enforces the limits its caller sets.
+  price struct. No Chainlink feed or pool price anywhere (`test_A713_noContractReadsAPrice`). Valuing an index is the
+  app's job, off-chain. The zap swaps, but it reads no price either: it enforces the limits its caller sets.
 - **One price per block.** The hub, never the executor, fixes the second the prices belong to: one slot back,
   `PRICE_LAG` (12 seconds) before the block (`priceTime()`), and Pyth's `parsePriceFeedUpdatesUnique` returns each
   feed's first update at or after it, published before the block. The hub checks the ids and publish times Pyth
@@ -485,6 +489,8 @@ records also cite.
     leg (DA-15); check `expectedNonce`; measure what the user pays and receives as balance changes inside the call,
     never using tokens already in the zap; check each mint leg's delivered component balance against what the index
     needs (`ShortFill`), which is load-bearing, since the pinned periphery does not itself check exact-output delivery.
+    A burn sells what the redeem delivered, measured as the zap's balance change, never `previewRedeem`'s figure
+    (A1a-05).
   - **Burn legs.** It sells a V3 burn leg one hop at a time and sends every hop's unsold input to the recipient. A V4
     burn leg is a single multi-hop action, because inside one V4 action an intermediate partial fill leaves an unsettled
     credit and the leg reverts atomically. A route that comes back to the component can leave unsold input from a later
@@ -526,6 +532,7 @@ records also cite.
   the call into a user-supplied address the last interaction when possible.
 - **Standard ERC-20s only as components** (whitelist policy). `issue` rejects fee-on-transfer tokens by checking the
   received amount. Do not whitelist USDC/USDT as components in scripts or docs; they are fine as mint/burn currencies.
+  `ConfigureWeighted` refuses the deployment's own, `V5_USDC` and `V5_USDT` off Ethereum, as well as Ethereum's (A7-22).
   The policy wants 6 to 18 decimals, which matter only to display and to Pyth's scaling. The admission check is
   `CheckToken`, and the WBT rule (a token that can both blacklist a holder and destroy its balance is refused) stays its
   default. On 2026-10-10 the owner ruled that a blacklist is no bar to listing and admitted Tether Gold, which the rule
@@ -559,7 +566,7 @@ records also cite.
   `IWeightedIndexFactory.<Error>`; for the same reason a test names `issue`, `redeem`, the previews, `componentTokens`,
   `rebalanceNonce` and `isIndex` through `IIndexHub` and `IIndexFactory`, which the weighted interfaces extend.
   Immutables in SCREAMING_SNAKE_CASE. Loop counters initialised explicitly (`uint256 i = 0`). Modifier logic lives in a
-  private function.
+  private function (`test_A1a06_modifierLogicIsPrivate`).
 - Foundry runs any test-contract function whose name starts with `table` as a table test: name none so, nor any
   function a test suite inherits.
 - `foundry.toml` keeps `dynamic_test_linking = false`. With forge's default, a test function ends at the first
@@ -585,6 +592,15 @@ records also cite.
   - Compute every argument before `vm.prank`: an external call in the arguments consumes the prank.
   - Measure gas with every touched account cooled first (`vm.cool`), so a call pays the cold reads a transaction of its
     own would.
+  - `foundry.toml`'s `fs_permissions` lists, read-only, exactly the files and folders `test/Repo.t.sol` reads: add the
+    path a new check needs, never the root, so no test, script or dependency reads `.env` or the broadcast records
+    (A7-18, `test_A718_noCheatcodeReadsTheEnvFile`).
+  - An invariant handler comes with deterministic walks (`test_XS16_handlerReachesEveryPath...`) that take every line
+    and branch of the handler on their own, so CI's 100% coverage does not depend on the fuzz seed. Check a new path
+    with `forge coverage --report lcov --match-test <walk>` alone; never pin the seed instead (XS-16).
+  - CI's workflow and both Foundry configs are pinned whole by their hashes (A7-12,
+    `test_A712_theCiConfigIsPinnedWhole`): a change to one updates its hash in `test/Repo.t.sol` in the same commit
+    (the failing test prints it), after a review of the whole change; the step pins there still hold every gate.
 - **Scripts.** They keep their logic in public functions that take explicit arguments, so tests can call them without
   environment variables: `DeployWeighted.deploy`, which deploys the factory (and through it the `WeightedHub`
   implementation), the zap and `MintRequests`; `ConfigureWeighted.propose`, `execute`, `safeCalldata` and `status`;
@@ -596,7 +612,9 @@ records also cite.
   - `OWNER` and `GUARDIAN` are required, on each chain.
   - On a mainnet the owner must be a contract that is not an EIP-7702 delegated account. A Safe owner must need at least
     `MIN_OWNER_THRESHOLD` (3) signatures, the design's 3-of-5 (the owner's call on 2026-09-30), and have no enabled
-    module.
+    module. Any other contract, such as a timelock, is refused unless the operator sets `OWNER_IS_NOT_A_SAFE` to that
+    owner's address (A7-08): the script cannot tell who signs for it. An acknowledgment names its owner, so a stale one
+    acknowledges no other, and none lowers a Safe rule.
   - When the owner is a Safe, neither the guardian nor the broadcasting key may be one of its signers (SA-06).
   - Neither role may be a market contract: the router and the PoolManager, Pyth, and on a mainnet every token and mint
     currency in the address book (CR-I37).

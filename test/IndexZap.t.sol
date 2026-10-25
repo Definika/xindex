@@ -9,6 +9,7 @@ import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {WeightedHub} from "../src/WeightedHub.sol";
 import {IndexZap} from "../src/IndexZap.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IIndexZap} from "../src/interfaces/IIndexZap.sol";
 import {IUniversalRouterSwaps} from "../src/interfaces/IUniversalRouterSwaps.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
@@ -1799,6 +1800,64 @@ contract IndexZapTest is XindexTest {
         zap.mintWithToken(_mintParams(address(index), address(usdc), 300e6, 1e18, _mintLegs(address(usdc)), alice));
         vm.stopPrank();
     }
+
+    // ---------------------------------------------------------------------
+    // A1a-05: a burn sells what the redeem delivered
+    // ---------------------------------------------------------------------
+
+    /// @dev An index of `short` beside USDC's smallest holding, one token of it issued to alice in kind and approved
+    ///      to the zap, and `short` paying one wei short from then on, on every transfer out of the index.
+    function _shortIndex(ShortToken short) internal returns (WeightedHub idx) {
+        router.setPrice(address(short), 15e18, 18);
+        _listWith(address(short));
+        idx = _createIndex("Short", "SHRT", _pair(address(short), address(usdc)), _pair(U_LINK, U_DUST));
+        short.mint(alice, U_LINK);
+        usdc.mint(alice, U_DUST);
+        vm.startPrank(alice);
+        short.approve(address(idx), U_LINK);
+        usdc.approve(address(idx), U_DUST);
+        idx.issue(1e18, alice);
+        idx.approve(address(zap), 1e18);
+        vm.stopPrank();
+        short.setShortFrom(address(idx));
+    }
+
+    /// @dev Burns alice's token of `idx` into USDC, `short` sold along a V3 hop and USDC passed through, for at least
+    ///      one unit: the zap refuses a zero limit.
+    function _shortBurn(WeightedHub idx, ShortToken short) internal returns (uint256 out) {
+        IUniversalRouterSwaps.BurnLeg[] memory legs = new IUniversalRouterSwaps.BurnLeg[](2);
+        legs[0] = IUniversalRouterSwaps.BurnLeg({
+            v3Path: _path2(address(short), address(usdc)), v4Path: _noV4(), minAmountOut: 0
+        });
+        legs[1] = IUniversalRouterSwaps.BurnLeg({v3Path: "", v4Path: _noV4(), minAmountOut: 0});
+        vm.prank(alice);
+        out = zap.burnToToken(_burnParams(address(idx), 1e18, address(usdc), 1, legs, alice));
+    }
+
+    /// @dev A1a-05. A component that pays the zap less than the hub sent, as a rebasing or fee token can, is sold as it
+    ///      arrived. The zap sold `previewRedeem`'s figure instead: holding one wei less than that, every burn
+    ///      reverted.
+    function test_A1a05_aBurnSellsWhatTheRedeemDelivered() public {
+        ShortToken short = new ShortToken();
+        WeightedHub idx = _shortIndex(short);
+        uint256 sent = idx.previewRedeem(1e18)[0];
+        _shortBurn(idx, short);
+        assertEq(short.balanceOf(address(router.inventory())), sent - 1, "what arrived, one wei short, is sold");
+        assertEq(short.balanceOf(address(zap)), 0, "and nothing stays behind");
+        assertEq(idx.balanceOf(alice), 0, "the token is burnt");
+    }
+
+    /// @dev A1a-05. Tokens already in the zap are never sold for a burner, as the zap's header promises: selling the
+    ///      preview, one wei more than arrived, took that wei out of five a stranger had sent the zap.
+    function test_A1a05_aBurnNeverSpendsTheZapsOwnTokens() public {
+        ShortToken short = new ShortToken();
+        WeightedHub idx = _shortIndex(short);
+        short.mint(address(zap), 5);
+        uint256 sent = idx.previewRedeem(1e18)[0];
+        _shortBurn(idx, short);
+        assertEq(short.balanceOf(address(zap)), 5, "the zap's own five wei are untouched");
+        assertEq(short.balanceOf(address(router.inventory())), sent - 1, "only what arrived is sold");
+    }
 }
 
 /// @dev `PathLib` reads calldata, so its shape check is reached through an external call.
@@ -1895,4 +1954,28 @@ struct UpstreamExactOutputParams {
     UpstreamPathKey[] path;
     uint128 amountOut;
     uint128 amountInMaximum;
+}
+
+/// @dev An ERC-20 that pays one wei short on every transfer out of `shortFrom`, as some rebasing and fee tokens do: the
+///      sender is debited the whole amount and the recipient credited one wei less.
+contract ShortToken is ERC20 {
+    address public shortFrom;
+
+    constructor() ERC20("Short Token", "SHORT") {}
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+
+    function setShortFrom(address from) external {
+        shortFrom = from;
+    }
+
+    function _update(address from, address to, uint256 value) internal override {
+        if (from != address(0) && from == shortFrom && to != address(0) && value != 0) {
+            super._update(from, address(0), 1);
+            value -= 1;
+        }
+        super._update(from, to, value);
+    }
 }

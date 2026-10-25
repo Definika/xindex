@@ -152,6 +152,13 @@ contract ThresholdOnly {
 }
 
 /// @notice Stand-in for a smart account whose fallback accepts any call and returns nothing.
+/// @notice A Safe-like contract whose `getThreshold` reverts: no answer is a threshold.
+contract RevertingThreshold {
+    function getThreshold() external pure returns (uint256) {
+        revert("no threshold");
+    }
+}
+
 contract SilentFallback {
     fallback() external {}
 }
@@ -211,7 +218,7 @@ contract ScriptsTest is Test {
         internal
         returns (WeightedIndexFactory, IndexZap, BasketBuilder, MintRequests)
     {
-        return deployer.deploy(owner_, guardian_, pyth, address(router), usdc, usdt);
+        return deployer.deploy(owner_, guardian_, pyth, address(router), usdc, usdt, address(0));
     }
 
     // ---------------------------------------------------------------------
@@ -243,8 +250,35 @@ contract ScriptsTest is Test {
         deployer.checkOwner(address(twoOfN)); // two signatures no longer suffice (the owner's call on 2026-09-30)
         assertEq(deployer.MIN_OWNER_THRESHOLD(), 3);
         deployer.checkOwner(address(new MockSafe(3))); // a real multisig, as the design's 3-of-5
-        deployer.checkOwner(address(router)); // a contract without getThreshold, such as a timelock
-        deployer.checkOwner(address(new SilentFallback())); // an empty answer is not a threshold
+    }
+
+    /// @dev A7-08: on Ethereum an owner that answers no Safe threshold, such as a timelock, a smart account with one
+    ///      key, a forwarder to a hot key or a Safe whose `getThreshold` reverts, is refused unless the operator
+    ///      acknowledges it with OWNER_IS_NOT_A_SAFE, which names it. Such an owner was accepted as it was, nothing
+    ///      checking who signs for it. The acknowledgment lowers no Safe rule, and one naming another owner, as one
+    ///      left from an earlier run does, acknowledges nothing.
+    function test_A708_aNonSafeOwnerNeedsTheOperatorsAcknowledgment() public {
+        vm.chainId(1);
+        address silent = address(new SilentFallback());
+        address reverting = address(new RevertingThreshold());
+        address[3] memory notSafes = [address(router), silent, reverting];
+        for (uint256 i = 0; i < notSafes.length; ++i) {
+            vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerNotASafe.selector, notSafes[i]));
+            deployer.checkOwner(notSafes[i]);
+            vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerNotASafe.selector, notSafes[i]));
+            deployer.checkOwner(notSafes[i], address(0));
+            vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerNotASafe.selector, notSafes[i]));
+            deployer.checkOwner(notSafes[i], notSafes[(i + 1) % notSafes.length]); // another owner's, left over
+            deployer.checkOwner(notSafes[i], notSafes[i]); // a timelock the operator chose, and named
+        }
+        MockSafe twoOfN = new MockSafe(2);
+        vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerThresholdTooLow.selector, address(twoOfN), 2));
+        deployer.checkOwner(address(twoOfN), address(twoOfN));
+        deployer.checkOwner(address(new MockSafe(3)), address(0));
+
+        // Through `deploy`, which `run` hands OWNER_IS_NOT_A_SAFE (`test_A708_deployRun_readsEnvironment`).
+        vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerNotASafe.selector, address(router)));
+        deployer.deploy(address(router), guardian, address(0), address(0), address(0), address(0), address(0));
     }
 
     function test_XA07_checkOwnerRejectsASafeWithModules() public {
@@ -526,8 +560,11 @@ contract ScriptsTest is Test {
         deployer.checkDeployment(factory, zap, builder, requests);
     }
 
-    /// @dev The deploy script reads these variables, which only this test sets.
-    function test_deployRun_readsEnvironment() public {
+    /// @dev The deploy script reads these variables, which only this test sets. A7-08: on Ethereum `run` takes the
+    ///      owner the operator acknowledges from OWNER_IS_NOT_A_SAFE, none while it is unset, and refuses an owner that
+    ///      is not a Safe unless the variable names it: the old `true`, or another owner's address left in `.env` from
+    ///      an earlier run, acknowledges nothing.
+    function test_A708_deployRun_readsEnvironment() public {
         vm.setEnv("OWNER", vm.toString(owner));
         vm.setEnv("GUARDIAN", vm.toString(guardian));
         vm.setEnv("PYTH", vm.toString(pyth));
@@ -544,6 +581,33 @@ contract ScriptsTest is Test {
         assertEq(requests.FACTORY(), address(factory));
         assertEq(requests.USDC(), usdc);
         assertEq(requests.USDT(), usdt);
+
+        vm.chainId(1);
+        vm.etch(MAINNET_UNIVERSAL_ROUTER, address(new MockUniversalRouter(MainnetAddresses.POOL_MANAGER)).code);
+        vm.etch(MainnetAddresses.PYTH, hex"00");
+        vm.etch(MainnetAddresses.USDC, hex"00");
+        vm.etch(MainnetAddresses.USDT, hex"00");
+        vm.setEnv("PYTH", vm.toString(MainnetAddresses.PYTH));
+        vm.setEnv("UNIVERSAL_ROUTER", vm.toString(MAINNET_UNIVERSAL_ROUTER));
+        vm.setEnv("USDC", vm.toString(MainnetAddresses.USDC));
+        vm.setEnv("USDT", vm.toString(MainnetAddresses.USDT));
+        address timelock = address(new SilentFallback());
+        vm.setEnv("OWNER", vm.toString(timelock));
+        DeployWeighted mainnet = new DeployWeightedThisBuild();
+        // Empty rather than left as found: forge loads a local `.env` into the environment, and `envOr` reads an empty
+        // value as unset.
+        vm.setEnv("OWNER_IS_NOT_A_SAFE", "");
+        vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerNotASafe.selector, timelock));
+        mainnet.run();
+        string[3] memory stale = [string("true"), "false", vm.toString(address(new SilentFallback()))];
+        for (uint256 i = 0; i < stale.length; ++i) {
+            vm.setEnv("OWNER_IS_NOT_A_SAFE", stale[i]);
+            vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerNotASafe.selector, timelock));
+            mainnet.run();
+        }
+        vm.setEnv("OWNER_IS_NOT_A_SAFE", vm.toString(timelock));
+        (factory,,,) = mainnet.run();
+        assertEq(factory.owner(), timelock, "acknowledged by name, a contract that is not a Safe owns the factory");
     }
 
     /// @dev The stablecoins MintRequests escrows resolve like the router: required off mainnet, mainnet's own on chain
@@ -597,7 +661,7 @@ contract ScriptsTest is Test {
         vm.chainId(1);
         vm.prank(DEFAULT_SENDER);
         vm.expectRevert(DeployChecks.BroadcasterRequired.selector);
-        deployer.deploy(owner, guardian, pyth, address(router), usdc, usdt);
+        deployer.deploy(owner, guardian, pyth, address(router), usdc, usdt, address(0));
         deployer.checkBroadcaster();
         vm.chainId(31337);
         vm.prank(DEFAULT_SENDER);
@@ -620,10 +684,10 @@ contract ScriptsTest is Test {
 
         vm.chainId(1);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerMustBeContract.selector, owner));
-        deployer.deploy(owner, guardian, address(0), address(0), address(0), address(0));
+        deployer.deploy(owner, guardian, address(0), address(0), address(0), address(0), address(0));
         MockSafe singleSigner = new MockSafe(1);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerThresholdTooLow.selector, address(singleSigner), 1));
-        deployer.deploy(address(singleSigner), guardian, address(0), address(0), address(0), address(0));
+        deployer.deploy(address(singleSigner), guardian, address(0), address(0), address(0), address(0), address(0));
     }
 
     /// @dev CF-5. The constants are the release record: this build's init-code hashes. A change to src/, to a
@@ -657,7 +721,7 @@ contract ScriptsTest is Test {
                 DeployWeighted.BuildNotReleased.selector, "WeightedIndexFactory", bytes32(uint256(1)), built[0]
             )
         );
-        other.deploy(safe, guardian, address(0), address(0), address(0), address(0));
+        other.deploy(safe, guardian, address(0), address(0), address(0), address(0), address(0));
 
         bytes32[4] memory wrongZap = [built[0], bytes32(0), built[2], built[3]];
         vm.expectRevert(
@@ -677,14 +741,19 @@ contract ScriptsTest is Test {
 
         DeployWeighted same = new DeployWeightedThisBuild();
         assertEq(same.releaseInitCodeHashes()[1], built[1], "a record of this build");
-        (WeightedIndexFactory factory,,,) = same.deploy(safe, guardian, address(0), address(0), address(0), address(0));
+        (WeightedIndexFactory factory,,,) =
+            same.deploy(safe, guardian, address(0), address(0), address(0), address(0), address(0));
         assertEq(factory.owner(), safe, "the recorded build broadcasts on chain 1");
     }
 
-    /// @dev CR-I36: a call that failed is not an answer.
-    function test_CRI36_aFailedSafeCallIsNeverReadAsAnAnswer() public {
+    /// @dev CR-I36: a call that failed is not an answer. A7-08: so the owner is no Safe, and is refused unless the
+    ///      operator acknowledges it; acknowledged, its one-word revert is still not read as a threshold.
+    function test_CRI36_A708_aFailedSafeCallIsNeverReadAsAnAnswer() public {
         vm.chainId(1);
-        deployer.checkOwner(address(new RevertsOneWord())); // not a Safe, so accepted as a contract owner
+        address revertsOneWord = address(new RevertsOneWord());
+        vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerNotASafe.selector, revertsOneWord));
+        deployer.checkOwner(revertsOneWord);
+        deployer.checkOwner(revertsOneWord, revertsOneWord);
         address unreadable = address(new ModuleListReverts());
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerModulesUnknown.selector, unreadable));
         deployer.checkOwner(unreadable);
@@ -758,7 +827,9 @@ contract ScriptsTest is Test {
         vm.etch(MainnetAddresses.USDC, hex"00");
         vm.etch(MainnetAddresses.USDT, hex"00");
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.RoleIsMarketContract.selector, MainnetAddresses.WETH));
-        deployer.deploy(MainnetAddresses.WETH, guardian, address(0), address(0), address(0), address(0));
+        deployer.deploy(
+            MainnetAddresses.WETH, guardian, address(0), address(0), address(0), address(0), MainnetAddresses.WETH
+        );
     }
 
     // ---------------------------------------------------------------------
@@ -807,8 +878,9 @@ contract ScriptsTest is Test {
         list[0] = ConfigureWeighted.Entry({token: token, priceId: _ID});
         address[] memory first = new address[](1);
         first[0] = token;
+        address[2] memory currencies = [usdc, usdt];
         (bytes[] memory calls, string[] memory labels) =
-            configure.safeCalldata(IWeightedIndexFactory(address(factory)), list, first, new address[](0));
+            configure.safeCalldata(IWeightedIndexFactory(address(factory)), list, first, new address[](0), currencies);
         assertEq(calls.length, 1, "the token is proposed");
         return labels[0];
     }

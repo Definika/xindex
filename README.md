@@ -614,7 +614,7 @@ them.
 ## Development
 
 ```bash
-forge build --sizes
+forge build --sizes --deny warnings  # a compiler warning fails it, as in CI
 forge lint -D notes             # fails on any warning or note
 forge fmt
 forge test                      # unit, fuzz, invariant and security regression tests, no RPC needed
@@ -637,7 +637,8 @@ Foundry and Wake versions. Pushes to `main` and pull requests into it from this 
 `MAINNET_RPC_URL` repository secret exists, so the fork tests always run there; it needs an archive node for the pinned
 fork block. Pull requests from forks get no secrets and skip the fork suites, so re-run them before merging. A keyed RPC
 may throttle five fork suites run in parallel; run them with `-j 1` when a revert appears next to an HTTP 429. CI does
-not run Aderyn yet, so run it before pushing.
+not run Aderyn yet, so run it before pushing. The build fails on any compiler warning (A7-17), and `test/Repo.t.sol`
+pins every gate's step whole, so no gate can be dropped, made conditional or let fail quietly (A7-12).
 
 ### Deploy
 
@@ -673,6 +674,11 @@ also every token and mint currency in the address book (CR-I37). `PYTH`, `UNIVER
 default to the address book's on chain 1 (`script/MainnetAddresses.sol`), where any other value is rejected, and are
 required anywhere else; they are the script's only market addresses, because the hub and factory depend on no Uniswap contract.
 
+An owner that is a contract but not a Safe, such as a timelock, is refused on Ethereum unless `OWNER_IS_NOT_A_SAFE`
+names it, set to the owner's own address (A7-08): the script cannot tell who signs for such an owner, so check that
+yourself; the run logs its code hash. An acknowledgment left in `.env` from an earlier run names that run's owner and
+acknowledges no other, and none lowers a Safe rule.
+
 **Deployment record.** `forge script --broadcast` writes `broadcast/DeployWeighted.s.sol/<chain id>/run-latest.json`:
 the git commit, each transaction with its init code, and the addresses. Broadcast from a clean, committed tree so the
 recorded commit is the deployed source, commit the record with the README address table (on a mainnet with `git add
@@ -700,7 +706,9 @@ and `V5_WHITELIST=wide` the other 89. Safe mode labels each with its trust tier:
 ```bash
 # owner is a key you hold (testnets and local forks only; a contract owner such as the mainnet Safe cannot sign, and
 # propose then reverts with OwnerIsContract: use safe mode)
-V5_MODE=propose V5_FACTORY=0x... V5_WHITELIST=<entries> V5_LIST=<tokens to list> forge script script/ConfigureWeighted.s.sol --rpc-url <rpc> --account <owner key> --sender <owner> --broadcast
+V5_MODE=propose V5_FACTORY=0x... V5_WHITELIST=<entries> V5_LIST=<tokens to list> \
+  V5_USDC=<the deployment's USDC> V5_USDT=<its USDT> \
+  forge script script/ConfigureWeighted.s.sol --rpc-url <rpc> --account <owner key> --sender <owner> --broadcast
 # owner is a Safe: print the listing proposals as calldata to sign in the Safe app (nothing is broadcast);
 # V5_LIST=all on the launch run only, and unset on every later run
 V5_MODE=safe V5_FACTORY=0x... V5_WHITELIST=default V5_LIST=all forge script script/ConfigureWeighted.s.sol --rpc-url mainnet
@@ -710,12 +718,14 @@ V5_MODE=execute V5_FACTORY=0x... V5_WHITELIST=default forge script script/Config
 
 `V5_MODE` is one of `propose`, `safe`, `execute` and `status`. `V5_WHITELIST` is `default` or `wide` (chain 1 only),
 or comma-separated `token:priceId` entries; anything else reverts `MalformedEntry`, and a list
-that names a token or a price id twice reverts in every mode (RT-24, V5-M1).
+that names a token or a price id twice reverts in every mode (RT-24, V5-M1). Propose and safe mode never propose the
+deployment's mint currencies as components: `V5_USDC` and `V5_USDT`, the `USDC` and `USDT` given to `DeployWeighted`,
+required off Ethereum; on Ethereum the address book's, where nothing else is accepted (A7-22).
 
 - **Propose and safe** propose a listing for each entry that is not listed and has no live proposal, skipping with the
   reason logged: a token never listed unless `V5_LIST` names it (`V5_LIST=all` for every entry), a delisted token
   unless `V5_RELIST` names it, a token with a different listing pending (cancel it first), and any entry outside the
-  policy the script can check (a token with code and 6 to 18 decimals, no USDC or USDT). Safe mode applies the same
+  policy the script can check (a token with code and 6 to 18 decimals, no mint currency). Safe mode applies the same
   checks, because a Safe batch sends every proposal in one transaction and one the factory refuses takes the rest down
   with it (CR-I38). Nothing on chain records that the guardian cancelled a first listing, so leave `V5_LIST` unset on a
   routine run and a cancelled listing stays cancelled until the operator names it again (RT-06). Safe mode labels each
@@ -792,7 +802,9 @@ OWNER=<Safe> GUARDIAN=<guardian> PYTH=<Pyth's Sepolia contract> UNIVERSAL_ROUTER
   forge script script/DeployWeighted.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast
 
 # 3. print the listing proposals and sign them as one batch in the Safe app
-V5_MODE=safe V5_FACTORY=<factory> V5_WHITELIST=<logged by create> V5_LIST=all forge script script/ConfigureWeighted.s.sol --rpc-url sepolia
+V5_MODE=safe V5_FACTORY=<factory> V5_WHITELIST=<logged by create> V5_LIST=all \
+  V5_USDC=<tUSDC logged by create> V5_USDT=<the second test stablecoin> \
+  forge script script/ConfigureWeighted.s.sol --rpc-url sepolia
 
 # 4. 2 to 9 days later, from any account
 V5_MODE=execute V5_FACTORY=<factory> V5_WHITELIST=<same> forge script script/ConfigureWeighted.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast

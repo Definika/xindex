@@ -346,7 +346,7 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         return account == owner() || (account == guardian && account != address(0));
     }
 
-    function _checkOwnerOrGuardian() internal view {
+    function _checkOwnerOrGuardian() private view {
         if (!isOwnerOrGuardian(msg.sender)) revert Unauthorized(msg.sender);
     }
 

@@ -150,12 +150,20 @@ contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
         IERC20 tokenOut = IERC20(p.tokenOut);
         uint256 outBefore = tokenOut.balanceOf(address(this));
         IERC20(p.index).safeTransferFrom(msg.sender, address(this), p.shares);
-        // redeem() rounds down deterministically, so the preview is the exact amount received.
-        uint256[] memory got = IIndexHub(p.index).previewRedeem(p.shares);
+        // What the redeem delivers is measured, never read off the preview (A1a-05): a component that pays less than it
+        // was sent, as a rebasing or fee token can, is sold as it arrived, and tokens already here are never sold.
+        uint256 n = tokens.length;
+        uint256[] memory got = new uint256[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            got[i] = IERC20(tokens[i]).balanceOf(address(this));
+        }
         // The basket must be in hand before it can be sold, so this cannot be the last interaction. It is safe: the
         // function is nonReentrant and the zap keeps no state. Wake's reentrancy detector does not model the guard.
         // wake-disable-next-line reentrancy
         IIndexHub(p.index).redeem(p.shares, address(this));
+        for (uint256 i = 0; i < n; ++i) {
+            got[i] = IERC20(tokens[i]).balanceOf(address(this)) - got[i];
+        }
 
         _sellBasket(p, tokens, got);
         amountOut = tokenOut.balanceOf(address(this)) - outBefore;
