@@ -7,6 +7,9 @@ and the keeper's request filler. The scope was `src/`, `script/`, the keeper (`k
 `keeper/keeper.mjs`), the tests, and the records the code is held against (`AGENTS.md`, `README.md`,
 `ARCHITECTURE.md`, the design records).
 
+Edited on 2026-10-25: paths on the author's machine became paths from the repository root; nothing else changed. The PoC
+files this record names were never committed.
+
 ## Method
 
 - **Hunters by lens, two rounds.** Fifteen hunters in the first round, one lens each: hub fees, hub streaming, hub
@@ -168,7 +171,7 @@ a 30-day stall at 500 bps needs under about 243 wei, a deliberate leftover. The 
 (an untrusted role, a stated property that fails for the first real minter); both code-truth verifiers rated it
 medium on the lead time per index. It is kept at high.
 
-**PoC.** `/Users/nikolozsichinava/Xindex/test/poc/F-01.t.sol`, three tests, all pass while the defect is present.
+**PoC.** `test/poc/F-01.t.sol`, three tests, all pass while the defect is present.
 Creator issues 1 share at the caps (creator 500, platform 100), `vm.warp(+365 days)`; `pendingStreamingFee()` is
 `(0, 1e18)` and `previewIssue(1e24)` is the unscaled basket; alice mints `1e24` and pays exactly 25,000 ETH, 50,000,000,000
 raw BTC and 20,000,000,000,000 raw USD; a stranger's `accrueFees()` one block later mints:
@@ -228,7 +231,7 @@ cap on low-decimal legs (WBTC, XAUT, the 6- to 9-decimal copies). The invariant 
 it, and `Rebalanced.units` and the stored units of a kept leg change, so a monitor diffing them misfires. All four
 verifiers rated it medium; the argument for high is the broken stated bound and that the leak grows with supply.
 
-**PoC.** `/Users/nikolozsichinava/Xindex/test/poc/F-03.t.sol`, three tests. A three-leg index with BTC at 10,000 raw
+**PoC.** `test/poc/F-03.t.sol`, three tests. A three-leg index with BTC at 10,000 raw
 units (`MIN_RAW_UNITS`, 8 decimals), `1e24` shares, 600 bps, a fill 7 days after creation at `mu = 1`. The keep-mask
 fill on BTC moves nothing in or out of BTC, yet:
 
@@ -280,7 +283,7 @@ every index. No funds move, holders redeem throughout. The mechanism is the acce
 is the bound, 13 times the documented week, and the app's wrong due date. Two verifiers rated it low on that ground
 and two medium; it is kept at medium because the stated trust bound no longer holds.
 
-**PoC.** `/Users/nikolozsichinava/Xindex/test/poc/F-04.t.sol`, two tests. A three-leg index with a 91-day interval,
+**PoC.** `test/poc/F-04.t.sol`, two tests. A three-leg index with a 91-day interval,
 BTC at 9,998 bps and ETH and USD at 1 bp each, 1,000,000 shares:
 
 ```
@@ -338,7 +341,7 @@ pending accrual at the same timestamp and the accrual is supply-neutral in `amou
 (operator gas only, configuration workarounds); the other three medium for the uncapped automatic retry. It is kept at
 medium as a keeper finding; the hub's ordering is inherent, since the bound is in amounts that need prices.
 
-**PoC.** `/Users/nikolozsichinava/Xindex/test/poc/F-09.t.sol`, one test on the default three-leg index with
+**PoC.** `test/poc/F-09.t.sol`, one test on the default three-leg index with
 `MockPyth`:
 
 ```
@@ -394,7 +397,7 @@ float and, on the auction path, `MAX_TURNOVER` of the attacker's own leg; never 
 either way). `keeper/README.md` does say stock is valued at Pyth; what it does not say is that the quote which rejected
 the route is discarded, so the inversion is undocumented. All four verifiers rated it medium.
 
-**PoC.** `/Users/nikolozsichinava/Xindex/test/poc/F-10.t.sol`, two tests, the bot's arithmetic replicated in integer
+**PoC.** `test/poc/F-10.t.sol`, two tests, the bot's arithmetic replicated in integer
 micro-dollars line for line from `math.mjs`, `routes.mjs`, `keeper.mjs` and `requests.mjs`. `Z` at Pyth $2, on the
 mock router $1; 10,000 Z and 1 ETH in the index; a 30,000 USDC float:
 
@@ -439,7 +442,7 @@ at thirty, bounded by the key's ETH and by switching `FILL_REQUESTS` off; no ind
 far cheaper to grief: `_redeemFor` does only `_buyStable` (nothing for USDC), one approve and the balance reads
 before `fill` at `:278`. All four verifiers rated it medium.
 
-**PoC.** `/Users/nikolozsichinava/Xindex/test/poc/F-05.t.sol`, three tests on a ten-leg mock index:
+**PoC.** `test/poc/F-05.t.sol`, three tests on a ten-leg mock index:
 
 ```
 gas: fillMint after the requester's cancel (burned): 1152018
@@ -487,7 +490,7 @@ eight and skips them. Without an attacker, any eight open redeems of a whole sha
 operator's Hermes quota is spent on dead requests, the class CF-7 fixed on the auction path; no funds at risk,
 requesters keep `cancel`, any other filler may fill. All four verifiers rated it medium.
 
-**PoC.** `/Users/nikolozsichinava/Xindex/test/poc/F-06.t.sol`, four tests. The ranking is pinned verbatim from
+**PoC.** `test/poc/F-06.t.sol`, four tests. The ranking is pinned verbatim from
 `math.mjs` by `vm.readFile` and ported to Solidity over requests the real `MintRequests` recorded:
 
 ```
@@ -532,7 +535,7 @@ parties. Fail-closed, no funds, no on-chain effect. The exploitability verifier 
 constants, caught at first startup); the other three medium as the project's only operational path. It is kept at
 medium. The user's memory note on the keeper also records the stale "eta 4, keepMask 5".
 
-**PoC.** `/Users/nikolozsichinava/Xindex/test/poc/F-02.t.sol`, three tests, `vm.store` and `vm.load` standing in for
+**PoC.** `test/poc/F-02.t.sol`, three tests, `vm.store` and `vm.load` standing in for
 the `eth_call` state override: `(1234, 5)` written to slots 4 and 5 of `factory.IMPLEMENTATION()` reads back as
 `(0, 0)` from `pendingRebalance()`, and as `(1234, 5)` from slots 6 and 7; a live auction sits in slots 6 and 7 with
 slots 4 and 5 at zero; the `atMuMax` override on slots 4 and 5 makes `previewRebalance` revert `NoPendingRebalance`,

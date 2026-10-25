@@ -5,6 +5,8 @@
 - **Completed:** 2026-09-16T19:10:36Z
 - **Method:** rainlanguage `audit` skill v0.35.0 (`rainlanguage/claude-audit-skills@9fefd09902d777aabc967ef6625d038e6c2101b7`), run as a Workflow fan-out: 17 reviewers, dedup, a second fresh-eyes round, adversarial verification (51 agents)
 - **Dimensions run:** 0 Process, 1 Security, 3 Documentation, 4 Code quality, 5 Correctness/intent, 6 Hazard surface
+- **Edited 2026-10-25:** paths into the agent's temporary folder on the author's machine are written `.../scratchpad`;
+  nothing else changed.
 
 ## Dimension 2 (test coverage) did not run
 
@@ -141,7 +143,7 @@ Cost of the distortion. The mean is arithmetic in ticks, so one outlier dominate
 
 Which baskets are exposed. An uncapped basket that is on target is immune (t_i = k' * S_i). Uncapped baskets that are off target are exposed: creator-chosen units, or supply drift. Depressing an overweight sold leg lowers k' and sells more of it. Capped baskets are exposed when a component in the rest group is more than about twice its within-rest share. Components already clipped at half are still exposed, because clipping bounds B but not m*.
 
-PoC. Test /private/tmp/claude-501/-Users-nikolozsichinava-Xindex-v2/b204dcf3-fa74-4b31-bdbb-0d703fe0b644/scratchpad/poc/sec-econ-twap/test/poc/TwapExtract.t.sol passes. It uses `setCumulatives(0, -887272*12)` for one block, then restores tick 0 before the auction. All tokens are worth 1 WETH per unit, 10 shares. (1) Uncapped, units (200,100,100,100,100), equal supplies. Honest targets are all 120. The distorted targets are all 112.16. At eta with m=1.5, the executor takes 878.44 and delivers 729.34. The index loses 149.1 WETH of 6,000, which is 2.48% (m* = 1.807). (2) Capped, units (300,200,400,100,100), supplies (30,20,5,5,5). Component 2 is pinned at its half-clip of 200 in both the honest and the distorted run. The executor still takes 2,453.75 and delivers 2,341.17, so the index loses 112.6 of 11,000, or 1.02%. On a $50M uncapped index, case (1) is about $1.24M, and it can repeat every rebalance.
+PoC. Test .../scratchpad/poc/sec-econ-twap/test/poc/TwapExtract.t.sol passes. It uses `setCumulatives(0, -887272*12)` for one block, then restores tick 0 before the auction. All tokens are worth 1 WETH per unit, 10 shares. (1) Uncapped, units (200,100,100,100,100), equal supplies. Honest targets are all 120. The distorted targets are all 112.16. At eta with m=1.5, the executor takes 878.44 and delivers 729.34. The index loses 149.1 WETH of 6,000, which is 2.48% (m* = 1.807). (2) Capped, units (300,200,400,100,100), supplies (30,20,5,5,5). Component 2 is pinned at its half-clip of 200 in both the honest and the distorted run. The executor still takes 2,453.75 and delivers 2,341.17, so the index loses 112.6 of 11,000, or 1.02%. On a $50M uncapped index, case (1) is about $1.24M, and it can repeat every rebalance.
 
 Claims this breaks. ARCHITECTURE.md section 5 says: "Nothing can move value out of an index". It lists "a multi-block TWAP manipulation at the snapshot; the caller choosing the snapshot moment" as shape-only, and says the owner and guardian can "never extract". Section 4 treats a windfall as needing natural moves ("the bought legs to lose a third of their value ... within three days"). The only defence is a guardian who spots the distorted targets during the 2-day notice and cancels, or holders who leave. No document tells the guardian to check snapshot prices.
 
@@ -188,7 +190,7 @@ Why MEDIUM, not HIGH:
 
 Even so, the loss is repeatable at every rebalance and contradicts an explicit security claim.
 
-*PoC:* I re-ran the reporter's test at /private/tmp/claude-501/-Users-nikolozsichinava-Xindex-v2/b204dcf3-fa74-4b31-bdbb-0d703fe0b644/scratchpad/poc/sec-econ-twap/test/poc/TwapExtract.t.sol. Command: `cd .../poc/sec-econ-twap && forge test --match-path 'test/poc/*' -vv`. All 47 tests pass.
+*PoC:* I re-ran the reporter's test at .../scratchpad/poc/sec-econ-twap/test/poc/TwapExtract.t.sol. Command: `cd .../poc/sec-econ-twap && forge test --match-path 'test/poc/*' -vv`. All 47 tests pass.
 
 Uncapped case, test_uncapped_offTarget_oneBlockExtremeTick:
 - Honest targets are 120e18 each; distorted targets are 112.16e18.
@@ -236,7 +238,7 @@ Why MEDIUM rather than HIGH:
 
 Loss magnitude, from the mock PoC: 2.48% of an off-target uncapped index and 1.02% of a capped one, per rebalance, and it can repeat monthly. That is a real value loss with significant preconditions and mitigations, and it contradicts a documented security claim.
 
-*PoC:* I re-ran the reporter's test, /private/tmp/claude-501/-Users-nikolozsichinava-Xindex-v2/b204dcf3-fa74-4b31-bdbb-0d703fe0b644/scratchpad/poc/sec-econ-twap/test/poc/TwapExtract.t.sol. It sets the cumulatives to 12 s at the extreme tick for one sold token, calls `startRebalance(0)` as the attacker, restores tick 0, warps to `eta` and fills with MockRebalanceExecutor.
+*PoC:* I re-ran the reporter's test, .../scratchpad/poc/sec-econ-twap/test/poc/TwapExtract.t.sol. It sets the cumulatives to 12 s at the extreme tick for one sold token, calls `startRebalance(0)` as the attacker, restores tick 0, warps to `eta` and fills with MockRebalanceExecutor.
 
 Command: `cd .../poc/sec-econ-twap && forge test --match-path 'test/poc/*' -vv`. Result: 47 passed, 0 failed.
 
@@ -289,7 +291,7 @@ Why MEDIUM, not HIGH:
 4. The loss per event is a few percent of the index (the PoC shows 1-2.5%), not the whole index.
 The risk can repeat every rebalance, and the protocol has no on-chain defence, so it is more than LOW.
 
-*PoC:* I copied the reporter's test /private/tmp/claude-501/-Users-nikolozsichinava-Xindex-v2/b204dcf3-fa74-4b31-bdbb-0d703fe0b644/scratchpad/poc/sec-econ-twap/test/poc/TwapExtract.t.sol into my own copy, /private/tmp/claude-501/-Users-nikolozsichinava-Xindex-v2/b204dcf3-fa74-4b31-bdbb-0d703fe0b644/scratchpad/poc/verify-twap-extract, and ran `forge test --match-path 'test/poc/*' -vv` there. Both tests pass:
+*PoC:* I copied the reporter's test .../scratchpad/poc/sec-econ-twap/test/poc/TwapExtract.t.sol into my own copy, .../scratchpad/poc/verify-twap-extract, and ran `forge test --match-path 'test/poc/*' -vv` there. Both tests pass:
 - test_uncapped_offTarget_oneBlockExtremeTick: "multiplier 1500000000000000000", "taken 878442685472932652750", "delivered 729343887162404082480", "loss bps 248".
 - test_capped_restComponentOverweight: "taken 2453753085421028956130", "delivered 2341167985895300502220", "loss bps 102".
 
@@ -553,7 +555,7 @@ Design intent: ARCHITECTURE.md:105-107 gives the exact formula and says it "repr
 
 No doc states that ranks 3 and below are uncapped, or how large they can get. That rules out documented-accepted. Because the code matches the recorded decision and the harm is a misstatement plus user expectation, not a fund risk, I lower the severity from MEDIUM to LOW.
 
-*PoC:* Test file: /private/tmp/claude-501/-Users-nikolozsichinava-Xindex-v2/b204dcf3-fa74-4b31-bdbb-0d703fe0b644/scratchpad/poc/verify-capped-rank3/test/poc/CappedRank3.t.sol. It extends IndexRuleTest so it can use the fixture's `rule`.
+*PoC:* Test file: .../scratchpad/poc/verify-capped-rank3/test/poc/CappedRank3.t.sol. It extends IndexRuleTest so it can use the fixture's `rule`.
 
 Command: `forge test --match-path 'test/poc/*' --match-test poc -vv`
 
@@ -1013,7 +1015,7 @@ On documentation: README.md:249-251 accurately says CI runs only fmt, build and 
 
 I lowered severity from MEDIUM to LOW. This is a process or enforcement gap with no on-chain exploit path. A regression would still need a reviewer to miss it, and the fork tests are enforced on main after merge.
 
-*PoC:* I did not write a forge test. The probe was a temporary src/LintProbe.sol in /private/tmp/claude-501/-Users-nikolozsichinava-Xindex-v2/b204dcf3-fa74-4b31-bdbb-0d703fe0b644/scratchpad/poc/lintprobe-verify, with a mixed-case variable and function, a low-level call and a missing zero check.
+*PoC:* I did not write a forge test. The probe was a temporary src/LintProbe.sol in .../scratchpad/poc/lintprobe-verify, with a mixed-case variable and function, a low-level call and a missing zero check.
 
 Commands and decisive output:
 - `forge build --sizes`: printed 2 warnings and 2 notes, then EXIT=0.
@@ -1074,7 +1076,7 @@ Impact is limited, which puts this below MEDIUM:
 
 The real harm is an operational footgun: an emergency delist can be quietly undone. That fits LOW.
 
-*PoC:* File: /private/tmp/claude-501/-Users-nikolozsichinava-Xindex-v2/b204dcf3-fa74-4b31-bdbb-0d703fe0b644/scratchpad/poc/verify-hazard-ops-2/test/poc/Relist.t.sol, test `test_poc_relistAfterDelist`, in a copy of the Scripts.t.sol fixtures. Steps: list A and B through the script; the guardian delists B; run `safeCalldata`, then `propose` again with the identical list; warp LISTING_DELAY; run `execute`.
+*PoC:* File: .../scratchpad/poc/verify-hazard-ops-2/test/poc/Relist.t.sol, test `test_poc_relistAfterDelist`, in a copy of the Scripts.t.sol fixtures. Steps: list A and B through the script; the guardian delists B; run `safeCalldata`, then `propose` again with the identical list; warp LISTING_DELAY; run `execute`.
 Command: cd <copy> && forge test --match-path 'test/poc/*' -vv
 Decisive output: "safe calls: 1" (only B; A is skipped as already listed), "proposed 0xA4AD...828c" (B), "etaB: 345601", "listed 0xA4AD...828c". The test ends with `assertTrue(factory.isWhitelisted(B))` and passes.
 
@@ -1919,7 +1921,7 @@ This version passes on the current code and fails when Ceil is changed to Floor 
 
 Confirmed in source. src/IndexToken.sol:332 rounds growing units with `Math.mulDiv(target - current, multiplier, WAD, Math.Rounding.Ceil)`. test/IndexToken.rebalance.t.sol:347-353 computes `exact = 100e18 * m`. Because 100e18 is a multiple of 1e18, `exact % WAD` is always 0. The ternary always adds 0, so the test cannot tell Ceil from Floor, even though its name says it checks rounding up. A mutation run confirms this: with Floor in place of Ceil, all 247 non-fork tests still pass. I lowered the severity to INFO. The production code is correct today, so there is no exploitable or runtime defect. The problem is a test that claims to check something it does not, which only matters if a later refactor flips the rounding. Recorded decisions are not affected.
 
-*PoC:* Mutation test in the private copy /private/tmp/claude-501/-Users-nikolozsichinava-Xindex-v2/b204dcf3-fa74-4b31-bdbb-0d703fe0b644/scratchpad/poc/verify-ceil: changed IndexToken.sol:332 from Rounding.Ceil to Rounding.Floor, then ran `forge test --no-match-path 'test/fork/*'`. Output: "Ran 11 test suites ...: 247 tests passed, 0 failed, 0 skipped". The mutant survives. I did not rerun the reporter's proposed test; its numbers (…618 vs …617) are plausible for u0 = 100e18+7 with target 200e18.
+*PoC:* Mutation test in the private copy .../scratchpad/poc/verify-ceil: changed IndexToken.sol:332 from Rounding.Ceil to Rounding.Floor, then ran `forge test --no-match-path 'test/fork/*'`. Output: "Ran 11 test suites ...: 247 tests passed, 0 failed, 0 skipped". The mutant survives. I did not rerun the reporter's proposed test; its numbers (…618 vs …617) are plausible for u0 = 100e18+7 with target 200e18.
 
 *Fix assessment:* The proposed fix is correct and follows CLAUDE.md: it changes only a test, creates the index through the factory, and uses the existing _issue/_start helpers. Making the start units 100e18+7 makes target minus current a non-multiple of WAD. The line `assertTrue(exact % WAD != 0)` stops the test from going vacuous again, and asserting `+1` exactly kills the Floor mutant. Two things to check. First, `targets[0]` must still be above u[0] for the odd composition. The rule's target depends on the supply and prices in the mock market and not on the start units, so this should hold, but the test should also assert `targets[0] > u[0]`. Second, the CREATE2 salt for the new composition must not collide with the fixture index; different units give a different salt, so it will not.
 

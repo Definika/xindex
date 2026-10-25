@@ -630,13 +630,14 @@ MAINNET_RPC_URL=https://... forge test --match-path 'test/fork/*' -vvv
 MAINNET_RPC_URL=https://... FORK_BLOCK=<recent block> forge test --match-path 'test/fork/*'
 ```
 
-CI (`.github/workflows/test.yml`) checks that every submodule commit matches `foundry.lock`, then runs fmt, build,
-`forge lint -D notes`, tests, 100% coverage on every file (offline suites), the ABI diff, the Wake detectors on `src/`,
-the swap rail's tests and the keeper's gates, with pinned Foundry and Wake versions. Pushes to `main` and pull requests
-into it from this repository fail until a `MAINNET_RPC_URL` repository secret exists, so the fork tests always run
-there; it needs an archive node for the pinned fork block. Pull requests from forks get no secrets and skip the fork
-suites, so re-run them before merging. A keyed RPC may throttle five fork suites run in parallel; run them with `-j 1`
-when a revert appears next to an HTTP 429. CI does not run Aderyn yet, so run it before pushing.
+CI (`.github/workflows/test.yml`) checks that every submodule commit matches `foundry.lock` and that no committed file
+names a path on its author's machine, then runs fmt, build, `forge lint -D notes`, tests, 100% coverage on every file
+(offline suites), the ABI diff, the Wake detectors on `src/`, the swap rail's tests and the keeper's gates, with pinned
+Foundry and Wake versions. Pushes to `main` and pull requests into it from this repository fail until a
+`MAINNET_RPC_URL` repository secret exists, so the fork tests always run there; it needs an archive node for the pinned
+fork block. Pull requests from forks get no secrets and skip the fork suites, so re-run them before merging. A keyed RPC
+may throttle five fork suites run in parallel; run them with `-j 1` when a revert appears next to an HTTP 429. CI does
+not run Aderyn yet, so run it before pushing.
 
 ### Deploy
 

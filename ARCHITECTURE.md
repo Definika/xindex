@@ -607,11 +607,11 @@ components (section 2).
   with Pyth's parse mocked: every coin forge-std can fund issued, rebalanced and redeemed in one index, the liquid ones
   through the zap and a Uniswap-routed executor, and four drills, a WBTC pause, a silent feed, a price a hundred times
   low and an auction nobody fills (`WeightedHub.fork`).
-- **Gates,** enforced in CI: the submodule check against `foundry.lock`, `forge fmt --check`, `forge build`,
-  `forge lint -D notes`, the ABI diff of the five committed ABIs, `forge test` (fork suites required on pushes to
-  `main` and on pull requests into it from this repository), the swap rail's and the keeper's tests, 100% coverage on
-  every file, and the Wake detectors clean on `src/`. Aderyn reports nothing on `src/` (`aderyn.toml` gives each
-  excluded rule its reason); CI does not run it yet.
+- **Gates,** enforced in CI: the submodule check against `foundry.lock`, the check that no committed file names a path
+  on its author's machine, `forge fmt --check`, `forge build`, `forge lint -D notes`, the ABI diff of the five committed
+  ABIs, `forge test` (fork suites required on pushes to `main` and on pull requests into it from this repository), the
+  swap rail's and the keeper's tests, 100% coverage on every file, and the Wake detectors clean on `src/`. Aderyn
+  reports nothing on `src/` (`aderyn.toml` gives each excluded rule its reason); CI does not run it yet.
 
 ## 9. Mainnet addresses
 

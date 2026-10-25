@@ -55,6 +55,27 @@ jobs:
           done < <(jq -r 'keys[]' foundry.lock)
           exit "$failed"
 
+      # No committed file names a path on its author's machine: a home folder (macOS, Linux or Windows), a temporary
+      # folder, or the folder an agent names after a home folder and keeps its scratchpad in. Name files from the
+      # repository root. No folder here is named Users, so that word matches anywhere in a path (C:/Users,
+      # /mnt/c/Users); a repository may have a folder named home, so the rooted patterns must start a path. A grep that
+      # could not run fails the step too, rather than passing as a clean tree. The brackets keep each pattern from
+      # matching itself, and test/Repo.t.sol pins this step whole: change both together.
+      - name: Check no committed file names a local path
+        run: |
+          users='/Use[r]s/|\\Use[r]s\\|-Use[r]s-'
+          rooted='(^|[^[:alnum:]._-])(/hom[e]/|-hom[e]-|/privat[e]/(tmp|var)/|/va[r]/folders/)'
+          status=0
+          git grep -n -I -E -e "$users" -e "$rooted" || status=$?
+          if [ "$status" -eq 0 ]; then
+            echo "::error::the lines above name a path on their author's machine"
+            exit 1
+          fi
+          if [ "$status" -ne 1 ]; then
+            echo "::error::git grep could not run (status $status)"
+            exit 1
+          fi
+
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         with:
