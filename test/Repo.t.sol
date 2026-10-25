@@ -262,6 +262,74 @@ contract RepoTest is Test {
         assertTrue(_contains(workflow, "but .gitmodules has no such submodule"), "every pin is a submodule");
     }
 
+    /// @dev No committed file names a path on its author's machine: a home folder, a temporary folder, or the folder an
+    ///      agent names after a home folder and keeps its scratchpad in. Three audit records showed the author's user
+    ///      name so until 2026-10-25. CI greps every committed text file and fails on a match, and on a grep that could
+    ///      not run, which would otherwise pass as a clean tree. The step is pinned whole, keys and script: a pin on a
+    ///      few of its lines let an `if: false`, a `continue-on-error`, a commented-out `exit 1` and a dropped
+    ///      `status=0` through (a match then leaves the status empty, which neither test catches). The brackets keep
+    ///      each pattern from matching itself.
+    function test_ciRefusesAPathOnItsAuthorsMachine() public view {
+        assertEq(
+            _step(_read(".github/workflows/test.yml"), "Check no committed file names a local path"),
+            string.concat(
+                "        run: |\n",
+                "          users='/Use[r]s/|\\\\Use[r]s\\\\|-Use[r]s-'\n",
+                "          rooted='(^|[^[:alnum:]._-])(/hom[e]/|-hom[e]-|/privat[e]/(tmp|var)/|/va[r]/folders/)'\n",
+                "          status=0\n",
+                "          git grep -n -I -E -e \"$users\" -e \"$rooted\" || status=$?\n",
+                "          if [ \"$status\" -eq 0 ]; then\n",
+                "            echo \"::error::the lines above name a path on their author's machine\"\n",
+                "            exit 1\n",
+                "          fi\n",
+                "          if [ \"$status\" -ne 1 ]; then\n",
+                "            echo \"::error::git grep could not run (status $status)\"\n",
+                "            exit 1\n",
+                "          fi\n"
+            ),
+            "CI runs exactly this step: no key added, no line changed"
+        );
+    }
+
+    /// @dev The CI step named `name`, less its name line: the lines after it up to the next line indented less than a
+    ///      step's keys (the next step, a comment above it, or the next job), trailing blank lines left out. The name
+    ///      line must start a line, indented as a step, and no other step may carry the name, so neither a
+    ///      commented-out copy nor a second step stands in for it.
+    function _step(string memory workflow, string memory name) internal pure returns (string memory) {
+        bytes memory t = bytes(workflow);
+        bytes memory h = bytes(string.concat("\n      - name: ", name, "\n"));
+        uint256 at = _indexOf(t, h, 0);
+        assertTrue(at < t.length, name);
+        assertEq(_indexOf(t, h, at + 1), t.length, "no other step carries the name");
+        uint256 start = at + h.length;
+        uint256 end = start;
+        for (uint256 line = start; line < t.length;) {
+            uint256 next = _indexOf(t, bytes("\n"), line);
+            uint256 indent = 0;
+            while (line + indent < next && t[line + indent] == bytes1(" ")) {
+                ++indent;
+            }
+            if (line + indent < next) {
+                if (indent < 8) break;
+                end = next < t.length ? next + 1 : next;
+            }
+            line = next + 1;
+        }
+        return string(_slice(t, start, end));
+    }
+
+    /// @dev Where `needle` first occurs in `t` at or after `from`, or `t.length` if it does not.
+    function _indexOf(bytes memory t, bytes memory needle, uint256 from) internal pure returns (uint256) {
+        for (uint256 i = from; i + needle.length <= t.length; ++i) {
+            uint256 j = 0;
+            while (j < needle.length && t[i + j] == needle[j]) {
+                ++j;
+            }
+            if (j == needle.length) return i;
+        }
+        return t.length;
+    }
+
     /// @dev LR-01: forge's default `dynamic_test_linking` deploys a `src/` contract a test creates through a
     ///      cheatcode, and the test function then ended, reported as a pass, at the first expected constructor revert:
     ///      the checks after it never ran, and neither did an unmet `expectCall`. Nothing placed after such a revert

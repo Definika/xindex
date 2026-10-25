@@ -266,11 +266,11 @@ deploy script resolves Pyth, the router and the stablecoins from the address boo
    surface.
 
 CI enforces items 1 to 5, Aderyn aside: fmt, build, `forge lint -D notes`, tests, 100% coverage on every file and
-`wake detect all src`. The fork suites run on every push from this repository, because the test step passes the
-`MAINNET_RPC_URL` secret unconditionally. On `main` and on pull requests into it the secret is also required, so a
-missing one fails the run rather than letting the suites skip. Check a run's test summary rather than assuming. Run
-everything locally before pushing. A pull request from a forked repository gets no secrets, so its fork suites skip,
-and a maintainer re-runs them before merging.
+`wake detect all src`. It also fails on a committed file that names a path on its author's machine. The fork suites run
+on every push from this repository, because the test step passes the `MAINNET_RPC_URL` secret unconditionally. On `main`
+and on pull requests into it the secret is also required, so a missing one fails the run rather than letting the suites
+skip. Check a run's test summary rather than assuming. Run everything locally before pushing. A pull request from a
+forked repository gets no secrets, so its fork suites skip, and a maintainer re-runs them before merging.
 
 ## Layout
 
@@ -544,31 +544,10 @@ records also cite.
 
 - `pragma solidity 0.8.28;` in `src/` and `script/`; tests use `^0.8.24`. The compiler is pinned to 0.8.28 in
   `foundry.toml`, and CI pins Foundry v1.8.1 and eth-wake 4.22.1 in `.github/workflows/test.yml`.
-- **Wake config.** CI generates its Wake config from `foundry.toml` and adds `keeper/` to its excluded folders, since
-  it would stop Wake before a detector runs: the keeper's executor is a separate Foundry project whose `xindex/`
-  remapping only it knows. The Wake VS Code extension reads `.vscode/settings.json` instead,
-  which holds four things:
-  - `wake.configuration.use_toml_if_present` set to false. The extension otherwise prefers a `wake.toml` in the
-    workspace root, and a local `wake detect` or `wake init config` leaves one there, gitignored. A stale one
-    replaces the whole committed config;
-  - its copy of `forge remappings` (paste the new output there whenever a dependency or remapping changes);
-  - the optimizer settings of `foundry.toml` (without them the factory's initcode looks too large to deploy);
-  - Wake's default excluded folders plus `keeper/`.
-- **Gas in tests.** Foundry 1.8 runs every call a test makes as its own transaction (`isolate = true`), so a measured
-  call already carries the 21,000 and its calldata, EIP-7623's floor included. Build the calldata before measuring,
-  and send it without Solidity's `call`, which first copies it to the top of the test's memory and pays for that
-  expansion.
-- OpenZeppelin v5.7.0 and forge-std v1.16.2, pinned in `foundry.lock`; the staged submodule commits must match
-  it, and CI checks that. The hub uses the upgradeable ERC20 because clones skip constructors, and the
-  storage-based `ReentrancyGuard` because its zeroed slot is "not entered" in a clone.
-- **Vendored code** keeps its license header and names its source commit:
-  - `IUniversalRouter` and `UniversalRouterCommands` come from Uniswap's universal-router (GPL-3.0-or-later) at
-    `3663f6db6e2fe121753cd2d899699c2dc75dca86`, which is tag 2.0.0 and the deployment the zap is pinned to.
-  - `UniswapV4Types` comes from v4-periphery (MIT) at `444c526b77d804590f0d7bc5a481af5a3277c952`, the commit that
-    router was built against.
-  - `IPyth`, `IPythEvents` and `PythStructs` come from pyth-network/pyth-crosschain (Apache-2.0) at
-    `2bb0eb54b2b3af8854d0c26f3884c28a0fce0802`, `target_chains/ethereum/sdk/solidity/`, with the pragma pinned and the
-    whitespace `forge fmt` writes; their plain imports and Pyth's own events carry the suppressions of vendored code.
+- **Paths start at the repository root** (`test/Repo.t.sol`), and a file in an agent's scratchpad is written
+  `.../scratchpad/...`. Never write a path on your machine: a home folder names its user, a temporary folder belongs to
+  one machine, and an agent's folder is named after its owner's home folder. CI fails on one
+  (`Check no committed file names a local path`), and `test/Repo.t.sol` pins that step.
 
   A vendored struct may retype `Currency` and `IHooks` to `address`, which is ABI-identical. Change vendored code only
   to replace a dependency, never to restyle. Both router libraries record the input layout of every command and action
