@@ -19,8 +19,6 @@ out/
 # `git checkout -- broadcast/`.
 /broadcast/*/11155111/
 
-# Docs
-docs/
 
 # Aderyn's default report, written by a local `aderyn .`
 /report.md

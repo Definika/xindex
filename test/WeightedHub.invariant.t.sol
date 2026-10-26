@@ -597,8 +597,9 @@ contract WeightedHandler is Test {
         restartMisjudged = restartMisjudged || index.earliestRebalance() != earliest;
         if (block.timestamp < earliest - 1) vm.warp(earliest - 1);
         if (block.timestamp < earliest) {
+            bytes[] memory early_ = pyth.liveUpdates(index, 0);
             vm.prank(guardian);
-            (bool early,) = address(index).call(abi.encodeCall(IWeightedHub.startRebalance, (0)));
+            (bool early,) = address(index).call(abi.encodeCall(IWeightedHub.startRebalance, (0, early_)));
             restartMisjudged = restartMisjudged || early;
         }
         if (!asGuardian) {
@@ -617,8 +618,9 @@ contract WeightedHandler is Test {
             kept += (mask >> i) & 1;
         }
         if (comps.length - kept < 2) mask = 0;
+        bytes[] memory live = pyth.liveUpdates(index, mask);
         vm.prank(asGuardian ? guardian : _actor(seed));
-        index.startRebalance(mask);
+        index.startRebalance(mask, live);
     }
 
     function cancelRebalance() external {

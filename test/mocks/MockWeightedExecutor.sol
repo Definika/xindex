@@ -90,7 +90,7 @@ contract MockWeightedExecutor is IRebalanceExecutor {
             abi.encodeCall(IIndexHub.redeem, (1, address(this))),
             abi.encodeCall(IWeightedHub.redeemSkipping, (1, address(this), 1)),
             abi.encodeCall(IWeightedHub.claim, (address(0), address(this))),
-            abi.encodeCall(IWeightedHub.startRebalance, (0)),
+            abi.encodeCall(IWeightedHub.startRebalance, (0, new bytes[](0))),
             abi.encodeCall(IWeightedHub.cancelRebalance, ()),
             abi.encodeWithSignature("executeRebalance(bytes,bytes[])", "", new bytes[](0)),
             abi.encodeWithSignature("executeRebalance(bytes,bytes[],uint256[])", "", new bytes[](0), new uint256[](0))

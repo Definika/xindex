@@ -685,8 +685,9 @@ contract SecurityRegressionTest is XindexTest {
         uint256 earliest = idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL();
         if (idx.restartAllowedAt() > earliest) earliest = idx.restartAllowedAt();
         if (block.timestamp < earliest) vm.warp(earliest);
+        bytes[] memory live = pyth.liveUpdates(idx, keepMask);
         vm.prank(caller);
-        idx.startRebalance(keepMask);
+        idx.startRebalance(keepMask, live);
         (eta,) = idx.pendingRebalance();
         vm.warp(eta + into);
     }
@@ -716,7 +717,7 @@ contract SecurityRegressionTest is XindexTest {
         MockERC20(t[3]).mint(address(idx), 12_345);
         uint256 balanceBefore = MockERC20(t[3]).balanceOf(address(idx));
 
-        _openAuction(idx, 1 << 3, guardian, 12 hours);
+        _openAuction(idx, 1 << 3, guardian, idx.AUCTION_DURATION() / 2);
         (,, uint256[] memory out, uint256[] memory amountsIn) = idx.previewRebalance(_cheapFirstStructs(t));
         assertEq(out[3], 0);
         assertEq(amountsIn[3], 0);
@@ -727,7 +728,7 @@ contract SecurityRegressionTest is XindexTest {
 
     function test_R12_flashIssuingAroundAFillExtractsNothing() public {
         (WeightedHub idx, address[] memory t) = _basket();
-        _openAuction(idx, 0, attacker, 18 hours);
+        _openAuction(idx, 0, attacker, idx.AUCTION_DURATION() * 3 / 4);
         bytes[] memory updates = _cheapFirst(idx, t);
 
         uint256 snapshot = vm.snapshotState();
@@ -743,7 +744,7 @@ contract SecurityRegressionTest is XindexTest {
         (WeightedHub idx, address[] memory t) = _basket();
         vm.prank(alice);
         idx.redeemSkipping(2e18, alice, (1 << 0) | (1 << 2)); // a growing and a shrinking component
-        _openAuction(idx, 0, attacker, 12 hours);
+        _openAuction(idx, 0, attacker, idx.AUCTION_DURATION() / 2);
         new MockWeightedExecutor().execute(idx, "", _cheapFirst(idx, t));
         (, uint256[] memory units) = idx.components();
         assertGt(units[0], UNITS, "the first component grew");
@@ -875,15 +876,17 @@ contract SecurityRegressionTest is XindexTest {
         idx.cancelRebalance();
         vm.warp(idx.restartAllowedAt());
         eta = block.timestamp + idx.REBALANCE_DELAY();
+        bytes[] memory live = pyth.liveUpdates(idx, 0);
         vm.expectEmit(true, true, true, true, address(idx));
         emit IWeightedHub.RebalanceStarted(2, 1, attacker, 0, eta);
         vm.prank(attacker);
-        idx.startRebalance(0);
+        idx.startRebalance(0, live);
 
         // The third proposal follows the second's expiry, with no event of its own to mark it.
         vm.warp(eta + idx.AUCTION_DURATION() + idx.REBALANCE_DELAY());
+        bytes[] memory live2 = pyth.liveUpdates(idx, 0);
         vm.prank(attacker);
-        idx.startRebalance(0);
+        idx.startRebalance(0, live2);
         assertEq(idx.proposalCount(), 3, "three attempts, all at rebalance nonce 1");
         assertEq(idx.rebalanceNonce(), 0);
 

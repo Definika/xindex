@@ -31,8 +31,13 @@ Every block L, with T = L's timestamp + 12 (the one block a fill sent now can la
    started only when the auction's middle, where μ is 1, falls in a session of Pyth's own schedule for those feeds,
    holidays and half days included (`US_EQUITY_SCHEDULE`), so competition can fill it near 1 rather than at the next
    open near `MU_MIN` (RX-3). The rule covers all twelve share-priced Ondo legs: Pyth's catalogue gives the six named
-   24/7 the same schedule (RX-31). Refresh the schedule string each year from the catalogue. The 4 richest ready
-   indexes are simulated per round, side by side, their routes kept until the next (RX-34).
+   24/7 the same schedule (RX-31). Refresh the schedule string each year from the catalogue. Since 2026-10-26 the hub
+   itself refuses a start while a moving feed is shut and ends every auction 6 hours after its start, so the schedule
+   only keeps the keeper from starting an auction that would expire unfilled at the close. The start carries the
+   Hermes update its check priced, for the next block, with Pyth's fee, and is sent only after a call at that block with
+   its own gas limit passes and while the block it was priced on is still the head; a start that missed is checked
+   again at the next block. The 4 richest ready indexes are simulated per round, side by side, their routes kept until
+   the next (RX-34).
 3. **Requests.** With `FILL_REQUESTS` on and nothing else to send, the open `MintRequests` requests on the indexes it
    serves are read every 25 blocks, with each index's gate and a Hermes value of one of its shares; a request whose read
    fails is kept as it was and read again. A request is skipped before any simulation when its limit is worth more than

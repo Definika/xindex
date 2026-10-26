@@ -130,6 +130,11 @@ export function inSchedule(t, schedule) {
 export const sessionStartOk = (t, delay, duration, schedule) =>
   inSchedule(BigInt(t) + BigInt(delay) + BigInt(duration) / 2n, schedule);
 
+/// The gas limit a start is sent with: Pyth's parse of `feeds` feeds, about 25,000 each on Ethereum (93 took 2.34M on a
+/// fork on 2026-10-12), the hub's own checks of each, and the call around them, with room to spare. The start is run
+/// with exactly this limit at its block before it is sent, so one that needs more is not sent (RX-3).
+export const startGasLimit = (feeds) => 150_000n + 45_000n * BigInt(feeds);
+
 /// Whether a fill at `profit` dollars, below zero only when MIN_PROFIT_USD is a subsidy, fits `budget` dollars over the
 /// rolling day before second `t`, given the earlier subsidised fills `spent` ({at, usd}). Returns the fills still in the
 /// window with the verdict (RX-16).

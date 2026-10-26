@@ -148,7 +148,7 @@ contract WeightedHubTest is WeightedTest {
         vm.expectRevert(IWeightedHub.NotInitialized.selector);
         clone.redeemSkipping(1, alice, 1);
         vm.expectRevert(IWeightedHub.NotInitialized.selector);
-        clone.startRebalance(0);
+        clone.startRebalance(0, new bytes[](0));
         vm.expectRevert(IWeightedHub.NotInitialized.selector);
         clone.cancelRebalance();
         vm.expectRevert(IWeightedHub.NotInitialized.selector);

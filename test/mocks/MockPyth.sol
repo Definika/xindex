@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {PythStructs} from "../../src/interfaces/pyth/PythStructs.sol";
+import {IWeightedHub} from "../../src/interfaces/IWeightedHub.sol";
 
 /// @notice Stands in for Pyth's `parsePriceFeedUpdatesUnique` and `getUpdateFee` as the deployed contract behaves:
 ///         each update is one feed, `abi.encode(PriceFeed, prevPublishTime)`, and a feed is returned only from an
@@ -52,6 +53,30 @@ contract MockPyth {
     ///         `prevPublishTime`.
     function update(bytes32 id, int64 price, uint64 conf, int32 expo, uint64 publishTime, uint64 prevPublishTime)
         external
+        pure
+        returns (bytes memory)
+    {
+        return _update(id, price, conf, expo, publishTime, prevPublishTime);
+    }
+
+    /// @notice What a start needs (RX-3): an update for each feed `index` moves under `keepMask`, at its price time and
+    ///         the first of that second, each at one dollar, since a start keeps no price.
+    function liveUpdates(IWeightedHub index, uint256 keepMask) external view returns (bytes[] memory data) {
+        (, bytes32[] memory ids,) = index.componentTerms();
+        uint64 time = uint64(index.priceTime());
+        uint256 moving = 0;
+        for (uint256 i = 0; i < ids.length; ++i) {
+            if ((keepMask & (1 << i)) == 0) ++moving;
+        }
+        data = new bytes[](moving);
+        uint256 k = 0;
+        for (uint256 i = 0; i < ids.length; ++i) {
+            if ((keepMask & (1 << i)) == 0) data[k++] = _update(ids[i], 1e8, 0, -8, time, time - 1);
+        }
+    }
+
+    function _update(bytes32 id, int64 price, uint64 conf, int32 expo, uint64 publishTime, uint64 prevPublishTime)
+        private
         pure
         returns (bytes memory)
     {

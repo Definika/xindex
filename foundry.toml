@@ -39,7 +39,7 @@ fs_permissions = [
     { access = "read", path = "./.gitmodules" },
     { access = "read", path = "./.gitignore" },
     { access = "read", path = "./.env.example" },
-    { access = "read", path = "./README.md" },
+    { access = "read", path = "./docs/known-limitations.md" },
     { access = "read", path = "./CLAUDE.md" },
 ]
 

@@ -227,7 +227,9 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     function MIN_REBALANCE_INTERVAL() external view returns (uint256);
 
     /// @notice Length of the auction. After it, the pending rebalance has expired. The factory owner and guardian can
-    ///         start a new one at once; anyone else from `eta + AUCTION_DURATION + REBALANCE_DELAY`.
+    ///         start a new one at once; anyone else from `eta + AUCTION_DURATION + REBALANCE_DELAY`. With the notice it
+    ///         is shorter than any closure of a market a leg's feed follows, so an auction started while every feed
+    ///         publishes can never run into the next open (RX-3).
     function AUCTION_DURATION() external view returns (uint256);
 
     /// @notice The multiplier on the growing legs at the auction's start (1e18 = parity). Above 1e18, so an executor
@@ -356,12 +358,17 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     ///         - {earliestRebalance} has passed;
     ///         - no unexpired rebalance is pending;
     ///         - the waits after a cancel and after an auction nobody filled are over.
-    ///         Before the waits are over, only the factory owner or guardian can start one. It reads no price and calls
-    ///         nothing on any component.
+    ///         Before the waits are over, only the factory owner or guardian can start one. Every moving component's
+    ///         feed must publish at {priceTime}, read from `priceUpdate` through Pyth as a settlement reads it, so a
+    ///         rebalance starts only while each leg's market is open: started while a feed is shut, its auction would
+    ///         first be fillable at the next open, near MU_MIN (RX-3). The prices are not kept. It calls nothing on any
+    ///         component.
+    /// @dev All of msg.value goes to Pyth as its update fee, as in {executeRebalance}.
     /// @param keepMask Bit i set leaves component i untouched, for example while it is paused or its price feed has
     ///        stopped. Only the factory owner or guardian can pass a non-zero mask, and it must leave at least
-    ///        MIN_COMPONENTS components to rebalance.
-    function startRebalance(uint256 keepMask) external;
+    ///        MIN_COMPONENTS components to rebalance. A kept component's feed is not read.
+    /// @param priceUpdate Pyth update data for every moving component's feed, as {executeRebalance} takes.
+    function startRebalance(uint256 keepMask, bytes[] calldata priceUpdate) external payable;
 
     /// @notice Factory owner or guardian. Cancels the pending rebalance. Anyone else must then wait REBALANCE_DELAY
     ///         before starting a new one.
@@ -404,7 +411,8 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     function currentMu() external view returns (uint256);
 
     /// @notice Whether anyone can start a rebalance now: {earliestRebalance} has passed, no auction is live, and the
-    ///         waits after a cancel and after an unfilled auction are over.
+    ///         waits after a cancel and after an unfilled auction are over. A start also needs every moving feed to
+    ///         publish, which this does not check.
     function canStartRebalance() external view returns (bool);
 
     /// @notice The exact settlement an execution in this block would use with `prices`. Reverts like

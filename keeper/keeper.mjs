@@ -364,7 +364,7 @@ async function evaluateStart(index, proposal, L) {
   const priced = await priceFill(index, best, leg, maxIn, L);
   if (priced.skip) return say(index, `not starting: ${priced.skip}`);
   if (priced.profit < cfg.minProfitUsd) return say(index, `not starting: best case pays ${priced.profit.toFixed(2)} USD`);
-  return { index, profit: priced.profit };
+  return { index, profit: priced.profit, updates: best.updates, T: best.T, feeds: st.ids.length };
 }
 
 async function startChecks(L, open) {
@@ -432,15 +432,32 @@ async function startChecks(L, open) {
   );
   const go = verdicts.filter(Boolean).sort((a, b) => b.profit - a.profit)[0];
   if (!go) return;
-  const data = encodeFunctionData({ abi: ABI.hub, functionName: "startRebalance", args: [0n] });
-  const used = await chain.client.estimateGas({ account: chain.account.address, to: go.index, data });
+  // A start reads every moving feed in its block's window, as a fill does (RX-3): it carries the update the start
+  // check priced it at, for block L+1, with Pyth's fee for it, and is checked at that block with the limit it is sent with.
+  const fee = await chain.read(setup.pyth, ABI.pyth, "getUpdateFee", [go.updates], L.number);
+  const data = encodeFunctionData({ abi: ABI.hub, functionName: "startRebalance", args: [0n, go.updates] });
   const nextBase = M.nextBaseFee(L);
   if (nextBase + tip > feeCap) return;
+  const tx = {
+    to: go.index,
+    data,
+    value: fee,
+    gas: M.startGasLimit(go.feeds),
+    maxFeePerGas: M.min(2n * nextBase + tip, feeCap),
+    maxPriorityFeePerGas: tip,
+  };
+  if (!(await fitsItsGas(tx, L, { block: { number: L.number + 1n, time: go.T } }))) {
+    say(go.index, "not starting: the start would not run within its gas limit in the next block");
+    return;
+  }
+  // Its update is for block L+1 alone: sent once the head has moved on, it would revert in whatever block it landed.
+  // The start checks then run again at the next block, not START_EVERY_BLOCKS later.
+  if ((await chain.blockNumber()) !== L.number) {
+    lastStartCheck = null;
+    return log(go.index, "block passed before sending; next block");
+  }
   log(go.index, `starting: best case pays ${go.profit.toFixed(2)} USD`);
-  await tracker.send(
-    { to: go.index, data, value: 0n, gas: M.gasLimitFor(used), maxFeePerGas: M.min(2n * nextBase + tip, feeCap), maxPriorityFeePerGas: tip },
-    { label: `start ${go.index}`, targetBlock: Number(L.number) + 3 },
-  );
+  await tracker.send(tx, { label: `start ${go.index}`, targetBlock: Number(L.number) + 1 });
 }
 
 async function onBlock(L) {

@@ -50,7 +50,7 @@ fixed percentages, the market-cap index is retired, and Pyth is the one oracle, 
                                               │ decimals (2-day delay)               │ issue / redeem in kind
                                               │ guardian, registry                   │ redeemSkipping / claim
                                                                                      │
-   anyone ── startRebalance(keepMask) ─────────────────────────────────────────────► │ 2 h notice, 24 h auction
+   anyone ── startRebalance(keepMask, priceUpdate) ────────────────────────────────► │ 2 h notice, 4 h auction
    executor ── executeRebalance(data, priceUpdate) ────────────────────────────────► │ prices at priceTime() ─► Pyth
             ◄── amountsOut, then the onXindexRebalance callback ──────────────────── │ fill at μ(t), backing check
 
@@ -256,18 +256,24 @@ and `⌈ ⌉` round at that precision.
 
 ### 3.1 Start, notice and auction
 
-`startRebalance(keepMask)` is open to anyone once the index's own rebalance interval, 7 to 91 days chosen at creation,
+`startRebalance(keepMask, priceUpdate)` is open to anyone once the index's own rebalance interval, 7 to 91 days chosen at creation,
 has passed since the last fill or the creation (`RebalanceTooSoon`, `earliestRebalance()`), while no proposal is pending or in its auction (`RebalancePending`). A non-zero keep
 mask, and any start before strangers may, needs the factory owner or guardian (`Unauthorized`, R16). The mask must fit
 the components and leave at least two moving (`InvalidKeepMask`, V5-L2), since a single moving component is already on
 its weight among the moving ones. After a fill with a keep mask, a start without one waits only
 `MIN_REBALANCE_INTERVAL`, so a sliver the guardian fills cannot hold everyone else off for a quarter; a start with a
-mask may start then too, so the guardian can renew a keep around a frozen component (XS-3). A start reads no price and calls nothing on any component. It stores
-`eta = now + REBALANCE_DELAY` and the mask, and emits `RebalanceStarted`.
+mask may start then too, so the guardian can renew a keep around a frozen component (XS-3). It stores
+`eta = now + REBALANCE_DELAY` and the mask, emits `RebalanceStarted`, and then parses every moving component's feed
+from `priceUpdate` at `priceTime()`, as a settlement does (section 3.2), forwarding `msg.value` to Pyth and keeping no
+price. A feed that does not publish then refuses the start, so a rebalance starts only while every leg's market is open
+(RX-3). It calls nothing on any component.
 
 `REBALANCE_DELAY` is 2 hours. The notice is for executors to prepare, not for holders' exits: targets come from the
 prices at the fill, so nothing a holder would leave over is fixed at the start (the spec, section 8). The auction runs
-from `eta` to `eta + AUCTION_DURATION` (24 hours).
+from `eta` to `eta + AUCTION_DURATION` (4 hours). The notice and the auction, 6 hours, are shorter than any closure of a
+market a feed follows (17.5 hours overnight for the US-hours stocks), so an auction started while every feed publishes
+ends before the next open: μ cannot fall through a closure to a fill at the reopening near `MU_MIN`, which a stranger
+could force with a 24-hour auction by starting during a weekend (RX-3).
 
 `cancelRebalance()`, owner or guardian, clears a pending proposal. Cancelling during the notice or the auction holds
 strangers off for `REBALANCE_DELAY` from the cancel (`restartAllowedAt`, R15); cancelling one that already expired only
@@ -443,14 +449,14 @@ balance, and the math holds nothing and reads nothing.
 
 ## 5. Flows
 
-The README's "How the flows work" walks through each flow for an app. In short:
+`docs/integration.md` walks through each flow for an app. In short:
 
 - **Create.** The creator picks 2 to 100 listed coins and their percentages; the app derives the units at current
   prices and shows the address and the index's wrapped share of value, and the creator creates.
 - **Mint and burn** through the zap (up to about 35 components, on coins with a route), through the basket builder
   over several transactions (any size, on coins with a route, the rest deposited in kind), in kind (up to 100), or at
   a limit through `MintRequests`, filled by anyone who holds or can issue the shares.
-- **Rebalance.** At most once per the index's interval, 7 to 91 days: anyone starts, 2 hours of notice, then a 24-hour auction in which an
+- **Rebalance.** At most once per the index's interval, 7 to 91 days: anyone starts while every feed publishes, 2 hours of notice, then a 4-hour auction in which an
   executor brings a signed Pyth update for `priceTime()`, previews the fill with `previewRebalance`, and settles,
   preferably through the bounded overload. Hermes, Pyth's service for signed updates, needs an API key since
   2026-08-26. The bot in `keeper/` is one such executor and holds no role; anyone may run one.
@@ -468,7 +474,7 @@ funds small and admin-free, and lets the swap layer be replaced without touching
 which made a stale feed a halt and could only approximate a bound at market prices (CR-L06). v4 Stage A removed every
 price and held a market-cap rule by keeping units proportional to supplies the owner maintained. A creator's
 percentage is a share of value, and with targets that move with the market a price-free band would have to be as wide
-as the market's moves. v5 reads Pyth in the settlement alone and keeps issue, redeem and claims price-free. In `src/`
+as the market's moves. v5 reads Pyth in the settlement, and in the start only to prove the feeds publish (RX-3), and keeps issue, redeem and claims price-free. In `src/`
 and `abi/`, `test_V5I4_onlyTheWeightedHubReadsAPrice` fails if any other file names Pyth's contract, parse, getters,
 pushes or price struct (V5-I4), and `test_A713_noContractReadsAPrice` if any file names a Chainlink feed, a pool's
 price or any other common price source (A7-13).
@@ -497,7 +503,7 @@ section 2a, and `design/2026-10-18-pre-mainnet-readings.md`, section 3).
 |---|---|
 | `createIndex` | about 13.1M |
 | `issue` | about 3.6M |
-| `startRebalance` | about 90k |
+| `startRebalance`, which parses every feed (RX-3), through the test's `MockPyth` (Pyth's own parse took 2.34M for 93 feeds on a fork) | about 4.9M |
 | `executeRebalance`, Pyth's parse mocked, an executor that already holds the bought tokens | about 4.8M |
 | `redeem` | about 3.7M |
 | `redeemSkipping`, every component skipped | about 5.1M |
@@ -579,7 +585,7 @@ components (section 2).
   no enabled module; neither the guardian nor the broadcasting key may be one of its signers (SA-06). Neither role may
   be the router, the PoolManager, Pyth, or any token or mint currency in the chain's address book (XA-39, CR-I37).
   Any other contract owner, such as a timelock, needs the operator's `OWNER_IS_NOT_A_SAFE`, set to its address (A7-08).
-- **Known limitations** are listed in the README, where users read them.
+- **Known limitations** are listed in `docs/known-limitations.md`, linked from the README.
 
 ## 8. Verification
 

@@ -845,7 +845,7 @@ contract IndexZapTest is XindexTest {
     function test_LR05_aRebalanceSettledDuringTheRefundStopsTheMint() public {
         _mintFor(alice, 1e18, 200e6);
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
-        index.startRebalance(0);
+        index.startRebalance(0, pyth.liveUpdates(index, 0));
         (uint256 eta,) = index.pendingRebalance();
         vm.warp(eta);
 

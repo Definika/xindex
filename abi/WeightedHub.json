@@ -1112,10 +1112,15 @@
         "name": "keepMask",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "priceUpdate",
+        "type": "bytes[]",
+        "internalType": "bytes[]"
       }
     ],
     "outputs": [],
-    "stateMutability": "nonpayable"
+    "stateMutability": "payable"
   },
   {
     "type": "function",

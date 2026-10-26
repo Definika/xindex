@@ -88,8 +88,9 @@ contract WeightedHubRebalanceTest is WeightedTest {
     /// @dev Starts a rebalance once the interval has passed and warps `into` seconds into its auction.
     function _open(uint256 keepMask, uint256 into) internal {
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
+        bytes[] memory live = pyth.liveUpdates(index, keepMask);
         if (keepMask != 0) vm.prank(guardian);
-        index.startRebalance(keepMask);
+        index.startRebalance(keepMask, live);
         (uint256 eta,) = index.pendingRebalance();
         vm.warp(eta + into);
     }
@@ -120,15 +121,17 @@ contract WeightedHubRebalanceTest is WeightedTest {
         uint256 earliest = index.lastRebalance() + index.MIN_REBALANCE_INTERVAL();
         vm.warp(earliest - 1);
         assertFalse(index.canStartRebalance());
+        bytes[] memory live = pyth.liveUpdates(index, 0);
         vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalanceTooSoon.selector, earliest));
-        index.startRebalance(0);
+        index.startRebalance(0, live);
 
         vm.warp(earliest);
         assertTrue(index.canStartRebalance());
+        bytes[] memory live2 = pyth.liveUpdates(index, 0);
         vm.expectEmit(address(index));
         emit IWeightedHub.RebalanceStarted(1, 1, stranger, 0, earliest + 2 hours);
         vm.prank(stranger);
-        index.startRebalance(0);
+        index.startRebalance(0, live2);
         (uint256 eta, uint256 keepMask) = index.pendingRebalance();
         assertEq(eta, earliest + 2 hours);
         assertEq(keepMask, 0);
@@ -139,20 +142,23 @@ contract WeightedHubRebalanceTest is WeightedTest {
     function test_startRefusesWhileAnAuctionIsLive() public {
         _open(0, 0);
         (uint256 eta,) = index.pendingRebalance();
-        vm.warp(eta + 1 days);
-        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalancePending.selector, eta + 1 days));
+        vm.warp(eta + index.AUCTION_DURATION());
+        bytes[] memory live = pyth.liveUpdates(index, 0);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalancePending.selector, eta + index.AUCTION_DURATION()));
         vm.prank(guardian);
-        index.startRebalance(0);
+        index.startRebalance(0, live);
     }
 
     function test_startChecksTheKeepMask() public {
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
+        bytes[] memory live = pyth.liveUpdates(index, 8);
         vm.startPrank(guardian);
         vm.expectRevert(abi.encodeWithSelector(IWeightedHub.InvalidKeepMask.selector, 8));
-        index.startRebalance(8);
+        index.startRebalance(8, live);
+        bytes[] memory live2 = pyth.liveUpdates(index, 7);
         vm.expectRevert(abi.encodeWithSelector(IWeightedHub.InvalidKeepMask.selector, 7));
-        index.startRebalance(7);
-        index.startRebalance(4);
+        index.startRebalance(7, live2);
+        index.startRebalance(4, pyth.liveUpdates(index, 4));
         vm.stopPrank();
         (, uint256 keepMask) = index.pendingRebalance();
         assertEq(keepMask, 4);
@@ -162,12 +168,14 @@ contract WeightedHubRebalanceTest is WeightedTest {
     ///      fill of it traded nothing and only restarted MIN_REBALANCE_INTERVAL: a free stall for the guardian.
     function test_V5L2_aKeepMaskMustLeaveTwoMoving() public {
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
+        bytes[] memory live = pyth.liveUpdates(index, 6);
         vm.startPrank(guardian);
         vm.expectRevert(abi.encodeWithSelector(IWeightedHub.InvalidKeepMask.selector, 6));
-        index.startRebalance(6);
+        index.startRebalance(6, live);
+        bytes[] memory live2 = pyth.liveUpdates(index, 3);
         vm.expectRevert(abi.encodeWithSelector(IWeightedHub.InvalidKeepMask.selector, 3));
-        index.startRebalance(3);
-        index.startRebalance(1);
+        index.startRebalance(3, live2);
+        index.startRebalance(1, pyth.liveUpdates(index, 1));
         vm.stopPrank();
     }
 
@@ -206,7 +214,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
         WeightedHub skewed = _create(specs);
         _issue(skewed, alice, SHARES);
         vm.warp(skewed.lastRebalance() + skewed.MIN_REBALANCE_INTERVAL());
-        skewed.startRebalance(0);
+        skewed.startRebalance(0, pyth.liveUpdates(skewed, 0));
         (uint256 eta,) = skewed.pendingRebalance();
         vm.warp(eta + _midpoint());
 
@@ -225,11 +233,69 @@ contract WeightedHubRebalanceTest is WeightedTest {
 
     function test_R16_onlyTheOwnerOrGuardianPassesAKeepMask() public {
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
+        bytes[] memory live = pyth.liveUpdates(index, 1);
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, stranger));
         vm.prank(stranger);
-        index.startRebalance(1);
+        index.startRebalance(1, live);
+        bytes[] memory live2 = pyth.liveUpdates(index, 1);
         vm.prank(owner);
-        index.startRebalance(1);
+        index.startRebalance(1, live2);
+    }
+
+    /// @dev RX-3: a start reads every moving feed in the fill's window, so a rebalance starts only while each leg's
+    ///      market is open. A feed whose market closed hours ago, as a US-hours stock's does overnight, refuses the
+    ///      start; the guardian can still start around it with a keep mask, and a kept feed is not read. Without the
+    ///      read, a stranger could start in a closed window and leave the reopening as the auction's only fillable
+    ///      moment, near MU_MIN.
+    function test_RX3_aStartNeedsEveryMovingFeedToPublish() public {
+        vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
+        uint64 time = uint64(index.priceTime());
+        bytes[] memory closed = _updates(index, _ids3(), _prices3(ETH_PRICE, BTC_PRICE, USD_PRICE));
+        closed[1] = pyth.update(BTC_ID, BTC_PRICE, 0, EXPO, time - 6 hours, time - 6 hours - 1);
+        vm.expectRevert(MockPyth.PriceFeedNotFoundWithinRange.selector);
+        vm.prank(stranger);
+        index.startRebalance(0, closed);
+        assertEq(index.proposalCount(), 0);
+
+        bytes[] memory open = pyth.liveUpdates(index, 1 << 1);
+        vm.prank(guardian);
+        index.startRebalance(1 << 1, open);
+        assertEq(pyth.lastMinPublishTime(), time);
+        assertEq(pyth.lastMaxPublishTime(), block.timestamp - 1);
+        bytes32[] memory ids = pyth.lastIds();
+        assertEq(ids.length, 2);
+        assertEq(ids[0], ETH_ID);
+        assertEq(ids[1], USD_ID);
+    }
+
+    /// @dev RX-3: the notice and the auction together are shorter than any closure of a market a feed follows. The
+    ///      shortest is the 17.5 hours overnight of Pyth's Equity.US feeds (09:30 to 16:00 ET), and an auction started
+    ///      at the open ends inside the session. So even a start in a session's last second expires before the next
+    ///      open: no fill lands at a reopening near MU_MIN.
+    function test_RX3_noAuctionRunsIntoTheNextOpen() public {
+        assertLt(index.REBALANCE_DELAY() + index.AUCTION_DURATION(), 17.5 hours);
+        assertLe(index.REBALANCE_DELAY() + index.AUCTION_DURATION(), 6.5 hours);
+        _open(0, 0);
+        (uint256 eta,) = index.pendingRebalance();
+        vm.warp(eta - index.REBALANCE_DELAY() + 17.5 hours);
+        bytes[] memory data = _updates(index, _ids3(), _prices3(2500e8, BTC_PRICE, USD_PRICE));
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalanceExpired.selector, eta + index.AUCTION_DURATION()));
+        executor.execute(index, "", data);
+    }
+
+    /// @dev RX-3: a start forwards all of msg.value to Pyth as its fee, as a fill does; nothing stays in the index.
+    function test_RX3_aStartPaysPythItsFee() public {
+        vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
+        pyth.setFee(1);
+        bytes[] memory live = pyth.liveUpdates(index, 0);
+        vm.deal(stranger, 3);
+        vm.expectRevert(MockPyth.InsufficientFee.selector);
+        vm.prank(stranger);
+        index.startRebalance{value: 2}(0, live);
+        vm.prank(stranger);
+        index.startRebalance{value: 3}(0, live);
+        assertEq(address(pyth).balance, 3);
+        assertEq(address(index).balance, 0, "nothing stays in the index");
     }
 
     // ---------------------------------------------------------------------
@@ -255,18 +321,21 @@ contract WeightedHubRebalanceTest is WeightedTest {
         assertEq(index.restartAllowedAt(), block.timestamp + 2 hours);
 
         assertFalse(index.canStartRebalance());
+        bytes[] memory live = pyth.liveUpdates(index, 0);
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, stranger));
         vm.prank(stranger);
-        index.startRebalance(0);
+        index.startRebalance(0, live);
+        bytes[] memory live2 = pyth.liveUpdates(index, 0);
         vm.prank(owner);
-        index.startRebalance(0);
+        index.startRebalance(0, live2);
         vm.prank(owner);
         index.cancelRebalance();
 
         vm.warp(block.timestamp + 2 hours);
         assertTrue(index.canStartRebalance());
+        bytes[] memory live3 = pyth.liveUpdates(index, 0);
         vm.prank(stranger);
-        index.startRebalance(0);
+        index.startRebalance(0, live3);
     }
 
     function test_XA02_XA16_VR04_anExpiredAuctionHoldsStrangersOffUntilItsDelayPasses() public {
@@ -280,9 +349,10 @@ contract WeightedHubRebalanceTest is WeightedTest {
         executor.execute(index, "", data);
         assertEq(index.currentMu(), 0);
         assertFalse(index.canStartRebalance());
+        bytes[] memory live = pyth.liveUpdates(index, 0);
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, stranger));
         vm.prank(stranger);
-        index.startRebalance(0);
+        index.startRebalance(0, live);
 
         // A cancel of the expired proposal neither shortens nor extends the hold-off.
         vm.prank(guardian);
@@ -291,16 +361,18 @@ contract WeightedHubRebalanceTest is WeightedTest {
 
         vm.warp(end + 2 hours);
         assertTrue(index.canStartRebalance());
+        bytes[] memory live2 = pyth.liveUpdates(index, 0);
         vm.prank(stranger);
-        index.startRebalance(0);
+        index.startRebalance(0, live2);
     }
 
     function test_theOwnerRestartsAtOnceAfterAnExpiry() public {
         _open(0, 0);
         (uint256 eta,) = index.pendingRebalance();
         vm.warp(eta + index.AUCTION_DURATION() + 1);
+        bytes[] memory live = pyth.liveUpdates(index, 0);
         vm.prank(owner);
-        index.startRebalance(0);
+        index.startRebalance(0, live);
         assertEq(index.proposalCount(), 2);
     }
 
@@ -314,7 +386,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
         executor.execute(index, "", data);
 
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
-        index.startRebalance(0);
+        index.startRebalance(0, pyth.liveUpdates(index, 0));
         (uint256 eta,) = index.pendingRebalance();
         data = _updates(index, _ids3(), _prices3(ETH_PRICE, BTC_PRICE, USD_PRICE));
         vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalanceNotReady.selector, eta));
@@ -326,13 +398,13 @@ contract WeightedHubRebalanceTest is WeightedTest {
         _open(0, 0);
         (uint256 eta,) = index.pendingRebalance();
         assertEq(index.currentMu(), 1.02e18);
-        vm.warp(eta + 12 hours);
+        vm.warp(eta + 2 hours);
         assertEq(index.currentMu(), 1e18);
-        vm.warp(eta + 24 hours);
+        vm.warp(eta + 4 hours);
         assertEq(index.currentMu(), 0.98e18);
-        // One second in, the decrement 0.04e18 / 86,400 = 462,962,962,962.96 rounds down, so μ rounds up.
+        // One second in, the decrement 0.04e18 / 14,400 = 2,777,777,777,777.78 rounds down, so μ rounds up.
         vm.warp(eta + 1);
-        assertEq(index.currentMu(), 1.02e18 - 462_962_962_962);
+        assertEq(index.currentMu(), 1.02e18 - 2_777_777_777_777);
     }
 
     // ---------------------------------------------------------------------
@@ -458,8 +530,8 @@ contract WeightedHubRebalanceTest is WeightedTest {
     }
 
     function test_theFeeGoesToPyth() public {
-        pyth.setFee(1);
         _open(0, _midpoint());
+        pyth.setFee(1);
         bytes[] memory data = _updates(index, _ids3(), _prices3(2500e8, BTC_PRICE, USD_PRICE));
         assertEq(pyth.getUpdateFee(data), 3);
 
@@ -553,7 +625,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
         WeightedHub pair = WeightedHub(factory.createIndex("Pair", "PAIR", specs, _params()));
         _issue(pair, alice, 1e18);
         vm.warp(pair.lastRebalance() + pair.MIN_REBALANCE_INTERVAL());
-        pair.startRebalance(0);
+        pair.startRebalance(0, pyth.liveUpdates(pair, 0));
         (uint256 eta,) = pair.pendingRebalance();
         vm.warp(eta + 1);
 
@@ -561,8 +633,8 @@ contract WeightedHubRebalanceTest is WeightedTest {
         prices[0] = PythStructs.Price({price: 3e8, conf: 0, expo: EXPO, publishTime: 0});
         prices[1] = PythStructs.Price({price: 1e8, conf: 0, expo: EXPO, publishTime: 0});
         (uint256 mu, uint256[] memory units,,) = pair.previewRebalance(prices);
-        assertEq(mu, 1_019_999_537_037_037_038);
-        assertEq(units[1], 1000e18 + 611_999_722_222_222_223_000);
+        assertEq(mu, 1_019_997_222_222_222_223);
+        assertEq(units[1], 1000e18 + 611_998_333_333_333_334_000);
         // X moves 0.6 of its 333.33 down, rounded down, which is just under a fifth of its units.
         assertEq(units[0], 1000e18 - 199_999_999_999_999_999_999);
     }
@@ -600,7 +672,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
         WeightedHub skewed = WeightedHub(factory.createIndex("Skewed", "SKW", specs, _params()));
         _issue(skewed, alice, 100e18);
         vm.warp(skewed.lastRebalance() + skewed.MIN_REBALANCE_INTERVAL());
-        skewed.startRebalance(0);
+        skewed.startRebalance(0, pyth.liveUpdates(skewed, 0));
         (uint256 eta,) = skewed.pendingRebalance();
         vm.warp(eta + skewed.AUCTION_DURATION());
 
@@ -639,7 +711,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
     }
 
     function test_previewMatchesTheFill() public {
-        _open(0, 5 hours + 7);
+        _open(0, 50 minutes + 7);
         (uint256 mu, uint256[] memory units, uint256[] memory out, uint256[] memory in_) =
             index.previewRebalance(_structs3(2345e8, 71_234e8, 0.99e8));
         _fill(2345e8, 71_234e8, 0.99e8);
@@ -674,8 +746,9 @@ contract WeightedHubRebalanceTest is WeightedTest {
         frozen.setReadsBroken(true);
 
         vm.warp(three.lastRebalance() + three.MIN_REBALANCE_INTERVAL());
+        bytes[] memory live = pyth.liveUpdates(three, 4);
         vm.prank(guardian);
-        three.startRebalance(4);
+        three.startRebalance(4, live);
         (uint256 eta,) = three.pendingRebalance();
         vm.warp(eta + three.AUCTION_DURATION() / 2);
 
@@ -765,8 +838,8 @@ contract WeightedHubRebalanceTest is WeightedTest {
     }
 
     function test_theBoundedFillTakesValue() public {
-        pyth.setFee(1);
         _open(0, _midpoint());
+        pyth.setFee(1);
         bytes[] memory data = _updates(index, _ids3(), _prices3(2500e8, BTC_PRICE, USD_PRICE));
         uint256[] memory bounds = new uint256[](3);
         bounds[1] = type(uint256).max;
@@ -835,7 +908,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
         gold.addBlackList(address(three));
 
         vm.warp(three.lastRebalance() + three.MIN_REBALANCE_INTERVAL());
-        three.startRebalance(0);
+        three.startRebalance(0, pyth.liveUpdates(three, 0));
         (uint256 eta,) = three.pendingRebalance();
         vm.warp(eta + three.AUCTION_DURATION() / 2);
         bytes32[] memory ids = new bytes32[](3);
@@ -973,7 +1046,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
         _issue(dust, alice, 40);
         assertEq(eth.balanceOf(address(dust)), 1);
         vm.warp(dust.lastRebalance() + dust.MIN_REBALANCE_INTERVAL());
-        dust.startRebalance(0);
+        dust.startRebalance(0, pyth.liveUpdates(dust, 0));
         (uint256 eta,) = dust.pendingRebalance();
         vm.warp(eta + 2 hours);
 
@@ -1069,7 +1142,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
         WeightedHub skewed = WeightedHub(factory.createIndex("Skewed", "SKW", specs, _params()));
         _issue(skewed, alice, 7e18);
         vm.warp(skewed.lastRebalance() + skewed.MIN_REBALANCE_INTERVAL());
-        skewed.startRebalance(0);
+        skewed.startRebalance(0, pyth.liveUpdates(skewed, 0));
         (uint256 eta,) = skewed.pendingRebalance();
         vm.warp(eta + skewed.AUCTION_DURATION());
 
@@ -1176,13 +1249,16 @@ contract WeightedHubRebalanceTest is WeightedTest {
         _fits("issue", before - gasleft());
 
         vm.warp(wide.lastRebalance() + wide.MIN_REBALANCE_INTERVAL());
-        _coolAll(tokens, address(wide));
-        before = gasleft();
-        wide.startRebalance(0);
-        _fits("startRebalance", before - gasleft());
+        {
+            bytes[] memory live = pyth.liveUpdates(wide, 0);
+            _coolAll(tokens, address(wide));
+            before = gasleft();
+            wide.startRebalance(0, live);
+            _fits("startRebalance", before - gasleft());
+        }
 
         (uint256 eta,) = wide.pendingRebalance();
-        vm.warp(eta + 12 hours);
+        vm.warp(eta + wide.AUCTION_DURATION() / 2);
         bytes[] memory data = _updates(wide, ids, prices);
         PythStructs.PriceFeed[] memory feeds = new PythStructs.PriceFeed[](n);
         for (uint256 i = 0; i < n; ++i) {
@@ -1264,8 +1340,9 @@ contract WeightedHubRebalanceTest is WeightedTest {
     /// @dev The guardian keeps BTC and its executor fills the two slivers at `eta`; returns the fill's time.
     function _xs3SliverFill(WeightedHub quarterly, uint256 interval) internal returns (uint256 fillTime) {
         vm.warp(quarterly.lastRebalance() + interval);
+        bytes[] memory live = pyth.liveUpdates(quarterly, 1);
         vm.prank(guardian);
-        quarterly.startRebalance(1);
+        quarterly.startRebalance(1, live);
         (uint256 eta,) = quarterly.pendingRebalance();
         vm.warp(eta);
         uint64 time = uint64(quarterly.priceTime());
@@ -1287,14 +1364,16 @@ contract WeightedHubRebalanceTest is WeightedTest {
 
         vm.warp(earliest - 1);
         assertFalse(quarterly.canStartRebalance());
+        bytes[] memory live = pyth.liveUpdates(quarterly, 0);
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalanceTooSoon.selector, earliest));
-        quarterly.startRebalance(0);
+        quarterly.startRebalance(0, live);
 
         vm.warp(earliest);
         assertTrue(quarterly.canStartRebalance(), "a week after the sliver, not a quarter");
+        bytes[] memory live2 = pyth.liveUpdates(quarterly, 0);
         vm.prank(stranger);
-        quarterly.startRebalance(0);
+        quarterly.startRebalance(0, live2);
         (uint256 eta, uint256 keepMask) = quarterly.pendingRebalance();
         assertEq(eta, earliest + quarterly.REBALANCE_DELAY());
         assertEq(keepMask, 0);
@@ -1308,12 +1387,14 @@ contract WeightedHubRebalanceTest is WeightedTest {
         uint256 fillTime = _xs3SliverFill(quarterly, interval);
         uint256 earliest = fillTime + quarterly.MIN_REBALANCE_INTERVAL();
         vm.warp(earliest - 1);
+        bytes[] memory live = pyth.liveUpdates(quarterly, 1);
         vm.prank(guardian);
         vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalanceTooSoon.selector, earliest));
-        quarterly.startRebalance(1);
+        quarterly.startRebalance(1, live);
         vm.warp(earliest);
+        bytes[] memory live2 = pyth.liveUpdates(quarterly, 1);
         vm.prank(guardian);
-        quarterly.startRebalance(1);
+        quarterly.startRebalance(1, live2);
         (, uint256 keepMask) = quarterly.pendingRebalance();
         assertEq(keepMask, 1, "the keep is renewed a week on");
         vm.prank(guardian);
@@ -1321,8 +1402,9 @@ contract WeightedHubRebalanceTest is WeightedTest {
 
         // A full fill, after ETH rose a thousandfold, puts the index back on its own interval.
         vm.warp(block.timestamp + quarterly.REBALANCE_DELAY());
+        bytes[] memory live3 = pyth.liveUpdates(quarterly, 0);
         vm.prank(stranger);
-        quarterly.startRebalance(0);
+        quarterly.startRebalance(0, live3);
         (uint256 eta,) = quarterly.pendingRebalance();
         vm.warp(eta);
         executor.execute(quarterly, "", _updates(quarterly, _ids3(), _prices3(2_010_000e8, BTC_PRICE, USD_PRICE)));
