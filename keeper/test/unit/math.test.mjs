@@ -192,10 +192,17 @@ test("RX-3, RX-31: Pyth's schedule decides when a share feed publishes, holidays
   assert.equal(M.inSchedule(est(2026, 11, 27, 12, 59), S), true, "the half day after it");
   assert.equal(M.inSchedule(est(2026, 11, 27, 13, 0), S), false);
   assert.equal(M.inSchedule(edt(2027, 6, 1, 10, 0), S), true, "summer time");
-  // 2 h of notice and a 24 h auction: μ reaches 1 at the start plus 14 h.
-  assert.equal(M.sessionStartOk(est(2027, 2, 16, 0, 0), 7_200, 86_400, S), true, "a 00:00 start puts μ = 1 at 14:00");
-  assert.equal(M.sessionStartOk(est(2027, 2, 16, 9, 35), 7_200, 86_400, S), false, "an in-session start puts μ = 1 at 23:35");
-  assert.equal(M.sessionStartOk(est(2026, 11, 26, 0, 0), 7_200, 86_400, S), false, "μ = 1 on Thanksgiving");
+  // 2 h of notice and the hub's 4 h auction: μ reaches 1 at the start plus 4 h.
+  assert.equal(M.sessionStartOk(est(2027, 2, 16, 9, 35), 7_200, 14_400, S), true, "a 09:35 start puts μ = 1 at 13:35");
+  assert.equal(M.sessionStartOk(est(2027, 2, 16, 0, 0), 7_200, 14_400, S), false, "a 00:00 start puts μ = 1 at 04:00");
+  assert.equal(M.sessionStartOk(est(2026, 11, 26, 9, 35), 7_200, 14_400, S), false, "μ = 1 on Thanksgiving");
+});
+
+test("RX-3: a start's gas limit covers Pyth's parse of its feeds and stays under EIP-7825's cap", () => {
+  // 93 feeds took 2.34M of Pyth's parse on a fork (2026-10-12): the limit must cover that and the hub's own checks.
+  assert.ok(M.startGasLimit(93) > 2_340_000n * 3n / 2n);
+  assert.ok(M.startGasLimit(100) <= 16_777_216n);
+  assert.ok(M.startGasLimit(2) < M.startGasLimit(3));
 });
 
 test("RX-16: a subsidised fill fits only what is left of the day's budget", () => {

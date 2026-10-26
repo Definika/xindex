@@ -99,7 +99,8 @@ Where it stands (2026-10-18):
   is refused (RX-27), a leg a fill buys must be able to leave (RX-12), and issue refuses a leg below its backing
   (RX-8); in the factory units are capped in whole tokens (RX-5) and the creator role is handed on in two steps
   (RX-22); in the keeper, request fills are verified, bounded and pinned (RX-1, RX-2, RX-4, RX-9, RX-10), and the rest
-  are documented. RX-3 is documented, and the keeper times its own starts for it.
+  are documented. RX-3, documented then, was fixed in the hub on 2026-10-26 after an outside reviewer raised it again
+  (the owner's call): a start reads every moving feed, and the auction is 4 hours (`test_RX3_...`).
 - Before any mainnet: Pyth's parameter replay (`design/2026-10-05-custom-weights.md`, section 8), which also sizes
   `MAX_EMA_DEVIATION` and `MAX_GROWTH`, and a settlement on a
   real update from Hermes, both waiting on Pyth's API key in `.env` (`PYTH_API_KEY`); the 26 attestations and RAY's
@@ -295,9 +296,11 @@ records also cite.
 
 ## Design rules that must not be broken
 
-- **One place reads a price.** Only `WeightedHub`'s settlement reads one, from Pyth, and only for the moving
-  components. Issue, redeem, `redeemSkipping` and claims never read a price, so no feed can block an exit or misprice a
-  mint (`test_issueAndRedeemNeverCallPyth`). The factory stores price ids and never calls Pyth;
+- **One place reads a price.** Only `WeightedHub` reads one, from Pyth, and only for the moving components: its
+  settlement prices them, and its start (`startRebalance`) parses the same feeds in the same window and keeps no price,
+  only proving that every feed publishes, so a rebalance starts only while each leg's market is open (RX-3, the owner's
+  call of 2026-10-26). Issue, redeem, `redeemSkipping` and claims never read a price, so no feed can block an exit or
+  misprice a mint (`test_issueAndRedeemNeverCallPyth`). The factory stores price ids and never calls Pyth;
   `test_V5I4_onlyTheWeightedHubReadsAPrice` fails if any other file names Pyth's contract, parse, getters, pushes or
   price struct. No Chainlink feed or pool price anywhere (`test_A713_noContractReadsAPrice`). Valuing an index is the
   app's job, off-chain. The zap swaps, but it reads no price either: it enforces the limits its caller sets.
@@ -352,7 +355,10 @@ records also cite.
   that grows a leg must leave the index able to send that leg, measured by sending itself one raw unit, so a token that
   blocks only its sender, as Tether Gold's does, cannot have good legs moved into a leg nobody can take out (RX-12).
 - **The notice is 2 hours.** `WeightedHub`'s `REBALANCE_DELAY` is 2 hours: targets come from the settlement's prices,
-  so the notice is for executors, not for holders' exits (the spec's section 8). `AUCTION_DURATION` is 24 hours. The
+  so the notice is for executors, not for holders' exits (the spec's section 8). `AUCTION_DURATION` is 4 hours (24
+  until 2026-10-26): with the notice it is shorter than any closure of a market a feed follows, 17.5 hours overnight for
+  the US-hours stocks, so an auction started while every feed publishes ends before the next open and no fill lands at
+  a reopening near `MU_MIN` (RX-3); do not lengthen it past that, nor drop the start's read. The
   rebalance interval is the index's own, chosen at creation within [`MIN_REBALANCE_INTERVAL`, `MAX_REBALANCE_INTERVAL`]
   = [7, 91] days (the website's weekly to quarterly cadences; V5R-I2 set the floor). A fill with a keep mask restarts
   only `MIN_REBALANCE_INTERVAL`, for any start (`earliestRebalance()`, XS-3): a guardian's sliver cannot hold the index
@@ -463,7 +469,8 @@ records also cite.
   or guardian cancel. An exit sent then pays that holder's share of the executor's take, like every other holder's, and
   no nonce can undo a haircut that landed first. Shares issued while a rebalance is pending share the haircut of any
   fill that lands after them, however the two are ordered (RT-02).
-- **Every payable path forwards the whole of `msg.value` to Pyth;** the hub never holds ether.
+- **Every payable path forwards the whole of `msg.value` to Pyth;** the hub never holds ether. Since 2026-10-26 that
+  is `startRebalance` as well as both `executeRebalance` overloads.
 - **The zap is stateless and replaceable.** New UX features (ETH in/out, aggregators, mixed-venue legs) go in a new or
   extended zap, never in the hub or factory. The app caps a zap basket at about 35 components, which is where 16.78M gas
   runs out. Since 2026-10-16 the zap's swaps run through `UniversalRouterSwaps`, the engine it shares with the basket
@@ -700,7 +707,9 @@ cost the owner weighs before launch.
   Bridged, ZKsync's bridge copy (RX-19); the queue drops USX and CASH (stablecoins), BP (an exchange's token) and S
   (Wormhole does not serve Sonic), and holds FIL until its Binance-Peg source passes a reading (RX-11, RX-20, RX-35,
   RX-64). An index holding one of the six US-hours stocks first becomes fillable at the next open, near `MU_MIN`: the
-  app says so at creation, and the keeper times its own starts for a session (RX-3); the hub is unchanged.
+  app says so at creation, and the keeper times its own starts for a session (RX-3); the hub is unchanged. Superseded on
+  2026-10-26, the owner's call after an outside reviewer raised RX-3 again: the hub fixes it, a start reading every
+  moving feed and the auction cut to 4 hours, so no auction can reach a reopening.
 - ATOM stays listed, and the restock service does not serve it (the owner's call of 2026-10-20). Its Wormhole copy is
   minted only from Binance-Peg ATOM, which has almost no market on BNB Chain (read on 2026-10-19: selling $500 lost
   305 bps on PancakeSwap v3, $1,000 lost 22% on v2). Ethereum's other ATOM tokens are no way round it: Gravity Bridge's

@@ -141,8 +141,9 @@ contract KeeperExecutorTest is WeightedTest {
     /// @dev Opens the auction and moves `into` seconds into it.
     function _open(uint256 into) internal {
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
+        bytes[] memory live = pyth.liveUpdates(index, 0);
         vm.prank(stranger);
-        index.startRebalance(0);
+        index.startRebalance(0, live);
         (uint256 eta,) = index.pendingRebalance();
         vm.warp(eta + into);
     }
@@ -349,8 +350,8 @@ contract KeeperExecutorTest is WeightedTest {
     }
 
     function test_pythFeeIsForwarded() public {
-        pyth.setFee(1);
         _open(index.AUCTION_DURATION());
+        pyth.setFee(1);
         (, uint256[] memory in_) = _preview();
         bytes[] memory update = _update();
         bytes[] memory routes = _routes();
@@ -383,8 +384,9 @@ contract KeeperExecutorTest is WeightedTest {
         btc.mint(address(executor), 1e8);
 
         vm.warp(own.lastRebalance() + own.MIN_REBALANCE_INTERVAL());
+        bytes[] memory live = pyth.liveUpdates(own, 0);
         vm.prank(keeper);
-        own.startRebalance(0);
+        own.startRebalance(0, live);
         (uint256 eta,) = own.pendingRebalance();
         vm.warp(eta);
         PythStructs.Price[] memory prices = new PythStructs.Price[](2);
@@ -1108,8 +1110,9 @@ contract KeeperExecutorTest is WeightedTest {
         assertTrue(vm.indexOf(config, pinned) != type(uint256).max, "config.mjs names slots 6 and 7");
 
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
+        bytes[] memory live = pyth.liveUpdates(index, 1);
         vm.prank(guardian);
-        index.startRebalance(1);
+        index.startRebalance(1, live);
         (uint256 liveEta, uint256 liveMask) = index.pendingRebalance();
         assertEq(uint256(vm.load(address(index), bytes32(ETA_SLOT))), liveEta, "a live auction's eta is in slot 6");
         assertEq(uint256(vm.load(address(index), bytes32(KEEP_MASK_SLOT))), liveMask, "and its keep mask in slot 7");

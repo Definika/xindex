@@ -68,8 +68,9 @@ import {PythStructs} from "./interfaces/pyth/PythStructs.sol";
 ///      - A gated index issues only to recipients the factory allows, until its creator opens it.
 ///
 ///      Rebalancing
-///      - Once the index's rebalance interval has passed, anyone can start a rebalance. After REBALANCE_DELAY of
-///        notice, an auction runs for AUCTION_DURATION.
+///      - Once the index's rebalance interval has passed, anyone can start a rebalance, while every moving feed
+///        publishes. After REBALANCE_DELAY of notice, an auction runs for AUCTION_DURATION. The two together are
+///        shorter than any closure of a market a feed follows, so no auction runs into a reopening (RX-3).
 ///      - At settlement, the moving components' value V = Σ u·p is shared out by weight. Each target is
 ///        t = w · V / (W · p), rounded up, where W sums the moving weights.
 ///      - Shrinking legs move to their targets. Growing legs move μ times their gap, rounded up. μ falls linearly from
@@ -99,7 +100,7 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
     uint256 private constant MAX_STREAMING_BPS = 600;
     uint256 public constant REBALANCE_DELAY = 2 hours;
     uint256 public constant MIN_REBALANCE_INTERVAL = 7 days;
-    uint256 public constant AUCTION_DURATION = 24 hours;
+    uint256 public constant AUCTION_DURATION = 4 hours;
     uint256 public constant MU_MAX = 1.02e18;
     uint256 public constant MU_MIN = 0.98e18;
     uint256 public constant MAX_TURNOVER = 0.2e18;
@@ -510,7 +511,12 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
     // ---------------------------------------------------------------------
 
     /// @inheritdoc IWeightedHub
-    function startRebalance(uint256 keepMask) external nonReentrant onlyInitialized {
+    function startRebalance(uint256 keepMask, bytes[] calldata priceUpdate)
+        external
+        payable
+        nonReentrant
+        onlyInitialized
+    {
         uint256 earliest = _earliestRebalance();
         if (block.timestamp < earliest) revert RebalanceTooSoon(earliest);
         uint256 pendingEta = _eta;
@@ -535,6 +541,12 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         // The call above is a view on the factory; nothing external can run in between.
         // forge-lint: disable-next-line(reentrancy-events)
         emit RebalanceStarted(proposalId, rebalanceNonce + 1, msg.sender, keepMask, eta);
+        // Every moving feed must publish now, so the market of every leg is open. Started while one is shut, the
+        // auction could first be filled at the next open, near MU_MIN; and since REBALANCE_DELAY + AUCTION_DURATION
+        // is shorter than any closure, an auction started now ends before the next open (RX-3).
+        // The prices are dropped on purpose: the read is the check, and only a settlement uses a price.
+        // wake-disable-next-line unchecked-return-value
+        _readPrices(priceUpdate, _priceTime()); // aderyn-fp(unchecked-return)
     }
 
     /// @dev The earliest time the next rebalance may start: the index's interval after the last settlement, or only

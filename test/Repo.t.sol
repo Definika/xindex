@@ -173,9 +173,7 @@ contract RepoTest is Test {
         assertEq(_count(section, "\n- **"), anchors.length, "every limitation is pinned here, and only those");
         assertTrue(_contains(section, "until its own interval, 7 to 91 days"), "a fresh index waits its own interval");
         assertTrue(_contains(section, "restarts only `MIN_REBALANCE_INTERVAL` for a rebalance without a keep mask"));
-        assertTrue(
-            _contains(section, "first fillable block is the next open, near `MU_MIN`"), "RX-3, as the owner chose"
-        );
+        assertTrue(_contains(section, "fill lands at a reopening near `MU_MIN`"), "RX-3, fixed in the hub");
         assertTrue(_contains(section, "five of seven named guardians suffice to mint"), "RX-6");
     }
 

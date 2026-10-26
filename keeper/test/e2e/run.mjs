@@ -456,7 +456,8 @@ const usdc0 = await read(USDC, erc20, "balanceOf", [executor]);
 await test.request({ method: "evm_setAutomine", params: [false] });
 let lateHash = null;
 const filled = new Set();
-for (let t = shrEta; t <= shrEta + 30n * 3600n && filled.size < 3; t += 3600n) {
+// Ten-minute steps: two dozen through each 4-hour auction (RX-3), as hourly steps were through the 24-hour one.
+for (let t = shrEta; t <= shrEta + 8n * 3600n && filled.size < 3; t += 600n) {
   await mineAt(t);
   // A transaction of the keeper's waits in the pool: mine it, the first fill one slot late.
   for (;;) {

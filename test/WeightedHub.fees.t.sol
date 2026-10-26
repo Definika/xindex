@@ -465,17 +465,19 @@ contract WeightedHubFeesTest is WeightedTest {
         vm.warp(monthly.lastRebalance() + 7 days);
         assertTrue(index.canStartRebalance(), "the weekly index is ready");
         assertFalse(monthly.canStartRebalance(), "the monthly one is not");
+        bytes[] memory live = pyth.liveUpdates(monthly, 0);
         vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalanceTooSoon.selector, earliest));
-        monthly.startRebalance(0);
+        monthly.startRebalance(0, live);
+        bytes[] memory live2 = pyth.liveUpdates(monthly, 0);
         vm.prank(guardian);
         vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalanceTooSoon.selector, earliest));
-        monthly.startRebalance(0);
+        monthly.startRebalance(0, live2);
 
         vm.warp(earliest - 1);
         assertFalse(monthly.canStartRebalance());
         vm.warp(earliest);
         assertTrue(monthly.canStartRebalance());
-        monthly.startRebalance(0);
+        monthly.startRebalance(0, pyth.liveUpdates(monthly, 0));
         (uint256 eta,) = monthly.pendingRebalance();
         assertEq(eta, earliest + monthly.REBALANCE_DELAY());
     }
@@ -710,7 +712,7 @@ contract WeightedHubFeesTest is WeightedTest {
     /// @dev Starts a rebalance as soon as the interval allows and warps to the auction's midpoint, where μ is one.
     function _openMidAuction(WeightedHub idx) internal {
         vm.warp(idx.lastRebalance() + 7 days);
-        idx.startRebalance(0);
+        idx.startRebalance(0, pyth.liveUpdates(idx, 0));
         (uint256 eta,) = idx.pendingRebalance();
         vm.warp(eta + idx.AUCTION_DURATION() / 2);
     }
@@ -884,8 +886,9 @@ contract WeightedHubFeesTest is WeightedTest {
     function _xs2MintThenOpenMidAuction(WeightedHub idx, uint256 keepMask) internal {
         _issueWith(idx, alice, 1e24, address(0));
         vm.warp(idx.lastRebalance() + 7 days);
+        bytes[] memory live = pyth.liveUpdates(idx, keepMask);
         if (keepMask != 0) vm.prank(guardian);
-        idx.startRebalance(keepMask);
+        idx.startRebalance(keepMask, live);
         (uint256 eta,) = idx.pendingRebalance();
         vm.warp(eta + idx.AUCTION_DURATION() / 2);
     }

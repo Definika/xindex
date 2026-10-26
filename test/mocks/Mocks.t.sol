@@ -660,7 +660,7 @@ contract MocksTest is Test {
         usdc.mint(address(executor), 100e6); // a float for what the fill does not pay for itself
 
         vm.warp(idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL());
-        idx.startRebalance(0);
+        idx.startRebalance(0, pyth.liveUpdates(idx, 0));
         (uint256 eta,) = idx.pendingRebalance();
         vm.warp(eta + idx.AUCTION_DURATION() / 2);
         uint64 time = uint64(idx.priceTime());

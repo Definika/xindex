@@ -74,7 +74,7 @@ The history, in one paragraph each:
 | Chain | Ethereum mainnet, one deployment (the owner's decision of 2026-10-10). The BNB Chain deployment was deleted on 2026-10-13; nothing crosses a chain inside a contract. |
 | Composition | Constituents and weights fixed at creation, 2 to 100 per index (`MIN_COMPONENTS`, `MAX_COMPONENTS`). Weights are in basis points and sum to `TOTAL_WEIGHT` (10,000). A new list or new weights is a new index. |
 | Creation | `createIndex(name, symbol, components)` with one `ComponentSpec {token, weight, units}` per component. The app derives the starting units from the weights at its own prices; each lies between `MIN_RAW_UNITS` (10,000) and `MAX_UNITS` (`(2^96 − 1) >> 10`). The factory reads no price, and the first rebalance brings an index to its weights. Every component copies its listing's Pyth price id and decimals. |
-| Rebalancing | Anyone starts a rebalance once the index's own interval, 7 to 91 days chosen at creation, has passed since the last one or creation (`earliestRebalance()`), then 2 hours of notice (`REBALANCE_DELAY`), then a 24-hour auction (`AUCTION_DURATION`) in which any contract can fill. The fill reads Pyth's prices, sets each moving component's target from its weight, and moves every leg the same share of the way. The growing legs ask `μ` times their step, `μ` falling from `MU_MAX` (1.02) to `MU_MIN` (0.98). One fill sends out at most `MAX_TURNOVER` (20%) of each component's own units, and must trade at least `MIN_TRADE` (0.1%) of the moving value. |
+| Rebalancing | Anyone starts a rebalance once the index's own interval, 7 to 91 days chosen at creation, has passed since the last one or creation (`earliestRebalance()`), then 2 hours of notice (`REBALANCE_DELAY`), then a 4-hour auction (`AUCTION_DURATION`) in which any contract can fill. A start carries a Pyth update and is refused unless every moving component's feed publishes, so a rebalance starts only while each leg's market is open (RX-3). The fill reads Pyth's prices, sets each moving component's target from its weight, and moves every leg the same share of the way. The growing legs ask `μ` times their step, `μ` falling from `MU_MAX` (1.02) to `MU_MIN` (0.98). One fill sends out at most `MAX_TURNOVER` (20%) of each component's own units, and must trade at least `MIN_TRADE` (0.1%) of the moving value. |
 | Prices | Pyth only, read only by the settlement and only for the moving components. One price per block: each feed's first update at or after `priceTime()`, 12 seconds (`PRICE_LAG`) before the block. Refused: a non-positive price, an exponent outside [-18, 0], a price above `MAX_PRICE`, a confidence interval wider than `MAX_CONFIDENCE` (2%). Issue, redeem and claims read none. The app values an index off chain. |
 | Swaps | Uniswap's Universal Router 2.0.0 alone, V3 or V4, one venue per leg, chosen by the caller. PancakeSwap and THORChain were removed on 2026-10-14. The app offers the one-click zap only up to about 35 components (EIP-7825's 16.78M gas per transaction). |
 | Fees | In shares, never in components: the creator's rate (0 to 100 bps, the creator's choice at creation) plus the platform's (0 to 25 bps, the factory's policy at creation) on every issue and every redeem. A minter's deposit backs the fee's shares on top of its own; a burner's fee is minted to the recipients out of what it burns. The recipients are read from the factory at each call: the index's creator and the platform recipient, and a referrer named at mint takes the policy's share of the platform's part. The policy starts at zero and reaches only indexes created after it is set. A streaming fee, the creator's yearly rate (0 to 500 bps) plus the platform's (0 to 100 bps, the policy at creation), accrues in shares at every issue, redeem, settlement and `accrueFees`, and shrinks every share's units by the same factor: it moves no tokens. |
@@ -93,7 +93,7 @@ The history, in one paragraph each:
                                                │ (2-day delay), guardian,             │ issue / redeem in kind
                                                │ registry                             │ redeemSkipping / claim
                                                                                       │
-   anyone ── startRebalance ────────────────────────────────────────────────────────► │ 2 hours of notice
+   anyone ── startRebalance(keepMask, priceUpdate) ─────────────────────────────────► │ 2 hours of notice
    executor ── executeRebalance(data, priceUpdate) ─────────────────────────────────► │ fill at μ(t), with a callback
                                          Pyth ◄── parse at priceTime() ────────────── │
                                                                                       │
@@ -109,7 +109,7 @@ The history, in one paragraph each:
   `ceil(shares × units_i × scale / 1e36)` of every component and mints; `redeem(shares)` burns and pushes
   `floor(shares × units_i × scale / 1e36)`, with `units_i` as recorded and `scale` the streaming fee's factor (1e18
   until a fee accrues; `components()` reports the units with it applied); `redeemSkipping` leaves chosen components as claims for the recipient. A rebalance
-  is `startRebalance`, 2 hours of notice, and a 24-hour auction whose fill reads Pyth's prices and stands only if every
+  is `startRebalance`, which only checks that every moving feed publishes, 2 hours of notice, and a 4-hour auction whose fill reads Pyth's prices and stands only if every
   component still backs the new units. Issue, redeem and claims read no price, and nothing computes an amount from a
   balance, so there is no share price to manipulate and no first-depositor attack. Share transfers to the hub itself or
   its factory are refused, since neither could move a share on (CR-I01, RT-21). Only initialized clones can issue,
@@ -173,11 +173,15 @@ non-zero overall `minAmountOut`, passes `rebalanceNonce()`, and calls `burnToTok
 
 **Rebalance.**
 1. Once the index's interval has passed since its creation or last rebalance (`earliestRebalance()`; a week after a
-   guardian's keep-mask fill, XS-3), anyone calls `startRebalance(0)`. It reads no
-   price and calls no component: it only sets the auction's start, `eta`, 2 hours ahead.
+   guardian's keep-mask fill, XS-3), anyone calls `startRebalance(0, priceUpdate)` with Pyth's fee as `msg.value`. It
+   reads every moving component's feed at `priceTime()`, as a fill does, and keeps no price: a feed that does not publish
+   then, as a US-hours stock's does not while its market is shut, refuses the start (RX-3). It calls no component and
+   only sets the auction's start, `eta`, 2 hours ahead.
 2. For 2 hours nothing changes. The targets come from the settlement's own prices, so the notice is for executors to
    ready their stock, routes and price update, not a window holders need. Issue and redeem stay open throughout.
-3. A 24-hour auction follows, with `μ` falling linearly from `MU_MAX` (1.02) to `MU_MIN` (0.98), rounding up. An
+3. A 4-hour auction follows, with `μ` falling linearly from `MU_MAX` (1.02) to `MU_MIN` (0.98), rounding up. The notice
+   and the auction together, 6 hours, are shorter than any closure of a market a feed follows (17.5 hours overnight for
+   the US-hours stocks), so an auction started while every feed publishes ends before the next open (RX-3). An
    executor contract calls `executeRebalance(data, priceUpdate)` with Pyth's signed update and Pyth's fee as
    `msg.value`. The hub reads each moving component's price at `priceTime()`, 12 seconds before the block: Pyth's
    first update at or after that second, published before the block. Each moving component's target is `w_i × V / (W
@@ -456,11 +460,11 @@ stock, Wormhole for every wrapped copy, and both Binance and Wormhole for a copy
   any executor, but without one no index rebalances. Pyth sells the key as a data plan: $500 a month for crypto feeds,
   Tether Gold's and the five Ondo tokens' own among them, and $2,500 and up for the share feeds twelve Ondo legs use.
   Six of Ondo's stocks (TSM, AVGO, LLY, JPM, WMT, V) have only
-  US-hours feeds, so an index holding one settles only while that market is open, or with the stock kept. μ keeps
-  falling on the clock while such a feed is shut, so its first fillable block is the next open, near `MU_MIN`: holders
-  pay about 1.65% of each fill's traded value, not the 0.3% competition would leave, and a stranger who starts on a
-  weekend at the right minute leaves only the auction's last block, at exactly `MU_MIN` (RX-3). The app says so at
-  creation; the keeper starts such an index only when the auction's middle falls in a session. Pyth's own catalogue,
+  US-hours feeds, so an index holding one settles only while that market is open, or with the stock kept. A start
+  reads every moving feed, and the 2 hours of notice and the 4-hour auction end before the market's next open, so no
+  fill lands at a reopening near `MU_MIN` (RX-3, fixed in the hub on 2026-10-26; until then a stranger could start on a
+  weekend and leave only the auction's last block, at exactly `MU_MIN`). Such an index rebalances only in a session: a
+  start late in one expires unfilled, and the keeper starts it so the auction's middle falls in one. Pyth's own catalogue,
   read on 2026-10-19, gives all six regular hours only, 09:30 to 16:00 New York time on trading days, with the
   exchange's holidays and half days, and gives the same schedule to the six share feeds named "24/7" (AMZN, SPCX, META,
   SKHY, MU, AMD); until Hermes' data, which needs the key, shows those six publishing outside it, treat all twelve as
@@ -751,14 +755,14 @@ No bot holds a role in Xindex, so these duties have owners and deadlines. Watch 
 | Veto a wrong listing | `ListingProposed` | before `eta` (2 days) | guardian or owner | check the price id against its feed's description and the decimals against the token; `cancelListing(token)` |
 | Execute a listing | its `eta` | `eta + PROPOSAL_WINDOW`, or it expires silently | anyone, owner signers first | `V5_MODE=execute` at the eta; `listingPending(token)` says whether it can still run |
 | Keep a Hermes key | before the first rebalance | none, but without one no index rebalances | executors, or one keyed service that hands updates to them | Hermes has required an API key since 2026-08-26 |
-| Trigger the rebalance | `earliestRebalance()`: the index's interval after `lastRebalance`, a week after a keep-mask fill | none, but the index drifts from its weights | anyone; the keeper in `keeper/` does it when a fill would pay | `canStartRebalance()`, then `startRebalance(0)`; a fill ending in `NothingToRebalance` means the index is on its weights |
+| Trigger the rebalance | `earliestRebalance()`: the index's interval after `lastRebalance`, a week after a keep-mask fill | none, but the index drifts from its weights | anyone; the keeper in `keeper/` does it when a fill would pay | `canStartRebalance()`, then `startRebalance(0, priceUpdate)` while every feed publishes; a fill ending in `NothingToRebalance` means the index is on its weights |
 | Check each rebalance | `RebalanceStarted` | before the fill | guardian | watch the moving components' Pyth feeds; `cancelRebalance()` on a feed that is wrong or stopped, then a keep mask |
 | Watch keep-mask rebalances | `RebalanceStarted` with a non-zero `keepMask` | before `eta` (2 hours) | owner signers | while a guardian replacement is pending, cancel the outgoing guardian's keep-mask proposals (RT-07) |
 | Fill auctions | the auction opens at `eta` | `eta + AUCTION_DURATION` | any executor contract | anyone may run the keeper in `keeper/`, which holds no role; competition is what keeps a fill near break-even |
 | Fill requests | a `MintRequested` or `RedeemRequested` event | the request's `deadline` | anyone who holds or can issue the shares, or the stablecoin | the keeper in `keeper/` fills at the request's limit when that pays; the surplus over the limit is the filler's |
 | Restock the wrapped and real-world legs | the keeper's `restock <coins>` log | before the auction that needs them | the keeper's operator | bridge through Wormhole's Portal, or acquire the token, and send it to the executor |
-| Rebalance around a frozen component | a paused or blacklisting component, or a stopped feed | each auction | guardian | `cancelRebalance()`, then `startRebalance(keepMask)` |
-| Restart after an unfilled auction | `eta + AUCTION_DURATION` passed with no `Rebalanced` | anyone after `REBALANCE_DELAY` more | guardian first, then anyone | `canStartRebalance()`, then `startRebalance(0)` |
+| Rebalance around a frozen component | a paused or blacklisting component, or a stopped feed | each auction | guardian | `cancelRebalance()`, then `startRebalance(keepMask, priceUpdate)` |
+| Restart after an unfilled auction | `eta + AUCTION_DURATION` passed with no `Rebalanced` | anyone after `REBALANCE_DELAY` more | guardian first, then anyone | `canStartRebalance()`, then `startRebalance(0, priceUpdate)` while every feed publishes |
 | Re-check venue depth per leg | monthly, and before a large mint or burn | none | app | V3 and V4 depth move independently; the route is the app's choice |
 | Watch guardian changes | `GuardianProposed` | `eta` (7 days) | owner signers, guardian, app | a security alert: once executed, the new guardian's veto replaces the old one. `guardianChangePending()` says whether it is still executable |
 | Hand over factory ownership | `OwnershipTransferStarted` | none: it takes effect as soon as the new owner accepts | owner signers, then the new owner | the one admin change with no delay and no veto; announce it first, and the new owner has to meet the rules the deploy script checks |
@@ -812,7 +816,7 @@ V5_MODE=execute V5_FACTORY=<factory> V5_WHITELIST=<same> forge script script/Con
 
 Add `--verify` with `ETHERSCAN_API_KEY` set to verify the contracts, so testers can call `drip()` from Etherscan.
 `USD_POOL_WETH` and `TOKEN_POOL_WETH` (in wei) change the liquidity `seed` adds. Timing is mainnet's: listings take 2
-days, and a rebalance can start an index's interval, at least 7 days, after its creation, followed by 2 hours of notice and a 24-hour auction
+days, and a rebalance can start an index's interval, at least 7 days, after its creation, followed by 2 hours of notice and a 4-hour auction
 whose fill needs a signed Pyth update, as on mainnet. The test pools are shallow and nobody arbitrages them, so zap
 prices on this market say nothing about mainnet. `test/fork/WeightedExecutorV3.sol` fills auctions through
 SwapRouter02; it is a test fixture without slippage limits, so never fund it on mainnet.

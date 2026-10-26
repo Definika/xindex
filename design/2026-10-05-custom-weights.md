@@ -104,8 +104,11 @@ Rebalancing keeps `IndexHub`'s shape (start, notice, falling auction, executor c
 mask, guardian cancel and restart hold-off) and replaces the band with prices read at settlement:
 
 1. **Start.** Anyone, once `MIN_REBALANCE_INTERVAL` (7 days) has passed since the last fill; the owner or guardian
-   also with a keep mask, or earlier than strangers after a cancel or expiry, as v4. A start reads no price.
-2. **Notice.** `REBALANCE_DELAY` (2 hours), then the auction runs `AUCTION_DURATION` (24 hours).
+   also with a keep mask, or earlier than strangers after a cancel or expiry, as v4. A start parses every moving feed
+   at `priceTime()`, as a fill does, and keeps no price: it starts only while each leg's market is open (RX-3, changed
+   on 2026-10-26; a start read no price before).
+2. **Notice.** `REBALANCE_DELAY` (2 hours), then the auction runs `AUCTION_DURATION` (4 hours, 24 until 2026-10-26).
+   Together they are shorter than any closure of a market a feed follows, so no auction reaches a reopening (RX-3).
 3. **Prices at the fill.** `executeRebalance(data, priceUpdate[, maxAmountsIn])` is payable and forwards its whole
    value to Pyth as the fee. The hub fixes the moment, `priceTime()`: T is one slot back, `PRICE_LAG` (12 seconds)
    before the block, and it asks Pyth's `parsePriceFeedUpdatesUnique` for each moving feed's update published in
@@ -148,9 +151,10 @@ reads Pyth.
 
 - **A lagging price** (the market moved, Pyth has not yet): bounded by the auction. With competition the fill lands
   where the market is; a lone executor gains the lag on the traded value only. Not so for an index holding a US-hours
-  stock: μ falls on the clock while its feed is shut, so its first fillable block is the next open, near `MU_MIN`, and
-  holders pay about 1.65% of the traded value per fill instead of competition's 0.3% (the red team's RX-3, documented,
-  not changed in the hub). A price more than `MAX_EMA_DEVIATION` from its own moving average is refused (RX-27). An executor also holds a free option of
+  stock: μ fell on the clock while its feed was shut, so its first fillable block was the next open, near `MU_MIN`,
+  and holders paid about 1.65% of the traded value per fill instead of competition's 0.3% (the red team's RX-3). Fixed
+  in the hub on 2026-10-26: a start needs every moving feed to publish, and the 6 hours of notice and auction end
+  before any reopening, so such an index fills in a session or not at all. A price more than `MAX_EMA_DEVIATION` from its own moving average is refused (RX-27). An executor also holds a free option of
   a slot: it sees each block's price twelve seconds before it chooses whether to fill in it (V5-L1).
 - **A wrong price on one coin of an index on its weights** trades against itself: the index sells what a price
   overstates and buys what it understates. Off its weights it need not (V5-M2), which is why the cap counts units.
@@ -190,7 +194,7 @@ reads Pyth.
 | --- | --- | --- |
 | `MIN_REBALANCE_INTERVAL` | 7 days | As v4 |
 | `REBALANCE_DELAY` | 2 hours | Targets come from settlement prices, so notice is for executors, not for holders' exits |
-| `AUCTION_DURATION` | 24 hours | As v4 |
+| `AUCTION_DURATION` | 4 hours | With the 2 hours of notice, shorter than any market closure a feed follows (17.5 hours overnight), so no fill lands at a reopening (RX-3; 24 hours, as v4, until 2026-10-26) |
 | `MU_MAX` / `MU_MIN` | 1.02 / 0.98 | 2% for swap costs and Pyth's lag either way |
 | `MAX_TURNOVER` | 20% of each component's units | A coin doubling at a 50% weight sheds a quarter, so two fills; a lying feed takes at most this |
 | `MAX_GROWTH` | 100% of each growing component's units, times μ | A coin halving at a 50% weight grows by a half, so one fill; an issuer's dump draws about its own leg's value (RX-15) |
@@ -202,7 +206,7 @@ reads Pyth.
 
 Before launch, a replay of Pyth's history against market minute closes on the listed coins (as v3's L-06 replay did
 with Chainlink) sets `MU_MIN`, `MAX_TURNOVER`, `MAX_GROWTH`, `MAX_EMA_DEVIATION` and `MAX_CONFIDENCE` from evidence,
-and sizes `MU_MIN` and `AUCTION_DURATION` against the US-hours stocks' session gaps (RX-3). It needs a Pyth API key.
+and checks `MU_MIN` against the slope a 4-hour auction gives μ (1% an hour). It needs a Pyth API key.
 
 ## 9. Phase 2: vault coins
 

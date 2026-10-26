@@ -354,9 +354,10 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
 
     function _openAuction(WeightedHub index, uint256 keepMask, uint256 into) internal {
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
+        bytes[] memory live = pyth.liveUpdates(index, keepMask);
         if (keepMask != 0) vm.prank(guardian);
         else vm.prank(stranger);
-        index.startRebalance(keepMask);
+        index.startRebalance(keepMask, live);
         (uint256 eta,) = index.pendingRebalance();
         vm.warp(eta + into);
     }
@@ -601,8 +602,9 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
 
         vm.prank(guardian);
         index.cancelRebalance();
+        bytes[] memory live = pyth.liveUpdates(index, 8);
         vm.prank(guardian);
-        index.startRebalance(8);
+        index.startRebalance(8, live);
         (uint256 eta,) = index.pendingRebalance();
         vm.warp(eta + 1 hours);
         data = _updates(index, picked, _flat(4), 8);
@@ -651,7 +653,7 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalanceExpired.selector, eta + index.AUCTION_DURATION()));
         index.executeRebalance("", data);
         assertFalse(index.canStartRebalance());
-        index.startRebalance(0); // the test contract is the factory's owner
+        index.startRebalance(0, pyth.liveUpdates(index, 0)); // the test contract is the factory's owner
         (uint256 again,) = index.pendingRebalance();
         vm.warp(again + 1 hours);
         index.executeRebalance("", _updates(index, picked, _flat(4), 0));
