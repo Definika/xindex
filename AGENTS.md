@@ -35,7 +35,7 @@ and P2 proofs of Ethereum's finality, the hybrid index) is tagged `stage-b-2026-
 v4's market-cap index (reference supplies and a price-free λ auction, deleted on 2026-10-06,
 `audit/2026-10-06-v4-retirement.md`). Nothing is deployed on a mainnet yet.
 
-Where it stands (2026-10-18):
+Where it stands (2026-10-26):
 - The weighted index is built and reviewed twice (`audit/2026-10-05-v5-review.md`, `audit/2026-10-07-v5-logic-review.md`).
 - The Ethereum deployment's scripts are built: `DeployWeighted`, `ConfigureWeighted` over `PythIds`, `CheckToken`.
 - The hundred-coin list is built as far as Ethereum holds it: 93 listed on 2026-10-10 (the 49 of before, 31 more
@@ -101,11 +101,19 @@ Where it stands (2026-10-18):
   (RX-22); in the keeper, request fills are verified, bounded and pinned (RX-1, RX-2, RX-4, RX-9, RX-10), and the rest
   are documented. RX-3, documented then, was fixed in the hub on 2026-10-26 after an outside reviewer raised it again
   (the owner's call): a start reads every moving feed, and the auction is 4 hours (`test_RX3_...`).
+- v5 was deployed on Sepolia on 2026-10-26 from `07aeae1`, the build before the RX-3 fix, under a 2-of-3 test Safe;
+  its four listings can be executed from 2026-10-28 (`docs/deployment.md`, with the addresses). Sepolia runs Glamsterdam
+  (EIP-8037): `forge script` broadcasts there need `--gas-estimate-multiplier 900`. The website and its backend, in
+  their own repositories, serve it.
+- The repository is MIT-licensed since 2026-10-26 (`LICENSE`); the files copied from Pyth, Wormhole and Uniswap keep
+  their own licenses (`NOTICE`).
 - Before any mainnet: Pyth's parameter replay (`design/2026-10-05-custom-weights.md`, section 8), which also sizes
   `MAX_EMA_DEVIATION` and `MAX_GROWTH`, and a settlement on a
   real update from Hermes, both waiting on Pyth's API key in `.env` (`PYTH_API_KEY`); the 26 attestations and RAY's
   update; Pyth's confirmation that Ethereum stays served; the platform's fee policy and the legal reading; and an
-  external audit, then `DeployWeighted`'s release hashes fixed at the audited commit (CF-5).
+  external audit, then `DeployWeighted`'s release hashes fixed at the audited commit (CF-5). Before the audit, the two
+  GPL-3.0 Universal Router files `IndexZap` and `BasketBuilder` compile (`NOTICE`) are to be replaced by MIT
+  declarations of our own, which moves both release hashes.
 
 For more:
 - `design/2026-10-05-custom-weights.md`: the v5 spec.
@@ -116,7 +124,8 @@ For more:
 - `design/2026-10-05-wide-asset-support.md` and `design/2026-10-05-token-admission-report.md`: the lists and the
   admission check.
 - `design/2026-09-30-v4-stage-a-spec.md` and `ARCHITECTURE.md`: the Stage A design `WeightedHub` keeps.
-- `README.md`: the product brief, frontend integration notes and deployment.
+- `README.md`: the overview. `docs/`: integration, known limitations, assets, design decisions, deployment and
+  development. `design/product-brief.md`: the brief the product was built from.
 
 ## Commands
 
@@ -162,7 +171,7 @@ deploy script resolves Pyth, the router and the stablecoins from the address boo
 3. `forge test` green. `forge coverage` at 100% for every file, including mocks and scripts.
 4. Fork tests green if the change touches `IndexZap`, the hub's rebalancing, routes, token behaviour, or anything
    router- or pool-related, `WeightedHub` and its price ids included. Their summary must list the five Ethereum
-   `test/fork/` suites and 0 skipped. `WeightedHub.fork.t.sol` alone takes about an hour at 93 coins on an archive RPC
+   `test/fork/` suites and 0 skipped. `WeightedHub.fork.t.sol` alone takes about an hour at the 91-coin list on an archive RPC
    (Alchemy, Tenderly), nearly all of it the admission quotes on a cold RPC cache; a public endpoint prunes the state
    before it ends. They are also required when the deploy checks or `script/MainnetAddresses.sol` change, which
    `MainnetAddresses.fork.t.sol` and `Security.fork.t.sol` exercise.
@@ -279,7 +288,7 @@ forked repository gets no secrets, so its fork suites skip, and a maintainer re-
 
 ## Layout
 
-`ls` and each file's header comments show what lives where, and README.md's Layout section gives the tour. Two things
+`ls` and each file's header comments show what lives where, and README.md's Repository structure gives the tour. Two things
 the tree does not say: `script/testnet/` (the Sepolia test market) never deploys to a mainnet; and `keeper/` is the keeper bot with its executor contract, a Foundry project of
 its own with its own tests (`keeper/README.md`): it starts and fills auctions, fills `MintRequests` requests at their
 limits (since 2026-10-16), serves coins without a Uniswap route from the executor's stock, and holds no role in the
@@ -556,6 +565,8 @@ records also cite.
 
 ## Conventions
 
+- **Licenses.** Our own files carry `// SPDX-License-Identifier: MIT` (`LICENSE`). A file copied from another project
+  keeps its upstream header and license, names its source and commit, and is listed in `NOTICE`.
 - `pragma solidity 0.8.28;` in `src/` and `script/`; tests use `^0.8.24`. The compiler is pinned to 0.8.28 in
   `foundry.toml`, and CI pins Foundry v1.8.1 and eth-wake 4.22.1 in `.github/workflows/test.yml`.
 - **Paths start at the repository root** (`test/Repo.t.sol`), and a file in an agent's scratchpad is written

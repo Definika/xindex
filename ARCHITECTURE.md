@@ -449,7 +449,7 @@ balance, and the math holds nothing and reads nothing.
 
 ## 5. Flows
 
-The README's "How the flows work" walks through each flow for an app. In short:
+`docs/integration.md` walks through each flow for an app. In short:
 
 - **Create.** The creator picks 2 to 100 listed coins and their percentages; the app derives the units at current
   prices and shows the address and the index's wrapped share of value, and the creator creates.
@@ -585,7 +585,7 @@ components (section 2).
   no enabled module; neither the guardian nor the broadcasting key may be one of its signers (SA-06). Neither role may
   be the router, the PoolManager, Pyth, or any token or mint currency in the chain's address book (XA-39, CR-I37).
   Any other contract owner, such as a timelock, needs the operator's `OWNER_IS_NOT_A_SAFE`, set to its address (A7-08).
-- **Known limitations** are listed in the README, where users read them.
+- **Known limitations** are listed in `docs/known-limitations.md`, linked from the README.
 
 ## 8. Verification
 

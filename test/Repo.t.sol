@@ -20,7 +20,7 @@ contract RepoTest is Test {
     /// @dev keccak256 of the files `test_A712_theCiConfigIsPinnedWhole` pins whole: CI's workflow and the two Foundry
     ///      configs it runs. A change to one fails that test, which prints the new hash, until it is pinned here.
     bytes32 private constant WORKFLOW_HASH = 0x61d572195ee06f987215585c11400a6ed24dae2af42e682cfd753b8802c6edbf;
-    bytes32 private constant FOUNDRY_TOML_HASH = 0xe878e5468b8cf15a984dea222e49f0d355e36f78751bdba05deb98d4835e02ee;
+    bytes32 private constant FOUNDRY_TOML_HASH = 0xad9de96ac8339b3cc1668438b0e9b63c65d70466cecb60d2702b9608293ab2cc;
     bytes32 private constant KEEPER_FOUNDRY_TOML_HASH =
         0x5426d5180cca7c4ac15d7fb182272a805a3ce19a143d6c6f8c158f61765d7592;
 
@@ -141,7 +141,7 @@ contract RepoTest is Test {
     ///      anchor inside the section itself, so a limitation cannot go missing while a cross-reference to the heading
     ///      keeps the old check green.
     function test_I09_XS17_theKnownLimitationsAreDocumented() public view {
-        string memory section = _section(_read("README.md"), "\n## Known limitations\n");
+        string memory section = _section(_read("docs/known-limitations.md"), "# Known limitations\n");
         string[23] memory anchors = [
             "**A lone executor can take up to 2% of what it trades.**",
             "**A wrong price costs at most the turnover cap.**",
