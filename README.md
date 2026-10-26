@@ -847,6 +847,7 @@ design/                       the v5 spec, the one-index decision, the wide-asse
 audit/                        the security reviews, their triage, and the six retirement records (the PoCs are in git
                               history at f83dcab)
 aderyn.toml                   Aderyn's configuration: the rules the design rejects, each with its reason
+LICENSE, NOTICE               the MIT License, and the copied files that keep their own licenses
 ```
 
 ## Not built (candidates for later)
@@ -859,3 +860,8 @@ too small to pay (the keeper in `keeper/` fills only what pays, unless its opera
 if cheap minting for small buyers matters after
 launch. Other chains' coins come in only as Ethereum tokens: the issuer's own, or the copy Wormhole's token bridge
 wraps (`design/2026-10-10-one-index-wormhole-legs.md`).
+
+## License
+
+MIT (`LICENSE`). The files copied from Pyth, Wormhole and Uniswap keep their own licenses, Apache-2.0 and GPL, each
+named in its header and listed in `NOTICE`.

@@ -1,0 +1,27 @@
+Xindex
+Copyright (c) 2026 Nikoloz Sichinava
+
+Xindex's own code is licensed under the MIT License (LICENSE). Each source file names its license in its
+SPDX-License-Identifier header. The files below are copied from other projects and keep their own licenses; each
+names its source and commit in its header.
+
+Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)
+  src/interfaces/pyth/IPyth.sol, IPythEvents.sol, PythStructs.sol
+      Pyth Network's Solidity SDK, Copyright 2025 Pyth Data Association
+  keeper/src/interfaces/ITokenBridge.sol
+      Wormhole (wormhole-foundation/wormhole)
+
+GNU General Public License v3.0 or later (https://www.gnu.org/licenses/gpl-3.0.html)
+  src/libraries/UniversalRouterCommands.sol
+  src/interfaces/IUniversalRouter.sol
+      Uniswap's universal-router, tag 2.0.0
+  IndexZap and BasketBuilder are compiled with these two files, directly and through src/UniversalRouterSwaps.sol.
+
+GNU General Public License v2.0 or later (https://www.gnu.org/licenses/old-licenses/gpl-2.0.html)
+  script/interfaces/IUniswapV3PoolSetup.sol, IUniswapV3FactorySetup.sol, IUniswapV3PoolRead.sol,
+  IUniswapV3FactoryRead.sol, INonfungiblePositionManager.sol
+      Uniswap V3 core and periphery
+  test/mocks/ISwapRouter02.sol, keeper/src/interfaces/IV3SwapRouter.sol
+      Uniswap's swap-router-contracts
+
+The dependencies under lib/ are git submodules, each under its own license.
