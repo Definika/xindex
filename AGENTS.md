@@ -414,8 +414,10 @@ records also cite.
   The scale pushed the settlement arithmetic out of the hub's EIP-170 budget into `WeightedMath`, a stateless contract
   the factory deploys with the implementation and the hub calls by STATICCALL (`MATH`); its constants are the hub's
   (`test_theMathConstantsAreTheHubs`), and the optimizer runs are 100 for the same reason.
-- **A gated index issues only to allowed recipients.** The factory keeps the gate (`isGated`) and the allowlist
-  (`isAllowedMinter`), both the creator's; the creator can open the gate for good (`openMinting`), never close it.
+- **A gated index issues only to its creator and allowed recipients.** The factory keeps the gate (`isGated`) and the
+  allowlist (`isAllowedMinter`), both the creator's; the creator mints without an entry, a right that moves with the
+  role (2026-10-27: on the website a private index's own creator could not buy it,
+  `test_theCreatorMintsItsOwnGatedIndex`); the creator can open the gate for good (`openMinting`), never close it.
   Transfers and burns never read the gate, so the token stays an ERC-20 the zap and `MintRequests` can handle. The
   creator has no other power: not over components, rates, or anyone's shares.
 - **Invariant:** for every component `i`,

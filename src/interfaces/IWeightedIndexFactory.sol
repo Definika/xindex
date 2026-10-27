@@ -258,14 +258,15 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     ///         index's components.
     function creatorOf(address index) external view returns (address);
 
-    /// @notice Whether `index` issues shares only to accounts its creator allows.
+    /// @notice Whether `index` issues shares only to its creator and the accounts its creator allows.
     function isGated(address index) external view returns (bool);
 
-    /// @notice Whether `account` may be issued shares of `index` while it is gated.
+    /// @notice Whether `account` may be issued shares of `index` while it is gated. The creator needs no entry.
     function isAllowedMinter(address index, address account) external view returns (bool);
 
     /// @notice What `index` reads at each issue and redeem: whether `to` may receive new shares (always true when the
-    ///         index is not gated), its creator, and the platform recipient.
+    ///         index is not gated or `to` is its creator, who could allow itself anyway), its creator, and the
+    ///         platform recipient.
     function feeTerms(address index, address to) external view returns (bool allowed, address creator, address platform);
 
     /// @notice The platform's fee an index created now copies, in basis points of the shares on every issue and

@@ -203,7 +203,7 @@ nothing to configure, and nobody else needed: no filler.
   `StaleRebalanceNonce`. About 35 legs fit a call.
 - `mint(index, shares, to, referrer, deadline)` debits exactly `previewIssue(shares)` of every component, approves
   the index for that much and no more, and issues; a leg short of it is named by `InsufficientEscrow`, so one more
-  buy completes a basket a rebalance changed. A gated index issues only to a `to` its creator allows.
+  buy completes a basket a rebalance changed. A gated index issues only to its creator or a `to` its creator allows.
 - `redeem(index, shares)` pulls the shares, redeems them here and credits each component's balance increase.
   `sell(SellParams{tokenOut, minAmountOut, tokens, amounts, legs, to, deadline})` debits each named leg, sells it
   through the engine or, when it is `tokenOut`, counts it toward the payout against its leg's minimum (DA-15), credits
