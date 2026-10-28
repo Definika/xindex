@@ -10,7 +10,8 @@ key or bot is involved in rebalancing.
 **Xindex is one deployment, on Ethereum, and one index holds up to 100 coins of the top 300** (the owner's decision of
 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). An index holds Ethereum ERC-20s in kind: the issuer's own
 contract where Ethereum has one, and otherwise the copy Wormhole's token bridge wraps from the chain that has it, priced
-at the coin's own Pyth feed. Nothing crosses a chain inside a contract: the app and the fillers bridge. There is no
+at the coin's own Pyth feed. Nothing crosses a chain inside a protocol contract: the app and the fillers bridge, the
+keeper's own executor among them (section 5). There is no
 vault, no proof and no bridge of ours. The BNB Chain deployment of 2026-10-07 was shelved on 2026-10-10 and deleted
 on 2026-10-13.
 
@@ -163,7 +164,7 @@ which returned the zap to its earlier Uniswap-only build. The zap types its call
   intermediate; the zap has no `receive()`.
 - **Every command is the zap's own.** Each swap is one `execute(commands, inputs)` built here, and nothing a caller
   supplied is forwarded, because the router's command set includes `TRANSFER` and `PERMIT2_TRANSFER_FROM`. The commands
-  and V4 actions are vendored with their input layouts in `src/libraries/`. The zap never encodes a swap amount of
+  and V4 actions are declared with their input layouts in `src/libraries/`. The zap never encodes a swap amount of
   zero, which the pinned V4 router reads as "the full debt" (CR-I05).
 - **Pre-fund and sweep, not Permit2.** The zap sends the router what a leg may spend and appends `SWEEP` back to itself
   in the same `execute`, so no allowance survives a call. The pre-fund is the operative bound on a leg's spend, because
@@ -460,6 +461,17 @@ balance, and the math holds nothing and reads nothing.
   executor brings a signed Pyth update for `priceTime()`, previews the fill with `previewRebalance`, and settles,
   preferably through the bounded overload. Hermes, Pyth's service for signed updates, needs an API key since
   2026-08-26. The bot in `keeper/` is one such executor and holds no role; anyone may run one.
+- **Restock.** A coin no Ethereum pool sells, most Wormhole copies among them, reaches an executor's fill only from
+  its stock. Beside the keeper runs its restock service (`keeper/restock.mjs`, since 2026-10-19), under a key of
+  its own, the treasury, which the executor's owner pins: it buys such a copy on its home chain's DEX, bridges it into
+  the executor through Wormhole's Token Bridge (`redeemBridged`), and bridges spare stock back out (`bridgeOut`), only
+  to the home-chain wallets the executor's owner pins, to sell there; USDC for the buys moves by CCTP. What arrives
+  earns the keeper stock allowance only within the restock allowance the executor's owner sets per coin, so restocking
+  never raises what a stolen keeper key can deliver (RS-1), and the treasury holds at most the owner's figure of USDC
+  off the float (RS-2). It serves the seven EVM-homed coins with a market, XRP, ADA, LTC and DOT on BNB Chain, AVAX,
+  OP and AERO; ATOM has none, and JUP, PYTH, SUI, APT and ALGO wait for their chains' adapters (`keeper/README.md`,
+  `audit/2026-10-25-restock-review.md`). None of it is a protocol contract or role: the hub sees an executor that
+  delivers.
 - **Leaving.** Issue and redeem stay open through notice and auction. Once the auction is live an executor can order
   its fill ahead of a public exit, and shares issued while a rebalance is pending share its haircut (RT-02).
 - **Frozen component.** `redeemSkipping` and `claim` for holders, the keep mask for rebalances.
@@ -489,12 +501,15 @@ lands at its own address (LR-05).
 **One deployment, the missing coins wrapped.** About 71 of the top-300 candidates exist on Ethereum through their
 issuer; held on BNB Chain instead, the same universe would have wrapped 71 legs. Wormhole is the one bridge accepted
 for wrapping: anyone attests a coin on its home chain and the bridge deploys the copy on Ethereum. The cost is a new
-trusted party over every wrapped leg (section 7). The list (`script/PythIds.sol`) stands at 93, 16 of them Wormhole
-copies: SOL, listed first, 12 added on 2026-10-10, and BNB, SUI and SEI, whose copies the count of that day missed,
-added on 2026-10-18; a 13th of 2026-10-10, DOGE's, left on 2026-10-14 on the owner's call, since Pyth prices DOGE and
-not the copy, and SAND and RLB left on 2026-10-18 after the source reading. Tether Gold and the 17 Ondo stocks do not
-count toward the hundred, so 75 coins of the top 300 are listed; 31 more copies await an attestation on Wormhole's Portal (`design/2026-10-10-one-index-wormhole-legs.md`,
-section 2a, and `design/2026-10-18-pre-mainnet-readings.md`, section 3).
+trusted party over every wrapped leg (section 7). The list (`script/PythIds.sol`) stands at 91, 15 of them Wormhole
+copies: SOL, listed first, 12 added on 2026-10-10, and BNB and SUI, whose copies the count of that day missed, added on
+2026-10-18; a 13th of 2026-10-10, DOGE's, left on 2026-10-14 on the owner's call, since Pyth prices DOGE and not the
+copy. SAND and RLB left on 2026-10-18 after the source reading, and on 2026-10-19 BTT and SEI's copy, added with BNB's
+and SUI's, their bridges closed or closing (RX-28, RX-32), the owner's calls; ZK is tiered Bridged, ZKsync's bridge
+copy of a token issued on ZKsync Era (RX-19). Tether Gold and the 17 Ondo stocks do not count toward the hundred, so 73
+coins of the top 300 are listed; 26 more copies await an attestation on Wormhole's Portal, and FIL's waits for a
+reading of its Binance-Peg source (`design/2026-10-10-one-index-wormhole-legs.md`, section 2a, and
+`design/2026-10-18-pre-mainnet-readings.md`, section 3).
 
 **Up to 100 components.** Every path of the hub and the factory fits EIP-7825's per-transaction cap of 2^24 gas at
 100, measured on mock tokens with every account cold (`test_aHundredComponentsFitOneTransaction`):
@@ -644,19 +659,21 @@ components (section 2).
 | WeightedIndexFactory / WeightedHub implementation / IndexZap / MintRequests | not deployed |
 
 Every listed token, with the source of each Wormhole copy, is in `script/MainnetAddresses.sol`, each price id in
-`script/PythIds.sol`. Only the tokens, Pyth and the router are called by anything deployed; the V3 factory and the
-quoter serve scripts and tests, and no contract calls the Wormhole bridge.
+`script/PythIds.sol`. Only the tokens, Pyth and the router are called by the protocol's contracts; the V3 factory and
+the quoter serve scripts and tests, and no protocol contract calls the Wormhole bridge. The keeper's executor, which
+holds no role, calls its Token Bridge to restock (section 5).
 
 ## 10. Roadmap
 
 **What remains before a mainnet**, in the order of `design/2026-10-10-one-index-wormhole-legs.md`, section 5, as
-`design/2026-10-18-pre-mainnet-readings.md`, section 7, updates it: the 31 Wormhole copies still to attest on Portal,
-each then through `CheckToken` and onto the lists; the settlement against
-Pyth's real contract on a real update from Hermes, which needs the API key; Pyth's parameter replay (the spec, section
-8), which sets `MU_MIN`, `MAX_TURNOVER` and `MAX_CONFIDENCE` from evidence; the external audit; the owner Safe (3 of 5)
-and the guardian on Ethereum, then `DeployWeighted` and `ConfigureWeighted` over the list; and the app side: Wormhole
-Connect for bridging in and out, the wrapped share and the Bridged and Custodial labels on every index, and a filler
-for `MintRequests`.
+`design/2026-10-18-pre-mainnet-readings.md`, section 7, updates it: the 26 Wormhole copies still to attest on Portal,
+and FIL's source reading, each then through `CheckToken` and onto the lists, and RAY's `updateWrapped` from Solana; the
+settlement against Pyth's real contract on a real update from Hermes, which needs the API key; Pyth's parameter replay
+(the spec, section 8), which sets `MU_MIN`, `MAX_TURNOVER` and `MAX_CONFIDENCE` from evidence; Pyth's confirmation
+that Ethereum stays served; the platform's fee policy and the legal reading; the external audit, then
+`DeployWeighted`'s release hashes fixed at the audited commit (CF-5); the owner Safe (3 of 5) and the guardian on
+Ethereum, then `DeployWeighted` and `ConfigureWeighted` over the list; and the app side: Wormhole Connect for bridging
+in and out, the wrapped share and the Bridged and Custodial labels on every index, and a filler for `MintRequests`.
 
 **Backlog.** ETH in/out, `createAndMint`, `mintWithTokenPermit` (USDC only), mixed-venue legs that split one leg
 across V3 and V4, per-pair partial-fill auctions, a backstop for auctions too small to pay (the keeper fills only what

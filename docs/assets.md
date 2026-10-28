@@ -35,7 +35,8 @@ it redeems one for one; WBTC takes WBTC/USD, so its own depeg shows; a Wormhole 
 - 17 tokenized US stocks issued by Ondo.
 
 26 more Wormhole copies wait for an attestation on Wormhole's Portal before they can be checked and listed
-([`design/2026-10-10-one-index-wormhole-legs.md`](../design/2026-10-10-one-index-wormhole-legs.md), section 2a). Every
+([`design/2026-10-10-one-index-wormhole-legs.md`](../design/2026-10-10-one-index-wormhole-legs.md), section 2a), and
+FIL's waits for a reading of its Binance-Peg source. Every
 listed token passed `CheckToken` on a mainnet fork, and one fork test issues, rebalances and redeems an index holding
 every coin `forge-std` can fund.
 
