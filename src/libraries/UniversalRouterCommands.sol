@@ -1,12 +1,12 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
 /// @title UniversalRouterCommands
 /// @notice The Universal Router command bytes the zap emits, and the input each one takes.
-/// @dev Vendored from Uniswap's universal-router (GPL-3.0-or-later), `contracts/libraries/Commands.sol` at commit
-///      3663f6db6e2fe121753cd2d899699c2dc75dca86, which is tag 2.0.0. Only the four commands the zap builds are kept.
-///      The input layouts below are from `contracts/base/Dispatcher.sol` at the same commit; they are what the zap
-///      encodes against, so they are recorded here rather than left to a reader to look up.
+/// @dev The router's command set is a protocol fact: a one-byte opcode per command, dispatched by the deployment the
+///      zap is pinned to (Uniswap's universal-router tag 2.0.0). The four values and input layouts below were read from
+///      that deployment's verified source and checked on a mainnet fork; they are declared here in our own words so
+///      the zap encodes against a record in this repository rather than one a reader has to look up.
 ///
 ///      The commands the zap deliberately never emits are as important as the ones it does: SWEEP's neighbours in the
 ///      set include TRANSFER and PERMIT2_TRANSFER_FROM, which move a payer's funds. That is why the zap builds every

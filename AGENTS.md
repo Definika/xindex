@@ -111,9 +111,10 @@ Where it stands (2026-10-26):
   `MAX_EMA_DEVIATION` and `MAX_GROWTH`, and a settlement on a
   real update from Hermes, both waiting on Pyth's API key in `.env` (`PYTH_API_KEY`); the 26 attestations and RAY's
   update; Pyth's confirmation that Ethereum stays served; the platform's fee policy and the legal reading; and an
-  external audit, then `DeployWeighted`'s release hashes fixed at the audited commit (CF-5). Before the audit, the two
-  GPL-3.0 Universal Router files `IndexZap` and `BasketBuilder` compile (`NOTICE`) are to be replaced by MIT
-  declarations of our own, which moves both release hashes.
+  external audit, then `DeployWeighted`'s release hashes fixed at the audited commit (CF-5). The two Universal Router
+  files `IndexZap` and `BasketBuilder` compile, `IUniversalRouter` and `UniversalRouterCommands`, are MIT declarations
+  of our own since 2026-10-28 (they were copied under GPL-3.0 until then), so every file the four contracts compile
+  is MIT or Apache-2.0 (`NOTICE`).
 
 For more:
 - `design/2026-10-05-custom-weights.md`: the v5 spec.

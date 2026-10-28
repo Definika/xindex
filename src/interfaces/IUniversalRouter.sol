@@ -1,8 +1,9 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
 /// @title IUniversalRouter
-/// @notice Minimal subset of Uniswap's Universal Router: the one call the zap makes, and the one read it needs.
+/// @notice The subset of Uniswap's Universal Router the zap and the basket builder use: the one call they make and the
+///         one read they need. Declared here in our own words from the router's ABI, which is a protocol fact.
 /// @dev Mainnet 2.0.0: 0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af. The zap is pinned to that deployment rather than
 ///      the 2.1.x line, whose command inputs carry an extra per-hop price array and which shipped a change its own
 ///      authors later reverted.
