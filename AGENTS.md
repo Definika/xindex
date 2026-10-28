@@ -105,16 +105,19 @@ Where it stands (2026-10-26):
   its four listings can be executed from 2026-10-28 (`docs/deployment.md`, with the addresses). Sepolia runs Glamsterdam
   (EIP-8037): `forge script` broadcasts there need `--gas-estimate-multiplier 900`. The website and its backend, in
   their own repositories, serve it.
-- The repository is MIT-licensed since 2026-10-26 (`LICENSE`); the files copied from Pyth, Wormhole and Uniswap keep
+- The repository is under the Business Source License 1.1 since 2026-10-28 (`LICENSE`; MIT from 2026-10-26 until
+  then, the owner's call to deter commercial clones): non-production use is free, the Additional Use Grant covers
+  running the keeper against our deployments and integrating with them, and the Change License is MIT on
+  2030-10-28. Our own `src/interfaces` stay MIT. The files copied from Pyth, Wormhole and Uniswap keep
   their own licenses (`NOTICE`).
 - Before any mainnet: Pyth's parameter replay (`design/2026-10-05-custom-weights.md`, section 8), which also sizes
   `MAX_EMA_DEVIATION` and `MAX_GROWTH`, and a settlement on a
   real update from Hermes, both waiting on Pyth's API key in `.env` (`PYTH_API_KEY`); the 26 attestations and RAY's
   update; Pyth's confirmation that Ethereum stays served; the platform's fee policy and the legal reading; and an
   external audit, then `DeployWeighted`'s release hashes fixed at the audited commit (CF-5). The two Universal Router
-  files `IndexZap` and `BasketBuilder` compile, `IUniversalRouter` and `UniversalRouterCommands`, are MIT declarations
+  files `IndexZap` and `BasketBuilder` compile, `IUniversalRouter` and `UniversalRouterCommands`, are declarations
   of our own since 2026-10-28 (they were copied under GPL-3.0 until then), so every file the four contracts compile
-  is MIT or Apache-2.0 (`NOTICE`).
+  is ours, MIT or Apache-2.0 (`NOTICE`).
 
 For more:
 - `design/2026-10-05-custom-weights.md`: the v5 spec.
@@ -568,7 +571,8 @@ records also cite.
 
 ## Conventions
 
-- **Licenses.** Our own files carry `// SPDX-License-Identifier: MIT` (`LICENSE`). A file copied from another project
+- **Licenses.** Our own files carry `// SPDX-License-Identifier: BUSL-1.1` (`LICENSE`), except the interfaces of our
+  own under `src/interfaces`, which carry `MIT` so integrators can build against them. A file copied from another project
   keeps its upstream header and license, names its source and commit, and is listed in `NOTICE`.
 - `pragma solidity 0.8.28;` in `src/` and `script/`; tests use `^0.8.24`. The compiler is pinned to 0.8.28 in
   `foundry.toml`, and CI pins Foundry v1.8.1 and eth-wake 4.22.1 in `.github/workflows/test.yml`.

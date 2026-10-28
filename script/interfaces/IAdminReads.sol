@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
 /// @notice The reads `CheckToken` makes to find who holds a token's admin powers and what kind of account it is. Every

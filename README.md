@@ -1,7 +1,7 @@
 # Xindex
 
 [![CI](https://github.com/Definika/xindex/actions/workflows/test.yml/badge.svg)](https://github.com/Definika/xindex/actions/workflows/test.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 
 Xindex is a protocol for index tokens on Ethereum. Anyone can create an index of 2 to 100 listed assets at weights they
 choose. Each index is an ERC-20 fully backed in kind: minting deposits the basket and redeeming returns it, so neither
@@ -131,5 +131,7 @@ report a vulnerability.
 
 ## License
 
-MIT, see [LICENSE](LICENSE). Files copied from Pyth, Wormhole and Uniswap keep their own licenses, listed in
+Business Source License 1.1, see [LICENSE](LICENSE): non-production use is free, running the keeper against our
+deployments and integrating with them is granted, and the code becomes MIT on 2030-10-28. The interfaces under
+`src/interfaces` are MIT now. Files copied from Pyth, Wormhole and Uniswap keep their own licenses, listed in
 [NOTICE](NOTICE).

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
 /// @notice The storage of Uniswap V4's PoolManager as `extsload` exposes it, laid out as v4-core lays it out: the pools

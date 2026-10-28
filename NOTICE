@@ -1,9 +1,11 @@
 Xindex
 Copyright (c) 2026 Nikoloz Sichinava
 
-Xindex's own code is licensed under the MIT License (LICENSE). Each source file names its license in its
-SPDX-License-Identifier header. The files below are copied from other projects and keep their own licenses; each
-names its source and commit in its header.
+Xindex's own code is licensed under the Business Source License 1.1 (LICENSE), which permits non-production use and
+the production uses its Additional Use Grant names, and converts to the MIT License on 2030-10-28. Our own interface
+files under src/interfaces stay under the MIT License, so anyone may build against the protocol. Each source file
+names its license in its SPDX-License-Identifier header. The files below are copied from other projects and keep
+their own licenses; each names its source and commit in its header.
 
 Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)
   src/interfaces/pyth/IPyth.sol, IPythEvents.sol, PythStructs.sol

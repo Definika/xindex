@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
 /// @notice A token that keeps shares and reports balances as shares times a rate, as rebasing and share tokens do (stETH,

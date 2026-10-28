@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
 import {console2} from "forge-std/Script.sol";
@@ -44,13 +44,13 @@ contract DeployWeighted is DeployChecks {
     ///         mainnet broadcast is bound to (CF-5): `deploy` refuses to broadcast on Ethereum from any other build (a
     ///         local edit, a lib/ checkout off foundry.lock, a FOUNDRY_* override), and `test_CF5_*` in
     ///         test/Scripts.t.sol fails until these equal the build, so only a reviewed, CI-green commit moves them.
-    bytes32 public constant FACTORY_INITCODE_HASH = 0xe5be89f8b303185366e075f092ec3e27e2f0d075616b9f41df8f63ae63168a24;
+    bytes32 public constant FACTORY_INITCODE_HASH = 0xc567eaedd151171abece8a36e74f1de8785ff5d99b63d4051919363a59c6efc5;
     /// @notice keccak256 of `IndexZap`'s init code, as above.
-    bytes32 public constant ZAP_INITCODE_HASH = 0x384c8dfa0697ed6ccc69d4e09d4791696d11d8afcf4c110b0119604a1a6209d1;
+    bytes32 public constant ZAP_INITCODE_HASH = 0x71535777ef8760df80e75112cca053b5b84987a1c2d843e7c2f31cc073b54fa7;
     /// @notice keccak256 of `BasketBuilder`'s init code, as above.
-    bytes32 public constant BUILDER_INITCODE_HASH = 0x443119af6904dd498ed1ddc08c2c18d1af43234220c9efd968c41be5bd4ffc01;
+    bytes32 public constant BUILDER_INITCODE_HASH = 0xae62eeee1e541ad1e35d8526ca9121f93d8d9318240170386d0b878187824661;
     /// @notice keccak256 of `MintRequests`' init code, as above.
-    bytes32 public constant REQUESTS_INITCODE_HASH = 0x1d212dbc4fd7daa5bcf551869e2461c977273e553faad227de93615b154cd417;
+    bytes32 public constant REQUESTS_INITCODE_HASH = 0xd3b3413a62913bc0091205d13253547060e4e4097339efda529b4f91f6b497f2;
 
     /// @dev How many contracts the release record covers: the factory, the zap, the builder and MintRequests.
     uint256 private constant RELEASED = 4;

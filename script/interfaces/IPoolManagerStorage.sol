@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
 /// @notice The Uniswap V4 PoolManager's raw storage read (v4-core's `IExtsload`), which v4's own StateLibrary reads a
