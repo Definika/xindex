@@ -270,7 +270,10 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         view
         returns (bool allowed, address creator, address platform)
     {
-        return (!isGated[index] || isAllowedMinter[index][to], creatorOf[index], platformFeeRecipient);
+        creator = creatorOf[index];
+        // A gated index's creator mints it without an allowlist entry, which it could give itself anyway.
+        allowed = !isGated[index] || to == creator || isAllowedMinter[index][to];
+        platform = platformFeeRecipient;
     }
 
     /// @inheritdoc IWeightedIndexFactory

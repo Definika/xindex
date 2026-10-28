@@ -421,6 +421,35 @@ contract WeightedHubFeesTest is WeightedTest {
         assertEq(eth.balanceOf(stranger), (1e18 - 1e18 * PLATFORM_FEE / BPS) * ETH_UNITS / 1e18);
     }
 
+    /// @dev A gated index's creator mints it without an allowlist entry (the website's private index could not be
+    ///      bought by its own creator); the right is the role's, so it moves with the role and leaves the old creator.
+    function test_theCreatorMintsItsOwnGatedIndex() public {
+        WeightedHub gated = _create(_defaultSpecs(), _feeParams(0, 7 days, true));
+        assertFalse(factory.isAllowedMinter(address(gated), creator));
+        (bool allowed,,) = factory.feeTerms(address(gated), creator);
+        assertTrue(allowed);
+        _issue(gated, creator, 1e18);
+        assertEq(gated.balanceOf(creator), 1e18);
+
+        // The gate is still on the recipient: the creator cannot mint to a stranger.
+        _fund(gated, creator, 1);
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.NotAllowedMinter.selector, stranger));
+        gated.issue(1, stranger);
+
+        // Handed on, the right goes with the role.
+        vm.prank(creator);
+        factory.transferCreator(address(gated), alice);
+        vm.prank(alice);
+        factory.acceptCreator(address(gated));
+        _issue(gated, alice, 1e18);
+        assertEq(gated.balanceOf(alice), 1e18);
+        _fund(gated, creator, 1e18);
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.NotAllowedMinter.selector, creator));
+        gated.issue(1e18, creator);
+    }
+
     function test_theCreatorOpensAGatedIndexForGood() public {
         WeightedHub gated = _create(_defaultSpecs(), _feeParams(0, 7 days, true));
         vm.prank(stranger);
