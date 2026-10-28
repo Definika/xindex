@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
 /// @notice The Ethereum mainnet contracts and market data the deploy and listing scripts use. This is the only copy:

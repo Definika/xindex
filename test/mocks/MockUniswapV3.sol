@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
 /// @notice Uniswap V3 pool stand-in for the Sepolia test-market script, which still creates real V3 pools for the

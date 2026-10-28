@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
 /// @notice A proxy that keeps its implementation, and its admin if it has one, in slots of the caller's choosing: the
