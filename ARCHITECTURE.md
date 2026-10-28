@@ -90,7 +90,7 @@ OpenZeppelin's upgradeable ERC20 and ERC20Permit (clones skip constructors, so n
 - **redeemSkipping(shares, to, skipMask):** the same, except each component whose bit is set stays in the index and is
   booked as a claim for `to`, the account that receives every other component (DA-17), before any token moves.
   **claim(token, to)** pays `msg.sender`'s claim on `token` and clears it.
-- **startRebalance(keepMask)**, **cancelRebalance()** and the two **executeRebalance** overloads: section 3.
+- **startRebalance(keepMask, priceUpdate)**, **cancelRebalance()** and the two **executeRebalance** overloads: section 3.
 - **Views:** `components()`, `componentTokens()`, `componentCount()`, `componentTerms()` (weights, price ids and
   decimals), `previewIssue`, `previewRedeem`, `claimOf`, `totalClaims`, `priceTime()`, `pendingRebalance()`,
   `currentMu()`, `canStartRebalance()`, and `previewRebalance(prices)`, which takes one Pyth price per component and
