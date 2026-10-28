@@ -46,9 +46,9 @@ contract DeployWeighted is DeployChecks {
     ///         test/Scripts.t.sol fails until these equal the build, so only a reviewed, CI-green commit moves them.
     bytes32 public constant FACTORY_INITCODE_HASH = 0xe5be89f8b303185366e075f092ec3e27e2f0d075616b9f41df8f63ae63168a24;
     /// @notice keccak256 of `IndexZap`'s init code, as above.
-    bytes32 public constant ZAP_INITCODE_HASH = 0x69a52ce53fb2f195e1fb74983e9ce13b850985c5782ededfc1a413b47d5f6349;
+    bytes32 public constant ZAP_INITCODE_HASH = 0x384c8dfa0697ed6ccc69d4e09d4791696d11d8afcf4c110b0119604a1a6209d1;
     /// @notice keccak256 of `BasketBuilder`'s init code, as above.
-    bytes32 public constant BUILDER_INITCODE_HASH = 0x88d3ac96b174d7028afb8da1d2f51f430f854e7d6897f25d98e19d43fb6cf582;
+    bytes32 public constant BUILDER_INITCODE_HASH = 0x443119af6904dd498ed1ddc08c2c18d1af43234220c9efd968c41be5bd4ffc01;
     /// @notice keccak256 of `MintRequests`' init code, as above.
     bytes32 public constant REQUESTS_INITCODE_HASH = 0x1d212dbc4fd7daa5bcf551869e2461c977273e553faad227de93615b154cd417;
 

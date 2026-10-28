@@ -11,12 +11,6 @@ Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)
   keeper/src/interfaces/ITokenBridge.sol
       Wormhole (wormhole-foundation/wormhole)
 
-GNU General Public License v3.0 or later (https://www.gnu.org/licenses/gpl-3.0.html)
-  src/libraries/UniversalRouterCommands.sol
-  src/interfaces/IUniversalRouter.sol
-      Uniswap's universal-router, tag 2.0.0
-  IndexZap and BasketBuilder are compiled with these two files, directly and through src/UniversalRouterSwaps.sol.
-
 GNU General Public License v2.0 or later (https://www.gnu.org/licenses/old-licenses/gpl-2.0.html)
   script/interfaces/IUniswapV3PoolSetup.sol, IUniswapV3FactorySetup.sol, IUniswapV3PoolRead.sol,
   IUniswapV3FactoryRead.sol, INonfungiblePositionManager.sol
