@@ -105,7 +105,7 @@ src/                 the protocol's contracts, their interfaces and libraries
 test/                unit, fuzz, invariant and regression tests; test/fork/ runs against mainnet
 script/              deployment, listing and token-check scripts, and the Sepolia test market
 abi/                 the ABIs apps decode with
-keeper/              the auction keeper: a bot and its executor contract
+keeper/              the auction keeper: a bot, its executor contract and the restock service
 docs/                integration, deployment and development guides
 design/              design records
 audit/               review reports
