@@ -221,20 +221,28 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         __ERC20Permit_init(name_);
 
         uint256 total = 0;
+        // The tokens and price ids seen so far, in memory: comparing the calldata structs again for each pair cost
+        // 2.8M gas at a hundred components.
+        address[] memory tokens = new address[](n);
+        bytes32[] memory ids = new bytes32[](n);
         for (uint256 i = 0; i < n; ++i) {
             ComponentInit calldata c = components_[i];
+            address token = c.token;
+            bytes32 priceId = c.priceId;
             if (
-                c.token == address(0) || c.units == 0 || c.weight == 0 || c.weight > TOTAL_WEIGHT
-                    || c.priceId == bytes32(0) || c.decimals > MAX_DECIMALS
+                token == address(0) || c.units == 0 || c.weight == 0 || c.weight > TOTAL_WEIGHT || priceId == bytes32(0)
+                    || c.decimals > MAX_DECIMALS
             ) revert InvalidComponents();
             // Pyth fills only the first of two equal ids, so an index whose components share one could never settle
             // (V5-M1). The factory refuses duplicates too; this covers a clone it did not check.
             for (uint256 j = 0; j < i; ++j) {
-                if (components_[j].token == c.token || components_[j].priceId == c.priceId) revert InvalidComponents();
+                if (tokens[j] == token || ids[j] == priceId) revert InvalidComponents();
             }
+            tokens[i] = token;
+            ids[i] = priceId;
             total += c.weight;
-            _components.push(Component({token: c.token, units: SafeCast.toUint96(c.units)}));
-            _terms.push(Terms({priceId: c.priceId, weight: SafeCast.toUint16(c.weight), decimals: c.decimals}));
+            _components.push(Component({token: token, units: SafeCast.toUint96(c.units)}));
+            _terms.push(Terms({priceId: priceId, weight: SafeCast.toUint16(c.weight), decimals: c.decimals}));
         }
         if (total != TOTAL_WEIGHT) revert InvalidComponents();
         // Set once at creation, in the same transaction as the factory's IndexCreated event.
@@ -711,10 +719,8 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
     function _readPrices(bytes[] calldata priceUpdate, uint256 time) private returns (uint256[] memory prices) {
         uint256 n = _components.length;
         uint256 keepMask = _keepMask;
-        uint256 moving = 0;
-        for (uint256 i = 0; i < n; ++i) {
-            if ((keepMask & (1 << i)) == 0) ++moving;
-        }
+        // The mask never reaches past the components: startRebalance refuses one that does.
+        uint256 moving = n - _countBits(keepMask);
         bytes32[] memory ids = new bytes32[](moving);
         uint256 k = 0;
         for (uint256 i = 0; i < n; ++i) {
@@ -900,21 +906,21 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
 
     /// @inheritdoc IIndexHub
     function componentTokens() external view returns (address[] memory tokens) {
-        uint256 n = _components.length;
-        tokens = new address[](n);
-        for (uint256 i = 0; i < n; ++i) {
-            tokens[i] = _components[i].token;
-        }
+        return _tokens();
     }
 
     /// @inheritdoc IWeightedHub
     function components() external view returns (address[] memory tokens, uint256[] memory units) {
+        return (_tokens(), _scaledUnits(_pendingScale()));
+    }
+
+    /// @dev Every component's token, in component order.
+    function _tokens() private view returns (address[] memory tokens) {
         uint256 n = _components.length;
         tokens = new address[](n);
         for (uint256 i = 0; i < n; ++i) {
             tokens[i] = _components[i].token;
         }
-        units = _scaledUnits(_pendingScale());
     }
 
     /// @inheritdoc IWeightedHub
@@ -1019,7 +1025,7 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         uint256 n = _components.length;
         units = new uint256[](n);
         for (uint256 i = 0; i < n; ++i) {
-            units[i] = scale == WAD ? _components[i].units : Math.mulDiv(_components[i].units, scale, WAD);
+            units[i] = Math.mulDiv(_components[i].units, scale, WAD);
         }
     }
 

@@ -470,7 +470,8 @@ records also cite.
   reverts `RebalanceMovedOn` when the settlement has grown past what the caller will deliver. Issue stays open through
   notice and auction, so a dust issue can grief an executor sized from an off-chain simulation: the callback arguments
   are authoritative (DA-13). At `MAX_COMPONENTS` (100), every path of the hub and the factory fits a transaction under
-  EIP-7825's 2^24 gas cap on mock tokens (`test_aHundredComponentsFitOneTransaction`): `createIndex` about 13.1M,
+  EIP-7825's 2^24 gas cap on mock tokens (`test_aHundredComponentsFitOneTransaction`): `createIndex` about 10.7M
+  (13.1M until 2026-10-28, when the two duplicate checks stopped re-decoding calldata structs for every pair),
   `redeemSkipping` with every component skipped 5.1M, the settlement's own work 4.8M with Pyth's parse mocked. With
   real tokens and Pyth's real contract, a fill of 93 legs cost 7.26M on an anvil fork of 2026-10-12, the parse 2.34M
   of it for a 30.9 KB update signed by keys the test installed; the fork suite's 14.9M for 92 legs counts its

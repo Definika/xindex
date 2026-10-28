@@ -516,7 +516,7 @@ reading of its Binance-Peg source (`design/2026-10-10-one-index-wormhole-legs.md
 
 | Operation at 100 components | Gas |
 |---|---|
-| `createIndex` | about 13.1M |
+| `createIndex` | about 10.7M |
 | `issue` | about 3.6M |
 | `startRebalance`, which parses every feed (RX-3), through the test's `MockPyth` (Pyth's own parse took 2.34M for 93 feeds on a fork) | about 4.9M |
 | `executeRebalance`, Pyth's parse mocked, an executor that already holds the bought tokens | about 4.8M |

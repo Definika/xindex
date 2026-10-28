@@ -157,9 +157,9 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         if (msg.value != creationFee) revert WrongCreationFee(msg.value, creationFee);
         // Read before the clone is initialized, so no factory state is read after an external call.
         address recipient = platformFeeRecipient;
-        _validateComponents(components);
-        IWeightedHub.Config memory config = _checkedConfig(params);
         IWeightedHub.ComponentInit[] memory inits = _componentInits(components);
+        _validateComponents(components, inits);
+        IWeightedHub.Config memory config = _checkedConfig(params);
 
         bytes32 salt = _salt(msg.sender, keccak256(bytes(name)), keccak256(bytes(symbol)), _contentsHash(inits, config));
         // Effects before interaction: register the clone, then initialize it in the same transaction.
@@ -353,27 +353,31 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         if (!isOwnerOrGuardian(msg.sender)) revert Unauthorized(msg.sender);
     }
 
-    function _validateComponents(ComponentSpec[] calldata components) private view {
+    /// @dev Validates `components` against the whitelist, the unit and weight bounds and the duplicate rules, reading
+    ///      each token's terms from `inits`, which {_componentInits} built from storage once. The duplicate checks
+    ///      compare the inits in memory: comparing calldata structs cost 1.9M gas at a hundred components.
+    function _validateComponents(ComponentSpec[] calldata components, IWeightedHub.ComponentInit[] memory inits)
+        private
+        view
+    {
         uint256 n = components.length;
         if (n < MIN_COMPONENTS || n > MAX_COMPONENTS) revert InvalidComponentCount(n);
 
         uint256 total = 0;
-        bytes32[] memory priceIds = new bytes32[](n);
         for (uint256 i = 0; i < n; ++i) {
             ComponentSpec calldata c = components[i];
-            address token = c.token;
+            IWeightedHub.ComponentInit memory init = inits[i];
+            address token = init.token;
             if (!isWhitelisted[token]) revert TokenNotWhitelisted(token);
-            Terms memory terms = _terms[token];
-            if (c.units < MIN_RAW_UNITS || c.units > _maxUnits(terms.decimals)) revert UnitsOutOfRange(token, c.units);
+            if (c.units < MIN_RAW_UNITS || c.units > _maxUnits(init.decimals)) revert UnitsOutOfRange(token, c.units);
             if (c.weight == 0 || c.weight > TOTAL_WEIGHT) revert InvalidWeights();
             total += c.weight;
-            bytes32 priceId = terms.priceId;
-            priceIds[i] = priceId;
+            bytes32 priceId = init.priceId;
             for (uint256 j = 0; j < i; ++j) {
-                if (components[j].token == token) revert DuplicateToken(token);
+                if (inits[j].token == token) revert DuplicateToken(token);
                 // Pyth fills only the first of two equal ids. So two components on one feed, such as two wrappers of
                 // one coin, would make every fill revert (V5-M1).
-                if (priceIds[j] == priceId) revert DuplicatePriceId(token);
+                if (inits[j].priceId == priceId) revert DuplicatePriceId(token);
             }
         }
         if (total != TOTAL_WEIGHT) revert InvalidWeights();
