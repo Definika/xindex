@@ -15,6 +15,7 @@ import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
 import {IUniversalRouterSwaps} from "../../src/interfaces/IUniversalRouterSwaps.sol";
 import {IXindexErrors} from "../../src/interfaces/IXindexErrors.sol";
 import {IUniversalRouter} from "../../src/interfaces/IUniversalRouter.sol";
+import {IWETH9} from "../../src/interfaces/IWETH9.sol";
 import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
 import {DeployWeighted} from "../../script/DeployWeighted.s.sol";
@@ -129,7 +130,7 @@ contract SecurityForkTest is Test {
             );
         }
         factory = new WeightedIndexFactory(address(this), address(0), A.PYTH);
-        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER));
+        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), IWETH9(A.WETH));
 
         // Nothing here asks for a price, so each token is listed under a price id of its own making.
         factory.proposeListing(A.WBTC, keccak256(abi.encode(A.WBTC)));

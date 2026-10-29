@@ -32,8 +32,8 @@ no enabled module, because a module acts as the Safe without signatures (keep it
 cannot see later changes). The guardian must not be the broadcasting key, which must hold no role; when the owner is a
 Safe, neither the guardian nor the broadcasting key may be one of its signers, since the guardian is the owner's veto
 (SA-06); and neither role may be a market contract: the router, the PoolManager and Pyth everywhere, and on a mainnet
-also every token and mint currency in the address book (CR-I37). `PYTH`, `UNIVERSAL_ROUTER`, `USDC` and `USDT`
-default to the address book's on chain 1 (`script/MainnetAddresses.sol`), where any other value is rejected, and are
+also every token and mint currency in the address book (CR-I37). `PYTH`, `UNIVERSAL_ROUTER`, `WETH`, `USDC` and
+`USDT` default to the address book's on chain 1 (`script/MainnetAddresses.sol`), where any other value is rejected, and are
 required anywhere else; they are the script's only market addresses, because the hub and factory depend on no Uniswap contract.
 
 An owner that is a contract but not a Safe, such as a timelock, is refused on Ethereum unless `OWNER_IS_NOT_A_SAFE`
@@ -160,7 +160,7 @@ Router's encoding, not on Sepolia.
 | WeightedIndexFactory (v5, blocks 11,998,381 to 11,998,385 with the next four) | `0x787139b915753F0CfFfa14708D1e665dCf5AA0bA` |
 | WeightedHub implementation | `0x3ae717ffeE17D3FAd861447703F31011eB8DC609` |
 | WeightedMath | `0xd22BDeF312560309686483F4983966d810f3FA85` |
-| IndexZap | `0x1CC5cC8bE9553cFe952a4A330071C20cE96d9924` |
+| IndexZap (the build of 2026-10-26, before the ether and permit-mint entry points of 2026-10-29; a redeploy of the zap alone adds them) | `0x1CC5cC8bE9553cFe952a4A330071C20cE96d9924` |
 | BasketBuilder | `0xa4AB1233D1Eb2ddcA77C27579A8cB41156452E13` |
 | MintRequests | `0x5b092e8A8ab29A12e2D91bE96C307759B2a12b81` |
 | Owner (2-of-3 Safe) | `0x2Fb4b72C689E21D0d33Bd9D66DbEAdC60b6b0CA2` |
@@ -181,7 +181,7 @@ MARKET_MODE=seed MARKET_TOKENS=<logged by create> forge script script/testnet/Se
 # 2. the factory (which deploys the WeightedHub implementation), the zap, the basket builder and MintRequests; USDT is
 #    any second 6-decimal test token, a FaucetToken for instance (tUSDT above); off a mainnet PYTH is required
 OWNER=<Safe> GUARDIAN=<guardian> PYTH=<Pyth's Sepolia contract> UNIVERSAL_ROUTER=0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b \
-  USDC=<tUSDC logged by create> USDT=<a second test stablecoin> \
+  WETH=0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14 USDC=<tUSDC logged by create> USDT=<a second test stablecoin> \
   forge script script/DeployWeighted.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast \
   --gas-estimate-multiplier 900
 

@@ -6,6 +6,8 @@ import {Vm} from "forge-std/Vm.sol";
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
+import {Errors} from "@openzeppelin/contracts/utils/Errors.sol";
+import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
 import {WeightedHub} from "../src/WeightedHub.sol";
 import {IndexZap} from "../src/IndexZap.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -13,6 +15,7 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IIndexZap} from "../src/interfaces/IIndexZap.sol";
 import {IUniversalRouterSwaps} from "../src/interfaces/IUniversalRouterSwaps.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
+import {IWETH9} from "../src/interfaces/IWETH9.sol";
 import {IIndexHub} from "../src/interfaces/IIndexHub.sol";
 import {IWeightedHub} from "../src/interfaces/IWeightedHub.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
@@ -24,6 +27,7 @@ import {MockHookToken, ITokenReceiverHook} from "./mocks/MockHookToken.sol";
 import {MockWeightedExecutor} from "./mocks/MockWeightedExecutor.sol";
 import {MockMarket} from "./mocks/MockMarket.sol";
 import {MockUniversalRouter} from "./mocks/MockUniversalRouter.sol";
+import {MockWETH} from "./mocks/MockWETH.sol";
 import {PathLib} from "../src/libraries/PathLib.sol";
 import {PathKey, V4ExactInputParams, V4ExactOutputParams} from "../src/libraries/UniswapV4Types.sol";
 
@@ -61,10 +65,10 @@ contract IndexZapTest is XindexTest {
         // list, and the mock router never settles against it.
         poolManager = makeAddr("poolManager");
         router = new MockUniversalRouter(poolManager);
-        zap = new IndexZap(IIndexFactory(address(factory)), router);
 
         wbtc = new MockERC20("Wrapped BTC", "WBTC", 8);
         weth = market.weth();
+        zap = new IndexZap(IIndexFactory(address(factory)), router, IWETH9(address(weth)));
         link = new MockERC20("Chainlink", "LINK", 18);
         usdc = market.usdc();
         usdt = new MockUSDT();
@@ -77,6 +81,8 @@ contract IndexZapTest is XindexTest {
 
         wbtc.mint(address(router.inventory()), 1_000e8);
         weth.mint(address(router.inventory()), 100_000e18);
+        // The ether behind every WETH the suite mints, so `withdraw` can pay a burn to ether.
+        vm.deal(address(weth), 1_000_000 ether);
         link.mint(address(router.inventory()), 10_000_000e18);
         usdc.mint(address(router.inventory()), 1_000_000_000e6);
         usdt.mint(address(router.inventory()), 1_000_000_000e6);
@@ -253,6 +259,33 @@ contract IndexZapTest is XindexTest {
         legs[1] = IUniversalRouterSwaps.BurnLeg({v3Path: "", v4Path: new PathKey[](0), minAmountOut: 0});
     }
 
+    /// @dev Mint legs paid in WETH: WBTC and LINK each one hop from WETH, and WETH itself passed through.
+    function _wethMintLegs() internal view returns (IUniversalRouterSwaps.MintLeg[] memory legs) {
+        legs = new IUniversalRouterSwaps.MintLeg[](3);
+        legs[0] = IUniversalRouterSwaps.MintLeg({
+            v3Path: _path2(address(wbtc), address(weth)), v4Path: _noV4(), maxAmountIn: 0
+        });
+        legs[1] = IUniversalRouterSwaps.MintLeg({v3Path: "", v4Path: _noV4(), maxAmountIn: 0});
+        legs[2] = IUniversalRouterSwaps.MintLeg({
+            v3Path: _path2(address(link), address(weth)), v4Path: _noV4(), maxAmountIn: 0
+        });
+    }
+
+    /// @dev Burn legs paid out in WETH, the mirror of `_wethMintLegs`.
+    function _wethBurnLegs() internal view returns (IUniversalRouterSwaps.BurnLeg[] memory legs) {
+        legs = new IUniversalRouterSwaps.BurnLeg[](3);
+        legs[0] = IUniversalRouterSwaps.BurnLeg({
+            v3Path: _path2(address(wbtc), address(weth)), v4Path: _noV4(), minAmountOut: 0
+        });
+        legs[1] = IUniversalRouterSwaps.BurnLeg({v3Path: "", v4Path: _noV4(), minAmountOut: 0});
+        legs[2] = IUniversalRouterSwaps.BurnLeg({
+            v3Path: _path2(address(link), address(weth)), v4Path: _noV4(), minAmountOut: 0
+        });
+    }
+
+    /// @dev One index token in WETH at the mock's prices: 0.02 for the WBTC, 0.01 held as WETH, 0.005 for the LINK.
+    uint256 constant NAV_WETH = 0.035 ether;
+
     function _mixedLegs() internal view returns (IUniversalRouterSwaps.MintLeg[] memory legs) {
         legs = new IUniversalRouterSwaps.MintLeg[](2);
         legs[0] = IUniversalRouterSwaps.MintLeg({
@@ -268,9 +301,20 @@ contract IndexZapTest is XindexTest {
         assertEq(usdc.balanceOf(address(zap)), 0, "zap usdc");
         assertEq(usdt.balanceOf(address(zap)), 0, "zap usdt");
         assertEq(index.balanceOf(address(zap)), 0, "zap index");
+        assertEq(address(zap).balance, 0, "zap ether");
     }
 
+    /// @dev An EIP-2612 permit on the index's shares, for the zap.
     function _permitSig(uint256 pk, address signer, uint256 value, uint256 deadline)
+        internal
+        view
+        returns (uint8 v, bytes32 r, bytes32 s)
+    {
+        return _tokenPermitSig(address(index), pk, signer, value, deadline);
+    }
+
+    /// @dev An EIP-2612 permit on `token`, for the zap, under the token's own domain and the signer's current nonce.
+    function _tokenPermitSig(address token, uint256 pk, address signer, uint256 value, uint256 deadline)
         internal
         view
         returns (uint8 v, bytes32 r, bytes32 s)
@@ -281,11 +325,11 @@ contract IndexZapTest is XindexTest {
                 signer,
                 address(zap),
                 value,
-                index.nonces(signer),
+                IERC20Permit(token).nonces(signer),
                 deadline
             )
         );
-        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", index.DOMAIN_SEPARATOR(), structHash));
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", IERC20Permit(token).DOMAIN_SEPARATOR(), structHash));
         (v, r, s) = vm.sign(pk, digest);
     }
 
@@ -296,10 +340,14 @@ contract IndexZapTest is XindexTest {
     function test_constructor() public {
         assertEq(address(zap.FACTORY()), address(factory));
         assertEq(address(zap.ROUTER()), address(router));
+        assertEq(address(zap.WETH()), address(weth));
+        IWETH9 w = IWETH9(address(weth));
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new IndexZap(IIndexFactory(address(0)), router);
+        new IndexZap(IIndexFactory(address(0)), router, w);
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(address(0)));
+        new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(address(0)), w);
+        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
+        new IndexZap(IIndexFactory(address(factory)), router, IWETH9(address(0)));
     }
 
     // ---------------------------------------------------------------------
@@ -1305,6 +1353,269 @@ contract IndexZapTest is XindexTest {
     }
 
     // ---------------------------------------------------------------------
+    // mint with permit
+    // ---------------------------------------------------------------------
+
+    function test_mintWithPermit_oneTransaction() public {
+        (address signer, uint256 pk) = makeAddrAndKey("signer");
+        usdc.mint(signer, 200e6);
+        IIndexZap.MintParams memory p =
+            _mintParams(address(index), address(usdc), 200e6, 1e18, _mintLegs(address(usdc)), signer);
+        (uint8 v, bytes32 r, bytes32 s) = _tokenPermitSig(address(usdc), pk, signer, 200e6, p.deadline);
+
+        vm.prank(signer);
+        uint256 spent = zap.mintWithTokenPermit(p, v, r, s);
+        assertEq(spent, NAV_USD6);
+        assertEq(index.balanceOf(signer), 1e18);
+        assertEq(usdc.balanceOf(signer), 200e6 - NAV_USD6, "the unspent part came back");
+        assertEq(usdc.nonces(signer), 1);
+        assertEq(usdc.allowance(signer, address(zap)), 0, "the permit was for exactly what was pulled");
+        _assertZapEmpty();
+    }
+
+    function test_mintWithPermit_frontRunPermitStillMints() public {
+        (address signer, uint256 pk) = makeAddrAndKey("signer");
+        usdc.mint(signer, 200e6);
+        IIndexZap.MintParams memory p =
+            _mintParams(address(index), address(usdc), 200e6, 1e18, _mintLegs(address(usdc)), signer);
+        (uint8 v, bytes32 r, bytes32 s) = _tokenPermitSig(address(usdc), pk, signer, 200e6, p.deadline);
+
+        vm.prank(bob); // someone copies the signature from the mempool and submits it first
+        usdc.permit(signer, address(zap), 200e6, p.deadline, v, r, s);
+
+        vm.prank(signer);
+        assertEq(zap.mintWithTokenPermit(p, v, r, s), NAV_USD6);
+        assertEq(index.balanceOf(signer), 1e18);
+    }
+
+    function test_mintWithPermit_invalidSignatureWithoutAllowanceReverts() public {
+        usdc.mint(alice, 200e6);
+        IIndexZap.MintParams memory p =
+            _mintParams(address(index), address(usdc), 200e6, 1e18, _mintLegs(address(usdc)), alice);
+        vm.prank(alice);
+        vm.expectPartialRevert(IERC20Errors.ERC20InsufficientAllowance.selector);
+        zap.mintWithTokenPermit(p, 27, bytes32(uint256(1)), bytes32(uint256(2)));
+    }
+
+    /// @dev USDT has no `permit`: the call to it fails, is ignored, and an approval given beforehand carries the mint.
+    function test_mintWithPermit_aTokenWithoutPermitMintsOnItsApproval() public {
+        usdt.mint(alice, 200e6);
+        IIndexZap.MintParams memory p =
+            _mintParams(address(index), address(usdt), 200e6, 1e18, _mintLegs(address(usdt)), alice);
+        vm.startPrank(alice);
+        usdt.approve(address(zap), 200e6);
+        assertEq(zap.mintWithTokenPermit(p, 27, bytes32(0), bytes32(0)), NAV_USD6);
+        vm.stopPrank();
+        assertEq(index.balanceOf(alice), 1e18);
+    }
+
+    function test_mintWithPermit_checksBeforePermit() public {
+        IIndexZap.MintParams memory p =
+            _mintParams(address(usdc), address(usdc), 200e6, 1e18, _mintLegs(address(usdc)), alice);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotIndex.selector, address(usdc)));
+        zap.mintWithTokenPermit(p, 27, bytes32(0), bytes32(0));
+
+        p.index = address(index);
+        p.expectedNonce = 1;
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.StaleRebalanceNonce.selector, 1, 0));
+        zap.mintWithTokenPermit(p, 27, bytes32(0), bytes32(0));
+    }
+
+    // ---------------------------------------------------------------------
+    // ether in and out
+    // ---------------------------------------------------------------------
+
+    function test_mintWithEth_wrapsSwapsAndRefundsTheRestAsEther() public {
+        vm.deal(alice, 1 ether);
+        IIndexZap.MintParams memory p =
+            _mintParams(address(index), address(weth), 0.05 ether, 1e18, _wethMintLegs(), bob);
+
+        vm.prank(alice);
+        vm.expectEmit(true, true, true, true, address(zap));
+        emit IIndexZap.ZapMint(address(index), alice, bob, address(weth), NAV_WETH, 1e18);
+        uint256 spent = zap.mintWithEth{value: 0.05 ether}(p);
+
+        assertEq(spent, NAV_WETH);
+        assertEq(index.balanceOf(bob), 1e18);
+        assertEq(alice.balance, 1 ether - NAV_WETH, "the unspent ether came back unwrapped");
+        assertEq(weth.balanceOf(address(index)), U_WETH, "the WETH leg was taken from the deposit");
+        assertEq(weth.balanceOf(alice), 0, "nothing came back as WETH");
+        _assertZapEmpty();
+    }
+
+    function test_mintWithEth_exactValueRefundsNothing() public {
+        vm.deal(alice, NAV_WETH);
+        IIndexZap.MintParams memory p =
+            _mintParams(address(index), address(weth), NAV_WETH, 1e18, _wethMintLegs(), alice);
+        vm.prank(alice);
+        assertEq(zap.mintWithEth{value: NAV_WETH}(p), NAV_WETH);
+        assertEq(alice.balance, 0);
+        assertEq(index.balanceOf(alice), 1e18);
+        _assertZapEmpty();
+    }
+
+    function test_mintWithEth_revertsUnlessTokenInIsWeth() public {
+        vm.deal(alice, 1 ether);
+        IIndexZap.MintParams memory p =
+            _mintParams(address(index), address(usdc), 200e6, 1e18, _mintLegs(address(usdc)), alice);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.NotWETH.selector, address(usdc)));
+        zap.mintWithEth{value: 200e6}(p);
+    }
+
+    function test_mintWithEth_revertsWhenTheValueIsNotTheBudget() public {
+        vm.deal(alice, 1 ether);
+        IIndexZap.MintParams memory p =
+            _mintParams(address(index), address(weth), 0.05 ether, 1e18, _wethMintLegs(), alice);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.ValueMismatch.selector, 0.04 ether, 0.05 ether));
+        zap.mintWithEth{value: 0.04 ether}(p);
+    }
+
+    /// @dev The checks run before the ether is wrapped, so a refused call leaves nothing to unwind.
+    function test_mintWithEth_checksRunFirst() public {
+        vm.deal(alice, 1 ether);
+        IIndexZap.MintParams memory p =
+            _mintParams(address(index), address(weth), 0.05 ether, 0, _wethMintLegs(), alice);
+        vm.prank(alice);
+        vm.expectRevert(IXindexErrors.ZeroAmount.selector);
+        zap.mintWithEth{value: 0.05 ether}(p);
+    }
+
+    function test_mintWithEth_revertsWhenTheCallerRefusesTheRefund() public {
+        EtherRefuser refuser = new EtherRefuser();
+        vm.deal(address(this), 0.05 ether);
+        IIndexZap.MintParams memory p =
+            _mintParams(address(index), address(weth), 0.05 ether, 1e18, _wethMintLegs(), alice);
+        vm.expectRevert(Errors.FailedCall.selector);
+        refuser.mint{value: 0.05 ether}(zap, p);
+
+        // With nothing to refund, the same caller mints.
+        p.maxAmountIn = NAV_WETH;
+        refuser.mint{value: NAV_WETH}(zap, p);
+        assertEq(index.balanceOf(alice), 1e18);
+    }
+
+    function test_burnToEth_sellsIntoWethAndPaysEther() public {
+        _mintFor(alice, 1e18, 200e6);
+        IIndexZap.BurnParams memory p = _burnParams(address(index), 1e18, address(weth), NAV_WETH, _wethBurnLegs(), bob);
+
+        vm.startPrank(alice);
+        index.approve(address(zap), 1e18);
+        vm.expectEmit(true, true, true, true, address(zap));
+        emit IIndexZap.ZapBurn(address(index), alice, bob, address(weth), 1e18, NAV_WETH);
+        uint256 out = zap.burnToEth(p);
+        vm.stopPrank();
+
+        assertEq(out, NAV_WETH);
+        assertEq(bob.balance, NAV_WETH, "paid in ether");
+        assertEq(weth.balanceOf(bob), 0, "and none as WETH");
+        assertEq(index.balanceOf(alice), 0);
+        _assertZapEmpty();
+    }
+
+    function test_burnToEth_revertsUnlessTokenOutIsWeth() public {
+        _mintFor(alice, 1e18, 200e6);
+        IIndexZap.BurnParams memory p =
+            _burnParams(address(index), 1e18, address(usdc), 1, _burnLegs(address(usdc)), alice);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.NotWETH.selector, address(usdc)));
+        zap.burnToEth(p);
+    }
+
+    function test_burnToEth_honoursTheMinimum() public {
+        _mintFor(alice, 1e18, 200e6);
+        IIndexZap.BurnParams memory p =
+            _burnParams(address(index), 1e18, address(weth), NAV_WETH + 1, _wethBurnLegs(), alice);
+        vm.startPrank(alice);
+        index.approve(address(zap), 1e18);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InsufficientOutput.selector, NAV_WETH, NAV_WETH + 1));
+        zap.burnToEth(p);
+        vm.stopPrank();
+    }
+
+    function test_burnToEth_revertsWhenTheRecipientRefusesEther() public {
+        address refuser = address(new EtherRefuser());
+        _mintFor(alice, 1e18, 200e6);
+        IIndexZap.BurnParams memory p = _burnParams(address(index), 1e18, address(weth), 1, _wethBurnLegs(), refuser);
+        vm.startPrank(alice);
+        index.approve(address(zap), 1e18);
+        vm.expectRevert(Errors.FailedCall.selector);
+        zap.burnToEth(p);
+        vm.stopPrank();
+    }
+
+    /// @dev What a hop did not sell is returned as the token, as on a burn to a token; only the proceeds are ether.
+    function test_burnToEth_returnsUnsoldComponentsAsTokens() public {
+        _mintFor(alice, 1e18, 200e6);
+        router.setMode(MockUniversalRouter.Mode.PartialFirstHop);
+        IIndexZap.BurnParams memory p = _burnParams(address(index), 1e18, address(weth), 1, _wethBurnLegs(), bob);
+        vm.startPrank(alice);
+        index.approve(address(zap), 1e18);
+        vm.expectEmit(true, true, true, true, address(zap));
+        emit IIndexZap.ComponentReturned(address(index), bob, address(wbtc), U_WBTC / 2);
+        vm.expectEmit(true, true, true, true, address(zap));
+        emit IIndexZap.ComponentReturned(address(index), bob, address(link), U_LINK / 2);
+        uint256 out = zap.burnToEth(p);
+        vm.stopPrank();
+
+        assertEq(out, 0.0225 ether, "half the WBTC and LINK sold, the WETH leg passed through");
+        assertEq(bob.balance, 0.0225 ether);
+        assertEq(wbtc.balanceOf(bob), U_WBTC / 2);
+        assertEq(link.balanceOf(bob), U_LINK / 2);
+        _assertZapEmpty();
+    }
+
+    function test_burnToEthWithPermit_oneTransaction() public {
+        (address signer, uint256 pk) = makeAddrAndKey("signer");
+        _mintFor(signer, 1e18, 200e6);
+        IIndexZap.BurnParams memory p =
+            _burnParams(address(index), 1e18, address(weth), NAV_WETH, _wethBurnLegs(), signer);
+        (uint8 v, bytes32 r, bytes32 s) = _permitSig(pk, signer, 1e18, p.deadline);
+
+        vm.prank(signer);
+        assertEq(zap.burnToEthWithPermit(p, v, r, s), NAV_WETH);
+        assertEq(signer.balance, NAV_WETH);
+        assertEq(index.nonces(signer), 1);
+        assertEq(index.allowance(signer, address(zap)), 0);
+        _assertZapEmpty();
+    }
+
+    function test_burnToEthWithPermit_checksBeforePermit() public {
+        _mintFor(alice, 1e18, 200e6);
+        IIndexZap.BurnParams memory p =
+            _burnParams(address(index), 1e18, address(usdc), 1, _burnLegs(address(usdc)), alice);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IIndexZap.NotWETH.selector, address(usdc)));
+        zap.burnToEthWithPermit(p, 27, bytes32(0), bytes32(0));
+
+        p.tokenOut = address(weth);
+        p.legs = _wethBurnLegs();
+        p.index = address(usdc);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotIndex.selector, address(usdc)));
+        zap.burnToEthWithPermit(p, 27, bytes32(0), bytes32(0));
+    }
+
+    /// @dev Only WETH's `withdraw` may send ether here. Anyone else is refused, so no swap, sweep or stranger can
+    ///      leave ether in the zap, and the engine's rule that native ether never reaches it stands.
+    function test_receive_takesEtherFromWethAlone() public {
+        vm.deal(alice, 1 ether);
+        vm.prank(alice);
+        (bool ok, bytes memory err) = address(zap).call{value: 1}("");
+        assertFalse(ok);
+        assertEq(err, abi.encodeWithSelector(IIndexZap.NotWETH.selector, alice));
+        assertEq(address(zap).balance, 0);
+
+        vm.deal(address(weth), 1);
+        vm.prank(address(weth));
+        (ok,) = address(zap).call{value: 1}("");
+        assertTrue(ok, "WETH may");
+    }
+
+    // ---------------------------------------------------------------------
     // CR: the security audit of 2026-09-23
     // ---------------------------------------------------------------------
 
@@ -1459,6 +1770,80 @@ contract IndexZapTest is XindexTest {
         );
 
         assertEq(index.balanceOf(address(probe)), 1e18, "the outer burn completed and the second share is untouched");
+        _assertTheGuardStoppedTheNestedCall(probe);
+    }
+
+    /// @dev CR-I26, mintWithTokenPermit: the refund in a callback token hands the payer control, as on a plain mint.
+    function test_CRI26_aPermitMintHoldsTheGuardThroughItsRefund() public {
+        MockHookToken hook = new MockHookToken();
+        router.setPrice(address(hook), 1e18, 18);
+        ZapReenterer probe = _reenterer(1e18, 0);
+        hook.mint(address(probe), 200e18);
+        probe.approve(IERC20(address(hook)), type(uint256).max);
+
+        IIndexZap.MintParams memory outer =
+            _mintParams(address(index), address(hook), 200e18, 1e18, _mintLegs(address(hook)), address(probe));
+        IIndexZap.BurnParams memory nested =
+            _burnParams(address(index), 1e18, address(usdc), 1, _burnLegs(address(usdc)), address(probe));
+        probe.run(
+            abi.encodeCall(IIndexZap.mintWithTokenPermit, (outer, 27, bytes32(0), bytes32(0))),
+            abi.encodeCall(IIndexZap.burnToToken, (nested))
+        );
+
+        assertEq(index.balanceOf(address(probe)), 2e18, "the outer mint completed and the held share was not burnt");
+        _assertTheGuardStoppedTheNestedCall(probe);
+    }
+
+    /// @dev CR-I26, mintWithEth: the ether refund hands the payer control, and a burn made from there fails on the
+    ///      outer call's guard.
+    function test_CRI26_anEtherMintHoldsTheGuardThroughItsRefund() public {
+        ZapReenterer probe = _reenterer(1e18, 0);
+        vm.deal(address(this), 0.05 ether);
+
+        IIndexZap.MintParams memory outer =
+            _mintParams(address(index), address(weth), 0.05 ether, 1e18, _wethMintLegs(), address(probe));
+        IIndexZap.BurnParams memory nested =
+            _burnParams(address(index), 1e18, address(usdc), 1, _burnLegs(address(usdc)), address(probe));
+        probe.run{value: 0.05 ether}(
+            abi.encodeCall(IIndexZap.mintWithEth, (outer)), abi.encodeCall(IIndexZap.burnToToken, (nested))
+        );
+
+        assertEq(index.balanceOf(address(probe)), 2e18, "the outer mint completed and the held share was not burnt");
+        assertEq(address(probe).balance, 0.05 ether - NAV_WETH, "the refund arrived");
+        _assertTheGuardStoppedTheNestedCall(probe);
+    }
+
+    /// @dev CR-I26, burnToEth: the ether payout hands the recipient control, and a mint made from there fails on the
+    ///      outer call's guard.
+    function test_CRI26_anEtherBurnHoldsTheGuardThroughItsPayout() public {
+        ZapReenterer probe = _reenterer(1e18, 200e6);
+
+        IIndexZap.BurnParams memory outer =
+            _burnParams(address(index), 1e18, address(weth), 1, _wethBurnLegs(), address(probe));
+        IIndexZap.MintParams memory nested =
+            _mintParams(address(index), address(usdc), 200e6, 1e18, _mintLegs(address(usdc)), address(probe));
+        probe.run(abi.encodeCall(IIndexZap.burnToEth, (outer)), abi.encodeCall(IIndexZap.mintWithToken, (nested)));
+
+        assertEq(index.balanceOf(address(probe)), 0, "the outer burn completed and nothing was minted inside it");
+        assertEq(address(probe).balance, NAV_WETH, "the payout arrived");
+        _assertTheGuardStoppedTheNestedCall(probe);
+    }
+
+    /// @dev CR-I26, burnToEthWithPermit: the same payout, and a second permit burn from inside it, stopped the same way.
+    function test_CRI26_anEtherPermitBurnHoldsTheGuardThroughItsPayout() public {
+        ZapReenterer probe = _reenterer(2e18, 0);
+
+        IIndexZap.BurnParams memory outer =
+            _burnParams(address(index), 1e18, address(weth), 1, _wethBurnLegs(), address(probe));
+        IIndexZap.BurnParams memory nested =
+            _burnParams(address(index), 1e18, address(weth), 1, _wethBurnLegs(), address(probe));
+        probe.run(
+            abi.encodeCall(IIndexZap.burnToEthWithPermit, (outer, 27, bytes32(0), bytes32(0))),
+            abi.encodeCall(IIndexZap.burnToEthWithPermit, (nested, 27, bytes32(0), bytes32(0)))
+        );
+
+        assertEq(index.balanceOf(address(probe)), 1e18, "the outer burn completed and the second share is untouched");
+        assertEq(address(probe).balance, NAV_WETH);
         _assertTheGuardStoppedTheNestedCall(probe);
     }
 
@@ -1913,19 +2298,35 @@ contract ZapReenterer is ITokenReceiverHook {
         token.approve(address(ZAP), amount);
     }
 
-    /// @notice Makes `outer` on the zap, armed to make `nested` from the first callback the zap's transfer triggers.
-    ///         A failure of `outer` reverts with the zap's own error.
-    function run(bytes calldata outer, bytes calldata nested) external {
+    /// @notice Makes `outer` on the zap, with the call's ether, armed to make `nested` from the first callback the
+    ///         zap's transfer or ether payment triggers. A failure of `outer` reverts with the zap's own error.
+    function run(bytes calldata outer, bytes calldata nested) external payable {
         _nested = nested;
         _armed = true;
-        Address.functionCall(address(ZAP), outer);
+        Address.functionCallWithValue(address(ZAP), outer, msg.value);
     }
 
     function onTokenReceived(address from, uint256) external {
+        _fire(from);
+    }
+
+    /// @notice An ether refund or payout from the zap hands this contract control, as a token callback does.
+    receive() external payable {
+        _fire(msg.sender);
+    }
+
+    function _fire(address from) private {
         if (!_armed || from != address(ZAP)) return;
         _armed = false;
         armedAndFired = true;
         (nestedSucceeded, nestedError) = address(ZAP).call(_nested);
+    }
+}
+
+/// @dev A caller and recipient that takes no ether: it has neither `receive` nor `fallback`.
+contract EtherRefuser {
+    function mint(IndexZap zap, IIndexZap.MintParams calldata p) external payable returns (uint256) {
+        return zap.mintWithEth{value: msg.value}(p);
     }
 }
 

@@ -354,6 +354,18 @@ contract MocksTest is Test {
         assertEq(address(w).balance, 0.4 ether);
     }
 
+    function test_weth_withdrawUnwrapsEther() public {
+        MockWETH w = new MockWETH();
+        vm.deal(alice, 1 ether);
+        vm.startPrank(alice);
+        w.deposit{value: 0.4 ether}();
+        w.withdraw(0.3 ether);
+        vm.stopPrank();
+        assertEq(w.balanceOf(alice), 0.1 ether);
+        assertEq(alice.balance, 0.9 ether);
+        assertEq(address(w).balance, 0.1 ether);
+    }
+
     function test_positionManager_takesDesiredAmountsAndRecordsThem() public {
         MockPositionManager positions = new MockPositionManager();
         weth.mint(alice, 2e18);

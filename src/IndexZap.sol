@@ -5,16 +5,18 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IIndexFactory} from "./interfaces/IIndexFactory.sol";
 import {IIndexHub} from "./interfaces/IIndexHub.sol";
 import {IIndexZap} from "./interfaces/IIndexZap.sol";
 import {IUniversalRouter} from "./interfaces/IUniversalRouter.sol";
+import {IWETH9} from "./interfaces/IWETH9.sol";
 import {UniversalRouterSwaps} from "./UniversalRouterSwaps.sol";
 
 /// @title IndexZap
-/// @notice Stateless convenience router: mint any index with a single token (USDC, USDT, ...), and burn any index
-///         straight into a single token, swapping through Uniswap's Universal Router.
+/// @notice Stateless convenience router: mint any index with a single token (USDC, USDT, ...) or with ether, and burn
+///         any index straight into a single token or ether, swapping through Uniswap's Universal Router.
 /// @dev Design notes
 ///      - The zap holds no state and no funds between transactions. Anyone can deploy a competing zap; the indexes do
 ///        not depend on this one.
@@ -30,20 +32,39 @@ import {UniversalRouterSwaps} from "./UniversalRouterSwaps.sol";
 ///        zap are never used. A fee-on-transfer currency reverts with `TransferShortfall`.
 ///      - What a burn hop did not sell goes to the recipient, with a ComponentReturned event. Unsold `tokenOut` is
 ///        paid out with the rest.
+///      - Ether is WETH inside the zap. `mintWithEth` wraps the call's ether and mints as `mintWithToken` does with
+///        WETH as `tokenIn`, refunding the unspent part as ether; `burnToEth` sells into WETH and unwraps the payout.
+///        The zap takes ether from WETH alone, which `withdraw` sends back, so no swap and no stranger can leave ether
+///        here, and it holds none between transactions.
+///      - A permit is tried, never required. One someone already submitted is accepted, and the transfer it was
+///        signed for is what enforces the approval.
 ///      - The zap never calls `redeemSkipping`: a claim recorded for the zap could never be collected. While a
 ///        component is frozen, holders exit directly through the index.
 ///      - Every call names the `rebalanceNonce` its quote was taken at. A rebalance changes the units, so a stale
 ///        quote reverts with `StaleRebalanceNonce` instead of buying or selling a different basket.
 ///      - The zap never calls `executeRebalance`.
+// The one way ether gets in is WETH's `withdraw`, called by `mintWithEth` for its refund and `burnToEth` for its
+// payout, each sent on in the same call (`_assertZapEmpty` in test/IndexZap.t.sol), so no ether stays here.
+// aderyn-fp-next-line(contract-locks-ether)
 contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
     using SafeERC20 for IERC20;
 
     /// @inheritdoc IIndexZap
     IIndexFactory public immutable FACTORY;
+    /// @inheritdoc IIndexZap
+    IWETH9 public immutable WETH;
 
-    constructor(IIndexFactory factory, IUniversalRouter router) UniversalRouterSwaps(router) {
-        if (address(factory) == address(0)) revert ZeroAddress();
+    constructor(IIndexFactory factory, IUniversalRouter router, IWETH9 weth) UniversalRouterSwaps(router) {
+        if (address(factory) == address(0) || address(weth) == address(0)) revert ZeroAddress();
         FACTORY = factory;
+        WETH = weth;
+    }
+
+    /// @dev Takes the ether `WETH.withdraw` sends back, and nothing else. A route's far end can never be native ether
+    ///      (the engine's route checks), so neither the router's sweep nor a V4 take can send ether here; refusing
+    ///      every other sender keeps that so, and leaves nothing for anyone to strand.
+    receive() external payable {
+        if (msg.sender != address(WETH)) revert NotWETH(msg.sender);
     }
 
     // ---------------------------------------------------------------------
@@ -52,16 +73,51 @@ contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
 
     /// @inheritdoc IIndexZap
     function mintWithToken(MintParams calldata p) external nonReentrant returns (uint256 amountSpent) {
-        _checkIndexCall(p.index, p.expectedNonce, p.to, p.deadline);
-        if (p.tokenIn == address(0)) revert ZeroAddress();
-        if (p.shares == 0 || p.maxAmountIn == 0) revert ZeroAmount();
+        _checkMint(p);
+        return _mintWithToken(p);
+    }
 
+    /// @inheritdoc IIndexZap
+    function mintWithTokenPermit(MintParams calldata p, uint8 v, bytes32 r, bytes32 s)
+        external
+        nonReentrant
+        returns (uint256 amountSpent)
+    {
+        _checkMint(p);
+        _tryPermit(p.tokenIn, p.maxAmountIn, p.deadline, v, r, s);
+        return _mintWithToken(p);
+    }
+
+    /// @inheritdoc IIndexZap
+    function mintWithEth(MintParams calldata p) external payable nonReentrant returns (uint256 amountSpent) {
+        _checkMint(p);
+        if (p.tokenIn != address(WETH)) revert NotWETH(p.tokenIn);
+        if (msg.value != p.maxAmountIn) revert ValueMismatch(msg.value, p.maxAmountIn);
+        uint256 balanceBefore = WETH.balanceOf(address(this));
+        // WETH credits exactly what it is sent, so the call's ether is what a token mint would have pulled.
+        WETH.deposit{value: msg.value}();
+        return _mint(p, balanceBefore, msg.value, true);
+    }
+
+    /// @dev Pulls the whole `maxAmountIn` of `tokenIn` from the caller, then mints.
+    function _mintWithToken(MintParams calldata p) private returns (uint256 amountSpent) {
         IERC20 tokenIn = IERC20(p.tokenIn);
         uint256 balanceBefore = tokenIn.balanceOf(address(this));
         tokenIn.safeTransferFrom(msg.sender, address(this), p.maxAmountIn);
         uint256 received = tokenIn.balanceOf(address(this)) - balanceBefore;
         if (received < p.maxAmountIn) revert TransferShortfall(p.tokenIn);
+        return _mint(p, balanceBefore, received, false);
+    }
 
+    /// @dev The mint every entry point shares once `tokenIn` is in hand: buys the basket, refunds what the swaps did
+    ///      not take, as ether when the caller paid ether, and issues.
+    /// @param balanceBefore The zap's `tokenIn` balance before the caller's payment arrived.
+    /// @param received What the caller paid.
+    function _mint(MintParams calldata p, uint256 balanceBefore, uint256 received, bool refundInEther)
+        private
+        returns (uint256 amountSpent)
+    {
+        IERC20 tokenIn = IERC20(p.tokenIn);
         uint256 reserved = _buyBasket(p);
 
         // Refund this call's tokenIn that the swaps did not take, except the part the basket itself holds, which
@@ -69,7 +125,14 @@ contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
         // it cannot underflow it.
         uint256 refund = Math.saturatingSub(tokenIn.balanceOf(address(this)) - balanceBefore, reserved);
         amountSpent = Math.saturatingSub(received, refund);
-        if (refund != 0) tokenIn.safeTransfer(msg.sender, refund);
+        if (refund != 0) {
+            if (refundInEther) {
+                WETH.withdraw(refund);
+                Address.sendValue(payable(msg.sender), refund);
+            } else {
+                tokenIn.safeTransfer(msg.sender, refund);
+            }
+        }
 
         // The amount is only known after the swaps. The function is nonReentrant, so no reentrant call can reorder
         // the log.
@@ -122,8 +185,8 @@ contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
 
     /// @inheritdoc IIndexZap
     function burnToToken(BurnParams calldata p) external nonReentrant returns (uint256 amountOut) {
-        _checkBurn(p);
-        return _burnBasket(p);
+        _checkBurn(p, false);
+        return _burnBasket(p, false);
     }
 
     /// @inheritdoc IIndexZap
@@ -132,18 +195,31 @@ contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
         nonReentrant
         returns (uint256 amountOut)
     {
-        _checkBurn(p);
-        // A failed permit is not a failed burn: if someone front-ran it, the allowance is already set. The transfer
-        // below is what enforces the approval, and the checks above have already run.
-        // forge-lint: disable-next-line(erc20-unchecked-transfer)
-        // wake-disable-next-line reentrancy
-        try IERC20Permit(p.index).permit(msg.sender, address(this), p.shares, p.deadline, v, r, s) {} catch {}
-        return _burnBasket(p);
+        _checkBurn(p, false);
+        _tryPermit(p.index, p.shares, p.deadline, v, r, s);
+        return _burnBasket(p, false);
+    }
+
+    /// @inheritdoc IIndexZap
+    function burnToEth(BurnParams calldata p) external nonReentrant returns (uint256 amountOut) {
+        _checkBurn(p, true);
+        return _burnBasket(p, true);
+    }
+
+    /// @inheritdoc IIndexZap
+    function burnToEthWithPermit(BurnParams calldata p, uint8 v, bytes32 r, bytes32 s)
+        external
+        nonReentrant
+        returns (uint256 amountOut)
+    {
+        _checkBurn(p, true);
+        _tryPermit(p.index, p.shares, p.deadline, v, r, s);
+        return _burnBasket(p, true);
     }
 
     /// @dev Pulls the caller's shares, redeems them to this contract, sells the basket into `tokenOut`, checks the
-    ///      minimum, and pays the recipient.
-    function _burnBasket(BurnParams calldata p) private returns (uint256 amountOut) {
+    ///      minimum, and pays the recipient, as ether when `payInEther`.
+    function _burnBasket(BurnParams calldata p, bool payInEther) private returns (uint256 amountOut) {
         address[] memory tokens = IIndexHub(p.index).componentTokens();
         if (p.legs.length != tokens.length) revert LegCountMismatch();
 
@@ -171,6 +247,14 @@ contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
 
         // forge-lint: disable-next-line(reentrancy-events)
         emit ZapBurn(p.index, msg.sender, p.to, p.tokenOut, p.shares, amountOut);
+        if (payInEther) {
+            WETH.withdraw(amountOut);
+            // The burn's recipient is paid its own proceeds, as the token payout below pays them: that it is the
+            // caller's choice is the point, not a leak.
+            // forge-lint: disable-next-line(arbitrary-send-eth)
+            Address.sendValue(payable(p.to), amountOut);
+            return amountOut;
+        }
         uint256 paidBefore = tokenOut.balanceOf(p.to);
         tokenOut.safeTransfer(p.to, amountOut);
         // Reject a fee-on-transfer payout: it would leave the recipient short of what this call reported paying.
@@ -207,10 +291,27 @@ contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
     // Checks
     // ---------------------------------------------------------------------
 
-    /// @dev The checks a burn runs before anything moves.
-    function _checkBurn(BurnParams calldata p) private view {
+    /// @dev Tries an EIP-2612 permit for `value` of `token`, from the caller to the zap. A failed permit is not a
+    ///      failed call: if someone front-ran it, the allowance is already set. The transfer that follows is what
+    ///      enforces the approval, and the call's checks have already run.
+    function _tryPermit(address token, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) private {
+        // forge-lint: disable-next-line(erc20-unchecked-transfer)
+        // wake-disable-next-line reentrancy
+        try IERC20Permit(token).permit(msg.sender, address(this), value, deadline, v, r, s) {} catch {}
+    }
+
+    /// @dev The checks a mint runs before anything moves.
+    function _checkMint(MintParams calldata p) private view {
+        _checkIndexCall(p.index, p.expectedNonce, p.to, p.deadline);
+        if (p.tokenIn == address(0)) revert ZeroAddress();
+        if (p.shares == 0 || p.maxAmountIn == 0) revert ZeroAmount();
+    }
+
+    /// @dev The checks a burn runs before anything moves. An ether burn's `tokenOut` must be WETH.
+    function _checkBurn(BurnParams calldata p, bool toEther) private view {
         _checkIndexCall(p.index, p.expectedNonce, p.to, p.deadline);
         if (p.tokenOut == address(0)) revert ZeroAddress();
+        if (toEther && p.tokenOut != address(WETH)) revert NotWETH(p.tokenOut);
         if (p.shares == 0 || p.minAmountOut == 0) revert ZeroAmount();
     }
 
