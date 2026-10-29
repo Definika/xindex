@@ -43,7 +43,9 @@ What the contracts do not protect against, and what an app built on them has to 
   into the coin needs Wormhole live. The app shows every index's wrapped share of value before it is created and to
   every holder (`design/2026-10-10-one-index-wormhole-legs.md`, section 3).
 - **A collapsing coin can stop the fills.** Fixed weights keep buying a coin whose price falls, and units beyond
-  `uint96` stop the fill rather than wrap, until the guardian keeps it (V5-L3).
+  `uint96` stop the fill rather than wrap, until the guardian keeps it (V5-L3). The figure: a growing leg whose target
+  is more than 1e18 times its units makes every fill trade nothing (`design/2026-10-29-settlement-vectors.md`,
+  section 3); a collapse by a factor of fifty against the rest still fills.
 - **An issuer's corporate action is not accounted for.** An index holds fixed units per share and pays out only those.
   If an issuer mints tokens to every holder, as a stock split paid in tokens would, the index's new tokens belong to no
   share; if it burns them, that leg falls below its backing. Ondo does neither: its token's balance never changes,

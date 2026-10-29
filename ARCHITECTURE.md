@@ -281,6 +281,9 @@ strangers off for `REBALANCE_DELAY` from the cancel (`restartAllowedAt`, R15); c
 clears it, and the hold-off the expiry granted stands (VR-04). An auction that expires unfilled holds strangers off
 until `eta + AUCTION_DURATION + REBALANCE_DELAY`, so the owner and guardian get the first restart (XA-02, XA-16,
 CR-I02). `canStartRebalance()` is the whole timing condition for a stranger, false on an uninitialized clone (DA-22).
+The eight states this makes (uninitialized, interval, cooldown, open, notice, auction, expired and held, expired and
+open), every action from each and the exact second of every transition are tabulated in
+`design/2026-10-29-rebalance-state-machine.md`, and `test/WeightedHub.states.t.sol` takes every cell.
 
 ### 3.2 The price time
 
@@ -606,7 +609,12 @@ components (section 2).
 
 - **Unit and fuzz tests per contract:** `test/WeightedHub.t.sol`, `test/WeightedHub.rebalance.t.sol` (exact
   settlements, every price refusal, the pinned slot, the unit cap under wrong prices, keep masks, reentrancy, a hundred
-  components), `test/WeightedIndexFactory.t.sol`, `test/IndexZap.t.sol`,
+  components), `test/WeightedHub.states.t.sol` (the rebalance state machine's transition matrix, section 3.1),
+  `test/WeightedMath.vectors.t.sol` (375 settlements replayed against the exact-rational model of
+  `test/vectors/settlement.py`, `design/2026-10-29-settlement-vectors.md`; the model's caps, `μ` bound and roundings
+  are proven in z3 for two legs, and for three but the `μ` bound's last step, by `test/vectors/proofs.py`,
+  `design/2026-10-29-settlement-proofs.md`),
+  `test/WeightedIndexFactory.t.sol`, `test/IndexZap.t.sol`,
   `test/WeightedZap.t.sol`, `test/MintRequests.t.sol`, `test/Security.t.sol`, the scripts' suites, `test/Repo.t.sol`
   and the mocks' own tests in `test/mocks/Mocks.t.sol`. `MockPyth` fills duplicate ids as Pyth's own loop does (V5-M1);
   `MockWeightedExecutor` fills honestly, short, not at all, or reentrantly.

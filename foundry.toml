@@ -25,7 +25,8 @@ dynamic_test_linking = false
 
 
 # Read-only access for test/Repo.t.sol, which checks the repository files review findings rest on: the pinned compiler,
-# the CI workflow and both Foundry configs, the dependency lock against .gitmodules, the ABIs and the docs. Only those
+# the CI workflow and both Foundry configs, the dependency lock against .gitmodules, the ABIs and the docs; and for
+# test/WeightedMath.vectors.t.sol, which replays the settlement vectors of test/vectors/settlement.json. Only those
 # (A7-18): no test or script, nor any dependency's code one runs, can read `.env` or the broadcast records.
 fs_permissions = [
     { access = "read", path = "./src" },
@@ -41,6 +42,7 @@ fs_permissions = [
     { access = "read", path = "./.env.example" },
     { access = "read", path = "./docs/known-limitations.md" },
     { access = "read", path = "./CLAUDE.md" },
+    { access = "read", path = "./test/vectors" },
 ]
 
 [lint]

@@ -110,6 +110,22 @@ Where it stands (2026-10-26):
   running the keeper against our deployments and integrating with them, and the Change License is MIT on
   2030-10-28. Our own `src/interfaces` stay MIT. The files copied from Pyth, Wormhole and Uniswap keep
   their own licenses (`NOTICE`).
+- The rebalance state machine is written down (`design/2026-10-29-rebalance-state-machine.md`, 2026-10-29, step 1
+  of the logic-hardening plan): eight states, the matrix of every action from each, the clock's boundaries and six
+  invariants, with `test/WeightedHub.states.t.sol` taking every cell and 17 mutants of the hub checked against it.
+  The hub did not change. Step 3 followed the same day (`design/2026-10-29-settlement-vectors.md`): an exact-rational
+  model of the settlement written from the spec (`test/vectors/settlement.py`, standard library only) generates
+  375 vectors (`test/vectors/settlement.json`) that `test/WeightedMath.vectors.t.sol` replays against
+  `WeightedMath.settlement` word for word, every outcome and every cap among them; the 19 mutants of the math all die, two of them only on legs priced at
+  one quantum of value. The math
+  did not change either. Step 2 the same day (`design/2026-10-29-settlement-proofs.md`): Halmos could not finish the
+  narrowest case (two 64-bit units at fixed prices) in ten minutes, since it explores every branch of `Math.mulDiv`,
+  so the properties are proven on the exact model in z3 instead (`test/vectors/proofs.py`), over every integer in
+  the hub's bounds: for two legs the turnover cap, the growth cap (its exact slack a quadrillionth of the leg, held
+  there by the minimum trade), the `μ` bound with no slack, and the rounding directions, each reduced to lemmas
+  z3 closes in seconds; for three legs all of them but the `μ` bound's last step, the multiplication of a proven
+  inequality by `μ · s`, which z3 did not close and the record leaves as a hand step. Certora was not run (paid).
+  Next in that plan: mutation testing as a CI gate.
 - Before any mainnet: Pyth's parameter replay (`design/2026-10-05-custom-weights.md`, section 8), which also sizes
   `MAX_EMA_DEVIATION` and `MAX_GROWTH`, and a settlement on a
   real update from Hermes, both waiting on Pyth's API key in `.env` (`PYTH_API_KEY`); the 26 attestations and RAY's
@@ -121,6 +137,12 @@ Where it stands (2026-10-26):
 
 For more:
 - `design/2026-10-05-custom-weights.md`: the v5 spec.
+- `design/2026-10-29-rebalance-state-machine.md`: the rebalance's eight states, the transition matrix, the clock's
+  boundaries and the invariants, with the test and the mutants that pin each cell.
+- `design/2026-10-29-settlement-vectors.md`: the exact-rational model of the settlement, written from the spec, the
+  vectors it generates and the mutants of `WeightedMath` the replay kills.
+- `design/2026-10-29-settlement-proofs.md`: the model's properties proven in z3 for two legs, and for three but the
+  `μ` bound's last step, the lemmas, the growth cap's exact bound, and why Halmos could not run the contract itself.
 - `design/2026-10-18-pre-mainnet-readings.md`: OP-PIP-132, Ondo's corporate actions, the copies left to attest, the
   owner's calls of 2026-10-18 and the source reading of the 2026-10-10 cohort.
 - `design/2026-10-10-one-index-wormhole-legs.md`: the one-index decision, the count of the top 300, the trust table
@@ -141,6 +163,10 @@ forge test                   # unit + fuzz + invariant tests, no RPC needed; for
                              # there makes the fork suites run too (archive node, or FORK_BLOCK, or --no-match-path 'test/fork/*');
                              # an RPC that cannot serve the pinned block fails with that sentence, not a raw fork error
 forge coverage               # must stay at 100% for every file (lines, statements, branches, functions)
+python3 -I test/vectors/settlement.py > test/vectors/settlement.json  # after a change to WeightedMath: regenerates the exact
+                             # model's vectors, which test/WeightedMath.vectors.t.sol replays; commit the model, the vectors and the change together
+python3 -I test/vectors/proofs.py 2 120  # proves the model's caps, mu bound and roundings in z3 for two legs (3 300 for three);
+                             # needs a Python with z3, as Halmos's is; rerun after any change to the arithmetic's rules
 aderyn .                     # Aderyn on src/, configured by aderyn.toml: must report nothing; CI does not run it
 for c in IndexZap BasketBuilder MintRequests WeightedIndexFactory WeightedHub; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
 forge test --root keeper     # the keeper's executor, its own Foundry project; CI also runs its fmt, build and lint
@@ -346,7 +372,9 @@ records also cite.
   and adds to a growing one at most `μ` times `MAX_GROWTH` (100%, the math's) of its own units, every leg moving the
   same share of the way, so a wrong or malicious price takes at most that, at most once a week. The growth cap keeps a
   coin whose issuer mints and dumps it from drawing a fifth of every other leg into it in one fill: it draws about its
-  own value at most (RX-15). A value cap measured in the reported prices let two wrong feeds take 89% of an index far
+  own value at most (RX-15). The growth cap's exact slack is the growth factor's rounding, up to the leg's units over
+  the share; the minimum trade keeps the share at or above `MIN_TRADE`, so the slack is at most a quadrillionth of
+  the leg (`design/2026-10-29-settlement-proofs.md`, P3): do not drop the minimum without re-reading the cap. A value cap measured in the reported prices let two wrong feeds take 89% of an index far
   from its weights (V5-M2); do not bring one back as the only cap.
 - **A fill must trade.** One whose release, after the turnover cap, is worth less than `MIN_TRADE` (0.1%) of the
   moving value reverts `NothingToRebalance`, and a keep mask must leave two components moving, so a fill that changes
@@ -358,7 +386,9 @@ records also cite.
   worth rerunning: each of those roundings flipped, no unit cap, no `MIN_TRADE` or one measured before the cap, a keep
   mask leaving one, a wider window or the minute, no confidence or publish-time check, a kept feed read, the
   duplicate-id checks removed, and the backing post-check's: the claims dropped from the backing term, only the bought
-  legs re-read, and a shrinking leg paid as a difference of floored backings.
+  legs re-read, and a shrinking leg paid as a difference of floored backings. The arithmetic's mutants of that list,
+  the caps, the scale and a constant among them, are killed by the settlement vectors (`test/WeightedMath.vectors.t.sol`,
+  `design/2026-10-29-settlement-vectors.md`, section 5); run them again after any change to `WeightedMath`.
 - **A collapsing coin can stop the fills.** Fixed weights keep buying it, at most doubling its units per fill (RX-15);
   a coin that falls far enough leaves every fill below `MIN_TRADE`, and units beyond `uint96` stop the fill rather than
   wrap, the preview with it (RX-61), until the guardian keeps it (V5-L3, a known limitation).
@@ -606,10 +636,20 @@ records also cite.
 - **A regression test has to fail without its fix.** Check it against the old code or a mutant before relying on it.
   The logic review found tests that passed either way: mocked return values instead of the real flow, prices that never
   moved between two snapshots, a salt whose fields were never varied one at a time. The mutants worth rerunning on
-  `WeightedHub` are listed under the settlement's rounding above.
+  `WeightedHub` are listed under the settlement's rounding above; the arithmetic's are killed by the settlement
+  vectors (`test/WeightedMath.vectors.t.sol`) and the rebalance's by `test/WeightedHub.states.t.sol`, each record
+  listing its mutants. Apply a mutant to a byte copy and restore the copy, never `git checkout`; grep a failing test
+  as `\[FAIL.*\] (test_\w+)\(\)`, since a failure's message can print a bracketed number; and build once after.
 - **Tests.**
-  - One `*.t.sol` per contract; the hub's rebalancing and invariants have their own files, and so do the invariants of
-    `MintRequests`.
+  - One `*.t.sol` per contract; the hub's rebalancing, its rebalance state machine (`test/WeightedHub.states.t.sol`,
+    the matrix of `design/2026-10-29-rebalance-state-machine.md`) and its invariants have their own files, and so do
+    the invariants of `MintRequests`.
+  - The settlement vectors live under `test/vectors/`: `settlement.py` is the exact model and the seeded generator,
+    `settlement.json` its output, and `test/WeightedMath.vectors.t.sol` replays it through `vm.readFile` (the folder
+    is in `fs_permissions`), never `ffi`. A change to `WeightedMath` regenerates the file in the same commit, and a
+    change to the arithmetic's rules changes the model first, then reruns `proofs.py`, the model's properties in z3
+    (`design/2026-10-29-settlement-proofs.md`). `test/WeightedMath.halmos.t.sol` is a Halmos harness forge runs
+    nothing in: its `check_` functions are symbolic, and name none `test`.
   - Mocks go under `test/mocks/`. Mainnet constants live in `script/MainnetAddresses.sol`, re-exported with test-only
     ones by `test/fork/ForkAddresses.sol`.
   - New behaviour needs a unit test, and a new revert path needs a test hitting the exact error
