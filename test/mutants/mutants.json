@@ -1,0 +1,713 @@
+[
+  {
+    "id": "M1",
+    "what": "_permissionlessAt returns the expiry term alone, ignoring restartAllowedAt",
+    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.states.t.sol",
+    "edits": [
+      {
+        "old": "return Math.max(restartAllowedAt, afterExpiry);",
+        "new": "return afterExpiry;"
+      }
+    ]
+  },
+  {
+    "id": "M2",
+    "what": "_permissionlessAt returns restartAllowedAt alone, ignoring the expiry",
+    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.states.t.sol",
+    "edits": [
+      {
+        "old": "return Math.max(restartAllowedAt, afterExpiry);",
+        "new": "return restartAllowedAt + 0 * afterExpiry;"
+      }
+    ]
+  },
+  {
+    "id": "M3",
+    "what": "a start is refused only while now < end, so the auction's last second lets one in",
+    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.states.t.sol",
+    "edits": [
+      {
+        "old": "if (pendingEta != 0 && block.timestamp <= pendingEta + AUCTION_DURATION) {\n            revert RebalancePending(",
+        "new": "if (pendingEta != 0 && block.timestamp < pendingEta + AUCTION_DURATION) {\n            revert RebalancePending("
+      }
+    ]
+  },
+  {
+    "id": "M4",
+    "what": "a fill is refused from end on, instead of after it",
+    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.states.t.sol",
+    "edits": [
+      {
+        "old": "if (block.timestamp > eta + AUCTION_DURATION) revert RebalanceExpired(",
+        "new": "if (block.timestamp >= eta + AUCTION_DURATION) revert RebalanceExpired("
+      }
+    ]
+  },
+  {
+    "id": "M5",
+    "what": "a fill is refused at eta, instead of before it",
+    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.states.t.sol",
+    "edits": [
+      {
+        "old": "if (block.timestamp < eta) revert RebalanceNotReady(eta);",
+        "new": "if (block.timestamp <= eta) revert RebalanceNotReady(eta);"
+      }
+    ]
+  },
+  {
+    "id": "M6",
+    "what": "a cancel always sets restartAllowedAt = now + REBALANCE_DELAY, an expiry's cancel included (VR-04 undone)",
+    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.states.t.sol",
+    "edits": [
+      {
+        "old": "uint256 restartAt =\n            block.timestamp <= eta + AUCTION_DURATION ? block.timestamp + REBALANCE_DELAY : _permissionlessAt(eta);",
+        "new": "uint256 restartAt = block.timestamp + REBALANCE_DELAY;"
+      }
+    ]
+  },
+  {
+    "id": "M7",
+    "what": "a start checks the caller before the mask",
+    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.states.t.sol",
+    "edits": [
+      {
+        "old": "        uint256 n = _components.length;\n        if (keepMask >> n != 0 || n - _countBits(keepMask) < MIN_COMPONENTS) revert InvalidKeepMask(keepMask);\n        if (\n            // A view on the factory, by STATICCALL: nothing it reaches can change state, so nothing re-enters.\n            // aderyn-fp-next-line(reentrancy-state-change)\n            (keepMask != 0 || block.timestamp < _permissionlessAt(pendingEta))\n                && !IWeightedIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender)\n        ) {\n            revert Unauthorized(msg.sender);\n        }\n",
+        "new": "        if (\n            // A view on the factory, by STATICCALL: nothing it reaches can change state, so nothing re-enters.\n            // aderyn-fp-next-line(reentrancy-state-change)\n            (keepMask != 0 || block.timestamp < _permissionlessAt(pendingEta))\n                && !IWeightedIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender)\n        ) {\n            revert Unauthorized(msg.sender);\n        }\n        uint256 n = _components.length;\n        if (keepMask >> n != 0 || n - _countBits(keepMask) < MIN_COMPONENTS) revert InvalidKeepMask(keepMask);\n"
+      }
+    ]
+  },
+  {
+    "id": "M8",
+    "what": "a cancel checks the caller before the proposal",
+    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.states.t.sol",
+    "edits": [
+      {
+        "old": "        if (eta == 0) revert NoPendingRebalance();\n        // A view on the factory, by STATICCALL: nothing it reaches can change state, so nothing re-enters.\n        // aderyn-fp-next-line(reentrancy-state-change)\n        if (!IWeightedIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender)) revert Unauthorized(msg.sender);\n",
+        "new": "        // A view on the factory, by STATICCALL: nothing it reaches can change state, so nothing re-enters.\n        // aderyn-fp-next-line(reentrancy-state-change)\n        if (!IWeightedIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender)) revert Unauthorized(msg.sender);\n        if (eta == 0) revert NoPendingRebalance();\n"
+      }
+    ]
+  },
+  {
+    "id": "M9",
+    "what": "a fill does not write lastRebalance",
+    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.states.t.sol",
+    "edits": [
+      {
+        "old": "id = ++rebalanceNonce;\n        lastRebalance = block.timestamp;",
+        "new": "id = ++rebalanceNonce;"
+      }
+    ]
+  },
+  {
+    "id": "M10",
+    "what": "a fill does not clear the proposal",
+    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.states.t.sol",
+    "edits": [
+      {
+        "old": "lastRebalance = block.timestamp;\n        _clearPendingRebalance();",
+        "new": "lastRebalance = block.timestamp;"
+      }
+    ]
+  },
+  {
+    "id": "M12",
+    "what": "canStartRebalance drops its interval check",
+    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.states.t.sol",
+    "edits": [
+      {
+        "old": "        if (block.timestamp < _earliestRebalance()) return false;\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "M13",
+    "what": "a stranger may pass a keep mask once nothing holds",
+    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.states.t.sol",
+    "edits": [
+      {
+        "old": "(keepMask != 0 || block.timestamp < _permissionlessAt(pendingEta))",
+        "new": "(block.timestamp < _permissionlessAt(pendingEta))"
+      }
+    ]
+  },
+  {
+    "id": "M14",
+    "what": "a masked fill does not record _maskedFill, so the index's own interval follows it",
+    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.states.t.sol",
+    "edits": [
+      {
+        "old": "_maskedFill = _keepMask != 0;",
+        "new": "_maskedFill = false;"
+      }
+    ]
+  },
+  {
+    "id": "M15",
+    "what": "currentMu reports 0 at the auction's last second",
+    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.states.t.sol",
+    "edits": [
+      {
+        "old": "if (eta == 0 || block.timestamp < eta || block.timestamp > eta + AUCTION_DURATION) return 0;",
+        "new": "if (eta == 0 || block.timestamp < eta || block.timestamp >= eta + AUCTION_DURATION) return 0;"
+      }
+    ]
+  },
+  {
+    "id": "M16",
+    "what": "canStartRebalance drops its initialized check",
+    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.states.t.sol",
+    "edits": [
+      {
+        "old": "        if (_getInitializedVersion() != 1) return false;\n        if (block.timestamp < _earliestRebalance())",
+        "new": "        if (block.timestamp < _earliestRebalance())"
+      }
+    ]
+  },
+  {
+    "id": "M17",
+    "what": "a start at earliest is too soon",
+    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.states.t.sol",
+    "edits": [
+      {
+        "old": "if (block.timestamp < earliest) revert RebalanceTooSoon(earliest);",
+        "new": "if (block.timestamp <= earliest) revert RebalanceTooSoon(earliest);"
+      }
+    ]
+  },
+  {
+    "id": "V1",
+    "what": "targets round down",
+    "origin": "design/2026-10-29-settlement-vectors.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "Math.mulDiv(value, weights[i], weight * prices[i], Math.Rounding.Ceil)",
+        "new": "Math.mulDiv(value, weights[i], weight * prices[i], Math.Rounding.Floor)"
+      }
+    ]
+  },
+  {
+    "id": "V2",
+    "what": "a shrinking leg's step rounds up",
+    "origin": "design/2026-10-29-settlement-vectors.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "units[i] = current - Math.mulDiv(current - target, share, WAD);",
+        "new": "units[i] = current - Math.mulDiv(current - target, share, WAD, Math.Rounding.Ceil);"
+      }
+    ]
+  },
+  {
+    "id": "V3",
+    "what": "a growing leg's step rounds down",
+    "origin": "design/2026-10-29-settlement-vectors.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "Math.mulDiv(target - current, growth, WAD, Math.Rounding.Ceil)",
+        "new": "Math.mulDiv(target - current, growth, WAD, Math.Rounding.Floor)"
+      }
+    ]
+  },
+  {
+    "id": "V4",
+    "what": "the growth factor mu * share rounds down",
+    "origin": "design/2026-10-29-settlement-vectors.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "return Math.mulDiv(mu, share, WAD, Math.Rounding.Ceil);",
+        "new": "return Math.mulDiv(mu, share, WAD, Math.Rounding.Floor);"
+      }
+    ]
+  },
+  {
+    "id": "V5",
+    "what": "no turnover cap",
+    "origin": "design/2026-10-29-settlement-vectors.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "if (limit < share) share = limit;",
+        "new": "if (limit < 0) share = limit;"
+      }
+    ]
+  },
+  {
+    "id": "V6",
+    "what": "no growth cap",
+    "origin": "design/2026-10-29-settlement-vectors.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "if (growLimit < share) share = growLimit;",
+        "new": "if (growLimit < 0) share = growLimit;"
+      }
+    ]
+  },
+  {
+    "id": "V7",
+    "what": "no minimum trade",
+    "origin": "design/2026-10-29-settlement-vectors.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "< Math.mulDiv(value, MIN_TRADE, WAD, Math.Rounding.Ceil)) {",
+        "new": "< 0 * Math.mulDiv(value, MIN_TRADE, WAD, Math.Rounding.Ceil)) {"
+      }
+    ]
+  },
+  {
+    "id": "V8",
+    "what": "the minimum trade checked on the release before the cap (V5R-1 undone)",
+    "origin": "design/2026-10-29-settlement-vectors.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "if (Math.mulDiv(released, share, WAD) < Math.mulDiv(value, MIN_TRADE",
+        "new": "if (released < Math.mulDiv(value, MIN_TRADE"
+      }
+    ]
+  },
+  {
+    "id": "V9",
+    "what": "amountsOut round up",
+    "origin": "design/2026-10-29-settlement-vectors.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "_backing(supply, current - next, scale, Math.Rounding.Floor)",
+        "new": "_backing(supply, current - next, scale, Math.Rounding.Ceil)"
+      }
+    ]
+  },
+  {
+    "id": "V10",
+    "what": "amountsIn round down",
+    "origin": "design/2026-10-29-settlement-vectors.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "_backing(supply, next - current, scale, Math.Rounding.Ceil)",
+        "new": "_backing(supply, next - current, scale, Math.Rounding.Floor)"
+      }
+    ]
+  },
+  {
+    "id": "V11",
+    "what": "no redo at MU_MAX",
+    "origin": "design/2026-10-29-settlement-vectors.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "if (mu != MU_MAX && !_anyNonZero(amountsOut)) {",
+        "new": "if (mu != mu && !_anyNonZero(amountsOut)) {"
+      }
+    ]
+  },
+  {
+    "id": "V12",
+    "what": "no overflow check on a growing leg's units",
+    "origin": "design/2026-10-29-settlement-vectors.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "if (units[i] > type(uint96).max) revert",
+        "new": "if (units[i] > type(uint256).max) revert"
+      }
+    ]
+  },
+  {
+    "id": "V13",
+    "what": "the turnover bound on the share rounds up",
+    "origin": "design/2026-10-29-settlement-vectors.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "Math.mulDiv(current, MAX_TURNOVER, current - target);",
+        "new": "Math.mulDiv(current, MAX_TURNOVER, current - target, Math.Rounding.Ceil);"
+      }
+    ]
+  },
+  {
+    "id": "V14",
+    "what": "the growth bound on the share rounds up",
+    "origin": "design/2026-10-29-settlement-vectors.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "Math.mulDiv(current, MAX_GROWTH, target - current);",
+        "new": "Math.mulDiv(current, MAX_GROWTH, target - current, Math.Rounding.Ceil);"
+      }
+    ]
+  },
+  {
+    "id": "V15",
+    "what": "the minimum trade's minimum rounds down",
+    "origin": "design/2026-10-29-settlement-vectors.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "Math.mulDiv(value, MIN_TRADE, WAD, Math.Rounding.Ceil)",
+        "new": "Math.mulDiv(value, MIN_TRADE, WAD, Math.Rounding.Floor)"
+      }
+    ]
+  },
+  {
+    "id": "V16",
+    "what": "the minimum trade's release rounds up",
+    "origin": "design/2026-10-29-settlement-vectors.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "if (Math.mulDiv(released, share, WAD) <",
+        "new": "if (Math.mulDiv(released, share, WAD, Math.Rounding.Ceil) <"
+      }
+    ]
+  },
+  {
+    "id": "V17",
+    "what": "a kept leg's value counted in V",
+    "origin": "design/2026-10-29-settlement-vectors.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "            if ((keepMask & (1 << i)) != 0) continue;\n            value += currentUnits[i] * prices[i];",
+        "new": "            value += currentUnits[i] * prices[i];\n            if ((keepMask & (1 << i)) != 0) continue;"
+      }
+    ]
+  },
+  {
+    "id": "V18",
+    "what": "the scale ignored in the amounts",
+    "origin": "design/2026-10-29-settlement-vectors.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "return Math.mulDiv(shares, units * scale, SHARE_UNIT * WAD, rounding);",
+        "new": "return Math.mulDiv(shares, units * WAD + 0 * scale, SHARE_UNIT * WAD, rounding);"
+      }
+    ]
+  },
+  {
+    "id": "V19",
+    "what": "MAX_TURNOVER at 25%",
+    "origin": "design/2026-10-29-settlement-vectors.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "uint256 public constant MAX_TURNOVER = 0.2e18;",
+        "new": "uint256 public constant MAX_TURNOVER = 0.25e18;"
+      }
+    ]
+  },
+  {
+    "id": "V20",
+    "what": "a shrinking leg paid as a difference of floored backings",
+    "origin": "AGENTS.md, the settlement's rounding",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "amountsOut[i] = _backing(supply, current - next, scale, Math.Rounding.Floor);",
+        "new": "amountsOut[i] =\n                _backing(supply, current, scale, Math.Rounding.Floor) - _backing(supply, next, scale, Math.Rounding.Floor);"
+      }
+    ]
+  },
+  {
+    "id": "H1",
+    "what": "a keep mask may leave one component moving (V5-L2)",
+    "origin": "AGENTS.md, the settlement's rounding",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "n - _countBits(keepMask) < MIN_COMPONENTS",
+        "new": "n - _countBits(keepMask) < 1"
+      }
+    ]
+  },
+  {
+    "id": "H2",
+    "what": "a wider window: an update published in the settling second is accepted",
+    "origin": "AGENTS.md, the settlement's rounding",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "uint256 latestPublishTime = time + PRICE_LAG - 1;",
+        "new": "uint256 latestPublishTime = time + PRICE_LAG;"
+      }
+    ]
+  },
+  {
+    "id": "H3",
+    "what": "the price time pinned to the minute (V5-L1 undone)",
+    "origin": "AGENTS.md, the settlement's rounding",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "return block.timestamp - PRICE_LAG;",
+        "new": "return (block.timestamp - PRICE_LAG) / 60 * 60;"
+      }
+    ]
+  },
+  {
+    "id": "H4",
+    "what": "no confidence check",
+    "origin": "AGENTS.md, the settlement's rounding",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "if (uint256(p.conf) * WAD > price * MAX_CONFIDENCE) {",
+        "new": "if (uint256(p.conf) * 0 > price * MAX_CONFIDENCE) {"
+      }
+    ]
+  },
+  {
+    "id": "H5",
+    "what": "no publish-time check on what Pyth returns",
+    "origin": "AGENTS.md, the settlement's rounding",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "if (feed.id != ids[k] || published < time || published > latestPublishTime) {",
+        "new": "if (feed.id != ids[k] || published < 0) {"
+      }
+    ]
+  },
+  {
+    "id": "H6",
+    "what": "a kept feed read",
+    "origin": "AGENTS.md, the settlement's rounding",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub*.t.sol",
+    "edits": [
+      {
+        "old": "uint256 moving = n - _countBits(keepMask);",
+        "new": "uint256 moving = n;"
+      },
+      {
+        "old": "if ((keepMask & (1 << i)) == 0) ids[k++] = _terms[i].priceId;",
+        "new": "ids[k++] = _terms[i].priceId;"
+      },
+      {
+        "old": "            if ((keepMask & (1 << i)) != 0) continue;\n            PythStructs.PriceFeed memory feed = feeds[k];",
+        "new": "            if ((keepMask & (1 << i)) != 0) {\n                ++k;\n                continue;\n            }\n            PythStructs.PriceFeed memory feed = feeds[k];"
+      }
+    ]
+  },
+  {
+    "id": "H7",
+    "what": "the initializer's duplicate checks removed (V5-M1)",
+    "origin": "AGENTS.md, the settlement's rounding",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.t.sol",
+    "edits": [
+      {
+        "old": "if (tokens[j] == token || ids[j] == priceId) revert InvalidComponents();",
+        "new": "if (tokens[j] == token && ids[j] == priceId && false) revert InvalidComponents();"
+      }
+    ]
+  },
+  {
+    "id": "H8",
+    "what": "the factory's duplicate price-id check removed (V5-M1)",
+    "origin": "AGENTS.md, the settlement's rounding",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "if (inits[j].priceId == priceId) revert DuplicatePriceId(token);",
+        "new": "if (inits[j].priceId == priceId && false) revert DuplicatePriceId(token);"
+      }
+    ]
+  },
+  {
+    "id": "H9",
+    "what": "the backing post-check drops the claims",
+    "origin": "AGENTS.md, the settlement's rounding",
+    "file": "src/WeightedHub.sol",
+    "test": "test/{WeightedHub.rebalance,Security}.t.sol",
+    "edits": [
+      {
+        "old": "uint256 required = _backing(supply, units[i], scale, Math.Rounding.Floor) + totalClaims[token];",
+        "new": "uint256 required = _backing(supply, units[i], scale, Math.Rounding.Floor);"
+      }
+    ]
+  },
+  {
+    "id": "H10",
+    "what": "the backing post-check re-reads only the bought legs",
+    "origin": "AGENTS.md, the settlement's rounding",
+    "file": "src/WeightedHub.sol",
+    "test": "test/{WeightedHub.rebalance,Security}.t.sol",
+    "edits": [
+      {
+        "old": "            // Nothing moved, so nothing is read: see {_balancesBefore} (DA-14).\n            if (amountsOut[i] == 0 && amountsIn[i] == 0) continue;",
+        "new": "            // Nothing moved, so nothing is read: see {_balancesBefore} (DA-14).\n            if (amountsIn[i] == 0) continue;"
+      }
+    ]
+  },
+  {
+    "id": "H11",
+    "what": "the probe's balance re-read dropped (RB-2, RX-12)",
+    "origin": "audit/2026-10-28-rebalance-review.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "if (!IERC20(token).trySafeTransfer(address(this), 1) || IERC20(token).balanceOf(address(this)) < balance) {",
+        "new": "if (!IERC20(token).trySafeTransfer(address(this), 1)) {"
+      }
+    ]
+  },
+  {
+    "id": "H12",
+    "what": "no probe: a leg the fill buys need not be able to leave (RX-12)",
+    "origin": "audit/2026-10-18-red-team.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "if (!IERC20(token).trySafeTransfer(address(this), 1) || IERC20(token).balanceOf(address(this)) < balance) {",
+        "new": "if (balance == type(uint256).max) {"
+      }
+    ]
+  },
+  {
+    "id": "H13",
+    "what": "issue does not check the backing before a deposit (RX-8)",
+    "origin": "audit/2026-10-18-red-team.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.t.sol",
+    "edits": [
+      {
+        "old": "if (before < required) revert Underbacked(address(token), before, required);",
+        "new": "if (before < required && false) revert Underbacked(address(token), before, required);"
+      }
+    ]
+  },
+  {
+    "id": "H14",
+    "what": "no moving-average check (RX-27)",
+    "origin": "audit/2026-10-18-red-team.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "        price = _scaledPrice(feed.price, i);\n        _checkEma(feed.price, feed.emaPrice, i);",
+        "new": "        price = _scaledPrice(feed.price, i);"
+      }
+    ]
+  },
+  {
+    "id": "H15",
+    "what": "a start does not read the moving feeds (RX-3)",
+    "origin": "audit/2026-10-18-red-team.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "        _readPrices(priceUpdate, _priceTime()); // aderyn-fp(unchecked-return)\n",
+        "new": "        if (priceUpdate.length == type(uint256).max) _readPrices(priceUpdate, _priceTime());\n"
+      }
+    ]
+  },
+  {
+    "id": "H16",
+    "what": "a gated index pays a referrer its gate refuses (AU-1)",
+    "origin": "audit/2026-10-31-review.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.fees.t.sol",
+    "edits": [
+      {
+        "old": "if (referrer != address(0)) (referrerAllowed,,) = _feeTerms(referrer);",
+        "new": "if (referrer != address(0)) referrerAllowed = true;"
+      }
+    ]
+  },
+  {
+    "id": "H17",
+    "what": "the preview skips the moving-average check (AU-2)",
+    "origin": "audit/2026-10-31-review.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "scaledPrices[i] = _checkedPrice(feeds[i], i);",
+        "new": "scaledPrices[i] = _scaledPrice(feeds[i].price, i);"
+      }
+    ]
+  },
+  {
+    "id": "H18",
+    "what": "a redeem fill reads balances before paying the stablecoin (AU-3)",
+    "origin": "audit/2026-10-31-review.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        REQUESTS.fill(f.id, f.amount);\n        // Read after the fill paid the stablecoin out, so a component that is the stablecoin itself counts only what\n        // the redeem brings in.\n        uint256[] memory held = new uint256[](tokens.length);\n        for (uint256 i = 0; i < tokens.length; ++i) {\n            held[i] = IERC20(tokens[i]).balanceOf(address(this));\n        }\n",
+        "new": "        uint256[] memory held = new uint256[](tokens.length);\n        for (uint256 i = 0; i < tokens.length; ++i) {\n            held[i] = IERC20(tokens[i]).balanceOf(address(this));\n        }\n        REQUESTS.fill(f.id, f.amount);\n"
+      }
+    ],
+    "root": "keeper"
+  }
+]

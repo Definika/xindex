@@ -20,7 +20,7 @@ import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 contract RepoTest is Test {
     /// @dev keccak256 of the files `test_A712_theCiConfigIsPinnedWhole` pins whole: CI's workflow and the two Foundry
     ///      configs it runs. A change to one fails that test, which prints the new hash, until it is pinned here.
-    bytes32 private constant WORKFLOW_HASH = 0x61d572195ee06f987215585c11400a6ed24dae2af42e682cfd753b8802c6edbf;
+    bytes32 private constant WORKFLOW_HASH = 0x50b1c23185427003b1c5a3a4af5c772025c7adaeaa2df9950bdb252e40415cef;
     bytes32 private constant FOUNDRY_TOML_HASH = 0xed56be1c9acc47165fe8a9303665b35391357ee7d85ef998f8c0c74761a0c3c4;
     bytes32 private constant KEEPER_FOUNDRY_TOML_HASH =
         0x5426d5180cca7c4ac15d7fb182272a805a3ce19a143d6c6f8c158f61765d7592;
@@ -61,7 +61,7 @@ contract RepoTest is Test {
     ///      here while its fork suites skipped.
     function test_I11_A712_theCiToolchainIsPinned() public view {
         string memory workflow = _read(".github/workflows/test.yml");
-        assertEq(_count(workflow, "foundry-rs/foundry-toolchain@"), 2, "each job installs Foundry once");
+        assertEq(_count(workflow, "foundry-rs/foundry-toolchain@"), 3, "each job installs Foundry once");
         assertEq(
             _count(
                 workflow,
@@ -71,8 +71,8 @@ contract RepoTest is Test {
                     "          version: v1.8.1\n"
                 )
             ),
-            2,
-            "and pins it, in both jobs"
+            3,
+            "and pins it, in all three jobs"
         );
         assertTrue(_contains(workflow, "eth-wake==4.22.1"), "Wake is pinned");
         assertEq(
@@ -404,12 +404,22 @@ contract RepoTest is Test {
         assertTrue(_contains(config, 'sepolia = { key = "${ETHERSCAN_API_KEY}" }'), "Sepolia verification uses it");
     }
 
+    /// @dev The mutation gate runs every mutant of the committed table, in a job of its own (step 4 of the
+    ///      logic-hardening plan): a step that ran a few by `--only`, or no step, would let a mutant survive unseen.
+    function test_theMutationGateRunsEveryMutant() public view {
+        string memory workflow = _read(".github/workflows/test.yml");
+        assertTrue(_contains(workflow, "  mutants:\n    name: Mutation gate\n"), "the gate has its job");
+        assertEq(
+            _step(workflow, "Every mutant is killed"), "        run: python3 -I test/mutants/run.py\n", "every mutant"
+        );
+    }
+
     /// @dev XA-64: CI clones only the direct submodules and checks the lock both ways, so a ghost lock entry fails.
     ///      A7-12: both checkouts clone only `lib/*`, and the check is pinned whole, keys and script: a pin on two of
     ///      its messages let an `exit 0` through.
     function test_XA64_A712_ciChecksOutDirectSubmodulesAndTheLockBothWays() public view {
         string memory workflow = _read(".github/workflows/test.yml");
-        assertEq(_count(workflow, "          submodules: true\n"), 2, "each checkout clones only lib/*");
+        assertEq(_count(workflow, "          submodules: true\n"), 3, "each checkout clones only lib/*");
         assertFalse(_contains(workflow, "recursive"), "never the dependencies' nested submodules");
         assertEq(
             _step(workflow, "Check submodule commits match foundry.lock"),
