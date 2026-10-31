@@ -19,8 +19,10 @@ or the hours section 2 did not have.
 - `test/vectors/proofs.py`: the model in z3 and the proofs. `python3 -I test/vectors/proofs.py 2 120` proves two legs
   with two minutes per property; `3 300` three legs. It needs a Python with the `z3` package; Halmos's has one
   (`~/.local/share/uv/tools/halmos/bin/python` on the machine that ran it), the system's does not.
-- `test/WeightedMath.halmos.t.sol`: the Halmos harness, four rungs. forge compiles it and runs nothing in it, since
-  its functions start with `check_`. It stays so the attempt can be repeated with more time or a later Halmos.
+- `test/WeightedMath.halmos.t.sol`: the Halmos harness, four rungs. forge runs each rung only at a few concrete points
+  (`test_everyRungHoldsAtConcretePoints`, added on 2026-10-31 because CI's coverage gate read the harness at 0%); the
+  symbolic runs are its `check_` functions, which only Halmos runs. It stays so the attempt can be repeated with more
+  time or a later Halmos.
 
 ## 2. Halmos
 

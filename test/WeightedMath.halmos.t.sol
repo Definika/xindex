@@ -10,7 +10,9 @@ import {WeightedMath} from "../src/WeightedMath.sol";
 ///         Halmos 0.3.3 could not finish rung 1 in ten minutes (`design/2026-10-29-settlement-proofs.md`, section 2):
 ///         it explores every branch of `Math.mulDiv`, about eleven calls per settlement. The properties are proven on
 ///         the exact model instead (`test/vectors/proofs.py`). The harness stays for a retry with more time or a
-///         later Halmos; forge compiles it and runs nothing in it.
+///         later Halmos. forge runs each rung only at the concrete points of {test_everyRungHoldsAtConcretePoints}, so
+///         the harness cannot rot between retries and CI's coverage gate reads every line of it; Halmos runs only the
+///         `check_` functions.
 /// @dev The rungs widen what is symbolic one step at a time: rung 1 leaves only the units symbolic, rung 2 adds the
 ///      multiplier, rung 3 a weight, rung 4 the prices.
 contract WeightedMathProofs is Test {
@@ -77,5 +79,16 @@ contract WeightedMathProofs is Test {
         vm.assume(u0 != 0 && u1 != 0 && p0 != 0 && p1 != 0);
         vm.assume(mu >= MU_MIN && mu <= MU_MAX && w0 != 0 && w0 < TOTAL_WEIGHT);
         _check(mu, _pair(p0, p1), _pair(u0, u1), _pair(w0, TOTAL_WEIGHT - w0));
+    }
+
+    /// @dev Every rung at concrete points, which forge runs: 1 ETH ($2,000) against 0.1 BTC ($6,000) is off equal
+    ///      weights, so it settles, BTC shrinking and ETH growing; 3 ETH against 0.1 BTC is on them, so the
+    ///      settlement reverts `NothingToRebalance` and the check has nothing to assert.
+    function test_everyRungHoldsAtConcretePoints() public view {
+        check_rung1_units(1e18, 1e7);
+        check_rung1_units(3e18, 1e7);
+        check_rung2_unitsAndMu(1e18, 1e7, MU_MIN);
+        check_rung3_unitsMuAndWeights(1e18, 1e7, MU_MAX, 2500);
+        check_rung4_everything(1e18, 1e7, uint128(ETH_PRICE), uint128(BTC_PRICE), WAD, 5000);
     }
 }

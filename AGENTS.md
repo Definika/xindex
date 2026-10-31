@@ -657,8 +657,9 @@ records also cite.
     `settlement.json` its output, and `test/WeightedMath.vectors.t.sol` replays it through `vm.readFile` (the folder
     is in `fs_permissions`), never `ffi`. A change to `WeightedMath` regenerates the file in the same commit, and a
     change to the arithmetic's rules changes the model first, then reruns `proofs.py`, the model's properties in z3
-    (`design/2026-10-29-settlement-proofs.md`). `test/WeightedMath.halmos.t.sol` is a Halmos harness forge runs
-    nothing in: its `check_` functions are symbolic, and name none `test`.
+    (`design/2026-10-29-settlement-proofs.md`). `test/WeightedMath.halmos.t.sol` is a Halmos harness: its
+    `check_` functions are symbolic and only Halmos runs them; forge runs them at the concrete points of its one
+    `test_` function, which keeps the file at CI's 100% coverage.
   - Mocks go under `test/mocks/`. Mainnet constants live in `script/MainnetAddresses.sol`, re-exported with test-only
     ones by `test/fork/ForkAddresses.sol`.
   - New behaviour needs a unit test, and a new revert path needs a test hitting the exact error
