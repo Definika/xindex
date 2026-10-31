@@ -22,7 +22,14 @@ between the preview and the transaction with a new price id changes the address,
 
 **Mint with USDC/USDT.** For each leg the app picks a venue, quotes it (QuoterV2 `quoteExactOutput` for a V3 leg, the
 V4 Quoter for a V4 one), sets per-leg limits and the overall `maxAmountIn`, reads `rebalanceNonce()`, and calls
-`mintWithToken(MintParams)`. Exact `shares` are minted; unspent USDC comes back.
+`mintWithToken(MintParams)`. Exact `shares` are minted; unspent USDC comes back. With a USDC EIP-2612 permit for
+`maxAmountIn` expiring at `deadline`, `mintWithTokenPermit(MintParams, v, r, s)` needs no approval transaction; a permit
+someone already submitted is accepted, and USDT has none.
+
+**Mint with ether, burn to ether.** `mintWithEth(MintParams)` takes `tokenIn = WETH`, `maxAmountIn = msg.value` and
+legs that end at WETH, with WETH itself a pass-through leg when the index holds it; the zap wraps, buys, and refunds
+the unspent ether. `burnToEth(BurnParams)` and `burnToEthWithPermit` take `tokenOut = WETH` and legs that end at WETH,
+and pay `to` in ether. A caller or `to` that cannot receive ether reverts the call. The events name WETH.
 
 **Burn to USDC/USDT/anything.** The app quotes each leg in the exact-input direction, sets per-leg minimums and a
 non-zero overall `minAmountOut`, passes `rebalanceNonce()`, and calls `burnToToken(BurnParams)` or
@@ -157,8 +164,8 @@ at any time) or `refund` (anyone, after the deadline).
   entry carries the pool of the hop it closes. The **burn** direction is walked forwards from the component, so the
   last entry names `tokenOut`; the **mint** direction is walked backwards from the component, so the *first* entry
   names the stable and the list is the burn route reversed. Live V4 pools for these components are paired against
-  **native ether**, `address(0)`, which may only ever be an intermediate: native ether never reaches the zap, which has
-  no `receive()`. Example, USDC to LINK: burn `[{ETH, 3000, 60}, {USDC, 500, 10}]`, mint `[{USDC, 500, 10}, {ETH,
+  **native ether**, `address(0)`, which may only ever be an intermediate: native ether never reaches the zap through a
+  swap, whose `receive()` takes ether from WETH alone. Example, USDC to LINK: burn `[{ETH, 3000, 60}, {USDC, 500, 10}]`, mint `[{USDC, 500, 10}, {ETH,
   3000, 60}]`. Keep a route from visiting the same currency twice: on a mint, the pinned periphery does not hold a V4
   exact-output route that revisits `tokenIn` to its `amountInMaximum` (upstream issue #564), so the zap's pre-funding
   is then the only bound on that leg; on a burn, a route that revisits the component can fill a later hop partially

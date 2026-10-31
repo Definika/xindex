@@ -14,8 +14,8 @@ reads a price. A permissionless auction brings an index back to its weights at P
 - **Mint and redeem.** `issue` takes each component in proportion to the shares minted, and `redeem` burns shares and
   pays the components out. No oracle sits on either path, so nothing can block an exit. `redeemSkipping` exits around a
   frozen component, which can be claimed later.
-- **Trade with stablecoins.** `IndexZap` mints with USDC or USDT and burns to any token in one transaction, through
-  Uniswap's Universal Router (V3 and V4 pools). `BasketBuilder` does the same over several transactions for baskets too
+- **Trade with stablecoins or ether.** `IndexZap` mints with USDC, USDT or ether and burns to any token or to ether
+  in one transaction, through Uniswap's Universal Router (V3 and V4 pools); a USDC permit makes the mint one signature. `BasketBuilder` does the same over several transactions for baskets too
   wide for one. `MintRequests` holds limit orders anyone can fill.
 - **Rebalance.** Once an index's interval (7 to 91 days) has passed, anyone can start a rebalance while every feed
   publishes. After 2 hours of notice, a 4-hour Dutch auction lets any contract settle it at Pyth prices; the multiplier
@@ -63,7 +63,7 @@ token_i.balanceOf(index) >= floor(totalSupply × units_i × scale / 1e36) + tota
 | [`WeightedIndexFactory`](src/WeightedIndexFactory.sol) | Lists assets, creates indexes, and holds the registry and the fee policy. |
 | [`WeightedHub`](src/WeightedHub.sol) | The index token: issue, redeem, claims, fees and rebalancing. |
 | [`WeightedMath`](src/WeightedMath.sol) | The rebalance settlement's arithmetic, shared by every index. |
-| [`IndexZap`](src/IndexZap.sol) | Mints with and burns to stablecoins in one transaction. |
+| [`IndexZap`](src/IndexZap.sol) | Mints with stablecoins or ether and burns to any token or ether in one transaction. |
 | [`BasketBuilder`](src/BasketBuilder.sol) | The same over several transactions, for baskets of any size. |
 | [`MintRequests`](src/MintRequests.sol) | Limit orders in USDC or USDT, escrowed until filled, cancelled or expired. |
 | [`KeeperExecutor`](keeper/src/KeeperExecutor.sol) | The keeper bot's executor. It starts and fills auctions and holds no role. |
@@ -78,7 +78,7 @@ token_i.balanceOf(index) >= floor(totalSupply × units_i × scale / 1e36) + tota
 |---|---|
 | WeightedIndexFactory | [`0x787139b915753F0CfFfa14708D1e665dCf5AA0bA`](https://sepolia.etherscan.io/address/0x787139b915753F0CfFfa14708D1e665dCf5AA0bA) |
 | WeightedHub (implementation) | [`0x3ae717ffeE17D3FAd861447703F31011eB8DC609`](https://sepolia.etherscan.io/address/0x3ae717ffeE17D3FAd861447703F31011eB8DC609) |
-| IndexZap | [`0x1CC5cC8bE9553cFe952a4A330071C20cE96d9924`](https://sepolia.etherscan.io/address/0x1CC5cC8bE9553cFe952a4A330071C20cE96d9924) |
+| IndexZap (the build of 2026-10-26, before the ether and permit-mint entry points) | [`0x1CC5cC8bE9553cFe952a4A330071C20cE96d9924`](https://sepolia.etherscan.io/address/0x1CC5cC8bE9553cFe952a4A330071C20cE96d9924) |
 | BasketBuilder | [`0xa4AB1233D1Eb2ddcA77C27579A8cB41156452E13`](https://sepolia.etherscan.io/address/0xa4AB1233D1Eb2ddcA77C27579A8cB41156452E13) |
 | MintRequests | [`0x5b092e8A8ab29A12e2D91bE96C307759B2a12b81`](https://sepolia.etherscan.io/address/0x5b092e8A8ab29A12e2D91bE96C307759B2a12b81) |
 

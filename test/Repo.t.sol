@@ -6,6 +6,7 @@ import {Vm, VmSafe} from "forge-std/Vm.sol";
 import {IndexZap} from "../src/IndexZap.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
+import {IWETH9} from "../src/interfaces/IWETH9.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 
 /// @notice Repository facts that security-review findings rest on and that no contract test can reach: the pinned
@@ -656,7 +657,7 @@ contract RepoTest is Test {
     function test_LR01_checksAfterAnExpectedConstructorRevertStillRun() public {
         assertTrue(_contains(_read("foundry.toml"), "\ndynamic_test_linking = false\n"), "test linking stays static");
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new IndexZap(IIndexFactory(address(0)), IUniversalRouter(address(0)));
+        new IndexZap(IIndexFactory(address(0)), IUniversalRouter(address(0)), IWETH9(address(0)));
         vm.expectCall(address(this), abi.encodeCall(this.reachedAfterTheRevert, ()));
         this.reachedAfterTheRevert();
     }

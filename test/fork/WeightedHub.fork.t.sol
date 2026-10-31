@@ -16,6 +16,7 @@ import {IWeightedHub} from "../../src/interfaces/IWeightedHub.sol";
 import {IWeightedIndexFactory} from "../../src/interfaces/IWeightedIndexFactory.sol";
 import {IRebalanceExecutor} from "../../src/interfaces/IRebalanceExecutor.sol";
 import {IUniversalRouter} from "../../src/interfaces/IUniversalRouter.sol";
+import {IWETH9} from "../../src/interfaces/IWETH9.sol";
 import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
 import {PythStructs} from "../../src/interfaces/pyth/PythStructs.sol";
 import {PythIds} from "../../script/PythIds.sol";
@@ -112,7 +113,7 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
 
         pyth = new MockPyth();
         factory = new WeightedIndexFactory(address(this), guardian, address(pyth));
-        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER));
+        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), IWETH9(A.WETH));
 
         (address[] memory tokens, bytes32[] memory ids) = PythIds.all();
         for (uint256 i = 0; i < tokens.length; ++i) {

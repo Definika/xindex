@@ -11,13 +11,13 @@
 | Fees | Paid in shares, never in components. The creator's rate (0 to 1%) plus the platform's (0 to 0.25%, the policy when the index was created) on every issue and redeem; a referrer named at mint takes a share of the platform's part. An optional streaming fee (creator up to 5% a year, platform up to 1%) accrues in shares and moves no tokens. |
 | Access | A gated index issues only to its creator and the recipients its creator allows, until the creator opens it for good; a referrer it would refuse gets no share, which stays the platform's. An unlisted index is simply not shown by the app. |
 | Assets | Ethereum ERC-20s: the issuer's own contract where Ethereum has one, Bitcoin as WBTC, and otherwise the copy Wormhole's token bridge wraps from the coin's home chain. Tether Gold and Ondo's tokenized stocks are listed too. The labels the app must show (Native, Bridged, Custodial, issuer powers) are in [assets.md](assets.md). |
-| Stablecoins | Mint with USDC or USDT through the zap, the basket builder, or a limit order in `MintRequests`. Burn to USDC, USDT or any other token, or in kind. Index tokens are fungible, so the protocol does not track which stablecoin a holder used. |
+| Stablecoins and ether | Mint with USDC, USDT or ether through the zap, the basket builder (stablecoins), or a limit order in `MintRequests`. Burn to USDC, USDT, ether or any other token, or in kind. Index tokens are fungible, so the protocol does not track which stablecoin a holder used. |
 | Governance | No admin can move an index's funds, mint or burn its shares, pause or upgrade it, or change its units or weights. The owner, a Safe that needs at least 3 signatures, proposes listings (effective after 2 days) and guardian changes (after 7), and sets the fee policy for new indexes. The guardian can cancel pending listings, delist, cancel a rebalance, and start one around a frozen component. Ownership moves in two steps and cannot be renounced. |
 | Frozen components | If an issuer pauses or blacklists a component, holders take every other component out with `redeemSkipping` and claim the frozen one later. The guardian rebalances around it with a keep mask, which neither moves the component nor reads its price. |
 
 ## Not built yet
 
-- ETH in and out (`mintWithETH`, `burnToETH`), `createAndMint` in one call, `mintWithTokenPermit` for USDC.
+- `createAndMint` in one call.
 - Constituent changes: a new list is a new index.
 - Legs that split one swap across V3 and V4, and per-pair partial-fill auctions.
 - A backstop for auctions too small to pay. The keeper fills only what pays, unless its operator sets a subsidy.

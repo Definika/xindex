@@ -158,11 +158,17 @@ which returned the zap to its earlier Uniswap-only build. The zap types its call
   `burnToToken(BurnParams{index, expectedNonce, shares, tokenOut, minAmountOut, legs, to, deadline})`: route endpoints
   validated, per-leg limits, balance-measured accounting, shortfalls reverted, `issue` as the final interaction of a
   mint. The leg whose component is already the mint's `tokenIn` or the burn's `tokenOut` carries no swap and honours
-  its own limit too (DA-15). `burnToTokenWithPermit(BurnParams, v, r, s)` runs the same checks before the permit.
+  its own limit too (DA-15). `burnToTokenWithPermit(BurnParams, v, r, s)` runs the same checks before the permit, and
+  `mintWithTokenPermit(MintParams, v, r, s)` does the same for a `tokenIn` with an EIP-2612 permit, USDC among them;
+  a permit is tried, never required, so one already submitted is accepted. `mintWithEth(MintParams)`,
+  `burnToEth(BurnParams)` and `burnToEthWithPermit` (built 2026-10-29) are the same calls with WETH as the token: the
+  zap wraps `msg.value`, which must equal `maxAmountIn`, refunds the unspent part as ether, and unwraps a burn's
+  proceeds for `to`. `WETH` is a construction argument, resolved by the deploy script like the stablecoins.
 - **One venue per leg.** A `MintLeg` or `BurnLeg` carries exactly one non-empty route, a packed `v3Path` or a
   `PathKey[] v4Path`, or `BadRoute(i)`; both empty is valid only for the pass-through leg. A V4 route must be hookless (`hooks` zero and
   `hookData` empty), which also rules out the dynamic-fee flag. `address(0)` is native ether and may appear only as an
-  intermediate; the zap has no `receive()`.
+  intermediate; the zap's `receive()` takes ether from WETH alone, which `withdraw` sends back, and refuses every
+  other sender.
 - **Every command is the zap's own.** Each swap is one `execute(commands, inputs)` built here, and nothing a caller
   supplied is forwarded, because the router's command set includes `TRANSFER` and `PERMIT2_TRANSFER_FROM`. The commands
   and V4 actions are declared with their input layouts in `src/libraries/`. The zap never encodes a swap amount of
@@ -578,10 +584,10 @@ components (section 2).
   proposals, within the 2 hours of `REBALANCE_DELAY`, and monitors watch `RebalanceStarted` with a non-zero `keepMask`
   (RT-07). Neither stall moves funds; holders redeem throughout.
 - **Reentrancy.** `nonReentrant` on the hub's ten entry points that mint, burn, pay, accrue or rebalance (`test_R11_everyEntryPointIsGuardedDuringTheCallback`),
-  on `createIndex`, on the zap's three (CR-I26), on every entry point of `BasketBuilder` and on every entry point of
+  on `createIndex`, on the zap's seven (CR-I26), on every entry point of `BasketBuilder` and on every entry point of
   `MintRequests`. The new units, the nonce and the cleared proposal are written before any rebalance transfer, and the
   callback goes only to `msg.sender`. Wake's reentrancy detector does not model the guard; its documented suppressions
-  are the `redeem` call in `IndexZap._burnBasket`, the `permit` call in `burnToTokenWithPermit`, the `redeem` call in
+  are the `redeem` call in `IndexZap._burnBasket`, the `permit` call in `IndexZap._tryPermit`, the `redeem` call in
   `BasketBuilder.redeem`, the clone's `initialize` call in `WeightedIndexFactory._initializeIndex`, and the executor
   callback and Pyth's parse in `WeightedHub` (RX-48). Inside `issue`, `redeem` and `executeRebalance`, supply, units and balances change at different
   moments, so integrators value an index from `components()` and independent prices, never from `balanceOf(index)`
@@ -684,8 +690,7 @@ that Ethereum stays served; the platform's fee policy and the legal reading; the
 Ethereum, then `DeployWeighted` and `ConfigureWeighted` over the list; and the app side: Wormhole Connect for bridging
 in and out, the wrapped share and the Bridged and Custodial labels on every index, and a filler for `MintRequests`.
 
-**Backlog.** ETH in/out, `createAndMint`, `mintWithTokenPermit` (USDC only), mixed-venue legs that split one leg
-across V3 and V4, per-pair partial-fill auctions, a backstop for auctions too small to pay (the keeper fills only what
+**Backlog.** `createAndMint`, mixed-venue legs that split one leg across V3 and V4, per-pair partial-fill auctions, a backstop for auctions too small to pay (the keeper fills only what
 pays unless its operator sets a subsidy), an aggregator or Universal Router 2.1 zap, V4 pools on the Sepolia market,
 and one L2 deployment if cheap minting for small buyers matters after launch.
 

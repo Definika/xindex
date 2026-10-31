@@ -130,6 +130,10 @@ Where it stands (2026-10-26):
   z3 closes in seconds; for three legs all of them but the `μ` bound's last step, the multiplication of a proven
   inequality by `μ · s`, which z3 did not close and the record leaves as a hand step. Certora was not run (paid).
   Next in that plan: mutation testing as a CI gate.
+- The zap takes ether and permits since 2026-10-29 (the owner's call): `mintWithEth`, `burnToEth`,
+  `burnToEthWithPermit` and `mintWithTokenPermit`, the backlog's ETH in and out and one-signature USDC mint, with `WETH`
+  a construction argument the deploy script resolves (`abi/IndexZap.json`, the zap's unit and fork suites). The Sepolia
+  zap of 2026-10-26 predates them and needs a redeploy of the zap alone to serve them.
 - Before any mainnet: Pyth's parameter replay (`design/2026-10-05-custom-weights.md`, section 8), which also sizes
   `MAX_EMA_DEVIATION` and `MAX_GROWTH`, and a settlement on a
   real update from Hermes, both waiting on Pyth's API key in `.env` (`PYTH_API_KEY`); the 26 attestations and RAY's
@@ -211,7 +215,7 @@ deploy script resolves Pyth, the router and the stablecoins from the address boo
    `MainnetAddresses.fork.t.sol` and `Security.fork.t.sol` exercise.
 5. The Wake VS Code analyzer reports no errors or warnings on `src/`. Its reentrancy detector does not model reentrancy
    guards; the documented suppressions are on the `redeem` call in `IndexZap._burnBasket`, the `permit` call in
-   `IndexZap.burnToTokenWithPermit`, the `redeem` call in `BasketBuilder.redeem`, and the clone's `initialize` call in
+   `IndexZap._tryPermit`, the `redeem` call in `BasketBuilder.redeem`, and the clone's `initialize` call in
    `WeightedIndexFactory._initializeIndex`, which the creation fee's transfer now follows. v5 adds the executor callback and Pyth's parse in `WeightedHub`, and
    the two events of the vendored `IPythEvents`, which only Pyth emits.
    Aderyn (Cyfrin's analyzer, `aderyn .`, and its VS Code extension) reports nothing on `src/` either. `aderyn.toml`
@@ -534,6 +538,14 @@ records also cite.
   runs out. Since 2026-10-16 the zap's swaps run through `UniversalRouterSwaps`, the engine it shares with the basket
   builder: the venue, command, payment, spend-bound, unsold-input, V4-route and check rules below are the engine's,
   and the swap errors both raise are declared in `IXindexErrors`.
+  - **Ether and permits** (built 2026-10-29, the owner's call to build the backlog's ETH entry and one-signature
+    mint, which widens the 2026-10-14 "USDC or USDT" entry to ether). `mintWithEth` and `burnToEth` are
+    `mintWithToken` and `burnToToken` with WETH as the token: `tokenIn` or `tokenOut` names `WETH`, a construction
+    argument `DeployWeighted` resolves like the stablecoins (`WETH` in the environment, the address book's on chain
+    1), `msg.value` must equal `maxAmountIn`, the zap wraps and unwraps, and a caller or `to` that refuses ether fails
+    the call. `mintWithTokenPermit`, `burnToTokenWithPermit` and `burnToEthWithPermit` try an EIP-2612 permit for the
+    whole amount pulled and accept one already submitted; USDT has none. Fiat and other-chain entry stay app-side and
+    undecided. The Sepolia zap of 2026-10-26 predates these entry points; a redeploy of the zap alone serves them.
   - **Venue.** It swaps through Uniswap's Universal Router, pinned to the 2.0.0 deployment, and nothing else (the
     owner's call on 2026-10-14). Each leg names exactly one venue: a packed `v3Path` or a hookless `PathKey[] v4Path`,
     never both and never neither, else `BadRoute(i)`; the pass-through leg names none.
@@ -549,7 +561,8 @@ records also cite.
     input is measured as what came back, `balance + given - before`, never as what was spent (CR-L02).
   - **V4 routes.** A V4 route must be hookless (`hooks == 0` and empty `hookData`). A hookless key cannot carry the
     dynamic-fee flag, so that one equality covers the flag bits too. `address(0)` is allowed only as an intermediate,
-    because native ether must never reach the zap, which has no `receive()`.
+    because native ether must never reach the zap through a swap: its `receive()` takes ether from WETH alone, which
+    `withdraw` sends back for `mintWithEth`'s refund and `burnToEth`'s payout, and refuses every other sender.
   - **Checks.** The zap must: validate every route's endpoints; honour every leg's limit, including the pass-through
     leg (DA-15); check `expectedNonce`; measure what the user pays and receives as balance changes inside the call,
     never using tokens already in the zap; check each mint leg's delivered component balance against what the index
@@ -793,7 +806,9 @@ cost the owner weighs before launch.
 **Swap venues** (the owner's call on 2026-10-14): the zap swaps through Uniswap's Universal Router 2.0.0 alone, V3 or
 V4 per leg, chosen by the caller. PancakeSwap's v3 Universal Router, a third venue per leg since 2026-10-06 (chiefly
 for CAKE), and THORChain, an app-side rail added the same day (`design/2026-10-06-swap-venues.md`), were both removed on
-2026-10-14: users come with USDC or USDT. CAKE stays listed; its legs route through Uniswap's pools, or it mints in
+2026-10-14: users come with USDC or USDT, and since 2026-10-29 with ether through the zap's `mintWithEth` and
+`burnToEth` (the owner's call to build the backlog's ETH entry; fiat and other-chain entry stay app-side and
+undecided). CAKE stays listed; its legs route through Uniswap's pools, or it mints in
 kind or through `MintRequests`.
 
 **Fees, cadence and private indexes** (built 2026-10-14 on the research record's defaults): fees in shares with the
@@ -813,7 +828,7 @@ If a change would alter any of these, say so explicitly.
 
 ## Not built (candidate backlog)
 
-- `mintWithETH` / `burnToETH`, `createAndMint`, `mintWithTokenPermit` for USDC.
+- `createAndMint`.
 - Constituent changes (a new list is a new index).
 - Mixed-venue legs (a single leg splitting across V3 and V4).
 - Per-pair partial-fill auctions.
