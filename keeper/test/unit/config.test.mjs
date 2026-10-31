@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseConfig } from "../../bot/config.mjs";
+import { readFile } from "node:fs/promises";
+import { CHAINS, MAINNET, parseConfig } from "../../bot/config.mjs";
+import { ETHEREUM_MARKET, marketOf } from "../../bot/routes.mjs";
 
 const VALID = {
   RPC_URL: "https://rpc.example",
@@ -21,7 +23,39 @@ test("defaults fill the optional settings", () => {
   assert.equal(c.maxFeeGwei, 100);
   assert.equal(c.priorityFeeGwei, 2);
   assert.equal(c.indexes, null);
+  assert.equal(c.chain, MAINNET);
+  assert.equal(c.fillAuctions, true);
   assert.ok(Object.isFrozen(c));
+});
+
+test("CHAIN_ID picks the chain's addresses, and the Sepolia keeper can serve requests alone", () => {
+  const c = parseConfig({ ...VALID, CHAIN_ID: "11155111", FILL_AUCTIONS: "0" });
+  assert.equal(c.chain, CHAINS[11155111]);
+  assert.equal(c.chain.name, "Sepolia");
+  assert.equal(c.fillAuctions, false);
+  assert.equal(c.fillRequests, true);
+  assert.equal(marketOf(c.chain).usdc, CHAINS[11155111].usdc);
+  assert.deepEqual(ETHEREUM_MARKET, marketOf(MAINNET));
+  assert.throws(() => parseConfig({ ...VALID, CHAIN_ID: "56" }), /CHAIN_ID must be one of 1, 11155111/);
+  assert.throws(() => parseConfig({ ...VALID, FILL_AUCTIONS: "yes" }), /FILL_AUCTIONS must be 0 or 1/);
+  assert.throws(
+    () => parseConfig({ ...VALID, FILL_AUCTIONS: "0", FILL_REQUESTS: "0" }),
+    /FILL_AUCTIONS and FILL_REQUESTS are both off/,
+  );
+});
+
+test("Sepolia's entry is the test deployment's market in docs/deployment.md", async () => {
+  const docs = await readFile(new URL("../../../docs/deployment.md", import.meta.url), "utf8");
+  const sepolia = CHAINS[11155111];
+  const rows = {
+    "Uniswap SwapRouter02": sepolia.swapRouter02,
+    "Uniswap QuoterV2": sepolia.quoterV2,
+    "Uniswap V3 factory": sepolia.v3Factory,
+    WETH: sepolia.weth,
+    "Wormhole Token Bridge": sepolia.tokenBridge,
+    "tUSDC (FaucetToken, 6 decimals)": sepolia.usdc,
+  };
+  for (const [row, address] of Object.entries(rows)) assert.ok(docs.includes(`| ${row} | \`${address}\` |`), row);
 });
 
 test("a trailing slash on HERMES_URL is dropped, and a negative minimum profit is a subsidy", () => {

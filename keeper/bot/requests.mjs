@@ -10,7 +10,7 @@
 import { encodeFunctionData } from "viem";
 import { failedRequests, revertedRequestFills, skippedRequests } from "./backoff.mjs";
 import { ABI, revertReason } from "./chain.mjs";
-import { FRESH_SECONDS, MAINNET, MAX_CONF_BPS, SHARE_PRICED_IDS, TX_GAS_CAP } from "./config.mjs";
+import { FRESH_SECONDS, MAX_CONF_BPS, SHARE_PRICED_IDS, TX_GAS_CAP } from "./config.mjs";
 import { priceKey } from "./hermes.mjs";
 import * as M from "./math.mjs";
 
@@ -135,7 +135,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
     for (let i = 0; i < st.tokens.length; i++) {
       const token = st.tokens[i];
       const amount = amounts[i];
-      if (amount === 0n || same(token, MAINNET.usdc)) continue; // a USDC leg is the float itself
+      if (amount === 0n || same(token, cfg.chain.usdc)) continue; // a USDC leg is the float itself
       const p = latest.get(priceKey(st.ids[i]));
       if (!p) return { skip: `no fresh, verified price for ${token}` };
       const dec = st.decimals[i];
@@ -175,7 +175,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
     }
     let stableRoute = "0x";
     let stableLimit = 0n;
-    const stable = M.stableLeg(r, MAINNET.usdc);
+    const stable = M.stableLeg(r, cfg.chain.usdc);
     if (stable) {
       const fairUsd = Number(stable.amount) / 1e6;
       stableRoute = await routes.best({ key, ...stable, fairUsd, blockNumber: L.number });
