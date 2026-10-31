@@ -21,7 +21,7 @@ contract RepoTest is Test {
     /// @dev keccak256 of the files `test_A712_theCiConfigIsPinnedWhole` pins whole: CI's workflow and the two Foundry
     ///      configs it runs. A change to one fails that test, which prints the new hash, until it is pinned here.
     bytes32 private constant WORKFLOW_HASH = 0x61d572195ee06f987215585c11400a6ed24dae2af42e682cfd753b8802c6edbf;
-    bytes32 private constant FOUNDRY_TOML_HASH = 0xad9de96ac8339b3cc1668438b0e9b63c65d70466cecb60d2702b9608293ab2cc;
+    bytes32 private constant FOUNDRY_TOML_HASH = 0xed56be1c9acc47165fe8a9303665b35391357ee7d85ef998f8c0c74761a0c3c4;
     bytes32 private constant KEEPER_FOUNDRY_TOML_HASH =
         0x5426d5180cca7c4ac15d7fb182272a805a3ce19a143d6c6f8c158f61765d7592;
 

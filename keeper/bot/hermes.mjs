@@ -16,14 +16,17 @@ export class HermesError extends Error {
 const key = (id) => id.toLowerCase().replace(/^0x/, "");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const parseOne = (p) => ({
+  price: BigInt(p.price),
+  conf: BigInt(p.conf),
+  expo: Number(p.expo),
+  publishTime: Number(p.publish_time),
+});
+
+/// An entry's price, with `ema` the moving average Hermes publishes beside it, which the hub's preview and its fill
+/// both check the price against (RX-27, AU-2).
 function parsePrice(entry) {
-  const p = entry.price;
-  return {
-    price: BigInt(p.price),
-    conf: BigInt(p.conf),
-    expo: Number(p.expo),
-    publishTime: Number(p.publish_time),
-  };
+  return { ...parseOne(entry.price), ema: parseOne(entry.ema_price) };
 }
 
 /// A Hermes client. `fetchImpl` and `now` are injectable for tests.

@@ -258,7 +258,9 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     ///         index's components.
     function creatorOf(address index) external view returns (address);
 
-    /// @notice Whether `index` issues shares only to its creator and the accounts its creator allows.
+    /// @notice Whether `index` issues shares only to its creator and the accounts its creator allows. The fee's shares
+    ///         still go to the creator and the platform recipient, and to a referrer only if it is one of those
+    ///         accounts.
     function isGated(address index) external view returns (bool);
 
     /// @notice Whether `account` may be issued shares of `index` while it is gated. The creator needs no entry.

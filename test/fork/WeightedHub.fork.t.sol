@@ -664,16 +664,17 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
     function _structs(Coin[] memory picked, uint256[] memory moves)
         internal
         pure
-        returns (PythStructs.Price[] memory out)
+        returns (PythStructs.PriceFeed[] memory out)
     {
-        out = new PythStructs.Price[](picked.length);
+        out = new PythStructs.PriceFeed[](picked.length);
         for (uint256 i = 0; i < picked.length; ++i) {
-            out[i] = PythStructs.Price({
+            PythStructs.Price memory p = PythStructs.Price({
                 price: int64(int256(uint256(int256(picked[i].priceE8)) * moves[i] / 10_000)),
                 conf: 0,
                 expo: -8,
                 publishTime: 0
             });
+            out[i] = PythStructs.PriceFeed({id: bytes32(0), price: p, emaPrice: p});
         }
     }
 }

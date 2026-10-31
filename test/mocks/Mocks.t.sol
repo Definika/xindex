@@ -679,9 +679,9 @@ contract MocksTest is Test {
         bytes[] memory updates = new bytes[](2);
         updates[0] = pyth.update(keccak256(abi.encode(t[0])), 2e8, 0, -8, time, time - 1);
         updates[1] = pyth.update(keccak256(abi.encode(t[1])), 1e8, 0, -8, time, time - 1);
-        PythStructs.Price[] memory prices = new PythStructs.Price[](2);
-        prices[0] = PythStructs.Price({price: 2e8, conf: 0, expo: -8, publishTime: time});
-        prices[1] = PythStructs.Price({price: 1e8, conf: 0, expo: -8, publishTime: time});
+        PythStructs.PriceFeed[] memory prices = new PythStructs.PriceFeed[](2);
+        prices[0] = _feed(2e8, time);
+        prices[1] = _feed(1e8, time);
         (, uint256[] memory next, uint256[] memory amountsOut, uint256[] memory amountsIn) =
             idx.previewRebalance(prices);
         executor.fill(idx, updates);
@@ -791,6 +791,12 @@ contract MocksTest is Test {
             hex"ccdd000000000000000000000000000000000000000000000000000000000000",
             "exactOutput encodes differently from Uniswap's IV3SwapRouter"
         );
+    }
+
+    /// @dev A Pyth feed of `price` at -8 published at `time`, its moving average equal to the price.
+    function _feed(int64 price, uint256 time) internal pure returns (PythStructs.PriceFeed memory) {
+        PythStructs.Price memory p = PythStructs.Price({price: price, conf: 0, expo: -8, publishTime: time});
+        return PythStructs.PriceFeed({id: bytes32(0), price: p, emaPrice: p});
     }
 }
 

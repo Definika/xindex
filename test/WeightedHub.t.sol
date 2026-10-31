@@ -466,7 +466,7 @@ contract WeightedHubTest is WeightedTest {
     }
 
     function test_previewRebalanceNeedsOnePricePerComponent() public {
-        PythStructs.Price[] memory prices = new PythStructs.Price[](2);
+        PythStructs.PriceFeed[] memory prices = new PythStructs.PriceFeed[](2);
         vm.expectRevert(abi.encodeWithSelector(IWeightedHub.PriceCountMismatch.selector, 2));
         index.previewRebalance(prices);
     }

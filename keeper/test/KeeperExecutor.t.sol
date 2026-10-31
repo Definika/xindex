@@ -389,9 +389,9 @@ contract KeeperExecutorTest is WeightedTest {
         own.startRebalance(0, live);
         (uint256 eta,) = own.pendingRebalance();
         vm.warp(eta);
-        PythStructs.Price[] memory prices = new PythStructs.Price[](2);
-        prices[0] = PythStructs.Price({price: ETH_PRICE, conf: 0, expo: EXPO, publishTime: 0});
-        prices[1] = PythStructs.Price({price: BTC_PRICE, conf: 0, expo: EXPO, publishTime: 0});
+        PythStructs.PriceFeed[] memory prices = new PythStructs.PriceFeed[](2);
+        prices[0] = _feed(ETH_PRICE, EXPO);
+        prices[1] = _feed(BTC_PRICE, EXPO);
         (,,, uint256[] memory in_) = own.previewRebalance(prices);
         assertGt(in_[1], 0, "the keeper's index asks for BTC");
 
@@ -1069,6 +1069,45 @@ contract KeeperExecutorTest is WeightedTest {
             abi.encodeWithSelector(KeeperExecutor.TooCostly.selector, _int(proceeds) - _int(paid), _int(proceeds))
         );
         executor.fillRedeem(_req(id, 90e6, routes, _stableRoute(address(usdt)), _int(proceeds), block.timestamp));
+    }
+
+    /// @dev A redeem request paid in a stablecoin that is also a component, which no listing allows today. The fill
+    ///      pays the stable out before the redeem brings that leg back, so the executor reads what it holds after the
+    ///      payment (AU-3). Read before it, a leg that redeemed less than the payment counted below zero and the fill
+    ///      reverted on the underflow.
+    function test_AU3_aRedeemPaidInAComponentCountsWhatTheRedeemBrings() public {
+        MintRequests own = new MintRequests(address(factory), address(usd), address(usdt));
+        KeeperExecutor ex = new KeeperExecutor(
+            IV3SwapRouter(address(router)),
+            address(usd),
+            IWeightedIndexFactory(address(factory)),
+            IMintRequests(address(own)),
+            ITokenBridge(address(bridge)),
+            execOwner,
+            keeper
+        );
+        vm.prank(execOwner);
+        ex.setRequestUsdcAllowance(type(uint256).max);
+        usd.mint(address(ex), 10_000e6);
+
+        _issue(index, stranger, 1e18);
+        vm.startPrank(stranger);
+        index.approve(address(own), 1e18);
+        uint256 id = own.requestRedeem(address(index), 1e18, address(usd), 90e6, block.timestamp + 1 days);
+        vm.stopPrank();
+        uint256[] memory got = index.previewRedeem(1e18);
+        assertLt(got[2], 90e6, "the USD leg redeems less than the payment");
+
+        bytes[] memory routes = new bytes[](3);
+        routes[0] = abi.encodePacked(address(eth), uint24(500), address(usd));
+        routes[1] = abi.encodePacked(address(btc), uint24(3000), address(eth), uint24(500), address(usd));
+        uint256 proceeds =
+            router.quoteOut(address(eth), address(usd), got[0]) + router.quoteOut(address(btc), address(usd), got[1]);
+        vm.prank(keeper);
+        (int256 delta,) = ex.fillRedeem(_req(id, 90e6, routes, "", type(int256).min, block.timestamp));
+        assertEq(delta, _int(proceeds) + _int(got[2]) - _int(90e6), "the USD leg returns to the float, unswapped");
+        assertEq(usd.balanceOf(stranger), 90e6, "the requester got its stable");
+        assertFalse(own.getRequest(id).open);
     }
 
     function test_fillRedeemChecksTheCall() public {

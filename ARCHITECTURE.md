@@ -93,8 +93,9 @@ OpenZeppelin's upgradeable ERC20 and ERC20Permit (clones skip constructors, so n
 - **startRebalance(keepMask, priceUpdate)**, **cancelRebalance()** and the two **executeRebalance** overloads: section 3.
 - **Views:** `components()`, `componentTokens()`, `componentCount()`, `componentTerms()` (weights, price ids and
   decimals), `previewIssue`, `previewRedeem`, `claimOf`, `totalClaims`, `priceTime()`, `pendingRebalance()`,
-  `currentMu()`, `canStartRebalance()`, and `previewRebalance(prices)`, which takes one Pyth price per component and
-  returns the settlement a fill in this block would use, without checking publish times. No function values the index.
+  `currentMu()`, `canStartRebalance()`, and `previewRebalance(feeds)`, which takes one Pyth price feed per component,
+  the price with its moving average, refuses any price the fill would (AU-2) and returns the settlement a fill in this
+  block would use, without checking ids or publish times. No function values the index.
 - **Access:** `issue`, `redeem`, `redeemSkipping`, `startRebalance`, `cancelRebalance` and both `executeRebalance`
   overloads revert `NotInitialized` on anything but an initialized clone; the implementation has initializers disabled.
   A recipient can never be zero, the hub itself or its factory, and that includes a plain ERC-20 `transfer` or
@@ -287,6 +288,9 @@ strangers off for `REBALANCE_DELAY` from the cancel (`restartAllowedAt`, R15); c
 clears it, and the hold-off the expiry granted stands (VR-04). An auction that expires unfilled holds strangers off
 until `eta + AUCTION_DURATION + REBALANCE_DELAY`, so the owner and guardian get the first restart (XA-02, XA-16,
 CR-I02). `canStartRebalance()` is the whole timing condition for a stranger, false on an uninitialized clone (DA-22).
+The eight states this makes (uninitialized, interval, cooldown, open, notice, auction, expired and held, expired and
+open), every action from each and the exact second of every transition are tabulated in
+`design/2026-10-29-rebalance-state-machine.md`, and `test/WeightedHub.states.t.sol` takes every cell.
 
 ### 3.2 The price time
 
@@ -438,7 +442,7 @@ the recipients; `redeem` burns `shares`, mints `floor(shares · fee / 10,000)` t
 the rest, rounded down. `fee` is the creator's rate plus the platform's, both in `config()` and fixed at creation. The
 recipients come from the factory's `feeTerms(index, to)` at each call: the index's creator, who can hand the role on,
 and the platform recipient of the moment; a referrer named at mint takes `referralShareBps` of the platform's part,
-rounded down. A recipient that could not hold shares is replaced, so no fee can block a mint or an exit
+rounded down, unless the index is gated and the gate would refuse it as `to` (AU-1). A recipient that could not hold shares is replaced, so no fee can block a mint or an exit
 (`test/WeightedHub.fees.t.sol`). The streaming fee built on 2026-10-16 is the `scale`: a yearly rate, the creator's (0
 to 500 bps) plus the platform's (0 to 100 bps), accrues in shares before every issue, redeem and settlement, and on
 `accrueFees`, as `supply · f / (1 − f)` shares for `f` the rate times the elapsed part of a year, and the scale every
@@ -612,7 +616,12 @@ components (section 2).
 
 - **Unit and fuzz tests per contract:** `test/WeightedHub.t.sol`, `test/WeightedHub.rebalance.t.sol` (exact
   settlements, every price refusal, the pinned slot, the unit cap under wrong prices, keep masks, reentrancy, a hundred
-  components), `test/WeightedIndexFactory.t.sol`, `test/IndexZap.t.sol`,
+  components), `test/WeightedHub.states.t.sol` (the rebalance state machine's transition matrix, section 3.1),
+  `test/WeightedMath.vectors.t.sol` (375 settlements replayed against the exact-rational model of
+  `test/vectors/settlement.py`, `design/2026-10-29-settlement-vectors.md`; the model's caps, `μ` bound and roundings
+  are proven in z3 for two legs, and for three but the `μ` bound's last step, by `test/vectors/proofs.py`,
+  `design/2026-10-29-settlement-proofs.md`),
+  `test/WeightedIndexFactory.t.sol`, `test/IndexZap.t.sol`,
   `test/WeightedZap.t.sol`, `test/MintRequests.t.sol`, `test/Security.t.sol`, the scripts' suites, `test/Repo.t.sol`
   and the mocks' own tests in `test/mocks/Mocks.t.sol`. `MockPyth` fills duplicate ids as Pyth's own loop does (V5-M1);
   `MockWeightedExecutor` fills honestly, short, not at all, or reentrantly.

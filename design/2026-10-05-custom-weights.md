@@ -144,7 +144,8 @@ mask, guardian cancel and restart hold-off) and replaces the band with prices re
 After a fill below `μ = 1`, the growing legs sit slightly under target; the next rebalance closes the gap, so drift
 heals and does not compound (`test_repeatedFillsFollowThePrices`).
 
-`previewRebalance(prices)` lets an executor simulate a fill from Pyth prices it read off chain; only the payable path
+`previewRebalance(feeds)` lets an executor simulate a fill from Pyth prices it read off chain, each with the moving
+average published beside it, which the preview checks as the fill does (AU-2, 2026-10-31); only the payable path
 reads Pyth.
 
 ## 6. What a wrong price can cost

@@ -132,8 +132,10 @@ at any time) or `refund` (anyone, after the deadline).
   the `restartAllowedAt` that `RebalanceCancelled` carries rather than computing either wait; `restartAllowedAt()`
   alone reflects cancels only (RT-08, RT-09).
 - **During a rebalance.** In the notice, show `pendingRebalance()`, which returns `(eta, keepMask)`. In the auction,
-  show `currentMu()` (0 outside an auction) and `previewRebalance(prices)`, which returns `(mu, units, amountsOut,
-  amountsIn)` for this block at the Pyth prices the app passes. Its `units` are recorded units, which carry the
+  show `currentMu()` (0 outside an auction) and `previewRebalance(feeds)`, which returns `(mu, units, amountsOut,
+  amountsIn)` for this block at the Pyth feeds the app passes, each price with the moving average Pyth publishes beside
+  it (Hermes's `ema_price`). It refuses a price the fill would, one more than 5% from its average included (AU-2), and
+  checks neither ids nor publish times. Its `units` are recorded units, which carry the
   index's scale: show them as units per index token only after multiplying by the scale `pendingStreamingFee()`
   reports, divided by 1e18. While a rebalance is pending, warn before a mint that
   the new shares share the coming settlement's outcome; during the auction, also warn before a burn that the fill can

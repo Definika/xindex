@@ -312,7 +312,8 @@ serve(HERMES_PORT, async (url, req) => {
     .filter((id) => prices.has(id))
     .map((id) => {
       const price = BigInt(Math.round(prices.get(id) * 1e8));
-      return { id, price: { price: String(price), conf: String(price / 2000n), expo: -8, publish_time: Math.floor(Date.now() / 1000) } };
+      const at = { price: String(price), conf: String(price / 2000n), expo: -8, publish_time: Math.floor(Date.now() / 1000) };
+      return { id, price: at, ema_price: at };
     });
   return [200, { parsed, binary: { encoding: "hex", data: [] } }];
 });
