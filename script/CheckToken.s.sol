@@ -25,8 +25,9 @@ import {IUniswapV3PoolRead} from "./interfaces/IUniswapV3PoolRead.sol";
 ///   CHECK=<token,...> forge script script/CheckToken.s.sol --fork-url <any evm rpc>
 ///
 /// What it checks, and what each finding does:
-///   - Transfers: `transfer` and `transferFrom` on the fork, balances compared exactly, then a day later. A shortfall
-///     or a surplus (fee-on-transfer, share rounding) refuses, and so does a balance that moves with time (rebasing).
+///   - Transfers: `transfer`, a transfer of one raw unit to oneself (the hub's probe of a bought leg, RX-12) and
+///     `transferFrom` on the fork, balances compared exactly, then a day later. A shortfall or a surplus
+///     (fee-on-transfer, share rounding) refuses, and so does a balance that moves with time (rebasing).
 ///   - Hooks: an ERC777Token entry in the ERC-1820 registry, or ERC-1363 by ERC-165, refuses.
 ///   - Admin powers: the selectors of the token's runtime code and of its implementation's (EIP-1967, the older
 ///     zeppelinos and EIP-1822 slots, a beacon, an EIP-1167 clone), from the table in {powerOf}, and who holds them:
@@ -397,6 +398,11 @@ contract CheckToken is Script {
             && _calls(SENDER, token, abi.encodeCall(IERC20.approve, (SPENDER, half)))
             && _calls(SPENDER, token, abi.encodeCall(IERC20.transferFrom, (SENDER, PAYEE, half)));
         if (!moved) return Transfers.Failed;
+        if (!_exact(token, funded, half, recipientBefore, payeeBefore)) return Transfers.Inexact;
+        // One raw unit to oneself, from the account that now holds `half`: what the hub sends a bought leg to prove it
+        // can leave the index (RX-12). A token that refuses it, or answers true and loses the unit, could never be
+        // bought by a fill.
+        if (!_calls(RECIPIENT, token, abi.encodeCall(IERC20.transfer, (RECIPIENT, 1)))) return Transfers.Failed;
         if (!_exact(token, funded, half, recipientBefore, payeeBefore)) return Transfers.Inexact;
         vm.warp(block.timestamp + WAIT);
         vm.roll(block.number + WAIT_BLOCKS);

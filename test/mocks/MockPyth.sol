@@ -19,7 +19,8 @@ contract MockPyth {
         None,
         DropLast,
         WrongId,
-        LateTime
+        LateTime,
+        EarlyTime
     }
 
     uint256 public fee;
@@ -153,6 +154,8 @@ contract MockPyth {
             priceFeeds[0].id = keccak256("another feed");
         } else if (tamper == Tamper.LateTime) {
             priceFeeds[0].price.publishTime = uint256(maxPublishTime) + 1;
+        } else if (tamper == Tamper.EarlyTime) {
+            priceFeeds[0].price.publishTime = uint256(minPublishTime) - 1;
         }
     }
 }

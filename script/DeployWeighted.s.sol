@@ -44,7 +44,7 @@ contract DeployWeighted is DeployChecks {
     ///         mainnet broadcast is bound to (CF-5): `deploy` refuses to broadcast on Ethereum from any other build (a
     ///         local edit, a lib/ checkout off foundry.lock, a FOUNDRY_* override), and `test_CF5_*` in
     ///         test/Scripts.t.sol fails until these equal the build, so only a reviewed, CI-green commit moves them.
-    bytes32 public constant FACTORY_INITCODE_HASH = 0xc567eaedd151171abece8a36e74f1de8785ff5d99b63d4051919363a59c6efc5;
+    bytes32 public constant FACTORY_INITCODE_HASH = 0xa50e29c827dcd86116308fba797b01653d70da29af8fc511b568e35021ae0dc2;
     /// @notice keccak256 of `IndexZap`'s init code, as above.
     bytes32 public constant ZAP_INITCODE_HASH = 0x71535777ef8760df80e75112cca053b5b84987a1c2d843e7c2f31cc073b54fa7;
     /// @notice keccak256 of `BasketBuilder`'s init code, as above.

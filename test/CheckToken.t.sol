@@ -13,6 +13,7 @@ import {MainnetAddresses} from "../script/MainnetAddresses.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockFeeToken} from "./mocks/MockFeeToken.sol";
 import {MockRebasingToken} from "./mocks/MockRebasingToken.sol";
+import {MockSelfRefusingToken, MockSelfLosingToken} from "./mocks/MockSelfTransferTokens.sol";
 import {MockERC1820Registry, MockERC1363Token} from "./mocks/MockHookRegistries.sol";
 import {
     MockBlacklistToken,
@@ -90,6 +91,20 @@ contract CheckTokenTest is Test {
         assertEq(uint8(r.transfers), uint8(CheckToken.Transfers.Inexact));
         assertEq(uint8(r.verdict), uint8(CheckToken.Verdict.Refused));
         assertEq(r.reason, checker.transferText(CheckToken.Transfers.Inexact));
+    }
+
+    /// @dev The hub proves a bought leg can leave by sending itself one raw unit (RX-12). A token that refuses that
+    ///      transfer, or answers true and loses the unit, could never be bought by a fill, so the check tries it (RB-1).
+    function test_RB1_aTokenThatCannotTransferToItselfIsRefused() public {
+        MockSelfRefusingToken refusing = new MockSelfRefusingToken();
+        CheckToken.Report memory r = _check(address(refusing));
+        assertEq(uint8(r.transfers), uint8(CheckToken.Transfers.Failed), "the self-transfer reverts");
+        assertEq(uint8(r.verdict), uint8(CheckToken.Verdict.Refused));
+
+        MockSelfLosingToken losing = new MockSelfLosingToken();
+        r = _check(address(losing));
+        assertEq(uint8(r.transfers), uint8(CheckToken.Transfers.Inexact), "the self-transfer loses the unit");
+        assertEq(uint8(r.verdict), uint8(CheckToken.Verdict.Refused));
     }
 
     /// @dev A share token's balance slot cannot be written, so the test balance comes from a holder: exact when its

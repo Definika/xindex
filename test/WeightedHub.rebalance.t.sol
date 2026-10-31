@@ -18,6 +18,7 @@ import {WeightedTest} from "./WeightedTest.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockPausableToken} from "./mocks/MockPausableToken.sol";
 import {MockSenderBlockToken} from "./mocks/MockAdminTokens.sol";
+import {MockSelfLosingToken} from "./mocks/MockSelfTransferTokens.sol";
 import {MockPyth} from "./mocks/MockPyth.sol";
 import {MockWeightedExecutor} from "./mocks/MockWeightedExecutor.sol";
 
@@ -474,6 +475,17 @@ contract WeightedHubRebalanceTest is WeightedTest {
         executor.execute(index, "", data);
     }
 
+    /// @dev An update published before the pinned second is refused by the hub's own check, not only by Pyth's window:
+    ///      a Pyth that returned one could not set a fill's price (RB-3).
+    function test_RB3_anUpdateBeforeThePinnedSecondIsRefused() public {
+        _open(0, _midpoint());
+        uint256 time = index.priceTime();
+        bytes[] memory data = _updates(index, _ids3(), _prices3(ETH_PRICE, BTC_PRICE, USD_PRICE));
+        pyth.setTamper(MockPyth.Tamper.EarlyTime);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.PriceMismatch.selector, ETH_ID, time - 1));
+        executor.execute(index, "", data);
+    }
+
     function test_theHubRefusesAPriceItCannotUse() public {
         _open(0, _midpoint());
         uint64 time = uint64(index.priceTime());
@@ -927,6 +939,39 @@ contract WeightedHubRebalanceTest is WeightedTest {
         gold.removeBlackList(address(three));
         executor.execute(three, "", data);
         assertEq(three.rebalanceNonce(), 1);
+    }
+
+    /// @dev The probe reads the balance again after its transfer. A token whose transfer to oneself answers true but
+    ///      loses the unit would otherwise pass as a leg the index can send (RX-12, RB-2). Sold, the leg leaves as any
+    ///      other.
+    function test_RB2_RX12_theProbeReadsTheBalanceAfterItsTransfer() public {
+        MockSelfLosingToken losing = new MockSelfLosingToken();
+        bytes32 id = keccak256("SLT/USD");
+        _list(address(losing), id);
+        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](2);
+        specs[0] = _spec(address(eth), 5000, ETH_UNITS);
+        specs[1] = _spec(address(losing), 5000, 50e18);
+        WeightedHub two = _create(specs);
+        _issue(two, alice, SHARES);
+
+        vm.warp(two.lastRebalance() + two.MIN_REBALANCE_INTERVAL());
+        two.startRebalance(0, pyth.liveUpdates(two, 0));
+        (uint256 eta,) = two.pendingRebalance();
+        vm.warp(eta + two.AUCTION_DURATION() / 2);
+        bytes32[] memory ids = new bytes32[](2);
+        ids[0] = ETH_ID;
+        ids[1] = id;
+        int64[] memory prices = new int64[](2);
+        prices[0] = 2500e8; // ETH shrinks, so the fill buys the losing leg
+        prices[1] = 1e8;
+        bytes[] memory data = _updates(two, ids, prices);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.CannotSendOut.selector, address(losing)));
+        executor.execute(two, "", data);
+
+        prices[0] = 1500e8; // ETH grows, so the fill sells the losing leg
+        data = _updates(two, ids, prices);
+        executor.execute(two, "", data);
+        assertEq(two.rebalanceNonce(), 1);
     }
 
     /// @dev A price further than MAX_EMA_DEVIATION from the update's own moving average, as a push of a few seconds on
