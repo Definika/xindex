@@ -16,7 +16,7 @@
 
 import { renameSync, writeFileSync } from "node:fs";
 import { encodeFunctionData, getAddress } from "viem";
-import { FRESH_SECONDS, HUB_SLOTS, MAINNET, SESSION_IDS, SHARE_PRICED_IDS, TX_GAS_CAP, US_EQUITY_SCHEDULE, parseConfig } from "./bot/config.mjs";
+import { FRESH_SECONDS, HUB_SLOTS, SESSION_IDS, SHARE_PRICED_IDS, TX_GAS_CAP, US_EQUITY_SCHEDULE, parseConfig } from "./bot/config.mjs";
 import { MAX_REVERTED_FILLS, MAX_REVERTED_REQUEST_FILLS, revertedFills } from "./bot/backoff.mjs";
 import { ABI, createChain, revertReason } from "./bot/chain.mjs";
 import { createHermes, priceKey } from "./bot/hermes.mjs";
@@ -24,7 +24,7 @@ import * as M from "./bot/math.mjs";
 import { createNeeds } from "./bot/needs.mjs";
 import { TxTracker } from "./bot/nonce.mjs";
 import { createRequestFiller } from "./bot/requests.mjs";
-import { createRoutes } from "./bot/routes.mjs";
+import { createRoutes, marketOf } from "./bot/routes.mjs";
 
 const START_EVERY_BLOCKS = 25n;
 const START_COOLDOWN = 86_400n; // a start of ours that nobody filled is not repeated for a day
@@ -39,7 +39,7 @@ const log = (...args) => console.log(new Date().toISOString(), ...args);
 const cfg = parseConfig(process.env);
 const chain = createChain(cfg);
 const hermes = createHermes({ url: cfg.hermesUrl, apiKey: cfg.pythApiKey });
-const routes = createRoutes(chain, cfg, ABI);
+const routes = createRoutes(chain, cfg, ABI, marketOf(cfg.chain));
 const tip = M.gweiToWei(cfg.priorityFeeGwei);
 const feeCap = M.gweiToWei(cfg.maxFeeGwei);
 const tracker = new TxTracker(chain.txIo, log, { feeCap });
@@ -53,7 +53,7 @@ const needs = cfg.needsFile
       },
     })
   : createNeeds({ write: () => {} });
-const isUsdc = (token) => token.toLowerCase() === MAINNET.usdc.toLowerCase();
+const isUsdc = (token) => token.toLowerCase() === cfg.chain.usdc.toLowerCase();
 const sharePriced = (id) => SHARE_PRICED_IDS.includes(id.toLowerCase());
 const tokensOf = (short) => short.map((s) => s.token).join(", ");
 let subsidies = []; // {at, usd}: fills sent below zero profit, for SUBSIDY_BUDGET_USD's rolling day (RX-16)
@@ -102,8 +102,8 @@ async function refresh(L) {
     );
     indexes = found.filter((r) => r.status === "success").map((r) => r.result);
   }
-  const eth = await hermes.latest([MAINNET.ethPriceId], Date.now() + HERMES_MS);
-  const p = eth.get(priceKey(MAINNET.ethPriceId));
+  const eth = await hermes.latest([cfg.chain.ethPriceId], Date.now() + HERMES_MS);
+  const p = eth.get(priceKey(cfg.chain.ethPriceId));
   if (p) ethUsd = M.priceUsd(p);
   lastRefresh = L.number;
 }
@@ -500,20 +500,25 @@ async function onBlock(L) {
   if (lastRefresh === null || L.number - lastRefresh >= START_EVERY_BLOCKS) await refresh(L);
 
   const T = L.timestamp + 12n;
-  const pending = await chain.multicall(
-    indexes.flatMap((address) => [
-      { address, abi: ABI.hub, functionName: "pendingRebalance" },
-      { address, abi: ABI.hub, functionName: "proposalCount" },
-    ]),
-    L.number,
-  );
+  // With FILL_AUCTIONS off the bot neither fills nor starts an auction, so no auction is read as open.
+  const pending = cfg.fillAuctions
+    ? await chain.multicall(
+        indexes.flatMap((address) => [
+          { address, abi: ABI.hub, functionName: "pendingRebalance" },
+          { address, abi: ABI.hub, functionName: "proposalCount" },
+        ]),
+        L.number,
+      )
+    : [];
   const open = new Map();
-  indexes.forEach((index, k) => {
-    const p = pending[2 * k];
-    if (p.status === "success" && M.auctionOpen(p.result[0], T, setup.duration)) {
-      open.set(index, { keepMask: p.result[1], proposal: pending[2 * k + 1].result });
-    }
-  });
+  if (cfg.fillAuctions) {
+    indexes.forEach((index, k) => {
+      const p = pending[2 * k];
+      if (p.status === "success" && M.auctionOpen(p.result[0], T, setup.duration)) {
+        open.set(index, { keepMask: p.result[1], proposal: pending[2 * k + 1].result });
+      }
+    });
+  }
   const auctions = [...open].map(([index, a]) => `${index}:${a.proposal}`);
   routes.forget([...auctions, ...startKeys, ...(filler ? filler.keys() : [])]);
   reverted.keep(auctions);
@@ -537,7 +542,7 @@ async function onBlock(L) {
     await tracker.send(best.tx, { label: `fill ${best.index} ${best.proposal}`, targetBlock: Number(L.number) + 1 });
     return;
   }
-  if (lastStartCheck === null || L.number - lastStartCheck >= START_EVERY_BLOCKS) {
+  if (cfg.fillAuctions && (lastStartCheck === null || L.number - lastStartCheck >= START_EVERY_BLOCKS)) {
     lastStartCheck = L.number;
     await startChecks(L, open);
   }
@@ -565,7 +570,7 @@ setup = await chain.checkSetup();
 if (cfg.fillRequests) {
   filler = createRequestFiller({ chain, cfg, hermes, routes, requests: setup.requests, pyth: setup.pyth, staticsOf, log, needs });
 }
-log(`keeper ${chain.account.address}, executor ${cfg.executor}, factory ${cfg.factory}, requests ${cfg.fillRequests ? setup.requests : "off"}`);
+log(`keeper ${chain.account.address} on ${cfg.chain.name}, executor ${cfg.executor}, factory ${cfg.factory}, auctions ${cfg.fillAuctions ? "on" : "off"}, requests ${cfg.fillRequests ? setup.requests : "off"}`);
 let last = -1n;
 while (!stopping) {
   const n = await chain.blockNumber().catch(() => last);

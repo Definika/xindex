@@ -1,18 +1,41 @@
 // The keeper's settings, read from the environment and checked before anything runs. No dependencies, so the unit
 // tests run without `npm install`.
 
-/// Ethereum's addresses the keeper trades through, and the protocol's fixed parameters it relies on.
-export const MAINNET = Object.freeze({
-  chainId: 1,
-  swapRouter02: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
-  quoterV2: "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
-  v3Factory: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
-  weth: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
-  usdc: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-  // Wormhole's Token Bridge, through which the restock service bridges the copies in and out.
-  tokenBridge: "0x3ee18B2214AFF97000D974cf647E7C347E8fa585",
-  ethPriceId: "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+/// The chains the keeper runs on, by chain id (`CHAIN_ID`): the addresses it trades through on each, and the
+/// protocol's fixed parameters it relies on.
+export const CHAINS = Object.freeze({
+  1: Object.freeze({
+    name: "Ethereum",
+    chainId: 1,
+    swapRouter02: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+    quoterV2: "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
+    v3Factory: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+    weth: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+    usdc: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    // Wormhole's Token Bridge, through which the restock service bridges the copies in and out.
+    tokenBridge: "0x3ee18B2214AFF97000D974cf647E7C347E8fa585",
+    ethPriceId: "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+  }),
+  // The test deployment's market (docs/deployment.md, "Testnet (Sepolia)"): Uniswap V3 pools against tUSDC, the
+  // FaucetToken the deployment mints with. Read on chain on 2026-10-31: SwapRouter02 and QuoterV2 answer factory()
+  // with the V3 factory, SwapRouter02's WETH9() is WETH, and the Token Bridge's chainId() is Sepolia's Wormhole id,
+  // 10002. Its hub is the build of 07aeae1, which predates RX-3's start and AU-2's preview, so the keeper serves it
+  // with FILL_AUCTIONS=0: requests only.
+  11155111: Object.freeze({
+    name: "Sepolia",
+    chainId: 11155111,
+    swapRouter02: "0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E",
+    quoterV2: "0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3",
+    v3Factory: "0x0227628f3F023bb0B980b67D528571c95c6DaC1c",
+    weth: "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
+    usdc: "0xD1aF4223B129071f7a1a27ED367E4D72cd7cF8D3",
+    tokenBridge: "0xDB5492265f6038831E89f495670FF909aDe94bd9",
+    ethPriceId: "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+  }),
 });
+
+/// Ethereum's entry, which the restock service, mainnet-only, uses throughout.
+export const MAINNET = CHAINS[1];
 
 /// WeightedHub's storage slots for the pending auction (`forge inspect WeightedHub storageLayout`), which the start
 /// check overrides to simulate an auction before opening one. The keeper verifies them at startup, and
@@ -74,6 +97,8 @@ const DEFAULTS = {
   MAX_FEE_GWEI: "100",
   PRIORITY_FEE_GWEI: "2",
   FILL_REQUESTS: "1",
+  FILL_AUCTIONS: "1",
+  CHAIN_ID: "1",
   SUBSIDY_BUDGET_USD: "0",
 };
 
@@ -128,7 +153,9 @@ export function parseConfig(env) {
     routeMaxLossBps: bps("ROUTE_MAX_LOSS_BPS"),
     maxFeeGwei: number("MAX_FEE_GWEI", { positive: true }),
     priorityFeeGwei: number("PRIORITY_FEE_GWEI", { min: 0 }),
+    chain: CHAINS[get("CHAIN_ID")] ?? null,
     fillRequests: get("FILL_REQUESTS") === "1",
+    fillAuctions: get("FILL_AUCTIONS") === "1",
     // What fills below zero profit may cost in all, per rolling day, when MIN_PROFIT_USD is negative; requests are never
     // subsidised (RX-16).
     subsidyBudgetUsd: number("SUBSIDY_BUDGET_USD", { min: 0 }),
@@ -136,6 +163,9 @@ export function parseConfig(env) {
     needsFile: get("NEEDS_FILE") || null,
   };
   if (!["0", "1"].includes(get("FILL_REQUESTS"))) problems.push("FILL_REQUESTS must be 0 or 1");
+  if (!["0", "1"].includes(get("FILL_AUCTIONS"))) problems.push("FILL_AUCTIONS must be 0 or 1");
+  else if (get("FILL_AUCTIONS") === "0" && get("FILL_REQUESTS") === "0") problems.push("FILL_AUCTIONS and FILL_REQUESTS are both off: nothing to do");
+  if (!config.chain) problems.push(`CHAIN_ID must be one of ${Object.keys(CHAINS).join(", ")}`);
 
   const list = get("INDEXES");
   if (list) {

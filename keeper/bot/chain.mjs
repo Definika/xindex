@@ -14,8 +14,8 @@ import {
   parseAbi,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { mainnet } from "viem/chains";
-import { HUB_SLOTS, MAINNET } from "./config.mjs";
+import { mainnet, sepolia } from "viem/chains";
+import { HUB_SLOTS } from "./config.mjs";
 
 const load = (path) => JSON.parse(readFileSync(new URL(path, import.meta.url), "utf8"));
 
@@ -89,8 +89,15 @@ export function revertReason(error) {
 const hex = (x) => numberToHex(x);
 const word = (x) => pad(numberToHex(x), { size: 32 });
 
+/// viem's definition of each chain the keeper runs on: its multicall refuses a block before the chain's own Multicall3
+/// was deployed, and mainnet's dates from block 14,353,601, past Sepolia's head.
+const VIEM_CHAINS = { 1: mainnet, 11155111: sepolia };
+
 export function createChain(cfg) {
-  const client = createPublicClient({ chain: mainnet, transport: http(cfg.rpcUrl, { timeout: 15_000, retryCount: 2 }) });
+  const client = createPublicClient({
+    chain: VIEM_CHAINS[cfg.chain.chainId],
+    transport: http(cfg.rpcUrl, { timeout: 15_000, retryCount: 2 }),
+  });
   const account = privateKeyToAccount(cfg.keeperKey);
 
   const read = (address, abi, functionName, args, blockNumber) =>
@@ -121,7 +128,7 @@ export function createChain(cfg) {
   /// Signs and broadcasts `tx` (see TxTracker), returning its hash. A node that already holds it reports the hash.
   async function send(tx) {
     const serialized = await account.signTransaction({
-      chainId: MAINNET.chainId,
+      chainId: cfg.chain.chainId,
       type: "eip1559",
       nonce: Number(tx.nonce),
       to: tx.to,
@@ -158,15 +165,15 @@ export function createChain(cfg) {
   /// Refuses to run against anything but the deployment and RPC this keeper is built for.
   async function checkSetup() {
     const chainId = await client.getChainId();
-    if (chainId !== MAINNET.chainId) throw new Error(`chain ${chainId} is not Ethereum`);
+    if (chainId !== cfg.chain.chainId) throw new Error(`chain ${chainId} is not ${cfg.chain.name}`);
     const at = await client.getBlockNumber();
     const ex = (fn) => read(cfg.executor, ABI.executor, fn, [], at);
     const [keeper, router, usdc, factory, requests] =
       await Promise.all([ex("keeper"), ex("ROUTER"), ex("USDC"), ex("FACTORY"), ex("REQUESTS")]);
     const same = (a, b) => a.toLowerCase() === b.toLowerCase();
     if (!same(keeper, account.address)) throw new Error(`the executor's keeper is ${keeper}, not this bot's ${account.address}`);
-    if (!same(router, MAINNET.swapRouter02)) throw new Error(`the executor routes through ${router}, not SwapRouter02`);
-    if (!same(usdc, MAINNET.usdc)) throw new Error(`the executor's float is ${usdc}, not USDC`);
+    if (!same(router, cfg.chain.swapRouter02)) throw new Error(`the executor routes through ${router}, not SwapRouter02`);
+    if (!same(usdc, cfg.chain.usdc)) throw new Error(`the executor's float is ${usdc}, not ${cfg.chain.name}'s USDC`);
     if (!same(factory, cfg.factory)) throw new Error(`the executor fills ${factory}'s indexes, not FACTORY's`);
     const requestsFactory = await read(requests, ABI.requests, "FACTORY", [], at);
     if (!same(requestsFactory, factory)) throw new Error(`the executor's request escrow ${requests} is on another factory`);

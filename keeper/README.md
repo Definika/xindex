@@ -248,7 +248,7 @@ raising to what EIP-8037 allows (RX-36).
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `RPC_URL` | required | Ethereum JSON-RPC. |
+| `RPC_URL` | required | The JSON-RPC of the chain `CHAIN_ID` names. |
 | `KEEPER_KEY` | required | The executor's keeper key (32-byte hex). |
 | `FACTORY` | required | The `WeightedIndexFactory`. |
 | `EXECUTOR` | required | This bot's `KeeperExecutor`. |
@@ -264,6 +264,8 @@ raising to what EIP-8037 allows (RX-36).
 | `MAX_FEE_GWEI` | `100` | No transaction while the base fee and tip exceed this, and no replacement's fees above it. |
 | `PRIORITY_FEE_GWEI` | `2` | Tip. |
 | `FILL_REQUESTS` | `1` | `1` fills `MintRequests` requests too, `0` serves auctions only. The escrow is the one the executor was built with. |
+| `FILL_AUCTIONS` | `1` | `1` starts and fills auctions, `0` serves requests only, as on Sepolia, whose hub predates this keeper's start and preview. |
+| `CHAIN_ID` | `1` | The chain whose market the bot trades: `1` Ethereum, `11155111` Sepolia's test deployment (`bot/config.mjs`, `docs/deployment.md`). The bot refuses an RPC on any other chain. |
 | `NEEDS_FILE` | none | Where to write what fills are short of, for the restock service. |
 
 ## Tests

@@ -11,17 +11,21 @@ import { routeLossBps } from "./math.mjs";
 
 const ZERO = "0x0000000000000000000000000000000000000000";
 
-/// Ethereum's Uniswap V3: the market the keeper's fills trade on.
-export const ETHEREUM_MARKET = Object.freeze({
-  usdc: MAINNET.usdc,
-  usdcDecimals: 6,
-  weth: MAINNET.weth,
-  v3Factory: MAINNET.v3Factory,
-  quoterV2: MAINNET.quoterV2,
-  directFees: [100, 500, 3000, 10000],
-  viaWethFees: [500, 3000, 10000],
-  wethUsdcFee: 500,
-});
+/// A chain's Uniswap V3, from its entry in `CHAINS`: the market the keeper's fills trade on there.
+export const marketOf = (chain) =>
+  Object.freeze({
+    usdc: chain.usdc,
+    usdcDecimals: 6,
+    weth: chain.weth,
+    v3Factory: chain.v3Factory,
+    quoterV2: chain.quoterV2,
+    directFees: [100, 500, 3000, 10000],
+    viaWethFees: [500, 3000, 10000],
+    wethUsdcFee: 500,
+  });
+
+/// Ethereum's Uniswap V3.
+export const ETHEREUM_MARKET = marketOf(MAINNET);
 /// How long a leg without a route keeps its quote: a quote that values a kept coin is from the block that uses it
 /// (XS-5, RX-13).
 export const REQUOTE_BLOCKS = 1n;
