@@ -129,7 +129,10 @@ Where it stands (2026-10-26):
   there by the minimum trade), the `μ` bound with no slack, and the rounding directions, each reduced to lemmas
   z3 closes in seconds; for three legs all of them but the `μ` bound's last step, the multiplication of a proven
   inequality by `μ · s`, which z3 did not close and the record leaves as a hand step. Certora was not run (paid).
-  Next in that plan: mutation testing as a CI gate.
+  Step 4 followed on 2026-10-31: the mutation gate. `test/mutants/mutants.json` holds 54 mutants as exact edits (the
+  state machine's 16, the math's 20, the hub's ten AGENTS.md lists and eight of the later fixes', the keeper's
+  AU-3 among them), `test/mutants/run.py` applies each and requires its suite to fail, and CI's `Mutation gate` job
+  runs them all, in about two minutes here. Every one is killed.
 - The zap takes ether and permits since 2026-10-29 (the owner's call): `mintWithEth`, `burnToEth`,
   `burnToEthWithPermit` and `mintWithTokenPermit`, the backlog's ETH in and out and one-signature USDC mint, with `WETH`
   a construction argument the deploy script resolves (`abi/IndexZap.json`, the zap's unit and fork suites). The Sepolia
@@ -176,6 +179,8 @@ python3 -I test/vectors/settlement.py > test/vectors/settlement.json  # after a 
 python3 -I test/vectors/proofs.py 2 120  # proves the model's caps, mu bound and roundings in z3 for two legs (3 300 for three);
                              # needs a Python with z3, as Halmos's is; rerun after any change to the arithmetic's rules
 aderyn .                     # Aderyn on src/, configured by aderyn.toml: must report nothing; CI does not run it
+python3 -I test/mutants/run.py  # the mutation gate: every mutant of test/mutants/mutants.json must be killed (CI runs it);
+                             # --only M3,V8 runs some, --check only that every edit still applies
 for c in IndexZap BasketBuilder MintRequests WeightedIndexFactory WeightedHub; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
 forge test --root keeper     # the keeper's executor, its own Foundry project; CI also runs its fmt, build and lint
 node --test keeper/test/unit/*.test.mjs  # the keeper bot's arithmetic, settings, Hermes client and tx tracker (no dependency)
@@ -660,8 +665,12 @@ records also cite.
   moved between two snapshots, a salt whose fields were never varied one at a time. The mutants worth rerunning on
   `WeightedHub` are listed under the settlement's rounding above; the arithmetic's are killed by the settlement
   vectors (`test/WeightedMath.vectors.t.sol`) and the rebalance's by `test/WeightedHub.states.t.sol`, each record
-  listing its mutants. Apply a mutant to a byte copy and restore the copy, never `git checkout`; grep a failing test
-  as `\[FAIL.*\] (test_\w+)\(\)`, since a failure's message can print a bracketed number; and build once after.
+  listing its mutants. Every one of them is committed as exact edits in `test/mutants/mutants.json`, which CI's
+  mutation gate runs (`test/mutants/run.py`): a fix to a finding adds its mutant there, with the suite that kills it,
+  and a change to the code a mutant edits updates that mutant's edit in the same commit, since a stale edit fails the
+  gate. Apply a mutant to a byte copy and restore the copy, never `git checkout` (the runner does both); grep a
+  failing test as `\[FAIL.*\] (test_\w+)\(\)`, since a failure's message can print a bracketed number; and build
+  once after.
 - **Tests.**
   - One `*.t.sol` per contract; the hub's rebalancing, its rebalance state machine (`test/WeightedHub.states.t.sol`,
     the matrix of `design/2026-10-29-rebalance-state-machine.md`) and its invariants have their own files, and so do

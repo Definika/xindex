@@ -129,7 +129,9 @@ the settlement's rounding, plus the caps, the scale and a constant.
 | V18 | the scale ignored in the amounts | killed |
 | V19 | `MAX_TURNOVER` at 25% | killed |
 
-All nineteen die, every one by `test_everyVectorSettlesAsTheExactModelSays`. V15 and V16 survived the first 365
+All nineteen die, every one by `test_everyVectorSettlesAsTheExactModelSays`. Since 2026-10-31 they are committed as
+exact edits in `test/mutants/mutants.json` with a twentieth, V20 (a shrinking leg paid as a difference of floored
+backings, from AGENTS.md's list), and CI's mutation gate runs them (`test/mutants/run.py`). V15 and V16 survived the first 365
 vectors: the two roundings of the minimum-trade check change a decision only when the capped release and the minimum
 lie within one quantum of value of each other (a raw unit of a component times a unit of its scaled price, 1e-36
 USD at the scale of the listed prices), and no vector built on listed prices lands there. The ten `quantum` vectors
