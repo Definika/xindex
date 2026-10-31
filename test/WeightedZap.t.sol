@@ -5,6 +5,7 @@ import {IndexZap} from "../src/IndexZap.sol";
 import {MintRequests} from "../src/MintRequests.sol";
 import {WeightedHub} from "../src/WeightedHub.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
+import {IWETH9} from "../src/interfaces/IWETH9.sol";
 import {IIndexZap} from "../src/interfaces/IIndexZap.sol";
 import {IUniversalRouterSwaps} from "../src/interfaces/IUniversalRouterSwaps.sol";
 import {IWeightedHub} from "../src/interfaces/IWeightedHub.sol";
@@ -14,6 +15,7 @@ import {PathKey} from "../src/libraries/UniswapV4Types.sol";
 import {WeightedTest} from "./WeightedTest.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockUniversalRouter} from "./mocks/MockUniversalRouter.sol";
+import {MockWETH} from "./mocks/MockWETH.sol";
 import {MockWeightedExecutor} from "./mocks/MockWeightedExecutor.sol";
 
 /// @notice v5 reuses `IndexZap` and `MintRequests` unchanged: deployed against the weighted factory, they mint, burn
@@ -35,7 +37,7 @@ contract WeightedZapTest is WeightedTest {
         index = _create(_defaultSpecs());
 
         router = new MockUniversalRouter(makeAddr("poolManager"));
-        zap = new IndexZap(IIndexFactory(address(factory)), router);
+        zap = new IndexZap(IIndexFactory(address(factory)), router, IWETH9(address(new MockWETH())));
         usdc = new MockERC20("USD Coin", "USDC", 6);
         usdt = new MockERC20("Tether", "USDT", 6);
         requests = new MintRequests(address(factory), address(usdc), address(usdt));

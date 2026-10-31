@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {MockERC20} from "./MockERC20.sol";
+import {MockWETH} from "./MockWETH.sol";
 
 /// @notice WETH and USDC for tests, and the reference supplies tests list tokens with. Nothing in Xindex reads a price,
 ///         so the market carries none.
@@ -15,7 +16,7 @@ contract MockMarket {
     MockERC20 public immutable usdc;
 
     constructor() {
-        weth = new MockERC20("Wrapped Ether", "WETH", 18);
+        weth = new MockWETH();
         usdc = new MockERC20("USD Coin", "USDC", 6);
     }
 

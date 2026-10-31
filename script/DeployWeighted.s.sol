@@ -9,6 +9,7 @@ import {BasketBuilder} from "../src/BasketBuilder.sol";
 import {MintRequests} from "../src/MintRequests.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
+import {IWETH9} from "../src/interfaces/IWETH9.sol";
 import {DeployChecks} from "./DeployChecks.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
 
@@ -34,6 +35,7 @@ import {MainnetAddresses} from "./MainnetAddresses.sol";
 ///   PYTH                The Pyth contract every index reads its prices from. Required off Ethereum; on Ethereum
 ///                       it defaults to the address book, and nothing else is accepted there.
 ///   UNIVERSAL_ROUTER    Uniswap's Universal Router, through which the zap swaps. Resolved like PYTH.
+///   WETH                Wrapped ether, which the zap's ether entry points wrap and unwrap. Resolved like PYTH.
 ///   USDC, USDT          The two stablecoins MintRequests escrows. Resolved like PYTH.
 contract DeployWeighted is DeployChecks {
     /// @notice Default {resolvePyth} uses on chain 1, from `MainnetAddresses`.
@@ -46,7 +48,7 @@ contract DeployWeighted is DeployChecks {
     ///         test/Scripts.t.sol fails until these equal the build, so only a reviewed, CI-green commit moves them.
     bytes32 public constant FACTORY_INITCODE_HASH = 0xa50e29c827dcd86116308fba797b01653d70da29af8fc511b568e35021ae0dc2;
     /// @notice keccak256 of `IndexZap`'s init code, as above.
-    bytes32 public constant ZAP_INITCODE_HASH = 0x71535777ef8760df80e75112cca053b5b84987a1c2d843e7c2f31cc073b54fa7;
+    bytes32 public constant ZAP_INITCODE_HASH = 0x854707aadb39ae23ec224d50ba08d1141615aeb8b3c148d1a2ceaec630afb1f0;
     /// @notice keccak256 of `BasketBuilder`'s init code, as above.
     bytes32 public constant BUILDER_INITCODE_HASH = 0xae62eeee1e541ad1e35d8526ca9121f93d8d9318240170386d0b878187824661;
     /// @notice keccak256 of `MintRequests`' init code, as above.
@@ -58,7 +60,7 @@ contract DeployWeighted is DeployChecks {
     /// @notice The local build of `name` is not the one this commit records: its init code hashes to `actual`.
     error BuildNotReleased(string name, bytes32 expected, bytes32 actual);
 
-    /// @notice Reads OWNER, GUARDIAN, PYTH and the optional market addresses from the environment and calls {deploy}.
+    /// @notice Reads OWNER, GUARDIAN, PYTH and the market addresses from the environment and calls {deploy}.
     function run()
         external
         returns (WeightedIndexFactory factory, IndexZap zap, BasketBuilder builder, MintRequests requests)
@@ -68,6 +70,7 @@ contract DeployWeighted is DeployChecks {
             vm.envAddress("GUARDIAN"),
             vm.envOr("PYTH", address(0)),
             vm.envOr("UNIVERSAL_ROUTER", address(0)),
+            vm.envOr("WETH", address(0)),
             vm.envOr("USDC", address(0)),
             vm.envOr("USDT", address(0)),
             vm.envOr("OWNER_IS_NOT_A_SAFE", address(0))
@@ -81,6 +84,7 @@ contract DeployWeighted is DeployChecks {
     /// @param guardian Initial guardian; see {checkGuardian}.
     /// @param pyth Pyth's contract; see {resolvePyth}.
     /// @param router Uniswap's Universal Router, through which the zap and the builder swap; see {resolveRouter}.
+    /// @param weth Wrapped ether for the zap's ether entry points; see {resolveStable}.
     /// @param usdc USDC for MintRequests; see {resolveStable}.
     /// @param usdt USDT for MintRequests; see {resolveStable}.
     /// @param acknowledged The owner the operator acknowledges is a contract but not a Safe; see {checkOwner}.
@@ -93,6 +97,7 @@ contract DeployWeighted is DeployChecks {
         address guardian,
         address pyth,
         address router,
+        address weth,
         address usdc,
         address usdt,
         address acknowledged
@@ -102,6 +107,7 @@ contract DeployWeighted is DeployChecks {
         checkGuardian(owner, guardian);
         pyth = resolvePyth(pyth);
         router = resolveRouter(router);
+        weth = resolveStable("WETH", weth, pinnedWeth());
         usdc = resolveStable("USDC", usdc, pinnedUsdc());
         usdt = resolveStable("USDT", usdt, pinnedUsdt());
         checkRolesAreNotMarket(owner, guardian, router);
@@ -113,7 +119,7 @@ contract DeployWeighted is DeployChecks {
         vm.startBroadcast();
         factory = new WeightedIndexFactory(owner, guardian, pyth);
         // The zap types its factory as `IIndexFactory`, and calls only `isIndex` on it, which this factory answers.
-        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(router));
+        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(router), IWETH9(weth));
         builder = new BasketBuilder(IIndexFactory(address(factory)), IUniversalRouter(router));
         requests = new MintRequests(address(factory), usdc, usdt);
         vm.stopBroadcast();
@@ -127,6 +133,7 @@ contract DeployWeighted is DeployChecks {
         console2.log("Guardian:                ", guardian);
         console2.log("Universal Router:        ", router);
         console2.log("PoolManager:             ", zap.POOL_MANAGER());
+        console2.log("WETH:                    ", weth);
         console2.log("MintRequests:            ", address(requests));
         console2.log("USDC:                    ", usdc);
         console2.log("USDT:                    ", usdt);

@@ -239,6 +239,11 @@ abstract contract DeployChecks is Script {
         return MainnetAddresses.PYTH;
     }
 
+    /// @notice Ethereum's WETH, the default on the pinned chain.
+    function pinnedWeth() public pure returns (address) {
+        return MainnetAddresses.WETH;
+    }
+
     /// @notice Fills a zero router with the chain's default on a pinned chain only, and requires it to have code. On a
     ///         pinned chain a given address must be the default, because the router is pinned there: the zap encodes
     ///         against one version's command inputs, and a later line changed them.
@@ -249,10 +254,10 @@ abstract contract DeployChecks is Script {
     }
 
     /// @notice Fills a zero address with the pinned chain's default, refuses any other there, and requires code, as
-    ///         {resolveRouter} does for the router. For the stablecoins and, in `DeployWeighted`, Pyth.
-    /// @param name "USDC", "USDT" or "PYTH", for the error.
+    ///         {resolveRouter} does for the router. For the stablecoins and, in `DeployWeighted`, Pyth and WETH.
+    /// @param name "USDC", "USDT", "PYTH" or "WETH", for the error.
     /// @param given Address from the environment; zero takes the default on a pinned chain.
-    /// @param pinnedDefault The pinned chain's address, from {pinnedUsdc}, {pinnedUsdt} or {pinnedPyth}.
+    /// @param pinnedDefault The pinned chain's address, from {pinnedUsdc}, {pinnedUsdt}, {pinnedPyth} or {pinnedWeth}.
     /// @return The resolved address.
     function resolveStable(string memory name, address given, address pinnedDefault) public view returns (address) {
         return _resolve(name, given, pinnedDefault);

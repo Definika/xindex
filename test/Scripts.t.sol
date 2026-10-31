@@ -199,6 +199,7 @@ contract ScriptsTest is Test {
     SetupTestMarket testMarket;
     MockUniversalRouter router;
     address pyth;
+    address weth;
     address usdc;
     address usdt;
     address owner = makeAddr("owner");
@@ -209,6 +210,7 @@ contract ScriptsTest is Test {
         testMarket = new SetupTestMarket();
         router = new MockUniversalRouter(makeAddr("poolManager"));
         pyth = address(new MockPyth());
+        weth = address(new MockWETH());
         usdc = address(new MockERC20("USD Coin", "USDC", 6));
         usdt = address(new MockUSDT());
     }
@@ -218,7 +220,7 @@ contract ScriptsTest is Test {
         internal
         returns (WeightedIndexFactory, IndexZap, BasketBuilder, MintRequests)
     {
-        return deployer.deploy(owner_, guardian_, pyth, address(router), usdc, usdt, address(0));
+        return deployer.deploy(owner_, guardian_, pyth, address(router), weth, usdc, usdt, address(0));
     }
 
     // ---------------------------------------------------------------------
@@ -278,7 +280,9 @@ contract ScriptsTest is Test {
 
         // Through `deploy`, which `run` hands OWNER_IS_NOT_A_SAFE (`test_A708_deployRun_readsEnvironment`).
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerNotASafe.selector, address(router)));
-        deployer.deploy(address(router), guardian, address(0), address(0), address(0), address(0), address(0));
+        deployer.deploy(
+            address(router), guardian, address(0), address(0), address(0), address(0), address(0), address(0)
+        );
     }
 
     function test_XA07_checkOwnerRejectsASafeWithModules() public {
@@ -569,6 +573,7 @@ contract ScriptsTest is Test {
         vm.setEnv("GUARDIAN", vm.toString(guardian));
         vm.setEnv("PYTH", vm.toString(pyth));
         vm.setEnv("UNIVERSAL_ROUTER", vm.toString(address(router)));
+        vm.setEnv("WETH", vm.toString(weth));
         vm.setEnv("USDC", vm.toString(usdc));
         vm.setEnv("USDT", vm.toString(usdt));
         (WeightedIndexFactory factory, IndexZap zap, BasketBuilder builder, MintRequests requests) = deployer.run();
@@ -578,6 +583,7 @@ contract ScriptsTest is Test {
         assertEq(factory.PYTH(), pyth);
         assertEq(address(zap.FACTORY()), address(factory));
         assertEq(address(zap.ROUTER()), address(router));
+        assertEq(address(zap.WETH()), weth);
         assertEq(requests.FACTORY(), address(factory));
         assertEq(requests.USDC(), usdc);
         assertEq(requests.USDT(), usdt);
@@ -587,8 +593,10 @@ contract ScriptsTest is Test {
         vm.etch(MainnetAddresses.PYTH, hex"00");
         vm.etch(MainnetAddresses.USDC, hex"00");
         vm.etch(MainnetAddresses.USDT, hex"00");
+        vm.etch(MainnetAddresses.WETH, hex"00");
         vm.setEnv("PYTH", vm.toString(MainnetAddresses.PYTH));
         vm.setEnv("UNIVERSAL_ROUTER", vm.toString(MAINNET_UNIVERSAL_ROUTER));
+        vm.setEnv("WETH", vm.toString(MainnetAddresses.WETH));
         vm.setEnv("USDC", vm.toString(MainnetAddresses.USDC));
         vm.setEnv("USDT", vm.toString(MainnetAddresses.USDT));
         address timelock = address(new SilentFallback());
@@ -614,6 +622,8 @@ contract ScriptsTest is Test {
     ///      1 and nothing else there, and never an address without code.
     function test_resolveStable() public {
         assertEq(deployer.resolveStable("USDC", usdc, MainnetAddresses.USDC), usdc);
+        assertEq(deployer.resolveStable("WETH", weth, deployer.pinnedWeth()), weth);
+        assertEq(deployer.pinnedWeth(), MainnetAddresses.WETH);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.AddressRequired.selector, "USDT"));
         deployer.resolveStable("USDT", address(0), MainnetAddresses.USDT);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.AddressHasNoCode.selector, "USDC", owner));
@@ -621,6 +631,7 @@ contract ScriptsTest is Test {
 
         vm.chainId(1);
         vm.etch(MainnetAddresses.USDT, hex"00");
+        vm.etch(MainnetAddresses.WETH, hex"00");
         assertEq(deployer.resolveStable("USDT", address(0), MainnetAddresses.USDT), MainnetAddresses.USDT);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.MainnetOverride.selector, "USDT", usdt));
         deployer.resolveStable("USDT", usdt, MainnetAddresses.USDT);
@@ -661,7 +672,7 @@ contract ScriptsTest is Test {
         vm.chainId(1);
         vm.prank(DEFAULT_SENDER);
         vm.expectRevert(DeployChecks.BroadcasterRequired.selector);
-        deployer.deploy(owner, guardian, pyth, address(router), usdc, usdt, address(0));
+        deployer.deploy(owner, guardian, pyth, address(router), weth, usdc, usdt, address(0));
         deployer.checkBroadcaster();
         vm.chainId(31337);
         vm.prank(DEFAULT_SENDER);
@@ -684,10 +695,12 @@ contract ScriptsTest is Test {
 
         vm.chainId(1);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerMustBeContract.selector, owner));
-        deployer.deploy(owner, guardian, address(0), address(0), address(0), address(0), address(0));
+        deployer.deploy(owner, guardian, address(0), address(0), address(0), address(0), address(0), address(0));
         MockSafe singleSigner = new MockSafe(1);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerThresholdTooLow.selector, address(singleSigner), 1));
-        deployer.deploy(address(singleSigner), guardian, address(0), address(0), address(0), address(0), address(0));
+        deployer.deploy(
+            address(singleSigner), guardian, address(0), address(0), address(0), address(0), address(0), address(0)
+        );
     }
 
     /// @dev CF-5. The constants are the release record: this build's init-code hashes. A change to src/, to a
@@ -711,6 +724,7 @@ contract ScriptsTest is Test {
         vm.etch(MainnetAddresses.PYTH, hex"00");
         vm.etch(MainnetAddresses.USDC, hex"00");
         vm.etch(MainnetAddresses.USDT, hex"00");
+        vm.etch(MainnetAddresses.WETH, hex"00");
         address safe = address(new MockSafe(3));
 
         DeployWeighted other = new DeployWeightedOtherBuild();
@@ -721,7 +735,7 @@ contract ScriptsTest is Test {
                 DeployWeighted.BuildNotReleased.selector, "WeightedIndexFactory", bytes32(uint256(1)), built[0]
             )
         );
-        other.deploy(safe, guardian, address(0), address(0), address(0), address(0), address(0));
+        other.deploy(safe, guardian, address(0), address(0), address(0), address(0), address(0), address(0));
 
         bytes32[4] memory wrongZap = [built[0], bytes32(0), built[2], built[3]];
         vm.expectRevert(
@@ -742,7 +756,7 @@ contract ScriptsTest is Test {
         DeployWeighted same = new DeployWeightedThisBuild();
         assertEq(same.releaseInitCodeHashes()[1], built[1], "a record of this build");
         (WeightedIndexFactory factory,,,) =
-            same.deploy(safe, guardian, address(0), address(0), address(0), address(0), address(0));
+            same.deploy(safe, guardian, address(0), address(0), address(0), address(0), address(0), address(0));
         assertEq(factory.owner(), safe, "the recorded build broadcasts on chain 1");
     }
 
@@ -826,9 +840,17 @@ contract ScriptsTest is Test {
         vm.etch(MainnetAddresses.PYTH, hex"00");
         vm.etch(MainnetAddresses.USDC, hex"00");
         vm.etch(MainnetAddresses.USDT, hex"00");
+        vm.etch(MainnetAddresses.WETH, hex"00");
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.RoleIsMarketContract.selector, MainnetAddresses.WETH));
         deployer.deploy(
-            MainnetAddresses.WETH, guardian, address(0), address(0), address(0), address(0), MainnetAddresses.WETH
+            MainnetAddresses.WETH,
+            guardian,
+            address(0),
+            address(0),
+            address(0),
+            address(0),
+            address(0),
+            MainnetAddresses.WETH
         );
     }
 
