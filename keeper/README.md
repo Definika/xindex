@@ -76,8 +76,9 @@ executor's **stock**: a coin the index sells is kept, and a coin it needs is del
 service keeps filled for the Wormhole copies it serves ([Restock](#restock)), and the operator for the rest. A coin
 leaves stock only within the **stock allowance** `OWNER` sets for it (`setStockAllowance(token, amount)`), and what the
 restock service bridges in adds to, which every delivery from stock spends; with none, nothing is served from stock.
-With `NEEDS_FILE` set, the keeper writes there every coin a fill, a start or a request is short of, with the whole of it
-that fill needs, for the restock service to bring in.
+With `NEEDS_FILE` set, the keeper writes there every coin a fill, a start or a request delivers from stock, with the
+whole of it that fill needs, for the restock service to bring in and then keep: a coin stays on the board while its
+fill waits, covered or not, so stock that has just arrived is not sent home before the fill uses it (RZ-3).
 
 The twelve Ondo legs priced at their share's feed (AMZNon, TSMon, SPCXon, METAon, AVGOon, SKHYon, MUon, LLYon, AMDon,
 JPMon, WMTon, Von; `SHARE_PRICED_IDS` in `bot/config.mjs`) are worth sValue shares, which the bot cannot read. Keep
@@ -138,7 +139,8 @@ what nobody needs. It is a separate process with its own key, the **treasury**, 
    whose nonce another transaction took is dropped only when a look a minute after the first still finds no receipt,
    and a receipt lookup that fails is never taken for a missing receipt (RS-5).
 2. It reads the keeper's `NEEDS_FILE`, the executor's stock and allowances, the treasury's USDC, each home wallet's
-   coins, float and gas, and Pyth's prices, and plans (`restock/plan.mjs`). A board that is missing, unreadable or not
+   coins, float and gas, and Pyth's prices, kept only where Pyth's contract on Ethereum, parsing the signed update Hermes
+   served with them, returns the same price (RX-9, RY-6), and plans (`restock/plan.mjs`). A board that is missing, unreadable or not
    written for 15 minutes is unknown, not empty: no coin is bought, sold or bridged until the keeper writes it again,
    where an empty one would send every coin home (RS-8).
    - a coin whose usable stock and transfers on their way fall short of the needs is bought on its home chain, up to
@@ -175,7 +177,7 @@ address was read on its chain on 2026-10-19:
 
 | Home chain | Coins | Venue | Float |
 |---|---|---|---|
-| BNB Chain | XRP, ADA, LTC, DOT | PancakeSwap v3 | USDT, topped up by hand (CCTP mints no USDC there) |
+| BNB Chain | XRP, ADA, LTC, DOT, BNB (as WBNB) | PancakeSwap v3 | USDT, topped up by hand (CCTP mints no USDC there) |
 | Avalanche | AVAX (WAVAX) | Uniswap v3 | USDC, by CCTP |
 | Optimism | OP | Uniswap v3 | USDC, by CCTP |
 | Base | AERO | Uniswap v3 | USDC, by CCTP |
@@ -264,7 +266,7 @@ raising to what EIP-8037 allows (RX-36).
 | `MAX_FEE_GWEI` | `100` | No transaction while the base fee and tip exceed this, and no replacement's fees above it. |
 | `PRIORITY_FEE_GWEI` | `2` | Tip. |
 | `FILL_REQUESTS` | `1` | `1` fills `MintRequests` requests too, `0` serves auctions only. The escrow is the one the executor was built with. |
-| `NEEDS_FILE` | none | Where to write what fills are short of, for the restock service. |
+| `NEEDS_FILE` | none | Where to write what fills deliver from stock, for the restock service. |
 
 ## Tests
 

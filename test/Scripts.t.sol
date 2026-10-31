@@ -428,6 +428,40 @@ contract ScriptsTest is Test {
         deployer.checkGuardian(address(safe), address(separate));
     }
 
+    /// @dev RZ-24. A module acts as its Safe with no signature, so a Safe's modules are its keys on both sides: a
+    ///      guardian Safe whose module signs for the owner, or is the broadcasting key, and an owner Safe whose module is
+    ///      the guardian, are each refused, as the same addresses among the signers are (SA-06).
+    function test_RZ24_aSafesModulesCountAsItsSigners() public {
+        address a = makeAddr("signer a");
+        MockSafe safe = new MockSafe(3);
+        safe.addOwner(a);
+        safe.addOwner(makeAddr("signer b"));
+
+        MockSafe moduled = new MockSafe(2);
+        moduled.addOwner(makeAddr("guardian signer f"));
+        moduled.enableModule(a);
+        vm.expectRevert(abi.encodeWithSelector(DeployChecks.GuardianSharesOwnerSigner.selector, address(moduled), a));
+        deployer.checkGuardian(address(safe), address(moduled));
+
+        MockSafe broadcastModule = new MockSafe(2);
+        broadcastModule.addOwner(makeAddr("guardian signer g"));
+        broadcastModule.enableModule(address(this));
+        vm.expectRevert(abi.encodeWithSelector(DeployChecks.GuardianIsBroadcaster.selector, address(broadcastModule)));
+        deployer.checkGuardian(address(safe), address(broadcastModule));
+
+        MockSafe ownerWithModule = new MockSafe(3);
+        ownerWithModule.addOwner(a);
+        ownerWithModule.enableModule(guardian);
+        vm.expectRevert(abi.encodeWithSelector(DeployChecks.GuardianSignsForOwner.selector, guardian));
+        deployer.checkGuardian(address(ownerWithModule), guardian);
+
+        // A module of its own, shared with nobody, passes.
+        MockSafe ownModule = new MockSafe(2);
+        ownModule.addOwner(makeAddr("guardian signer h"));
+        ownModule.enableModule(makeAddr("guardian module"));
+        deployer.checkGuardian(address(safe), address(ownModule));
+    }
+
     function test_XA39_rolesCannotBeMarketContracts() public {
         deployer.checkRolesAreNotMarket(owner, guardian, address(router));
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.RoleIsMarketContract.selector, address(router)));
@@ -1024,7 +1058,7 @@ contract ScriptsTest is Test {
             assertEq(p.deadline, block.timestamp + 1 hours);
             assertEq(FaucetToken(tokens[i]).balanceOf(DEFAULT_SENDER), list[i].supply - tokenAmount);
         }
-        assertEq(MockWETH(uniswap.weth).balanceOf(uniswap.positionManager), 0.6 ether);
+        assertEq(MockWETH(payable(uniswap.weth)).balanceOf(uniswap.positionManager), 0.6 ether);
     }
 
     function test_XA26_seedRefusesAPoolWhosePriceMoved() public {

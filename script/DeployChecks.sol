@@ -21,6 +21,10 @@ abstract contract DeployChecks is Script {
     uint256 public constant MIN_OWNER_THRESHOLD = 3;
     /// @notice Start of a Safe's module list.
     address public constant SENTINEL_MODULES = address(0x1);
+    /// @notice How many of a Safe's modules the role checks compare as its keys: a page larger than any Safe in use.
+    uint256 internal constant MODULES_READ = 16;
+    /// @dev The shortest well-formed answer to `getModulesPaginated`: the array's offset, the next cursor and its length.
+    uint256 internal constant MODULES_ANSWER_MIN = 96;
 
     /// @notice OWNER is zero or Foundry's default sender.
     error OwnerRequired();
@@ -102,8 +106,7 @@ abstract contract DeployChecks is Script {
         // A static call keeps a missing function or a short answer from reverting without a named error.
         // forge-lint: disable-next-line(low-level-calls)
         (bool ok, bytes memory data) = owner.staticcall(query);
-        // A well-formed answer holds at least the array offset, the next cursor and the array length.
-        if (!ok || data.length < 96) revert OwnerModulesUnknown(owner);
+        if (!ok || data.length < MODULES_ANSWER_MIN) revert OwnerModulesUnknown(owner);
         (address[] memory modules,) = abi.decode(data, (address[], address));
         if (modules.length != 0) revert OwnerHasModules(owner, modules[0]);
     }
@@ -114,6 +117,8 @@ abstract contract DeployChecks is Script {
     ///         the broadcasting key may be one of its signers, and a guardian Safe may share no signer with it: the
     ///         guardian is the owner's veto, and a key that signs for both weakens both (SA-06). Signers are compared
     ///         one level deep on each side, so a signer that is itself a Safe, such as a treasury, brings in its own.
+    ///         A Safe's enabled modules count as its signers, since a module acts as the Safe without signatures
+    ///         (RZ-24).
     /// @param owner The intended factory owner.
     /// @param guardian The intended guardian.
     function checkGuardian(address owner, address guardian) public view {
@@ -136,13 +141,13 @@ abstract contract DeployChecks is Script {
 
     /// @dev `account`'s signers, each followed by its own signers when it is a Safe too: one level down, so a treasury
     ///      Safe that signs for the owner, or for a guardian Safe, brings in its keys. Empty for a key or for a contract
-    ///      that is not a Safe.
+    ///      that is not a Safe. Modules count as signers at both levels (RZ-24).
     function _signerKeys(address account) private view returns (address[] memory keys) {
-        address[] memory signers = _signers(account);
+        address[] memory signers = _signersAndModules(account);
         address[][] memory nested = new address[][](signers.length);
         uint256 total = signers.length;
         for (uint256 i = 0; i < signers.length; ++i) {
-            nested[i] = _signers(signers[i]);
+            nested[i] = _signersAndModules(signers[i]);
             total += nested[i].length;
         }
         keys = new address[](total);
@@ -152,6 +157,24 @@ abstract contract DeployChecks is Script {
             for (uint256 j = 0; j < nested[i].length; ++j) {
                 keys[k++] = nested[i][j];
             }
+        }
+    }
+
+    /// @dev `account`'s signers, then its enabled modules, the first page of `MODULES_READ`: each acts as the Safe, a
+    ///      module without any signature (RZ-24). Empty for a key or a contract that is not a Safe.
+    function _signersAndModules(address account) private view returns (address[] memory keys) {
+        address[] memory signers = _signers(account);
+        address[] memory modules;
+        bytes memory query = abi.encodeCall(ISafeThreshold.getModulesPaginated, (SENTINEL_MODULES, MODULES_READ));
+        // forge-lint: disable-next-line(low-level-calls)
+        (bool ok, bytes memory data) = account.staticcall(query);
+        if (ok && data.length >= MODULES_ANSWER_MIN) (modules,) = abi.decode(data, (address[], address));
+        keys = new address[](signers.length + modules.length);
+        for (uint256 i = 0; i < signers.length; ++i) {
+            keys[i] = signers[i];
+        }
+        for (uint256 i = 0; i < modules.length; ++i) {
+            keys[signers.length + i] = modules[i];
         }
     }
 

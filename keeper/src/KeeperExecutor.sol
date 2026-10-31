@@ -207,9 +207,18 @@ contract KeeperExecutor is IRebalanceExecutor {
         emit KeeperSet(previous, next);
     }
 
-    /// @notice Owner only. Sends `amount` of `token`, float or inventory, to `to`.
+    /// @notice Owner only. Sends `amount` of `token`, float or inventory, to `to`. The stock allowance is then capped
+    ///         at what is left, as {bridgeOut} caps it, so coins kept later cannot inherit an allowance the coins that
+    ///         left had (RZ-23).
     function withdraw(address token, address to, uint256 amount) external onlyOwner {
         SafeERC20.safeTransfer(IERC20(token), to, amount);
+        uint256 left = IERC20(token).balanceOf(address(this));
+        if (stockAllowance[token] > left) {
+            stockAllowance[token] = left;
+            // What is left is known only after the transfer; only the owner calls.
+            // forge-lint: disable-next-line(reentrancy-events)
+            emit StockAllowanceSet(token, left);
+        }
     }
 
     /// @notice Owner only. Lets the keeper deliver up to `amount` of `token` from stock from now on, replacing what was

@@ -35,14 +35,16 @@ import {WeightedMath} from "./WeightedMath.sol";
 ///        token, starting units, weight, price id and decimals, and the index's config (fee rates, referral share,
 ///        rebalance interval). The gate and the listed flag are not in it.
 ///      - So an address can never hold a different basket or different terms, even after a re-org. An app can show
-///        the address before the transaction confirms.
+///        the address before the transaction confirms, unless a relisting of a component or a policy change lands
+///        first: either changes the salt, and the index deploys at another address (RZ-28).
 ///
 ///      Fees
 ///      - The owner sets a policy: the platform's fee, the referrer's share of it, the recipient, and a creation fee
 ///        in ether.
 ///      - An index copies the rates in force at creation and keeps them. A later policy reaches only later indexes.
-///      - A creator names the highest platform fee it accepts. So a policy change cannot land between its quote and
-///        its creation.
+///      - A creator names the highest platform fee and streaming fee it accepts. So no higher rate can land between
+///        its quote and its creation. The referral share is not bounded: it only splits the platform's part, so it
+///        costs neither the creator nor a minter (RZ-28).
 ///      - The recipients are read live, through `feeTerms`, so changing a recipient strands nothing.
 ///      - The creation fee is forwarded to the recipient in the same call. The factory holds no ether.
 ///

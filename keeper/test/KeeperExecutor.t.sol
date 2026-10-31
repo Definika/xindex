@@ -1369,6 +1369,27 @@ contract KeeperExecutorTest is WeightedTest {
 
     /// @dev Stock that leaves takes its allowance with it as far as the allowance would outlast the balance, so coins
     ///      kept by a later fill cannot be delivered on the credit of coins that already left.
+    /// @dev RZ-23. The owner's withdrawal caps the stock allowance at what is left, as `bridgeOut` does, so coins a
+    ///      later fill keeps cannot be delivered on the credit of the coins that left.
+    function test_RZ23_withdrawCapsTheAllowanceAtWhatIsLeft() public {
+        address to = makeAddr("cold");
+        btc.mint(address(executor), 10e8);
+        _allow(address(btc), 10e8);
+        vm.expectEmit(address(executor));
+        emit KeeperExecutor.StockAllowanceSet(address(btc), 3e8);
+        vm.prank(execOwner);
+        executor.withdraw(address(btc), to, 7e8);
+        assertEq(executor.stockAllowance(address(btc)), 3e8);
+
+        _allow(address(btc), 1e8);
+        vm.prank(execOwner);
+        executor.withdraw(address(btc), to, 1e8);
+        assertEq(executor.stockAllowance(address(btc)), 1e8, "an allowance at or below the balance stays as it was");
+
+        btc.mint(address(executor), 5e8); // kept by a later fill
+        assertEq(executor.stockAllowance(address(btc)), 1e8, "and the kept coins earn none");
+    }
+
     function test_bridgeOutCapsTheAllowanceAtWhatIsLeft() public {
         _treasury();
         btc.mint(address(executor), 10e8);
