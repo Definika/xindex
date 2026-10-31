@@ -229,6 +229,7 @@ hermesServer = http
         parsed: feeds.map((f) => ({
           id: f.id.slice(2),
           price: { price: String(f.price), conf: String(f.conf), expo: f.expo, publish_time: latest && quiet.has(f.id.slice(2)) ? t - 3600 : t },
+          ema_price: { price: String(f.price), conf: String(f.conf), expo: f.expo, publish_time: latest && quiet.has(f.id.slice(2)) ? t - 3600 : t },
         })),
       };
       if (!latest) body.binary = { encoding: "hex", data: [(await encodeUpdate(feeds, t)).slice(2)] };

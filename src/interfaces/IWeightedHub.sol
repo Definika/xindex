@@ -21,7 +21,7 @@ import {PythStructs} from "./pyth/PythStructs.sol";
 ///           by the deposit that minted it.
 ///         - The rates are fixed at creation. The creator picks its own rate, up to the factory's caps. The platform's
 ///           rate is the factory's policy at that moment. A referrer named at mint takes the referral share of the
-///           platform's part.
+///           platform's part, unless the index is gated and its gate would refuse the referrer as a recipient.
 ///         - A streaming fee is a yearly rate on the index's value. It accrues on every issue, redeem and settlement,
 ///           and on {accrueFees}. Each accrual mints the recipients their share of the index, and shrinks every share's
 ///           units by the same factor ({pendingStreamingFee}). So every share's backing stays exactly what the index
@@ -189,7 +189,7 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     ///         value at these prices. The index is on its weights, and a fill would only restart the rebalance
     ///         interval (V5-L2, V5R-1).
     error NothingToRebalance();
-    /// @notice `prices` does not have one entry per component. Only raised by {previewRebalance}.
+    /// @notice `feeds` does not have one entry per component. Only raised by {previewRebalance}.
     error PriceCountMismatch(uint256 count);
     /// @notice Pyth returned an update for `id` that is not the one asked for, or one published outside the second
     ///         {priceTime} names and the block that settles.
@@ -415,16 +415,18 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     ///         publish, which this does not check.
     function canStartRebalance() external view returns (bool);
 
-    /// @notice The exact settlement an execution in this block would use with `prices`. Reverts like
-    ///         {executeRebalance} outside an auction and on a price it would refuse. It does not check publish times.
-    /// @param prices One Pyth price per component, in component order; a kept component's entry is ignored.
+    /// @notice The exact settlement an execution in this block would use with `feeds`. Reverts like
+    ///         {executeRebalance} outside an auction and on a price it would refuse, one far from its moving average
+    ///         included. It checks neither ids nor publish times, which belong to the update a fill parses.
+    /// @param feeds One Pyth price feed per component, in component order, as Pyth's parse returns them: each price
+    ///        with the moving average published beside it. A kept component's entry is ignored.
     /// @return mu The multiplier on the growing legs (1e18 = parity).
     /// @return units New recorded units per component, in component order. Unlike {components}, they do not have the
     ///         scale applied: units per whole index token are these times {pendingStreamingFee}'s scale / 1e18. A kept
     ///         component's are exactly its current recorded units.
     /// @return amountsOut What the index would send the executor per component.
     /// @return amountsIn What the index would need back per component, in full.
-    function previewRebalance(PythStructs.Price[] calldata prices)
+    function previewRebalance(PythStructs.PriceFeed[] calldata feeds)
         external
         view
         returns (uint256 mu, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn);

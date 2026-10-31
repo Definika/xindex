@@ -121,15 +121,18 @@ async function preview(index, st, L, keepMask, eta) {
     Date.now() + HERMES_MS,
   );
   const priceOf = (i) => prices.get(priceKey(st.ids[i]));
-  const structs = st.ids.map((_, i) => {
-    if (!moving.includes(i)) return { price: 0n, conf: 0n, expo: 0, publishTime: 0n };
+  // One Pyth feed per component, each price with its moving average, which the preview checks as the fill does (AU-2).
+  const struct = (p) => ({ price: p.price, conf: p.conf, expo: p.expo, publishTime: BigInt(p.publishTime) });
+  const none = { price: 0n, conf: 0n, expo: 0, publishTime: 0n };
+  const feeds = st.ids.map((id, i) => {
+    if (!moving.includes(i)) return { id, price: none, emaPrice: none };
     const p = priceOf(i);
-    return { price: p.price, conf: p.conf, expo: p.expo, publishTime: BigInt(p.publishTime) };
+    return { id, price: struct(p), emaPrice: struct(p.ema) };
   });
   const over = { block: { number: L.number + 1n, time: T } };
   if (eta !== undefined) over.state = { [index]: { [HUB_SLOTS.eta]: eta, [HUB_SLOTS.keepMask]: keepMask } };
   const at = (o) =>
-    chain.call({ to: index, abi: ABI.hub, functionName: "previewRebalance", args: [structs] }, L.number, o);
+    chain.call({ to: index, abi: ABI.hub, functionName: "previewRebalance", args: [feeds] }, L.number, o);
   const [mu, , out, need] = await at(over);
   const supply = await chain.read(index, ABI.hub, "totalSupply", [], L.number);
   const [feeShares] = await chain.call({ to: index, abi: ABI.hub, functionName: "pendingStreamingFee", args: [] }, L.number, over);

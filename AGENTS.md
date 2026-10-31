@@ -101,6 +101,10 @@ Where it stands (2026-10-26):
   (RX-22); in the keeper, request fills are verified, bounded and pinned (RX-1, RX-2, RX-4, RX-9, RX-10), and the rest
   are documented. RX-3, documented then, was fixed in the hub on 2026-10-26 after an outside reviewer raised it again
   (the owner's call): a start reads every moving feed, and the auction is 4 hours (`test_RX3_...`).
+- The review of 2026-10-31 (`audit/2026-10-31-review.md`, ids `AU-1`..`AU-3`) found no high or medium finding. Its
+  three are fixed: a gated index no longer pays a referrer its gate would refuse (AU-1), `previewRebalance` takes
+  Pyth's feeds and refuses a price far from its average, as the fill does (AU-2, an ABI change the keeper bot follows),
+  and the keeper's redeem fill reads balances after paying the stablecoin (AU-3). The hub is 98 bytes under EIP-170.
 - v5 was deployed on Sepolia on 2026-10-26 from `07aeae1`, the build before the RX-3 fix, under a 2-of-3 test Safe;
   its four listings can be executed from 2026-10-28 (`docs/deployment.md`, with the addresses). Sepolia runs Glamsterdam
   (EIP-8037): `forge script` broadcasts there need `--gas-estimate-multiplier 900`. The website and its backend, in
@@ -259,6 +263,9 @@ deploy script resolves Pyth, the router and the stablecoins from the address boo
    - The rebalance review of 2026-10-28: `RB-1`..`RB-5` (`audit/2026-10-28-rebalance-review.md`), a test named
      `test_RB1_...` in `test/CheckToken.t.sol`, and `test_RB2_RX12_...` and `test_RB3_...` in
      `test/WeightedHub.rebalance.t.sol`. RB-4 is fixed by documentation alone; RB-5 is informational and open.
+   - The review of 2026-10-31: `AU-1`..`AU-3` (`audit/2026-10-31-review.md`), a test named `test_AU1_...` in
+     `test/WeightedHub.fees.t.sol`, `test_AU2_...` in `test/WeightedHub.rebalance.t.sol` with the node test named
+     `AU-2: ...` in `keeper/test/unit/hermes.test.mjs`, and `test_AU3_...` in `keeper/test/KeeperExecutor.t.sol`.
    - The skills audit of 2026-10-04: `A7-08`, `A7-12`, `A7-13`, `A7-17`, `A7-18`, `A7-22`, `A1a-05` and `A1a-06`, the
      eight of its findings still open on `main`, fixed on 2026-10-25 (`audit/2026-10-25-skills-audit-port.md`), a
      test named `test_A708_...` or `test_A1a05_...`. The record's status table names every test.
@@ -455,6 +462,8 @@ records also cite.
   allowlist (`isAllowedMinter`), both the creator's; the creator mints without an entry, a right that moves with the
   role (2026-10-27: on the website a private index's own creator could not buy it,
   `test_theCreatorMintsItsOwnGatedIndex`); the creator can open the gate for good (`openMinting`), never close it.
+  The minter names the referrer, so the gate holds for it too: a referrer the gate would refuse as `to` is named
+  nobody and the platform keeps its part (AU-1). The platform recipient takes its fee shares whatever the gate.
   Transfers and burns never read the gate, so the token stays an ERC-20 the zap and `MintRequests` can handle. The
   creator has no other power: not over components, rates, or anyone's shares.
 - **Invariant:** for every component `i`,

@@ -18,7 +18,8 @@ interface IIndexHub is IERC20, IERC20Permit {
     function issue(uint256 shares, address to) external;
 
     /// @notice As {issue}, naming `referrer`, who takes the referral share of the platform's part of the fee. Zero
-    ///         names nobody.
+    ///         names nobody, and so does a referrer a gated index would not issue to as `to`: the platform keeps its
+    ///         part.
     function issue(uint256 shares, address to, address referrer) external;
 
     /// @notice Burns `shares` from msg.sender and sends `to` the basket of those shares less the exit fee's, rounded

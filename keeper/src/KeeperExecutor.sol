@@ -390,11 +390,13 @@ contract KeeperExecutor is IRebalanceExecutor {
 
         _buyStable(request.stable, f);
         SafeERC20.forceApprove(IERC20(request.stable), address(REQUESTS), f.amount);
+        REQUESTS.fill(f.id, f.amount);
+        // Read after the fill paid the stablecoin out, so a component that is the stablecoin itself counts only what
+        // the redeem brings in.
         uint256[] memory held = new uint256[](tokens.length);
         for (uint256 i = 0; i < tokens.length; ++i) {
             held[i] = IERC20(tokens[i]).balanceOf(address(this));
         }
-        REQUESTS.fill(f.id, f.amount);
         index.redeem(request.escrow, address(this));
         uint256[] memory got = new uint256[](tokens.length);
         for (uint256 i = 0; i < tokens.length; ++i) {

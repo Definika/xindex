@@ -533,8 +533,8 @@ contract WeightedHubRebalanceTest is WeightedTest {
 
     function test_thePriceAtTheCeilingIsAccepted() public {
         _open(0, _midpoint());
-        PythStructs.Price[] memory prices = _structs3(ETH_PRICE, BTC_PRICE, USD_PRICE);
-        prices[1] = PythStructs.Price({price: 1e17, conf: 0, expo: 0, publishTime: 0});
+        PythStructs.PriceFeed[] memory prices = _structs3(ETH_PRICE, BTC_PRICE, USD_PRICE);
+        prices[1] = _feed(1e17, 0);
         // 1e17 · 10^(36 − 8) = 1e45 = MAX_PRICE: the price is accepted, not PriceOutOfRange. Every other leg would have
         // to grow a trillionfold, and a growing leg at most doubles per fill, so the fill trades too little (RX-15).
         vm.expectRevert(IWeightedHub.NothingToRebalance.selector);
@@ -641,9 +641,9 @@ contract WeightedHubRebalanceTest is WeightedTest {
         (uint256 eta,) = pair.pendingRebalance();
         vm.warp(eta + 1);
 
-        PythStructs.Price[] memory prices = new PythStructs.Price[](2);
-        prices[0] = PythStructs.Price({price: 3e8, conf: 0, expo: EXPO, publishTime: 0});
-        prices[1] = PythStructs.Price({price: 1e8, conf: 0, expo: EXPO, publishTime: 0});
+        PythStructs.PriceFeed[] memory prices = new PythStructs.PriceFeed[](2);
+        prices[0] = _feed(3e8, EXPO);
+        prices[1] = _feed(1e8, EXPO);
         (uint256 mu, uint256[] memory units,,) = pair.previewRebalance(prices);
         assertEq(mu, 1_019_997_222_222_222_223);
         assertEq(units[1], 1000e18 + 611_998_333_333_333_334_000);
@@ -688,9 +688,9 @@ contract WeightedHubRebalanceTest is WeightedTest {
         (uint256 eta,) = skewed.pendingRebalance();
         vm.warp(eta + skewed.AUCTION_DURATION());
 
-        PythStructs.Price[] memory prices = new PythStructs.Price[](2);
-        prices[0] = PythStructs.Price({price: 0.0333e8, conf: 0, expo: EXPO, publishTime: 0});
-        prices[1] = PythStructs.Price({price: 30e8, conf: 0, expo: EXPO, publishTime: 0});
+        PythStructs.PriceFeed[] memory prices = new PythStructs.PriceFeed[](2);
+        prices[0] = _feed(0.0333e8, EXPO);
+        prices[1] = _feed(30e8, EXPO);
         (,, uint256[] memory out,) = skewed.previewRebalance(prices);
         assertLe(out[0], 99e18 * 100 / 5, "at most a fifth of A leaves");
         assertGt(out[0], 99e18 * 100 / 5 - 1e6, "and the cap is what binds");
@@ -782,7 +782,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
 
     function test_aKeptComponentsPriceEntryIsIgnoredInThePreview() public {
         _open(4, _midpoint());
-        PythStructs.Price[] memory prices = _structs3(2500e8, BTC_PRICE, 0);
+        PythStructs.PriceFeed[] memory prices = _structs3(2500e8, BTC_PRICE, 0);
         (, uint256[] memory units,,) = index.previewRebalance(prices);
         assertEq(units[2], USD_UNITS);
     }
@@ -1006,6 +1006,27 @@ contract WeightedHubRebalanceTest is WeightedTest {
         assertEq(index.rebalanceNonce(), 1, "exactly 5% off settles");
     }
 
+    /// @dev The preview refuses what the fill would: a price further than MAX_EMA_DEVIATION from its moving average
+    ///      (AU-2). It took Pyth's price alone before, so an executor saw a settlement the fill then refused, at its gas.
+    function test_AU2_thePreviewRefusesAPriceFarFromItsAverage() public {
+        _open(0, _midpoint());
+        PythStructs.PriceFeed[] memory feeds = _structs3(ETH_PRICE, BTC_PRICE, USD_PRICE);
+        int64 high = 2100e8 + 1; // 5% above the average, ETH_PRICE, and one more
+        feeds[0].price = PythStructs.Price({price: high, conf: 0, expo: EXPO, publishTime: 0});
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.PriceOffAverage.selector, address(eth), high, ETH_PRICE));
+        index.previewRebalance(feeds);
+
+        feeds[0].price.price = 2100e8;
+        (uint256 mu,,,) = index.previewRebalance(feeds);
+        assertEq(mu, index.currentMu(), "exactly 5% off settles");
+
+        uint64 time = uint64(index.priceTime());
+        bytes[] memory data = _updates(index, _ids3(), _prices3(ETH_PRICE, BTC_PRICE, USD_PRICE));
+        data[0] = pyth.updateWithEma(ETH_ID, 2100e8, EXPO, ETH_PRICE, EXPO, time, time - 1);
+        executor.execute(index, "", data);
+        assertEq(index.rebalanceNonce(), 1, "and the fill agrees");
+    }
+
     /// @dev ETH falls 90%, as a coin whose issuer mints and dumps it would. Its target is 5.5 times its units, but a
     ///      growing leg at most doubles per fill, so every leg moves 2/9 of the way: the others give up a tenth of their
     ///      units, where the turnover cap alone would have let the fill take a fifth (RX-15).
@@ -1138,7 +1159,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
         _open(0, into);
 
         // forge-lint: disable-next-line(unsafe-typecast)
-        PythStructs.Price[] memory prices =
+        PythStructs.PriceFeed[] memory prices =
             _structs3(int64(int256(ethPrice)), int64(int256(btcPrice)), int64(int256(usdPrice)));
         uint256 mu;
         uint256[] memory out;
@@ -1192,7 +1213,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
         vm.warp(eta + skewed.AUCTION_DURATION());
 
         // forge-lint: disable-next-line(unsafe-typecast)
-        PythStructs.Price[] memory prices =
+        PythStructs.PriceFeed[] memory prices =
             _structs3(int64(int256(ethPrice)), int64(int256(btcPrice)), int64(int256(usdPrice)));
         try skewed.previewRebalance(prices) returns (
             uint256, uint256[] memory, uint256[] memory out, uint256[] memory

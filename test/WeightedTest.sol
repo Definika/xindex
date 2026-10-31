@@ -145,15 +145,25 @@ abstract contract WeightedTest is Test {
         prices[2] = usdPrice;
     }
 
-    /// @dev The same prices as Pyth structs, for `previewRebalance`.
+    /// @dev The same prices as Pyth feeds, for `previewRebalance`.
     function _structs3(int64 ethPrice, int64 btcPrice, int64 usdPrice)
         internal
         pure
-        returns (PythStructs.Price[] memory prices)
+        returns (PythStructs.PriceFeed[] memory feeds)
     {
-        prices = new PythStructs.Price[](3);
-        prices[0] = PythStructs.Price({price: ethPrice, conf: 0, expo: EXPO, publishTime: 0});
-        prices[1] = PythStructs.Price({price: btcPrice, conf: 0, expo: EXPO, publishTime: 0});
-        prices[2] = PythStructs.Price({price: usdPrice, conf: 0, expo: EXPO, publishTime: 0});
+        feeds = new PythStructs.PriceFeed[](3);
+        feeds[0] = _feed(ethPrice, EXPO);
+        feeds[1] = _feed(btcPrice, EXPO);
+        feeds[2] = _feed(usdPrice, EXPO);
+    }
+
+    /// @dev A Pyth feed of `price` at `expo` for `previewRebalance`, its moving average equal to the price. The two
+    ///      are separate structs, so a test can move one without the other.
+    function _feed(int64 price, int32 expo) internal pure returns (PythStructs.PriceFeed memory) {
+        return PythStructs.PriceFeed({
+            id: bytes32(0),
+            price: PythStructs.Price({price: price, conf: 0, expo: expo, publishTime: 0}),
+            emaPrice: PythStructs.Price({price: price, conf: 0, expo: expo, publishTime: 0})
+        });
     }
 }

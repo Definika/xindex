@@ -486,7 +486,9 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
     ///      - `platformShares` to the platform, minus the referral share (rounded down) for `referrer`, if named;
     ///      - the rest to the creator.
     ///      A recipient that is missing or cannot hold shares is replaced: the platform's part goes to the creator, and
-    ///      the creator's to `to`. So no recipient can block a mint or an exit.
+    ///      the creator's to `to`. So no recipient can block a mint or an exit. A referrer a gated index's gate would
+    ///      refuse as `to` is named nobody, and the platform keeps its part: the minter names the referrer, so the
+    ///      gate holds for it as it does for `to`.
     function _mintFeeShares(
         uint256 feeShares,
         uint256 platformShares,
@@ -497,7 +499,10 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
     ) private {
         if (feeShares == 0) return;
         uint256 referrerShares = 0;
-        if (referrer != address(0) && !_cannotHoldShares(referrer)) {
+        // The gate's answer for the referrer comes from the factory, by STATICCALL, as `to`'s did ({_feeTerms}).
+        bool referrerAllowed = false;
+        if (referrer != address(0)) (referrerAllowed,,) = _feeTerms(referrer);
+        if (referrerAllowed && !_cannotHoldShares(referrer)) {
             referrerShares = Math.mulDiv(platformShares, _config.referralShareBps, BPS);
             platformShares -= referrerShares;
         } else {
@@ -744,10 +749,16 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
             if (feed.id != ids[k] || published < time || published > latestPublishTime) {
                 revert PriceMismatch(feed.id, published);
             }
-            prices[i] = _scaledPrice(feed.price, i);
-            _checkEma(feed.price, feed.emaPrice, i);
+            prices[i] = _checkedPrice(feed, i);
             ++k;
         }
+    }
+
+    /// @dev `feed`'s price for component `i`, converted by {_scaledPrice} and refused unless it is near its moving
+    ///      average ({_checkEma}): every check a fill makes on a price, which {previewRebalance} makes too.
+    function _checkedPrice(PythStructs.PriceFeed memory feed, uint256 i) private view returns (uint256 price) {
+        price = _scaledPrice(feed.price, i);
+        _checkEma(feed.price, feed.emaPrice, i);
     }
 
     /// @dev Converts `p` to USD per raw unit of component `i`, scaled by 1e36: `price * 10 ** (36 + expo - decimals)`,
@@ -1002,18 +1013,18 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
     }
 
     /// @inheritdoc IWeightedHub
-    function previewRebalance(PythStructs.Price[] calldata prices)
+    function previewRebalance(PythStructs.PriceFeed[] calldata feeds)
         external
         view
         returns (uint256 mu, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn)
     {
         uint256 n = _components.length;
-        if (prices.length != n) revert PriceCountMismatch(prices.length);
+        if (feeds.length != n) revert PriceCountMismatch(feeds.length);
         mu = _openMu();
         uint256 keepMask = _keepMask;
         uint256[] memory scaledPrices = new uint256[](n);
         for (uint256 i = 0; i < n; ++i) {
-            if ((keepMask & (1 << i)) == 0) scaledPrices[i] = _scaledPrice(prices[i], i);
+            if ((keepMask & (1 << i)) == 0) scaledPrices[i] = _checkedPrice(feeds[i], i);
         }
         // As the fill will see it: after the streaming fee accrues, at the scale that leaves.
         (uint256 pendingScale, uint256 feeShares) = _pendingAccrual(_storedStreamingRate());

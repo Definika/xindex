@@ -702,12 +702,13 @@ contract SecurityRegressionTest is XindexTest {
         }
     }
 
-    /// @dev The same prices as Pyth structs, for `previewRebalance`.
-    function _cheapFirstStructs(address[] memory t) internal pure returns (PythStructs.Price[] memory prices) {
-        prices = new PythStructs.Price[](t.length);
+    /// @dev The same prices as Pyth feeds, for `previewRebalance`, each with its moving average equal to it.
+    function _cheapFirstStructs(address[] memory t) internal pure returns (PythStructs.PriceFeed[] memory feeds) {
+        feeds = new PythStructs.PriceFeed[](t.length);
         for (uint256 i = 0; i < t.length; ++i) {
-            prices[i] =
+            PythStructs.Price memory p =
                 PythStructs.Price({price: i == 0 ? int64(0.9e8) : int64(1e8), conf: 0, expo: -8, publishTime: 0});
+            feeds[i] = PythStructs.PriceFeed({id: bytes32(0), price: p, emaPrice: p});
         }
     }
 

@@ -26,9 +26,10 @@ const reset = (h) => {
 };
 const json = (res, body, status = 200, headers = {}) =>
   res.writeHead(status, { "content-type": "application/json", ...headers }).end(JSON.stringify(body));
-const entry = (id, publishTime, price = "250000000000") => ({
+const entry = (id, publishTime, price = "250000000000", ema = price) => ({
   id: id.slice(2),
   price: { price, conf: "100000", expo: -8, publish_time: publishTime },
+  ema_price: { price: ema, conf: "90000", expo: -8, publish_time: publishTime },
 });
 const hermes = () => createHermes({ url: base, apiKey: "k3y" });
 const soon = (ms = 2000) => Date.now() + ms;
@@ -44,8 +45,21 @@ test("at(): the update and its prices, with the key as a Bearer token", async ()
   const { updates, prices } = await hermes().at([A, B], 1000, soon());
   assert.deepEqual(updates, ["0x504e4155"]);
   assert.equal(seen[0].auth, "Bearer k3y");
-  assert.deepEqual(prices.get(A.slice(2)), { price: 250000000000n, conf: 100000n, expo: -8, publishTime: 1000 });
+  assert.deepEqual(prices.get(A.slice(2)), {
+    price: 250000000000n,
+    conf: 100000n,
+    expo: -8,
+    publishTime: 1000,
+    ema: { price: 250000000000n, conf: 90000n, expo: -8, publishTime: 1000 },
+  });
   assert.equal(prices.get(B.slice(2)).price, -5n);
+});
+
+test("AU-2: at() carries each price's moving average, which the hub's preview checks the price against", async () => {
+  reset((req, res) => json(res, { binary: { encoding: "hex", data: ["504e4155"] }, parsed: [entry(A, 1000, "250000000000", "200000000000")] }));
+  const { prices } = await hermes().at([A], 1000, soon());
+  assert.equal(prices.get(A.slice(2)).price, 250000000000n);
+  assert.deepEqual(prices.get(A.slice(2)).ema, { price: 200000000000n, conf: 90000n, expo: -8, publishTime: 1000 });
 });
 
 test("at(): an update outside [t, t + 11] or missing a feed is refused", async () => {

@@ -654,10 +654,11 @@ contract WeightedHandler is Test {
         }
     }
 
-    function _structs() internal view returns (PythStructs.Price[] memory out) {
-        out = new PythStructs.Price[](comps.length);
+    function _structs() internal view returns (PythStructs.PriceFeed[] memory out) {
+        out = new PythStructs.PriceFeed[](comps.length);
         for (uint256 i = 0; i < comps.length; ++i) {
-            out[i] = PythStructs.Price({price: prices[i], conf: 0, expo: EXPO, publishTime: 0});
+            PythStructs.Price memory p = PythStructs.Price({price: prices[i], conf: 0, expo: EXPO, publishTime: 0});
+            out[i] = PythStructs.PriceFeed({id: bytes32(0), price: p, emaPrice: p});
         }
     }
 

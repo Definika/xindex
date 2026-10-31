@@ -421,6 +421,41 @@ contract WeightedHubFeesTest is WeightedTest {
         assertEq(eth.balanceOf(stranger), (1e18 - 1e18 * PLATFORM_FEE / BPS) * ETH_UNITS / 1e18);
     }
 
+    /// @dev The minter names the referrer, so a gated index's gate holds for it as for `to`: a referrer the gate
+    ///      would refuse is nobody, its share staying the platform's, and one it allows, an allowlisted account or the
+    ///      creator, takes it (AU-1). Before the fix the stranger took half the platform's part of every mint.
+    function test_AU1_aGatedIndexPaysNoReferrerItsGateWouldRefuse() public {
+        // A 14-day interval, since the gate is not in the salt and setUp's index has these terms at 7 days.
+        WeightedHub gated = _create(_defaultSpecs(), _feeParams(uint16(CREATOR_FEE), 14 days, true));
+        uint256 feeShares = _gross(1e18) - 1e18;
+        uint256 platformShares = _platformPart(feeShares);
+        uint256 referrerShares = platformShares * REFERRAL_SHARE / BPS;
+        assertGt(referrerShares, 0);
+
+        _fund(gated, creator, 1e18);
+        vm.prank(creator);
+        vm.expectEmit(address(gated));
+        emit IWeightedHub.FeeSharesMinted(address(0), creator, platform, feeShares - platformShares, platformShares, 0);
+        gated.issue(1e18, creator, stranger);
+        assertEq(gated.balanceOf(stranger), 0, "a stranger named as referrer gets nothing");
+        assertEq(gated.balanceOf(platform), platformShares, "the platform keeps the referral share");
+
+        vm.prank(creator);
+        factory.setAllowedMinter(address(gated), alice, true);
+        _fund(gated, creator, 1e18);
+        vm.prank(creator);
+        gated.issue(1e18, creator, alice);
+        assertEq(gated.balanceOf(alice), referrerShares, "an allowed referrer takes its share");
+
+        _fund(gated, alice, 1e18);
+        vm.prank(alice);
+        gated.issue(1e18, alice, creator);
+        assertEq(
+            gated.balanceOf(creator), 2e18 + 3 * (feeShares - platformShares) + referrerShares, "so does the creator"
+        );
+        _assertBacked(gated);
+    }
+
     /// @dev A gated index's creator mints it without an allowlist entry (the website's private index could not be
     ///      bought by its own creator); the right is the role's, so it moves with the role and leaves the old creator.
     function test_theCreatorMintsItsOwnGatedIndex() public {

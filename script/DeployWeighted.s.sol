@@ -44,11 +44,11 @@ contract DeployWeighted is DeployChecks {
     ///         mainnet broadcast is bound to (CF-5): `deploy` refuses to broadcast on Ethereum from any other build (a
     ///         local edit, a lib/ checkout off foundry.lock, a FOUNDRY_* override), and `test_CF5_*` in
     ///         test/Scripts.t.sol fails until these equal the build, so only a reviewed, CI-green commit moves them.
-    bytes32 public constant FACTORY_INITCODE_HASH = 0xa50e29c827dcd86116308fba797b01653d70da29af8fc511b568e35021ae0dc2;
+    bytes32 public constant FACTORY_INITCODE_HASH = 0x7c49c7435cd6899303458bc0dbaaa0fb2bf2290ca5ba36fa5124e412de9f3b5a;
     /// @notice keccak256 of `IndexZap`'s init code, as above.
-    bytes32 public constant ZAP_INITCODE_HASH = 0x71535777ef8760df80e75112cca053b5b84987a1c2d843e7c2f31cc073b54fa7;
+    bytes32 public constant ZAP_INITCODE_HASH = 0x3e6dc2c25609e3a678628ba5f2faf6d35a28cc71b40cafed4916d2c4806bbad3;
     /// @notice keccak256 of `BasketBuilder`'s init code, as above.
-    bytes32 public constant BUILDER_INITCODE_HASH = 0xae62eeee1e541ad1e35d8526ca9121f93d8d9318240170386d0b878187824661;
+    bytes32 public constant BUILDER_INITCODE_HASH = 0x92395cab72b8fe960036e93050cc3c4902533372fe74472da92e79dd224ac408;
     /// @notice keccak256 of `MintRequests`' init code, as above.
     bytes32 public constant REQUESTS_INITCODE_HASH = 0xd3b3413a62913bc0091205d13253547060e4e4097339efda529b4f91f6b497f2;
 

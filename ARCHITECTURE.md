@@ -93,8 +93,9 @@ OpenZeppelin's upgradeable ERC20 and ERC20Permit (clones skip constructors, so n
 - **startRebalance(keepMask, priceUpdate)**, **cancelRebalance()** and the two **executeRebalance** overloads: section 3.
 - **Views:** `components()`, `componentTokens()`, `componentCount()`, `componentTerms()` (weights, price ids and
   decimals), `previewIssue`, `previewRedeem`, `claimOf`, `totalClaims`, `priceTime()`, `pendingRebalance()`,
-  `currentMu()`, `canStartRebalance()`, and `previewRebalance(prices)`, which takes one Pyth price per component and
-  returns the settlement a fill in this block would use, without checking publish times. No function values the index.
+  `currentMu()`, `canStartRebalance()`, and `previewRebalance(feeds)`, which takes one Pyth price feed per component,
+  the price with its moving average, refuses any price the fill would (AU-2) and returns the settlement a fill in this
+  block would use, without checking ids or publish times. No function values the index.
 - **Access:** `issue`, `redeem`, `redeemSkipping`, `startRebalance`, `cancelRebalance` and both `executeRebalance`
   overloads revert `NotInitialized` on anything but an initialized clone; the implementation has initializers disabled.
   A recipient can never be zero, the hub itself or its factory, and that includes a plain ERC-20 `transfer` or
@@ -435,7 +436,7 @@ the recipients; `redeem` burns `shares`, mints `floor(shares · fee / 10,000)` t
 the rest, rounded down. `fee` is the creator's rate plus the platform's, both in `config()` and fixed at creation. The
 recipients come from the factory's `feeTerms(index, to)` at each call: the index's creator, who can hand the role on,
 and the platform recipient of the moment; a referrer named at mint takes `referralShareBps` of the platform's part,
-rounded down. A recipient that could not hold shares is replaced, so no fee can block a mint or an exit
+rounded down, unless the index is gated and the gate would refuse it as `to` (AU-1). A recipient that could not hold shares is replaced, so no fee can block a mint or an exit
 (`test/WeightedHub.fees.t.sol`). The streaming fee built on 2026-10-16 is the `scale`: a yearly rate, the creator's (0
 to 500 bps) plus the platform's (0 to 100 bps), accrues in shares before every issue, redeem and settlement, and on
 `accrueFees`, as `supply · f / (1 − f)` shares for `f` the rate times the elapsed part of a year, and the scale every

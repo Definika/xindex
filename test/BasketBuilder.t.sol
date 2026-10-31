@@ -625,6 +625,8 @@ contract BasketBuilderTest is XindexTest {
         vm.stopPrank();
 
         factory.setAllowedMinter(address(gated), alice, true);
+        // The gate holds for the referrer too, so it is allowed here: one it refuses takes no share (AU-1).
+        factory.setAllowedMinter(address(gated), referrer, true);
         vm.prank(alice);
         builder.mint(address(gated), 1e18, alice, referrer, block.timestamp);
         assertEq(gated.balanceOf(alice), 1e18);
