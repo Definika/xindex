@@ -7,7 +7,7 @@
 // (circlefin/aptos-cctp, typescript/example/precompiled-move-scripts/mainnet/v2, commit 440599d; ./scripts, NOTICE),
 // since V2's functions return receipts a script must consume in the same transaction; swaps through Panora, whose router
 // enforces the minimum output on chain. An account's transactions run in sequence-number order, so this signer keeps
-// one transaction in flight at a time (`idle`): one that expired would leave every later one waiting behind it.
+// one transaction in flight at a time (`inflight.mjs`): one that expired would leave every later one waiting behind it.
 
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -25,6 +25,8 @@ import {
 import { contracts, deserialize, keccak256, toUniversal } from "@wormhole-foundation/sdk-connect";
 import { AptosTokenBridge } from "@wormhole-foundation/sdk-aptos-tokenbridge";
 import { AptosWormholeCore } from "@wormhole-foundation/sdk-aptos-core";
+import { createInflight, refusedOutright } from "../inflight.mjs";
+import { aptosFate, checkPanoraArgs } from "./checks.mjs";
 
 /// Aptos mainnet's chain id: the RPC must serve this chain.
 export const MAINNET_CHAIN_ID = 1;
@@ -36,8 +38,8 @@ export const USDC_METADATA = "0xbae207659db88bea0cbead6da0ed00aac12edcdda169e591
 export const TOKEN_BRIDGE_EMITTER = `0x${"0".repeat(63)}1`;
 /// Circle's CCTP V2 on Aptos, domain 9 (developers.circle.com, checked on chain on 2026-11-01).
 export const MESSAGE_TRANSMITTER_V2 = "0x1b3f6d749cb835451202f9a1932e49014266f7e3d51611a9a763d156cb4bdaf6";
-/// Panora's router, whose `router_entry` is the only function a swap may call; its 17th argument is the minimum output,
-/// which it enforces (E_OUTPUT_LESS_THAN_MINIMUM_TRY_INCREASING_SLIPPAGE).
+/// Panora's router, whose `router_entry` is the only function a swap may call; its argument 17 (counted from 0) is the
+/// minimum output, which it enforces (E_OUTPUT_LESS_THAN_MINIMUM_TRY_INCREASING_SLIPPAGE; `checks.mjs` checkPanoraArgs).
 export const PANORA_ROUTER = "0x1c3206329806286fd2223647c9f9b130e66baeb6d7224a18c1f642ffe48f3b4c::panora_swap::router_entry";
 /// The most gas units a transaction may use, at the network's price: what the wallet's APT must cover beyond the move.
 export const MAX_GAS_UNITS = 200_000n;
@@ -77,13 +79,28 @@ export function humanUnits(amount, decimals) {
   return frac ? `${whole}.${frac}` : whole;
 }
 
-export function createMoves({ aptos, account, panora, fetchImpl = fetch }) {
+/// `rpcUrl` is the fullnode's REST API, through `/v1`, read directly where the answer's ledger time matters.
+export function createMoves({ aptos, account, panora, rpcUrl, fetchImpl = fetch }) {
   const address = norm(account.accountAddress.toString());
   const ids = { coreBridge: contracts.coreBridge("Mainnet", "Aptos"), tokenBridge: contracts.tokenBridge("Mainnet", "Aptos") };
   const bridge = new AptosTokenBridge("Mainnet", "Aptos", aptos, ids);
   const core = new AptosWormholeCore("Mainnet", "Aptos", aptos, ids);
   let consumed = null; // the bridge's table of completed transfers, read once
-  let inflight = null;
+  /// The one transaction sent that may still execute: `{id (its hash), sequence, expire, sentVersion}`.
+  const inflight = createInflight((e) => fate(e.id, e.sequence, e.expire, e.sentVersion));
+  /// GET `path` of the REST API: the status, the body when it is 200, and the ledger headers every Aptos answer carries,
+  /// a 404 included: its node's ledger version, oldest version kept and ledger time (microseconds).
+  async function rest(path) {
+    const r = await fetchImpl(`${rpcUrl.replace(/\/+$/, "")}${path}`, { signal: AbortSignal.timeout(15_000) });
+    const header = (name) => r.headers.get(name);
+    return {
+      status: r.status,
+      body: r.status === 200 ? await r.json() : null,
+      ledgerVersion: header("x-aptos-ledger-version"),
+      oldestVersion: header("x-aptos-ledger-oldest-version"),
+      ledgerTimestamp: header("x-aptos-ledger-timestampusec"),
+    };
+  }
 
   const view = async (fn, typeArguments, functionArguments) => (await aptos.view({ payload: { function: fn, typeArguments, functionArguments } }))[0];
   /// The wallet's balance of fungible asset `metadata` (APT counted with any coins not yet moved to its store).
@@ -94,32 +111,22 @@ export function createMoves({ aptos, account, panora, fetchImpl = fetch }) {
         : await view("0x1::primary_fungible_store::balance", ["0x1::fungible_asset::Metadata"], [address, metadata]),
     );
 
-  /// What became of transaction `hash`, the wallet's `sequence` and expiring at `expire` (unix seconds): landed,
-  /// reverted, pending, or expired once the account's sequence number passed it or the ledger's clock reached its
-  /// expiry with no transaction of that hash.
-  async function fate(hash, sequence, expire) {
-    try {
-      const t = await aptos.getTransactionByHash({ transactionHash: hash });
-      if (t.type === "pending_transaction") return { state: "pending" };
-      return { state: t.success ? "landed" : "reverted", at: String(t.version ?? "") };
-    } catch (error) {
-      if (error?.status !== 404) throw error;
-    }
-    const [{ sequence_number }, { ledger_timestamp }] = await Promise.all([aptos.getAccountInfo({ accountAddress: address }), aptos.getLedgerInfo()]);
-    if (BigInt(sequence_number) > BigInt(sequence)) return { state: "expired", reason: `its sequence number ${sequence} went to another transaction` };
-    if (BigInt(ledger_timestamp) >= BigInt(expire) * 1_000_000n) return { state: "expired", reason: `it expired at ${expire}` };
-    return { state: "pending" };
-  }
-
-  async function idle() {
-    if (!inflight) return;
-    const s = await fate(inflight.hash, inflight.sequence, inflight.expire);
-    if (s.state === "pending") {
-      // Only a completing step is sent again here; a move is the parent's to send, once it is in its journal.
-      if (inflight.resend) await inflight.resend();
-      throw new Error(`transaction ${inflight.hash} is still in flight; waiting for it`);
-    }
-    inflight = null;
+  /// What became of transaction `hash`, the wallet's `sequence`, expiring at `expire` (unix seconds) and built at
+  /// ledger version `sentVersion` (`aptosFate`, PD-4): the account first, then the hash, each with its node's ledger
+  /// headers, so a hash lookup on a node behind the account read is seen for what it is.
+  async function fate(hash, sequence, expire, sentVersion = null) {
+    const a = await rest(`/accounts/${address}`);
+    if (a.status !== 200 || !a.ledgerVersion || !a.ledgerTimestamp) throw new Error(`Aptos answered ${a.status} for the wallet's account`);
+    const h = await rest(`/transactions/by_hash/${hash}`);
+    if ((h.status !== 200 && h.status !== 404) || !h.ledgerVersion || !h.oldestVersion) throw new Error(`Aptos answered ${h.status} for transaction ${hash}`);
+    const found = h.status === 404 ? null : h.body.type === "pending_transaction" ? { pending: true } : { success: h.body.success, version: h.body.version };
+    return aptosFate({
+      sequence,
+      expire,
+      sentVersion,
+      account: { sequence: a.body.sequence_number, ledgerVersion: a.ledgerVersion, ledgerTimestamp: a.ledgerTimestamp },
+      byHash: { found, ledgerVersion: h.ledgerVersion, oldestVersion: h.oldestVersion },
+    });
   }
 
   /// The wallet's balance changes in simulation `result`, by metadata: the primary stores' balances after it, against
@@ -145,8 +152,8 @@ export function createMoves({ aptos, account, panora, fetchImpl = fetch }) {
   /// Builds `data` for the wallet with explicit gas, price, sequence number and expiry, and checks by simulation that it
   /// succeeds and moves the wallet's APT and USDC only within `bounds` (metadata -> {min, max}, APT's including gas).
   async function build(data, bounds) {
-    await idle();
-    const [{ sequence_number }, { ledger_timestamp }] = await Promise.all([aptos.getAccountInfo({ accountAddress: address }), aptos.getLedgerInfo()]);
+    await inflight.idle();
+    const [{ sequence_number }, { ledger_timestamp, ledger_version }] = await Promise.all([aptos.getAccountInfo({ accountAddress: address }), aptos.getLedgerInfo()]);
     const expire = BigInt(ledger_timestamp) / 1_000_000n + EXPIRY_SECONDS;
     const transaction = await aptos.transaction.build.simple({
       sender: address,
@@ -164,29 +171,37 @@ export function createMoves({ aptos, account, panora, fetchImpl = fetch }) {
     for (const [metadata, bound] of Object.entries(bounds)) {
       if (!moved.has(metadata) && (0n < bound.min || 0n > bound.max)) throw new Error(`the transaction would not move the wallet's ${metadata} as the move needs`);
     }
-    return { transaction, sequence: BigInt(sequence_number), expire };
+    return { transaction, sequence: BigInt(sequence_number), expire, sentVersion: String(ledger_version) };
   }
 
   /// `built` signed: the transaction and its authenticator as `raw`, its hash, and its expiry (sequence and time).
-  function signed({ transaction, sequence, expire }) {
+  /// Signing puts nothing in flight: only sending does (PD-6).
+  function signed({ transaction, sequence, expire, sentVersion }) {
     const senderAuthenticator = aptos.transaction.sign({ signer: account, transaction });
     const hash = generateUserTransactionHash({ transaction, senderAuthenticator });
-    inflight = { hash, sequence: String(sequence), expire: String(expire), submit: { transaction, senderAuthenticator }, resend: null };
     return {
       raw: JSON.stringify({ transaction: Buffer.from(transaction.bcsToBytes()).toString("base64"), auth: Buffer.from(senderAuthenticator.bcsToBytes()).toString("base64") }),
       signature: hash,
-      expiry: JSON.stringify({ sequence: String(sequence), expire: String(expire) }),
+      expiry: JSON.stringify({ sequence: String(sequence), expire: String(expire), sentVersion }),
     };
   }
 
-  /// Signs and submits `built`, a step that only completes a move, and waits for it; throws if it fails.
+  /// Signs and submits `built`, a step that only completes a move, and waits for it; throws if it fails. A step the
+  /// node refuses outright is forgotten: it holds the sequence number nowhere, and a completing step that ran after
+  /// all would only find its work done (PD-6).
   async function execute(built) {
     const s = signed(built);
-    const submit = inflight.submit;
-    inflight.resend = () => aptos.transaction.submit.simple(submit).catch(() => {});
-    await aptos.transaction.submit.simple(submit);
+    const submit = decode(s.raw);
+    const resend = () => aptos.transaction.submit.simple(submit).catch(() => {});
+    inflight.sent({ id: s.signature, sequence: String(built.sequence), expire: String(built.expire), sentVersion: built.sentVersion, resend });
+    try {
+      await aptos.transaction.submit.simple(submit);
+    } catch (error) {
+      if (refusedOutright(error)) inflight.clear(s.signature);
+      throw error;
+    }
     const t = await aptos.waitForTransaction({ transactionHash: s.signature });
-    inflight = null;
+    inflight.clear(s.signature);
     if (!t.success) throw new Error(`${s.signature} failed: ${t.vm_status}`);
     return s.signature;
   }
@@ -261,9 +276,7 @@ export function createMoves({ aptos, account, panora, fetchImpl = fetch }) {
       if (!quote?.txData) return { refused: "loss", outAmount: "0" };
       const { function: fn, type_arguments: typeArguments, arguments: args } = quote.txData;
       if (fn !== PANORA_ROUTER) throw new Error(`Panora's swap calls ${fn}, not its router`);
-      if (norm(args[1]) !== address) throw new Error("Panora's swap pays someone else");
-      if (norm(args[15]) !== to) throw new Error("Panora's swap buys another token");
-      if (!Array.isArray(args[16]) || args[16].length !== 1 || BigInt(args[16][0]) !== amountIn) throw new Error("Panora's swap spends another amount");
+      checkPanoraArgs(args, { address, to, amountIn });
       const out = baseUnits(quote.toTokenAmount, decimals(to));
       if (out < floor) return { refused: "loss", outAmount: String(out) };
       const functionArguments = [...args];
@@ -286,25 +299,31 @@ export function createMoves({ aptos, account, panora, fetchImpl = fetch }) {
       if (payloads.length !== 1) throw new Error(`the SDK built ${payloads.length} transactions for one transfer`);
       return signed(await build(payloads[0], { [APT_METADATA]: { min: -(value + MAX_GAS_OCTAS), max: -value } }));
     },
-    /// The CCTP V2 burn of `amount` of USDC for `treasury` (a word) on Ethereum, with no fee and standard finality,
-    /// through Circle's script, signed: it must take exactly `amount`.
-    async buildSweep({ amount, treasury }) {
+    /// The CCTP V2 burn of `amount` of USDC for `treasury` (a word) on Ethereum, paying Circle at most `maxFee` (PD-12),
+    /// with standard finality, through Circle's script, signed: it must take exactly `amount`.
+    async buildSweep({ amount, treasury, maxFee = "0" }) {
       const value = BigInt(amount);
       const data = {
         bytecode: script("deposit_for_burn"),
-        functionArguments: [new U64(value), new U32(ETHEREUM_DOMAIN), AccountAddress.from(treasury), AccountAddress.from("0x0"), AccountAddress.from(USDC_METADATA), new U64(0n), new U32(STANDARD_FINALITY)],
+        functionArguments: [new U64(value), new U32(ETHEREUM_DOMAIN), AccountAddress.from(treasury), AccountAddress.from("0x0"), AccountAddress.from(USDC_METADATA), new U64(BigInt(maxFee)), new U32(STANDARD_FINALITY)],
       };
       return signed(await build(data, { [USDC_METADATA]: { min: -value, max: -value }, [APT_METADATA]: { min: -MAX_GAS_OCTAS, max: 0n } }));
     },
-    /// Sends signed move `raw`; resubmitting the same transaction has no further effect.
-    async send({ raw }) {
+    /// Sends signed move `raw`, with its hash `signature` and `expiry`; resubmitting the same transaction has no further
+    /// effect. From here it is in flight (PD-6).
+    async send({ raw, signature, expiry }) {
+      const { sequence, expire, sentVersion = null } = JSON.parse(expiry);
+      inflight.sent({ id: signature, sequence, expire, sentVersion });
       const r = await aptos.transaction.submit.simple(decode(raw)).catch((error) => ({ error: String(error?.message ?? error) }));
       return r.hash ?? null;
     },
+    /// What became of transaction `signature` with `expiry`. One that may still execute is in flight again, so after a
+    /// restart nothing is built over its sequence number (PD-9).
     async status({ signature, expiry }) {
-      const { sequence, expire } = JSON.parse(expiry);
-      const s = await fate(signature, sequence, expire);
-      if (s.state !== "pending" && inflight?.hash === signature) inflight = null;
+      const { sequence, expire, sentVersion = null } = JSON.parse(expiry);
+      const s = await fate(signature, sequence, expire, sentVersion);
+      if (s.state === "pending" || s.state === "unknown") inflight.sent({ id: signature, sequence, expire, sentVersion });
+      else inflight.clear(signature);
       return s;
     },
     /// The sequence the Token Bridge published in transaction `signature`.

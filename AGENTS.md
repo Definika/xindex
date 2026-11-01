@@ -114,6 +114,26 @@ Where it stands (2026-10-26):
   must land in one slot, which a Safe cannot time (RZ-26); a collapsed leg stops the fills far sooner than was
   documented (RZ-4); issue does not probe a frozen leg (RZ-25); RY-3's self-referral and RY-8's restock churn. The
   fork suites have not run on the zap's change.
+- The protocol documentation review of 2026-11-01 (`audit/2026-11-01-protocol-docs-review.md`, ids `PD-1`..`PD-14`)
+  read every protocol Xindex uses in its own docs. The contracts that hold index funds follow them all; every finding
+  is in the restock service. It found three ways a compromised aggregator answer could take more than the bounds, all
+  in the non-EVM swaps of 2026-11-01, which had never run:
+  - Jupiter's other routes (PD-1), and its on-chain minimum, which lives in instruction bytes nobody read (PD-2);
+  - Cetus's API-chosen package with no floor of ours (PD-3).
+
+  The fourteen were fixed on 2026-11-02, the owner's call:
+  - Jupiter's swap is read by its own IDL, from the front.
+  - Every token account of the wallet is held in the simulation.
+  - Sui's floor is split on chain.
+  - The expiry rules no longer drop a move on a node behind.
+  - A transaction is in flight only once sent.
+  - Stale Circle signatures and VAAs are renewed.
+  - Burns allow Iris's standard fee, at most 10 bps.
+  - Panora's splits and integrator fee are checked.
+  - `node keeper/restock.mjs --attest <chain> <token>` replaces legacy Portal, closed on 2026-06-30, for the copies
+    still to attest (PD-7).
+
+  The mutation gate runs the keeper's node suites since.
 - v5 was deployed on Sepolia on 2026-10-26 from `07aeae1`, the build before the RX-3 fix, under a 2-of-3 test Safe;
   its four listings can be executed from 2026-10-28 (`docs/deployment.md`, with the addresses). Sepolia runs Glamsterdam
   (EIP-8037): `forge script` broadcasts there need `--gas-estimate-multiplier 900`. The website and its backend, in
@@ -189,7 +209,8 @@ python3 -I test/vectors/proofs.py 2 120  # proves the model's caps, mu bound and
                              # needs a Python with z3, as Halmos's is; rerun after any change to the arithmetic's rules
 aderyn .                     # Aderyn on src/, configured by aderyn.toml: must report nothing; CI does not run it
 python3 -I test/mutants/run.py  # the mutation gate: every mutant of test/mutants/mutants.json must be killed (CI runs it);
-                             # --only M3,V8 runs some, --check only that every edit still applies
+                             # --only M3,V8 runs some, --check only that every edit still applies; a mutant with
+                             # "runner": "node" names a keeper/test/unit suite instead of a forge one
 for c in IndexZap BasketBuilder MintRequests WeightedIndexFactory WeightedHub; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
 forge test --root keeper     # the keeper's executor, its own Foundry project; CI also runs its fmt, build and lint
 node --test keeper/test/unit/*.test.mjs  # the keeper bot's arithmetic, settings, Hermes client and tx tracker (no dependency)
@@ -290,6 +311,11 @@ deploy script resolves Pyth, the router and the stablecoins from the address boo
      `test_RZ24_...` in `test/Scripts.t.sol`, and node tests named `RY-6, RZ-1: ...`, `RZ-2, RZ-22: ...` and
      `RZ-5: ...` in `keeper/test/unit/`. Each record's "Status of the fixes" names every test; the ids fixed by
      documentation, the open ones and the keeper's wiring without a unit harness have none.
+   - The protocol documentation review of 2026-11-01: `PD-1`..`PD-14` (`audit/2026-11-01-protocol-docs-review.md`),
+     node tests named `PD-1: ...` in `keeper/test/unit/` (the restock's Solana, Sui, Aptos, in-flight, journal,
+     attestation, advance, attest and signer-home suites), each with its mutants P1 to P24 in
+     `test/mutants/mutants.json`. The record's "Status of the fixes" names every test; PD-14, a dashboard setting, is
+     fixed by documentation alone.
    - The skills audit of 2026-10-04: `A7-08`, `A7-12`, `A7-13`, `A7-17`, `A7-18`, `A7-22`, `A1a-05` and `A1a-06`, the
      eight of its findings still open on `main`, fixed on 2026-10-25 (`audit/2026-10-25-skills-audit-port.md`), a
      test named `test_A708_...` or `test_A1a05_...`. The record's status table names every test.

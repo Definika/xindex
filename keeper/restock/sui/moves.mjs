@@ -5,17 +5,20 @@
 //
 // Sui through gRPC (Mysten's public fullnodes no longer serve JSON-RPC); Wormhole's Token Bridge through Wormhole's own
 // SDK; CCTP V2 as Circle's Sui scripts build it (circlefin/sui-cctp, scripts/sui/ptbV2.ts); swaps through Cetus's
-// aggregator. A signed Sui transaction names its owned inputs at their versions: two that share a gas coin cannot
-// both execute, so this signer keeps one transaction in flight at a time (`busy`), as the EVM side waits for its
+// aggregator, whose input coin goes only to Cetus's own aggregator package and whose floor the transaction holds itself
+// (PD-3). A signed Sui transaction names its owned inputs at their versions: two that share a gas coin cannot both
+// execute, so this signer keeps one transaction in flight at a time (`inflight.mjs`), as the EVM side waits for its
 // pending nonce (RS-15).
 
-import { AggregatorClient, Env, getProvidersExcluding, PYTH_ORACLE_BASED_DEXES } from "@cetusprotocol/aggregator-sdk";
+import { AGGREGATOR_V3_CONFIG, AggregatorClient, Env, getProvidersExcluding, PYTH_ORACLE_BASED_DEXES } from "@cetusprotocol/aggregator-sdk";
 import { coinWithBalance, Transaction, TransactionDataBuilder } from "@mysten/sui/transactions";
 import { normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
 import { contracts, deserialize, toUniversal } from "@wormhole-foundation/sdk-connect";
 import { SuiWormholeCore } from "@wormhole-foundation/sdk-sui-core";
 import { SuiTokenBridge } from "@wormhole-foundation/sdk-sui-tokenbridge";
 import { slippageFor } from "../bounds.mjs";
+import { createInflight, refusedOutright } from "../inflight.mjs";
+import { checkAggregator, missingObject, missingTransaction, payWithFloor, suiFate } from "./checks.mjs";
 
 /// Sui mainnet's chain identifier: the RPC must serve this chain.
 export const MAINNET_CHAIN = "4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S";
@@ -40,6 +43,8 @@ const ETHEREUM_DOMAIN = 0;
 const STANDARD_FINALITY = 2000;
 /// The most gas, in MIST, one transaction may cost: what the wallet's SUI must cover beyond what the move spends.
 export const MAX_GAS_BUDGET = 500_000_000n;
+/// Cetus's aggregator package as its SDK pins it: the one package a swap's input coin may go to, or an upgrade of it.
+export const AGGREGATOR = AGGREGATOR_V3_CONFIG.DEFAULT_PUBLISHED_AT.Mainnet;
 
 const hexBytes = (hex) => Uint8Array.from(Buffer.from(hex.replace(/^0x/, ""), "hex"));
 
@@ -49,41 +54,44 @@ export function createMoves({ client, keypair, genesis = MAINNET_CHAIN }) {
   const bridge = new SuiTokenBridge("Mainnet", "Sui", client, ids);
   const core = new SuiWormholeCore("Mainnet", "Sui", client, ids);
   const aggregator = new AggregatorClient({ client, signer: address, env: Env.Mainnet });
-  /// The one transaction in flight: `{digest, gas, epoch}`, until it lands or can no longer.
-  let inflight = null;
+  /// The one transaction sent that may still execute: `{id (its digest), gas, epoch}`.
+  const inflight = createInflight((e) => fate(e.id, e.gas, e.epoch));
+  /// Each package's original package, the first version its upgrades descend from, read once.
+  const originals = new Map();
+  async function originalOf(packageId) {
+    if (!originals.has(packageId)) {
+      const { response } = await client.movePackageService.getPackage({ packageId });
+      if (!response.package?.originalId) throw new Error(`package ${packageId} has no original package`);
+      originals.set(packageId, normalizeSuiAddress(response.package.originalId));
+    }
+    return originals.get(packageId);
+  }
 
   const epochNow = async () => BigInt((await client.getCurrentSystemState()).systemState.epoch);
   const balanceOf = async (coinType) => BigInt((await client.getBalance({ owner: address, coinType })).balance.balance);
 
-  /// What became of transaction `digest`, signed with gas coins `gas` at their versions and valid until `epoch`.
+  /// What became of transaction `digest`, signed with gas coins `gas` at their versions and valid until `epoch`
+  /// (`suiFate`): only a coin that is gone or at another version counts against it, never an error reading one (PD-5).
   async function fate(digest, gas, epoch) {
+    let found = null;
     try {
       const r = await client.getTransaction({ digest, include: { effects: true } });
       const t = r.Transaction ?? r.FailedTransaction;
-      return { state: t.status.success ? "landed" : "reverted", at: String(t.checkpoint ?? "") };
+      found = { success: t.status.success, checkpoint: t.checkpoint };
     } catch (error) {
-      if (!/not found/i.test(String(error?.message))) throw error;
+      if (!missingTransaction(error)) throw error;
     }
-    for (const g of gas) {
-      const o = await client.getObject({ objectId: g.objectId, include: { previousTransaction: true } }).catch(() => null);
-      // A gas coin our own transaction moved: it executed, and the node has not served it yet.
-      if (o?.object?.previousTransaction === digest) return { state: "pending" };
-      if (!o || String(o.object.version) !== g.version) return { state: "expired", reason: `its gas coin ${g.objectId} moved to another version` };
+    const coins = [];
+    if (!found) {
+      for (const g of gas) {
+        const read = await client
+          .getObject({ objectId: g.objectId, include: { previousTransaction: true } })
+          .then((o) => ({ version: o.object.version, previousTransaction: o.object.previousTransaction }))
+          .catch((error) => (missingObject(error) ? null : Promise.reject(error)));
+        coins.push({ ...g, read });
+      }
     }
-    if ((await epochNow()) > BigInt(epoch)) return { state: "expired", reason: `its expiry epoch ${epoch} ended` };
-    return { state: "pending" };
-  }
-
-  /// Refuses to build while the transaction in flight may still execute.
-  async function idle() {
-    if (!inflight) return;
-    const s = await fate(inflight.digest, inflight.gas, inflight.epoch);
-    if (s.state === "pending") {
-      // Only a completing step is sent again here; a move is the parent's to send, once it is in its journal.
-      if (inflight.resend) await inflight.resend();
-      throw new Error(`transaction ${inflight.digest} is still in flight; waiting for it`);
-    }
-    inflight = null;
+    return suiFate({ digest, found, coins, epochNow: found ? 0n : await epochNow(), epoch });
   }
 
   /// The wallet's SUI coins whose total covers `need` MIST, the largest first, none of the one in flight's.
@@ -110,7 +118,7 @@ export function createMoves({ client, keypair, genesis = MAINNET_CHAIN }) {
   /// budget), budget and expiry (the next epoch), builds it, and checks by simulation that it moves the wallet's coins
   /// only within `bounds` (coin type -> {min, max}, SUI's including the gas). Returns the bytes and what `fate` needs.
   async function build(tx, spend, bounds) {
-    await idle();
+    await inflight.idle();
     const [price, epoch] = await Promise.all([client.getReferenceGasPrice(), epochNow()]);
     const coins = await gasCoins(spend + MAX_GAS_BUDGET);
     tx.setSender(address);
@@ -136,11 +144,11 @@ export function createMoves({ client, keypair, genesis = MAINNET_CHAIN }) {
     return { bytes, gas: coins.map((c) => ({ objectId: c.objectId, version: String(c.version) })), epoch: epoch + 1n };
   }
 
-  /// `built` signed: the bytes and signature (as `raw`), its digest, and its expiry (gas coins and epoch).
+  /// `built` signed: the bytes and signature (as `raw`), its digest, and its expiry (gas coins and epoch). Signing puts
+  /// nothing in flight: only sending does (PD-6).
   async function signed({ bytes, gas, epoch }) {
     const { signature } = await keypair.signTransaction(bytes);
     const digest = TransactionDataBuilder.getDigestFromBytes(bytes);
-    inflight = { digest, gas, epoch: String(epoch), resend: null };
     return {
       raw: JSON.stringify({ bytes: Buffer.from(bytes).toString("base64"), signature }),
       signature: digest,
@@ -148,17 +156,26 @@ export function createMoves({ client, keypair, genesis = MAINNET_CHAIN }) {
     };
   }
 
-  /// Signs and executes `built`, a step that only completes a move, and waits for it; throws if it fails.
+  /// Signs and executes `built`, a step that only completes a move, and waits for it; throws if it fails. A step the
+  /// network refuses outright holds no gas coin and is forgotten: the next round builds it afresh, and a completing step
+  /// that ran after all would only find its work done (PD-6).
   async function execute(built) {
     const s = await signed(built);
     const { bytes, signature } = JSON.parse(s.raw);
     const transaction = Buffer.from(bytes, "base64");
-    inflight.resend = () => client.executeTransaction({ transaction, signatures: [signature] }).catch(() => {});
-    const r = await client.executeTransaction({ transaction, signatures: [signature], include: { effects: true } });
+    const resend = () => client.executeTransaction({ transaction, signatures: [signature] }).catch(() => {});
+    inflight.sent({ id: s.signature, gas: built.gas, epoch: String(built.epoch), resend });
+    let r;
+    try {
+      r = await client.executeTransaction({ transaction, signatures: [signature], include: { effects: true } });
+    } catch (error) {
+      if (refusedOutright(error)) inflight.clear(s.signature);
+      throw error;
+    }
+    inflight.clear(s.signature);
     const t = r.Transaction ?? r.FailedTransaction;
     if (!t.status.success) throw new Error(`${s.signature} failed: ${JSON.stringify(t.status.error)}`);
     await client.waitForTransaction({ digest: s.signature });
-    inflight = null;
     return s.signature;
   }
 
@@ -229,7 +246,9 @@ export function createMoves({ client, keypair, genesis = MAINNET_CHAIN }) {
     },
     /// A swap of `amount` of `inputMint` for at least `minOut` of `outputMint` through Cetus's aggregator, signed; or
     /// `{refused: "loss", outAmount}` when no route pays `minOut`. Oracle-priced pools are left out, so no price feed is
-    /// fetched here.
+    /// fetched here. The route's input goes only to Cetus's aggregator package or an upgrade of it, and the floor is
+    /// split off the output inside the transaction, so whatever packages the route names, the wallet gets the floor or
+    /// the transaction aborts (PD-3).
     async buildSwap({ inputMint, outputMint, amount, minOut }) {
       const from = normalizeStructTag(inputMint);
       const target = normalizeStructTag(outputMint);
@@ -237,6 +256,7 @@ export function createMoves({ client, keypair, genesis = MAINNET_CHAIN }) {
       const floor = BigInt(minOut);
       const router = await aggregator.findRouters({ from, target, amount: amountIn.toString(), byAmountIn: true, providers: getProvidersExcluding(PYTH_ORACLE_BASED_DEXES) });
       if (!router || router.insufficientLiquidity || router.error) return { refused: "loss", outAmount: "0" };
+      await checkAggregator(router.packages, AGGREGATOR, originalOf);
       // The route may take a little less than asked (its splits' granularity): spend what it takes, never more than
       // asked nor under 99% of it, for the floor's share of it, rounded up.
       const spend = BigInt(router.amountIn.toString());
@@ -248,7 +268,7 @@ export function createMoves({ client, keypair, genesis = MAINNET_CHAIN }) {
       const tx = new Transaction();
       const inputCoin = from === SUI ? tx.splitCoins(tx.gas, [tx.pure.u64(spend)])[0] : coinWithBalance({ type: from, balance: spend })(tx);
       const output = await aggregator.routerSwap({ router, inputCoin, slippage: bps / 10_000, txb: tx });
-      tx.transferObjects([output], address);
+      payWithFloor(tx, output, share, address);
       const bounds = from === SUI
         ? { [SUI]: { min: -(spend + MAX_GAS_BUDGET), max: 0n }, [target]: { min: share, max: out * 2n } }
         : { [from]: { min: -spend, max: 0n }, [target]: { min: target === SUI ? share - MAX_GAS_BUDGET : share, max: out * 2n } };
@@ -269,9 +289,9 @@ export function createMoves({ client, keypair, genesis = MAINNET_CHAIN }) {
       if (txs.length !== 1) throw new Error(`the SDK built ${txs.length} transactions for one transfer`);
       return signed(await build(txs[0], value, { [SUI]: { min: -(value + MAX_GAS_BUDGET), max: -value } }));
     },
-    /// The CCTP V2 burn of `amount` of USDC for `treasury` (a word) on Ethereum, with no fee and standard finality,
-    /// signed: it must take exactly `amount` (Circle's addDepositForBurnV2).
-    async buildSweep({ amount, treasury }) {
+    /// The CCTP V2 burn of `amount` of USDC for `treasury` (a word) on Ethereum, paying Circle at most `maxFee` (PD-12),
+    /// with standard finality, signed: it must take exactly `amount` (Circle's addDepositForBurnV2).
+    async buildSweep({ amount, treasury, maxFee = "0" }) {
       const value = BigInt(amount);
       const tx = new Transaction();
       const coin = coinWithBalance({ type: USDC, balance: value })(tx);
@@ -282,7 +302,7 @@ export function createMoves({ client, keypair, genesis = MAINNET_CHAIN }) {
           tx.pure.u32(ETHEREUM_DOMAIN),
           tx.pure.address(treasury),
           tx.pure.address("0x0"),
-          tx.pure.u256(0n),
+          tx.pure.u256(BigInt(maxFee)),
           tx.pure.u32(STANDARD_FINALITY),
           tx.pure.vector("u8", []),
           tx.object(CCTP.tmmState),
@@ -300,20 +320,36 @@ export function createMoves({ client, keypair, genesis = MAINNET_CHAIN }) {
       });
       return signed(await build(tx, 0n, { [USDC]: { min: -value, max: -value }, [SUI]: { min: -MAX_GAS_BUDGET, max: 0n } }));
     },
-    /// Sends signed move `raw` as it is; Sui runs a transaction once, so sending it again is safe.
-    async send({ raw }) {
-      const { bytes, signature } = JSON.parse(raw);
-      const r = await client.executeTransaction({ transaction: Buffer.from(bytes, "base64"), signatures: [signature] });
+    /// Sends signed move `raw`, with its digest `signature` and `expiry`, as it is; Sui runs a transaction once, so
+    /// sending it again is safe. From here it is in flight (PD-6).
+    async send({ raw, signature, expiry }) {
+      const { bytes, signature: sig } = JSON.parse(raw);
+      const { epoch, gas } = JSON.parse(expiry);
+      inflight.sent({ id: signature, gas, epoch });
+      const r = await client.executeTransaction({ transaction: Buffer.from(bytes, "base64"), signatures: [sig] });
       return (r.Transaction ?? r.FailedTransaction)?.digest ?? null;
     },
     /// What became of transaction `signature` (its digest) with `expiry`: landed, reverted, pending, or expired once a
-    /// gas coin it names moved on without it, or its epoch ended.
+    /// gas coin it names moved on without it, or its epoch ended. One that may still execute is in flight again, so
+    /// after a restart nothing is built over its gas coins (PD-9).
     async status({ signature, expiry }) {
       const { epoch, gas } = JSON.parse(expiry);
       const s = await fate(signature, gas, epoch);
-      if (s.state === "pending") inflight = { digest: signature, gas, epoch };
-      else if (inflight?.digest === signature) inflight = null;
+      if (s.state === "pending") inflight.sent({ id: signature, gas, epoch });
+      else inflight.clear(signature);
       return s;
+    },
+    /// Attests coin type `token` to the Token Bridge, which publishes its decimals, symbol and name for a copy on
+    /// Ethereum (PD-7), as the SDK builds it, after a simulation in which only the gas moves: the digest and the
+    /// sequence the bridge published.
+    async attest({ token }) {
+      const txs = [];
+      for await (const u of bridge.createAttestation(normalizeStructTag(token))) txs.push(u.transaction);
+      if (txs.length !== 1) throw new Error(`the SDK built ${txs.length} transactions for one attestation`);
+      const digest = await execute(await build(txs[0], 0n, { [SUI]: { min: -MAX_GAS_BUDGET, max: 0n } }));
+      const mine = (await core.parseTransaction(digest)).filter((m) => `0x${Buffer.from(m.emitter.toUint8Array()).toString("hex")}` === TOKEN_BRIDGE_EMITTER);
+      if (mine.length !== 1) throw new Error(`transaction ${digest} carries ${mine.length} Token Bridge messages`);
+      return { signature: digest, sequence: String(mine[0].sequence) };
     },
     /// The sequence the Token Bridge published in transaction `signature`.
     async sequenceOf({ signature }) {

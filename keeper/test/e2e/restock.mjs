@@ -362,6 +362,9 @@ serve(SCAN_PORT, async (url) => {
 /// Circle's attestation of the CCTP burn in transaction `transactionHash` on domain `domain`: the message as emitted,
 /// with the nonce, finality executed, fee executed and expiry Iris fills, signed by the test attester.
 serve(IRIS_PORT, async (url) => {
+  // The route's fee table, as Iris answered it on 2026-11-02 for every route the service uses: a standard transfer
+  // is free (PD-12).
+  if (/^\/v2\/burn\/USDC\/fees\/\d+\/\d+$/.test(url.pathname)) return [200, [{ finalityThreshold: 1000, minimumFee: 1 }, { finalityThreshold: 2000, minimumFee: 0 }]];
   const m = url.pathname.match(/^\/v2\/messages\/(\d+)$/);
   const hash = url.searchParams.get("transactionHash");
   const from = m && byDomain[m[1]];

@@ -11,13 +11,18 @@
 //      wallet's coins, float and gas, and Pyth's prices, and plans (`restock/plan.mjs`): buy a short coin on its home
 //      chain and bridge it in, sell and bring home what nobody needs, and move USDC where the buys wait for it;
 //   3. it runs the plan, each move recorded in the journal (JOURNAL_FILE) before it is broadcast.
+//
+// `node restock.mjs --attest <chain> <token>` instead attests one token on a served home chain for its Wormhole copy on
+// Ethereum, the owner's step before a copy can be listed (restock/attest.mjs, PD-7), and exits.
 
 import { decodeFunctionResult, encodeFunctionData } from "viem";
 import { MAINNET } from "./bot/config.mjs";
 import { revertReason } from "./bot/chain.mjs";
 import { createHermes, priceKey } from "./bot/hermes.mjs";
 import { readNeeds } from "./bot/needs.mjs";
-import { createIris, createWormholescan } from "./restock/attestations.mjs";
+import { createAdvance } from "./restock/advance.mjs";
+import { attestToken } from "./restock/attest.mjs";
+import { cctpMaxFee, createIris, createWormholescan } from "./restock/attestations.mjs";
 import { CHAINS, PRICE_IDS } from "./restock/coins.mjs";
 import { parseRestockConfig } from "./restock/config.mjs";
 import { ABI, createEvm, createEvmHome, word } from "./restock/evm.mjs";
@@ -25,10 +30,11 @@ import { createSolanaHome } from "./restock/solana.mjs";
 import { createSuiHome } from "./restock/sui.mjs";
 import { createAptosHome } from "./restock/aptos.mjs";
 import { createAlgorandHome } from "./restock/algorand.mjs";
-import { createJournal, fileStore } from "./restock/journal.mjs";
+import { createJournal, fileStore, resumeOrder } from "./restock/journal.mjs";
 import { plan } from "./restock/plan.mjs";
 
 const ONCE = process.argv.includes("--once");
+const ATTEST = process.argv.indexOf("--attest");
 const FRESH_SECONDS = 120;
 const log = (...args) => console.log(new Date().toISOString(), ...args);
 const cfg = parseRestockConfig(process.env);
@@ -82,62 +88,18 @@ async function checkSetup() {
 // Moving the journal on
 // ---------------------------------------------------------------------
 
-const chainOf = (move) => (move.data.chain === "ethereum" ? eth : homes[move.data.chain]);
-
-/// Takes `move` one step further, as far as its chains and the attestation services allow this round.
-async function advance(move) {
-  if (move.stage === "signed") {
-    const adapter = chainOf(move);
-    if (!adapter) return log(`move ${move.id}`, `waits: ${move.data.chain} is not served now`);
-    if (!(await adapter.resume(move))) return;
-    move = journal.get(move.id);
-    if (move.stage !== "sent") return;
-  }
-  if (move.stage === "sent" && move.data.status === "reverted") {
-    journal.drop(move.id, "its transaction reverted");
-    return log(`move ${move.id}`, `${move.kind} reverted on ${move.data.chain}; dropped`);
-  }
-  if (["buy", "sell", "draw", "repay"].includes(move.kind)) return journal.advance(move.id, "done");
-
-  if (move.kind === "bridgeIn" || move.kind === "bridgeOut") {
-    const into = move.kind === "bridgeIn";
-    const from = into ? homes[move.chain] : eth;
-    const to = into ? eth : homes[move.chain];
-    if (!from || !to) return log(`move ${move.id}`, `waits: ${move.chain} is not served now`);
-    if (move.stage === "sent") {
-      if (move.data.sequence === undefined) journal.note(move.id, { sequence: (await from.sequenceOfTx(move.data.hash)).toString() });
-      const vaa = await wormholescan.vaa(from.def.wormhole, from.emitter, journal.get(move.id).data.sequence, to.verifyVaa);
-      if (!vaa) return;
-      journal.advance(move.id, "attested", { vaa });
-    }
-    const { vaa } = journal.get(move.id).data;
-    if (!(await to.transferCompleted(vaa))) {
-      // The copy the journal recorded when the move opened, so a coin dropped from RESTOCK_COINS while its transfer
-      // was on its way is still redeemed (RZ-18).
-      if (into) await eth.complete({ to: cfg.executor, abi: ABI.executor, functionName: "redeemBridged", args: [vaa, move.copy ?? coinOf(move.coin).copy] });
-      else await to.redeem(vaa);
-    }
-    journal.advance(move.id, "redeemed");
-    return log(`move ${move.id}`, `${move.kind} of ${move.coin} landed`);
-  }
-
-  // A CCTP move: burned on one side, attested by Circle, received on the other.
-  const funding = move.kind === "fund";
-  const from = funding ? eth : homes[move.chain];
-  const to = funding ? homes[move.chain] : eth;
-  if (!from || !to) return log(`move ${move.id}`, `waits: ${move.chain} is not served now`);
-  if (move.stage === "sent") {
-    const [fromDomain, toDomain] = funding ? [0, CHAINS[move.chain].cctpDomain] : [CHAINS[move.chain].cctpDomain, 0];
-    const expect = { destinationDomain: toDomain, recipient: to.cctpRecipient, sender: from.cctpSender, amount: BigInt(move.amount) };
-    const m = await iris.message(fromDomain, move.data.hash, expect, to.verifyCctp);
-    if (!m) return;
-    journal.advance(move.id, "attested", m);
-  }
-  const { message, attestation } = journal.get(move.id).data;
-  if (!(await to.cctpReceived(message))) await to.receive(message, attestation);
-  journal.advance(move.id, "received");
-  log(`move ${move.id}`, `${move.kind} of ${Number(move.amount) / 1e6} USDC landed on ${funding ? move.chain : "ethereum"}`);
-}
+/// Takes a move one step further, as far as its chains and the attestation services allow this round
+/// (restock/advance.mjs).
+const advance = createAdvance({
+  journal,
+  eth,
+  homes,
+  wormholescan,
+  iris,
+  redeemIn: (vaa, copy) => eth.complete({ to: cfg.executor, abi: ABI.executor, functionName: "redeemBridged", args: [vaa, copy] }),
+  coinOf,
+  log,
+});
 
 // ---------------------------------------------------------------------
 // Reading
@@ -232,12 +194,14 @@ async function act(a, price) {
     return log(a.coin, `bridging ${a.usd.toFixed(0)} USD out to ${a.chain}`);
   }
   if (a.kind === "fund") {
+    // The route's standard fee, from Circle's table, within MAX_CCTP_FEE_BPS (PD-12).
+    const maxFee = cctpMaxFee(a.amount, await iris.fees(0, CHAINS[a.chain].cctpDomain));
     await eth.allow(MAINNET.usdc, eth.tokenMessenger, a.amount);
-    await eth.commit(a, eth.burnRequest(a.amount, CHAINS[a.chain].cctpDomain, h.cctpRecipient));
+    await eth.commit(a, eth.burnRequest(a.amount, CHAINS[a.chain].cctpDomain, h.cctpRecipient, maxFee));
     return log(a.chain, `funding its float with ${Number(a.amount) / 1e6} USDC`);
   }
   if (a.kind === "sweep") {
-    await h.sweep(a, eth.address);
+    await h.sweep(a, eth.address, cctpMaxFee(a.amount, await iris.fees(CHAINS[a.chain].cctpDomain, 0)));
     return log(a.chain, `bringing ${Number(a.amount) / 1e6} USDC home to the treasury`);
   }
   if (a.kind === "draw") {
@@ -270,7 +234,7 @@ async function reclaimRent() {
 
 async function round() {
   for (const h of Object.values(homes)) h.forgetRoutes(); // each round searches its routes afresh
-  for (const move of journal.pending()) {
+  for (const move of resumeOrder(journal.pending())) {
     await advance(move).catch((error) => log(`move ${move.id}`, `not moved on: ${revertReason(error)}`));
   }
   await reclaimRent();
@@ -290,6 +254,25 @@ async function round() {
     await act(a, p.get(a.coin)).catch((error) => log(a.coin ?? a.chain ?? "treasury", `${a.kind} failed: ${revertReason(error)}`));
   }
   journal.prune();
+}
+
+if (ATTEST >= 0) {
+  const [chain, token] = process.argv.slice(ATTEST + 1);
+  const home = homes[chain];
+  if (!home?.attest) throw new Error(`--attest needs a served chain whose signer attests (${Object.keys(homes).filter((n) => homes[n].attest).join(", ") || "none served"}), then a token`);
+  if (!token) throw new Error("--attest needs the token to attest after the chain");
+  await home.check();
+  await attestToken({
+    home,
+    wormholeChain: CHAINS[chain].wormhole,
+    token,
+    wormholescan,
+    verifyVaa: eth.verifyVaa,
+    wrappedAsset: (tokenChain, tokenAddress) => eth.read(MAINNET.tokenBridge, ABI.tokenBridge, "wrappedAsset", [tokenChain, tokenAddress]),
+    submit: (functionName, vaa) => eth.complete({ to: MAINNET.tokenBridge, abi: ABI.tokenBridge, functionName, args: [vaa] }),
+    log,
+  });
+  process.exit(0);
 }
 
 let stopping = false;

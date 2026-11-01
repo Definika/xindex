@@ -82,9 +82,17 @@ behaviour behind them, proven by the restock's end-to-end test, unchanged in wha
 **D3. Solana's key and libraries live in their own process.** The service's treasury key moves stock and USDC on
 Ethereum within the owner's allowances (RS-1, RS-2). Solana needs `@solana/web3.js`, Wormhole's SDK and Anchor, a
 dependency tree far larger than the viem the keeper has today. They run in a child process with its own package and
-lockfile (`keeper/restock/solana/`), which holds only the Solana key, read from its own file, and answers only "build
-and sign this move". The parent never loads those libraries or that key; the child never sees the treasury's. The
-parent sends, confirms and reads balances itself, through Solana's JSON-RPC, with no dependency.
+lockfile (`keeper/restock/solana/`), which holds only the Solana key and answers only "build and sign this move". The
+parent never loads those libraries; the child never sees the treasury's key.
+
+As built (2026-11-01, and the review of that day, `audit/2026-11-01-protocol-docs-review.md`), two details differ from
+the plan above:
+- The chain's key is a setting of the parent's environment (`SOLANA_KEY`, `SUI_KEY`, `APTOS_KEY`,
+  `ALGORAND_MNEMONIC`), handed to the child alone through the environment allowlist. It is not read from a file of the
+  child's own.
+- The child, not the parent, sends a journalled move and reports its status, in its chain's own terms.
+
+The isolation that matters holds: no child is given `TREASURY_KEY`.
 
 **D4. A Solana move is journalled as Solana recommends.** The move that commits funds (a swap, a bridge transfer, a
 burn) is one transaction, signed, recorded with its `lastValidBlockHeight`, then sent. After a restart it is sent again
@@ -122,14 +130,25 @@ its own package, read from a brief of that chain's primary sources:
 
 | Chain | Coins | Venue | Bridge | Float | A move can no longer land when |
 |---|---|---|---|---|---|
-| Solana | JUP, PYTH | Jupiter Swap V2 `/build` | Wormhole SDK | CCTP V2, Circle's IDLs | the finalized height passes its blockhash's |
-| Sui | SUI | Cetus aggregator | Wormhole SDK | CCTP V2, Circle's PTBs | a gas coin moved without it, or its epoch ended |
-| Aptos | APT | Panora (argument 17 the floor) | Wormhole SDK | CCTP V2, Circle's scripts | the sequence passed it, or its expiry |
+| Solana | JUP, PYTH | Jupiter Swap V2 `/build`, its swap read by Jupiter's IDL | Wormhole SDK | CCTP V2, Circle's IDLs | the finalized height passes its blockhash's, seen from a node caught up that keeps the slots since |
+| Sui | SUI | Cetus aggregator, its own package only, the floor split on chain | Wormhole SDK | CCTP V2, Circle's PTBs | a gas coin is gone or at another version, or its epoch ended |
+| Aptos | APT | Panora (argument 17 the floor, no integrator fee) | Wormhole SDK | CCTP V2, Circle's scripts | its sequence number was used, seen from a node at or past that version, or its expiry passed |
 | Algorand | ALGO | Tinyman v2 USDC/ALGO pool | Wormhole SDK | by hand (no CCTP) | its last valid round passed |
 
 Every move is simulated before it is signed and its effect on the wallet bounded; the parent journals it before it is
-sent; Sui, Aptos and Algorand keep one transaction in flight and re-send by themselves only completing steps. Checked:
-the keeper's unit suite (146/0), the EVM restock end-to-end test after the refactor (94/0, before the later commits),
-and each chain read-only on mainnet (Solana's transfer and burn accounts, Sui's quote and nonce read, Aptos's payload,
-store derivation and consumed table, Algorand's swaps built from a holder's state). Not yet: an end-to-end test of any
-of the four on a local chain, a live Jupiter build (its API key), and any transaction sent.
+sent; Sui, Aptos and Algorand keep one transaction in flight from the moment it is sent and re-send by themselves only
+completing steps.
+
+The review of 2026-11-01 against each protocol's docs (`audit/2026-11-01-protocol-docs-review.md`, PD-1 to PD-14)
+found three ways a compromised aggregator answer could take more than the bounds. All fourteen of its findings were
+fixed on 2026-11-02, and that record says how.
+
+Checked: the keeper's unit suite (175/0), the mutation gate's 24 mutants of those fixes (all killed), the EVM restock
+end-to-end test on the changed service (94/0), and each chain read-only on mainnet:
+- Solana: Jupiter's IDL read from its program and live swaps decoded by it; the every-account simulation through the
+  public RPC; landed and never-sent statuses.
+- Sui: the aggregator lineage, and a swap simulated with its floor held and broken.
+- Aptos: Panora's floor aborting one unit above the quote, and the four branches of the expiry rule.
+
+Not yet: an end-to-end test of any of the four on a local chain, a live Jupiter build (its API key), and any
+transaction sent.

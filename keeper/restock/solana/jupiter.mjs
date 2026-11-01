@@ -3,12 +3,16 @@
 // the compute unit limit from a simulation, checks the compute unit price, compiles the v0 transaction with the lookup
 // tables, and signs it. Exact input only, which the restock's plan allows for: a buy spends `amountIn` of the float for
 // at least `minOut` of the coin, a sale sells `amount` of the coin for at least `minOut` of the float, both bounded at
-// Pyth's price. The answer is not trusted (`verify.mjs`): the instructions may call only the expected programs, and the
-// simulation must move the wallet's accounts only as the swap allows.
+// Pyth's price. The answer is not trusted (`verify.mjs`): the instructions may call only the expected programs, the one
+// swap instruction is read by Jupiter's own IDL and must spend, pay and bound exactly as asked, its on-chain minimum
+// included (`checks.mjs` checkJupiterSwap, PD-1 and PD-2), and the simulation must move no account of the wallet
+// beyond what the swap allows.
 
+import { inflateSync } from "node:zlib";
 import { getAssociatedTokenAddressSync, ASSOCIATED_TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { ComputeBudgetProgram, PublicKey, TransactionInstruction } from "@solana/web3.js";
-import { slippageFor, unitPriceOf } from "./checks.mjs";
+import { checkJupiterSwap, slippageFor, unitPriceOf } from "./checks.mjs";
+import { decodeInstruction } from "./idl-decode.mjs";
 import { checkPrograms, compile, MAX_COMPUTE_UNITS, simulateAndCheck, unitLimit } from "./verify.mjs";
 
 /// Jupiter's aggregator program (v6), which `/build`'s swap instruction calls; JUPITER_PROGRAMS adds others, should
@@ -17,6 +21,20 @@ export const JUPITER_PROGRAM = new PublicKey("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi
 /// The associated token program's `CreateIdempotent` instruction, the only setup a swap may carry: it opens one of the
 /// wallet's own token accounts if missing (accounts: payer, account, owner, mint, system program, token program).
 const CREATE_IDEMPOTENT = 1;
+/// How long a read of Jupiter's IDL is used: each upgrade of its program adds venues to the route's type, and a route
+/// through a venue the IDL read does not list cannot be read, so it is refused until the next read.
+const IDL_MAX_AGE_MS = 3_600_000;
+
+/// The IDL `program` publishes on chain: Anchor's IDL account, at the address derived from the program's signer with
+/// the seed "anchor:idl", holds an 8-byte discriminator, a 32-byte authority, a 4-byte length and the zlib-compressed
+/// JSON. Only the program's upgrade authority can write it, the same party that controls the program.
+export async function readIdl(connection, program) {
+  const [base] = PublicKey.findProgramAddressSync([], program);
+  const info = await connection.getAccountInfo(await PublicKey.createWithSeed(base, "anchor:idl", program), "confirmed");
+  if (!info) throw new Error(`program ${program.toBase58()} publishes no IDL`);
+  const length = info.data.readUInt32LE(40);
+  return JSON.parse(inflateSync(info.data.subarray(44, 44 + length)).toString("utf8"));
+}
 
 const toInstruction = (ix) =>
   new TransactionInstruction({
@@ -29,6 +47,16 @@ const toInstruction = (ix) =>
 export function createJupiter({ url, apiKey, connection, wallet, programs = [], fetchImpl = fetch }) {
   const base = url.replace(/\/+$/, "");
   const jupiterPrograms = [JUPITER_PROGRAM, ...programs];
+  let idl = null;
+  let idlAt = 0;
+  /// Jupiter's IDL, read again once IDL_MAX_AGE_MS old.
+  async function jupiterIdl() {
+    if (!idl || Date.now() - idlAt > IDL_MAX_AGE_MS) {
+      idl = await readIdl(connection, JUPITER_PROGRAM);
+      idlAt = Date.now();
+    }
+    return idl;
+  }
 
   /// Refuses any instruction but Jupiter's and the creation of one of the wallet's own token accounts: a top-level
   /// token instruction could approve a delegate, which moves no balance a simulation would show.
@@ -67,8 +95,9 @@ export function createJupiter({ url, apiKey, connection, wallet, programs = [], 
   }
 
   /// The swap of `amount` of `inputMint` for at least `minOut` of `outputMint` (PublicKeys and bigints), signed by the
-  /// wallet, at a compute unit price of at most `maxUnitPrice` micro-lamports: `{transaction, outAmount, minOut}`
-  /// unsigned, or `{refused: "loss", outAmount}` when the best route pays less than `minOut`.
+  /// wallet, at a compute unit price of at most `maxUnitPrice` micro-lamports: `{transaction, lastValidBlockHeight,
+  /// sentSlot, outAmount, minOut}` unsigned, or `{refused: "loss", outAmount}` when the best route pays less than
+  /// `minOut`.
   async function swapTransaction({ inputMint, outputMint, amount, minOut, maxUnitPrice }) {
     const probe = await build({ inputMint, outputMint, amount, slippageBps: 0 });
     const slippageBps = slippageFor(BigInt(probe.outAmount), minOut);
@@ -76,15 +105,30 @@ export function createJupiter({ url, apiKey, connection, wallet, programs = [], 
     const quote = await build({ inputMint, outputMint, amount, slippageBps });
     if (BigInt(quote.otherAmountThreshold) < minOut) return { refused: "loss", outAmount: BigInt(quote.outAmount) };
 
-    const instructions = [
+    const answered = [
       ...(quote.setupInstructions ?? []),
       quote.swapInstruction,
       ...(quote.cleanupInstruction ? [quote.cleanupInstruction] : []),
       ...(quote.otherInstructions ?? []),
-    ].map(toInstruction);
+    ];
+    const inAccount = getAssociatedTokenAddressSync(inputMint, wallet.publicKey);
+    const outAccount = getAssociatedTokenAddressSync(outputMint, wallet.publicKey);
+    // The swap as its program reads it, not as the answer's JSON describes it: the JSON's threshold binds nothing.
+    const reading = await jupiterIdl();
+    const onChainMin = checkJupiterSwap({
+      instructions: answered,
+      programs: jupiterPrograms.map((p) => p.toBase58()),
+      decode: (data) => decodeInstruction(reading, data),
+      wallet: wallet.publicKey.toBase58(),
+      inAccount: inAccount.toBase58(),
+      outAccount: outAccount.toBase58(),
+      inputMint: inputMint.toBase58(),
+      outputMint: outputMint.toBase58(),
+      amount,
+      minOut,
+    });
+    const instructions = answered.map(toInstruction);
     checkInstructions(instructions);
-    const swapProgram = toInstruction(quote.swapInstruction).programId;
-    if (!jupiterPrograms.some((p) => p.equals(swapProgram))) throw new Error("the swap is not Jupiter's");
     // Jupiter's price, within the operator's cap (its docs warn it spikes when recent blocks bid extreme values).
     let unitPrice = 0n;
     for (const ix of quote.computeBudgetInstructions ?? []) {
@@ -102,9 +146,10 @@ export function createJupiter({ url, apiKey, connection, wallet, programs = [], 
       if (listed.some((a, i) => onChain[i] !== a)) throw new Error(`lookup table ${key} differs from Jupiter's`);
       lookupTables.push(table);
     }
-    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
-    const inAccount = getAssociatedTokenAddressSync(inputMint, wallet.publicKey);
-    const outAccount = getAssociatedTokenAddressSync(outputMint, wallet.publicKey);
+    const {
+      context: { slot: sentSlot },
+      value: { blockhash, lastValidBlockHeight },
+    } = await connection.getLatestBlockhashAndContext("confirmed");
     const bounds = [
       { address: inAccount, min: -amount, max: 0n },
       { address: outAccount, min: minOut, max: BigInt(quote.outAmount) * 2n },
@@ -112,7 +157,7 @@ export function createJupiter({ url, apiKey, connection, wallet, programs = [], 
     const draft = compile({ instructions, payer: wallet.publicKey, blockhash, lookupTables, units: MAX_COMPUTE_UNITS, unitPrice });
     const units = await simulateAndCheck(connection, draft, wallet.publicKey, bounds);
     const transaction = compile({ instructions, payer: wallet.publicKey, blockhash, lookupTables, units: unitLimit(units), unitPrice });
-    return { transaction, lastValidBlockHeight, outAmount: BigInt(quote.outAmount), minOut: BigInt(quote.otherAmountThreshold) };
+    return { transaction, lastValidBlockHeight, sentSlot, outAmount: BigInt(quote.outAmount), minOut: onChainMin };
   }
 
   return { swapTransaction };

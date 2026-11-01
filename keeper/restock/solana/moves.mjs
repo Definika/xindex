@@ -11,7 +11,7 @@ import {
 } from "@solana/spl-token";
 import { PublicKey, Transaction } from "@solana/web3.js";
 import { utils } from "@coral-xyz/anchor";
-import { resumeDecision } from "../solana-sending.mjs";
+import { resumeDecision, solanaExpiry } from "../solana-sending.mjs";
 import { USDC_MINT } from "./cctp.mjs";
 import { compile, MAX_COMPUTE_UNITS, simulateAndCheck, unitLimit } from "./verify.mjs";
 
@@ -47,20 +47,24 @@ export function createMoves({ connection, wallet, jupiter, cctp, wormhole, maxUn
       .slice(0, 128)
       .map((k) => new PublicKey(k));
     const price = await unitPrice(writable);
-    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+    const {
+      context: { slot },
+      value: { blockhash, lastValidBlockHeight },
+    } = await connection.getLatestBlockhashAndContext("confirmed");
     const draft = compile({ instructions, payer: wallet.publicKey, blockhash, units: MAX_COMPUTE_UNITS, unitPrice: price });
     const units = await simulateAndCheck(connection, draft, wallet.publicKey, bounds);
     const tx = compile({ instructions, payer: wallet.publicKey, blockhash, units: unitLimit(units), unitPrice: price });
-    return signed(tx, signers, lastValidBlockHeight);
+    return signed(tx, signers, lastValidBlockHeight, slot);
   }
 
-  /// `tx` signed: its bytes in base64, its signature, and its expiry, the block height past which it cannot land.
-  function signed(tx, signers, lastValidBlockHeight) {
+  /// `tx` signed: its bytes in base64, its signature, and its expiry: the block height past which it cannot land, and
+  /// the slot it was built at, before which it cannot have landed (`solanaExpiry`).
+  function signed(tx, signers, lastValidBlockHeight, sentSlot) {
     tx.sign([wallet, ...signers]);
     return {
       raw: Buffer.from(tx.serialize()).toString("base64"),
       signature: utils.bytes.bs58.encode(tx.signatures[0]),
-      expiry: String(lastValidBlockHeight),
+      expiry: JSON.stringify({ lastValidBlockHeight: String(lastValidBlockHeight), sentSlot: String(sentSlot) }),
     };
   }
 
@@ -75,6 +79,20 @@ export function createMoves({ connection, wallet, jupiter, cctp, wormhole, maxUn
     const { value } = await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed");
     if (value.err) throw new Error(`${signature} failed: ${JSON.stringify(value.err)}`);
     return signature;
+  }
+
+  /// Waits until `signature` is confirmed; throws if it failed, or once the block height passes `lastValidBlockHeight`
+  /// with it unconfirmed.
+  async function confirmed(signature, lastValidBlockHeight) {
+    for (;;) {
+      const s = (await connection.getSignatureStatuses([signature])).value[0];
+      if (s?.confirmationStatus === "confirmed" || s?.confirmationStatus === "finalized") {
+        if (s.err) throw new Error(`${signature} failed: ${JSON.stringify(s.err)}`);
+        return;
+      }
+      if ((await connection.getBlockHeight("confirmed")) > Number(lastValidBlockHeight)) throw new Error(`${signature} expired unconfirmed`);
+      await new Promise((r) => setTimeout(r, 2000));
+    }
   }
 
   /// Refuses a mint the manual Token Bridge route cannot carry (Token-2022), or that does not exist.
@@ -109,16 +127,39 @@ export function createMoves({ connection, wallet, jupiter, cctp, wormhole, maxUn
     },
     /// Sends signed transaction `raw` (base64) as it is: a move the parent journalled, sent once or sent again.
     send: async ({ raw }) => connection.sendRawTransaction(Buffer.from(raw, "base64"), { skipPreflight: true, maxRetries: 0 }),
-    /// What became of transaction `signature`, whose expiry is block height `expiry`: landed, reverted, pending, or
-    /// expired, once the finalized height has passed it with no confirmed status (`resumeDecision`).
+    /// What became of transaction `signature` with `expiry` (`solanaExpiry`): landed, reverted, pending, expired once
+    /// the finalized height has passed it with no status from a node that has seen that far and keeps the slots since
+    /// the transaction was built, or unknown while no node at hand can say (`resumeDecision`, PD-8).
     async status({ signature, expiry }) {
-      const [{ value }, finalizedHeight] = await Promise.all([
+      const { lastValidBlockHeight, sentSlot } = solanaExpiry(expiry);
+      const [{ context, value }, epoch, firstAvailableSlot] = await Promise.all([
         connection.getSignatureStatuses([signature], { searchTransactionHistory: true }),
-        connection.getBlockHeight("finalized"),
+        connection.getEpochInfo("finalized"),
+        connection.getFirstAvailableBlock(),
       ]);
-      const decision = resumeDecision({ status: value[0], finalizedHeight, lastValidBlockHeight: expiry });
-      if (decision.sent) return { state: decision.sent === "success" ? "landed" : "reverted", at: String(value[0].slot) };
+      const facts = {
+        status: value[0],
+        finalizedHeight: epoch.blockHeight,
+        finalizedSlot: epoch.absoluteSlot,
+        statusSlot: context.slot,
+        firstAvailableSlot,
+        lastValidBlockHeight,
+        sentSlot,
+      };
+      let decision = resumeDecision(facts);
+      let at = value[0]?.slot;
+      if (decision.unknown || decision.drop) {
+        // A second witness before a drop: the transaction itself, from a node that keeps the history.
+        const transaction = await connection
+          .getTransaction(signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 })
+          .then((t) => (t ? { err: t.meta?.err ?? null, slot: t.slot } : null))
+          .catch((error) => (/history is not available/i.test(String(error?.message)) ? "unavailable" : Promise.reject(error)));
+        decision = resumeDecision({ ...facts, transaction });
+        at = transaction?.slot ?? at;
+      }
+      if (decision.sent) return { state: decision.sent === "success" ? "landed" : "reverted", at: String(at) };
       if (decision.drop) return { state: "expired", reason: decision.drop };
+      if (decision.unknown) return { state: "unknown", reason: decision.unknown };
       return { state: "pending" };
     },
     /// A swap of `amount` of `inputMint` for at least `minOut` of `outputMint` through Jupiter, signed; or
@@ -132,7 +173,7 @@ export function createMoves({ connection, wallet, jupiter, cctp, wormhole, maxUn
         maxUnitPrice,
       });
       if (r.refused) return { refused: r.refused, outAmount: String(r.outAmount) };
-      return { ...signed(r.transaction, [], r.lastValidBlockHeight), outAmount: String(r.outAmount), minOut: String(r.minOut) };
+      return { ...signed(r.transaction, [], r.lastValidBlockHeight, r.sentSlot), outAmount: String(r.outAmount), minOut: String(r.minOut) };
     },
     /// The Token Bridge transfer of `amount` of `mint` to `executor` (a word) on Ethereum, with its payload, signed:
     /// it must take exactly `amount` of the coin, which the bridge carries whole at its six decimals.
@@ -142,12 +183,24 @@ export function createMoves({ connection, wallet, jupiter, cctp, wormhole, maxUn
       const { instructions, signers } = await wormhole.transferTransaction(coin, big(amount), executor);
       return checkedAndSigned(instructions, signers, [{ address: ata(coin), min: -big(amount), max: -big(amount) }]);
     },
-    /// The CCTP burn of `amount` of USDC for `treasury` (a word) on Ethereum, signed: it must take exactly `amount`.
-    /// `eventAccount` is kept for the rent's reclaim.
-    async buildSweep({ amount, treasury }) {
-      const { transaction, signers, eventAccount } = await cctp.burnTransaction(big(amount), treasury);
+    /// The CCTP burn of `amount` of USDC for `treasury` (a word) on Ethereum, paying Circle at most `maxFee` (PD-12),
+    /// signed: it must take exactly `amount`. `eventAccount` is kept for the rent's reclaim.
+    async buildSweep({ amount, treasury, maxFee = "0" }) {
+      const { transaction, signers, eventAccount } = await cctp.burnTransaction(big(amount), treasury, big(maxFee));
       const out = await checkedAndSigned(transaction.instructions, signers, [{ address: cctp.usdcAccount, min: -big(amount), max: -big(amount) }]);
       return { ...out, eventAccount: eventAccount.toBase58() };
+    },
+    /// Attests SPL token `token` to the Token Bridge, which publishes its decimals, symbol and name for a copy on
+    /// Ethereum (PD-7). It commits no funds, only fees, so it is signed and sent here, after a simulation in which no
+    /// token of the wallet moves: the signature and the sequence the bridge published.
+    async attest({ token }) {
+      const mint = new PublicKey(token);
+      await checkMint(mint);
+      const { instructions, signers } = await wormhole.attestTransaction(mint);
+      const s = await checkedAndSigned(instructions, signers, []);
+      await connection.sendRawTransaction(Buffer.from(s.raw, "base64"), { maxRetries: 5 });
+      await confirmed(s.signature, solanaExpiry(s.expiry).lastValidBlockHeight);
+      return { signature: s.signature, sequence: String(await wormhole.sequenceOf(s.signature)) };
     },
     /// The sequence the Token Bridge published in transaction `signature`.
     sequenceOf: async ({ signature }) => String(await wormhole.sequenceOf(signature)),

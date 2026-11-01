@@ -137,7 +137,11 @@ what nobody needs. It is a separate process with its own key, the **treasury**, 
    that do them, and a signed transfer or an attestation is stored for a move only when it is the move's own and the
    receiving chain's contract accepts it, so a wrong answer is fetched again rather than kept (RS-14). A signed move
    whose nonce another transaction took is dropped only when a look a minute after the first still finds no receipt,
-   and a receipt lookup that fails is never taken for a missing receipt (RS-5).
+   and a receipt lookup that fails is never taken for a missing receipt (RS-5). A signature that goes stale while a
+   move waits is renewed: Circle is asked, at most hourly, to sign again a message whose expiry passed, and a VAA a
+   replaced guardian set signed is fetched again (PD-10). A round resumes every signed move before any other step, so
+   no signer builds over a transaction it may have in flight (PD-9). Each CCTP burn allows the route's standard fee from
+   Iris's table, zero today, and refuses a rate over 10 bps (PD-12).
 2. It reads the keeper's `NEEDS_FILE`, the executor's stock and allowances, the treasury's USDC, each home wallet's
    coins, float and gas, and Pyth's prices, kept only where Pyth's contract on Ethereum, parsing the signed update Hermes
    served with them, returns the same price (RX-9, RY-6), and plans (`restock/plan.mjs`). A board that is missing, unreadable or not
@@ -237,11 +241,11 @@ each chain and the stock, and nothing beyond it.
 | `JOURNAL_FILE` | required | Where the service keeps its moves, on the disk before each is sent. Keep it: it is what a restart resumes from, and the service refuses to start on one empty or unreadable (RS-13). |
 | `RESTOCK_COINS` | every coin | Comma-separated symbols to serve. |
 | `BSC_RPC_URL`, `AVALANCHE_RPC_URL`, `OPTIMISM_RPC_URL`, `BASE_RPC_URL` | required for their coins | Each home chain's JSON-RPC. |
-| `SOLANA_RPC_URL`, `SOLANA_KEY` | required for JUP, PYTH | Solana's JSON-RPC, and the service's Solana wallet, its 64-byte secret key in base58; both go to the signer alone. |
+| `SOLANA_RPC_URL`, `SOLANA_KEY` | required for JUP, PYTH | Solana's JSON-RPC, and the service's Solana wallet, its 64-byte secret key in base58; both go to the signer alone. The RPC must keep transaction history: a move whose blockhash expired is dropped only on the word of a node caught up to the finalized slot that keeps the slots since it was built, and stays signed, reported unknown, otherwise (PD-8). A node that caps the accounts a simulation returns, as the public one does at 3, is asked in chunks (PD-1). |
 | `JUPITER_API_KEY` | required for JUP, PYTH | Jupiter's Swap API key (its portal), which every Swap V2 call needs. |
 | `JUPITER_URL`, `JUPITER_PROGRAMS`, `SOLANA_MAX_UNIT_PRICE` | `https://api.jup.ag`, none, `1000000` | Jupiter's API; more Jupiter program ids a swap may call; the most micro-lamports per compute unit a transaction bids. |
 | `SUI_RPC_URL`, `SUI_KEY` | required for SUI | A Sui gRPC fullnode (`https://fullnode.mainnet.sui.io:443`) and the wallet's `suiprivkey1...` key; both go to the Sui signer alone. |
-| `APTOS_RPC_URL`, `APTOS_KEY` | required for APT | An Aptos fullnode's REST API (`https://api.mainnet.aptoslabs.com/v1`) and the wallet's 32-byte Ed25519 key in hex. |
+| `APTOS_RPC_URL`, `APTOS_KEY` | required for APT | An Aptos fullnode's REST API, through `/v1` (`https://api.mainnet.aptoslabs.com/v1`), and the wallet's 32-byte Ed25519 key in hex. A move whose sequence number was used is dropped only by a node at or past that version that keeps the versions since it was built (PD-4). |
 | `PANORA_API_KEY`, `PANORA_URL` | required for APT, `https://api.panora.exchange` | Panora's API key (its docs publish a public one) and its API. |
 | `ALGORAND_ALGOD_URL`, `ALGORAND_MNEMONIC` | required for ALGO | An algod (`https://mainnet-api.algonode.cloud`) and the wallet's 25-word mnemonic; the wallet must hold USDC (asset 31566704), opted in. |
 | `ALGORAND_INDEXER_URL` | `https://mainnet-idx.algonode.cloud` | The indexer that confirms a transaction algod no longer remembers (1000 rounds). |
@@ -270,6 +274,16 @@ Then in `keeper/`:
     RPC_URL=... KEEPER_KEY=... FACTORY=... EXECUTOR=... PYTH_API_KEY=... npm start
 
 The RPC must honour `eth_call` block overrides (Tenderly, publicnode and geth do; the bot checks at startup).
+
+To attest a token on Solana or Sui for its Wormhole copy on Ethereum (the owner's step before a copy can be listed,
+`design/2026-10-10-one-index-wormhole-legs.md`, section 2a), with the restock service's settings:
+
+    node restock.mjs --attest solana <mint>      # or: --attest sui <coin type>
+
+The chain's signer attests the token, after a simulation in which no token of its wallet moves. The service then
+waits for the guardians' signature, checks it on Ethereum's core, and creates the copy from the treasury, or updates
+an existing copy's name and symbol (`updateWrapped`, as RAY's needs). It follows Wormhole's SDK route, the one Wormhole's
+docs now give; legacy Portal's own interface closed on 2026-06-30 (PD-7).
 
 Before Glamsterdam reaches mainnet: under EIP-8037 a transaction's state gas comes from a reservoir the GAS opcode does
 not show, so the executor's `gasUsed` undercounts fills that write new slots. The bot already simulates every fill it

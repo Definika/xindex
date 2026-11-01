@@ -709,5 +709,341 @@
       }
     ],
     "root": "keeper"
+  },
+  {
+    "id": "P1",
+    "what": "Jupiter's answer may call its program more than once (PD-1)",
+    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "file": "keeper/restock/solana/checks.mjs",
+    "test": "keeper/test/unit/restock-solana.test.mjs",
+    "edits": [
+      {
+        "old": "if (calls.length !== 1) throw new Error(",
+        "new": "if (calls.length === 0) throw new Error("
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "P2",
+    "what": "the wallet's other token accounts are left out of the simulation's bounds (PD-1)",
+    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "file": "keeper/restock/solana/checks.mjs",
+    "test": "keeper/test/unit/restock-solana.test.mjs",
+    "edits": [
+      {
+        "old": "const all = [...bounds, ...owned.filter((a) => !named.has(a)).map((address) => ({ address, min: 0n, max: 0n, held: true }))];",
+        "new": "const all = [...bounds];"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "P3",
+    "what": "an instruction with bytes after its arguments is read, a decoy among them (PD-2)",
+    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "file": "keeper/restock/solana/idl-decode.mjs",
+    "test": "keeper/test/unit/restock-solana.test.mjs",
+    "edits": [
+      {
+        "old": "  if (r.offset !== bytes.length - 8) throw new Error(`${ix.name} carries ${bytes.length - 8 - r.offset} bytes after its arguments`);\n",
+        "new": ""
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "P4",
+    "what": "Jupiter's on-chain minimum is not held to the floor (PD-2)",
+    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "file": "keeper/restock/solana/checks.mjs",
+    "test": "keeper/test/unit/restock-solana.test.mjs",
+    "edits": [
+      {
+        "old": "if (onChainMin < minOut) throw new Error(",
+        "new": "if (onChainMin < 0n) throw new Error("
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "P5",
+    "what": "a Cetus route may name any aggregator package (PD-3)",
+    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "file": "keeper/restock/sui/checks.mjs",
+    "test": "keeper/test/unit/restock-sui.test.mjs",
+    "edits": [
+      {
+        "old": "if (theirs !== ours) throw new Error(",
+        "new": "if (theirs === undefined) throw new Error("
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "P6",
+    "what": "the swap's output goes to the wallet with no floor split off it (PD-3)",
+    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "file": "keeper/restock/sui/checks.mjs",
+    "test": "keeper/test/unit/restock-sui.test.mjs",
+    "edits": [
+      {
+        "old": "  const [floor] = tx.splitCoins(output, [tx.pure.u64(share)]);\n  tx.transferObjects([floor, output], address);",
+        "new": "  tx.transferObjects([output], address);"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "P7",
+    "what": "a hash lookup on a node behind the account read counts a move expired (PD-4)",
+    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "file": "keeper/restock/aptos/checks.mjs",
+    "test": "keeper/test/unit/restock-aptos.test.mjs",
+    "edits": [
+      {
+        "old": "    if (BigInt(byHash.ledgerVersion) < BigInt(account.ledgerVersion)) return { state: \"pending\" };\n",
+        "new": ""
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "P8",
+    "what": "any error reading a gas coin counts it gone (PD-5)",
+    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "file": "keeper/restock/sui/checks.mjs",
+    "test": "keeper/test/unit/restock-sui.test.mjs",
+    "edits": [
+      {
+        "old": "export const missingObject = (error) => error?.code === \"notExists\" || error?.reason === \"notFound\";",
+        "new": "export const missingObject = (error) => error !== undefined;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "P9",
+    "what": "a 4xx refusal is taken for a transport failure, and a refused step stays in flight (PD-6)",
+    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "file": "keeper/restock/inflight.mjs",
+    "test": "keeper/test/unit/restock-inflight.test.mjs",
+    "edits": [
+      {
+        "old": "  return status >= 400 && status < 500 && ![404, 408, 409, 425, 429].includes(status);",
+        "new": "  return false;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "P10",
+    "what": "a move goes to the signer without its digest and expiry, so it is not held in flight when sent (PD-6)",
+    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "file": "keeper/restock/signer-home.mjs",
+    "test": "keeper/test/unit/restock-signer-home.test.mjs",
+    "edits": [
+      {
+        "old": "const sendRequest = (data) => ({ raw: data.raw, signature: data.hash, expiry: data.expiry });",
+        "new": "const sendRequest = (data) => ({ raw: data.raw });"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "P11",
+    "what": "an attestation always creates a copy, even one that exists (PD-7)",
+    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "file": "keeper/restock/attest.mjs",
+    "test": "keeper/test/unit/restock-attest.test.mjs",
+    "edits": [
+      {
+        "old": "await submit(created ? \"createWrapped\" : \"updateWrapped\", vaa);",
+        "new": "await submit(\"createWrapped\", vaa);"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "P12",
+    "what": "a null status from a node behind the finalized slot drops a move (PD-8)",
+    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "file": "keeper/restock/solana-sending.mjs",
+    "test": "keeper/test/unit/restock-solana.test.mjs",
+    "edits": [
+      {
+        "old": "if (statusSlot === null || finalizedSlot === null || BigInt(statusSlot) < BigInt(finalizedSlot)) {",
+        "new": "if (false) {"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "P13",
+    "what": "a null status from a node without the history drops a move (PD-8)",
+    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "file": "keeper/restock/solana-sending.mjs",
+    "test": "keeper/test/unit/restock-solana.test.mjs",
+    "edits": [
+      {
+        "old": "if (sentSlot === null || firstAvailableSlot === null || BigInt(firstAvailableSlot) > BigInt(sentSlot)) {",
+        "new": "if (false) {"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "P14",
+    "what": "a move whose fate is unknown is sent again silently (PD-8)",
+    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "file": "keeper/restock/signer-home.mjs",
+    "test": "keeper/test/unit/restock-signer-home.test.mjs",
+    "edits": [
+      {
+        "old": "    if (s.state === \"unknown\") throw new Error(`whether it landed is unknown: ${s.reason}`);\n",
+        "new": ""
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "P15",
+    "what": "a round takes moves oldest first, a completing step before a signed move (PD-9)",
+    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "file": "keeper/restock/journal.mjs",
+    "test": "keeper/test/unit/restock-journal.test.mjs",
+    "edits": [
+      {
+        "old": "  return [...moves.filter((m) => m.stage === \"signed\"), ...moves.filter((m) => m.stage !== \"signed\")];",
+        "new": "  return [...moves];"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "P16",
+    "what": "a Circle signature past its expiry is an error, never re-attested (PD-10)",
+    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "file": "keeper/restock/advance.mjs",
+    "test": "keeper/test/unit/restock-advance.test.mjs",
+    "edits": [
+      {
+        "old": "if (!fields || fields.expirationBlock === 0n) throw new Error(",
+        "new": "if (true) throw new Error("
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "P17",
+    "what": "a VAA that no longer verifies is redeemed as stored (PD-10)",
+    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "file": "keeper/restock/advance.mjs",
+    "test": "keeper/test/unit/restock-advance.test.mjs",
+    "edits": [
+      {
+        "old": "        const check = await to.verifyVaa(vaa);\n        if (!check.valid) {",
+        "new": "        const check = await to.verifyVaa(vaa);\n        if (false) {"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "P18",
+    "what": "a stored Circle signature is received without checking it is still valid (PD-10)",
+    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "file": "keeper/restock/advance.mjs",
+    "test": "keeper/test/unit/restock-advance.test.mjs",
+    "edits": [
+      {
+        "old": "      const { valid } = await to.verifyCctp(message, attestation);\n      if (!valid) {",
+        "new": "      const { valid } = await to.verifyCctp(message, attestation);\n      if (false) {"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "P19",
+    "what": "a signer's input closing under a write is left unheard (PD-11)",
+    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "file": "keeper/restock/signer-home.mjs",
+    "test": "keeper/test/unit/restock-signer-home.test.mjs",
+    "edits": [
+      {
+        "old": "    self.stdin.on(\"error\", fail);\n",
+        "new": ""
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "P20",
+    "what": "a burn allows no fee whatever the route's standard rate (PD-12)",
+    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "file": "keeper/restock/attestations.mjs",
+    "test": "keeper/test/unit/restock-attestations.test.mjs",
+    "edits": [
+      {
+        "old": "  return (amount * scaled + 99_999_999n) / 100_000_000n;",
+        "new": "  return 0n;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "P21",
+    "what": "Panora's splits need not add up to the amount (PD-13)",
+    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "file": "keeper/restock/aptos/checks.mjs",
+    "test": "keeper/test/unit/restock-aptos.test.mjs",
+    "edits": [
+      {
+        "old": "if (total !== amountIn) throw new Error(",
+        "new": "if (total < 0n) throw new Error("
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "P22",
+    "what": "Panora's swap may pay an integrator fee (PD-13)",
+    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "file": "keeper/restock/aptos/checks.mjs",
+    "test": "keeper/test/unit/restock-aptos.test.mjs",
+    "edits": [
+      {
+        "old": "if (String(args[18]) !== PANORA_NO_FEE.amount || normAddress(args[19]) !== PANORA_NO_FEE.recipient) {",
+        "new": "if (false) {"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "P23",
+    "what": "a node's cap on simulated accounts fails the move instead of chunking it (PD-1)",
+    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "file": "keeper/restock/solana/checks.mjs",
+    "test": "keeper/test/unit/restock-solana.test.mjs",
+    "edits": [
+      {
+        "old": "    if (!(max > 0)) throw error;\n",
+        "new": "    throw error;\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "P24",
+    "what": "a transaction may change who controls a token account the move does not name (PD-1)",
+    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "file": "keeper/restock/solana/checks.mjs",
+    "test": "keeper/test/unit/restock-solana.test.mjs",
+    "edits": [
+      {
+        "old": "if (controlOf(is) !== controlOf(was)) throw new Error(",
+        "new": "if (false) throw new Error("
+      }
+    ],
+    "runner": "node"
   }
 ]

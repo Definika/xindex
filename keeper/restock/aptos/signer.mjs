@@ -15,8 +15,9 @@ const { Account, Aptos, AptosConfig, Ed25519PrivateKey, Network } = await import
 const { createMoves } = await import("./moves.mjs");
 
 const account = Account.fromPrivateKey({ privateKey: new Ed25519PrivateKey(required("APTOS_KEY")) });
-const aptos = new Aptos(new AptosConfig({ network: Network.MAINNET, fullnode: required("APTOS_RPC_URL") }));
+const rpcUrl = required("APTOS_RPC_URL");
+const aptos = new Aptos(new AptosConfig({ network: Network.MAINNET, fullnode: rpcUrl }));
 const panora = { url: (process.env.PANORA_URL?.trim() || "https://api.panora.exchange").replace(/\/+$/, ""), apiKey: required("PANORA_API_KEY") };
-const moves = createMoves({ aptos, account, panora });
+const moves = createMoves({ aptos, account, panora, rpcUrl });
 
 serve(moves, { wallet: account.accountAddress.toStringLong() });

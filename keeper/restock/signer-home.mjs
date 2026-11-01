@@ -7,7 +7,8 @@
 //
 // Every signer answers the same requests (`solana/moves.mjs` is the first): info, balances, buildSwap, buildBridgeIn,
 // buildSweep (on a chain CCTP serves), send, status, sequenceOf, transferCompleted, redeem, cctpReceived, verifyCctp,
-// receive, and reclaim where a burn leaves rent to take back.
+// receive, reclaim where a burn leaves rent to take back, and attest where the owner attests tokens for copies
+// (Solana and Sui, PD-7).
 
 import { spawn } from "node:child_process";
 
@@ -33,7 +34,18 @@ export function startSigner({ env, path, label = "signer", timeoutMs = 120_000 }
     pending.clear();
   };
   function start() {
-    child = spawn(process.execPath, [path], { env, stdio: ["pipe", "pipe", "inherit"] });
+    const self = spawn(process.execPath, [path], { env, stdio: ["pipe", "pipe", "inherit"] });
+    child = self;
+    // A signer that cannot start, or whose input closes under a write (EPIPE, when it has just died), reports it as an
+    // 'error' event; unheard, Node would end the whole service with it (PD-11). Either fails what is waiting, and the
+    // next request starts the signer again.
+    const fail = (error) => {
+      if (child === self) child = null;
+      failAll(new Error(`the ${label} signer failed: ${error?.message ?? error}`));
+      self.kill();
+    };
+    self.on("error", fail);
+    self.stdin.on("error", fail);
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
       buffer += chunk;
@@ -55,8 +67,8 @@ export function startSigner({ env, path, label = "signer", timeoutMs = 120_000 }
         else waiting.reject(new Error(`${label}: ${message.error}`));
       }
     });
-    child.on("exit", (code) => {
-      child = null;
+    self.on("exit", (code) => {
+      if (child === self) child = null;
       failAll(new Error(`the ${label} signer exited (${code})`));
     });
   }
@@ -84,8 +96,13 @@ export function createSignerHome({ name, def, signerPath, env, coins, floatId, j
   let info = null;
   const home = { name, def: { wormhole: def.wormhole, cctpDomain: def.cctpDomain } };
 
+  /// The signer's request to send journalled move `data` (`{raw, hash, expiry}`): the digest and expiry go with it, so
+  /// the signer holds it in flight from the moment it is sent (PD-6).
+  const sendRequest = (data) => ({ raw: data.raw, signature: data.hash, expiry: data.expiry });
+
   /// What the signer says of journalled move `move`: landed (the move goes to "sent"), expired (dropped: nothing it
-  /// would have moved left the wallet), or pending (the same bytes are sent again). Returns `{status}` or null.
+  /// would have moved left the wallet), pending (the same bytes are sent again), or unknown, when the node at hand
+  /// cannot show whether it landed, which leaves it signed and is reported (PD-8). Returns `{status}` or null.
   async function resume(move) {
     const s = await ask("status", { signature: move.data.hash, expiry: move.data.expiry });
     if (s.state === "landed" || s.state === "reverted") {
@@ -96,7 +113,8 @@ export function createSignerHome({ name, def, signerPath, env, coins, floatId, j
       journal.drop(move.id, s.reason ?? "it expired before it landed");
       return null;
     }
-    await ask("send", { raw: move.data.raw }).catch(() => {});
+    if (s.state === "unknown") throw new Error(`whether it landed is unknown: ${s.reason}`);
+    await ask("send", sendRequest(move.data)).catch(() => {});
     return null;
   }
 
@@ -104,7 +122,7 @@ export function createSignerHome({ name, def, signerPath, env, coins, floatId, j
   /// until it lands; one not landed in time is left signed, for {resume}. Returns its id and `{status}`, or null.
   async function commit(action, signed, extra = {}) {
     const id = journal.open(action, { chain: name, raw: signed.raw, hash: signed.signature, expiry: signed.expiry, ...extra });
-    await ask("send", { raw: signed.raw }).catch(() => {});
+    await ask("send", sendRequest(journal.get(id).data)).catch(() => {});
     for (let s = 0; s < CONFIRM_SECONDS; s += 3) {
       await new Promise((r) => setTimeout(r, 3000));
       const move = journal.get(id);
@@ -170,11 +188,14 @@ export function createSignerHome({ name, def, signerPath, env, coins, floatId, j
     /// Completes transfer `vaa`, which the executor bridged out to the pinned recipient here.
     redeem: (vaa) => ask("redeem", { vaa, mints }, 300_000),
     transferCompleted: (vaa) => ask("transferCompleted", { vaa }),
-    /// Burns `a.amount` of the float by CCTP for `treasury` (an address) on Ethereum.
-    async sweep(a, treasury) {
-      const signed = await ask("buildSweep", { amount: String(a.amount), treasury: evmWord(treasury) });
+    /// Burns `a.amount` of the float by CCTP for `treasury` (an address) on Ethereum, paying Circle at most `maxFee`.
+    async sweep(a, treasury, maxFee = 0n) {
+      const signed = await ask("buildSweep", { amount: String(a.amount), treasury: evmWord(treasury), maxFee: String(maxFee) });
       await commit(a, signed, signed.eventAccount ? { eventAccount: signed.eventAccount } : {});
     },
+    /// Attests token `token` (its address or coin type here) to the Token Bridge, for a copy on Ethereum (PD-7):
+    /// `{signature, sequence}`.
+    attest: (token) => ask("attest", { token }, 600_000),
     receive: (message, attestation) => ask("receive", { message, attestation }, 300_000),
     cctpReceived: (message) => ask("cctpReceived", { message }),
     verifyVaa,

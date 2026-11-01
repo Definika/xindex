@@ -1,7 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createJournal } from "../../restock/journal.mjs";
-import { createSignerHome, evmWord } from "../../restock/signer-home.mjs";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createSignerHome, evmWord, startSigner } from "../../restock/signer-home.mjs";
 
 /// A journal in memory, and a signer that answers from `script` (op -> function of args), recording every request.
 function rig(script) {
@@ -102,4 +105,37 @@ test("a sweep names the treasury as a word, and keeps the burn's event account f
   await home.sweep({ kind: "sweep", chain: "sui", amount: 7n }, "0x88A5b9350c722D25579a5EF1C5C613f923460c04");
   assert.equal(treasury, evmWord("0x88A5b9350c722D25579a5EF1C5C613f923460c04"));
   assert.equal(journal.find(() => true)[0].data.eventAccount, "Ev3nt");
+});
+
+test("PD-6: a move goes to the signer with its digest and expiry, so the signer holds it in flight from the moment it is sent", async () => {
+  const { home, asked } = rig({
+    buildSweep: () => SIGNED,
+    send: () => null,
+    status: () => ({ state: "landed" }),
+  });
+  await home.sweep({ kind: "sweep", chain: "sui", amount: 7n }, "0x88A5b9350c722D25579a5EF1C5C613f923460c04", 3n);
+  const send = asked.find((a) => a.op === "send");
+  assert.deepEqual(send.args, { raw: SIGNED.raw, signature: SIGNED.signature, expiry: SIGNED.expiry });
+  assert.equal(asked.find((a) => a.op === "buildSweep").args.maxFee, "3", "the route's fee bound goes with the sweep (PD-12)");
+});
+
+test("PD-8: a move whose fate the node cannot show stays signed, is not sent again, and the reason is reported", async () => {
+  const { home, journal, asked } = rig({ send: () => null, status: () => ({ state: "unknown", reason: "the node keeps slots from 401 only" }) });
+  const id = journal.open({ kind: "sweep", chain: "sui", amount: 5n }, { chain: "sui", raw: "r", hash: "d", expiry: "e" });
+  await assert.rejects(home.resume(journal.get(id)), /whether it landed is unknown: the node keeps slots from 401 only/);
+  assert.equal(journal.get(id).stage, "signed");
+  assert.equal(asked.filter((a) => a.op === "send").length, 0);
+});
+
+test("PD-11: a signer whose input closed under a write fails what is waiting, and the service goes on", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "signer-"));
+  const path = join(dir, "closes-input.mjs");
+  writeFileSync(path, 'import { closeSync } from "node:fs";\ncloseSync(0);\nsetTimeout(() => {}, 3000);\n');
+  const ask = startSigner({ env: { PATH: process.env.PATH ?? "" }, path, label: "test", timeoutMs: 10_000 });
+  const first = ask("info");
+  await new Promise((r) => setTimeout(r, 500)); // the signer has closed its input by now
+  const second = ask("info");
+  // Unheard, the EPIPE of the second write would end this process here.
+  await assert.rejects(second, /the test signer failed: .*EPIPE|the test signer (failed|exited)/);
+  await assert.rejects(first, /the test signer/);
 });

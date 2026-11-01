@@ -26,7 +26,8 @@ import { allowExactly, noPendingTransaction, resumeMove, settleCommit, withFeeHe
 
 const TOKEN_MESSENGER_V2 = "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d";
 const MESSAGE_TRANSMITTER_V2 = "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64";
-/// CCTP V2's finality for a standard transfer: the source chain's own finality, and no fee.
+/// CCTP V2's finality for a standard transfer: the source chain's own finality, at the route's standard fee, which is
+/// zero on every route the service uses and bounded by `cctpMaxFee` (attestations.mjs) should Circle switch one on.
 const STANDARD_FINALITY = 2000;
 
 /// Each chain's Wormhole Token Bridge, CCTP domain, and, on a home chain, the Uniswap V3 fork its coins trade on, in
@@ -118,6 +119,9 @@ export const ABI = Object.freeze({
     "function transferTokensWithPayload(address token, uint256 amount, uint16 recipientChain, bytes32 recipient, uint32 nonce, bytes payload) payable returns (uint64)",
     "function completeTransfer(bytes encodedVm)",
     "function isTransferCompleted(bytes32 hash) view returns (bool)",
+    "function wrappedAsset(uint16 tokenChainId, bytes32 tokenAddress) view returns (address)",
+    "function createWrapped(bytes encodedVm) returns (address token)",
+    "function updateWrapped(bytes encodedVm) returns (address token)",
   ]),
   core: parseAbi([
     "function messageFee() view returns (uint256)",
@@ -264,12 +268,13 @@ export function createEvm({ name, rpcUrl, key, journal }) {
     },
     transferCompleted: (vaa) => read(def.tokenBridge, ABI.tokenBridge, "isTransferCompleted", [vaaHash(vaa)]),
     cctpReceived: received,
-    /// The CCTP burn of `amount` USDC to `recipient` (an address or a word) on `domain`, as a request for {commit}.
-    burnRequest: (amount, domain, recipient) => ({
+    /// The CCTP burn of `amount` USDC to `recipient` (an address or a word) on `domain`, paying Circle at most `maxFee`
+    /// (PD-12), as a request for {commit}.
+    burnRequest: (amount, domain, recipient, maxFee = 0n) => ({
       to: TOKEN_MESSENGER_V2,
       abi: ABI.tokenMessenger,
       functionName: "depositForBurn",
-      args: [amount, domain, word(recipient), def.usdc ?? def.market.usdc, `0x${"00".repeat(32)}`, 0n, STANDARD_FINALITY],
+      args: [amount, domain, word(recipient), def.usdc ?? def.market.usdc, `0x${"00".repeat(32)}`, maxFee, STANDARD_FINALITY],
     }),
     receiveRequest,
     /// Receives CCTP `message` with `attestation` here: the transmitter counts each message once.
@@ -359,10 +364,10 @@ export function createEvmHome({ name, rpcUrl, key, journal, cfg }) {
     },
     /// Completes transfer `vaa`, which the executor bridged out to this wallet.
     redeem: (vaa) => h.complete({ to: def.tokenBridge, abi: ABI.tokenBridge, functionName: "completeTransfer", args: [vaa] }),
-    /// Burns action `a`'s `a.amount` of the float by CCTP for `treasury` on Ethereum.
-    async sweep(a, treasury) {
+    /// Burns action `a`'s `a.amount` of the float by CCTP for `treasury` on Ethereum, paying Circle at most `maxFee`.
+    async sweep(a, treasury, maxFee = 0n) {
       await h.allow(def.market.usdc, h.tokenMessenger, a.amount);
-      await h.commit(a, h.burnRequest(a.amount, 0, treasury));
+      await h.commit(a, h.burnRequest(a.amount, 0, treasury, maxFee));
     },
   };
 }

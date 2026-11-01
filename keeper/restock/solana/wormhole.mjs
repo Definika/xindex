@@ -42,6 +42,16 @@ export function createWormhole({ connection, wallet }) {
       const { transaction, signers = [] } = built[0].transaction;
       return { instructions: transaction.instructions, signers };
     },
+    /// The attestation of native SPL token `mint` to the Token Bridge, as the SDK builds it (Wormhole's attest-tokens
+    /// guide: `createAttestation`; the copy is then created on Ethereum from the signed attestation, PD-7): one
+    /// transaction and its extra signers. Refuses anything but exactly one transaction.
+    async attestTransaction(mint) {
+      const built = [];
+      for await (const unsigned of bridge.createAttestation(mint, wallet.publicKey)) built.push(unsigned);
+      if (built.length !== 1) throw new Error(`the SDK built ${built.length} transactions for one attestation`);
+      const { transaction, signers = [] } = built[0].transaction;
+      return { instructions: transaction.instructions, signers };
+    },
     /// The sequence the Token Bridge published in transaction `signature`, from the core's own record of it.
     async sequenceOf(signature) {
       const ids = await core.parseTransaction(signature);

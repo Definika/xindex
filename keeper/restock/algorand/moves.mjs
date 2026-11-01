@@ -13,6 +13,7 @@ import algosdk from "algosdk";
 import { contracts, deserialize, toUniversal } from "@wormhole-foundation/sdk-connect";
 import { AlgorandWormholeCore } from "@wormhole-foundation/sdk-algorand-core";
 import { AlgorandTokenBridge } from "@wormhole-foundation/sdk-algorand-tokenbridge";
+import { createInflight, refusedOutright } from "../inflight.mjs";
 
 /// Algorand mainnet's genesis hash: the RPC must serve this chain.
 export const MAINNET_GENESIS_HASH = "wGHE2Pwdvd7S12BL5FaOP20EGYesN73ktiC1qzkkit8=";
@@ -38,7 +39,8 @@ export function createMoves({ algod, indexerUrl, account, fetchImpl = fetch }) {
   const ids = { coreBridge: contracts.coreBridge("Mainnet", "Algorand"), tokenBridge: contracts.tokenBridge("Mainnet", "Algorand") };
   const bridge = new AlgorandTokenBridge("Mainnet", "Algorand", algod, ids);
   const core = new AlgorandWormholeCore("Mainnet", "Algorand", algod, ids);
-  let inflight = null;
+  /// The one group sent that may still commit: `{id (its key transaction's id), lastValid}`.
+  const inflight = createInflight((e) => fate(e.id, e.lastValid));
 
   const idx = async (path) => {
     const r = await fetchImpl(`${indexerUrl.replace(/\/+$/, "")}${path}`, { signal: AbortSignal.timeout(15_000) });
@@ -63,17 +65,6 @@ export function createMoves({ algod, indexerUrl, account, fetchImpl = fetch }) {
     const indexed = BigInt(health?.round ?? 0);
     if (algodRound > BigInt(lastValid) && indexed > BigInt(lastValid)) return { state: "expired", reason: `its last valid round ${lastValid} passed` };
     return { state: "pending" };
-  }
-
-  async function idle() {
-    if (!inflight) return;
-    const s = await fate(inflight.txid, inflight.lastValid);
-    if (s.state === "pending") {
-      // Only a completing step is sent again here; a move is the parent's to send, once it is in its journal.
-      if (inflight.resend) await inflight.resend();
-      throw new Error(`transaction ${inflight.txid} is still in flight; waiting for it`);
-    }
-    inflight = null;
   }
 
   const params = async (fee) => ({ ...(await algod.getTransactionParams().do()), flatFee: true, fee });
@@ -142,7 +133,7 @@ export function createMoves({ algod, indexerUrl, account, fetchImpl = fetch }) {
   /// `pairs` ({tx, signer?}) grouped, simulated, checked against `bounds`, and signed: the logic signatures the SDK
   /// supplies sign their own transactions, the wallet the rest. Returns the move's signed form and the simulation.
   async function signedGroup(pairs, bounds) {
-    await idle();
+    await inflight.idle();
     const txns = pairs.map((p) => p.tx);
     algosdk.assignGroupID(txns);
     const sim = await simulate(txns);
@@ -153,20 +144,28 @@ export function createMoves({ algod, indexerUrl, account, fetchImpl = fetch }) {
     for (const p of pairs) bytes.push(p.signer ? await p.signer.signTxn(p.tx) : p.tx.signTxn(account.sk));
     const key = txns[txns.length - 1];
     const lastValid = String(Math.max(...txns.map((t) => Number(t.lastRound))));
-    inflight = { txid: key.txID(), lastValid, resend: null };
+    // Signing puts nothing in flight: only sending does (PD-6).
     return {
       signed: { raw: JSON.stringify(bytes.map((b) => Buffer.from(b).toString("base64"))), signature: key.txID(), expiry: lastValid },
       changes,
     };
   }
 
-  /// Sends group `bytes`, a step that only completes a move, and waits for its key transaction `txid`.
+  /// Sends group `bytes`, a step that only completes a move, and waits for its key transaction `txid`. A group algod
+  /// refuses outright is forgotten: it is in no pool, and a completing step that ran after all would only find its
+  /// work done (PD-6).
   async function complete(signed) {
     const bytes = JSON.parse(signed.raw).map((b) => Buffer.from(b, "base64"));
-    inflight.resend = () => algod.sendRawTransaction(bytes).do().catch(() => {});
-    await algod.sendRawTransaction(bytes).do();
+    const resend = () => algod.sendRawTransaction(bytes).do().catch(() => {});
+    inflight.sent({ id: signed.signature, lastValid: signed.expiry, resend });
+    try {
+      await algod.sendRawTransaction(bytes).do();
+    } catch (error) {
+      if (refusedOutright(error)) inflight.clear(signed.signature);
+      throw error;
+    }
     await algosdk.waitForConfirmation(algod, signed.signature, 20);
-    inflight = null;
+    inflight.clear(signed.signature);
     return signed.signature;
   }
 
@@ -241,14 +240,19 @@ export function createMoves({ algod, indexerUrl, account, fetchImpl = fetch }) {
       return signed;
     },
     /// Sends signed group `raw` as it is; Algorand commits a transaction once, so sending it again is safe.
-    async send({ raw }) {
+    async send({ raw, signature, expiry }) {
+      // From here it is in flight (PD-6).
+      inflight.sent({ id: signature, lastValid: expiry });
       const bytes = JSON.parse(raw).map((b) => Buffer.from(b, "base64"));
       const r = await algod.sendRawTransaction(bytes).do().catch((error) => ({ error: String(error?.message ?? error) }));
       return r.txId ?? r.txid ?? null;
     },
+    /// What became of group `signature` with `expiry`. One that may still commit is in flight again, so after a restart
+    /// nothing else is sent before it settles (PD-9).
     async status({ signature, expiry }) {
       const s = await fate(signature, expiry);
-      if (s.state !== "pending" && inflight?.txid === signature) inflight = null;
+      if (s.state === "pending") inflight.sent({ id: signature, lastValid: expiry });
+      else inflight.clear(signature);
       return s;
     },
     /// The sequence the Token Bridge published in transaction `signature`: from algod while it remembers it, or from

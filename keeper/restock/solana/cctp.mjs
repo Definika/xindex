@@ -56,9 +56,10 @@ export function createCctp({ connection, wallet }) {
   const usedNonce = (message) => pda("used_nonce", transmitter.programId, [messageFields(message).nonce]);
 
   /// The burn of `amount` (raw USDC) from the wallet's USDC account, minted on Ethereum to `recipient` (a 32-byte hex
-  /// word), with no destination caller, no fee and standard finality, as an unsigned transaction and the event account
-  /// keypair it must also be signed by. The event account's rent can be reclaimed five days on.
-  async function burnTransaction(amount, recipient) {
+  /// word), with no destination caller, a fee of at most `maxFee` (Iris's standard rate, PD-12) and standard finality,
+  /// as an unsigned transaction and the event account keypair it must also be signed by. The event account's rent can
+  /// be reclaimed five days on.
+  async function burnTransaction(amount, recipient, maxFee = 0n) {
     const event = Keypair.generate();
     const accounts = {
       owner: wallet.publicKey,
@@ -81,7 +82,7 @@ export function createCctp({ connection, wallet }) {
       amount: new anchor.BN(amount.toString()),
       destinationDomain: ETHEREUM_DOMAIN,
       mintRecipient: new PublicKey(hexBytes(recipient)),
-      maxFee: new anchor.BN(0),
+      maxFee: new anchor.BN(maxFee.toString()),
       minFinalityThreshold: STANDARD_FINALITY,
       destinationCaller: PublicKey.default,
     };
