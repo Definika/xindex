@@ -125,7 +125,7 @@ async function advance(move) {
   if (move.stage === "sent") {
     const [fromDomain, toDomain] = funding ? [0, CHAINS[move.chain].cctpDomain] : [CHAINS[move.chain].cctpDomain, 0];
     const expect = { destinationDomain: toDomain, recipient: to.cctpRecipient, sender: from.cctpSender, amount: BigInt(move.amount) };
-    const m = await iris.message(fromDomain, move.data.hash, expect, to.verifyCctp, CHAINS[move.chain].cctpVersion);
+    const m = await iris.message(fromDomain, move.data.hash, expect, to.verifyCctp);
     if (!m) return;
     journal.advance(move.id, "attested", m);
   }
@@ -228,9 +228,8 @@ async function act(a, price) {
     return log(a.coin, `bridging ${a.usd.toFixed(0)} USD out to ${a.chain}`);
   }
   if (a.kind === "fund") {
-    const version = CHAINS[a.chain].cctpVersion;
-    await eth.allow(MAINNET.usdc, eth.tokenMessengerFor(version), a.amount);
-    await eth.commit(a, eth.burnRequest(a.amount, CHAINS[a.chain].cctpDomain, h.cctpRecipient, version));
+    await eth.allow(MAINNET.usdc, eth.tokenMessenger, a.amount);
+    await eth.commit(a, eth.burnRequest(a.amount, CHAINS[a.chain].cctpDomain, h.cctpRecipient));
     return log(a.chain, `funding its float with ${Number(a.amount) / 1e6} USDC`);
   }
   if (a.kind === "sweep") {
