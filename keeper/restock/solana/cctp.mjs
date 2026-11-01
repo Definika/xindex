@@ -123,8 +123,17 @@ export function createCctp({ connection, wallet }) {
       .transaction();
   }
 
+  /// The reclaim of burn event account `eventAccount`'s rent, with the burn's `message` and its `attestation`, as
+  /// Circle's `reclaimEventAccount` example builds it: allowed five days after the burn.
+  const reclaimTransaction = (eventAccount, message, attestation) =>
+    transmitter.methods
+      .reclaimEventAccount({ attestation: hexBytes(attestation), destinationMessage: hexBytes(message) })
+      .accountsPartial({ payee: wallet.publicKey, messageTransmitter: pda("message_transmitter", transmitter.programId), messageSentEventData: eventAccount })
+      .transaction();
+
   return {
     usdcAccount,
+    reclaimTransaction,
     transmitterId: transmitter.programId,
     messengerId: messenger.programId,
     burnTransaction,

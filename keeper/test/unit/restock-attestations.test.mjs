@@ -122,3 +122,28 @@ test("RS-14: the sequence is read only from the Wormhole core's own log", () => 
   assert.equal(sequenceIn([forged, event(CORE.toLowerCase(), 17n)], { core: CORE, emitter: BSC_BRIDGE, decode }), 17n);
   assert.equal(sequenceIn([forged], { core: CORE, emitter: BSC_BRIDGE, decode }), null);
 });
+
+/// A CCTP V1 message as Iris returns one (Circle's Message.sol and BurnMessage.sol): version 0, domains, a u64 nonce,
+/// sender, recipient, destination caller, then the burn: version, token, mint recipient, amount, sender.
+function cctpV1({ source = 8, destination = 0, recipient = TREASURY, sender = `0x${"5e".repeat(32)}`, amount = 7_000_000n } = {}) {
+  const header = `${hex(0, 4)}${hex(source, 4)}${hex(destination, 4)}${hex(1234, 8)}${"aa".repeat(32)}${"bb".repeat(32)}${"00".repeat(32)}`;
+  const burn = `${hex(0, 4)}${"cc".repeat(32)}${word(recipient)}${hex(amount, 32)}${word(sender)}`;
+  return `0x${header}${burn}`;
+}
+
+test("CCTP V1, where Circle still runs it (Sui, Aptos): its own endpoint, no status, PENDING until signed, its own layout", async () => {
+  const sender = `0x${"5e".repeat(32)}`;
+  const move = { destinationDomain: 0, recipient: TREASURY, sender, amount: 7_000_000n };
+  const base = "https://iris-api.circle.com/v1/messages/8/";
+  const f = fakeFetch({
+    [`${base}0xaa`]: [200, { messages: [{ message: cctpV1(), attestation: "0x03", eventNonce: "1234" }] }],
+    [`${base}0xbb`]: [200, { messages: [{ message: cctpV1(), attestation: "PENDING", eventNonce: "1234" }] }],
+    [`${base}0xcc`]: [200, { messages: [{ message: cctpV1({ amount: 1n }), attestation: "0x03" }] }],
+  });
+  const iris = createIris({ fetchImpl: f.impl });
+  assert.deepEqual(await iris.message(8, "0xaa", move, null, 1), { message: cctpV1(), attestation: "0x03" });
+  assert.equal(f.asked.at(-1), `${base}0xaa`, "the V1 path");
+  assert.equal(await iris.message(8, "0xbb", move, null, 1), null, "pending");
+  await assert.rejects(iris.message(8, "0xcc", move, null, 1), /no message of this move/, "another amount is not this move's");
+  await assert.rejects(iris.message(8, "0xaa", { ...move, sender: TREASURY }, null, 1), /no message of this move/, "nor another sender's");
+});

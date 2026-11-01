@@ -123,7 +123,7 @@ async function advance(move) {
   if (move.stage === "sent") {
     const [fromDomain, toDomain] = funding ? [0, CHAINS[move.chain].cctpDomain] : [CHAINS[move.chain].cctpDomain, 0];
     const expect = { destinationDomain: toDomain, recipient: to.cctpRecipient, sender: from.cctpSender, amount: BigInt(move.amount) };
-    const m = await iris.message(fromDomain, move.data.hash, expect, to.verifyCctp);
+    const m = await iris.message(fromDomain, move.data.hash, expect, to.verifyCctp, CHAINS[move.chain].cctpVersion);
     if (!m) return;
     journal.advance(move.id, "attested", m);
   }
@@ -226,8 +226,9 @@ async function act(a, price) {
     return log(a.coin, `bridging ${a.usd.toFixed(0)} USD out to ${a.chain}`);
   }
   if (a.kind === "fund") {
-    await eth.allow(MAINNET.usdc, eth.tokenMessenger, a.amount);
-    await eth.commit(a, eth.burnRequest(a.amount, CHAINS[a.chain].cctpDomain, h.cctpRecipient));
+    const version = CHAINS[a.chain].cctpVersion;
+    await eth.allow(MAINNET.usdc, eth.tokenMessengerFor(version), a.amount);
+    await eth.commit(a, eth.burnRequest(a.amount, CHAINS[a.chain].cctpDomain, h.cctpRecipient, version));
     return log(a.chain, `funding its float with ${Number(a.amount) / 1e6} USDC`);
   }
   if (a.kind === "sweep") {
@@ -245,11 +246,29 @@ async function act(a, price) {
   }
 }
 
+/// CCTP V2 lets a Solana burn's event account be closed for its rent five days after the burn; the journal keeps a
+/// received burn seven days, so the reclaim lands in between, with the burn's message and attestation.
+const RECLAIM_AFTER_SECONDS = 5 * 86_400 + 600;
+
+async function reclaimRent() {
+  const now = Math.floor(Date.now() / 1000);
+  const due = (m) => m.kind === "sweep" && m.stage === "received" && m.data.eventAccount && !m.data.reclaimed && now - m.at >= RECLAIM_AFTER_SECONDS;
+  for (const m of journal.find(due)) {
+    const h = homes[m.chain];
+    if (!h?.reclaim) continue;
+    await h
+      .reclaim(m.data.eventAccount, m.data.message, m.data.attestation)
+      .then(() => journal.note(m.id, { reclaimed: true }))
+      .catch((error) => log(`move ${m.id}`, `rent not reclaimed: ${revertReason(error)}`));
+  }
+}
+
 async function round() {
   for (const h of Object.values(homes)) h.forgetRoutes(); // each round searches its routes afresh
   for (const move of journal.pending()) {
     await advance(move).catch((error) => log(`move ${move.id}`, `not moved on: ${revertReason(error)}`));
   }
+  await reclaimRent();
   const p = await prices();
   const state = await readState();
   const { actions, notes } = plan({

@@ -11,6 +11,7 @@ import {
 } from "@solana/spl-token";
 import { PublicKey, Transaction } from "@solana/web3.js";
 import { utils } from "@coral-xyz/anchor";
+import { resumeDecision } from "../solana-sending.mjs";
 import { USDC_MINT } from "./cctp.mjs";
 import { compile, MAX_COMPUTE_UNITS, simulateAndCheck, unitLimit } from "./verify.mjs";
 
@@ -53,12 +54,13 @@ export function createMoves({ connection, wallet, jupiter, cctp, wormhole, maxUn
     return signed(tx, signers, lastValidBlockHeight);
   }
 
+  /// `tx` signed: its bytes in base64, its signature, and its expiry, the block height past which it cannot land.
   function signed(tx, signers, lastValidBlockHeight) {
     tx.sign([wallet, ...signers]);
     return {
       raw: Buffer.from(tx.serialize()).toString("base64"),
       signature: utils.bytes.bs58.encode(tx.signatures[0]),
-      lastValidBlockHeight: String(lastValidBlockHeight),
+      expiry: String(lastValidBlockHeight),
     };
   }
 
@@ -99,11 +101,25 @@ export function createMoves({ connection, wallet, jupiter, cctp, wormhole, maxUn
         accounts,
       };
     },
-    /// The wallet's SOL, in lamports, and its balance of each token: `{sol, tokens: {mint: amount}}`.
+    /// The wallet's SOL, in lamports, and its balance of each token: `{gas, tokens: {mint: amount}}`.
     async balances({ mints }) {
       const tokens = {};
       for (const m of mints) tokens[m] = String(await tokenBalance(ata(new PublicKey(m))));
-      return { sol: String(await connection.getBalance(wallet.publicKey, "confirmed")), tokens };
+      return { gas: String(await connection.getBalance(wallet.publicKey, "confirmed")), tokens };
+    },
+    /// Sends signed transaction `raw` (base64) as it is: a move the parent journalled, sent once or sent again.
+    send: async ({ raw }) => connection.sendRawTransaction(Buffer.from(raw, "base64"), { skipPreflight: true, maxRetries: 0 }),
+    /// What became of transaction `signature`, whose expiry is block height `expiry`: landed, reverted, pending, or
+    /// expired, once the finalized height has passed it with no confirmed status (`resumeDecision`).
+    async status({ signature, expiry }) {
+      const [{ value }, finalizedHeight] = await Promise.all([
+        connection.getSignatureStatuses([signature], { searchTransactionHistory: true }),
+        connection.getBlockHeight("finalized"),
+      ]);
+      const decision = resumeDecision({ status: value[0], finalizedHeight, lastValidBlockHeight: expiry });
+      if (decision.sent) return { state: decision.sent === "success" ? "landed" : "reverted", at: String(value[0].slot) };
+      if (decision.drop) return { state: "expired", reason: decision.drop };
+      return { state: "pending" };
     },
     /// A swap of `amount` of `inputMint` for at least `minOut` of `outputMint` through Jupiter, signed; or
     /// `{refused: "loss", outAmount}` when no route pays `minOut`.
@@ -167,6 +183,13 @@ export function createMoves({ connection, wallet, jupiter, cctp, wormhole, maxUn
         await sendLegacy({ transaction: new Transaction().add(open) });
       }
       return sendLegacy({ transaction: await cctp.receiveTransaction(message, attestation) });
+    },
+    /// Takes back the rent of burn event account `eventAccount`, five days after its burn, with the burn's `message`
+    /// and `attestation`; null when the account is gone already.
+    async reclaim({ eventAccount, message, attestation }) {
+      const account = new PublicKey(eventAccount);
+      if (!(await connection.getAccountInfo(account, "confirmed"))) return null;
+      return sendLegacy({ transaction: await cctp.reclaimTransaction(account, message, attestation) });
     },
   };
 }

@@ -35,6 +35,22 @@ function cctpBurn(message) {
   };
 }
 
+/// A CCTP V1 message's domains, from its header (116 bytes: version, source and destination domains, a u64 nonce,
+/// sender, recipient, destination caller; Circle's Message.sol), and its burn message's mint recipient, amount and
+/// sender (BurnMessage.sol: version, burn token, mint recipient, amount, message sender); null when too short.
+function cctpBurnV1(message) {
+  const m = hex(typeof message === "string" ? message : "");
+  const at = (byte, bytes) => m.slice(2 * byte, 2 * (byte + bytes));
+  if (m.length < 2 * (116 + 132)) return null;
+  return {
+    source: Number.parseInt(at(4, 4), 16),
+    destination: Number.parseInt(at(8, 4), 16),
+    recipient: at(116 + 36, 32),
+    amount: BigInt(`0x${at(116 + 68, 32)}`),
+    sender: at(116 + 100, 32),
+  };
+}
+
 /// Wormholescan's API (https://api.wormholescan.io). `fetchImpl` is injectable for tests.
 export function createWormholescan({ url = "https://api.wormholescan.io", fetchImpl = fetch, timeoutMs = 10_000 } = {}) {
   const base = url.replace(/\/+$/, "");
@@ -67,7 +83,7 @@ export function createWormholescan({ url = "https://api.wormholescan.io", fetchI
   };
 }
 
-/// Circle's Iris API, CCTP V2 (https://iris-api.circle.com). `fetchImpl` is injectable for tests.
+/// Circle's Iris API, CCTP V2 and, where Circle still runs it, V1 (https://iris-api.circle.com). `fetchImpl` is injectable for tests.
 export function createIris({ url = "https://iris-api.circle.com", fetchImpl = fetch, timeoutMs = 10_000 } = {}) {
   const base = url.replace(/\/+$/, "");
   return {
@@ -75,8 +91,9 @@ export function createIris({ url = "https://iris-api.circle.com", fetchImpl = fe
     /// null until Circle has attested it. `expect` is the move's: `{destinationDomain, recipient, sender, amount}`; a
     /// message that is not its burn is never taken for it, an answer with none is thrown, and so is the move's when
     /// `verify(message, attestation)` (the other chain's transmitter: `{valid, reason}`) refuses it (RS-14).
-    async message(domain, hash, expect, verify = null) {
-      const path = `/v2/messages/${domain}?transactionHash=${hash}`;
+    async message(domain, hash, expect, verify = null, version = 2) {
+      // Circle still runs V1 on some chains (Sui, Aptos), with its own endpoint and message layout.
+      const path = version === 1 ? `/v1/messages/${domain}/${hash}` : `/v2/messages/${domain}?transactionHash=${hash}`;
       const response = await fetchImpl(`${base}${path}`, { signal: AbortSignal.timeout(timeoutMs) });
       if (response.status === 404) return null;
       if (!response.ok) throw new Error(`Iris ${response.status} on ${path}`);
@@ -84,11 +101,12 @@ export function createIris({ url = "https://iris-api.circle.com", fetchImpl = fe
       const messages = Array.isArray(body?.messages) ? body.messages : [];
       let pending = messages.length === 0;
       for (const m of messages) {
-        if (m.status !== "complete" || !m.attestation || m.attestation === "PENDING") {
+        // V1 answers carry no status, only an attestation that reads PENDING until Circle signs it.
+        if ((version !== 1 && m.status !== "complete") || !m.attestation || m.attestation === "PENDING") {
           pending = true;
           continue;
         }
-        const burn = cctpBurn(m.message);
+        const burn = version === 1 ? cctpBurnV1(m.message) : cctpBurn(m.message);
         if (
           burn?.source === domain &&
           burn.destination === expect.destinationDomain &&

@@ -4,8 +4,9 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseRestockConfig } from "../../restock/config.mjs";
-import { evmWord, resumeDecision } from "../../restock/solana-sending.mjs";
-import { signerEnv, startSigner } from "../../restock/solana.mjs";
+import { resumeDecision } from "../../restock/solana-sending.mjs";
+import { evmWord, startSigner } from "../../restock/signer-home.mjs";
+import { signerEnv } from "../../restock/solana.mjs";
 import { foreignControl, slippageFor, tokenAmount, unitLimit, unitPriceOf, MAX_COMPUTE_UNITS } from "../../restock/solana/checks.mjs";
 
 const VALID = {
@@ -124,14 +125,14 @@ process.stdin.on("data", (c) => {
 });
 `,
   );
-  const ask = startSigner({ env: { PATH: process.env.PATH, ONLY: "this" }, path: fake, timeoutMs: 5_000 });
+  const ask = startSigner({ env: { PATH: process.env.PATH, ONLY: "this" }, path: fake, label: "solana", timeoutMs: 5_000 });
   const [slow, fast] = await Promise.all([ask("echo", { wait: 50, n: 1 }), ask("echo", { wait: 0, n: 2 })]);
   assert.equal(slow.n, 1, "each answer reaches its own request");
   assert.equal(fast.n, 2);
   const keys = await ask("env");
   assert.ok(keys.includes("ONLY") && !keys.includes("TREASURY_KEY"), "the child sees only the environment it was given");
   await assert.rejects(ask("boom"), /solana: no route/);
-  await assert.rejects(ask("exit"), /the Solana signer exited \(3\)/);
+  await assert.rejects(ask("exit"), /the solana signer exited \(3\)/);
   assert.equal((await ask("echo", { wait: 0, n: 3 })).n, 3, "started again on the next request");
   await assert.rejects(ask("echo", { wait: 60_000 }, 100), /did not answer echo/);
   await ask("exit").catch(() => {});

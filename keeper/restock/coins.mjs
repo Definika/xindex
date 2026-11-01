@@ -2,8 +2,9 @@
 // `npm install`. `test/unit/restock-coins.test.mjs` pins every coin against script/MainnetAddresses.sol and
 // script/PythIds.sol; the home-chain addresses are checked on their own chains before the service sends anything.
 
-/// Each home chain: its Wormhole chain id, its platform, its gas coin, the stablecoin its float is kept in, and its
-/// CCTP domain (null where Circle's CCTP does not run, so its float is topped up by hand).
+/// Each home chain: its Wormhole chain id, its platform, its gas coin, the stablecoin its float is kept in, its CCTP
+/// domain (null where Circle's CCTP does not run, so its float is topped up by hand), and the CCTP version Circle runs
+/// there: V2 on the EVM chains and Solana, V1 still on Sui and Aptos (Circle's guidance, read on 2026-11-01).
 export const CHAINS = Object.freeze({
   bsc: {
     wormhole: 4,
@@ -13,6 +14,7 @@ export const CHAINS = Object.freeze({
     // BNB Chain's Binance-Peg coins trade against Binance-Peg USDT; BNB Chain has no CCTP.
     float: { symbol: "USDT", id: "0x55d398326f99059fF775485246999027B3197955", decimals: 18 },
     cctpDomain: null,
+    cctpVersion: null,
   },
   avalanche: {
     wormhole: 6,
@@ -21,6 +23,7 @@ export const CHAINS = Object.freeze({
     gas: { symbol: "AVAX", decimals: 18 },
     float: { symbol: "USDC", id: "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E", decimals: 6 },
     cctpDomain: 1,
+    cctpVersion: 2,
   },
   optimism: {
     wormhole: 24,
@@ -29,6 +32,7 @@ export const CHAINS = Object.freeze({
     gas: { symbol: "ETH", decimals: 18 },
     float: { symbol: "USDC", id: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85", decimals: 6 },
     cctpDomain: 2,
+    cctpVersion: 2,
   },
   base: {
     wormhole: 30,
@@ -37,6 +41,7 @@ export const CHAINS = Object.freeze({
     gas: { symbol: "ETH", decimals: 18 },
     float: { symbol: "USDC", id: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", decimals: 6 },
     cctpDomain: 6,
+    cctpVersion: 2,
   },
   solana: {
     wormhole: 1,
@@ -44,6 +49,7 @@ export const CHAINS = Object.freeze({
     gas: { symbol: "SOL", decimals: 9 },
     float: { symbol: "USDC", id: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", decimals: 6 },
     cctpDomain: 5,
+    cctpVersion: 2,
   },
   sui: {
     wormhole: 21,
@@ -51,6 +57,7 @@ export const CHAINS = Object.freeze({
     gas: { symbol: "SUI", decimals: 9 },
     float: { symbol: "USDC", id: "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC", decimals: 6 },
     cctpDomain: 8,
+    cctpVersion: 1,
   },
   aptos: {
     wormhole: 22,
@@ -58,6 +65,7 @@ export const CHAINS = Object.freeze({
     gas: { symbol: "APT", decimals: 8 },
     float: { symbol: "USDC", id: "0xbae207659db88bea0cbead6da0ed00aac12edcdda169e591cd41c94180b46f3b", decimals: 6 },
     cctpDomain: 9,
+    cctpVersion: 1,
   },
   algorand: {
     wormhole: 8,
@@ -66,6 +74,7 @@ export const CHAINS = Object.freeze({
     // Algorand's USDC is Circle's own asset, but Algorand has no CCTP.
     float: { symbol: "USDC", id: "31566704", decimals: 6 },
     cctpDomain: null,
+    cctpVersion: null,
   },
 });
 

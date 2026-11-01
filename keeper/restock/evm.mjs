@@ -28,6 +28,10 @@ const TOKEN_MESSENGER_V2 = "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d";
 const MESSAGE_TRANSMITTER_V2 = "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64";
 /// CCTP V2's finality for a standard transfer: the source chain's own finality, and no fee.
 const STANDARD_FINALITY = 2000;
+/// CCTP V1's contracts on Ethereum, for the chains where Circle still runs V1 (Sui, Aptos): Circle's addresses, read
+/// on 2026-11-01 (developers.circle.com/cctp/v1/evm-smart-contracts).
+const TOKEN_MESSENGER_V1 = "0xBd3fa81B58Ba92a82136038B25aDec7066af3155";
+const MESSAGE_TRANSMITTER_V1 = "0x0a992d191DEeC32aFe36203Ad87D7d289a738F81";
 
 /// Each chain's Wormhole Token Bridge, CCTP domain, and, on a home chain, the Uniswap V3 fork its coins trade on, in
 /// the route search's terms (`bot/routes.mjs`): its float as "usdc", its wrapped gas coin as "weth". Every address was
@@ -131,6 +135,9 @@ export const ABI = Object.freeze({
   tokenMessenger: parseAbi([
     "function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken, bytes32 destinationCaller, uint256 maxFee, uint32 minFinalityThreshold)",
   ]),
+  tokenMessengerV1: parseAbi([
+    "function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken) returns (uint64)",
+  ]),
   messageTransmitter: parseAbi([
     "function receiveMessage(bytes message, bytes attestation) returns (bool)",
     "function usedNonces(bytes32 nonce) view returns (uint256)",
@@ -147,6 +154,14 @@ export function vaaHash(vaa) {
 
 /// A CCTP V2 message's nonce: 32 bytes after its version and its two domains.
 export const cctpNonce = (message) => `0x${message.slice(2 + 24, 2 + 24 + 64)}`;
+
+/// Whether `message` is a CCTP V1 message: its version, the first four bytes, is 0 (V2's is 1).
+export const isCctpV1 = (message) => Number.parseInt(message.slice(2, 10), 16) === 0;
+
+/// The key under which a transmitter records `message` received: V2 keys by the message's nonce, V1 by
+/// keccak256(abi.encodePacked(uint32 sourceDomain, uint64 nonce)) (Circle's MessageTransmitter.sol).
+export const usedNonceKey = (message) =>
+  isCctpV1(message) ? keccak256(`0x${message.slice(2 + 8, 2 + 16)}${message.slice(2 + 24, 2 + 40)}`) : cctpNonce(message);
 
 /// An EVM address as Wormhole and CCTP encode a recipient: left-padded to 32 bytes.
 export const word = (address) => pad(address, { size: 32 });
@@ -216,12 +231,16 @@ export function createEvm({ name, rpcUrl, key, journal }) {
     return sequence;
   }
 
+  /// The transmitter that receives `message` here: V1's for a V1 message, which only Ethereum takes (from Sui and
+  /// Aptos), V2's otherwise.
+  const transmitterFor = (message) => (isCctpV1(message) ? MESSAGE_TRANSMITTER_V1 : MESSAGE_TRANSMITTER_V2);
   const receiveRequest = (message, attestation) => ({
-    to: MESSAGE_TRANSMITTER_V2,
+    to: transmitterFor(message),
     abi: ABI.messageTransmitter,
     functionName: "receiveMessage",
     args: [message, attestation],
   });
+  const received = async (message) => (await read(transmitterFor(message), ABI.messageTransmitter, "usedNonces", [usedNonceKey(message)])) !== 0n;
 
   return {
     name,
@@ -251,25 +270,31 @@ export function createEvm({ name, rpcUrl, key, journal }) {
     /// Whether this chain's CCTP transmitter would receive `message` with `attestation`, before the move stores them: a
     /// simulation, or the message received already (RS-14).
     verifyCctp: async (message, attestation) => {
-      const r = { to: MESSAGE_TRANSMITTER_V2, abi: ABI.messageTransmitter, functionName: "receiveMessage", args: [message, attestation] };
+      const r = receiveRequest(message, attestation);
       try {
         await client.simulateContract({ account, address: r.to, abi: r.abi, functionName: r.functionName, args: r.args });
         return { valid: true, reason: "" };
       } catch (error) {
         if (!isRevert(error)) throw error;
-        const used = (await read(MESSAGE_TRANSMITTER_V2, ABI.messageTransmitter, "usedNonces", [cctpNonce(message)])) !== 0n;
+        const used = await received(message);
         return { valid: used, reason: used ? "" : revertReason(error) };
       }
     },
     transferCompleted: (vaa) => read(def.tokenBridge, ABI.tokenBridge, "isTransferCompleted", [vaaHash(vaa)]),
-    cctpReceived: async (message) => (await read(MESSAGE_TRANSMITTER_V2, ABI.messageTransmitter, "usedNonces", [cctpNonce(message)])) !== 0n,
-    /// The CCTP burn of `amount` USDC to `recipient` on `domain`, as a request for {commit}.
-    burnRequest: (amount, domain, recipient) => ({
-      to: TOKEN_MESSENGER_V2,
-      abi: ABI.tokenMessenger,
-      functionName: "depositForBurn",
-      args: [amount, domain, word(recipient), def.usdc ?? def.market.usdc, `0x${"00".repeat(32)}`, 0n, STANDARD_FINALITY],
-    }),
+    cctpReceived: received,
+    /// The CCTP burn of `amount` USDC to `recipient` (an address or a word) on `domain`, as a request for {commit}:
+    /// V2's, or V1's on Ethereum for a chain Circle still serves with V1 (`version` 1).
+    burnRequest: (amount, domain, recipient, version = 2) =>
+      version === 1
+        ? { to: TOKEN_MESSENGER_V1, abi: ABI.tokenMessengerV1, functionName: "depositForBurn", args: [amount, domain, word(recipient), def.usdc ?? def.market.usdc] }
+        : {
+            to: TOKEN_MESSENGER_V2,
+            abi: ABI.tokenMessenger,
+            functionName: "depositForBurn",
+            args: [amount, domain, word(recipient), def.usdc ?? def.market.usdc, `0x${"00".repeat(32)}`, 0n, STANDARD_FINALITY],
+          },
+    /// The token messenger a burn of CCTP `version` spends the USDC through, which the burn's approval names.
+    tokenMessengerFor: (version) => (version === 1 ? TOKEN_MESSENGER_V1 : TOKEN_MESSENGER_V2),
     receiveRequest,
     /// Receives CCTP `message` with `attestation` here: the transmitter counts each message once.
     receive: (message, attestation) => complete(receiveRequest(message, attestation)),

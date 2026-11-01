@@ -131,6 +131,10 @@ export function createJournal({ load, save, now = () => Math.floor(Date.now() / 
       return usd;
     },
     /// Forgets moves that settled more than `days` ago; a day's buys stay, for the budget.
+    /// Every move, settled or not, for which `predicate(move)` holds: read only.
+    find(predicate) {
+      return Object.values(state.moves).filter(predicate);
+    },
     prune(days = 7) {
       const before = now() - Math.max(days, 1) * DAY;
       const old = Object.values(state.moves).filter((m) => settled(m) && m.updatedAt < before);
