@@ -155,6 +155,7 @@ Router's encoding, not on Sepolia.
 | Uniswap Universal Router | `0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b` |
 | Uniswap V4 PoolManager | `0xE03A1074c86CFeDd5C142C4F04F1a1536e203543` |
 | Uniswap QuoterV2 | `0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3` |
+| Uniswap SwapRouter02 | `0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E` |
 | Uniswap V3 factory | `0x0227628f3F023bb0B980b67D528571c95c6DaC1c` |
 | Uniswap NonfungiblePositionManager | `0x1238536071E1c677A632429e3655c799b22cDA52` |
 | WeightedIndexFactory (v5, blocks 11,998,381 to 11,998,385 with the next four) | `0x787139b915753F0CfFfa14708D1e665dCf5AA0bA` |
@@ -166,6 +167,7 @@ Router's encoding, not on Sepolia.
 | Owner (2-of-3 Safe) | `0x2Fb4b72C689E21D0d33Bd9D66DbEAdC60b6b0CA2` |
 | Guardian | `0x8cef9aAa300aA0A1EA5A0D8593EFc9ADED7B55a1` |
 | Pyth | `0xDd24F84d36BF92C65F92307595335bdFab5Bbd21` |
+| Wormhole Token Bridge | `0xDB5492265f6038831E89f495670FF909aDe94bd9` |
 | tUSDC (FaucetToken, 6 decimals) | `0xD1aF4223B129071f7a1a27ED367E4D72cd7cF8D3` |
 | tUSDT (FaucetToken, 6 decimals; no Uniswap pool yet, so only limit orders use it) | `0x33780f7352fA32D4736449516066DF56C7DcF1c1` |
 | tWBTC / tLINK / tUNI (FaucetToken) | `0x656C9999ad6092F813996C30a2dbe89Ff2F670A9` / `0xC02F993785FC45cF48bF61c24DCbB11F9085A4E4` / `0xc34fE6c23897ae506368cF3acb0Db96d6D63Bf85` |
@@ -200,3 +202,27 @@ days, and a rebalance can start an index's interval, at least 7 days, after its 
 whose fill needs a signed Pyth update, as on mainnet. The test pools are shallow and nobody arbitrages them, so zap
 prices on this market say nothing about mainnet. `test/fork/WeightedExecutorV3.sol` fills auctions through
 SwapRouter02; it is a test fixture without slippage limits, so never fund it on mainnet.
+
+### The keeper on Sepolia
+
+The keeper (`keeper/`) runs on Sepolia with `CHAIN_ID=11155111`, which takes the market of the table above. It serves
+`MintRequests` requests only, `FILL_AUCTIONS=0`: the hub deployed there is the build of `07aeae1`, whose
+`startRebalance` and `previewRebalance` predate RX-3 and AU-2, so this keeper can neither start nor fill its auctions.
+A request fill values the basket at Hermes' signed prices, verified by Sepolia's Pyth contract, so it needs
+`PYTH_API_KEY` too; the stand-ins are priced at the real coins' feeds, and the backend's market maker keeps the test
+pools at those prices. A fill through Sepolia's Pyth has not been tried yet.
+
+```bash
+cd keeper
+# the executor: SwapRouter02, tUSDC, the factory, MintRequests, the Token Bridge, its owner, the keeper's address
+forge create src/KeeperExecutor.sol:KeeperExecutor --rpc-url $SEPOLIA_RPC_URL --account sepolia-deployer --broadcast \
+  --gas-limit 16000000 --constructor-args 0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E \
+  0xD1aF4223B129071f7a1a27ED367E4D72cd7cF8D3 0x787139b915753F0CfFfa14708D1e665dCf5AA0bA \
+  0x5b092e8A8ab29A12e2D91bE96C307759B2a12b81 0xDB5492265f6038831E89f495670FF909aDe94bd9 <owner> <keeper>
+# the owner lets request fills spend the float, and the float is tUSDC from the faucet
+cast send <executor> "setRequestUsdcAllowance(uint256)" 1000000000 --rpc-url $SEPOLIA_RPC_URL --account <owner>
+cast send 0xD1aF4223B129071f7a1a27ED367E4D72cd7cF8D3 "transfer(address,uint256)" <executor> <amount> --rpc-url $SEPOLIA_RPC_URL --account <holder>
+npm install
+CHAIN_ID=11155111 FILL_AUCTIONS=0 RPC_URL=$SEPOLIA_RPC_URL KEEPER_KEY=... FACTORY=0x787139b915753F0CfFfa14708D1e665dCf5AA0bA \
+  EXECUTOR=<executor> PYTH_API_KEY=... npm start
+```
