@@ -23,6 +23,7 @@ import { parseRestockConfig } from "./restock/config.mjs";
 import { ABI, createEvm, createEvmHome, word } from "./restock/evm.mjs";
 import { createSolanaHome } from "./restock/solana.mjs";
 import { createSuiHome } from "./restock/sui.mjs";
+import { createAptosHome } from "./restock/aptos.mjs";
 import { createJournal, fileStore } from "./restock/journal.mjs";
 import { plan } from "./restock/plan.mjs";
 
@@ -47,6 +48,7 @@ for (const [name, chain] of Object.entries(cfg.chains)) {
   if (chain.platform === "evm") homes[name] = createEvmHome({ name, rpcUrl: chain.rpcUrl, key: chain.key, journal, cfg: cfg.plan });
   else if (chain.platform === "solana") homes[name] = createSolanaHome({ settings: chain, coins, journal, cfg: cfg.plan, verifyVaa: eth.verifyVaa });
   else if (chain.platform === "sui") homes[name] = createSuiHome({ settings: chain, coins, journal, cfg: cfg.plan, verifyVaa: eth.verifyVaa });
+  else if (chain.platform === "aptos") homes[name] = createAptosHome({ settings: chain, coins, journal, cfg: cfg.plan, verifyVaa: eth.verifyVaa });
   else throw new Error(`${name}'s coins (${coins.map((c) => c.symbol).join(", ")}) need their ${chain.platform} adapter; leave them out of RESTOCK_COINS`);
 }
 const coinOf = (symbol) => cfg.coins.find((c) => c.symbol === symbol);

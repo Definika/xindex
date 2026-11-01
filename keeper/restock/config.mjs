@@ -101,6 +101,13 @@ export function parseRestockConfig(env) {
         problems.push("JUPITER_PROGRAMS must be base58 program ids, comma-separated");
       }
     }
+    if (chain === "aptos") {
+      // The Aptos signer's swaps go through Panora's API, which wants a key (its docs publish a public one).
+      Object.assign(config.chains.aptos, {
+        panoraApiKey: required("PANORA_API_KEY", /^\S+$/, "Panora's API key"),
+        panoraUrl: get("PANORA_URL") ? required("PANORA_URL", URL, "an http(s) URL") : null,
+      });
+    }
     config.plan.gasMin.set(chain, GAS_MIN[chain]);
   }
 
