@@ -108,6 +108,10 @@ export function parseRestockConfig(env) {
         panoraUrl: get("PANORA_URL") ? required("PANORA_URL", URL, "an http(s) URL") : null,
       });
     }
+    if (chain === "algorand") {
+      // The indexer that confirms what algod no longer remembers (it keeps 1000 rounds).
+      config.chains.algorand.indexerUrl = get("ALGORAND_INDEXER_URL") ? required("ALGORAND_INDEXER_URL", URL, "an http(s) URL") : null;
+    }
     config.plan.gasMin.set(chain, GAS_MIN[chain]);
   }
 

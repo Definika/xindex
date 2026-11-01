@@ -186,20 +186,27 @@ Depth read on 2026-10-19, selling $3,000: LTC 88 bps, DOT 73, OP 88; selling $10
 AERO 46. **ATOM is not served** (the owner's call of 2026-10-20): Binance-Peg ATOM, the only source its copy redeems
 for, has almost no market on BNB Chain (selling $500 lost 305 bps on PancakeSwap v3, $1,000 lost 22% on v2), and
 Ethereum's other ATOM tokens, Gravity Bridge's and Axelar's, are other bridges with no Uniswap market. An index holding
-ATOM fills only from stock the operator adds, within its stock allowance. SUI, APT and ALGO wait for their chains'
-adapters; the service refuses to start with them in `RESTOCK_COINS`.
+ATOM fills only from stock the operator adds, within its stock allowance.
 
-**JUP and PYTH, on Solana** (opt-in, named in `RESTOCK_COINS`; `design/2026-11-01-non-evm-restock.md`): bought and
-sold through Jupiter's Swap V2, bridged with Wormhole's own SDK, and their float moved by CCTP V2. Solana's libraries
-and key live in a process of their own, the signer (`restock/solana/`, its own `package.json` and lockfile: run
-`npm ci --ignore-scripts` there), which the service starts with an environment naming only the Solana RPC, the Solana
-key and Jupiter's key, never the treasury's. The signer builds and signs each move and checks it first by simulation:
-it may move the wallet's coins only as the move says, leave no delegate or close authority on any of them, and call
-only the programs the move needs; the service journals the signed move before sending it, sends the same bytes again
-while its blockhash may still land, and drops it once the finalized block height has passed it. Solana's bridge pays a
-token account, so the executor pins, for each of these coins, the wallet's associated token account for its mint, which
-the service prints at startup when it is missing; and the Solana wallet needs SOL for fees and for the rent of the
-accounts its moves open.
+**JUP and PYTH (Solana), SUI, APT and ALGO** (opt-in, named in `RESTOCK_COINS`; `design/2026-11-01-non-evm-restock.md`):
+each chain's libraries and key live in a process of their own, its signer (`restock/solana/`, `restock/sui/`,
+`restock/aptos/`, `restock/algorand/`, each with its own `package.json` and lockfile: run `npm ci --ignore-scripts` in
+each one served),
+which the service starts with an environment naming only that chain's RPC, its key and its venue's key, never the
+treasury's (`signer-home.mjs`). Bridging goes through Wormhole's own SDK, the float through CCTP V2 (Circle's programs
+on Solana, its scripts on Sui and Aptos; Algorand has no CCTP, so its USDC float is topped up by hand, as BNB Chain's
+is), and swaps through Jupiter's Swap V2 (Solana), Cetus's aggregator (Sui), Panora (Aptos) and Tinyman v2's USDC/ALGO
+pool (Algorand), each with its on-chain minimum at the plan's floor or above. A signer builds and signs each move and
+first checks it by simulation: the wallet's coins may move only as the move says, and on Solana no delegate or close
+authority may be left on its token accounts and a swap may call only Jupiter's program. The service journals the signed
+move before asking the signer to send it, has it sent again while it may still land, and drops it once it cannot:
+Solana's blockhash expired at finalized height, Sui's gas coin moved without it or its epoch ended, Aptos's sequence
+number passed or its expiry reached, Algorand's last valid round passed. Sui's, Aptos's and Algorand's signers keep one
+transaction in flight at a time, and re-send by themselves only the steps that complete a move. Solana's bridge pays a
+token account, so the executor pins, for JUP and PYTH, the wallet's associated token account for each mint; Sui's,
+Aptos's and Algorand's pay the wallet itself. The service prints each missing pin at startup. Each wallet needs its
+chain's gas coin, and on Solana the rent of the accounts its moves open, which a burn's event account returns five days
+on.
 
 **Setup, once, by `OWNER`:** deploy the executor with Wormhole's Token Bridge; `setTreasury(<treasury address>)`;
 `setHomeRecipient(<Wormhole chain id>, <copy>, <treasury address, left-padded to 32 bytes>)` for each coin served (BNB
@@ -233,6 +240,11 @@ each chain and the stock, and nothing beyond it.
 | `SOLANA_RPC_URL`, `SOLANA_KEY` | required for JUP, PYTH | Solana's JSON-RPC, and the service's Solana wallet, its 64-byte secret key in base58; both go to the signer alone. |
 | `JUPITER_API_KEY` | required for JUP, PYTH | Jupiter's Swap API key (its portal), which every Swap V2 call needs. |
 | `JUPITER_URL`, `JUPITER_PROGRAMS`, `SOLANA_MAX_UNIT_PRICE` | `https://api.jup.ag`, none, `1000000` | Jupiter's API; more Jupiter program ids a swap may call; the most micro-lamports per compute unit a transaction bids. |
+| `SUI_RPC_URL`, `SUI_KEY` | required for SUI | A Sui gRPC fullnode (`https://fullnode.mainnet.sui.io:443`) and the wallet's `suiprivkey1...` key; both go to the Sui signer alone. |
+| `APTOS_RPC_URL`, `APTOS_KEY` | required for APT | An Aptos fullnode's REST API (`https://api.mainnet.aptoslabs.com/v1`) and the wallet's 32-byte Ed25519 key in hex. |
+| `PANORA_API_KEY`, `PANORA_URL` | required for APT, `https://api.panora.exchange` | Panora's API key (its docs publish a public one) and its API. |
+| `ALGORAND_ALGOD_URL`, `ALGORAND_MNEMONIC` | required for ALGO | An algod (`https://mainnet-api.algonode.cloud`) and the wallet's 25-word mnemonic; the wallet must hold USDC (asset 31566704), opted in. |
+| `ALGORAND_INDEXER_URL` | `https://mainnet-idx.algonode.cloud` | The indexer that confirms a transaction algod no longer remembers (1000 rounds). |
 | `RESTOCK_BUFFER_BPS` | `1000` | How far above the needs a buy fills. |
 | `RESTOCK_MIN_USD` | `200` | Smallest trade or transfer worth its fees. |
 | `RESTOCK_DAILY_USD` | `20000` | Most the buys of a day may cost; the last one is cut to what is left (RS-7). |

@@ -78,7 +78,11 @@ export function createMoves({ client, keypair, genesis = MAINNET_CHAIN }) {
   async function idle() {
     if (!inflight) return;
     const s = await fate(inflight.digest, inflight.gas, inflight.epoch);
-    if (s.state === "pending") throw new Error(`transaction ${inflight.digest} is still in flight; waiting for it`);
+    if (s.state === "pending") {
+      // Only a completing step is sent again here; a move is the parent's to send, once it is in its journal.
+      if (inflight.resend) await inflight.resend();
+      throw new Error(`transaction ${inflight.digest} is still in flight; waiting for it`);
+    }
     inflight = null;
   }
 
@@ -136,7 +140,7 @@ export function createMoves({ client, keypair, genesis = MAINNET_CHAIN }) {
   async function signed({ bytes, gas, epoch }) {
     const { signature } = await keypair.signTransaction(bytes);
     const digest = TransactionDataBuilder.getDigestFromBytes(bytes);
-    inflight = { digest, gas, epoch: String(epoch) };
+    inflight = { digest, gas, epoch: String(epoch), resend: null };
     return {
       raw: JSON.stringify({ bytes: Buffer.from(bytes).toString("base64"), signature }),
       signature: digest,
@@ -148,7 +152,9 @@ export function createMoves({ client, keypair, genesis = MAINNET_CHAIN }) {
   async function execute(built) {
     const s = await signed(built);
     const { bytes, signature } = JSON.parse(s.raw);
-    const r = await client.executeTransaction({ transaction: Buffer.from(bytes, "base64"), signatures: [signature], include: { effects: true } });
+    const transaction = Buffer.from(bytes, "base64");
+    inflight.resend = () => client.executeTransaction({ transaction, signatures: [signature] }).catch(() => {});
+    const r = await client.executeTransaction({ transaction, signatures: [signature], include: { effects: true } });
     const t = r.Transaction ?? r.FailedTransaction;
     if (!t.status.success) throw new Error(`${s.signature} failed: ${JSON.stringify(t.status.error)}`);
     await client.waitForTransaction({ digest: s.signature });

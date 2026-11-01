@@ -115,7 +115,8 @@ export function createMoves({ aptos, account, panora, fetchImpl = fetch }) {
     if (!inflight) return;
     const s = await fate(inflight.hash, inflight.sequence, inflight.expire);
     if (s.state === "pending") {
-      await aptos.transaction.submit.simple(inflight.submit).catch(() => {});
+      // Only a completing step is sent again here; a move is the parent's to send, once it is in its journal.
+      if (inflight.resend) await inflight.resend();
       throw new Error(`transaction ${inflight.hash} is still in flight; waiting for it`);
     }
     inflight = null;
@@ -170,7 +171,7 @@ export function createMoves({ aptos, account, panora, fetchImpl = fetch }) {
   function signed({ transaction, sequence, expire }) {
     const senderAuthenticator = aptos.transaction.sign({ signer: account, transaction });
     const hash = generateUserTransactionHash({ transaction, senderAuthenticator });
-    inflight = { hash, sequence: String(sequence), expire: String(expire), submit: { transaction, senderAuthenticator } };
+    inflight = { hash, sequence: String(sequence), expire: String(expire), submit: { transaction, senderAuthenticator }, resend: null };
     return {
       raw: JSON.stringify({ transaction: Buffer.from(transaction.bcsToBytes()).toString("base64"), auth: Buffer.from(senderAuthenticator.bcsToBytes()).toString("base64") }),
       signature: hash,
@@ -181,7 +182,9 @@ export function createMoves({ aptos, account, panora, fetchImpl = fetch }) {
   /// Signs and submits `built`, a step that only completes a move, and waits for it; throws if it fails.
   async function execute(built) {
     const s = signed(built);
-    await aptos.transaction.submit.simple(inflight.submit);
+    const submit = inflight.submit;
+    inflight.resend = () => aptos.transaction.submit.simple(submit).catch(() => {});
+    await aptos.transaction.submit.simple(submit);
     const t = await aptos.waitForTransaction({ transactionHash: s.signature });
     inflight = null;
     if (!t.success) throw new Error(`${s.signature} failed: ${t.vm_status}`);
