@@ -15,7 +15,6 @@ import { priceKey } from "./hermes.mjs";
 import * as M from "./math.mjs";
 
 const INT256_MIN = -(2n ** 255n);
-const UINT64_MAX = 2n ** 64n - 1n;
 const HERMES_MS = 5_000;
 const same = (a, b) => a.toLowerCase() === b.toLowerCase();
 const sharePriced = (id) => SHARE_PRICED_IDS.includes(id.toLowerCase());
@@ -39,15 +38,13 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
   /// them, returns the same price, and only when fresh and narrow enough to value anything at (RX-1, RX-9). A price
   /// that is missing, forged, stale or wide is left out, and callers treat its coin as unpriced.
   async function trustedLatest(ids, L) {
-    const { prices, updates } = await hermes.latestSigned(ids, Date.now() + HERMES_MS);
-    if (prices.size === 0 || updates.length === 0) return new Map();
-    const served = ids.filter((id) => prices.has(hermes.key(id)));
-    const fee = await chain.read(pyth, ABI.pyth, "getUpdateFee", [updates], L.number);
-    const [feeds] = await chain.call(
-      { to: pyth, abi: ABI.pyth, functionName: "parsePriceFeedUpdates", args: [updates, served, 0n, UINT64_MAX], value: fee },
-      L.number,
-    );
-    const verified = M.verifiedPrices(prices, feeds, hermes.key);
+    const verified = await hermes.trusted(ids, Date.now() + HERMES_MS, {
+      read: chain.read,
+      call: chain.call,
+      pyth,
+      abi: ABI.pyth,
+      blockNumber: L.number,
+    });
     const fresh = new Map();
     for (const [k, p] of verified) if (M.freshPrice(p, L.timestamp, FRESH_SECONDS, MAX_CONF_BPS)) fresh.set(k, p);
     return fresh;
@@ -126,9 +123,13 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
       st.tokens.map((t) => ({ address: cfg.executor, abi: ABI.executor, functionName: "stockAllowance", args: [t] })),
       L.number,
     );
+    // A stock read that failed is not an empty stock: valued as one, the fill would deliver stock it never counted
+    // and overstate its profit by that stock's value. The check is made again next block (RY-9).
+    if ([...held, ...allowed].some((r) => r.status !== "success")) throw new Error("a stock read failed");
     const routeOf = st.tokens.map(() => "0x");
     const legLimits = st.tokens.map(() => 0n);
     const short = [];
+    const stocked = []; // every leg stock serves, for the restock's board (RZ-3)
     let inventoryUsd = 0;
     let routedUsd = 0;
     const down = (x) => (x * (10_000n - BigInt(cfg.slippageBps))) / 10_000n;
@@ -140,10 +141,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
       if (!p) return { skip: `no fresh, verified price for ${token}` };
       const dec = st.decimals[i];
       const shared = sharePriced(st.ids[i]);
-      const h = M.min(
-        held[i].status === "success" ? held[i].result : 0n,
-        allowed[i].status === "success" ? allowed[i].result : 0n,
-      );
+      const h = M.min(held[i].result, allowed[i].result);
       let route = null;
       if (r.isMint) {
         if (M.deliversSharePricedStock({ need: amount, held: h, sharePriced: shared })) {
@@ -152,13 +150,20 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
         if (amount > h) {
           const shortfall = amount - h;
           route = await routes.best({ key, token, side: "buy", amount: shortfall, fairUsd: M.amountUsd(shortfall, dec, p), blockNumber: L.number });
-          if (!route) {
+          if (route) {
+            routedUsd += M.amountUsd(shortfall, dec, p);
+            const cost = routes.quoteOf({ key, token, side: "buy", amount: shortfall });
+            if (cost) legLimits[i] = M.withTolerance(cost, cfg.slippageBps);
+          }
+        }
+        if (!route) {
+          // Stock serves this leg: the board carries all of it, covered yet or not, so the need stays until the fill
+          // lands rather than leaving the moment the restock's coins do (RZ-3).
+          stocked.push({ token, amount });
+          if (amount > h) {
             short.push({ token, amount });
             continue;
           }
-          routedUsd += M.amountUsd(shortfall, dec, p);
-          const cost = routes.quoteOf({ key, token, side: "buy", amount: shortfall });
-          if (cost) legLimits[i] = M.withTolerance(cost, cfg.slippageBps);
         }
         inventoryUsd += M.amountUsd(M.inventoryDelta({ out: 0n, in: amount, held: h, routed: route !== null }), dec, p);
       } else {
@@ -184,7 +189,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
       const q = routes.quoteOf({ key, token: stable.token, side: stable.side, amount: stable.amount });
       if (q) stableLimit = stable.side === "sell" ? down(q) : M.withTolerance(q, cfg.slippageBps);
     }
-    return { routes: routeOf, legLimits, stableRoute, stableLimit, inventoryUsd, routedVolumeUsdc: M.usdToUsdcCeil(routedUsd), short };
+    return { routes: routeOf, legLimits, stableRoute, stableLimit, inventoryUsd, routedVolumeUsdc: M.usdToUsdcCeil(routedUsd), short, stocked };
   }
 
   /// Request `id`, as a fill this bot could send now: its profit after gas and the transaction, or why not. A request
@@ -209,7 +214,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
     }
     const leg = await legs(id, r, st, amounts, L);
     if (leg.skip) return { ...leg, declined: true };
-    needs?.report(`request:${id}`, "request", leg.short);
+    needs?.report(`request:${id}`, "request", leg.stocked);
     if (leg.short.length) {
       return { skip: `restock: no route and too little stock of ${leg.short.map((s) => s.token).join(", ")}`, declined: true };
     }
@@ -231,7 +236,8 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
     try {
       [usdcDelta, inner] = await chain.call({ to: cfg.executor, abi: ABI.executor, functionName, args }, L.number, over);
     } catch (error) {
-      return { skip: `${functionName} would revert: ${revertReason(error)}`, failed: true };
+      // Only a revert is a failed simulation; an RPC error is retried next block without a strike (RZ-12).
+      return { skip: `${functionName} would revert: ${revertReason(error)}`, failed: chain.isRevert(error) };
     }
     const used = M.txGasUsed(inner, encodeFunctionData({ abi: ABI.executor, functionName, args }));
     if (used > TX_GAS_CAP) return { skip: `${functionName} needs ${used} gas, above EIP-7825's cap`, declined: true };
@@ -255,7 +261,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
     try {
       await chain.call({ to: cfg.executor, abi: ABI.executor, functionName, args: sent, gas }, L.number, over);
     } catch (error) {
-      return { skip: `${functionName} does not fit its gas limit of ${gas}: ${revertReason(error)}`, failed: true };
+      return { skip: `${functionName} does not fit its gas limit of ${gas}: ${revertReason(error)}`, failed: chain.isRevert(error) };
     }
     const tx = {
       to: cfg.executor,
@@ -289,7 +295,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
     for (const { id, reason } of skipped) say(id, `not simulated: ${reason}`);
     const priced = await Promise.all(
       candidates.map(({ id, request }) =>
-        evaluate(id, request, L, ethUsd, tip, feeCap).catch((error) => ({ skip: `check failed: ${revertReason(error)}`, failed: true })),
+        evaluate(id, request, L, ethUsd, tip, feeCap).catch((error) => ({ skip: `check failed: ${revertReason(error)}`, failed: chain.isRevert(error) })),
       ),
     );
     priced.forEach((p, k) => {

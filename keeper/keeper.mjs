@@ -16,7 +16,7 @@
 
 import { renameSync, writeFileSync } from "node:fs";
 import { encodeFunctionData, getAddress } from "viem";
-import { FRESH_SECONDS, HUB_SLOTS, SESSION_IDS, SHARE_PRICED_IDS, TX_GAS_CAP, US_EQUITY_SCHEDULE, parseConfig } from "./bot/config.mjs";
+import { FRESH_SECONDS, HUB_SLOTS, MAX_CONF_BPS, SESSION_IDS, SHARE_PRICED_IDS, TX_GAS_CAP, US_EQUITY_SCHEDULE, parseConfig } from "./bot/config.mjs";
 import { MAX_REVERTED_FILLS, MAX_REVERTED_REQUEST_FILLS, revertedFills } from "./bot/backoff.mjs";
 import { ABI, createChain, revertReason } from "./bot/chain.mjs";
 import { createHermes, priceKey } from "./bot/hermes.mjs";
@@ -102,11 +102,16 @@ async function refresh(L) {
     );
     indexes = found.filter((r) => r.status === "success").map((r) => r.result);
   }
-  const eth = await hermes.latest([cfg.chain.ethPriceId], Date.now() + HERMES_MS);
+  // ETH's price values every fill's gas: Pyth's, confirmed by its contract, and fresh, or none, which fills nothing
+  // until the next refresh finds one (RY-7).
+  const eth = await hermes.trusted([cfg.chain.ethPriceId], Date.now() + HERMES_MS, pythChain(L));
   const p = eth.get(priceKey(cfg.chain.ethPriceId));
-  if (p) ethUsd = M.priceUsd(p);
+  ethUsd = M.freshPrice(p, L.timestamp, FRESH_SECONDS, MAX_CONF_BPS) ? M.priceUsd(p) : null;
   lastRefresh = L.number;
 }
+
+/// Pyth's contract on Ethereum as of block L, for {hermes.verified} and {hermes.trusted}.
+const pythChain = (L) => ({ read: chain.read, call: chain.call, pyth: setup.pyth, abi: ABI.pyth, blockNumber: L.number });
 
 /// The auction of `index` as block L+1 would settle it, at Hermes' update for second t_L. `eta`, when given, is
 /// written into the hub for the call, to see an auction that is not open yet. `maxSupply` is the most shares the fill
@@ -120,6 +125,15 @@ async function preview(index, st, L, keepMask, eta) {
     Number(L.timestamp),
     Date.now() + HERMES_MS,
   );
+  // Every price the fill is valued at must be the signed update's, as Pyth's contract parses it in the hub's window:
+  // the simulation sends the bytes, but the preview, the routes' fair values and the kept coins read these (RY-7).
+  const ids = moving.map((i) => st.ids[i]);
+  const trusted = await hermes.verified(prices, updates, ids, {
+    ...pythChain(L),
+    minPublishTime: L.timestamp,
+    maxPublishTime: L.timestamp + 11n,
+  });
+  for (const id of ids) if (!trusted.has(priceKey(id))) throw new Error(`Hermes' price of ${id} is not its signed update's`);
   const priceOf = (i) => prices.get(priceKey(st.ids[i]));
   // One Pyth feed per component, each price with its moving average, which the preview checks as the fill does (AU-2).
   const struct = (p) => ({ price: p.price, conf: p.conf, expo: p.expo, publishTime: BigInt(p.publishTime) });
@@ -153,8 +167,12 @@ async function legs(index, st, sim, maxIn, L, key) {
     st.tokens.map((t) => ({ address: cfg.executor, abi: ABI.executor, functionName: "stockAllowance", args: [t] })),
     L.number,
   );
+  // A stock read that failed is not an empty stock: valued as one, the fill would deliver stock it never counted
+  // and overstate its profit by that stock's value. The check is made again next block (RY-9).
+  if ([...held, ...allowed].some((r) => r.status !== "success")) throw new Error("a stock read failed");
   const routeOf = st.tokens.map(() => "0x");
   const short = [];
+  const stocked = []; // every leg stock serves, for the restock's board (RZ-3)
   const unsafe = [];
   let inventoryUsd = 0;
   let routedUsd = 0;
@@ -163,10 +181,7 @@ async function legs(index, st, sim, maxIn, L, key) {
     const out = sim.out[i];
     const need = sim.in[i];
     if ((out === 0n && need === 0n) || isUsdc(token)) continue; // a USDC leg is the float itself
-    const h = M.min(
-      held[i].status === "success" ? held[i].result : 0n,
-      allowed[i].status === "success" ? allowed[i].result : 0n,
-    );
+    const h = M.min(held[i].result, allowed[i].result);
     const p = sim.priceOf(i);
     const dec = st.decimals[i];
     const shared = sharePriced(st.ids[i]);
@@ -176,21 +191,28 @@ async function legs(index, st, sim, maxIn, L, key) {
     if (out > 0n) {
       route = await routes.best({ key, token, side: "sell", amount: out, fairUsd: M.amountUsd(out, dec, p), blockNumber: L.number });
       if (route) routedUsd += M.amountUsd(out, dec, p);
-    } else if (maxIn[i] > h) {
-      const shortfall = maxIn[i] - h;
-      route = await routes.best({ key, token, side: "buy", amount: shortfall, fairUsd: M.amountUsd(shortfall, dec, p), blockNumber: L.number });
-      if (!route) {
-        short.push({ token, amount: maxIn[i] });
-        continue;
+    } else {
+      if (maxIn[i] > h) {
+        const shortfall = maxIn[i] - h;
+        route = await routes.best({ key, token, side: "buy", amount: shortfall, fairUsd: M.amountUsd(shortfall, dec, p), blockNumber: L.number });
+        if (route) routedUsd += M.amountUsd(M.max(need - h, 0n), dec, p);
       }
-      routedUsd += M.amountUsd(M.max(need - h, 0n), dec, p);
+      if (!route) {
+        // Stock serves this leg: the board carries all of it, whether stock covers it yet or not, so the need stays
+        // while the fill waits for its price, rather than leaving the moment the restock's coins land (RZ-3).
+        stocked.push({ token, amount: maxIn[i] });
+        if (maxIn[i] > h) {
+          short.push({ token, amount: maxIn[i] });
+          continue;
+        }
+      }
     }
     if (route) routeOf[i] = route;
     // A kept coin counts at no more than its best quote (XS-5).
     const quoteUsdc = out > 0n ? routes.quoteOf({ key, token, side: "sell", amount: out }) : null;
     inventoryUsd += M.stockChangeUsd({ out, in: need, held: h, routed: route !== null, decimals: dec, price: p, quoteUsdc, sharePriced: shared });
   }
-  return { routes: routeOf, inventoryUsd, routedVolumeUsdc: M.usdToUsdcCeil(routedUsd), short, unsafe };
+  return { routes: routeOf, inventoryUsd, routedVolumeUsdc: M.usdToUsdcCeil(routedUsd), short, stocked, unsafe };
 }
 
 /// Simulates the executor's fill of `sim` and prices it: profit after gas, and the transaction that would send it.
@@ -333,7 +355,7 @@ async function evaluateFill(index, keepMask, proposal, L) {
   }
   const maxIn = sim.in.map((x) => M.withTolerance(x, cfg.supplyToleranceBps));
   const leg = await legs(index, st, sim, maxIn, L, `${index}:${proposal}`);
-  needs.report(`${index}:${proposal}`, "fill", leg.short);
+  needs.report(`${index}:${proposal}`, "fill", leg.stocked);
   if (leg.short.length) return say(index, `restock: no route and too little stock of ${tokensOf(leg.short)}`);
   if (leg.unsafe.length) return say(index, `would deliver share-priced stock of ${leg.unsafe.join(", ")}: set its stock allowance to zero`);
   const priced = await priceFill(index, sim, leg, maxIn, L);
@@ -361,13 +383,19 @@ async function evaluateStart(index, proposal, L) {
   const [, , , needMax] = await best.again(atMuMax);
   const maxIn = needMax.map((x) => M.withTolerance(x, cfg.supplyToleranceBps));
   const leg = await legs(index, st, best, maxIn, L, `${index}:${proposal + 1n}`);
-  needs.report(`${index}:${proposal + 1n}`, "start", leg.short);
+  needs.report(`${index}:${proposal + 1n}`, "start", leg.stocked);
   if (leg.short.length) return say(index, `not starting: restock ${tokensOf(leg.short)}`);
   if (leg.unsafe.length) return say(index, `not starting: would deliver share-priced stock of ${leg.unsafe.join(", ")}`);
   const priced = await priceFill(index, best, leg, maxIn, L);
   if (priced.skip) return say(index, `not starting: ${priced.skip}`);
-  if (priced.profit < cfg.minProfitUsd) return say(index, `not starting: best case pays ${priced.profit.toFixed(2)} USD`);
-  return { index, profit: priced.profit, updates: best.updates, T: best.T, feeds: st.ids.length };
+  // The start is this bot's own transaction: its gas, at the limit it is sent with, and Pyth's fee for its update, the
+  // fill's own (`priced.tx.value`), come off what the fill it opens would pay (RZ-14).
+  const startUsd = M.fillCostUsd({ used: M.startGasLimit(st.ids.length), nextBase: M.nextBaseFee(L), tip, ethUsd, pythFee: priced.tx.value });
+  const profit = priced.profit - startUsd;
+  if (profit < cfg.minProfitUsd) {
+    return say(index, `not starting: best case pays ${profit.toFixed(2)} USD after the start's ${startUsd.toFixed(2)}`);
+  }
+  return { index, profit, updates: best.updates, T: best.T, feeds: st.ids.length };
 }
 
 async function startChecks(L, open) {

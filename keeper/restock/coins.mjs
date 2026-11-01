@@ -69,7 +69,7 @@ export const CHAINS = Object.freeze({
   },
 });
 
-/// The thirteen coins: the Ethereum copy (`MainnetAddresses`' constant `name`), its home chain and the token there,
+/// The fourteen coins: the Ethereum copy (`MainnetAddresses`' constant `name`), its home chain and the token there,
 /// its decimals (the copy's and the home token's are the same), its Pyth feed, and the venue the service trades it on.
 /// `isGas` marks a coin that is its home chain's gas coin, of which the service always keeps a reserve.
 export const COINS = Object.freeze(
@@ -79,6 +79,8 @@ export const COINS = Object.freeze(
     { symbol: "LTC", name: "LTC", copy: "0x1cA1Ef3fB8Ff4a480C0ae7eea5f91A24a5BB3344", chain: "bsc", home: "0x4338665cbb7b2485a8855a139b75d5e34ab0db94", decimals: 18, venue: "pancakeswap-v3" },
     { symbol: "DOT", name: "DOT", copy: "0x1839a38E59536D88C25e8E6e0D0f59e05b143ab2", chain: "bsc", home: "0x7083609fce4d1d8dc0c979aab8c869ea2c873402", decimals: 18, venue: "pancakeswap-v3" },
     { symbol: "ATOM", name: "ATOM", copy: "0x7845167B54253269624dBA0cA5Fee87933107b34", chain: "bsc", home: "0x0eb3a705fc54725037cc9e008bdede697f62f335", decimals: 18, venue: "pancakeswap-v3" },
+    // BNB's copy wraps WBNB, an ERC-20 like the others here; the gas reserve is native BNB, so it is no gas coin (RZ-5).
+    { symbol: "BNB", name: "BNB", copy: "0x418D75f65a02b3D53B2418FB8E1fe493759c7605", chain: "bsc", home: "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c", decimals: 18, venue: "pancakeswap-v3" },
     { symbol: "AVAX", name: "AVAX", copy: "0x85f138bfEE4ef8e540890CFb48F620571d67Eda3", chain: "avalanche", home: "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7", decimals: 18, venue: "uniswap-v3" },
     { symbol: "OP", name: "OP", copy: "0x1df721D242E0783F8fCab4A9FfE4F35bdf329909", chain: "optimism", home: "0x4200000000000000000000000000000000000042", decimals: 18, venue: "uniswap-v3" },
     { symbol: "AERO", name: "AERO", copy: "0x750525C1877E30304F1E22b1b49b4C9DdE674ddF", chain: "base", home: "0x940181a94a35a4569e4529a3cdfb74e38fd98631", decimals: 18, venue: "uniswap-v3" },
@@ -98,6 +100,7 @@ export const PRICE_IDS = Object.freeze({
   LTC: "0x6e3f3fa8253588df9326580180233eb791e03b443a3ba7a1d892e73874e19a54",
   DOT: "0xca3eed9b267293f6595901c734c7525ce8ef49adafe8284606ceb307afa2ca5b",
   ATOM: "0xb00b60f88b03a6a625a8d1c048c3f66653edf217439983d037e7222c4e612819",
+  BNB: "0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f",
   AVAX: "0x93da3352f9f1d105fdfe4971cfa80e9dd777bfc5d0f683ebb6e1294b92137bb7",
   OP: "0x385f64d993f7b77d8182ed5003d97c60aa3361f3cecfe711544d2d59165e9bdf",
   AERO: "0x9db37f4d5654aad3e37e2e14ffd8d53265fb3026d1d8f91146539eebaa2ef45f",
@@ -111,8 +114,9 @@ export const PRICE_IDS = Object.freeze({
 /// The coins served when `RESTOCK_COINS` is unset: those whose chain has an adapter and whose home market can take a
 /// restock within the loss bound. ATOM is left out, the owner's call of 2026-10-20: Binance-Peg ATOM, the only source its
 /// copy redeems for, has almost no market on BNB Chain (read on 2026-10-19: selling $500 lost 305 bps on PancakeSwap
-/// v3). JUP, PYTH, SUI, APT and ALGO wait for their chains' adapters.
-export const DEFAULT_COINS = Object.freeze(["XRP", "ADA", "LTC", "DOT", "AVAX", "OP", "AERO"]);
+/// v3). JUP, PYTH, SUI, APT and ALGO wait for their chains' adapters. BNB, listed since 2026-10-18, joined on 2026-11-01
+/// (RZ-5).
+export const DEFAULT_COINS = Object.freeze(["XRP", "ADA", "LTC", "DOT", "BNB", "AVAX", "OP", "AERO"]);
 
 /// The coins of `symbols` (`DEFAULT_COINS` when null), refusing a symbol the table does not know.
 export function coinsOf(symbols) {

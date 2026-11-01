@@ -76,8 +76,8 @@ Where it stands (2026-10-26):
   a stolen keeper key can deliver beyond the owner's figures (RS-1), and bridges spare stock back out, only to
   home-chain wallets the executor's owner pins, to sell there; USDC moves by CCTP, the treasury holding at most the
   owner's figure off the float (RS-2). It runs under a key of its own, the treasury, which the owner pins. Built for
-  the seven EVM-homed coins with a market (XRP, ADA, LTC, DOT on BNB Chain; AVAX, OP, AERO); ATOM has none on BNB
-  Chain, and JUP, PYTH, SUI, APT and ALGO wait for their chains' adapters.
+  the eight EVM-homed coins with a market (XRP, ADA, LTC, DOT and, since 2026-11-01, BNB on BNB Chain; AVAX, OP,
+  AERO); ATOM has none on BNB Chain, and JUP, PYTH, SUI, APT and ALGO wait for their chains' adapters.
 - The security audit of 2026-10-13 (`audit/2026-10-13-security-audit.md`, Cloudflare's security-audit skill, ids
   `CF-1`..`CF-8`) found no exploitable path in the four contracts that hold index funds; its findings in the keeper,
   CheckToken, the deploy script and CI are fixed, CF-3 is a known limitation below, and CF-2 and CF-8 went with the
@@ -105,6 +105,15 @@ Where it stands (2026-10-26):
   three are fixed: a gated index no longer pays a referrer its gate would refuse (AU-1), `previewRebalance` takes
   Pyth's feeds and refuses a price far from its average, as the fill does (AU-2, an ABI change the keeper bot follows),
   and the keeper's redeem fill reads balances after paying the stablecoin (AU-3). The hub is 98 bytes under EIP-170.
+- The red teams of 2026-10-31 (`audit/2026-10-31-red-team.md`, ids `RY-1`..`RY-9`; `audit/2026-10-31-red-team-ii.md`,
+  ids `RZ-1`..`RZ-33`) found no path that takes holders' funds. Fixed on 2026-11-01: the request filler had valued
+  nothing since RX-9's fix, and the restock's RY-6 fix would have stopped it, because viem returns Pyth's parse
+  unwrapped (RZ-1); the restock's halving never quoted (RZ-2); stock left the needs board the moment it landed (RZ-3);
+  the keeper values only prices Pyth's contract confirms, previews included (RY-7); the zap refuses WETH and the
+  call's own token as recipients (RY-1); BNB joined the restock (RZ-5). Open, the owner's calls: a keep-mask start
+  must land in one slot, which a Safe cannot time (RZ-26); a collapsed leg stops the fills far sooner than was
+  documented (RZ-4); issue does not probe a frozen leg (RZ-25); RY-3's self-referral and RY-8's restock churn. The
+  fork suites have not run on the zap's change.
 - v5 was deployed on Sepolia on 2026-10-26 from `07aeae1`, the build before the RX-3 fix, under a 2-of-3 test Safe;
   its four listings can be executed from 2026-10-28 (`docs/deployment.md`, with the addresses). Sepolia runs Glamsterdam
   (EIP-8037): `forge script` broadcasts there need `--gas-estimate-multiplier 900`. The website and its backend, in
@@ -270,6 +279,12 @@ deploy script resolves Pyth, the router and the stablecoins from the address boo
    - The review of 2026-10-31: `AU-1`..`AU-3` (`audit/2026-10-31-review.md`), a test named `test_AU1_...` in
      `test/WeightedHub.fees.t.sol`, `test_AU2_...` in `test/WeightedHub.rebalance.t.sol` with the node test named
      `AU-2: ...` in `keeper/test/unit/hermes.test.mjs`, and `test_AU3_...` in `keeper/test/KeeperExecutor.t.sol`.
+   - The red teams of 2026-10-31: `RY-1`..`RY-9` (`audit/2026-10-31-red-team.md`) and `RZ-1`..`RZ-33`
+     (`audit/2026-10-31-red-team-ii.md`), both drafted with `RT` ids, which the red team of 2026-09-24 holds. A test
+     named `test_RY1_...` in `test/IndexZap.t.sol`, `test_RZ23_...` in `keeper/test/KeeperExecutor.t.sol` or
+     `test_RZ24_...` in `test/Scripts.t.sol`, and node tests named `RY-6, RZ-1: ...`, `RZ-2, RZ-22: ...` and
+     `RZ-5: ...` in `keeper/test/unit/`. Each record's "Status of the fixes" names every test; the ids fixed by
+     documentation, the open ones and the keeper's wiring without a unit harness have none.
    - The skills audit of 2026-10-04: `A7-08`, `A7-12`, `A7-13`, `A7-17`, `A7-18`, `A7-22`, `A1a-05` and `A1a-06`, the
      eight of its findings still open on `main`, fixed on 2026-10-25 (`audit/2026-10-25-skills-audit-port.md`), a
      test named `test_A708_...` or `test_A1a05_...`. The record's status table names every test.

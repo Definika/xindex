@@ -604,7 +604,17 @@ contract WeightedHandler is Test {
         }
         if (!asGuardian) {
             uint256 afterExpiry = eta == 0 ? 0 : eta + index.AUCTION_DURATION() + index.REBALANCE_DELAY();
-            earliest = Math.max(earliest, Math.max(index.restartAllowedAt(), afterExpiry));
+            uint256 holdOff = Math.max(index.restartAllowedAt(), afterExpiry);
+            // The hold-off's other side: the second before it ends, with the interval over, a stranger is refused and
+            // `canStartRebalance` says so (RZ-32).
+            if (holdOff > earliest && block.timestamp < holdOff) {
+                vm.warp(holdOff - 1);
+                bytes[] memory held = pyth.liveUpdates(index, 0);
+                vm.prank(_actor(seed));
+                (bool started,) = address(index).call(abi.encodeCall(IWeightedHub.startRebalance, (0, held)));
+                holdOffMisjudged = holdOffMisjudged || started || index.canStartRebalance();
+            }
+            earliest = Math.max(earliest, holdOff);
         }
         if (block.timestamp < earliest) vm.warp(earliest + bound(seed, 0, 3 days));
         holdOffMisjudged = holdOffMisjudged || (!asGuardian && !index.canStartRebalance());

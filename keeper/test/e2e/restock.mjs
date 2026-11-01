@@ -46,6 +46,7 @@ import { avalanche, base, bsc, mainnet, optimism } from "viem/chains";
 import { createNeeds } from "../../bot/needs.mjs";
 import { EVM_CHAINS } from "../../restock/evm.mjs";
 import { ORPHAN_SECONDS } from "../../restock/sending.mjs";
+import { encodeUpdate, guardianSlots, RECEIVER } from "./pnau.mjs";
 
 const UPSTREAM = process.env.MAINNET_RPC_URL;
 if (!UPSTREAM) {
@@ -253,6 +254,9 @@ async function installSigners(f, coreAddress, cctp) {
 step("Ethereum fork and executor");
 const eth = await fork(UPSTREAM, mainnet);
 await installSigners(eth, await read(eth, ETH_BRIDGE, bridgeAbi, "wormhole"), true);
+// Pyth's receiver verifies the fake Hermes's updates against the test's own five keys (pnau.mjs), since the restock
+// values nothing Pyth's contract has not confirmed (RY-6).
+for (const [slot, value] of guardianSlots()) await eth.test.setStorageAt({ address: RECEIVER, index: slot, value });
 const deployer = privateKeyToAccount(key("deployer")).address;
 const execOwner = privateKeyToAccount(key("owner")).address;
 const treasury = privateKeyToAccount(key("treasury"));
@@ -306,16 +310,23 @@ function serve(port, handler) {
 
 serve(HERMES_PORT, async (url, req) => {
   if (req.headers.authorization !== "Bearer e2e") return [401, { error: "no key" }];
-  const parsed = url.searchParams
+  const publishTime = Math.floor(Date.now() / 1000);
+  const feeds = url.searchParams
     .getAll("ids[]")
     .map((id) => id.replace(/^0x/, "").toLowerCase())
     .filter((id) => prices.has(id))
     .map((id) => {
       const price = BigInt(Math.round(prices.get(id) * 1e8));
-      const at = { price: String(price), conf: String(price / 2000n), expo: -8, publish_time: Math.floor(Date.now() / 1000) };
-      return { id, price: at, ema_price: at };
+      return { id: `0x${id}`, price, conf: price / 2000n, expo: -8 };
     });
-  return [200, { parsed, binary: { encoding: "hex", data: [] } }];
+  const parsed = feeds.map((f) => {
+    const at = { price: String(f.price), conf: String(f.conf), expo: f.expo, publish_time: publishTime };
+    return { id: f.id.slice(2), price: at, ema_price: at };
+  });
+  // Signed with the test's keys, which the Ethereum fork's Pyth receiver holds, so the restock's verified read
+  // (RY-6) confirms exactly these prices.
+  const data = feeds.length === 0 ? [] : [(await encodeUpdate(feeds, publishTime)).slice(2)];
+  return [200, { parsed, binary: { encoding: "hex", data } }];
 });
 
 /// The VAA the guardians would sign for what `emitter` published as `sequence` on Wormhole chain `chain`, for the

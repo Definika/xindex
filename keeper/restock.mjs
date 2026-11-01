@@ -116,8 +116,10 @@ async function advance(move) {
     }
     const { vaa } = journal.get(move.id).data;
     if (!(await to.transferCompleted(vaa))) {
+      // The copy the journal recorded when the move opened, so a coin dropped from RESTOCK_COINS while its transfer
+      // was on its way is still redeemed (RZ-18).
       const request = into
-        ? { to: cfg.executor, abi: ABI.executor, functionName: "redeemBridged", args: [vaa, coinOf(move.coin).copy] }
+        ? { to: cfg.executor, abi: ABI.executor, functionName: "redeemBridged", args: [vaa, move.copy ?? coinOf(move.coin).copy] }
         : { to: to.def.tokenBridge, abi: ABI.tokenBridge, functionName: "completeTransfer", args: [vaa] };
       await to.complete(request);
     }
@@ -147,10 +149,30 @@ async function advance(move) {
 // Reading
 // ---------------------------------------------------------------------
 
-/// Pyth's latest price of every served coin, in USD, fresh and narrow; a coin without one is left out.
+/// Pyth's contract, read once from the executor's factory, as the keeper reads it.
+let pythContract;
+async function pyth() {
+  if (!pythContract) {
+    const factory = await eth.read(cfg.executor, ABI.executor, "FACTORY");
+    pythContract = await eth.read(factory, ABI.factory, "PYTH");
+  }
+  return pythContract;
+}
+
+/// An `eth_call` from the treasury on Ethereum, with `value`, decoded; what Pyth's parse needs its fee sent as.
+async function ethCall({ to, abi, functionName, args, value = 0n }) {
+  const data = encodeFunctionData({ abi, functionName, args });
+  const { data: result } = await eth.client.call({ account: eth.address, to, data, value });
+  return decodeFunctionResult({ abi, functionName, data: result });
+}
+
+/// Pyth's latest price of every served coin, in USD, verified by Pyth's contract on Ethereum, fresh and narrow; a coin
+/// without one is left out. Verified, not taken from Hermes' JSON (RX-9, RY-6): the plan sizes every buy's
+/// `amountInMaximum` and every sale's `amountOutMinimum` at these prices and judges each route against them, so a
+/// forged price would have set the bounds a sandwich takes to.
 async function prices() {
   const ids = cfg.coins.map((c) => PRICE_IDS[c.symbol]);
-  const latest = await hermes.latest(ids, Date.now() + 5_000);
+  const latest = await hermes.trusted(ids, Date.now() + 5_000, { read: eth.read, call: ethCall, pyth: await pyth(), abi: ABI.pyth });
   const now = Math.floor(Date.now() / 1000);
   const out = new Map();
   for (const c of cfg.coins) {
@@ -194,15 +216,17 @@ async function readState() {
 /// The best route for `side` of `amount` of `c` on its home chain, halving the amount, down to RESTOCK_MIN_USD, while
 /// none stays within ROUTE_MAX_LOSS_BPS: a thin pool takes the restock in smaller batches rather than none.
 async function routeFor(c, side, amount, price) {
-  const r = routes[c.chain];
   const block = await homes[c.chain].client.getBlockNumber();
-  for (let a = amount; a > 0n; a /= 2n) {
-    const usd = (Number(a) / 10 ** c.decimals) * price;
-    if (usd < cfg.plan.minUsd) break;
-    const route = await r.best({ key: `restock:${block}`, token: c.home, side, amount: a, fairUsd: usd, blockNumber: block });
-    if (route) return { route, amount: a, usd };
-  }
-  return null;
+  return routes[c.chain].bestBatch({
+    key: `restock:${block}`,
+    token: c.home,
+    side,
+    amount,
+    decimals: c.decimals,
+    price,
+    minUsd: cfg.plan.minUsd,
+    blockNumber: block,
+  });
 }
 
 async function act(a, price) {

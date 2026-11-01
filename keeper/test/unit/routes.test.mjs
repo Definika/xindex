@@ -154,3 +154,30 @@ test("XS-5: pools that quote nothing count as nothing; only a coin with no pool 
   await sell(b, 2_000n * E18, 100n);
   assert.equal(b.quoteOf({ key: KEY, token: Z, side: "sell", amount: 2_000n * E18 }), 2_000n * 10n ** 6n);
 });
+
+test("RZ-2, RZ-22: bestBatch quotes each halving, so a pool that passes only at half the size is used", async () => {
+  const chain = fakeChain();
+  // Z sells at Pyth's $2 up to 1,000 Z and at $1 beyond: a thin pool.
+  chain.call = async ({ args: [, amount] }) => {
+    chain.quotes += 1;
+    return [(amount * (amount <= 1_000n * E18 ? 2_000_000n : 1_000_000n)) / E18, [], [], 0n];
+  };
+  const routes = createRoutes(chain, cfg, { v3Factory: [], v3Pool: [], quoter: [] });
+  const pick = await routes.bestBatch({ key: "restock:100", token: Z, side: "sell", amount: 4_000n * E18, decimals: 18, price: 2, minUsd: 100, blockNumber: 100n });
+  assert.deepEqual(pick, { route: path(Z, 100, MAINNET.usdc), amount: 1_000n * E18, usd: 2_000 });
+  assert.equal(chain.quotes, 3, "4,000 and 2,000 refused, 1,000 taken");
+
+  // Below the minimum the halving stops: nothing is quoted under 100 USD.
+  chain.call = async () => {
+    chain.quotes += 1;
+    return [0n, [], [], 0n];
+  };
+  chain.quotes = 0;
+  assert.equal(await routes.bestBatch({ key: "restock:101", token: Z, side: "sell", amount: 200n * E18, decimals: 18, price: 2, minUsd: 100, blockNumber: 101n }), null);
+  assert.equal(chain.quotes, 3, "400, 200 and 100 USD quoted; 50 USD is below the minimum and never quoted");
+
+  // RZ-22: the amount the plan sized at the minimum is quoted even when floats put it an ulp under.
+  chain.quotes = 0;
+  await routes.bestBatch({ key: "restock:102", token: Z, side: "sell", amount: 50n * E18, decimals: 18, price: 2, minUsd: 100.00000000000001, blockNumber: 102n });
+  assert.equal(chain.quotes, 1, "the first amount is quoted; its halving is not");
+});

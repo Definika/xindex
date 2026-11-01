@@ -137,6 +137,23 @@ export function createRoutes(chain, cfg, abi, market = ETHEREUM_MARKET) {
     return amount < c.amount ? (c.usdc * amount) / c.amount : c.usdc;
   }
 
+  /// {best} for `amount` of `token`, worth `price` USD a whole token of `decimals`, halving the amount, down to `minUsd`,
+  /// while no route stays within ROUTE_MAX_LOSS_BPS: a thin pool takes a restock in smaller batches rather than none.
+  /// Returns the route with the amount and USD value it was found for, or null. Each amount is looked up under a key of
+  /// its own: under one key, {best} answers null without quoting for any amount below one it refused in the block, so
+  /// every halving after the first was never quoted (RZ-2).
+  async function bestBatch({ key, token, side, amount, decimals, price, minUsd, blockNumber }) {
+    for (let a = amount; a > 0n; a /= 2n) {
+      const usd = (Number(a) / 10 ** decimals) * price;
+      // The plan sized `amount` at the minimum or more, in integers; recomputed in floats it can land an ulp under,
+      // so only the halvings are held to it (RZ-22).
+      if (a !== amount && usd < minUsd) break;
+      const route = await best({ key: `${key}:${a}`, token, side, amount: a, fairUsd: usd, blockNumber });
+      if (route) return { route, amount: a, usd };
+    }
+    return null;
+  }
+
   /// Forgets the routes of auctions and requests that are over.
   function forget(keepKeys) {
     for (const k of chosen.keys()) if (!keepKeys.some((key) => k.startsWith(`${key}:`))) chosen.delete(k);
@@ -147,5 +164,5 @@ export function createRoutes(chain, cfg, abi, market = ETHEREUM_MARKET) {
     for (const k of chosen.keys()) if (k.startsWith(`${key}:`)) chosen.delete(k);
   }
 
-  return { best, quoteOf, forget, forgetKey };
+  return { best, bestBatch, quoteOf, forget, forgetKey };
 }

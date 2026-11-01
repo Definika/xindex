@@ -934,6 +934,27 @@ contract IndexZapTest is XindexTest {
         vm.stopPrank();
     }
 
+    /// @dev RY-1. A burn's ether payout sent to WETH's address is wrapped by WETH's fallback and credited to the zap,
+    ///      out of every later call's reach; a token payout sent to its own token's contract, or a mint's shares to its
+    ///      `tokenIn`'s, are kept there. Each recipient reverts before anything moves.
+    function test_RY1_wethAndTheCallsOwnTokenAreNotValidRecipients() public {
+        _mintFor(alice, 2e18, 400e6);
+        vm.startPrank(alice);
+        index.approve(address(zap), 2e18);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(weth)));
+        zap.burnToEth(_burnParams(address(index), 1e18, address(weth), 1, _wethBurnLegs(), address(weth)));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(weth)));
+        zap.burnToToken(_burnParams(address(index), 1e18, address(weth), 1, _wethBurnLegs(), address(weth)));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(usdc)));
+        zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, _burnLegs(address(usdc)), address(usdc)));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(usdc)));
+        zap.mintWithToken(_mintParams(address(index), address(usdc), 1, 1e18, _mintLegs(address(usdc)), address(usdc)));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(weth)));
+        zap.mintWithToken(_mintParams(address(index), address(usdc), 1, 1e18, _mintLegs(address(usdc)), address(weth)));
+        vm.stopPrank();
+        _assertZapEmpty();
+    }
+
     function test_burn_revertsInvalidRecipients() public {
         vm.startPrank(alice);
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);

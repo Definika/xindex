@@ -73,17 +73,19 @@ export function stockChangeUsd({ out, in: need, held, routed, decimals, price, q
 /// allowance to zero, so the leg is bought instead.
 export const deliversSharePricedStock = ({ need, held, sharePriced }) => sharePriced && need > 0n && held > 0n;
 
+/// Whether price `p` ({price, conf, expo, publishTime}) is Pyth's `f`, field for field.
+const samePrice = (p, f) =>
+  p.price === BigInt(f.price) && p.conf === BigInt(f.conf) && p.expo === Number(f.expo) && BigInt(p.publishTime) === BigInt(f.publishTime);
+
 /// Keeps the prices of `prices` (by Hermes key) that Pyth's contract returned identically from `feeds`, its parse of the
-/// same signed update: a price Hermes, or anyone between the bot and Hermes, changed is dropped (RX-9).
+/// same signed update, the moving average carried beside a price included, since the hub checks one against the other
+/// (RX-27): a price Hermes, or anyone between the bot and Hermes, changed is dropped (RX-9, RY-7).
 export function verifiedPrices(prices, feeds, keyOf) {
   const verified = new Map();
   for (const feed of feeds) {
     const k = keyOf(feed.id);
     const p = prices.get(k);
-    const f = feed.price;
-    if (p && p.price === BigInt(f.price) && p.conf === BigInt(f.conf) && p.expo === Number(f.expo) && BigInt(p.publishTime) === BigInt(f.publishTime)) {
-      verified.set(k, p);
-    }
+    if (p && samePrice(p, feed.price) && (p.ema === undefined || samePrice(p.ema, feed.emaPrice))) verified.set(k, p);
   }
   return verified;
 }
