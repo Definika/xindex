@@ -186,8 +186,20 @@ Depth read on 2026-10-19, selling $3,000: LTC 88 bps, DOT 73, OP 88; selling $10
 AERO 46. **ATOM is not served** (the owner's call of 2026-10-20): Binance-Peg ATOM, the only source its copy redeems
 for, has almost no market on BNB Chain (selling $500 lost 305 bps on PancakeSwap v3, $1,000 lost 22% on v2), and
 Ethereum's other ATOM tokens, Gravity Bridge's and Axelar's, are other bridges with no Uniswap market. An index holding
-ATOM fills only from stock the operator adds, within its stock allowance. JUP, PYTH (Solana), SUI, APT and ALGO
-wait for their chains' adapters; the service refuses to start with them in `RESTOCK_COINS`.
+ATOM fills only from stock the operator adds, within its stock allowance. SUI, APT and ALGO wait for their chains'
+adapters; the service refuses to start with them in `RESTOCK_COINS`.
+
+**JUP and PYTH, on Solana** (opt-in, named in `RESTOCK_COINS`; `design/2026-11-01-non-evm-restock.md`): bought and
+sold through Jupiter's Swap V2, bridged with Wormhole's own SDK, and their float moved by CCTP V2. Solana's libraries
+and key live in a process of their own, the signer (`restock/solana/`, its own `package.json` and lockfile: run
+`npm ci --ignore-scripts` there), which the service starts with an environment naming only the Solana RPC, the Solana
+key and Jupiter's key, never the treasury's. The signer builds and signs each move and checks it first by simulation:
+it may move the wallet's coins only as the move says, leave no delegate or close authority on any of them, and call
+only the programs the move needs; the service journals the signed move before sending it, sends the same bytes again
+while its blockhash may still land, and drops it once the finalized block height has passed it. Solana's bridge pays a
+token account, so the executor pins, for each of these coins, the wallet's associated token account for its mint, which
+the service prints at startup when it is missing; and the Solana wallet needs SOL for fees and for the rent of the
+accounts its moves open.
 
 **Setup, once, by `OWNER`:** deploy the executor with Wormhole's Token Bridge; `setTreasury(<treasury address>)`;
 `setHomeRecipient(<Wormhole chain id>, <copy>, <treasury address, left-padded to 32 bytes>)` for each coin served (BNB
@@ -218,6 +230,9 @@ each chain and the stock, and nothing beyond it.
 | `JOURNAL_FILE` | required | Where the service keeps its moves, on the disk before each is sent. Keep it: it is what a restart resumes from, and the service refuses to start on one empty or unreadable (RS-13). |
 | `RESTOCK_COINS` | every coin | Comma-separated symbols to serve. |
 | `BSC_RPC_URL`, `AVALANCHE_RPC_URL`, `OPTIMISM_RPC_URL`, `BASE_RPC_URL` | required for their coins | Each home chain's JSON-RPC. |
+| `SOLANA_RPC_URL`, `SOLANA_KEY` | required for JUP, PYTH | Solana's JSON-RPC, and the service's Solana wallet, its 64-byte secret key in base58; both go to the signer alone. |
+| `JUPITER_API_KEY` | required for JUP, PYTH | Jupiter's Swap API key (its portal), which every Swap V2 call needs. |
+| `JUPITER_URL`, `JUPITER_PROGRAMS`, `SOLANA_MAX_UNIT_PRICE` | `https://api.jup.ag`, none, `1000000` | Jupiter's API; more Jupiter program ids a swap may call; the most micro-lamports per compute unit a transaction bids. |
 | `RESTOCK_BUFFER_BPS` | `1000` | How far above the needs a buy fills. |
 | `RESTOCK_MIN_USD` | `200` | Smallest trade or transfer worth its fees. |
 | `RESTOCK_DAILY_USD` | `20000` | Most the buys of a day may cost; the last one is cut to what is left (RS-7). |

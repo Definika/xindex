@@ -12,6 +12,9 @@ Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)
       Pyth Network's Solidity SDK, Copyright 2025 Pyth Data Association
   keeper/src/interfaces/ITokenBridge.sol
       Wormhole (wormhole-foundation/wormhole)
+  keeper/restock/solana/idl/message_transmitter_v2.json, token_messenger_minter_v2.json
+      Circle's CCTP V2 Solana programs' interface definitions (circlefin/solana-cctp-contracts, examples/target/idl,
+      commit ec16e95d28ee47f7832df4203ae07b5981d146fc); JSON carries no header, so this entry names their source
 
 GNU General Public License v2.0 or later (https://www.gnu.org/licenses/old-licenses/gpl-2.0.html)
   script/interfaces/IUniswapV3PoolSetup.sol, IUniswapV3FactorySetup.sol, IUniswapV3PoolRead.sol,

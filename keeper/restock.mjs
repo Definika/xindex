@@ -14,14 +14,14 @@
 
 import { decodeFunctionResult, encodeFunctionData } from "viem";
 import { MAINNET } from "./bot/config.mjs";
-import { isRevert, revertReason } from "./bot/chain.mjs";
+import { revertReason } from "./bot/chain.mjs";
 import { createHermes, priceKey } from "./bot/hermes.mjs";
 import { readNeeds } from "./bot/needs.mjs";
-import { createRoutes } from "./bot/routes.mjs";
 import { createIris, createWormholescan } from "./restock/attestations.mjs";
 import { CHAINS, PRICE_IDS } from "./restock/coins.mjs";
 import { parseRestockConfig } from "./restock/config.mjs";
-import { ABI, EVM_CHAINS, createEvm, word } from "./restock/evm.mjs";
+import { ABI, createEvm, createEvmHome, word } from "./restock/evm.mjs";
+import { createSolanaHome } from "./restock/solana.mjs";
 import { createJournal, fileStore } from "./restock/journal.mjs";
 import { plan } from "./restock/plan.mjs";
 
@@ -36,29 +36,19 @@ const wormholescan = createWormholescan({ url: process.env.WORMHOLESCAN_URL });
 const iris = createIris({ url: process.env.IRIS_URL });
 const eth = createEvm({ name: "ethereum", rpcUrl: cfg.rpcUrl, key: cfg.treasuryKey, journal });
 
+/// Each home chain's adapter, in the same terms whatever the chain (`restock/evm.mjs` createEvmHome): `check`,
+/// `recipientFor`, `forgetRoutes`, `balance`, `buy`, `sell`, `bridgeIn`, `sequenceOfTx`, `redeem`, `transferCompleted`,
+/// `sweep`, `receive`, `cctpReceived`, `verifyVaa`, `verifyCctp`, `resume`, with `emitter`, `cctpSender` and
+/// `cctpRecipient`.
 const homes = {};
-const routes = {};
 for (const [name, chain] of Object.entries(cfg.chains)) {
-  if (chain.platform !== "evm") {
-    throw new Error(`${name}'s coins (${cfg.coins.filter((c) => c.chain === name).map((c) => c.symbol).join(", ")}) need their ${chain.platform} adapter; leave them out of RESTOCK_COINS`);
-  }
-  homes[name] = createEvm({ name, rpcUrl: chain.rpcUrl, key: chain.key, journal });
-  routes[name] = createRoutes(reader(homes[name].client), { routeMaxLossBps: cfg.plan.maxLossBps }, ABI, EVM_CHAINS[name].market);
+  const coins = cfg.coins.filter((c) => c.chain === name);
+  if (chain.platform === "evm") homes[name] = createEvmHome({ name, rpcUrl: chain.rpcUrl, key: chain.key, journal, cfg: cfg.plan });
+  else if (chain.platform === "solana") homes[name] = createSolanaHome({ settings: chain, coins, journal, cfg: cfg.plan, verifyVaa: eth.verifyVaa });
+  else throw new Error(`${name}'s coins (${coins.map((c) => c.symbol).join(", ")}) need their ${chain.platform} adapter; leave them out of RESTOCK_COINS`);
 }
 const coinOf = (symbol) => cfg.coins.find((c) => c.symbol === symbol);
 const same = (a, b) => a.toLowerCase() === b.toLowerCase();
-
-/// The route search's view of a chain: multicall, eth_call, and which errors are reverts.
-function reader(client) {
-  return {
-    multicall: (contracts, blockNumber) => client.multicall({ contracts, blockNumber, allowFailure: true }),
-    call: async ({ to, abi, functionName, args }, blockNumber) => {
-      const { data } = await client.call({ to, data: encodeFunctionData({ abi, functionName, args }), blockNumber });
-      return decodeFunctionResult({ abi, functionName, data });
-    },
-    isRevert,
-  };
-}
 
 /// Refuses to run unless the executor names this treasury, this bridge and USDC, and every served chain's recipient is
 /// this service's wallet there: without them every move would revert, or bridge to someone else.
@@ -70,13 +60,13 @@ async function checkSetup() {
   if (!same(bridge, MAINNET.tokenBridge)) throw new Error(`the executor bridges through ${bridge}, not Wormhole's Token Bridge`);
   if (!same(usdc, MAINNET.usdc)) throw new Error(`the executor's float is ${usdc}, not USDC`);
   for (const [name, home] of Object.entries(homes)) {
-    const chainId = await home.client.getChainId();
-    if (chainId !== CHAINS[name].evmChainId) throw new Error(`${name}'s RPC serves chain ${chainId}`);
+    await home.check();
     // One recipient per coin and chain: Solana's bridge pays a token account per mint, so the executor pins each coin.
     for (const c of cfg.coins.filter((x) => x.chain === name)) {
       const pinned = await ex("homeRecipient", [CHAINS[name].wormhole, c.copy]);
-      if (!same(pinned, word(home.address))) {
-        throw new Error(`the executor's recipient for ${c.symbol} on ${name} is ${pinned}: the owner must call setHomeRecipient(${CHAINS[name].wormhole}, ${c.copy}, ${word(home.address)})`);
+      const wanted = await home.recipientFor(c);
+      if (!same(pinned, wanted)) {
+        throw new Error(`the executor's recipient for ${c.symbol} on ${name} is ${pinned}: the owner must call setHomeRecipient(${CHAINS[name].wormhole}, ${c.copy}, ${wanted})`);
       }
     }
   }
@@ -109,11 +99,8 @@ async function advance(move) {
     const to = into ? eth : homes[move.chain];
     if (!from || !to) return log(`move ${move.id}`, `waits: ${move.chain} is not served now`);
     if (move.stage === "sent") {
-      if (move.data.sequence === undefined) {
-        const receipt = await from.client.getTransactionReceipt({ hash: move.data.hash });
-        journal.note(move.id, { sequence: (await from.sequenceOf(receipt, from.def.tokenBridge)).toString() });
-      }
-      const vaa = await wormholescan.vaa(from.def.wormhole, from.def.tokenBridge, journal.get(move.id).data.sequence, to.verifyVaa);
+      if (move.data.sequence === undefined) journal.note(move.id, { sequence: (await from.sequenceOfTx(move.data.hash)).toString() });
+      const vaa = await wormholescan.vaa(from.def.wormhole, from.emitter, journal.get(move.id).data.sequence, to.verifyVaa);
       if (!vaa) return;
       journal.advance(move.id, "attested", { vaa });
     }
@@ -121,10 +108,8 @@ async function advance(move) {
     if (!(await to.transferCompleted(vaa))) {
       // The copy the journal recorded when the move opened, so a coin dropped from RESTOCK_COINS while its transfer
       // was on its way is still redeemed (RZ-18).
-      const request = into
-        ? { to: cfg.executor, abi: ABI.executor, functionName: "redeemBridged", args: [vaa, move.copy ?? coinOf(move.coin).copy] }
-        : { to: to.def.tokenBridge, abi: ABI.tokenBridge, functionName: "completeTransfer", args: [vaa] };
-      await to.complete(request);
+      if (into) await eth.complete({ to: cfg.executor, abi: ABI.executor, functionName: "redeemBridged", args: [vaa, move.copy ?? coinOf(move.coin).copy] });
+      else await to.redeem(vaa);
     }
     journal.advance(move.id, "redeemed");
     return log(`move ${move.id}`, `${move.kind} of ${move.coin} landed`);
@@ -137,13 +122,13 @@ async function advance(move) {
   if (!from || !to) return log(`move ${move.id}`, `waits: ${move.chain} is not served now`);
   if (move.stage === "sent") {
     const [fromDomain, toDomain] = funding ? [0, CHAINS[move.chain].cctpDomain] : [CHAINS[move.chain].cctpDomain, 0];
-    const expect = { destinationDomain: toDomain, recipient: to.address, sender: from.address, amount: BigInt(move.amount) };
+    const expect = { destinationDomain: toDomain, recipient: to.cctpRecipient, sender: from.cctpSender, amount: BigInt(move.amount) };
     const m = await iris.message(fromDomain, move.data.hash, expect, to.verifyCctp);
     if (!m) return;
     journal.advance(move.id, "attested", m);
   }
   const { message, attestation } = journal.get(move.id).data;
-  if (!(await to.cctpReceived(message))) await to.complete(to.receiveRequest(message, attestation));
+  if (!(await to.cctpReceived(message))) await to.receive(message, attestation);
   journal.advance(move.id, "received");
   log(`move ${move.id}`, `${move.kind} of ${Number(move.amount) / 1e6} USDC landed on ${funding ? move.chain : "ethereum"}`);
 }
@@ -216,49 +201,21 @@ async function readState() {
 // Acting
 // ---------------------------------------------------------------------
 
-/// The best route for `side` of `amount` of `c` on its home chain, halving the amount, down to RESTOCK_MIN_USD, while
-/// none stays within ROUTE_MAX_LOSS_BPS: a thin pool takes the restock in smaller batches rather than none.
-async function routeFor(c, side, amount, price) {
-  const block = await homes[c.chain].client.getBlockNumber();
-  return routes[c.chain].bestBatch({
-    key: `restock:${block}`,
-    token: c.home,
-    side,
-    amount,
-    decimals: c.decimals,
-    price,
-    minUsd: cfg.plan.minUsd,
-    blockNumber: block,
-  });
-}
-
 async function act(a, price) {
   const c = a.coin ? coinOf(a.coin) : null;
   const h = a.chain ? homes[a.chain] : null;
   if (a.kind === "buy") {
-    const pick = await routeFor(c, "buy", a.amountOut, price);
-    if (!pick) return log(a.coin, `no route on ${a.chain} within ROUTE_MAX_LOSS_BPS for ${a.usd.toFixed(0)} USD or less`);
-    const maxIn = (a.maxIn * pick.amount) / a.amountOut;
-    await h.allow(h.def.market.usdc, h.def.router, maxIn);
-    const params = { path: pick.route, recipient: h.address, amountOut: pick.amount, amountInMaximum: maxIn };
-    await h.commit({ ...a, usd: pick.usd, amountIn: maxIn }, { to: h.def.router, abi: ABI.router, functionName: "exactOutput", args: [params] });
-    return log(a.coin, `bought ${pick.usd.toFixed(0)} USD on ${a.chain}`);
+    const done = await h.buy(a, c, price);
+    if (!done) return log(a.coin, `no route on ${a.chain} within ROUTE_MAX_LOSS_BPS for ${a.usd.toFixed(0)} USD or less`);
+    return log(a.coin, `bought ${done.usd.toFixed(0)} USD on ${a.chain}`);
   }
   if (a.kind === "sell") {
-    const pick = await routeFor(c, "sell", a.amount, price);
-    if (!pick) return log(a.coin, `no route on ${a.chain} to sell within ROUTE_MAX_LOSS_BPS`);
-    const minOut = (a.minOut * pick.amount) / a.amount;
-    await h.allow(c.home, h.def.router, pick.amount);
-    const params = { path: pick.route, recipient: h.address, amountIn: pick.amount, amountOutMinimum: minOut };
-    await h.commit({ ...a, amount: pick.amount }, { to: h.def.router, abi: ABI.router, functionName: "exactInput", args: [params] });
-    return log(a.coin, `sold ${pick.usd.toFixed(0)} USD on ${a.chain}`);
+    const done = await h.sell(a, c, price);
+    if (!done) return log(a.coin, `no route on ${a.chain} to sell within ROUTE_MAX_LOSS_BPS`);
+    return log(a.coin, `sold ${done.usd.toFixed(0)} USD on ${a.chain}`);
   }
   if (a.kind === "bridgeIn") {
-    await h.allow(c.home, h.def.tokenBridge, a.amount);
-    const value = await h.messageFee();
-    const args = [c.home, a.amount, 2, word(cfg.executor), 0, "0x01"];
-    const { id, receipt } = await h.commit(a, { to: h.def.tokenBridge, abi: ABI.tokenBridge, functionName: "transferTokensWithPayload", args, value });
-    if (receipt?.status === "success") journal.note(id, { sequence: (await h.sequenceOf(receipt, h.def.tokenBridge)).toString() });
+    await h.bridgeIn(a, c, word(cfg.executor));
     return log(a.coin, `bridging ${a.usd.toFixed(0)} USD in from ${a.chain}`);
   }
   if (a.kind === "bridgeOut") {
@@ -270,12 +227,11 @@ async function act(a, price) {
   }
   if (a.kind === "fund") {
     await eth.allow(MAINNET.usdc, eth.tokenMessenger, a.amount);
-    await eth.commit(a, eth.burnRequest(a.amount, CHAINS[a.chain].cctpDomain, h.address));
+    await eth.commit(a, eth.burnRequest(a.amount, CHAINS[a.chain].cctpDomain, h.cctpRecipient));
     return log(a.chain, `funding its float with ${Number(a.amount) / 1e6} USDC`);
   }
   if (a.kind === "sweep") {
-    await h.allow(h.def.market.usdc, h.tokenMessenger, a.amount);
-    await h.commit(a, h.burnRequest(a.amount, 0, eth.address));
+    await h.sweep(a, eth.address);
     return log(a.chain, `bringing ${Number(a.amount) / 1e6} USDC home to the treasury`);
   }
   if (a.kind === "draw") {
@@ -290,7 +246,7 @@ async function act(a, price) {
 }
 
 async function round() {
-  for (const r of Object.values(routes)) r.forget([]); // each round searches its routes afresh
+  for (const h of Object.values(homes)) h.forgetRoutes(); // each round searches its routes afresh
   for (const move of journal.pending()) {
     await advance(move).catch((error) => log(`move ${move.id}`, `not moved on: ${revertReason(error)}`));
   }

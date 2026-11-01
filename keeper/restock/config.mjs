@@ -89,6 +89,18 @@ export function parseRestockConfig(env) {
       rpcUrl: required(s.rpc, URL, "an http(s) URL"),
       key: s.key ? required(s.key, s.pattern, s.what) : config.treasuryKey,
     };
+    if (chain === "solana") {
+      // The Solana signer's own settings (solana/signer.mjs): Jupiter's key, which Swap V2 requires, and its options.
+      Object.assign(config.chains.solana, {
+        jupiterApiKey: required("JUPITER_API_KEY", /^\S+$/, "Jupiter's Swap API key"),
+        jupiterUrl: get("JUPITER_URL") ? required("JUPITER_URL", URL, "an http(s) URL") : null,
+        jupiterPrograms: get("JUPITER_PROGRAMS") || null,
+        maxUnitPrice: get("SOLANA_MAX_UNIT_PRICE") ? String(number("SOLANA_MAX_UNIT_PRICE", { min: 1, integer: true })) : null,
+      });
+      if (get("JUPITER_PROGRAMS") && !/^[1-9A-HJ-NP-Za-km-z]{32,44}(,[1-9A-HJ-NP-Za-km-z]{32,44})*$/.test(get("JUPITER_PROGRAMS"))) {
+        problems.push("JUPITER_PROGRAMS must be base58 program ids, comma-separated");
+      }
+    }
     config.plan.gasMin.set(chain, GAS_MIN[chain]);
   }
 
