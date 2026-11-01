@@ -36,6 +36,9 @@ wake.toml
 # The keeper bot
 /keeper/node_modules/
 /keeper/restock/solana/node_modules/
+/keeper/restock/sui/node_modules/
+/keeper/restock/aptos/node_modules/
+/keeper/restock/algorand/node_modules/
 /keeper/out/
 /keeper/cache/
 __pycache__/

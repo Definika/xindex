@@ -15,12 +15,7 @@ export function unitPriceOf(data) {
   return bytes.length === 9 && bytes[0] === 3 ? bytes.readBigUInt64LE(1) : null;
 }
 
-/// The slippage, in basis points, that leaves a quote of `out` with an on-chain minimum of `minOut` at least, rounded
-/// down; null when the quote is below `minOut` already.
-export function slippageFor(out, minOut) {
-  if (out < minOut || out === 0n) return null;
-  return Number(((out - minOut) * 10_000n) / out);
-}
+export { slippageFor } from "../bounds.mjs";
 
 /// An SPL token account's balance, from its data (the amount is the u64 at byte 64), or zero for no account.
 export function tokenAmount(data) {

@@ -1,0 +1,14 @@
+{
+  "name": "xindex-restock-sui",
+  "private": true,
+  "description": "The restock service's Sui signer: builds and signs its Sui moves in a process of its own, holding only the Sui key",
+  "type": "module",
+  "dependencies": {
+    "@cetusprotocol/aggregator-sdk": "1.7.5",
+    "@mysten/sui": "2.31.2",
+    "@wormhole-foundation/sdk-connect": "6.1.5",
+    "@wormhole-foundation/sdk-sui": "6.1.5",
+    "@wormhole-foundation/sdk-sui-core": "6.1.5",
+    "@wormhole-foundation/sdk-sui-tokenbridge": "6.1.5"
+  }
+}

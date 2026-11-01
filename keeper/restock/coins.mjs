@@ -4,7 +4,8 @@
 
 /// Each home chain: its Wormhole chain id, its platform, its gas coin, the stablecoin its float is kept in, its CCTP
 /// domain (null where Circle's CCTP does not run, so its float is topped up by hand), and the CCTP version Circle runs
-/// there: V2 on the EVM chains and Solana, V1 still on Sui and Aptos (Circle's guidance, read on 2026-11-01).
+/// there: V2 on the EVM chains, Solana and Sui (Circle's packages on Sui, CCTP V2 since 2026-10-05; V1 is retired
+/// from 2026-10-31 to 2026-12-01).
 export const CHAINS = Object.freeze({
   bsc: {
     wormhole: 4,
@@ -57,7 +58,7 @@ export const CHAINS = Object.freeze({
     gas: { symbol: "SUI", decimals: 9 },
     float: { symbol: "USDC", id: "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC", decimals: 6 },
     cctpDomain: 8,
-    cctpVersion: 1,
+    cctpVersion: 2,
   },
   aptos: {
     wormhole: 22,

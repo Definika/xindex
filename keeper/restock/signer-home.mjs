@@ -120,7 +120,9 @@ export function createSignerHome({ name, def, signerPath, env, coins, floatId, j
   async function batch({ inputMint, outputMint, amount, minOut, usd }) {
     for (let a = amount, m = minOut, u = usd; a > 0n && u >= cfg.minUsd; a /= 2n, m /= 2n, u /= 2) {
       const r = await ask("buildSwap", { inputMint, outputMint, amount: String(a), minOut: String(m) });
-      if (!r.refused) return { amount: a, usd: u, signed: r };
+      // A venue whose route takes a little less than asked says what it spends (Sui's aggregator).
+      const spent = r.spent === undefined ? a : BigInt(r.spent);
+      if (!r.refused) return { amount: spent, usd: (u * Number(spent)) / Number(a), signed: r };
     }
     return null;
   }
