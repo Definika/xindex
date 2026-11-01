@@ -44,7 +44,9 @@ sell these coins are unaffected either way.
 - A burn's `mintRecipient` on Solana is a USDC token account, and that account must exist when `receiveMessage` runs,
   or the instruction reverts. A burn from Solana writes its message to an event account the sender creates, whose rent
   can be reclaimed five days later.
-- Circle's guidance has Sui (domain 8) and Aptos (domain 9) on CCTP V1 still, and lists no Algorand.
+- Sui (domain 8) and Aptos (domain 9) run CCTP V2, wired to Ethereum's TokenMessengerV2 on chain (a banner on
+  Circle's pages still said V1; its migration guide and the chains say V2, and V1 retires by 2026-12-01). Circle lists
+  no Algorand.
 - Circle's app-level kit (`@circle-fin/bridge-kit`, `@circle-fin/adapter-solana`) runs burn, attestation and mint as one
   call. The restock signs, records and only then broadcasts every move that commits funds, so it cannot hand a whole
   move to such a call; it builds the programs' instructions itself, from Circle's IDLs.
@@ -111,3 +113,23 @@ and Ethereum's core already checks the VAAs the service redeems there (RS-14).
 A Jupiter API key; a Solana wallet for the service, with SOL for fees and rent (every ATA and CCTP event account costs
 rent); the executor owner's `setHomeRecipient` per coin, the Solana ones at the wallet's ATAs, which the service prints
 at startup; and a `restockAllowance` for JUP and PYTH, as for every coin.
+
+## 6. Built (2026-11-01)
+
+All four chains' code, on branch `restock/non-evm`: the executor's per-coin recipient (D1), the chain-neutral moves
+(D2), one signer home for every non-EVM chain (`signer-home.mjs`, `signer-protocol.mjs`), and a signer per chain, each
+its own package, read from a brief of that chain's primary sources:
+
+| Chain | Coins | Venue | Bridge | Float | A move can no longer land when |
+|---|---|---|---|---|---|
+| Solana | JUP, PYTH | Jupiter Swap V2 `/build` | Wormhole SDK | CCTP V2, Circle's IDLs | the finalized height passes its blockhash's |
+| Sui | SUI | Cetus aggregator | Wormhole SDK | CCTP V2, Circle's PTBs | a gas coin moved without it, or its epoch ended |
+| Aptos | APT | Panora (argument 17 the floor) | Wormhole SDK | CCTP V2, Circle's scripts | the sequence passed it, or its expiry |
+| Algorand | ALGO | Tinyman v2 USDC/ALGO pool | Wormhole SDK | by hand (no CCTP) | its last valid round passed |
+
+Every move is simulated before it is signed and its effect on the wallet bounded; the parent journals it before it is
+sent; Sui, Aptos and Algorand keep one transaction in flight and re-send by themselves only completing steps. Checked:
+the keeper's unit suite (146/0), the EVM restock end-to-end test after the refactor (94/0, before the later commits),
+and each chain read-only on mainnet (Solana's transfer and burn accounts, Sui's quote and nonce read, Aptos's payload,
+store derivation and consumed table, Algorand's swaps built from a holder's state). Not yet: an end-to-end test of any
+of the four on a local chain, a live Jupiter build (its API key), and any transaction sent.
