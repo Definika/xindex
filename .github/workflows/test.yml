@@ -206,3 +206,26 @@ jobs:
             exit 1
           fi
           wake detect all src
+
+  # The mutation gate (step 4 of the logic-hardening plan, 2026-10-31): every mutant of test/mutants/mutants.json is
+  # applied in turn and the suite it names must fail. It runs in a job of its own, with no secret and no shared cache,
+  # since it rewrites src/ while it runs. A mutant whose code has changed fails as stale: update its edit with the code.
+  mutants:
+    name: Mutation gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          submodules: true
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with:
+          version: v1.8.1
+          cache: false
+
+      - name: Every mutant is killed
+        run: python3 -I test/mutants/run.py

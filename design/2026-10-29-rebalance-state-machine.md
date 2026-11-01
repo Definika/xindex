@@ -198,9 +198,9 @@ alone (`forge test --match-path test/WeightedHub.states.t.sol`). A mutant is kil
 Sixteen of the seventeen are killed. The first run reported M4, M5, M6 and M17 as survivors because the runner's
 pattern for a failing test stopped at the first `]` and those failures print a bracketed number
 (`RebalanceTooSoon(1801123200 [1.801e9])`); run by hand, M17 failed nine of the eleven tests, and the four were run
-again with the pattern fixed. The runner is not committed: it is a dozen lines of Python that apply one edit to a
-byte copy, run the suite and restore the copy, and `AGENTS.md`'s rule to restore from a byte copy, never from git,
-holds.
+again with the pattern fixed. Since 2026-10-31 every mutant here but M11 is committed as exact edits in
+`test/mutants/mutants.json`, and CI's mutation gate runs them (`test/mutants/run.py`), restoring each file from the
+bytes it read, never from git.
 
 ## 8. Findings
 
