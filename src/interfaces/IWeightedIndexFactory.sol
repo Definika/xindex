@@ -27,7 +27,8 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     /// @param creatorStreamingBps The creator's streaming fee, in basis points of the index's value per year, at most
     ///        MAX_CREATOR_STREAMING_BPS.
     /// @param maxPlatformFeeBps The highest platform fee the creator accepts. The creation reverts if the current
-    ///        policy charges more, so a policy change cannot land between the creator's quote and the creation.
+    ///        policy charges more, so no higher rate can land between the creator's quote and the creation. A policy
+    ///        change still moves the address {predictIndexAddress} gave (RZ-28).
     /// @param maxPlatformStreamingBps The highest platform streaming fee the creator accepts, likewise.
     /// @param rebalanceInterval Seconds between rebalances, within [MIN_REBALANCE_INTERVAL, MAX_REBALANCE_INTERVAL].
     /// @param gated Whether only recipients the creator allows ({setAllowedMinter}) may be issued shares, until the

@@ -4,6 +4,8 @@
 // and response shapes are unchanged. `/v2/updates/price/{t}` returns each feed's first update published at or after t,
 // which is exactly what the hub's parse accepts for a block at t + 12.
 
+import { verifiedPrices } from "./math.mjs";
+
 export class HermesError extends Error {
   constructor(message, { status, permanent = false } = {}) {
     super(message);
@@ -14,6 +16,7 @@ export class HermesError extends Error {
 }
 
 const key = (id) => id.toLowerCase().replace(/^0x/, "");
+const UINT64_MAX = 2n ** 64n - 1n;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const parseOne = (p) => ({
@@ -108,7 +111,39 @@ export function createHermes({ url, apiKey, fetchImpl = fetch, now = Date.now, r
     return { prices, updates };
   }
 
-  return { at, latest, latestSigned, key };
+  /// The prices of `prices` (by key) for `ids` that Pyth's contract, parsing the signed `updates` Hermes served with
+  /// them, returns unchanged, its moving average included (RX-9, RY-7): a price Hermes, or anyone between the bot and
+  /// Hermes, changed is left out, so a forged or tampered `parsed` body values nothing. Pyth's parse reverts when the
+  /// updates lack one of the ids served or carry it outside [minPublishTime, maxPublishTime], and that error is thrown:
+  /// a mismatch fails the caller's round rather than leaving one coin out (RZ-7). `read(address, abi, functionName,
+  /// args, blockNumber)` and `call({to, abi, functionName, args, value}, blockNumber)` are the chain's, as
+  /// `createChain` and the restock's Ethereum client make them; `pyth` is Pyth's contract and `abi` its ABI.
+  async function verified(prices, updates, ids, { read, call, pyth, abi, blockNumber, minPublishTime = 0n, maxPublishTime = UINT64_MAX }) {
+    if (prices.size === 0 || updates.length === 0) return new Map();
+    const served = ids.filter((id) => prices.has(key(id)));
+    const fee = await read(pyth, abi, "getUpdateFee", [updates], blockNumber);
+    // viem returns a function's single output unwrapped: the parse's answer is the PriceFeed[] itself (RZ-1).
+    const feeds = await call(
+      {
+        to: pyth,
+        abi,
+        functionName: "parsePriceFeedUpdates",
+        args: [updates, served, BigInt(minPublishTime), BigInt(maxPublishTime)],
+        value: fee,
+      },
+      blockNumber,
+    );
+    return verifiedPrices(prices, feeds, key);
+  }
+
+  /// {latest}, {verified}: kept only where Pyth's contract confirms them (RX-9, RY-6). Freshness and width are the
+  /// caller's checks, as for {latest}.
+  async function trusted(ids, deadline, chain) {
+    const { prices, updates } = await latestSigned(ids, deadline);
+    return verified(prices, updates, ids, chain);
+  }
+
+  return { at, latest, latestSigned, verified, trusted, key };
 }
 
 export const priceKey = key;

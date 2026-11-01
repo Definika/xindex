@@ -516,7 +516,7 @@ contract BasketBuilderTest is XindexTest {
         // A leg's own cap binds the router's pre-fund, so a cap too small cannot complete the swap.
         p.legs[1] = _mintLeg(_path2(address(weth), address(usdc)));
         p.legs[1].maxAmountIn = 1;
-        vm.expectRevert();
+        vm.expectRevert(abi.encodeWithSignature("V3TooMuchRequested()")); // the pool's own revert, unwrapped (RZ-31)
         builder.buy(p);
         vm.stopPrank();
     }
@@ -796,7 +796,8 @@ contract BasketBuilderTest is XindexTest {
         // The leg left sells on its own, against the overall minimum.
         p = _sellParams(address(usdc), type(uint256).max, _one(address(link)), bob);
         vm.prank(alice);
-        vm.expectRevert();
+        // RZ-31: the overall minimum, not some other revert, refuses it.
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InsufficientOutput.selector, 15e6, type(uint256).max));
         builder.sell(p);
         p.minAmountOut = 1;
         vm.prank(alice);

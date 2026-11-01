@@ -7,8 +7,8 @@ const read = (path) => readFileSync(new URL(`../../../${path}`, import.meta.url)
 const addresses = read("script/MainnetAddresses.sol");
 const pythIds = read("script/PythIds.sol");
 
-test("every coin is the copy MainnetAddresses lists, from the home token, chain and decimals its comment names", () => {
-  assert.equal(COINS.length, 13);
+test("RZ-5: every coin is the copy MainnetAddresses lists, from the home token, chain and decimals its comment names", () => {
+  assert.equal(COINS.length, 14);
   for (const c of COINS) {
     const constant = new RegExp(`/// @dev ([^\\n]*)\\n\\s*address internal constant ${c.name} = (0x[0-9a-fA-F]{40});`).exec(addresses);
     assert.ok(constant, `${c.symbol}: MainnetAddresses has no ${c.name}`);
@@ -39,7 +39,7 @@ test("only BNB Chain and Algorand go without CCTP, and the gas coins are the thr
 });
 
 test("a subset of the coins is chosen by symbol, and an unknown symbol is refused", () => {
-  assert.deepEqual(coinsOf(null).map((c) => c.symbol), ["XRP", "ADA", "LTC", "DOT", "AVAX", "OP", "AERO"], "the served coins by default");
+  assert.deepEqual(coinsOf(null).map((c) => c.symbol), ["XRP", "ADA", "LTC", "DOT", "BNB", "AVAX", "OP", "AERO"], "the served coins by default");
   assert.ok(coinsOf(null).every((c) => CHAINS[c.chain].platform === "evm"), "each with its chain's adapter built");
   assert.deepEqual(coinsOf(["XRP", "SUI"]).map((c) => c.symbol), ["XRP", "SUI"]);
   assert.throws(() => coinsOf(["XRP", "DOGE"]), /unknown restock coins: DOGE/);

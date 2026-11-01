@@ -144,3 +144,43 @@ test("RX-9, RX-30: latestSigned() returns the signed update, and asks Hermes to 
   assert.equal(prices.size, 1, "the unserved id is simply absent");
   assert.deepEqual(updates, ["0xabcd"]);
 });
+
+const feedOf = (id, price, publishTime, conf = 100000n) => ({ id, price: { price, conf, expo: -8, publishTime: BigInt(publishTime) }, emaPrice: { price, conf: 90000n, expo: -8, publishTime: BigInt(publishTime) } });
+
+test("RY-6, RZ-1: trusted() keeps only the prices Pyth's contract confirms from the signed update", async () => {
+  reset((req, res) => json(res, { parsed: [entry(A, 9), entry(B, 9, "999900000000")], binary: { data: ["abcd", "ef01"] } }));
+  const calls = [];
+  const chain = {
+    read: async (address, abi, functionName, args, blockNumber) => {
+      calls.push({ functionName, address, args, blockNumber });
+      assert.equal(functionName, "getUpdateFee");
+      assert.deepEqual(args, [["0xabcd", "0xef01"]]);
+      return 7n;
+    },
+    call: async ({ to, functionName, args, value }, blockNumber) => {
+      calls.push({ functionName, to, args, blockNumber, value });
+      assert.equal(functionName, "parsePriceFeedUpdates");
+      assert.equal(value, 7n, "the fee the read returned is sent");
+      assert.deepEqual(args.slice(0, 2), [["0xabcd", "0xef01"], [A, B]]);
+      // Pyth's view: A as Hermes said it, B at a different price than the JSON claimed. Shaped as viem decodes it: a
+      // function's single output comes back unwrapped, so the parse answers the PriceFeed[] itself (RZ-1).
+      return [feedOf(A, 250000000000n, 9), feedOf(B, 250000000000n, 9)];
+    },
+  };
+  const prices = await hermes().trusted([A, B], soon(), { ...chain, pyth: "0x" + "12".repeat(20), abi: [], blockNumber: 42n });
+  assert.deepEqual([...prices.keys()], [A.slice(2)], "the forged B is left out");
+  assert.equal(prices.get(A.slice(2)).price, 250000000000n);
+  assert.deepEqual(calls.map((c) => [c.functionName, c.blockNumber]), [["getUpdateFee", 42n], ["parsePriceFeedUpdates", 42n]]);
+  assert.equal(calls[0].address, "0x" + "12".repeat(20));
+  assert.equal(calls[1].to, "0x" + "12".repeat(20));
+});
+
+test("RY-6: trusted() values nothing when Hermes serves prices without a signed update", async () => {
+  reset((req, res) => json(res, { parsed: [entry(A, 9)], binary: { data: [] } }));
+  const chain = {
+    read: async () => assert.fail("no chain call without an update"),
+    call: async () => assert.fail("no chain call without an update"),
+  };
+  const prices = await hermes().trusted([A], soon(), { ...chain, pyth: "0x" + "12".repeat(20), abi: [] });
+  assert.equal(prices.size, 0);
+});

@@ -238,7 +238,7 @@ test("RX-18: Pyth's update fee counts against a fill like its gas", () => {
   assert.equal(M.fillCostUsd({ used: 1_000_000n, nextBase: 10n * gwei, tip: 2n * gwei, ethUsd: 3_000, pythFee: 10n ** 15n }), 39);
 });
 
-test("RX-9: only prices Pyth's contract returned identically from the signed update are kept", () => {
+test("RX-9, RY-7: only prices Pyth's contract returned identically from the signed update are kept", () => {
   const key = (id) => id.toLowerCase().replace(/^0x/, "");
   const p = { price: 300_00000000n, conf: 10n, expo: -8, publishTime: 1_000 };
   const prices = new Map([
@@ -249,4 +249,13 @@ test("RX-9: only prices Pyth's contract returned identically from the signed upd
   const kept = M.verifiedPrices(prices, [feed("0xAA", 300_00000000n), feed("0xbb", 282_00000000n)], key);
   assert.deepEqual([...kept.keys()], ["aa"], "a price Hermes inflated is dropped");
   assert.equal(M.verifiedPrices(prices, [], key).size, 0, "nothing Pyth did not return is kept");
+
+  // RY-7: the moving average beside a price is the update's too, since the hub checks the price against it (RX-27).
+  const ema = { price: 299_00000000n, conf: 9n, expo: -8, publishTime: 1_000 };
+  const withEma = new Map([
+    ["aa", { ...p, ema }],
+    ["bb", { ...p, ema: { ...ema, price: 200_00000000n } }],
+  ]);
+  const feedEma = (id) => ({ ...feed(id, 300_00000000n), emaPrice: { ...ema, publishTime: 1_000n } });
+  assert.deepEqual([...M.verifiedPrices(withEma, [feedEma("0xaa"), feedEma("0xbb")], key).keys()], ["aa"], "a forged average is dropped");
 });

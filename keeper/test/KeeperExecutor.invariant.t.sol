@@ -101,7 +101,8 @@ contract RestockHandler is Test {
         assertEq(executor.stockAllowance(address(coin)), stock + credited, "RS-6: the credit, within both allowances");
         assertEq(executor.restockAllowance(address(coin)), room - credited, "spends the restock allowance by as much");
         assertLe(potential(), before, "RS-1: an arrival raises nothing");
-        ceiling = potential();
+        // The ceiling stays where the owner's last call left it: across any run of treasury calls the keeper's reach
+        // never climbs back above it (RZ-29).
         ++redeemed;
     }
 
@@ -117,7 +118,6 @@ contract RestockHandler is Test {
 
         assertLe(executor.stockAllowance(address(coin)), coin.balanceOf(address(executor)), "capped at what is left");
         assertLe(potential(), before, "RS-1: bridging out raises nothing");
-        ceiling = potential();
         ++bridgedOut;
     }
 
