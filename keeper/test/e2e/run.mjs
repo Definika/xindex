@@ -225,14 +225,19 @@ hermesServer = http
         if (!p) throw new Error(`unknown id ${id}`);
         return { id: `0x${id}`, ...p };
       });
+      const timeOf = (f) => (latest && quiet.has(f.id.slice(2)) ? t - 3600 : t);
       const body = {
         parsed: feeds.map((f) => ({
           id: f.id.slice(2),
-          price: { price: String(f.price), conf: String(f.conf), expo: f.expo, publish_time: latest && quiet.has(f.id.slice(2)) ? t - 3600 : t },
-          ema_price: { price: String(f.price), conf: String(f.conf), expo: f.expo, publish_time: latest && quiet.has(f.id.slice(2)) ? t - 3600 : t },
+          price: { price: String(f.price), conf: String(f.conf), expo: f.expo, publish_time: timeOf(f) },
+          ema_price: { price: String(f.price), conf: String(f.conf), expo: f.expo, publish_time: timeOf(f) },
         })),
       };
-      if (!latest) body.binary = { encoding: "hex", data: [(await encodeUpdate(feeds, t)).slice(2)] };
+      // Signed with the test's keys, as Hermes signs every answer: the bot values nothing Pyth's contract has not
+      // confirmed, latest prices included (RX-9, RY-7). One update per publish time, so a quiet feed stays old.
+      const times = [...new Set(feeds.map(timeOf))];
+      const data = await Promise.all(times.map(async (at) => (await encodeUpdate(feeds.filter((f) => timeOf(f) === at), at)).slice(2)));
+      body.binary = { encoding: "hex", data };
       res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body));
     } catch (error) {
       res.writeHead(400).end(String(error.message));

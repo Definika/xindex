@@ -376,13 +376,13 @@ contract WeightedHubTest is WeightedTest {
 
         paused.setPaused(true);
         vm.prank(alice);
-        vm.expectRevert();
+        vm.expectRevert(bytes("paused")); // the token's own revert, not some other (XA-36)
         two.redeem(1e18, alice);
         vm.prank(alice);
         two.redeemSkipping(1e18, alice, 2);
         assertEq(eth.balanceOf(alice), ETH_UNITS);
 
-        vm.expectRevert();
+        vm.expectRevert(bytes("paused"));
         vm.prank(alice);
         two.claim(address(paused), alice);
         paused.setPaused(false);

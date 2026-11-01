@@ -354,6 +354,16 @@ contract MocksTest is Test {
         assertEq(address(w).balance, 0.4 ether);
     }
 
+    function test_weth_etherSentWithNoCallIsWrappedForTheSender() public {
+        MockWETH w = new MockWETH();
+        vm.deal(alice, 1 ether);
+        vm.prank(alice);
+        (bool ok,) = address(w).call{value: 0.4 ether}("");
+        assertTrue(ok);
+        assertEq(w.balanceOf(alice), 0.4 ether);
+        assertEq(address(w).balance, 0.4 ether);
+    }
+
     function test_weth_withdrawUnwrapsEther() public {
         MockWETH w = new MockWETH();
         vm.deal(alice, 1 ether);

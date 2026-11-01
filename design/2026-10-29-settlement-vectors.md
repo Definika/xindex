@@ -90,6 +90,13 @@ the other legs would release. That is V5-L3, the known limitation, in numbers: a
 1e18 against the rest stops the fills until the guardian keeps it. A collapse by 1e6 does the same; by 50 it does
 not, which is why the `collapsed` kind divides by at most 50.
 
+Correction of 2026-11-01 (RZ-4, `audit/2026-10-31-red-team-ii.md`): the minimum trade stops a collapsed leg's fill
+long before its share reaches zero. With the growth cap binding, a fill of an index on its weights trades about
+`w / k` of the moving value for a leg of weight `w` fallen `k`-fold, so it reverts `NothingToRebalance` once `k` passes
+about `999 · w / (1 − w)`: 999 at 50%, 11 at 1%. "By 50 it does not" holds only for a leg of weight above about 5%;
+five of the thirty `collapsed` vectors, whose weights are drawn at random, refuse this way. The vectors and the
+model are unchanged; `docs/known-limitations.md` carries the figures.
+
 ## 4. The replay
 
 `test_everyVectorSettlesAsTheExactModelSays` calls `WeightedMath.settlement` on each vector inside `try`, and
@@ -149,5 +156,5 @@ price three legs at one quantum each and are searched for the two windows (secti
   factor's) are the ones the contract applies, and are now written down in section 2.
 - **The share-zero stall has a number.** A growing leg whose target exceeds 1e18 times its units stops every fill
   (section 3). The hub's answer is the guardian's keep mask (V5-L3); nothing to change, and the figure belongs in
-  the known limitations.
+  the known limitations. The minimum trade stops a fill much sooner (section 3's correction, RZ-4).
 - **Nothing to change in the contract.** The four release hashes stand.

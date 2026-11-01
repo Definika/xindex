@@ -143,7 +143,7 @@ contract RepoTest is Test {
     ///      keeps the old check green.
     function test_I09_XS17_theKnownLimitationsAreDocumented() public view {
         string memory section = _section(_read("docs/known-limitations.md"), "# Known limitations\n");
-        string[23] memory anchors = [
+        string[24] memory anchors = [
             "**A lone executor can take up to 2% of what it trades.**",
             "**A wrong price costs at most the turnover cap.**",
             "**Rebalancing needs Pyth's Hermes, and Hermes needs a key.**",
@@ -155,6 +155,7 @@ contract RepoTest is Test {
             "**An exit sent during the auction can be overtaken by the fill.**",
             "**The guardian can stall rebalancing.**",
             "**Issuers can freeze components, and some can burn them.**",
+            "**A keep-mask start must land in one slot.**",
             "**A request's surplus goes to the fastest filler.**",
             "**Circle and Tether freeze differently, and `MintRequests` cannot tell.**",
             "**A request is an option held by every filler until it closes.**",

@@ -42,10 +42,15 @@ What the contracts do not protect against, and what an app built on them has to 
   wrapped leg, beyond the turnover cap. The wrapped copies have no DEX liquidity: redeem pays them, and turning them
   into the coin needs Wormhole live. The app shows every index's wrapped share of value before it is created and to
   every holder (`design/2026-10-10-one-index-wormhole-legs.md`, section 3).
-- **A collapsing coin can stop the fills.** Fixed weights keep buying a coin whose price falls, and units beyond
-  `uint96` stop the fill rather than wrap, until the guardian keeps it (V5-L3). The figure: a growing leg whose target
-  is more than 1e18 times its units makes every fill trade nothing (`design/2026-10-29-settlement-vectors.md`,
-  section 3); a collapse by a factor of fifty against the rest still fills.
+- **A collapsing coin can stop the fills.** Fixed weights keep buying a coin whose price falls, and the growth cap
+  lets a fill at most double its units (RX-15), so the fill trades less the further the coin falls. For an index on its
+  weights whose coin of weight `w` falls `k`-fold against the rest, the capped fill trades about `w / k` of the moving
+  value, under `MIN_TRADE` once `k` passes about `999 · w / (1 − w)`: 999 for a coin at 50%, 429 at 30%, 111 at 10%,
+  11 at 1% (RZ-4, replayed on `WeightedMath._targets`). Every fill and preview then reverts `NothingToRebalance`, as
+  units beyond `uint96` would (RX-61), until the price recovers or the guardian starts a rebalance with the coin kept
+  (V5-L3). A two-component index cannot keep one, since a keep mask must leave two moving, so its rebalancing waits
+  for the price. An issuer that crashes its coin can so stop the rebalancing of every index holding it at a small
+  weight; that moves no funds, and holders redeem in kind throughout.
 - **An issuer's corporate action is not accounted for.** An index holds fixed units per share and pays out only those.
   If an issuer mints tokens to every holder, as a stock split paid in tokens would, the index's new tokens belong to no
   share; if it burns them, that leg falls below its backing. Ondo does neither: its token's balance never changes,
@@ -88,7 +93,16 @@ What the contracts do not protect against, and what an app built on them has to 
   its balance, and the admins of H, PLUME, SNX and SYRUP can burn or move any holder's balance without a blacklist
   (`design/2026-10-18-token-source-reading.md`); the app names them. A paused component makes `redeem`, the zap and any fill that moves it revert; `redeemSkipping`, `claim`
   and the guardian's keep mask are the recourse, and a permanently frozen component needs the keep mask at every
-  rebalance. A destroyed balance is lost to the index's holders.
+  rebalance. A destroyed balance is lost to the index's holders. Issue does not test that the index can still send each
+  leg, as a fill does (RX-12): a minter can deposit into a leg a sender-blocking blacklist has already frozen for the
+  index, and hold a claim on it that cannot be paid until the issuer lifts it (RZ-25, open, the owner's call: a probe on
+  every issue costs gas on every leg and code the hub's 98 spare bytes may not hold). The app checks first.
+- **A keep-mask start must land in one slot.** Since RX-3 every start, the owner's and the guardian's included, carries
+  a Pyth update valid only for the slot `priceTime()` names, so its transaction must be built for the block it lands
+  in. A Safe's signers sign the update into the calldata, and cannot then time its execution to that block, so the
+  keep mask, the recourse around a frozen component (V5-L3) and Ondo's corporate actions
+  (`design/2026-10-18-pre-mainnet-readings.md`, section 2), needs a guardian key with tooling that builds and sends
+  the start as the keeper does (RZ-26, open, the owner's call between that and letting a keep-mask start skip the read).
 - **A request's surplus goes to the fastest filler.** A fill delivers what the filler sends and at least the
   requester's limit, so a generous limit is value left for fillers. The app suggests limits from its own valuation.
 - **Circle and Tether freeze differently, and `MintRequests` cannot tell.**

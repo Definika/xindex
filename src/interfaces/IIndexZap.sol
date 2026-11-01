@@ -31,7 +31,8 @@ import {IWETH9} from "./IWETH9.sol";
 ///      Errors the zap raises, of the shared ones:
 ///      - NotIndex: an index the factory did not deploy.
 ///      - ZeroAddress: a zero factory, router, WETH, recipient, `tokenIn` or `tokenOut`.
-///      - InvalidRecipient: a recipient that is the zap, the index, the router, the PoolManager or the factory (RT-21).
+///      - InvalidRecipient: a recipient that is the zap, the index, the router, the PoolManager or the factory (RT-21),
+///        WETH, or the call's own `tokenIn` or `tokenOut` (RY-1).
 ///      - The swap errors, shared with `BasketBuilder`: StaleRebalanceNonce, Expired, ZeroAmount, BadRoute, ShortFill,
 ///        InsufficientBudget, InsufficientOutput and TransferShortfall.
 interface IIndexZap is IUniversalRouterSwaps {

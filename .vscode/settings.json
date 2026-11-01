@@ -14,6 +14,12 @@
         "test",
         "keeper"
     ],
+    "wake.detectors.ignore_paths": [
+        "venv",
+        ".venv",
+        "test",
+        "audit"
+    ],
     "wake.compiler.solc.optimizer.enabled": true,
     "wake.compiler.solc.optimizer.runs": 100
 }

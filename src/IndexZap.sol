@@ -43,8 +43,9 @@ import {UniversalRouterSwaps} from "./UniversalRouterSwaps.sol";
 ///      - Every call names the `rebalanceNonce` its quote was taken at. A rebalance changes the units, so a stale
 ///        quote reverts with `StaleRebalanceNonce` instead of buying or selling a different basket.
 ///      - The zap never calls `executeRebalance`.
-// The one way ether gets in is WETH's `withdraw`, called by `mintWithEth` for its refund and `burnToEth` for its
-// payout, each sent on in the same call (`_assertZapEmpty` in test/IndexZap.t.sol), so no ether stays here.
+// The one way a call brings ether in is WETH's `withdraw`, called by `mintWithEth` for its refund and `burnToEth` for
+// its payout, each sent on in the same call (`_assertZapEmpty` in test/IndexZap.t.sol), so no call leaves ether here.
+// Ether forced in without a call stays, stranded and harmless (RY-2).
 // aderyn-fp-next-line(contract-locks-ether)
 contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
     using SafeERC20 for IERC20;
@@ -61,8 +62,9 @@ contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
     }
 
     /// @dev Takes the ether `WETH.withdraw` sends back, and nothing else. A route's far end can never be native ether
-    ///      (the engine's route checks), so neither the router's sweep nor a V4 take can send ether here; refusing
-    ///      every other sender keeps that so, and leaves nothing for anyone to strand.
+    ///      (the engine's route checks), so neither the router's sweep nor a V4 take can send ether here, and refusing
+    ///      every other sender keeps calls from leaving any. Ether forced in without a call (a SELFDESTRUCT, a block
+    ///      reward) is stranded: no call pays out more than its own proceeds (RY-2).
     receive() external payable {
         if (msg.sender != address(WETH)) revert NotWETH(msg.sender);
     }
@@ -300,17 +302,21 @@ contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
         try IERC20Permit(token).permit(msg.sender, address(this), value, deadline, v, r, s) {} catch {}
     }
 
-    /// @dev The checks a mint runs before anything moves.
+    /// @dev The checks a mint runs before anything moves. The shares cannot go to `tokenIn`'s own contract, which
+    ///      could never move them (RY-1).
     function _checkMint(MintParams calldata p) private view {
         _checkIndexCall(p.index, p.expectedNonce, p.to, p.deadline);
         if (p.tokenIn == address(0)) revert ZeroAddress();
+        if (p.to == p.tokenIn) revert InvalidRecipient(p.to);
         if (p.shares == 0 || p.maxAmountIn == 0) revert ZeroAmount();
     }
 
-    /// @dev The checks a burn runs before anything moves. An ether burn's `tokenOut` must be WETH.
+    /// @dev The checks a burn runs before anything moves. An ether burn's `tokenOut` must be WETH. The payout cannot
+    ///      go to `tokenOut`'s own contract, which would keep it (RY-1).
     function _checkBurn(BurnParams calldata p, bool toEther) private view {
         _checkIndexCall(p.index, p.expectedNonce, p.to, p.deadline);
         if (p.tokenOut == address(0)) revert ZeroAddress();
+        if (p.to == p.tokenOut) revert InvalidRecipient(p.to);
         if (toEther && p.tokenOut != address(WETH)) revert NotWETH(p.tokenOut);
         if (p.shares == 0 || p.minAmountOut == 0) revert ZeroAmount();
     }
@@ -324,10 +330,11 @@ contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
         if (to == address(0)) revert ZeroAddress();
         // Each of these would lose what it is sent: anyone can sweep tokens left in the router, anything sent to the
         // pool manager is a donation, and the factory and the index can never move a token they receive (RT-21).
-        if (to == address(this) || to == index || to == address(ROUTER) || to == POOL_MANAGER || to == address(FACTORY))
-        {
-            revert InvalidRecipient(to);
-        }
+        // WETH wraps ether sent to it for the sender, here the zap, where no later call can reach it (RY-1).
+        if (
+            to == address(this) || to == index || to == address(ROUTER) || to == POOL_MANAGER || to == address(FACTORY)
+                || to == address(WETH)
+        ) revert InvalidRecipient(to);
     }
 
     /// @dev Reverts if a rebalance settled since the caller's quote, which changed the basket.
