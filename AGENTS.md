@@ -358,7 +358,10 @@ its own with its own tests (`keeper/README.md`): it starts and fills auctions, f
 limits (since 2026-10-16), serves coins without a Uniswap route from the executor's stock, and holds no role in the
 protocol. Anyone may run one; its key is the keeper's own hot key, never
 the owner's or the guardian's. Its restock service (`keeper/restock.mjs`, `keeper/restock/`) runs beside it with the
-treasury's key, also never the owner's or the guardian's.
+treasury's key, also never the owner's or the guardian's. Its invariant checker (`keeper/invariants.mjs`,
+`keeper/invariants/`, since 2026-11-01, the logic-hardening plan's step 6) holds no key: it reads every index, `MintRequests`
+and the basket builder each round and reports any property that does not hold, the hub's invariant on the recorded
+units and scale it reads from storage (`HUB_STATE_SLOTS`, pinned by `test_theCheckersHubSlotsAreTheHubs`) among them.
 
 Deleted on 2026-10-13 as unused, and recoverable from git at `f83dcab`: the v4 hackathon demo (`demo/`), the reviews'
 PoC tests (`audit/poc/`, which the audit records still cite), v4's market-cap analysis scripts (`design/analysis/`), the

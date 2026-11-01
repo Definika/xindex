@@ -1166,6 +1166,45 @@ contract KeeperExecutorTest is WeightedTest {
         }
     }
 
+    uint256 constant COMPONENTS_SLOT = 0;
+    uint256 constant SCALE_SLOT = 3;
+
+    /// @dev The invariant checker reads the recorded units and scale from storage, since no view returns them
+    ///      (bot/config.mjs, HUB_STATE_SLOTS). Slot 0 holds the component count, the word at keccak256(slot 0) + i the
+    ///      token in its low 20 bytes and the units above, and slot 3 the scale with lastAccrual above it: a scale
+    ///      stored there is the one components() reports from. The next layout change fails here, not in the checker.
+    function test_theCheckersHubSlotsAreTheHubs() public {
+        string memory config = vm.readFile("bot/config.mjs");
+        string memory pinned = string.concat(
+            "HUB_STATE_SLOTS = Object.freeze({ components: ",
+            vm.toString(COMPONENTS_SLOT),
+            "n, scale: ",
+            vm.toString(SCALE_SLOT),
+            "n });"
+        );
+        assertTrue(vm.indexOf(config, pinned) != type(uint256).max, "config.mjs names slots 0 and 3");
+
+        address[] memory tokens = index.componentTokens();
+        assertEq(uint256(vm.load(address(index), bytes32(COMPONENTS_SLOT))), tokens.length, "slot 0 holds the count");
+        uint256 word3 = uint256(vm.load(address(index), bytes32(SCALE_SLOT)));
+        assertEq(uint128(word3), 1e18, "a fresh index's scale is 1e18, in slot 3's low 16 bytes");
+        assertEq(uint40(word3 >> 128), index.lastAccrual(), "lastAccrual sits above it");
+
+        // At lastAccrual nothing is pending, so components() reports the stored scale: store another and read it back.
+        vm.warp(index.lastAccrual());
+        uint256 stored = 0.5e18 + 3;
+        vm.store(address(index), bytes32(SCALE_SLOT), bytes32(((word3 >> 128) << 128) | stored));
+        (, uint256 pending) = index.pendingStreamingFee();
+        assertEq(pending, stored, "the scale slot is the hub's");
+        (, uint256[] memory units) = index.components();
+        uint256 base = uint256(keccak256(abi.encode(COMPONENTS_SLOT)));
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            uint256 word = uint256(vm.load(address(index), bytes32(base + i)));
+            assertEq(address(uint160(word)), tokens[i], "component i's word names its token");
+            assertEq((word >> 160) * stored / 1e18, units[i], "and its recorded units, at the stored scale");
+        }
+    }
+
     // ---------------------------------------------------------------------
     // Restock
     // ---------------------------------------------------------------------

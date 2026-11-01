@@ -4,7 +4,9 @@ Starts and fills `WeightedHub` auctions on Ethereum, and fills `MintRequests` re
 `src/KeeperExecutor.sol`. It holds **no role in the protocol**: starting a rebalance, filling an auction and filling a
 request are open to anyone, and anyone may run a keeper. Its key is the keeper's own hot key, not the owner's or the
 guardian's. A second process, the restock service (`restock.mjs`, see [Restock](#restock)), keeps the executor stocked
-with the coins Ethereum has only as Wormhole copies, buying them on their home chains.
+with the coins Ethereum has only as Wormhole copies, buying them on their home chains. A third, the invariant checker
+(`invariants.mjs`, see [Invariant checker](#invariant-checker)), holds no key and watches that the contracts' properties
+hold on chain.
 
 ## What it does
 
@@ -270,6 +272,49 @@ raising to what EIP-8037 allows (RX-36).
 | `CHAIN_ID` | `1` | The chain whose market the bot trades: `1` Ethereum, `11155111` Sepolia's test deployment (`bot/config.mjs`, `docs/deployment.md`). The bot refuses an RPC on any other chain. |
 | `NEEDS_FILE` | none | Where to write what fills deliver from stock, for the restock service. |
 
+## Invariant checker
+
+`invariants.mjs` reads the chain and reports; it holds no key and sends nothing, so anyone can run one, and the beta
+runs one beside the keeper (the logic-hardening plan's step 6). Every `POLL_SECONDS` it reads, at the latest block:
+
+- **Every index of the factory.** The hub's invariant, exactly: each component's balance against
+  `floor(totalSupply · units · scale / 1e36) + totalClaims`, on the recorded units and scale. No view returns those
+  (`components()` reports at the scale an accrual now would leave), so it reads them from storage
+  (`HUB_STATE_SLOTS` in `bot/config.mjs`, pinned by `test_theCheckersHubSlotsAreTheHubs`), and evaluates nothing on an
+  index whose storage does not reproduce `components()`, `componentTokens()`, `lastAccrual()` and
+  `pendingStreamingFee()`. Then the rebalance state machine's I1 to I4
+  (`design/2026-10-29-rebalance-state-machine.md`, section 5) and the keep mask, and against its last round: the
+  components never change, the units move only at a fill, the scale only shrinks, the counters never go back.
+- **`MintRequests`**, when `REQUESTS` is set: its balance of each token covers the open requests' escrows.
+- **The `BasketBuilder`**, when `BUILDER` is set: its balance of each token covers its users' escrows, the pairs found
+  from its credit events since `FROM_BLOCK`.
+- **The admin events monitors watch (RT-07):** a start with a keep mask, a cancel, and the factory's guardian, owner,
+  listing, whitelist and fee-policy events, printed as notices.
+
+Each finding prints as one JSON line when it is raised and when it clears, not every round; breaches and reader
+findings (the checker could not trust a read) also go to `ALERT_WEBHOOK`. A component whose `balanceOf` reverts is a
+notice: that is what the keep mask and `redeemSkipping` exist for. `--once` runs one round and exits 1 if anything but
+a notice stands, for a cron job or CI.
+
+    npm install
+    RPC_URL=... FACTORY=... REQUESTS=... BUILDER=... FROM_BLOCK=... ALERT_WEBHOOK=... npm run invariants
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RPC_URL` | required | The JSON-RPC of the chain `CHAIN_ID` names; it must serve logs from `FROM_BLOCK` (publicnode prunes Sepolia's). |
+| `FACTORY` | required | The `WeightedIndexFactory`. |
+| `CHAIN_ID` | `1` | `1` Ethereum, `11155111` Sepolia. |
+| `REQUESTS` | none | `MintRequests`, whose escrows are checked when set. |
+| `BUILDER` | none | The `BasketBuilder`, whose escrows are checked when set; needs `FROM_BLOCK`. |
+| `FROM_BLOCK` | none | The deployment's first block: where the builder's events and the notices start. Unset, notices start now. |
+| `POLL_SECONDS` | `60` | How often it reads. |
+| `LOG_CHUNK` | `10000` | The widest block range one `eth_getLogs` asks for. |
+| `ALERT_WEBHOOK` | none | A Slack or Discord incoming webhook. |
+
+Its first run, on 2026-11-01 against Sepolia's deployment (block 12,040,646): four indexes, no finding. On an anvil fork
+of it, with WETH9's balance slot of the first index set to 5 wei, the next round raised `backing` with the required
+123,264,984,283,783 wei, one below the index's real balance, and `--once` exited 1.
+
 ## Tests
 
 - `forge test --root keeper` (from the repo root): the executor against the real hub, factory and request escrow with
@@ -277,7 +322,7 @@ raising to what EIP-8037 allows (RX-36).
 - `node --test keeper/test/unit/*.test.mjs`: arithmetic, settings, the route search, the request filter and scan, the
   back-offs, the Hermes client and the transaction tracker; the needs board; and the restock's coin table (pinned
   against `script/MainnetAddresses.sol` and `script/PythIds.sol`), planner, journal, settings and attestation clients;
-  no install.
+  and the invariant checker's properties and settings; no install.
 - `forge test --root keeper` with `MAINNET_RPC_URL` also runs `test/KeeperExecutor.fork.t.sol`: `redeemBridged` and
   `bridgeOut` against Wormhole's real Token Bridge, with a test guardian installed in Wormhole's core on the fork.
 - `MAINNET_RPC_URL=<archive> npm run e2e` (in `keeper/`): an anvil fork with the real Pyth contract verifying updates
