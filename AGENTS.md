@@ -69,7 +69,8 @@ Where it stands (2026-10-26):
   `fillMint` and `fillRedeem` on the executor, which buys or sells the basket in the fill's own transaction, so a
   request wider than one transaction's swaps waits for stock), serves coins without a Uniswap route from its
   executor's stock, and holds no role. Its end-to-end test passed on 2026-10-17 (20/0, Tenderly's public archive)
-  after the fixes of the audit of 2026-10-16. Since 2026-10-19 (the owner's call: "we need everything automated") a
+  after the fixes of the audit of 2026-10-16, and again on 2026-11-01 (20/0) after the red teams' fixes, with the
+  restock's (94/0). Since 2026-10-19 (the owner's call: "we need everything automated") a
   restock service (`keeper/restock.mjs`) keeps that stock filled for the Wormhole copies: it buys a coin on its home
   chain's DEX, bridges it in through Wormhole's Token Bridge into the executor, whose `redeemBridged` adds what arrived
   to the coin's stock allowance within the restock allowance the owner sets per coin, so restocking never raises what

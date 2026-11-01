@@ -338,5 +338,5 @@ of it, with WETH9's balance slot of the first index set to 5 wei, the next round
   gone; on the CCTP chains the float starts empty, so the treasury draws, funds by CCTP, sweeps back and repays; after
   each chain's flows no allowance is left standing (RS-12). Then a move signed but never broadcast is resumed once, and
   one whose nonce went elsewhere is kept at the first look and dropped a minute later (RS-5). All four chains passed on
-  2026-10-20 (75 checks), before the review of 2026-10-25; after it, Base passed its 29 on 2026-10-25, the other three
-  not yet run again.
+  2026-10-20 (75 checks), before the review of 2026-10-25; after it, Base passed its 29 on 2026-10-25; and all four
+  again on 2026-11-01 (94 checks), after the red teams' fixes, on Tenderly's public archive and the public defaults.
