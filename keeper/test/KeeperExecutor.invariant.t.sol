@@ -199,7 +199,7 @@ contract KeeperExecutorInvariantTest is Test {
         );
         vm.startPrank(owner);
         executor.setTreasury(treasury);
-        executor.setHomeRecipient(4, bytes32(uint256(0xbee)));
+        executor.setHomeRecipient(4, address(coin), bytes32(uint256(0xbee)));
         executor.setTreasuryUsdcAllowance(1_000_000e6);
         executor.setRestockAllowance(address(coin), 1_000e18);
         vm.stopPrank();

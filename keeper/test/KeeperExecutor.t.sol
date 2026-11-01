@@ -1178,7 +1178,8 @@ contract KeeperExecutorTest is WeightedTest {
     function _treasury() internal {
         vm.startPrank(execOwner);
         executor.setTreasury(treasury);
-        executor.setHomeRecipient(HOME, HOME_WALLET);
+        executor.setHomeRecipient(HOME, address(btc), HOME_WALLET);
+        executor.setHomeRecipient(HOME, address(eth), HOME_WALLET);
         vm.stopPrank();
         bridge.setWrapped(HOME, BTC_SOURCE, address(btc));
     }
@@ -1202,7 +1203,7 @@ contract KeeperExecutorTest is WeightedTest {
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NotOwner.selector, keeper));
         executor.setTreasuryUsdcAllowance(1);
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NotOwner.selector, keeper));
-        executor.setHomeRecipient(HOME, HOME_WALLET);
+        executor.setHomeRecipient(HOME, address(btc), HOME_WALLET);
         vm.stopPrank();
 
         vm.startPrank(execOwner);
@@ -1215,12 +1216,13 @@ contract KeeperExecutorTest is WeightedTest {
         emit KeeperExecutor.TreasuryUsdcAllowanceSet(5);
         executor.setTreasuryUsdcAllowance(5);
         vm.expectEmit(address(executor));
-        emit KeeperExecutor.HomeRecipientSet(HOME, HOME_WALLET);
-        executor.setHomeRecipient(HOME, HOME_WALLET);
+        emit KeeperExecutor.HomeRecipientSet(HOME, address(btc), HOME_WALLET);
+        executor.setHomeRecipient(HOME, address(btc), HOME_WALLET);
         vm.stopPrank();
         assertEq(executor.treasury(), treasury);
         assertEq(executor.treasuryUsdcAllowance(), 5);
-        assertEq(executor.homeRecipient(HOME), HOME_WALLET);
+        assertEq(executor.homeRecipient(HOME, address(btc)), HOME_WALLET);
+        assertEq(executor.homeRecipient(HOME, address(eth)), bytes32(0), "each coin is pinned on its own");
     }
 
     function test_onlyTheTreasuryRestocks() public {
@@ -1328,7 +1330,7 @@ contract KeeperExecutorTest is WeightedTest {
         _treasury();
         btc.mint(address(executor), 5e8);
         vm.startPrank(treasury);
-        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NoHomeRecipient.selector, uint16(21)));
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NoHomeRecipient.selector, uint16(21), address(btc)));
         executor.bridgeOut(address(btc), 1e8, 21);
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NotStock.selector, address(usdc)));
         executor.bridgeOut(address(usdc), 1e6, HOME);
@@ -1351,10 +1353,42 @@ contract KeeperExecutorTest is WeightedTest {
         assertEq(btc.allowance(address(executor), address(bridge)), 0, "no approval left behind");
 
         vm.prank(execOwner);
-        executor.setHomeRecipient(HOME, bytes32(0));
-        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NoHomeRecipient.selector, HOME));
+        executor.setHomeRecipient(HOME, address(btc), bytes32(0));
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NoHomeRecipient.selector, HOME, address(btc)));
         vm.prank(treasury);
         executor.bridgeOut(address(btc), 1e8, HOME);
+    }
+
+    /// @dev Solana's bridge pays a token account, one per mint, so each coin bridged out there has a recipient of its
+    ///      own, and a coin the owner pinned none for cannot leave, whatever is pinned for the others on that chain.
+    function test_bridgeOutSendsEachCoinToItsOwnRecipient() public {
+        _treasury();
+        uint16 solana = 1;
+        bytes32 btcAccount = bytes32(uint256(0xa7a1));
+        bytes32 ethAccount = bytes32(uint256(0xa7a2));
+        btc.mint(address(executor), 2e8);
+        eth.mint(address(executor), 2e18);
+        vm.startPrank(execOwner);
+        executor.setHomeRecipient(solana, address(btc), btcAccount);
+        vm.stopPrank();
+        vm.startPrank(treasury);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NoHomeRecipient.selector, solana, address(eth)));
+        executor.bridgeOut(address(eth), 1e18, solana);
+        executor.bridgeOut(address(btc), 1e8, solana);
+        vm.stopPrank();
+        (address token,, uint16 chain, bytes32 recipient,) = bridge.last();
+        assertEq(token, address(btc));
+        assertEq(chain, solana);
+        assertEq(recipient, btcAccount, "BTC's own recipient");
+
+        vm.prank(execOwner);
+        executor.setHomeRecipient(solana, address(eth), ethAccount);
+        vm.prank(treasury);
+        executor.bridgeOut(address(eth), 1e18, solana);
+        (token,, chain, recipient,) = bridge.last();
+        assertEq(token, address(eth));
+        assertEq(recipient, ethAccount, "ETH's own recipient, not BTC's");
+        assertEq(executor.homeRecipient(HOME, address(btc)), HOME_WALLET, "another chain's pin is untouched");
     }
 
     /// @dev What the bridge cannot carry below eight decimals stays here, and no approval of it is left behind.

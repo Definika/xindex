@@ -100,7 +100,7 @@ contract KeeperExecutorForkTest is Test {
         );
         vm.startPrank(execOwner);
         executor.setTreasury(treasury);
-        executor.setHomeRecipient(BNB, HOME_WALLET);
+        executor.setHomeRecipient(BNB, A.XRP, HOME_WALLET);
         executor.setRestockAllowance(A.XRP, 100e18); // RS-1: the restocking the owner allows
         vm.stopPrank();
     }

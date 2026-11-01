@@ -62,9 +62,10 @@ contract KeeperExecutor is IRebalanceExecutor {
     address public treasury;
     /// @notice The most USDC the treasury may hold off the float, counting what it holds. Only the owner sets it.
     uint256 public treasuryUsdcCap;
-    /// @notice The only recipient {bridgeOut} sends to on each Wormhole chain, as the bridge encodes it. Only the owner
-    ///         sets it.
-    mapping(uint16 chain => bytes32 recipient) public homeRecipient;
+    /// @notice The only recipient {bridgeOut} sends each coin to on each Wormhole chain, as the bridge encodes it: the
+    ///         service's wallet on most chains, and on Solana, whose bridge pays a token account, the wallet's token
+    ///         account for that coin. Only the owner sets it.
+    mapping(uint16 chain => mapping(address token => bytes32 recipient)) public homeRecipient;
     /// @notice How much more of each coin arriving through the bridge may earn stock allowance: every credit spends it.
     ///         Only the owner sets it, so the stock a compromised keeper key can deliver stays within what the owner
     ///         allowed, restocking included (RS-1).
@@ -85,8 +86,8 @@ contract KeeperExecutor is IRebalanceExecutor {
     event TreasurySet(address indexed previous, address indexed next);
     /// @notice The treasury may now hold up to `amount` of USDC off the float.
     event TreasuryUsdcAllowanceSet(uint256 amount);
-    /// @notice {bridgeOut} now sends to `recipient` on Wormhole chain `chain`.
-    event HomeRecipientSet(uint16 indexed chain, bytes32 recipient);
+    /// @notice {bridgeOut} now sends `token` to `recipient` on Wormhole chain `chain`.
+    event HomeRecipientSet(uint16 indexed chain, address indexed token, bytes32 recipient);
     /// @notice `amount` of `token` arrived through the bridge, `credited` of it added to its stock allowance.
     event BridgedIn(address indexed token, uint256 amount, uint256 credited);
     /// @notice `amount` more of `token` arriving through the bridge may now earn stock allowance.
@@ -160,7 +161,7 @@ contract KeeperExecutor is IRebalanceExecutor {
     /// @notice `caller` is not the treasury.
     error NotTreasury(address caller);
     /// @notice The owner pinned no recipient on Wormhole chain `chain`.
-    error NoHomeRecipient(uint16 chain);
+    error NoHomeRecipient(uint16 chain, address token);
     /// @notice USDC is the float, not stock: it does not cross the bridge.
     error NotStock(address token);
     /// @notice The bridged transfer carried `actual`, not the `expected` token.
@@ -257,11 +258,11 @@ contract KeeperExecutor is IRebalanceExecutor {
         return cap > out ? cap - out : 0;
     }
 
-    /// @notice Owner only. Makes `recipient` the only address {bridgeOut} sends to on Wormhole chain `chain`; zero
-    ///         stops every bridge out to that chain.
-    function setHomeRecipient(uint16 chain, bytes32 recipient) external onlyOwner {
-        homeRecipient[chain] = recipient;
-        emit HomeRecipientSet(chain, recipient);
+    /// @notice Owner only. Makes `recipient` the only address {bridgeOut} sends `token` to on Wormhole chain `chain`;
+    ///         zero stops bridging that coin out to that chain.
+    function setHomeRecipient(uint16 chain, address token, bytes32 recipient) external onlyOwner {
+        homeRecipient[chain][token] = recipient;
+        emit HomeRecipientSet(chain, token, recipient);
     }
 
     /// @notice Owner only. Lets `amount` more of `token` arriving through the bridge earn stock allowance from now on,
@@ -496,16 +497,16 @@ contract KeeperExecutor is IRebalanceExecutor {
         emit BridgedIn(token, amount, credited);
     }
 
-    /// @notice Treasury only. Bridges `amount` of `token` to the owner's pinned recipient on Wormhole chain `chain`,
-    ///         forwarding all of msg.value to the bridge as Wormhole's message fee. What the bridge cannot carry below
-    ///         its eight decimals stays here. The stock allowance is then capped at what is left, so coins kept later
-    ///         cannot inherit an allowance the coins that left had.
+    /// @notice Treasury only. Bridges `amount` of `token` to the owner's pinned recipient for it on Wormhole
+    ///         chain `chain`, forwarding all of msg.value to the bridge as Wormhole's message fee. What the bridge
+    ///         cannot carry below its eight decimals stays here. The stock allowance is then capped at what is
+    ///         left, so coins kept later cannot inherit an allowance the coins that left had.
     /// @return sequence The bridge's message sequence, by which the bot fetches the signed transfer.
     function bridgeOut(address token, uint256 amount, uint16 chain) external payable returns (uint64 sequence) {
         _checkTreasury();
         if (token == USDC) revert NotStock(token);
-        bytes32 recipient = homeRecipient[chain];
-        if (recipient == bytes32(0)) revert NoHomeRecipient(chain);
+        bytes32 recipient = homeRecipient[chain][token];
+        if (recipient == bytes32(0)) revert NoHomeRecipient(chain, token);
         SafeERC20.forceApprove(IERC20(token), address(TOKEN_BRIDGE), amount);
         // The recipient is the owner's, and msg.value is Wormhole's fee, which the bridge forwards to its core.
         // forge-lint: disable-next-line(arbitrary-send-eth)

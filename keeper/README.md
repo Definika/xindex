@@ -152,7 +152,7 @@ what nobody needs. It is a separate process with its own key, the **treasury**, 
    - a covered coin's coins at home first top the stock up to the needs and the buffer, as far as the restock
      allowance goes, and only the rest is sold (RS-10); stock the executor holds beyond the needs, the buffer and
      `RESTOCK_KEEP_USD`, not counting what is on its way (RS-9), is bridged out to the treasury's wallet on its home
-     chain (`bridgeOut`, to the recipient `OWNER` pinned there with `setHomeRecipient`; the allowance is then capped at
+     chain (`bridgeOut`, to the recipient `OWNER` pinned for the coin there with `setHomeRecipient`; the allowance is then capped at
      what is left), and what reaches the home wallet is sold for the float;
    - a buy short of float waits for USDC: on a chain CCTP serves, the treasury draws it from the executor
      (`drawUsdc`, within the most the owner lets it hold off the float, `setTreasuryUsdcAllowance`) and sends it
@@ -190,8 +190,9 @@ ATOM fills only from stock the operator adds, within its stock allowance. JUP, P
 wait for their chains' adapters; the service refuses to start with them in `RESTOCK_COINS`.
 
 **Setup, once, by `OWNER`:** deploy the executor with Wormhole's Token Bridge; `setTreasury(<treasury address>)`;
-`setHomeRecipient(<Wormhole chain id>, <treasury address, left-padded to 32 bytes>)` for each home chain (BNB Chain 4,
-Avalanche 6, Optimism 24, Base 30): the treasury's key is the same on every EVM chain; `setTreasuryUsdcAllowance`, the
+`setHomeRecipient(<Wormhole chain id>, <copy>, <treasury address, left-padded to 32 bytes>)` for each coin served (BNB
+Chain 4: XRP, ADA, LTC, DOT, BNB; Avalanche 6: AVAX; Optimism 24: OP; Base 30: AERO): the treasury's key is the same on
+every EVM chain, and the executor pins a recipient per coin because Solana's bridge pays a token account per mint; `setTreasuryUsdcAllowance`, the
 most USDC the treasury may hold off the float, what it holds counted; and `setRestockAllowance(<copy>, <amount>)` for
 each coin served, the restocking you allow until you next look: what arrives through the bridge earns the keeper stock
 allowance only within it (RS-1). Then send the treasury gas on each chain and Ethereum, and USDT to its

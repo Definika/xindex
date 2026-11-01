@@ -72,9 +72,12 @@ async function checkSetup() {
   for (const [name, home] of Object.entries(homes)) {
     const chainId = await home.client.getChainId();
     if (chainId !== CHAINS[name].evmChainId) throw new Error(`${name}'s RPC serves chain ${chainId}`);
-    const pinned = await ex("homeRecipient", [CHAINS[name].wormhole]);
-    if (!same(pinned, word(home.address))) {
-      throw new Error(`the executor's recipient on ${name} is ${pinned}: the owner must call setHomeRecipient(${CHAINS[name].wormhole}, ${word(home.address)})`);
+    // One recipient per coin and chain: Solana's bridge pays a token account per mint, so the executor pins each coin.
+    for (const c of cfg.coins.filter((x) => x.chain === name)) {
+      const pinned = await ex("homeRecipient", [CHAINS[name].wormhole, c.copy]);
+      if (!same(pinned, word(home.address))) {
+        throw new Error(`the executor's recipient for ${c.symbol} on ${name} is ${pinned}: the owner must call setHomeRecipient(${CHAINS[name].wormhole}, ${c.copy}, ${word(home.address)})`);
+      }
     }
   }
 }
