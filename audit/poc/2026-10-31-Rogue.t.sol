@@ -3,14 +3,14 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {WeightedIndexFactory} from "../src/WeightedIndexFactory.sol";
-import {WeightedHub} from "../src/WeightedHub.sol";
-import {IWeightedHub} from "../src/interfaces/IWeightedHub.sol";
-import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
-import {PythStructs} from "../src/interfaces/pyth/PythStructs.sol";
-import {MockERC20} from "./mocks/MockERC20.sol";
-import {MockPyth} from "./mocks/MockPyth.sol";
-import {MockWeightedExecutor} from "./mocks/MockWeightedExecutor.sol";
+import {WeightedIndexFactory} from "../../src/WeightedIndexFactory.sol";
+import {WeightedHub} from "../../src/WeightedHub.sol";
+import {IWeightedHub} from "../../src/interfaces/IWeightedHub.sol";
+import {IWeightedIndexFactory} from "../../src/interfaces/IWeightedIndexFactory.sol";
+import {PythStructs} from "../../src/interfaces/pyth/PythStructs.sol";
+import {MockERC20} from "../../test/mocks/MockERC20.sol";
+import {MockPyth} from "../../test/mocks/MockPyth.sol";
+import {MockWeightedExecutor} from "../../test/mocks/MockWeightedExecutor.sol";
 
 /// @dev Temporary audit fuzzer. Delete after the review.
 contract RogueTest is Test {

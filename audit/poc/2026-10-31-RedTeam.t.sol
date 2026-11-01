@@ -4,20 +4,20 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {XindexTest} from "./XindexTest.sol";
-import {WeightedTest} from "./WeightedTest.sol";
-import {WeightedHub} from "../src/WeightedHub.sol";
-import {IndexZap} from "../src/IndexZap.sol";
-import {IIndexZap} from "../src/interfaces/IIndexZap.sol";
-import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
-import {IWETH9} from "../src/interfaces/IWETH9.sol";
-import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
-import {IUniversalRouterSwaps} from "../src/interfaces/IUniversalRouterSwaps.sol";
-import {PathKey} from "../src/libraries/UniswapV4Types.sol";
-import {MockERC20} from "./mocks/MockERC20.sol";
-import {MockMarket} from "./mocks/MockMarket.sol";
-import {MockUniversalRouter} from "./mocks/MockUniversalRouter.sol";
-import {MockWeightedExecutor} from "./mocks/MockWeightedExecutor.sol";
+import {XindexTest} from "../../test/XindexTest.sol";
+import {WeightedTest} from "../../test/WeightedTest.sol";
+import {WeightedHub} from "../../src/WeightedHub.sol";
+import {IndexZap} from "../../src/IndexZap.sol";
+import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
+import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
+import {IWETH9} from "../../src/interfaces/IWETH9.sol";
+import {IWeightedIndexFactory} from "../../src/interfaces/IWeightedIndexFactory.sol";
+import {IUniversalRouterSwaps} from "../../src/interfaces/IUniversalRouterSwaps.sol";
+import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
+import {MockERC20} from "../../test/mocks/MockERC20.sol";
+import {MockMarket} from "../../test/mocks/MockMarket.sol";
+import {MockUniversalRouter} from "../../test/mocks/MockUniversalRouter.sol";
+import {MockWeightedExecutor} from "../../test/mocks/MockWeightedExecutor.sol";
 
 /// @dev Canonical WETH9 shape: a payable fallback that deposits, which `test/mocks/MockWETH.sol` lacks. The gap
 ///      matters for RT-1: on mainnet, ether sent to WETH's address is wrapped and credited to the sender.
@@ -35,15 +35,6 @@ contract WETH9Like is MockERC20 {
 
     receive() external payable {
         deposit();
-    }
-}
-
-/// @dev Forces ether into a target with SELFDESTRUCT. After EIP-6780 the code stays, but the balance still moves.
-contract Boom {
-    constructor() payable {}
-
-    function boom(address payable target) external {
-        selfdestruct(target);
     }
 }
 
@@ -149,8 +140,8 @@ contract RedTeamZapTest is XindexTest {
     ///         leave ether here. SELFDESTRUCT (and a block's coinbase) can. Nothing is lost by users: the forced ether is
     ///         simply stranded, and burns still pay exactly their own proceeds.
     function test_RT2_forcedEtherIsStrandedButHarmless() public {
-        Boom boom = new Boom{value: 5 ether}();
-        boom.boom(payable(address(zap)));
+        // What SELFDESTRUCT or a coinbase payment does: the balance arrives without calling `receive`.
+        vm.deal(address(zap), address(zap).balance + 5 ether);
         assertEq(address(zap).balance, 5 ether, "forced in past receive()");
 
         _issueEther(alice);
