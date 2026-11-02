@@ -121,7 +121,7 @@ Where it stands (2026-10-26):
   - A need reaches the restock only for a fill that could pay `MIN_PROFIT_USD` at its best price (RY-8).
   - RY-3's self-referral waits for the fee policy.
 
-  The fork suites have not run on the zap's change.
+  The fork suites ran on the zap's change in CI on 2026-11-02 (`f2f4c18`): the five suites' 45 tests, 0 skipped.
 - The protocol documentation review of 2026-11-01 (`audit/2026-11-01-protocol-docs-review.md`, ids `PD-1`..`PD-14`)
   read every protocol Xindex uses in its own docs. The contracts that hold index funds follow them all; every finding
   is in the restock service. It found three ways a compromised aggregator answer could take more than the bounds, all
@@ -175,8 +175,10 @@ Where it stands (2026-10-26):
   a construction argument the deploy script resolves (`abi/IndexZap.json`, the zap's unit and fork suites). The Sepolia
   zap of 2026-10-26 predates them and needs a redeploy of the zap alone to serve them.
 - Before any mainnet: Pyth's parameter replay (`design/2026-10-05-custom-weights.md`, section 8), which also sizes
-  `MAX_EMA_DEVIATION` and `MAX_GROWTH`, and a settlement on a
-  real update from Hermes, both waiting on Pyth's API key in `.env` (`PYTH_API_KEY`); the 26 attestations and RAY's
+  `MAX_EMA_DEVIATION` and `MAX_GROWTH`, and a settlement on a real update from Hermes, both waiting on a paid Pyth
+  plan: the key the web app holds authenticates but was entitled to none of the 91 feeds on 2026-11-02 (Pyth's Free
+  plan has no API; Starter, $500 a month, covers the 79 crypto feeds, Pro and Pyth Indices the 12 stocks), and
+  Pyth's free pushes on Ethereum keep only ETH fresh; the 26 attestations and RAY's
   update; Pyth's confirmation that Ethereum stays served; the platform's fee policy and the legal reading; and an
   external audit, then `DeployWeighted`'s release hashes fixed at the audited commit (CF-5). The two Universal Router
   files `IndexZap` and `BasketBuilder` compile, `IUniversalRouter` and `UniversalRouterCommands`, are declarations
@@ -185,6 +187,8 @@ Where it stands (2026-10-26):
 
 For more:
 - `design/2026-10-05-custom-weights.md`: the v5 spec.
+- `audit/2026-11-02-external-audit-package.md`: the external auditors' brief: the candidate commit, the scope, the
+  roles, the properties, where to look first, and every earlier review's open ids.
 - `design/2026-10-29-rebalance-state-machine.md`: the rebalance's eight states, the transition matrix, the clock's
   boundaries and the invariants, with the test and the mutants that pin each cell.
 - `design/2026-10-29-settlement-vectors.md`: the exact-rational model of the settlement, written from the spec, the

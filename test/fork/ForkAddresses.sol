@@ -26,6 +26,9 @@ library ForkAddresses {
     ///      appoint operators that move or burn any holder's balance. The check's fork test still proves it goes to
     ///      review (CF-4).
     address internal constant SAND = 0x3845badAde8e6dFF049820680d1F14bD3903a5d0;
+    /// @dev TokenSoft's wrapped XRP, which the check called listable until its table named TokenSoft's whitelist and
+    ///      `revoke` (read 2026-10-26): a blacklist with a destroy, refused by the WBT rule.
+    address internal constant WXRP = 0x39fBBABf11738317a448031930706cd3e612e1B9;
 
     /// @dev Uniswap SwapRouter02. The zap swaps through the Universal Router; this is only the fork tests' own rebalance
     ///      executor, a fixture whose venue is independent of anything Xindex deploys.
