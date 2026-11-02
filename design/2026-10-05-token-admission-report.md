@@ -339,7 +339,7 @@ of its own there; `CheckToken` ran on all seven at about block 26,162,400.
 | Copy | Address | Check [v] | Depth within 2% | Verdict |
 |---|---|---|---|---|
 | SOL, Wormhole ("Wrapped SOL", 9 decimals) | `0xD31a59c85aE9D8edEFeC411D448f90841571b89c` | listable: mint and burn by its owner, Wormhole's token bridge | about $166k, V3 and V4 against ether | **listed** on Ethereum, Bridged |
-| XRP, Wrapped XRP (TokenSoft, 18 decimals) | `0x39fBBABf11738317a448031930706cd3e612e1B9` | listable by the scan; refused on reading the source | about $44k | **refused**, WBT rule |
+| XRP, Wrapped XRP (TokenSoft, 18 decimals) | `0x39fBBABf11738317a448031930706cd3e612e1B9` | listable by the scan; refused on reading the source (the scan refuses it too since 2026-11-02, its table naming TokenSoft's whitelist and `revoke`) | about $44k | **refused**, WBT rule |
 | XRP, Hex Trust wXRP | `0xB73eE5488647a6302EBf5FEE8Af3152F6960AE4c` | REVIEW: blacklist with a burn from any account; upgraded under a single key | none | **refused**, no route |
 | AVAX, Wormhole | `0x85f138bfEE4ef8e540890CFb48F620571d67Eda3` | listable | under one AVAX | **refused**, no route |
 | AVAX, 21.co | `0x399508A43d7E2b4451cd344633108b4d84b33B03` | listable | no pool | **refused**, no route |

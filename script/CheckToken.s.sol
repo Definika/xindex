@@ -623,6 +623,10 @@ contract CheckToken is Script {
                 || selector == 0x4a393149 // onTransfer(address,address,uint256): MiniMe (LEO) asks its controller
                 || selector == 0xe5c7160b // blocklist(address): Gala (GALA), the source reading of 2026-10-18 (CF-4)
                 || selector == 0x8e204c43 // isBlocklisted(address): a blocklist's view (GALA)
+                || selector == 0x052d9e7e // setWhitelistEnabled(bool): TokenSoft (wXRP), stops every holder not listed
+                || selector == 0x8ab1d681 // removeFromWhitelist(address): TokenSoft (wXRP)
+                || selector == 0x3973b596 // updateOutboundWhitelistEnabled(uint8,uint8,bool): TokenSoft (wXRP)
+                || selector == 0xd4ce1415 // detectTransferRestriction(address,address,uint256): ERC-1404's view
         ) {
             return BLACKLIST;
         }
@@ -640,6 +644,7 @@ contract CheckToken is Script {
                 || selector == 0x7adf1239 // ownerBatchReallocateFrom(address[],address[],uint256[]): WLFI, the same
                 || selector == 0xac9fe421 // setSuperOperator(address,bool): SAND, operators that need no allowance (CF-4)
                 || selector == 0x699c834b // setExecutionOperator(address,bool): SAND's second admin, the same (CF-4)
+                || selector == 0xeac449d9 // revoke(address,uint256): TokenSoft (wXRP), a revoker takes any balance
         ) {
             return DESTROY;
         }
@@ -656,6 +661,7 @@ contract CheckToken is Script {
             selector == 0x3659cfe6 // upgradeTo(address): OpenZeppelin's proxies and UUPS
                 || selector == 0x4f1ef286 // upgradeToAndCall(address,bytes): OpenZeppelin's proxies and UUPS
                 || selector == 0x0753c30c // deprecate(address): Tether, which then forwards every call
+                || selector == 0x912a9885 // updateCodeAddress(address): TokenSoft's EIP-1822 proxy (wXRP)
         ) {
             return UPGRADE;
         }

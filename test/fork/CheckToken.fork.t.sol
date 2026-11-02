@@ -113,6 +113,18 @@ contract CheckTokenForkTest is Test {
         assertEq(uint8(wlfi.verdict), uint8(CheckToken.Verdict.Refused));
     }
 
+    /// @dev TokenSoft's wrapped XRP: an EIP-1822 proxy whose implementation has a transfer whitelist, a revoker that
+    ///      takes any holder's balance, a pauser, minters and burners, under owners no `owner()` names.
+    function testFork_theWbtRuleRefusesTokenSoftsWrappedXrp() public {
+        CheckToken.Report memory r = _check(A.WXRP);
+        assertEq(r.symbol, "WXRP");
+        assertTrue(r.implementation != address(0), "the proxy is followed to its implementation");
+        uint256 expected = checker.BLACKLIST() | checker.DESTROY() | checker.UPGRADE();
+        assertEq(r.powers & expected, expected);
+        assertEq(uint8(r.verdict), uint8(CheckToken.Verdict.Refused));
+        assertEq(r.reason, "the WBT rule: it can blacklist a holder and destroy its balance");
+    }
+
     /// @dev WBT: a single key can pause, blacklist and destroy a blacklisted balance, which the WBT rule refuses.
     function testFork_theWbtRuleRefusesWbt() public {
         CheckToken.Report memory r = _check(A.WBT);

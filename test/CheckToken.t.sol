@@ -492,7 +492,7 @@ contract CheckTokenTest is Test {
         for (uint256 i = 0; i < pauses.length; ++i) {
             _assertPower(pauses[i], checker.PAUSE());
         }
-        string[27] memory blacklists = [
+        string[31] memory blacklists = [
             "addBlackList(address)",
             "blacklist(address)",
             "freeze(address)",
@@ -519,12 +519,16 @@ contract CheckTokenTest is Test {
             "isFrozen(address)",
             "onTransfer(address,address,uint256)",
             "blocklist(address)",
-            "isBlocklisted(address)"
+            "isBlocklisted(address)",
+            "setWhitelistEnabled(bool)",
+            "removeFromWhitelist(address)",
+            "updateOutboundWhitelistEnabled(uint8,uint8,bool)",
+            "detectTransferRestriction(address,address,uint256)"
         ];
         for (uint256 i = 0; i < blacklists.length; ++i) {
             _assertPower(blacklists[i], checker.BLACKLIST());
         }
-        string[13] memory destroys = [
+        string[14] memory destroys = [
             "destroyBlackFunds(address)",
             "wipeFrozenAddress(address)",
             "wipeBlacklistedAccount(address)",
@@ -537,7 +541,8 @@ contract CheckTokenTest is Test {
             "ownerReallocateFrom(address,address,uint256)",
             "ownerBatchReallocateFrom(address[],address[],uint256[])",
             "setSuperOperator(address,bool)",
-            "setExecutionOperator(address,bool)"
+            "setExecutionOperator(address,bool)",
+            "revoke(address,uint256)"
         ];
         for (uint256 i = 0; i < destroys.length; ++i) {
             _assertPower(destroys[i], checker.DESTROY());
@@ -555,9 +560,25 @@ contract CheckTokenTest is Test {
         _assertPower("upgradeTo(address)", checker.UPGRADE());
         _assertPower("upgradeToAndCall(address,bytes)", checker.UPGRADE());
         _assertPower("deprecate(address)", checker.UPGRADE());
+        _assertPower("updateCodeAddress(address)", checker.UPGRADE());
         _assertPower("transferAndCall(address,uint256,bytes)", checker.CALLBACK());
         _assertPower("transferAndCall(address,uint256)", checker.CALLBACK());
         _assertPower("hasRole(bytes32,address)", checker.ROLES());
+    }
+
+    /// @dev TokenSoft's wrapped XRP, read on 2026-10-26: the check called it listable, because its table named none of
+    ///      the token's powers. A whitelist its owner can switch on stops any holder not on it, and a revoker takes any
+    ///      holder's balance (`revoke(from, amount)`): a blacklist with a destroy, which the WBT rule refuses.
+    function test_tokenSoftsWhitelistAndRevokeFallUnderTheWbtRule() public view {
+        assertEq(checker.powerOf(0x052d9e7e), checker.BLACKLIST(), "setWhitelistEnabled(bool)");
+        assertEq(checker.powerOf(0xeac449d9), checker.DESTROY(), "revoke(address,uint256)");
+        assertEq(checker.powerOf(0x912a9885), checker.UPGRADE(), "updateCodeAddress(address)");
+
+        CheckToken.Report memory wxrp = _listable();
+        wxrp.powers = checker.powerOf(0x052d9e7e) | checker.powerOf(0xeac449d9);
+        (CheckToken.Verdict v, string memory reason) = _verdict(wxrp);
+        assertEq(uint8(v), uint8(CheckToken.Verdict.Refused));
+        assertEq(reason, "the WBT rule: it can blacklist a holder and destroy its balance");
     }
 
     /// @dev CF-4: the names the owed source reading of 2026-10-18 found outside the table. GALA's blocklist beside its
