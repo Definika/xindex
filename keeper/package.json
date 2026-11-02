@@ -8,7 +8,8 @@
     "once": "node keeper.mjs --once",
     "test": "node --test test/unit/*.test.mjs",
     "e2e": "node test/e2e/run.mjs",
-    "e2e:restock": "node test/e2e/restock.mjs"
+    "e2e:restock": "node test/e2e/restock.mjs",
+    "invariants": "node invariants.mjs"
   },
   "dependencies": {
     "viem": "2.21.54"

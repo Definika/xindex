@@ -193,7 +193,7 @@ differ from the table's are marked.
 | RZ-27 | Valid, a pre-mainnet check | Open: it is part of the settlement on a real Hermes update already on the pre-mainnet list | none |
 | RZ-28 | Valid, documentation | Fixed: the factory's header and `maxPlatformFeeBps` say that no higher rate can land, that any policy change moves the address `predictIndexAddress` gave, and that the referral share needs no bound, since it only splits the platform's part | none |
 | RZ-29 | Valid | Fixed. Treasury calls no longer reset the ceiling, so the invariant holds across any run of them; the per-call `assertLe`s were and remain the per-step checks | `invariant_RS1_...` |
-| RZ-30 | Valid | Partly fixed: the keeper e2e's fake Hermes signs `/latest`, one update per publish time. Open: a request scenario. Not run (no RPC) | none |
+| RZ-30 | Valid | Partly fixed: the keeper e2e's fake Hermes signs `/latest`, one update per publish time; the e2e passed with it on 2026-11-01 (20/0). Open: a request scenario | none |
 | RZ-31 | Valid | Fixed: the two tests expect `V3TooMuchRequested()` and `InsufficientOutput(15e6, type(uint256).max)` | the two tests |
 | RZ-32 | Valid | Fixed. The handler tries a stranger at the hold-off's last second and asserts it is refused and `canStartRebalance()` is false; a hub mutant that lets strangers in one second early fails `test_XS16_handlerReachesEveryPath` | the hub invariant suite |
 | RZ-33 | Valid | Open: vectors near a `mulDiv`'s 256-bit edge and the `uint96` boundary need new kinds in the exact model | none |
