@@ -1,0 +1,13 @@
+{
+  "name": "xindex-restock-aptos",
+  "private": true,
+  "description": "The restock service's Aptos signer: builds and signs its Aptos moves in a process of its own, holding only the Aptos key",
+  "type": "module",
+  "dependencies": {
+    "@aptos-labs/ts-sdk": "2.0.1",
+    "@wormhole-foundation/sdk-aptos": "6.1.5",
+    "@wormhole-foundation/sdk-aptos-core": "6.1.5",
+    "@wormhole-foundation/sdk-aptos-tokenbridge": "6.1.5",
+    "@wormhole-foundation/sdk-connect": "6.1.5"
+  }
+}

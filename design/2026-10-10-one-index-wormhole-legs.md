@@ -138,10 +138,15 @@ transaction:
 | HNT | Solana (1) | `hntyVP6YFm1Hg25TN9WGLqM12b8TQmcknKrdu1oxWux` | |
 
 How an attestation goes, in order. First, on the home chain, call the token bridge's `attestToken(token, nonce)`
-(on BNB Chain the bridge is `0xB6F6D86a8f9879A9c87f643768d9efc38c1Da6E7`; on Solana, Sui and Aptos, Portal's own
-interface does the same). Second, wait for the guardians to sign the attestation, which Wormholescan shows as a VAA.
-Third, on Ethereum, call `createWrapped(vaa)` on `MainnetAddresses.WORMHOLE_TOKEN_BRIDGE`; the copy then answers at
-`wrappedAsset(chain, source)`. Fourth, read the source on its home chain, since `CheckToken` reads only the Ethereum
+(on BNB Chain the bridge is `0xB6F6D86a8f9879A9c87f643768d9efc38c1Da6E7`). On Solana and Sui, the restock service does it
+through Wormhole's TypeScript SDK, the one route Wormhole's docs now give (`createAttestation`, then
+`submitAttestation`): `node keeper/restock.mjs --attest solana <mint>` or `--attest sui <coin type>` attests the token,
+waits for the guardians' signature, checks it on Ethereum's core and creates the copy from the treasury, or updates
+an existing copy's name and symbol, which is RAY's `updateWrapped`. Portal's own interface for this, legacy Portal,
+closed on 2026-06-30 (PD-7, `audit/2026-11-01-protocol-docs-review.md`). Second, wait for the guardians to sign the
+attestation, which Wormholescan shows as a VAA. Third, on Ethereum, call `createWrapped(vaa)` on
+`MainnetAddresses.WORMHOLE_TOKEN_BRIDGE`; the copy then answers at `wrappedAsset(chain, source)`. The restock service's
+`--attest` takes the second and third steps itself. Fourth, read the source on its home chain, since `CheckToken` reads only the Ethereum
 copy and every copy is the same `BridgeToken` beacon: apply the WBT rule and the DOGE rule there (a proxy whose admin
 is one externally owned key, or a single key that can mint, means a copy that key can leave unbacked), and record the
 home chain's bridge side as a party (RX-11, RX-32). Fifth, run `CheckToken` on the copy, add it to the address book and

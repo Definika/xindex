@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createIris, createWormholescan, sequenceIn } from "../../restock/attestations.mjs";
+import { attestMetaOf, cctpFields, cctpMaxFee, createIris, createWormholescan, MAX_CCTP_FEE_BPS, sequenceIn } from "../../restock/attestations.mjs";
 
 /// A fetch that answers each URL from `routes` (status and body) and records what was asked.
 function fakeFetch(routes) {
@@ -121,4 +121,56 @@ test("RS-14: the sequence is read only from the Wormhole core's own log", () => 
   const forged = event(`0x${"66".repeat(20)}`, 99n); // a token in the transfer, emitting the core's event as its own
   assert.equal(sequenceIn([forged, event(CORE.toLowerCase(), 17n)], { core: CORE, emitter: BSC_BRIDGE, decode }), 17n);
   assert.equal(sequenceIn([forged], { core: CORE, emitter: BSC_BRIDGE, decode }), null);
+});
+
+
+/// A CCTP V2 burn message: the 148-byte header (version, domains, `nonce`, sender, recipient, caller, finality) and the
+/// 228-byte burn body, whose expiration block Circle sets when it signs.
+function cctpMessage({ nonce = 0xabcn, expirationBlock = 0n, amount = 1_000_000n } = {}) {
+  const w = (n) => hex(n, 32);
+  const header = `${hex(1, 4)}${hex(8, 4)}${hex(0, 4)}${w(nonce)}${w(1)}${w(2)}${w(0)}${hex(2000, 4)}${hex(2000, 4)}`;
+  const body = `${hex(1, 4)}${w(3)}${w(4)}${w(amount)}${w(5)}${w(0)}${w(0)}${w(expirationBlock)}`;
+  return `0x${header}${body}`;
+}
+
+test("PD-12: a burn allows the route's standard fee from Circle's table, rounded up, and refuses one over MAX_CCTP_FEE_BPS", async () => {
+  // Iris's table for Ethereum to Solana, read on 2026-11-02: fast 1 bp, standard 0.
+  const table = [{ finalityThreshold: 1000, minimumFee: 1 }, { finalityThreshold: 2000, minimumFee: 0 }];
+  assert.equal(cctpMaxFee(1_000_000_000n, table), 0n, "standard transfers are free today");
+  const priced = (fee) => [{ finalityThreshold: 2000, minimumFee: fee }];
+  assert.equal(cctpMaxFee(1_000_000_000n, priced(1)), 100_000n, "1 bp of 1,000 USDC is 0.1 USDC");
+  assert.equal(cctpMaxFee(1_000_001n, priced(1)), 101n, "rounded up");
+  assert.equal(cctpMaxFee(1_000_000_000n, priced(0.5)), 50_000n, "a fee with decimals");
+  assert.equal(cctpMaxFee(1_000_000n, priced(MAX_CCTP_FEE_BPS)), 1_000n);
+  assert.throws(() => cctpMaxFee(1_000_000n, priced(MAX_CCTP_FEE_BPS + 1)), /costs 11 bps on the route, over 10/);
+  assert.throws(() => cctpMaxFee(1_000_000n, [{ finalityThreshold: 1000, minimumFee: 1 }]), /no standard transfer fee/);
+  assert.throws(() => cctpMaxFee(1_000_000n, priced("x")), /standard fee of x/);
+  const asked = [];
+  const iris = createIris({ fetchImpl: async (url) => (asked.push(url), { status: 200, ok: true, json: async () => table }) });
+  assert.deepEqual(await iris.fees(0, 5), table);
+  assert.deepEqual(asked, ["https://iris-api.circle.com/v2/burn/USDC/fees/0/5"]);
+});
+
+test("PD-10: a CCTP message's nonce and expiry are read from it, and Circle is asked to sign it again by nonce", async () => {
+  assert.deepEqual(cctpFields(cctpMessage({ nonce: 0xabcn, expirationBlock: 24_000_000n })), { nonce: `0x${hex(0xabc, 32)}`, expirationBlock: 24_000_000n });
+  assert.equal(cctpFields(cctpMessage()).expirationBlock, 0n, "none set");
+  assert.equal(cctpFields("0x1234"), null, "too short to be a burn");
+  const asked = [];
+  const iris = createIris({
+    fetchImpl: async (url, init) => (asked.push([init?.method ?? "GET", url]), { status: 200, ok: true, json: async () => ({ message: "Re-attestation successfully requested for nonce." }) }),
+  });
+  await iris.reattest("0xabc");
+  assert.deepEqual(asked, [["POST", "https://iris-api.circle.com/v2/reattest/0xabc"]]);
+  const refused = createIris({ fetchImpl: async () => ({ status: 400, ok: false, text: async () => "not eligible" }) });
+  await assert.rejects(refused.reattest("0xabc"), /Iris 400 on \/v2\/reattest\/0xabc: not eligible/);
+});
+
+test("PD-7: a token attestation's chain, address, decimals, symbol and name are read from its VAA; anything else is none", () => {
+  const text32 = (s) => Buffer.from(s.padEnd(32, "\0")).toString("hex");
+  const payload = `02${word("0x" + "5a".repeat(32))}${hex(1, 2)}${hex(6, 1)}${text32("JTO")}${text32("Jito")}`;
+  const body = `${hex(1_700_000_000, 4)}${hex(0, 4)}${hex(1, 2)}${"ec".repeat(32)}${hex(9, 8)}${hex(32, 1)}${payload}`;
+  const attestation = `0x01${hex(4, 4)}${hex(1, 1)}${"ab".repeat(66)}${body}`;
+  assert.deepEqual(attestMetaOf(attestation), { tokenAddress: `0x${"5a".repeat(32)}`, tokenChain: 1, decimals: 6, symbol: "JTO", name: "Jito" });
+  assert.equal(attestMetaOf(vaa()), null, "a transfer is not an attestation");
+  assert.equal(attestMetaOf("0x01"), null);
 });

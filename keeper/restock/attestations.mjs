@@ -67,10 +67,69 @@ export function createWormholescan({ url = "https://api.wormholescan.io", fetchI
   };
 }
 
+/// A CCTP V2 message's nonce, which Circle assigns when it attests (header bytes 12..44, as 0x-hex), and its burn's
+/// expiration block (body byte 196), which Circle sets when it signs and the receiving transmitter enforces; zero for
+/// none. Null when `message` is too short to be a burn.
+export function cctpFields(message) {
+  const m = hex(typeof message === "string" ? message : "");
+  if (m.length < 2 * (148 + 228)) return null;
+  return { nonce: `0x${m.slice(24, 88)}`, expirationBlock: BigInt(`0x${m.slice(2 * (148 + 196), 2 * (148 + 228))}`) };
+}
+
+/// The most of a transfer, in basis points, a standard CCTP transfer may pay Circle: standard transfers are free on
+/// every route the service uses (Iris's fee table, read on 2026-11-02), and Circle may switch a minimum fee on.
+export const MAX_CCTP_FEE_BPS = 10;
+
+/// The fee to allow a standard transfer of `amount` (raw USDC), from Iris's fee table `fees` for its route
+/// (`[{finalityThreshold, minimumFee}]`, the minimum fee in basis points, which may have decimals): the standard
+/// rate's fee, rounded up. A burn that allows less than the route's minimum reverts, and a rate above
+/// MAX_CCTP_FEE_BPS is refused rather than paid (PD-12).
+export function cctpMaxFee(amount, fees) {
+  const standard = Array.isArray(fees) ? fees.find((f) => Number(f.finalityThreshold) === 2000) : null;
+  if (!standard) throw new Error("Iris lists no standard transfer fee for the route");
+  const rate = Number(standard.minimumFee);
+  if (!Number.isFinite(rate) || rate < 0) throw new Error(`Iris lists a standard fee of ${standard.minimumFee}`);
+  if (rate > MAX_CCTP_FEE_BPS) throw new Error(`a standard transfer costs ${rate} bps on the route, over ${MAX_CCTP_FEE_BPS}`);
+  const scaled = BigInt(Math.round(rate * 10_000)); // basis points to the 1e8 of the amount
+  return (amount * scaled + 99_999_999n) / 100_000_000n;
+}
+
+/// A token attestation's metadata, from a VAA (0x-hex): the token's chain and address (a word), its decimals, and its
+/// symbol and name as the attestation carries them (32 bytes each, zero-padded); null when the VAA does not carry an
+/// attestation (payload 2).
+export function attestMetaOf(vaa) {
+  const bytes = Buffer.from(hex(vaa), "hex");
+  if (bytes.length < 6) return null;
+  const at = 6 + 66 * bytes[5] + 51;
+  if (bytes.length < at + 100 || bytes[at] !== 2) return null;
+  const text = (b) => b.toString("utf8").replace(/\0+$/, "");
+  return {
+    tokenAddress: `0x${bytes.subarray(at + 1, at + 33).toString("hex")}`,
+    tokenChain: bytes.readUInt16BE(at + 33),
+    decimals: bytes[at + 35],
+    symbol: text(bytes.subarray(at + 36, at + 68)),
+    name: text(bytes.subarray(at + 68, at + 100)),
+  };
+}
+
 /// Circle's Iris API, CCTP V2 (https://iris-api.circle.com). `fetchImpl` is injectable for tests.
 export function createIris({ url = "https://iris-api.circle.com", fetchImpl = fetch, timeoutMs = 10_000 } = {}) {
   const base = url.replace(/\/+$/, "");
   return {
+    /// The fee table of the route from CCTP domain `source` to `destination`: `[{finalityThreshold, minimumFee}]`.
+    async fees(source, destination) {
+      const path = `/v2/burn/USDC/fees/${source}/${destination}`;
+      const response = await fetchImpl(`${base}${path}`, { signal: AbortSignal.timeout(timeoutMs) });
+      if (!response.ok) throw new Error(`Iris ${response.status} on ${path}`);
+      return response.json();
+    },
+    /// Asks Circle to sign the message with nonce `nonce` (0x-hex) again, with a new expiry (PD-10).
+    async reattest(nonce) {
+      const path = `/v2/reattest/${nonce}`;
+      const response = await fetchImpl(`${base}${path}`, { method: "POST", signal: AbortSignal.timeout(timeoutMs) });
+      if (!response.ok) throw new Error(`Iris ${response.status} on ${path}: ${(await response.text()).slice(0, 200)}`);
+      return response.json();
+    },
     /// The message the CCTP burn in transaction `hash` on CCTP domain `domain` sent, with Circle's attestation of it;
     /// null until Circle has attested it. `expect` is the move's: `{destinationDomain, recipient, sender, amount}`; a
     /// message that is not its burn is never taken for it, an answer with none is thrown, and so is the move's when

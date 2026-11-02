@@ -5,17 +5,29 @@
 // (redeeming a transfer, receiving a CCTP message) are each counted once by the contract they call, so they are simply
 // sent again until that contract says it is done.
 
-import { createPublicClient, createWalletClient, decodeEventLog, encodeFunctionData, http, keccak256, pad, parseAbi } from "viem";
+import {
+  createPublicClient,
+  createWalletClient,
+  decodeEventLog,
+  decodeFunctionResult,
+  encodeFunctionData,
+  http,
+  keccak256,
+  pad,
+  parseAbi,
+} from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { avalanche, base, bsc, mainnet, optimism } from "viem/chains";
 import { MAINNET } from "../bot/config.mjs";
 import { ABI as KEEPER_ABI, isRevert, revertReason } from "../bot/chain.mjs";
+import { createRoutes } from "../bot/routes.mjs";
 import { sequenceIn } from "./attestations.mjs";
 import { allowExactly, noPendingTransaction, resumeMove, settleCommit, withFeeHeadroom } from "./sending.mjs";
 
 const TOKEN_MESSENGER_V2 = "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d";
 const MESSAGE_TRANSMITTER_V2 = "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64";
-/// CCTP V2's finality for a standard transfer: the source chain's own finality, and no fee.
+/// CCTP V2's finality for a standard transfer: the source chain's own finality, at the route's standard fee, which is
+/// zero on every route the service uses and bounded by `cctpMaxFee` (attestations.mjs) should Circle switch one on.
 const STANDARD_FINALITY = 2000;
 
 /// Each chain's Wormhole Token Bridge, CCTP domain, and, on a home chain, the Uniswap V3 fork its coins trade on, in
@@ -107,6 +119,9 @@ export const ABI = Object.freeze({
     "function transferTokensWithPayload(address token, uint256 amount, uint16 recipientChain, bytes32 recipient, uint32 nonce, bytes payload) payable returns (uint64)",
     "function completeTransfer(bytes encodedVm)",
     "function isTransferCompleted(bytes32 hash) view returns (bool)",
+    "function wrappedAsset(uint16 tokenChainId, bytes32 tokenAddress) view returns (address)",
+    "function createWrapped(bytes encodedVm) returns (address token)",
+    "function updateWrapped(bytes encodedVm) returns (address token)",
   ]),
   core: parseAbi([
     "function messageFee() view returns (uint256)",
@@ -205,17 +220,32 @@ export function createEvm({ name, rpcUrl, key, journal }) {
     return sequence;
   }
 
+  const receiveRequest = (message, attestation) => ({
+    to: MESSAGE_TRANSMITTER_V2,
+    abi: ABI.messageTransmitter,
+    functionName: "receiveMessage",
+    args: [message, attestation],
+  });
+  const received = async (message) => (await read(MESSAGE_TRANSMITTER_V2, ABI.messageTransmitter, "usedNonces", [cctpNonce(message)])) !== 0n;
+
   return {
     name,
     def,
     client,
     address: account.address,
+    /// Who the chain's Token Bridge publishes as, for Wormholescan: the bridge contract on an EVM chain.
+    emitter: def.tokenBridge,
+    /// The service as a CCTP burn's sender, and as the recipient a burn to this chain mints to.
+    cctpSender: account.address,
+    cctpRecipient: account.address,
     read,
     commit,
     resume,
     complete,
     allow,
     sequenceOf,
+    /// The sequence the Token Bridge published in mined transaction `hash`.
+    sequenceOfTx: async (hash) => sequenceOf(await client.getTransactionReceipt({ hash }), def.tokenBridge),
     balance: (token) => (token ? read(token, ABI.erc20, "balanceOf", [account.address]) : client.getBalance({ address: account.address })),
     messageFee: async () => read(await coreAddress(), ABI.core, "messageFee"),
     /// Whether this chain's Wormhole core accepts `vaa`'s signatures, before the move stores it (RS-14).
@@ -226,31 +256,118 @@ export function createEvm({ name, rpcUrl, key, journal }) {
     /// Whether this chain's CCTP transmitter would receive `message` with `attestation`, before the move stores them: a
     /// simulation, or the message received already (RS-14).
     verifyCctp: async (message, attestation) => {
-      const r = { to: MESSAGE_TRANSMITTER_V2, abi: ABI.messageTransmitter, functionName: "receiveMessage", args: [message, attestation] };
+      const r = receiveRequest(message, attestation);
       try {
         await client.simulateContract({ account, address: r.to, abi: r.abi, functionName: r.functionName, args: r.args });
         return { valid: true, reason: "" };
       } catch (error) {
         if (!isRevert(error)) throw error;
-        const used = (await read(MESSAGE_TRANSMITTER_V2, ABI.messageTransmitter, "usedNonces", [cctpNonce(message)])) !== 0n;
+        const used = await received(message);
         return { valid: used, reason: used ? "" : revertReason(error) };
       }
     },
     transferCompleted: (vaa) => read(def.tokenBridge, ABI.tokenBridge, "isTransferCompleted", [vaaHash(vaa)]),
-    cctpReceived: async (message) => (await read(MESSAGE_TRANSMITTER_V2, ABI.messageTransmitter, "usedNonces", [cctpNonce(message)])) !== 0n,
-    /// The CCTP burn of `amount` USDC to `recipient` on `domain`, as a request for {commit}.
-    burnRequest: (amount, domain, recipient) => ({
+    cctpReceived: received,
+    /// The CCTP burn of `amount` USDC to `recipient` (an address or a word) on `domain`, paying Circle at most `maxFee`
+    /// (PD-12), as a request for {commit}.
+    burnRequest: (amount, domain, recipient, maxFee = 0n) => ({
       to: TOKEN_MESSENGER_V2,
       abi: ABI.tokenMessenger,
       functionName: "depositForBurn",
-      args: [amount, domain, word(recipient), def.usdc ?? def.market.usdc, `0x${"00".repeat(32)}`, 0n, STANDARD_FINALITY],
+      args: [amount, domain, word(recipient), def.usdc ?? def.market.usdc, `0x${"00".repeat(32)}`, maxFee, STANDARD_FINALITY],
     }),
-    receiveRequest: (message, attestation) => ({
-      to: MESSAGE_TRANSMITTER_V2,
-      abi: ABI.messageTransmitter,
-      functionName: "receiveMessage",
-      args: [message, attestation],
-    }),
+    receiveRequest,
+    /// Receives CCTP `message` with `attestation` here: the transmitter counts each message once.
+    receive: (message, attestation) => complete(receiveRequest(message, attestation)),
     tokenMessenger: TOKEN_MESSENGER_V2,
+  };
+}
+
+/// The route search's view of `client`: multicall, eth_call, and which errors are reverts.
+function reader(client) {
+  return {
+    multicall: (contracts, blockNumber) => client.multicall({ contracts, blockNumber, allowFailure: true }),
+    call: async ({ to, abi, functionName, args }, blockNumber) => {
+      const { data } = await client.call({ to, data: encodeFunctionData({ abi, functionName, args }), blockNumber });
+      return decodeFunctionResult({ abi, functionName, data });
+    },
+    isRevert,
+  };
+}
+
+/// The restock service's home on EVM chain `name`: its wallet (`createEvm`) and the moves the service makes there, in
+/// the terms every home chain offers (`restock.mjs`): buying and selling a coin on the chain's Uniswap V3 fork, bridging
+/// it to the executor, completing a transfer the executor bridged out, and moving USDC by CCTP. `cfg` is the plan's
+/// `{maxLossBps, minUsd}`.
+export function createEvmHome({ name, rpcUrl, key, journal, cfg }) {
+  const h = createEvm({ name, rpcUrl, key, journal });
+  const { def } = h;
+  const routes = createRoutes(reader(h.client), { routeMaxLossBps: cfg.maxLossBps }, ABI, def.market);
+
+  /// The best route for `side` of `amount` of `c`, halving the amount, down to RESTOCK_MIN_USD, while none stays within
+  /// ROUTE_MAX_LOSS_BPS: a thin pool takes the restock in smaller batches rather than none.
+  async function routeFor(c, side, amount, price) {
+    const block = await h.client.getBlockNumber();
+    return routes.bestBatch({
+      key: `restock:${block}`,
+      token: c.home,
+      side,
+      amount,
+      decimals: c.decimals,
+      price,
+      minUsd: cfg.minUsd,
+      blockNumber: block,
+    });
+  }
+
+  return {
+    ...h,
+    /// Fails unless the RPC serves this chain.
+    async check() {
+      const chainId = await h.client.getChainId();
+      if (chainId !== def.viem.id) throw new Error(`${name}'s RPC serves chain ${chainId}`);
+    },
+    /// What the executor must pin for coin `c` here: the service's wallet, as the bridge encodes it.
+    recipientFor: () => word(h.address),
+    /// Each round searches its routes afresh.
+    forgetRoutes: () => routes.forget([]),
+    /// Buys action `a`'s coin `c` (`a.amountOut`, for at most `a.maxIn`), in the largest batch a route takes within
+    /// the loss limit; null when none does. The batch's share of `a.maxIn` bounds what it may spend.
+    async buy(a, c, price) {
+      const pick = await routeFor(c, "buy", a.amountOut, price);
+      if (!pick) return null;
+      const maxIn = (a.maxIn * pick.amount) / a.amountOut;
+      await h.allow(def.market.usdc, def.router, maxIn);
+      const params = { path: pick.route, recipient: h.address, amountOut: pick.amount, amountInMaximum: maxIn };
+      await h.commit({ ...a, usd: pick.usd, amountIn: maxIn }, { to: def.router, abi: ABI.router, functionName: "exactOutput", args: [params] });
+      return { usd: pick.usd };
+    },
+    /// Sells action `a`'s `a.amount` of coin `c` for the float, for at least its share of `a.minOut`; null when no
+    /// route takes it within the loss limit.
+    async sell(a, c, price) {
+      const pick = await routeFor(c, "sell", a.amount, price);
+      if (!pick) return null;
+      const minOut = (a.minOut * pick.amount) / a.amount;
+      await h.allow(c.home, def.router, pick.amount);
+      const params = { path: pick.route, recipient: h.address, amountIn: pick.amount, amountOutMinimum: minOut };
+      await h.commit({ ...a, amount: pick.amount }, { to: def.router, abi: ABI.router, functionName: "exactInput", args: [params] });
+      return { usd: pick.usd };
+    },
+    /// Bridges action `a`'s `a.amount` of coin `c` to `executor` (a word) on Ethereum, as a transfer with a payload,
+    /// which only its recipient may complete (`KeeperExecutor.redeemBridged`).
+    async bridgeIn(a, c, executor) {
+      await h.allow(c.home, def.tokenBridge, a.amount);
+      const value = await h.messageFee();
+      const args = [c.home, a.amount, 2, executor, 0, "0x01"];
+      const { id, receipt } = await h.commit(a, { to: def.tokenBridge, abi: ABI.tokenBridge, functionName: "transferTokensWithPayload", args, value });
+      if (receipt?.status === "success") journal.note(id, { sequence: (await h.sequenceOf(receipt, def.tokenBridge)).toString() });
+    },
+    /// Completes transfer `vaa`, which the executor bridged out to this wallet.
+    redeem: (vaa) => h.complete({ to: def.tokenBridge, abi: ABI.tokenBridge, functionName: "completeTransfer", args: [vaa] }),
+    /// Burns action `a`'s `a.amount` of the float by CCTP for `treasury` on Ethereum, paying Circle at most `maxFee`.
+    async sweep(a, treasury, maxFee = 0n) {
+      await h.allow(def.market.usdc, h.tokenMessenger, a.amount);
+      await h.commit(a, h.burnRequest(a.amount, 0, treasury, maxFee));
+    },
   };
 }

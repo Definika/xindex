@@ -4,7 +4,7 @@ import { mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as nodeFs from "node:fs";
-import { createJournal, fileStore } from "../../restock/journal.mjs";
+import { createJournal, fileStore, resumeOrder } from "../../restock/journal.mjs";
 
 const XRP = `0x${"c7".repeat(20)}`;
 
@@ -142,4 +142,20 @@ test("RS-13: the journal reaches the disk before the transaction it records is s
   assert.equal(calls[5][1], dir);
   assert.match(store.load(), /"draw"/);
   assert.deepEqual(readdirSync(dir), ["restock.json"], "no temporary file left");
+});
+
+test("PD-9: a round resumes every signed move before it takes any other step, so no signer builds over a move it may have in flight", () => {
+  let text = null;
+  const journal = createJournal({ load: () => text, save: (t) => (text = t) });
+  const redeem = journal.open({ kind: "bridgeOut", coin: "SUI", copy: XRP, chain: "sui", amount: 1n }, { chain: "ethereum", hash: "0x1" });
+  journal.advance(redeem, "sent", { status: "success" });
+  journal.advance(redeem, "attested", { vaa: "0xvaa" });
+  const receipt = journal.open({ kind: "fund", chain: "sui", amount: 5n }, { chain: "ethereum", hash: "0x2" });
+  journal.advance(receipt, "sent", { status: "success" });
+  const swap = journal.open({ kind: "buy", coin: "SUI", copy: XRP, chain: "sui", amountIn: 3n }, { chain: "sui", hash: "d3" });
+  const burn = journal.open({ kind: "sweep", chain: "aptos", amount: 4n }, { chain: "aptos", hash: "0x4" });
+  // Oldest first, the redeem (a Sui transaction) would be built before the Sui swap signed after it was asked about.
+  assert.deepEqual(journal.pending().map((m) => m.id), [redeem, receipt, swap, burn]);
+  assert.deepEqual(resumeOrder(journal.pending()).map((m) => m.id), [swap, burn, redeem, receipt]);
+  assert.deepEqual(resumeOrder([]), []);
 });

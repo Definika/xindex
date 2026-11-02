@@ -12,6 +12,10 @@ and restored from the bytes read before the edit, never from git (AGENTS.md), in
 after. Before any mutant runs, every suite the run uses must pass unmutated, so a broken test cannot read as a kill.
 A mutant is killed when its suite reports a failing test; a compile error is neither a kill nor a survival but an
 error. The run fails on any survivor, stale edit or error.
+
+A mutant's suite is a forge test path, or, with `"runner": "node"`, a node test file of the keeper bot's
+(keeper/test/unit), which Node's own runner reports in TAP: each `not ok` line names a failing test, and a test file
+whose process dies, as one that leaves an error unheard does, reports one too.
 """
 
 import argparse
@@ -26,7 +30,21 @@ TABLE = pathlib.Path("test/mutants/mutants.json")
 # A failing test as forge prints it. A failure's reason can hold a bracketed number, `[1.801e9]`, so the pattern does
 # not stop at the first `]` (AGENTS.md).
 FAILED = re.compile(r"^\[FAIL[^\n]*\] (\w+)\(", re.MULTILINE)
+# A failing test as Node's TAP reporter prints it, at any depth.
+NODE_FAILED = re.compile(r"^\s*not ok \d+ - (.+)$", re.MULTILINE)
 TIMEOUT_S = 1800
+
+
+def node_test(mutant):
+    started = time.monotonic()
+    command = ["node", "--test", "--test-reporter=tap", mutant["test"]]
+    done = subprocess.run(command, capture_output=True, text=True, timeout=TIMEOUT_S)
+    output = done.stdout + done.stderr
+    return done.returncode, output, sorted(set(NODE_FAILED.findall(output))), time.monotonic() - started
+
+
+def suite_test(mutant):
+    return node_test(mutant) if mutant.get("runner") == "node" else forge_test(mutant)
 
 
 def forge_test(mutant):
@@ -57,7 +75,7 @@ def run(mutant):
         return "stale", problem
     try:
         path.write_bytes(mutated.encode())
-        code, output, failed, seconds = forge_test(mutant)
+        code, output, failed, seconds = suite_test(mutant)
     finally:
         path.write_bytes(original)
     if path.read_bytes() != original:
@@ -66,7 +84,7 @@ def run(mutant):
         return "killed", f"{len(failed)} failing, e.g. {failed[0]} ({seconds:.0f} s)"
     if code != 0:
         tail = output.strip().splitlines()[-3:]
-        return "error", "forge failed without a failing test: " + " | ".join(tail)
+        return "error", "the suite failed without a failing test: " + " | ".join(tail)
     return "survived", f"every test of {mutant['test']} passed ({seconds:.0f} s)"
 
 
@@ -97,8 +115,8 @@ def main():
         return 1 if stale else 0
 
     # Every suite this run uses must pass as committed, or a failure would read as a kill.
-    for suite in sorted({(m["test"], m.get("root")) for m in mutants}, key=str):
-        code, output, failed, seconds = forge_test({"test": suite[0], "root": suite[1]})
+    for suite in sorted({(m["test"], m.get("root"), m.get("runner")) for m in mutants}, key=str):
+        code, output, failed, seconds = suite_test({"test": suite[0], "root": suite[1], "runner": suite[2]})
         if code != 0 or failed:
             print(output[-4000:])
             raise SystemExit(f"the unmutated suite {suite[0]} fails: fix it before the mutation gate")

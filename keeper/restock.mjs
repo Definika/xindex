@@ -11,21 +11,30 @@
 //      wallet's coins, float and gas, and Pyth's prices, and plans (`restock/plan.mjs`): buy a short coin on its home
 //      chain and bridge it in, sell and bring home what nobody needs, and move USDC where the buys wait for it;
 //   3. it runs the plan, each move recorded in the journal (JOURNAL_FILE) before it is broadcast.
+//
+// `node restock.mjs --attest <chain> <token>` instead attests one token on a served home chain for its Wormhole copy on
+// Ethereum, the owner's step before a copy can be listed (restock/attest.mjs, PD-7), and exits.
 
 import { decodeFunctionResult, encodeFunctionData } from "viem";
 import { MAINNET } from "./bot/config.mjs";
-import { isRevert, revertReason } from "./bot/chain.mjs";
+import { revertReason } from "./bot/chain.mjs";
 import { createHermes, priceKey } from "./bot/hermes.mjs";
 import { readNeeds } from "./bot/needs.mjs";
-import { createRoutes } from "./bot/routes.mjs";
-import { createIris, createWormholescan } from "./restock/attestations.mjs";
+import { createAdvance } from "./restock/advance.mjs";
+import { attestToken } from "./restock/attest.mjs";
+import { cctpMaxFee, createIris, createWormholescan } from "./restock/attestations.mjs";
 import { CHAINS, PRICE_IDS } from "./restock/coins.mjs";
 import { parseRestockConfig } from "./restock/config.mjs";
-import { ABI, EVM_CHAINS, createEvm, word } from "./restock/evm.mjs";
-import { createJournal, fileStore } from "./restock/journal.mjs";
+import { ABI, createEvm, createEvmHome, word } from "./restock/evm.mjs";
+import { createSolanaHome } from "./restock/solana.mjs";
+import { createSuiHome } from "./restock/sui.mjs";
+import { createAptosHome } from "./restock/aptos.mjs";
+import { createAlgorandHome } from "./restock/algorand.mjs";
+import { createJournal, fileStore, resumeOrder } from "./restock/journal.mjs";
 import { plan } from "./restock/plan.mjs";
 
 const ONCE = process.argv.includes("--once");
+const ATTEST = process.argv.indexOf("--attest");
 const FRESH_SECONDS = 120;
 const log = (...args) => console.log(new Date().toISOString(), ...args);
 const cfg = parseRestockConfig(process.env);
@@ -36,29 +45,22 @@ const wormholescan = createWormholescan({ url: process.env.WORMHOLESCAN_URL });
 const iris = createIris({ url: process.env.IRIS_URL });
 const eth = createEvm({ name: "ethereum", rpcUrl: cfg.rpcUrl, key: cfg.treasuryKey, journal });
 
+/// Each home chain's adapter, in the same terms whatever the chain (`restock/evm.mjs` createEvmHome): `check`,
+/// `recipientFor`, `forgetRoutes`, `balance`, `buy`, `sell`, `bridgeIn`, `sequenceOfTx`, `redeem`, `transferCompleted`,
+/// `sweep`, `receive`, `cctpReceived`, `verifyVaa`, `verifyCctp`, `resume`, with `emitter`, `cctpSender` and
+/// `cctpRecipient`.
 const homes = {};
-const routes = {};
 for (const [name, chain] of Object.entries(cfg.chains)) {
-  if (chain.platform !== "evm") {
-    throw new Error(`${name}'s coins (${cfg.coins.filter((c) => c.chain === name).map((c) => c.symbol).join(", ")}) need their ${chain.platform} adapter; leave them out of RESTOCK_COINS`);
-  }
-  homes[name] = createEvm({ name, rpcUrl: chain.rpcUrl, key: chain.key, journal });
-  routes[name] = createRoutes(reader(homes[name].client), { routeMaxLossBps: cfg.plan.maxLossBps }, ABI, EVM_CHAINS[name].market);
+  const coins = cfg.coins.filter((c) => c.chain === name);
+  if (chain.platform === "evm") homes[name] = createEvmHome({ name, rpcUrl: chain.rpcUrl, key: chain.key, journal, cfg: cfg.plan });
+  else if (chain.platform === "solana") homes[name] = createSolanaHome({ settings: chain, coins, journal, cfg: cfg.plan, verifyVaa: eth.verifyVaa });
+  else if (chain.platform === "sui") homes[name] = createSuiHome({ settings: chain, coins, journal, cfg: cfg.plan, verifyVaa: eth.verifyVaa });
+  else if (chain.platform === "aptos") homes[name] = createAptosHome({ settings: chain, coins, journal, cfg: cfg.plan, verifyVaa: eth.verifyVaa });
+  else if (chain.platform === "algorand") homes[name] = createAlgorandHome({ settings: chain, coins, journal, cfg: cfg.plan, verifyVaa: eth.verifyVaa });
+  else throw new Error(`${name}'s coins (${coins.map((c) => c.symbol).join(", ")}) need their ${chain.platform} adapter; leave them out of RESTOCK_COINS`);
 }
 const coinOf = (symbol) => cfg.coins.find((c) => c.symbol === symbol);
 const same = (a, b) => a.toLowerCase() === b.toLowerCase();
-
-/// The route search's view of a chain: multicall, eth_call, and which errors are reverts.
-function reader(client) {
-  return {
-    multicall: (contracts, blockNumber) => client.multicall({ contracts, blockNumber, allowFailure: true }),
-    call: async ({ to, abi, functionName, args }, blockNumber) => {
-      const { data } = await client.call({ to, data: encodeFunctionData({ abi, functionName, args }), blockNumber });
-      return decodeFunctionResult({ abi, functionName, data });
-    },
-    isRevert,
-  };
-}
 
 /// Refuses to run unless the executor names this treasury, this bridge and USDC, and every served chain's recipient is
 /// this service's wallet there: without them every move would revert, or bridge to someone else.
@@ -70,11 +72,14 @@ async function checkSetup() {
   if (!same(bridge, MAINNET.tokenBridge)) throw new Error(`the executor bridges through ${bridge}, not Wormhole's Token Bridge`);
   if (!same(usdc, MAINNET.usdc)) throw new Error(`the executor's float is ${usdc}, not USDC`);
   for (const [name, home] of Object.entries(homes)) {
-    const chainId = await home.client.getChainId();
-    if (chainId !== CHAINS[name].evmChainId) throw new Error(`${name}'s RPC serves chain ${chainId}`);
-    const pinned = await ex("homeRecipient", [CHAINS[name].wormhole]);
-    if (!same(pinned, word(home.address))) {
-      throw new Error(`the executor's recipient on ${name} is ${pinned}: the owner must call setHomeRecipient(${CHAINS[name].wormhole}, ${word(home.address)})`);
+    await home.check();
+    // One recipient per coin and chain: Solana's bridge pays a token account per mint, so the executor pins each coin.
+    for (const c of cfg.coins.filter((x) => x.chain === name)) {
+      const pinned = await ex("homeRecipient", [CHAINS[name].wormhole, c.copy]);
+      const wanted = await home.recipientFor(c);
+      if (!same(pinned, wanted)) {
+        throw new Error(`the executor's recipient for ${c.symbol} on ${name} is ${pinned}: the owner must call setHomeRecipient(${CHAINS[name].wormhole}, ${c.copy}, ${wanted})`);
+      }
     }
   }
 }
@@ -83,67 +88,18 @@ async function checkSetup() {
 // Moving the journal on
 // ---------------------------------------------------------------------
 
-const chainOf = (move) => (move.data.chain === "ethereum" ? eth : homes[move.data.chain]);
-
-/// Takes `move` one step further, as far as its chains and the attestation services allow this round.
-async function advance(move) {
-  if (move.stage === "signed") {
-    const adapter = chainOf(move);
-    if (!adapter) return log(`move ${move.id}`, `waits: ${move.data.chain} is not served now`);
-    if (!(await adapter.resume(move))) return;
-    move = journal.get(move.id);
-    if (move.stage !== "sent") return;
-  }
-  if (move.stage === "sent" && move.data.status === "reverted") {
-    journal.drop(move.id, "its transaction reverted");
-    return log(`move ${move.id}`, `${move.kind} reverted on ${move.data.chain}; dropped`);
-  }
-  if (["buy", "sell", "draw", "repay"].includes(move.kind)) return journal.advance(move.id, "done");
-
-  if (move.kind === "bridgeIn" || move.kind === "bridgeOut") {
-    const into = move.kind === "bridgeIn";
-    const from = into ? homes[move.chain] : eth;
-    const to = into ? eth : homes[move.chain];
-    if (!from || !to) return log(`move ${move.id}`, `waits: ${move.chain} is not served now`);
-    if (move.stage === "sent") {
-      if (move.data.sequence === undefined) {
-        const receipt = await from.client.getTransactionReceipt({ hash: move.data.hash });
-        journal.note(move.id, { sequence: (await from.sequenceOf(receipt, from.def.tokenBridge)).toString() });
-      }
-      const vaa = await wormholescan.vaa(from.def.wormhole, from.def.tokenBridge, journal.get(move.id).data.sequence, to.verifyVaa);
-      if (!vaa) return;
-      journal.advance(move.id, "attested", { vaa });
-    }
-    const { vaa } = journal.get(move.id).data;
-    if (!(await to.transferCompleted(vaa))) {
-      // The copy the journal recorded when the move opened, so a coin dropped from RESTOCK_COINS while its transfer
-      // was on its way is still redeemed (RZ-18).
-      const request = into
-        ? { to: cfg.executor, abi: ABI.executor, functionName: "redeemBridged", args: [vaa, move.copy ?? coinOf(move.coin).copy] }
-        : { to: to.def.tokenBridge, abi: ABI.tokenBridge, functionName: "completeTransfer", args: [vaa] };
-      await to.complete(request);
-    }
-    journal.advance(move.id, "redeemed");
-    return log(`move ${move.id}`, `${move.kind} of ${move.coin} landed`);
-  }
-
-  // A CCTP move: burned on one side, attested by Circle, received on the other.
-  const funding = move.kind === "fund";
-  const from = funding ? eth : homes[move.chain];
-  const to = funding ? homes[move.chain] : eth;
-  if (!from || !to) return log(`move ${move.id}`, `waits: ${move.chain} is not served now`);
-  if (move.stage === "sent") {
-    const [fromDomain, toDomain] = funding ? [0, CHAINS[move.chain].cctpDomain] : [CHAINS[move.chain].cctpDomain, 0];
-    const expect = { destinationDomain: toDomain, recipient: to.address, sender: from.address, amount: BigInt(move.amount) };
-    const m = await iris.message(fromDomain, move.data.hash, expect, to.verifyCctp);
-    if (!m) return;
-    journal.advance(move.id, "attested", m);
-  }
-  const { message, attestation } = journal.get(move.id).data;
-  if (!(await to.cctpReceived(message))) await to.complete(to.receiveRequest(message, attestation));
-  journal.advance(move.id, "received");
-  log(`move ${move.id}`, `${move.kind} of ${Number(move.amount) / 1e6} USDC landed on ${funding ? move.chain : "ethereum"}`);
-}
+/// Takes a move one step further, as far as its chains and the attestation services allow this round
+/// (restock/advance.mjs).
+const advance = createAdvance({
+  journal,
+  eth,
+  homes,
+  wormholescan,
+  iris,
+  redeemIn: (vaa, copy) => eth.complete({ to: cfg.executor, abi: ABI.executor, functionName: "redeemBridged", args: [vaa, copy] }),
+  coinOf,
+  log,
+});
 
 // ---------------------------------------------------------------------
 // Reading
@@ -213,49 +169,21 @@ async function readState() {
 // Acting
 // ---------------------------------------------------------------------
 
-/// The best route for `side` of `amount` of `c` on its home chain, halving the amount, down to RESTOCK_MIN_USD, while
-/// none stays within ROUTE_MAX_LOSS_BPS: a thin pool takes the restock in smaller batches rather than none.
-async function routeFor(c, side, amount, price) {
-  const block = await homes[c.chain].client.getBlockNumber();
-  return routes[c.chain].bestBatch({
-    key: `restock:${block}`,
-    token: c.home,
-    side,
-    amount,
-    decimals: c.decimals,
-    price,
-    minUsd: cfg.plan.minUsd,
-    blockNumber: block,
-  });
-}
-
 async function act(a, price) {
   const c = a.coin ? coinOf(a.coin) : null;
   const h = a.chain ? homes[a.chain] : null;
   if (a.kind === "buy") {
-    const pick = await routeFor(c, "buy", a.amountOut, price);
-    if (!pick) return log(a.coin, `no route on ${a.chain} within ROUTE_MAX_LOSS_BPS for ${a.usd.toFixed(0)} USD or less`);
-    const maxIn = (a.maxIn * pick.amount) / a.amountOut;
-    await h.allow(h.def.market.usdc, h.def.router, maxIn);
-    const params = { path: pick.route, recipient: h.address, amountOut: pick.amount, amountInMaximum: maxIn };
-    await h.commit({ ...a, usd: pick.usd, amountIn: maxIn }, { to: h.def.router, abi: ABI.router, functionName: "exactOutput", args: [params] });
-    return log(a.coin, `bought ${pick.usd.toFixed(0)} USD on ${a.chain}`);
+    const done = await h.buy(a, c, price);
+    if (!done) return log(a.coin, `no route on ${a.chain} within ROUTE_MAX_LOSS_BPS for ${a.usd.toFixed(0)} USD or less`);
+    return log(a.coin, `bought ${done.usd.toFixed(0)} USD on ${a.chain}`);
   }
   if (a.kind === "sell") {
-    const pick = await routeFor(c, "sell", a.amount, price);
-    if (!pick) return log(a.coin, `no route on ${a.chain} to sell within ROUTE_MAX_LOSS_BPS`);
-    const minOut = (a.minOut * pick.amount) / a.amount;
-    await h.allow(c.home, h.def.router, pick.amount);
-    const params = { path: pick.route, recipient: h.address, amountIn: pick.amount, amountOutMinimum: minOut };
-    await h.commit({ ...a, amount: pick.amount }, { to: h.def.router, abi: ABI.router, functionName: "exactInput", args: [params] });
-    return log(a.coin, `sold ${pick.usd.toFixed(0)} USD on ${a.chain}`);
+    const done = await h.sell(a, c, price);
+    if (!done) return log(a.coin, `no route on ${a.chain} to sell within ROUTE_MAX_LOSS_BPS`);
+    return log(a.coin, `sold ${done.usd.toFixed(0)} USD on ${a.chain}`);
   }
   if (a.kind === "bridgeIn") {
-    await h.allow(c.home, h.def.tokenBridge, a.amount);
-    const value = await h.messageFee();
-    const args = [c.home, a.amount, 2, word(cfg.executor), 0, "0x01"];
-    const { id, receipt } = await h.commit(a, { to: h.def.tokenBridge, abi: ABI.tokenBridge, functionName: "transferTokensWithPayload", args, value });
-    if (receipt?.status === "success") journal.note(id, { sequence: (await h.sequenceOf(receipt, h.def.tokenBridge)).toString() });
+    await h.bridgeIn(a, c, word(cfg.executor));
     return log(a.coin, `bridging ${a.usd.toFixed(0)} USD in from ${a.chain}`);
   }
   if (a.kind === "bridgeOut") {
@@ -266,13 +194,14 @@ async function act(a, price) {
     return log(a.coin, `bridging ${a.usd.toFixed(0)} USD out to ${a.chain}`);
   }
   if (a.kind === "fund") {
+    // The route's standard fee, from Circle's table, within MAX_CCTP_FEE_BPS (PD-12).
+    const maxFee = cctpMaxFee(a.amount, await iris.fees(0, CHAINS[a.chain].cctpDomain));
     await eth.allow(MAINNET.usdc, eth.tokenMessenger, a.amount);
-    await eth.commit(a, eth.burnRequest(a.amount, CHAINS[a.chain].cctpDomain, h.address));
+    await eth.commit(a, eth.burnRequest(a.amount, CHAINS[a.chain].cctpDomain, h.cctpRecipient, maxFee));
     return log(a.chain, `funding its float with ${Number(a.amount) / 1e6} USDC`);
   }
   if (a.kind === "sweep") {
-    await h.allow(h.def.market.usdc, h.tokenMessenger, a.amount);
-    await h.commit(a, h.burnRequest(a.amount, 0, eth.address));
+    await h.sweep(a, eth.address, cctpMaxFee(a.amount, await iris.fees(CHAINS[a.chain].cctpDomain, 0)));
     return log(a.chain, `bringing ${Number(a.amount) / 1e6} USDC home to the treasury`);
   }
   if (a.kind === "draw") {
@@ -286,11 +215,29 @@ async function act(a, price) {
   }
 }
 
+/// CCTP V2 lets a Solana burn's event account be closed for its rent five days after the burn; the journal keeps a
+/// received burn seven days, so the reclaim lands in between, with the burn's message and attestation.
+const RECLAIM_AFTER_SECONDS = 5 * 86_400 + 600;
+
+async function reclaimRent() {
+  const now = Math.floor(Date.now() / 1000);
+  const due = (m) => m.kind === "sweep" && m.stage === "received" && m.data.eventAccount && !m.data.reclaimed && now - m.at >= RECLAIM_AFTER_SECONDS;
+  for (const m of journal.find(due)) {
+    const h = homes[m.chain];
+    if (!h?.reclaim) continue;
+    await h
+      .reclaim(m.data.eventAccount, m.data.message, m.data.attestation)
+      .then(() => journal.note(m.id, { reclaimed: true }))
+      .catch((error) => log(`move ${m.id}`, `rent not reclaimed: ${revertReason(error)}`));
+  }
+}
+
 async function round() {
-  for (const r of Object.values(routes)) r.forget([]); // each round searches its routes afresh
-  for (const move of journal.pending()) {
+  for (const h of Object.values(homes)) h.forgetRoutes(); // each round searches its routes afresh
+  for (const move of resumeOrder(journal.pending())) {
     await advance(move).catch((error) => log(`move ${move.id}`, `not moved on: ${revertReason(error)}`));
   }
+  await reclaimRent();
   const p = await prices();
   const state = await readState();
   const { actions, notes } = plan({
@@ -307,6 +254,25 @@ async function round() {
     await act(a, p.get(a.coin)).catch((error) => log(a.coin ?? a.chain ?? "treasury", `${a.kind} failed: ${revertReason(error)}`));
   }
   journal.prune();
+}
+
+if (ATTEST >= 0) {
+  const [chain, token] = process.argv.slice(ATTEST + 1);
+  const home = homes[chain];
+  if (!home?.attest) throw new Error(`--attest needs a served chain whose signer attests (${Object.keys(homes).filter((n) => homes[n].attest).join(", ") || "none served"}), then a token`);
+  if (!token) throw new Error("--attest needs the token to attest after the chain");
+  await home.check();
+  await attestToken({
+    home,
+    wormholeChain: CHAINS[chain].wormhole,
+    token,
+    wormholescan,
+    verifyVaa: eth.verifyVaa,
+    wrappedAsset: (tokenChain, tokenAddress) => eth.read(MAINNET.tokenBridge, ABI.tokenBridge, "wrappedAsset", [tokenChain, tokenAddress]),
+    submit: (functionName, vaa) => eth.complete({ to: MAINNET.tokenBridge, abi: ABI.tokenBridge, functionName, args: [vaa] }),
+    log,
+  });
+  process.exit(0);
 }
 
 let stopping = false;

@@ -21,6 +21,13 @@ export const STAGES = Object.freeze({
 
 const DAY = 86_400;
 
+/// `moves`, the journal's pending ones, in the order a round takes them: every signed move first, so each signer learns
+/// of the transaction it may have in flight before it is asked to build anything else, a completing step included
+/// (PD-9); then the rest. Each group keeps its order, oldest first.
+export function resumeOrder(moves) {
+  return [...moves.filter((m) => m.stage === "signed"), ...moves.filter((m) => m.stage !== "signed")];
+}
+
 /// `load()` returns the saved text or null; `save(text)` stores it; `now()` is the clock, in seconds.
 export function createJournal({ load, save, now = () => Math.floor(Date.now() / 1000) }) {
   let state = parse(load());
@@ -131,6 +138,10 @@ export function createJournal({ load, save, now = () => Math.floor(Date.now() / 
       return usd;
     },
     /// Forgets moves that settled more than `days` ago; a day's buys stay, for the budget.
+    /// Every move, settled or not, for which `predicate(move)` holds: read only.
+    find(predicate) {
+      return Object.values(state.moves).filter(predicate);
+    },
     prune(days = 7) {
       const before = now() - Math.max(days, 1) * DAY;
       const old = Object.values(state.moves).filter((m) => settled(m) && m.updatedAt < before);

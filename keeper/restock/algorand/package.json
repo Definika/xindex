@@ -1,0 +1,13 @@
+{
+  "name": "xindex-restock-algorand",
+  "private": true,
+  "description": "The restock service's Algorand signer: builds and signs its Algorand moves in a process of its own, holding only the Algorand key",
+  "type": "module",
+  "dependencies": {
+    "@wormhole-foundation/sdk-algorand": "6.1.5",
+    "@wormhole-foundation/sdk-algorand-core": "6.1.5",
+    "@wormhole-foundation/sdk-algorand-tokenbridge": "6.1.5",
+    "@wormhole-foundation/sdk-connect": "6.1.5",
+    "algosdk": "2.7.0"
+  }
+}

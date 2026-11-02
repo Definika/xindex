@@ -139,7 +139,11 @@ what nobody needs. It is a separate process with its own key, the **treasury**, 
    that do them, and a signed transfer or an attestation is stored for a move only when it is the move's own and the
    receiving chain's contract accepts it, so a wrong answer is fetched again rather than kept (RS-14). A signed move
    whose nonce another transaction took is dropped only when a look a minute after the first still finds no receipt,
-   and a receipt lookup that fails is never taken for a missing receipt (RS-5).
+   and a receipt lookup that fails is never taken for a missing receipt (RS-5). A signature that goes stale while a
+   move waits is renewed: Circle is asked, at most hourly, to sign again a message whose expiry passed, and a VAA a
+   replaced guardian set signed is fetched again (PD-10). A round resumes every signed move before any other step, so
+   no signer builds over a transaction it may have in flight (PD-9). Each CCTP burn allows the route's standard fee from
+   Iris's table, zero today, and refuses a rate over 10 bps (PD-12).
 2. It reads the keeper's `NEEDS_FILE`, the executor's stock and allowances, the treasury's USDC, each home wallet's
    coins, float and gas, and Pyth's prices, kept only where Pyth's contract on Ethereum, parsing the signed update Hermes
    served with them, returns the same price (RX-9, RY-6), and plans (`restock/plan.mjs`). A board that is missing, unreadable or not
@@ -154,7 +158,7 @@ what nobody needs. It is a separate process with its own key, the **treasury**, 
    - a covered coin's coins at home first top the stock up to the needs and the buffer, as far as the restock
      allowance goes, and only the rest is sold (RS-10); stock the executor holds beyond the needs, the buffer and
      `RESTOCK_KEEP_USD`, not counting what is on its way (RS-9), is bridged out to the treasury's wallet on its home
-     chain (`bridgeOut`, to the recipient `OWNER` pinned there with `setHomeRecipient`; the allowance is then capped at
+     chain (`bridgeOut`, to the recipient `OWNER` pinned for the coin there with `setHomeRecipient`; the allowance is then capped at
      what is left), and what reaches the home wallet is sold for the float;
    - a buy short of float waits for USDC: on a chain CCTP serves, the treasury draws it from the executor
      (`drawUsdc`, within the most the owner lets it hold off the float, `setTreasuryUsdcAllowance`) and sends it
@@ -188,12 +192,32 @@ Depth read on 2026-10-19, selling $3,000: LTC 88 bps, DOT 73, OP 88; selling $10
 AERO 46. **ATOM is not served** (the owner's call of 2026-10-20): Binance-Peg ATOM, the only source its copy redeems
 for, has almost no market on BNB Chain (selling $500 lost 305 bps on PancakeSwap v3, $1,000 lost 22% on v2), and
 Ethereum's other ATOM tokens, Gravity Bridge's and Axelar's, are other bridges with no Uniswap market. An index holding
-ATOM fills only from stock the operator adds, within its stock allowance. JUP, PYTH (Solana), SUI, APT and ALGO
-wait for their chains' adapters; the service refuses to start with them in `RESTOCK_COINS`.
+ATOM fills only from stock the operator adds, within its stock allowance.
+
+**JUP and PYTH (Solana), SUI, APT and ALGO** (opt-in, named in `RESTOCK_COINS`; `design/2026-11-01-non-evm-restock.md`):
+each chain's libraries and key live in a process of their own, its signer (`restock/solana/`, `restock/sui/`,
+`restock/aptos/`, `restock/algorand/`, each with its own `package.json` and lockfile: run `npm ci --ignore-scripts` in
+each one served),
+which the service starts with an environment naming only that chain's RPC, its key and its venue's key, never the
+treasury's (`signer-home.mjs`). Bridging goes through Wormhole's own SDK, the float through CCTP V2 (Circle's programs
+on Solana, its scripts on Sui and Aptos; Algorand has no CCTP, so its USDC float is topped up by hand, as BNB Chain's
+is), and swaps through Jupiter's Swap V2 (Solana), Cetus's aggregator (Sui), Panora (Aptos) and Tinyman v2's USDC/ALGO
+pool (Algorand), each with its on-chain minimum at the plan's floor or above. A signer builds and signs each move and
+first checks it by simulation: the wallet's coins may move only as the move says, and on Solana no delegate or close
+authority may be left on its token accounts and a swap may call only Jupiter's program. The service journals the signed
+move before asking the signer to send it, has it sent again while it may still land, and drops it once it cannot:
+Solana's blockhash expired at finalized height, Sui's gas coin moved without it or its epoch ended, Aptos's sequence
+number passed or its expiry reached, Algorand's last valid round passed. Sui's, Aptos's and Algorand's signers keep one
+transaction in flight at a time, and re-send by themselves only the steps that complete a move. Solana's bridge pays a
+token account, so the executor pins, for JUP and PYTH, the wallet's associated token account for each mint; Sui's,
+Aptos's and Algorand's pay the wallet itself. The service prints each missing pin at startup. Each wallet needs its
+chain's gas coin, and on Solana the rent of the accounts its moves open, which a burn's event account returns five days
+on.
 
 **Setup, once, by `OWNER`:** deploy the executor with Wormhole's Token Bridge; `setTreasury(<treasury address>)`;
-`setHomeRecipient(<Wormhole chain id>, <treasury address, left-padded to 32 bytes>)` for each home chain (BNB Chain 4,
-Avalanche 6, Optimism 24, Base 30): the treasury's key is the same on every EVM chain; `setTreasuryUsdcAllowance`, the
+`setHomeRecipient(<Wormhole chain id>, <copy>, <treasury address, left-padded to 32 bytes>)` for each coin served (BNB
+Chain 4: XRP, ADA, LTC, DOT, BNB; Avalanche 6: AVAX; Optimism 24: OP; Base 30: AERO): the treasury's key is the same on
+every EVM chain, and the executor pins a recipient per coin because Solana's bridge pays a token account per mint; `setTreasuryUsdcAllowance`, the
 most USDC the treasury may hold off the float, what it holds counted; and `setRestockAllowance(<copy>, <amount>)` for
 each coin served, the restocking you allow until you next look: what arrives through the bridge earns the keeper stock
 allowance only within it (RS-1). Then send the treasury gas on each chain and Ethereum, and USDT to its
@@ -219,6 +243,14 @@ each chain and the stock, and nothing beyond it.
 | `JOURNAL_FILE` | required | Where the service keeps its moves, on the disk before each is sent. Keep it: it is what a restart resumes from, and the service refuses to start on one empty or unreadable (RS-13). |
 | `RESTOCK_COINS` | every coin | Comma-separated symbols to serve. |
 | `BSC_RPC_URL`, `AVALANCHE_RPC_URL`, `OPTIMISM_RPC_URL`, `BASE_RPC_URL` | required for their coins | Each home chain's JSON-RPC. |
+| `SOLANA_RPC_URL`, `SOLANA_KEY` | required for JUP, PYTH | Solana's JSON-RPC, and the service's Solana wallet, its 64-byte secret key in base58; both go to the signer alone. The RPC must keep transaction history: a move whose blockhash expired is dropped only on the word of a node caught up to the finalized slot that keeps the slots since it was built, and stays signed, reported unknown, otherwise (PD-8). A node that caps the accounts a simulation returns, as the public one does at 3, is asked in chunks (PD-1). |
+| `JUPITER_API_KEY` | required for JUP, PYTH | Jupiter's Swap API key (its portal), which every Swap V2 call needs. |
+| `JUPITER_URL`, `JUPITER_PROGRAMS`, `SOLANA_MAX_UNIT_PRICE` | `https://api.jup.ag`, none, `1000000` | Jupiter's API; more Jupiter program ids a swap may call; the most micro-lamports per compute unit a transaction bids. |
+| `SUI_RPC_URL`, `SUI_KEY` | required for SUI | A Sui gRPC fullnode (`https://fullnode.mainnet.sui.io:443`) and the wallet's `suiprivkey1...` key; both go to the Sui signer alone. |
+| `APTOS_RPC_URL`, `APTOS_KEY` | required for APT | An Aptos fullnode's REST API, through `/v1` (`https://api.mainnet.aptoslabs.com/v1`), and the wallet's 32-byte Ed25519 key in hex. A move whose sequence number was used is dropped only by a node at or past that version that keeps the versions since it was built (PD-4). |
+| `PANORA_API_KEY`, `PANORA_URL` | required for APT, `https://api.panora.exchange` | Panora's API key (its docs publish a public one) and its API. |
+| `ALGORAND_ALGOD_URL`, `ALGORAND_MNEMONIC` | required for ALGO | An algod (`https://mainnet-api.algonode.cloud`) and the wallet's 25-word mnemonic; the wallet must hold USDC (asset 31566704), opted in. |
+| `ALGORAND_INDEXER_URL` | `https://mainnet-idx.algonode.cloud` | The indexer that confirms a transaction algod no longer remembers (1000 rounds). |
 | `RESTOCK_BUFFER_BPS` | `1000` | How far above the needs a buy fills. |
 | `RESTOCK_MIN_USD` | `200` | Smallest trade or transfer worth its fees. |
 | `RESTOCK_DAILY_USD` | `20000` | Most the buys of a day may cost; the last one is cut to what is left (RS-7). |
@@ -244,6 +276,16 @@ Then in `keeper/`:
     RPC_URL=... KEEPER_KEY=... FACTORY=... EXECUTOR=... PYTH_API_KEY=... npm start
 
 The RPC must honour `eth_call` block overrides (Tenderly, publicnode and geth do; the bot checks at startup).
+
+To attest a token on Solana or Sui for its Wormhole copy on Ethereum (the owner's step before a copy can be listed,
+`design/2026-10-10-one-index-wormhole-legs.md`, section 2a), with the restock service's settings:
+
+    node restock.mjs --attest solana <mint>      # or: --attest sui <coin type>
+
+The chain's signer attests the token, after a simulation in which no token of its wallet moves. The service then
+waits for the guardians' signature, checks it on Ethereum's core, and creates the copy from the treasury, or updates
+an existing copy's name and symbol (`updateWrapped`, as RAY's needs). It follows Wormhole's SDK route, the one Wormhole's
+docs now give; legacy Portal's own interface closed on 2026-06-30 (PD-7).
 
 Before Glamsterdam reaches mainnet: under EIP-8037 a transaction's state gas comes from a reservoir the GAS opcode does
 not show, so the executor's `gasUsed` undercounts fills that write new slots. The bot already simulates every fill it

@@ -3,7 +3,8 @@
 // script/PythIds.sol; the home-chain addresses are checked on their own chains before the service sends anything.
 
 /// Each home chain: its Wormhole chain id, its platform, its gas coin, the stablecoin its float is kept in, and its
-/// CCTP domain (null where Circle's CCTP does not run, so its float is topped up by hand).
+/// CCTP domain (null where Circle's CCTP does not run, so its float is topped up by hand). Every one of them runs CCTP
+/// V2, Sui and Aptos included (read on 2026-11-01; Circle retires V1 by 2026-12-01).
 export const CHAINS = Object.freeze({
   bsc: {
     wormhole: 4,
