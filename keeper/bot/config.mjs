@@ -42,6 +42,14 @@ export const MAINNET = CHAINS[1];
 /// `test_XS8_theBotsHubSlotsAreTheHubs` (keeper/test/KeeperExecutor.t.sol) pins them against a real hub.
 export const HUB_SLOTS = Object.freeze({ eta: 6n, keepMask: 7n });
 
+/// WeightedHub's slots for the recorded units and scale, which no view returns: `components()` reports units at the
+/// scale an accrual now would leave. The invariant checker (invariants.mjs) reads them to evaluate the backing
+/// invariant exactly, cross-checks them against the views every round, and `test_theCheckersHubSlotsAreTheHubs`
+/// (keeper/test/KeeperExecutor.t.sol) pins them against a real hub. Slot 0 holds the length of `_components`, whose
+/// element `i` is the word at keccak256(slot 0) + i: the token in its low 20 bytes, the units in the 12 above. Slot 3
+/// holds `_scale` (uint128), then `_lastAccrual` (uint40) and `_maskedFill` (bool).
+export const HUB_STATE_SLOTS = Object.freeze({ components: 0n, scale: 3n });
+
 /// EIP-7825's cap on a transaction's gas.
 export const TX_GAS_CAP = 16_777_216n;
 
