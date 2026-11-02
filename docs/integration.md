@@ -78,7 +78,10 @@ ordered.
 **Rebalance around a frozen component.** The guardian cancels and starts again with the component's bit in `keepMask`;
 that component keeps its units, its price is not read, and the settlement neither transfers it nor reads its balance,
 so the mask also routes around a component whose contract or price feed stops answering (DA-14, RT-01). At least two
-components must stay moving (`InvalidKeepMask`).
+components must stay moving (`InvalidKeepMask`). The guardian is a `GuardianRelay` its Safe controls (RZ-26): the
+Safe calls the relay's `cancelRebalance(index)` and `authorizeStart(index, keepMask, deadline)`, and anyone sends the
+start with `start(index, priceUpdate)` and Pyth's fee, since its update is valid for one slot only; the keeper does.
+`StartAuthorized` and `authorizationOf(index)` show an authorized start until it is sent.
 
 **Exit while a component is frozen.** If, say, WBTC is paused, `redeem` and the zap revert. The holder calls
 `redeemSkipping(shares, to, skipMask)` with the WBTC bit set: every other component arrives now and the WBTC amount is

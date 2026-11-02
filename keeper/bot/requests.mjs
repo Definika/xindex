@@ -291,8 +291,13 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
       else if (skips.blocked(key, L.number)) continue;
       else entries.push({ id, request });
     }
-    const { chosen: candidates, skipped } = M.fillableRequests(entries, L.timestamp + 12n, indexes, info);
-    for (const { id, reason } of skipped) say(id, `not simulated: ${reason}`);
+    // A request is never subsidised, so one that cannot pay MIN_PROFIT_USD at its limit is not simulated (RY-8).
+    const minProfitUsd = Math.max(cfg.minProfitUsd, 0);
+    const { chosen: candidates, skipped } = M.fillableRequests(entries, L.timestamp + 12n, indexes, info, M.MAX_REQUEST_CHECKS, minProfitUsd);
+    for (const { id, reason } of skipped) {
+      needs?.report(`request:${id}`, "request", []); // nor does it hold stock on the restock's board (RY-8)
+      say(id, `not simulated: ${reason}`);
+    }
     const priced = await Promise.all(
       candidates.map(({ id, request }) =>
         evaluate(id, request, L, ethUsd, tip, feeCap).catch((error) => ({ skip: `check failed: ${revertReason(error)}`, failed: chain.isRevert(error) })),

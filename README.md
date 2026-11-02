@@ -48,7 +48,8 @@ reads a price. A permissionless auction brings an index back to its weights at P
 - Only rebalancing reads prices, from Pyth. One fill moves at most 20% of each component, whatever a price says.
 - The owner, a Safe that needs at least 3 signatures, lists assets behind a 2-day delay and sets fees for new indexes.
 - The guardian can cancel a rebalance or route one around a frozen asset. It moves no funds, and the owner can replace
-  it through a 7-day delay it cannot block.
+  it through a 7-day delay it cannot block. It is a relay contract its Safe controls: the Safe authorizes a rebalance's
+  start and anyone sends it, since the start's Pyth update is valid for one block only.
 
 Every index holds, for each component `i`, at all times:
 

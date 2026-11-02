@@ -20,7 +20,7 @@ import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 contract RepoTest is Test {
     /// @dev keccak256 of the files `test_A712_theCiConfigIsPinnedWhole` pins whole: CI's workflow and the two Foundry
     ///      configs it runs. A change to one fails that test, which prints the new hash, until it is pinned here.
-    bytes32 private constant WORKFLOW_HASH = 0x50b1c23185427003b1c5a3a4af5c772025c7adaeaa2df9950bdb252e40415cef;
+    bytes32 private constant WORKFLOW_HASH = 0x8cc17c8abd60edb7efc229d2a59871655c99267d954663cf6ede2a61d1781d34;
     bytes32 private constant FOUNDRY_TOML_HASH = 0xed56be1c9acc47165fe8a9303665b35391357ee7d85ef998f8c0c74761a0c3c4;
     bytes32 private constant KEEPER_FOUNDRY_TOML_HASH =
         0x5426d5180cca7c4ac15d7fb182272a805a3ce19a143d6c6f8c158f61765d7592;
@@ -155,7 +155,7 @@ contract RepoTest is Test {
             "**An exit sent during the auction can be overtaken by the fill.**",
             "**The guardian can stall rebalancing.**",
             "**Issuers can freeze components, and some can burn them.**",
-            "**A keep-mask start must land in one slot.**",
+            "**A start must land in one slot, so the guardian is a relay.**",
             "**A request's surplus goes to the fastest filler.**",
             "**Circle and Tether freeze differently, and `MintRequests` cannot tell.**",
             "**A request is an option held by every filler until it closes.**",
@@ -344,13 +344,14 @@ contract RepoTest is Test {
     }
 
     /// @dev XA-44: the ABIs the web app decodes with are committed, and CI regenerates them and fails on a diff: the zap,
-    ///      the basket builder, `MintRequests`, and v5's weighted factory and index. v4's market-cap factory and hub are deleted, and their
+    ///      the basket builder, `MintRequests`, v5's weighted factory and index, and the guardian relay (RZ-26), which the
+    ///      keeper reads too. v4's market-cap factory and hub are deleted, and their
     ///      ABIs with them; so are Stage B's hybrid factory, hybrid index and vault
     ///      (`audit/2026-10-07-stage-b-retirement.md`). A7-12: the step is pinned whole, so neither a contract left out
     ///      nor a diff that stops failing passes.
     function test_XA44_A712_theAbisAreCommittedAndChecked() public view {
-        string[5] memory contracts =
-            ["IndexZap", "BasketBuilder", "MintRequests", "WeightedIndexFactory", "WeightedHub"];
+        string[6] memory contracts =
+            ["IndexZap", "BasketBuilder", "MintRequests", "WeightedIndexFactory", "WeightedHub", "GuardianRelay"];
         for (uint256 i = 0; i < contracts.length; ++i) {
             assertTrue(
                 _contains(_read(string.concat("abi/", contracts[i], ".json")), '"type": "function"'),
@@ -362,7 +363,7 @@ contract RepoTest is Test {
             string.concat(
                 "        run: |\n",
                 "          set -euo pipefail\n",
-                "          for contract in IndexZap BasketBuilder MintRequests WeightedIndexFactory WeightedHub; do\n",
+                "          for contract in IndexZap BasketBuilder MintRequests WeightedIndexFactory WeightedHub GuardianRelay; do\n",
                 "            forge inspect \"$contract\" abi --json > \"abi/$contract.json\"\n",
                 "          done\n",
                 "          git diff --exit-code abi/\n"

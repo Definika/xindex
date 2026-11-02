@@ -13,9 +13,16 @@ cp .env.example .env   # fill MAINNET_RPC_URL, OWNER (a Safe on mainnet) and GUA
 source .env
 ```
 
-`DeployWeighted` deploys `WeightedIndexFactory`, which deploys the `WeightedHub` implementation every index is a clone
-of, then the zap, the basket builder and `MintRequests` for that factory. It runs once, on Ethereum. Listings follow through the factory's
-timelock.
+`DeployWeighted` deploys the `GuardianRelay` that holds the guardian role for the guardian's Safe, `GUARDIAN` (RZ-26),
+then `WeightedIndexFactory` with that relay as its guardian, which deploys the `WeightedHub` implementation every index
+is a clone of, then the zap, the basket builder and `MintRequests` for that factory. It runs once, on Ethereum. Listings
+follow through the factory's timelock. The relay exists because every start of a rebalance carries a Pyth update valid
+for one slot, which a Safe cannot land: the Safe authorizes a start on the relay (`authorizeStart(index, keepMask,
+deadline)`), and anyone sends it with an update of their own (`start(index, priceUpdate)`), the keeper in `keeper/`
+first. The Safe uses the guardian's other powers through the relay too: `cancelRebalance(index)`,
+`cancelListing(factory, token)`, `delist(factory, token)` and `cancelGuardianChange(factory)`. A later guardian is a
+new relay for its Safe, deployed with `forge create src/GuardianRelay.sol:GuardianRelay --constructor-args <safe>` and
+proposed through `proposeGuardian`.
 
 ```bash
 OWNER=<safe> GUARDIAN=<guardian> forge script script/DeployWeighted.s.sol --rpc-url mainnet --account deployer \
@@ -31,7 +38,8 @@ delegated account, and a Safe must need at least three signatures (`MIN_OWNER_TH
 no enabled module, because a module acts as the Safe without signatures (keep it that way after deployment; the script
 cannot see later changes). The guardian must not be the broadcasting key, which must hold no role; when the owner is a
 Safe, neither the guardian nor the broadcasting key may be one of its signers, since the guardian is the owner's veto
-(SA-06); and neither role may be a market contract: the router, the PoolManager and Pyth everywhere, and on a mainnet
+(SA-06); these rules read `GUARDIAN`, the Safe, which only the relay answers to; and neither role may be a market
+contract: the router, the PoolManager and Pyth everywhere, and on a mainnet
 also every token and mint currency in the address book (CR-I37). `PYTH`, `UNIVERSAL_ROUTER`, `WETH`, `USDC` and
 `USDT` default to the address book's on chain 1 (`script/MainnetAddresses.sol`), where any other value is rejected, and are
 required anywhere else; they are the script's only market addresses, because the hub and factory depend on no Uniswap contract.
@@ -49,7 +57,9 @@ explorer (`--verify` needs `ETHERSCAN_API_KEY`). The deploy log ends with the ru
 `WeightedHub` implementation, the zap, the basket builder and `MintRequests`: record them with the addresses, and
 `DeployWeighted.checkDeployment(factory, zap, builder, requests)` re-reads them later (it also refuses a zap, a
 builder or a `MintRequests` that does not point at that factory, a builder on another router, and an implementation
-reading another Pyth).
+reading another Pyth). It logs the guardian relay's address, its Safe and its runtime code hash as well; the relay's
+init code is part of the release record a mainnet broadcast is bound to (`RELAY_INITCODE_HASH`, CF-5), and since the
+factory's guardian can change, `checkDeployment` does not read it.
 
 **The admission check** comes first: `script/CheckToken.s.sol` is read-only and prints one report per token for the
 Safe's signers (transfers simulated on a fork, transfer hooks, admin powers and who holds them, Uniswap depth on
@@ -110,19 +120,19 @@ No bot holds a role in Xindex, so these duties have owners and deadlines. Watch 
 
 | Duty | Starts with | Deadline | Who | How |
 |---|---|---|---|---|
-| Veto a wrong listing | `ListingProposed` | before `eta` (2 days) | guardian or owner | check the price id against its feed's description and the decimals against the token; `cancelListing(token)` |
+| Veto a wrong listing | `ListingProposed` | before `eta` (2 days) | guardian or owner | check the price id against its feed's description and the decimals against the token; `cancelListing(token)`, the guardian's Safe through its relay: `cancelListing(factory, token)` |
 | Execute a listing | its `eta` | `eta + PROPOSAL_WINDOW`, or it expires silently | anyone, owner signers first | `V5_MODE=execute` at the eta; `listingPending(token)` says whether it can still run |
 | Keep a Hermes key | before the first rebalance | none, but without one no index rebalances | executors, or one keyed service that hands updates to them | Hermes requires an API key |
 | Trigger the rebalance | `earliestRebalance()`: the index's interval after `lastRebalance`, a week after a keep-mask fill | none, but the index drifts from its weights | anyone; the keeper in `keeper/` does it when a fill would pay | `canStartRebalance()`, then `startRebalance(0, priceUpdate)` while every feed publishes; a fill ending in `NothingToRebalance` means the index is on its weights |
-| Check each rebalance | `RebalanceStarted` | before the fill | guardian | watch the moving components' Pyth feeds; `cancelRebalance()` on a feed that is wrong or stopped, then a keep mask |
+| Check each rebalance | `RebalanceStarted` | before the fill | guardian | watch the moving components' Pyth feeds; the relay's `cancelRebalance(index)` on a feed that is wrong or stopped, then a keep mask |
 | Watch keep-mask rebalances | `RebalanceStarted` with a non-zero `keepMask` | before `eta` (2 hours) | owner signers | while a guardian replacement is pending, cancel the outgoing guardian's keep-mask proposals (RT-07) |
 | Fill auctions | the auction opens at `eta` | `eta + AUCTION_DURATION` | any executor contract | anyone may run the keeper in `keeper/`, which holds no role; competition is what keeps a fill near break-even |
 | Fill requests | a `MintRequested` or `RedeemRequested` event | the request's `deadline` | anyone who holds or can issue the shares, or the stablecoin | the keeper in `keeper/` fills at the request's limit when that pays; the surplus over the limit is the filler's |
 | Restock the wrapped and real-world legs | the keeper's `restock <coins>` log | before the auction that needs them | the restock service for XRP, ADA, LTC, DOT, BNB, AVAX, OP and AERO; the keeper's operator for the rest | the service buys each on its home chain and bridges it into the executor through Wormhole's Token Bridge (`keeper/restock.mjs`); for ATOM, the copies from chains it has no adapter for, Tether Gold and the Ondo stocks, bridge through Wormhole's Portal or acquire the token, and send it to the executor |
 | Keep the restock service running | its `gas below its minimum`, `top up its USDT float by hand` or `still pending` log | before the next restock | the treasury's operator | send gas to the treasury's wallet on that chain, top up the BNB Chain USDT float, or cancel the transaction stuck past a fee spike (`keeper/README.md`, Restock) |
 | Renew a restock allowance | its `restock allowance ... is spent` log | before that coin's stock runs out | the executor's owner | `setRestockAllowance(<copy>, <amount>)`, or the other allowance the log names; what arrives through the bridge earns the keeper stock allowance only within it (RS-1) |
-| Rebalance around a frozen component | a paused or blacklisting component, or a stopped feed | each auction | guardian | `cancelRebalance()`, then `startRebalance(keepMask, priceUpdate)` |
-| Restart after an unfilled auction | `eta + AUCTION_DURATION` passed with no `Rebalanced` | anyone after `REBALANCE_DELAY` more | guardian first, then anyone | `canStartRebalance()`, then `startRebalance(0, priceUpdate)` while every feed publishes |
+| Rebalance around a frozen component | a paused or blacklisting component, or a stopped feed | each auction | guardian | on the relay, `cancelRebalance(index)`, then `authorizeStart(index, keepMask, deadline)`; the keeper sends the start in the first block it runs in, with a fresh update (RZ-26), and `authorizationOf(index)` shows it until then |
+| Restart after an unfilled auction | `eta + AUCTION_DURATION` passed with no `Rebalanced` | anyone after `REBALANCE_DELAY` more | guardian first, then anyone | `canStartRebalance()`, then `startRebalance(0, priceUpdate)` while every feed publishes; the guardian's Safe authorizes the relay's start with a keep mask of 0 |
 | Re-check venue depth per leg | monthly, and before a large mint or burn | none | app | V3 and V4 depth move independently; the route is the app's choice |
 | Watch guardian changes | `GuardianProposed` | `eta` (7 days) | owner signers, guardian, app | a security alert: once executed, the new guardian's veto replaces the old one. `guardianChangePending()` says whether it is still executable |
 | Hand over factory ownership | `OwnershipTransferStarted` | none: it takes effect as soon as the new owner accepts | owner signers, then the new owner | the one admin change with no delay and no veto; announce it first, and the new owner has to meet the rules the deploy script checks |

@@ -15,7 +15,7 @@
 //      limit in its stablecoin.
 
 import { renameSync, writeFileSync } from "node:fs";
-import { encodeFunctionData, getAddress } from "viem";
+import { encodeFunctionData, getAddress, zeroAddress } from "viem";
 import { FRESH_SECONDS, HUB_SLOTS, MAX_CONF_BPS, SESSION_IDS, SHARE_PRICED_IDS, TX_GAS_CAP, US_EQUITY_SCHEDULE, parseConfig } from "./bot/config.mjs";
 import { MAX_REVERTED_FILLS, MAX_REVERTED_REQUEST_FILLS, revertedFills } from "./bot/backoff.mjs";
 import { ABI, createChain, revertReason } from "./bot/chain.mjs";
@@ -28,6 +28,7 @@ import { createRoutes, marketOf } from "./bot/routes.mjs";
 
 const START_EVERY_BLOCKS = 25n;
 const START_COOLDOWN = 86_400n; // a start of ours that nobody filled is not repeated for a day
+const NOT_ASKED = " (not asked of the restock: at its best price it cannot pay MIN_PROFIT_USD, RY-8)";
 const HERMES_MS = 5_000;
 const MAX_FILL_CHECKS = 8; // open auctions simulated per block, richest first (CF-7)
 const MAX_START_CHECKS = 4; // ready indexes whose start is simulated per round, richest first (RX-34)
@@ -65,6 +66,7 @@ const said = new Map(); // index -> the last reason logged, so a waiting index i
 const worth = new Map(); // `index:proposal` -> {supply, tvl, block}: an open auction's index, valued every 25 blocks
 let setup;
 let filler = null;
+let relay = null; // the factory's guardian when it is a GuardianRelay, whose authorized starts anyone sends (RZ-26)
 let indexes = [];
 let lastRefresh = null;
 let lastStartCheck = null;
@@ -107,7 +109,21 @@ async function refresh(L) {
   const eth = await hermes.trusted([cfg.chain.ethPriceId], Date.now() + HERMES_MS, pythChain(L));
   const p = eth.get(priceKey(cfg.chain.ethPriceId));
   ethUsd = M.freshPrice(p, L.timestamp, FRESH_SECONDS, MAX_CONF_BPS) ? M.priceUsd(p) : null;
+  relay = await guardianRelay(L);
   lastRefresh = L.number;
+}
+
+/// The factory's guardian if it is a GuardianRelay, which answers CONTROLLER(), or null: a guardian that is a key or a
+/// Safe of its own sends its starts itself (RZ-26).
+async function guardianRelay(L) {
+  const guardian = await chain.read(cfg.factory, ABI.factory, "guardian", [], L.number);
+  if (guardian === zeroAddress) return null;
+  try {
+    await chain.read(guardian, ABI.relay, "CONTROLLER", [], L.number);
+    return guardian;
+  } catch {
+    return null;
+  }
 }
 
 /// Pyth's contract on Ethereum as of block L, for {hermes.verified} and {hermes.trusted}.
@@ -355,8 +371,9 @@ async function evaluateFill(index, keepMask, proposal, L) {
   }
   const maxIn = sim.in.map((x) => M.withTolerance(x, cfg.supplyToleranceBps));
   const leg = await legs(index, st, sim, maxIn, L, `${index}:${proposal}`);
-  needs.report(`${index}:${proposal}`, "fill", leg.stocked);
-  if (leg.short.length) return say(index, `restock: no route and too little stock of ${tokensOf(leg.short)}`);
+  const pays = await mayPay(index, st, L, keepMask, leg.stocked, sim);
+  needs.report(`${index}:${proposal}`, "fill", pays ? leg.stocked : []);
+  if (leg.short.length) return say(index, `restock${pays ? "" : NOT_ASKED}: no route and too little stock of ${tokensOf(leg.short)}`);
   if (leg.unsafe.length) return say(index, `would deliver share-priced stock of ${leg.unsafe.join(", ")}: set its stock allowance to zero`);
   const priced = await priceFill(index, sim, leg, maxIn, L);
   if (priced.skip) {
@@ -383,8 +400,9 @@ async function evaluateStart(index, proposal, L) {
   const [, , , needMax] = await best.again(atMuMax);
   const maxIn = needMax.map((x) => M.withTolerance(x, cfg.supplyToleranceBps));
   const leg = await legs(index, st, best, maxIn, L, `${index}:${proposal + 1n}`);
-  needs.report(`${index}:${proposal + 1n}`, "start", leg.stocked);
-  if (leg.short.length) return say(index, `not starting: restock ${tokensOf(leg.short)}`);
+  const pays = await mayPay(index, st, L, 0n, leg.stocked, best, best);
+  needs.report(`${index}:${proposal + 1n}`, "start", pays ? leg.stocked : []);
+  if (leg.short.length) return say(index, `not starting: restock${pays ? "" : NOT_ASKED} ${tokensOf(leg.short)}`);
   if (leg.unsafe.length) return say(index, `not starting: would deliver share-priced stock of ${leg.unsafe.join(", ")}`);
   const priced = await priceFill(index, best, leg, maxIn, L);
   if (priced.skip) return say(index, `not starting: ${priced.skip}`);
@@ -396,6 +414,17 @@ async function evaluateStart(index, proposal, L) {
     return say(index, `not starting: best case pays ${profit.toFixed(2)} USD after the start's ${startUsd.toFixed(2)}`);
   }
   return { index, profit, updates: best.updates, T: best.T, feeds: st.ids.length };
+}
+
+/// Whether the auction of `index` could pay MIN_PROFIT_USD at its best price, μ = MU_MIN, so that the stock its fill
+/// would deliver is worth bringing in (RY-8): M.settlementMarginUsd of the settlement then, at the update's prices.
+/// `best` is that settlement when already simulated; otherwise it is, with `sim`, the settlement now, as the fallback
+/// should the best case not simulate. Nothing is asked when stock serves no leg.
+async function mayPay(index, st, L, keepMask, stocked, sim, best) {
+  if (stocked.length === 0) return false;
+  const atBest = best ?? (await preview(index, st, L, keepMask, L.timestamp + 12n - setup.duration).catch(() => sim));
+  const prices = st.ids.map((_, i) => (atBest.moving.includes(i) ? atBest.priceOf(i) : null));
+  return M.settlementMarginUsd({ out: atBest.out, need: atBest.in, decimals: st.decimals, prices }) >= cfg.minProfitUsd;
 }
 
 async function startChecks(L, open) {
@@ -491,6 +520,55 @@ async function startChecks(L, open) {
   await tracker.send(tx, { label: `start ${go.index}`, targetBlock: Number(L.number) + 1 });
 }
 
+/// Sends a start the guardian's Safe authorized on its relay, if one is live (RZ-26). The Safe cannot land a start's
+/// update, valid for one slot, so anyone may send what it authorized, once: this bot does, at the first block where it
+/// runs, with Hermes' update for that block's second for every feed the keep mask moves and Pyth's fee for it. It
+/// weighs no profit: the Safe decided. The authorizations are read every block, and the start is checked at block L+1
+/// with the limit it is sent with.
+async function relayStarts(L) {
+  if (!relay || indexes.length === 0) return false;
+  const T = L.timestamp + 12n;
+  const reads = await chain.multicall(
+    indexes.map((index) => ({ address: relay, abi: ABI.relay, functionName: "authorizationOf", args: [index] })),
+    L.number,
+  );
+  for (const [index, { keepMask }] of M.liveAuthorizations(indexes, reads, T)) {
+    const st = await staticsOf(index, L.number);
+    const moving = st.ids.filter((_, i) => ((keepMask >> BigInt(i)) & 1n) === 0n);
+    let updates;
+    try {
+      ({ updates } = await hermes.at(moving, Number(L.timestamp), Date.now() + HERMES_MS));
+    } catch (error) {
+      say(index, `the guardian's start waits for Hermes: ${revertReason(error)}`);
+      continue;
+    }
+    const fee = await chain.read(setup.pyth, ABI.pyth, "getUpdateFee", [updates], L.number);
+    const nextBase = M.nextBaseFee(L);
+    if (nextBase + tip > feeCap) return false;
+    const tx = {
+      to: relay,
+      data: encodeFunctionData({ abi: ABI.relay, functionName: "start", args: [index, updates] }),
+      value: fee,
+      gas: M.relayStartGasLimit(moving.length),
+      maxFeePerGas: M.min(2n * nextBase + tip, feeCap),
+      maxPriorityFeePerGas: tip,
+    };
+    if (!(await fitsItsGas(tx, L, { block: { number: L.number + 1n, time: T } }))) {
+      say(index, `the guardian's start, keeping ${keepMask}, would not run in the next block`);
+      continue;
+    }
+    // Its update is for block L+1 alone, as an own start's.
+    if ((await chain.blockNumber()) !== L.number) {
+      log(index, "block passed before sending the guardian's start; next block");
+      return true;
+    }
+    log(index, `sending the start the guardian authorized, keeping ${keepMask}`);
+    await tracker.send(tx, { label: `relaystart ${index}`, targetBlock: Number(L.number) + 1 });
+    return true;
+  }
+  return false;
+}
+
 async function onBlock(L) {
   const nextBase = M.nextBaseFee(L);
   const done = await tracker.onBlock(Number(L.number), nextBase);
@@ -498,6 +576,7 @@ async function onBlock(L) {
     const [kind, index, proposal] = done.label.split(" ");
     const ok = done.receipt?.status === "success" && !done.replaced;
     if (kind === "start" && ok) started.set(index, L.timestamp);
+    if (kind === "relaystart") log(index, ok ? "the guardian's start landed" : "the guardian's start did not land; trying again");
     if (kind === "fill" && ok) {
       started.delete(index);
       said.delete(index);
@@ -570,6 +649,7 @@ async function onBlock(L) {
     await tracker.send(best.tx, { label: `fill ${best.index} ${best.proposal}`, targetBlock: Number(L.number) + 1 });
     return;
   }
+  if (await relayStarts(L)) return;
   if (cfg.fillAuctions && (lastStartCheck === null || L.number - lastStartCheck >= START_EVERY_BLOCKS)) {
     lastStartCheck = L.number;
     await startChecks(L, open);

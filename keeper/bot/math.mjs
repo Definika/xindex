@@ -137,6 +137,37 @@ export const sessionStartOk = (t, delay, duration, schedule) =>
 /// with exactly this limit at its block before it is sent, so one that needs more is not sent (RX-3).
 export const startGasLimit = (feeds) => 150_000n + 45_000n * BigInt(feeds);
 
+/// The most a settlement can pay its executor, in dollars: what it sends out less what it takes in, each leg at
+/// `prices[i]`, the update's price of that leg, or null for a kept leg, which moves nothing; before any route's loss and
+/// gas. At the auction's best price, μ = MU_MIN, it bounds what any fill of it pays, so a fill or start whose bound
+/// misses MIN_PROFIT_USD reports no need: stock brought in for a fill that is never made would only churn (RY-8).
+export function settlementMarginUsd({ out, need, decimals, prices }) {
+  let usd = 0;
+  for (let i = 0; i < out.length; i++) {
+    if (!prices[i]) continue;
+    usd += amountUsd(out[i], decimals[i], prices[i]) - amountUsd(need[i], decimals[i], prices[i]);
+  }
+  return usd;
+}
+
+/// The gas limit of a start the guardian's Safe authorized, sent through its relay (RZ-26): a start's, plus the relay's
+/// read and deletion of the authorization, its event and its call into the index.
+export const relayStartGasLimit = (feeds) => startGasLimit(feeds) + 50_000n;
+
+/// The starts the guardian's Safe authorized on its relay that a block at second `T` may still send (RZ-26), from one
+/// `authorizationOf` read per index, multicall results in the order of `indexes`: index -> {keepMask, deadline}. A read
+/// that failed, and a deadline before `T`, zero for none or for one already sent, are left out.
+export function liveAuthorizations(indexes, reads, T) {
+  const live = new Map();
+  indexes.forEach((index, k) => {
+    const r = reads[k];
+    if (r?.status !== "success") return;
+    const [keepMask, deadline] = r.result;
+    if (deadline >= BigInt(T)) live.set(index, { keepMask, deadline });
+  });
+  return live;
+}
+
 /// Whether a fill at `profit` dollars, below zero only when MIN_PROFIT_USD is a subsidy, fits `budget` dollars over the
 /// rolling day before second `t`, given the earlier subsidised fills `spent` ({at, usd}). Returns the fills still in the
 /// window with the verdict (RX-16).
@@ -263,12 +294,13 @@ export function requestUsd(request, shareUsd) {
 /// The open requests worth simulating at second T on an index this bot serves (XS-7). `info` maps a lowercased index
 /// to `{shareUsd, mintAllowed}`: one share's worth at Pyth (null when unpriced) and whether the index would issue to
 /// the executor (null when unread). A request is skipped before any simulation when its index is unpriced, when it is
-/// a mint the index's gate would refuse the executor, or when its limit is worth more than its escrow, which no fill
-/// at Pyth prices meets. The rest are ranked by their escrow's dollars, not its raw amount, which is in a stablecoin's
+/// a mint the index's gate would refuse the executor, or when its escrow is worth less than its limit plus
+/// `minProfitUsd`, which no fill at Pyth prices pays, so no need is reported for it either (RY-8). The rest are ranked by
+/// their escrow's dollars, not its raw amount, which is in a stablecoin's
 /// units for a mint and in shares for a redemption; each side keeps half of the `cap` slots, so one side's requests
 /// cannot crowd out the other's, and slots one side leaves go to the other. Returns `{chosen, skipped}`, the chosen
 /// entries with `usd` added, the skipped ones as `{id, reason}`.
-export function fillableRequests(entries, T, indexes, info, cap = MAX_REQUEST_CHECKS) {
+export function fillableRequests(entries, T, indexes, info, cap = MAX_REQUEST_CHECKS, minProfitUsd = 0) {
   const served = new Set(indexes.map((a) => a.toLowerCase()));
   const skipped = [];
   const ranked = [];
@@ -287,6 +319,10 @@ export function fillableRequests(entries, T, indexes, info, cap = MAX_REQUEST_CH
     const { escrowUsd, limitUsd } = requestUsd(r, at.shareUsd);
     if (limitUsd > escrowUsd) {
       skipped.push({ id: entry.id, reason: `its limit, worth ${limitUsd.toFixed(2)} USD, is above its escrow's ${escrowUsd.toFixed(2)} USD` });
+      continue;
+    }
+    if (escrowUsd - limitUsd < minProfitUsd) {
+      skipped.push({ id: entry.id, reason: `its escrow over its limit, ${(escrowUsd - limitUsd).toFixed(2)} USD, cannot pay MIN_PROFIT_USD` });
       continue;
     }
     ranked.push({ ...entry, usd: escrowUsd });
