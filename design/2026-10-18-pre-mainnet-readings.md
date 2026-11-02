@@ -106,7 +106,8 @@ redemption.
   token with it, which reaches only later indexes.
 - The keeper and the app watch Ondo's notices (`status.ondo.finance`, at least 24 hours ahead of a change over 1%)
   and the oracle above; the guardian keeps an affected share-priced leg in any rebalance started around the action,
-  and cancels each auction of an index that cannot keep it, a two-leg index (RX-7).
+  and cancels each auction of an index that cannot keep it, a two-leg index (RX-7). The guardian's Safe does both
+  through its relay (RZ-26, 2026-11-02): it authorizes the keep-mask start, which the keeper sends.
 - The keeper's stock allowance for the twelve stays at zero (RX-2).
 - On a termination notice, the app tells holders of an index with that leg to exit before its date (RX-29).
 - The app labels the twelve as priced at their share, and flags an index whose starting units and weights disagree.

@@ -132,3 +132,21 @@ test("FILL_REQUESTS is on by default and must be 0 or 1", () => {
   assert.equal(parseConfig({ ...VALID, FILL_REQUESTS: "0" }).fillRequests, false);
   assert.throws(() => parseConfig({ ...VALID, FILL_REQUESTS: "yes" }), /FILL_REQUESTS must be 0 or 1/);
 });
+
+test("RY-8: a request whose escrow over its limit cannot pay MIN_PROFIT_USD is not simulated, so it asks no stock", () => {
+  // One share worth $50: a mint escrowing $100 for 1.98 shares leaves $1 over its limit, one for 1.9 shares $5.
+  const thin = { id: 1n, request: request({ escrow: 100n * 10n ** 6n, limit: 198n * 10n ** 16n }) };
+  const fat = { id: 2n, request: request({ escrow: 100n * 10n ** 6n, limit: 190n * 10n ** 16n }) };
+  // A redemption of 2 shares ($100) asking $99.50, and one asking $90.
+  const thinRedeem = { id: 3n, request: request({ isMint: false, escrow: 2n * 10n ** 18n, limit: 99_500_000n }) };
+  const fatRedeem = { id: 4n, request: request({ isMint: false, escrow: 2n * 10n ** 18n, limit: 90n * 10n ** 6n }) };
+  const entries = [thin, fat, thinRedeem, fatRedeem];
+  const picked = fillableRequests(entries, 1_000n, [INDEX], infoOf(50), MAX_REQUEST_CHECKS, 2);
+  assert.deepEqual(new Set(ids(picked)), new Set([2n, 4n]));
+  assert.deepEqual(
+    picked.skipped.map((s) => s.id),
+    [1n, 3n],
+  );
+  assert.ok(picked.skipped.every((s) => /cannot pay MIN_PROFIT_USD/.test(s.reason)));
+  assert.equal(fillableRequests(entries, 1_000n, [INDEX], infoOf(50)).chosen.length, 4, "with no minimum all four pay something");
+});

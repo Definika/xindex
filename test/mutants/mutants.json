@@ -1045,5 +1045,125 @@
       }
     ],
     "runner": "node"
+  },
+  {
+    "id": "G1",
+    "what": "the relay's start spends no authorization, so one start is sent again and again (RZ-26)",
+    "origin": "audit/2026-10-31-red-team-ii.md",
+    "file": "src/GuardianRelay.sol",
+    "test": "test/GuardianRelay.t.sol",
+    "edits": [
+      {
+        "old": "delete authorizationOf[index];",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "G2",
+    "what": "an authorized start outlives its deadline (RZ-26)",
+    "origin": "audit/2026-10-31-red-team-ii.md",
+    "file": "src/GuardianRelay.sol",
+    "test": "test/GuardianRelay.t.sol",
+    "edits": [
+      {
+        "old": "if (block.timestamp > authorization.deadline) revert",
+        "new": "if (authorization.deadline == 0) revert"
+      }
+    ]
+  },
+  {
+    "id": "G3",
+    "what": "an authorized start cannot be sent at its deadline (RZ-26)",
+    "origin": "audit/2026-10-31-red-team-ii.md",
+    "file": "src/GuardianRelay.sol",
+    "test": "test/GuardianRelay.t.sol",
+    "edits": [
+      {
+        "old": "if (block.timestamp > authorization.deadline) revert",
+        "new": "if (block.timestamp >= authorization.deadline) revert"
+      }
+    ]
+  },
+  {
+    "id": "G4",
+    "what": "anyone authorizes a start (RZ-26)",
+    "origin": "audit/2026-10-31-red-team-ii.md",
+    "file": "src/GuardianRelay.sol",
+    "test": "test/GuardianRelay.t.sol",
+    "edits": [
+      {
+        "old": "uint256 keepMask, uint256 deadline) external onlyController {",
+        "new": "uint256 keepMask, uint256 deadline) external {"
+      }
+    ]
+  },
+  {
+    "id": "G5",
+    "what": "the relay starts with no keep mask, not the controller's (RZ-26)",
+    "origin": "audit/2026-10-31-red-team-ii.md",
+    "file": "src/GuardianRelay.sol",
+    "test": "test/GuardianRelay.t.sol",
+    "edits": [
+      {
+        "old": "(authorization.keepMask, priceUpdate);",
+        "new": "(0, priceUpdate);"
+      }
+    ]
+  },
+  {
+    "id": "G6",
+    "what": "the relay keeps the caller's fee instead of passing it to Pyth (RZ-26)",
+    "origin": "audit/2026-10-31-red-team-ii.md",
+    "file": "src/GuardianRelay.sol",
+    "test": "test/GuardianRelay.t.sol",
+    "edits": [
+      {
+        "old": "startRebalance{value: msg.value}(",
+        "new": "startRebalance{value: 0}("
+      }
+    ]
+  },
+  {
+    "id": "G7",
+    "what": "the keeper sends a guardian's start whose deadline has passed (RZ-26)",
+    "origin": "audit/2026-10-31-red-team-ii.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/math.test.mjs",
+    "edits": [
+      {
+        "old": "if (deadline >= BigInt(T)) live.set(index, { keepMask, deadline });",
+        "new": "if (deadline > 0n) live.set(index, { keepMask, deadline });"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "Y1",
+    "what": "a request that cannot pay MIN_PROFIT_USD at its limit is simulated and asks the restock for stock (RY-8)",
+    "origin": "audit/2026-10-31-red-team.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/requests.test.mjs",
+    "edits": [
+      {
+        "old": "if (escrowUsd - limitUsd < minProfitUsd) {",
+        "new": "if (false) {"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "Y2",
+    "what": "an auction's margin at its best price ignores what it takes in, so any auction asks for stock (RY-8)",
+    "origin": "audit/2026-10-31-red-team.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/math.test.mjs",
+    "edits": [
+      {
+        "old": "usd += amountUsd(out[i], decimals[i], prices[i]) - amountUsd(need[i], decimals[i], prices[i]);",
+        "new": "usd += amountUsd(out[i], decimals[i], prices[i]);"
+      }
+    ],
+    "runner": "node"
   }
 ]

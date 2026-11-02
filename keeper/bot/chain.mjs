@@ -31,6 +31,7 @@ export const ABI = {
   hub: load("../../abi/WeightedHub.json"),
   factory: load("../../abi/WeightedIndexFactory.json"),
   requests: load("../../abi/MintRequests.json"),
+  relay: load("../../abi/GuardianRelay.json"),
   executor: executorAbi(),
   erc20: parseAbi(["function balanceOf(address) view returns (uint256)", "function symbol() view returns (string)"]),
   quoter: parseAbi([
@@ -54,7 +55,7 @@ export const ABI = {
     "error PriceFeedNotFound()",
   ]),
 };
-const ERRORS = [...ABI.hub, ...ABI.factory, ...ABI.requests, ...ABI.executor, ...ABI.pyth].filter((x) => x.type === "error");
+const ERRORS = [...ABI.hub, ...ABI.factory, ...ABI.requests, ...ABI.relay, ...ABI.executor, ...ABI.pyth].filter((x) => x.type === "error");
 
 /// The revert data inside a viem error, if any.
 function revertData(error) {

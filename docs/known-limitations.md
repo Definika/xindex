@@ -95,14 +95,17 @@ What the contracts do not protect against, and what an app built on them has to 
   and the guardian's keep mask are the recourse, and a permanently frozen component needs the keep mask at every
   rebalance. A destroyed balance is lost to the index's holders. Issue does not test that the index can still send each
   leg, as a fill does (RX-12): a minter can deposit into a leg a sender-blocking blacklist has already frozen for the
-  index, and hold a claim on it that cannot be paid until the issuer lifts it (RZ-25, open, the owner's call: a probe on
-  every issue costs gas on every leg and code the hub's 98 spare bytes may not hold). The app checks first.
-- **A keep-mask start must land in one slot.** Since RX-3 every start, the owner's and the guardian's included, carries
-  a Pyth update valid only for the slot `priceTime()` names, so its transaction must be built for the block it lands
-  in. A Safe's signers sign the update into the calldata, and cannot then time its execution to that block, so the
-  keep mask, the recourse around a frozen component (V5-L3) and Ondo's corporate actions
-  (`design/2026-10-18-pre-mainnet-readings.md`, section 2), needs a guardian key with tooling that builds and sends
-  the start as the keeper does (RZ-26, open, the owner's call between that and letting a keep-mask start skip the read).
+  index, and hold a claim on it that cannot be paid until the issuer lifts it (RZ-25). The owner's call of 2026-11-02
+  leaves the hub as it is, since a probe on every issue costs gas on every leg and code the hub's 98 spare bytes may not
+  hold: the app checks first, simulating a send of each coin from the index before it offers a mint, and a direct
+  caller checks for itself.
+- **A start must land in one slot, so the guardian is a relay.** Since RX-3 every start, the owner's and the
+  guardian's included, carries a Pyth update valid only for the slot `priceTime()` names, so its transaction must be
+  built for the block it lands in, which a Safe, whose signers sign the update into the calldata, cannot do. The
+  guardian is therefore `GuardianRelay`, which its Safe controls (RZ-26, the owner's call of 2026-11-02): the Safe
+  authorizes a start, an index and its keep mask until a deadline, and anyone, the keeper first, sends it with an
+  update of their own, once. Whoever sends it chooses only the block before the deadline. The owner, also a Safe, has
+  no relay: a keep-mask start the owner wants goes through the guardian's.
 - **A request's surplus goes to the fastest filler.** A fill delivers what the filler sends and at least the
   requester's limit, so a generous limit is value left for fillers. The app suggests limits from its own valuation.
 - **Circle and Tether freeze differently, and `MintRequests` cannot tell.**

@@ -148,6 +148,7 @@ const FACTORY = json(`${ROOT}out/WeightedIndexFactory.sol/WeightedIndexFactory.j
 const HUB = json(`${ROOT}abi/WeightedHub.json`);
 const EXECUTOR = json(`${KEEPER_DIR}out/KeeperExecutor.sol/KeeperExecutor.json`);
 const REQUESTS = json(`${ROOT}out/MintRequests.sol/MintRequests.json`);
+const RELAY = json(`${ROOT}out/GuardianRelay.sol/GuardianRelay.json`);
 
 step("anvil fork");
 const head = await createPublicClient({ transport: transport(UPSTREAM) }).getBlockNumber();
@@ -250,11 +251,20 @@ hermesServer = http
 // ---------------------------------------------------------------------
 
 step("protocol");
+// The guardian is a relay the guardian's Safe controls, as DeployWeighted makes it (RZ-26).
+const relayHash = await wallet.deployContract({
+  account: deployer,
+  abi: RELAY.abi,
+  bytecode: RELAY.bytecode.object,
+  args: [guardian],
+  chain,
+});
+const relay = (await pub.waitForTransactionReceipt({ hash: relayHash })).contractAddress;
 const factoryHash = await wallet.deployContract({
   account: deployer,
   abi: FACTORY.abi,
   bytecode: FACTORY.bytecode.object,
-  args: [owner, guardian, PYTH],
+  args: [owner, relay, PYTH],
   chain,
 });
 const factory = (await pub.waitForTransactionReceipt({ hash: factoryHash })).contractAddress;
@@ -511,6 +521,30 @@ ok(jup1 - jup0 === shr.amountsOut[1] + mix.amountsOut[1], "SHR's and MIX's JUP a
 ok(nvda0 - nvda1 === mix.amountsIn[2], "MIX's NVDAon came out of stock");
 const usdc1 = await read(USDC, erc20, "balanceOf", [executor]);
 console.log(`  executor USDC float ${Number(usdc0) / 1e6} -> ${Number(usdc1) / 1e6}`);
+
+// ---------------------------------------------------------------------
+// The guardian's Safe, through its relay
+// ---------------------------------------------------------------------
+
+step("the guardian's Safe authorizes a start of LQ keeping UNI; the keeper sends it through the relay (RZ-26)");
+const KEEP_UNI = 8n; // LQ holds WETH, WBTC, LINK and UNI: UNI kept, three still move
+await mineAt(await read(LQ, HUB, "earliestRebalance"));
+const lqBefore = await proposals(LQ);
+const authorizedAt = await pub.getBlockNumber();
+await send(guardian, relay, RELAY.abi, "authorizeStart", [LQ, KEEP_UNI, (await now()) + 3600n]);
+await settle();
+await mineBlocks(1);
+const [, lqMask] = await read(LQ, HUB, "pendingRebalance");
+ok((await proposals(LQ)) === lqBefore + 1n && lqMask === KEEP_UNI, "LQ started with UNI kept");
+const lqStarts = await pub.getContractEvents({ address: LQ, abi: HUB, eventName: "RebalanceStarted", fromBlock: authorizedAt });
+const lqStart = lqStarts[lqStarts.length - 1];
+const lqStartTx = lqStart && (await pub.getTransaction({ hash: lqStart.transactionHash }));
+ok(
+  lqStart?.args.caller.toLowerCase() === relay.toLowerCase() && lqStartTx.from.toLowerCase() === keeperAccount.address.toLowerCase(),
+  "the relay started it, in a transaction the keeper sent",
+);
+const [, lqDeadline] = await read(relay, RELAY.abi, "authorizationOf", [LQ]);
+ok(lqDeadline === 0n, "and the authorization is spent");
 
 step(`done: ${passed} passed, ${failed} failed`);
 shutdown(failed === 0 ? 0 : 1);

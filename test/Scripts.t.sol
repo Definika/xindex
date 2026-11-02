@@ -14,6 +14,7 @@ import {ConfigureWeighted} from "../script/ConfigureWeighted.s.sol";
 import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
 import {IndexZap} from "../src/IndexZap.sol";
 import {BasketBuilder} from "../src/BasketBuilder.sol";
+import {GuardianRelay} from "../src/GuardianRelay.sol";
 import {MintRequests} from "../src/MintRequests.sol";
 import {SetupTestMarket} from "../script/testnet/SetupTestMarket.s.sol";
 import {FaucetToken} from "../script/testnet/FaucetToken.sol";
@@ -177,15 +178,16 @@ contract FakeWeightedFactory {
 /// @notice DeployWeighted recording this very build, whatever it is, so a test can deploy on chain 1 from any build,
 ///         `forge coverage`'s unoptimized one included.
 contract DeployWeightedThisBuild is DeployWeighted {
-    function releaseInitCodeHashes() public pure override returns (bytes32[4] memory) {
+    function releaseInitCodeHashes() public pure override returns (bytes32[5] memory) {
         return buildInitCodeHashes();
     }
 }
 
 /// @notice DeployWeighted recording a build no compiler produces.
 contract DeployWeightedOtherBuild is DeployWeighted {
-    function releaseInitCodeHashes() public pure override returns (bytes32[4] memory released) {
-        released = [bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)), bytes32(uint256(4))];
+    function releaseInitCodeHashes() public pure override returns (bytes32[5] memory released) {
+        released =
+            [bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)), bytes32(uint256(4)), bytes32(uint256(5))];
     }
 }
 
@@ -487,12 +489,22 @@ contract ScriptsTest is Test {
     // DeployWeighted
     // ---------------------------------------------------------------------
 
+    /// @dev RZ-26: the factory's guardian is a relay the guardian's Safe controls, never the Safe itself, since the
+    ///      Safe cannot land a start's one-slot Pyth update.
+    function test_RZ26_theDeployHandsTheGuardianRoleToARelay() public {
+        (WeightedIndexFactory factory,,,) = _deploy(address(new MockSafe(3)), guardian);
+        GuardianRelay relay = GuardianRelay(factory.guardian());
+        assertGt(address(relay).code.length, 0, "a contract holds the role");
+        assertEq(relay.CONTROLLER(), guardian);
+        assertFalse(factory.isOwnerOrGuardian(guardian), "the Safe acts only through the relay");
+    }
+
     function test_deployWeighted_wiresOneDeployment() public {
         address safeOwner = address(new MockSafe(3));
         (WeightedIndexFactory factory, IndexZap zap, BasketBuilder builder, MintRequests requests) =
             _deploy(safeOwner, guardian);
         assertEq(factory.owner(), safeOwner);
-        assertEq(factory.guardian(), guardian);
+        assertEq(GuardianRelay(factory.guardian()).CONTROLLER(), guardian, "the guardian's Safe controls the relay");
         assertEq(factory.PYTH(), pyth);
         WeightedHub implementation = WeightedHub(factory.IMPLEMENTATION());
         assertEq(implementation.FACTORY(), address(factory));
@@ -613,7 +625,7 @@ contract ScriptsTest is Test {
         (WeightedIndexFactory factory, IndexZap zap, BasketBuilder builder, MintRequests requests) = deployer.run();
         assertEq(address(builder.FACTORY()), address(factory));
         assertEq(factory.owner(), owner);
-        assertEq(factory.guardian(), guardian);
+        assertEq(GuardianRelay(factory.guardian()).CONTROLLER(), guardian, "the guardian's Safe controls the relay");
         assertEq(factory.PYTH(), pyth);
         assertEq(address(zap.FACTORY()), address(factory));
         assertEq(address(zap.ROUTER()), address(router));
@@ -741,13 +753,14 @@ contract ScriptsTest is Test {
     ///      dependency or to the compiler settings fails here until they are updated in the same reviewed commit, and
     ///      the failure prints the new values. `forge coverage` compiles without the optimizer, so it skips the pin.
     function test_CF5_theReleaseHashesAreThisBuilds() public view {
-        bytes32[4] memory pinned = deployer.releaseInitCodeHashes();
+        bytes32[5] memory pinned = deployer.releaseInitCodeHashes();
         if (vm.isContext(VmSafe.ForgeContext.Coverage)) return;
-        bytes32[4] memory built = deployer.buildInitCodeHashes();
+        bytes32[5] memory built = deployer.buildInitCodeHashes();
         assertEq(pinned[0], built[0], "FACTORY_INITCODE_HASH: set it to this build's WeightedIndexFactory hash");
         assertEq(pinned[1], built[1], "ZAP_INITCODE_HASH: set it to this build's IndexZap hash");
         assertEq(pinned[2], built[2], "BUILDER_INITCODE_HASH: set it to this build's BasketBuilder hash");
         assertEq(pinned[3], built[3], "REQUESTS_INITCODE_HASH: set it to this build's MintRequests hash");
+        assertEq(pinned[4], built[4], "RELAY_INITCODE_HASH: set it to this build's GuardianRelay hash");
         deployer.checkBuild(pinned);
     }
 
@@ -762,7 +775,7 @@ contract ScriptsTest is Test {
         address safe = address(new MockSafe(3));
 
         DeployWeighted other = new DeployWeightedOtherBuild();
-        bytes32[4] memory built = other.buildInitCodeHashes();
+        bytes32[5] memory built = other.buildInitCodeHashes();
         assertEq(other.releaseInitCodeHashes()[0], bytes32(uint256(1)), "a record no build matches");
         vm.expectRevert(
             abi.encodeWithSelector(
@@ -771,21 +784,26 @@ contract ScriptsTest is Test {
         );
         other.deploy(safe, guardian, address(0), address(0), address(0), address(0), address(0), address(0));
 
-        bytes32[4] memory wrongZap = [built[0], bytes32(0), built[2], built[3]];
+        bytes32[5] memory wrongZap = [built[0], bytes32(0), built[2], built[3], built[4]];
         vm.expectRevert(
             abi.encodeWithSelector(DeployWeighted.BuildNotReleased.selector, "IndexZap", bytes32(0), built[1])
         );
         other.checkBuild(wrongZap);
-        bytes32[4] memory wrongBuilder = [built[0], built[1], bytes32(0), built[3]];
+        bytes32[5] memory wrongBuilder = [built[0], built[1], bytes32(0), built[3], built[4]];
         vm.expectRevert(
             abi.encodeWithSelector(DeployWeighted.BuildNotReleased.selector, "BasketBuilder", bytes32(0), built[2])
         );
         other.checkBuild(wrongBuilder);
-        bytes32[4] memory wrongRequests = [built[0], built[1], built[2], bytes32(0)];
+        bytes32[5] memory wrongRequests = [built[0], built[1], built[2], bytes32(0), built[4]];
         vm.expectRevert(
             abi.encodeWithSelector(DeployWeighted.BuildNotReleased.selector, "MintRequests", bytes32(0), built[3])
         );
         other.checkBuild(wrongRequests);
+        bytes32[5] memory wrongRelay = [built[0], built[1], built[2], built[3], bytes32(0)];
+        vm.expectRevert(
+            abi.encodeWithSelector(DeployWeighted.BuildNotReleased.selector, "GuardianRelay", bytes32(0), built[4])
+        );
+        other.checkBuild(wrongRelay);
 
         DeployWeighted same = new DeployWeightedThisBuild();
         assertEq(same.releaseInitCodeHashes()[1], built[1], "a record of this build");

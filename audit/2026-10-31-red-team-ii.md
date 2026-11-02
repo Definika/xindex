@@ -171,7 +171,7 @@ differ from the table's are marked.
 | RZ-1 | Confirmed, high | Fixed. `hermes.verified` reads the parse as `const feeds = await call(...)`, and the request filler's `trustedLatest` calls `hermes.trusted` rather than a copy of it, so one parse is left. The unit mock returns viem's shape | `RY-6, RZ-1: trusted() keeps only ...`, which fails with `feeds is not iterable` on the bug restored |
 | RZ-2 | Confirmed, medium | Fixed. The halving moved beside the cache it depends on, `routes.bestBatch`, with a key per amount; `restock.mjs` `routeFor` calls it | `RZ-2, RZ-22: bestBatch quotes each halving ...` in `keeper/test/unit/routes.test.mjs`, which fails with one key |
 | RZ-3 | Confirmed, medium | Fixed. Both fillers report every leg stock serves, at the whole of its bound, covered or not (`leg.stocked`); `short` still decides the skip. `keeper/README.md` says so | none: neither `legs()` has a unit harness |
-| RZ-4 | Confirmed, medium; the threshold re-derived as `k > 999 · w / (1 − w)` for a leg of weight `w` fallen `k`-fold, matching the table; five of the thirty `collapsed` vectors refuse this way | Fixed, documentation: `docs/known-limitations.md` and a correction in `design/2026-10-29-settlement-vectors.md`. Open, the owner's call: whether a growth-capped fill may settle below `MIN_TRADE` (a change to the settlement's rules, its vectors and its proofs), and that a two-component index cannot keep a leg | none |
+| RZ-4 | Confirmed, medium; the threshold re-derived as `k > 999 · w / (1 − w)` for a leg of weight `w` fallen `k`-fold, matching the table; five of the thirty `collapsed` vectors refuse this way | Fixed, documentation: `docs/known-limitations.md` and a correction in `design/2026-10-29-settlement-vectors.md`. The owner's call of 2026-11-02: the stop stays, since it also keeps an index from pouring value into a coin that keeps falling; the guardian's Safe keeps such a coin through the relay (RZ-26), and a two-component index waits for the price | none |
 | RZ-5 | Confirmed, low | Fixed. BNB (WBNB on BNB Chain, PancakeSwap v3, Pyth's BNB/USD) is in the coin table and served by default; WBNB is an ERC-20, so it is no gas coin | `RZ-5: every coin is the copy MainnetAddresses lists ...`, pinned against `script/MainnetAddresses.sol` and `script/PythIds.sol`. Its home market was not exercised (e2e not run) |
 | RZ-6 | Valid, informational (overstated: bookkeeping only) | Open | none |
 | RZ-7 | Valid, documentation | Fixed: `hermes.verified` says a mismatch fails the round | none |
@@ -188,8 +188,8 @@ differ from the table's are marked.
 | RZ-22 | Valid, low (overstated: no coin served today has fewer than 18 decimals) | Fixed with RZ-2: only the halvings are held to `RESTOCK_MIN_USD` | `RZ-2, RZ-22: ...` |
 | RZ-23 | Valid, low | Fixed. `withdraw` caps the stock allowance at what is left, as `bridgeOut` does | `test_RZ23_withdrawCapsTheAllowanceAtWhatIsLeft` in `keeper/test/KeeperExecutor.t.sol` |
 | RZ-24 | Valid, low | Fixed. A Safe's enabled modules, the first 16, count among its keys on both sides and one level down | `test_RZ24_aSafesModulesCountAsItsSigners` in `test/Scripts.t.sol`, which fails with the module read removed |
-| RZ-25 | Valid, low | Open, the owner's call: a send probe on every issue costs gas on every leg and code the hub's 98 spare bytes may not hold. Recorded in `docs/known-limitations.md` | none |
-| RZ-26 | Valid, and medium rather than low: every privileged start, a keep mask's included, must carry an update valid for one slot, which a Safe cannot time, and the keep mask is the documented recourse around a frozen leg (V5-L3) and Ondo's corporate actions | Open, the owner's call: a guardian key with tooling that times the start as the keeper does, or a keep-mask start that skips the read RX-3 added. Recorded in `docs/known-limitations.md` | none |
+| RZ-25 | Valid, low | Fixed in the app on 2026-11-02, the owner's call: the check is the app's. Before it offers a mint, the backend simulates from the index a send of one raw unit of each coin to itself, as the hub's probe after a fill does (RX-12), and refuses the buy quote with `frozen_leg` when one fails (`apps/api/src/quotes/frozen.ts`, Definika/xindex-backend#5). No hub change: a direct caller stays unprotected, as `docs/known-limitations.md` records | in the backend's repository: `apps/api/test/frozen.test.ts`, and the RZ-25 test in `test/integration/quotes.test.ts` (a paused WBTC refuses LQ's buy; Tether's blacklist of an index is named) |
+| RZ-26 | Valid, and medium rather than low: every privileged start, a keep mask's included, must carry an update valid for one slot, which a Safe cannot time, and the keep mask is the documented recourse around a frozen leg (V5-L3) and Ondo's corporate actions | Fixed on 2026-11-02, the owner's call of a guardian relay over a guardian hot key or a start that skips the read. `src/GuardianRelay.sol` holds the guardian role for the guardian's Safe: the Safe authorizes a start (an index, its keep mask, a deadline), and anyone sends it with an update of their own, once; the Safe uses the guardian's other powers through it. `DeployWeighted` deploys it with the Safe as its controller and records its init code (CF-5); the keeper sends authorized starts. The hub and the factory are unchanged | `test_RZ26_*` in `test/GuardianRelay.t.sol` and `test/Scripts.t.sol`; `RZ-26: ...` in `keeper/test/unit/math.test.mjs`; the keeper end-to-end test's relay step; mutants G1 to G7 |
 | RZ-27 | Valid, a pre-mainnet check | Open: it is part of the settlement on a real Hermes update already on the pre-mainnet list | none |
 | RZ-28 | Valid, documentation | Fixed: the factory's header and `maxPlatformFeeBps` say that no higher rate can land, that any policy change moves the address `predictIndexAddress` gave, and that the referral share needs no bound, since it only splits the platform's part | none |
 | RZ-29 | Valid | Fixed. Treasury calls no longer reset the ceiling, so the invariant holds across any run of them; the per-call `assertLe`s were and remain the per-step checks | `invariant_RS1_...` |
@@ -212,4 +212,17 @@ The informational section is not addressed by this pass, except the moving avera
 - `aderyn .`: no issue. `wake detect all src`: no detections.
 - Not run: the five fork suites, which the zap's change requires before merging, and both end-to-end tests. This
   session had no archive RPC.
+
+### Gates of the owner's calls of 2026-11-02 (RZ-26's relay, RY-8)
+
+- `forge fmt --check`, `forge build --sizes --deny warnings`, `forge lint -D notes`: clean.
+- `forge test`: 545 pass, the fork suites skipped; `forge coverage`: 100% of lines, statements, branches and functions
+  in every file. `aderyn .`: no issue. `wake detect all src`: no detections.
+- `forge test --root keeper`: 64 pass. `node --test keeper/test/unit/*.test.mjs`: 179 pass. The mutation gate: 87 mutants, G1 to G7, Y1 and Y2 among them,
+  every one killed.
+- The fork suites that exercise `DeployWeighted`, `MainnetAddresses.fork.t.sol` and `Security.fork.t.sol`: 18 pass.
+- The keeper end-to-end test: 23 pass, 0 fail, on an archive RPC at block 26319503, the relay's start among them (the
+  Safe authorizes LQ keeping UNI, the keeper sends it, the authorization is spent). Its first two runs that day failed
+  only on reads of a cold fork cache that outlasted the keeper's 15-second RPC timeout.
+- RZ-25's check in the backend: its unit suite 112 pass, its integration suite 74 pass on the seeded local chain.
 

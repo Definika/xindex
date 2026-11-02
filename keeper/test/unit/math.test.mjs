@@ -259,3 +259,37 @@ test("RX-9, RY-7: only prices Pyth's contract returned identically from the sign
   const feedEma = (id) => ({ ...feed(id, 300_00000000n), emaPrice: { ...ema, publishTime: 1_000n } });
   assert.deepEqual([...M.verifiedPrices(withEma, [feedEma("0xaa"), feedEma("0xbb")], key).keys()], ["aa"], "a forged average is dropped");
 });
+
+test("RZ-26: the bot sends only the guardian's starts a block may still send", () => {
+  const indexes = ["0xA", "0xB", "0xC", "0xD", "0xE"];
+  const T = 1_000n;
+  const reads = [
+    { status: "success", result: [4n, 1_000n] }, // live until this very block
+    { status: "success", result: [4n, 999n] }, // its deadline passed
+    { status: "success", result: [0n, 0n] }, // none, or already sent
+    { status: "failure", error: new Error("no relay") },
+    { status: "success", result: [0n, 5_000n] }, // a start before strangers may, no coin kept
+  ];
+  const live = M.liveAuthorizations(indexes, reads, T);
+  assert.deepEqual([...live.keys()], ["0xA", "0xE"]);
+  assert.deepEqual(live.get("0xA"), { keepMask: 4n, deadline: 1_000n });
+  assert.equal(M.liveAuthorizations(indexes, reads, 1_001n).size, 1, "at 1001 only E's is left");
+});
+
+test("RZ-26: a start through the relay carries the relay's own gas on top of a start's", () => {
+  for (const feeds of [2, 3, 99]) assert.ok(M.relayStartGasLimit(feeds) > M.startGasLimit(feeds));
+  assert.ok(M.relayStartGasLimit(100) <= 16_777_216n);
+});
+
+test("RY-8: an auction asks for stock only when its settlement at its best price could pay MIN_PROFIT_USD", () => {
+  const price = (usd) => ({ price: BigInt(Math.round(usd * 1e8)), conf: 0n, expo: -8, publishTime: 1_000 });
+  // Sends out 1 WETH ($2,000) and takes in 1,980 USDT-like dollars of a 6-decimal coin and 0.0001 of an 8-decimal one.
+  const out = [10n ** 18n, 0n, 0n];
+  const need = [0n, 1_970n * 10n ** 6n, 10_000n];
+  const decimals = [18, 6, 8];
+  const prices = [price(2_000), price(1), price(60_000)];
+  const margin = M.settlementMarginUsd({ out, need, decimals, prices });
+  assert.ok(Math.abs(margin - (2_000 - 1_970 - 6)) < 1e-6, `margin ${margin}`);
+  assert.equal(M.settlementMarginUsd({ out, need, decimals, prices: [price(2_000), price(1), null] }), 30, "a kept leg moves nothing");
+  assert.ok(M.settlementMarginUsd({ out: [0n, 0n, 0n], need, decimals, prices }) < 0, "a settlement that only takes pays nothing");
+});

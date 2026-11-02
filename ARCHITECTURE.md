@@ -136,7 +136,10 @@ OpenZeppelin's upgradeable ERC20 and ERC20Permit (clones skip constructors, so n
 - **Guardian and ownership.** `proposeGuardian` is owner only (zero removes the role) and replaces any pending change;
   `executeGuardianChange` is permissionless from `GUARDIAN_DELAY` (7 days) for `PROPOSAL_WINDOW`. The owner can cancel
   any guardian change, the guardian only its own removal, never its replacement (XA-61). `isOwnerOrGuardian(account)`
-  tells hubs who may cancel a rebalance, pass a keep mask or start before strangers. Ownership moves in OpenZeppelin's
+  tells hubs who may cancel a rebalance, pass a keep mask or start before strangers. The guardian `DeployWeighted`
+  installs is a `GuardianRelay` its Safe controls (RZ-26): the Safe authorizes a start, its index, keep mask and
+  deadline, and anyone sends it with an update of their own, once, since a start's update is valid for one slot and a
+  Safe cannot land it; the Safe makes every other guardian call through the relay. Ownership moves in OpenZeppelin's
   two steps and takes effect the moment the new owner accepts: the one admin change with no delay and no guardian veto.
   `renounceOwnership` always reverts. An expired proposal leaves `listingEta`, `pendingGuardian` and
   `pendingGuardianEta` set, so `listingPending(token)` and `guardianChangePending()` say whether one can still run

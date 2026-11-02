@@ -40,8 +40,9 @@ Every block L, with T = L's timestamp + 12 (the one block a fill sent now can la
    the next (RX-34).
 3. **Requests.** With `FILL_REQUESTS` on and nothing else to send, the open `MintRequests` requests on the indexes it
    serves are read every 25 blocks, with each index's gate and a Hermes value of one of its shares; a request whose read
-   fails is kept as it was and read again. A request is skipped before any simulation when its limit is worth more than
-   its escrow at Pyth, or when it is a mint on an index whose gate would not issue to the executor. Of the rest, the 8
+   fails is kept as it was and read again. A request is skipped before any simulation when its escrow at Pyth is worth
+   less than its limit plus `MIN_PROFIT_USD`, since no fill of it could pay (RY-8), or when it is a mint on an index
+   whose gate would not issue to the executor. Of the rest, the 8
    largest in dollars are simulated per block, at most 4 of them on one side while the other side has requests, and a
    request whose simulation reverts waits 2, 4, 8... blocks, at most 200, before the next; one whose fill reverts on
    chain waits 5, then 10, and is left after the third. Each is simulated as block L+1 would fill it. A mint request is
@@ -61,7 +62,13 @@ Every block L, with T = L's timestamp + 12 (the one block a fill sent now can la
    - A fill that reverts on chain strikes the request, its requester and its index, so new request ids do not start
      over (RX-10); a request a check keeps declining without a revert is checked again 2, 4, 8... blocks later, at most
      200 (RX-24).
-4. **One transaction in flight.** A transaction that misses its block is replaced on the same nonce by a 0-value
+4. **The guardian's starts.** The factory's guardian is a `GuardianRelay`, which the guardian's Safe controls (RZ-26):
+   a start carries a Pyth update valid for one slot, which a Safe cannot land, so the Safe authorizes a start on the
+   relay, an index and its keep mask until a deadline, and anyone may send it. The bot reads the relay's authorizations
+   every block and sends a live one, after the fills and before its own starts, with Hermes' update for every feed the
+   keep mask moves, for the next block, and Pyth's fee, once a call at that block with its own gas limit passes. It
+   weighs no profit: the Safe decided. A factory whose guardian is no relay is left alone.
+5. **One transaction in flight.** A transaction that misses its block is replaced on the same nonce by a 0-value
    transfer to itself, its fees raised each block, never above `MAX_FEE_GWEI` and at most 10 times, until something on
    that nonce is mined; after the tenth it only waits, and logs it. A nonce left pending by an earlier run is cleared
    the same way at startup, at most 4 of them, and so is one whose send failed with its outcome unknown; a pending
@@ -78,7 +85,12 @@ leaves stock only within the **stock allowance** `OWNER` sets for it (`setStockA
 restock service bridges in adds to, which every delivery from stock spends; with none, nothing is served from stock.
 With `NEEDS_FILE` set, the keeper writes there every coin a fill, a start or a request delivers from stock, with the
 whole of it that fill needs, for the restock service to bring in and then keep: a coin stays on the board while its
-fill waits, covered or not, so stock that has just arrived is not sent home before the fill uses it (RZ-3).
+fill waits, covered or not, so stock that has just arrived is not sent home before the fill uses it (RZ-3). Only a
+fill that could pay `MIN_PROFIT_USD` at its best price is on the board (RY-8): an auction's, when its settlement at
+μ = `MU_MIN` sends out that much more than it takes in at the update's prices, before routes and gas; a request's,
+when its escrow is worth that much more than its limit. Stock brought in for a fill that is never made would only
+cost the restock its swaps and bridge fees, there and back. A holder who makes a paying auction and leaves before its
+fill can still cause that, within the restock's daily and per-coin bounds.
 
 The twelve Ondo legs priced at their share's feed (AMZNon, TSMon, SPCXon, METAon, AVGOon, SKHYon, MUon, LLYon, AMDon,
 JPMon, WMTon, Von; `SHARE_PRICED_IDS` in `bot/config.mjs`) are worth sValue shares, which the bot cannot read. Keep

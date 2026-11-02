@@ -69,7 +69,8 @@ Where it stands (2026-10-26):
   `fillMint` and `fillRedeem` on the executor, which buys or sells the basket in the fill's own transaction, so a
   request wider than one transaction's swaps waits for stock), serves coins without a Uniswap route from its
   executor's stock, and holds no role. Its end-to-end test passed on 2026-10-17 (20/0, Tenderly's public archive)
-  after the fixes of the audit of 2026-10-16. Since 2026-10-19 (the owner's call: "we need everything automated") a
+  after the fixes of the audit of 2026-10-16, and on 2026-11-02 (23/0, on an archive RPC) with the guardian relay's
+  start the keeper sends (RZ-26). Since 2026-10-19 (the owner's call: "we need everything automated") a
   restock service (`keeper/restock.mjs`) keeps that stock filled for the Wormhole copies: it buys a coin on its home
   chain's DEX, bridges it in through Wormhole's Token Bridge into the executor, whose `redeemBridged` adds what arrived
   to the coin's stock allowance within the restock allowance the owner sets per coin, so restocking never raises what
@@ -110,10 +111,16 @@ Where it stands (2026-10-26):
   nothing since RX-9's fix, and the restock's RY-6 fix would have stopped it, because viem returns Pyth's parse
   unwrapped (RZ-1); the restock's halving never quoted (RZ-2); stock left the needs board the moment it landed (RZ-3);
   the keeper values only prices Pyth's contract confirms, previews included (RY-7); the zap refuses WETH and the
-  call's own token as recipients (RY-1); BNB joined the restock (RZ-5). Open, the owner's calls: a keep-mask start
-  must land in one slot, which a Safe cannot time (RZ-26); a collapsed leg stops the fills far sooner than was
-  documented (RZ-4); issue does not probe a frozen leg (RZ-25); RY-3's self-referral and RY-8's restock churn. The
-  fork suites have not run on the zap's change.
+  call's own token as recipients (RY-1); BNB joined the restock (RZ-5). The owner's calls of 2026-11-02 on the four
+  left open:
+  - A start must land in one slot, which a Safe cannot time (RZ-26): the guardian is a `GuardianRelay` its Safe
+    controls, which `DeployWeighted` deploys; the Safe authorizes a start and anyone, the keeper first, sends it.
+  - A collapsed leg stops the fills far sooner than was documented (RZ-4): the stop stays.
+  - Issue does not probe a frozen leg (RZ-25): the app checks before it offers a mint; the hub is unchanged.
+  - A need reaches the restock only for a fill that could pay `MIN_PROFIT_USD` at its best price (RY-8).
+  - RY-3's self-referral waits for the fee policy.
+
+  The fork suites have not run on the zap's change.
 - The protocol documentation review of 2026-11-01 (`audit/2026-11-01-protocol-docs-review.md`, ids `PD-1`..`PD-14`)
   read every protocol Xindex uses in its own docs. The contracts that hold index funds follow them all; every finding
   is in the restock service. It found three ways a compromised aggregator answer could take more than the bounds, all
@@ -211,7 +218,7 @@ aderyn .                     # Aderyn on src/, configured by aderyn.toml: must r
 python3 -I test/mutants/run.py  # the mutation gate: every mutant of test/mutants/mutants.json must be killed (CI runs it);
                              # --only M3,V8 runs some, --check only that every edit still applies; a mutant with
                              # "runner": "node" names a keeper/test/unit suite instead of a forge one
-for c in IndexZap BasketBuilder MintRequests WeightedIndexFactory WeightedHub; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
+for c in IndexZap BasketBuilder MintRequests WeightedIndexFactory WeightedHub GuardianRelay; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
 forge test --root keeper     # the keeper's executor, its own Foundry project; CI also runs its fmt, build and lint
 node --test keeper/test/unit/*.test.mjs  # the keeper bot's arithmetic, settings, Hermes client and tx tracker (no dependency)
 
@@ -225,7 +232,8 @@ MAINNET_RPC_URL=https://ethereum-rpc.publicnode.com FORK_BLOCK=$(( $(cast block-
 CHECK=wide forge script script/CheckToken.s.sol --fork-url $MAINNET_RPC_URL
 ```
 
-Deployment, once, on Ethereum: `script/DeployWeighted.s.sol`, then `script/ConfigureWeighted.s.sol`, which lists each
+Deployment, once, on Ethereum: `script/DeployWeighted.s.sol`, which gives the guardian role to a `GuardianRelay` the
+guardian's Safe controls (RZ-26), then `script/ConfigureWeighted.s.sol`, which lists each
 coin with its Pyth price id (`script/PythIds.sol`). `script/CheckToken.s.sol` reports on every token before its first
 listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 91 in all. On chain 1 the
 deploy script resolves Pyth, the router and the stablecoins from the address book and refuses any other address
@@ -307,10 +315,12 @@ deploy script resolves Pyth, the router and the stablecoins from the address boo
      `AU-2: ...` in `keeper/test/unit/hermes.test.mjs`, and `test_AU3_...` in `keeper/test/KeeperExecutor.t.sol`.
    - The red teams of 2026-10-31: `RY-1`..`RY-9` (`audit/2026-10-31-red-team.md`) and `RZ-1`..`RZ-33`
      (`audit/2026-10-31-red-team-ii.md`), both drafted with `RT` ids, which the red team of 2026-09-24 holds. A test
-     named `test_RY1_...` in `test/IndexZap.t.sol`, `test_RZ23_...` in `keeper/test/KeeperExecutor.t.sol` or
-     `test_RZ24_...` in `test/Scripts.t.sol`, and node tests named `RY-6, RZ-1: ...`, `RZ-2, RZ-22: ...` and
-     `RZ-5: ...` in `keeper/test/unit/`. Each record's "Status of the fixes" names every test; the ids fixed by
-     documentation, the open ones and the keeper's wiring without a unit harness have none.
+     named `test_RY1_...` in `test/IndexZap.t.sol`, `test_RZ23_...` in `keeper/test/KeeperExecutor.t.sol`,
+     `test_RZ24_...` in `test/Scripts.t.sol` or `test_RZ26_...` in `test/GuardianRelay.t.sol` and
+     `test/Scripts.t.sol`, and node tests named `RY-6, RZ-1: ...`, `RZ-2, RZ-22: ...`, `RZ-5: ...`, `RZ-26: ...` and
+     `RY-8: ...` in `keeper/test/unit/`, RZ-26's and RY-8's with their mutants G1 to G7, Y1 and Y2. Each record's
+     "Status of the fixes" names every test; the ids fixed by documentation, the open ones and the keeper's wiring
+     without a unit harness have none.
    - The protocol documentation review of 2026-11-01: `PD-1`..`PD-14` (`audit/2026-11-01-protocol-docs-review.md`),
      node tests named `PD-1: ...` in `keeper/test/unit/` (the restock's Solana, Sui, Aptos, in-flight, journal,
      attestation, advance, attest and signer-home suites), each with its mutants P1 to P24 in
@@ -537,6 +547,12 @@ records also cite.
     can be neither zero, the factory nor an index.
   - The guardian can: cancel pending listings; delist; cancel a rebalance; start one with a keep mask; start one before
     strangers may; and cancel a guardian change that would remove the role. It cannot block its own replacement.
+  - The guardian is a `GuardianRelay` (`src/GuardianRelay.sol`) its Safe controls (RZ-26, the owner's call of
+    2026-11-02): a start carries a Pyth update valid for one slot, which a Safe cannot land, so the Safe authorizes a
+    start (an index, its keep mask, a deadline) and anyone sends it with an update of their own, once, and the Safe
+    uses the guardian's other powers through the relay. The relay holds no funds and adds no power; whoever sends an
+    authorized start chooses only its block before the deadline. Never give it a power the guardian lacks, nor let a
+    start it sends skip the authorization.
   - There is no pause, no upgrade, no sweep, no renounce, no instant guardian change, and no keeper or bot role. Keep
     it that way.
   - `cancelRebalance` has no window and no rate limit. A hostile or compromised guardian can cancel each auction at its
@@ -578,7 +594,8 @@ records also cite.
   no nonce can undo a haircut that landed first. Shares issued while a rebalance is pending share the haircut of any
   fill that lands after them, however the two are ordered (RT-02).
 - **Every payable path forwards the whole of `msg.value` to Pyth;** the hub never holds ether. Since 2026-10-26 that
-  is `startRebalance` as well as both `executeRebalance` overloads.
+  is `startRebalance` as well as both `executeRebalance` overloads, and the guardian relay's `start` hands the whole of
+  its own to the hub's.
 - **The zap is stateless and replaceable.** New UX features (ETH in/out, aggregators, mixed-venue legs) go in a new or
   extended zap, never in the hub or factory. The app caps a zap basket at about 35 components, which is where 16.78M gas
   runs out. Since 2026-10-16 the zap's swaps run through `UniversalRouterSwaps`, the engine it shares with the basket
@@ -751,7 +768,8 @@ records also cite.
   come from `DEFAULT_SENDER`.
 - **Deployment rules.**
   - Deployments never use raw private keys: `--account` keystores or `--ledger`.
-  - `OWNER` and `GUARDIAN` are required, on each chain.
+  - `OWNER` and `GUARDIAN` are required, on each chain. `GUARDIAN` is the guardian's Safe, which controls the relay the
+    script deploys as the factory's guardian; the guardian rules below read it.
   - On a mainnet the owner must be a contract that is not an EIP-7702 delegated account. A Safe owner must need at least
     `MIN_OWNER_THRESHOLD` (3) signatures, the design's 3-of-5 (the owner's call on 2026-09-30), and have no enabled
     module. Any other contract, such as a timelock, is refused unless the operator sets `OWNER_IS_NOT_A_SAFE` to that
@@ -763,10 +781,10 @@ records also cite.
   - On chain 1 the market addresses are the address book's and nothing else (`MainnetOverride`); elsewhere they come
     from the environment.
   - On chain 1 `deploy` broadcasts only the build `DeployWeighted`'s `FACTORY_INITCODE_HASH`, `ZAP_INITCODE_HASH`,
-    `BUILDER_INITCODE_HASH` and `REQUESTS_INITCODE_HASH` record (`BuildNotReleased`, CF-5). A change to `src/`, a
-    dependency or the compiler settings fails `test_CF5_theReleaseHashesAreThisBuilds` until those four are set to the
-    values it prints, in the same commit. The test stops at the first mismatch; `cast keccak` of each artifact's
-    `bytecode.object` gives all four. `foundry.toml` keeps `auto_detect_remappings = false`: the detected remappings
+    `BUILDER_INITCODE_HASH`, `REQUESTS_INITCODE_HASH` and `RELAY_INITCODE_HASH` record (`BuildNotReleased`, CF-5). A
+    change to `src/`, a dependency or the compiler settings fails `test_CF5_theReleaseHashesAreThisBuilds` until those
+    five are set to the values it prints, in the same commit. The test stops at the first mismatch; `cast keccak` of
+    each artifact's `bytecode.object` gives all five. `foundry.toml` keeps `auto_detect_remappings = false`: the detected remappings
     carry the checkout's absolute path into the metadata, so the hashes differed between machines and CI. After
     changing `foundry.toml`, rebuild with `forge build --force`, since the cache can keep the old artifacts.
 - **Mainnet addresses** are verified on-chain before being committed: tokens by symbol and decimals, and the router
