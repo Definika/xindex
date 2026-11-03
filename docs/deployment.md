@@ -142,8 +142,11 @@ No bot holds a role in Xindex, so these duties have owners and deadlines. Watch 
 **v5 is deployed on Sepolia** from commit `07aeae1`, the build before the RX-3 fix: its hub's
 `startRebalance(keepMask)` takes no price update and its auctions run 24 hours, while `abi/` and `src/` are the fixed
 build's. Its owner is a 2-of-3 test Safe and its guardian an externally owned account (a mainnet owner needs at
-least 3 signatures). The four listings (tWBTC, WETH, tLINK, tUNI) are proposed and can be executed by anyone from
-2026-10-28 14:01 UTC until 2026-11-04 14:01 UTC; no index can be created before then. v3 also runs there, deployed from
+least 3 signatures). The four listings (tWBTC, WETH, tLINK, tUNI) were executed on 2026-10-28. Its zap was redeployed
+alone on 2026-11-03 from `70ffa6f`, for the factory above, with `forge create` and the node's gas estimate (23.85M gas
+used): it adds `mintWithEth`, `burnToEth`, `burnToEthWithPermit` and `mintWithTokenPermit`, and RY-1's recipient
+checks. The zap calls only the factory's `isIndex` and the hub's `issue`, `redeem`, `previewIssue`, `componentTokens`
+and `rebalanceNonce`, which the build of `07aeae1` answers alike. v3 also runs there, deployed from
 `4b4dbe4` (tag `v3.0.0`); nothing on `main` drives it.
 
 Sepolia runs Glamsterdam (EIP-8037): creating contracts and storage costs two to four times what
@@ -171,7 +174,7 @@ Router's encoding, not on Sepolia.
 | WeightedIndexFactory (v5, blocks 11,998,381 to 11,998,385 with the next four) | `0x787139b915753F0CfFfa14708D1e665dCf5AA0bA` |
 | WeightedHub implementation | `0x3ae717ffeE17D3FAd861447703F31011eB8DC609` |
 | WeightedMath | `0xd22BDeF312560309686483F4983966d810f3FA85` |
-| IndexZap (the build of 2026-10-26, before the ether and permit-mint entry points of 2026-10-29; a redeploy of the zap alone adds them) | `0x1CC5cC8bE9553cFe952a4A330071C20cE96d9924` |
+| IndexZap (redeployed alone on 2026-11-03 from `70ffa6f`, block 12,055,700, with the ether and permit-mint entry points; the zap of 2026-10-26, `0x1CC5cC8bE9553cFe952a4A330071C20cE96d9924`, has neither) | `0xa0CD6C2DB622d28F350423119cAab2C331b759ff` |
 | BasketBuilder | `0xa4AB1233D1Eb2ddcA77C27579A8cB41156452E13` |
 | MintRequests | `0x5b092e8A8ab29A12e2D91bE96C307759B2a12b81` |
 | Owner (2-of-3 Safe) | `0x2Fb4b72C689E21D0d33Bd9D66DbEAdC60b6b0CA2` |

@@ -79,7 +79,7 @@ token_i.balanceOf(index) >= floor(totalSupply × units_i × scale / 1e36) + tota
 |---|---|
 | WeightedIndexFactory | [`0x787139b915753F0CfFfa14708D1e665dCf5AA0bA`](https://sepolia.etherscan.io/address/0x787139b915753F0CfFfa14708D1e665dCf5AA0bA) |
 | WeightedHub (implementation) | [`0x3ae717ffeE17D3FAd861447703F31011eB8DC609`](https://sepolia.etherscan.io/address/0x3ae717ffeE17D3FAd861447703F31011eB8DC609) |
-| IndexZap (the build of 2026-10-26, before the ether and permit-mint entry points) | [`0x1CC5cC8bE9553cFe952a4A330071C20cE96d9924`](https://sepolia.etherscan.io/address/0x1CC5cC8bE9553cFe952a4A330071C20cE96d9924) |
+| IndexZap (redeployed alone on 2026-11-03 from `70ffa6f`, with the ether and permit-mint entry points) | [`0xa0CD6C2DB622d28F350423119cAab2C331b759ff`](https://sepolia.etherscan.io/address/0xa0CD6C2DB622d28F350423119cAab2C331b759ff) |
 | BasketBuilder | [`0xa4AB1233D1Eb2ddcA77C27579A8cB41156452E13`](https://sepolia.etherscan.io/address/0xa4AB1233D1Eb2ddcA77C27579A8cB41156452E13) |
 | MintRequests | [`0x5b092e8A8ab29A12e2D91bE96C307759B2a12b81`](https://sepolia.etherscan.io/address/0x5b092e8A8ab29A12e2D91bE96C307759B2a12b81) |
 
