@@ -765,7 +765,7 @@ contract WeightedHandler is Test {
     ///      amounts: it either still fits them or stops at RebalanceMovedOn, never anything else (DA-13, RX-57).
     function frontRunFill(uint256 offset, uint256 actorSeed, uint256 shares) external {
         if (frozen || !_toAuction(offset)) return;
-        (bool trades,, uint256[] memory units,, uint256[] memory in_) = _preview();
+        (bool trades,,,, uint256[] memory in_) = _preview();
         if (!trades) return;
         shares = bound(shares, 1, 1e18);
         address who = _actor(actorSeed);
@@ -783,6 +783,10 @@ contract WeightedHandler is Test {
         ghostIssued += shares;
         _accountFee(held, streaming + (shares * 10_000 + 9874) / 9875 - shares);
         _clock(streaming, supply);
+        // The units the fill settles are the preview's after the issue, in the same block, not the quote's: the
+        // settlement rounds each leg's backing at the supply, so on a dust supply an issue moves them (here 1.8% of a
+        // leg when 4,040 wei-shares landed on 71). The quote's amounts only bound the fill (DA-13).
+        (,, uint256[] memory units,,) = _preview();
 
         // In the same block, so the fill accrues nothing more.
         (, uint256 keepMask) = index.pendingRebalance();
