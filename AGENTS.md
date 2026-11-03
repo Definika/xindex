@@ -143,7 +143,8 @@ Where it stands (2026-10-26):
 
   The mutation gate runs the keeper's node suites since.
 - v5 was deployed on Sepolia on 2026-10-26 from `07aeae1`, the build before the RX-3 fix, under a 2-of-3 test Safe;
-  its four listings can be executed from 2026-10-28 (`docs/deployment.md`, with the addresses). Sepolia runs Glamsterdam
+  its four listings were executed on 2026-10-28, and its zap alone was redeployed on 2026-11-03 from `70ffa6f`, with
+  the ether and permit entry points (`docs/deployment.md`, with the addresses). Sepolia runs Glamsterdam
   (EIP-8037): `forge script` broadcasts there need `--gas-estimate-multiplier 900`. The website and its backend, in
   their own repositories, serve it.
 - The repository is under the Business Source License 1.1 since 2026-10-28 (`LICENSE`; MIT from 2026-10-26 until
@@ -172,8 +173,8 @@ Where it stands (2026-10-26):
   runs them all, in about two minutes here. Every one is killed.
 - The zap takes ether and permits since 2026-10-29 (the owner's call): `mintWithEth`, `burnToEth`,
   `burnToEthWithPermit` and `mintWithTokenPermit`, the backlog's ETH in and out and one-signature USDC mint, with `WETH`
-  a construction argument the deploy script resolves (`abi/IndexZap.json`, the zap's unit and fork suites). The Sepolia
-  zap of 2026-10-26 predates them and needs a redeploy of the zap alone to serve them.
+  a construction argument the deploy script resolves (`abi/IndexZap.json`, the zap's unit and fork suites). Sepolia's
+  zap serves them since its redeploy alone on 2026-11-03.
 - Before any mainnet: Pyth's parameter replay (`design/2026-10-05-custom-weights.md`, section 8), which also sizes
   `MAX_EMA_DEVIATION` and `MAX_GROWTH`, and a settlement on a real update from Hermes, both waiting on a paid Pyth
   plan: the key the web app holds authenticates but was entitled to none of the 91 feeds on 2026-11-02 (Pyth's Free
@@ -616,7 +617,7 @@ records also cite.
     1), `msg.value` must equal `maxAmountIn`, the zap wraps and unwraps, and a caller or `to` that refuses ether fails
     the call. `mintWithTokenPermit`, `burnToTokenWithPermit` and `burnToEthWithPermit` try an EIP-2612 permit for the
     whole amount pulled and accept one already submitted; USDT has none. Fiat and other-chain entry stay app-side and
-    undecided. The Sepolia zap of 2026-10-26 predates these entry points; a redeploy of the zap alone serves them.
+    undecided. Sepolia's zap serves these entry points since its redeploy alone on 2026-11-03.
   - **Venue.** It swaps through Uniswap's Universal Router, pinned to the 2.0.0 deployment, and nothing else (the
     owner's call on 2026-10-14). Each leg names exactly one venue: a packed `v3Path` or a hookless `PathKey[] v4Path`,
     never both and never neither, else `BadRoute(i)`; the pass-through leg names none.
