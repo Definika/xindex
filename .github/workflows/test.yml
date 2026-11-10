@@ -100,7 +100,7 @@ jobs:
       - name: Check the committed ABIs are current
         run: |
           set -euo pipefail
-          for contract in IndexZap BasketBuilder MintRequests WeightedIndexFactory WeightedHub GuardianRelay; do
+          for contract in IndexZap BasketBuilder MintRequests WeightedIndexFactory WeightedHub; do
             forge inspect "$contract" abi --json > "abi/$contract.json"
           done
           git diff --exit-code abi/

@@ -2,28 +2,25 @@
 pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
-import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {WeightedMath} from "../src/WeightedMath.sol";
 
 /// @notice A Halmos harness for `WeightedMath.settlement`, run by Halmos, not by forge: every argument of a `check_`
-///         function is symbolic, so a passing check would hold for every value its assumptions allow. On 2026-10-29
-///         Halmos 0.3.3 could not finish rung 1 in ten minutes (`design/2026-10-29-settlement-proofs.md`, section 2):
-///         it explores every branch of `Math.mulDiv`, about eleven calls per settlement. The properties are proven on
-///         the exact model instead (`test/vectors/proofs.py`). The harness stays for a retry with more time or a
-///         later Halmos. forge runs each rung only at the concrete points of {test_everyRungHoldsAtConcretePoints}, so
-///         the harness cannot rot between retries and CI's coverage gate reads every line of it; Halmos runs only the
-///         `check_` functions.
-/// @dev The rungs widen what is symbolic one step at a time: rung 1 leaves only the units symbolic, rung 2 adds the
-///      multiplier, rung 3 a weight, rung 4 the prices.
+///         function is symbolic, so a passing check holds for every value its assumptions allow. forge runs each rung
+///         only at the concrete points of {test_everyRungHoldsAtConcretePoints}, so the harness cannot rot between
+///         runs and CI's coverage gate reads every line of it; Halmos runs only the `check_` functions.
+/// @dev The rungs widen what is symbolic one step at a time: rung 1 leaves only the new units symbolic, rung 2 adds
+///      the auction's clock, rung 3 the weights, rung 4 the current units, the supply and the scale. What they check
+///      is what the hub relies on without a price: an accepted fill clears a bar that is never zero, keeps every leg
+///      inside its unit caps, grows at least one leg, and never has a leg both send and receive. That it never lowers
+///      the weighted product of the units is a fact about the logarithm, proven in the record
+///      (`design/2026-11-10-oracle-free-rebalance.md`, section 3), which no solver of integers states.
 contract WeightedMathProofs is Test {
     uint256 constant WAD = 1e18;
     uint256 constant TOTAL_WEIGHT = 10_000;
-    uint256 constant MU_MAX = 1.02e18;
-    uint256 constant MU_MIN = 0.98e18;
-    uint256 constant MAX_TURNOVER = 0.2e18;
-    /// @dev ETH at $2,000 with 18 decimals and BTC at $60,000 with 8, as the unit suites price them.
-    uint256 constant ETH_PRICE = 2e21;
-    uint256 constant BTC_PRICE = 6e32;
+    uint256 constant AUCTION_DURATION = 4 hours;
+    /// @dev 0.025 ETH and 0.0005 BTC a token, as the unit suites' default index holds them.
+    uint256 constant ETH_UNITS = 0.025e18;
+    uint256 constant BTC_UNITS = 0.0005e8;
 
     WeightedMath math;
 
@@ -37,58 +34,70 @@ contract WeightedMathProofs is Test {
         v[1] = b;
     }
 
-    /// @dev The properties every rung checks on a settlement that returns: a leg never both sends and receives, a
-    ///      shrinking leg gives up at most MAX_TURNOVER of its own units, every leg stays within 96 bits, and the
-    ///      multiplier used is the auction's or MU_MAX.
-    function _check(uint256 mu, uint256[] memory prices, uint256[] memory units, uint256[] memory weights)
-        internal
-        view
-    {
-        try math.settlement(mu, prices, 1e18, WAD, units, weights, 0) returns (
-            uint256 muUsed, uint256[] memory after_, uint256[] memory amountsOut, uint256[] memory amountsIn
+    /// @dev The properties every rung checks on a settlement that returns.
+    function _check(
+        uint256 elapsed,
+        uint256 supply,
+        uint256 scale,
+        uint256[] memory units,
+        uint256[] memory next,
+        uint256[] memory weights
+    ) internal view {
+        try math.settlement(elapsed, supply, scale, units, next, weights, 0) returns (
+            uint256 bar, int256 gain, uint256[] memory amountsOut, uint256[] memory amountsIn
         ) {
-            assert(muUsed == mu || muUsed == MU_MAX);
+            assert(bar != 0);
+            assert(gain >= int256(bar));
+            assert(next[0] > units[0] || next[1] > units[1]);
             for (uint256 i = 0; i < 2; ++i) {
                 assert(amountsOut[i] == 0 || amountsIn[i] == 0);
-                assert(after_[i] <= type(uint96).max);
-                if (after_[i] < units[i]) assert(units[i] - after_[i] <= Math.mulDiv(units[i], MAX_TURNOVER, WAD));
+                assert(next[i] <= type(uint96).max);
+                assert(next[i] * 5 >= units[i] * 4);
+                assert(next[i] <= 2 * units[i]);
             }
         } catch {}
     }
 
-    /// @dev Rung 1: any units up to 64 bits, at the fixed prices, equal weights and parity.
-    function check_rung1_units(uint64 u0, uint64 u1) public view {
-        vm.assume(u0 != 0 && u1 != 0);
-        _check(WAD, _pair(ETH_PRICE, BTC_PRICE), _pair(u0, u1), _pair(5000, 5000));
+    /// @dev Rung 1: any new units up to 64 bits, from the default units, at equal weights and the auction's end.
+    function check_rung1_newUnits(uint64 v0, uint64 v1) public view {
+        _check(AUCTION_DURATION, 1e18, WAD, _pair(ETH_UNITS, BTC_UNITS), _pair(v0, v1), _pair(5000, 5000));
     }
 
-    /// @dev Rung 2: rung 1 with the multiplier anywhere in the auction's range.
-    function check_rung2_unitsAndMu(uint64 u0, uint64 u1, uint256 mu) public view {
-        vm.assume(u0 != 0 && u1 != 0 && mu >= MU_MIN && mu <= MU_MAX);
-        _check(mu, _pair(ETH_PRICE, BTC_PRICE), _pair(u0, u1), _pair(5000, 5000));
+    /// @dev Rung 2: rung 1 at any second of the auction.
+    function check_rung2_newUnitsAndTheClock(uint64 v0, uint64 v1, uint256 elapsed) public view {
+        vm.assume(elapsed <= AUCTION_DURATION);
+        _check(elapsed, 1e18, WAD, _pair(ETH_UNITS, BTC_UNITS), _pair(v0, v1), _pair(5000, 5000));
     }
 
     /// @dev Rung 3: rung 2 with any split of the weights.
-    function check_rung3_unitsMuAndWeights(uint64 u0, uint64 u1, uint256 mu, uint16 w0) public view {
-        vm.assume(u0 != 0 && u1 != 0 && mu >= MU_MIN && mu <= MU_MAX && w0 != 0 && w0 < TOTAL_WEIGHT);
-        _check(mu, _pair(ETH_PRICE, BTC_PRICE), _pair(u0, u1), _pair(w0, TOTAL_WEIGHT - w0));
+    function check_rung3_newUnitsClockAndWeights(uint64 v0, uint64 v1, uint256 elapsed, uint16 w0) public view {
+        vm.assume(elapsed <= AUCTION_DURATION && w0 != 0 && w0 < TOTAL_WEIGHT);
+        _check(elapsed, 1e18, WAD, _pair(ETH_UNITS, BTC_UNITS), _pair(v0, v1), _pair(w0, TOTAL_WEIGHT - w0));
     }
 
-    /// @dev Rung 4: rung 3 with any prices up to 128 bits and units up to 96.
-    function check_rung4_everything(uint96 u0, uint96 u1, uint128 p0, uint128 p1, uint256 mu, uint16 w0) public view {
-        vm.assume(u0 != 0 && u1 != 0 && p0 != 0 && p1 != 0);
-        vm.assume(mu >= MU_MIN && mu <= MU_MAX && w0 != 0 && w0 < TOTAL_WEIGHT);
-        _check(mu, _pair(p0, p1), _pair(u0, u1), _pair(w0, TOTAL_WEIGHT - w0));
+    /// @dev Rung 4: rung 3 from any current units up to 96 bits, at any supply up to 128 bits and any scale up to one.
+    function check_rung4_everything(
+        uint96 u0,
+        uint96 u1,
+        uint256 v0,
+        uint256 v1,
+        uint256 elapsed,
+        uint16 w0,
+        uint128 supply,
+        uint64 scale
+    ) public view {
+        vm.assume(u0 != 0 && u1 != 0 && elapsed <= AUCTION_DURATION && w0 != 0 && w0 < TOTAL_WEIGHT);
+        vm.assume(scale != 0 && scale <= WAD);
+        _check(elapsed, supply, scale, _pair(u0, u1), _pair(v0, v1), _pair(w0, TOTAL_WEIGHT - w0));
     }
 
-    /// @dev Every rung at concrete points, which forge runs: 1 ETH ($2,000) against 0.1 BTC ($6,000) is off equal
-    ///      weights, so it settles, BTC shrinking and ETH growing; 3 ETH against 0.1 BTC is on them, so the
-    ///      settlement reverts `NothingToRebalance` and the check has nothing to assert.
+    /// @dev Every rung at concrete points, which forge runs: a tenth of the ETH out for an eighth more BTC settles;
+    ///      the same units again gain nothing and are refused, so the check has nothing to assert.
     function test_everyRungHoldsAtConcretePoints() public view {
-        check_rung1_units(1e18, 1e7);
-        check_rung1_units(3e18, 1e7);
-        check_rung2_unitsAndMu(1e18, 1e7, MU_MIN);
-        check_rung3_unitsMuAndWeights(1e18, 1e7, MU_MAX, 2500);
-        check_rung4_everything(1e18, 1e7, uint128(ETH_PRICE), uint128(BTC_PRICE), WAD, 5000);
+        check_rung1_newUnits(0.0225e18, 0.0005625e8);
+        check_rung1_newUnits(uint64(ETH_UNITS), uint64(BTC_UNITS));
+        check_rung2_newUnitsAndTheClock(0.0225e18, 0.0005625e8, 3 hours);
+        check_rung3_newUnitsClockAndWeights(0.0225e18, 0.0005625e8, AUCTION_DURATION, 2500);
+        check_rung4_everything(1e18, 1e7, 0.9e18, 1.2e7, AUCTION_DURATION, 5000, 1e24, 0.9e18);
     }
 }

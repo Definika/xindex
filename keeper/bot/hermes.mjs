@@ -1,8 +1,8 @@
-// Pyth's Hermes, as the keeper uses it: the signed update for one second, and the latest prices. Native fetch only.
+// Pyth's Hermes, as the keeper uses it: the latest prices, with the signed update that carries them. Native fetch
+// only. No contract of the protocol reads a price: these are the keeper's own, to value its own trades.
 //
 // Since 2026-08-26 Hermes serves at https://pyth.dourolabs.app/hermes and needs `Authorization: Bearer <key>`; routes
-// and response shapes are unchanged. `/v2/updates/price/{t}` returns each feed's first update published at or after t,
-// which is exactly what the hub's parse accepts for a block at t + 12.
+// and response shapes are unchanged.
 
 import { verifiedPrices } from "./math.mjs";
 
@@ -26,8 +26,8 @@ const parseOne = (p) => ({
   publishTime: Number(p.publish_time),
 });
 
-/// An entry's price, with `ema` the moving average Hermes publishes beside it, which the hub's preview and its fill
-/// both check the price against (RX-27, AU-2).
+/// An entry's price, with `ema` the moving average Hermes publishes beside it, which Pyth's contract returns with it:
+/// the bot keeps a price only when both are the signed update's (RY-7).
 function parsePrice(entry) {
   return { ...parseOne(entry.price), ema: parseOne(entry.ema_price) };
 }
@@ -68,25 +68,6 @@ export function createHermes({ url, apiKey, fetchImpl = fetch, now = Date.now, r
   }
 
   const query = (ids) => ids.map((id) => `ids[]=${encodeURIComponent(id)}`).join("&");
-
-  /// The update a fill at block time `t + 12` needs: each of `ids`' first update at or after `t`, checked to fall in
-  /// the hub's window [t, t + 11]. Returns the update bytes (0x hex) and the prices it carries, by id.
-  async function at(ids, t, deadline) {
-    const body = await get(`/v2/updates/price/${t}?${query(ids)}&encoding=hex&parsed=true`, deadline);
-    const prices = new Map();
-    for (const entry of body.parsed ?? []) prices.set(key(entry.id), parsePrice(entry));
-    for (const id of ids) {
-      const p = prices.get(key(id));
-      if (!p) throw new HermesError(`Hermes left out ${id}`);
-      if (p.publishTime < t || p.publishTime > t + 11) {
-        throw new HermesError(`Hermes gave ${id} at ${p.publishTime}, outside [${t}, ${t + 11}]`);
-      }
-    }
-    const data = body.binary?.data;
-    if (!Array.isArray(data) || data.length === 0) throw new HermesError("Hermes returned no update data");
-    const updates = data.map((hex) => (hex.startsWith("0x") ? hex : `0x${hex}`));
-    return { updates, prices };
-  }
 
   /// The latest price of each of `ids`, by id, in chunks of 50 to keep each URL short. An id Hermes does not serve is
   /// left out of the map, rather than failing every id asked with it (RX-30): callers treat it as unpriced.
@@ -143,7 +124,7 @@ export function createHermes({ url, apiKey, fetchImpl = fetch, now = Date.now, r
     return verified(prices, updates, ids, chain);
   }
 
-  return { at, latest, latestSigned, verified, trusted, key };
+  return { latest, latestSigned, verified, trusted, key };
 }
 
 export const priceKey = key;

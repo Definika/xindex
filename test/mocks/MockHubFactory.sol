@@ -15,8 +15,8 @@ contract MockHubFactory {
     address public creator;
     address public platform;
 
-    constructor(address pyth) {
-        IMPLEMENTATION = new WeightedHub(pyth, address(new WeightedMath()));
+    constructor() {
+        IMPLEMENTATION = new WeightedHub(address(new WeightedMath()));
     }
 
     function create(IWeightedHub.ComponentInit[] memory inits, IWeightedHub.Config memory cfg)

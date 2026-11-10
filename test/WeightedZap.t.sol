@@ -171,11 +171,11 @@ contract WeightedZapTest is WeightedTest {
     function test_theZapSeesAWeightedRebalance() public {
         _mint(1e18, 0);
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
-        index.startRebalance(0, pyth.liveUpdates(index, 0));
+        index.startRebalance(0);
         (uint256 eta,) = index.pendingRebalance();
         vm.warp(eta + index.AUCTION_DURATION() / 2);
         MockWeightedExecutor executor = new MockWeightedExecutor();
-        executor.execute(index, "", _updates(index, _ids3(), _prices3(4000e8, BTC_PRICE, USD_PRICE)));
+        executor.execute(index, _onWeights(index, _market(2400, BTC_PRICE, USD_PRICE)), "");
         assertEq(index.rebalanceNonce(), 1);
 
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.StaleRebalanceNonce.selector, 0, 1));

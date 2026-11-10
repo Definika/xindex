@@ -8,8 +8,6 @@ names its license in its SPDX-License-Identifier header. The files below are cop
 their own licenses; each names its source and commit in its header.
 
 Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)
-  src/interfaces/pyth/IPyth.sol, IPythEvents.sol, PythStructs.sol
-      Pyth Network's Solidity SDK, Copyright 2025 Pyth Data Association
   keeper/src/interfaces/ITokenBridge.sol
       Wormhole (wormhole-foundation/wormhole)
   keeper/restock/solana/idl/message_transmitter_v2.json, token_messenger_minter_v2.json

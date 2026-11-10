@@ -148,10 +148,10 @@ contract WeightedHubFeesTest is WeightedTest {
     }
 
     function test_initializeChecksTheConfig() public {
-        MockHubFactory mock = new MockHubFactory(address(pyth));
+        MockHubFactory mock = new MockHubFactory();
         IWeightedHub.ComponentInit[] memory inits = new IWeightedHub.ComponentInit[](2);
-        inits[0] = IWeightedHub.ComponentInit(address(eth), ETH_UNITS, 5000, ETH_ID, 18);
-        inits[1] = IWeightedHub.ComponentInit(address(btc), BTC_UNITS, 5000, BTC_ID, 8);
+        inits[0] = IWeightedHub.ComponentInit(address(eth), ETH_UNITS, 5000);
+        inits[1] = IWeightedHub.ComponentInit(address(btc), BTC_UNITS, 5000);
 
         IWeightedHub.Config memory cfg = IWeightedHub.Config(100, 26, 0, 0, 0, 7 days);
         vm.expectRevert(IWeightedHub.InvalidConfig.selector);
@@ -280,10 +280,10 @@ contract WeightedHubFeesTest is WeightedTest {
     /// @dev The real factory never answers a zero or trap recipient; the hub still has to mint somewhere, so that no
     ///      recipient can block a mint or an exit: the creator's part to `to`, the platform's to the creator.
     function test_aRecipientThatCouldNotHoldSharesIsReplaced() public {
-        MockHubFactory mock = new MockHubFactory(address(pyth));
+        MockHubFactory mock = new MockHubFactory();
         IWeightedHub.ComponentInit[] memory inits = new IWeightedHub.ComponentInit[](2);
-        inits[0] = IWeightedHub.ComponentInit(address(eth), ETH_UNITS, 5000, ETH_ID, 18);
-        inits[1] = IWeightedHub.ComponentInit(address(btc), BTC_UNITS, 5000, BTC_ID, 8);
+        inits[0] = IWeightedHub.ComponentInit(address(eth), ETH_UNITS, 5000);
+        inits[1] = IWeightedHub.ComponentInit(address(btc), BTC_UNITS, 5000);
         WeightedHub idx = mock.create(inits, IWeightedHub.Config(100, 25, 5000, 0, 0, 7 days));
         uint256 feeShares = _gross(1e18) - 1e18;
         uint256 platformShares = _platformPart(feeShares);
@@ -529,19 +529,17 @@ contract WeightedHubFeesTest is WeightedTest {
         vm.warp(monthly.lastRebalance() + 7 days);
         assertTrue(index.canStartRebalance(), "the weekly index is ready");
         assertFalse(monthly.canStartRebalance(), "the monthly one is not");
-        bytes[] memory live = pyth.liveUpdates(monthly, 0);
         vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalanceTooSoon.selector, earliest));
-        monthly.startRebalance(0, live);
-        bytes[] memory live2 = pyth.liveUpdates(monthly, 0);
+        monthly.startRebalance(0);
         vm.prank(guardian);
         vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalanceTooSoon.selector, earliest));
-        monthly.startRebalance(0, live2);
+        monthly.startRebalance(0);
 
         vm.warp(earliest - 1);
         assertFalse(monthly.canStartRebalance());
         vm.warp(earliest);
         assertTrue(monthly.canStartRebalance());
-        monthly.startRebalance(0, pyth.liveUpdates(monthly, 0));
+        monthly.startRebalance(0);
         (uint256 eta,) = monthly.pendingRebalance();
         assertEq(eta, earliest + monthly.REBALANCE_DELAY());
     }
@@ -720,6 +718,32 @@ contract WeightedHubFeesTest is WeightedTest {
         _assertBacked(streaming);
     }
 
+    /// @dev The yearly rate is a ceiling. Each accrual charges the rate for the time since the last one, on what is
+    ///      left, and anyone may accrue, so a year of daily accruals takes less than one accrual at its end: at the
+    ///      600 basis points of both caps, 5.82% of the index against 6.00%. Neither takes more than the rate, and
+    ///      the holders keep the difference (the cold review of 2026-11-10).
+    function test_theStreamingRateIsACeilingThatFrequentAccrualsUndercut() public {
+        WeightedHub streaming = _streamingIndex();
+        _issueWith(streaming, alice, 1000e18, address(0));
+        uint256 snapshot = vm.snapshotState();
+
+        vm.warp(block.timestamp + 365 days);
+        streaming.accrueFees();
+        (, uint256 once) = streaming.pendingStreamingFee();
+        assertEq(once, 0.94e18, "one accrual after a year: the rate itself, 6%");
+
+        vm.revertToState(snapshot);
+        for (uint256 day = 0; day < 365; ++day) {
+            vm.warp(block.timestamp + 1 days);
+            vm.prank(stranger);
+            streaming.accrueFees();
+        }
+        (, uint256 daily) = streaming.pendingStreamingFee();
+        assertGt(daily, once, "daily accruals leave the holders more");
+        assertApproxEqAbs(daily, 0.9418e18, 0.0001e18, "e^-0.06 of every share's units, 5.82% taken");
+        _assertBacked(streaming);
+    }
+
     /// @dev A redeem accrues before it burns: the burner is paid at the scale its preview showed.
     function test_aRedeemAccruesFirst() public {
         WeightedHub streaming = _streamingIndex();
@@ -759,24 +783,25 @@ contract WeightedHubFeesTest is WeightedTest {
         _openMidAuction(streaming);
         (uint256 feeShares, uint256 scale) = _expectedAccrual(supply, 1e18, block.timestamp - since);
         assertGt(feeShares, 0);
-        (uint256 mu, uint256[] memory previewUnits, uint256[] memory out, uint256[] memory in_) =
-            streaming.previewRebalance(_structs3(2500e8, BTC_PRICE, USD_PRICE));
-        assertEq(mu, 1e18);
+        uint256[] memory previewUnits = _onWeights(streaming, _market(2500, BTC_PRICE, USD_PRICE));
+        (uint256 bar,, uint256[] memory out, uint256[] memory in_) = streaming.previewRebalance(previewUnits);
+        assertEq(bar, streaming.currentBar());
 
         MockWeightedExecutor executor = new MockWeightedExecutor();
         vm.expectEmit(address(streaming));
         emit IWeightedHub.StreamingFeeAccrued(feeShares, scale);
-        executor.execute(streaming, "", _updates(streaming, _ids3(), _prices3(2500e8, BTC_PRICE, USD_PRICE)));
+        executor.execute(streaming, previewUnits, "");
         assertEq(executor.lastAmountsOut(), out);
         assertEq(executor.lastAmountsIn(), in_);
         assertEq(streaming.totalSupply(), supply + feeShares);
         _assertSettledAtScale(streaming, previewUnits, units, scale, out[0]);
     }
 
-    /// @dev Starts a rebalance as soon as the interval allows and warps to the auction's midpoint, where μ is one.
+    /// @dev Starts a rebalance as soon as the interval allows and warps to the auction's midpoint, where the bar has
+    ///      halved ten times.
     function _openMidAuction(WeightedHub idx) internal {
         vm.warp(idx.lastRebalance() + 7 days);
-        idx.startRebalance(0, pyth.liveUpdates(idx, 0));
+        idx.startRebalance(0);
         (uint256 eta,) = idx.pendingRebalance();
         vm.warp(eta + idx.AUCTION_DURATION() / 2);
     }
@@ -891,12 +916,8 @@ contract WeightedHubFeesTest is WeightedTest {
         uint256 btcHeld = btc.balanceOf(address(streaming));
         (, uint256[] memory before) = streaming.components();
 
-        bytes32[] memory ids = new bytes32[](2);
-        (ids[0], ids[1]) = (ETH_ID, USD_ID);
-        int64[] memory prices = new int64[](2);
-        (prices[0], prices[1]) = (2500e8, USD_PRICE);
         MockWeightedExecutor executor = new MockWeightedExecutor();
-        executor.execute(streaming, "", _updates(streaming, ids, prices));
+        executor.execute(streaming, _onWeights(streaming, _market(2500, BTC_PRICE, USD_PRICE), 1 << 1), "");
 
         assertEq(executor.lastAmountsOut()[1], 0);
         assertEq(executor.lastAmountsIn()[1], 0);
@@ -917,9 +938,9 @@ contract WeightedHubFeesTest is WeightedTest {
         WeightedHub streaming = _xs2Index();
         _xs2MintThenOpenMidAuction(streaming, 0);
         (, uint256 scale) = streaming.pendingStreamingFee();
-        (, uint256[] memory recorded,,) = streaming.previewRebalance(_structs3(2500e8, BTC_PRICE, USD_PRICE));
+        uint256[] memory recorded = _onWeights(streaming, _market(2500, BTC_PRICE, USD_PRICE));
         MockWeightedExecutor executor = new MockWeightedExecutor();
-        executor.execute(streaming, "", _updates(streaming, _ids3(), _prices3(2500e8, BTC_PRICE, USD_PRICE)));
+        executor.execute(streaming, recorded, "");
         for (uint256 i = 0; i < 3; ++i) {
             assertTrue(executor.lastAmountsOut()[i] != 0 || executor.lastAmountsIn()[i] != 0, "every leg moved");
         }
@@ -950,9 +971,8 @@ contract WeightedHubFeesTest is WeightedTest {
     function _xs2MintThenOpenMidAuction(WeightedHub idx, uint256 keepMask) internal {
         _issueWith(idx, alice, 1e24, address(0));
         vm.warp(idx.lastRebalance() + 7 days);
-        bytes[] memory live = pyth.liveUpdates(idx, keepMask);
         if (keepMask != 0) vm.prank(guardian);
-        idx.startRebalance(keepMask, live);
+        idx.startRebalance(keepMask);
         (uint256 eta,) = idx.pendingRebalance();
         vm.warp(eta + idx.AUCTION_DURATION() / 2);
     }
@@ -1084,10 +1104,10 @@ contract WeightedHubFeesTest is WeightedTest {
     /// @dev The accrual's fallbacks are the mint's: a creator that could not hold shares hands its part to the
     ///      caller, and a platform that could not hands its part to the creator.
     function test_anAccrualsCreatorFallbackIsTheCaller() public {
-        MockHubFactory mock = new MockHubFactory(address(pyth));
+        MockHubFactory mock = new MockHubFactory();
         IWeightedHub.ComponentInit[] memory inits = new IWeightedHub.ComponentInit[](2);
-        inits[0] = IWeightedHub.ComponentInit(address(eth), ETH_UNITS, 5000, ETH_ID, 18);
-        inits[1] = IWeightedHub.ComponentInit(address(btc), BTC_UNITS, 5000, BTC_ID, 8);
+        inits[0] = IWeightedHub.ComponentInit(address(eth), ETH_UNITS, 5000);
+        inits[1] = IWeightedHub.ComponentInit(address(btc), BTC_UNITS, 5000);
         WeightedHub idx = mock.create(inits, IWeightedHub.Config(0, 0, 0, 500, 100, 7 days));
         mock.set(true, creator, platform);
         _issueWith(idx, alice, 1e18, address(0));

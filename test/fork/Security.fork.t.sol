@@ -129,13 +129,13 @@ contract SecurityForkTest is Test {
                 )
             );
         }
-        factory = new WeightedIndexFactory(address(this), address(0), A.PYTH);
+        factory = new WeightedIndexFactory(address(this), address(0));
+        factory.setApprovedCreator(address(this), true);
         zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), IWETH9(A.WETH));
 
-        // Nothing here asks for a price, so each token is listed under a price id of its own making.
-        factory.proposeListing(A.WBTC, keccak256(abi.encode(A.WBTC)));
-        factory.proposeListing(A.WETH, keccak256(abi.encode(A.WETH)));
-        factory.proposeListing(A.LINK, keccak256(abi.encode(A.LINK)));
+        factory.proposeListing(A.WBTC);
+        factory.proposeListing(A.WETH);
+        factory.proposeListing(A.LINK);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(A.WBTC);
         factory.executeListing(A.WETH);

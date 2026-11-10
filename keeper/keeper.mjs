@@ -2,21 +2,27 @@
 // Xindex keeper: starts and fills `WeightedHub` auctions through its own `KeeperExecutor`. It holds no role in the
 // protocol (starting and filling are open to anyone); its key is a dedicated hot key that can only fill. See README.md.
 //
+// No contract reads a price (since 2026-11-10): a fill names the units the index settles at, and the index accepts them
+// when a weighted gain in units clears the auction's bar, which falls with time. The keeper prices its own trades, off
+// chain, at Pyth's prices from Hermes, each confirmed by Pyth's contract before anything is valued at it.
+//
 // Every block L, with T = L's timestamp + 12, the one block a fill sent now can land in:
-//   1. each open auction is simulated exactly as block L+1 would run it (eth_call with block overrides), with Hermes'
-//      update for second t_L, the routes quoted for each leg, and the executor's stock;
+//   1. for each open auction the bot names, at its prices, the units that clear the bar at T while leaving the index
+//      the least (bot/units.mjs), and simulates its executor's fill of them exactly as block L+1 would run it (eth_call
+//      with block overrides), with the routes quoted for each leg and the executor's stock;
 //   2. the most profitable fill whose profit, after gas and valued stock, reaches MIN_PROFIT_USD is sent with a USDC
 //      floor at least what that decision needs, a supply bound, and a deadline of T; an auction whose fills revert
-//      on chain is backed off, and left after MAX_REVERTED_FILLS;
-//   3. every 25 blocks, an index anyone may restart is started only when a simulation of its auction at its best
-//      price (μ = MU_MIN) would pay;
+//      on chain is backed off, and left after MAX_REVERTED_FILLS. The bar falls, so a fill that does not pay yet pays
+//      later if the index is far enough from its weights, and the first keeper it pays fills it;
+//   3. every 25 blocks, an index anyone may restart is started only when a simulation of its auction at its last
+//      second, where the bar is lowest, would pay;
 //   4. with FILL_REQUESTS on and nothing else to send, each open `MintRequests` request is simulated the same way and
 //      the most profitable fill sent: a mint request at exactly its limit in shares, a redeem request at exactly its
 //      limit in its stablecoin.
 
 import { renameSync, writeFileSync } from "node:fs";
-import { encodeFunctionData, getAddress, zeroAddress } from "viem";
-import { FRESH_SECONDS, HUB_SLOTS, MAX_CONF_BPS, SESSION_IDS, SHARE_PRICED_IDS, TX_GAS_CAP, US_EQUITY_SCHEDULE, parseConfig } from "./bot/config.mjs";
+import { encodeFunctionData, getAddress } from "viem";
+import { FRESH_SECONDS, HUB_SLOTS, MAX_CONF_BPS, SHARE_PRICED_IDS, TX_GAS_CAP, parseConfig } from "./bot/config.mjs";
 import { MAX_REVERTED_FILLS, MAX_REVERTED_REQUEST_FILLS, revertedFills } from "./bot/backoff.mjs";
 import { ABI, createChain, revertReason } from "./bot/chain.mjs";
 import { createHermes, priceKey } from "./bot/hermes.mjs";
@@ -25,6 +31,7 @@ import { createNeeds } from "./bot/needs.mjs";
 import { TxTracker } from "./bot/nonce.mjs";
 import { createRequestFiller } from "./bot/requests.mjs";
 import { createRoutes, marketOf } from "./bot/routes.mjs";
+import * as U from "./bot/units.mjs";
 
 const START_EVERY_BLOCKS = 25n;
 const START_COOLDOWN = 86_400n; // a start of ours that nobody filled is not repeated for a day
@@ -56,17 +63,17 @@ const needs = cfg.needsFile
   : createNeeds({ write: () => {} });
 const isUsdc = (token) => token.toLowerCase() === cfg.chain.usdc.toLowerCase();
 const sharePriced = (id) => SHARE_PRICED_IDS.includes(id.toLowerCase());
+const kept = (keepMask, i) => ((keepMask >> BigInt(i)) & 1n) === 1n;
 const tokensOf = (short) => short.map((s) => s.token).join(", ");
 let subsidies = []; // {at, usd}: fills sent below zero profit, for SUBSIDY_BUDGET_USD's rolling day (RX-16)
 let startKeys = []; // route keys of the last start round, kept until the next (RX-34)
 
-const statics = new Map(); // index -> {tokens, ids, decimals}
+const statics = new Map(); // index -> {tokens, ids, decimals, weights}: `ids` null where the keeper has no price id
 const started = new Map(); // index -> timestamp of a start of ours not yet filled
 const said = new Map(); // index -> the last reason logged, so a waiting index is not logged every block
 const worth = new Map(); // `index:proposal` -> {supply, tvl, block}: an open auction's index, valued every 25 blocks
 let setup;
 let filler = null;
-let relay = null; // the factory's guardian when it is a GuardianRelay, whose authorized starts anyone sends (RZ-26)
 let indexes = [];
 let lastRefresh = null;
 let lastStartCheck = null;
@@ -80,14 +87,30 @@ function say(index, reason) {
   log(index, reason);
 }
 
+/// What never changes about `index`: its tokens, each one's decimals, read from the token, and the Pyth id the keeper
+/// values it at, null for a coin outside its catalogue, which it leaves alone.
 async function staticsOf(index, blockNumber) {
   if (!statics.has(index)) {
     const tokens = await chain.read(index, ABI.hub, "componentTokens", [], blockNumber);
-    const [, ids, decimals] = await chain.read(index, ABI.hub, "componentTerms", [], blockNumber);
-    statics.set(index, { tokens, ids, decimals });
+    const decimals = await chain.multicall(
+      tokens.map((t) => ({ address: t, abi: ABI.erc20, functionName: "decimals" })),
+      blockNumber,
+    );
+    if (decimals.some((r) => r.status !== "success")) throw new Error("a decimals read failed");
+    const ids = tokens.map((t) => cfg.priceIds[t.toLowerCase()] ?? null);
+    statics.set(index, { tokens, ids, decimals: decimals.map((r) => Number(r.result)), weights: null });
   }
   return statics.get(index);
 }
+
+/// The weights of `index`, fixed at its creation, in basis points.
+async function weightsOf(index, st, blockNumber) {
+  if (st.weights === null) st.weights = await chain.read(index, ABI.hub, "componentWeights", [], blockNumber);
+  return st.weights;
+}
+
+/// The Hermes prices of `ids`, with none for a coin without an id.
+const pricesFrom = (latest, ids) => ids.map((id) => (id ? latest.get(priceKey(id)) : undefined));
 
 async function refresh(L) {
   if (cfg.indexes) indexes = cfg.indexes.map((a) => getAddress(a));
@@ -109,65 +132,51 @@ async function refresh(L) {
   const eth = await hermes.trusted([cfg.chain.ethPriceId], Date.now() + HERMES_MS, pythChain(L));
   const p = eth.get(priceKey(cfg.chain.ethPriceId));
   ethUsd = M.freshPrice(p, L.timestamp, FRESH_SECONDS, MAX_CONF_BPS) ? M.priceUsd(p) : null;
-  relay = await guardianRelay(L);
   lastRefresh = L.number;
-}
-
-/// The factory's guardian if it is a GuardianRelay, which answers CONTROLLER(), or null: a guardian that is a key or a
-/// Safe of its own sends its starts itself (RZ-26).
-async function guardianRelay(L) {
-  const guardian = await chain.read(cfg.factory, ABI.factory, "guardian", [], L.number);
-  if (guardian === zeroAddress) return null;
-  try {
-    await chain.read(guardian, ABI.relay, "CONTROLLER", [], L.number);
-    return guardian;
-  } catch {
-    return null;
-  }
 }
 
 /// Pyth's contract on Ethereum as of block L, for {hermes.verified} and {hermes.trusted}.
 const pythChain = (L) => ({ read: chain.read, call: chain.call, pyth: setup.pyth, abi: ABI.pyth, blockNumber: L.number });
 
-/// The auction of `index` as block L+1 would settle it, at Hermes' update for second t_L. `eta`, when given, is
-/// written into the hub for the call, to see an auction that is not open yet. `maxSupply` is the most shares the fill
-/// accepts: the supply now, plus the streaming fee an accrual would mint by T, which leaves the settlement unchanged,
-/// plus SUPPLY_TOLERANCE_BPS (XS-4).
+/// The keeper's price of each leg of `st` it may move, as Pyth's {price, expo}, and null for the rest: a kept leg, a
+/// coin without an id, a share-priced Ondo leg, which the bot cannot value (RX-2), and a price that is not Hermes'
+/// signed one as Pyth's contract parses it, or is stale or wide (RX-1, RX-9, RY-7).
+async function pricesOf(st, L, keepMask) {
+  const wanted = st.ids.map((id, i) => (id && !sharePriced(id) && !kept(keepMask, i) ? id : null));
+  const ids = wanted.filter(Boolean);
+  const trusted = ids.length ? await hermes.trusted(ids, Date.now() + HERMES_MS, pythChain(L)) : new Map();
+  return wanted.map((id) => {
+    const p = id ? trusted.get(priceKey(id)) : null;
+    return p && M.freshPrice(p, L.timestamp, FRESH_SECONDS, MAX_CONF_BPS) ? p : null;
+  });
+}
+
+/// The fill of `index` the keeper would send for block L+1: the units it names at its own prices to clear the bar
+/// then, and the settlement the hub previews for them. `eta`, when given, is written into the hub for the call, to see
+/// an auction that is not open yet. `maxSupply` is the most shares the fill accepts: the supply now, plus the streaming
+/// fee an accrual would mint by T, which leaves the settlement unchanged, plus SUPPLY_TOLERANCE_BPS (XS-4).
 async function preview(index, st, L, keepMask, eta) {
   const T = L.timestamp + 12n;
-  const moving = st.ids.map((_, i) => i).filter((i) => ((keepMask >> BigInt(i)) & 1n) === 0n);
-  const { updates, prices } = await hermes.at(
-    moving.map((i) => st.ids[i]),
-    Number(L.timestamp),
-    Date.now() + HERMES_MS,
-  );
-  // Every price the fill is valued at must be the signed update's, as Pyth's contract parses it in the hub's window:
-  // the simulation sends the bytes, but the preview, the routes' fair values and the kept coins read these (RY-7).
-  const ids = moving.map((i) => st.ids[i]);
-  const trusted = await hermes.verified(prices, updates, ids, {
-    ...pythChain(L),
-    minPublishTime: L.timestamp,
-    maxPublishTime: L.timestamp + 11n,
-  });
-  for (const id of ids) if (!trusted.has(priceKey(id))) throw new Error(`Hermes' price of ${id} is not its signed update's`);
-  const priceOf = (i) => prices.get(priceKey(st.ids[i]));
-  // One Pyth feed per component, each price with its moving average, which the preview checks as the fill does (AU-2).
-  const struct = (p) => ({ price: p.price, conf: p.conf, expo: p.expo, publishTime: BigInt(p.publishTime) });
-  const none = { price: 0n, conf: 0n, expo: 0, publishTime: 0n };
-  const feeds = st.ids.map((id, i) => {
-    if (!moving.includes(i)) return { id, price: none, emaPrice: none };
-    const p = priceOf(i);
-    return { id, price: struct(p), emaPrice: struct(p.ema) };
-  });
   const over = { block: { number: L.number + 1n, time: T } };
   if (eta !== undefined) over.state = { [index]: { [HUB_SLOTS.eta]: eta, [HUB_SLOTS.keepMask]: keepMask } };
-  const at = (o) =>
-    chain.call({ to: index, abi: ABI.hub, functionName: "previewRebalance", args: [feeds] }, L.number, o);
-  const [mu, , out, need] = await at(over);
+  const [units, weights, bar, prices] = await Promise.all([
+    chain.read(index, ABI.hub, "recordedUnits", [], L.number),
+    weightsOf(index, st, L.number),
+    chain.call({ to: index, abi: ABI.hub, functionName: "currentBar", args: [] }, L.number, over),
+    pricesOf(st, L, keepMask),
+  ]);
+  if (bar === 0n) throw new Error("no auction is open at the next block");
+  // Dollars per raw unit: only their ratios decide the units named.
+  const perUnit = prices.map((p, i) => (p ? M.priceUsd(p) / 10 ** st.decimals[i] : null));
+  const named = U.nameUnits({ units, weights, keepMask, prices: perUnit, bar, costBps: cfg.tradeCostBps });
+  if (!named) throw new Error("no units the keeper can price clear the bar");
+  const at = { to: index, abi: ABI.hub, functionName: "previewRebalance", args: [named.newUnits] };
+  const [, gain, out, need] = await chain.call(at, L.number, over);
+  const moving = out.map((_, i) => i).filter((i) => out[i] > 0n || need[i] > 0n);
   const supply = await chain.read(index, ABI.hub, "totalSupply", [], L.number);
   const [feeShares] = await chain.call({ to: index, abi: ABI.hub, functionName: "pendingStreamingFee", args: [] }, L.number, over);
   const maxSupply = M.withTolerance(supply + feeShares, cfg.supplyToleranceBps);
-  return { T, moving, updates, priceOf, over, mu, out, in: need, maxSupply, again: at };
+  return { T, moving, newUnits: named.newUnits, bar, gain, priceOf: (i) => prices[i], over, out, in: need, maxSupply };
 }
 
 /// The routes, stock change and routed volume of a settlement, or `short` naming coins the executor can neither buy
@@ -189,9 +198,9 @@ async function legs(index, st, sim, maxIn, L, key) {
   const routeOf = st.tokens.map(() => "0x");
   const short = [];
   const stocked = []; // every leg stock serves, for the restock's board (RZ-3)
-  const unsafe = [];
   let inventoryUsd = 0;
   let routedUsd = 0;
+  // Every moving leg has a price: the bot names new units only for the legs it can value.
   for (const i of sim.moving) {
     const token = st.tokens[i];
     const out = sim.out[i];
@@ -200,9 +209,6 @@ async function legs(index, st, sim, maxIn, L, key) {
     const h = M.min(held[i].result, allowed[i].result);
     const p = sim.priceOf(i);
     const dec = st.decimals[i];
-    const shared = sharePriced(st.ids[i]);
-    // Share-priced Ondo stock is worth sValue shares, which the bot cannot read: it delivers none (RX-2).
-    if (M.deliversSharePricedStock({ need: maxIn[i], held: h, sharePriced: shared })) unsafe.push(token);
     let route = null;
     if (out > 0n) {
       route = await routes.best({ key, token, side: "sell", amount: out, fairUsd: M.amountUsd(out, dec, p), blockNumber: L.number });
@@ -226,21 +232,20 @@ async function legs(index, st, sim, maxIn, L, key) {
     if (route) routeOf[i] = route;
     // A kept coin counts at no more than its best quote (XS-5).
     const quoteUsdc = out > 0n ? routes.quoteOf({ key, token, side: "sell", amount: out }) : null;
-    inventoryUsd += M.stockChangeUsd({ out, in: need, held: h, routed: route !== null, decimals: dec, price: p, quoteUsdc, sharePriced: shared });
+    inventoryUsd += M.stockChangeUsd({ out, in: need, held: h, routed: route !== null, decimals: dec, price: p, quoteUsdc });
   }
-  return { routes: routeOf, inventoryUsd, routedVolumeUsdc: M.usdToUsdcCeil(routedUsd), short, stocked, unsafe };
+  return { routes: routeOf, inventoryUsd, routedVolumeUsdc: M.usdToUsdcCeil(routedUsd), short, stocked };
 }
 
 /// Simulates the executor's fill of `sim` and prices it: profit after gas, and the transaction that would send it.
 async function priceFill(index, sim, leg, maxIn, L) {
   if (ethUsd === null) return { skip: "no ETH price to value gas" };
-  const fee = await chain.read(setup.pyth, ABI.pyth, "getUpdateFee", [sim.updates], L.number);
-  const args = [index, sim.updates, leg.routes, maxIn, sim.maxSupply, INT256_MIN, sim.T];
+  const args = [index, sim.newUnits, leg.routes, maxIn, sim.maxSupply, INT256_MIN, sim.T];
   let usdcDelta;
   let inner;
   try {
     [usdcDelta, inner] = await chain.call(
-      { to: cfg.executor, abi: ABI.executor, functionName: "fill", args, value: fee },
+      { to: cfg.executor, abi: ABI.executor, functionName: "fill", args },
       L.number,
       sim.over,
     );
@@ -252,8 +257,7 @@ async function priceFill(index, sim, leg, maxIn, L) {
   const gas = M.min(M.gasLimitFor(used), TX_GAS_CAP);
   const nextBase = M.nextBaseFee(L);
   if (nextBase + tip > feeCap) return { skip: `base fee ${M.weiToGwei(nextBase)} gwei above MAX_FEE_GWEI` };
-  // The fee Pyth takes is spent like gas, so it counts against the fill (RX-18).
-  const gasUsd = M.fillCostUsd({ used, nextBase, tip, ethUsd, pythFee: fee });
+  const gasUsd = M.fillCostUsd({ used, nextBase, tip, ethUsd });
   const profit = M.profitUsd({ usdcDelta, inventoryUsd: leg.inventoryUsd, gasUsd });
   const floor = M.usdcFloor({
     simDelta: usdcDelta,
@@ -266,12 +270,12 @@ async function priceFill(index, sim, leg, maxIn, L) {
   const data = encodeFunctionData({
     abi: ABI.executor,
     functionName: "fill",
-    args: [index, sim.updates, leg.routes, maxIn, sim.maxSupply, floor, sim.T],
+    args: [index, sim.newUnits, leg.routes, maxIn, sim.maxSupply, floor, sim.T],
   });
   const tx = {
     to: cfg.executor,
     data,
-    value: fee,
+    value: 0n,
     gas,
     maxFeePerGas: M.min(2n * nextBase + tip, feeCap),
     maxPriorityFeePerGas: tip,
@@ -308,7 +312,8 @@ function subsidyFits(profit, t) {
 
 /// The open auctions to simulate this block (CF-7): each index's supply and worth, read once per auction and again
 /// every 25 blocks with one multicall and one Hermes request for all of them, then M.auctionsToEvaluate. An auction
-/// on an empty or small index costs no Hermes request and no simulation per block.
+/// on an empty or small index costs no Hermes request and no simulation per block. A coin the keeper has no price for
+/// counts as nothing.
 async function worthChecking(open, L) {
   const keyOf = (index) => `${index}:${open.get(index).proposal}`;
   // An auction backed off after fills reverted on chain gives up its check slot (RX-24).
@@ -343,11 +348,11 @@ async function worthChecking(open, L) {
     });
     if (live.length) {
       const ids = new Set();
-      for (const r of live) for (const id of (await staticsOf(r.index, L.number)).ids) ids.add(id);
-      const latest = await hermes.latest([...ids], Date.now() + HERMES_MS);
+      for (const r of live) for (const id of (await staticsOf(r.index, L.number)).ids) if (id) ids.add(id);
+      const latest = ids.size ? await hermes.latest([...ids], Date.now() + HERMES_MS) : new Map();
       for (const r of live) {
         const st = statics.get(r.index);
-        const prices = st.ids.map((id) => latest.get(priceKey(id)));
+        const prices = pricesFrom(latest, st.ids);
         worth.set(keyOf(r.index), { supply: r.supply, tvl: M.tvlUsd({ supply: r.supply, units: r.units, decimals: st.decimals, prices }), block: L.number });
       }
     }
@@ -374,18 +379,17 @@ async function evaluateFill(index, keepMask, proposal, L) {
   const pays = await mayPay(index, st, L, keepMask, leg.stocked, sim);
   needs.report(`${index}:${proposal}`, "fill", pays ? leg.stocked : []);
   if (leg.short.length) return say(index, `restock${pays ? "" : NOT_ASKED}: no route and too little stock of ${tokensOf(leg.short)}`);
-  if (leg.unsafe.length) return say(index, `would deliver share-priced stock of ${leg.unsafe.join(", ")}: set its stock allowance to zero`);
   const priced = await priceFill(index, sim, leg, maxIn, L);
   if (priced.skip) {
     routes.forgetKey(`${index}:${proposal}`); // a simulation that reverts searches its routes again (RX-13)
     return say(index, priced.skip);
   }
-  const mu = Number(sim.mu) / 1e18;
-  if (priced.profit < cfg.minProfitUsd) return say(index, `waiting: profit below ${cfg.minProfitUsd} USD at mu ${mu.toFixed(4)}`);
-  return { index, proposal, mu, ...priced };
+  const bar = Number(sim.bar) / 1e18;
+  if (priced.profit < cfg.minProfitUsd) return say(index, `waiting: profit below ${cfg.minProfitUsd} USD at a bar of ${bar.toFixed(6)}`);
+  return { index, proposal, bar, ...priced };
 }
 
-/// Whether to start `index`: its auction, simulated at its best price, must pay.
+/// Whether to start `index`: its auction, simulated at its last second, where the bar is lowest, must pay.
 async function evaluateStart(index, proposal, L) {
   const st = await staticsOf(index, L.number);
   const T = L.timestamp + 12n;
@@ -395,35 +399,32 @@ async function evaluateStart(index, proposal, L) {
   } catch (error) {
     return say(index, `not starting: ${revertReason(error)}`);
   }
-  // Inventory must cover the most an auction can ask: amounts in at MU_MAX, from an eta of T.
-  const atMuMax = { ...best.over, state: { [index]: { [HUB_SLOTS.eta]: T, [HUB_SLOTS.keepMask]: 0n } } };
-  const [, , , needMax] = await best.again(atMuMax);
-  const maxIn = needMax.map((x) => M.withTolerance(x, cfg.supplyToleranceBps));
+  const maxIn = best.in.map((x) => M.withTolerance(x, cfg.supplyToleranceBps));
   const leg = await legs(index, st, best, maxIn, L, `${index}:${proposal + 1n}`);
   const pays = await mayPay(index, st, L, 0n, leg.stocked, best, best);
   needs.report(`${index}:${proposal + 1n}`, "start", pays ? leg.stocked : []);
   if (leg.short.length) return say(index, `not starting: restock${pays ? "" : NOT_ASKED} ${tokensOf(leg.short)}`);
-  if (leg.unsafe.length) return say(index, `not starting: would deliver share-priced stock of ${leg.unsafe.join(", ")}`);
   const priced = await priceFill(index, best, leg, maxIn, L);
   if (priced.skip) return say(index, `not starting: ${priced.skip}`);
-  // The start is this bot's own transaction: its gas, at the limit it is sent with, and Pyth's fee for its update, the
-  // fill's own (`priced.tx.value`), come off what the fill it opens would pay (RZ-14).
-  const startUsd = M.fillCostUsd({ used: M.startGasLimit(st.ids.length), nextBase: M.nextBaseFee(L), tip, ethUsd, pythFee: priced.tx.value });
+  // The start is this bot's own transaction: its gas, at the limit it is sent with, comes off what the fill it opens
+  // would pay (RZ-14).
+  const startUsd = M.fillCostUsd({ used: M.START_GAS_LIMIT, nextBase: M.nextBaseFee(L), tip, ethUsd });
   const profit = priced.profit - startUsd;
   if (profit < cfg.minProfitUsd) {
     return say(index, `not starting: best case pays ${profit.toFixed(2)} USD after the start's ${startUsd.toFixed(2)}`);
   }
-  return { index, profit, updates: best.updates, T: best.T, feeds: st.ids.length };
+  return { index, profit, T: best.T };
 }
 
-/// Whether the auction of `index` could pay MIN_PROFIT_USD at its best price, μ = MU_MIN, so that the stock its fill
-/// would deliver is worth bringing in (RY-8): M.settlementMarginUsd of the settlement then, at the update's prices.
+/// Whether the auction of `index` could pay MIN_PROFIT_USD at its last second, where the bar is lowest, so that the
+/// stock its fill would deliver is worth bringing in (RY-8): M.settlementMarginUsd of the settlement then, at the
+/// keeper's prices.
 /// `best` is that settlement when already simulated; otherwise it is, with `sim`, the settlement now, as the fallback
 /// should the best case not simulate. Nothing is asked when stock serves no leg.
 async function mayPay(index, st, L, keepMask, stocked, sim, best) {
   if (stocked.length === 0) return false;
   const atBest = best ?? (await preview(index, st, L, keepMask, L.timestamp + 12n - setup.duration).catch(() => sim));
-  const prices = st.ids.map((_, i) => (atBest.moving.includes(i) ? atBest.priceOf(i) : null));
+  const prices = st.ids.map((_, i) => atBest.priceOf(i));
   return M.settlementMarginUsd({ out: atBest.out, need: atBest.in, decimals: st.decimals, prices }) >= cfg.minProfitUsd;
 }
 
@@ -452,30 +453,12 @@ async function startChecks(L, open) {
   if (ready.length === 0) return;
 
   const ids = new Set();
-  for (const r of ready) for (const id of (await staticsOf(r.index, L.number)).ids) ids.add(id);
-  const latest = await hermes.latest([...ids], Date.now() + HERMES_MS);
-  const T = L.timestamp + 12n;
+  for (const r of ready) for (const id of (await staticsOf(r.index, L.number)).ids) if (id) ids.add(id);
+  const latest = ids.size ? await hermes.latest([...ids], Date.now() + HERMES_MS) : new Map();
   const worthy = [];
   for (const r of ready) {
     const st = statics.get(r.index);
-    const quiet = st.ids.filter((id) => {
-      const p = latest.get(priceKey(id));
-      return !p || BigInt(p.publishTime) < L.timestamp - FRESH_SECONDS;
-    });
-    if (quiet.length) {
-      say(r.index, `not starting: feed closed or quiet: ${quiet.join(", ")}`);
-      continue;
-    }
-    // An index holding a US-hours stock is started so that μ reaches 1 inside a session, where competition can fill
-    // it; started at any hour, its first fillable block would be the next open, near MU_MIN (RX-3).
-    if (
-      st.ids.some((id) => SESSION_IDS.includes(id.toLowerCase())) &&
-      !M.sessionStartOk(T, setup.delay, setup.duration, US_EQUITY_SCHEDULE)
-    ) {
-      say(r.index, "not starting: its auction's middle would fall outside a US session");
-      continue;
-    }
-    const tvl = M.tvlUsd({ supply: r.supply, units: r.units, decimals: st.decimals, prices: st.ids.map((id) => latest.get(priceKey(id))) });
+    const tvl = M.tvlUsd({ supply: r.supply, units: r.units, decimals: st.decimals, prices: pricesFrom(latest, st.ids) });
     if (tvl < cfg.minTvlUsd) {
       say(r.index, `not starting: worth ${tvl.toFixed(0)} USD, below MIN_TVL_USD`);
       continue;
@@ -492,17 +475,16 @@ async function startChecks(L, open) {
   );
   const go = verdicts.filter(Boolean).sort((a, b) => b.profit - a.profit)[0];
   if (!go) return;
-  // A start reads every moving feed in its block's window, as a fill does (RX-3): it carries the update the start
-  // check priced it at, for block L+1, with Pyth's fee for it, and is checked at that block with the limit it is sent with.
-  const fee = await chain.read(setup.pyth, ABI.pyth, "getUpdateFee", [go.updates], L.number);
-  const data = encodeFunctionData({ abi: ABI.hub, functionName: "startRebalance", args: [0n, go.updates] });
+  // A start is a plain call: it reads no feed and takes no ether. It is checked at block L+1 with the limit it is sent
+  // with.
+  const data = encodeFunctionData({ abi: ABI.hub, functionName: "startRebalance", args: [0n] });
   const nextBase = M.nextBaseFee(L);
   if (nextBase + tip > feeCap) return;
   const tx = {
     to: go.index,
     data,
-    value: fee,
-    gas: M.startGasLimit(go.feeds),
+    value: 0n,
+    gas: M.START_GAS_LIMIT,
     maxFeePerGas: M.min(2n * nextBase + tip, feeCap),
     maxPriorityFeePerGas: tip,
   };
@@ -510,63 +492,14 @@ async function startChecks(L, open) {
     say(go.index, "not starting: the start would not run within its gas limit in the next block");
     return;
   }
-  // Its update is for block L+1 alone: sent once the head has moved on, it would revert in whatever block it landed.
-  // The start checks then run again at the next block, not START_EVERY_BLOCKS later.
+  // The start was priced for block L+1: once the head has moved on, the checks run again at the next block rather
+  // than START_EVERY_BLOCKS later.
   if ((await chain.blockNumber()) !== L.number) {
     lastStartCheck = null;
     return log(go.index, "block passed before sending; next block");
   }
   log(go.index, `starting: best case pays ${go.profit.toFixed(2)} USD`);
   await tracker.send(tx, { label: `start ${go.index}`, targetBlock: Number(L.number) + 1 });
-}
-
-/// Sends a start the guardian's Safe authorized on its relay, if one is live (RZ-26). The Safe cannot land a start's
-/// update, valid for one slot, so anyone may send what it authorized, once: this bot does, at the first block where it
-/// runs, with Hermes' update for that block's second for every feed the keep mask moves and Pyth's fee for it. It
-/// weighs no profit: the Safe decided. The authorizations are read every block, and the start is checked at block L+1
-/// with the limit it is sent with.
-async function relayStarts(L) {
-  if (!relay || indexes.length === 0) return false;
-  const T = L.timestamp + 12n;
-  const reads = await chain.multicall(
-    indexes.map((index) => ({ address: relay, abi: ABI.relay, functionName: "authorizationOf", args: [index] })),
-    L.number,
-  );
-  for (const [index, { keepMask }] of M.liveAuthorizations(indexes, reads, T)) {
-    const st = await staticsOf(index, L.number);
-    const moving = st.ids.filter((_, i) => ((keepMask >> BigInt(i)) & 1n) === 0n);
-    let updates;
-    try {
-      ({ updates } = await hermes.at(moving, Number(L.timestamp), Date.now() + HERMES_MS));
-    } catch (error) {
-      say(index, `the guardian's start waits for Hermes: ${revertReason(error)}`);
-      continue;
-    }
-    const fee = await chain.read(setup.pyth, ABI.pyth, "getUpdateFee", [updates], L.number);
-    const nextBase = M.nextBaseFee(L);
-    if (nextBase + tip > feeCap) return false;
-    const tx = {
-      to: relay,
-      data: encodeFunctionData({ abi: ABI.relay, functionName: "start", args: [index, updates] }),
-      value: fee,
-      gas: M.relayStartGasLimit(moving.length),
-      maxFeePerGas: M.min(2n * nextBase + tip, feeCap),
-      maxPriorityFeePerGas: tip,
-    };
-    if (!(await fitsItsGas(tx, L, { block: { number: L.number + 1n, time: T } }))) {
-      say(index, `the guardian's start, keeping ${keepMask}, would not run in the next block`);
-      continue;
-    }
-    // Its update is for block L+1 alone, as an own start's.
-    if ((await chain.blockNumber()) !== L.number) {
-      log(index, "block passed before sending the guardian's start; next block");
-      return true;
-    }
-    log(index, `sending the start the guardian authorized, keeping ${keepMask}`);
-    await tracker.send(tx, { label: `relaystart ${index}`, targetBlock: Number(L.number) + 1 });
-    return true;
-  }
-  return false;
 }
 
 async function onBlock(L) {
@@ -576,7 +509,6 @@ async function onBlock(L) {
     const [kind, index, proposal] = done.label.split(" ");
     const ok = done.receipt?.status === "success" && !done.replaced;
     if (kind === "start" && ok) started.set(index, L.timestamp);
-    if (kind === "relaystart") log(index, ok ? "the guardian's start landed" : "the guardian's start did not land; trying again");
     if (kind === "fill" && ok) {
       started.delete(index);
       said.delete(index);
@@ -645,11 +577,10 @@ async function onBlock(L) {
   } else if (best) {
     if ((await chain.blockNumber()) !== L.number) return log(best.index, "block passed before sending; next block");
     if (best.profit < 0) subsidies.push({ at: L.timestamp, usd: -best.profit });
-    log(best.index, `filling at mu ${best.mu.toFixed(4)}: profit ${best.profit.toFixed(2)} USD (float ${(Number(best.usdcDelta) / 1e6).toFixed(2)}, stock ${best.inventoryUsd.toFixed(2)}, gas ${best.gasUsd.toFixed(2)})`);
+    log(best.index, `filling at a bar of ${best.bar.toFixed(6)}: profit ${best.profit.toFixed(2)} USD (float ${(Number(best.usdcDelta) / 1e6).toFixed(2)}, stock ${best.inventoryUsd.toFixed(2)}, gas ${best.gasUsd.toFixed(2)})`);
     await tracker.send(best.tx, { label: `fill ${best.index} ${best.proposal}`, targetBlock: Number(L.number) + 1 });
     return;
   }
-  if (await relayStarts(L)) return;
   if (cfg.fillAuctions && (lastStartCheck === null || L.number - lastStartCheck >= START_EVERY_BLOCKS)) {
     lastStartCheck = L.number;
     await startChecks(L, open);

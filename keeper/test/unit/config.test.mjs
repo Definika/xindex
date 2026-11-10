@@ -97,19 +97,41 @@ test("INDEXES is lowercased and deduplicated", () => {
   assert.deepEqual(c.indexes, [a.toLowerCase()]);
 });
 
-test("RX-2, RX-3: the share-priced and session-limited ids are PythIds.sol's", async () => {
-  const { SESSION_IDS, SHARE_PRICED_IDS } = await import("../../bot/config.mjs");
+test("RX-2: the share-priced ids are PythIds.sol's", async () => {
+  const { SHARE_PRICED_IDS } = await import("../../bot/config.mjs");
   const { readFileSync } = await import("node:fs");
   const source = readFileSync(new URL("../../../script/PythIds.sol", import.meta.url), "utf8");
-  const idsOf = (pattern) =>
-    [...source.matchAll(new RegExp(`\\((${pattern})[^)]*\\)[^\\n]*\\n\\s*bytes32 internal constant \\w+ = (0x[0-9a-f]{64})`, "g"))].map((m) => m[2]);
-  const share = idsOf("Equity\\.(?:US|Index)\\.");
-  const us = idsOf("Equity\\.US\\.");
+  const share = [...source.matchAll(/\((Equity\.(?:US|Index)\.)[^)]*\)[^\n]*\n\s*bytes32 internal constant \w+ = (0x[0-9a-f]{64})/g)].map((m) => m[2]);
   assert.equal(share.length, 12);
-  assert.equal(us.length, 6);
   assert.deepEqual([...SHARE_PRICED_IDS].sort(), share.sort());
-  // Pyth's catalogue gives all twelve the regular-hours schedule, the six named 24/7 included (RX-31).
-  assert.deepEqual([...SESSION_IDS].sort(), share.sort());
+});
+
+test("the keeper values a chain's own coins, and PRICE_IDS adds to them or changes one", () => {
+  const token = `0x${"Cd".repeat(20)}`;
+  const id = `0x${"ab".repeat(32)}`;
+  const weth = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
+  assert.equal(Object.keys(parseConfig(VALID).priceIds).length, 91);
+  assert.equal(parseConfig(VALID).priceIds[weth], "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace");
+  const c = parseConfig({ ...VALID, PRICE_IDS: `${token}=${id}, ${weth}=${id}` });
+  assert.equal(c.priceIds[token.toLowerCase()], id);
+  assert.equal(c.priceIds[weth], id, "an entry replaces the catalogue's");
+  assert.equal(Object.keys(c.priceIds).length, 92);
+  assert.equal(Object.keys(parseConfig({ ...VALID, CHAIN_ID: "11155111" }).priceIds).length, 4, "Sepolia's test tokens");
+  for (const bad of ["junk", `${token}`, `${token}=0x12`, `${token}=${id}=${id}`, `0x12=${id}`]) {
+    assert.throws(() => parseConfig({ ...VALID, PRICE_IDS: bad }), /PRICE_IDS has an entry that is not token=id/, bad);
+  }
+});
+
+test("TRADE_COST_BPS defaults to 30 and is a count of basis points", () => {
+  assert.equal(parseConfig(VALID).tradeCostBps, 30);
+  assert.equal(parseConfig({ ...VALID, TRADE_COST_BPS: "0" }).tradeCostBps, 0);
+  assert.throws(() => parseConfig({ ...VALID, TRADE_COST_BPS: "10001" }), /TRADE_COST_BPS must be at most 10000/);
+});
+
+test("every chain names Pyth's contract, which the keeper alone asks", async () => {
+  const { CHAINS } = await import("../../bot/config.mjs");
+  assert.equal(CHAINS[1].pyth, "0x4305FB66699C3B2702D4d05CF36551390A4c69C6");
+  assert.equal(CHAINS[11155111].pyth, "0xDd24F84d36BF92C65F92307595335bdFab5Bbd21");
 });
 
 test("RX-16: SUBSIDY_BUDGET_USD defaults to none and cannot be negative", () => {

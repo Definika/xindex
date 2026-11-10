@@ -20,7 +20,7 @@ import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 contract RepoTest is Test {
     /// @dev keccak256 of the files `test_A712_theCiConfigIsPinnedWhole` pins whole: CI's workflow and the two Foundry
     ///      configs it runs. A change to one fails that test, which prints the new hash, until it is pinned here.
-    bytes32 private constant WORKFLOW_HASH = 0x8cc17c8abd60edb7efc229d2a59871655c99267d954663cf6ede2a61d1781d34;
+    bytes32 private constant WORKFLOW_HASH = 0x50b1c23185427003b1c5a3a4af5c772025c7adaeaa2df9950bdb252e40415cef;
     bytes32 private constant FOUNDRY_TOML_HASH = 0xed56be1c9acc47165fe8a9303665b35391357ee7d85ef998f8c0c74761a0c3c4;
     bytes32 private constant KEEPER_FOUNDRY_TOML_HASH =
         0x5426d5180cca7c4ac15d7fb182272a805a3ce19a143d6c6f8c158f61765d7592;
@@ -143,19 +143,18 @@ contract RepoTest is Test {
     ///      keeps the old check green.
     function test_I09_XS17_theKnownLimitationsAreDocumented() public view {
         string memory section = _section(_read("docs/known-limitations.md"), "# Known limitations\n");
-        string[24] memory anchors = [
-            "**A lone executor can take up to 2% of what it trades.**",
-            "**A wrong price costs at most the turnover cap.**",
-            "**Rebalancing needs Pyth's Hermes, and Hermes needs a key.**",
+        string[21] memory anchors = [
+            "**A lone executor keeps the index's distance from its weights.**",
+            "**No contract reads a price.**",
+            "**One fill may not land on the weights.**",
             "**Wrapped legs rest on Wormhole.**",
-            "**A collapsing coin can stop the fills.**",
+            "**A collapsing coin is still bought.**",
             "**An issuer's corporate action is not accounted for.**",
-            "**Price ids are data the owner maintains.**",
-            "**Rebalances clear only when the moving value pays for the fill.**",
+            "**Rebalances clear only when the distance pays for the fill.**",
+            "**A dust index's units can be walked.**",
             "**An exit sent during the auction can be overtaken by the fill.**",
             "**The guardian can stall rebalancing.**",
             "**Issuers can freeze components, and some can burn them.**",
-            "**A start must land in one slot, so the guardian is a relay.**",
             "**A request's surplus goes to the fastest filler.**",
             "**Circle and Tether freeze differently, and `MintRequests` cannot tell.**",
             "**A request is an option held by every filler until it closes.**",
@@ -164,8 +163,6 @@ contract RepoTest is Test {
             "**The basket builder is one custody point.**",
             "**Airdrops, rewards and governance votes**",
             "**A hooked V4 pool cannot be routed through.**",
-            "**`PYTH` cannot be repointed.**",
-            "**An executor that also builds the block sees further.**",
             "**A `tokenIn` that calls back into the zap is unsupported**",
             "**Zap gas grows with components and hops, and nothing on chain bounds it.**"
         ];
@@ -175,7 +172,7 @@ contract RepoTest is Test {
         assertEq(_count(section, "\n- **"), anchors.length, "every limitation is pinned here, and only those");
         assertTrue(_contains(section, "until its own interval, 7 to 91 days"), "a fresh index waits its own interval");
         assertTrue(_contains(section, "restarts only `MIN_REBALANCE_INTERVAL` for a rebalance without a keep mask"));
-        assertTrue(_contains(section, "fill lands at a reopening near `MU_MIN`"), "RX-3, fixed in the hub");
+        assertTrue(_contains(section, "A fair price therefore needs a bidder"), "the oracle-free rebalance's cost");
         assertTrue(_contains(section, "five of seven named guardians suffice to mint"), "RX-6");
     }
 
@@ -344,14 +341,14 @@ contract RepoTest is Test {
     }
 
     /// @dev XA-44: the ABIs the web app decodes with are committed, and CI regenerates them and fails on a diff: the zap,
-    ///      the basket builder, `MintRequests`, v5's weighted factory and index, and the guardian relay (RZ-26), which the
-    ///      keeper reads too. v4's market-cap factory and hub are deleted, and their
-    ///      ABIs with them; so are Stage B's hybrid factory, hybrid index and vault
-    ///      (`audit/2026-10-07-stage-b-retirement.md`). A7-12: the step is pinned whole, so neither a contract left out
-    ///      nor a diff that stops failing passes.
+    ///      the basket builder, `MintRequests`, and the weighted factory and index. v4's market-cap factory and hub are
+    ///      deleted, and their ABIs with them; so are Stage B's hybrid factory, hybrid index and vault
+    ///      (`audit/2026-10-07-stage-b-retirement.md`), and the guardian relay, which went with the price update its
+    ///      starts carried (`audit/2026-11-10-oracle-retirement.md`). A7-12: the step is pinned whole, so neither a
+    ///      contract left out nor a diff that stops failing passes.
     function test_XA44_A712_theAbisAreCommittedAndChecked() public view {
-        string[6] memory contracts =
-            ["IndexZap", "BasketBuilder", "MintRequests", "WeightedIndexFactory", "WeightedHub", "GuardianRelay"];
+        string[5] memory contracts =
+            ["IndexZap", "BasketBuilder", "MintRequests", "WeightedIndexFactory", "WeightedHub"];
         for (uint256 i = 0; i < contracts.length; ++i) {
             assertTrue(
                 _contains(_read(string.concat("abi/", contracts[i], ".json")), '"type": "function"'),
@@ -363,7 +360,7 @@ contract RepoTest is Test {
             string.concat(
                 "        run: |\n",
                 "          set -euo pipefail\n",
-                "          for contract in IndexZap BasketBuilder MintRequests WeightedIndexFactory WeightedHub GuardianRelay; do\n",
+                "          for contract in IndexZap BasketBuilder MintRequests WeightedIndexFactory WeightedHub; do\n",
                 "            forge inspect \"$contract\" abi --json > \"abi/$contract.json\"\n",
                 "          done\n",
                 "          git diff --exit-code abi/\n"
@@ -391,11 +388,12 @@ contract RepoTest is Test {
         assertFalse(_contains(_read("script/ConfigureWeighted.s.sol"), "excluded"), "nor the listing script's entries");
     }
 
-    /// @dev XA-46: the agent instructions have one copy; CLAUDE.md only imports AGENTS.md.
-    function test_XA46_claudeMdOnlyImportsAgentsMd() public view {
+    /// @dev XA-46: the agent instructions have one copy. CLAUDE.md holds the sections itself and imports no other
+    ///      file: an imported file is a second copy to drift, as AGENTS.md was until 2026-11-10.
+    function test_XA46_theAgentInstructionsAreOneFile() public view {
         string memory claude = _read("CLAUDE.md");
-        assertTrue(_contains(claude, "\n@AGENTS.md"), "CLAUDE.md imports AGENTS.md");
-        assertFalse(_contains(claude, "\n## "), "and repeats none of its sections");
+        assertTrue(_contains(claude, "\n## Design rules that must not be broken\n"), "CLAUDE.md holds the rules");
+        assertFalse(_contains(claude, "\n@"), "and imports no other file");
     }
 
     /// @dev XA-58: `--verify` finds its key: `.env.example` names it and foundry.toml uses it for mainnet and Sepolia.
@@ -568,7 +566,7 @@ contract RepoTest is Test {
         return t.length;
     }
 
-    /// @dev A1a-06: modifier logic lives in a private function, as AGENTS.md's conventions say. Each modifier in
+    /// @dev A1a-06: modifier logic lives in a private function, as CLAUDE.md's conventions say. Each modifier in
     ///      `src/` is its helper's call and `_;` alone, and the helper is the file's one function of its name, declared
     ///      `private`: no logic sits in a modifier, and no derived contract can call the check outside it
     ///      (`test_A1a06_aModifierHoldsItsHelperCallAlone` shows what the parse refuses).
@@ -646,7 +644,7 @@ contract RepoTest is Test {
     ///      the file, so the refusal shows where no `.env` exists, as in CI.
     function test_A718_noCheatcodeReadsTheEnvFile() public view {
         string[5] memory off =
-            [".env", "src/../.env", "keeper/.env", "broadcast/DeployWeighted.s.sol/1/run-latest.json", "AGENTS.md"];
+            [".env", "src/../.env", "keeper/.env", "broadcast/DeployWeighted.s.sol/1/run-latest.json", "README.md"];
         for (uint256 i = 0; i < off.length; ++i) {
             try this.readForA718(off[i]) returns (string memory) {
                 assertTrue(false, string.concat(off[i], " was read"));
@@ -678,8 +676,8 @@ contract RepoTest is Test {
 
     /// @dev No file in `src/` and no shipped ABI in `abi/` names a Chainlink feed, a pool's price or its oracle, and the
     ///      v3 price contracts are gone. Every file of both folders is read, Stage B's included, so a new file is covered
-    ///      without being listed. v5's one price source is Pyth, read only by `WeightedHub`'s settlement
-    ///      (`test_V5I4_onlyTheWeightedHubReadsAPrice`). A7-13: the words name the common ways to read a price
+    ///      without being listed. Nothing reads Pyth either (`test_V5I4_noContractNamesPyth`). A7-13: the words name the
+    ///      common ways to read a price
     ///      (`_priceWords`), not five of them, and `test_A713_theScanFindsEveryPriceWord` shows the scan finds each.
     function test_A713_noContractReadsAPrice() public view {
         string[47] memory priceWords = _priceWords();
@@ -714,8 +712,8 @@ contract RepoTest is Test {
     ///      pool's slot 0, square-root price, observations and raw state; a V2 pair's reserves and cumulative prices;
     ///      TWAP oracles; quoters', routers' and ERC-7726 quotes; Curve's and Balancer's pool prices, rates and
     ///      queries; the lending markets', Band's, Chronicle's, Maker's, API3's and Tellor's oracles; a staked or vault
-    ///      token's exchange rate; and the retired `navPerToken`. Pyth's getters are V5-I4's words, allowed in the hub
-    ///      alone. A read through a name not listed here, or by raw selector, is review's to catch (A7-13).
+    ///      token's exchange rate; and the retired `navPerToken`. Pyth's getters are V5-I4's words, allowed nowhere.
+    ///      A read through a name not listed here, or by raw selector, is review's to catch (A7-13).
     function _priceWords() internal pure returns (string[47] memory) {
         return [
             "latestRoundData",
@@ -776,21 +774,13 @@ contract RepoTest is Test {
         return "";
     }
 
-    /// @dev v5 reads one price source, Pyth, in one place: `WeightedHub`'s settlement. Only the hub, its interface (which
-    ///      names Pyth's fee quote and takes Pyth's price struct for executors), its ABI and the vendored Pyth files name
-    ///      Pyth's contract, its parse, its getters, its pushes or its price struct; the factory, the zap and
-    ///      `MintRequests` name none of them. A new file is covered without being listed. The words cover every way to
-    ///      read a Pyth price, not only the one the hub uses (V5-I4).
-    function test_V5I4_onlyTheWeightedHubReadsAPrice() public view {
-        string[6] memory allowed = [
-            "src/WeightedHub.sol",
-            "src/interfaces/IWeightedHub.sol",
-            "src/interfaces/pyth/IPyth.sol",
-            "src/interfaces/pyth/IPythEvents.sol",
-            "src/interfaces/pyth/PythStructs.sol",
-            "abi/WeightedHub.json"
-        ];
-        string[5] memory pythWords = ["IPyth", "parsePriceFeedUpdates", "getPrice", "updatePriceFeeds", "PythStructs"];
+    /// @dev No contract reads a price since the oracle-free rebalance of 2026-11-10: a rebalance is judged on units
+    ///      alone (`design/2026-11-10-oracle-free-rebalance.md`). V5-I4 kept Pyth to the hub; now no file in `src/` and
+    ///      no shipped ABI names Pyth at all, by its name, its parse, its getters, its pushes or its price struct, and
+    ///      the vendored Pyth interfaces are gone. A new file is covered without being listed.
+    function test_V5I4_noContractNamesPyth() public view {
+        string[7] memory pythWords =
+            ["Pyth", "pyth", "PYTH", "parsePriceFeedUpdates", "getPrice", "updatePriceFeeds", "priceId"];
         uint256 read = 0;
         string[2] memory dirs = ["src", "abi"];
         for (uint256 d = 0; d < dirs.length; ++d) {
@@ -798,11 +788,6 @@ contract RepoTest is Test {
             for (uint256 i = 0; i < entries.length; ++i) {
                 if (entries[i].isDir || _isFinderMetadata(entries[i].path)) continue;
                 ++read;
-                bool exempt = false;
-                for (uint256 a = 0; a < allowed.length; ++a) {
-                    exempt = exempt || _endsWith(entries[i].path, allowed[a]);
-                }
-                if (exempt) continue;
                 string memory text = vm.readFile(entries[i].path);
                 for (uint256 j = 0; j < pythWords.length; ++j) {
                     assertFalse(_contains(text, pythWords[j]), string.concat(entries[i].path, " names ", pythWords[j]));
@@ -810,8 +795,7 @@ contract RepoTest is Test {
             }
         }
         assertGt(read, 20, "every source and ABI file is read");
-        assertTrue(_contains(_read("src/WeightedHub.sol"), "parsePriceFeedUpdatesUnique"), "the hub reads Pyth");
-        assertFalse(_contains(_read("src/WeightedIndexFactory.sol"), "Pyth("), "the factory never calls Pyth");
+        assertFalse(vm.exists("src/interfaces/pyth"), "the vendored Pyth interfaces are gone");
     }
 
     function _endsWith(string memory text, string memory suffix) internal pure returns (bool) {

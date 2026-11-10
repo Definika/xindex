@@ -36,8 +36,6 @@ library ForkAddresses {
     address internal constant UNIVERSAL_ROUTER = MainnetAddresses.UNIVERSAL_ROUTER;
     address internal constant POOL_MANAGER = MainnetAddresses.POOL_MANAGER;
     address internal constant QUOTER_V2 = 0x61fFE014bA17989E743c5F6cB21bF9697530B21e;
-    /// @dev Pyth's proxy, which a v5 factory needs at construction; the zap suites never ask it for a price.
-    address internal constant PYTH = MainnetAddresses.PYTH;
 
     /// @dev Block the fork tests pin to. Bump deliberately; a pinned block keeps quotes deterministic
     ///      and lets the RPC cache.

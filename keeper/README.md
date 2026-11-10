@@ -10,36 +10,49 @@ hold on chain.
 
 ## What it does
 
+No contract reads a price (since 2026-11-10). A fill names the units the index settles at, and the index accepts them
+when every leg is inside its unit caps and a weighted gain in units clears the auction's bar, which starts at a half
+and halves every twelve minutes for four hours (`design/2026-11-10-oracle-free-rebalance.md`). So the keeper prices its
+own trades, off chain: Pyth's prices from Hermes, each kept only where Pyth's contract confirms the signed update that
+carries it, through the keeper's own catalogue of each coin's Pyth id (`bot/price-ids.mjs`, and `PRICE_IDS`).
+
 Every block L, with T = L's timestamp + 12 (the one block a fill sent now can land in):
 
 1. **Fills.** For each open auction on an index with shares worth at least `MIN_TVL_USD` (valued once per auction and
-   again every 25 blocks, with one Hermes request for all of them), the richest 8 first, it fetches Pyth's update for
-   second t_L from Hermes, previews the settlement and
-   simulates the executor's whole fill exactly as block L+1 would run it (`eth_call` with block overrides), with the
-   routes it quoted and the executor's stock. Profit = the USDC float's change + the stock's change valued at Pyth −
-   gas. It sends the most profitable fill whose profit reaches `MIN_PROFIT_USD`, with a USDC floor no lower than that
-   decision needs (a sandwich can take nothing below it), `maxAmountsIn` and the index's supply a hair above the
-   preview's, and a deadline of T: a fill mined late, or after an issue that grew the supply past its bound, reverts in
-   its first lines, before Pyth's parse. A fill that reverts on chain all the same, after its simulation passed, holds
-   its auction off for 5 blocks, then 10, and after the third this bot leaves that auction until the strikes lapse, 300
-   blocks after the last (RX-26); its routes are searched again. Pyth's update fee counts against the profit like gas
-   (RX-18), the chosen fill is simulated again with the gas limit it will carry before it is sent (RX-21), and a fill
-   below zero profit, which only a negative `MIN_PROFIT_USD` allows, is sent only within `SUBSIDY_BUDGET_USD` a day
-   (RX-16). An auction the bot is backed off from does not take one of the 8 check slots (RX-24).
-2. **Starts.** Every 25 blocks, for each index anyone may restart, it simulates the auction at its best price
-   (μ = MU_MIN, by overriding the hub's pending slot) and starts it only when that would pay, every feed has published
-   in the last minute (US-hours stock feeds close), the index is worth `MIN_TVL_USD`, and the executor can deliver
-   every coin the auction may ask for. An index holding one of the six US-hours stocks (TSM, AVGO, LLY, JPM, WMT, V) is
-   started only when the auction's middle, where μ is 1, falls in a session of Pyth's own schedule for those feeds,
-   holidays and half days included (`US_EQUITY_SCHEDULE`), so competition can fill it near 1 rather than at the next
-   open near `MU_MIN` (RX-3). The rule covers all twelve share-priced Ondo legs: Pyth's catalogue gives the six named
-   24/7 the same schedule (RX-31). Refresh the schedule string each year from the catalogue. Since 2026-10-26 the hub
-   itself refuses a start while a moving feed is shut and ends every auction 6 hours after its start, so the schedule
-   only keeps the keeper from starting an auction that would expire unfilled at the close. The start carries the
-   Hermes update its check priced, for the next block, with Pyth's fee, and is sent only after a call at that block with
-   its own gas limit passes and while the block it was priced on is still the head; a start that missed is checked
-   again at the next block. The 4 richest ready indexes are simulated per round, side by side, their routes kept until
-   the next (RX-34).
+   again every 25 blocks, with one Hermes request for all of them), the richest 8 first:
+   - It reads the index's recorded units, its weights and the bar at T, and names the units to settle at
+     (`bot/units.mjs`): for every leg it can value, `λ · weight / price`, with `λ` the smallest that clears the bar.
+     That is the fill that leaves the index the least value at the keeper's prices among those the index accepts, so
+     it is the keeper's best at that second. What it names is checked in the hub's own arithmetic, ported word for
+     word and replayed against the contracts' vectors, before anything is asked of the chain.
+   - A leg it cannot value keeps its units: a kept leg, a coin outside the catalogue, a share-priced Ondo leg
+     (RX-2), and a coin whose price is not the signed one, is older than a minute or carries a confidence interval
+     wider than 2% (RX-1, RX-9). A leg within `TRADE_COST_BPS` of its weight is not traded for its own sake.
+   - It previews the settlement those units give and simulates the executor's whole fill exactly as block L+1 would
+     run it (`eth_call` with block overrides), with the routes it quoted and the executor's stock. Profit = the USDC
+     float's change + the stock's change valued at the keeper's prices − gas.
+   - It sends the most profitable fill whose profit reaches `MIN_PROFIT_USD`, with a USDC floor no lower than that
+     decision needs (a sandwich can take nothing below it), `maxAmountsIn` and the index's supply a hair above the
+     preview's, and a deadline of T: a fill mined late, or after an issue that grew the supply past its bound,
+     reverts in its first lines. The bar only falls, so units named for T clear it in any later block too.
+   - A fill that does not pay yet waits: as the bar falls, clearing it costs less, and a fill pays once the bar is
+     below the index's distance from its weights by more than the routes and gas cost. The first keeper it pays
+     fills it, which is what makes the price fair; a lone keeper could wait for the last second and keep the
+     distance. An index on its weights never pays: clearing any bar from there is a gift.
+   - A fill that reverts on chain all the same, after its simulation passed, holds its auction off for 5 blocks, then
+     10, and after the third this bot leaves that auction until the strikes lapse, 300 blocks after the last (RX-26);
+     its routes are searched again. The chosen fill is simulated again with the gas limit it will carry before it is
+     sent (RX-21), and a fill below zero profit, which only a negative `MIN_PROFIT_USD` allows, is sent only within
+     `SUBSIDY_BUDGET_USD` a day (RX-16). An auction the bot is backed off from does not take one of the 8 check
+     slots (RX-24).
+2. **Starts.** Every 25 blocks, for each index anyone may restart, it simulates the auction at its last second, where
+   the bar is lowest (by overriding the hub's pending slot), and starts it only when a fill then would pay after the
+   start's own gas, the index is worth `MIN_TVL_USD`, and the executor can deliver every coin that fill asks for. A
+   start is a plain call: it carries no update and no ether. It is sent only after a call at the next block with its
+   own gas limit passes and while the block it was priced on is still the head; a start that missed is checked again
+   at the next block. The 4 richest ready indexes are simulated per round, side by side, their routes kept until the
+   next (RX-34). The guardian's Safe sends its own starts, keep masks included, as plain calls too; the bot fills
+   them like any other auction and names a kept leg's units unchanged.
 3. **Requests.** With `FILL_REQUESTS` on and nothing else to send, the open `MintRequests` requests on the indexes it
    serves are read every 25 blocks, with each index's gate and a Hermes value of one of its shares; a request whose read
    fails is kept as it was and read again. A request is skipped before any simulation when its escrow at Pyth is worth
@@ -54,23 +67,17 @@ Every block L, with T = L's timestamp + 12 (the one block a fill sent now can la
    basket sold along the routes, a coin with no route kept as stock. Profit and the floor are priced as a fill's, and
    the most profitable request whose profit reaches `MIN_PROFIT_USD` is sent, never below zero: requests are not
    subsidised (RX-16). The surplus over a limit is the filler's, which is why the app suggests limits.
-   - A request fill reads no Pyth update on chain, so every price it is valued at is Hermes' latest, kept only where
-     Pyth's own contract, parsing the signed update Hermes served with it, returns the same price, and only when it
-     was published in the last minute with a confidence interval within 2% (RX-1, RX-9). A closed US-hours feed's last
-     close therefore prices nothing.
+   - Every price a request fill is valued at is Hermes' latest, kept only where Pyth's own contract, parsing the
+     signed update Hermes served with it, returns the same price, and only when it was published in the last minute
+     with a confidence interval within 2% (RX-1, RX-9). A closed US-hours feed's last close therefore prices
+     nothing, and a request on an index holding a coin outside the catalogue is not filled.
    - The fill names the index's `rebalanceNonce` it was simulated at, and reverts `StaleRebalanceNonce` if a settlement
      landed first (RX-4). Each routed leg carries its quote plus `SLIPPAGE_BPS` as its own bound, and so does the
      stablecoin leg, so a pool pushed ahead of the fill stops it at that leg (RX-10).
    - A fill that reverts on chain strikes the request, its requester and its index, so new request ids do not start
      over (RX-10); a request a check keeps declining without a revert is checked again 2, 4, 8... blocks later, at most
      200 (RX-24).
-4. **The guardian's starts.** The factory's guardian is a `GuardianRelay`, which the guardian's Safe controls (RZ-26):
-   a start carries a Pyth update valid for one slot, which a Safe cannot land, so the Safe authorizes a start on the
-   relay, an index and its keep mask until a deadline, and anyone may send it. The bot reads the relay's authorizations
-   every block and sends a live one, after the fills and before its own starts, with Hermes' update for every feed the
-   keep mask moves, for the next block, and Pyth's fee, once a call at that block with its own gas limit passes. It
-   weighs no profit: the Safe decided. A factory whose guardian is no relay is left alone.
-5. **One transaction in flight.** A transaction that misses its block is replaced on the same nonce by a 0-value
+4. **One transaction in flight.** A transaction that misses its block is replaced on the same nonce by a 0-value
    transfer to itself, its fees raised each block, never above `MAX_FEE_GWEI` and at most 10 times, until something on
    that nonce is mined; after the tenth it only waits, and logs it. A nonce left pending by an earlier run is cleared
    the same way at startup, at most 4 of them, and so is one whose send failed with its outcome unknown; a pending
@@ -89,7 +96,8 @@ With `NEEDS_FILE` set, the keeper writes there every coin a fill, a start or a r
 whole of it that fill needs, for the restock service to bring in and then keep: a coin stays on the board while its
 fill waits, covered or not, so stock that has just arrived is not sent home before the fill uses it (RZ-3). Only a
 fill that could pay `MIN_PROFIT_USD` at its best price is on the board (RY-8): an auction's, when its settlement at
-μ = `MU_MIN` sends out that much more than it takes in at the update's prices, before routes and gas; a request's,
+its last second, where the bar is lowest, sends out that much more than it takes in at the keeper's prices, before
+routes and gas; a request's,
 when its escrow is worth that much more than its limit. Stock brought in for a fill that is never made would only
 cost the restock its swaps and bridge fees, there and back. A holder who makes a paying auction and leaves before its
 fill can still cause that, within the restock's daily and per-coin bounds.
@@ -108,8 +116,10 @@ routed coin too; only the rest is bought. The executor's address must be able to
   fills may still turn into anything else, which every request fill ending with less USDC than it started spends
   (RX-1, RX-9). With none, no request fill may cost the float anything. Keep it off the bot's machine.
 - `keeper`, the bot's hot key, can only `fill`, `fillMint` and `fillRedeem`, and only for an index the factory
-  created, through the request escrow the executor was built with. Anyone can create a factory index and hold all its
-  shares, or request a mint of one, so that check does not keep the stock from an index the key's thief owns (CF-1):
+  created, through the request escrow the executor was built with. Only a wallet the factory's owner
+  approved creates a factory index (`setApprovedCreator`), so a thief cannot make one of its own. But anyone can hold
+  the shares of an index that exists, or request a mint of one, so that check does not keep the stock from an index the
+  key's thief holds (CF-1):
   what bounds the stock a stolen key can move is the allowance `OWNER` left, which a request fill spends like an
   auction fill, so keep each allowance to what the next fills need. The key can also trade the USDC float badly within
   the floor it sets itself: keep the float to what fills need, and the key's ETH to a few days of gas.
@@ -120,13 +130,14 @@ routed coin too; only the rest is bought. The executor's address must be able to
   side emptied as a depegged copy's is, counts as nothing; a quote the RPC failed to answer fails the check rather
   than counting. Only a coin with no pool at all counts at Pyth: that is the Wormhole copies', Ondo stocks' and Tether
   Gold's case, and a bridge incident or a copy trading under its coin's feed then turns float into a coin worth less
-  than the bot booked. An index's creator can build one to make the bot buy its other legs with the float, up to the
-  auction's turnover cap each interval, and a redeem request up to the request allowance. Keep the float and that
+  than the bot booked. Only a wallet the factory's owner approved creates an index, so a stranger cannot build one to
+  make the bot buy its other legs with the float; an index an approved creator built still can, up to the auction's
+  turnover cap each interval, and a redeem request up to the request allowance. Keep the float and that
   allowance to what fills need, and serve such coins (`INDEXES`) only where the operator has a market for them. A kept
   coin's quote is the block's own (RX-13); the pools a coin can use are read again every 25 blocks, so one created
   after a depeg counts (RX-17), and a pool nobody initialized is no market, so it cannot zero a coin's value (RX-14).
   An initialized pool whose liquidity is gone still quotes nothing, as XS-5 intends.
-- Fills go through the public mempool: anyone can see a fill and its price update before it lands. The floor bounds
+- Fills go through the public mempool: anyone can see a fill and the units it names before it lands. The floor bounds
   what a sandwich can take. An auction fill whose auction a copier filled first, or that an issue past
   `SUPPLY_TOLERANCE_BPS` reached first, reverts in its first lines; so does a request fill whose request its requester
   cancelled or another filler filled first, or a mint fill on a gated index whose creator disallowed the executor
@@ -310,15 +321,17 @@ raising to what EIP-8037 allows (RX-36).
 | `KEEPER_KEY` | required | The executor's keeper key (32-byte hex). |
 | `FACTORY` | required | The `WeightedIndexFactory`. |
 | `EXECUTOR` | required | This bot's `KeeperExecutor`. |
-| `PYTH_API_KEY` | required | Hermes' API key, sent as `Authorization: Bearer`. |
+| `PYTH_API_KEY` | required | Hermes' API key, sent as `Authorization: Bearer`: the keeper's own price source. No contract reads a price. |
 | `HERMES_URL` | `https://pyth.dourolabs.app/hermes` | Hermes since 2026-08-26. |
-| `INDEXES` | every index | Comma-separated indexes to serve; anyone can create indexes, so a list caps the bot's work. |
+| `PRICE_IDS` | none | `token=id` pairs, comma-separated: Pyth ids for coins the catalogue (`bot/price-ids.mjs`, the 91 listed coins) does not hold, a testnet's for instance, or another feed for one it does. A coin without an id is left alone. |
+| `TRADE_COST_BPS` | `30` | What trading a leg is taken to cost when the bot names a fill's units: a leg within this of its weight is not traded for its own sake. |
+| `INDEXES` | every index | Comma-separated indexes to serve. Only wallets the factory's owner approved create indexes, so the set is the team's; a list still caps the bot's work. |
 | `MIN_PROFIT_USD` | `5` | Least profit a fill or a start must promise; negative is a subsidy the operator accepts, for auctions only and within `SUBSIDY_BUDGET_USD`. |
 | `SUBSIDY_BUDGET_USD` | `0` | Most the auction fills sent below zero profit may cost in all over a rolling day; requests are never subsidised (RX-16). The day restarts with the process. |
 | `MIN_TVL_USD` | `1000` | Smallest index the bot starts or simulates a fill for (anyone can open an empty one's). |
 | `SLIPPAGE_BPS` | `30` | Room the floor leaves for the pools to move, on the volume the routes trade. |
-| `SUPPLY_TOLERANCE_BPS` | `10` | How much an issue may grow the index's supply, and with it the settlement, before the fill reverts, before Pyth's parse. It is also the griefing threshold: an issue of more than this share of the supply ahead of a fill makes it revert, though cheaply, and the bot leaves an auction after three such reverts. |
-| `ROUTE_MAX_LOSS_BPS` | `100` | Most a route may lose against Pyth; the auction's whole edge is 200. |
+| `SUPPLY_TOLERANCE_BPS` | `10` | How much an issue may grow the index's supply, and with it the settlement, before the fill reverts, in its first lines. It is also the griefing threshold: an issue of more than this share of the supply ahead of a fill makes it revert, though cheaply, and the bot leaves an auction after three such reverts. |
+| `ROUTE_MAX_LOSS_BPS` | `100` | Most a route may lose against the keeper's price of the coin. |
 | `MAX_FEE_GWEI` | `100` | No transaction while the base fee and tip exceed this, and no replacement's fees above it. |
 | `PRIORITY_FEE_GWEI` | `2` | Tip. |
 | `FILL_REQUESTS` | `1` | `1` fills `MintRequests` requests too, `0` serves auctions only. The escrow is the one the executor was built with. |
@@ -373,16 +386,19 @@ of it, with WETH9's balance slot of the first index set to 5 wei, the next round
 
 - `forge test --root keeper` (from the repo root): the executor against the real hub, factory and request escrow with
   mocks, request fills included.
-- `node --test keeper/test/unit/*.test.mjs`: arithmetic, settings, the route search, the request filter and scan, the
+- `node --test keeper/test/unit/*.test.mjs`: arithmetic, the units a fill names (the hub's rule, replayed against the
+  contracts' own vectors in `test/vectors/settlement.json`), the price catalogue (pinned against `script/Listings.sol`,
+  `script/MainnetAddresses.sol` and `script/PythIds.sol`), settings, the route search, the request filter and scan, the
   back-offs, the Hermes client and the transaction tracker; the needs board; and the restock's coin table (pinned
   against `script/MainnetAddresses.sol` and `script/PythIds.sol`), planner, journal, settings and attestation clients;
   and the invariant checker's properties and settings; no install.
 - `forge test --root keeper` with `MAINNET_RPC_URL` also runs `test/KeeperExecutor.fork.t.sol`: `redeemBridged` and
   `bridgeOut` against Wormhole's real Token Bridge, with a test guardian installed in Wormhole's core on the fork.
-- `MAINNET_RPC_URL=<archive> npm run e2e` (in `keeper/`): an anvil fork with the real Pyth contract verifying updates
-  this test signs, real pools and tokens, and `keeper.mjs` as its own process. It covers a start held back by a quiet
-  feed and by missing stock, an index never started, fills only once profitable, stock kept and delivered, a two-hop
-  buy, and a fill mined a slot late reverting early and being sent again. On a cold RPC cache a start check can outlast
+- `MAINNET_RPC_URL=<archive> npm run e2e` (in `keeper/`): an anvil fork with real pools and tokens, the real Pyth
+  contract confirming the keeper's prices against updates this test signs, and `keeper.mjs` as its own process. It
+  covers plain starts, a start held back by missing stock, an index never started, fills only once the bar has fallen
+  far enough to pay, stock kept and delivered, a two-hop buy, a fill mined a slot late reverting early and being sent
+  again, and a guardian's keep-mask start whose fill leaves the kept coin's units alone. On a cold RPC cache a start check can outlast
   the keeper's 15-second RPC timeout and the test then fails on timing; `FORK_BLOCK` at a block already run keeps the
   cache warm.
 - `MAINNET_RPC_URL=<archive> npm run e2e:restock` (in `keeper/`): anvil forks of Ethereum, BNB Chain, Base, Optimism and

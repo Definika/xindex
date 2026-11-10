@@ -3,8 +3,9 @@
 // and along routes; a redeem request is paid exactly its limit in its stablecoin, the escrowed shares redeemed and
 // their basket sold. Any surplus over a limit is the filler's, which is why the app suggests limits. Requests are
 // ranked by dollars and pre-checked against their limit and their index's gate before any simulation, and one whose
-// simulation reverts is backed off (XS-7). A request fill reads no Pyth update on chain, so every price it is valued at
-// is Hermes' latest, verified through Pyth's own contract and refused when stale or wide (RX-1, RX-9); what a fill may
+// simulation reverts is backed off (XS-7). Nothing on chain reads a price, so every price a fill is valued at is the
+// keeper's own: Hermes' latest, verified through Pyth's contract and refused when stale or wide (RX-1, RX-9). A coin
+// outside the keeper's price catalogue has none, and a request on an index holding one is not filled. What a fill may
 // spend of the float is bounded on chain by the executor's request allowance.
 
 import { encodeFunctionData } from "viem";
@@ -97,12 +98,12 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
     });
     // Every read first, so a failed one leaves the last scan's values in place.
     const priceIds = new Set();
-    for (const r of live) for (const id of (await staticsOf(r.index, L.number)).ids) priceIds.add(id);
+    for (const r of live) for (const id of (await staticsOf(r.index, L.number)).ids) if (id) priceIds.add(id);
     const latest = live.length ? await trustedLatest([...priceIds], L) : new Map();
     info.clear();
     for (const r of live) {
       const st = await staticsOf(r.index, L.number);
-      const prices = st.ids.map((id) => latest.get(priceKey(id)));
+      const prices = st.ids.map((id) => (id ? latest.get(priceKey(id)) : undefined));
       const priced = r.units !== null && prices.every(Boolean);
       const shareUsd = priced ? M.tvlUsd({ supply: 10n ** 18n, units: r.units, decimals: st.decimals, prices }) : null;
       info.set(r.index.toLowerCase(), { shareUsd, mintAllowed: r.mintAllowed });
@@ -114,7 +115,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
   /// carries a bound at its quote plus SLIPPAGE_BPS, so a pool pushed against the fill stops it at that leg (RX-10).
   async function legs(id, r, st, amounts, L) {
     const key = `request:${id}`;
-    const latest = await trustedLatest(st.ids, L);
+    const latest = await trustedLatest(st.ids.filter(Boolean), L);
     const held = await chain.multicall(
       st.tokens.map((t) => ({ address: t, abi: ABI.erc20, functionName: "balanceOf", args: [cfg.executor] })),
       L.number,
@@ -137,7 +138,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
       const token = st.tokens[i];
       const amount = amounts[i];
       if (amount === 0n || same(token, cfg.chain.usdc)) continue; // a USDC leg is the float itself
-      const p = latest.get(priceKey(st.ids[i]));
+      const p = st.ids[i] ? latest.get(priceKey(st.ids[i])) : undefined;
       if (!p) return { skip: `no fresh, verified price for ${token}` };
       const dec = st.decimals[i];
       const shared = sharePriced(st.ids[i]);

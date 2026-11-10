@@ -170,7 +170,7 @@
   },
   {
     "id": "M15",
-    "what": "currentMu reports 0 at the auction's last second",
+    "what": "currentBar reports 0 at the auction's last second",
     "origin": "design/2026-10-29-rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
@@ -209,105 +209,105 @@
   },
   {
     "id": "V1",
-    "what": "targets round down",
-    "origin": "design/2026-10-29-settlement-vectors.md",
+    "what": "the lower cap rounds down",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
       {
-        "old": "Math.mulDiv(value, weights[i], weight * prices[i], Math.Rounding.Ceil)",
-        "new": "Math.mulDiv(value, weights[i], weight * prices[i], Math.Rounding.Floor)"
+        "old": "lowest = Math.mulDiv(current, WAD - MAX_TURNOVER, WAD, Math.Rounding.Ceil);",
+        "new": "lowest = Math.mulDiv(current, WAD - MAX_TURNOVER, WAD);"
       }
     ]
   },
   {
     "id": "V2",
-    "what": "a shrinking leg's step rounds up",
-    "origin": "design/2026-10-29-settlement-vectors.md",
+    "what": "no turnover cap",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
       {
-        "old": "units[i] = current - Math.mulDiv(current - target, share, WAD);",
-        "new": "units[i] = current - Math.mulDiv(current - target, share, WAD, Math.Rounding.Ceil);"
+        "old": "lowest = Math.mulDiv(current, WAD - MAX_TURNOVER, WAD, Math.Rounding.Ceil);",
+        "new": "lowest = 0;"
       }
     ]
   },
   {
     "id": "V3",
-    "what": "a growing leg's step rounds down",
-    "origin": "design/2026-10-29-settlement-vectors.md",
+    "what": "no growth cap",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
       {
-        "old": "Math.mulDiv(target - current, growth, WAD, Math.Rounding.Ceil)",
-        "new": "Math.mulDiv(target - current, growth, WAD, Math.Rounding.Floor)"
+        "old": "highest = current + Math.mulDiv(current, MAX_GROWTH, WAD);",
+        "new": "highest = type(uint256).max;"
       }
     ]
   },
   {
     "id": "V4",
-    "what": "the growth factor mu * share rounds down",
-    "origin": "design/2026-10-29-settlement-vectors.md",
+    "what": "a kept leg may move inside the caps",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
       {
-        "old": "return Math.mulDiv(mu, share, WAD, Math.Rounding.Ceil);",
-        "new": "return Math.mulDiv(mu, share, WAD, Math.Rounding.Floor);"
+        "old": "if ((keepMask & (1 << i)) == 0) {\n                lowest",
+        "new": "if ((keepMask & (1 << i)) != type(uint256).max) {\n                lowest"
       }
     ]
   },
   {
     "id": "V5",
-    "what": "no turnover cap",
-    "origin": "design/2026-10-29-settlement-vectors.md",
+    "what": "a growing leg's change rounds up",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
       {
-        "old": "if (limit < share) share = limit;",
-        "new": "if (limit < 0) share = limit;"
+        "old": "if (next >= current) return int256(((next - current) * WAD) / current);",
+        "new": "if (next >= current) return int256(Math.ceilDiv((next - current) * WAD, current));"
       }
     ]
   },
   {
     "id": "V6",
-    "what": "no growth cap",
-    "origin": "design/2026-10-29-settlement-vectors.md",
+    "what": "a shrinking leg's change rounds toward zero",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
       {
-        "old": "if (growLimit < share) share = growLimit;",
-        "new": "if (growLimit < 0) share = growLimit;"
+        "old": "return -int256(Math.ceilDiv((current - next) * WAD, current));",
+        "new": "return -int256(((current - next) * WAD) / current);"
       }
     ]
   },
   {
     "id": "V7",
-    "what": "no minimum trade",
-    "origin": "design/2026-10-29-settlement-vectors.md",
+    "what": "a leg's score rounds toward zero",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
       {
-        "old": "< Math.mulDiv(value, MIN_TRADE, WAD, Math.Rounding.Ceil)) {",
-        "new": "< 0 * Math.mulDiv(value, MIN_TRADE, WAD, Math.Rounding.Ceil)) {"
+        "old": "return _floorDiv(numerator, SCORE_DENOMINATOR);",
+        "new": "return numerator / SCORE_DENOMINATOR;"
       }
     ]
   },
   {
     "id": "V8",
-    "what": "the minimum trade checked on the release before the cap (V5R-1 undone)",
-    "origin": "design/2026-10-29-settlement-vectors.md",
+    "what": "the gain rounds toward zero",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
       {
-        "old": "if (Math.mulDiv(released, share, WAD) < Math.mulDiv(value, MIN_TRADE",
-        "new": "if (released < Math.mulDiv(value, MIN_TRADE"
+        "old": "return _floorDiv(total, TOTAL_WEIGHT);",
+        "new": "return total / TOTAL_WEIGHT;"
       }
     ]
   },
@@ -339,92 +339,144 @@
   },
   {
     "id": "V11",
-    "what": "no redo at MU_MAX",
-    "origin": "design/2026-10-29-settlement-vectors.md",
+    "what": "the score's fourth-order term at 7/30, above the logarithm's 1/4",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
       {
-        "old": "if (mu != MU_MAX && !_anyNonZero(amountsOut)) {",
-        "new": "if (mu != mu && !_anyNonZero(amountsOut)) {"
+        "old": "- 9 * square * square;",
+        "new": "- 7 * square * square;"
       }
     ]
   },
   {
     "id": "V12",
-    "what": "no overflow check on a growing leg's units",
-    "origin": "design/2026-10-29-settlement-vectors.md",
+    "what": "no check that the new units fit 96 bits",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
       {
-        "old": "if (units[i] > type(uint96).max) revert",
-        "new": "if (units[i] > type(uint256).max) revert"
+        "old": "            if (next > type(uint96).max) revert SafeCast.SafeCastOverflowedUintDowncast(96, next);\n",
+        "new": ""
       }
     ]
   },
   {
     "id": "V13",
-    "what": "the turnover bound on the share rounds up",
-    "origin": "design/2026-10-29-settlement-vectors.md",
+    "what": "the bar rounds down",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
       {
-        "old": "Math.mulDiv(current, MAX_TURNOVER, current - target);",
-        "new": "Math.mulDiv(current, MAX_TURNOVER, current - target, Math.Rounding.Ceil);"
+        "old": "(2 * BAR_HALF_LIFE) << halvings, Math.Rounding.Ceil);",
+        "new": "(2 * BAR_HALF_LIFE) << halvings, Math.Rounding.Floor);"
       }
     ]
   },
   {
     "id": "V14",
-    "what": "the growth bound on the share rounds up",
-    "origin": "design/2026-10-29-settlement-vectors.md",
+    "what": "the bar starts at a quarter",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
       {
-        "old": "Math.mulDiv(current, MAX_GROWTH, target - current);",
-        "new": "Math.mulDiv(current, MAX_GROWTH, target - current, Math.Rounding.Ceil);"
+        "old": "uint256 public constant BAR_MAX = 0.5e18;",
+        "new": "uint256 public constant BAR_MAX = 0.25e18;"
       }
     ]
   },
   {
     "id": "V15",
-    "what": "the minimum trade's minimum rounds down",
-    "origin": "design/2026-10-29-settlement-vectors.md",
+    "what": "an index without shares settles",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
       {
-        "old": "Math.mulDiv(value, MIN_TRADE, WAD, Math.Rounding.Ceil)",
-        "new": "Math.mulDiv(value, MIN_TRADE, WAD, Math.Rounding.Floor)"
+        "old": "        if (supply == 0) revert IWeightedHub.NothingToRebalance();\n",
+        "new": ""
       }
     ]
   },
   {
     "id": "V16",
-    "what": "the minimum trade's release rounds up",
-    "origin": "design/2026-10-29-settlement-vectors.md",
+    "what": "a gain exactly on the bar is refused",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
       {
-        "old": "if (Math.mulDiv(released, share, WAD) <",
-        "new": "if (Math.mulDiv(released, share, WAD, Math.Rounding.Ceil) <"
+        "old": "if (gain < int256(bar)) revert IWeightedHub.GainBelowBar(gain, bar);",
+        "new": "if (gain <= int256(bar)) revert IWeightedHub.GainBelowBar(gain, bar);"
       }
     ]
   },
   {
     "id": "V17",
-    "what": "a kept leg's value counted in V",
-    "origin": "design/2026-10-29-settlement-vectors.md",
+    "what": "a list of another length is not refused",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
       {
-        "old": "            if ((keepMask & (1 << i)) != 0) continue;\n            value += currentUnits[i] * prices[i];",
-        "new": "            value += currentUnits[i] * prices[i];\n            if ((keepMask & (1 << i)) != 0) continue;"
+        "old": "        if (newUnits.length != currentUnits.length) revert IXindexErrors.LengthMismatch();\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "V21",
+    "what": "the bar is answered past the auction's end",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "        if (elapsed > AUCTION_DURATION) revert IWeightedHub.AuctionOver(elapsed);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "V22",
+    "what": "a fill may triple a leg",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "uint256 public constant MAX_GROWTH = 1e18;",
+        "new": "uint256 public constant MAX_GROWTH = 2e18;"
+      }
+    ]
+  },
+  {
+    "id": "V23",
+    "what": "the bar's half-life is ten minutes",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "uint256 public constant BAR_HALF_LIFE = 12 minutes;",
+        "new": "uint256 public constant BAR_HALF_LIFE = 10 minutes;"
+      }
+    ]
+  },
+  {
+    "id": "V24",
+    "what": "the score's second-order term dropped",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "- 15 * square * ONE * ONE ",
+        "new": "- 0 * square * ONE * ONE "
       }
     ]
   },
@@ -457,7 +509,7 @@
   {
     "id": "V20",
     "what": "a shrinking leg paid as a difference of floored backings",
-    "origin": "AGENTS.md, the settlement's rounding",
+    "origin": "CLAUDE.md, the settlement's rounding",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -470,7 +522,7 @@
   {
     "id": "H1",
     "what": "a keep mask may leave one component moving (V5-L2)",
-    "origin": "AGENTS.md, the settlement's rounding",
+    "origin": "CLAUDE.md, the settlement's rounding",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -482,107 +534,73 @@
   },
   {
     "id": "H2",
-    "what": "a wider window: an update published in the settling second is accepted",
-    "origin": "AGENTS.md, the settlement's rounding",
+    "what": "the fill's clock runs a second ahead, so a fill clears a second early",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
       {
-        "old": "uint256 latestPublishTime = time + PRICE_LAG - 1;",
-        "new": "uint256 latestPublishTime = time + PRICE_LAG;"
+        "old": "        return block.timestamp - eta;\n",
+        "new": "        return block.timestamp - eta + 1;\n"
       }
     ]
   },
   {
     "id": "H3",
-    "what": "the price time pinned to the minute (V5-L1 undone)",
-    "origin": "AGENTS.md, the settlement's rounding",
+    "what": "the keep mask is not passed to the math, so a kept leg may move",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
       {
-        "old": "return block.timestamp - PRICE_LAG;",
-        "new": "return (block.timestamp - PRICE_LAG) / 60 * 60;"
+        "old": "_recordedUnits(), newUnits, weights, _keepMask);",
+        "new": "_recordedUnits(), newUnits, weights, 0);"
       }
     ]
   },
   {
     "id": "H4",
-    "what": "no confidence check",
-    "origin": "AGENTS.md, the settlement's rounding",
+    "what": "the fill checks the executor's units against the supply before the streaming fee accrues",
+    "origin": "audit/2026-10-16-security-audit.md, XS-2",
     "file": "src/WeightedHub.sol",
-    "test": "test/WeightedHub.rebalance.t.sol",
+    "test": "test/WeightedHub.fees.t.sol",
     "edits": [
       {
-        "old": "if (uint256(p.conf) * WAD > price * MAX_CONFIDENCE) {",
-        "new": "if (uint256(p.conf) * 0 > price * MAX_CONFIDENCE) {"
-      }
-    ]
-  },
-  {
-    "id": "H5",
-    "what": "no publish-time check on what Pyth returns",
-    "origin": "AGENTS.md, the settlement's rounding",
-    "file": "src/WeightedHub.sol",
-    "test": "test/WeightedHub.rebalance.t.sol",
-    "edits": [
-      {
-        "old": "if (feed.id != ids[k] || published < time || published > latestPublishTime) {",
-        "new": "if (feed.id != ids[k] || published < 0) {"
-      }
-    ]
-  },
-  {
-    "id": "H6",
-    "what": "a kept feed read",
-    "origin": "AGENTS.md, the settlement's rounding",
-    "file": "src/WeightedHub.sol",
-    "test": "test/WeightedHub*.t.sol",
-    "edits": [
-      {
-        "old": "uint256 moving = n - _countBits(keepMask);",
-        "new": "uint256 moving = n;"
-      },
-      {
-        "old": "if ((keepMask & (1 << i)) == 0) ids[k++] = _terms[i].priceId;",
-        "new": "ids[k++] = _terms[i].priceId;"
-      },
-      {
-        "old": "            if ((keepMask & (1 << i)) != 0) continue;\n            PythStructs.PriceFeed memory feed = feeds[k];",
-        "new": "            if ((keepMask & (1 << i)) != 0) {\n                ++k;\n                continue;\n            }\n            PythStructs.PriceFeed memory feed = feeds[k];"
+        "old": "        return _computeSettlement(_openElapsed(), newUnits, totalSupply() + feeShares, pendingScale);\n",
+        "new": "        return _computeSettlement(_openElapsed(), newUnits, totalSupply(), pendingScale);\n"
       }
     ]
   },
   {
     "id": "H7",
-    "what": "the initializer's duplicate checks removed (V5-M1)",
-    "origin": "AGENTS.md, the settlement's rounding",
+    "what": "the initializer's duplicate-token check removed",
+    "origin": "audit/2026-10-05-v5-review.md, the initializer's own checks",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.t.sol",
     "edits": [
       {
-        "old": "if (tokens[j] == token || ids[j] == priceId) revert InvalidComponents();",
-        "new": "if (tokens[j] == token && ids[j] == priceId && false) revert InvalidComponents();"
+        "old": "                if (tokens[j] == token) revert InvalidComponents();\n",
+        "new": "                tokens[j];\n"
       }
     ]
   },
   {
     "id": "H8",
-    "what": "the factory's duplicate price-id check removed (V5-M1)",
-    "origin": "AGENTS.md, the settlement's rounding",
+    "what": "the factory's duplicate-token check removed",
+    "origin": "audit/2026-10-05-v5-review.md, the factory's own checks",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedIndexFactory.t.sol",
     "edits": [
       {
-        "old": "if (inits[j].priceId == priceId) revert DuplicatePriceId(token);",
-        "new": "if (inits[j].priceId == priceId && false) revert DuplicatePriceId(token);"
+        "old": "                if (inits[j].token == token) revert DuplicateToken(token);\n",
+        "new": "                inits[j];\n"
       }
     ]
   },
   {
     "id": "H9",
     "what": "the backing post-check drops the claims",
-    "origin": "AGENTS.md, the settlement's rounding",
+    "origin": "CLAUDE.md, the settlement's rounding",
     "file": "src/WeightedHub.sol",
     "test": "test/{WeightedHub.rebalance,Security}.t.sol",
     "edits": [
@@ -595,7 +613,7 @@
   {
     "id": "H10",
     "what": "the backing post-check re-reads only the bought legs",
-    "origin": "AGENTS.md, the settlement's rounding",
+    "origin": "CLAUDE.md, the settlement's rounding",
     "file": "src/WeightedHub.sol",
     "test": "test/{WeightedHub.rebalance,Security}.t.sol",
     "edits": [
@@ -645,32 +663,6 @@
     ]
   },
   {
-    "id": "H14",
-    "what": "no moving-average check (RX-27)",
-    "origin": "audit/2026-10-18-red-team.md",
-    "file": "src/WeightedHub.sol",
-    "test": "test/WeightedHub.rebalance.t.sol",
-    "edits": [
-      {
-        "old": "        price = _scaledPrice(feed.price, i);\n        _checkEma(feed.price, feed.emaPrice, i);",
-        "new": "        price = _scaledPrice(feed.price, i);"
-      }
-    ]
-  },
-  {
-    "id": "H15",
-    "what": "a start does not read the moving feeds (RX-3)",
-    "origin": "audit/2026-10-18-red-team.md",
-    "file": "src/WeightedHub.sol",
-    "test": "test/WeightedHub.rebalance.t.sol",
-    "edits": [
-      {
-        "old": "        _readPrices(priceUpdate, _priceTime()); // aderyn-fp(unchecked-return)\n",
-        "new": "        if (priceUpdate.length == type(uint256).max) _readPrices(priceUpdate, _priceTime());\n"
-      }
-    ]
-  },
-  {
     "id": "H16",
     "what": "a gated index pays a referrer its gate refuses (AU-1)",
     "origin": "audit/2026-10-31-review.md",
@@ -680,19 +672,6 @@
       {
         "old": "if (referrer != address(0)) (referrerAllowed,,) = _feeTerms(referrer);",
         "new": "if (referrer != address(0)) referrerAllowed = true;"
-      }
-    ]
-  },
-  {
-    "id": "H17",
-    "what": "the preview skips the moving-average check (AU-2)",
-    "origin": "audit/2026-10-31-review.md",
-    "file": "src/WeightedHub.sol",
-    "test": "test/WeightedHub.rebalance.t.sol",
-    "edits": [
-      {
-        "old": "scaledPrices[i] = _checkedPrice(feeds[i], i);",
-        "new": "scaledPrices[i] = _scaledPrice(feeds[i].price, i);"
       }
     ]
   },
@@ -1047,98 +1026,6 @@
     "runner": "node"
   },
   {
-    "id": "G1",
-    "what": "the relay's start spends no authorization, so one start is sent again and again (RZ-26)",
-    "origin": "audit/2026-10-31-red-team-ii.md",
-    "file": "src/GuardianRelay.sol",
-    "test": "test/GuardianRelay.t.sol",
-    "edits": [
-      {
-        "old": "delete authorizationOf[index];",
-        "new": ""
-      }
-    ]
-  },
-  {
-    "id": "G2",
-    "what": "an authorized start outlives its deadline (RZ-26)",
-    "origin": "audit/2026-10-31-red-team-ii.md",
-    "file": "src/GuardianRelay.sol",
-    "test": "test/GuardianRelay.t.sol",
-    "edits": [
-      {
-        "old": "if (block.timestamp > authorization.deadline) revert",
-        "new": "if (authorization.deadline == 0) revert"
-      }
-    ]
-  },
-  {
-    "id": "G3",
-    "what": "an authorized start cannot be sent at its deadline (RZ-26)",
-    "origin": "audit/2026-10-31-red-team-ii.md",
-    "file": "src/GuardianRelay.sol",
-    "test": "test/GuardianRelay.t.sol",
-    "edits": [
-      {
-        "old": "if (block.timestamp > authorization.deadline) revert",
-        "new": "if (block.timestamp >= authorization.deadline) revert"
-      }
-    ]
-  },
-  {
-    "id": "G4",
-    "what": "anyone authorizes a start (RZ-26)",
-    "origin": "audit/2026-10-31-red-team-ii.md",
-    "file": "src/GuardianRelay.sol",
-    "test": "test/GuardianRelay.t.sol",
-    "edits": [
-      {
-        "old": "uint256 keepMask, uint256 deadline) external onlyController {",
-        "new": "uint256 keepMask, uint256 deadline) external {"
-      }
-    ]
-  },
-  {
-    "id": "G5",
-    "what": "the relay starts with no keep mask, not the controller's (RZ-26)",
-    "origin": "audit/2026-10-31-red-team-ii.md",
-    "file": "src/GuardianRelay.sol",
-    "test": "test/GuardianRelay.t.sol",
-    "edits": [
-      {
-        "old": "(authorization.keepMask, priceUpdate);",
-        "new": "(0, priceUpdate);"
-      }
-    ]
-  },
-  {
-    "id": "G6",
-    "what": "the relay keeps the caller's fee instead of passing it to Pyth (RZ-26)",
-    "origin": "audit/2026-10-31-red-team-ii.md",
-    "file": "src/GuardianRelay.sol",
-    "test": "test/GuardianRelay.t.sol",
-    "edits": [
-      {
-        "old": "startRebalance{value: msg.value}(",
-        "new": "startRebalance{value: 0}("
-      }
-    ]
-  },
-  {
-    "id": "G7",
-    "what": "the keeper sends a guardian's start whose deadline has passed (RZ-26)",
-    "origin": "audit/2026-10-31-red-team-ii.md",
-    "file": "keeper/bot/math.mjs",
-    "test": "keeper/test/unit/math.test.mjs",
-    "edits": [
-      {
-        "old": "if (deadline >= BigInt(T)) live.set(index, { keepMask, deadline });",
-        "new": "if (deadline > 0n) live.set(index, { keepMask, deadline });"
-      }
-    ],
-    "runner": "node"
-  },
-  {
     "id": "Y1",
     "what": "a request that cannot pay MIN_PROFIT_USD at its limit is simulated and asks the restock for stock (RY-8)",
     "origin": "audit/2026-10-31-red-team.md",
@@ -1165,5 +1052,87 @@
       }
     ],
     "runner": "node"
+  },
+  {
+    "id": "U1",
+    "what": "the bot rounds a shrinking leg's change toward zero, so it counts a gain the hub does not",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 2: the keeper's port of the rule",
+    "file": "keeper/bot/units.mjs",
+    "test": "keeper/test/unit/units.test.mjs",
+    "edits": [
+      {
+        "old": "  return -ceilDiv((current - next) * WAD, current);",
+        "new": "  return -(((current - next) * WAD) / current);"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "U2",
+    "what": "the bot returns units it did not check against the bar",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 2: the keeper's port of the rule",
+    "file": "keeper/bot/units.mjs",
+    "test": "keeper/test/unit/units.test.mjs",
+    "edits": [
+      {
+        "old": "    return g.error === undefined && g.gain >= bar ? g.gain : null;",
+        "new": "    return g.error === undefined ? g.gain : null;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "U3",
+    "what": "the bot's lower cap rounds down, one unit under what the hub accepts",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 2: the keeper's port of the rule",
+    "file": "keeper/bot/units.mjs",
+    "test": "keeper/test/unit/units.test.mjs",
+    "edits": [
+      {
+        "old": "export const lowestOf = (current) => ceilDiv(current * (WAD - MAX_TURNOVER), WAD);",
+        "new": "export const lowestOf = (current) => (current * (WAD - MAX_TURNOVER)) / WAD;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "U4",
+    "what": "the bot's score truncates toward zero, above the hub's for a shrinking leg",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 2: the keeper's port of the rule",
+    "file": "keeper/bot/units.mjs",
+    "test": "keeper/test/unit/units.test.mjs",
+    "edits": [
+      {
+        "old": "  return floorDiv(numerator, SCORE_DENOMINATOR);",
+        "new": "  return numerator / SCORE_DENOMINATOR;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "F1",
+    "what": "createIndex without the approval check, so anyone creates an index",
+    "origin": "CLAUDE.md, Product decisions: only approved wallets create an index (2026-11-10)",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "        if (!isApprovedCreator[msg.sender]) revert CreatorNotApproved(msg.sender);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "F2",
+    "what": "setApprovedCreator without onlyOwner, so anyone approves a creator",
+    "origin": "CLAUDE.md, Product decisions: only approved wallets create an index (2026-11-10)",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "function setApprovedCreator(address account, bool approved) external onlyOwner {",
+        "new": "function setApprovedCreator(address account, bool approved) external {"
+      }
+    ]
   }
 ]

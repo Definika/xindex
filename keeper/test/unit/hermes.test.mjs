@@ -34,48 +34,30 @@ const entry = (id, publishTime, price = "250000000000", ema = price) => ({
 const hermes = () => createHermes({ url: base, apiKey: "k3y" });
 const soon = (ms = 2000) => Date.now() + ms;
 
-test("at(): the update and its prices, with the key as a Bearer token", async () => {
+test("latestSigned(): the latest prices and their signed update, with the key as a Bearer token", async () => {
   reset((req, res, url) => {
-    assert.equal(url.pathname, "/hermes/v2/updates/price/1000");
+    assert.equal(url.pathname, "/hermes/v2/updates/price/latest");
     assert.deepEqual(url.searchParams.getAll("ids[]"), [A, B]);
     assert.equal(url.searchParams.get("encoding"), "hex");
     assert.equal(url.searchParams.get("parsed"), "true");
-    json(res, { binary: { encoding: "hex", data: ["504e4155"] }, parsed: [entry(A, 1000), entry(B, 1011, "-5")] });
+    json(res, { binary: { encoding: "hex", data: ["504e4155"] }, parsed: [entry(A, 1000, "250000000000", "200000000000"), entry(B, 1011, "-5")] });
   });
-  const { updates, prices } = await hermes().at([A, B], 1000, soon());
+  const { updates, prices } = await hermes().latestSigned([A, B], soon());
   assert.deepEqual(updates, ["0x504e4155"]);
   assert.equal(seen[0].auth, "Bearer k3y");
+  // Each price comes with the moving average Hermes publishes beside it: Pyth's contract returns both, and the bot
+  // keeps a price only when both are the signed update's (RY-7).
   assert.deepEqual(prices.get(A.slice(2)), {
     price: 250000000000n,
     conf: 100000n,
     expo: -8,
     publishTime: 1000,
-    ema: { price: 250000000000n, conf: 90000n, expo: -8, publishTime: 1000 },
+    ema: { price: 200000000000n, conf: 90000n, expo: -8, publishTime: 1000 },
   });
   assert.equal(prices.get(B.slice(2)).price, -5n);
 });
 
-test("AU-2: at() carries each price's moving average, which the hub's preview checks the price against", async () => {
-  reset((req, res) => json(res, { binary: { encoding: "hex", data: ["504e4155"] }, parsed: [entry(A, 1000, "250000000000", "200000000000")] }));
-  const { prices } = await hermes().at([A], 1000, soon());
-  assert.equal(prices.get(A.slice(2)).price, 250000000000n);
-  assert.deepEqual(prices.get(A.slice(2)).ema, { price: 200000000000n, conf: 90000n, expo: -8, publishTime: 1000 });
-});
-
-test("at(): an update outside [t, t + 11] or missing a feed is refused", async () => {
-  for (const [parsed, message] of [
-    [[entry(A, 999)], "outside"],
-    [[entry(A, 1012)], "outside"],
-    [[], "left out"],
-  ]) {
-    reset((req, res) => json(res, { binary: { data: ["00"] }, parsed }));
-    await assert.rejects(hermes().at([A], 1000, soon()), (e) => e instanceof HermesError && e.message.includes(message));
-  }
-  reset((req, res) => json(res, { binary: { data: [] }, parsed: [entry(A, 1000)] }));
-  await assert.rejects(hermes().at([A], 1000, soon()), /no update data/);
-});
-
-test("at(): 404 and 5xx are retried until the update exists", async () => {
+test("404 and 5xx are retried until Hermes answers", async () => {
   let n = 0;
   reset((req, res) => {
     n++;
@@ -83,28 +65,28 @@ test("at(): 404 and 5xx are retried until the update exists", async () => {
     if (n === 2) return json(res, { error: "busy" }, 503);
     json(res, { binary: { data: ["00"] }, parsed: [entry(A, 1000)] });
   });
-  await hermes().at([A], 1000, soon());
+  await hermes().latest([A], soon());
   assert.equal(seen.length, 3);
 });
 
-test("at(): retries stop at the deadline", async () => {
+test("retries stop at the deadline", async () => {
   reset((req, res) => json(res, { error: "no update yet" }, 404));
   const started = Date.now();
-  await assert.rejects(hermes().at([A], 1000, soon(600)), (e) => e instanceof HermesError && !e.permanent);
+  await assert.rejects(hermes().latest([A], soon(600)), (e) => e instanceof HermesError && !e.permanent);
   assert.ok(Date.now() - started < 1500, "gave up near the deadline");
 });
 
 test("400 and 401 are permanent: no retry", async () => {
   for (const status of [400, 401]) {
     reset((req, res) => json(res, { error: "no" }, status));
-    await assert.rejects(hermes().at([A], 1000, soon()), (e) => e.permanent === true && e.status === status);
+    await assert.rejects(hermes().latest([A], soon()), (e) => e.permanent === true && e.status === status);
     assert.equal(seen.length, 1);
   }
 });
 
 test("429 waits at least a second, and gives up when the deadline comes first", async () => {
   reset((req, res) => json(res, { error: "slow down" }, 429, { "retry-after": "1" }));
-  await assert.rejects(hermes().at([A], 1000, soon(500)), /429 until the deadline/);
+  await assert.rejects(hermes().latest([A], soon(500)), /429 until the deadline/);
   assert.equal(seen.length, 1);
 
   let n = 0;
@@ -113,13 +95,13 @@ test("429 waits at least a second, and gives up when the deadline comes first", 
     json(res, { binary: { data: ["00"] }, parsed: [entry(A, 1000)] });
   });
   const started = Date.now();
-  await hermes().at([A], 1000, soon(3000));
+  await hermes().latest([A], soon(3000));
   assert.ok(Date.now() - started >= 1000, "honoured Retry-After");
 });
 
 test("an unreachable Hermes fails at the deadline", async () => {
   const dead = createHermes({ url: "http://127.0.0.1:1", apiKey: "k" });
-  await assert.rejects(dead.at([A], 1000, soon(500)), /unreachable/);
+  await assert.rejects(dead.latest([A], soon(500)), /unreachable/);
 });
 
 test("latest(): chunks of 50 ids, merged", async () => {

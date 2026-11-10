@@ -40,11 +40,11 @@ contract WeightedExecutorV3 is IRebalanceExecutor {
         IERC20(token).forceApprove(address(ROUTER), type(uint256).max);
     }
 
-    /// @notice Deployer only. Settles `index`'s auction with `priceUpdate`.
-    function fill(IWeightedHub index, bytes[] calldata priceUpdate) external payable {
+    /// @notice Deployer only. Settles `index`'s auction at `newUnits`.
+    function fill(IWeightedHub index, uint256[] calldata newUnits) external {
         if (msg.sender != OWNER) revert NotOwner(msg.sender);
         _filling = address(index);
-        index.executeRebalance{value: msg.value}("", priceUpdate);
+        index.executeRebalance(newUnits, "");
         _filling = address(0);
     }
 

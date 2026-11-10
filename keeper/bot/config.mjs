@@ -1,8 +1,14 @@
 // The keeper's settings, read from the environment and checked before anything runs. No dependencies, so the unit
 // tests run without `npm install`.
 
-/// The chains the keeper runs on, by chain id (`CHAIN_ID`): the addresses it trades through on each, and the
-/// protocol's fixed parameters it relies on.
+import { MAINNET_PRICE_IDS } from "./price-ids.mjs";
+
+const WETH_ID = "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace";
+
+/// The chains the keeper runs on, by chain id (`CHAIN_ID`): the addresses it trades through on each, and the keeper's
+/// own price source there. No contract reads a price (since 2026-11-10): `pyth` is Pyth's contract, which the keeper
+/// alone asks to confirm that a price Hermes served is the signed one (RX-9, RY-7), and `priceIds` maps each coin the
+/// keeper can value to its Pyth id. A coin without an entry is one the keeper leaves alone.
 export const CHAINS = Object.freeze({
   1: Object.freeze({
     name: "Ethereum",
@@ -14,13 +20,16 @@ export const CHAINS = Object.freeze({
     usdc: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
     // Wormhole's Token Bridge, through which the restock service bridges the copies in and out.
     tokenBridge: "0x3ee18B2214AFF97000D974cf647E7C347E8fa585",
-    ethPriceId: "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+    ethPriceId: WETH_ID,
+    pyth: "0x4305FB66699C3B2702D4d05CF36551390A4c69C6",
+    priceIds: MAINNET_PRICE_IDS,
   }),
   // The test deployment's market (docs/deployment.md, "Testnet (Sepolia)"): Uniswap V3 pools against tUSDC, the
   // FaucetToken the deployment mints with. Read on chain on 2026-10-31: SwapRouter02 and QuoterV2 answer factory()
   // with the V3 factory, SwapRouter02's WETH9() is WETH, and the Token Bridge's chainId() is Sepolia's Wormhole id,
-  // 10002. Its hub is the build of 07aeae1, which predates RX-3's start and AU-2's preview, so the keeper serves it
-  // with FILL_AUCTIONS=0: requests only.
+  // 10002. Its hub is the build of 07aeae1, which rebalances at Pyth's prices, so until a deployment of the
+  // oracle-free build replaces it the keeper serves it with FILL_AUCTIONS=0: requests only. The test tokens are priced
+  // at their mainnet counterparts' ids, as that deployment listed them.
   11155111: Object.freeze({
     name: "Sepolia",
     chainId: 11155111,
@@ -30,7 +39,14 @@ export const CHAINS = Object.freeze({
     weth: "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
     usdc: "0xD1aF4223B129071f7a1a27ED367E4D72cd7cF8D3",
     tokenBridge: "0xDB5492265f6038831E89f495670FF909aDe94bd9",
-    ethPriceId: "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+    ethPriceId: WETH_ID,
+    pyth: "0xDd24F84d36BF92C65F92307595335bdFab5Bbd21",
+    priceIds: Object.freeze({
+      "0xfff9976782d46cc05630d1f6ebab18b2324d6b14": WETH_ID, // WETH
+      "0x656c9999ad6092f813996c30a2dbe89ff2f670a9": "0xc9d8b075a5c69303365ae23633d4e085199bf5c520a3b90fed1322a0342ffc33", // tWBTC
+      "0xc02f993785fc45cf48bf61c24dcbb11f9085a4e4": "0x8ac0c70fff57e9aefdf5edf44b51d62c2d433653cbb2cf5cc06bb115af04d221", // tLINK
+      "0xc34fe6c23897ae506368cf3acb0db96d6d63bf85": "0x78d185a741d07edb3412b09008b7c5cfb9bbbd7d568bf00ba737b456ba171501", // tUNI
+    }),
   }),
 });
 
@@ -53,17 +69,16 @@ export const HUB_STATE_SLOTS = Object.freeze({ components: 0n, scale: 3n });
 /// EIP-7825's cap on a transaction's gas.
 export const TX_GAS_CAP = 16_777_216n;
 
-/// A price older than this many seconds is a closed or quiet feed (US-hours stock feeds): no start, and no request
-/// fill priced at it (RX-1).
+/// A price older than this many seconds is a closed or quiet feed (US-hours stock feeds): the keeper values nothing at
+/// it, so it moves no such leg and fills no request priced at it (RX-1).
 export const FRESH_SECONDS = 60n;
 
-/// The widest confidence interval a price the bot values anything at may carry, in basis points of the price, as the
-/// hub's MAX_CONFIDENCE refuses a settlement (RX-1).
+/// The widest confidence interval a price the bot values anything at may carry, in basis points of the price (RX-1).
 export const MAX_CONF_BPS = 200n;
 
-/// The twelve Ondo legs priced at the share's feed, while each token is worth sValue shares (script/PythIds.sol,
-/// CF-3). The bot cannot read sValue, so it never values these at Pyth: it delivers none from stock and counts any it
-/// keeps as nothing (RX-2). `test/unit/config.test.mjs` pins the list against PythIds.sol.
+/// The twelve Ondo legs whose Pyth feed prices the share, while each token is worth sValue shares (script/PythIds.sol,
+/// CF-3). The bot cannot read sValue, so it never values these at Pyth: it names no new units for them, delivers none
+/// from stock and counts any it keeps as nothing (RX-2). `test/unit/config.test.mjs` pins the list against PythIds.sol.
 export const SHARE_PRICED_IDS = Object.freeze(
   [
     "0x329635cf9e705e01ed2d842fafbb6c426d7e5630e75847740d89957222fd68b8", // AMZNon, Equity.Index.AMZN/USD
@@ -81,17 +96,7 @@ export const SHARE_PRICED_IDS = Object.freeze(
   ].map((id) => id.toLowerCase()),
 );
 
-/// The feeds whose settlements can land only in a session: all twelve. Pyth's catalogue (Benchmarks' `/v1/price_feeds`,
-/// read on 2026-10-19 without a key) gives every one of them, the six named "24/7" included, the US regular-hours
-/// schedule below, so the bot times its own starts for that until Pyth's data says otherwise (RX-3, RX-31).
-export const SESSION_IDS = SHARE_PRICED_IDS;
-
-/// The schedule Pyth's catalogue gives the six Equity.US feeds, read on 2026-10-19: New York time; Monday to Friday
-/// 09:30-16:00, Saturday and Sunday closed; then the exchange holidays (MMDD/C) and half days (MMDD/hhmm-hhmm) of the
-/// coming year. Refresh it each year from the catalogue.
-export const US_EQUITY_SCHEDULE =
-  "America/New_York;0930-1600,0930-1600,0930-1600,0930-1600,0930-1600,C,C;0907/C,1126/C,1127/0930-1300,1224/0930-1300,1225/C,0101/C,0118/C,0215/C,0326/C,0531/C,0618/C,0705/C";
-
+export const ID = /^0x[0-9a-fA-F]{64}$/;
 export const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 export const KEY = /^0x[0-9a-fA-F]{64}$/;
 
@@ -102,6 +107,7 @@ const DEFAULTS = {
   SLIPPAGE_BPS: "30",
   SUPPLY_TOLERANCE_BPS: "10",
   ROUTE_MAX_LOSS_BPS: "100",
+  TRADE_COST_BPS: "30",
   MAX_FEE_GWEI: "100",
   PRIORITY_FEE_GWEI: "2",
   FILL_REQUESTS: "1",
@@ -159,6 +165,10 @@ export function parseConfig(env) {
     slippageBps: bps("SLIPPAGE_BPS"),
     supplyToleranceBps: bps("SUPPLY_TOLERANCE_BPS"),
     routeMaxLossBps: bps("ROUTE_MAX_LOSS_BPS"),
+    // What trading a leg is taken to cost when the bot names a fill's units: a leg within this of its weight is left
+    // alone rather than traded for nothing (bot/units.mjs).
+    tradeCostBps: bps("TRADE_COST_BPS"),
+    priceIds: null,
     maxFeeGwei: number("MAX_FEE_GWEI", { positive: true }),
     priorityFeeGwei: number("PRIORITY_FEE_GWEI", { min: 0 }),
     chain: CHAINS[get("CHAIN_ID")] ?? null,
@@ -183,6 +193,16 @@ export function parseConfig(env) {
     else if (entries.length === 0) problems.push("INDEXES is set but names no index");
     else config.indexes = [...new Set(entries.map((s) => s.toLowerCase()))];
   }
+
+  // The coins the keeper can value: the chain's own, and PRICE_IDS, `token=id` pairs, for a deployment whose coins
+  // the catalogue does not hold (a testnet's) or to change one's feed.
+  const priceIds = { ...(config.chain?.priceIds ?? {}) };
+  for (const pair of (get("PRICE_IDS") ?? "").split(",").map((s) => s.trim()).filter(Boolean)) {
+    const [token, id, ...rest] = pair.split("=").map((s) => s.trim());
+    if (rest.length || !ADDRESS.test(token ?? "") || !ID.test(id ?? "")) problems.push(`PRICE_IDS has an entry that is not token=id: ${pair}`);
+    else priceIds[token.toLowerCase()] = id.toLowerCase();
+  }
+  config.priceIds = Object.freeze(priceIds);
 
   if (problems.length) throw new Error(`keeper configuration:\n  ${problems.join("\n  ")}`);
   return Object.freeze(config);

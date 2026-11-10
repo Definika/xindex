@@ -11,12 +11,13 @@ import {IWeightedHub} from "../src/interfaces/IWeightedHub.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {WeightedTest} from "./WeightedTest.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
-import {MockPyth} from "./mocks/MockPyth.sol";
 
 /// @notice The weighted factory: listings with price ids, creation, addresses and the guardian.
 contract WeightedIndexFactoryTest is WeightedTest {
     function setUp() public {
         _deploy();
+        // The checks of createIndex are called from this contract, which must be approved to reach them.
+        _approveCreator(address(this));
     }
 
     // ---------------------------------------------------------------------
@@ -26,35 +27,27 @@ contract WeightedIndexFactoryTest is WeightedTest {
     function test_constructorWiresTheImplementation() public view {
         WeightedHub implementation = WeightedHub(factory.IMPLEMENTATION());
         assertEq(implementation.FACTORY(), address(factory));
-        assertEq(implementation.PYTH(), address(pyth));
-        assertEq(factory.PYTH(), address(pyth));
+        assertTrue(implementation.MATH().code.length != 0, "the implementation names the math deployed with it");
         assertEq(factory.owner(), owner);
         assertEq(factory.guardian(), guardian);
         assertEq(factory.MAX_COMPONENTS(), implementation.MAX_COMPONENTS());
         assertEq(factory.TOTAL_WEIGHT(), implementation.TOTAL_WEIGHT());
     }
 
-    function test_constructorRefusesAPythWithoutCode() public {
-        vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.NotAContract.selector, address(0xbeef)));
-        new WeightedIndexFactory(owner, guardian, address(0xbeef));
-    }
-
     function test_constructorEmitsTheGuardian() public {
         vm.expectEmit();
         emit IWeightedIndexFactory.GuardianSet(address(0), guardian);
-        WeightedIndexFactory deployed = new WeightedIndexFactory(owner, guardian, address(pyth));
+        WeightedIndexFactory deployed = new WeightedIndexFactory(owner, guardian);
         assertEq(deployed.guardian(), guardian);
     }
 
-    function test_hubConstructorRefusesAZeroPyth() public {
+    function test_hubConstructorRefusesAZeroMath() public {
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new WeightedHub(address(0), address(1));
-        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new WeightedHub(address(1), address(0));
+        new WeightedHub(address(0));
     }
 
     function test_aZeroGuardianIsNone() public {
-        WeightedIndexFactory unguarded = new WeightedIndexFactory(owner, address(0), address(pyth));
+        WeightedIndexFactory unguarded = new WeightedIndexFactory(owner, address(0));
         assertFalse(unguarded.isOwnerOrGuardian(address(0)));
         assertTrue(unguarded.isOwnerOrGuardian(owner));
     }
@@ -63,96 +56,84 @@ contract WeightedIndexFactoryTest is WeightedTest {
     // Listings
     // ---------------------------------------------------------------------
 
-    function test_proposeListingRecordsThePriceIdAndDecimals() public {
+    function test_proposeListingRecordsTheDecimals() public {
         vm.expectEmit(address(factory));
-        emit IWeightedIndexFactory.ListingProposed(address(btc), block.timestamp + 2 days, BTC_ID, 8);
+        emit IWeightedIndexFactory.ListingProposed(address(btc), block.timestamp + 2 days, 8);
         vm.prank(owner);
-        factory.proposeListing(address(btc), BTC_ID);
+        factory.proposeListing(address(btc));
 
-        (bytes32 id, uint8 decimals) = factory.pendingTerms(address(btc));
-        assertEq(id, BTC_ID);
-        assertEq(decimals, 8);
         assertEq(factory.listingEta(address(btc)), block.timestamp + 2 days);
         assertTrue(factory.listingPending(address(btc)));
         assertFalse(factory.isWhitelisted(address(btc)));
-        assertEq(factory.priceIdOf(address(btc)), bytes32(0), "nothing in force before execution");
+        assertEq(factory.decimalsOf(address(btc)), 0, "nothing in force before execution");
     }
 
     function test_proposeListingIsOwnerOnly() public {
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, guardian));
         vm.prank(guardian);
-        factory.proposeListing(address(eth), ETH_ID);
+        factory.proposeListing(address(eth));
     }
 
     function test_proposeListingRefusesAnAccountWithoutCode() public {
         vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.NotAContract.selector, alice));
         vm.prank(owner);
-        factory.proposeListing(alice, ETH_ID);
-    }
-
-    function test_proposeListingRefusesAZeroPriceId() public {
-        vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.InvalidPriceId.selector, address(eth)));
-        vm.prank(owner);
-        factory.proposeListing(address(eth), bytes32(0));
+        factory.proposeListing(alice);
     }
 
     function test_proposeListingRefusesMoreThan18Decimals() public {
         MockERC20 wide = new MockERC20("Wide", "WIDE", 19);
         vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.InvalidDecimals.selector, address(wide), 19));
         vm.prank(owner);
-        factory.proposeListing(address(wide), ETH_ID);
+        factory.proposeListing(address(wide));
     }
 
     function test_proposeListingRefusesAListedToken() public {
-        _list(address(eth), ETH_ID);
+        _list(address(eth));
         vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.AlreadyListed.selector, address(eth)));
         vm.prank(owner);
-        factory.proposeListing(address(eth), ETH_ID);
+        factory.proposeListing(address(eth));
     }
 
     function test_proposeListingRefusesALiveListingButNotAnExpiredOne() public {
         vm.prank(owner);
-        factory.proposeListing(address(eth), ETH_ID);
+        factory.proposeListing(address(eth));
         uint256 eta = factory.listingEta(address(eth));
 
         vm.warp(eta + factory.PROPOSAL_WINDOW());
         vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.ListingPending.selector, address(eth), eta));
         vm.prank(owner);
-        factory.proposeListing(address(eth), ETH_ID);
+        factory.proposeListing(address(eth));
 
         vm.warp(eta + factory.PROPOSAL_WINDOW() + 1);
         assertFalse(factory.listingPending(address(eth)));
         vm.prank(owner);
-        factory.proposeListing(address(eth), BTC_ID);
-        (bytes32 id,) = factory.pendingTerms(address(eth));
-        assertEq(id, BTC_ID);
+        factory.proposeListing(address(eth));
+        assertEq(
+            factory.listingEta(address(eth)), block.timestamp + 2 days, "the new proposal replaced the expired one"
+        );
     }
 
-    function test_executeListingPutsTheTermsInForce() public {
+    function test_executeListingPutsTheDecimalsInForce() public {
         vm.prank(owner);
-        factory.proposeListing(address(usd), USD_ID);
+        factory.proposeListing(address(usd));
         vm.warp(block.timestamp + 2 days);
 
         vm.expectEmit(address(factory));
-        emit IWeightedIndexFactory.TokenTermsSet(address(usd), USD_ID, 6);
+        emit IWeightedIndexFactory.TokenDecimalsSet(address(usd), 6);
         vm.expectEmit(address(factory));
         emit IWeightedIndexFactory.TokenWhitelisted(address(usd), true);
         vm.prank(stranger);
         factory.executeListing(address(usd));
 
         assertTrue(factory.isWhitelisted(address(usd)));
-        assertEq(factory.priceIdOf(address(usd)), USD_ID);
         assertEq(factory.decimalsOf(address(usd)), 6);
         assertEq(factory.listingEta(address(usd)), 0);
-        (bytes32 id, uint8 decimals) = factory.pendingTerms(address(usd));
-        assertEq(id, bytes32(0));
-        assertEq(decimals, 0);
         assertEq(factory.whitelistedTokens().length, 1);
     }
 
     function test_executeListingKeepsTheDecimalsReadAtProposal() public {
         vm.prank(owner);
-        factory.proposeListing(address(usd), USD_ID);
+        factory.proposeListing(address(usd));
         usd.setDecimals(18);
         vm.warp(block.timestamp + 2 days);
         factory.executeListing(address(usd));
@@ -164,7 +145,7 @@ contract WeightedIndexFactoryTest is WeightedTest {
         factory.executeListing(address(eth));
 
         vm.prank(owner);
-        factory.proposeListing(address(eth), ETH_ID);
+        factory.proposeListing(address(eth));
         uint256 eta = factory.listingEta(address(eth));
 
         vm.warp(eta - 1);
@@ -182,7 +163,7 @@ contract WeightedIndexFactoryTest is WeightedTest {
 
     function test_executeListingOnTheLastSecondOfItsWindow() public {
         vm.prank(owner);
-        factory.proposeListing(address(eth), ETH_ID);
+        factory.proposeListing(address(eth));
         vm.warp(factory.listingEta(address(eth)) + factory.PROPOSAL_WINDOW());
         factory.executeListing(address(eth));
         assertTrue(factory.isWhitelisted(address(eth)));
@@ -190,7 +171,7 @@ contract WeightedIndexFactoryTest is WeightedTest {
 
     function test_cancelListing() public {
         vm.prank(owner);
-        factory.proposeListing(address(eth), ETH_ID);
+        factory.proposeListing(address(eth));
 
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, stranger));
         vm.prank(stranger);
@@ -201,8 +182,6 @@ contract WeightedIndexFactoryTest is WeightedTest {
         vm.prank(guardian);
         factory.cancelListing(address(eth));
         assertEq(factory.listingEta(address(eth)), 0);
-        (bytes32 id,) = factory.pendingTerms(address(eth));
-        assertEq(id, bytes32(0));
 
         vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.NoPendingListing.selector, address(eth)));
         vm.prank(owner);
@@ -221,7 +200,7 @@ contract WeightedIndexFactoryTest is WeightedTest {
         assertEq(listed[0], address(usd));
         assertEq(listed[1], address(btc));
         assertFalse(factory.isWhitelisted(address(eth)));
-        assertEq(factory.priceIdOf(address(eth)), ETH_ID, "delisting keeps the terms");
+        assertEq(factory.decimalsOf(address(eth)), 18, "delisting keeps the decimals");
 
         vm.prank(owner);
         factory.delist(address(btc));
@@ -251,7 +230,7 @@ contract WeightedIndexFactoryTest is WeightedTest {
     ///      pending there, and stop a second later.
     function test_CRI33_aListingIsPendingAtTheLastMomentItCanExecute() public {
         vm.prank(owner);
-        factory.proposeListing(address(eth), ETH_ID);
+        factory.proposeListing(address(eth));
         uint256 deadline = factory.listingEta(address(eth)) + factory.PROPOSAL_WINDOW();
 
         uint256 snapshot = vm.snapshotState();
@@ -266,7 +245,7 @@ contract WeightedIndexFactoryTest is WeightedTest {
     }
 
     function test_delistChecksTheCallerAndTheToken() public {
-        _list(address(eth), ETH_ID);
+        _list(address(eth));
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, stranger));
         vm.prank(stranger);
         factory.delist(address(eth));
@@ -276,25 +255,20 @@ contract WeightedIndexFactoryTest is WeightedTest {
         factory.delist(address(btc));
     }
 
-    /// @dev A relisting can carry a new price id, and only indexes created after it read it: every index copies its
-    ///      ids at creation, so no key can repoint an existing index's prices.
+    /// @dev A relisting reads the token's decimals anew, and they only bound what a later index may start with: an
+    ///      index that exists holds its own units and is not reached.
     function test_aRelistingReachesOnlyNewIndexes() public {
         _listAll();
         WeightedHub before = _create(_defaultSpecs());
+        uint256[] memory unitsBefore = before.recordedUnits();
 
         vm.prank(owner);
         factory.delist(address(eth));
-        bytes32 newId = keccak256("ETH/USD, another feed");
-        _list(address(eth), newId);
-        assertEq(factory.priceIdOf(address(eth)), newId);
-
-        vm.prank(alice);
-        WeightedHub later = WeightedHub(factory.createIndex("Weighted", "WGT", _defaultSpecs(), _params()));
-
-        (, bytes32[] memory oldIds,) = before.componentTerms();
-        (, bytes32[] memory newIds,) = later.componentTerms();
-        assertEq(oldIds[0], ETH_ID);
-        assertEq(newIds[0], newId);
+        eth.setDecimals(9);
+        _list(address(eth));
+        assertEq(factory.decimalsOf(address(eth)), 9);
+        assertEq(factory.maxUnitsOf(address(eth)), 1e18, "a billion whole tokens at the new decimals");
+        assertEq(before.recordedUnits(), unitsBefore);
     }
 
     // ---------------------------------------------------------------------
@@ -307,9 +281,9 @@ contract WeightedIndexFactoryTest is WeightedTest {
         address predicted = factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _params());
 
         IWeightedHub.ComponentInit[] memory inits = new IWeightedHub.ComponentInit[](3);
-        inits[0] = IWeightedHub.ComponentInit(address(eth), ETH_UNITS, 5000, ETH_ID, 18);
-        inits[1] = IWeightedHub.ComponentInit(address(btc), BTC_UNITS, 3000, BTC_ID, 8);
-        inits[2] = IWeightedHub.ComponentInit(address(usd), USD_UNITS, 2000, USD_ID, 6);
+        inits[0] = IWeightedHub.ComponentInit(address(eth), ETH_UNITS, 5000);
+        inits[1] = IWeightedHub.ComponentInit(address(btc), BTC_UNITS, 3000);
+        inits[2] = IWeightedHub.ComponentInit(address(usd), USD_UNITS, 2000);
         IWeightedHub.Config memory cfg = IWeightedHub.Config({
             creatorFeeBps: 0,
             platformFeeBps: 0,
@@ -332,13 +306,11 @@ contract WeightedIndexFactoryTest is WeightedTest {
         assertEq(index.lastRebalance(), block.timestamp);
 
         (address[] memory tokens, uint256[] memory units) = index.components();
-        (uint256[] memory weights, bytes32[] memory ids, uint8[] memory decimals) = index.componentTerms();
+        uint256[] memory weights = index.componentWeights();
         for (uint256 i = 0; i < 3; ++i) {
             assertEq(tokens[i], inits[i].token);
             assertEq(units[i], inits[i].units);
             assertEq(weights[i], inits[i].weight);
-            assertEq(ids[i], inits[i].priceId);
-            assertEq(decimals[i], inits[i].decimals);
         }
     }
 
@@ -360,13 +332,13 @@ contract WeightedIndexFactoryTest is WeightedTest {
     }
 
     function test_createIndexRefusesAnUnlistedOrDelistedToken() public {
-        _list(address(eth), ETH_ID);
-        _list(address(btc), BTC_ID);
+        _list(address(eth));
+        _list(address(btc));
         IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
         vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.TokenNotWhitelisted.selector, address(usd)));
         factory.createIndex("Weighted", "WGT", specs, _params());
 
-        _list(address(usd), USD_ID);
+        _list(address(usd));
         vm.prank(owner);
         factory.delist(address(btc));
         vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.TokenNotWhitelisted.selector, address(btc)));
@@ -461,40 +433,6 @@ contract WeightedIndexFactoryTest is WeightedTest {
         assertEq(factory.MIN_COMPONENTS(), WeightedHub(factory.IMPLEMENTATION()).MIN_COMPONENTS());
     }
 
-    /// @dev V5-M1: two tokens listed on one feed, such as two wrappers of one coin, may each go in an index, never both
-    ///      in one: Pyth fills only the first of two equal ids, so every fill of that index would revert.
-    function test_V5M1_twoComponentsOnOneFeedAreRefused() public {
-        _listAll();
-        MockERC20 twin = new MockERC20("Staked Ether", "STETH", 18);
-        _list(address(twin), ETH_ID);
-        IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
-        specs[2] = _spec(address(twin), 2000, ETH_UNITS);
-        vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.DuplicatePriceId.selector, address(twin)));
-        factory.createIndex("Weighted", "WGT", specs, _params());
-
-        specs[0] = _spec(address(twin), 5000, ETH_UNITS);
-        specs[2] = _spec(address(usd), 2000, USD_UNITS);
-        WeightedHub index = _create(specs);
-        assertEq(index.componentTokens()[0], address(twin));
-    }
-
-    /// @dev V5-M1, the mechanism: an update fills the first requested slot with its id, so a second slot asking for
-    ///      the same id is never filled, whatever the executor brings, and the parse reverts. The mock does what Pyth's
-    ///      `_parseSingleMerkleUpdate` does; an earlier mock resolved each slot on its own and hid this.
-    function test_V5M1_pythNeverFillsOneIdTwice() public {
-        bytes[] memory data = new bytes[](2);
-        data[0] = pyth.update(ETH_ID, ETH_PRICE, 0, EXPO, 100, 99);
-        data[1] = pyth.update(ETH_ID, ETH_PRICE, 0, EXPO, 100, 99);
-        bytes32[] memory ids = new bytes32[](2);
-        ids[0] = ETH_ID;
-        ids[1] = ETH_ID;
-        vm.expectRevert(MockPyth.PriceFeedNotFoundWithinRange.selector);
-        pyth.parsePriceFeedUpdatesUnique(data, ids, 100, 111);
-        ids[1] = BTC_ID;
-        data[1] = pyth.update(BTC_ID, BTC_PRICE, 0, EXPO, 100, 99);
-        assertEq(pyth.parsePriceFeedUpdatesUnique(data, ids, 100, 111).length, 2);
-    }
-
     function test_createIndexRefusesTheSameIndexTwice() public {
         _listAll();
         WeightedHub index = _create(_defaultSpecs());
@@ -505,11 +443,11 @@ contract WeightedIndexFactoryTest is WeightedTest {
     }
 
     /// @dev Each field of the salt, varied alone, moves the address: the creator, the name, the symbol, and each
-    ///      component's token, weight, units, price id and decimals (LR-05's lesson, for the weighted salt).
+    ///      component's token, weight and units (LR-05's lesson, for the weighted salt).
     function test_LR05_theAddressCommitsToEveryField() public {
         _listAll();
         MockERC20 other = new MockERC20("Other", "OTH", 18);
-        _list(address(other), ETH_ID);
+        _list(address(other));
         IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
         address base = factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _params());
 
@@ -532,25 +470,13 @@ contract WeightedIndexFactoryTest is WeightedTest {
         specs = _defaultSpecs();
         assertEq(factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _params()), base, "unchanged");
 
-        // The same token relisted under another price id moves the address.
-        vm.prank(owner);
-        factory.delist(address(eth));
-        _list(address(eth), keccak256("ETH/USD, another feed"));
-        assertTrue(factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _params()) != base, "price id");
-
-        // And under its old id but other decimals, as a token that changed them would carry.
+        // A relisting is not a term of the index: the same token listed again, with other decimals as a token that
+        // changed them would carry, leaves the address where it was.
         vm.prank(owner);
         factory.delist(address(eth));
         eth.setDecimals(17);
-        _list(address(eth), ETH_ID);
-        assertTrue(factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _params()) != base, "decimals");
-        eth.setDecimals(18);
-        vm.prank(owner);
-        factory.delist(address(eth));
-        _list(address(eth), ETH_ID);
-        assertEq(
-            factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _params()), base, "back to the same terms"
-        );
+        _list(address(eth));
+        assertEq(factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _params()), base, "a relisting");
     }
 
     function test_theCloneIsTheImplementations() public {
@@ -564,7 +490,7 @@ contract WeightedIndexFactoryTest is WeightedTest {
         IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](100);
         for (uint256 i = 0; i < 100; ++i) {
             MockERC20 token = new MockERC20("T", "T", 18);
-            _list(address(token), keccak256(abi.encode(i)));
+            _list(address(token));
             specs[i] = _spec(address(token), 100, 1e18);
         }
         WeightedHub index = _create(specs);
@@ -667,7 +593,7 @@ contract WeightedIndexFactoryTest is WeightedTest {
         assertEq(factory.pendingGuardianEta(), 0);
 
         // Without a guardian, nobody but the owner cancels a removal.
-        WeightedIndexFactory unguarded = new WeightedIndexFactory(owner, address(0), address(pyth));
+        WeightedIndexFactory unguarded = new WeightedIndexFactory(owner, address(0));
         vm.prank(owner);
         unguarded.proposeGuardian(address(0));
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, address(0)));
@@ -805,9 +731,9 @@ contract WeightedIndexFactoryTest is WeightedTest {
             rebalanceInterval: 7 days
         });
         IWeightedHub.ComponentInit[] memory inits = new IWeightedHub.ComponentInit[](3);
-        inits[0] = IWeightedHub.ComponentInit(address(eth), ETH_UNITS, 5000, ETH_ID, 18);
-        inits[1] = IWeightedHub.ComponentInit(address(btc), BTC_UNITS, 3000, BTC_ID, 8);
-        inits[2] = IWeightedHub.ComponentInit(address(usd), USD_UNITS, 2000, USD_ID, 6);
+        inits[0] = IWeightedHub.ComponentInit(address(eth), ETH_UNITS, 5000);
+        inits[1] = IWeightedHub.ComponentInit(address(btc), BTC_UNITS, 3000);
+        inits[2] = IWeightedHub.ComponentInit(address(usd), USD_UNITS, 2000);
         vm.prank(creator);
         vm.expectEmit(address(factory));
         emit IWeightedIndexFactory.IndexCreated(predicted, creator, "Weighted", "WGT", inits, cfg, false);
@@ -844,6 +770,94 @@ contract WeightedIndexFactoryTest is WeightedTest {
         vm.prank(creator);
         vm.expectRevert(Errors.FailedCall.selector);
         factory.createIndex{value: 0.01 ether}("Weighted2", "WGT", specs, _params());
+    }
+
+    /// @dev Only an account the owner approved creates an index (the owner's call of 2026-11-10). Neither role is
+    ///      approved by being a role.
+    function test_onlyAnApprovedCreatorCreatesAnIndex() public {
+        _listAll();
+        IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
+        address[3] memory unapproved = [stranger, owner, guardian];
+        for (uint256 i = 0; i < unapproved.length; ++i) {
+            assertFalse(factory.isApprovedCreator(unapproved[i]));
+            vm.prank(unapproved[i]);
+            vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.CreatorNotApproved.selector, unapproved[i]));
+            factory.createIndex("Weighted", "WGT", specs, _params());
+        }
+        assertEq(factory.allIndexesLength(), 0);
+
+        _approveCreator(stranger);
+        vm.prank(stranger);
+        WeightedHub index = WeightedHub(factory.createIndex("Weighted", "WGT", specs, _params()));
+        assertTrue(factory.isIndex(address(index)));
+        assertEq(factory.creatorOf(address(index)), stranger);
+    }
+
+    function test_onlyTheOwnerApprovesCreators() public {
+        vm.prank(guardian);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, guardian));
+        factory.setApprovedCreator(guardian, true);
+        // An approved creator approves nobody.
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, creator));
+        factory.setApprovedCreator(stranger, true);
+        assertFalse(factory.isApprovedCreator(stranger));
+
+        vm.startPrank(owner);
+        vm.expectEmit(address(factory));
+        emit IWeightedIndexFactory.CreatorApprovalSet(stranger, true);
+        factory.setApprovedCreator(stranger, true);
+        assertTrue(factory.isApprovedCreator(stranger));
+        vm.expectEmit(address(factory));
+        emit IWeightedIndexFactory.CreatorApprovalSet(stranger, false);
+        factory.setApprovedCreator(stranger, false);
+        assertFalse(factory.isApprovedCreator(stranger));
+        vm.stopPrank();
+    }
+
+    /// @dev Withdrawing an approval stops that account's next creation and nothing else: the index it created keeps
+    ///      its creator, and keeps issuing and redeeming.
+    function test_aWithdrawnApprovalStopsCreationAndReachesNoIndex() public {
+        _listAll();
+        IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
+        WeightedHub index = _create(specs);
+        _issue(index, alice, 10e18);
+        vm.prank(owner);
+        factory.setApprovedCreator(creator, false);
+
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.CreatorNotApproved.selector, creator));
+        factory.createIndex("Second", "SEC", specs, _params());
+
+        assertEq(factory.creatorOf(address(index)), creator);
+        _issue(index, alice, 1e18);
+        vm.prank(alice);
+        index.redeem(11e18, alice);
+        assertEq(index.totalSupply(), 0);
+    }
+
+    /// @dev The partner path: an approved creator creates the index and hands the role on. The new creator, never
+    ///      approved, takes the role and its fee, and still cannot create an index of its own.
+    function test_theCreatorRoleMovesToAnAccountThatWasNeverApproved() public {
+        _listAll();
+        IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
+        WeightedHub index = _create(specs, _p(100, 25, 7 days));
+        vm.prank(creator);
+        factory.transferCreator(address(index), stranger);
+        vm.prank(stranger);
+        factory.acceptCreator(address(index));
+        assertEq(factory.creatorOf(address(index)), stranger);
+        assertFalse(factory.isApprovedCreator(stranger));
+
+        _issue(index, alice, 100e18);
+        uint256 feeShares = index.totalSupply() - 100e18;
+        assertGt(feeShares, 0);
+        assertEq(index.balanceOf(stranger), feeShares, "the creator's fee on the mint goes to the new creator");
+        assertEq(index.balanceOf(creator), 0);
+
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.CreatorNotApproved.selector, stranger));
+        factory.createIndex("Second", "SEC", specs, _params());
     }
 
     /// @dev The creator role is offered and accepted, so `creatorOf` never names an account that did not agree (RX-22).

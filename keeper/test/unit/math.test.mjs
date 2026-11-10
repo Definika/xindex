@@ -177,32 +177,9 @@ test("RX-2: share-priced Ondo stock is never delivered, and counts as nothing wh
   assert.equal(M.deliversSharePricedStock({ need: 1n, held: 5n, sharePriced: false }), false);
 });
 
-test("RX-3, RX-31: Pyth's schedule decides when a share feed publishes, holidays and half days included", async () => {
-  const { US_EQUITY_SCHEDULE: S } = await import("../../bot/config.mjs");
-  // Eastern Standard Time is UTC-5, Eastern Daylight Time UTC-4.
-  const est = (y, mo, d, h, m) => Date.UTC(y, mo - 1, d, h + 5, m, 0) / 1000;
-  const edt = (y, mo, d, h, m) => Date.UTC(y, mo - 1, d, h + 4, m, 0) / 1000;
-  assert.equal(M.inSchedule(est(2027, 2, 16, 9, 30), S), true, "a Tuesday's open");
-  assert.equal(M.inSchedule(est(2027, 2, 16, 15, 59), S), true);
-  assert.equal(M.inSchedule(est(2027, 2, 16, 16, 0), S), false, "the close is excluded");
-  assert.equal(M.inSchedule(est(2027, 2, 16, 9, 29), S), false);
-  assert.equal(M.inSchedule(est(2027, 2, 13, 12, 0), S), false, "a Saturday");
-  assert.equal(M.inSchedule(est(2027, 2, 15, 12, 0), S), false, "Presidents' Day");
-  assert.equal(M.inSchedule(est(2026, 11, 26, 12, 0), S), false, "Thanksgiving");
-  assert.equal(M.inSchedule(est(2026, 11, 27, 12, 59), S), true, "the half day after it");
-  assert.equal(M.inSchedule(est(2026, 11, 27, 13, 0), S), false);
-  assert.equal(M.inSchedule(edt(2027, 6, 1, 10, 0), S), true, "summer time");
-  // 2 h of notice and the hub's 4 h auction: μ reaches 1 at the start plus 4 h.
-  assert.equal(M.sessionStartOk(est(2027, 2, 16, 9, 35), 7_200, 14_400, S), true, "a 09:35 start puts μ = 1 at 13:35");
-  assert.equal(M.sessionStartOk(est(2027, 2, 16, 0, 0), 7_200, 14_400, S), false, "a 00:00 start puts μ = 1 at 04:00");
-  assert.equal(M.sessionStartOk(est(2026, 11, 26, 9, 35), 7_200, 14_400, S), false, "μ = 1 on Thanksgiving");
-});
-
-test("RX-3: a start's gas limit covers Pyth's parse of its feeds and stays under EIP-7825's cap", () => {
-  // 93 feeds took 2.34M of Pyth's parse on a fork (2026-10-12): the limit must cover that and the hub's own checks.
-  assert.ok(M.startGasLimit(93) > 2_340_000n * 3n / 2n);
-  assert.ok(M.startGasLimit(100) <= 16_777_216n);
-  assert.ok(M.startGasLimit(2) < M.startGasLimit(3));
+test("a start is sent with room over what a hundred-coin index took, far under EIP-7825's cap", () => {
+  assert.ok(M.START_GAS_LIMIT > 2n * 94_000n);
+  assert.ok(M.START_GAS_LIMIT < 16_777_216n / 10n);
 });
 
 test("RX-16: a subsidised fill fits only what is left of the day's budget", () => {
@@ -231,11 +208,9 @@ test("RX-34: the start checks take the richest ready indexes, at most the cap", 
   assert.deepEqual(rest.map((r) => r.index), ["a"]);
 });
 
-test("RX-18: Pyth's update fee counts against a fill like its gas", () => {
-  const gwei = 1_000_000_000n;
-  const base = M.fillCostUsd({ used: 1_000_000n, nextBase: 10n * gwei, tip: 2n * gwei, ethUsd: 3_000 });
-  assert.equal(base, 36, "1M gas at 12 gwei and $3,000");
-  assert.equal(M.fillCostUsd({ used: 1_000_000n, nextBase: 10n * gwei, tip: 2n * gwei, ethUsd: 3_000, pythFee: 10n ** 15n }), 39);
+test("a fill costs its gas at the next block's base fee plus the tip, and nothing else", () => {
+  const gwei = 10n ** 9n;
+  assert.equal(M.fillCostUsd({ used: 1_000_000n, nextBase: 10n * gwei, tip: 2n * gwei, ethUsd: 3_000 }), 36);
 });
 
 test("RX-9, RY-7: only prices Pyth's contract returned identically from the signed update are kept", () => {
@@ -258,27 +233,6 @@ test("RX-9, RY-7: only prices Pyth's contract returned identically from the sign
   ]);
   const feedEma = (id) => ({ ...feed(id, 300_00000000n), emaPrice: { ...ema, publishTime: 1_000n } });
   assert.deepEqual([...M.verifiedPrices(withEma, [feedEma("0xaa"), feedEma("0xbb")], key).keys()], ["aa"], "a forged average is dropped");
-});
-
-test("RZ-26: the bot sends only the guardian's starts a block may still send", () => {
-  const indexes = ["0xA", "0xB", "0xC", "0xD", "0xE"];
-  const T = 1_000n;
-  const reads = [
-    { status: "success", result: [4n, 1_000n] }, // live until this very block
-    { status: "success", result: [4n, 999n] }, // its deadline passed
-    { status: "success", result: [0n, 0n] }, // none, or already sent
-    { status: "failure", error: new Error("no relay") },
-    { status: "success", result: [0n, 5_000n] }, // a start before strangers may, no coin kept
-  ];
-  const live = M.liveAuthorizations(indexes, reads, T);
-  assert.deepEqual([...live.keys()], ["0xA", "0xE"]);
-  assert.deepEqual(live.get("0xA"), { keepMask: 4n, deadline: 1_000n });
-  assert.equal(M.liveAuthorizations(indexes, reads, 1_001n).size, 1, "at 1001 only E's is left");
-});
-
-test("RZ-26: a start through the relay carries the relay's own gas on top of a start's", () => {
-  for (const feeds of [2, 3, 99]) assert.ok(M.relayStartGasLimit(feeds) > M.startGasLimit(feeds));
-  assert.ok(M.relayStartGasLimit(100) <= 16_777_216n);
 });
 
 test("RY-8: an auction asks for stock only when its settlement at its best price could pay MIN_PROFIT_USD", () => {

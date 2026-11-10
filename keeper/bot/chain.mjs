@@ -16,6 +16,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { mainnet, sepolia } from "viem/chains";
 import { HUB_SLOTS } from "./config.mjs";
+import { barAt, BAR_HALF_LIFE } from "./units.mjs";
 
 const load = (path) => JSON.parse(readFileSync(new URL(path, import.meta.url), "utf8"));
 
@@ -31,9 +32,13 @@ export const ABI = {
   hub: load("../../abi/WeightedHub.json"),
   factory: load("../../abi/WeightedIndexFactory.json"),
   requests: load("../../abi/MintRequests.json"),
-  relay: load("../../abi/GuardianRelay.json"),
   executor: executorAbi(),
-  erc20: parseAbi(["function balanceOf(address) view returns (uint256)", "function symbol() view returns (string)"]),
+  erc20: parseAbi([
+    "function balanceOf(address) view returns (uint256)",
+    "function symbol() view returns (string)",
+    "function decimals() view returns (uint8)",
+  ]),
+  multicall3: parseAbi(["function getCurrentBlockTimestamp() view returns (uint256)"]),
   quoter: parseAbi([
     "function quoteExactInput(bytes path, uint256 amountIn) returns (uint256 amountOut, uint160[], uint32[], uint256)",
     "function quoteExactOutput(bytes path, uint256 amountOut) returns (uint256 amountIn, uint160[], uint32[], uint256)",
@@ -42,6 +47,7 @@ export const ABI = {
   v3Pool: parseAbi([
     "function slot0() view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked)",
   ]),
+  // Pyth's contract, which no contract of the protocol calls: the keeper asks it to confirm a price Hermes served.
   pyth: parseAbi([
     "function getUpdateFee(bytes[] updateData) view returns (uint256)",
     "struct Price { int64 price; uint64 conf; int32 expo; uint256 publishTime; }",
@@ -55,7 +61,10 @@ export const ABI = {
     "error PriceFeedNotFound()",
   ]),
 };
-const ERRORS = [...ABI.hub, ...ABI.factory, ...ABI.requests, ...ABI.relay, ...ABI.executor, ...ABI.pyth].filter((x) => x.type === "error");
+const ERRORS = [...ABI.hub, ...ABI.factory, ...ABI.requests, ...ABI.executor, ...ABI.pyth].filter((x) => x.type === "error");
+
+/// Multicall3, at one address on every chain the keeper runs on: its clock tells whether the RPC honours overrides.
+const MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11";
 
 /// The revert data inside a viem error, if any.
 function revertData(error) {
@@ -180,20 +189,33 @@ export function createChain(cfg) {
     if (!same(requestsFactory, factory)) throw new Error(`the executor's request escrow ${requests} is on another factory`);
 
     const implementation = await read(cfg.factory, ABI.factory, "IMPLEMENTATION", [], at);
-    const pyth = await read(cfg.factory, ABI.factory, "PYTH", [], at);
     const duration = await read(implementation, ABI.hub, "AUCTION_DURATION", [], at);
     const delay = await read(implementation, ABI.hub, "REBALANCE_DELAY", [], at);
     const block = await client.getBlock({ blockNumber: at });
     const time = block.timestamp + 1000n;
-    const priceTime = await call({ to: implementation, abi: ABI.hub, functionName: "priceTime", args: [] }, at, {
+    const clock = await call({ to: MULTICALL3, abi: ABI.multicall3, functionName: "getCurrentBlockTimestamp", args: [] }, at, {
       block: { number: at + 1n, time },
     });
-    if (priceTime !== time - 12n) throw new Error("the RPC ignores eth_call block overrides: the keeper needs them");
+    if (clock !== time) throw new Error("the RPC ignores eth_call block overrides: the keeper needs them");
     const [eta, keepMask] = await call({ to: implementation, abi: ABI.hub, functionName: "pendingRebalance", args: [] }, at, {
       state: { [implementation]: { [HUB_SLOTS.eta]: 1234n, [HUB_SLOTS.keepMask]: 5n } },
     });
     if (eta !== 1234n || keepMask !== 5n) throw new Error("WeightedHub's storage layout is not the one the keeper knows");
-    return { implementation, pyth, duration, delay, requests };
+    // The bar one half-life into an auction, read from the hub with both overrides, is the one the bot computes: a hub
+    // of another build, which the bot's units would not clear, is refused before anything is sent.
+    if (cfg.fillAuctions) {
+      let bar;
+      try {
+        bar = await call({ to: implementation, abi: ABI.hub, functionName: "currentBar", args: [] }, at, {
+          block: { number: at + 1n, time },
+          state: { [implementation]: { [HUB_SLOTS.eta]: time - BAR_HALF_LIFE } },
+        });
+      } catch (error) {
+        throw new Error(`this factory's hub has no bar to read (${revertReason(error)}): it is not the oracle-free build; serve it with FILL_AUCTIONS=0`);
+      }
+      if (bar !== barAt(BAR_HALF_LIFE)) throw new Error("WeightedHub's bar is not the one the keeper computes");
+    }
+    return { implementation, pyth: cfg.chain.pyth, duration, delay, requests };
   }
 
   return {

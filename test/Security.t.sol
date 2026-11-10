@@ -7,6 +7,7 @@ import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.so
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {WeightedHub} from "../src/WeightedHub.sol";
 import {IndexZap} from "../src/IndexZap.sol";
 import {IIndexZap} from "../src/interfaces/IIndexZap.sol";
@@ -25,7 +26,6 @@ import {MockPausableToken} from "./mocks/MockPausableToken.sol";
 import {MockWeightedExecutor} from "./mocks/MockWeightedExecutor.sol";
 import {MockUniversalRouter} from "./mocks/MockUniversalRouter.sol";
 import {PathKey} from "../src/libraries/UniswapV4Types.sol";
-import {PythStructs} from "../src/interfaces/pyth/PythStructs.sol";
 
 /// @notice Watches an index from inside a token callback, the way a third-party protocol could.
 contract NavProbe is ITokenReceiverHook {
@@ -66,7 +66,7 @@ contract FlashFiller is IRebalanceExecutor {
     uint256 public spent;
 
     /// @return pnl Raw units the filler ends with minus raw units it minted, summed over the components.
-    function fill(WeightedHub index, uint256 shares, bytes[] calldata priceUpdate) external returns (int256 pnl) {
+    function fill(WeightedHub index, uint256 shares, uint256[] calldata newUnits) external returns (int256 pnl) {
         address[] memory t = index.componentTokens();
         if (shares != 0) {
             uint256[] memory need = index.previewIssue(shares);
@@ -77,7 +77,7 @@ contract FlashFiller is IRebalanceExecutor {
             }
             index.issue(shares, address(this));
         }
-        index.executeRebalance("", priceUpdate);
+        index.executeRebalance(newUnits, "");
         if (shares != 0) index.redeem(shares, address(this));
         uint256 held = 0;
         for (uint256 i = 0; i < t.length; ++i) {
@@ -102,7 +102,6 @@ interface IXindexCore is IWeightedIndexFactory, IWeightedHub {
     function MIN_COMPONENTS() external view override(IWeightedIndexFactory, IWeightedHub) returns (uint256);
     function MAX_COMPONENTS() external view override(IWeightedIndexFactory, IWeightedHub) returns (uint256);
     function TOTAL_WEIGHT() external view override(IWeightedIndexFactory, IWeightedHub) returns (uint256);
-    function PYTH() external view override(IWeightedIndexFactory, IWeightedHub) returns (address);
     function MIN_REBALANCE_INTERVAL() external view override(IWeightedIndexFactory, IWeightedHub) returns (uint256);
 }
 
@@ -319,6 +318,8 @@ contract SecurityRegressionTest is XindexTest {
         IWeightedIndexFactory.ComponentSpec[] memory specs = _specs(_blueTokens(), _blueUnits(1));
         address creatorA = makeAddr("creatorA");
         address creatorB = makeAddr("creatorB");
+        _approveCreator(creatorA);
+        _approveCreator(creatorB);
 
         uint256 snap = vm.snapshotState();
         vm.prank(creatorA);
@@ -374,13 +375,13 @@ contract SecurityRegressionTest is XindexTest {
         address typo = makeAddr("typo");
         vm.prank(owner);
         vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.NotAContract.selector, typo));
-        factory.proposeListing(typo, _priceId(typo));
+        factory.proposeListing(typo);
     }
 
     function test_L07_hostileListingWaitsAndGuardianCanCancel() public {
         MockERC20 hostile = new MockERC20("Blue Chip Plus", "BLUE+", 18);
         vm.prank(owner);
-        factory.proposeListing(address(hostile), _priceId(address(hostile)));
+        factory.proposeListing(address(hostile));
         uint256 eta = factory.listingEta(address(hostile));
         assertEq(eta, block.timestamp + 2 days);
 
@@ -399,7 +400,7 @@ contract SecurityRegressionTest is XindexTest {
         MockERC20 hostile = new MockERC20("Blue Chip Plus", "BLUE+", 18);
         vm.startPrank(owner); // a compromised owner tries to remove the guardian and list at the same time
         factory.proposeGuardian(address(0));
-        factory.proposeListing(address(hostile), _priceId(address(hostile)));
+        factory.proposeListing(address(hostile));
         vm.stopPrank();
         assertEq(factory.guardian(), guardian, "the guardian keeps its powers while its removal is pending");
 
@@ -417,7 +418,7 @@ contract SecurityRegressionTest is XindexTest {
     function test_FR03_staleListingProposalsExpire() public {
         MockERC20 token = new MockERC20("Stale", "STALE", 18);
         vm.prank(owner);
-        factory.proposeListing(address(token), _priceId(address(token)));
+        factory.proposeListing(address(token));
         uint256 deadline = factory.listingEta(address(token)) + factory.PROPOSAL_WINDOW();
 
         vm.warp(deadline + 1);
@@ -425,7 +426,7 @@ contract SecurityRegressionTest is XindexTest {
         factory.executeListing(address(token));
 
         vm.prank(owner); // proposing again restarts the public delay
-        factory.proposeListing(address(token), _priceId(address(token)));
+        factory.proposeListing(address(token));
         assertEq(factory.listingEta(address(token)), block.timestamp + factory.LISTING_DELAY());
     }
 
@@ -547,6 +548,9 @@ contract SecurityRegressionTest is XindexTest {
     function test_I08_creatorIsRecordedAndCopiesLandElsewhere() public {
         address creator = makeAddr("creator");
         address copier = makeAddr("copier");
+        // Both approved: the salt keeps two approved creators apart as it kept any two apart.
+        _approveCreator(creator);
+        _approveCreator(copier);
         IWeightedIndexFactory.ComponentSpec[] memory t = _specs(_blueTokens(), _blueUnits(1));
 
         vm.prank(copier); // front-runs with identical arguments
@@ -686,30 +690,28 @@ contract SecurityRegressionTest is XindexTest {
         uint256 earliest = idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL();
         if (idx.restartAllowedAt() > earliest) earliest = idx.restartAllowedAt();
         if (block.timestamp < earliest) vm.warp(earliest);
-        bytes[] memory live = pyth.liveUpdates(idx, keepMask);
         vm.prank(caller);
-        idx.startRebalance(keepMask, live);
+        idx.startRebalance(keepMask);
         (eta,) = idx.pendingRebalance();
         vm.warp(eta + into);
     }
 
-    /// @dev Pyth updates at the index's price time: the first component at 90 cents and the rest at a dollar, so a fill
-    ///      buys the first and sells the others. Pyth ignores an update for a feed the hub does not ask for.
-    function _cheapFirst(WeightedHub idx, address[] memory t) internal view returns (bytes[] memory data) {
-        uint64 time = uint64(idx.priceTime());
-        data = new bytes[](t.length);
-        for (uint256 i = 0; i < t.length; ++i) {
-            data[i] = pyth.update(_priceId(t[i]), i == 0 ? int64(0.9e8) : int64(1e8), 0, -8, time, time - 1);
+    /// @dev The units a fair fill names when the first component trades at 90 cents and the rest at a dollar: it buys
+    ///      the first and sells the others, onto the weights, without changing the index's value at those prices. The
+    ///      components `keepMask` names keep their units.
+    function _cheapFirst(WeightedHub idx, uint256 keepMask) internal view returns (uint256[] memory units) {
+        units = idx.recordedUnits();
+        uint256[] memory weights = idx.componentWeights();
+        uint256 value = 0;
+        uint256 weight = 0;
+        for (uint256 i = 0; i < units.length; ++i) {
+            if ((keepMask >> i) & 1 != 0) continue;
+            value += units[i] * (i == 0 ? 90 : 100);
+            weight += weights[i];
         }
-    }
-
-    /// @dev The same prices as Pyth feeds, for `previewRebalance`, each with its moving average equal to it.
-    function _cheapFirstStructs(address[] memory t) internal pure returns (PythStructs.PriceFeed[] memory feeds) {
-        feeds = new PythStructs.PriceFeed[](t.length);
-        for (uint256 i = 0; i < t.length; ++i) {
-            PythStructs.Price memory p =
-                PythStructs.Price({price: i == 0 ? int64(0.9e8) : int64(1e8), conf: 0, expo: -8, publishTime: 0});
-            feeds[i] = PythStructs.PriceFeed({id: bytes32(0), price: p, emaPrice: p});
+        for (uint256 i = 0; i < units.length; ++i) {
+            if ((keepMask >> i) & 1 != 0) continue;
+            units[i] = Math.mulDiv(value, weights[i], weight * (i == 0 ? 90 : 100), Math.Rounding.Ceil);
         }
     }
 
@@ -720,23 +722,24 @@ contract SecurityRegressionTest is XindexTest {
         uint256 balanceBefore = MockERC20(t[3]).balanceOf(address(idx));
 
         _openAuction(idx, 1 << 3, guardian, idx.AUCTION_DURATION() / 2);
-        (,, uint256[] memory out, uint256[] memory amountsIn) = idx.previewRebalance(_cheapFirstStructs(t));
+        uint256[] memory units = _cheapFirst(idx, 1 << 3);
+        (,, uint256[] memory out, uint256[] memory amountsIn) = idx.previewRebalance(units);
         assertEq(out[3], 0);
         assertEq(amountsIn[3], 0);
-        new MockWeightedExecutor().execute(idx, "", _cheapFirst(idx, t));
+        new MockWeightedExecutor().execute(idx, units, "");
         assertEq(MockERC20(t[3]).balanceOf(address(idx)), balanceBefore);
         assertEq(idx.rebalanceNonce(), 1);
     }
 
     function test_R12_flashIssuingAroundAFillExtractsNothing() public {
-        (WeightedHub idx, address[] memory t) = _basket();
+        (WeightedHub idx,) = _basket();
         _openAuction(idx, 0, attacker, idx.AUCTION_DURATION() * 3 / 4);
-        bytes[] memory updates = _cheapFirst(idx, t);
+        uint256[] memory units = _cheapFirst(idx, 0);
 
         uint256 snapshot = vm.snapshotState();
-        int256 plain = new FlashFiller().fill(idx, 0, updates);
+        int256 plain = new FlashFiller().fill(idx, 0, units);
         vm.revertToState(snapshot);
-        int256 withFlashShares = new FlashFiller().fill(idx, 1_000_000e18, updates);
+        int256 withFlashShares = new FlashFiller().fill(idx, 1_000_000e18, units);
         // The extra shares bear exactly what they earn: the filler gains what it would without them, to the raw units
         // of rounding its issue and redemption take.
         assertApproxEqAbs(withFlashShares, plain, 10, "flash shares extract nothing");
@@ -747,7 +750,7 @@ contract SecurityRegressionTest is XindexTest {
         vm.prank(alice);
         idx.redeemSkipping(2e18, alice, (1 << 0) | (1 << 2)); // a growing and a shrinking component
         _openAuction(idx, 0, attacker, idx.AUCTION_DURATION() / 2);
-        new MockWeightedExecutor().execute(idx, "", _cheapFirst(idx, t));
+        new MockWeightedExecutor().execute(idx, _cheapFirst(idx, 0), "");
         (, uint256[] memory units) = idx.components();
         assertGt(units[0], UNITS, "the first component grew");
         assertLt(units[2], UNITS, "and the third shrank");
@@ -759,9 +762,9 @@ contract SecurityRegressionTest is XindexTest {
     }
 
     function test_R20_zapRefusesAQuoteFromBeforeARebalance() public {
-        (WeightedHub idx, address[] memory t) = _basket();
-        _openAuction(idx, 0, attacker, 0);
-        new MockWeightedExecutor().execute(idx, "", _cheapFirst(idx, t));
+        (WeightedHub idx,) = _basket();
+        _openAuction(idx, 0, attacker, idx.AUCTION_DURATION() / 2);
+        new MockWeightedExecutor().execute(idx, _cheapFirst(idx, 0), "");
 
         IIndexZap.BurnParams memory p =
             _burnParams(address(idx), 1e18, address(usdc), 1, new IUniversalRouterSwaps.BurnLeg[](5), alice);
@@ -781,7 +784,7 @@ contract SecurityRegressionTest is XindexTest {
     function test_XA03_relistingAlwaysTakesAFreshProposal() public {
         vm.prank(owner);
         vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.AlreadyListed.selector, address(link)));
-        factory.proposeListing(address(link), _priceId(address(link)));
+        factory.proposeListing(address(link));
 
         vm.prank(guardian);
         factory.delist(address(link));
@@ -791,7 +794,7 @@ contract SecurityRegressionTest is XindexTest {
         assertFalse(factory.isWhitelisted(address(link)));
 
         vm.prank(owner);
-        factory.proposeListing(address(link), _priceId(address(link)));
+        factory.proposeListing(address(link));
         assertEq(factory.listingEta(address(link)), block.timestamp + factory.LISTING_DELAY(), "a fresh delay");
     }
 
@@ -870,7 +873,7 @@ contract SecurityRegressionTest is XindexTest {
     }
 
     function test_XA59_everyProposalCarriesItsOwnId() public {
-        (WeightedHub idx, address[] memory t) = _basket();
+        (WeightedHub idx,) = _basket();
         uint256 eta = _openAuction(idx, 0, attacker, 0);
         assertEq(idx.proposalCount(), 1);
 
@@ -878,24 +881,22 @@ contract SecurityRegressionTest is XindexTest {
         idx.cancelRebalance();
         vm.warp(idx.restartAllowedAt());
         eta = block.timestamp + idx.REBALANCE_DELAY();
-        bytes[] memory live = pyth.liveUpdates(idx, 0);
         vm.expectEmit(true, true, true, true, address(idx));
         emit IWeightedHub.RebalanceStarted(2, 1, attacker, 0, eta);
         vm.prank(attacker);
-        idx.startRebalance(0, live);
+        idx.startRebalance(0);
 
         // The third proposal follows the second's expiry, with no event of its own to mark it.
         vm.warp(eta + idx.AUCTION_DURATION() + idx.REBALANCE_DELAY());
-        bytes[] memory live2 = pyth.liveUpdates(idx, 0);
         vm.prank(attacker);
-        idx.startRebalance(0, live2);
+        idx.startRebalance(0);
         assertEq(idx.proposalCount(), 3, "three attempts, all at rebalance nonce 1");
         assertEq(idx.rebalanceNonce(), 0);
 
         (eta,) = idx.pendingRebalance();
-        vm.warp(eta);
+        vm.warp(eta + idx.AUCTION_DURATION() / 2);
         vm.recordLogs();
-        new MockWeightedExecutor().execute(idx, "", _cheapFirst(idx, t));
+        new MockWeightedExecutor().execute(idx, _cheapFirst(idx, 0), "");
         Vm.Log[] memory logs = vm.getRecordedLogs();
         bool found = false;
         for (uint256 i = 0; i < logs.length; ++i) {

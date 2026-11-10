@@ -270,16 +270,7 @@ library MainnetAddresses {
     /// @dev Wormhole's token bridge on Ethereum (Portal), which owns every Wormhole copy above: `wrappedAsset(chain,
     ///      source)` names the copy of a source token, and `isWrappedAsset(token)` says whether a token is one. An
     ///      ERC-1967 proxy the guardians' governance upgrades; its proxy code hash is pinned by
-    ///      `test/fork/MainnetAddresses.fork.t.sol`, as Pyth's is. Anyone attests a new source token on its home chain,
+    ///      `test/fork/MainnetAddresses.fork.t.sol`. Anyone attests a new source token on its home chain,
     ///      and the bridge deploys its copy here (design/2026-10-10-one-index-wormhole-legs.md, section 5).
     address internal constant WORMHOLE_TOKEN_BRIDGE = 0x3ee18B2214AFF97000D974cf647E7C347E8fa585;
-
-    // ---------------------------------------------------------------------
-    // Prices, for v5's weighted indexes only.
-    // ---------------------------------------------------------------------
-    /// @dev Pyth's contract on Ethereum, from which `WeightedHub` reads every settlement's prices. An ERC-1967 proxy the
-    ///      Pyth DAO upgrades by governance message; read on 2026-10-05 at block 26,128,096: version 1.4.6, Wormhole
-    ///      chain id 2, update fee 0, implementation 0x3F38404A2e3Cb949bcDfA19a5C3bDf3fE375fEb0. The proxy's code hash
-    ///      is pinned by `test/fork/MainnetAddresses.fork.t.sol`; the implementation's is not, since Pyth upgrades it.
-    address internal constant PYTH = 0x4305FB66699C3B2702D4d05CF36551390A4c69C6;
 }

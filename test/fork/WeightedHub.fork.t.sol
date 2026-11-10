@@ -18,11 +18,9 @@ import {IRebalanceExecutor} from "../../src/interfaces/IRebalanceExecutor.sol";
 import {IUniversalRouter} from "../../src/interfaces/IUniversalRouter.sol";
 import {IWETH9} from "../../src/interfaces/IWETH9.sol";
 import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
-import {PythStructs} from "../../src/interfaces/pyth/PythStructs.sol";
-import {PythIds} from "../../script/PythIds.sol";
+import {Listings} from "../../script/Listings.sol";
 import {MainnetAddresses as M} from "../../script/MainnetAddresses.sol";
 import {ISwapRouter02} from "../mocks/ISwapRouter02.sol";
-import {MockPyth} from "../mocks/MockPyth.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
 import {WeightedExecutorV3} from "./WeightedExecutorV3.sol";
 
@@ -46,18 +44,18 @@ interface IWbtcAdmin {
     function unpause() external;
 }
 
-/// @notice v5 on a mainnet fork, with every coin of the Ethereum list (49: the first four and the wide list), real
-///         token contracts and real Uniswap pools. Only Pyth is a stand-in, since real
-///         signed updates need an API key; its prices come from the pools, as Pyth's track the market.
+/// @notice The weighted index on a mainnet fork, with every coin of the Ethereum list (the first four and the wide
+///         list), real token contracts and real Uniswap pools. Nothing stands in for a price: the contracts read none.
+///         The tests price each coin from the pools, as an executor would, and name their fills by those prices.
 ///
 ///         It answers what the unit tests cannot: does every real token issue, redeem and rebalance through the hub;
 ///         which coins can Uniswap actually trade, at what slippage; does the zap mint and burn a weighted index
-///         through real pools; does a Uniswap rebalancer settle at a profit; and what happens, with real tokens, when
-///         WBTC is paused, a feed goes silent, a price is wrong or nobody fills. Skips when MAINNET_RPC_URL is unset.
+///         through real pools; does a Uniswap rebalancer settle; and what happens, with real tokens, when WBTC is
+///         paused, an executor leaves a coin alone, a fill asks for too much or nobody fills. Skips when
+///         MAINNET_RPC_URL is unset.
 contract WeightedHubForkTest is Test, IRebalanceExecutor {
     using SafeERC20 for IERC20;
 
-    MockPyth pyth;
     WeightedIndexFactory factory;
     IndexZap zap;
     IQuoterV2Weighted quoter = IQuoterV2Weighted(A.QUOTER_V2);
@@ -71,7 +69,6 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
     /// @dev What the fork found for one coin.
     struct Coin {
         address token;
-        bytes32 id;
         uint8 decimals;
         bool dealt; // whether forge's `deal` can write its balance
         bool routed; // whether a Uniswap V3 route to USDC exists
@@ -111,13 +108,13 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
             );
         }
 
-        pyth = new MockPyth();
-        factory = new WeightedIndexFactory(address(this), guardian, address(pyth));
+        factory = new WeightedIndexFactory(address(this), guardian);
+        factory.setApprovedCreator(creator, true);
         zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), IWETH9(A.WETH));
 
-        (address[] memory tokens, bytes32[] memory ids) = PythIds.all();
+        address[] memory tokens = Listings.all();
         for (uint256 i = 0; i < tokens.length; ++i) {
-            factory.proposeListing(tokens[i], ids[i]);
+            factory.proposeListing(tokens[i]);
         }
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         for (uint256 i = 0; i < tokens.length; ++i) {
@@ -133,11 +130,10 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
     ///      over every fee tier with liquidity) that pays most for a $1,000 sale, prices the coin from a $10 sale along
     ///      it, and measures the slippage of the $1,000 one.
     function _discover(uint256 count) internal {
-        (address[] memory tokens, bytes32[] memory ids) = PythIds.all();
+        address[] memory tokens = Listings.all();
         for (uint256 i = 0; i < count; ++i) {
             Coin memory c;
             c.token = tokens[i];
-            c.id = ids[i];
             c.decimals = IERC20Metadata(tokens[i]).decimals();
             c.dealt = _canDeal(tokens[i]);
             (c.route, c.routed) = _bestRoute(tokens[i], c.decimals);
@@ -332,33 +328,51 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         }
     }
 
-    /// @dev Pyth updates at the index's price time for `picked`, each price scaled by `moveBps[i]`, skipping the
-    ///      components `skipMask` names.
-    function _updates(WeightedHub index, Coin[] memory picked, uint256[] memory moveBps, uint256 skipMask)
+    /// @dev The fill an executor names for `index` when the market prices each of `picked` at its pool price scaled
+    ///      by `moveBps[i]`: toward the units that sit on the weights there, every leg the same share of the way, as far
+    ///      as the unit caps let the furthest leg go. The components `leaveMask` names keep their units.
+    function _fillUnits(WeightedHub index, Coin[] memory picked, uint256[] memory moveBps, uint256 leaveMask)
         internal
         view
-        returns (bytes[] memory data)
+        returns (uint256[] memory fill)
     {
-        uint64 time = uint64(index.priceTime());
-        uint256 count = 0;
-        for (uint256 i = 0; i < picked.length; ++i) {
-            if ((skipMask >> i) & 1 == 0) ++count;
+        fill = index.recordedUnits();
+        uint256[] memory weights = index.componentWeights();
+        uint256 n = fill.length;
+        uint256[] memory quotes = new uint256[](n);
+        uint256 value = 0;
+        uint256 weight = 0;
+        for (uint256 i = 0; i < n; ++i) {
+            if ((leaveMask >> i) & 1 == 1) continue;
+            // Dollars per raw unit, scaled by 1e36.
+            quotes[i] = uint256(int256(picked[i].priceE8)) * moveBps[i] / 10_000 * 10 ** (28 - picked[i].decimals);
+            value += fill[i] * quotes[i];
+            weight += weights[i];
         }
-        data = new bytes[](count);
-        uint256 k = 0;
-        for (uint256 i = 0; i < picked.length; ++i) {
-            if ((skipMask >> i) & 1 == 1) continue;
-            int64 price = int64(int256(uint256(int256(picked[i].priceE8)) * moveBps[i] / 10_000));
-            data[k++] = pyth.update(picked[i].id, price, uint64(price) / 1000, -8, time, time - 1);
+        uint256[] memory targets = new uint256[](n);
+        uint256 share = 1e18;
+        for (uint256 i = 0; i < n; ++i) {
+            if ((leaveMask >> i) & 1 == 1) continue;
+            uint256 target = Math.mulDiv(value, weights[i], weight * quotes[i], Math.Rounding.Ceil);
+            targets[i] = target;
+            if (target > fill[i]) share = Math.min(share, Math.mulDiv(fill[i], 1e18, target - fill[i]));
+            if (target < fill[i]) share = Math.min(share, Math.mulDiv(fill[i], 0.2e18, fill[i] - target));
+        }
+        for (uint256 i = 0; i < n; ++i) {
+            if ((leaveMask >> i) & 1 == 1) continue;
+            if (targets[i] > fill[i]) {
+                fill[i] += Math.mulDiv(targets[i] - fill[i], share, 1e18, Math.Rounding.Ceil);
+            } else {
+                fill[i] -= Math.mulDiv(fill[i] - targets[i], share, 1e18);
+            }
         }
     }
 
     function _openAuction(WeightedHub index, uint256 keepMask, uint256 into) internal {
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
-        bytes[] memory live = pyth.liveUpdates(index, keepMask);
         if (keepMask != 0) vm.prank(guardian);
         else vm.prank(stranger);
-        index.startRebalance(keepMask, live);
+        index.startRebalance(keepMask);
         (uint256 eta,) = index.pendingRebalance();
         vm.warp(eta + into);
     }
@@ -396,7 +410,7 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
     function _blueChips() internal view returns (Coin[] memory picked) {
         picked = new Coin[](4);
         for (uint256 i = 0; i < 4; ++i) {
-            picked[i] = coins[i]; // WETH, WBTC, LINK, UNI: PythIds lists them first
+            picked[i] = coins[i]; // WETH, WBTC, LINK, UNI: Listings names them first
         }
     }
 
@@ -407,7 +421,7 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
     /// @dev Every coin `deal` can fund goes in one index: it issues, rebalances with real transfers of every token, and
     ///      redeems to the last unit. The report says which coins Uniswap can trade, and how well.
     function testFork_everyCoinIssuesRebalancesAndRedeems() public {
-        _discover(PythIds.COUNT);
+        _discover(Listings.COUNT);
         _report();
         Coin[] memory picked = _pick(_dealable);
         console2.log("coins in the index:", picked.length, "of", coins.length);
@@ -423,16 +437,16 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
             moves[i] = i % 2 == 0 ? 11_000 : 9000;
         }
         _openAuction(index, 0, index.AUCTION_DURATION() / 2);
-        bytes[] memory data = _updates(index, picked, moves, 0);
+        uint256[] memory fill = _fillUnits(index, picked, moves, 0);
         uint256 gasBefore = gasleft();
-        index.executeRebalance("", data);
-        console2.log("gas for a fill of", picked.length, "real tokens (mock Pyth parse):", gasBefore - gasleft());
+        index.executeRebalance(fill, "");
+        console2.log("gas for a fill of", picked.length, "real tokens:", gasBefore - gasleft());
         assertEq(index.rebalanceNonce(), 1);
         _assertBacked(index);
 
-        // Each weight is back on target at the moved prices, to within rounding. The prices are the ones `_updates`
-        // published, truncated to whole 1e-8 dollars: SHIB and PEPE trade near 400 of those, so the untruncated move
-        // would be up to 0.25% off the price the hub settled at.
+        // Each weight is back on target at the moved prices, to within rounding. The prices are the ones the fill was
+        // named by, truncated to whole 1e-8 dollars: SHIB and PEPE trade near 400 of those, so the untruncated move
+        // would be up to 0.25% off the price the fill used.
         (, uint256[] memory units) = index.components();
         uint256 total = 0;
         uint256[] memory values = new uint256[](picked.length);
@@ -441,7 +455,7 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
             values[i] = Math.mulDiv(units[i], published, 10 ** picked[i].decimals);
             total += values[i];
         }
-        (uint256[] memory weights,,) = index.componentTerms();
+        uint256[] memory weights = index.componentWeights();
         for (uint256 i = 0; i < picked.length; ++i) {
             assertApproxEqRel(values[i] * 10_000, total * weights[i], 0.001e18, "weight back on target");
         }
@@ -465,7 +479,7 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
     ///      Alice mints with USDC through the zap, a Uniswap rebalancer fills at the auction's end, and she burns back
     ///      to USDC.
     function testFork_liquidCoinsThroughTheZapAndAUniswapRebalance() public {
-        _discover(PythIds.COUNT);
+        _discover(Listings.COUNT);
         Coin[] memory picked = _pick(_liquid);
         console2.log("liquid coins (<= 2% slippage on $1,000):", picked.length);
         for (uint256 i = 0; i < picked.length; ++i) {
@@ -513,9 +527,9 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         }
         deal(A.USDC, address(executor), 100_000e6);
         _openAuction(index, 0, index.AUCTION_DURATION());
-        bytes[] memory data = _updates(index, picked, _flat(picked.length), 0);
+        uint256[] memory fill = _fillUnits(index, picked, _flat(picked.length), 0);
         uint256 floatBefore = IERC20(A.USDC).balanceOf(address(executor));
-        executor.fill(index, data);
+        executor.fill(index, fill);
         uint256 floatAfter = IERC20(A.USDC).balanceOf(address(executor));
         console2.log("rebalancer's float before / after (USDC, 6 dec):", floatBefore, floatAfter);
         assertEq(index.rebalanceNonce(), 1);
@@ -574,8 +588,7 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
 
         // The guardian rebalances everything but WBTC.
         _openAuction(index, 2, index.AUCTION_DURATION() / 2);
-        bytes[] memory data = _updates(index, picked, _flat(4), 2);
-        index.executeRebalance("", data);
+        index.executeRebalance(_fillUnits(index, picked, _flat(4), 2), "");
         assertEq(index.rebalanceNonce(), 1);
         _assertBacked(index);
 
@@ -586,9 +599,9 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         assertEq(IERC20(A.WBTC).balanceOf(alice), owed);
     }
 
-    /// @dev Pyth goes silent for UNI: no fill can settle, since UNI's update is missing. The guardian cancels and
-    ///      restarts with UNI kept, and the rest rebalance.
-    function testFork_drill_aFeedGoesSilent() public {
+    /// @dev An executor that holds no UNI leaves it alone, with no mask and no guardian: it names UNI's own units and
+    ///      rebalances the rest among themselves.
+    function testFork_drill_anExecutorLeavesACoinAlone() public {
         _discover(4);
         Coin[] memory picked = _blueChips();
         uint256[] memory skew = new uint256[](4);
@@ -597,46 +610,51 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         _issueInKind(index, alice, 10e18);
 
         _openAuction(index, 0, index.AUCTION_DURATION() / 2);
-        bytes[] memory data = _updates(index, picked, _flat(4), 8); // UNI is component 3
-        vm.expectRevert(MockPyth.PriceFeedNotFoundWithinRange.selector);
-        index.executeRebalance("", data);
-
-        vm.prank(guardian);
-        index.cancelRebalance();
-        bytes[] memory live = pyth.liveUpdates(index, 8);
-        vm.prank(guardian);
-        index.startRebalance(8, live);
-        (uint256 eta,) = index.pendingRebalance();
-        vm.warp(eta + 1 hours);
-        data = _updates(index, picked, _flat(4), 8);
-        (, uint256[] memory before) = index.components();
-        index.executeRebalance("", data);
-        (, uint256[] memory afterwards) = index.components();
-        assertEq(afterwards[3], before[3], "UNI untouched");
+        uint256[] memory before = index.recordedUnits();
+        uint256 uniHeld = IERC20(picked[3].token).balanceOf(address(index));
+        uint256[] memory fill = _fillUnits(index, picked, _flat(4), 8); // UNI is component 3
+        index.executeRebalance(fill, "");
+        assertEq(index.recordedUnits()[3], before[3], "UNI untouched");
+        assertEq(IERC20(picked[3].token).balanceOf(address(index)), uniHeld);
+        // The skew prices WETH a tenth above the market at creation, so the index holds less of it than its weight asks,
+        // and more WBTC: a fill toward the weights buys the first and sells the second.
+        assertGt(index.recordedUnits()[0], before[0], "WETH, worth less than its weight, was bought");
+        assertLt(index.recordedUnits()[1], before[1], "WBTC, worth more than its weight, was sold");
         assertEq(index.rebalanceNonce(), 1);
+        _assertBacked(index);
     }
 
-    /// @dev A wrong price: Pyth reports UNI at a hundredth of its value. The fill would buy UNI with everything else,
-    ///      but sends out at most a fifth of each coin it sells (V5-M2); the guardian cancels instead of letting it fill.
-    function testFork_drill_aWrongPriceTakesAtMostAFifth() public {
+    /// @dev What a fill may ask of an index on its weights: no more than a fifth of any coin, whatever it offers
+    ///      (V5-M2), and not even that for a coin poured in to the most a fill accepts. As if UNI were free to mint, an
+    ///      executor doubles it and asks for a fifth of the other three: refused. Asking for 15% of them is the most
+    ///      that doubling pays for.
+    function testFork_drill_noFillTakesMoreThanAFifth() public {
         _discover(4);
         Coin[] memory picked = _blueChips();
         WeightedHub index = _create("Blue", picked, _flat(4));
         _issueInKind(index, alice, 10e18);
-        (, uint256[] memory units) = index.components();
+        uint256[] memory units = index.recordedUnits();
 
         _openAuction(index, 0, index.AUCTION_DURATION());
-        uint256[] memory moves = _flat(4);
-        moves[3] = 100; // UNI is component 3
-        bytes[] memory data = _updates(index, picked, moves, 0);
-        (,, uint256[] memory out,) = index.previewRebalance(_structs(picked, moves));
-        for (uint256 i = 0; i < 4; ++i) {
-            assertLe(out[i], units[i] * 10 / 5, "at most a fifth of each coin's units, for 10 tokens");
+        uint256[] memory fill = new uint256[](4);
+        (fill[0], fill[1], fill[2], fill[3]) = (units[0] * 79 / 100, units[1], units[2], units[3] * 2);
+        vm.expectPartialRevert(IWeightedHub.LegOutOfBounds.selector);
+        index.previewRebalance(fill);
+
+        for (uint256 i = 0; i < 3; ++i) {
+            fill[i] = Math.mulDiv(units[i], 8, 10, Math.Rounding.Ceil);
         }
-        vm.prank(guardian);
-        index.cancelRebalance();
-        vm.expectRevert(IWeightedHub.NoPendingRebalance.selector);
-        index.executeRebalance("", data);
+        vm.expectPartialRevert(IWeightedHub.GainBelowBar.selector);
+        index.previewRebalance(fill);
+
+        for (uint256 i = 0; i < 3; ++i) {
+            fill[i] = Math.mulDiv(units[i], 85, 100, Math.Rounding.Ceil);
+        }
+        (,, uint256[] memory out,) = index.previewRebalance(fill);
+        for (uint256 i = 0; i < 3; ++i) {
+            assertLe(out[i], units[i] * 10 * 15 / 100, "at most 15% of each coin's units, for 10 tokens");
+        }
+        assertEq(out[3], 0);
     }
 
     /// @dev Nobody fills: the auction expires, a stranger waits out the hold-off, the owner may restart at once.
@@ -649,32 +667,17 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         _issueInKind(index, alice, 10e18);
 
         _openAuction(index, 0, index.AUCTION_DURATION() + 1);
-        bytes[] memory data = _updates(index, picked, _flat(4), 0);
+        uint256[] memory fill = _fillUnits(index, picked, _flat(4), 0);
         (uint256 eta,) = index.pendingRebalance();
         vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalanceExpired.selector, eta + index.AUCTION_DURATION()));
-        index.executeRebalance("", data);
+        index.executeRebalance(fill, "");
         assertFalse(index.canStartRebalance());
-        index.startRebalance(0, pyth.liveUpdates(index, 0)); // the test contract is the factory's owner
+        index.startRebalance(0); // the test contract is the factory's owner
         (uint256 again,) = index.pendingRebalance();
-        vm.warp(again + 1 hours);
-        index.executeRebalance("", _updates(index, picked, _flat(4), 0));
+        // Five percent off its weights the index gains 0.12% from a fair fill, which the bar reaches inside three
+        // hours.
+        vm.warp(again + 3 hours);
+        index.executeRebalance(fill, "");
         assertEq(index.rebalanceNonce(), 1);
-    }
-
-    function _structs(Coin[] memory picked, uint256[] memory moves)
-        internal
-        pure
-        returns (PythStructs.PriceFeed[] memory out)
-    {
-        out = new PythStructs.PriceFeed[](picked.length);
-        for (uint256 i = 0; i < picked.length; ++i) {
-            PythStructs.Price memory p = PythStructs.Price({
-                price: int64(int256(uint256(int256(picked[i].priceE8)) * moves[i] / 10_000)),
-                conf: 0,
-                expo: -8,
-                publishTime: 0
-            });
-            out[i] = PythStructs.PriceFeed({id: bytes32(0), price: p, emaPrice: p});
-        }
     }
 }

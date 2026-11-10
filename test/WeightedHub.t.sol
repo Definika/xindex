@@ -8,13 +8,12 @@ import {WeightedHub} from "../src/WeightedHub.sol";
 import {IWeightedHub} from "../src/interfaces/IWeightedHub.sol";
 import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
-import {PythStructs} from "../src/interfaces/pyth/PythStructs.sol";
 import {WeightedTest} from "./WeightedTest.sol";
 import {MockFeeToken} from "./mocks/MockFeeToken.sol";
 import {MockPausableToken} from "./mocks/MockPausableToken.sol";
 
-/// @notice The weighted hub outside rebalancing: initialization, issue, redeem, claims, recipients and views. Issue and
-///         redeem must never read a price, which `test_issueAndRedeemNeverCallPyth` pins.
+/// @notice The weighted hub outside rebalancing: initialization, issue, redeem, claims, recipients and views. Nothing
+///         here or anywhere reads a price, which `test_V5I4_A713_noContractReadsAPrice` in `test/Repo.t.sol` pins.
 contract WeightedHubTest is WeightedTest {
     WeightedHub index;
 
@@ -30,9 +29,9 @@ contract WeightedHubTest is WeightedTest {
 
     function _inits() internal view returns (IWeightedHub.ComponentInit[] memory inits) {
         inits = new IWeightedHub.ComponentInit[](3);
-        inits[0] = IWeightedHub.ComponentInit(address(eth), ETH_UNITS, 5000, ETH_ID, 18);
-        inits[1] = IWeightedHub.ComponentInit(address(btc), BTC_UNITS, 3000, BTC_ID, 8);
-        inits[2] = IWeightedHub.ComponentInit(address(usd), USD_UNITS, 2000, USD_ID, 6);
+        inits[0] = IWeightedHub.ComponentInit(address(eth), ETH_UNITS, 5000);
+        inits[1] = IWeightedHub.ComponentInit(address(btc), BTC_UNITS, 3000);
+        inits[2] = IWeightedHub.ComponentInit(address(usd), USD_UNITS, 2000);
     }
 
     /// @dev A valid config: no fee, the shortest interval.
@@ -85,7 +84,7 @@ contract WeightedHubTest is WeightedTest {
         _expectInvalid(new IWeightedHub.ComponentInit[](101));
 
         IWeightedHub.ComponentInit[] memory one = new IWeightedHub.ComponentInit[](1);
-        one[0] = IWeightedHub.ComponentInit(address(eth), ETH_UNITS, 10_000, ETH_ID, 18);
+        one[0] = IWeightedHub.ComponentInit(address(eth), ETH_UNITS, 10_000);
         _expectInvalid(one);
 
         IWeightedHub.ComponentInit[] memory twice = _inits();
@@ -110,23 +109,7 @@ contract WeightedHubTest is WeightedTest {
         _expectInvalid(inits);
 
         inits = _inits();
-        inits[0].priceId = bytes32(0);
-        _expectInvalid(inits);
-
-        inits = _inits();
-        inits[1].decimals = 19;
-        _expectInvalid(inits);
-
-        inits = _inits();
         inits[2].weight = 1999;
-        _expectInvalid(inits);
-    }
-
-    /// @dev V5-M1: Pyth fills only the first of two equal ids, so a clone whose components shared one could never
-    ///      settle. The hub refuses it even from a factory that did not check.
-    function test_V5M1_initializeRefusesTwoComponentsOnOneFeed() public {
-        IWeightedHub.ComponentInit[] memory inits = _inits();
-        inits[2].priceId = ETH_ID;
         _expectInvalid(inits);
     }
 
@@ -148,13 +131,13 @@ contract WeightedHubTest is WeightedTest {
         vm.expectRevert(IWeightedHub.NotInitialized.selector);
         clone.redeemSkipping(1, alice, 1);
         vm.expectRevert(IWeightedHub.NotInitialized.selector);
-        clone.startRebalance(0, new bytes[](0));
+        clone.startRebalance(0);
         vm.expectRevert(IWeightedHub.NotInitialized.selector);
         clone.cancelRebalance();
         vm.expectRevert(IWeightedHub.NotInitialized.selector);
-        clone.executeRebalance("", new bytes[](0));
+        clone.executeRebalance(new uint256[](0), "");
         vm.expectRevert(IWeightedHub.NotInitialized.selector);
-        clone.executeRebalance("", new bytes[](0), new uint256[](0));
+        clone.executeRebalance(new uint256[](0), "", new uint256[](0));
         assertFalse(clone.canStartRebalance());
         assertFalse(WeightedHub(factory.IMPLEMENTATION()).canStartRebalance());
     }
@@ -211,7 +194,7 @@ contract WeightedHubTest is WeightedTest {
 
     function test_issueRefusesAFeeOnTransferComponent() public {
         MockFeeToken fee = new MockFeeToken();
-        _list(address(fee), keccak256("FEE/USD"));
+        _list(address(fee));
         IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](2);
         specs[0] = _spec(address(eth), 5000, ETH_UNITS);
         specs[1] = _spec(address(fee), 5000, 1e18);
@@ -234,7 +217,7 @@ contract WeightedHubTest is WeightedTest {
     ///      index already holds the fee token, from a donation, and only the change still shows the fee.
     function test_RT05_theFeeCheckMeasuresTheChangeWhenTheIndexAlreadyHoldsTheToken() public {
         MockFeeToken fee = new MockFeeToken();
-        _list(address(fee), keccak256("FEE/USD"));
+        _list(address(fee));
         IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](2);
         specs[0] = _spec(address(eth), 5000, ETH_UNITS);
         specs[1] = _spec(address(fee), 5000, 1e18);
@@ -366,7 +349,7 @@ contract WeightedHubTest is WeightedTest {
 
     function test_holdersLeaveWhileAComponentIsFrozen() public {
         MockPausableToken paused = new MockPausableToken("Paused", "PSD", 18);
-        _list(address(paused), keccak256("PAUSED/USD"));
+        _list(address(paused));
         IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](2);
         specs[0] = _spec(address(eth), 5000, ETH_UNITS);
         specs[1] = _spec(address(paused), 5000, 1e18);
@@ -417,18 +400,6 @@ contract WeightedHubTest is WeightedTest {
         assertEq(index.balanceOf(stranger), 1);
     }
 
-    /// @dev Issue and redeem read no price: Pyth is never called, so no feed can block an exit.
-    function test_issueAndRedeemNeverCallPyth() public {
-        vm.etch(address(pyth), hex"fe");
-        _issue(index, alice, 1e18);
-        vm.startPrank(alice);
-        index.redeemSkipping(1e17, alice, 1);
-        index.redeem(1e17, alice);
-        index.claim(address(eth), alice);
-        vm.stopPrank();
-        assertEq(index.balanceOf(alice), 8e17);
-    }
-
     function test_permitNonces() public view {
         assertEq(index.nonces(alice), 0);
         assertTrue(index.DOMAIN_SEPARATOR() != bytes32(0));
@@ -447,27 +418,19 @@ contract WeightedHubTest is WeightedTest {
         (uint256 eta, uint256 keepMask) = index.pendingRebalance();
         assertEq(eta, 0);
         assertEq(keepMask, 0);
-        assertEq(index.currentMu(), 0);
+        assertEq(index.currentBar(), 0);
         assertEq(index.proposalCount(), 0);
         assertEq(index.rebalanceNonce(), 0);
         assertEq(index.restartAllowedAt(), 0);
         assertEq(index.SHARE_UNIT(), 1e18);
-        assertEq(index.MIN_EXPO(), -18);
-        assertEq(index.MAX_PRICE(), 1e45);
-    }
-
-    /// @dev V5-L1: one slot back, whatever the block's second: the executor sees its price at most a slot ahead.
-    function test_V5L1_priceTimeIsOneSlotBack() public {
-        assertEq(index.PRICE_LAG(), 12);
-        vm.warp(1_800_000_011);
-        assertEq(index.priceTime(), 1_799_999_999);
-        vm.warp(1_800_000_023);
-        assertEq(index.priceTime(), 1_800_000_011);
-    }
-
-    function test_previewRebalanceNeedsOnePricePerComponent() public {
-        PythStructs.PriceFeed[] memory prices = new PythStructs.PriceFeed[](2);
-        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.PriceCountMismatch.selector, 2));
-        index.previewRebalance(prices);
+        uint256[] memory weights = index.componentWeights();
+        assertEq(weights.length, 3);
+        assertEq(weights[0], 5000);
+        assertEq(weights[1], 3000);
+        assertEq(weights[2], 2000);
+        uint256[] memory recorded = index.recordedUnits();
+        assertEq(recorded[0], ETH_UNITS);
+        assertEq(recorded[1], BTC_UNITS);
+        assertEq(recorded[2], USD_UNITS);
     }
 }

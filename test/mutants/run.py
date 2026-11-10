@@ -8,7 +8,7 @@ Run from the repository root, standard library only:
 
 A mutant is one or more exact edits to one file. Each edit's `old` text must occur exactly once in that file, so a
 mutant whose code has changed fails the gate as stale rather than turning into a no-op. The file is mutated in place
-and restored from the bytes read before the edit, never from git (AGENTS.md), in a `finally`, and checked equal
+and restored from the bytes read before the edit, never from git (CLAUDE.md), in a `finally`, and checked equal
 after. Before any mutant runs, every suite the run uses must pass unmutated, so a broken test cannot read as a kill.
 A mutant is killed when its suite reports a failing test; a compile error is neither a kill nor a survival but an
 error. The run fails on any survivor, stale edit or error.
@@ -28,7 +28,7 @@ import time
 
 TABLE = pathlib.Path("test/mutants/mutants.json")
 # A failing test as forge prints it. A failure's reason can hold a bracketed number, `[1.801e9]`, so the pattern does
-# not stop at the first `]` (AGENTS.md).
+# not stop at the first `]` (CLAUDE.md).
 FAILED = re.compile(r"^\[FAIL[^\n]*\] (\w+)\(", re.MULTILINE)
 # A failing test as Node's TAP reporter prints it, at any depth.
 NODE_FAILED = re.compile(r"^\s*not ok \d+ - (.+)$", re.MULTILINE)

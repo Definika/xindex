@@ -21,11 +21,12 @@ test("RZ-5: every coin is the copy MainnetAddresses lists, from the home token, 
   }
 });
 
-test("every coin is priced at the feed PythIds lists its copy with", () => {
+test("every coin is priced at the feed PythIds names for it", () => {
+  // The table names each feed after its coin's constant in MainnetAddresses. No contract reads it since the
+  // oracle-free rebalance of 2026-11-10: it is this service's own price catalogue.
   for (const c of COINS) {
-    const pair = new RegExp(`\\(M\\.${c.name}, (\\w+)\\)`).exec(pythIds);
-    assert.ok(pair, `${c.symbol}: PythIds does not list ${c.name}`);
-    const id = new RegExp(`bytes32 internal constant ${pair[1]} = (0x[0-9a-f]{64});`).exec(pythIds);
+    const id = new RegExp(`bytes32 internal constant ${c.name} = (0x[0-9a-f]{64});`).exec(pythIds);
+    assert.ok(id, `${c.symbol}: PythIds has no ${c.name}`);
     assert.equal(PRICE_IDS[c.symbol], id[1], `${c.symbol}'s feed`);
   }
   assert.deepEqual(Object.keys(PRICE_IDS).sort(), COINS.map((c) => c.symbol).sort());

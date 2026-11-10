@@ -13,6 +13,6 @@ src = "src/"
 #   internal-function-used-once           a library function is the unit its own tests pin (PathLib's, shared with the
 #                                         test mocks), whatever number of callers src/ has
 #   centralization-risk                   the owner's powers are the design's: every one is a proposal behind a public
-#                                         delay and the guardian's veto, none touches funds, and AGENTS.md ("No admin
+#                                         delay and the guardian's veto, none touches funds, and CLAUDE.md ("No admin
 #                                         power over funds") lists them all
 exclude = ["costly-loop", "require-revert-in-loop", "internal-function-used-once", "centralization-risk"]

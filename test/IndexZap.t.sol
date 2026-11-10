@@ -689,7 +689,7 @@ contract IndexZapTest is XindexTest {
     }
 
     /// @dev DA-15. The leg whose component is already `tokenOut` carries no swap, and its `minAmountOut` was never
-    ///      read, so the one limit the NatSpec, the README and AGENTS.md all promise applies to every leg silently did
+    ///      read, so the one limit the NatSpec, the README and CLAUDE.md all promise applies to every leg silently did
     ///      not apply to that one. The mint side had the same hole for `maxAmountIn` on the `tokenIn` leg.
     function test_DA15_thePassThroughLegHonoursItsOwnLimit() public {
         _mintFor(alice, 1e18, 200e6);
@@ -893,20 +893,19 @@ contract IndexZapTest is XindexTest {
     function test_LR05_aRebalanceSettledDuringTheRefundStopsTheMint() public {
         _mintFor(alice, 1e18, 200e6);
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
-        index.startRebalance(0, pyth.liveUpdates(index, 0));
+        index.startRebalance(0);
         (uint256 eta,) = index.pendingRebalance();
-        vm.warp(eta);
+        vm.warp(eta + index.AUCTION_DURATION());
 
-        // At the router's prices the basket holds $60, $30 and $15 against equal weights, so the fill trades.
-        bytes[] memory updates = new bytes[](3);
-        uint64 time = uint64(index.priceTime());
-        updates[0] = pyth.update(_priceId(address(wbtc)), 60_000e8, 0, -8, time, time - 1);
-        updates[1] = pyth.update(_priceId(address(weth)), 3_000e8, 0, -8, time, time - 1);
-        updates[2] = pyth.update(_priceId(address(link)), 15e8, 0, -8, time, time - 1);
+        // The fill adds a hundredth to every component, which clears the bar the auction ends at.
+        uint256[] memory units = index.recordedUnits();
+        for (uint256 i = 0; i < units.length; ++i) {
+            units[i] += units[i] / 100;
+        }
 
         MockHookToken hook = new MockHookToken();
         router.setPrice(address(hook), 1e18, 18);
-        RebalancingMinter minter = new RebalancingMinter(zap, index, new MockWeightedExecutor(), updates);
+        RebalancingMinter minter = new RebalancingMinter(zap, index, new MockWeightedExecutor(), units);
         hook.mint(address(minter), 200e18);
 
         IIndexZap.MintParams memory p =
@@ -2273,21 +2272,19 @@ contract PathShapeProbe {
     }
 }
 
-/// @dev Mints through the zap with a callback token and, when the zap refunds it, fills the index's auction with the
-///      price updates it was given.
+/// @dev Mints through the zap with a callback token and, when the zap refunds it, fills the index's auction at the
+///      units it was given.
 contract RebalancingMinter is ITokenReceiverHook {
     IndexZap internal immutable ZAP;
     WeightedHub internal immutable INDEX;
     MockWeightedExecutor internal immutable EXECUTOR;
-    bytes[] internal _updates;
+    uint256[] internal _units;
 
-    constructor(IndexZap zap, WeightedHub index, MockWeightedExecutor executor, bytes[] memory updates) {
+    constructor(IndexZap zap, WeightedHub index, MockWeightedExecutor executor, uint256[] memory units) {
         ZAP = zap;
         INDEX = index;
         EXECUTOR = executor;
-        for (uint256 i = 0; i < updates.length; ++i) {
-            _updates.push(updates[i]);
-        }
+        _units = units;
     }
 
     function mint(IIndexZap.MintParams calldata p) external {
@@ -2296,7 +2293,7 @@ contract RebalancingMinter is ITokenReceiverHook {
     }
 
     function onTokenReceived(address from, uint256) external {
-        if (from == address(ZAP)) EXECUTOR.execute(INDEX, "", _updates);
+        if (from == address(ZAP)) EXECUTOR.execute(INDEX, _units, "");
     }
 }
 

@@ -53,9 +53,9 @@ contract KeeperExecutor is IRebalanceExecutor {
     ///         bounds. Only the owner sets it, and every delivery from stock spends it (CF-1).
     mapping(address token => uint256 amount) public stockAllowance;
     /// @notice How much of the USDC float request fills may still turn into anything else: every request fill that
-    ///         ends with less USDC than it started spends the difference. A fill reads no Pyth update on chain, so a
-    ///         price the bot got wrong, stale or forged, could otherwise spend the whole float (RX-1, RX-9). Only the
-    ///         owner sets it.
+    ///         ends with less USDC than it started spends the difference. Nothing on chain checks a price, so a price
+    ///         the bot got wrong, stale or forged, could otherwise spend the whole float (RX-1, RX-9). Only the owner
+    ///         sets it.
     uint256 public requestUsdcAllowance;
     /// @notice The restock service's key, the only account that bridges stock and draws or repays USDC. The owner
     ///         sets it.
@@ -151,8 +151,7 @@ contract KeeperExecutor is IRebalanceExecutor {
     /// @notice The fill changed the float by `usdcDelta`, below `minUsdcDelta`.
     error TooCostly(int256 usdcDelta, int256 minUsdcDelta);
     /// @notice The index's supply is `supply`, above the `maxSupply` the fill was quoted for: an issue since the quote
-    ///         grew the settlement past what the bot accepts, so the fill stops before the hub parses Pyth's update
-    ///         (XS-4).
+    ///         grew the settlement past what the bot accepts, so the fill stops before it reaches the hub (XS-4).
     error SupplyMovedOn(uint256 supply, uint256 maxSupply);
     /// @notice The index settled a rebalance since the fill's simulation: its nonce is `actual`, not `expected` (RX-4).
     error StaleRebalanceNonce(uint256 expected, uint256 actual);
@@ -272,26 +271,29 @@ contract KeeperExecutor is IRebalanceExecutor {
         emit RestockAllowanceSet(token, amount);
     }
 
-    /// @notice Keeper only. Fills `index`'s auction with `priceUpdate`, forwarding all of msg.value to Pyth as its fee.
+    /// @notice Keeper only. Fills `index`'s auction at the units the keeper names. The index reads no price: it
+    ///         accepts the units when their weighted gain clears its auction's bar.
+    /// @param newUnits The recorded units each component is to have, in component order, as `executeRebalance` takes
+    ///        them. The bot chooses them from its own view of the market; the floor below is what protects the float.
     /// @param routes One per component: an exact-input Uniswap V3 path from the component to USDC, which read as an
     ///        exact-output path buys the component with USDC; empty for a coin served from inventory, and for USDC.
     /// @param maxAmountsIn Passed to the hub: the fill reverts if the index asks for more of any component.
     /// @param maxSupply The most shares the index may have when the fill runs. The settlement grows with the supply,
     ///        so an issue ahead of the fill that would break `maxAmountsIn` is refused here, for one read, rather than
-    ///        by the hub after Pyth's parse (XS-4).
+    ///        by the hub after its own checks (XS-4).
     /// @param minUsdcDelta The least the USDC float may change by: negative accepts a cost, positive requires a gain.
     /// @param deadline The latest block timestamp the fill may be mined at.
     /// @return usdcDelta What the fill changed the float by.
     /// @return gasUsed The gas the call used inside this function, for the bot's simulation.
     function fill(
         IWeightedHub index,
-        bytes[] calldata priceUpdate,
+        uint256[] calldata newUnits,
         bytes[] calldata routes,
         uint256[] calldata maxAmountsIn,
         uint256 maxSupply,
         int256 minUsdcDelta,
         uint256 deadline
-    ) external payable returns (int256 usdcDelta, uint256 gasUsed) {
+    ) external returns (int256 usdcDelta, uint256 gasUsed) {
         uint256 gasStart = gasleft();
         _checkKeeper();
         if (block.timestamp > deadline) revert Expired(deadline);
@@ -300,7 +302,7 @@ contract KeeperExecutor is IRebalanceExecutor {
         _checkRoutes(index.componentTokens(), routes);
 
         uint256 before = IERC20(USDC).balanceOf(address(this));
-        _settle(index, priceUpdate, routes, maxAmountsIn);
+        _settle(index, newUnits, routes, maxAmountsIn);
         usdcDelta = SafeCast.toInt256(IERC20(USDC).balanceOf(address(this))) - SafeCast.toInt256(before);
         if (usdcDelta < minUsdcDelta) revert TooCostly(usdcDelta, minUsdcDelta);
         gasUsed = gasStart - gasleft();
@@ -309,17 +311,15 @@ contract KeeperExecutor is IRebalanceExecutor {
     /// @dev The hub's bounded settlement of `index`, with this contract marked as filling it for the callback.
     function _settle(
         IWeightedHub index,
-        bytes[] calldata priceUpdate,
+        uint256[] calldata newUnits,
         bytes[] calldata routes,
         uint256[] calldata maxAmountsIn
     ) private {
         // Transient, for this transaction's callback only: an event per fill would say nothing the hub's does not.
         // forge-lint: disable-next-line(missing-events-access-control)
         _filling = address(index);
-        // `index` is one the factory created, checked by {fill}, and msg.value is Pyth's fee, which the hub forwards
-        // whole.
-        // forge-lint: disable-next-line(arbitrary-send-eth)
-        index.executeRebalance{value: msg.value}(abi.encode(routes), priceUpdate, maxAmountsIn);
+        // `index` is one the factory created, checked by {fill}.
+        index.executeRebalance(newUnits, abi.encode(routes), maxAmountsIn);
         // forge-lint: disable-next-line(missing-events-access-control)
         _filling = address(0);
     }

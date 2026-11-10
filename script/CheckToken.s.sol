@@ -281,11 +281,7 @@ contract CheckToken is Script {
         if (!ScriptUtils.same(raw, "default") && !ScriptUtils.same(raw, "wide")) {
             return lists.parseAddresses(raw);
         }
-        ConfigureWeighted.Entry[] memory list = lists.resolveList(raw);
-        tokens = new address[](list.length);
-        for (uint256 i = 0; i < list.length; ++i) {
-            tokens[i] = list[i].token;
-        }
+        return lists.resolveList(raw);
     }
 
     /// @notice Where depth is measured on this chain: Uniswap on Ethereum, and nowhere elsewhere.
