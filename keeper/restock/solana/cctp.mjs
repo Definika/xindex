@@ -10,8 +10,7 @@ import { readFileSync } from "node:fs";
 
 const idl = (name) => JSON.parse(readFileSync(new URL(`./idl/${name}.json`, import.meta.url), "utf8"));
 
-/// CCTP's domain for Solana, and for Ethereum, where every burn from here goes.
-export const SOLANA_DOMAIN = 5;
+/// CCTP's domain for Ethereum, where every burn from here goes.
 export const ETHEREUM_DOMAIN = 0;
 /// A standard transfer: finalized on the source chain, with no fee (CCTP V2's `minFinalityThreshold` of 2000).
 export const STANDARD_FINALITY = 2000;

@@ -437,7 +437,8 @@ PoC tests (`audit/poc/`, which the audit records still cite), v4's market-cap an
 v4 architecture PDF with its builder (`design/build_pdf.py`), the BNB Chain deployment (`script/BnbChainAddresses.sol`,
 its list and fork suite), and the design records of retired designs and research (v4's hybrid architecture, Stage B's
 spec and interfaces, Stage C, the chain and L2 research, the hackathon plan, the two-chain decision), which the audit
-records also cite.
+records also cite. Deleted on 2026-11-09 for the same reason, and recoverable from git at `922da1d`: the probes of the
+red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source of the flow video (`docs/video/`).
 
 ## Design rules that must not be broken
 
