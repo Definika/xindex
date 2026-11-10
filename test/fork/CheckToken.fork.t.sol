@@ -75,13 +75,13 @@ contract CheckTokenForkTest is Test {
     ///      added its `blocklist`, which sits beside a `burnFrom` that spends an allowance
     ///      (design/2026-10-18-token-source-reading.md), and the owner kept it.
     function testFork_everyWideTokenPassesTheCheck() public {
-        ConfigureWeighted.Entry[] memory list = new ConfigureWeighted().wideMainnetList();
+        address[] memory list = new ConfigureWeighted().wideMainnetList();
         for (uint256 i = 0; i < list.length; ++i) {
-            CheckToken.Report memory r = _check(list[i].token);
+            CheckToken.Report memory r = _check(list[i]);
             assertEq(uint8(r.transfers), uint8(CheckToken.Transfers.Exact), r.symbol);
             CheckToken.Verdict expected = CheckToken.Verdict.Listable;
-            if (list[i].token == MainnetAddresses.XAUT) expected = CheckToken.Verdict.Refused;
-            if (list[i].token == MainnetAddresses.GALA) expected = CheckToken.Verdict.Review;
+            if (list[i] == MainnetAddresses.XAUT) expected = CheckToken.Verdict.Refused;
+            if (list[i] == MainnetAddresses.GALA) expected = CheckToken.Verdict.Review;
             assertEq(uint8(r.verdict), uint8(expected), r.symbol);
         }
     }

@@ -822,11 +822,7 @@ contract CheckTokenTest is Test {
         address[] memory wide = checker.resolveTokens("wide");
         assertEq(first.length, lists.DEFAULT_COUNT());
         assertEq(first[0], MainnetAddresses.WETH);
-        ConfigureWeighted.Entry[] memory entries = lists.wideMainnetList();
-        assertEq(wide.length, entries.length);
-        for (uint256 i = 0; i < wide.length; ++i) {
-            assertEq(wide[i], entries[i].token);
-        }
+        assertEq(wide, lists.wideMainnetList());
     }
 
     function test_run_readsTheEnvironment() public {

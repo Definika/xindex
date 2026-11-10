@@ -6,32 +6,24 @@ import {WeightedIndexFactory} from "../src/WeightedIndexFactory.sol";
 import {WeightedHub} from "../src/WeightedHub.sol";
 import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
 import {MockMarket} from "./mocks/MockMarket.sol";
-import {MockPyth} from "./mocks/MockPyth.sol";
 
-/// @notice State and helpers the zap, MintRequests and security suites share: a weighted factory over a stand-in Pyth,
-///         and indexes built from explicit units with the weights shared equally. Nothing these suites drive reads a
-///         weight before a rebalance, so the units alone shape every basket.
+/// @notice State and helpers the zap, MintRequests and security suites share: a weighted factory, and indexes built
+///         from explicit units with the weights shared equally. Nothing these suites drive reads a weight before a
+///         rebalance, so the units alone shape every basket.
 abstract contract XindexTest is Test {
     MockMarket market;
-    MockPyth pyth;
     WeightedIndexFactory factory;
     address owner = makeAddr("owner");
 
-    /// @dev Deploys the stand-in Pyth and a weighted factory owned by `owner`, with `guardian` (zero for none).
+    /// @dev Deploys a weighted factory owned by `owner`, with `guardian` (zero for none).
     function _deployFactory(address guardian) internal {
-        pyth = new MockPyth();
-        factory = new WeightedIndexFactory(owner, guardian, address(pyth));
+        factory = new WeightedIndexFactory(owner, guardian);
     }
 
-    /// @dev The Pyth price id `token` is listed under: one per token, so no two components share a feed (V5-M1).
-    function _priceId(address token) internal pure returns (bytes32) {
-        return keccak256(abi.encode(token));
-    }
-
-    /// @dev Lists `token` under its own price id, through the full listing delay.
+    /// @dev Lists `token`, through the full listing delay.
     function _listWith(address token) internal {
         vm.prank(owner);
-        factory.proposeListing(token, _priceId(token));
+        factory.proposeListing(token);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(token);
     }

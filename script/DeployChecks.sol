@@ -5,7 +5,7 @@ import {Script, console2} from "forge-std/Script.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
 import {ISafeThreshold} from "./interfaces/ISafeThreshold.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
-import {PythIds} from "./PythIds.sol";
+import {Listings} from "./Listings.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
 
 /// @notice The checks every deployment of a factory runs before it broadcasts: the owner, the guardian, the roles
@@ -215,9 +215,9 @@ abstract contract DeployChecks is Script {
         }
     }
 
-    /// @dev Every token the Ethereum address book lists, the whole `PythIds` table, then its two mint currencies.
+    /// @dev Every token the Ethereum address book lists, the whole `Listings` table, then its two mint currencies.
     function _mainnetMarket() private pure returns (address[] memory list) {
-        (address[] memory tokens,) = PythIds.all();
+        address[] memory tokens = Listings.all();
         uint256 n = tokens.length;
         list = new address[](n + 2);
         for (uint256 i = 0; i < n; ++i) {
@@ -257,11 +257,6 @@ abstract contract DeployChecks is Script {
         return MainnetAddresses.USDT;
     }
 
-    /// @notice Ethereum's Pyth contract, the default on the pinned chain.
-    function pinnedPyth() public pure returns (address) {
-        return MainnetAddresses.PYTH;
-    }
-
     /// @notice Ethereum's WETH, the default on the pinned chain.
     function pinnedWeth() public pure returns (address) {
         return MainnetAddresses.WETH;
@@ -277,10 +272,10 @@ abstract contract DeployChecks is Script {
     }
 
     /// @notice Fills a zero address with the pinned chain's default, refuses any other there, and requires code, as
-    ///         {resolveRouter} does for the router. For the stablecoins and, in `DeployWeighted`, Pyth and WETH.
-    /// @param name "USDC", "USDT", "PYTH" or "WETH", for the error.
+    ///         {resolveRouter} does for the router. For the stablecoins and, in `DeployWeighted`, WETH.
+    /// @param name "USDC", "USDT" or "WETH", for the error.
     /// @param given Address from the environment; zero takes the default on a pinned chain.
-    /// @param pinnedDefault The pinned chain's address, from {pinnedUsdc}, {pinnedUsdt}, {pinnedPyth} or {pinnedWeth}.
+    /// @param pinnedDefault The pinned chain's address, from {pinnedUsdc}, {pinnedUsdt} or {pinnedWeth}.
     /// @return The resolved address.
     function resolveStable(string memory name, address given, address pinnedDefault) public view returns (address) {
         return _resolve(name, given, pinnedDefault);

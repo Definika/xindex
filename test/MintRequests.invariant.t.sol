@@ -5,7 +5,6 @@ import {Test} from "forge-std/Test.sol";
 import {WeightedIndexFactory} from "../src/WeightedIndexFactory.sol";
 import {WeightedHub} from "../src/WeightedHub.sol";
 import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
-import {MockPyth} from "./mocks/MockPyth.sol";
 import {MintRequests} from "../src/MintRequests.sol";
 import {IMintRequests} from "../src/interfaces/IMintRequests.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
@@ -253,12 +252,12 @@ contract MintRequestsInvariantTest is Test {
     address owner = makeAddr("owner");
 
     function setUp() public {
-        factory = new WeightedIndexFactory(owner, makeAddr("guardian"), address(new MockPyth()));
+        factory = new WeightedIndexFactory(owner, makeAddr("guardian"));
         address[] memory components = new address[](2);
         vm.startPrank(owner);
         for (uint256 i = 0; i < 2; ++i) {
             components[i] = address(new MockERC20("C", "C", 18));
-            factory.proposeListing(components[i], keccak256(abi.encode(components[i])));
+            factory.proposeListing(components[i]);
         }
         vm.stopPrank();
         vm.warp(block.timestamp + factory.LISTING_DELAY());

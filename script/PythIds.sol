@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
-import {MainnetAddresses as M} from "./MainnetAddresses.sol";
-
-/// @notice The Pyth price id each listed Ethereum coin is listed with for v5's weighted indexes, read from Pyth's Hermes
+/// @notice The Pyth price id of each listed coin. No contract and no script reads it since 2026-11-10: an index
+///         rebalances through an auction on units alone (`design/2026-11-10-oracle-free-rebalance.md`), and a listing
+///         carries no feed. It stays as the keeper's price catalogue, which its own tests pin (`keeper/`): the keeper
+///         values its own trades at these feeds, off chain, at its own risk. Read from Pyth's Hermes
 ///         catalogue (`/v2/price_feeds`) on 2026-10-05, each checked to name its coin by the feed's description, given
 ///         beside it. WETH takes ETH/USD: it redeems one for one on chain, and ETH/USD is Pyth's deepest feed. WBTC takes
 ///         WBTC/USD, not BTC/USD: it is custodial, so its own price is what catches a depeg. GRAM is left out until the
@@ -26,9 +27,6 @@ import {MainnetAddresses as M} from "./MainnetAddresses.sol";
 ///         SEI's copy left on 2026-10-19, the owner's call on the red team's RX-28 and RX-32: the bridge behind each has
 ///         closed or is closing, so the copy would be priced as a coin it no longer redeems for.
 library PythIds {
-    /// @notice How many coins the table names.
-    uint256 internal constant COUNT = 91;
-
     /// @dev ETHEREUM / US DOLLAR.
     bytes32 internal constant WETH = 0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace;
     /// @dev WRAPPED BITCOIN / US DOLLAR.
@@ -212,155 +210,4 @@ library PythIds {
     bytes32 internal constant BNB = 0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f;
     /// @dev SUI / US DOLLAR, read from Pyth's catalogue on 2026-10-18.
     bytes32 internal constant SUI = 0x23d7315113f5b1d3ba7a83604c44b94d79f4fd69af77f804fc7f920a6dc65744;
-
-    /// @notice A token's trust tier (design/2026-10-05-wide-asset-support.md, section 1), shown by the app beside every
-    ///         index that holds it and by `ConfigureWeighted`'s safe mode beside every listing.
-    enum Tier {
-        Unrecorded,
-        Native,
-        Bridged,
-        Custodial
-    }
-
-    /// @notice The tier of a token in the table: `Custodial` for WBTC (BitGo holds the bitcoin), Tether Gold, the
-    ///         Ondo stocks, and Wormhole's copies of Binance-Peg coins, which carry Binance's custody under the
-    ///         bridge's; `Bridged` for a bridge's copy of a coin issued elsewhere, Wormhole's other copies among them;
-    ///         `Native` for a token issued on Ethereum, ether's WETH among them; and `Unrecorded` for any token off the
-    ///         table.
-    function tierOf(address token) internal pure returns (Tier) {
-        if (
-            token == M.WBTC || token == M.XAUT || token == M.NVDAON || token == M.AAPLON || token == M.GOOGLON
-                || token == M.MSFTON || token == M.AMZNON || token == M.TSMON || token == M.SPCXON || token == M.METAON
-                || token == M.AVGOON || token == M.TSLAON || token == M.SKHYON || token == M.MUON || token == M.LLYON
-                || token == M.AMDON || token == M.JPMON || token == M.WMTON || token == M.VON || token == M.XRP
-                || token == M.ADA || token == M.LTC || token == M.DOT || token == M.ATOM
-        ) return Tier.Custodial;
-        if (
-            token == M.CRO || token == M.ICP || token == M.ARB || token == M.RENDER || token == M.CAKE || token == M.ZRO
-                || token == M.INJ || token == M.SOL || token == M.W || token == M.ZK || token == M.AVAX
-                || token == M.JUP || token == M.ALGO || token == M.AERO || token == M.APT || token == M.PYTH_TOKEN
-                || token == M.OP || token == M.BNB || token == M.SUI
-        ) return Tier.Bridged;
-        if (
-            token == M.WETH || token == M.LINK || token == M.UNI || token == M.QNT || token == M.AAVE || token == M.ENA
-                || token == M.ONDO || token == M.SKY || token == M.WLD || token == M.MNT || token == M.MORPHO
-                || token == M.POL || token == M.LIT || token == M.ETHFI || token == M.FET || token == M.CRV
-                || token == M.NEXO || token == M.VIRTUAL || token == M.STRK || token == M.PENDLE || token == M.SHIB
-                || token == M.PEPE || token == M.FF || token == M.GNO || token == M.OHM || token == M.GRT
-                || token == M.SYRUP || token == M.ENS || token == M.JASMY || token == M.COMP || token == M.EIGEN
-                || token == M.AXS || token == M.BAT || token == M.CVX || token == M.MANA || token == M.IMX
-                || token == M.FLUID || token == M.CHZ || token == M.APE || token == M.SENT || token == M.SNX
-                || token == M.ONEINCH || token == M.GLM || token == M.ATH || token == M.H || token == M.PLUME
-                || token == M.GALA || token == M.RSR
-        ) return Tier.Native;
-        return Tier.Unrecorded;
-    }
-
-    /// @notice A tier's name, as safe mode's labels and the app show it.
-    function tierName(Tier tier) internal pure returns (string memory) {
-        if (tier == Tier.Native) return "Native";
-        if (tier == Tier.Bridged) return "Bridged";
-        if (tier == Tier.Custodial) return "Custodial";
-        return "Unrecorded";
-    }
-
-    /// @notice Every coin of the table and its id: WETH, WBTC, LINK and UNI first, the `default` list, then the wide
-    ///         list: the 45 of 2026-10-06 and 2026-10-10's first additions, then the hundred-coin list's 28
-    ///         Ethereum-issued coins (31, less SAND, RLB and BTT) and 12 Wormhole copies, then the 2 copies found on
-    ///         2026-10-18 that stayed (BNB and SUI), each group by market cap.
-    function all() internal pure returns (address[] memory tokens, bytes32[] memory ids) {
-        tokens = new address[](COUNT);
-        ids = new bytes32[](COUNT);
-        (tokens[0], ids[0]) = (M.WETH, WETH);
-        (tokens[1], ids[1]) = (M.WBTC, WBTC);
-        (tokens[2], ids[2]) = (M.LINK, LINK);
-        (tokens[3], ids[3]) = (M.UNI, UNI);
-        (tokens[4], ids[4]) = (M.QNT, QNT);
-        (tokens[5], ids[5]) = (M.AAVE, AAVE);
-        (tokens[6], ids[6]) = (M.ENA, ENA);
-        (tokens[7], ids[7]) = (M.ONDO, ONDO);
-        (tokens[8], ids[8]) = (M.SKY, SKY);
-        (tokens[9], ids[9]) = (M.WLD, WLD);
-        (tokens[10], ids[10]) = (M.MNT, MNT);
-        (tokens[11], ids[11]) = (M.MORPHO, MORPHO);
-        (tokens[12], ids[12]) = (M.POL, POL);
-        (tokens[13], ids[13]) = (M.LIT, LIT);
-        (tokens[14], ids[14]) = (M.ETHFI, ETHFI);
-        (tokens[15], ids[15]) = (M.FET, FET);
-        (tokens[16], ids[16]) = (M.CRV, CRV);
-        (tokens[17], ids[17]) = (M.NEXO, NEXO);
-        (tokens[18], ids[18]) = (M.VIRTUAL, VIRTUAL);
-        (tokens[19], ids[19]) = (M.STRK, STRK);
-        (tokens[20], ids[20]) = (M.PENDLE, PENDLE);
-        (tokens[21], ids[21]) = (M.CRO, CRO);
-        (tokens[22], ids[22]) = (M.ICP, ICP);
-        (tokens[23], ids[23]) = (M.ARB, ARB);
-        (tokens[24], ids[24]) = (M.RENDER, RENDER);
-        (tokens[25], ids[25]) = (M.CAKE, CAKE);
-        (tokens[26], ids[26]) = (M.ZRO, ZRO);
-        (tokens[27], ids[27]) = (M.INJ, INJ);
-        (tokens[28], ids[28]) = (M.SHIB, SHIB);
-        (tokens[29], ids[29]) = (M.PEPE, PEPE);
-        (tokens[30], ids[30]) = (M.SOL, SOL);
-        (tokens[31], ids[31]) = (M.XAUT, XAUT);
-        (tokens[32], ids[32]) = (M.NVDAON, NVDAON);
-        (tokens[33], ids[33]) = (M.AAPLON, AAPLON);
-        (tokens[34], ids[34]) = (M.GOOGLON, GOOGLON);
-        (tokens[35], ids[35]) = (M.MSFTON, MSFTON);
-        (tokens[36], ids[36]) = (M.AMZNON, AMZNON);
-        (tokens[37], ids[37]) = (M.TSMON, TSMON);
-        (tokens[38], ids[38]) = (M.SPCXON, SPCXON);
-        (tokens[39], ids[39]) = (M.METAON, METAON);
-        (tokens[40], ids[40]) = (M.AVGOON, AVGOON);
-        (tokens[41], ids[41]) = (M.TSLAON, TSLAON);
-        (tokens[42], ids[42]) = (M.SKHYON, SKHYON);
-        (tokens[43], ids[43]) = (M.MUON, MUON);
-        (tokens[44], ids[44]) = (M.LLYON, LLYON);
-        (tokens[45], ids[45]) = (M.AMDON, AMDON);
-        (tokens[46], ids[46]) = (M.JPMON, JPMON);
-        (tokens[47], ids[47]) = (M.WMTON, WMTON);
-        (tokens[48], ids[48]) = (M.VON, VON);
-        (tokens[49], ids[49]) = (M.FF, FF);
-        (tokens[50], ids[50]) = (M.GNO, GNO);
-        (tokens[51], ids[51]) = (M.OHM, OHM);
-        (tokens[52], ids[52]) = (M.GRT, GRT);
-        (tokens[53], ids[53]) = (M.SYRUP, SYRUP);
-        (tokens[54], ids[54]) = (M.ENS, ENS);
-        (tokens[55], ids[55]) = (M.JASMY, JASMY);
-        (tokens[56], ids[56]) = (M.COMP, COMP);
-        (tokens[57], ids[57]) = (M.EIGEN, EIGEN);
-        (tokens[58], ids[58]) = (M.AXS, AXS);
-        (tokens[59], ids[59]) = (M.BAT, BAT);
-        (tokens[60], ids[60]) = (M.CVX, CVX);
-        (tokens[61], ids[61]) = (M.MANA, MANA);
-        (tokens[62], ids[62]) = (M.IMX, IMX);
-        (tokens[63], ids[63]) = (M.FLUID, FLUID);
-        (tokens[64], ids[64]) = (M.CHZ, CHZ);
-        (tokens[65], ids[65]) = (M.ZK, ZK);
-        (tokens[66], ids[66]) = (M.APE, APE);
-        (tokens[67], ids[67]) = (M.SENT, SENT);
-        (tokens[68], ids[68]) = (M.SNX, SNX);
-        (tokens[69], ids[69]) = (M.ONEINCH, ONEINCH);
-        (tokens[70], ids[70]) = (M.GLM, GLM);
-        (tokens[71], ids[71]) = (M.ATH, ATH);
-        (tokens[72], ids[72]) = (M.H, H);
-        (tokens[73], ids[73]) = (M.PLUME, PLUME);
-        (tokens[74], ids[74]) = (M.GALA, GALA);
-        (tokens[75], ids[75]) = (M.W, W);
-        (tokens[76], ids[76]) = (M.RSR, RSR);
-        (tokens[77], ids[77]) = (M.XRP, XRP);
-        (tokens[78], ids[78]) = (M.ADA, ADA);
-        (tokens[79], ids[79]) = (M.LTC, LTC);
-        (tokens[80], ids[80]) = (M.AVAX, AVAX);
-        (tokens[81], ids[81]) = (M.DOT, DOT);
-        (tokens[82], ids[82]) = (M.JUP, JUP);
-        (tokens[83], ids[83]) = (M.ALGO, ALGO);
-        (tokens[84], ids[84]) = (M.ATOM, ATOM);
-        (tokens[85], ids[85]) = (M.AERO, AERO);
-        (tokens[86], ids[86]) = (M.APT, APT);
-        (tokens[87], ids[87]) = (M.PYTH_TOKEN, PYTH_TOKEN);
-        (tokens[88], ids[88]) = (M.OP, OP);
-        (tokens[89], ids[89]) = (M.BNB, BNB);
-        (tokens[90], ids[90]) = (M.SUI, SUI);
-    }
 }

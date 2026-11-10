@@ -2,72 +2,55 @@
 
 What the contracts do not protect against, and what an app built on them has to show its users.
 
-- **A lone executor can take up to 2% of what it trades.** At the auction's end `μ` reaches `MU_MIN` (0.98), so an
-  executor with no competition that waits for it delivers 98% of the value it takes, at the settling prices.
-  Competition fills earlier, at the `μ` that just covers an executor's swap costs, except on an index holding one of the
-  six US-hours stocks, below. What a fill trades is only the drift
-  since the last rebalance, at most 20% of each component's units, at most once a week.
-- **A wrong price costs at most the turnover cap.** A fill at a wrong or forged Pyth price trades the index toward
-  wrong targets. The cap counts units, not value, so whatever the price says, one fill sends out at most 20% of each
-  component's own units and at most doubles a component it buys, at most once every `MIN_REBALANCE_INTERVAL` (V5-M2,
-  RX-15); the guardian can cancel, a confidence interval wider than 2% is refused, and so is a price more than 5% from
-  the moving average Pyth publishes with it (RX-27), so a push of a few seconds on thin venues moves a fill's price by
-  at most that. An issuer that mints its coin and drives its price down reaches the rest of the index only through the
-  fixed weights, about its own leg's value per fill (RX-15). Pyth's contract on Ethereum is upgradeable by Pyth's
-  governance and verifies updates against Pyth's own set of five signing keys, not Wormhole's guardians (OP-PIP-132).
-  Three of the five suffice, for a price and for a governance message alike, so those three can
-  also upgrade Pyth's contract (`design/2026-10-18-pre-mainnet-readings.md`, section 1). The app says so on every
-  index.
-- **Rebalancing needs Pyth's Hermes, and Hermes needs a key.** Signed updates come from Hermes, which requires an
-  API key. The contract does not care who fetches an update, so one keyed service can hand updates to
-  any executor, but without one no index rebalances. Pyth sells the key as a data plan: $500 a month for crypto feeds,
-  Tether Gold's and the five Ondo tokens' own among them, and $2,500 and up for the share feeds twelve Ondo legs use.
-  Six of Ondo's stocks (TSM, AVGO, LLY, JPM, WMT, V) have only
-  US-hours feeds, so an index holding one settles only while that market is open, or with the stock kept. A start
-  reads every moving feed, and the 2 hours of notice and the 4-hour auction end before the market's next open, so no
-  fill lands at a reopening near `MU_MIN` (RX-3). Such an index rebalances only in a session: a start late in one
-  expires unfilled, and the keeper starts it so the auction's middle falls in one. Pyth's catalogue gives all six
-  regular hours only, 09:30 to 16:00 New York time on trading days, with the
-  exchange's holidays and half days, and gives the same schedule to the six share feeds named "24/7" (AMZN, SPCX, META,
-  SKHY, MU, AMD); until Hermes' data, which needs the key, shows those six publishing outside it, treat all twelve as
-  session-limited (RX-31).
-  Since OP-PIP-132 an update's previous publish time is its own less a second, so Pyth admits only the message stamped
-  exactly at `priceTime()`, and the hub's window is in effect one second (RX-59).
+- **A lone executor keeps the index's distance from its weights.** No contract reads a price: the executor names
+  the units a rebalance settles at, and the index accepts them when their weighted gain clears a bar that falls
+  through the auction. Executors compete by filling earlier, at a higher bar, which leaves more with the holders. With
+  an honest executor bidding, the keeper first, holders keep the whole distance less its costs. With none, an
+  executor waits for the auction's last second and keeps it: 0.3 to 0.6% of the index in an ordinary week, up to
+  about 1.8% after a week in which a tenth of the index halved. That distance is what a fair rebalance would have
+  earned the holders; it is never their principal, and on its weights an index has nothing to take
+  (`design/2026-11-10-oracle-free-rebalance.md`, sections 3 and 6). A fair price therefore needs a bidder, where a
+  price feed gave one whoever filled.
+- **No contract reads a price.** Nothing checks what a coin is worth, and nothing needs to: a fill is judged on
+  units. Whatever the executor offers, one fill sends out at most 20% of each component's own units and at most
+  doubles a component (V5-M2, RX-15), at most once every `MIN_REBALANCE_INTERVAL`, and it must raise the weighted
+  product of the units. So a coin that is worthless and free to mint, by its issuer or through a forged bridge
+  message, takes a bounded share of the rest per fill: a coin at 10% of an index, at most 5.8% of the other
+  components. Valuing an index is the app's job, from sources of its own.
+- **One fill may not land on the weights.** The unit caps bound a fill, and the gain an executor is credited with is
+  a little under what the market pays it for the last few percent, so a fill lands about 96% of the way in an
+  ordinary week and about half the way after a quarter's drift. The next rebalance takes the rest.
 - **Wrapped legs rest on Wormhole.** They rest on the chain each copy comes from too. Wormhole runs delegated
   guardian sets: for BNB Chain, Kaia, NEAR, Sui, Arbitrum and Monad, five of seven named guardians suffice to mint, so
   11 of the 15 listed copies and 13 of those queued rest on five keys, not 13 of 19; upgrading a copy's code still
-  takes a governance message (RX-6). A copy whose home chain shuts its bridge side redeems for nothing while priced as
-  its coin: BTT's and SEI's copies left the list for that (RX-28, RX-32). Wormhole's guardians (13 of 19) can forge a bridge message, minting unbacked
+  takes a governance message (RX-6). A copy whose home chain shuts its bridge side redeems for nothing:
+  BTT's and SEI's copies left the list for that (RX-28, RX-32). Wormhole's guardians (13 of 19) can forge a bridge message, minting unbacked
   wrapped tokens or upgrading every wrapped token's code at once, with no timelock; that reaches the whole of every
-  wrapped leg, beyond the turnover cap. The wrapped copies have no DEX liquidity: redeem pays them, and turning them
+  wrapped leg, and through a fill the bounded share of the rest described above. The wrapped copies have no DEX liquidity: redeem pays them, and turning them
   into the coin needs Wormhole live. The app shows every index's wrapped share of value before it is created and to
   every holder (`design/2026-10-10-one-index-wormhole-legs.md`, section 3).
-- **A collapsing coin can stop the fills.** Fixed weights keep buying a coin whose price falls, and the growth cap
-  lets a fill at most double its units (RX-15), so the fill trades less the further the coin falls. For an index on its
-  weights whose coin of weight `w` falls `k`-fold against the rest, the capped fill trades about `w / k` of the moving
-  value, under `MIN_TRADE` once `k` passes about `999 · w / (1 − w)`: 999 for a coin at 50%, 429 at 30%, 111 at 10%,
-  11 at 1% (RZ-4, replayed on `WeightedMath._targets`). Every fill and preview then reverts `NothingToRebalance`, as
-  units beyond `uint96` would (RX-61), until the price recovers or the guardian starts a rebalance with the coin kept
-  (V5-L3). A two-component index cannot keep one, since a keep mask must leave two moving, so its rebalancing waits
-  for the price. An issuer that crashes its coin can so stop the rebalancing of every index holding it at a small
-  weight; that moves no funds, and holders redeem in kind throughout.
+- **A collapsing coin is still bought.** Fixed weights keep buying a coin whose price falls: an executor is paid to
+  deliver it, at most doubling its units per fill (RX-15). Units beyond `uint96` stop a fill rather than wrap
+  (RX-61). The guardian stops the buying by starting a rebalance with the coin kept (V5-L3). A two-component index
+  cannot keep one, since a keep mask must leave two moving. Holders redeem in kind throughout.
 - **An issuer's corporate action is not accounted for.** An index holds fixed units per share and pays out only those.
   If an issuer mints tokens to every holder, as a stock split paid in tokens would, the index's new tokens belong to no
   share; if it burns them, that leg falls below its backing. Ondo does neither: its token's balance never changes,
-  and each token tracks a multiplier of shares (`sValue`) that reinvested dividends raise and a split multiplies. So the
-  five Ondo legs priced at the token's own feed are priced right, and the twelve priced at the share's feed are worth
-  `sValue` times what the hub thinks: a small drift from dividends, which the turnover cap bounds, and after a split a
-  rebalance that cannot clear until the guardian keeps that leg. The guardian keeps an affected leg out of any
-  rebalance around a corporate action, which Ondo announces at least 24 hours ahead (CF-3,
-  `design/2026-10-18-pre-mainnet-readings.md`, section 2).
-- **Price ids are data the owner maintains.** The contracts cannot tell a wrong price id from a right one. Check each
-  listing's feed description during its 2 days, while it can still be cancelled. An index copies its ids at creation,
-  so a wrong id reaches only indexes created while it stood, and the guardian can keep that component at each
-  rebalance.
-- **Rebalances clear only when the moving value pays for the fill.** Small indexes on mainnet rarely rebalance, and a
+  and each token tracks a multiplier of shares (`sValue`) that reinvested dividends raise and a split multiplies. No
+  contract prices an Ondo token, so nothing misprices it: executors price the token the market trades. The guardian
+  still keeps an affected leg out of any rebalance around a corporate action, which Ondo announces at least 24 hours
+  ahead (CF-3, `design/2026-10-18-pre-mainnet-readings.md`, section 2).
+- **Rebalances clear only when the distance pays for the fill.** An executor fills when the index's distance from its
+  weights covers its gas and its swaps, so small indexes on mainnet rarely rebalance, and a
   fresh index cannot rebalance until its own interval, 7 to 91 days, has passed since its creation. An unfilled auction expires, and for `REBALANCE_DELAY`
-  afterwards (less a second, CR-I02) only the owner and guardian can restart it. A fill that would send nothing out, as
-  on an empty or dust index, settles at `MU_MAX`, so nobody is paid for it (R14, XA-27).
+  afterwards (less a second, CR-I02) only the owner and guardian can restart it. When the distance is under an
+  executor's costs, anyone may still fill at the auction's last second with a gift of the bar's floor, 4.77e-7 of
+  the index, which pays the holders and restarts the interval.
+- **A dust index's units can be walked.** An index without shares does not rebalance (R14, XA-27). On a supply
+  worth nothing, though, a fill's gain costs nothing, so whoever holds a dust index's shares can move its units off
+  its weights over several intervals. A later minter deposits at those units, in kind and fairly, and the next
+  auction pays the distance to whoever fills first. The app shows an index's components against its weights before
+  it offers a mint.
 - **An exit sent during the auction can be overtaken by the fill.** The executor picks the block, so it can order its
   fill ahead of a redeem or a guardian cancel it sees in the public mempool. No bound moves; during the auction, use a
   private relay (RT-02). Shares minted while a rebalance is pending share the outcome of any fill that lands after
@@ -76,11 +59,11 @@ What the contracts do not protect against, and what an app built on them has to 
   compromised guardian can cancel each proposal at the last second of its auction and hold rebalancing off while the
   index drifts from its weights. It moves no funds, holders redeem throughout, and the owner ends it by replacing that
   guardian: 7 days of notice the guardian cannot cancel, since it may only cancel its own removal (DA-12). A guardian
-  can also stall without a cancel: a keep-mask rebalance that leaves a pair of components moving can clear `MIN_TRADE`
-  on a sliver of the index. Its fill restarts only `MIN_REBALANCE_INTERVAL` for a rebalance without a keep mask, not
+  can also stall without a cancel: a keep-mask rebalance that leaves a pair of small components moving can be
+  filled with a gift to that sliver. Its fill restarts only `MIN_REBALANCE_INTERVAL` for a rebalance without a keep mask, not
   the index's own interval, so the stall can outlast the guardian's replacement by up to a week (XS-3), and by a
   keep-mask auction the outgoing guardian left pending, `REBALANCE_DELAY` + `AUCTION_DURATION` more (RX-44); the owner and
-  the new guardian can start a keep-mask rebalance then too, for an index that only settles with a component kept. While a replacement is pending, the owner cancels the outgoing guardian's
+  the new guardian can start a keep-mask rebalance then too. While a replacement is pending, the owner cancels the outgoing guardian's
   keep-mask proposals, and monitors alert on `RebalanceStarted` with a non-zero `keepMask` (RT-07). The owner has only
   `REBALANCE_DELAY`, 2 hours, to cancel one before the guardian's own executor can fill it at `eta`.
 - **Issuers can freeze components, and some can burn them.** WBTC can be paused by its custodian, and so can MANA,
@@ -99,13 +82,6 @@ What the contracts do not protect against, and what an app built on them has to 
   leaves the hub as it is, since a probe on every issue costs gas on every leg and code the hub's 98 spare bytes may not
   hold: the app checks first, simulating a send of each coin from the index before it offers a mint, and a direct
   caller checks for itself.
-- **A start must land in one slot, so the guardian is a relay.** Since RX-3 every start, the owner's and the
-  guardian's included, carries a Pyth update valid only for the slot `priceTime()` names, so its transaction must be
-  built for the block it lands in, which a Safe, whose signers sign the update into the calldata, cannot do. The
-  guardian is therefore `GuardianRelay`, which its Safe controls (RZ-26, the owner's call of 2026-11-02): the Safe
-  authorizes a start, an index and its keep mask until a deadline, and anyone, the keeper first, sends it with an
-  update of their own, once. Whoever sends it chooses only the block before the deadline. The owner, also a Safe, has
-  no relay: a keep-mask start the owner wants goes through the guardian's.
 - **A request's surplus goes to the fastest filler.** A fill delivers what the filler sends and at least the
   requester's limit, so a generous limit is value left for fillers. The app suggests limits from its own valuation.
 - **Circle and Tether freeze differently, and `MintRequests` cannot tell.**
@@ -136,7 +112,9 @@ What the contracts do not protect against, and what an app built on them has to 
   one share per call. An integer scale backs the supply by up to `supply · units / 1e36` raw units less per accrual, a
   part in the scale (1e18 at first, less as fees accrue) of a leg, which stays in the index (RX-62). A lifetime's gap is capped just under the whole index, and a second
   one, which would shrink the scale to zero, is not charged. `lastAccrual()` and `pendingStreamingFee()` show the clock
-  and what an accrual now would mint.
+  and what an accrual now would mint. The yearly rate is a ceiling: each accrual charges the rate for the time since
+  the last one, on what is left, and anyone can call `accrueFees`, so the more often it runs the less a year takes: at
+  500 basis points, 5.00% with one accrual a year and 4.88% with one a day. Holders never pay more than the rate.
 - **The basket builder is one custody point.** Every user's escrow of a token sits in one address. An issuer that
   blacklists or pauses the builder freezes every escrow of that token until it lifts the block, and one that can
   destroy a blacklisted balance, as Tether's contracts can, can take them all. The builder sends itself one unit of a
@@ -152,12 +130,6 @@ What the contracts do not protect against, and what an app built on them has to 
   there is no admin who could sweep them.
 - **A hooked V4 pool cannot be routed through.** The zap rejects any V4 route whose hops carry hooks or hook data, so a
   component whose only V4 depth sits behind a hook is reachable on V3 only.
-- **`PYTH` cannot be repointed.** It is an immutable of the one implementation every index clones, and on Ethereum the
-  deploy accepts only `0x4305…`. If that contract stops verifying updates, rebalancing ends for good on every index;
-  issue, redeem, `redeemSkipping` and claims read no price and keep working. Pyth's written confirmation that this
-  address stays served is a pre-mainnet item (RX-25).
-- **An executor that also builds the block sees further.** Under ePBS (EIP-7732) a builder that is also the executor
-  can commit to a block and withhold its payload, seeing past `PRICE_LAG` the way V5-L1 bounds (RX-65).
 - **A `tokenIn` that calls back into the zap is unsupported**, alongside fee-on-transfer currencies. The zap pre-funds
   the Universal Router with exactly a leg's cap and sweeps it back within the same `execute`; the pre-fund is the bound
   (CR-I14, RT-11). Mint and burn currencies are the user's choice, so the app should offer only USDC and USDT.

@@ -5,17 +5,15 @@ import {Test} from "forge-std/Test.sol";
 import {WeightedIndexFactory} from "../src/WeightedIndexFactory.sol";
 import {WeightedHub} from "../src/WeightedHub.sol";
 import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
-import {PythStructs} from "../src/interfaces/pyth/PythStructs.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
-import {MockPyth} from "./mocks/MockPyth.sol";
 
 /// @notice State and helpers the weighted factory and hub suites share.
 /// @dev Three tokens shaped like the ones the product lists: ETH-like with 18 decimals at $2,000, BTC-like with 8 at
-///      $60,000 and a dollar token with 6 at $1, each priced by Pyth with exponent -8. The default index holds them at
-///      50%, 30% and 20% and is worth $100 per whole index token at those prices, so its starting units are exactly
-///      on its weights.
+///      $60,000 and a dollar token with 6 at $1. No contract knows those prices: only a test's executor does, as a
+///      market would. The default index holds the three at 50%, 30% and 20% and is worth $100 per whole index token at
+///      those prices, so its starting units are exactly on its weights.
 abstract contract WeightedTest is Test {
-    MockPyth pyth;
     WeightedIndexFactory factory;
     MockERC20 eth;
     MockERC20 btc;
@@ -27,13 +25,10 @@ abstract contract WeightedTest is Test {
     address alice = makeAddr("alice");
     address stranger = makeAddr("stranger");
 
-    bytes32 constant ETH_ID = keccak256("ETH/USD");
-    bytes32 constant BTC_ID = keccak256("BTC/USD");
-    bytes32 constant USD_ID = keccak256("USD/USD");
-    int32 constant EXPO = -8;
-    int64 constant ETH_PRICE = 2000e8;
-    int64 constant BTC_PRICE = 60_000e8;
-    int64 constant USD_PRICE = 1e8;
+    /// @dev The market's starting prices, in dollars per whole token.
+    uint256 constant ETH_PRICE = 2000;
+    uint256 constant BTC_PRICE = 60_000;
+    uint256 constant USD_PRICE = 1;
     /// @dev $100 of each component's weight: 0.025 ETH, 0.0005 BTC and 20 dollars per whole index token.
     uint256 constant ETH_UNITS = 0.025e18;
     uint256 constant BTC_UNITS = 0.0005e8;
@@ -41,25 +36,24 @@ abstract contract WeightedTest is Test {
 
     function _deploy() internal {
         vm.warp(1_800_000_000);
-        pyth = new MockPyth();
-        factory = new WeightedIndexFactory(owner, guardian, address(pyth));
+        factory = new WeightedIndexFactory(owner, guardian);
         eth = new MockERC20("Ether", "ETH", 18);
         btc = new MockERC20("Bitcoin", "BTC", 8);
         usd = new MockERC20("Dollar", "USD", 6);
     }
 
-    /// @dev Lists `token` with `priceId`, through the full listing delay.
-    function _list(address token, bytes32 priceId) internal {
+    /// @dev Lists `token`, through the full listing delay.
+    function _list(address token) internal {
         vm.prank(owner);
-        factory.proposeListing(token, priceId);
+        factory.proposeListing(token);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(token);
     }
 
     function _listAll() internal {
-        _list(address(eth), ETH_ID);
-        _list(address(btc), BTC_ID);
-        _list(address(usd), USD_ID);
+        _list(address(eth));
+        _list(address(btc));
+        _list(address(usd));
     }
 
     function _spec(address token, uint256 weight, uint256 units)
@@ -118,52 +112,66 @@ abstract contract WeightedTest is Test {
         vm.stopPrank();
     }
 
-    /// @dev One update per id, published at the index's price time, each the first of its second.
-    function _updates(WeightedHub index, bytes32[] memory ids, int64[] memory prices)
+    /// @dev The market's price of each default component, in dollars per whole token: only tests name a price.
+    function _market(uint256 ethPrice, uint256 btcPrice, uint256 usdPrice)
+        internal
+        pure
+        returns (uint256[] memory prices)
+    {
+        prices = new uint256[](3);
+        // Per raw unit, at one scale: ETH has 18 decimals, BTC 8 and USD 6.
+        prices[0] = ethPrice;
+        prices[1] = btcPrice * 1e10;
+        prices[2] = usdPrice * 1e12;
+    }
+
+    /// @dev The units that put `index` on its weights at `prices` (per raw unit, any one scale) without changing its
+    ///      value there: the fill a competitive executor names. Each is rounded up, in the holders' favour.
+    function _onWeights(WeightedHub index, uint256[] memory prices) internal view returns (uint256[] memory) {
+        return _onWeights(index, prices, 0);
+    }
+
+    /// @dev As above, moving only the components `keepMask` leaves: they share their own value by their own weights,
+    ///      and a kept component keeps its units.
+    function _onWeights(WeightedHub index, uint256[] memory prices, uint256 keepMask)
         internal
         view
-        returns (bytes[] memory data)
+        returns (uint256[] memory units)
     {
-        uint64 time = uint64(index.priceTime());
-        data = new bytes[](ids.length);
-        for (uint256 i = 0; i < ids.length; ++i) {
-            data[i] = pyth.update(ids[i], prices[i], 0, EXPO, time, time - 1);
+        units = index.recordedUnits();
+        uint256[] memory weights = index.componentWeights();
+        uint256 n = units.length;
+        uint256 value = 0;
+        uint256 weight = 0;
+        for (uint256 i = 0; i < n; ++i) {
+            if ((keepMask >> i) & 1 != 0) continue;
+            value += units[i] * prices[i];
+            weight += weights[i];
+        }
+        for (uint256 i = 0; i < n; ++i) {
+            if ((keepMask >> i) & 1 != 0) continue;
+            units[i] = Math.mulDiv(value, weights[i], weight * prices[i], Math.Rounding.Ceil);
         }
     }
 
-    function _ids3() internal pure returns (bytes32[] memory ids) {
-        ids = new bytes32[](3);
-        ids[0] = ETH_ID;
-        ids[1] = BTC_ID;
-        ids[2] = USD_ID;
-    }
-
-    function _prices3(int64 ethPrice, int64 btcPrice, int64 usdPrice) internal pure returns (int64[] memory prices) {
-        prices = new int64[](3);
-        prices[0] = ethPrice;
-        prices[1] = btcPrice;
-        prices[2] = usdPrice;
-    }
-
-    /// @dev The same prices as Pyth feeds, for `previewRebalance`.
-    function _structs3(int64 ethPrice, int64 btcPrice, int64 usdPrice)
-        internal
-        pure
-        returns (PythStructs.PriceFeed[] memory feeds)
-    {
-        feeds = new PythStructs.PriceFeed[](3);
-        feeds[0] = _feed(ethPrice, EXPO);
-        feeds[1] = _feed(btcPrice, EXPO);
-        feeds[2] = _feed(usdPrice, EXPO);
-    }
-
-    /// @dev A Pyth feed of `price` at `expo` for `previewRebalance`, its moving average equal to the price. The two
-    ///      are separate structs, so a test can move one without the other.
-    function _feed(int64 price, int32 expo) internal pure returns (PythStructs.PriceFeed memory) {
-        return PythStructs.PriceFeed({
-            id: bytes32(0),
-            price: PythStructs.Price({price: price, conf: 0, expo: expo, publishTime: 0}),
-            emaPrice: PythStructs.Price({price: price, conf: 0, expo: expo, publishTime: 0})
-        });
+    /// @dev Warps to the first second of the pending auction at which `newUnits` clear the bar. Reverts the test if
+    ///      they never do.
+    function _warpToFirstFill(WeightedHub index, uint256[] memory newUnits) internal {
+        (uint256 eta,) = index.pendingRebalance();
+        uint256 low = 0;
+        uint256 high = index.AUCTION_DURATION();
+        vm.warp(eta + high);
+        // Reverts here, with the index's own error, if the fill never clears the bar.
+        index.previewRebalance(newUnits);
+        while (low < high) {
+            uint256 mid = (low + high) / 2;
+            vm.warp(eta + mid);
+            try index.previewRebalance(newUnits) {
+                high = mid;
+            } catch {
+                low = mid + 1;
+            }
+        }
+        vm.warp(eta + low);
     }
 }

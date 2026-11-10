@@ -4,8 +4,9 @@
 [![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 
 Xindex is a protocol for index tokens on Ethereum. Anyone can create an index of 2 to 100 listed assets at weights they
-choose. Each index is an ERC-20 fully backed in kind: minting deposits the basket and redeeming returns it, so neither
-reads a price. A permissionless auction brings an index back to its weights at Pyth prices.
+choose. Each index is an ERC-20 fully backed in kind: minting deposits the basket and redeeming returns it. A
+permissionless auction brings an index back toward its weights. No contract reads a price, a feed or an oracle, for
+any of it.
 
 ## How it works
 
@@ -17,22 +18,24 @@ reads a price. A permissionless auction brings an index back to its weights at P
 - **Trade with stablecoins or ether.** `IndexZap` mints with USDC, USDT or ether and burns to any token or to ether
   in one transaction, through Uniswap's Universal Router (V3 and V4 pools); a USDC permit makes the mint one signature. `BasketBuilder` does the same over several transactions for baskets too
   wide for one. `MintRequests` holds limit orders anyone can fill.
-- **Rebalance.** Once an index's interval (7 to 91 days) has passed, anyone can start a rebalance while every feed
-  publishes. After 2 hours of notice, a 4-hour Dutch auction lets any contract settle it at Pyth prices; the multiplier
-  on what the executor must deliver falls from 1.02 to 0.98. One fill moves at most 20% of each component.
+- **Rebalance.** Once an index's interval (7 to 91 days) has passed, anyone can start a rebalance. After 2 hours of
+  notice, a 4-hour auction lets any contract settle it. The executor names the units each component is to have, and
+  the index accepts them only if their weighted gain clears a bar that halves every twelve minutes. No price is read:
+  the bar falls until some executor finds the trade worth making, and competition between executors is what makes it
+  fair. One fill takes at most 20% of a component and at most doubles one, and never lowers the weighted product of
+  the units, a constant-weight pool's invariant.
 - **Fees.** Creator and platform fees on mint and redeem, and an optional streaming fee, all paid in new shares. No fee
   moves a component.
 
 ```
                   createIndex(name, symbol, [{token, weight, units}, ...], params)
    creator ──────────────────────────────────► WeightedIndexFactory ──CREATE2 clone───► WeightedHub (ERC-20)
-                                               │ listings with Pyth ids               │ holds the basket
+                                               │ listings                             │ holds the basket
                                                │ (2-day delay), guardian,             │ issue / redeem in kind
                                                │ registry                             │ redeemSkipping / claim
                                                                                       │
-   anyone ── startRebalance(keepMask, priceUpdate) ─────────────────────────────────► │ 2 hours of notice
-   executor ── executeRebalance(data, priceUpdate) ─────────────────────────────────► │ fill at μ(t), with a callback
-                                         Pyth ◄── parse at priceTime() ────────────── │
+   anyone ── startRebalance(keepMask) ──────────────────────────────────────────────► │ 2 hours of notice
+   executor ── executeRebalance(newUnits, data) ────────────────────────────────────► │ gain ≥ bar(t), with a callback
                                                                                       │
    user ── mintWithToken(USDC) ──► IndexZap ── exactOutput swaps ──► Universal Router ─► V3 / V4
         ◄─ burnToToken(USDT)  ───     │      ◄─ exactInput swaps  ──                  │
@@ -45,11 +48,12 @@ reads a price. A permissionless auction brings an index back to its weights at P
 ## Trust model
 
 - No upgrades, no pause, and no admin access to funds, to shares, or to an index's components and weights.
-- Only rebalancing reads prices, from Pyth. One fill moves at most 20% of each component, whatever a price says.
+- Nothing reads a price, so no feed and no price signer is trusted. A rebalance is judged on units: on its weights
+  an index cannot lose value to a fill, and off them a fill can take at most the index's distance from its weights.
+  Executors competing for that distance return it to the holders; a lone one keeps it.
 - The owner, a Safe that needs at least 3 signatures, lists assets behind a 2-day delay and sets fees for new indexes.
 - The guardian can cancel a rebalance or route one around a frozen asset. It moves no funds, and the owner can replace
-  it through a 7-day delay it cannot block. It is a relay contract its Safe controls: the Safe authorizes a rebalance's
-  start and anyone sends it, since the start's Pyth update is valid for one block only.
+  it through a 7-day delay it cannot block.
 
 Every index holds, for each component `i`, at all times:
 
@@ -134,5 +138,5 @@ report a vulnerability.
 
 Business Source License 1.1, see [LICENSE](LICENSE): non-production use is free, running the keeper against our
 deployments and integrating with them is granted, and the code becomes MIT on 2030-10-28. The interfaces under
-`src/interfaces` are MIT now. Files copied from Pyth, Wormhole and Uniswap keep their own licenses, listed in
+`src/interfaces` are MIT now. Files copied from Wormhole and Uniswap keep their own licenses, listed in
 [NOTICE](NOTICE).

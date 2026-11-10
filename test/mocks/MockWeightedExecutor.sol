@@ -36,17 +36,17 @@ contract MockWeightedExecutor is IRebalanceExecutor {
         shortComponent = i;
     }
 
-    function execute(IWeightedHub index, bytes calldata data, bytes[] calldata priceUpdate) external payable {
-        index.executeRebalance{value: msg.value}(data, priceUpdate);
+    function execute(IWeightedHub index, uint256[] calldata newUnits, bytes calldata data) external {
+        index.executeRebalance(newUnits, data);
     }
 
     function executeBounded(
         IWeightedHub index,
+        uint256[] calldata newUnits,
         bytes calldata data,
-        bytes[] calldata priceUpdate,
         uint256[] calldata maxAmountsIn
-    ) external payable {
-        index.executeRebalance{value: msg.value}(data, priceUpdate, maxAmountsIn);
+    ) external {
+        index.executeRebalance(newUnits, data, maxAmountsIn);
     }
 
     function lastAmountsOut() external view returns (uint256[] memory) {
@@ -90,10 +90,12 @@ contract MockWeightedExecutor is IRebalanceExecutor {
             abi.encodeCall(IIndexHub.redeem, (1, address(this))),
             abi.encodeCall(IWeightedHub.redeemSkipping, (1, address(this), 1)),
             abi.encodeCall(IWeightedHub.claim, (address(0), address(this))),
-            abi.encodeCall(IWeightedHub.startRebalance, (0, new bytes[](0))),
+            abi.encodeCall(IWeightedHub.startRebalance, (0)),
             abi.encodeCall(IWeightedHub.cancelRebalance, ()),
-            abi.encodeWithSignature("executeRebalance(bytes,bytes[])", "", new bytes[](0)),
-            abi.encodeWithSignature("executeRebalance(bytes,bytes[],uint256[])", "", new bytes[](0), new uint256[](0))
+            abi.encodeWithSignature("executeRebalance(uint256[],bytes)", new uint256[](0), ""),
+            abi.encodeWithSignature(
+                "executeRebalance(uint256[],bytes,uint256[])", new uint256[](0), "", new uint256[](0)
+            )
         ];
         for (uint256 i = 0; i < attempts.length; ++i) {
             (, bytes memory result) = address(index).call(attempts[i]);

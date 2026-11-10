@@ -634,7 +634,7 @@ components (section 2).
   settles, `canStartRebalance` is right, a fill settles exactly its preview, what comes in is worth at least μ times
   what leaves (`muBoundBroken`), no fill sends out more than `MAX_TURNOVER` of a component's units (`turnoverBroken`),
   and the weights never change. `test/MintRequests.invariant.t.sol` is described in section 2.
-- **Security regression tests,** named after their ids, as `AGENTS.md` gate 6 requires. v5's own: V5-M1, V5-M2, V5-L1,
+- **Security regression tests,** named after their ids, as `CLAUDE.md` gate 6 requires. v5's own: V5-M1, V5-M2, V5-L1,
   V5-L2, V5-L3, V5-I4 and V5R-1; V5-I1 to V5-I3 and V5R-I2 are recorded by documentation, and V5R-I1 is retired with
   Stage B. The older ids that still bind (R04, R08, R10, R11, R14 to R16, R21, DA-01, DA-13, DA-14, DA-17, DA-22,
   SA-07, CR-I01, RT-01, RT-21 and others) are re-targeted to the weighted suites, as `audit/2026-10-06-v4-retirement.md`

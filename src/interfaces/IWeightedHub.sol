@@ -3,7 +3,6 @@ pragma solidity 0.8.28;
 
 import {IIndexHub} from "./IIndexHub.sol";
 import {IXindexErrors} from "./IXindexErrors.sol";
-import {PythStructs} from "./pyth/PythStructs.sol";
 
 /// @title IWeightedHub
 /// @notice An index whose creator chose each component's share of its value (its weight).
@@ -11,9 +10,11 @@ import {PythStructs} from "./pyth/PythStructs.sol";
 ///         - 1e18 shares (one whole index token) always redeem for exactly `units_i` raw units of each component,
 ///           minus the index's fee.
 ///         - The components and their weights never change.
-///         - A rebalance brings the units back to the weights, at Pyth prices read in the settling transaction,
-///           through an auction on the growing legs.
-///         - Issue, redeem and claims never read a price.
+///         - A rebalance brings the units back toward the weights through an auction. Its executor names the new
+///           units, and the index accepts them only if their weighted gain clears a bar that falls with time
+///           ({executeRebalance}). Competing executors are what make the trade fair, and the best trade an executor
+///           can offer is the one that puts the index on its weights at the market's prices.
+///         - Nothing here reads a price: not a rebalance, not an issue, a redeem or a claim.
 ///
 ///         Fees
 ///         - Fees are paid in shares and never move a component. A minter's deposit backs the fee's shares on top of
@@ -26,6 +27,10 @@ import {PythStructs} from "./pyth/PythStructs.sol";
 ///           and on {accrueFees}. Each accrual mints the recipients their share of the index, and shrinks every share's
 ///           units by the same factor ({pendingStreamingFee}). So every share's backing stays exactly what the index
 ///           holds.
+///         - The yearly rate is a ceiling. Each accrual charges the rate for the time since the last one, on what is
+///           left, so the more often anyone accrues, the less a year takes: at 500 basis points, 5.00% with one
+///           accrual a year and 4.88% with one a day. Anyone can call {accrueFees}; holders never pay more than the
+///           rate.
 ///         - The factory names the recipients (the creator and the platform) at each call (`feeTerms`). It also says
 ///           whether `to` may receive shares of a gated index. The creator keeps that allowlist and can hand the role
 ///           on.
@@ -46,14 +51,10 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     /// @param token The component.
     /// @param units Starting raw units per 1e18 shares, non-zero and within uint96.
     /// @param weight Its share of the index's value, in basis points, non-zero; all of them sum to TOTAL_WEIGHT.
-    /// @param priceId Its Pyth price id, non-zero.
-    /// @param decimals Its decimals, as the factory recorded them at listing, at most 18.
     struct ComponentInit {
         address token;
         uint256 units;
         uint256 weight;
-        bytes32 priceId;
-        uint8 decimals;
     }
 
     /// @notice What the factory fixed for the index at creation, besides its components. None of it ever changes.
@@ -118,21 +119,19 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     event RebalanceCancelled(uint256 indexed proposalId, address indexed caller, uint256 restartAllowedAt);
     /// @notice The proposal with this `proposalId` settled, and {rebalanceNonce} is now `id`.
     /// @param executor The contract that filled the auction.
-    /// @param mu The multiplier on the growing legs the settlement used (1e18 = parity).
-    /// @param priceTime The second the prices were read at: each is Pyth's first update at or after it.
-    /// @param prices Each moving component's price, in USD per raw unit scaled by 1e36; zero for a kept one.
-    /// @param units New recorded units per component, in component order. Like the old ones, they carry the index's
-    ///        scale (the last `StreamingFeeAccrued` one); {components} reports them with it applied. A kept
-    ///        component's units are unchanged.
+    /// @param bar The gain the auction asked for in the settling block (1e18 = 100%).
+    /// @param gain The fill's weighted gain, at least `bar`.
+    /// @param units New recorded units per component, in component order, as the executor named them. Like the old
+    ///        ones, they carry the index's scale (the last `StreamingFeeAccrued` one); {components} reports them with
+    ///        it applied. A kept component's units are unchanged.
     /// @param amountsOut What the index sent `executor` per component.
     /// @param amountsIn What the index needed back per component; see `IRebalanceExecutor`.
     event Rebalanced(
         uint256 indexed proposalId,
         uint256 indexed id,
         address indexed executor,
-        uint256 mu,
-        uint256 priceTime,
-        uint256[] prices,
+        uint256 bar,
+        int256 gain,
         uint256[] units,
         uint256[] amountsOut,
         uint256[] amountsIn
@@ -143,8 +142,7 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     /// @notice The implementation, or a clone the factory did not initialize, cannot issue, redeem or rebalance.
     error NotInitialized();
     /// @notice {initialize} got fewer than MIN_COMPONENTS or more than MAX_COMPONENTS components, a zero token, zero
-    ///         units, a zero weight, weights that do not sum to TOTAL_WEIGHT, a zero price id, more than 18 decimals,
-    ///         or two components with the same token or the same price id.
+    ///         units, a zero weight, weights that do not sum to TOTAL_WEIGHT, or the same token twice.
     error InvalidComponents();
     /// @notice {initialize} got fee rates summing to more than 125 basis points, streaming rates summing to more than
     ///         600, a referral share above 10,000 basis points, or an interval below MIN_REBALANCE_INTERVAL. The
@@ -185,22 +183,20 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     /// @notice The settlement needs more of `token` than the caller said it would fill. Only raised by the bounded
     ///         `executeRebalance`.
     error RebalanceMovedOn(address token, uint256 required, uint256 maxAmountIn);
-    /// @notice What the shrinking legs release, after the turnover cap, is worth less than MIN_TRADE of the moving
-    ///         value at these prices. The index is on its weights, and a fill would only restart the rebalance
-    ///         interval (V5-L2, V5R-1).
+    /// @notice The index has no shares, so it has nothing to trade. Its units stay as they are: nobody moves an empty
+    ///         index's units for nothing.
     error NothingToRebalance();
-    /// @notice `feeds` does not have one entry per component. Only raised by {previewRebalance}.
-    error PriceCountMismatch(uint256 count);
-    /// @notice Pyth returned an update for `id` that is not the one asked for, or one published outside the second
-    ///         {priceTime} names and the block that settles.
-    error PriceMismatch(bytes32 id, uint256 publishTime);
-    /// @notice `token`'s price is not positive, has an exponent outside [MIN_EXPO, 0], or comes to more than MAX_PRICE.
-    error PriceOutOfRange(address token, int64 price, int32 expo);
-    /// @notice `token`'s confidence interval is wider than MAX_CONFIDENCE of its price: Pyth's publishers disagree.
-    error PriceUncertain(address token, int64 price, uint64 conf);
-    /// @notice `token`'s price is further than MAX_EMA_DEVIATION from `emaPrice`, the update's own moving average, or
-    ///         that average is not positive or has another exponent (RX-27).
-    error PriceOffAverage(address token, int64 price, int64 emaPrice);
+    /// @notice The fill names `units` for component `index`, outside what one fill may leave it with: at least
+    ///         `lowest` (what MAX_TURNOVER leaves, rounded up) and at most `highest` (what MAX_GROWTH adds). A kept
+    ///         component must keep its units exactly, so both bounds are its current units.
+    error LegOutOfBounds(uint256 index, uint256 units, uint256 lowest, uint256 highest);
+    /// @notice The fill's weighted gain is `gain`, under the `bar` the auction asks for in this block. It will be
+    ///         accepted once the bar has fallen to it, if nobody fills first. A fill that changes nothing has no gain,
+    ///         so none can restart the rebalance interval for free (V5-L2).
+    error GainBelowBar(int256 gain, uint256 bar);
+    /// @notice The math was asked for a bar `elapsed` seconds into an auction, past AUCTION_DURATION. The hub refuses
+    ///         an expired auction first (RebalanceExpired), so only a direct call to the math sees this.
+    error AuctionOver(uint256 elapsed);
     /// @notice After a fill, the index could not send itself one raw unit of `token`, a leg it bought, or lost some
     ///         doing so: a token that blocks the index as a sender would trap what the fill bought (RX-12).
     error CannotSendOut(address token);
@@ -218,7 +214,7 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     function TOTAL_WEIGHT() external view returns (uint256);
 
     /// @notice Notice period between {startRebalance} and the start of the auction. It lets executors prepare. It is
-    ///         not an exit window for holders: prices are read only at settlement, and holders can redeem at any time.
+    ///         not an exit window for holders, who can redeem at any time.
     function REBALANCE_DELAY() external view returns (uint256);
 
     /// @notice Shortest rebalance interval an index can be created with. It is also the wait that a settlement with a
@@ -226,54 +222,19 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     ///         interval above.
     function MIN_REBALANCE_INTERVAL() external view returns (uint256);
 
-    /// @notice Length of the auction. After it, the pending rebalance has expired. The factory owner and guardian can
-    ///         start a new one at once; anyone else from `eta + AUCTION_DURATION + REBALANCE_DELAY`. With the notice it
-    ///         is shorter than any closure of a market a leg's feed follows, so an auction started while every feed
-    ///         publishes can never run into the next open (RX-3).
+    /// @notice Length of the auction, over which the bar falls from the math's BAR_MAX by half every BAR_HALF_LIFE.
+    ///         After it, the pending rebalance has expired. The factory owner and guardian can start a new one at
+    ///         once; anyone else from `eta + AUCTION_DURATION + REBALANCE_DELAY`.
     function AUCTION_DURATION() external view returns (uint256);
 
-    /// @notice The multiplier on the growing legs at the auction's start (1e18 = parity). Above 1e18, so an executor
-    ///         first has to deliver more value than it takes, at the settling prices.
-    function MU_MAX() external view returns (uint256);
-
-    /// @notice The multiplier at the auction's end. A lone executor at the end keeps at most `1 − MU_MIN` of the value
-    ///         it trades, at the settling prices.
-    function MU_MIN() external view returns (uint256);
-
-    /// @notice The most of any component's own units one rebalance sends out (1e18 = 100%). Beyond it, every leg moves
-    ///         the same smaller share of the way to its target. It counts units, not value. So whatever a price says, a
-    ///         fill sends out at most this share of each component it sells (V5-M2). A growing leg is capped too, at
-    ///         μ times the math's MAX_GROWTH of its own units (RX-15).
+    /// @notice The most of any component's own units one rebalance sends out (1e18 = 100%). It counts units, not value.
+    ///         So whatever anything is worth, a fill sends out at most this share of each component it takes (V5-M2).
+    ///         A growing leg is capped too, at the math's MAX_GROWTH of its own units (RX-15).
     function MAX_TURNOVER() external view returns (uint256);
-
-    /// @notice The least a fill must trade, as a share of the moving value at its prices (1e18 = 100%). Below it the
-    ///         index is on its weights, and the fill reverts NothingToRebalance (V5-L2).
-    function MIN_TRADE() external view returns (uint256);
-
-    /// @notice Widest confidence interval a price may carry, as a share of the price (1e18 = 100%).
-    function MAX_CONFIDENCE() external view returns (uint256);
-
-    /// @notice Furthest a price may be from the moving average Pyth publishes in the same update, as a share of the
-    ///         average (1e18 = 100%). A push lasting seconds on thin venues cannot set a fill's price (RX-27).
-    function MAX_EMA_DEVIATION() external view returns (uint256);
-
-    /// @notice How far before the settling block its prices are read: one Ethereum slot. It is also the length of the
-    ///         window they must be published in, from {priceTime} to the second before the block.
-    function PRICE_LAG() external view returns (uint256);
-
-    /// @notice The highest price a settlement accepts, in USD per raw unit scaled by 1e36: one raw unit worth a
-    ///         billion dollars, which only a broken feed reaches. It keeps every value product inside 256 bits.
-    function MAX_PRICE() external view returns (uint256);
-
-    /// @notice Lowest exponent a Pyth price may carry.
-    function MIN_EXPO() external view returns (int256);
 
     /// @notice The factory that deployed this index. Only it can initialize the index, and it says who the owner and
     ///         guardian are.
     function FACTORY() external view returns (address);
-
-    /// @notice The Pyth contract every settlement reads its prices from, fixed in the implementation.
-    function PYTH() external view returns (address);
 
     /// @notice The settlement arithmetic (`IWeightedMath`) every fill and preview runs. The factory deployed it with
     ///         this implementation, and it never changes.
@@ -330,14 +291,9 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     ///         gross shares, the fee's included, rounded up; {previewIssue} gives the exact amounts (RX-42).
     function components() external view returns (address[] memory tokens, uint256[] memory units);
 
-    /// @notice What the creator fixed for each component, in component order.
-    /// @return weights Share of the index's value, in basis points.
-    /// @return priceIds Pyth price id.
-    /// @return decimals Decimals the factory recorded at listing; prices are scaled by these, never by a live read.
-    function componentTerms()
-        external
-        view
-        returns (uint256[] memory weights, bytes32[] memory priceIds, uint8[] memory decimals);
+    /// @notice Each component's share of the index's value, in basis points, in component order, as the creator fixed
+    ///         it.
+    function componentWeights() external view returns (uint256[] memory weights);
 
     /// @notice Number of rebalance proposals ever started, including cancelled and expired ones.
     function proposalCount() external view returns (uint256);
@@ -358,76 +314,67 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     ///         - {earliestRebalance} has passed;
     ///         - no unexpired rebalance is pending;
     ///         - the waits after a cancel and after an auction nobody filled are over.
-    ///         Before the waits are over, only the factory owner or guardian can start one. Every moving component's
-    ///         feed must publish at {priceTime}, read from `priceUpdate` through Pyth as a settlement reads it, so a
-    ///         rebalance starts only while each leg's market is open: started while a feed is shut, its auction would
-    ///         first be fillable at the next open, near MU_MIN (RX-3). The prices are not kept. It calls nothing on any
-    ///         component.
-    /// @dev All of msg.value goes to Pyth as its update fee, as in {executeRebalance}.
-    /// @param keepMask Bit i set leaves component i untouched, for example while it is paused or its price feed has
-    ///        stopped. Only the factory owner or guardian can pass a non-zero mask, and it must leave at least
-    ///        MIN_COMPONENTS components to rebalance. A kept component's feed is not read.
-    /// @param priceUpdate Pyth update data for every moving component's feed, as {executeRebalance} takes.
-    function startRebalance(uint256 keepMask, bytes[] calldata priceUpdate) external payable;
+    ///         Before the waits are over, only the factory owner or guardian can start one. It calls nothing on any
+    ///         component and reads no price.
+    /// @param keepMask Bit i set leaves component i untouched: no fill of this rebalance may change its units, for
+    ///        example while its issuer is minting it without limit. Only the factory owner or guardian can pass a
+    ///        non-zero mask, and it must leave at least MIN_COMPONENTS components to rebalance. An executor needs no
+    ///        mask to leave a component alone: it names that component's current units.
+    function startRebalance(uint256 keepMask) external;
 
     /// @notice Factory owner or guardian. Cancels the pending rebalance. Anyone else must then wait REBALANCE_DELAY
     ///         before starting a new one.
     function cancelRebalance() external;
 
-    /// @notice Settles the pending rebalance during its auction:
-    ///         1. reads every moving component's price from `priceUpdate` at {priceTime}, through Pyth;
+    /// @notice Settles the pending rebalance during its auction, moving every component to the units the caller
+    ///         names:
+    ///         1. checks `newUnits`: every component inside its unit caps, a kept one unchanged, and the weighted gain
+    ///            at or above {currentBar} (`IWeightedMath` has the rule);
     ///         2. sends msg.sender what the index no longer needs of each shrinking component;
     ///         3. calls `IRebalanceExecutor.onXindexRebalance` on msg.sender;
     ///         4. reverts unless the index then holds every component's new backing, and the whole of `amountsIn` on
     ///            top of what it held before.
-    ///         Only a contract can execute. Reverts NothingToRebalance when the index is on its weights.
-    /// @dev All of msg.value goes to Pyth as its update fee, which `IPyth.getUpdateFee(priceUpdate)` quotes. Pyth
-    ///      keeps any excess. `amountsOut` and `amountsIn` are computed from `totalSupply()` in the settling block, so
-    ///      the callback's arguments are the ones to trust.
+    ///         Only a contract can execute. It reads no price: the bar falls until some executor finds the trade worth
+    ///         making, and the first to clear it settles. Reverts NothingToRebalance on an index without shares.
+    /// @dev `amountsOut` and `amountsIn` are computed from `totalSupply()` in the settling block, so the callback's
+    ///      arguments are the ones to trust.
+    /// @param newUnits The recorded units each component is to have, in component order. Like {previewRebalance}'s
+    ///        `currentUnits`, they carry the index's scale. Name a component's current units to leave it alone.
     /// @param data Passed unchanged to the executor's callback.
-    /// @param priceUpdate Pyth's signed update data, from its Hermes service, covering every moving component at
-    ///        {priceTime}.
-    function executeRebalance(bytes calldata data, bytes[] calldata priceUpdate) external payable;
+    function executeRebalance(uint256[] calldata newUnits, bytes calldata data) external;
 
     /// @notice As {executeRebalance}, but refuses to settle if the index needs more of some component than the caller
     ///         is prepared to deliver (RebalanceMovedOn).
     /// @param maxAmountsIn Most of each component, in component order, the caller will deliver. Must have one entry per
     ///        component (else LengthMismatch); an empty array is the unbounded {executeRebalance}.
-    function executeRebalance(bytes calldata data, bytes[] calldata priceUpdate, uint256[] calldata maxAmountsIn)
-        external
-        payable;
-
-    /// @notice The second whose prices an execution in this block reads: PRICE_LAG before the block. For each moving
-    ///         component, Pyth must deliver its first update published at or after this second and before the block.
-    ///         So a settlement has exactly one price per component to use.
-    function priceTime() external view returns (uint256);
+    function executeRebalance(uint256[] calldata newUnits, bytes calldata data, uint256[] calldata maxAmountsIn)
+        external;
 
     /// @notice The last started rebalance. `eta` is 0 when none was started, or the last one was executed or
     ///         cancelled. An auction nobody filled keeps its `eta` after `eta + AUCTION_DURATION`.
     function pendingRebalance() external view returns (uint256 eta, uint256 keepMask);
 
-    /// @notice The multiplier an execution in this block would start from, or 0 outside an auction. A settlement that
-    ///         would send nothing out uses MU_MAX instead.
-    function currentMu() external view returns (uint256);
+    /// @notice The gain a fill in this block must reach (1e18 = 100%), or 0 outside an auction.
+    function currentBar() external view returns (uint256);
 
     /// @notice Whether anyone can start a rebalance now: {earliestRebalance} has passed, no auction is live, and the
-    ///         waits after a cancel and after an unfilled auction are over. A start also needs every moving feed to
-    ///         publish, which this does not check.
+    ///         waits after a cancel and after an unfilled auction are over.
     function canStartRebalance() external view returns (bool);
 
-    /// @notice The exact settlement an execution in this block would use with `feeds`. Reverts like
-    ///         {executeRebalance} outside an auction and on a price it would refuse, one far from its moving average
-    ///         included. It checks neither ids nor publish times, which belong to the update a fill parses.
-    /// @param feeds One Pyth price feed per component, in component order, as Pyth's parse returns them: each price
-    ///        with the moving average published beside it. A kept component's entry is ignored.
-    /// @return mu The multiplier on the growing legs (1e18 = parity).
-    /// @return units New recorded units per component, in component order. Unlike {components}, they do not have the
-    ///         scale applied: units per whole index token are these times {pendingStreamingFee}'s scale / 1e18. A kept
-    ///         component's are exactly its current recorded units.
+    /// @notice Each component's recorded units, in component order, as a fill's `newUnits` are compared with them.
+    ///         Unlike {components}, they do not have the scale applied: units per whole index token are these times
+    ///         {pendingStreamingFee}'s scale / 1e18.
+    function recordedUnits() external view returns (uint256[] memory units);
+
+    /// @notice The exact settlement an execution in this block would make of `newUnits`. Reverts like
+    ///         {executeRebalance}: outside an auction, on a component outside its caps, and on a gain under the bar.
+    /// @param newUnits The recorded units each component is to have, in component order.
+    /// @return bar The gain the auction asks for in this block.
+    /// @return gain The weighted gain of `newUnits`.
     /// @return amountsOut What the index would send the executor per component.
     /// @return amountsIn What the index would need back per component, in full.
-    function previewRebalance(PythStructs.PriceFeed[] calldata feeds)
+    function previewRebalance(uint256[] calldata newUnits)
         external
         view
-        returns (uint256 mu, uint256[] memory units, uint256[] memory amountsOut, uint256[] memory amountsIn);
+        returns (uint256 bar, int256 gain, uint256[] memory amountsOut, uint256[] memory amountsIn);
 }

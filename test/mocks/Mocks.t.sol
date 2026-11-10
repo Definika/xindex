@@ -21,13 +21,11 @@ import {MockWETH} from "./MockWETH.sol";
 import {MockPositionManager} from "./MockPositionManager.sol";
 import {INonfungiblePositionManager} from "../../script/interfaces/INonfungiblePositionManager.sol";
 import {MockMarket} from "./MockMarket.sol";
-import {MockPyth} from "./MockPyth.sol";
 import {WeightedIndexFactory} from "../../src/WeightedIndexFactory.sol";
 import {WeightedHub} from "../../src/WeightedHub.sol";
 import {IIndexHub} from "../../src/interfaces/IIndexHub.sol";
 import {IWeightedHub} from "../../src/interfaces/IWeightedHub.sol";
 import {IWeightedIndexFactory} from "../../src/interfaces/IWeightedIndexFactory.sol";
-import {PythStructs} from "../../src/interfaces/pyth/PythStructs.sol";
 import {WeightedExecutorV3} from "../fork/WeightedExecutorV3.sol";
 
 /// @notice Exercises the mocks' own guard rails so their behaviour in the real tests is trustworthy.
@@ -634,13 +632,12 @@ contract MocksTest is Test {
     }
 
     function test_weightedExecutorV3_sellsBuysAndSettlesThroughARouter() public {
-        MockPyth pyth = new MockPyth();
-        WeightedIndexFactory f = new WeightedIndexFactory(address(this), address(0), address(pyth));
+        WeightedIndexFactory f = new WeightedIndexFactory(address(this), address(0));
         MockERC20 shrinking = new MockERC20("Shrinking", "SHR", 18);
         MockERC20 growing = new MockERC20("Growing", "GRO", 18);
         address[2] memory t = [address(shrinking), address(growing)];
         for (uint256 i = 0; i < 2; ++i) {
-            f.proposeListing(t[i], keccak256(abi.encode(t[i])));
+            f.proposeListing(t[i]);
         }
         vm.warp(block.timestamp + f.LISTING_DELAY());
         IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](2);
@@ -671,7 +668,8 @@ contract MocksTest is Test {
         idx.issue(1e18, address(this));
 
         // The shrinking component trades at $2 and the growing one at $1: half and half by weight, a fill sells the
-        // first and buys the second.
+        // first and buys the second. It names the units: a fifth of the first out, the most one fill may take, and
+        // what that is worth of the second in.
         router.setPrice(address(shrinking), 2e18);
         router.setPrice(address(growing), 1e18);
         growing.mint(address(router), 1_000e18);
@@ -682,19 +680,13 @@ contract MocksTest is Test {
         usdc.mint(address(executor), 100e6); // a float for what the fill does not pay for itself
 
         vm.warp(idx.lastRebalance() + idx.MIN_REBALANCE_INTERVAL());
-        idx.startRebalance(0, pyth.liveUpdates(idx, 0));
+        idx.startRebalance(0);
         (uint256 eta,) = idx.pendingRebalance();
         vm.warp(eta + idx.AUCTION_DURATION() / 2);
-        uint64 time = uint64(idx.priceTime());
-        bytes[] memory updates = new bytes[](2);
-        updates[0] = pyth.update(keccak256(abi.encode(t[0])), 2e8, 0, -8, time, time - 1);
-        updates[1] = pyth.update(keccak256(abi.encode(t[1])), 1e8, 0, -8, time, time - 1);
-        PythStructs.PriceFeed[] memory prices = new PythStructs.PriceFeed[](2);
-        prices[0] = _feed(2e8, time);
-        prices[1] = _feed(1e8, time);
-        (, uint256[] memory next, uint256[] memory amountsOut, uint256[] memory amountsIn) =
-            idx.previewRebalance(prices);
-        executor.fill(idx, updates);
+        uint256[] memory next = new uint256[](2);
+        (next[0], next[1]) = (80e18, 140e18);
+        (,, uint256[] memory amountsOut, uint256[] memory amountsIn) = idx.previewRebalance(next);
+        executor.fill(idx, next);
 
         (, uint256[] memory units) = idx.components();
         assertEq(units, next, "the settlement is the preview's");
@@ -738,12 +730,12 @@ contract MocksTest is Test {
 
         vm.prank(bob);
         vm.expectRevert(abi.encodeWithSelector(WeightedExecutorV3.NotOwner.selector, bob));
-        executor.fill(IWeightedHub(address(fake)), new bytes[](0));
+        executor.fill(IWeightedHub(address(fake)), new uint256[](0));
         assertEq(usdc.balanceOf(address(executor)), 10_000e6, "the float stays");
 
         // The fake does what the finding describes: without the checks above, this callback emptied the float.
         vm.expectRevert(abi.encodeWithSelector(WeightedExecutorV3.UnexpectedCaller.selector, address(fake)));
-        fake.executeRebalance("", new bytes[](0));
+        fake.executeRebalance(new uint256[](0), "");
     }
 
     // ---------------------------------------------------------------------
@@ -802,12 +794,6 @@ contract MocksTest is Test {
             "exactOutput encodes differently from Uniswap's IV3SwapRouter"
         );
     }
-
-    /// @dev A Pyth feed of `price` at -8 published at `time`, its moving average equal to the price.
-    function _feed(int64 price, uint256 time) internal pure returns (PythStructs.PriceFeed memory) {
-        PythStructs.Price memory p = PythStructs.Price({price: price, conf: 0, expo: -8, publishTime: time});
-        return PythStructs.PriceFeed({id: bytes32(0), price: p, emaPrice: p});
-    }
 }
 
 /// @dev Poses as an index whose only component is the executor's float token: its `executeRebalance` calls the
@@ -821,7 +807,7 @@ contract FakeIndex {
         EXECUTOR = executor;
     }
 
-    function executeRebalance(bytes calldata data, bytes[] calldata) external {
+    function executeRebalance(uint256[] calldata, bytes calldata data) external {
         uint256[] memory nothing = new uint256[](1);
         uint256[] memory everything = new uint256[](1);
         everything[0] = MockERC20(FLOAT).balanceOf(EXECUTOR);

@@ -11,11 +11,6 @@
         "name": "initialGuardian",
         "type": "address",
         "internalType": "address"
-      },
-      {
-        "name": "pyth",
-        "type": "address",
-        "internalType": "address"
       }
     ],
     "stateMutability": "nonpayable"
@@ -211,19 +206,6 @@
         "name": "",
         "type": "uint256",
         "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "PYTH",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
       }
     ],
     "stateMutability": "view"
@@ -445,7 +427,7 @@
     ],
     "outputs": [
       {
-        "name": "",
+        "name": "decimals",
         "type": "uint8",
         "internalType": "uint8"
       }
@@ -788,30 +770,6 @@
   },
   {
     "type": "function",
-    "name": "pendingTerms",
-    "inputs": [
-      {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "priceId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      },
-      {
-        "name": "decimals",
-        "type": "uint8",
-        "internalType": "uint8"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "platformFeeBps",
     "inputs": [],
     "outputs": [
@@ -944,25 +902,6 @@
   },
   {
     "type": "function",
-    "name": "priceIdOf",
-    "inputs": [
-      {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "proposeGuardian",
     "inputs": [
       {
@@ -982,11 +921,6 @@
         "name": "token",
         "type": "address",
         "internalType": "address"
-      },
-      {
-        "name": "priceId",
-        "type": "bytes32",
-        "internalType": "bytes32"
       }
     ],
     "outputs": [],
@@ -1298,16 +1232,6 @@
             "name": "weight",
             "type": "uint256",
             "internalType": "uint256"
-          },
-          {
-            "name": "priceId",
-            "type": "bytes32",
-            "internalType": "bytes32"
-          },
-          {
-            "name": "decimals",
-            "type": "uint8",
-            "internalType": "uint8"
           }
         ]
       },
@@ -1386,12 +1310,6 @@
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
-      },
-      {
-        "name": "priceId",
-        "type": "bytes32",
-        "indexed": false,
-        "internalType": "bytes32"
       },
       {
         "name": "decimals",
@@ -1480,19 +1398,13 @@
   },
   {
     "type": "event",
-    "name": "TokenTermsSet",
+    "name": "TokenDecimalsSet",
     "inputs": [
       {
         "name": "token",
         "type": "address",
         "indexed": true,
         "internalType": "address"
-      },
-      {
-        "name": "priceId",
-        "type": "bytes32",
-        "indexed": false,
-        "internalType": "bytes32"
       },
       {
         "name": "decimals",
@@ -1552,17 +1464,6 @@
         "name": "creatorFeeBps",
         "type": "uint256",
         "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "DuplicatePriceId",
-    "inputs": [
-      {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
       }
     ]
   },
@@ -1720,17 +1621,6 @@
     "type": "error",
     "name": "InvalidFeePolicy",
     "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "InvalidPriceId",
-    "inputs": [
-      {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
-      }
-    ]
   },
   {
     "type": "error",

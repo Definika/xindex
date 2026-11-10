@@ -4,15 +4,14 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {ConfigureWeighted} from "../script/ConfigureWeighted.s.sol";
 import {MainnetAddresses} from "../script/MainnetAddresses.sol";
-import {PythIds} from "../script/PythIds.sol";
+import {Listings} from "../script/Listings.sol";
 import {WeightedIndexFactory} from "../src/WeightedIndexFactory.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
-import {MockPyth} from "./mocks/MockPyth.sol";
 
 /// @notice A contract with no `decimals`, so the policy check finds no answer.
 contract NoDecimals {}
 
-/// @notice v5's listing script against a real `WeightedIndexFactory`. Broadcasts come from DEFAULT_SENDER, the
+/// @notice The listing script against a real `WeightedIndexFactory`. Broadcasts come from DEFAULT_SENDER, the
 ///         factory's owner here. The V5_ variables are set by `test_A722_run_readsEnvironment` alone.
 contract ConfigureWeightedTest is Test {
     ConfigureWeighted configure;
@@ -21,28 +20,20 @@ contract ConfigureWeightedTest is Test {
     MockERC20 b;
     address guardian = makeAddr("guardian");
 
-    bytes32 constant A_ID = keccak256("A/USD");
-    bytes32 constant B_ID = keccak256("B/USD");
     /// @dev The deployment's mint currencies here: two addresses no list names.
     address constant HERE_USDC = address(0xC0FFEE01);
     address constant HERE_USDT = address(0xC0FFEE02);
 
     function setUp() public {
         configure = new ConfigureWeighted();
-        factory = new WeightedIndexFactory(DEFAULT_SENDER, guardian, address(new MockPyth()));
+        factory = new WeightedIndexFactory(DEFAULT_SENDER, guardian);
         a = new MockERC20("Alpha", "A", 18);
         b = new MockERC20("Beta", "B", 8);
     }
 
-    function _list() internal view returns (ConfigureWeighted.Entry[] memory list) {
-        list = new ConfigureWeighted.Entry[](2);
-        list[0] = ConfigureWeighted.Entry({token: address(a), priceId: A_ID});
-        list[1] = ConfigureWeighted.Entry({token: address(b), priceId: B_ID});
-    }
-
-    function _all() internal view returns (address[] memory tokens) {
-        tokens = new address[](2);
-        (tokens[0], tokens[1]) = (address(a), address(b));
+    function _list() internal view returns (address[] memory list) {
+        list = new address[](2);
+        (list[0], list[1]) = (address(a), address(b));
     }
 
     function _none() internal pure returns (address[] memory) {
@@ -59,9 +50,9 @@ contract ConfigureWeightedTest is Test {
 
     function test_theMainnetListsAreTheTable() public {
         vm.chainId(1);
-        ConfigureWeighted.Entry[] memory first = configure.resolveList("default");
-        ConfigureWeighted.Entry[] memory wide = configure.resolveList("wide");
-        (address[] memory tokens, bytes32[] memory ids) = PythIds.all();
+        address[] memory first = configure.resolveList("default");
+        address[] memory wide = configure.resolveList("wide");
+        address[] memory tokens = Listings.all();
         assertEq(first.length, configure.DEFAULT_COUNT());
         assertEq(first.length + wide.length, tokens.length);
         assertEq(
@@ -70,113 +61,109 @@ contract ConfigureWeightedTest is Test {
             "the list of 2026-10-06, 2026-10-10's additions, less DOGE (10-14), with BNB and SUI, less SAND, RLB, BTT, SEI"
         );
         for (uint256 i = 0; i < tokens.length; ++i) {
-            ConfigureWeighted.Entry memory entry = i < 4 ? first[i] : wide[i - 4];
-            assertEq(entry.token, tokens[i]);
-            assertEq(entry.priceId, ids[i]);
+            assertEq(i < 4 ? first[i] : wide[i - 4], tokens[i]);
         }
-        assertEq(first[0].token, MainnetAddresses.WETH);
+        assertEq(first[0], MainnetAddresses.WETH);
     }
 
-    /// @dev PYTH is pinned here too, written out independently of the address book like the table below, since every
-    ///      settlement of every index parses at it and no test reaching only the address book would catch a wrong one
-    ///      (RX-33).
-    function test_RX33_pythIsPinnedIndependently() public pure {
-        assertEq(MainnetAddresses.PYTH, 0x4305FB66699C3B2702D4d05CF36551390A4c69C6, "Pyth's proxy on Ethereum");
+    /// @dev The router is pinned here too, written out independently of the address book like the table below, since
+    ///      every swap of the zap and the builder goes through it and no test reaching only the address book would
+    ///      catch a wrong one (RX-33). Pyth's address, pinned beside it until 2026-11-10, went with the oracle.
+    function test_RX33_theRouterIsPinnedIndependently() public pure {
         assertEq(
             MainnetAddresses.UNIVERSAL_ROUTER, 0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af, "Universal Router 2.0.0"
         );
     }
 
-    /// @dev Every coin of the table has a price id of its own, none zero, and the first three are pinned to the feeds
-    ///      they were read from: no index could hold two coins on one id (V5-M1).
-    function test_everyListedCoinHasItsOwnPriceId() public pure {
-        (, bytes32[] memory ids) = PythIds.all();
-        for (uint256 i = 0; i < ids.length; ++i) {
-            assertTrue(ids[i] != bytes32(0));
+    /// @dev Every coin of the table is a token of its own, none zero: the factory refuses a token named twice in an
+    ///      index, and a list that names one twice is a slip.
+    function test_everyListedCoinIsListedOnce() public pure {
+        address[] memory tokens = Listings.all();
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            assertTrue(tokens[i] != address(0));
             for (uint256 j = 0; j < i; ++j) {
-                assertTrue(ids[i] != ids[j], "one id per coin");
+                assertTrue(tokens[i] != tokens[j], "one entry per coin");
             }
         }
-        assertEq(ids[0], 0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace, "WETH on ETH/USD");
-        assertEq(ids[1], 0xc9d8b075a5c69303365ae23633d4e085199bf5c520a3b90fed1322a0342ffc33, "WBTC on WBTC/USD");
-        assertEq(ids[2], 0x8ac0c70fff57e9aefdf5edf44b51d62c2d433653cbb2cf5cc06bb115af04d221, "LINK on LINK/USD");
     }
 
     /// @dev Every coin of the table carries a tier, as the app and safe mode show it: WBTC, Tether Gold and the Ondo stocks
     ///         custodial, eight bridged
     ///         copies, and the rest issued on Ethereum.
     function test_everyListedCoinHasItsTier() public view {
-        (address[] memory tokens,) = PythIds.all();
+        address[] memory tokens = Listings.all();
         uint256[4] memory count;
         for (uint256 i = 0; i < tokens.length; ++i) {
-            PythIds.Tier tier = PythIds.tierOf(tokens[i]);
-            assertTrue(tier != PythIds.Tier.Unrecorded, "every listed coin is recorded");
+            Listings.Tier tier = Listings.tierOf(tokens[i]);
+            assertTrue(tier != Listings.Tier.Unrecorded, "every listed coin is recorded");
             ++count[uint256(tier)];
         }
-        assertEq(count[uint256(PythIds.Tier.Native)], 48, "22 of the wide list and 26 of the hundred-coin list");
-        assertEq(count[uint256(PythIds.Tier.Bridged)], 19, "8, ZK and W, and 9 Wormhole copies");
-        assertEq(count[uint256(PythIds.Tier.Custodial)], 24, "19, and 5 Wormhole copies of Binance-Peg coins");
-        assertEq(uint8(PythIds.tierOf(MainnetAddresses.WBTC)), uint8(PythIds.Tier.Custodial));
-        assertEq(uint8(PythIds.tierOf(MainnetAddresses.ARB)), uint8(PythIds.Tier.Bridged));
-        assertEq(uint8(PythIds.tierOf(MainnetAddresses.INJ)), uint8(PythIds.Tier.Bridged));
-        assertEq(uint8(PythIds.tierOf(MainnetAddresses.SOL)), uint8(PythIds.Tier.Bridged));
-        assertEq(uint8(PythIds.tierOf(MainnetAddresses.XAUT)), uint8(PythIds.Tier.Custodial));
-        assertEq(uint8(PythIds.tierOf(MainnetAddresses.GNO)), uint8(PythIds.Tier.Native));
-        assertEq(uint8(PythIds.tierOf(MainnetAddresses.ONEINCH)), uint8(PythIds.Tier.Native));
+        assertEq(count[uint256(Listings.Tier.Native)], 48, "22 of the wide list and 26 of the hundred-coin list");
+        assertEq(count[uint256(Listings.Tier.Bridged)], 19, "8, ZK and W, and 9 Wormhole copies");
+        assertEq(count[uint256(Listings.Tier.Custodial)], 24, "19, and 5 Wormhole copies of Binance-Peg coins");
+        assertEq(uint8(Listings.tierOf(MainnetAddresses.WBTC)), uint8(Listings.Tier.Custodial));
+        assertEq(uint8(Listings.tierOf(MainnetAddresses.ARB)), uint8(Listings.Tier.Bridged));
+        assertEq(uint8(Listings.tierOf(MainnetAddresses.INJ)), uint8(Listings.Tier.Bridged));
+        assertEq(uint8(Listings.tierOf(MainnetAddresses.SOL)), uint8(Listings.Tier.Bridged));
+        assertEq(uint8(Listings.tierOf(MainnetAddresses.XAUT)), uint8(Listings.Tier.Custodial));
+        assertEq(uint8(Listings.tierOf(MainnetAddresses.GNO)), uint8(Listings.Tier.Native));
+        assertEq(uint8(Listings.tierOf(MainnetAddresses.ONEINCH)), uint8(Listings.Tier.Native));
         assertEq(
-            uint8(PythIds.tierOf(MainnetAddresses.ZK)), uint8(PythIds.Tier.Bridged), "ZKsync's bridge issues it (RX-19)"
+            uint8(Listings.tierOf(MainnetAddresses.ZK)),
+            uint8(Listings.Tier.Bridged),
+            "ZKsync's bridge issues it (RX-19)"
         );
-        assertEq(uint8(PythIds.tierOf(MainnetAddresses.W)), uint8(PythIds.Tier.Bridged), "a mesh peer, home Solana");
-        assertEq(uint8(PythIds.tierOf(MainnetAddresses.JUP)), uint8(PythIds.Tier.Bridged), "a Wormhole copy");
-        assertEq(uint8(PythIds.tierOf(MainnetAddresses.OP)), uint8(PythIds.Tier.Bridged));
-        assertEq(uint8(PythIds.tierOf(MainnetAddresses.BNB)), uint8(PythIds.Tier.Bridged), "WBNB, not Binance-Peg");
-        assertEq(uint8(PythIds.tierOf(MainnetAddresses.SUI)), uint8(PythIds.Tier.Bridged));
+        assertEq(uint8(Listings.tierOf(MainnetAddresses.W)), uint8(Listings.Tier.Bridged), "a mesh peer, home Solana");
+        assertEq(uint8(Listings.tierOf(MainnetAddresses.JUP)), uint8(Listings.Tier.Bridged), "a Wormhole copy");
+        assertEq(uint8(Listings.tierOf(MainnetAddresses.OP)), uint8(Listings.Tier.Bridged));
+        assertEq(uint8(Listings.tierOf(MainnetAddresses.BNB)), uint8(Listings.Tier.Bridged), "WBNB, not Binance-Peg");
+        assertEq(uint8(Listings.tierOf(MainnetAddresses.SUI)), uint8(Listings.Tier.Bridged));
         assertEq(
-            uint8(PythIds.tierOf(MainnetAddresses.XRP)),
-            uint8(PythIds.Tier.Custodial),
+            uint8(Listings.tierOf(MainnetAddresses.XRP)),
+            uint8(Listings.Tier.Custodial),
             "a Wormhole copy of a Binance-Peg coin carries Binance's custody"
         );
         assertEq(
-            uint8(PythIds.tierOf(0xd881A7F17Ed2c71FD671AfbA3A9b30Eb914Aea5F)),
-            uint8(PythIds.Tier.Unrecorded),
+            uint8(Listings.tierOf(0xd881A7F17Ed2c71FD671AfbA3A9b30Eb914Aea5F)),
+            uint8(Listings.Tier.Unrecorded),
             "DOGE's copy, off the list since 2026-10-14"
         );
         assertEq(
-            uint8(PythIds.tierOf(0x3845badAde8e6dFF049820680d1F14bD3903a5d0)),
-            uint8(PythIds.Tier.Unrecorded),
+            uint8(Listings.tierOf(0x3845badAde8e6dFF049820680d1F14bD3903a5d0)),
+            uint8(Listings.Tier.Unrecorded),
             "SAND, off the list since 2026-10-18"
         );
         assertEq(
-            uint8(PythIds.tierOf(0xC669928185DbCE49d2230CC9B0979BE6DC797957)),
-            uint8(PythIds.Tier.Unrecorded),
+            uint8(Listings.tierOf(0xC669928185DbCE49d2230CC9B0979BE6DC797957)),
+            uint8(Listings.Tier.Unrecorded),
             "BTT, off the list since 2026-10-19 (RX-28)"
         );
         assertEq(
-            uint8(PythIds.tierOf(0xf91e605af079384cc7077B3914A4a36019a89EE8)),
-            uint8(PythIds.Tier.Unrecorded),
+            uint8(Listings.tierOf(0xf91e605af079384cc7077B3914A4a36019a89EE8)),
+            uint8(Listings.Tier.Unrecorded),
             "SEI's copy, off the list since 2026-10-19 (RX-32)"
         );
         assertEq(
-            uint8(PythIds.tierOf(0x046EeE2cc3188071C02BfC1745A6b17c656e3f3d)),
-            uint8(PythIds.Tier.Unrecorded),
+            uint8(Listings.tierOf(0x046EeE2cc3188071C02BfC1745A6b17c656e3f3d)),
+            uint8(Listings.Tier.Unrecorded),
             "RLB, off the list since 2026-10-18"
         );
-        assertEq(uint8(PythIds.tierOf(MainnetAddresses.ATOM)), uint8(PythIds.Tier.Custodial));
-        assertEq(uint8(PythIds.tierOf(MainnetAddresses.VON)), uint8(PythIds.Tier.Custodial));
-        assertEq(uint8(PythIds.tierOf(MainnetAddresses.USDC)), uint8(PythIds.Tier.Unrecorded));
-        assertEq(PythIds.tierName(PythIds.Tier.Native), "Native");
-        assertEq(PythIds.tierName(PythIds.Tier.Bridged), "Bridged");
-        assertEq(PythIds.tierName(PythIds.Tier.Custodial), "Custodial");
-        assertEq(PythIds.tierName(PythIds.Tier.Unrecorded), "Unrecorded");
+        assertEq(uint8(Listings.tierOf(MainnetAddresses.ATOM)), uint8(Listings.Tier.Custodial));
+        assertEq(uint8(Listings.tierOf(MainnetAddresses.VON)), uint8(Listings.Tier.Custodial));
+        assertEq(uint8(Listings.tierOf(MainnetAddresses.USDC)), uint8(Listings.Tier.Unrecorded));
+        assertEq(Listings.tierName(Listings.Tier.Native), "Native");
+        assertEq(Listings.tierName(Listings.Tier.Bridged), "Bridged");
+        assertEq(Listings.tierName(Listings.Tier.Custodial), "Custodial");
+        assertEq(Listings.tierName(Listings.Tier.Unrecorded), "Unrecorded");
         assertEq(configure.tierLabel(MainnetAddresses.WBTC), " (Custodial)");
         assertEq(configure.tierLabel(address(a)), "", "a token off the table carries no label");
     }
 
-    /// @dev CR-L08: the lists are the release record, pinned against this table, written out by hand, address and
-    ///      price id, rather than read from `PythIds`, so a slip in either shows.
+    /// @dev CR-L08: the lists are the release record, pinned against this table, written out by hand rather than read
+    ///      from `Listings`, so a slip in either shows.
     function test_CRL08_theListsAreTheReleaseRecord() public view {
-        ConfigureWeighted.Entry[] memory first = configure.defaultMainnetList();
-        ConfigureWeighted.Entry[] memory wide = configure.wideMainnetList();
+        address[] memory first = configure.defaultMainnetList();
+        address[] memory wide = configure.wideMainnetList();
         address[91] memory tokens = [
             0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2, // WETH
             0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599, // WBTC
@@ -270,105 +257,10 @@ contract ConfigureWeightedTest is Test {
             0x418D75f65a02b3D53B2418FB8E1fe493759c7605, // BNB (WBNB)
             0x84074EA631dEc7a4edcD5303d164D5dEa4c653D6 // SUI
         ];
-        bytes32[91] memory ids = [
-            bytes32(0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace), // WETH
-            0xc9d8b075a5c69303365ae23633d4e085199bf5c520a3b90fed1322a0342ffc33, // WBTC
-            0x8ac0c70fff57e9aefdf5edf44b51d62c2d433653cbb2cf5cc06bb115af04d221, // LINK
-            0x78d185a741d07edb3412b09008b7c5cfb9bbbd7d568bf00ba737b456ba171501, // UNI
-            0x19ab139032007c8bd7d1fd3842ef392a5434569a72b555504a5aee47df2a0a35, // QNT
-            0x2b9ab1e972a281585084148ba1389800799bd4be63b957507db1349314e47445, // AAVE
-            0xb7910ba7322db020416fcac28b48c01212fd9cc8fbcbaf7d30477ed8605f6bd4, // ENA
-            0xd40472610abe56d36d065a0cf889fc8f1dd9f3b7f2a478231a5fc6df07ea5ce3, // ONDO
-            0xa483243eed64ca27a1f6e26385b7d1e0d07e9fe264bb6903efb3efc4689d3fe7, // SKY
-            0xd6835ad1f773de4a378115eb6824bd0c0e42d84d1c84d9750e853fb6b6c7794a, // WLD
-            0x4e3037c822d852d79af3ac80e35eb420ee3b870dca49f9344a38ef4773fb0585, // MNT
-            0x5b2a4c542d4a74dd11784079ef337c0403685e3114ba0d9909b5c7a7e06fdc42, // MORPHO
-            0xffd11c5a1cfd42f80afb2df4d9f264c15f956d68153335374ec10722edd70472, // POL
-            0xc0c83f00c39165892d55dcd17ade2191e289697e2ac132d9ab721e20834e2a9e, // LIT
-            0xb27578a9654246cb0a2950842b92330e9ace141c52b63829cc72d5c45a5a595a, // ETHFI
-            0x7da003ada32eabbac855af3d22fcf0fe692cc589f0cfd5ced63cf0bdcc742efe, // FET
-            0xa19d04ac696c7a6616d291c7e5d1377cc8be437c327b75adb5dc1bad745fcae8, // CRV
-            0xe5f406d97d7fa159c21647912b72aa8c669e24d7bd59bcd518587bbde027c531, // NEXO
-            0x8132e3eb1dac3e56939a16ff83848d194345f6688bff97eb1c8bd462d558802b, // VIRTUAL
-            0x6a182399ff70ccf3e06024898942028204125a819e519a335ffa4579e66cd870, // STRK
-            0x9a4df90b25497f66b1afb012467e316e801ca3d839456db028892fe8c70c8016, // PENDLE
-            0x23199c2bcb1303f667e733b9934db9eca5991e765b45f5ed18bc4b231415f2fe, // CRO
-            0xc9907d786c5821547777780a1e4f89484f3417cb14dd244f2b0a34ea7a554d67, // ICP
-            0x3fa4252848f9f0a1480be62745a4629d9eb1322aebab8a791e344b3b9c1adcf5, // ARB
-            0x3d4a2bd9535be6ce8059d75eadeba507b043257321aa544717c56fa19b49e35d, // RENDER
-            0x2356af9529a1064d41e32d617e2ce1dca5733afa901daba9e2b68dee5d53ecf9, // CAKE
-            0x3bd860bea28bf982fa06bcf358118064bb114086cc03993bd76197eaab0b8018, // ZRO
-            0x7a5bc1d2b56ad029048cd63964b3ad2776eadf812edc1a43a31406cb54bff592, // INJ
-            0xf0d57deca57b3da2fe63a493f4c25925fdfd8edf834b20f93e1f84dbd1504d4a, // SHIB
-            0xd69731a2e74ac1ce884fc3890f7ee324b6deb66147055249568869ed700882e4, // PEPE
-            0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d, // SOL
-            0x44465e17d2e9d390e70c999d5a11fda4f092847fcd2e3e5aa089d96c98a30e67, // XAUt
-            0x207ddea2a443d30b7e13a7c88a9e3f106765deb97049afc65a18cede50fffc82, // NVDAon
-            0xe6734de88a83d9d2fb33072adab319004700aefd069653aba30ba9e3cac056f2, // AAPLon
-            0xad79b3487bef87ff8f8ab31c0b779ad08d931fdfa5436f7e92a234bb82bff7e4, // GOOGLon
-            0x29b228e9fd72bbd306bcca3b10c165d8dba5d535ef8d5aab6c6e4bc18912d150, // MSFTon
-            0x329635cf9e705e01ed2d842fafbb6c426d7e5630e75847740d89957222fd68b8, // AMZNon
-            0xe722560a66e4ab00522ef20a38fa2ba5d1b41f1c5404723ed895d202a7af7cc4, // TSMon
-            0x2dbfb1791e75725227a90dbd23c6bdd83b80cc9d13011973c948b6aeacdf17b9, // SPCXon
-            0x2cc0c022f7f37920485a5947f3cea8633783b6cb7fff6d94ee52f48687b7783d, // METAon
-            0xd0c9aef79b28308b256db7742a0a9b08aaa5009db67a52ea7fa30ed6853f243b, // AVGOon
-            0xc09ef687ed07091c047da444f1499f2da52cdc1c085104643ec565a9eb1af514, // TSLAon
-            0xb196587ca694ea231cd8710321f4f62ed08794c6a096759d5c63616730042ae0, // SKHYon
-            0x27e65b49e4572601374c5bde284411c20f49eb74845cc7f7801f9d27fba2b4b2, // MUon
-            0x70dcf5fd56553d0023693e4b590336a8c9bcfd0d98dd9f093b1f697820d98325, // LLYon
-            0xfa1a3697811ac1b36846b4de42ad1b4d3c7b50b556eed405dbefbf4e4a0c7c07, // AMDon
-            0x7f4f157e57bfcccd934c566df536f34933e74338fe241a5425ce561acdab164e, // JPMon
-            0x327ae981719058e6fb44e132fb4adbf1bd5978b43db0661bfdaefd9bea0c82dc, // WMTon
-            0xc719eb7bab9b2bc060167f1d1680eb34a29c490919072513b545b9785b73ee90, // Von
-            0xf9597faf41a8d91fcc4dc95e9b4f408ea391cf17ec26955ae2055b6dbda5ec89, // FF
-            0xc5f60d00d926ee369ded32a38a6bd5c1e0faa936f91b987a5d0dcf3c5d8afab0, // GNO
-            0x3a8c0214e4fb7f1dd7792ed4d5b2971372e52f088fcd9cc02309253cbdc4a70e, // OHM
-            0x4d1f8dae0d96236fb98e8f47471a366ec3b1732b47041781934ca3a9bb2f35e7, // GRT
-            0xed86e0c6321d790302e5d88751995ebc9079273e549005d68a83ba72e48ff1ce, // SYRUP
-            0xb98ab6023650bd2edc026b983fb7c2f8fa1020286f1ba6ecf3f4322cd83b72a6, // ENS
-            0x2b386bdca7fda5cf3c3975f70318593bf144104cb00742592ecff60dd798972f, // JASMY
-            0x4a8e42861cabc5ecb50996f92e7cfa2bce3fd0a2423b0c44c9b423fb2bd25478, // COMP
-            0xc65db025687356496e8653d0d6608eec64ce2d96e2e28c530e574f0e4f712380, // EIGEN
-            0xb7e3904c08ddd9c0c10c6d207d390fd19e87eb6aab96304f571ed94caebdefa0, // AXS
-            0x8e860fb74e60e5736b455d82f60b3728049c348e94961add5f961b02fdee2535, // BAT
-            0x6aac625e125ada0d2a6b98316493256ca733a5808cd34ccef79b0e28c64d1e76, // CVX
-            0x1dfffdcbc958d732750f53ff7f06d24bb01364b3f62abea511a390c74b8d16a5, // MANA
-            0x941320a8989414874de5aa2fc340a75d5ed91fdff1613dd55f83844d52ea63a2, // IMX
-            0x47d462d8bac4c29b6ae1792029b9b92c8adea12ed22155bfc22f481287f1e349, // FLUID
-            0xe799f456b358a2534aa1b45141d454ac04b444ed23b1440b778549bb758f2b5c, // CHZ
-            0xcc03dc09298fb447e0bf9afdb760d5b24340fd2167fd33d8967dd8f9a141a2e8, // ZK
-            0x15add95022ae13563a11992e727c91bdb6b55bc183d9d747436c80a483d8c864, // APE
-            0xc1c19f04619dbca4343d76f240b4d944551bbbb56883051e874a8d0533bce644, // SENT
-            0x39d020f60982ed892abbcd4a06a276a9f9b7bfbce003204c110b6e488f502da3, // SNX
-            0x63f341689d98a12ef60a5cff1d7f85c70a9e17bf1575f0e7c0b2512d48b1c8b3, // 1INCH
-            0x01a09cbc99b1894271cfd90d6e5aab527cafa66b19d651b441b84e84f671de33, // GLM
-            0xf6b551a947e7990089e2d5149b1e44b369fcc6ad3627cb822362a2b19d24ad4a, // ATH
-            0x807df1ed343907c4d97790334338c5df6e360036b3c95f880450d078569b5481, // H
-            0xded84d57dbf810bf86b97936f12e1f01b8d6d01c251a4d6eac592147988d475c, // PLUME
-            0x0781209c28fda797616212b7f94d77af3a01f3e94a5d421760aef020cf2bcb51, // GALA
-            0xeff7446475e218517566ea99e72a4abec2e1bd8498b43b7d8331e29dcb059389, // W
-            0xfb7565b77267ba3f6ef770bed5d7f9b22b8542db676dbd9b934a2fcf945f4371, // RSR
-            0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8, // XRP
-            0x2a01deaec9e51a579277b34b122399984d0bbf57e2458a7e42fecd2829867a0d, // ADA
-            0x6e3f3fa8253588df9326580180233eb791e03b443a3ba7a1d892e73874e19a54, // LTC
-            0x93da3352f9f1d105fdfe4971cfa80e9dd777bfc5d0f683ebb6e1294b92137bb7, // AVAX
-            0xca3eed9b267293f6595901c734c7525ce8ef49adafe8284606ceb307afa2ca5b, // DOT
-            0x0a0408d619e9380abad35060f9192039ed5042fa6f82301d0e48bb52be830996, // JUP
-            0xfa17ceaf30d19ba51112fdcc750cc83454776f47fb0112e4af07f15f4bb1ebc0, // ALGO
-            0xb00b60f88b03a6a625a8d1c048c3f66653edf217439983d037e7222c4e612819, // ATOM
-            0x9db37f4d5654aad3e37e2e14ffd8d53265fb3026d1d8f91146539eebaa2ef45f, // AERO
-            0x03ae4db29ed4ae33d323568895aa00337e658e348b37509f5372ae51f0af00d5, // APT
-            0x0bbf28e9a841a1cc788f6a361b17ca072d0ea3098a1e5df1c3922d06719579ff, // PYTH
-            0x385f64d993f7b77d8182ed5003d97c60aa3361f3cecfe711544d2d59165e9bdf, // OP
-            0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f, // BNB
-            0x23d7315113f5b1d3ba7a83604c44b94d79f4fd69af77f804fc7f920a6dc65744 // SUI
-        ];
         assertEq(first.length, 4);
         assertEq(wide.length, 87);
         for (uint256 i = 0; i < tokens.length; ++i) {
-            ConfigureWeighted.Entry memory entry = i < 4 ? first[i] : wide[i - 4];
-            assertEq(entry.token, tokens[i]);
-            assertEq(entry.priceId, ids[i]);
+            assertEq(i < 4 ? first[i] : wide[i - 4], tokens[i]);
         }
     }
 
@@ -383,46 +275,21 @@ contract ConfigureWeightedTest is Test {
     }
 
     function test_entriesParse() public view {
-        string memory raw = string.concat(
-            vm.toString(address(a)), ":", vm.toString(A_ID), " , ", vm.toString(address(b)), ":", vm.toString(B_ID)
-        );
-        ConfigureWeighted.Entry[] memory list = configure.resolveList(raw);
-        assertEq(list.length, 2);
-        assertEq(list[0].token, address(a));
-        assertEq(list[0].priceId, A_ID);
-        assertEq(list[1].token, address(b));
-        assertEq(list[1].priceId, B_ID);
+        address[] memory list =
+            configure.resolveList(string.concat(vm.toString(address(a)), " , ", vm.toString(address(b))));
+        assertEq(list, _list());
     }
 
-    function test_malformedEntriesAreRefused() public {
-        string memory token = vm.toString(address(a));
-        string[4] memory bad = [
-            token,
-            string.concat(token, ":"),
-            string.concat(token, ":", vm.toString(A_ID), ":x"),
-            string.concat(token, ":", vm.toString(bytes32(0)))
-        ];
-        for (uint256 i = 0; i < bad.length; ++i) {
-            vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.MalformedEntry.selector, bad[i]));
-            configure.parseEntry(bad[i]);
-        }
-    }
-
-    /// @dev A token or a price id named twice is refused before anything runs (RT-24, V5-M1).
-    function test_RT24_V5M1_aListNamingATokenOrAnIdTwiceIsRefused() public {
-        ConfigureWeighted.Entry[] memory list = _list();
-        list[1].token = address(a);
+    /// @dev A token named twice is refused before anything runs (RT-24).
+    function test_RT24_aListNamingATokenTwiceIsRefused() public {
+        address[] memory list = _list();
+        list[1] = address(a);
         vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.DuplicateEntry.selector, address(a)));
-        configure.safeCalldata(factory, list, _all(), _none(), _currencies());
+        configure.safeCalldata(factory, list, _list(), _none(), _currencies());
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.DuplicateEntry.selector, address(a)));
+        configure.propose(factory, list, _list(), _none(), _currencies());
 
-        list = _list();
-        list[1].priceId = A_ID;
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.DuplicatePriceId.selector, A_ID));
-        configure.propose(factory, list, _all(), _none(), _currencies());
-
-        string memory raw = string.concat(
-            vm.toString(address(a)), ":", vm.toString(A_ID), ",", vm.toString(address(a)), ":", vm.toString(B_ID)
-        );
+        string memory raw = string.concat(vm.toString(address(a)), ",", vm.toString(address(a)));
         vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.DuplicateEntry.selector, address(a)));
         configure.resolveList(raw);
     }
@@ -453,14 +320,12 @@ contract ConfigureWeightedTest is Test {
         configure.propose(factory, _list(), onlyA, _none(), _currencies());
         assertGt(factory.listingEta(address(a)), 0);
         assertEq(factory.listingEta(address(b)), 0);
-        (bytes32 id,) = factory.pendingTerms(address(a));
-        assertEq(id, A_ID);
     }
 
     /// @dev RT-06: a listing the guardian cancelled is not proposed again by a routine run, and a delisted token comes
     ///      back only when named in V5_RELIST.
     function test_RT06_XA11_aVetoedOrDelistedTokenStaysOutUnlessNamed() public {
-        configure.propose(factory, _list(), _all(), _none(), _currencies());
+        configure.propose(factory, _list(), _list(), _none(), _currencies());
         vm.prank(guardian);
         factory.cancelListing(address(a));
         configure.propose(factory, _list(), _none(), _none(), _currencies());
@@ -471,16 +336,16 @@ contract ConfigureWeightedTest is Test {
         assertTrue(factory.isWhitelisted(address(b)));
         vm.prank(guardian);
         factory.delist(address(b));
-        configure.propose(factory, _list(), _all(), _none(), _currencies());
+        configure.propose(factory, _list(), _list(), _none(), _currencies());
         assertEq(factory.listingEta(address(b)), 0, "delisted, and only V5_LIST named it");
-        configure.propose(factory, _list(), _none(), _all(), _currencies());
+        configure.propose(factory, _list(), _none(), _list(), _currencies());
         assertGt(factory.listingEta(address(b)), 0, "named in V5_RELIST");
     }
 
     /// @dev An expired first listing is the owner's own proposal run out, not a veto: a routine run proposes it again,
     ///      while a cancelled one still waits to be named (RX-39).
     function test_RX39_anExpiredFirstListingIsProposedAgainButACancelledOneIsNot() public {
-        configure.propose(factory, _list(), _all(), _none(), _currencies());
+        configure.propose(factory, _list(), _list(), _none(), _currencies());
         vm.prank(guardian);
         factory.cancelListing(address(a));
         vm.warp(block.timestamp + factory.LISTING_DELAY() + factory.PROPOSAL_WINDOW() + 1);
@@ -492,75 +357,66 @@ contract ConfigureWeightedTest is Test {
     }
 
     function test_XA40_proposeSkipsWhatThePolicyOrTheFactoryWouldRefuse() public {
-        configure.propose(factory, _list(), _all(), _none(), _currencies());
-        // Already pending with the entry's id, or with another: both skipped.
-        ConfigureWeighted.Entry[] memory changed = _list();
-        changed[0].priceId = keccak256("A, another feed");
-        configure.propose(factory, changed, _all(), _none(), _currencies());
-        configure.propose(factory, _list(), _all(), _none(), _currencies());
-        (bytes32 id,) = factory.pendingTerms(address(a));
-        assertEq(id, A_ID);
+        configure.propose(factory, _list(), _list(), _none(), _currencies());
+        uint256 eta = factory.listingEta(address(a));
+        // Already pending: skipped, and the proposal stands as it was.
+        vm.warp(block.timestamp + 1);
+        configure.propose(factory, _list(), _list(), _none(), _currencies());
+        assertEq(factory.listingEta(address(a)), eta);
         // Listed: skipped.
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         configure.execute(factory, _list());
-        configure.propose(factory, _list(), _all(), _all(), _currencies());
+        configure.propose(factory, _list(), _list(), _list(), _currencies());
         assertEq(factory.listingEta(address(a)), 0);
 
         // The policy: a mint currency, a token with no code, no decimals, and decimals outside 6 to 18.
-        ConfigureWeighted.Entry[] memory odd = new ConfigureWeighted.Entry[](6);
-        odd[0] = ConfigureWeighted.Entry({token: MainnetAddresses.USDC, priceId: keccak256("1")});
-        odd[1] = ConfigureWeighted.Entry({token: MainnetAddresses.USDT, priceId: keccak256("2")});
-        odd[2] = ConfigureWeighted.Entry({token: makeAddr("no code"), priceId: keccak256("3")});
-        odd[3] = ConfigureWeighted.Entry({token: address(new NoDecimals()), priceId: keccak256("4")});
-        odd[4] = ConfigureWeighted.Entry({token: address(new MockERC20("Five", "FIVE", 5)), priceId: keccak256("5")});
-        odd[5] = ConfigureWeighted.Entry({token: address(new MockERC20("Wide", "WIDE", 19)), priceId: keccak256("6")});
-        address[] memory named = new address[](6);
-        for (uint256 i = 0; i < 6; ++i) {
-            named[i] = odd[i].token;
-        }
-        (bytes[] memory calls,) = configure.safeCalldata(factory, odd, named, _none(), _currencies());
+        address[] memory odd = new address[](6);
+        odd[0] = MainnetAddresses.USDC;
+        odd[1] = MainnetAddresses.USDT;
+        odd[2] = makeAddr("no code");
+        odd[3] = address(new NoDecimals());
+        odd[4] = address(new MockERC20("Five", "FIVE", 5));
+        odd[5] = address(new MockERC20("Wide", "WIDE", 19));
+        (bytes[] memory calls,) = configure.safeCalldata(factory, odd, odd, _none(), _currencies());
         assertEq(calls.length, 0, "the policy skips every one");
     }
 
     function test_XA18_LR07_proposeNeedsAnOwnerThatSigns() public {
-        WeightedIndexFactory owned = new WeightedIndexFactory(address(configure), guardian, address(new MockPyth()));
-        ConfigureWeighted.Entry[] memory list = _list();
-        address[] memory all = _all();
+        WeightedIndexFactory owned = new WeightedIndexFactory(address(configure), guardian);
+        address[] memory list = _list();
         address[] memory none = _none();
         vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.OwnerIsContract.selector, address(configure)));
-        configure.propose(owned, list, all, none, _currencies());
+        configure.propose(owned, list, list, none, _currencies());
 
         // A key delegated under EIP-7702 has code but still signs.
         vm.etch(DEFAULT_SENDER, abi.encodePacked(hex"ef0100", address(0x1234)));
-        configure.propose(factory, list, all, none, _currencies());
+        configure.propose(factory, list, list, none, _currencies());
         assertGt(factory.listingEta(address(a)), 0);
     }
 
     function test_safeModeLabelsEveryProposal() public view {
         (bytes[] memory calls, string[] memory labels) =
-            configure.safeCalldata(factory, _list(), _all(), _none(), _currencies());
+            configure.safeCalldata(factory, _list(), _list(), _none(), _currencies());
         assertEq(calls.length, 2);
-        assertEq(calls[0], abi.encodeCall(factory.proposeListing, (address(a), A_ID)));
-        assertEq(
-            labels[1], string.concat("proposeListing B ", vm.toString(address(b)), " price id ", vm.toString(B_ID))
-        );
+        assertEq(calls[0], abi.encodeCall(factory.proposeListing, (address(a))));
+        assertEq(labels[1], string.concat("proposeListing B ", vm.toString(address(b))));
     }
 
     // ---------------------------------------------------------------------
     // Execution and status
     // ---------------------------------------------------------------------
 
-    function test_XA06_executeRunsOnlyWhatIsDueAndTheEntrys() public {
+    function test_XA06_executeRunsOnlyWhatIsDue() public {
         configure.execute(factory, _list()); // nothing pending
-        configure.propose(factory, _list(), _all(), _none(), _currencies());
+        configure.propose(factory, _list(), _list(), _none(), _currencies());
         configure.execute(factory, _list()); // not ready
         assertFalse(factory.isWhitelisted(address(a)));
 
         vm.warp(block.timestamp + factory.LISTING_DELAY());
-        ConfigureWeighted.Entry[] memory changed = _list();
-        changed[0].priceId = keccak256("A, another feed");
-        configure.execute(factory, changed);
-        assertFalse(factory.isWhitelisted(address(a)), "the pending id is not the entry's");
+        address[] memory onlyB = new address[](1);
+        onlyB[0] = address(b);
+        configure.execute(factory, onlyB);
+        assertFalse(factory.isWhitelisted(address(a)), "not in the list this run was given");
         assertTrue(factory.isWhitelisted(address(b)));
 
         vm.warp(block.timestamp + factory.PROPOSAL_WINDOW() + 1);
@@ -572,42 +428,36 @@ contract ConfigureWeightedTest is Test {
     ///      cancelled.
     function test_FR05_executeWorksFromAnyAccountAndNeverReproposesACancelledListing() public {
         address someoneElse = makeAddr("someone else"); // the broadcaster is neither owner nor guardian
-        WeightedIndexFactory other = new WeightedIndexFactory(someoneElse, guardian, address(new MockPyth()));
-        ConfigureWeighted.Entry[] memory list = _list();
+        WeightedIndexFactory other = new WeightedIndexFactory(someoneElse, guardian);
+        address[] memory list = _list();
         vm.startPrank(someoneElse);
-        other.proposeListing(list[0].token, list[0].priceId);
-        other.proposeListing(list[1].token, list[1].priceId);
+        other.proposeListing(list[0]);
+        other.proposeListing(list[1]);
         vm.stopPrank();
         vm.prank(guardian);
-        other.cancelListing(list[1].token);
+        other.cancelListing(list[1]);
 
         vm.warp(block.timestamp + other.LISTING_DELAY());
         configure.execute(other, list);
-        assertTrue(other.isWhitelisted(list[0].token));
-        assertFalse(other.isWhitelisted(list[1].token));
-        assertEq(other.listingEta(list[1].token), 0, "a cancelled listing stays cancelled");
+        assertTrue(other.isWhitelisted(list[0]));
+        assertFalse(other.isWhitelisted(list[1]));
+        assertEq(other.listingEta(list[1]), 0, "a cancelled listing stays cancelled");
     }
 
     function test_XA42_statusReportsListingsAndPendingProposals() public {
-        configure.propose(factory, _list(), _all(), _none(), _currencies());
+        configure.propose(factory, _list(), _list(), _none(), _currencies());
         vm.warp(block.timestamp + factory.LISTING_DELAY());
-        ConfigureWeighted.Entry[] memory onlyB = new ConfigureWeighted.Entry[](1);
-        onlyB[0] = _list()[1];
+        address[] memory onlyB = new address[](1);
+        onlyB[0] = address(b);
         configure.execute(factory, onlyB);
 
-        ConfigureWeighted.Entry[] memory changed = _list();
-        changed[0].priceId = keccak256("A, another feed");
-        ConfigureWeighted.Report[] memory reports = configure.status(factory, changed);
+        ConfigureWeighted.Report[] memory reports = configure.status(factory, _list());
+        assertEq(reports[0].token, address(a));
         assertFalse(reports[0].listed);
-        assertFalse(reports[0].idInForce);
         assertGt(reports[0].eta, 0);
-        assertFalse(reports[0].pendingMatches);
+        assertEq(reports[1].token, address(b));
         assertTrue(reports[1].listed);
-        assertTrue(reports[1].idInForce);
         assertEq(reports[1].eta, 0);
-
-        reports = configure.status(factory, _list());
-        assertTrue(reports[0].pendingMatches);
     }
 
     // ---------------------------------------------------------------------
@@ -619,16 +469,13 @@ contract ConfigureWeightedTest is Test {
     ///      proposed.
     function test_A722_theDeploymentsMintCurrencyIsNeverAComponent() public {
         MockERC20 tUsdc = new MockERC20("Test USDC", "tUSDC", 6);
-        ConfigureWeighted.Entry[] memory list = new ConfigureWeighted.Entry[](2);
-        list[0] = ConfigureWeighted.Entry({token: address(tUsdc), priceId: A_ID});
-        list[1] = ConfigureWeighted.Entry({token: address(b), priceId: B_ID});
-        address[] memory named = new address[](2);
-        (named[0], named[1]) = (address(tUsdc), address(b));
+        address[] memory list = new address[](2);
+        (list[0], list[1]) = (address(tUsdc), address(b));
         address[2] memory currencies = [address(tUsdc), HERE_USDT];
-        (bytes[] memory calls,) = configure.safeCalldata(factory, list, named, _none(), currencies);
+        (bytes[] memory calls,) = configure.safeCalldata(factory, list, list, _none(), currencies);
         assertEq(calls.length, 1, "only b is proposed");
-        assertEq(calls[0], abi.encodeCall(WeightedIndexFactory.proposeListing, (address(b), B_ID)));
-        configure.propose(factory, list, named, _none(), currencies);
+        assertEq(calls[0], abi.encodeCall(WeightedIndexFactory.proposeListing, (address(b))));
+        configure.propose(factory, list, list, _none(), currencies);
         assertEq(factory.listingEta(address(tUsdc)), 0, "nor through propose");
         assertGt(factory.listingEta(address(b)), 0);
     }
@@ -659,9 +506,7 @@ contract ConfigureWeightedTest is Test {
     /// @dev The script reads these variables, which only this test sets. A7-22: `run` takes the deployment's mint
     ///      currencies from V5_USDC and V5_USDT, here `b` and a token no list names, and proposes neither.
     function test_A722_run_readsEnvironment() public {
-        string memory raw = string.concat(
-            vm.toString(address(a)), ":", vm.toString(A_ID), ",", vm.toString(address(b)), ":", vm.toString(B_ID)
-        );
+        string memory raw = string.concat(vm.toString(address(a)), ",", vm.toString(address(b)));
         vm.setEnv("V5_FACTORY", vm.toString(address(factory)));
         vm.setEnv("V5_WHITELIST", raw);
         vm.setEnv("V5_LIST", "all");

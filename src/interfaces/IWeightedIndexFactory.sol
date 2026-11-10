@@ -7,9 +7,9 @@ import {IWeightedHub} from "./IWeightedHub.sol";
 
 /// @title IWeightedIndexFactory
 /// @notice Creates indexes whose creators choose each component's weight. Components come from a whitelist that the
-///         owner lists behind a timelock. Each listed token carries the Pyth price id its indexes rebalance at.
+///         owner lists behind a timelock.
 /// @dev "Owner only" functions revert with OpenZeppelin's `OwnableUnauthorizedAccount` for any other caller.
-///      "Owner or guardian" functions revert with `Unauthorized`. The factory stores price ids and never reads a price.
+///      "Owner or guardian" functions revert with `Unauthorized`. Neither the factory nor any index reads a price.
 interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     /// @notice One component of an index to create.
     /// @param token A whitelisted token.
@@ -46,8 +46,7 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     }
 
     /// @notice `creator` created `index`.
-    ///         - `components`: each one's token, starting units, weight in basis points, and the Pyth price id and
-    ///           decimals copied from its listing.
+    ///         - `components`: each one's token, starting units and weight in basis points.
     ///         - `config`: the index's other fixed terms.
     ///         - `listed`: whether the creator wants the app to show it.
     event IndexCreated(
@@ -77,14 +76,14 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     event MinterAllowed(address indexed index, address indexed account, bool allowed);
     /// @notice `index`'s creator opened it to every minter, for good.
     event MintingOpened(address indexed index);
-    /// @notice The owner proposed listing `token` with Pyth price id `priceId` and `decimals`, executable from `eta`.
-    event ListingProposed(address indexed token, uint256 eta, bytes32 priceId, uint8 decimals);
+    /// @notice The owner proposed listing `token`, which reports `decimals`, executable from `eta`.
+    event ListingProposed(address indexed token, uint256 eta, uint8 decimals);
     /// @notice A pending listing was cancelled.
     event ListingCancelled(address indexed token);
     /// @notice `token` was listed (`allowed`) or delisted.
     event TokenWhitelisted(address indexed token, bool allowed);
-    /// @notice `token` now carries `priceId` and `decimals` for every index created from here on.
-    event TokenTermsSet(address indexed token, bytes32 priceId, uint8 decimals);
+    /// @notice `token`'s listing took effect with `decimals`, which bound the units an index may start it with.
+    event TokenDecimalsSet(address indexed token, uint8 decimals);
     /// @notice The owner proposed `newGuardian`, executable from `eta`.
     event GuardianProposed(address indexed newGuardian, uint256 eta);
     /// @notice A pending guardian change was cancelled, or replaced by a new proposal.
@@ -100,9 +99,6 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     error TokenNotWhitelisted(address token);
     /// @notice `token` appears twice.
     error DuplicateToken(address token);
-    /// @notice `token` carries the same Pyth price id as an earlier component. Pyth fills only the first of two equal
-    ///         ids, so such an index could never settle a rebalance (V5-M1).
-    error DuplicatePriceId(address token);
     /// @notice `units` for `token` lie outside [MIN_RAW_UNITS, {maxUnitsOf} `token`].
     error UnitsOutOfRange(address token, uint256 units);
     /// @notice A weight is zero or above TOTAL_WEIGHT, or the weights do not sum to TOTAL_WEIGHT.
@@ -111,8 +107,6 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     error IndexAlreadyExists(address index);
     /// @notice `token` has no code.
     error NotAContract(address token);
-    /// @notice The price id is zero.
-    error InvalidPriceId(address token);
     /// @notice `token` reports more than 18 decimals.
     error InvalidDecimals(address token, uint8 decimals);
     /// @notice `token` already has a listing that has not expired, executable from `eta`.
@@ -207,9 +201,6 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     /// @notice The `WeightedHub` every index is a clone of.
     function IMPLEMENTATION() external view returns (address);
 
-    /// @notice The Pyth contract every index reads its prices from.
-    function PYTH() external view returns (address);
-
     /// @notice The guardian: cancels listings, rebalances and its own removal, delists, and starts rebalances early or
     ///         with a keep mask. Zero when there is none.
     function guardian() external view returns (address);
@@ -231,10 +222,8 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     /// @notice Every whitelisted token, in no particular order.
     function whitelistedTokens() external view returns (address[] memory);
 
-    /// @notice `token`'s Pyth price id, which a new index copies; zero for a token never listed. Delisting keeps it.
-    function priceIdOf(address token) external view returns (bytes32);
-
-    /// @notice `token`'s decimals as read when its listing was proposed, which a new index copies.
+    /// @notice `token`'s decimals as read when its listing was proposed; zero for a token never listed. Delisting
+    ///         keeps them. They only bound the units an index may start with ({maxUnitsOf}).
     function decimalsOf(address token) external view returns (uint8);
 
     /// @notice Most raw units of `token` an index may start with: MAX_WHOLE_TOKENS whole tokens at its listed decimals,
@@ -244,9 +233,6 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     /// @notice When `token`'s pending listing becomes executable; zero when none was proposed. Stays set after it
     ///         expires: read {listingPending}.
     function listingEta(address token) external view returns (uint256);
-
-    /// @notice The price id and decimals a pending listing of `token` carries.
-    function pendingTerms(address token) external view returns (bytes32 priceId, uint8 decimals);
 
     /// @notice Whether `token` has a listing that can still be executed or is waiting out its delay.
     function listingPending(address token) external view returns (bool);
@@ -316,8 +302,8 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     /// @notice Number of indexes ever created.
     function allIndexesLength() external view returns (uint256);
 
-    /// @notice The address {createIndex} would deploy to for these arguments, with the current price ids and fee
-    ///         policy. Reverts as {createIndex} would on `params`.
+    /// @notice The address {createIndex} would deploy to for these arguments, with the current fee policy. Reverts as
+    ///         {createIndex} would on `params`.
     function predictIndexAddress(
         address creator,
         string calldata name,
@@ -327,13 +313,12 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     ) external view returns (address);
 
     /// @notice Creates an index of `components`, with the caller as its creator.
-    ///         - Copies each token's current price id and decimals into the index.
     ///         - Takes the fee rates from `params` and the current policy.
     ///         - `msg.value` must equal the policy's creation fee; it is forwarded to the platform recipient.
-    ///         Reads no price. The app derives the units from the weights at current prices, and the first rebalance
-    ///         brings any index to its weights.
-    /// @param components Between MIN_COMPONENTS and MAX_COMPONENTS distinct whitelisted tokens, no two sharing a price
-    ///        id, with their weights and units.
+    ///         Reads no price. The app derives the units from the weights at current prices, and rebalances bring an
+    ///         index toward its weights.
+    /// @param components Between MIN_COMPONENTS and MAX_COMPONENTS distinct whitelisted tokens, with their weights and
+    ///        units.
     /// @param params The creator's fee, the platform fee it accepts, the rebalance interval, and the gate and listing
     ///        flags.
     function createIndex(
@@ -359,10 +344,9 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
         uint256 creationFee_
     ) external;
 
-    /// @notice Owner only. Proposes listing `token` with Pyth price id `priceId`. Its decimals are read and recorded
-    ///         now. Anyone can execute it from LISTING_DELAY later, within PROPOSAL_WINDOW. A relisting may carry a new
-    ///         price id. It reaches only indexes created afterwards, since every index copies its ids at creation.
-    function proposeListing(address token, bytes32 priceId) external;
+    /// @notice Owner only. Proposes listing `token`. Its decimals are read and recorded now. Anyone can execute it
+    ///         from LISTING_DELAY later, within PROPOSAL_WINDOW. A listing reaches only indexes created afterwards.
+    function proposeListing(address token) external;
 
     /// @notice Owner or guardian. Cancels `token`'s pending listing.
     function cancelListing(address token) external;

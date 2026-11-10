@@ -12,7 +12,6 @@ import {IUniswapV3PoolRead} from "../interfaces/IUniswapV3PoolRead.sol";
 import {INonfungiblePositionManager} from "../interfaces/INonfungiblePositionManager.sol";
 import {IUniswapV3FactorySetup} from "../interfaces/IUniswapV3FactorySetup.sol";
 import {IUniswapV3PoolSetup} from "../interfaces/IUniswapV3PoolSetup.sol";
-import {PythIds} from "../PythIds.sol";
 import {ScriptUtils} from "../ScriptUtils.sol";
 import {IWETH9} from "../../src/interfaces/IWETH9.sol";
 import {FaucetToken} from "./FaucetToken.sol";
@@ -46,8 +45,6 @@ contract SetupTestMarket is Script {
     /// @param wethPerToken WETH wei per whole token at the starting price, which sizes the pool.
     /// @param supply Minted to the deployer at creation, for pool liquidity.
     /// @param dripAmount What each faucet drip mints.
-    /// @param priceId The Pyth price id to list the token with, its mainnet counterpart's (Pyth's ids are the same on
-    ///        every chain); zero for tUSDC, which is a currency and never listed.
     struct Spec {
         string name;
         string symbol;
@@ -56,7 +53,6 @@ contract SetupTestMarket is Script {
         uint256 wethPerToken;
         uint256 supply;
         uint256 dripAmount;
-        bytes32 priceId;
     }
 
     /// @notice Uniswap V3 contracts and WETH the market is built on.
@@ -123,8 +119,7 @@ contract SetupTestMarket is Script {
             fee: POOL_FEE_LOW,
             wethPerToken: 0.0004167e18,
             supply: 1_000_000e6,
-            dripAmount: 100e6,
-            priceId: bytes32(0)
+            dripAmount: 100e6
         });
         list[1] = Spec({
             name: "Xindex Test WBTC",
@@ -133,8 +128,7 @@ contract SetupTestMarket is Script {
             fee: POOL_FEE_LOW,
             wethPerToken: 31.6e18,
             supply: 10e8,
-            dripAmount: 0.001e8,
-            priceId: PythIds.WBTC
+            dripAmount: 0.001e8
         });
         list[2] = Spec({
             name: "Xindex Test LINK",
@@ -143,8 +137,7 @@ contract SetupTestMarket is Script {
             fee: POOL_FEE_MEDIUM,
             wethPerToken: 0.0045e18,
             supply: 100_000e18,
-            dripAmount: 10e18,
-            priceId: PythIds.LINK
+            dripAmount: 10e18
         });
         list[3] = Spec({
             name: "Xindex Test UNI",
@@ -153,8 +146,7 @@ contract SetupTestMarket is Script {
             fee: POOL_FEE_MEDIUM,
             wethPerToken: 0.00264e18,
             supply: 200_000e18,
-            dripAmount: 20e18,
-            priceId: PythIds.UNI
+            dripAmount: 20e18
         });
     }
 
@@ -244,20 +236,18 @@ contract SetupTestMarket is Script {
         console2.log("Deploy Xindex with OWNER, GUARDIAN and:");
         console2.log("  UNIVERSAL_ROUTER=%s", SEPOLIA_UNIVERSAL_ROUTER);
         console2.log("Mint and burn with tUSDC at %s; the pools above are the V3 routes.", tokens[0]);
-        console2.log("List the components as `create` logged them, V5_WHITELIST=<token:priceId,...>");
+        console2.log("List the components as `create` logged them, V5_WHITELIST=<token,...>");
     }
 
-    /// @notice `ConfigureWeighted` entries for the market's components: tWBTC, WETH, tLINK, tUNI, each under its
-    ///         mainnet counterpart's Pyth id. tUSDC is a currency and is not listed.
-    /// @param weth The Uniswap deployment's WETH, listed under ETH/USD.
+    /// @notice `ConfigureWeighted` entries for the market's components: tWBTC, WETH, tLINK, tUNI. tUSDC is a currency
+    ///         and is not listed.
+    /// @param weth The Uniswap deployment's WETH.
     /// @param tokens The market's tokens, in {specs} order.
     /// @return entries A V5_WHITELIST value for `ConfigureWeighted`.
     function whitelist(address weth, address[] memory tokens) public pure returns (string memory entries) {
-        Spec[] memory list = specs();
-        entries = _entry(tokens[1], list[1].priceId);
-        entries = string.concat(entries, ",", _entry(weth, PythIds.WETH));
-        for (uint256 i = 2; i < list.length; ++i) {
-            entries = string.concat(entries, ",", _entry(tokens[i], list[i].priceId));
+        entries = string.concat(vm.toString(tokens[1]), ",", vm.toString(weth));
+        for (uint256 i = 2; i < tokens.length; ++i) {
+            entries = string.concat(entries, ",", vm.toString(tokens[i]));
         }
     }
 
@@ -345,10 +335,6 @@ contract SetupTestMarket is Script {
         params.fee = spec.fee;
         params.recipient = msg.sender;
         params.deadline = block.timestamp + 1 hours;
-    }
-
-    function _entry(address token, bytes32 priceId) private pure returns (string memory) {
-        return string.concat(vm.toString(token), ":", vm.toString(priceId));
     }
 
     function _wholeToken(uint8 decimals) private pure returns (uint256) {

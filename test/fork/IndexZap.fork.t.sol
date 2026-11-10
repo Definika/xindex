@@ -86,14 +86,13 @@ contract IndexZapForkTest is Test {
         }
 
         alice = _eoa(alice);
-        factory = new WeightedIndexFactory(address(this), address(0), A.PYTH);
+        factory = new WeightedIndexFactory(address(this), address(0));
         zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), IWETH9(A.WETH));
         zapEther = address(zap).balance;
 
-        // The zap never asks for a price, so each token is listed under a price id of its own making.
-        factory.proposeListing(A.WBTC, keccak256(abi.encode(A.WBTC)));
-        factory.proposeListing(A.WETH, keccak256(abi.encode(A.WETH)));
-        factory.proposeListing(A.LINK, keccak256(abi.encode(A.LINK)));
+        factory.proposeListing(A.WBTC);
+        factory.proposeListing(A.WETH);
+        factory.proposeListing(A.LINK);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(A.WBTC);
         factory.executeListing(A.WETH);
@@ -548,7 +547,7 @@ contract IndexZapForkTest is Test {
 
         // tBTC is on no list; it is listed here to exercise a two-hop route. The basket holds 0.0005 of each: 50,000
         // raw units of WBTC (8 decimals) and 5e14 of tBTC (18).
-        factory.proposeListing(A.TBTC, keccak256(abi.encode(A.TBTC)));
+        factory.proposeListing(A.TBTC);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         factory.executeListing(A.TBTC);
 

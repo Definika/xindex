@@ -6,14 +6,16 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {WeightedHub} from "../src/WeightedHub.sol";
 import {IWeightedHub} from "../src/interfaces/IWeightedHub.sol";
 import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
+import {IWeightedMath} from "../src/interfaces/IWeightedMath.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {WeightedTest} from "./WeightedTest.sol";
 import {MockWeightedExecutor} from "./mocks/MockWeightedExecutor.sol";
 
 /// @notice The rebalance state machine of `design/2026-10-29-rebalance-state-machine.md`: one test per state, taking
 ///         every action from it, then the clock's transitions and the invariants the matrix implies.
-/// @dev The default index (ETH 50%, BTC 30%, USD 20%, $100 a token) with 100 tokens issued. A fill prices ETH at
-///      $2,500, so it has a tenth of the ETH units to sell. Each row test drives a fresh index into its state, tries
+/// @dev The default index (ETH 50%, BTC 30%, USD 20%, $100 a token) with 100 tokens issued. A fill doubles every
+///      component it may move: a gift, which clears the bar at any second of the auction, so the clock alone decides
+///      each cell. Each row test drives a fresh index into its state, tries
 ///      every start (with and without a keep mask, by a stranger and by the guardian or owner), both cancels and both
 ///      fills, reads the views, lets a holder issue and redeem, and then takes each transition that leaves the state.
 ///      The order of a start's checks (the interval, then the proposal, then the mask, then the caller) and of a
@@ -118,32 +120,34 @@ contract WeightedHubStatesTest is WeightedTest {
         assertEq(index.canStartRebalance(), s == State.Open || s == State.ExpiredOpen, "canStartRebalance");
     }
 
-    function _assertViews(uint256 mu, uint256 eta, uint256 keepMask) internal view {
-        assertEq(index.currentMu(), mu, "currentMu");
+    /// @dev The bar `elapsed` seconds into an auction, from the math the index names.
+    function _bar(uint256 elapsed) internal view returns (uint256) {
+        return IWeightedMath(index.MATH()).barAt(elapsed);
+    }
+
+    function _assertViews(uint256 bar, uint256 eta, uint256 keepMask) internal view {
+        assertEq(index.currentBar(), bar, "currentBar");
         (uint256 pendingEta, uint256 pendingMask) = index.pendingRebalance();
         assertEq(pendingEta, eta, "eta");
         assertEq(pendingMask, keepMask, "keepMask");
     }
 
     function _start(address who, uint256 keepMask) internal {
-        bytes[] memory live = pyth.liveUpdates(index, keepMask);
         vm.prank(who);
-        index.startRebalance(keepMask, live);
+        index.startRebalance(keepMask);
     }
 
     function _startEmits(address who, uint256 keepMask, uint256 proposalId, uint256 id) internal {
-        bytes[] memory live = pyth.liveUpdates(index, keepMask);
         vm.expectEmit(address(index));
         emit IWeightedHub.RebalanceStarted(proposalId, id, who, keepMask, block.timestamp + delay);
         vm.prank(who);
-        index.startRebalance(keepMask, live);
+        index.startRebalance(keepMask);
     }
 
     function _startReverts(address who, uint256 keepMask, bytes memory err) internal {
-        bytes[] memory live = pyth.liveUpdates(index, keepMask);
         vm.expectRevert(err);
         vm.prank(who);
-        index.startRebalance(keepMask, live);
+        index.startRebalance(keepMask);
     }
 
     function _cancelEmits(address who, uint256 proposalId, uint256 restartAt) internal {
@@ -159,23 +163,28 @@ contract WeightedHubStatesTest is WeightedTest {
         index.cancelRebalance();
     }
 
-    /// @dev Prices ETH at $2,500, so a fill has a tenth of the ETH units to sell. A kept leg's update is ignored.
-    function _fillData() internal view returns (bytes[] memory) {
-        return _updates(index, _ids3(), _prices3(2500e8, BTC_PRICE, USD_PRICE));
+    /// @dev Twice the units of every component the pending rebalance may move, the most one fill adds. With no leg
+    ///      kept the gain is above BAR_MAX, so the fill clears the bar from the auction's first second.
+    function _fillUnits() internal view returns (uint256[] memory units) {
+        units = index.recordedUnits();
+        (, uint256 keepMask) = index.pendingRebalance();
+        for (uint256 i = 0; i < units.length; ++i) {
+            if ((keepMask >> i) & 1 == 0) units[i] *= 2;
+        }
     }
 
     function _fill() internal {
-        executor.execute(index, "", _fillData());
+        executor.execute(index, _fillUnits(), "");
     }
 
     /// @dev Both overloads revert `err`. The bounded one is given bounds of the wrong length, which it would refuse
     ///      (LengthMismatch) if it read them before the clock.
     function _fillReverts(bytes memory err) internal {
-        bytes[] memory data = _fillData();
+        uint256[] memory units = _fillUnits();
         vm.expectRevert(err);
-        executor.execute(index, "", data);
+        executor.execute(index, units, "");
         vm.expectRevert(err);
-        executor.executeBounded(index, "", data, new uint256[](1));
+        executor.executeBounded(index, units, "", new uint256[](1));
     }
 
     /// @dev A holder issues, redeems, redeems skipping a leg and accrues the fees: none of them reads the rebalance.
@@ -338,8 +347,9 @@ contract WeightedHubStatesTest is WeightedTest {
         assertEq(index.rebalanceNonce(), 0);
     }
 
-    /// @dev Row 6. The auction ends by a fill or a cancel. A fill that trades nothing (V5-L2), or asks more than its
-    ///      bound (DA-13), leaves the state as it was. The last second still fills, at MU_MIN, into the interval.
+    /// @dev Row 6. The auction ends by a fill or a cancel. A fill that changes nothing (V5-L2), or asks more than its
+    ///      bound (DA-13), leaves the state as it was. The last second still fills, at the bar's floor, into the
+    ///      interval.
     function test_auction_aFillOrACancelEndsIt() public {
         _enter(State.Auction);
         _assertState(State.Auction);
@@ -352,18 +362,18 @@ contract WeightedHubStatesTest is WeightedTest {
         _startReverts(guardian, KEEP_USD, pending);
         _startReverts(guardian, KEEP_BEYOND, pending);
         _cancelReverts(stranger, _unauthorized(stranger));
-        _assertViews(index.MU_MAX(), eta, 0);
+        _assertViews(_bar(0), eta, 0);
         _holdersMove();
         _assertState(State.Auction);
 
-        bytes[] memory flat = _updates(index, _ids3(), _prices3(ETH_PRICE, BTC_PRICE, USD_PRICE));
-        vm.expectRevert(IWeightedHub.NothingToRebalance.selector);
-        executor.execute(index, "", flat);
+        uint256[] memory unchanged = index.recordedUnits();
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.GainBelowBar.selector, int256(0), _bar(0)));
+        executor.execute(index, unchanged, "");
         _assertState(State.Auction);
 
-        bytes[] memory data = _fillData();
+        uint256[] memory units = _fillUnits();
         vm.expectPartialRevert(IWeightedHub.RebalanceMovedOn.selector);
-        executor.executeBounded(index, "", data, new uint256[](3));
+        executor.executeBounded(index, units, "", new uint256[](3));
         _assertState(State.Auction);
 
         uint256 snap = vm.snapshotState();
@@ -374,7 +384,8 @@ contract WeightedHubStatesTest is WeightedTest {
 
         vm.warp(eta + auction);
         _assertState(State.Auction);
-        assertEq(index.currentMu(), index.MU_MIN());
+        assertEq(index.currentBar(), _bar(auction));
+        assertGt(index.currentBar(), 0, "the bar never reaches zero");
         _fill();
         _assertState(State.Interval);
         _assertViews(0, 0, 0);
@@ -477,14 +488,14 @@ contract WeightedHubStatesTest is WeightedTest {
         _fillReverts(abi.encodeWithSelector(IWeightedHub.RebalanceNotReady.selector, eta));
         vm.warp(eta);
         _assertState(State.Auction);
-        assertEq(index.currentMu(), index.MU_MAX());
+        assertEq(index.currentBar(), _bar(0));
         vm.warp(end);
         _assertState(State.Auction);
-        assertEq(index.currentMu(), index.MU_MIN());
+        assertEq(index.currentBar(), _bar(auction));
         _startReverts(guardian, 0, abi.encodeWithSelector(IWeightedHub.RebalancePending.selector, end));
         vm.warp(end + 1);
         _assertState(State.ExpiredHeld);
-        assertEq(index.currentMu(), 0);
+        assertEq(index.currentBar(), 0);
         _fillReverts(abi.encodeWithSelector(IWeightedHub.RebalanceExpired.selector, end));
         vm.warp(end + delay - 1);
         _assertState(State.ExpiredHeld);
@@ -535,7 +546,7 @@ contract WeightedHubStatesTest is WeightedTest {
         (eta,) = index.pendingRebalance();
         assertGe(eta, index.restartAllowedAt());
         vm.warp(eta);
-        executor.execute(index, "", _updates(index, _ids3(), _prices3(ETH_PRICE, BTC_PRICE, USD_PRICE)));
+        _fill();
         assertLe(index.restartAllowedAt(), index.lastRebalance());
         _assertState(State.Interval);
     }
@@ -551,7 +562,9 @@ contract WeightedHubStatesTest is WeightedTest {
 
         _start(guardian, KEEP_USD);
         (uint256 eta,) = index.pendingRebalance();
-        vm.warp(eta);
+        // With the dollar leg kept, doubling the other two gains less than the bar's first second asks: one half-life
+        // on, it clears.
+        vm.warp(eta + 12 minutes);
         _fill();
         _assertState(State.Interval);
         assertEq(index.earliestRebalance(), block.timestamp + 7 days, "a masked fill: the floor");
@@ -560,7 +573,7 @@ contract WeightedHubStatesTest is WeightedTest {
         _start(stranger, 0);
         (eta,) = index.pendingRebalance();
         vm.warp(eta);
-        executor.execute(index, "", _updates(index, _ids3(), _prices3(ETH_PRICE, BTC_PRICE, USD_PRICE)));
+        _fill();
         _assertState(State.Interval);
         assertEq(index.earliestRebalance(), block.timestamp + 30 days, "an unmasked fill: the index's own");
     }

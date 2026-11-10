@@ -7,9 +7,7 @@ import {WeightedIndexFactory} from "../src/WeightedIndexFactory.sol";
 import {WeightedHub} from "../src/WeightedHub.sol";
 import {IWeightedHub} from "../src/interfaces/IWeightedHub.sol";
 import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
-import {PythStructs} from "../src/interfaces/pyth/PythStructs.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
-import {MockPyth} from "./mocks/MockPyth.sol";
 import {MockWeightedExecutor} from "./mocks/MockWeightedExecutor.sol";
 import {MockUniversalRouter} from "./mocks/MockUniversalRouter.sol";
 import {BasketBuilder} from "../src/BasketBuilder.sol";
@@ -34,16 +32,14 @@ struct Wiring {
 
 contract WeightedHandler is Test {
     uint256 internal constant WAD = 1e18;
-    int32 internal constant EXPO = -8;
 
     WeightedHub public index;
-    MockPyth public pyth;
     MockWeightedExecutor public executor;
     address public guardian;
     MockERC20[] public comps;
-    bytes32[] public ids;
     address[] public actors;
-    /// @dev The prices Pyth publishes, with exponent -8, each kept within a hundredth and a hundred times its start.
+    /// @dev The market's prices, in dollars per whole token at 1e8, each kept within a hundredth and a hundred times
+    ///      its start. No contract reads them: the handler's executor names its fills by them, as a market would.
     int64[] public prices;
     int64[] internal _start;
 
@@ -98,24 +94,23 @@ contract WeightedHandler is Test {
     bool public frontRunMisjudged;
     /// @dev Whether the last settlement carried a keep mask, which shortens the next restart (XS-3).
     bool public lastFillMasked;
-    bool public muBoundBroken;
+    /// @dev An accepted fill's gain was under its bar, or the bar was zero.
+    bool public gainBroken;
     bool public turnoverBroken;
+    /// @dev An accepted fill more than doubled a component's units (RX-15).
+    bool public growthBroken;
     bool public nothingMisjudged;
 
     constructor(
         WeightedHub index_,
-        MockPyth pyth_,
         MockERC20[] memory comps_,
-        bytes32[] memory ids_,
         int64[] memory prices_,
         address[] memory actors_,
         address[5] memory recipients_,
         Wiring memory wiring_
     ) {
         index = index_;
-        pyth = pyth_;
         comps = comps_;
-        ids = ids_;
         prices = prices_;
         _start = prices_;
         actors = actors_;
@@ -307,7 +302,7 @@ contract WeightedHandler is Test {
     // prices and time
     // ---------------------------------------------------------------------
 
-    /// @dev Moves a component's published price anywhere from a hundredth to a hundred times its start.
+    /// @dev Moves a component's market price anywhere from a hundredth to a hundred times its start.
     function movePrice(uint256 compSeed, uint256 factor) external {
         uint256 i = compSeed % comps.length;
         // forge-lint: disable-next-line(unsafe-typecast)
@@ -597,9 +592,8 @@ contract WeightedHandler is Test {
         restartMisjudged = restartMisjudged || index.earliestRebalance() != earliest;
         if (block.timestamp < earliest - 1) vm.warp(earliest - 1);
         if (block.timestamp < earliest) {
-            bytes[] memory early_ = pyth.liveUpdates(index, 0);
             vm.prank(guardian);
-            (bool early,) = address(index).call(abi.encodeCall(IWeightedHub.startRebalance, (0, early_)));
+            (bool early,) = address(index).call(abi.encodeCall(IWeightedHub.startRebalance, (0)));
             restartMisjudged = restartMisjudged || early;
         }
         if (!asGuardian) {
@@ -609,9 +603,8 @@ contract WeightedHandler is Test {
             // `canStartRebalance` says so (RZ-32).
             if (holdOff > earliest && block.timestamp < holdOff) {
                 vm.warp(holdOff - 1);
-                bytes[] memory held = pyth.liveUpdates(index, 0);
                 vm.prank(_actor(seed));
-                (bool started,) = address(index).call(abi.encodeCall(IWeightedHub.startRebalance, (0, held)));
+                (bool started,) = address(index).call(abi.encodeCall(IWeightedHub.startRebalance, (0)));
                 holdOffMisjudged = holdOffMisjudged || started || index.canStartRebalance();
             }
             earliest = Math.max(earliest, holdOff);
@@ -628,9 +621,8 @@ contract WeightedHandler is Test {
             kept += (mask >> i) & 1;
         }
         if (comps.length - kept < 2) mask = 0;
-        bytes[] memory live = pyth.liveUpdates(index, mask);
         vm.prank(asGuardian ? guardian : _actor(seed));
-        index.startRebalance(mask, live);
+        index.startRebalance(mask);
     }
 
     function cancelRebalance() external {
@@ -640,74 +632,96 @@ contract WeightedHandler is Test {
         index.cancelRebalance();
     }
 
-    /// @dev Warps into the auction if the notice is still running, and returns whether there is anything to fill.
+    /// @dev Warps to `offset` seconds into the auction, unless the clock is already past that, and returns whether
+    ///      there is anything to fill.
     function _toAuction(uint256 offset) internal returns (bool open) {
         (uint256 eta,) = index.pendingRebalance();
         if (eta == 0 || block.timestamp > eta + index.AUCTION_DURATION()) return false;
-        if (block.timestamp < eta) vm.warp(eta + bound(offset, 0, index.AUCTION_DURATION()));
+        uint256 target = eta + bound(offset, 0, index.AUCTION_DURATION());
+        if (block.timestamp < target) vm.warp(target);
         return true;
     }
 
-    /// @dev Every moving component's update for the price time of this block.
-    function _updates() internal view returns (bytes[] memory data) {
-        (, uint256 keepMask) = index.pendingRebalance();
-        uint64 time = uint64(index.priceTime());
-        uint256 moving = 0;
-        for (uint256 i = 0; i < comps.length; ++i) {
-            if ((keepMask >> i) & 1 == 0) ++moving;
+    /// @dev A component's market price per raw unit, scaled by 1e36.
+    function _quote(uint256 i) internal view returns (uint256) {
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return uint256(int256(prices[i])) * 10 ** (36 - 8 - uint256(comps[i].decimals()));
+    }
+
+    /// @dev The fill the handler's executor names: toward the units that sit on the weights at the market's prices,
+    ///      every leg the same share of the way, as far as the unit caps let the furthest leg go. It leaves alone the
+    ///      components the pending rebalance keeps, and a frozen one, which needs no mask (RX-57).
+    function _fillUnits() internal view returns (uint256[] memory fill) {
+        fill = index.recordedUnits();
+        uint256[] memory weights = index.componentWeights();
+        (, uint256 leave) = index.pendingRebalance();
+        if (frozen) leave |= 1 << FROZEN;
+        uint256 n = fill.length;
+        uint256 value = 0;
+        uint256 weight = 0;
+        for (uint256 i = 0; i < n; ++i) {
+            if ((leave >> i) & 1 == 1) continue;
+            value += fill[i] * _quote(i);
+            weight += weights[i];
         }
-        data = new bytes[](moving);
-        uint256 k = 0;
-        for (uint256 i = 0; i < comps.length; ++i) {
-            if ((keepMask >> i) & 1 == 1) continue;
-            data[k++] = pyth.update(ids[i], prices[i], 0, EXPO, time, time - 1);
+        uint256[] memory targets = new uint256[](n);
+        uint256 share = WAD;
+        for (uint256 i = 0; i < n; ++i) {
+            if ((leave >> i) & 1 == 1) continue;
+            uint256 current = fill[i];
+            uint256 target = Math.mulDiv(value, weights[i], weight * _quote(i), Math.Rounding.Ceil);
+            targets[i] = target;
+            if (target > current) share = Math.min(share, Math.mulDiv(current, WAD, target - current));
+            if (target < current) {
+                share = Math.min(share, Math.mulDiv(current, index.MAX_TURNOVER(), current - target));
+            }
+        }
+        for (uint256 i = 0; i < n; ++i) {
+            if ((leave >> i) & 1 == 1) continue;
+            uint256 current = fill[i];
+            if (targets[i] > current) {
+                fill[i] = current + Math.mulDiv(targets[i] - current, share, WAD, Math.Rounding.Ceil);
+            } else {
+                fill[i] = current - Math.mulDiv(current - targets[i], share, WAD);
+            }
         }
     }
 
-    function _structs() internal view returns (PythStructs.PriceFeed[] memory out) {
-        out = new PythStructs.PriceFeed[](comps.length);
-        for (uint256 i = 0; i < comps.length; ++i) {
-            PythStructs.Price memory p = PythStructs.Price({price: prices[i], conf: 0, expo: EXPO, publishTime: 0});
-            out[i] = PythStructs.PriceFeed({id: bytes32(0), price: p, emaPrice: p});
-        }
-    }
-
-    /// @dev The settlement the preview shows, or nothing when the index is on its weights at these prices.
+    /// @dev The handler's fill and the settlement the preview makes of it, or nothing when the index refuses it: the
+    ///      gain is under the bar, as on an index near its weights or early in the auction, or the index is empty.
     function _preview()
         internal
-        returns (bool trades, uint256 mu, uint256[] memory units, uint256[] memory out, uint256[] memory in_)
+        returns (bool trades, uint256[] memory fill, uint256[] memory out, uint256[] memory in_)
     {
-        try index.previewRebalance(_structs()) returns (
-            uint256 mu_, uint256[] memory units_, uint256[] memory out_, uint256[] memory in__
+        fill = _fillUnits();
+        try index.previewRebalance(fill) returns (
+            uint256 bar, int256 gain, uint256[] memory out_, uint256[] memory in__
         ) {
-            return (true, mu_, units_, out_, in__);
+            // forge-lint: disable-next-line(unsafe-typecast)
+            gainBroken = gainBroken || bar == 0 || gain < int256(bar);
+            return (true, fill, out_, in__);
         } catch (bytes memory reason) {
-            nothingMisjudged = nothingMisjudged || bytes4(reason) != IWeightedHub.NothingToRebalance.selector;
-            return (false, 0, units, out, in_);
+            bytes4 why = bytes4(reason);
+            nothingMisjudged = nothingMisjudged
+                || (why != IWeightedHub.GainBelowBar.selector && why != IWeightedHub.NothingToRebalance.selector);
+            return (false, fill, out, in_);
         }
-    }
-
-    /// @dev Whether a fill now would have to move the frozen component.
-    function _movesFrozen() internal view returns (bool) {
-        (, uint256 keepMask) = index.pendingRebalance();
-        return frozen && (keepMask >> FROZEN) & 1 == 0;
     }
 
     function executeRebalance(uint256 offset, bool bounded) external {
-        if (_movesFrozen() || !_toAuction(offset)) return;
-        (bool trades, uint256 mu, uint256[] memory preview, uint256[] memory out, uint256[] memory in_) = _preview();
+        if (!_toAuction(offset)) return;
+        (bool trades, uint256[] memory fill, uint256[] memory out, uint256[] memory in_) = _preview();
         if (!trades) return;
-        _checkValue(mu, out, in_);
+        _checkCaps(fill, out);
 
-        bytes[] memory data = _updates();
         uint256 held = _recipientsHold();
         uint256 supply = index.totalSupply();
         uint256 streaming = _streamingFee();
         (, uint256 keepMask) = index.pendingRebalance();
         uint256[] memory before = _balances();
         executor.setMode(MockWeightedExecutor.Mode.Honest);
-        if (bounded) executor.executeBounded(index, "", data, in_);
-        else executor.execute(index, "", data);
+        if (bounded) executor.executeBounded(index, fill, "", in_);
+        else executor.execute(index, fill, "");
         ++ghostExecutions;
         lastFillMasked = keepMask != 0;
         // What the fill moved, measured on the index's balances: exactly the preview's amounts (RX-56).
@@ -719,40 +733,30 @@ contract WeightedHandler is Test {
         _accountFee(held, streaming);
         _clock(streaming, supply);
 
-        // The preview's units are the recorded ones, which carry the scale the fill's accrual left; the views report
-        // them with it applied.
+        // The units the executor named are the recorded ones, which carry the scale the fill's accrual left; the views
+        // report them with it applied.
         (, uint256[] memory afterwards) = index.components();
         for (uint256 i = 0; i < afterwards.length; ++i) {
-            previewMisled = previewMisled || afterwards[i] != Math.mulDiv(preview[i], scale, WAD) || preview[i] == 0;
+            previewMisled = previewMisled || afterwards[i] != Math.mulDiv(fill[i], scale, WAD) || fill[i] == 0;
         }
-        _recorded = preview;
+        _recorded = fill;
     }
 
-    /// @dev At the settling prices, what comes in is worth at least μ times what leaves, and what leaves of each
-    ///      component is at most MAX_TURNOVER of its units, at any price (V5-M2).
-    function _checkValue(uint256 mu, uint256[] memory out, uint256[] memory in_) internal {
-        (, uint256 keepMask) = index.pendingRebalance();
-        (,, uint8[] memory decimals) = index.componentTerms();
-        uint256 valueOut = 0;
-        uint256 valueIn = 0;
+    /// @dev What leaves of each component is at most MAX_TURNOVER of its backing, and no component more than doubles
+    ///      its units, whatever the executor named (V5-M2, RX-15).
+    function _checkCaps(uint256[] memory fill, uint256[] memory out) internal {
         // The settlement's supply and scale: the fee the fill accrues first is minted on top of today's.
         uint256 fee = _streamingFee();
         uint256 settlingScale = _scaleAfter(fee, index.totalSupply());
         uint256 supply = index.totalSupply() + fee;
         for (uint256 i = 0; i < comps.length; ++i) {
-            if ((keepMask >> i) & 1 == 1) continue;
-            // forge-lint: disable-next-line(unsafe-typecast)
-            uint256 q = uint256(int256(prices[i])) * 10 ** (36 - 8 - uint256(decimals[i]));
-            valueOut += out[i] * q;
-            valueIn += in_[i] * q;
             uint256 backing = Math.mulDiv(supply, _recorded[i] * settlingScale, WAD * WAD, Math.Rounding.Ceil);
             turnoverBroken =
                 turnoverBroken || out[i] > Math.mulDiv(backing, index.MAX_TURNOVER(), WAD, Math.Rounding.Ceil);
+            growthBroken = growthBroken || fill[i] > 2 * _recorded[i];
         }
-        muBoundBroken = muBoundBroken || valueIn * WAD < valueOut * mu;
     }
 
-    /// @dev Delivers one raw unit too little of a growing component. It can never settle.
     /// @dev The index's balance of every component.
     function _balances() internal view returns (uint256[] memory b) {
         b = new uint256[](comps.length);
@@ -765,7 +769,7 @@ contract WeightedHandler is Test {
     ///      amounts: it either still fits them or stops at RebalanceMovedOn, never anything else (DA-13, RX-57).
     function frontRunFill(uint256 offset, uint256 actorSeed, uint256 shares) external {
         if (frozen || !_toAuction(offset)) return;
-        (bool trades,,,, uint256[] memory in_) = _preview();
+        (bool trades, uint256[] memory fill,, uint256[] memory in_) = _preview();
         if (!trades) return;
         shares = bound(shares, 1, 1e18);
         address who = _actor(actorSeed);
@@ -783,24 +787,20 @@ contract WeightedHandler is Test {
         ghostIssued += shares;
         _accountFee(held, streaming + (shares * 10_000 + 9874) / 9875 - shares);
         _clock(streaming, supply);
-        // The units the fill settles are the preview's after the issue, in the same block, not the quote's: the
-        // settlement rounds each leg's backing at the supply, so on a dust supply an issue moves them (here 1.8% of a
-        // leg when 4,040 wei-shares landed on 71). The quote's amounts only bound the fill (DA-13).
-        (,, uint256[] memory units,,) = _preview();
 
-        // In the same block, so the fill accrues nothing more.
+        // In the same block, so the fill accrues nothing more. The units are the executor's, whatever the supply: the
+        // issue moved only the amounts they come to, which the quote's bound.
         (, uint256 keepMask) = index.pendingRebalance();
-        bytes[] memory data = _updates();
         executor.setMode(MockWeightedExecutor.Mode.Honest);
         (bool settled, bytes memory reason) =
-            address(executor).call(abi.encodeCall(MockWeightedExecutor.executeBounded, (index, "", data, in_)));
+            address(executor).call(abi.encodeCall(MockWeightedExecutor.executeBounded, (index, fill, "", in_)));
         if (!settled) {
             frontRunMisjudged = frontRunMisjudged || bytes4(reason) != IWeightedHub.RebalanceMovedOn.selector;
             return;
         }
         ++ghostExecutions;
         lastFillMasked = keepMask != 0;
-        _recorded = units;
+        _recorded = fill;
         // A bounded fill delivers no more of any component than its bound (DA-13, RX-57).
         uint256[] memory delivered = executor.lastAmountsIn();
         for (uint256 i = 0; i < delivered.length; ++i) {
@@ -810,24 +810,22 @@ contract WeightedHandler is Test {
 
     function executeRebalanceShort(uint256 offset) external {
         if (!_toAuction(offset)) return;
-        (bool trades,,,, uint256[] memory amountsIn) = _preview();
+        (bool trades, uint256[] memory fill,, uint256[] memory amountsIn) = _preview();
         if (!trades) return;
+        // An accepted fill gains, so it grows a leg, and on any supply that leg asks for at least a raw unit.
         uint256 growing = amountsIn.length;
         for (uint256 i = 0; i < amountsIn.length; ++i) {
             if (growing == amountsIn.length && amountsIn[i] != 0) growing = i;
         }
-        if (growing == amountsIn.length) return; // nothing is bought
 
         executor.setMode(MockWeightedExecutor.Mode.Short);
         executor.setShortComponent(growing);
-        bytes[] memory data = _updates();
-        (bool settled,) = address(executor).call(abi.encodeCall(MockWeightedExecutor.execute, (index, "", data)));
+        (bool settled,) = address(executor).call(abi.encodeCall(MockWeightedExecutor.execute, (index, fill, "")));
         shortFillSucceeded = shortFillSucceeded || settled;
     }
 }
 
 contract WeightedHubInvariantTest is Test {
-    MockPyth pyth;
     WeightedIndexFactory factory;
     WeightedHub index;
     WeightedHandler handler;
@@ -851,15 +849,13 @@ contract WeightedHubInvariantTest is Test {
         vm.warp(1_800_000_000);
         address owner = makeAddr("owner");
         address guardian = makeAddr("guardian");
-        pyth = new MockPyth();
-        factory = new WeightedIndexFactory(owner, guardian, address(pyth));
+        factory = new WeightedIndexFactory(owner, guardian);
 
         comps.push(new MockERC20("BTC", "BTC", 8));
         comps.push(new MockERC20("ETH", "ETH", 18));
         comps.push(new MockERC20("USD", "USD", 6));
         // Pausable, as WBTC, MANA and the Ondo tokens are; the handler freezes it at times (RX-57).
         comps.push(MockERC20(address(new MockPausableToken("ODD", "ODD", 13))));
-        bytes32[] memory ids = new bytes32[](4);
         int64[] memory prices = new int64[](4);
         (prices[0], prices[1], prices[2], prices[3]) = (60_000e8, 2000e8, 1e8, 0.5e8);
         // On their weights at those prices but the last, odd in its decimals, which starts at a quarter of its weight:
@@ -869,9 +865,8 @@ contract WeightedHubInvariantTest is Test {
 
         IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](4);
         for (uint256 i = 0; i < comps.length; ++i) {
-            ids[i] = keccak256(abi.encode("feed", i));
             vm.prank(owner);
-            factory.proposeListing(address(comps[i]), ids[i]);
+            factory.proposeListing(address(comps[i]));
             specs[i] =
                 IWeightedIndexFactory.ComponentSpec({token: address(comps[i]), weight: weights[i], units: units[i]});
         }
@@ -907,7 +902,7 @@ contract WeightedHubInvariantTest is Test {
         for (uint256 i = 0; i < 5; ++i) {
             actors.push(makeAddr(string(abi.encodePacked("actor", i))));
         }
-        _deployHandler(ids, prices, owner, guardian);
+        _deployHandler(prices, owner, guardian);
         targetContract(address(handler));
     }
 
@@ -946,12 +941,10 @@ contract WeightedHubInvariantTest is Test {
         usdc.mint(address(router.inventory()), 1e40);
     }
 
-    function _deployHandler(bytes32[] memory ids, int64[] memory prices, address owner, address guardian) internal {
+    function _deployHandler(int64[] memory prices, address owner, address guardian) internal {
         handler = new WeightedHandler(
             index,
-            pyth,
             comps,
-            ids,
             prices,
             actors,
             recipients,
@@ -999,11 +992,16 @@ contract WeightedHubInvariantTest is Test {
         handler.warp(1 hours);
         handler.accrueFees(0);
 
-        // An empty index: nothing to shortchange, and an honest fill settles at MU_MAX.
+        // The first rebalance. At the auction's first second the bar is above anything a trade offers, so nothing
+        // fills; at its last the fill settles, and a short one does not.
         handler.startRebalance(0, 0, false);
         handler.startRebalance(0, 0, false); // already pending
-        handler.executeRebalanceShort(0);
         handler.executeRebalance(0, false);
+        handler.executeRebalanceShort(0);
+        assertEq(index.rebalanceNonce(), 0, "no fill clears the bar's first second");
+        handler.executeRebalanceShort(4 hours);
+        assertEq(index.rebalanceNonce(), 0, "one raw unit short, no settlement");
+        handler.executeRebalance(4 hours, false);
         assertEq(index.rebalanceNonce(), 1);
 
         // After a cancel, strangers wait out the hold-off, which the handler warps past.
@@ -1020,15 +1018,18 @@ contract WeightedHubInvariantTest is Test {
         handler.claim(0, 0, 0);
         handler.transfer(0, 1, 5e17);
         handler.movePrice(1, 4000e8);
-        handler.executeRebalanceShort(0);
+        handler.executeRebalanceShort(4 hours);
         assertEq(index.rebalanceNonce(), 1, "one raw unit short, no settlement");
         for (uint256 i = 0; i < comps.length; ++i) {
             handler.donate(i, 1e30);
         }
-        handler.executeRebalanceShort(0);
+        handler.executeRebalanceShort(4 hours);
         assertEq(index.rebalanceNonce(), 1, "the donations belong to the holders, not to the executor");
-        handler.executeRebalance(0, true);
-        assertEq(index.rebalanceNonce(), 2, "an honest fill settles");
+        // The pausable component is frozen: the executor leaves it alone, with no mask, and fills the rest (RX-57).
+        handler.freeze(true);
+        handler.executeRebalance(4 hours, true);
+        assertEq(index.rebalanceNonce(), 2, "an honest fill settles, around the frozen component");
+        handler.freeze(false);
 
         // The guardian starts with a keep mask; a fill moves only the others.
         handler.startRebalance(0, 1, true);
@@ -1036,16 +1037,17 @@ contract WeightedHubInvariantTest is Test {
         assertEq(keepMask, 1);
         handler.movePrice(2, 0.5e8);
         // An issue ahead of a bounded fill: a whole token's stops it at its bound, a wei's lets it settle (RX-57).
-        handler.frontRunFill(0, 0, 1e18);
+        handler.frontRunFill(4 hours, 0, 1e18);
         assertEq(index.rebalanceNonce(), 2, "a front-run past the bound stops the fill");
-        handler.frontRunFill(0, 0, 1);
-        handler.executeRebalance(0, false);
+        handler.frontRunFill(4 hours, 0, 1);
+        handler.executeRebalance(4 hours, false);
         assertEq(index.rebalanceNonce(), 3);
         assertFalse(handler.frontRunMisjudged());
         assertFalse(handler.boundBroken());
 
-        // Fills at μ = 1 bring the index onto its weights within a few rebalances, the unit cap allowing; then the next
-        // fill has nothing to trade and is refused (V5-L2), and the handler skips it.
+        // Fills bring the index onto its weights within a few rebalances, the unit caps allowing. BTC's few raw units
+        // a token round its target up by a visible step, which the other legs then follow in ever smaller ones; once
+        // a fill gains less than the bar's last second asks it is refused (V5-L2), and the handler skips it.
         uint256 fills;
         uint256 rounds = 0;
         do {
@@ -1053,15 +1055,16 @@ contract WeightedHubInvariantTest is Test {
             handler.startRebalance(0, 0, false);
             handler.executeRebalance(12 hours, false);
             ++rounds;
-        } while (index.rebalanceNonce() != fills && rounds < 8);
+        } while (index.rebalanceNonce() != fills && rounds < 40);
         assertEq(index.rebalanceNonce(), fills, "the last fill found nothing to trade");
         handler.executeRebalanceShort(12 hours);
         handler.frontRunFill(12 hours, 0, 1); // nor does a front-run fill, which issues nothing ahead of it
         assertEq(index.rebalanceNonce(), fills);
         assertFalse(handler.nothingMisjudged());
 
-        assertFalse(handler.muBoundBroken());
+        assertFalse(handler.gainBroken());
         assertFalse(handler.turnoverBroken());
+        assertFalse(handler.growthBroken());
         assertFalse(handler.previewMisled());
         assertFalse(handler.shortFillSucceeded());
 
@@ -1130,9 +1133,8 @@ contract WeightedHubInvariantTest is Test {
     }
 
     /// @dev The handler's paths the walk above cannot reach once it has issued, walked on a fresh index nobody holds:
-    ///      each holder's path returning before it acts, a gated issue refused while the gate is shut, a short fill
-    ///      with nothing to buy (off its weights the preview trades units, but on no supply every amount is zero), and
-    ///      the guardian's two corrections of a keep mask. They, and the front-run fill with nothing to trade the walk
+    ///      each holder's path returning before it acts, a gated issue refused while the gate is shut, a fill of an
+    ///      index without shares, which the index refuses, and the guardian's two corrections of a keep mask. They, and the front-run fill with nothing to trade the walk
     ///      above now makes, were the fuzzer's to find; with some seeds it missed the short fill's or the front-run's
     ///      return, so CI's coverage gate depended on the seed (XS-16).
     function test_XS16_handlerReachesEveryPathOnAnEmptyIndex() public {
@@ -1152,7 +1154,7 @@ contract WeightedHubInvariantTest is Test {
         handler.movePrice(1, 4000e8);
         handler.startRebalance(0, 0, false);
         handler.executeRebalanceShort(0);
-        assertEq(index.rebalanceNonce(), 0, "nothing to buy, so no fill");
+        assertEq(index.rebalanceNonce(), 0, "an empty index does not rebalance");
         assertEq(index.totalSupply(), 0);
         assertFalse(handler.nothingMisjudged());
 
@@ -1179,7 +1181,7 @@ contract WeightedHubInvariantTest is Test {
         }
     }
 
-    /// @dev The invariant as AGENTS.md states it, with the recorded units and the scale the handler models, not the
+    /// @dev The invariant as CLAUDE.md states it, with the recorded units and the scale the handler models, not the
     ///      floored units the views report.
     function invariant_everyComponentBackedAtTheExactScale() public view {
         uint256 supply = index.totalSupply();
@@ -1249,10 +1251,11 @@ contract WeightedHubInvariantTest is Test {
         assertFalse(handler.frontRunMisjudged(), "a front-run fill fits its bound or stops at it (RX-57)");
         assertFalse(handler.boundBroken(), "a bounded fill delivers no more than its bound (DA-13, RX-57)");
         assertFalse(handler.previewMisled(), "a fill settles exactly the units its preview showed, none zero");
-        assertFalse(handler.muBoundBroken(), "what comes in is worth at least mu times what leaves");
+        assertFalse(handler.gainBroken(), "an accepted fill's gain is at least its bar, and the bar is never zero");
         assertFalse(handler.turnoverBroken(), "a fill sends out no more than MAX_TURNOVER of a component's units");
-        assertFalse(handler.nothingMisjudged(), "a preview refuses only an index on its weights");
-        (uint256[] memory weights,,) = index.componentTerms();
+        assertFalse(handler.growthBroken(), "a fill at most doubles a component's units (RX-15)");
+        assertFalse(handler.nothingMisjudged(), "a preview refuses a fill inside the caps only for the bar");
+        uint256[] memory weights = index.componentWeights();
         uint256 total = 0;
         for (uint256 i = 0; i < weights.length; ++i) {
             total += weights[i];
