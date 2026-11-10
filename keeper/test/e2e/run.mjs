@@ -260,6 +260,7 @@ for (const c of Object.values(T)) await send(owner, factory, FACTORY.abi, "propo
 await test.setNextBlockTimestamp({ timestamp: (await now()) + 2n * 86_400n + 1n });
 await test.mine({ blocks: 1 });
 for (const c of Object.values(T)) await send(owner, factory, FACTORY.abi, "executeListing", [c.a]);
+await send(owner, factory, FACTORY.abi, "setApprovedCreator", [creator, true]);
 
 /// An index of `coins` with `weights` (bps), `shares` of it issued in kind, each share worth `value` dollars.
 async function createIndex(name, coins, weights, value, shares) {

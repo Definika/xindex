@@ -16,6 +16,8 @@ import {MockERC20} from "./mocks/MockERC20.sol";
 contract WeightedIndexFactoryTest is WeightedTest {
     function setUp() public {
         _deploy();
+        // The checks of createIndex are called from this contract, which must be approved to reach them.
+        _approveCreator(address(this));
     }
 
     // ---------------------------------------------------------------------
@@ -768,6 +770,94 @@ contract WeightedIndexFactoryTest is WeightedTest {
         vm.prank(creator);
         vm.expectRevert(Errors.FailedCall.selector);
         factory.createIndex{value: 0.01 ether}("Weighted2", "WGT", specs, _params());
+    }
+
+    /// @dev Only an account the owner approved creates an index (the owner's call of 2026-11-10). Neither role is
+    ///      approved by being a role.
+    function test_onlyAnApprovedCreatorCreatesAnIndex() public {
+        _listAll();
+        IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
+        address[3] memory unapproved = [stranger, owner, guardian];
+        for (uint256 i = 0; i < unapproved.length; ++i) {
+            assertFalse(factory.isApprovedCreator(unapproved[i]));
+            vm.prank(unapproved[i]);
+            vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.CreatorNotApproved.selector, unapproved[i]));
+            factory.createIndex("Weighted", "WGT", specs, _params());
+        }
+        assertEq(factory.allIndexesLength(), 0);
+
+        _approveCreator(stranger);
+        vm.prank(stranger);
+        WeightedHub index = WeightedHub(factory.createIndex("Weighted", "WGT", specs, _params()));
+        assertTrue(factory.isIndex(address(index)));
+        assertEq(factory.creatorOf(address(index)), stranger);
+    }
+
+    function test_onlyTheOwnerApprovesCreators() public {
+        vm.prank(guardian);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, guardian));
+        factory.setApprovedCreator(guardian, true);
+        // An approved creator approves nobody.
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, creator));
+        factory.setApprovedCreator(stranger, true);
+        assertFalse(factory.isApprovedCreator(stranger));
+
+        vm.startPrank(owner);
+        vm.expectEmit(address(factory));
+        emit IWeightedIndexFactory.CreatorApprovalSet(stranger, true);
+        factory.setApprovedCreator(stranger, true);
+        assertTrue(factory.isApprovedCreator(stranger));
+        vm.expectEmit(address(factory));
+        emit IWeightedIndexFactory.CreatorApprovalSet(stranger, false);
+        factory.setApprovedCreator(stranger, false);
+        assertFalse(factory.isApprovedCreator(stranger));
+        vm.stopPrank();
+    }
+
+    /// @dev Withdrawing an approval stops that account's next creation and nothing else: the index it created keeps
+    ///      its creator, and keeps issuing and redeeming.
+    function test_aWithdrawnApprovalStopsCreationAndReachesNoIndex() public {
+        _listAll();
+        IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
+        WeightedHub index = _create(specs);
+        _issue(index, alice, 10e18);
+        vm.prank(owner);
+        factory.setApprovedCreator(creator, false);
+
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.CreatorNotApproved.selector, creator));
+        factory.createIndex("Second", "SEC", specs, _params());
+
+        assertEq(factory.creatorOf(address(index)), creator);
+        _issue(index, alice, 1e18);
+        vm.prank(alice);
+        index.redeem(11e18, alice);
+        assertEq(index.totalSupply(), 0);
+    }
+
+    /// @dev The partner path: an approved creator creates the index and hands the role on. The new creator, never
+    ///      approved, takes the role and its fee, and still cannot create an index of its own.
+    function test_theCreatorRoleMovesToAnAccountThatWasNeverApproved() public {
+        _listAll();
+        IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
+        WeightedHub index = _create(specs, _p(100, 25, 7 days));
+        vm.prank(creator);
+        factory.transferCreator(address(index), stranger);
+        vm.prank(stranger);
+        factory.acceptCreator(address(index));
+        assertEq(factory.creatorOf(address(index)), stranger);
+        assertFalse(factory.isApprovedCreator(stranger));
+
+        _issue(index, alice, 100e18);
+        uint256 feeShares = index.totalSupply() - 100e18;
+        assertGt(feeShares, 0);
+        assertEq(index.balanceOf(stranger), feeShares, "the creator's fee on the mint goes to the new creator");
+        assertEq(index.balanceOf(creator), 0);
+
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.CreatorNotApproved.selector, stranger));
+        factory.createIndex("Second", "SEC", specs, _params());
     }
 
     /// @dev The creator role is offered and accepted, so `creatorOf` never names an account that did not agree (RX-22).

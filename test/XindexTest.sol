@@ -15,9 +15,17 @@ abstract contract XindexTest is Test {
     WeightedIndexFactory factory;
     address owner = makeAddr("owner");
 
-    /// @dev Deploys a weighted factory owned by `owner`, with `guardian` (zero for none).
+    /// @dev Deploys a weighted factory owned by `owner`, with `guardian` (zero for none). This contract, which
+    ///      `_createIndex` creates from, is approved to create.
     function _deployFactory(address guardian) internal {
         factory = new WeightedIndexFactory(owner, guardian);
+        _approveCreator(address(this));
+    }
+
+    /// @dev The owner lets `account` create indexes.
+    function _approveCreator(address account) internal {
+        vm.prank(owner);
+        factory.setApprovedCreator(account, true);
     }
 
     /// @dev Lists `token`, through the full listing delay.

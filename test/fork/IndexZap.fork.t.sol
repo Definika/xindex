@@ -87,6 +87,7 @@ contract IndexZapForkTest is Test {
 
         alice = _eoa(alice);
         factory = new WeightedIndexFactory(address(this), address(0));
+        factory.setApprovedCreator(address(this), true);
         zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), IWETH9(A.WETH));
         zapEther = address(zap).balance;
 

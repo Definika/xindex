@@ -12,10 +12,11 @@ import {WeightedHub} from "./WeightedHub.sol";
 import {WeightedMath} from "./WeightedMath.sol";
 
 /// @title WeightedIndexFactory
-/// @notice Anyone can create an index here, choosing each component's weight. Components come from a curated
-///         whitelist. See {IWeightedIndexFactory}.
+/// @notice An account the owner approved creates an index here, choosing each component's weight. Components come
+///         from a curated whitelist. See {IWeightedIndexFactory}.
 /// @dev Roles
-///      - The owner proposes listings and guardian changes, delists, and hands over ownership.
+///      - The owner proposes listings and guardian changes, approves who may create an index, delists, and hands over
+///        ownership.
 ///      - A listing takes effect LISTING_DELAY after it is proposed; a guardian change, GUARDIAN_DELAY after. Either
 ///        must be executed within PROPOSAL_WINDOW of becoming ready, or proposed again.
 ///      - The guardian can cancel pending listings and delist. It keeps that power while its replacement is pending.
@@ -49,8 +50,13 @@ import {WeightedMath} from "./WeightedMath.sol";
 ///      - The creation fee is forwarded to the recipient in the same call. The factory holds no ether.
 ///
 ///      Creators
+///      - Only an account the owner approved creates an index. No contract reads a price, so none can tell whether
+///        the units a creator names match its weights, and an index created off its weights loses that distance to
+///        whoever fills its auctions: the approval is what keeps a stranger from creating one. It is read at creation
+///        and nowhere else: an approved creator is bound by the whitelist and the fee caps, and withdrawing an
+///        approval reaches no index that exists.
 ///      - The factory records each index's creator. The creator receives the creator's fee shares and can hand the
-///        role on.
+///        role on, to any account: taking the role needs no approval.
 ///      - On a gated index, the creator keeps the allowlist of who may receive new shares, and can open the index for
 ///        good. The creator has no power over components or rates.
 ///
@@ -97,6 +103,8 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
     /// @dev The decimals a pending listing read from its token when it was proposed.
     mapping(address token => uint8 decimals) private _pendingDecimals;
 
+    /// @inheritdoc IWeightedIndexFactory
+    mapping(address account => bool approved) public isApprovedCreator;
     mapping(address => bool) public isIndex;
     mapping(address => address) public creatorOf;
     /// @inheritdoc IWeightedIndexFactory
@@ -144,6 +152,7 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         ComponentSpec[] calldata components,
         IndexParams calldata params
     ) external payable nonReentrant returns (address index) {
+        if (!isApprovedCreator[msg.sender]) revert CreatorNotApproved(msg.sender);
         // The reentrancy guard covers the creation fee's transfer at the end: the only call here into an address the
         // factory did not deploy. Validation only reads storage, and initializing our own clone makes no external call.
         if (bytes(name).length == 0 || bytes(symbol).length == 0) revert EmptyString();
@@ -175,7 +184,11 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         address predicted = Clones.predictDeterministicAddress(template, salt);
         if (predicted.code.length != 0) revert IndexAlreadyExists(predicted);
         index = Clones.cloneDeterministic(template, salt);
+        // IndexCreated, which createIndex emits next, records the new index and its creator.
+        // forge-lint: disable-next-line(missing-events-access-control)
         isIndex[index] = true;
+        // IndexCreated, as above.
+        // forge-lint: disable-next-line(missing-events-access-control)
         creatorOf[index] = msg.sender;
         allIndexes.push(index);
     }
@@ -209,6 +222,14 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
     // ---------------------------------------------------------------------
     // Creators
     // ---------------------------------------------------------------------
+
+    /// @inheritdoc IWeightedIndexFactory
+    function setApprovedCreator(address account, bool approved) external onlyOwner {
+        // CreatorApprovalSet, on the next line, records the change the lint asks an event for.
+        // forge-lint: disable-next-line(missing-events-access-control)
+        isApprovedCreator[account] = approved;
+        emit CreatorApprovalSet(account, approved);
+    }
 
     /// @inheritdoc IWeightedIndexFactory
     function transferCreator(address index, address newCreator) external {

@@ -206,9 +206,10 @@ The hub is 19,861 bytes, 4,715 under EIP-170 (it was 98 under).
   a 50/50 index created 90/10 by value, and 19.8% of a 99/1 index created 1/99: the turnover cap, a fifth of a leg,
   is the only bound, and the interval the only delay. The same arithmetic prices drift: 0.48% after one coin of four
   rose a quarter, 5.0% in one fill after one coin of two doubled (its whole distance is 5.7%), 8.7% after it tripled
-  (13.4%). The app, which has prices, creates on the weights and is the only check on an index someone else
-  created: it shows each index's coins against its weights and must not offer a mint of one far from them. Found
-  on 2026-11-10, after the first version of this record called the distance "the rebalance's proceeds".
+  (13.4%). Found on 2026-11-10, after the first version of this record called the distance "the rebalance's
+  proceeds". The owner's answer the same day: only wallets the factory's owner approved create an index
+  (`setApprovedCreator`, `CreatorNotApproved`), so no stranger can make one off its weights. The team creates on the
+  weights, at the app's prices, and the app shows each index's coins against its weights.
 - **A fill near the weights can be forced.** When the distance is under an executor's costs, nobody honest fills,
   and anyone may fill at the last second with a gift of at least the bar's floor, 4.77e-7 of the index, restarting
   the interval. It costs the filler and pays the holders, and delays the next rebalance by the interval.

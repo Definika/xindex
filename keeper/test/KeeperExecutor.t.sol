@@ -422,6 +422,9 @@ contract KeeperExecutorTest is WeightedTest {
         IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](2);
         specs[0] = _spec(address(eth), 1, 1e18);
         specs[1] = _spec(address(btc), 9999, factory.MIN_RAW_UNITS());
+        // Since 2026-11-10 only an approved wallet creates an index, so the exploit also needs the keeper key to be
+        // one; the executor's allowance must hold even then.
+        _approveCreator(keeper);
         vm.prank(keeper);
         WeightedHub own = WeightedHub(factory.createIndex("Own", "OWN", specs, _params()));
         _issue(own, keeper, 1e18);

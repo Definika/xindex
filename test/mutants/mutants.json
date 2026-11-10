@@ -1108,5 +1108,31 @@
       }
     ],
     "runner": "node"
+  },
+  {
+    "id": "F1",
+    "what": "createIndex without the approval check, so anyone creates an index",
+    "origin": "CLAUDE.md, Product decisions: only approved wallets create an index (2026-11-10)",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "        if (!isApprovedCreator[msg.sender]) revert CreatorNotApproved(msg.sender);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "F2",
+    "what": "setApprovedCreator without onlyOwner, so anyone approves a creator",
+    "origin": "CLAUDE.md, Product decisions: only approved wallets create an index (2026-11-10)",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "function setApprovedCreator(address account, bool approved) external onlyOwner {",
+        "new": "function setApprovedCreator(address account, bool approved) external {"
+      }
+    ]
   }
 ]

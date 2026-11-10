@@ -6,8 +6,8 @@ import {IXindexErrors} from "./IXindexErrors.sol";
 import {IWeightedHub} from "./IWeightedHub.sol";
 
 /// @title IWeightedIndexFactory
-/// @notice Creates indexes whose creators choose each component's weight. Components come from a whitelist that the
-///         owner lists behind a timelock.
+/// @notice Creates indexes whose creators choose each component's weight. Only an account the owner approved creates
+///         one ({setApprovedCreator}). Components come from a whitelist that the owner lists behind a timelock.
 /// @dev "Owner only" functions revert with OpenZeppelin's `OwnableUnauthorizedAccount` for any other caller.
 ///      "Owner or guardian" functions revert with `Unauthorized`. Neither the factory nor any index reads a price.
 interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
@@ -68,6 +68,8 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
         address indexed recipient,
         uint256 creationFee
     );
+    /// @notice The owner approved `account` to create indexes (`approved`), or withdrew that approval.
+    event CreatorApprovalSet(address indexed account, bool approved);
     /// @notice `index`'s creator offered the role to `pendingCreator`, who takes it with {acceptCreator}.
     event CreatorTransferStarted(address indexed index, address indexed creator, address indexed pendingCreator);
     /// @notice `index`'s creator role, and with it its creator's fee shares and allowlist, moved to `newCreator`.
@@ -91,6 +93,8 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     /// @notice The guardian changed.
     event GuardianSet(address indexed previousGuardian, address indexed newGuardian);
 
+    /// @notice {createIndex} from `account`, which the owner has not approved to create indexes.
+    error CreatorNotApproved(address account);
     /// @notice Name or symbol is empty.
     error EmptyString();
     /// @notice An index needs between MIN_COMPONENTS and MAX_COMPONENTS components.
@@ -240,6 +244,10 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     /// @notice Whether a guardian change can still be executed or is waiting out its delay.
     function guardianChangePending() external view returns (bool);
 
+    /// @notice Whether `account` may create an index. Only {createIndex} reads it: an index keeps running, and its
+    ///         creator role can be handed to any account ({transferCreator}), whatever this says.
+    function isApprovedCreator(address account) external view returns (bool);
+
     /// @notice `index`'s creator: who created it, or whoever accepted the role since ({acceptCreator}). The
     ///         creator receives the creator's fee shares and keeps a gated index's allowlist. It has no power over the
     ///         index's components.
@@ -303,7 +311,7 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     function allIndexesLength() external view returns (uint256);
 
     /// @notice The address {createIndex} would deploy to for these arguments, with the current fee policy. Reverts as
-    ///         {createIndex} would on `params`.
+    ///         {createIndex} would on `params`. It does not check that `creator` is approved.
     function predictIndexAddress(
         address creator,
         string calldata name,
@@ -313,6 +321,7 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     ) external view returns (address);
 
     /// @notice Creates an index of `components`, with the caller as its creator.
+    ///         - Only an approved creator (CreatorNotApproved otherwise).
     ///         - Takes the fee rates from `params` and the current policy.
     ///         - `msg.value` must equal the policy's creation fee; it is forwarded to the platform recipient.
     ///         Reads no price. The app derives the units from the weights at current prices, and rebalances bring an
@@ -327,6 +336,11 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
         ComponentSpec[] calldata components,
         IndexParams calldata params
     ) external payable returns (address index);
+
+    /// @notice Owner only. Lets `account` create indexes (`approved`), or no longer. It takes effect at once and
+    ///         reaches no index that exists: an approved creator can do nothing a listing and the fee caps do not
+    ///         already bound, and has no power over any index's funds.
+    function setApprovedCreator(address account, bool approved) external;
 
     /// @notice Owner only. Sets the fee policy that indexes created from now on copy, and the recipient every index
     ///         reads at each issue and redeem. It does not change any existing index's rates. The recipient cannot be

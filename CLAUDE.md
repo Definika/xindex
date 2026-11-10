@@ -5,7 +5,8 @@ Claude Code reads it as the project's instructions.
 
 ## What this is
 
-Xindex smart contracts: a Foundry project where anyone creates crypto index tokens (ERC-20) backed in kind, and
+Xindex smart contracts: a Foundry project where wallets the owner approves create crypto index tokens (ERC-20)
+backed in kind (the Xindex team's), and
 users mint them with USDC/USDT, and burn them into any token
 through Uniswap's Universal Router, which reaches both V3 and V4 pools. Creators choose each coin's percentage, fixed
 at creation with the coin list, and the index rebalances back toward those percentages through a permissionless
@@ -178,10 +179,12 @@ Pyth-priced rebalance as it then was, and the last one says what replaced it.
   `burnToEthWithPermit` and `mintWithTokenPermit`, the backlog's ETH in and out and one-signature USDC mint, with `WETH`
   a construction argument the deploy script resolves (`abi/IndexZap.json`, the zap's unit and fork suites). Sepolia's
   zap serves them since its redeploy alone on 2026-11-03.
-- Anyone creates an index (the owner's call of 2026-11-10, under "Product decisions"). A gate that let only
-  wallets the owner approved create one (`setApprovedCreator`, the owner's calls of 2026-11-09 and 2026-11-10) was
-  built and removed the same day, with its tests and mutants F1 and F2. It was never pushed or deployed, so `main`,
-  Sepolia and the website never had it.
+- Only wallets the owner approves create an index (the owner's calls of 2026-11-09 and 2026-11-10, under "Product
+  decisions"): the factory's `setApprovedCreator` and `isApprovedCreator`, `CreatorNotApproved` from `createIndex`,
+  and mutants F1 and F2. The gate was removed for some hours on 2026-11-10, on the owner's call to reopen creation,
+  and restored the same day once it was clear what open creation costs without a price on chain (the design rule "An
+  index created off its weights"). The website's create page, and a new Sepolia deployment, since a new factory is a
+  whole new deployment, follow.
 - **The oracle-free rebalance** was built on 2026-11-10 (the owner's call: "we have to cut off oracles somehow and
   keep rebalance safely"; `design/2026-11-10-oracle-free-rebalance.md` is the spec). What it is:
   - The executor names every component's new units (`executeRebalance(uint256[] newUnits, bytes data)`). The hub reads
@@ -271,7 +274,8 @@ CHECK=wide forge script script/CheckToken.s.sol --fork-url $MAINNET_RPC_URL
 ```
 
 Deployment, once, on Ethereum: `script/DeployWeighted.s.sol`, which gives the guardian role to the guardian's Safe,
-then `script/ConfigureWeighted.s.sol`, which lists each coin of `script/Listings.sol`. `script/CheckToken.s.sol` reports on every token before its first
+then `script/ConfigureWeighted.s.sol`, which lists each coin of `script/Listings.sol`; the owner then approves the
+wallets that create indexes (`setApprovedCreator`), and nobody can create one before. `script/CheckToken.s.sol` reports on every token before its first
 listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 91 in all. On chain 1 the
 deploy script resolves the router, WETH and the stablecoins from the address book and refuses any other address
 (`DeployChecks.isPinnedChain`). Sepolia first needs its test market from
@@ -474,13 +478,14 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   index after one coin of four rose a quarter, 5.0% in one fill after one coin of two doubled, 8.7% after it tripled.
   Say so wherever the design is described: do not call it harmless or "never the holders' principal", as the first
   records of 2026-11-10 did, and do not claim the price is fair without a bidder.
-- **An index created off its weights can be drained by its creator.** Units and weights are the creator's to name,
-  and no contract can compare them without a price. A creator can name units far from the weights, let others mint,
-  and fill its own auction at the last second: 15.5% of a 50/50 index created 90/10 by value in one fill, and at the
-  worst a fifth of an index per fill, every interval. The cap is `MAX_TURNOVER`; nothing else on chain stands against
-  it. The app, which has prices, is the only check: it creates on the weights, shows every index's coins against its
-  weights, and must not offer a mint of an index far from them. Found on 2026-11-10 after creation was reopened;
-  the owner's call on it (the app's check alone, the creator gate back, or a tighter cap) is open.
+- **An index created off its weights can be drained by its creator, so only approved wallets create.** Units and
+  weights are the creator's to name, and no contract can compare them without a price. A creator can name units far
+  from the weights, let others mint, and fill its own auction at the last second: 15.5% of a 50/50 index created
+  90/10 by value in one fill, and at the worst a fifth of an index per fill, every interval. On chain only
+  `MAX_TURNOVER` bounds it. That is why `createIndex` is open only to wallets the owner approved (restored on
+  2026-11-10 for this reason): do not reopen creation without an answer to this. The team creates on the weights, at
+  the app's prices, and the app still shows every index's coins against its weights: an approved wallet that named
+  units off them would make such an index all the same.
 - **Weights and constituents are fixed at creation,** two to a hundred components, so no listing or delisting
   reaches an existing index. The CREATE2 salt commits to every component's token, units and weight, and to the
   index's config: its fee rates, referral share and rebalance interval
@@ -590,8 +595,12 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
     delay. The owner also delists, transfers ownership, and sets the fee policy (`setFeePolicy`: the platform's rate,
     the referral share, the recipient, the creation fee), which reaches only indexes created afterwards; the recipient
     can be neither zero, the factory nor an index.
-  - Anyone creates an index: `createIndex` has no gate on its caller, who is bound by the whitelist and the fee
-    caps. Do not add one without the owner's call (it was built and removed on 2026-11-10).
+  - The owner approves which wallets may create an index (`setApprovedCreator`, at once); `createIndex` from any
+    other reverts `CreatorNotApproved`. The approval is read at creation and nowhere else: an approved wallet is
+    bound by the whitelist and the fee caps, it has no power over an index's funds, and withdrawing an approval
+    reaches no index that exists. The creator role of an index still moves to any account, approved or not
+    (`test_theCreatorRoleMovesToAnAccountThatWasNeverApproved`). Do not let the approval gate an issue, a redeem, a
+    rebalance or the handoff.
   - The guardian can: cancel pending listings; delist; cancel a rebalance; start one with a keep mask; start one before
     strangers may; and cancel a guardian change that would remove the role. It cannot block its own replacement.
   - The guardian is the guardian's Safe itself. `GuardianRelay` (RZ-26, 2026-11-02) existed because a start carried
@@ -854,18 +863,22 @@ rule above has the figures). It supersedes "Pyth is the only oracle" of 2026-10-
 rebalance as it is" of 2026-11-10, both below, and with them the guardian relay of 2026-11-02, the Pyth plan, the
 replay and the US-hours limits on stock legs. Dropping rebalancing for fixed amounts per token stays not taken.
 
-**Anyone creates an index** (the owner's call of 2026-11-10: "Let's make it back to the public one that anybody can
-mint and create an index. Everyone can create an index on our website"). `createIndex` is open to every wallet, as it
-was before. It reverses "only the team creates indexes" (the owner's calls of 2026-11-09 and 2026-11-10), under which
-the factory refused `createIndex` from any wallet its owner had not approved; that gate was built and removed the
-same day, never pushed or deployed. The costs the owner named when asking for the gate come back with open
-creation and are not answered in a contract: a stranger's look-alike index under our factory, served by our zap at
-the fee caps; a guardian and a keeper whose work grows with every index anyone makes; and creation spam while the
-creation fee is zero. A fourth cost was found only after the reversal, and is the owner's to weigh: with no price on
-chain, a creator can make an index far from its weights and drain it through its own auctions, up to a fifth a fill
-(the design rule "An index created off its weights"). The app answers the first by what it lists, and the fee policy's creation fee answers the
-last. A partner needs no handoff from the team any more, though the creator role still moves (`transferCreator`,
-`acceptCreator`). Dropping rebalancing for fixed amounts per token, discussed on 2026-11-10, was not taken.
+**Only the team creates indexes** (the owner's calls of 2026-11-09 and 2026-11-10): the factory refuses `createIndex`
+from any wallet its owner has not approved, and the site lists the team's indexes. The call was made twice. First on
+2026-11-09 and 2026-11-10, because open creation was hard to manage and a risk to the name: a stranger's look-alike
+index under our factory, served by our zap at the fee caps; a guardian and a keeper whose work grows with every index
+anyone makes; and creation spam at a creation fee of zero. Reserve's way, an open contract behind a curated app, was
+considered and refused once it was clear strangers could still create on chain. On the afternoon of 2026-11-10 the
+owner reopened creation ("everyone can create an index on our website"), and the gate was removed. That evening a
+fourth cost was put to the owner, found only after the oracle-free rebalance was built: with no price on chain, a
+creator can make an index far from its weights and drain it through its own auctions, up to a fifth a fill. The
+owner's answer: "that mean everyone creating index is bad. ok lets move to our old plan that only xindex team can
+create and list indexes on our website". The gate is back, and reopening creation needs an answer to that cost first.
+A partner asks the team: the site's create page is the wizard for approved wallets and a contact link for everyone
+else. The team creates the index and hands the partner the creator role, with its fee (`transferCreator`,
+`acceptCreator`). It changes nothing about funds, token issuers, Wormhole or the rebalance; it makes the team the
+issuer and gatekeeper of every index, which counsel's reading must cover. It supersedes "no team index" of
+2026-10-06, below. Dropping rebalancing for fixed amounts per token, discussed on 2026-11-10, was not taken.
 
 **One index on Ethereum, the missing coins as Wormhole-wrapped legs** (the owner's decision of 2026-10-10,
 `design/2026-10-10-one-index-wormhole-legs.md`): one deployment, on Ethereum; an index holds up to 100 coins of the top
@@ -892,8 +905,8 @@ parameters (section 8 of the spec) wait on a replay of Pyth's history, and Herme
 cost the owner weighs before launch.
 
 **The listings** (the owner's calls on 2026-10-06):
-- No team index at launch: creators make every index, so "flagship" names no product. (On 2026-11-10 the owner had
-  the team create every index, and reversed it the same day: above.)
+- No team index at launch: creators make every index, so "flagship" names no product. Superseded on 2026-11-10: the
+  team creates every index (above).
 - The admission rule stays the WBT rule; Binance-Peg coins stay listable, labelled Custodial.
 - The v5 Ethereum list is 27 coins: no OKB, BGB, GT or GRAM. NIGHT is refused. INJ, SHIB and PEPE joined on
   2026-10-10, from CoinGecko's top 100; SHIB and PEPE on the owner's call lifting the memecoin exclusion for those

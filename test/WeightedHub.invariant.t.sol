@@ -850,6 +850,9 @@ contract WeightedHubInvariantTest is Test {
         address owner = makeAddr("owner");
         address guardian = makeAddr("guardian");
         factory = new WeightedIndexFactory(owner, guardian);
+        // This contract creates both indexes, then hands each creator role to an account that was never approved.
+        vm.prank(owner);
+        factory.setApprovedCreator(address(this), true);
 
         comps.push(new MockERC20("BTC", "BTC", 8));
         comps.push(new MockERC20("ETH", "ETH", 18));

@@ -130,6 +130,7 @@ contract SecurityForkTest is Test {
             );
         }
         factory = new WeightedIndexFactory(address(this), address(0));
+        factory.setApprovedCreator(address(this), true);
         zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), IWETH9(A.WETH));
 
         factory.proposeListing(A.WBTC);

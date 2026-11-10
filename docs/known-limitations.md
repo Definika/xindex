@@ -12,10 +12,11 @@ What the contracts do not protect against, and what an app built on them has to 
   fill can take more; on its weights an index has nothing to take
   (`design/2026-11-10-oracle-free-rebalance.md`, sections 3 and 6). A fair price therefore needs a bidder, where a
   price feed gave one whoever filled. An index created off its weights carries its distance from its first day:
-  units and weights are the creator's to name, and no contract can compare them without a price. A creator can name
+  units and weights are the creator's to name, and no contract can compare them without a price. A creator could name
   units far from the weights, let others mint, and fill its own auction: 15.5% of a 50/50 index created 90/10 by
-  value in one fill, at the worst a fifth of an index per fill. Only the app, which has prices, can refuse to offer
-  such an index.
+  value in one fill, at the worst a fifth of an index per fill. That is why only wallets the factory's owner approved
+  create an index (`setApprovedCreator`): the team creates on the weights, at the app's prices, and the app shows
+  every index's coins against its weights.
 - **No contract reads a price.** Nothing checks what a coin is worth, and nothing needs to: a fill is judged on
   units. Whatever the executor offers, one fill sends out at most 20% of each component's own units and at most
   doubles a component (V5-M2, RX-15), at most once every `MIN_REBALANCE_INTERVAL`, and it must raise the weighted

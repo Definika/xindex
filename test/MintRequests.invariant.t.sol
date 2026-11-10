@@ -255,6 +255,7 @@ contract MintRequestsInvariantTest is Test {
         factory = new WeightedIndexFactory(owner, makeAddr("guardian"));
         address[] memory components = new address[](2);
         vm.startPrank(owner);
+        factory.setApprovedCreator(address(this), true);
         for (uint256 i = 0; i < 2; ++i) {
             components[i] = address(new MockERC20("C", "C", 18));
             factory.proposeListing(components[i]);

@@ -633,6 +633,7 @@ contract MocksTest is Test {
 
     function test_weightedExecutorV3_sellsBuysAndSettlesThroughARouter() public {
         WeightedIndexFactory f = new WeightedIndexFactory(address(this), address(0));
+        f.setApprovedCreator(address(this), true);
         MockERC20 shrinking = new MockERC20("Shrinking", "SHR", 18);
         MockERC20 growing = new MockERC20("Growing", "GRO", 18);
         address[2] memory t = [address(shrinking), address(growing)];

@@ -109,6 +109,7 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         }
 
         factory = new WeightedIndexFactory(address(this), guardian);
+        factory.setApprovedCreator(creator, true);
         zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), IWETH9(A.WETH));
 
         address[] memory tokens = Listings.all();

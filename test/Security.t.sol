@@ -318,6 +318,8 @@ contract SecurityRegressionTest is XindexTest {
         IWeightedIndexFactory.ComponentSpec[] memory specs = _specs(_blueTokens(), _blueUnits(1));
         address creatorA = makeAddr("creatorA");
         address creatorB = makeAddr("creatorB");
+        _approveCreator(creatorA);
+        _approveCreator(creatorB);
 
         uint256 snap = vm.snapshotState();
         vm.prank(creatorA);
@@ -546,6 +548,9 @@ contract SecurityRegressionTest is XindexTest {
     function test_I08_creatorIsRecordedAndCopiesLandElsewhere() public {
         address creator = makeAddr("creator");
         address copier = makeAddr("copier");
+        // Both approved: the salt keeps two approved creators apart as it kept any two apart.
+        _approveCreator(creator);
+        _approveCreator(copier);
         IWeightedIndexFactory.ComponentSpec[] memory t = _specs(_blueTokens(), _blueUnits(1));
 
         vm.prank(copier); // front-runs with identical arguments

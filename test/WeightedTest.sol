@@ -37,9 +37,16 @@ abstract contract WeightedTest is Test {
     function _deploy() internal {
         vm.warp(1_800_000_000);
         factory = new WeightedIndexFactory(owner, guardian);
+        _approveCreator(creator);
         eth = new MockERC20("Ether", "ETH", 18);
         btc = new MockERC20("Bitcoin", "BTC", 8);
         usd = new MockERC20("Dollar", "USD", 6);
+    }
+
+    /// @dev The owner lets `account` create indexes; `_deploy` approves `creator`, whom `_create` creates from.
+    function _approveCreator(address account) internal {
+        vm.prank(owner);
+        factory.setApprovedCreator(account, true);
     }
 
     /// @dev Lists `token`, through the full listing delay.
