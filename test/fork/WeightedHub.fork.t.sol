@@ -615,7 +615,10 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         index.executeRebalance(fill, "");
         assertEq(index.recordedUnits()[3], before[3], "UNI untouched");
         assertEq(IERC20(picked[3].token).balanceOf(address(index)), uniHeld);
-        assertLt(index.recordedUnits()[0], before[0], "WETH, worth more than its weight, was sold");
+        // The skew prices WETH a tenth above the market at creation, so the index holds less of it than its weight asks,
+        // and more WBTC: a fill toward the weights buys the first and sells the second.
+        assertGt(index.recordedUnits()[0], before[0], "WETH, worth less than its weight, was bought");
+        assertLt(index.recordedUnits()[1], before[1], "WBTC, worth more than its weight, was sold");
         assertEq(index.rebalanceNonce(), 1);
         _assertBacked(index);
     }
