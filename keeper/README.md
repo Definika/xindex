@@ -116,8 +116,10 @@ routed coin too; only the rest is bought. The executor's address must be able to
   fills may still turn into anything else, which every request fill ending with less USDC than it started spends
   (RX-1, RX-9). With none, no request fill may cost the float anything. Keep it off the bot's machine.
 - `keeper`, the bot's hot key, can only `fill`, `fillMint` and `fillRedeem`, and only for an index the factory
-  created, through the request escrow the executor was built with. Anyone can create a factory index and hold all its
-  shares, or request a mint of one, so that check does not keep the stock from an index the key's thief owns (CF-1):
+  created, through the request escrow the executor was built with. Only a wallet the factory's owner
+  approved creates a factory index (`setApprovedCreator`), so a thief cannot make one of its own. But anyone can hold
+  the shares of an index that exists, or request a mint of one, so that check does not keep the stock from an index the
+  key's thief holds (CF-1):
   what bounds the stock a stolen key can move is the allowance `OWNER` left, which a request fill spends like an
   auction fill, so keep each allowance to what the next fills need. The key can also trade the USDC float badly within
   the floor it sets itself: keep the float to what fills need, and the key's ETH to a few days of gas.
@@ -128,8 +130,9 @@ routed coin too; only the rest is bought. The executor's address must be able to
   side emptied as a depegged copy's is, counts as nothing; a quote the RPC failed to answer fails the check rather
   than counting. Only a coin with no pool at all counts at Pyth: that is the Wormhole copies', Ondo stocks' and Tether
   Gold's case, and a bridge incident or a copy trading under its coin's feed then turns float into a coin worth less
-  than the bot booked. An index's creator can build one to make the bot buy its other legs with the float, up to the
-  auction's turnover cap each interval, and a redeem request up to the request allowance. Keep the float and that
+  than the bot booked. Only a wallet the factory's owner approved creates an index, so a stranger cannot build one to
+  make the bot buy its other legs with the float; an index an approved creator built still can, up to the auction's
+  turnover cap each interval, and a redeem request up to the request allowance. Keep the float and that
   allowance to what fills need, and serve such coins (`INDEXES`) only where the operator has a market for them. A kept
   coin's quote is the block's own (RX-13); the pools a coin can use are read again every 25 blocks, so one created
   after a depeg counts (RX-17), and a pool nobody initialized is no market, so it cannot zero a coin's value (RX-14).
@@ -322,7 +325,7 @@ raising to what EIP-8037 allows (RX-36).
 | `HERMES_URL` | `https://pyth.dourolabs.app/hermes` | Hermes since 2026-08-26. |
 | `PRICE_IDS` | none | `token=id` pairs, comma-separated: Pyth ids for coins the catalogue (`bot/price-ids.mjs`, the 91 listed coins) does not hold, a testnet's for instance, or another feed for one it does. A coin without an id is left alone. |
 | `TRADE_COST_BPS` | `30` | What trading a leg is taken to cost when the bot names a fill's units: a leg within this of its weight is not traded for its own sake. |
-| `INDEXES` | every index | Comma-separated indexes to serve; anyone can create indexes, so a list caps the bot's work. |
+| `INDEXES` | every index | Comma-separated indexes to serve. Only wallets the factory's owner approved create indexes, so the set is the team's; a list still caps the bot's work. |
 | `MIN_PROFIT_USD` | `5` | Least profit a fill or a start must promise; negative is a subsidy the operator accepts, for auctions only and within `SUBSIDY_BUDGET_USD`. |
 | `SUBSIDY_BUDGET_USD` | `0` | Most the auction fills sent below zero profit may cost in all over a rolling day; requests are never subsidised (RX-16). The day restarts with the process. |
 | `MIN_TVL_USD` | `1000` | Smallest index the bot starts or simulates a fill for (anyone can open an empty one's). |

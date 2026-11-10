@@ -4,18 +4,25 @@ How each flow works, and what an app needs to get right when it builds on the co
 
 ## Flows
 
-**Create.** Any wallet may create an index. The creator picks whitelisted tokens, a weight for each in basis points
-summing to 10,000, and the value one index token should start at. The app turns each weight into starting units at its
-own prices, `units_i = w_i / 10,000 × value / price_i` in the token's raw units, calls `predictIndexAddress` to show the
-address, and calls `createIndex`. The factory reads no price, so units a little off the weights cost nothing: the first
-rebalance, the index's interval after creation, brings the index to its weights. Every unit has to lie in
-`[MIN_RAW_UNITS, maxUnitsOf(token)]` or the call reverts `UnitsOutOfRange(token, units)`; `maxUnitsOf` is
-`MAX_WHOLE_TOKENS` (1e9) whole tokens per index token, never above `MAX_UNITS`, so a wei-share stays worth nothing
-(RX-5). The floor binds hardest on Tether Gold, whose 10,000 raw units are 0.01 oz, about $30, so an index token worth
-$100 can hold it at 30% or more; for WBTC, 0.0001 BTC, about $11, at 11% or more on a $100 token; for an 18-decimal
-component the floor binds on nothing (RX-38). Names and symbols are free-form and not unique; the UI must show the index
-address and `creatorOf` to avoid spoofing. The creator role is handed on in two steps: `transferCreator` offers it and
-the new creator takes it with `acceptCreator`, so `creatorOf` only ever names an account that agreed (RX-22).
+**Create.** Only a wallet the factory's owner approved creates an index: `isApprovedCreator(account)` says whether one
+may, and `createIndex` from any other reverts `CreatorNotApproved(account)`. No contract reads a price, so none can
+compare the units a creator names with its weights. An index created off its weights carries that distance from its
+first day and loses it to whoever fills its auctions: on the exact model, one last-second fill takes 15.5% of a 50/50
+index created 90/10 by value, and at the worst a fifth of an index per fill. The approval keeps a stranger from creating
+such an index, and the team creates on the weights at the app's prices. A partner asks the team, which creates the index
+and hands on its creator role. The creator picks whitelisted tokens, a weight for each in basis points summing to
+10,000, and the value one index token should start at. The app turns each weight into starting units at its own prices,
+`units_i = w_i / 10,000 × value / price_i` in the token's raw units, calls `predictIndexAddress` to show the address,
+and calls `createIndex`. The factory reads no price and takes the units as named, so the app has to derive them on the
+weights: the first rebalance, the index's interval after creation, pays whatever distance is left to whoever fills it.
+Every unit has to lie in `[MIN_RAW_UNITS, maxUnitsOf(token)]` or the call reverts `UnitsOutOfRange(token, units)`;
+`maxUnitsOf` is `MAX_WHOLE_TOKENS` (1e9) whole tokens per index token, never above `MAX_UNITS`, so a wei-share stays
+worth nothing (RX-5). The floor binds hardest on Tether Gold, whose 10,000 raw units are 0.01 oz, about $30, so an index
+token worth $100 can hold it at 30% or more; for WBTC, 0.0001 BTC, about $11, at 11% or more on a $100 token; for an
+18-decimal component the floor binds on nothing (RX-38). Names and symbols are free-form and not unique; the UI must
+show the index address and `creatorOf` to avoid spoofing. The creator role is handed on in two steps: `transferCreator`
+offers it and the new creator takes it with `acceptCreator`, so `creatorOf` only ever names an account that agreed
+(RX-22). The new creator needs no approval: the approval is read at creation and nowhere else.
 
 The address commits to the creator, the name, the symbol, every component's token, units and weight, and the index's
 fee rates, referral share and rebalance interval. A change of the fee policy that lands between the preview and the
@@ -224,13 +231,12 @@ at any time) or `refund` (anyone, after the deadline).
   Errors that several contracts raise (`ZeroAddress`, `LengthMismatch`, `Unauthorized`, `NotIndex`, `InvalidRecipient`)
   are declared once, in `IXindexErrors`.
 - **Events.** `WeightedIndexFactory`: `IndexCreated` (every component's token, units and weight, the config and the
-  listing flag), `FeePolicySet`, `CreatorTransferStarted`, `CreatorTransferred`, `MinterAllowed`, `MintingOpened`,
-  `ListingProposed`, `ListingCancelled`, `TokenDecimalsSet`, `TokenWhitelisted`, `GuardianProposed`,
+  listing flag), `FeePolicySet`, `CreatorApprovalSet`, `CreatorTransferStarted`, `CreatorTransferred`, `MinterAllowed`,
+  `MintingOpened`, `ListingProposed`, `ListingCancelled`, `TokenDecimalsSet`, `TokenWhitelisted`, `GuardianProposed`,
   `GuardianChangeCancelled`, `GuardianSet`, `OwnershipTransferStarted`, `OwnershipTransferred`. `WeightedHub`: `Issued`,
   `Redeemed`, `ClaimRecorded`, `Claimed`, `StreamingFeeAccrued`, `FeeSharesMinted`, `RebalanceStarted`,
-  `RebalanceCancelled`, `Rebalanced`, and the ERC-20 events.
-  `IndexZap`: `ZapMint`, `ZapBurn`, `ComponentReturned`. `BasketBuilder`: `Deposited`, `Withdrawn`, `Bought`, `Minted`,
-  `Redeemed`, `Sold`, `Unsold`.
+  `RebalanceCancelled`, `Rebalanced`, and the ERC-20 events. `IndexZap`: `ZapMint`, `ZapBurn`, `ComponentReturned`.
+  `BasketBuilder`: `Deposited`, `Withdrawn`, `Bought`, `Minted`, `Redeemed`, `Sold`, `Unsold`.
 - **Watch the ownership handover.** `transferOwnership(new owner)` emits `OwnershipTransferStarted` and
   `acceptOwnership()` emits `OwnershipTransferred`. It is the one admin change with no delay and no guardian veto.
 - **Errors.** `IndexZap`: `NotIndex`, `StaleRebalanceNonce`, `Expired`, `ZeroAddress`, `ZeroAmount`, `InvalidRecipient`
@@ -238,21 +244,20 @@ at any time) or `refund` (anyone, after the deadline).
   `ShortFill(i, received, required)`, `InsufficientBudget`, `InsufficientOutput`, `TransferShortfall`; the swap errors
   are declared in `IXindexErrors`, shared with `BasketBuilder`, which adds `LengthMismatch`, `ComponentOutOfRange` and
   `InsufficientEscrow(token, held, needed)`, and whose `BadRoute` and `ShortFill` name a leg by its position in the
-  call. `WeightedHub`:
-  `NotFactory`, `NotInitialized`, `InvalidComponents`, `InvalidConfig`, `NotAllowedMinter`, `ZeroShares`, `ZeroAddress`,
-  `InvalidRecipient` (also for a share transfer to the index itself or its factory), `InvalidSkipMask`,
-  `NothingToClaim`, `TransferAmountMismatch`, `Underbacked(token, balance, required)`, `Unauthorized`,
-  `RebalanceTooSoon`, `RebalancePending`, `InvalidKeepMask`, `NoPendingRebalance`, `RebalanceNotReady`,
+  call. `WeightedHub`: `NotFactory`, `NotInitialized`, `InvalidComponents`, `InvalidConfig`, `NotAllowedMinter`,
+  `ZeroShares`, `ZeroAddress`, `InvalidRecipient` (also for a share transfer to the index itself or its factory),
+  `InvalidSkipMask`, `NothingToClaim`, `TransferAmountMismatch`, `Underbacked(token, balance, required)`,
+  `Unauthorized`, `RebalanceTooSoon`, `RebalancePending`, `InvalidKeepMask`, `NoPendingRebalance`, `RebalanceNotReady`,
   `RebalanceExpired`, `RebalanceUnderfunded`, `RebalanceMovedOn`, `NothingToRebalance`, `LegOutOfBounds(index, units,
   lowest, highest)`, `GainBelowBar(gain, bar)`, `CannotSendOut(token)`, `LengthMismatch`, OpenZeppelin's
   `SafeCastOverflowedUintDowncast(96, units)` for units beyond 96 bits, and its ERC-20 and ERC-2612 errors.
   `AuctionOver(elapsed)` comes only from a direct call to the math past the auction's end. `WeightedIndexFactory`:
-  `EmptyString`, `InvalidComponentCount`, `TokenNotWhitelisted`, `DuplicateToken`, `UnitsOutOfRange(token, units)`,
-  `InvalidWeights`, `IndexAlreadyExists`, `CreatorFeeTooHigh`, `StreamingFeeTooHigh`, `PlatformFeeTooHigh`,
-  `PlatformStreamingFeeTooHigh`, `IntervalOutOfRange`, `WrongCreationFee`, `InvalidFeePolicy`, `NotGated`,
-  `NotAContract`, `InvalidDecimals`, `AlreadyListed`, `ListingPending`, `NoPendingListing`, `ListingNotReady`,
-  `ListingExpired`, `NotWhitelisted`, `NoPendingGuardianChange`, `GuardianChangeNotReady`, `GuardianChangeExpired`,
-  `Unauthorized`, `RenounceDisabled`, and OpenZeppelin's `Ownable` errors.
+  `CreatorNotApproved(account)`, `EmptyString`, `InvalidComponentCount`, `TokenNotWhitelisted`, `DuplicateToken`,
+  `UnitsOutOfRange(token, units)`, `InvalidWeights`, `IndexAlreadyExists`, `CreatorFeeTooHigh`, `StreamingFeeTooHigh`,
+  `PlatformFeeTooHigh`, `PlatformStreamingFeeTooHigh`, `IntervalOutOfRange`, `WrongCreationFee`, `InvalidFeePolicy`,
+  `NotGated`, `NotAContract`, `InvalidDecimals`, `AlreadyListed`, `ListingPending`, `NoPendingListing`,
+  `ListingNotReady`, `ListingExpired`, `NotWhitelisted`, `NoPendingGuardianChange`, `GuardianChangeNotReady`,
+  `GuardianChangeExpired`, `Unauthorized`, `RenounceDisabled`, and OpenZeppelin's `Ownable` errors.
 - **Requests.** Suggest a limit from the app's own valuation and show the deadline; a fill pays exactly what the filler
   sends, so any surplus over the limit goes to the fastest filler. Read a request with `getRequest(id)` (`requester`,
   `deadline`, `isMint`, `open`, `index`, `stable`, `escrow`, `limit`) and follow `MintRequested`, `RedeemRequested`,

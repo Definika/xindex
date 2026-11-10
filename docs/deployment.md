@@ -70,9 +70,25 @@ whose `FACTORY` is another). It logs the guardian's address as well; since the f
 `test_CF5_theReleaseHashesAreThisBuilds` fails until the four equal the build, and they are fixed at the audited commit
 before a mainnet broadcast.
 
-**Creating indexes.** Creation is open to anyone: once the coins an index names are listed, any wallet calls
-`createIndex`, and nothing else has to be approved or configured. The fee policy is zero until the owner sets one
-(`setFeePolicy`), and it reaches only indexes created afterwards.
+**Approving creators.** After the listings, the owner's Safe approves each wallet that creates indexes with
+`setApprovedCreator(<wallet>, true)`. Nobody can create an index before: `createIndex` from any other wallet reverts
+`CreatorNotApproved`, the owner and the guardian included. The approval takes effect at once, with no delay.
+
+```bash
+# the calldata of the Safe's transaction to the factory, value 0
+cast calldata "setApprovedCreator(address,bool)" <wallet> true
+# afterwards, from any account
+cast call <factory> "isApprovedCreator(address)(bool)" <wallet>
+```
+
+No contract reads a price, so none can compare the units a creator names with its weights. An index created off its
+weights carries that distance from its first day and loses it to whoever fills its auctions: on the exact model, one
+last-second fill takes 15.5% of a 50/50 index created 90/10 by value, and at the worst a fifth of an index per fill. The
+approval is what keeps a stranger from creating such an index; the team creates on the weights at the app's prices. It
+is read at creation and nowhere else: withdrawing it (`setApprovedCreator(<wallet>, false)`) reaches no index that
+exists, it gives no power over funds, and an index's creator role still moves to any account, approved or not
+(`transferCreator`, `acceptCreator`), which is how a partner takes over an index the team made. The fee policy is zero
+until the owner sets one (`setFeePolicy`), and it reaches only indexes created afterwards.
 
 **The admission check** comes first: `script/CheckToken.s.sol` is read-only and prints one report per token for the
 Safe's signers (transfers simulated on a fork, transfer hooks, admin powers and who holds them, Uniswap depth on
@@ -149,6 +165,7 @@ No bot holds a role in Xindex, so these duties have owners and deadlines. Watch 
 | Restart after an unfilled auction | `eta + AUCTION_DURATION` passed with no `Rebalanced` | anyone after `REBALANCE_DELAY` more | guardian first, then anyone | `canStartRebalance()`, then `startRebalance(0)`; the owner and the guardian's Safe may start at once |
 | Re-check venue depth per leg | monthly, and before a large mint or burn | none | app | V3 and V4 depth move independently; the route is the app's choice |
 | Watch guardian changes | `GuardianProposed` | `eta` (7 days) | owner signers, guardian, app | a security alert: once executed, the new guardian's veto replaces the old one. `guardianChangePending()` says whether it is still executable |
+| Approve a creating wallet | the listings executed, or a new wallet of the team's | none, but nobody creates an index before | owner signers | `setApprovedCreator(wallet, true)` through the Safe, at once; `isApprovedCreator(wallet)` confirms it, and `CreatorApprovalSet` records it. Withdrawing an approval reaches no index that exists |
 | Hand over factory ownership | `OwnershipTransferStarted` | none: it takes effect as soon as the new owner accepts | owner signers, then the new owner | the one admin change with no delay and no veto; announce it first, and the new owner has to meet the rules the deploy script checks |
 
 ## Testnet (Sepolia)
@@ -206,13 +223,13 @@ Router's encoding, not on Sepolia.
 
 ### A new deployment
 
-A new factory is a whole new deployment: the hub's implementation and the math are deployed by the factory, and the
-zap, the basket builder and `MintRequests` are each built for one factory. Deploying the current build therefore
-means every step below except, if the test market above is reused, the first: no `PYTH` is passed, the guardian
-needs no relay, and the listings are token addresses. Indexes of the deployed build stay where they are and are not
-moved. The keeper's executor is built for one factory and one `MintRequests` too, so it is deployed again, and the
-app and its backend are pointed at the new addresses. Until then the Sepolia deployment and this repository's
-`abi/` are two builds.
+A new factory is a whole new deployment: the hub's implementation and the math are deployed by the factory, and the zap,
+the basket builder and `MintRequests` are each built for one factory. Deploying the current build therefore means every
+step below except, if the test market above is reused, the first: no `PYTH` is passed, the guardian needs no relay, the
+listings are token addresses, and the owner approves the creating wallets after them. Indexes of the deployed build stay
+where they are and are not moved. The keeper's executor is built for one factory and one `MintRequests` too, so it is
+deployed again, and the app and its backend are pointed at the new addresses. Until then the Sepolia deployment and this
+repository's `abi/` are two builds.
 
 ```bash
 export SEPOLIA_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com
@@ -234,8 +251,12 @@ V5_MODE=safe V5_FACTORY=<factory> V5_WHITELIST=<logged by create> V5_LIST=all \
   V5_USDC=<tUSDC logged by create> V5_USDT=<the second test stablecoin> \
   forge script script/ConfigureWeighted.s.sol --rpc-url sepolia
 
-# 4. 2 to 9 days later, from any account; after it, any wallet creates an index
+# 4. 2 to 9 days later, from any account
 V5_MODE=execute V5_FACTORY=<factory> V5_WHITELIST=<same> forge script script/ConfigureWeighted.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast --gas-estimate-multiplier 900
+
+# 5. the owner approves each wallet that creates indexes, signed in the Safe app; nobody can create one before
+cast calldata "setApprovedCreator(address,bool)" <wallet> true
+cast call <factory> "isApprovedCreator(address)(bool)" <wallet> --rpc-url $SEPOLIA_RPC_URL
 ```
 
 Add `--verify` with `ETHERSCAN_API_KEY` set to verify the contracts, so testers can call `drip()` from Etherscan.

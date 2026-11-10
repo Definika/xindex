@@ -1,11 +1,12 @@
 # Xindex Architecture
 
-Xindex turns a portfolio of tokens into a single ERC-20 index token. Anyone can create an index and choose each coin's
-percentage, anyone can mint it with USDC or USDT, and anyone can burn it back into USDC, USDT or any other token with
-Uniswap V3 or V4 liquidity. Every index is fully backed, in kind, by the tokens it holds. Its constituents
-and its creator's percentages never change; it rebalances back toward them through a permissionless auction in which
-the executor names the units each coin is to have and the index checks a gain in units. No contract reads a price, a
-feed or an oracle, for any of it. No admin can touch user funds, and no protocol key or bot is involved in rebalancing.
+Xindex turns a portfolio of tokens into a single ERC-20 index token. A wallet the factory's owner approved creates an
+index and chooses each coin's percentage, anyone can mint it with USDC or USDT, and anyone can burn it back into USDC,
+USDT or any other token with Uniswap V3 or V4 liquidity. Every index is fully backed, in kind, by the tokens it holds.
+Its constituents and its creator's percentages never change; it rebalances back toward them through a permissionless
+auction in which the executor names the units each coin is to have and the index checks a gain in units. No contract
+reads a price, a feed or an oracle, for any of it. No admin can touch user funds, and no protocol key or bot is involved
+in rebalancing.
 
 **Xindex is one deployment, on Ethereum, and one index holds up to 100 coins of the top 300** (the owner's decision of
 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). An index holds Ethereum ERC-20s in kind: the issuer's own
@@ -29,7 +30,7 @@ design it. Nothing has had an external audit, and nothing is deployed on a mainn
 
 | Requirement (from the product brief) | How the contracts meet it |
 |---|---|
-| Create a portfolio as one ERC-20, any name/symbol | `WeightedIndexFactory.createIndex(name, symbol, components, params)` deploys a `WeightedHub` clone with free-form name and symbol |
+| Create a portfolio as one ERC-20, any name/symbol | `WeightedIndexFactory.createIndex(name, symbol, components, params)` deploys a `WeightedHub` clone with free-form name and symbol; only a wallet the factory's owner approved creates one (`setApprovedCreator`) |
 | Choose each coin's percentage | Each component carries a weight in basis points, the weights summing to 10,000, fixed at creation with the coin list |
 | Others can mint the same index | `issue`, `mintWithToken` and `requestMint` are permissionless |
 | Decentralized | No custody, no pause, no upgrade, no rebalancing key; listings take effect after a public 2-day delay with a guardian veto, guardian changes after 7 days |
@@ -125,21 +126,32 @@ OpenZeppelin's upgradeable ERC20 and ERC20Permit (clones skip constructors, so n
   whitelists the token. `cancelListing` and `delist` are owner or guardian; delisting is immediate, keeps the token's
   decimals, and affects only indexes created afterwards. A relisting reads the decimals anew and reaches only indexes
   created after it (`test_aRelistingReachesOnlyNewIndexes`).
-- **Creation.** `createIndex(name, symbol, components, params)`, permissionless and payable for the policy's creation
-  fee, with `params` the creator's fee rate, the highest platform fee it accepts, the rebalance interval (7 to 91
-  days), the gate and the listing flag; each component a
-  `ComponentSpec {token, weight, units}`: a non-empty name and symbol, 2 to 100 whitelisted components, units in
+- **Creation.** `createIndex(name, symbol, components, params)`, open only to a wallet the owner approved
+  (`CreatorNotApproved` otherwise) and payable for the policy's creation fee, with `params` the creator's fee rate, the
+  highest platform fee it accepts, the rebalance interval (7 to 91 days), the gate and the listing flag; each component
+  a `ComponentSpec {token, weight, units}`: a non-empty name and symbol, 2 to 100 whitelisted components, units in
   `[MIN_RAW_UNITS, maxUnitsOf(token)]` (`UnitsOutOfRange`), weights of at least one basis point summing to exactly
   10,000 (`InvalidWeights`) and no token twice (`DuplicateToken`). The floor, 10,000 raw units, is DA-09's granularity
   rule. The ceiling is `MAX_WHOLE_TOKENS` (1e9) whole tokens per index token at the token's listed decimals, so a
   wei-share backs a negligible amount (RX-5), and never above `MAX_UNITS`, `(2^96 − 1) >> 10`, which leaves a 2^10
-  margin below `uint96` for units to grow (V5-L3). The clone is deployed with CREATE2 from a salt over the creator,
-  the name, the symbol, every component's token, units and weight, and the config: fee and streaming rates, referral
-  share and rebalance interval (LR-05); the gate and the listing flag are not in it. The clone is registered
-  (`isIndex`, `creatorOf`, `allIndexes`), announced (`IndexCreated`) and initialized in one transaction;
-  `predictIndexAddress` gives the address first. No unit is checked against a price: the app derives the units from
-  the percentages at its own prices, and rebalances, the first possible after the index's own interval (7 to 91 days),
-  close any gap within the caps.
+  margin below `uint96` for units to grow (V5-L3). The clone is deployed with CREATE2 from a salt over the creator, the
+  name, the symbol, every component's token, units and weight, and the config: fee and streaming rates, referral share
+  and rebalance interval (LR-05); the gate and the listing flag are not in it. The clone is registered (`isIndex`,
+  `creatorOf`, `allIndexes`), announced (`IndexCreated`) and initialized in one transaction; `predictIndexAddress` gives
+  the address first. No unit is checked against a price: the app derives the units from the percentages at its own
+  prices, and rebalances, the first possible after the index's own interval (7 to 91 days), close any gap within the
+  caps, paying it to whoever fills them: hence the approval below.
+- **Approved creators.** `setApprovedCreator(account, approved)`, owner only, takes effect at once and emits
+  `CreatorApprovalSet`; `isApprovedCreator(account)` reads it. Neither the owner nor the guardian is approved by being
+  a role (`test_onlyAnApprovedCreatorCreatesAnIndex`, `test_onlyTheOwnerApprovesCreators`). The reason is that nothing
+  reads a price: no contract can compare the units a creator names with its weights, and an index created off its
+  weights carries that distance from its first day and loses it to whoever fills its auctions (section 3.7). The
+  approval is what keeps a stranger from creating such an index; the team creates on the weights at the app's prices.
+  It is read at creation and nowhere else: an approved wallet is bound by the whitelist and the fee caps, it has no
+  power over any index's funds, and withdrawing an approval reaches no index that exists
+  (`test_aWithdrawnApprovalStopsCreationAndReachesNoIndex`). An index's creator role still moves to any account,
+  approved or not, through `transferCreator` and `acceptCreator`, which is how a partner takes over an index the team
+  made (`test_theCreatorRoleMovesToAnAccountThatWasNeverApproved`).
 - **Guardian and ownership.** `proposeGuardian` is owner only (zero removes the role) and replaces any pending change;
   `executeGuardianChange` is permissionless from `GUARDIAN_DELAY` (7 days) for `PROPOSAL_WINDOW`. The owner can cancel
   any guardian change, the guardian only its own removal, never its replacement (XA-61). `isOwnerOrGuardian(account)`
@@ -455,8 +467,9 @@ one fill after one coin of two doubled. It comes out of the holders' value: it i
 loses to arbitrage. So a fair price needs an executor bidding, the team's keeper first, where a price feed gave one
 whoever filled; nothing on chain makes the price fair without a bidder. An index created off its weights carries its
 distance from its first day, and its creator can take it: 15.5% of a 50/50 index created 90/10 by value in one fill,
-at the worst a fifth of an index per fill. No contract can compare units with weights without a price; the app is the
-only check (`docs/known-limitations.md`).
+at the worst a fifth of an index per fill. No contract can compare units with weights without a price. That
+is why only wallets the factory's owner approved create an index (section 2): the team creates on the weights, at the
+app's prices, and the app shows an index's coins against its weights (`docs/known-limitations.md`).
 
 **No price can be wrong.** No key signs a price and no feed reports one, so there is none to forge or to stop. What is
 left is a coin that turns worthless and free to mint, by its issuer or through a forged bridge message. The caps and
@@ -537,8 +550,10 @@ math holds nothing and reads nothing. No price enters either.
 
 `docs/integration.md` walks through each flow for an app. In short:
 
-- **Create.** The creator picks 2 to 100 listed coins and their percentages; the app derives the units at current
-  prices and shows the address and the index's wrapped share of value, and the creator creates.
+- **Create.** A wallet the owner approved picks 2 to 100 listed coins and their percentages; the app derives the units
+  at current prices and shows the address and the index's wrapped share of value, and the wallet creates. A partner
+  asks the team, which creates the index and hands on its creator role, fee included (`transferCreator`,
+  `acceptCreator`).
 - **Mint and burn** through the zap (up to about 35 components, on coins with a route), through the basket builder
   over several transactions (any size, on coins with a route, the rest deposited in kind), in kind (up to 100), or at
   a limit through `MintRequests`, filled by anyone who holds or can issue the shares.
@@ -587,6 +602,14 @@ index. An index holds its own units and weights from creation, so no relisting o
 commits to every component's token, units and weight and to its config, so a front-runner's copy lands at its own
 address (LR-05).
 
+**Only approved wallets create an index.** No contract reads a price, so none can compare the units a creator names with
+its weights. An index created off its weights carries that distance from its first day and loses it to whoever fills its
+auctions: on the exact model, one last-second fill takes 15.5% of a 50/50 index created 90/10 by value, and at the worst
+a fifth of an index per fill. So `createIndex` reverts `CreatorNotApproved` for any wallet the factory's owner has not
+approved (`setApprovedCreator`), and the team creates on the weights at the app's prices. The approval is read at
+creation and nowhere else: it gates no issue, redeem, rebalance or handoff of the creator role, it reaches no index that
+exists, and it gives no power over funds.
+
 **One deployment, the missing coins wrapped.** About 71 of the top-300 candidates exist on Ethereum through their
 issuer; held on BNB Chain instead, the same universe would have wrapped 71 legs. Wormhole is the one bridge accepted for
 wrapping: anyone attests a coin on its home chain and the bridge deploys the copy on Ethereum. The cost is a new trusted
@@ -625,16 +648,16 @@ components (section 2).
 ## 7. Security model
 
 - **Trust.**
-  - The factory owner (a Safe), who proposes listings and guardian changes behind public delays and hands over
-    ownership in two steps with no delay; the guardian, who can cancel listings and rebalances, delist, start a
-    rebalance with a keep mask or before strangers may, and cancel its own removal but not its replacement. The
-    guardian is the guardian's Safe itself.
+  - The factory owner (a Safe), who proposes listings and guardian changes behind public delays, approves which wallets
+    may create an index, at once, and hands over ownership in two steps with no delay; the guardian, who can cancel
+    listings and rebalances, delist, start a rebalance with a keep mask or before strangers may, and cancel its own
+    removal but not its replacement. The guardian is the guardian's Safe itself.
   - No price feed and no price signer. Nothing reads a price, so no publisher, signing key or oracle's governance is
     trusted with anything, Pyth's included. What took their place is not a party but a condition on the price: a fill
     is safe whoever makes it (section 3.3), and its price is fair when an honest executor bids, the team's keeper
     first. A lone executor takes the index's distance from its weights out of the holders' value: 0.3 to 0.6% of an
     index in an ordinary week, 5.0% after one coin of two doubled, and up to a fifth per fill of an index its creator
-    made off its weights (section 3.7).
+    made off its weights (section 3.7), which is why only wallets the owner approved create one.
   - Wormhole's guardians, for the wrapped legs: a quorum (13 of 19) can forge a bridge message, minting unbacked copies
     or upgrading every wrapped token's code at once, with no timelock. Since April 2026, for the chains on delegated
     guardian sets (BNB Chain, Kaia, NEAR, Sui, Arbitrum, Monad), five of seven named guardians suffice to mint, so most
@@ -691,6 +714,8 @@ components (section 2).
   signers (SA-06). Neither role may be the router, the PoolManager, or any token or mint currency in the chain's
   address book (XA-39, CR-I37).
   Any other contract owner, such as a timelock, needs the operator's `OWNER_IS_NOT_A_SAFE`, set to its address (A7-08).
+  After the listings the owner approves the wallets that create indexes (`setApprovedCreator`); nobody can create one
+  before.
 - **Known limitations** are listed in `docs/known-limitations.md`, linked from the README.
 
 ## 8. Verification
@@ -770,17 +795,17 @@ reads it.
 ## 10. Roadmap
 
 **What remains before a mainnet**, in the order of `design/2026-10-10-one-index-wormhole-legs.md`, section 5, as
-`design/2026-10-18-pre-mainnet-readings.md`, section 7, and the spec, section 9, update it: the 26 Wormhole copies
-still to attest, and FIL's source reading, each then through `CheckToken` and onto the lists, and RAY's `updateWrapped`
-from Solana; a run of the fork suites, rewritten for the oracle-free rebalance, on an archive RPC; a red team of the
-oracle-free mechanism by reviewers who did not design it, and a run of the Halmos harness; the platform's fee policy
-and the legal reading; the external audit, then `DeployWeighted`'s release hashes fixed at the audited commit (CF-5);
-the owner Safe (3 of 5) and the guardian's Safe on Ethereum, then `DeployWeighted` and `ConfigureWeighted` over the
-list; a new Sepolia deployment, since the one live there is the Pyth-priced build (`docs/deployment.md`); and the app
-side: `previewRebalance(newUnits)` and the listings as they now are, Wormhole Connect for bridging in and out, the
-wrapped share and the Bridged and Custodial labels on every index, an index's coins shown against its weights, and a
-filler for `MintRequests`. No Pyth plan, parameter replay or settlement on a Hermes update is needed any more: the
-keeper's Hermes key is the keeper's own, for its own prices.
+`design/2026-10-18-pre-mainnet-readings.md`, section 7, and the spec, section 9, update it: the 26 Wormhole copies still
+to attest, and FIL's source reading, each then through `CheckToken` and onto the lists, and RAY's `updateWrapped` from
+Solana; a run of the fork suites, rewritten for the oracle-free rebalance, on an archive RPC; a red team of the
+oracle-free mechanism by reviewers who did not design it, and a run of the Halmos harness; the platform's fee policy and
+the legal reading; the external audit, then `DeployWeighted`'s release hashes fixed at the audited commit (CF-5); the
+owner Safe (3 of 5) and the guardian's Safe on Ethereum, then `DeployWeighted` and `ConfigureWeighted` over the list,
+and the owner's approval of the wallets that create indexes; a new Sepolia deployment, since the one live there is the
+Pyth-priced build (`docs/deployment.md`); and the app side: `previewRebalance(newUnits)` and the listings as they now
+are, Wormhole Connect for bridging in and out, the wrapped share and the Bridged and Custodial labels on every index, an
+index's coins shown against its weights, and a filler for `MintRequests`. No Pyth plan, parameter replay or settlement
+on a Hermes update is needed any more: the keeper's Hermes key is the keeper's own, for its own prices.
 
 **Backlog.** `createAndMint`, mixed-venue legs that split one leg across V3 and V4, per-pair partial-fill auctions, a backstop for auctions too small to pay (the keeper fills only what
 pays unless its operator sets a subsidy), an aggregator or Universal Router 2.1 zap, V4 pools on the Sepolia market,
@@ -821,4 +846,5 @@ and one L2 deployment if cheap minting for small buyers matters after launch.
   and the index checks a gain in units against a falling bar (section 3,
   `design/2026-11-10-oracle-free-rebalance.md`). `audit/2026-11-10-oracle-retirement.md` lists the review ids that
   went with Pyth and the test of every re-targeted one. What it cost: a fair price now needs an executor bidding,
-  where Pyth gave one whoever filled.
+  where Pyth gave one whoever filled. The same day creation was limited to wallets the factory's owner approves
+  (`setApprovedCreator`), since no contract can check a creator's units against its weights.

@@ -3,15 +3,18 @@
 [![CI](https://github.com/Definika/xindex/actions/workflows/test.yml/badge.svg)](https://github.com/Definika/xindex/actions/workflows/test.yml)
 [![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 
-Xindex is a protocol for index tokens on Ethereum. Anyone can create an index of 2 to 100 listed assets at weights they
-choose. Each index is an ERC-20 fully backed in kind: minting deposits the basket and redeeming returns it. A
-permissionless auction brings an index back toward its weights. No contract reads a price, a feed or an oracle, for
-any of it.
+Xindex is a protocol for index tokens on Ethereum. A wallet the factory's owner approved creates an index of 2 to 100
+listed assets at weights it chooses, and anyone can mint, redeem and trade it. Each index is an ERC-20 fully backed in
+kind: minting deposits the basket and redeeming returns it. A permissionless auction brings an index back toward its
+weights. No contract reads a price, a feed or an oracle, for any of it.
 
 ## How it works
 
 - **Create.** `WeightedIndexFactory.createIndex` deploys an index, a clone of `WeightedHub`, with its own name, symbol,
-  components and weights. They never change.
+  components and weights. They never change. Only a wallet the factory's owner approved can call it
+  (`setApprovedCreator`): no contract reads a price, so none can check the units a creator names against its weights,
+  and an index created off its weights loses that distance to whoever fills its auctions. The team creates on the
+  weights; a partner takes over an index by its creator role, which moves to any account.
 - **Mint and redeem.** `issue` takes each component in proportion to the shares minted, and `redeem` burns shares and
   pays the components out. No oracle sits on either path, so nothing can block an exit. `redeemSkipping` exits around a
   frozen component, which can be claimed later.
@@ -51,7 +54,8 @@ any of it.
 - Nothing reads a price, so no feed and no price signer is trusted. A rebalance is judged on units: on its weights
   an index cannot lose value to a fill, and off them a fill can take at most the index's distance from its weights.
   Executors competing for that distance return it to the holders; a lone one keeps it.
-- The owner, a Safe that needs at least 3 signatures, lists assets behind a 2-day delay and sets fees for new indexes.
+- The owner, a Safe that needs at least 3 signatures, lists assets behind a 2-day delay, approves which wallets may
+  create an index and sets fees for new indexes. The approval is read at creation only: it reaches no existing index.
 - The guardian can cancel a rebalance or route one around a frozen asset. It moves no funds, and the owner can replace
   it through a 7-day delay it cannot block.
 
