@@ -198,7 +198,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
     function test_noRebalanceEntryPointTakesEther() public {
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
         vm.deal(address(this), 3);
-        (bool started,) = address(index).call{value: 1}(abi.encodeCall(IWeightedHub.startRebalance, (0)));
+        (bool started,) = address(index).call{value: 1}(abi.encodeWithSignature("startRebalance(uint256)", 0));
         assertFalse(started, "a start takes no ether");
         index.startRebalance(0);
         (uint256 eta,) = index.pendingRebalance();
@@ -679,7 +679,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
         executor.setMode(MockWeightedExecutor.Mode.Reentrant);
         executor.execute(index, _fair(), "");
         bytes[] memory errors = executor.reentryErrors();
-        assertEq(errors.length, 10, "every entry point that mints, burns, pays, accrues or rebalances (XS-18)");
+        assertEq(errors.length, 11, "every entry point that mints, burns, pays, accrues or rebalances (XS-18)");
         for (uint256 i = 0; i < errors.length; ++i) {
             assertEq(errors[i], abi.encodeWithSelector(ReentrancyGuard.ReentrancyGuardReentrantCall.selector));
         }
@@ -979,10 +979,13 @@ contract WeightedHubRebalanceTest is WeightedTest {
 
         vm.warp(wide.lastRebalance() + wide.MIN_REBALANCE_INTERVAL());
         {
+            // The dearest start: the guardian's, with a quote, which stores a price per component. The fill below then
+            // reads them back and is checked against them, so both are measured at their worst.
             _coolAll(tokens, address(wide));
+            vm.prank(guardian);
             before = gasleft();
-            wide.startRebalance(0);
-            _fits("startRebalance", before - gasleft());
+            wide.startRebalance(0, prices, 0.01e18);
+            _fits("startRebalance with a quote", before - gasleft());
         }
 
         (uint256 eta,) = wide.pendingRebalance();

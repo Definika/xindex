@@ -48,6 +48,18 @@ interface IWeightedMath {
         uint256 keepMask
     ) external pure returns (uint256 bar, int256 gain, uint256[] memory amountsOut, uint256[] memory amountsIn);
 
+    /// @notice Checks a fill against a quote posted with its proposal's start: at `prices`, one per component per raw
+    ///         unit, the units the fill adds must be worth at least the units it takes, less `tolerance` (1e18 =
+    ///         100%), rounded up. Reverts `IWeightedHub.BelowQuote` otherwise. A component whose units do not change
+    ///         counts for nothing, whatever its price.
+    /// @dev The caller keeps every price under 2^128 and every unit within uint96, so the sums cannot overflow.
+    function quoteCheck(
+        uint256[] memory currentUnits,
+        uint256[] memory newUnits,
+        uint256[] memory prices,
+        uint256 tolerance
+    ) external pure;
+
     /// @notice The gain the auction asks for `elapsed` seconds after it opened: BAR_MAX at first, halving every
     ///         BAR_HALF_LIFE along a straight line within each, rounded up. Reverts `IWeightedHub.AuctionOver` past
     ///         AUCTION_DURATION.

@@ -206,7 +206,15 @@ Pyth-priced rebalance as it then was, and the last one says what replaced it.
     and `nameUnits`, the units that clear the bar while leaving the index the least), sends plain starts, leaves alone
     every leg it cannot value, and prices its own trades off chain at Pyth's prices from Hermes, each confirmed by
     Pyth's contract, through a coin-to-id catalogue of its own (`keeper/bot/price-ids.mjs`). Mutants U1 to U4.
-  - Not done: a run of the fork suites, rewritten but waiting for an archive RPC; the app; a red team of the
+  - The fork suites ran in CI on 2026-11-10 (559 tests, none skipped, `a9802b6`, merged as `e93c6b3`), and the
+    keeper's end-to-end test passed on a mainnet fork the same day (24 of 24): plain starts, fills on the bar, a late
+    fill, stock, the guardian's keep mask.
+  - A quote the owner or guardian may post with a start was added the same day (the design rule "A quote can only
+    refuse", the spec's section 10): `startRebalance(keepMask, prices, tolerance)`, `rebalanceQuote()`,
+    `RebalanceQuoted`, `BelowQuote`, `InvalidQuote`, `WeightedMath.quoteCheck`, 77 vectors in the model, the suite
+    `test/WeightedHub.quote.t.sol`, mutants Q1 to Q7 and the keeper's U5. The hub is 21,315 bytes, 3,261 under
+    EIP-170.
+  - Not done: the app's move to this build (it is converted to `5bbaf3e`, on a branch); a red team of the
     mechanism by reviewers who did not design it; the Halmos harness; a new Sepolia deployment.
     `test/vectors/proofs.py` is rewritten for the new arithmetic: it checks the proof's chain in exact rationals
     (the derivative identity behind `L(x) ≤ ln(1 + x)`, the margin at the cap, every rounding, every second of the
@@ -340,7 +348,7 @@ deploy script resolves the router, WETH and the stablecoins from the address boo
      `test/WeightedHub.rebalance.t.sol` and `test/WeightedHub.invariant.t.sol`, the builder's in
      `test/BasketBuilder.t.sol`, XS-17's in `test/Repo.t.sol`, the keeper's in `keeper/test/KeeperExecutor.t.sol` and
      the node tests named `XS-5: ...` and so on in `keeper/test/unit/`. XS-18 is recorded by documentation and the R11
-     test's ten entry points.
+     test's eleven entry points.
    - The red team of 2026-10-18: `RX-1`..`RX-67` (`audit/2026-10-18-red-team.md`), a test named `test_RX8_...`, and a
      node test named `RX-1: ...` in `keeper/test/unit/`. The record's "Status of the fixes" names every test; the ids
      fixed by documentation alone, the listing calls and the off-chain readings have none.
@@ -453,12 +461,23 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
 
 ## Design rules that must not be broken
 
-- **Nothing reads a price.** No contract reads a price, a feed, a pool's price or an oracle, by any name: not a
+- **Nothing reads a price.** No contract reads a feed, a pool's price or an oracle, by any name: not a
   rebalance, not an issue, a redeem or a claim (`test_V5I4_noContractNamesPyth`, `test_A713_noContractReadsAPrice`).
-  A rebalance is judged on units alone. So no feed can block an exit, misprice a mint or set the terms of a
-  rebalance, and nobody's keys stand between the holders and their coins. Do not bring a price back into a contract,
-  as a check, a bound or a hint: the design's safety is that it needs none. Valuing an index is the app's job,
-  off-chain. The zap swaps, but it reads no price either: it enforces the limits its caller sets.
+  A rebalance is safe on units alone. So no feed can block an exit, misprice a mint or set the terms of a
+  rebalance, and nobody's keys stand between the holders and their coins. Do not make the design's safety depend on
+  a price: it needs none. Valuing an index is the app's job, off-chain. The zap swaps, but it reads no price either:
+  it enforces the limits its caller sets.
+- **A quote can only refuse.** The one place a price enters a contract is the quote the owner or guardian may post
+  with a start (`startRebalance(keepMask, prices, tolerance)`, the owner's call of 2026-11-10, after Reserve's price
+  ranges): prices of the caller's own, fixed at the start, never read from anywhere. A fill of that proposal must
+  clear the bar as any fill and must also bring in, at those prices, at least `1 − tolerance` of what it takes out
+  (`WeightedMath.quoteCheck`, `BelowQuote`). Both checks must pass, so a quote that is wrong, stale or hostile can
+  only stop its own proposal from filling, which a cancel already can; it can make no fill worse than a start
+  without one allows. Keep it that way: never let a quote accept a fill the bar refuses, replace the bar, outlive
+  its proposal (mutant Q2), or reach an issue, a redeem or a claim. What it buys: a lone executor keeps at most the
+  tolerance of what it trades, not the index's distance from its weights. Its limits: a stranger's start carries
+  none, so the guardian replaces such a proposal within its six hours; and the tolerance has to cover six hours of
+  market, or the proposal expires unfilled (the spec's section 10).
 - **The executor names the units, and the index checks a gain.** `executeRebalance(newUnits, data)` settles at the
   units its caller names. `WeightedMath` accepts them when every leg is inside its unit caps and
   `⌊Σ w_i · L(x_i) / 10,000⌋ ≥ bar`, with `x_i` the leg's relative change in units, rounded down, and
@@ -633,7 +652,8 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   notice and auction, so a dust issue can grief an executor sized from an off-chain simulation: the callback arguments
   are authoritative (DA-13). At `MAX_COMPONENTS` (100), every path of the hub and the factory fits a transaction under
   EIP-7825's 2^24 gas cap on mock tokens (`test_aHundredComponentsFitOneTransaction`): `createIndex` about 5.3M,
-  `redeemSkipping` with every component skipped 5.1M, a fill 4.2M with an executor that holds the tokens. Real tokens
+  `redeemSkipping` with every component skipped 5.1M, a fill 4.2M with an executor that holds the tokens; a start
+  with a quote 1.4M, and a fill under one 4.4M. Real tokens
   transfer dearer, and swaps for 100 legs do not fit, so an atomic fill that wide needs an executor that already
   holds the tokens.
 - **Keep mask.** Only the owner or guardian can pass one. A kept component must keep its units exactly: no fill of
@@ -862,6 +882,15 @@ same day: the distance comes out of the holders' value, and it is about 5% after
 rule above has the figures). It supersedes "Pyth is the only oracle" of 2026-10-05 and "leave
 rebalance as it is" of 2026-11-10, both below, and with them the guardian relay of 2026-11-02, the Pyth plan, the
 replay and the US-hours limits on stock legs. Dropping rebalancing for fixed amounts per token stays not taken.
+
+**A quote with a start** (the owner's call of 2026-11-10, after reading how Reserve's Index DTFs rebalance: "lets add
+it to our contracts"). The owner or guardian may post prices of their own with a start, and a fill of that proposal
+must then also bring in at least `1 − tolerance` of what it takes out at those prices. It amends "No oracle" above in
+one respect, said to the owner before the build: a price now enters a contract, from the owner or guardian and only to
+refuse a fill; no feed, oracle or pool is read, and the index's safety still rests on units alone, since a fill must
+pass both checks. What it buys: a lone executor keeps at most the tolerance of what it trades. What it does not: a
+stranger's plain start carries no quote, and a quote goes stale over the six hours of a proposal. A hot key that
+narrows prices before each auction, as Reserve's launcher does, was not taken.
 
 **Only the team creates indexes** (the owner's calls of 2026-11-09 and 2026-11-10): the factory refuses `createIndex`
 from any wallet its owner has not approved, and the site lists the team's indexes. The call was made twice. First on
