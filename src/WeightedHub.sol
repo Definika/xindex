@@ -150,6 +150,13 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
     /// @inheritdoc IWeightedHub
     uint256 public restartAllowedAt;
 
+    /// @dev The quote the owner or guardian posted with a start: one price per component, zero for a kept one, and
+    ///      its tolerance. It binds the fills of proposal `_quoteProposal` alone: a later proposal starts without
+    ///      it, so nothing has to clear it.
+    uint128[] private _quote;
+    uint256 private _quoteTolerance;
+    uint256 private _quoteProposal;
+
     modifier onlyInitialized() {
         _checkInitialized();
         _;
@@ -179,6 +186,9 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
                 || uint256(config_.creatorStreamingBps) + config_.platformStreamingBps > MAX_STREAMING_BPS
                 || config_.referralShareBps > BPS || config_.rebalanceInterval < MIN_REBALANCE_INTERVAL
         ) revert InvalidConfig();
+        // The factory emits IndexCreated with this config in the call that initializes the clone. The lint reads the
+        // rebalance interval, which times a start, as access control.
+        // forge-lint: disable-next-line(missing-events-access-control)
         _config = config_;
         _scale = SCALE_ONE;
         // The streaming fee's clock starts here. The modifier's Initialized event records the moment.
@@ -488,6 +498,49 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
 
     /// @inheritdoc IWeightedHub
     function startRebalance(uint256 keepMask) external nonReentrant onlyInitialized {
+        _start(keepMask);
+    }
+
+    /// @inheritdoc IWeightedHub
+    function startRebalance(uint256 keepMask, uint256[] calldata prices, uint256 tolerance)
+        external
+        nonReentrant
+        onlyInitialized
+    {
+        // A view on the factory, by STATICCALL: nothing it reaches can change state, so nothing re-enters.
+        // aderyn-fp-next-line(reentrancy-state-change)
+        if (!IWeightedIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender)) revert Unauthorized(msg.sender);
+        uint256 n = _components.length;
+        if (prices.length != n) revert LengthMismatch();
+        if (tolerance >= WAD) revert InvalidQuote();
+        _start(keepMask);
+        uint256 proposalId = proposalCount;
+
+        // The quote is the caller's alone: the index reads no price. A kept component is recorded at zero, since no
+        // fill of this proposal may move it.
+        uint256[] memory posted = new uint256[](n);
+        bool first = _quote.length == 0;
+        for (uint256 i = 0; i < n; ++i) {
+            if ((keepMask >> i) & 1 == 0) {
+                uint256 price = prices[i];
+                if (price == 0 || price > type(uint128).max) revert InvalidQuote();
+                posted[i] = price;
+            }
+            // Each entry is zero or was checked against uint128 just above.
+            // forge-lint: disable-next-line(unsafe-typecast)
+            uint128 entry = uint128(posted[i]);
+            if (first) _quote.push(entry);
+            else _quote[i] = entry;
+        }
+        _quoteTolerance = tolerance;
+        _quoteProposal = proposalId;
+        // The factory call above is a view; nothing external can run in between.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit RebalanceQuoted(proposalId, posted, tolerance);
+    }
+
+    /// @dev Starts a rebalance for `msg.sender` under the clock and the keep-mask rules. Its id is `proposalCount`.
+    function _start(uint256 keepMask) private {
         uint256 earliest = _earliestRebalance();
         if (block.timestamp < earliest) revert RebalanceTooSoon(earliest);
         uint256 pendingEta = _eta;
@@ -717,14 +770,28 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
     function _computeSettlement(uint256 elapsed, uint256[] memory newUnits, uint256 supply, uint256 scale)
         private
         view
-        returns (uint256, int256, uint256[] memory, uint256[] memory)
+        returns (uint256 bar, int256 gain, uint256[] memory amountsOut, uint256[] memory amountsIn)
     {
         uint256 n = _components.length;
         uint256[] memory weights = new uint256[](n);
         for (uint256 i = 0; i < n; ++i) {
             weights[i] = _weights[i];
         }
-        return IWeightedMath(MATH).settlement(elapsed, supply, scale, _recordedUnits(), newUnits, weights, _keepMask);
+        uint256[] memory units = _recordedUnits();
+        (bar, gain, amountsOut, amountsIn) =
+            IWeightedMath(MATH).settlement(elapsed, supply, scale, units, newUnits, weights, _keepMask);
+        // A quote posted with this proposal's start can only refuse what the settlement above accepted.
+        if (_quoteProposal == proposalCount) {
+            IWeightedMath(MATH).quoteCheck(units, newUnits, _quotePrices(n), _quoteTolerance);
+        }
+    }
+
+    /// @dev The stored quote's prices, one per component.
+    function _quotePrices(uint256 n) private view returns (uint256[] memory prices) {
+        prices = new uint256[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            prices[i] = _quote[i];
+        }
     }
 
     /// @dev Every component's units as recorded, without the scale.
@@ -833,6 +900,12 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
     /// @inheritdoc IWeightedHub
     function pendingRebalance() external view returns (uint256 eta, uint256 keepMask) {
         return (_eta, _keepMask);
+    }
+
+    /// @inheritdoc IWeightedHub
+    function rebalanceQuote() external view returns (uint256[] memory prices, uint256 tolerance) {
+        if (_eta == 0 || _quoteProposal != proposalCount) return (new uint256[](0), 0);
+        return (_quotePrices(_components.length), _quoteTolerance);
     }
 
     /// @inheritdoc IWeightedHub

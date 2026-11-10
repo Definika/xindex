@@ -18,6 +18,14 @@ Run from the repository root, with no dependency beyond the standard library:
 
     python3 -I test/vectors/settlement.py > test/vectors/settlement.json
 
+The owner or guardian may post prices with a start (the spec's section 10). They enter no settlement above: a fill
+of that proposal must then also bring in, at those prices, at least `1 - tolerance` of the value it takes out,
+
+    sum_{v_i > u_i} p_i * (v_i - u_i)  >=  ceil( sum_{v_i < u_i} p_i * (u_i - v_i) * (1e18 - tolerance) / 1e18 )
+
+so a quote can only refuse a fill the rule above accepts, never accept one it refuses. `quote_floor` is that check and
+the `quotes` of the output are its vectors.
+
 The generator is deterministic (SEED), so a rerun reproduces the committed file. Change the arithmetic, this model or
 the vectors together, and commit the three in one change.
 """
@@ -111,6 +119,14 @@ def settle(elapsed, supply, scale, units, new_units, weights, keep):
     out = [floor(Fraction(supply * (u - v) * scale, UNIT_SCALE)) if v < u else 0 for u, v in zip(units, new_units)]
     inn = [ceil(Fraction(supply * (v - u) * scale, UNIT_SCALE)) if v > u else 0 for u, v in zip(units, new_units)]
     return (SETTLES, bar, gain, out, inn)
+
+
+def quote_floor(units, new_units, prices, tolerance):
+    """A posted quote against a fill: (value out, value in, floor), each in price times raw units per share. The fill
+    holds the quote when value in >= floor, the value out less the tolerance, rounded up."""
+    value_out = sum(p * (u - v) for u, v, p in zip(units, new_units, prices) if v < u)
+    value_in = sum(p * (v - u) for u, v, p in zip(units, new_units, prices) if v > u)
+    return value_out, value_in, ceil(Fraction(value_out * (WAD - tolerance), WAD))
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -290,6 +306,52 @@ def with_outcome(v):
     return v
 
 
+UINT128_MAX = 2**128 - 1
+
+
+def quote_vector(units, new_units, prices, tolerance):
+    value_out, value_in, floor_ = quote_floor(units, new_units, prices, tolerance)
+    return dict(units=units, newUnits=new_units, prices=prices, tolerance=tolerance, valueOut=value_out,
+                valueIn=value_in, floor=floor_, holds=1 if value_in >= floor_ else 0)
+
+
+def quotes():
+    """The quote's vectors, from a generator of their own, so the settlement's vectors do not move when these do."""
+    rng = random.Random(SEED + 2)
+    out = []
+    # Any units inside the caps at any prices and tolerance: the sums, wherever they land.
+    for _ in range(30):
+        n = rng.randint(2, 8)
+        units = [int(10 ** rng.uniform(4, 28)) for _ in range(n)]
+        new_units = [rng.choice([u, rng.randint(*bounds(u, 0))]) for u in units]
+        prices = [rng.choice([1, UINT128_MAX, int(10 ** rng.uniform(0, 38))]) for _ in range(n)]
+        tolerance = rng.choice([0, 1, WAD - 1, WAD // 100, rng.randrange(WAD)])
+        out.append(quote_vector(units, new_units, prices, tolerance))
+    # Trades near the quote: every leg worth about the same, some sold, the rest bought for about what the quote asks.
+    for _ in range(40):
+        n = rng.randint(2, 8)
+        prices = [int(10 ** rng.uniform(0, 20)) for _ in range(n)]
+        units = [10**30 // p for p in prices]
+        tolerance = rng.choice([0, WAD // 1000, WAD // 100, WAD // 20])
+        sold = rng.randint(1, n - 1)
+        part = rng.uniform(0.01, 0.15)
+        asked = part * sold / (n - sold) * (1 - tolerance / WAD) * rng.uniform(0.97, 1.03)
+        new_units = [u - int(u * part) if i < sold else u + int(u * asked) for i, u in enumerate(units)]
+        out.append(quote_vector(units, new_units, prices, tolerance))
+    # On the floor to the unit, and one unit under it: two legs at a price of one, a hundredth of tolerance.
+    for sold in (10**6, 10**18, 3 * 10**20 + 7):
+        floor_ = ceil(Fraction(sold * (WAD - WAD // 100), WAD))
+        for bought in (floor_, floor_ - 1):
+            out.append(quote_vector([10**24, 10**24], [10**24 - sold, 10**24 + bought], [1, 1], WAD // 100))
+    # The widest sums the hub can pass: every leg at the top price, half sold a fifth and half doubled.
+    top = 2**96 - 1
+    units = [top // 2] * 100
+    new_units = [bounds(u, 0)[0] if i % 2 else bounds(u, 0)[1] for i, u in enumerate(units)]
+    out.append(quote_vector(units, new_units, [UINT128_MAX] * 100, 0))
+    assert sum(q["holds"] for q in out) >= 15 and sum(1 - q["holds"] for q in out) >= 15, "both verdicts are met"
+    return out
+
+
 def main():
     rng = random.Random(SEED)
     plan = [("trade", 110), ("wide", 40), ("gift", 20), ("caps", 40), ("tiny", 30), ("kept", 40), ("dust", 15),
@@ -324,7 +386,7 @@ def main():
     assert counts["overflow"] >= 10 and counts["empty"] >= 3 and counts["length"] >= 4 and counts["elapsed"] >= 5, counts
     assert counts["kept"] >= 30 and counts["scaled"] >= 20 and counts["negativeGain"] >= 10, counts
     assert counts["turnoverBound"] >= 10 and counts["growthBound"] >= 10, counts
-    out = dict(seed=SEED, count=len(vectors), counts=counts, vectors=vectors)
+    out = dict(seed=SEED, count=len(vectors), counts=counts, vectors=vectors, quotes=quotes())
     print(json.dumps(out, separators=(",", ":"), sort_keys=True))
 
 

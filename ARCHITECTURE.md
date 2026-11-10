@@ -5,8 +5,9 @@ index and chooses each coin's percentage, anyone can mint it with USDC or USDT, 
 USDT or any other token with Uniswap V3 or V4 liquidity. Every index is fully backed, in kind, by the tokens it holds.
 Its constituents and its creator's percentages never change; it rebalances back toward them through a permissionless
 auction in which the executor names the units each coin is to have and the index checks a gain in units. No contract
-reads a price, a feed or an oracle, for any of it. No admin can touch user funds, and no protocol key or bot is involved
-in rebalancing.
+reads a price, a feed or an oracle, for any of it. The one place a price enters is a quote the owner or guardian may
+post with a start: their own figures, used only to refuse a fill (section 3.9). No admin can touch user funds, and no
+protocol key or bot is involved in rebalancing.
 
 **Xindex is one deployment, on Ethereum, and one index holds up to 100 coins of the top 300** (the owner's decision of
 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). An index holds Ethereum ERC-20s in kind: the issuer's own
@@ -37,7 +38,7 @@ design it. Nothing has had an external audit, and nothing is deployed on a mainn
 | Mint and burn | In-kind `issue` / `redeem` on the hub; USDC/USDT through the zap, or at a limit through `MintRequests` |
 | Trade the index into other coins | Standard ERC-20 (transferable, listable) plus `burnToToken` into any token |
 | USDC/USDT in, USDC/USDT out | The zap mints from either stable; the burner chooses the payout token |
-| Rebalancing and index price | The units are brought back toward the weights through an auction, at most once per the index's interval (7 to 91 days): an executor names the units, and the index accepts them when a weighted gain in units clears a bar that falls with time (section 3). No contract reads a price; the index price is the basket's value, computed off chain |
+| Rebalancing and index price | The units are brought back toward the weights through an auction, at most once per the index's interval (7 to 91 days): an executor names the units, and the index accepts them when a weighted gain in units clears a bar that falls with time (section 3). The owner or guardian may post a quote with a start, which can only refuse a fill. No contract reads a price of its own; the index price is the basket's value, computed off chain |
 | Layer-1 coins | Ethereum tokens, Bitcoin as WBTC, and the coins Ethereum lacks as Wormhole-wrapped copies: SOL, XRP, ADA, AVAX and others |
 
 Constraints kept from v3 and v4: in-kind backing, CREATE2 addresses that commit to their contents, fixed constituents,
@@ -79,12 +80,12 @@ OpenZeppelin's upgradeable ERC20 and ERC20Permit (clones skip constructors, so n
   (`uint16[]`), both set at `initialize`. Only `executeRebalance` changes units, and nothing changes the weights.
   `units_i` is the recorded amount of component `i` (in that token's own decimals) per whole index token (`1e18`
   shares); times `_scale / 1e18` it is the raw amount backing one whole index token. `_scale` is the streaming fee's
-  factor (1e18 = one, lowered by each accrual and by nothing else; no
-  fill resets it, XS-2), beside which `_lastAccrual` is the fee's clock (`lastAccrual()`), restarted by every accrual,
-  one that mints nothing included (XS-1), and `_maskedFill`, whether the last fill had a keep mask (XS-3). Open claims live in `claimOf[account][token]`, their sum per token
-  in `totalClaims[token]`. A pending
-  rebalance is its `eta` and keep mask; beside them `proposalCount`, `rebalanceNonce`, `lastRebalance` (creation, then
-  each fill) and `restartAllowedAt`.
+  factor (1e18 = one, lowered by each accrual and by nothing else; no fill resets it, XS-2), beside which `_lastAccrual`
+  is the fee's clock (`lastAccrual()`), restarted by every accrual, one that mints nothing included (XS-1), and
+  `_maskedFill`, whether the last fill had a keep mask (XS-3). Open claims live in `claimOf[account][token]`, their sum
+  per token in `totalClaims[token]`. A pending rebalance is its `eta` and keep mask, and, when its start posted one, a
+  quote: a price per component (`uint128`), a tolerance and the proposal it belongs to; beside them `proposalCount`,
+  `rebalanceNonce`, `lastRebalance` (creation, then each fill) and `restartAllowedAt`.
 - **initialize(name, symbol, components, config):** `FACTORY` only, once. 2 to 100 components, each with a non-zero token,
   non-zero units within `uint96` and a weight from 1 to `TOTAL_WEIGHT`; the weights sum to `TOTAL_WEIGHT` (10,000),
   and no two components share a token. Anything else is `InvalidComponents`. Fee rates, a referral share or an
@@ -96,21 +97,24 @@ OpenZeppelin's upgradeable ERC20 and ERC20Permit (clones skip constructors, so n
 - **redeemSkipping(shares, to, skipMask):** the same, except each component whose bit is set stays in the index and is
   booked as a claim for `to`, the account that receives every other component (DA-17), before any token moves.
   **claim(token, to)** pays `msg.sender`'s claim on `token` and clears it.
-- **startRebalance(keepMask)**, **cancelRebalance()** and the two **executeRebalance** overloads: section 3.
+- **startRebalance(keepMask)**, **startRebalance(keepMask, prices, tolerance)**, **cancelRebalance()** and the two
+  **executeRebalance** overloads: section 3.
 - **Views:** `components()`, `componentTokens()`, `componentCount()`, `componentWeights()`, `recordedUnits()` (the units
   a fill's `newUnits` are compared with, without the scale), `config()`, `previewIssue`, `previewRedeem`, `claimOf`,
   `totalClaims`, `pendingStreamingFee()`, `lastAccrual()`, `earliestRebalance()`, `pendingRebalance()`, `currentBar()`,
+  `rebalanceQuote()` (the pending proposal's prices and tolerance, empty and zero when it has none),
   `canStartRebalance()`, and `previewRebalance(newUnits)`, which returns the bar, the gain and the amounts a fill of
-  those units in this block would settle, and reverts as the fill would. No function values the index, and none takes
-  or returns a price.
-- **Access:** `issue`, `redeem`, `redeemSkipping`, `startRebalance`, `cancelRebalance` and both `executeRebalance`
-  overloads revert `NotInitialized` on anything but an initialized clone; the implementation has initializers disabled.
-  A recipient can never be zero, the hub itself or its factory, and that includes a plain ERC-20 `transfer` or
-  `transferFrom` of shares, since neither could ever move a share on (CR-I01, RT-21). These and `claim` share the
-  storage-based `ReentrancyGuard`, whose zeroed slot reads as "not entered" in a clone; the ERC-20 entry points are
-  deliberately unguarded.
-- **Ether:** none of the hub's entry points is payable, a start and both fills included
-  (`test_noRebalanceEntryPointTakesEther`): nobody is paid for a price, and the hub never holds ether.
+  those units in this block would settle, and reverts as the fill would. No function values the index. The only
+  prices any function takes or returns are a quote's, the owner's or guardian's own (section 3.9).
+- **Access:** `issue`, `redeem`, `redeemSkipping`, both `startRebalance` overloads, `cancelRebalance` and both
+  `executeRebalance` overloads revert `NotInitialized` on anything but an initialized clone; the implementation has
+  initializers disabled. A recipient can never be zero, the hub itself or its factory, and that includes a plain ERC-20
+  `transfer` or `transferFrom` of shares, since neither could ever move a share on (CR-I01, RT-21). These and `claim`
+  share the storage-based `ReentrancyGuard`, whose zeroed slot reads as "not entered" in a clone; the ERC-20 entry
+  points are deliberately unguarded.
+- **Ether:** none of the hub's entry points is payable, both starts and both fills included
+  (`test_noRebalanceEntryPointTakesEther`, `test_aQuotedStartTakesNoEther`): nobody is paid for a price, and the hub
+  never holds ether.
 
 ### WeightedIndexFactory (`src/WeightedIndexFactory.sol`)
 
@@ -277,9 +281,11 @@ Decodes Uniswap V3 packed paths (`token(20) | fee(3) | token(20) ...`): shape ch
 An index holds amounts of coins, and a weight is a share of value, so bringing the units back to the weights takes
 someone who knows what the coins are worth. That someone is the executor, never the index: the executor names the units
 each component is to have, and the index judges them on units alone. No contract reads a price, a feed, a pool's price
-or an oracle, for a rebalance or for anything else (`test_V5I4_noContractNamesPyth`,
-`test_A713_noContractReadsAPrice`), so no feed can block an exit, misprice a mint or set the terms of a rebalance. The
-spec is `design/2026-11-10-oracle-free-rebalance.md`. Until 2026-11-10 the settlement was priced by Pyth (section 11).
+or an oracle, for a rebalance or for anything else (`test_V5I4_noContractNamesPyth`, `test_A713_noContractReadsAPrice`),
+so no feed can block an exit, misprice a mint or set the terms of a rebalance. The one place a price enters is a quote
+the owner or guardian may post with a start: their own figures, fixed at the start, and used only to refuse a fill the
+rule accepts (section 3.9). The spec is `design/2026-11-10-oracle-free-rebalance.md`. Until 2026-11-10 the settlement
+was priced by Pyth (section 11).
 
 Notation: `u_i` a component's recorded units, `v_i` the units the executor names for it, `w_i` its weight (basis points
 on chain, summing to 10,000), `σ` the index's scale after the settlement's own accrual (1e18 = one),
@@ -298,6 +304,9 @@ mask, a start without one waits only `MIN_REBALANCE_INTERVAL`, so a sliver the g
 off for a quarter; a start with a mask may start then too, so the guardian can renew a keep around a frozen component
 (XS-3). The start stores `eta = now + REBALANCE_DELAY` and the mask, and emits `RebalanceStarted`. It is a plain call:
 it takes no ether and no data, reads no price and calls nothing on any component.
+
+`startRebalance(keepMask, prices, tolerance)` is the same start with a quote posted, for the owner or guardian only,
+under the same clock and keep-mask rules (section 3.9). The plain start is unchanged by it.
 
 `REBALANCE_DELAY` is 2 hours. The notice is for executors to prepare, not for holders' exits: the units a fill settles
 at are named at the fill, so nothing a holder would leave over is fixed at the start. The auction runs from `eta` to
@@ -331,7 +340,8 @@ A leg left alone has `x = 0` and scores nothing. So a fill that changes nothing 
 reaches zero, none can restart the rebalance interval for free (V5-L2,
 `test_V5L2_aFillThatChangesNothingCannotRestartTheInterval`); no minimum trade is needed. On an index without shares
 the settlement reverts `NothingToRebalance`: an empty index has nothing to trade, and nobody moves its units for nothing
-(R14, XA-27, `test_R14_XA27_anEmptyIndexDoesNotRebalance`).
+(R14, XA-27, `test_R14_XA27_anEmptyIndexDoesNotRebalance`). A fill of a proposal whose start posted a quote must hold
+the quote as well (section 3.9).
 
 ### 3.3 Why it is safe
 
@@ -428,7 +438,8 @@ In order, `executeRebalance`:
 2. checks that an auction is open (`NoPendingRebalance`, `RebalanceNotReady`, `RebalanceExpired`);
 3. has `WeightedMath` check the units named and compute the amounts at `S` and `σ` in this block: one entry per
    component (`LengthMismatch`), a supply above zero (`NothingToRebalance`), each leg's caps in component order
-   (`LegOutOfBounds`, then the 96-bit limit), then the gain against the bar (`GainBelowBar`);
+   (`LegOutOfBounds`, then the 96-bit limit), then the gain against the bar (`GainBelowBar`), and last, when the
+   proposal's start posted a quote, the quote (`BelowQuote`, section 3.9);
 4. for the bounded overload, checks `maxAmountsIn` (`RebalanceMovedOn`);
 5. reads what the index holds of each component that sends or receives something, and of no other, not even its
    balance (DA-14);
@@ -462,14 +473,15 @@ BTC 30% and USD 20%, with ETH up 25%, is 0.62% of its value from its weights. Th
 weights, has a gain of 0.6201%, which the bar reaches 4,618 seconds into the auction; executors who compete fill near
 there, and the holders keep the distance less the executors' costs. A lone executor that waits for the last second keeps
 0.6166% of the index, and no more (`test_aLoneExecutorKeepsAtMostTheDistanceFromTheWeights`). In an ordinary week the
-distance is 0.3 to 0.6% of an index, up to about 1.8% after a week in which a tenth of the index halved, and 5.0% in
-one fill after one coin of two doubled. It comes out of the holders' value: it is what a fee-less constant-weight pool
-loses to arbitrage. So a fair price needs an executor bidding, the team's keeper first, where a price feed gave one
-whoever filled; nothing on chain makes the price fair without a bidder. An index created off its weights carries its
-distance from its first day, and its creator can take it: 15.5% of a 50/50 index created 90/10 by value in one fill,
-at the worst a fifth of an index per fill. No contract can compare units with weights without a price. That
-is why only wallets the factory's owner approved create an index (section 2): the team creates on the weights, at the
-app's prices, and the app shows an index's coins against its weights (`docs/known-limitations.md`).
+distance is 0.3 to 0.6% of an index, up to about 1.8% after a week in which a tenth of the index halved, and 5.0% in one
+fill after one coin of two doubled. It comes out of the holders' value: it is what a fee-less constant-weight pool loses
+to arbitrage. So a fair price needs an executor bidding, the team's keeper first, where a price feed gave one whoever
+filled. Without a bidder, nothing on chain makes the price fair unless the start posted a quote, which caps a lone
+executor at its tolerance of what it trades (section 3.9). An index created off its weights carries its distance from
+its first day, and its creator can take it: 15.5% of a 50/50 index created 90/10 by value in one fill, at the worst a
+fifth of an index per fill. No contract can compare units with weights without a price. That is why only wallets the
+factory's owner approved create an index (section 2): the team creates on the weights, at the app's prices, and the app
+shows an index's coins against its weights (`docs/known-limitations.md`).
 
 **No price can be wrong.** No key signs a price and no feed reports one, so there is none to forge or to stop. What is
 left is a coin that turns worthless and free to mint, by its issuer or through a forged bridge message. The caps and
@@ -505,6 +517,62 @@ longer answers at all (`test_R08_DA14_RT01_aComponentLeftAloneIsNotRead`). The l
   whoever holds a dust index's shares can move its units off its weights over several intervals. A later minter
   deposits at those units, in kind and fairly, and the next auction pays the distance to whoever fills first. The app
   shows an index's components against its weights before it offers a mint.
+
+### 3.9 The quote
+
+The owner or guardian may post a quote with a start: `startRebalance(keepMask, prices, tolerance)`, for those two roles
+only (`Unauthorized` otherwise), under the same clock and keep-mask rules as `startRebalance(keepMask)`, which is
+unchanged and still open to anyone once the waits are over.
+
+- `prices`: one per component, in component order (`LengthMismatch` otherwise). Each is the price of one raw unit of
+  the token in any one unit of account, from 1 to 2^128 − 1 for a component the mask leaves moving; only their ratios
+  matter. A kept component's entry is ignored and recorded as zero.
+- `tolerance`: how far under the quoted value a fill may bring in, 1e18 = 100%. It must be under 1e18. A price out of
+  range or a tolerance of 1e18 or more reverts `InvalidQuote`.
+- The start emits `RebalanceQuoted(proposalId, prices, tolerance)`, and `rebalanceQuote()` returns the pending
+  proposal's prices and tolerance, empty and zero when it has none.
+
+A fill of that proposal must clear the bar as any fill does, and must also bring in, at those prices, at least
+`1 − tolerance` of the value it takes out:
+
+```
+valueOut = Σ p_i · (u_i − v_i)      over the legs that shrink
+valueIn  = Σ p_i · (v_i − u_i)      over the legs that grow
+valueIn ≥ ⌈valueOut · (1e18 − tolerance) / 1e18⌉          or BelowQuote(valueIn, floor)
+```
+
+The check is `WeightedMath.quoteCheck`, exact in integers, with the floor rounded up, against the executor. It runs
+after the settlement's own checks, in `previewRebalance` as in the fill. A component whose units do not change counts
+for nothing, whatever its price.
+
+**The index still reads no price of its own.** No feed, no oracle, no pool: these prices are the caller's, a
+governance input fixed at the start. The quote is the one place a price enters a contract, and it enters only to
+refuse.
+
+**It can only tighten.** A fill must pass both checks, so a quote that is wrong, stale or hostile can stop its own
+proposal from filling, which a cancel already can, and can make no fill worse than a start without a quote allows
+(`test_aQuoteOnlyRefusesWhatTheBarWouldAccept`, `test_aWrongQuoteStopsItsProposalAndNothingElse`). A compromised
+owner or guardian gains nothing over funds from it.
+
+**What it buys.** An executor alone at the auction's last second keeps at most `tolerance` of what it trades, where
+without a quote it keeps the index's whole distance from its weights (0.48% of an index after one coin of four rose a
+quarter, 5.0% after one coin of two doubled). In `test_aQuoteCapsWhatALoneExecutorKeeps`, with the market's prices
+posted and half a percent of tolerance, the fill that kept 0.6166% of the index is refused and the most a fill keeps is
+under 0.06%.
+
+**Its limits.**
+
+- It protects only a proposal whose start posted one, and it ends with that proposal: a later start without one is
+  bound by the bar alone (`test_aQuoteEndsWithItsProposal`).
+- A stranger may still start without a quote once the waits are over. The guardian then has the two hours of notice
+  and the four of auction to cancel that proposal and start one with a quote, in one Safe transaction.
+- A quote is hours old by the time the auction ends, so its tolerance has to cover the market's move over about six
+  hours, or nothing fills and the proposal expires.
+
+It is modelled on Reserve's Index DTFs, where a rebalance manager posts price ranges; here it is optional and sits on
+top of the rule that needs no price. The keeper reads `rebalanceQuote()` and names units that hold it. The exact
+model's `quote_floor` (`test/vectors/settlement.py`) generates the 77 vectors under `quotes`, which
+`test/WeightedMath.vectors.t.sol` replays, and `test/WeightedHub.quote.t.sol` holds the hub's ten tests.
 
 ## 4. Accounting
 
@@ -557,12 +625,13 @@ math holds nothing and reads nothing. No price enters either.
 - **Mint and burn** through the zap (up to about 35 components, on coins with a route), through the basket builder
   over several transactions (any size, on coins with a route, the rest deposited in kind), in kind (up to 100), or at
   a limit through `MintRequests`, filled by anyone who holds or can issue the shares.
-- **Rebalance.** At most once per the index's interval, 7 to 91 days: anyone starts, a plain call; 2 hours of notice;
-  then a 4-hour auction in which an executor names the units from its own prices, previews the fill with
-  `previewRebalance(newUnits)`, and settles once its gain clears the bar, preferably through the bounded overload. The
-  bot in `keeper/` is one such executor and holds no role; anyone may run one. Its bidding, and any other honest
-  executor's, is what makes the price fair (section 3.5). It prices its own trades off chain, from Pyth's prices
-  served by Hermes, which needs an API key since 2026-08-26; no contract waits on that.
+- **Rebalance.** At most once per the index's interval, 7 to 91 days: anyone starts, a plain call, or the owner or
+  guardian starts with a quote (section 3.9); 2 hours of notice; then a 4-hour auction in which an executor names the
+  units from its own prices, previews the fill with `previewRebalance(newUnits)`, and settles once its gain clears the
+  bar, preferably through the bounded overload. The bot in `keeper/` is one such executor and holds no role; anyone may
+  run one. Its bidding, and any other honest executor's, is what makes the price fair (section 3.5). It prices its own
+  trades off chain, from Pyth's prices served by Hermes, which needs an API key since 2026-08-26; no contract waits on
+  that.
 - **Restock.** A coin no Ethereum pool sells, most Wormhole copies among them, reaches an executor's fill only from its
   stock. Beside the keeper runs its restock service (`keeper/restock.mjs`, since 2026-10-19), under a key of its own,
   the treasury, which the executor's owner pins: it buys such a copy on its home chain's DEX, bridges it into the
@@ -595,7 +664,8 @@ no feed and no price signer is trusted, and nobody's keys stand between the hold
 (V5-I4), and `test_A713_noContractReadsAPrice` if any file names a Chainlink feed, a pool's price or any other common
 price source (A7-13). The cost is the one section 3.5 states: a fair price needs an executor bidding, where a price
 feed gave one whoever filled. Do not bring a price back into a contract, as a check, a bound or a hint: the design's
-safety is that it needs none.
+safety is that it needs none. The one exception is the quote the owner or guardian may post with a start (section
+3.9): a governance input no contract fetches, which can only refuse a fill the bar accepts. The rule holds without it.
 
 **Fixed weights and constituents.** Nobody, the creator included, changes them; new weights or a new list mean a new
 index. An index holds its own units and weights from creation, so no relisting or delisting reaches it, and its address
@@ -631,12 +701,14 @@ Portal, and FIL's waits for a reading of its Binance-Peg source (`design/2026-10
 | `createIndex` | about 5.3M |
 | `issue` | about 3.6M |
 | `startRebalance` | about 94k |
+| `startRebalance` with a quote, which stores a price per component | about 1.4M |
 | `executeRebalance`, an executor that already holds the bought tokens | about 4.2M |
+| the same fill under a quote | about 4.4M |
 | `redeem` | about 3.7M |
 | `redeemSkipping`, every component skipped | about 5.1M |
 | `claim` | about 53k |
 
-The hub is 19,861 bytes, 4,715 under EIP-170. Real tokens transfer dearer than mocks. The fork suite that issues,
+The hub is 21,315 bytes, 3,261 under EIP-170. Real tokens transfer dearer than mocks. The fork suite that issues,
 rebalances and redeems every coin forge-std can fund in one index (`test/fork/WeightedHub.fork.t.sol`) is rewritten
 for this rebalance and has not run on it yet, so no figure on real tokens is recorded for this build; the Pyth-priced
 build's are in section 11.
@@ -650,14 +722,17 @@ components (section 2).
 - **Trust.**
   - The factory owner (a Safe), who proposes listings and guardian changes behind public delays, approves which wallets
     may create an index, at once, and hands over ownership in two steps with no delay; the guardian, who can cancel
-    listings and rebalances, delist, start a rebalance with a keep mask or before strangers may, and cancel its own
-    removal but not its replacement. The guardian is the guardian's Safe itself.
+    listings and rebalances, delist, start a rebalance with a keep mask, with a quote or before strangers may, and
+    cancel its own removal but not its replacement. The guardian is the guardian's Safe itself.
   - No price feed and no price signer. Nothing reads a price, so no publisher, signing key or oracle's governance is
     trusted with anything, Pyth's included. What took their place is not a party but a condition on the price: a fill
     is safe whoever makes it (section 3.3), and its price is fair when an honest executor bids, the team's keeper
     first. A lone executor takes the index's distance from its weights out of the holders' value: 0.3 to 0.6% of an
     index in an ordinary week, 5.0% after one coin of two doubled, and up to a fifth per fill of an index its creator
-    made off its weights (section 3.7), which is why only wallets the owner approved create one.
+    made off its weights (section 3.7), which is why only wallets the owner approved create one. The one price a
+    contract takes is a quote the owner or guardian may post with a start, and it can only refuse a fill: a wrong,
+    stale or hostile one stops its own proposal, which a cancel already can, and gives a compromised role nothing over
+    funds. With one posted, a lone executor keeps at most its tolerance of what it trades (section 3.9).
   - Wormhole's guardians, for the wrapped legs: a quorum (13 of 19) can forge a bridge message, minting unbacked copies
     or upgrading every wrapped token's code at once, with no timelock. Since April 2026, for the chains on delegated
     guardian sets (BNB Chain, Kaia, NEAR, Sui, Arbitrum, Monad), five of seven named guardians suffice to mint, so most
@@ -677,22 +752,23 @@ components (section 2).
   constituents are fixed at creation. Rounding goes the holders' way everywhere.
 - **The guardian's stalls.** `cancelRebalance` has no window and no rate limit, so a hostile or compromised guardian can
   cancel every auction at its last second until the owner replaces it, after `GUARDIAN_DELAY`, which the guardian cannot
-  cancel: a trust assumption of the role (DA-12). A keep-mask rebalance that leaves a pair of small components moving
-  can also be filled with a gift to that sliver, and its fill restarts `MIN_REBALANCE_INTERVAL` for a start without a
-  mask rather than the index's interval (XS-3), so the stall can outlast the replacement by up to a week, and by a
-  keep-mask auction the outgoing guardian left pending, `REBALANCE_DELAY` + `AUCTION_DURATION` more (RX-44). While a
-  replacement is pending the owner cancels the outgoing guardian's keep-mask proposals, within the 2 hours of
-  `REBALANCE_DELAY`, and monitors watch `RebalanceStarted` with a non-zero `keepMask` (RT-07). Neither stall moves
-  funds; holders redeem throughout.
-- **Reentrancy.** `nonReentrant` on the hub's ten entry points that mint, burn, pay, accrue or rebalance
-  (`test_R11_everyEntryPointIsGuardedDuringTheCallback`), on `createIndex`, on the zap's seven (CR-I26), on every entry
-  point of `BasketBuilder` and on every entry point of `MintRequests`. The new units, the nonce and the cleared proposal
-  are written before any rebalance transfer, and the callback goes only to `msg.sender`. Wake's reentrancy detector does
-  not model the guard; its documented suppressions are the `redeem` call in `IndexZap._burnBasket`, the `permit` call in
-  `IndexZap._tryPermit`, the `redeem` call in `BasketBuilder.redeem`, the clone's `initialize` call in
-  `WeightedIndexFactory._initializeIndex`, and the executor callback in `WeightedHub`. Inside `issue`, `redeem` and
-  `executeRebalance`, supply, units and balances change at different moments, so integrators value an index from
-  `components()` and independent prices, never from `balanceOf(index)` and `totalSupply()` (VR-05).
+  cancel: a trust assumption of the role (DA-12). A quote no fill can hold stalls its own proposal in the same way, and
+  does nothing else. A keep-mask rebalance that leaves a pair of small components moving can also be filled with a gift
+  to that sliver, and its fill restarts `MIN_REBALANCE_INTERVAL` for a start without a mask rather than the index's
+  interval (XS-3), so the stall can outlast the replacement by up to a week, and by a keep-mask auction the outgoing
+  guardian left pending, `REBALANCE_DELAY` + `AUCTION_DURATION` more (RX-44). While a replacement is pending the owner
+  cancels the outgoing guardian's keep-mask proposals, within the 2 hours of `REBALANCE_DELAY`, and monitors watch
+  `RebalanceStarted` with a non-zero `keepMask` (RT-07). Neither stall moves funds; holders redeem throughout.
+- **Reentrancy.** `nonReentrant` on the hub's eleven entry points that mint, burn, pay, accrue or rebalance
+  (`test_R11_everyEntryPointIsGuardedDuringTheCallback` re-enters ten of them; the quoted start shares the guard), on
+  `createIndex`, on the zap's seven (CR-I26), on every entry point of `BasketBuilder` and on every entry point of
+  `MintRequests`. The new units, the nonce and the cleared proposal are written before any rebalance transfer, and the
+  callback goes only to `msg.sender`. Wake's reentrancy detector does not model the guard; its documented suppressions
+  are the `redeem` call in `IndexZap._burnBasket`, the `permit` call in `IndexZap._tryPermit`, the `redeem` call in
+  `BasketBuilder.redeem`, the clone's `initialize` call in `WeightedIndexFactory._initializeIndex`, and the executor
+  callback in `WeightedHub`. Inside `issue`, `redeem` and `executeRebalance`, supply, units and balances change at
+  different moments, so integrators value an index from `components()` and independent prices, never from
+  `balanceOf(index)` and `totalSupply()` (VR-05).
 - **Clone safety.** The implementation has initializers disabled; `initialize` is `FACTORY`-only and runs in the same
   transaction as the clone; uninitialized instances cannot issue, redeem or rebalance; `isIndex` is the only trusted
   registry, and the zap and `MintRequests` check it.
@@ -721,16 +797,18 @@ components (section 2).
 ## 8. Verification
 
 - **Unit and fuzz tests per contract:** `test/WeightedHub.t.sol`, `test/WeightedHub.fees.t.sol`,
-  `test/WeightedHub.rebalance.t.sol` (exact settlements, the bar, the unit caps, the bound on and off the weights,
-  keep masks, reentrancy, a hundred components), `test/WeightedHub.states.t.sol` (the rebalance state machine's
-  transition matrix, section 3.1), `test/WeightedMath.vectors.t.sol` (426 settlements replayed against the
-  exact-rational model of `test/vectors/settlement.py`, written from the spec; `test/vectors/proofs.py` checks the
-  safety proof's chain in exact rationals with the standard library alone, section 3.3; the method is that of
-  `design/2026-10-29-settlement-vectors.md`), `test/WeightedMath.halmos.t.sol` (the integer properties stated for
-  Halmos, which has not been run on it), `test/WeightedIndexFactory.t.sol`, `test/IndexZap.t.sol`,
+  `test/WeightedHub.rebalance.t.sol` (exact settlements, the bar, the unit caps, the bound on and off the weights, keep
+  masks, reentrancy, a hundred components), `test/WeightedHub.states.t.sol` (the rebalance state machine's transition
+  matrix, section 3.1), `test/WeightedHub.quote.t.sol` (the quote of section 3.9: who may post one, what it must
+  contain, the cap it puts on a lone executor, that it only refuses, that a wrong one stops its own proposal and nothing
+  else, and that it ends with its proposal), `test/WeightedMath.vectors.t.sol` (426 settlements and 77 quote checks
+  replayed against the exact-rational model of `test/vectors/settlement.py`, written from the spec;
+  `test/vectors/proofs.py` checks the safety proof's chain in exact rationals with the standard library alone, section
+  3.3; the method is that of `design/2026-10-29-settlement-vectors.md`), `test/WeightedMath.halmos.t.sol` (the integer
+  properties stated for Halmos, which has not been run on it), `test/WeightedIndexFactory.t.sol`, `test/IndexZap.t.sol`,
   `test/WeightedZap.t.sol`, `test/BasketBuilder.t.sol`, `test/MintRequests.t.sol`, `test/Security.t.sol`, the scripts'
-  suites, `test/Repo.t.sol` and the mocks' own tests in `test/mocks/Mocks.t.sol`. `MockWeightedExecutor` fills
-  honestly, short, not at all, or reentrantly.
+  suites, `test/Repo.t.sol` and the mocks' own tests in `test/mocks/Mocks.t.sol`. `MockWeightedExecutor` fills honestly,
+  short, not at all, or reentrantly.
 - **Invariant suites.** `test/WeightedHub.invariant.t.sol` runs random issue, redeem, `redeemSkipping`, claim, transfer,
   donate, moves of the test market's prices, time jumps, starts, cancels, and honest, bounded and short fills. It
   asserts that every component stays backed including open claims, supply and claims add up, the nonce counts fills, a
@@ -837,14 +915,15 @@ and one L2 deployment if cheap minting for small buyers matters after launch.
   (`keeper/`); and on 2026-10-13 the deletion of the BNB Chain deployment, the v4 demo, the review PoCs and the records
   of retired designs, all recoverable from git at `f83dcab`. On 2026-10-14 the owner removed THORChain and the zap's
   PancakeSwap legs: users come with USDC or USDT, and the zap swaps through Uniswap alone.
-- **The oracle-free rebalance** (2026-11-10): the owner's call to cut the oracle and keep the rebalance. Until then
-  v5's settlement was priced by Pyth. The hub fixed the second its prices belonged to, an executor brought a signed
-  update for it, the targets came from those prices, and the auction ran on a multiplier μ that fell from 1.02 to
-  0.98. From 2026-10-26 a start read every moving feed (RX-3), and from 2026-11-02 a `GuardianRelay` held the guardian
-  role, because a start's update was valid for one slot, which a Safe cannot land (RZ-26). Three of Pyth's five
-  signing keys could take up to a fifth of each component per fill. All of that went: the executor names the units,
-  and the index checks a gain in units against a falling bar (section 3,
-  `design/2026-11-10-oracle-free-rebalance.md`). `audit/2026-11-10-oracle-retirement.md` lists the review ids that
-  went with Pyth and the test of every re-targeted one. What it cost: a fair price now needs an executor bidding,
-  where Pyth gave one whoever filled. The same day creation was limited to wallets the factory's owner approves
-  (`setApprovedCreator`), since no contract can check a creator's units against its weights.
+- **The oracle-free rebalance** (2026-11-10): the owner's call to cut the oracle and keep the rebalance. Until then v5's
+  settlement was priced by Pyth. The hub fixed the second its prices belonged to, an executor brought a signed update
+  for it, the targets came from those prices, and the auction ran on a multiplier μ that fell from 1.02 to 0.98. From
+  2026-10-26 a start read every moving feed (RX-3), and from 2026-11-02 a `GuardianRelay` held the guardian role,
+  because a start's update was valid for one slot, which a Safe cannot land (RZ-26). Three of Pyth's five signing keys
+  could take up to a fifth of each component per fill. All of that went: the executor names the units, and the index
+  checks a gain in units against a falling bar (section 3, `design/2026-11-10-oracle-free-rebalance.md`).
+  `audit/2026-11-10-oracle-retirement.md` lists the review ids that went with Pyth and the test of every re-targeted
+  one. What it cost: a fair price now needs an executor bidding, where Pyth gave one whoever filled. The same day
+  creation was limited to wallets the factory's owner approves (`setApprovedCreator`), since no contract can check a
+  creator's units against its weights. A quote the owner or guardian may post with a start was added the same day
+  (section 3.9).

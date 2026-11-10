@@ -51,6 +51,18 @@ contract WeightedMathVectorsTest is Test {
     }
 
     /// @dev The file, kept in memory: in storage, every parse would read its 200 KB back word by word.
+    /// @dev One vector of the quote's check, its fields in the same alphabetical order.
+    struct Quote {
+        uint256 floor;
+        uint256 holds;
+        uint256[] newUnits;
+        uint256[] prices;
+        uint256 tolerance;
+        uint256[] units;
+        uint256 valueIn;
+        uint256 valueOut;
+    }
+
     function _file() internal view returns (string memory json, uint256 count) {
         json = vm.readFile("test/vectors/settlement.json");
         count = vm.parseJsonUint(json, ".count");
@@ -106,6 +118,32 @@ contract WeightedMathVectorsTest is Test {
     ///      themselves, not read from the file's summary, so a regenerated file that lost a path fails. And the facts
     ///      the model owes the spec hold on every settled vector: the gain clears the bar, the bar is positive, a leg
     ///      never both sends and receives, a kept leg's units do not move, and every leg is inside its caps.
+    /// @dev The quote's check against the exact model: it passes where the model's quote holds, and where it does
+    ///      not it reverts with the model's value in and floor, to the unit.
+    function test_everyQuoteHoldsOrFailsAsTheExactModelSays() public view {
+        string memory json = vm.readFile("test/vectors/settlement.json");
+        Quote[] memory quotes = abi.decode(vm.parseJson(json, ".quotes"), (Quote[]));
+        assertEq(quotes.length, 77);
+        uint256 held = 0;
+        for (uint256 i = 0; i < quotes.length; ++i) {
+            Quote memory q = quotes[i];
+            try math.quoteCheck(q.units, q.newUnits, q.prices, q.tolerance) {
+                assertEq(q.holds, 1, string.concat("quote ", vm.toString(i), " holds in the model"));
+                assertGe(q.valueIn, q.floor);
+                ++held;
+            } catch (bytes memory reason) {
+                assertEq(q.holds, 0, string.concat("quote ", vm.toString(i), " fails in the model"));
+                assertEq(
+                    reason,
+                    abi.encodeWithSelector(IWeightedHub.BelowQuote.selector, q.valueIn, q.floor),
+                    string.concat("quote ", vm.toString(i), ": the refusal")
+                );
+            }
+        }
+        assertGe(held, 15, "the vectors hold some quotes");
+        assertGe(quotes.length - held, 15, "and fail others");
+    }
+
     function test_theVectorsReachEveryPath() public view {
         uint256[7] memory outcomes;
         uint256 kept = 0;

@@ -1175,6 +1175,7 @@ contract KeeperExecutorTest is WeightedTest {
     ///      before it opens.
     uint256 constant ETA_SLOT = 6;
     uint256 constant KEEP_MASK_SLOT = 7;
+    uint256 constant QUOTE_PROPOSAL_SLOT = 14;
 
     /// @dev XS-8: keeper/bot/config.mjs names these slots, and on a real hub they are the pending auction's: writing
     ///      them is what `pendingRebalance` reports, on a clone and on the implementation the bot's startup check
@@ -1187,9 +1188,11 @@ contract KeeperExecutorTest is WeightedTest {
             vm.toString(ETA_SLOT),
             "n, keepMask: ",
             vm.toString(KEEP_MASK_SLOT),
+            "n, quoteProposal: ",
+            vm.toString(QUOTE_PROPOSAL_SLOT),
             "n });"
         );
-        assertTrue(vm.indexOf(config, pinned) != type(uint256).max, "config.mjs names slots 6 and 7");
+        assertTrue(vm.indexOf(config, pinned) != type(uint256).max, "config.mjs names slots 6, 7 and 14");
 
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
         vm.prank(guardian);
@@ -1206,6 +1209,23 @@ contract KeeperExecutorTest is WeightedTest {
             assertEq(eta, 1234, "the eta slot is the hub's");
             assertEq(keepMask, 5, "the keepMask slot is the hub's");
         }
+
+        // The proposal a quote belongs to is in slot 14: zeroed there, as the bot's start simulation zeroes it, the
+        // hub reports no quote, though the prices are still stored.
+        // The eta stored above is long past, so the guardian may start again.
+        vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL() + 1 days);
+        uint256[] memory prices = new uint256[](index.componentCount());
+        for (uint256 i = 0; i < prices.length; ++i) {
+            prices[i] = 1;
+        }
+        vm.prank(guardian);
+        index.startRebalance(0, prices, 0);
+        assertEq(uint256(vm.load(address(index), bytes32(QUOTE_PROPOSAL_SLOT))), index.proposalCount());
+        (uint256[] memory posted,) = index.rebalanceQuote();
+        assertEq(posted.length, prices.length);
+        vm.store(address(index), bytes32(QUOTE_PROPOSAL_SLOT), bytes32(0));
+        (posted,) = index.rebalanceQuote();
+        assertEq(posted.length, 0, "the quoteProposal slot is the hub's");
     }
 
     uint256 constant COMPONENTS_SLOT = 0;

@@ -158,7 +158,13 @@ async function pricesOf(st, L, keepMask) {
 async function preview(index, st, L, keepMask, eta) {
   const T = L.timestamp + 12n;
   const over = { block: { number: L.number + 1n, time: T } };
-  if (eta !== undefined) over.state = { [index]: { [HUB_SLOTS.eta]: eta, [HUB_SLOTS.keepMask]: keepMask } };
+  // A start of the keeper's posts no quote: an earlier proposal's is cleared for the simulation.
+  if (eta !== undefined) {
+    over.state = { [index]: { [HUB_SLOTS.eta]: eta, [HUB_SLOTS.keepMask]: keepMask, [HUB_SLOTS.quoteProposal]: 0n } };
+  }
+  // The quote the owner or guardian posted with this proposal, if any: prices of theirs that a fill must also hold.
+  const [quotePrices, quoteTolerance] = await chain.call({ to: index, abi: ABI.hub, functionName: "rebalanceQuote", args: [] }, L.number, over);
+  const quote = quotePrices.length ? { prices: quotePrices, tolerance: quoteTolerance } : null;
   const [units, weights, bar, prices] = await Promise.all([
     chain.read(index, ABI.hub, "recordedUnits", [], L.number),
     weightsOf(index, st, L.number),
@@ -168,8 +174,8 @@ async function preview(index, st, L, keepMask, eta) {
   if (bar === 0n) throw new Error("no auction is open at the next block");
   // Dollars per raw unit: only their ratios decide the units named.
   const perUnit = prices.map((p, i) => (p ? M.priceUsd(p) / 10 ** st.decimals[i] : null));
-  const named = U.nameUnits({ units, weights, keepMask, prices: perUnit, bar, costBps: cfg.tradeCostBps });
-  if (!named) throw new Error("no units the keeper can price clear the bar");
+  const named = U.nameUnits({ units, weights, keepMask, prices: perUnit, bar, costBps: cfg.tradeCostBps, quote });
+  if (!named) throw new Error(quote ? "no units the keeper can price clear the bar and hold the quote" : "no units the keeper can price clear the bar");
   const at = { to: index, abi: ABI.hub, functionName: "previewRebalance", args: [named.newUnits] };
   const [, gain, out, need] = await chain.call(at, L.number, over);
   const moving = out.map((_, i) => i).filter((i) => out[i] > 0n || need[i] > 0n);

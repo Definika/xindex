@@ -54,9 +54,10 @@ export const CHAINS = Object.freeze({
 export const MAINNET = CHAINS[1];
 
 /// WeightedHub's storage slots for the pending auction (`forge inspect WeightedHub storageLayout`), which the start
-/// check overrides to simulate an auction before opening one. The keeper verifies them at startup, and
+/// check overrides to simulate an auction before opening one; `quoteProposal` is zeroed there, since a start of the
+/// keeper's posts no quote and a past proposal's must not bind the simulation. The keeper verifies them at startup, and
 /// `test_XS8_theBotsHubSlotsAreTheHubs` (keeper/test/KeeperExecutor.t.sol) pins them against a real hub.
-export const HUB_SLOTS = Object.freeze({ eta: 6n, keepMask: 7n });
+export const HUB_SLOTS = Object.freeze({ eta: 6n, keepMask: 7n, quoteProposal: 14n });
 
 /// WeightedHub's slots for the recorded units and scale, which no view returns: `components()` reports units at the
 /// scale an accrual now would leave. The invariant checker (invariants.mjs) reads them to evaluate the backing
