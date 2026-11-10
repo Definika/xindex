@@ -4,8 +4,10 @@ How to deploy Xindex, operate it once deployed, and use the Sepolia test deploym
 
 ## Deploy
 
-Nothing below has been run on a mainnet yet; it has run end to end on an anvil fork of Ethereum. Never put a private key
-in `.env`. Import the deployer key once into an encrypted keystore, or use a hardware wallet with `--ledger`:
+Nothing below has been run on a mainnet yet. The scripts as they now are run in `test/Scripts.t.sol` and
+`test/ConfigureWeighted.t.sol`; the end-to-end runs on an anvil fork of Ethereum were of the Pyth-priced build that the
+oracle-free rebalance replaced on 2026-11-10. Never put a private key in `.env`. Import the deployer key once into an
+encrypted keystore, or use a hardware wallet with `--ledger`:
 
 ```bash
 cast wallet import deployer --interactive
@@ -13,16 +15,17 @@ cp .env.example .env   # fill MAINNET_RPC_URL, OWNER (a Safe on mainnet) and GUA
 source .env
 ```
 
-`DeployWeighted` deploys the `GuardianRelay` that holds the guardian role for the guardian's Safe, `GUARDIAN` (RZ-26),
-then `WeightedIndexFactory` with that relay as its guardian, which deploys the `WeightedHub` implementation every index
-is a clone of, then the zap, the basket builder and `MintRequests` for that factory. It runs once, on Ethereum. Listings
-follow through the factory's timelock. The relay exists because every start of a rebalance carries a Pyth update valid
-for one slot, which a Safe cannot land: the Safe authorizes a start on the relay (`authorizeStart(index, keepMask,
-deadline)`), and anyone sends it with an update of their own (`start(index, priceUpdate)`), the keeper in `keeper/`
-first. The Safe uses the guardian's other powers through the relay too: `cancelRebalance(index)`,
-`cancelListing(factory, token)`, `delist(factory, token)` and `cancelGuardianChange(factory)`. A later guardian is a
-new relay for its Safe, deployed with `forge create src/GuardianRelay.sol:GuardianRelay --constructor-args <safe>` and
-proposed through `proposeGuardian`.
+`DeployWeighted` deploys `WeightedIndexFactory` with the owner, `OWNER`, and the guardian's Safe, `GUARDIAN`, as its
+guardian. The factory's constructor deploys `WeightedMath` and the `WeightedHub` implementation every index is a clone
+of. The script then deploys the zap, the basket builder and `MintRequests` for that factory. It runs once, on
+Ethereum. Listings follow through the factory's timelock.
+
+No oracle is deployed, named or read: there is no `PYTH` variable, and an index rebalances through an auction on units
+alone (`design/2026-11-10-oracle-free-rebalance.md`). There is no relay either. A start of a rebalance is a plain call,
+so the guardian's Safe holds the role itself and sends every guardian call as an ordinary transaction:
+`startRebalance(keepMask)` and `cancelRebalance()` on an index, and `cancelListing(token)`, `delist(token)` and
+`cancelGuardianChange()` on the factory. A later guardian is proposed through `proposeGuardian` and takes the role
+after `GUARDIAN_DELAY`, 7 days.
 
 ```bash
 OWNER=<safe> GUARDIAN=<guardian> forge script script/DeployWeighted.s.sol --rpc-url mainnet --account deployer \
@@ -38,11 +41,12 @@ delegated account, and a Safe must need at least three signatures (`MIN_OWNER_TH
 no enabled module, because a module acts as the Safe without signatures (keep it that way after deployment; the script
 cannot see later changes). The guardian must not be the broadcasting key, which must hold no role; when the owner is a
 Safe, neither the guardian nor the broadcasting key may be one of its signers, since the guardian is the owner's veto
-(SA-06); these rules read `GUARDIAN`, the Safe, which only the relay answers to; and neither role may be a market
-contract: the router, the PoolManager and Pyth everywhere, and on a mainnet
-also every token and mint currency in the address book (CR-I37). `PYTH`, `UNIVERSAL_ROUTER`, `WETH`, `USDC` and
-`USDT` default to the address book's on chain 1 (`script/MainnetAddresses.sol`), where any other value is rejected, and are
-required anywhere else; they are the script's only market addresses, because the hub and factory depend on no Uniswap contract.
+(SA-06); a guardian Safe may share no signer with the owner's, and a Safe's enabled modules count as its signers
+(RZ-24); and neither role may be a market contract: the router and the PoolManager everywhere, and on a mainnet also
+every token and mint currency in the address book (CR-I37). `UNIVERSAL_ROUTER`, `WETH`, `USDC` and `USDT` default to
+the address book's on chain 1 (`script/MainnetAddresses.sol`), where any other value is rejected, and are required
+anywhere else; they are the script's only market addresses, because the hub and factory depend on no Uniswap contract
+and on no oracle.
 
 An owner that is a contract but not a Safe, such as a timelock, is refused on Ethereum unless `OWNER_IS_NOT_A_SAFE`
 names it, set to the owner's own address (A7-08): the script cannot tell who signs for such an owner, so check that
@@ -57,9 +61,18 @@ explorer (`--verify` needs `ETHERSCAN_API_KEY`). The deploy log ends with the ru
 `WeightedHub` implementation, the zap, the basket builder and `MintRequests`: record them with the addresses, and
 `DeployWeighted.checkDeployment(factory, zap, builder, requests)` re-reads them later (it also refuses a zap, a
 builder or a `MintRequests` that does not point at that factory, a builder on another router, and an implementation
-reading another Pyth). It logs the guardian relay's address, its Safe and its runtime code hash as well; the relay's
-init code is part of the release record a mainnet broadcast is bound to (`RELAY_INITCODE_HASH`, CF-5), and since the
-factory's guardian can change, `checkDeployment` does not read it.
+whose `FACTORY` is another). It logs the guardian's address as well; since the factory's guardian can change,
+`checkDeployment` does not read it.
+
+**The release record.** On chain 1 the script broadcasts only the build its four release hashes record:
+`FACTORY_INITCODE_HASH`, whose init code embeds the math's and the implementation's, `ZAP_INITCODE_HASH`,
+`BUILDER_INITCODE_HASH` and `REQUESTS_INITCODE_HASH`. Any other build reverts `BuildNotReleased` (CF-5).
+`test_CF5_theReleaseHashesAreThisBuilds` fails until the four equal the build, and they are fixed at the audited commit
+before a mainnet broadcast.
+
+**Creating indexes.** Creation is open to anyone: once the coins an index names are listed, any wallet calls
+`createIndex`, and nothing else has to be approved or configured. The fee policy is zero until the owner sets one
+(`setFeePolicy`), and it reaches only indexes created afterwards.
 
 **The admission check** comes first: `script/CheckToken.s.sol` is read-only and prints one report per token for the
 Safe's signers (transfers simulated on a fork, transfer hooks, admin powers and who holds them, Uniswap depth on
@@ -71,9 +84,10 @@ CHECK=wide forge script script/CheckToken.s.sol --fork-url <mainnet rpc>
 CHECK=<token,...> forge script script/CheckToken.s.sol --fork-url <any evm rpc>
 ```
 
-**Listings** go through `script/ConfigureWeighted.s.sol`, or the equivalent calls through the Safe: each coin with
-the Pyth price id its indexes rebalance at. `V5_WHITELIST=default` is the first four coins of `script/PythIds.sol`
-and `V5_WHITELIST=wide` the other 89. Safe mode labels each with its trust tier:
+**Listings** go through `script/ConfigureWeighted.s.sol`, or the equivalent calls through the Safe:
+`proposeListing(token)` for each coin. A listing is a token and nothing else: no index reads a price, so no token
+carries a price id. `V5_WHITELIST=default` is the first four coins of `script/Listings.sol` (WETH, WBTC, LINK and UNI)
+and `V5_WHITELIST=wide` the other 87. Safe mode labels each with its trust tier:
 
 ```bash
 # owner is a key you hold (testnets and local forks only; a contract owner such as the mainnet Safe cannot sign, and
@@ -88,25 +102,25 @@ V5_MODE=safe V5_FACTORY=0x... V5_WHITELIST=default V5_LIST=all forge script scri
 V5_MODE=execute V5_FACTORY=0x... V5_WHITELIST=default forge script script/ConfigureWeighted.s.sol --rpc-url mainnet --account deployer --sender <any account> --broadcast
 ```
 
-`V5_MODE` is one of `propose`, `safe`, `execute` and `status`. `V5_WHITELIST` is `default` or `wide` (chain 1 only),
-or comma-separated `token:priceId` entries; anything else reverts `MalformedEntry`, and a list
-that names a token or a price id twice reverts in every mode (RT-24, V5-M1). Propose and safe mode never propose the
+`V5_MODE` is one of `propose`, `safe`, `execute` and `status`. `V5_WHITELIST` is `default` or `wide` (chain 1 only,
+`ListOffItsChain` elsewhere), or comma-separated token addresses, and a list that names a token twice reverts
+`DuplicateEntry` (RT-24). Propose and safe mode never propose the
 deployment's mint currencies as components: `V5_USDC` and `V5_USDT`, the `USDC` and `USDT` given to `DeployWeighted`,
 required off Ethereum; on Ethereum the address book's, where nothing else is accepted (A7-22).
 
 - **Propose and safe** propose a listing for each entry that is not listed and has no live proposal, skipping with the
   reason logged: a token never listed unless `V5_LIST` names it (`V5_LIST=all` for every entry), a delisted token
-  unless `V5_RELIST` names it, a token with a different listing pending (cancel it first), and any entry outside the
-  policy the script can check (a token with code and 6 to 18 decimals, no mint currency). Safe mode applies the same
-  checks, because a Safe batch sends every proposal in one transaction and one the factory refuses takes the rest down
-  with it (CR-I38). Nothing on chain records that the guardian cancelled a first listing, so leave `V5_LIST` unset on a
-  routine run and a cancelled listing stays cancelled until the operator names it again (RT-06). Safe mode labels each
-  proposal with the token's symbol (a symbol that is not an ABI string shows as `?`, RT-25), its tier, its address and
-  its price id: check the id against the feed's description before signing.
-- **Execute** never proposes. It runs only a due listing whose pending price id is exactly the entry's, and logs why a
-  pending one was left: not ready, expired, or a different id.
-- **Status** is read-only: for every entry, whether the token is listed, whether the price id in force is the entry's,
-  and any pending listing with its window and whether its id is the entry's.
+  unless `V5_RELIST` names it, a token with a listing already pending, and any entry outside the policy the script can
+  check (a token with code and 6 to 18 decimals, no mint currency). Safe mode applies the same checks, because a Safe
+  batch sends every proposal in one transaction and one the factory refuses takes the rest down with it (CR-I38).
+  Nothing on chain records that the guardian cancelled a first listing, so leave `V5_LIST` unset on a routine run and
+  a cancelled listing stays cancelled until the operator names it again (RT-06); a first listing that expired
+  unexecuted is proposed again without it (RX-39). Safe mode labels each proposal with the token's symbol (a symbol
+  that is not an ABI string shows as `?`, RT-25), its tier and its address: check the address against the coin before
+  signing.
+- **Execute** never proposes. It runs every due listing of the list, and logs why a pending one was left: not ready,
+  or expired.
+- **Status** is read-only: for every token, whether it is listed, and any pending listing with its window.
 
 In the Safe app, a safe mode's output becomes one Transaction Builder batch: each calldata line is one transaction to
 the factory with value 0, under a label line naming the call and the token. The Safe's threshold of signers signs it,
@@ -120,29 +134,34 @@ No bot holds a role in Xindex, so these duties have owners and deadlines. Watch 
 
 | Duty | Starts with | Deadline | Who | How |
 |---|---|---|---|---|
-| Veto a wrong listing | `ListingProposed` | before `eta` (2 days) | guardian or owner | check the price id against its feed's description and the decimals against the token; `cancelListing(token)`, the guardian's Safe through its relay: `cancelListing(factory, token)` |
+| Veto a wrong listing | `ListingProposed` | before `eta` (2 days) | guardian or owner | check the token's address against the coin and the decimals recorded against the token's; `cancelListing(token)` on the factory |
 | Execute a listing | its `eta` | `eta + PROPOSAL_WINDOW`, or it expires silently | anyone, owner signers first | `V5_MODE=execute` at the eta; `listingPending(token)` says whether it can still run |
-| Keep a Hermes key | before the first rebalance | none, but without one no index rebalances | executors, or one keyed service that hands updates to them | Hermes requires an API key |
-| Trigger the rebalance | `earliestRebalance()`: the index's interval after `lastRebalance`, a week after a keep-mask fill | none, but the index drifts from its weights | anyone; the keeper in `keeper/` does it when a fill would pay | `canStartRebalance()`, then `startRebalance(0, priceUpdate)` while every feed publishes; a fill ending in `NothingToRebalance` means the index is on its weights |
-| Check each rebalance | `RebalanceStarted` | before the fill | guardian | watch the moving components' Pyth feeds; the relay's `cancelRebalance(index)` on a feed that is wrong or stopped, then a keep mask |
+| Keep an honest executor bidding | before the first rebalance | none: without one, a lone executor takes each index's distance from its weights out of the holders' value | the keeper's operator first, and anyone else who runs an executor | the keeper prices its own trades off chain from Pyth's prices on Hermes, which requires an API key (`PYTH_API_KEY`); no contract waits on it. With no bidder, a lone executor fills at the auction's last second and keeps the index's distance from its weights, 0.3 to 0.6% of an index in an ordinary week: the rebalance's proceeds, never the holders' principal |
+| Trigger the rebalance | `earliestRebalance()`: the index's interval after `lastRebalance`, a week after a keep-mask fill | none, but the index drifts from its weights | anyone; the keeper in `keeper/` does it when a fill would pay | `canStartRebalance()`, then `startRebalance(0)`, a plain call; an index near its weights offers a fill nothing, and its auction expires unfilled |
+| Check each rebalance | `RebalanceStarted` | before the fill | guardian | watch the components: a coin its issuer mints without limit, a bridge in doubt, a corporate action; `cancelRebalance()` on the index, then a start with a keep mask |
 | Watch keep-mask rebalances | `RebalanceStarted` with a non-zero `keepMask` | before `eta` (2 hours) | owner signers | while a guardian replacement is pending, cancel the outgoing guardian's keep-mask proposals (RT-07) |
-| Fill auctions | the auction opens at `eta` | `eta + AUCTION_DURATION` | any executor contract | anyone may run the keeper in `keeper/`, which holds no role; competition is what keeps a fill near break-even |
+| Fill auctions | the auction opens at `eta` | `eta + AUCTION_DURATION` | any executor contract | anyone may run the keeper in `keeper/`, which holds no role; executors competing to fill earlier are what make the price fair, and a lone one keeps the index's distance from its weights |
 | Fill requests | a `MintRequested` or `RedeemRequested` event | the request's `deadline` | anyone who holds or can issue the shares, or the stablecoin | the keeper in `keeper/` fills at the request's limit when that pays; the surplus over the limit is the filler's |
 | Restock the wrapped and real-world legs | the keeper's `restock <coins>` log | before the auction that needs them | the restock service for XRP, ADA, LTC, DOT, BNB, AVAX, OP and AERO; the keeper's operator for the rest | the service buys each on its home chain and bridges it into the executor through Wormhole's Token Bridge (`keeper/restock.mjs`); for ATOM, the copies from chains it has no adapter for, Tether Gold and the Ondo stocks, bridge through Wormhole's Portal or acquire the token, and send it to the executor |
 | Keep the restock service running | its `gas below its minimum`, `top up its USDT float by hand` or `still pending` log | before the next restock | the treasury's operator | send gas to the treasury's wallet on that chain, top up the BNB Chain USDT float, or cancel the transaction stuck past a fee spike (`keeper/README.md`, Restock) |
 | Renew a restock allowance | its `restock allowance ... is spent` log | before that coin's stock runs out | the executor's owner | `setRestockAllowance(<copy>, <amount>)`, or the other allowance the log names; what arrives through the bridge earns the keeper stock allowance only within it (RS-1) |
-| Rebalance around a frozen component | a paused or blacklisting component, or a stopped feed | each auction | guardian | on the relay, `cancelRebalance(index)`, then `authorizeStart(index, keepMask, deadline)`; the keeper sends the start in the first block it runs in, with a fresh update (RZ-26), and `authorizationOf(index)` shows it until then |
-| Restart after an unfilled auction | `eta + AUCTION_DURATION` passed with no `Rebalanced` | anyone after `REBALANCE_DELAY` more | guardian first, then anyone | `canStartRebalance()`, then `startRebalance(0, priceUpdate)` while every feed publishes; the guardian's Safe authorizes the relay's start with a keep mask of 0 |
+| Rebalance around a frozen component | a paused or blacklisting component | each auction | guardian | the guardian's Safe calls `cancelRebalance()`, then `startRebalance(keepMask)`, on the index; an executor fills it like any other auction, naming the kept component's units unchanged |
+| Restart after an unfilled auction | `eta + AUCTION_DURATION` passed with no `Rebalanced` | anyone after `REBALANCE_DELAY` more | guardian first, then anyone | `canStartRebalance()`, then `startRebalance(0)`; the owner and the guardian's Safe may start at once |
 | Re-check venue depth per leg | monthly, and before a large mint or burn | none | app | V3 and V4 depth move independently; the route is the app's choice |
 | Watch guardian changes | `GuardianProposed` | `eta` (7 days) | owner signers, guardian, app | a security alert: once executed, the new guardian's veto replaces the old one. `guardianChangePending()` says whether it is still executable |
 | Hand over factory ownership | `OwnershipTransferStarted` | none: it takes effect as soon as the new owner accepts | owner signers, then the new owner | the one admin change with no delay and no veto; announce it first, and the new owner has to meet the rules the deploy script checks |
 
 ## Testnet (Sepolia)
 
-**v5 is deployed on Sepolia** from commit `07aeae1`, the build before the RX-3 fix: its hub's
-`startRebalance(keepMask)` takes no price update and its auctions run 24 hours, while `abi/` and `src/` are the fixed
-build's. Its owner is a 2-of-3 test Safe and its guardian an externally owned account (a mainnet owner needs at
-least 3 signatures). The four listings (tWBTC, WETH, tLINK, tUNI) were executed on 2026-10-28. Its zap was redeployed
+**What runs on Sepolia is the Pyth-priced build of v5**, deployed on 2026-10-26 from commit `07aeae1`, not the build
+this repository now holds. It is still live, and the table below is the record of what is deployed. That build prices
+a rebalance from Pyth: its factory lists with `proposeListing(token, priceId)`, its `executeRebalance(data,
+priceUpdate)` is payable and reads a signed Pyth update, its `startRebalance(keepMask)` takes no price update, since it
+predates the RX-3 fix, and its auctions run 24 hours. `abi/` and `src/` are the oracle-free build's, so they do not
+decode that deployment's listings, its rebalance calls or its `Rebalanced` event. A new deployment of the current
+build is described under "A new deployment" below. The deployment's owner is a 2-of-3 test Safe and its guardian an
+externally owned account (a mainnet owner needs at least 3 signatures). The four listings (tWBTC, WETH, tLINK, tUNI)
+were executed on 2026-10-28. Its zap was redeployed
 alone on 2026-11-03 from `70ffa6f`, for the factory above, with `forge create` and the node's gas estimate (23.85M gas
 used): it adds `mintWithEth`, `burnToEth`, `burnToEthWithPermit` and `mintWithTokenPermit`, and RY-1's recipient
 checks. The zap calls only the factory's `isIndex` and the hub's `issue`, `redeem`, `previewIssue`, `componentTokens`
@@ -155,9 +174,9 @@ alone took 63.6M gas), while `cast send` takes the node's own estimate.
 
 `script/testnet/SetupTestMarket.s.sol` deploys stand-ins for USDC, WBTC, LINK and UNI as `FaucetToken`s, where any
 account can `drip()` a small amount once a day, each with a Uniswap V3 WETH pool at a mainnet-like price so the zap has
-a V3 route to swap through. Nothing in Xindex reads those pools' prices. `create` logs the `V5_WHITELIST` entries for
-`ConfigureWeighted`: tWBTC, WETH, tLINK and tUNI, each under its mainnet counterpart's Pyth price id, since Pyth's ids
-are the same on every chain. Faucet tokens have no value and their supply grows with every drip, which nothing reads.
+a V3 route to swap through. Nothing in Xindex reads those pools' prices. `create` logs the `V5_WHITELIST` value for
+`ConfigureWeighted`: the addresses of tWBTC, WETH, tLINK and tUNI. Faucet tokens have no value and their supply grows
+with every drip, which nothing reads.
 
 **No V4 pools on this market.** The V4 legs are proven on mainnet forks and against a strict mock of the Universal
 Router's encoding, not on Sepolia.
@@ -179,11 +198,21 @@ Router's encoding, not on Sepolia.
 | MintRequests | `0x5b092e8A8ab29A12e2D91bE96C307759B2a12b81` |
 | Owner (2-of-3 Safe) | `0x2Fb4b72C689E21D0d33Bd9D66DbEAdC60b6b0CA2` |
 | Guardian | `0x8cef9aAa300aA0A1EA5A0D8593EFc9ADED7B55a1` |
-| Pyth | `0xDd24F84d36BF92C65F92307595335bdFab5Bbd21` |
+| Pyth (read by the deployed build's hub; the current build names none) | `0xDd24F84d36BF92C65F92307595335bdFab5Bbd21` |
 | Wormhole Token Bridge | `0xDB5492265f6038831E89f495670FF909aDe94bd9` |
 | tUSDC (FaucetToken, 6 decimals) | `0xD1aF4223B129071f7a1a27ED367E4D72cd7cF8D3` |
 | tUSDT (FaucetToken, 6 decimals; no Uniswap pool yet, so only limit orders use it) | `0x33780f7352fA32D4736449516066DF56C7DcF1c1` |
 | tWBTC / tLINK / tUNI (FaucetToken) | `0x656C9999ad6092F813996C30a2dbe89Ff2F670A9` / `0xC02F993785FC45cF48bF61c24DCbB11F9085A4E4` / `0xc34fE6c23897ae506368cF3acb0Db96d6D63Bf85` |
+
+### A new deployment
+
+A new factory is a whole new deployment: the hub's implementation and the math are deployed by the factory, and the
+zap, the basket builder and `MintRequests` are each built for one factory. Deploying the current build therefore
+means every step below except, if the test market above is reused, the first: no `PYTH` is passed, the guardian
+needs no relay, and the listings are token addresses. Indexes of the deployed build stay where they are and are not
+moved. The keeper's executor is built for one factory and one `MintRequests` too, so it is deployed again, and the
+app and its backend are pointed at the new addresses. Until then the Sepolia deployment and this repository's
+`abi/` are two builds.
 
 ```bash
 export SEPOLIA_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com
@@ -193,9 +222,9 @@ DEPLOYER=$(cast wallet address --account sepolia-deployer)
 MARKET_MODE=create forge script script/testnet/SetupTestMarket.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast
 MARKET_MODE=seed MARKET_TOKENS=<logged by create> forge script script/testnet/SetupTestMarket.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast
 
-# 2. the factory (which deploys the WeightedHub implementation), the zap, the basket builder and MintRequests; USDT is
-#    any second 6-decimal test token, a FaucetToken for instance (tUSDT above); off a mainnet PYTH is required
-OWNER=<Safe> GUARDIAN=<guardian> PYTH=<Pyth's Sepolia contract> UNIVERSAL_ROUTER=0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b \
+# 2. the factory (which deploys WeightedMath and the WeightedHub implementation), the zap, the basket builder and
+#    MintRequests; USDT is any second 6-decimal test token, a FaucetToken for instance (tUSDT above)
+OWNER=<Safe> GUARDIAN=<guardian> UNIVERSAL_ROUTER=0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b \
   WETH=0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14 USDC=<tUSDC logged by create> USDT=<a second test stablecoin> \
   forge script script/DeployWeighted.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast \
   --gas-estimate-multiplier 900
@@ -205,25 +234,27 @@ V5_MODE=safe V5_FACTORY=<factory> V5_WHITELIST=<logged by create> V5_LIST=all \
   V5_USDC=<tUSDC logged by create> V5_USDT=<the second test stablecoin> \
   forge script script/ConfigureWeighted.s.sol --rpc-url sepolia
 
-# 4. 2 to 9 days later, from any account
+# 4. 2 to 9 days later, from any account; after it, any wallet creates an index
 V5_MODE=execute V5_FACTORY=<factory> V5_WHITELIST=<same> forge script script/ConfigureWeighted.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast --gas-estimate-multiplier 900
 ```
 
 Add `--verify` with `ETHERSCAN_API_KEY` set to verify the contracts, so testers can call `drip()` from Etherscan.
 `USD_POOL_WETH` and `TOKEN_POOL_WETH` (in wei) change the liquidity `seed` adds. Timing is mainnet's: listings take 2
-days, and a rebalance can start an index's interval, at least 7 days, after its creation, followed by 2 hours of notice and a 4-hour auction
-whose fill needs a signed Pyth update, as on mainnet. The test pools are shallow and nobody arbitrages them, so zap
-prices on this market say nothing about mainnet. `test/fork/WeightedExecutorV3.sol` fills auctions through
-SwapRouter02; it is a test fixture without slippage limits, so never fund it on mainnet.
+days, and a rebalance can start an index's interval, at least 7 days, after its creation, followed by 2 hours of notice
+and a 4-hour auction, as on mainnet; a fill names its units and needs no price update. The test pools are shallow and
+nobody arbitrages them, so zap prices on this market say nothing about mainnet. `test/fork/WeightedExecutorV3.sol` fills
+auctions through SwapRouter02; it is a test fixture without slippage limits, so never fund it on mainnet.
 
 ### The keeper on Sepolia
 
 The keeper (`keeper/`) runs on Sepolia with `CHAIN_ID=11155111`, which takes the market of the table above. It serves
-`MintRequests` requests only, `FILL_AUCTIONS=0`: the hub deployed there is the build of `07aeae1`, whose
-`startRebalance` and `previewRebalance` predate RX-3 and AU-2, so this keeper can neither start nor fill its auctions.
-A request fill values the basket at Hermes' signed prices, verified by Sepolia's Pyth contract, so it needs
-`PYTH_API_KEY` too; the stand-ins are priced at the real coins' feeds, and the backend's market maker keeps the test
-pools at those prices. A fill through Sepolia's Pyth has not been tried yet.
+`MintRequests` requests only, `FILL_AUCTIONS=0`: the hub deployed there is the Pyth-priced build of `07aeae1`, whose
+`executeRebalance` and `previewRebalance` are not the calls this keeper makes, so it can neither fill nor preview its
+auctions. A request fill values the basket at the keeper's own prices, off chain: Hermes' prices, each kept only
+where Sepolia's Pyth contract confirms the signed update that carries it, so the keeper needs `PYTH_API_KEY`. No
+contract of the current build reads a price or waits on that. The stand-ins are priced at the real coins' feeds, and
+the backend's market maker keeps the test pools at those prices. A request fill valued through Sepolia's Pyth has not
+been tried yet.
 
 ```bash
 cd keeper

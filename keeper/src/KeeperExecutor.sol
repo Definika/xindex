@@ -53,9 +53,9 @@ contract KeeperExecutor is IRebalanceExecutor {
     ///         bounds. Only the owner sets it, and every delivery from stock spends it (CF-1).
     mapping(address token => uint256 amount) public stockAllowance;
     /// @notice How much of the USDC float request fills may still turn into anything else: every request fill that
-    ///         ends with less USDC than it started spends the difference. A fill reads no Pyth update on chain, so a
-    ///         price the bot got wrong, stale or forged, could otherwise spend the whole float (RX-1, RX-9). Only the
-    ///         owner sets it.
+    ///         ends with less USDC than it started spends the difference. Nothing on chain checks a price, so a price
+    ///         the bot got wrong, stale or forged, could otherwise spend the whole float (RX-1, RX-9). Only the owner
+    ///         sets it.
     uint256 public requestUsdcAllowance;
     /// @notice The restock service's key, the only account that bridges stock and draws or repays USDC. The owner
     ///         sets it.
@@ -151,8 +151,7 @@ contract KeeperExecutor is IRebalanceExecutor {
     /// @notice The fill changed the float by `usdcDelta`, below `minUsdcDelta`.
     error TooCostly(int256 usdcDelta, int256 minUsdcDelta);
     /// @notice The index's supply is `supply`, above the `maxSupply` the fill was quoted for: an issue since the quote
-    ///         grew the settlement past what the bot accepts, so the fill stops before the hub parses Pyth's update
-    ///         (XS-4).
+    ///         grew the settlement past what the bot accepts, so the fill stops before it reaches the hub (XS-4).
     error SupplyMovedOn(uint256 supply, uint256 maxSupply);
     /// @notice The index settled a rebalance since the fill's simulation: its nonce is `actual`, not `expected` (RX-4).
     error StaleRebalanceNonce(uint256 expected, uint256 actual);

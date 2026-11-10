@@ -78,8 +78,8 @@ with `V = Σ u_i q_i`. Nobody has to say what `q` is: the bound holds for every 
 So:
 
 - On its weights at the market's prices, an index cannot lose value to any fill.
-- Off them, the most any fill can take is the distance `D`. That distance is what a fair rebalance would have earned
-  the holders; it is never their principal.
+- Off them, the most any fill can take is the distance `D`. It comes out of the holders' value: section 6 and
+  section 8 have its size, for drift and for an index created off its weights.
 - Forever, whoever fills and however, the holders own at least what a fee-less constant-weight pool with the same
   weights would hold.
 
@@ -89,8 +89,13 @@ grows with `x`, the computed score of a leg is at most `L(x̃) ≤ ln(1 + x̃) �
 
 **What is checked how.**
 
-- Lemma 1 and the two theorems: by hand, above. They are facts about the logarithm, which no solver of integers
-  states.
+- Lemma 1: by hand, above, and again in exact rationals by `test/vectors/proofs.py` (standard library only), from
+  the identity `d/dx [ln(1 + x) − L(x)] = x³(1 + 6x) / (5(1 + x))`. The difference therefore falls on `(−1/6, 0)`
+  and rises on either side, so on `[−0.2, 1]` it is least at `0`, where it is zero, or at `−0.2`, where a rational
+  bound of `ln(5/4)` shows it is `3.1e-6` above zero. The same script checks that `x` and the score round down
+  inside the lemma's range for every leg up to 399 units and at the boundaries of large ones, every second of the
+  bar, and that the amounts keep the backing.
+- The two theorems: by hand, above.
 - That the contract computes exactly this rule: the exact model and its 426 vectors, replayed word for word
   (`test/WeightedMath.vectors.t.sol`).
 - Theorem 2 on its weights: `testFuzz_R04_onItsWeightsNoFillTakesValue`, any units, any second.
@@ -141,8 +146,9 @@ distance from the weights, so the first fill that can afford it is the one that 
 
 **Why competition matters, and where.** The distance `D` is the prize. Executors compete by filling earlier, at a
 higher bar, which leaves more with the holders. With an honest executor bidding, ours first, the holders keep all of
-it but the executor's costs. With none, a lone executor waits for the last second and keeps it. Competition decides
-who gets the rebalance's proceeds. It never decides whether the holders' coins are safe: Theorem 2 holds either way.
+it but the executor's costs. With none, a lone executor waits for the last second and takes it, out of the holders'
+value. Competition decides how much of the distance the holders keep. Theorem 2 bounds what they can lose either
+way: the distance, which is what a fee-less constant-weight pool loses to arbitrage.
 
 ## 6. What a fill can take: the numbers
 
@@ -161,7 +167,7 @@ Against the design it replaces:
 |---|---|---|
 | Price keys stolen or wrong | up to 20% of each coin per fill | cannot happen |
 | An honest executor bidding | fair price | fair price, less the executor's costs |
-| No honest executor bids | about 0.1% of the index a week (2% of what trades) | the whole distance: 0.3 to 0.6% in an ordinary week, up to 1.8% in a crash week |
+| No honest executor bids | about 0.1% of the index a week (2% of what trades) | the whole distance: 0.3 to 0.6% in an ordinary week, up to 1.8% in a crash week, 5.0% in one fill after one coin of two doubles |
 | A 10% coin turns worthless and free to mint | about its own weight of the rest, per fill | at most 5.8% of the rest, per fill |
 
 A simulation of the executor's best fill (20 equal coins, each moving 11% a week on its own) lands the index 96% of
@@ -182,7 +188,7 @@ The hub is 19,861 bytes, 4,715 under EIP-170 (it was 98 under).
 
 - **A fair price needs a bidder.** With Pyth the price was fair whoever filled. Now it is fair when executors compete
   or ours bids. A lone greedy executor keeps the distance from the weights, several times what `MU_MIN` let it keep.
-  The keeper's liveness is now the holders' performance, never their principal.
+  The keeper's liveness is now the holders' performance: what a lone executor takes comes out of their value.
 - **One fill may not land on the weights.** The unit caps bound a fill as before, and `L`'s slack under the
   logarithm makes the last few percent unattractive. The next rebalance takes the rest.
 - **The keeper needs prices of its own.** The protocol reads none, but an executor must know what the market says to
@@ -194,6 +200,15 @@ The hub is 19,861 bytes, 4,715 under EIP-170 (it was 98 under).
   An executor that holds the only shares can move the units off the weights over several intervals, and a later
   minter deposits at those units. The mint is in kind and fair; the next auction pays the distance to whoever fills
   first. An index without shares does not rebalance at all. The app shows an index's coins against its weights.
+- **An index created off its weights can be drained by its creator.** `createIndex` takes units and weights, and
+  nothing compares them: that would need a price. A creator can name units far from the weights, let others mint in
+  kind at those units, and fill its own auction at the last second. On the exact model, one such fill takes 15.5% of
+  a 50/50 index created 90/10 by value, and 19.8% of a 99/1 index created 1/99: the turnover cap, a fifth of a leg,
+  is the only bound, and the interval the only delay. The same arithmetic prices drift: 0.48% after one coin of four
+  rose a quarter, 5.0% in one fill after one coin of two doubled (its whole distance is 5.7%), 8.7% after it tripled
+  (13.4%). The app, which has prices, creates on the weights and is the only check on an index someone else
+  created: it shows each index's coins against its weights and must not offer a mint of one far from them. Found
+  on 2026-11-10, after the first version of this record called the distance "the rebalance's proceeds".
 - **A fill near the weights can be forced.** When the distance is under an executor's costs, nobody honest fills,
   and anyone may fill at the last second with a gift of at least the bar's floor, 4.77e-7 of the index, restarting
   the interval. It costs the filler and pays the holders, and delays the next rebalance by the interval.
@@ -214,6 +229,6 @@ Left:
 - The fork suites are rewritten and compile, and have not run: they need an archive RPC.
 - The web app and its backend, which read `previewRebalance` and the listings.
 - A red team of this mechanism, by reviewers who did not design it.
-- The Halmos harness, and the z3 script of the retired arithmetic (`test/vectors/proofs.py`), which proves a model
-  that no longer exists.
+- The Halmos harness, not run yet. (`test/vectors/proofs.py` was rewritten for this arithmetic on 2026-11-10: it
+  checks the proof's chain in exact rationals, and needs no solver.)
 - A new Sepolia deployment.

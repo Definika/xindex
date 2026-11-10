@@ -13,7 +13,7 @@ forge test                             # unit, fuzz, invariant and regression te
 forge coverage                         # 100% on every file
 python3 -I test/vectors/settlement.py > test/vectors/settlement.json  # after a change to WeightedMath: the exact
                                        # model's vectors, which test/WeightedMath.vectors.t.sol replays (commit both)
-python3 -I test/vectors/proofs.py 2 120  # the model's properties proven in z3 (needs a Python with z3, as Halmos's is)
+python3 -I test/vectors/proofs.py        # the proof behind the settlement, checked in exact rationals (no dependency)
 aderyn .                               # static analysis of src/, configured in aderyn.toml; reports nothing
 
 forge test --root keeper               # the keeper's executor, a Foundry project of its own

@@ -8,7 +8,8 @@ matters here gets a new id from a review of this surface.
 
 ## 1. Retired in full
 
-The ids tested before the change, less those tested after it, are exactly these nine.
+The ids tested before the change, less those tested after it, are exactly these ten: nine went with the contracts,
+and RX-18 with the keeper's bot (section 6).
 
 | Id | What it fixed | The tests that went | What survives |
 |---|---|---|---|
@@ -20,11 +21,14 @@ The ids tested before the change, less those tested after it, are exactly these 
 | RX-3 | A start reads every moving feed, and the auction is four hours | `test_RX3_aStartNeedsEveryMovingFeedToPublish`, `test_RX3_noAuctionRunsIntoTheNextOpen`, `test_RX3_aStartPaysPythItsFee` | No feed to be shut. The auction stays four hours for the bar's twenty halvings |
 | RX-27 | A price far from its moving average is refused | `test_RX27_aPriceFarFromItsAverageIsRefused` | Nothing |
 | AU-2 | The preview makes the fill's price checks | `test_AU2_thePreviewRefusesAPriceFarFromItsAverage` | The preview runs the fill's own check (`test_previewMatchesTheFill`, `test_theBarDecidesWhenAFillClears`) |
-| RZ-26 | The guardian is a relay its Safe controls | The twelve `test_RZ26_...` of `test/GuardianRelay.t.sol` and `test/Scripts.t.sol` | `GuardianRelay` is deleted: a start carries no update, so the Safe holds the role itself |
+| RZ-26 | The guardian is a relay its Safe controls | The twelve `test_RZ26_...` of `test/GuardianRelay.t.sol` and `test/Scripts.t.sol`, and the keeper's two node tests named `RZ-26: ...` | `GuardianRelay` is deleted: a start carries no update, so the Safe holds the role itself |
+| RX-18 | Pyth's update fee counts against a fill's profit, as gas | The node test `RX-18: Pyth's update fee counts against a fill like its gas` | The keeper pays no fee: no call of the hub takes ether (`test_aFillTakesNoEther`, `a fill costs its gas ... and nothing else`) |
 
 Recorded by documentation alone, and retired with them: V5-I1 (that an update is the first of its second is Pyth's
 to keep), RX-25 (`PYTH` cannot be repointed), RX-31 and RX-59 (the share feeds' sessions and the one-second window),
-RX-65 (a block builder seeing past `PRICE_LAG`), RZ-4 (a collapsed leg stopping the fills under `MIN_TRADE`), and the
+RX-65 (a block builder seeing past `PRICE_LAG`), RZ-4 (a collapsed leg stopping the fills under `MIN_TRADE`), RZ-17 (a
+start's gas limit calibrated per feed) and RZ-27 (the moving average's sign and exponent), both open and untested,
+and the
 known limitations "A wrong price costs at most the turnover cap", "Rebalancing needs Pyth's Hermes", "Price ids are
 data the owner maintains" and "A start must land in one slot". `docs/known-limitations.md` now has "A lone executor
 keeps the index's distance from its weights", "No contract reads a price", "One fill may not land on the weights"
@@ -85,7 +89,23 @@ their tests.
 Pyth-priced hub ("Delete after the review"), are deleted: they imported the Pyth mock and cannot compile against a hub
 that reads no price. `audit/2026-10-31-red-team.md` still cites them; they are in git before this change.
 
-## 6. Not yet decided here
+## 6. The keeper's bot
 
-The keeper bot's ids that rest on Pyth as the keeper's own price source (RX-1, RX-2, RX-9, RY-6, RY-7, RZ-1, and G7,
-Y1 and Y2 among the mutants) are the bot's stage: it still builds the retired calls.
+Converted the same day (`keeper/keeper.mjs`, `keeper/bot/`). The bot names the units of its own fills
+(`keeper/bot/units.mjs`: the hub's arithmetic ported word for word, replayed against the contracts' 426 vectors, and
+`nameUnits`, which picks the units that clear the bar while leaving the index the least), sends plain starts, and pays
+no fee. Pyth stays the keeper's own price source, off chain: Hermes' prices, each confirmed by Pyth's contract before
+anything is valued at it, with the coin-to-id catalogue now the keeper's (`keeper/bot/price-ids.mjs`, pinned against
+`script/Listings.sol`, `script/MainnetAddresses.sol` and `script/PythIds.sol`).
+
+- Gone: the relay's starts (`relayStarts`, `liveAuthorizations`, `relayStartGasLimit`) with RZ-26's two node tests
+  and mutant G7; the Pyth fee in a fill's cost, with RX-18's node test; the US-session timing of a start and the
+  quiet-feed hold (`inSchedule`, `sessionStartOk`, `SESSION_IDS`, `US_EQUITY_SCHEDULE`), with the node tests
+  `RX-3, RX-31: ...` and `RX-3: a start's gas limit ...`. No session bounds a fill any more: the bot names no units
+  for a leg it cannot value, a share-priced Ondo leg and a leg whose price is stale among them, and leaves it alone.
+- Kept, as the keeper's own safeguards: RX-1, RX-2, RX-9, RX-10, RX-13, RX-16, RX-34, RY-6, RY-7, RY-8, RZ-1 and
+  their tests, and mutants Y1 and Y2.
+- New: the node suites `keeper/test/unit/units.test.mjs` and `keeper/test/unit/price-ids.test.mjs`, and mutants U1
+  to U4 (each rounding of the port flipped, the exact check dropped).
+- The end-to-end test (`keeper/test/e2e/run.mjs`) deploys no relay and lists no price id; its guardian starts an
+  auction with a keep mask in a plain call, and the keeper's fill leaves the kept coin's units alone.

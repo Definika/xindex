@@ -10,31 +10,33 @@ How a token's own supply changes does not matter, since nothing reads it.
 a holder and destroy its balance; Tether Gold and Ondo's stocks, whose issuers hold that power, are listed by an explicit
 waiver.
 
-## Price ids
+## What a listing records
 
-Every listing records the token's Pyth price id and its decimals, read from the token when the listing is proposed. No
-settlement asks a component for them again. A price is scaled as `price × 10^(36 + expo − decimals)`. Each id in
-`script/PythIds.sol` carries its feed's description, and the feed must price the asset held: WETH takes ETH/USD, since
-it redeems one for one; WBTC takes WBTC/USD, so its own depeg shows; a Wormhole copy takes its coin's feed.
+A listing records the token's decimals, read from the token when the listing is proposed, and nothing else. They only
+bound the units an index may start with (`maxUnitsOf`). No contract reads a price, so no listing carries a price id
+(since 2026-11-10). `script/PythIds.sol` still holds each coin's Pyth id with its feed's description, as the keeper's
+catalogue: the keeper prices its own trades off chain, and no contract or script reads the file.
 
 ## Listing process
 
-- `proposeListing(token, priceId)`, owner only, starts a 2-day delay (`LISTING_DELAY`).
+- `proposeListing(token)`, owner only, starts a 2-day delay (`LISTING_DELAY`).
 - For the next 7 days (`PROPOSAL_WINDOW`) anyone can `executeListing`; after that the proposal expires.
 - Until it executes, the owner or guardian can `cancelListing`.
-- Either role can `delist` a token at any time. Delisting and relisting reach only indexes created afterwards, since
-  every index copies its components' price ids and decimals at creation.
+- Either role can `delist` a token at any time. Delisting and relisting reach only indexes created afterwards: an
+  index's components and weights are fixed at its creation.
 
 ## The list
 
-`script/PythIds.sol` lists 91 assets: `default` is the first four (WETH, WBTC, LINK, UNI) and `wide` the other 87.
+`script/Listings.sol` lists 91 assets with their tiers: `default` is the first four (WETH, WBTC, LINK, UNI) and `wide`
+the other 87.
 
 - 73 coins of the top 300, held as the issuer's own Ethereum contract where one exists, and otherwise as the copy
   Wormhole's token bridge wraps from the coin's home chain (15 copies, among them SOL, BNB and SUI).
 - Tether Gold.
 - 17 tokenized US stocks issued by Ondo.
 
-26 more Wormhole copies wait for an attestation on Wormhole's Portal before they can be checked and listed
+26 more Wormhole copies wait for an attestation (`node keeper/restock.mjs --attest <chain> <token>`, since legacy
+Portal closed on 2026-06-30) before they can be checked and listed
 ([`design/2026-10-10-one-index-wormhole-legs.md`](../design/2026-10-10-one-index-wormhole-legs.md), section 2a), and
 FIL's waits for a reading of its Binance-Peg source. Every
 listed token passed `CheckToken` on a mainnet fork, and one fork test issues, rebalances and redeems an index holding
@@ -58,8 +60,8 @@ every coin `forge-std` can fund.
 ## Liquidity
 
 Most Wormhole copies and real-world assets have no Uniswap liquidity. They mint in kind or through `MintRequests`, and a
-rebalance that buys them needs an executor that holds them. Six stocks (TSM, AVGO, LLY, JPM, WMT, V) have Pyth feeds
-only during US market hours, so an index holding one rebalances only while that market is open, or with the stock kept.
+rebalance that buys them needs an executor that holds them. Nothing on chain waits for a market to be open: an
+executor that cannot value a stock outside US hours leaves it alone, naming its units unchanged, and trades the rest.
 
 ## Ethereum addresses
 
@@ -78,11 +80,9 @@ From the address book, `script/MainnetAddresses.sol`:
 | Uniswap QuoterV2 (V3 quotes) | `0x61fFE014bA17989E743c5F6cB21bF9697530B21e` |
 | Uniswap V4 Quoter | `0x52F0E24D1c21C8A0cB1e5a5dD6198556BD9E1203` |
 | Uniswap V4 StateView | `0x7fFE42C4a5DEeA5b0feC41C94C136Cf115597227` |
-| Pyth | `0x4305FB66699C3B2702D4d05CF36551390A4c69C6` |
 | WeightedIndexFactory / IndexZap / BasketBuilder / MintRequests | not deployed |
 
 The scripts read these addresses from the address book, and `test/fork/MainnetAddresses.fork.t.sol` checks it on
 chain: tokens by symbol and decimals, the router and the PoolManager by their runtime code hashes (every Universal
-Router build answers `poolManager()` alike, CR-I35), Pyth's proxy by its code, the Wormhole copies against the bridge,
-and both lists on a fresh factory over Pyth. The quoters and StateView are for apps and tests; no contract reads
-them.
+Router build answers `poolManager()` alike, CR-I35), the Wormhole copies against the bridge, and both lists on a fresh
+factory. The quoters and StateView are for apps and tests; no contract reads them.

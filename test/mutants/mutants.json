@@ -1026,20 +1026,6 @@
     "runner": "node"
   },
   {
-    "id": "G7",
-    "what": "the keeper sends a guardian's start whose deadline has passed (RZ-26)",
-    "origin": "audit/2026-10-31-red-team-ii.md",
-    "file": "keeper/bot/math.mjs",
-    "test": "keeper/test/unit/math.test.mjs",
-    "edits": [
-      {
-        "old": "if (deadline >= BigInt(T)) live.set(index, { keepMask, deadline });",
-        "new": "if (deadline > 0n) live.set(index, { keepMask, deadline });"
-      }
-    ],
-    "runner": "node"
-  },
-  {
     "id": "Y1",
     "what": "a request that cannot pay MIN_PROFIT_USD at its limit is simulated and asks the restock for stock (RY-8)",
     "origin": "audit/2026-10-31-red-team.md",
@@ -1063,6 +1049,62 @@
       {
         "old": "usd += amountUsd(out[i], decimals[i], prices[i]) - amountUsd(need[i], decimals[i], prices[i]);",
         "new": "usd += amountUsd(out[i], decimals[i], prices[i]);"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "U1",
+    "what": "the bot rounds a shrinking leg's change toward zero, so it counts a gain the hub does not",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 2: the keeper's port of the rule",
+    "file": "keeper/bot/units.mjs",
+    "test": "keeper/test/unit/units.test.mjs",
+    "edits": [
+      {
+        "old": "  return -ceilDiv((current - next) * WAD, current);",
+        "new": "  return -(((current - next) * WAD) / current);"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "U2",
+    "what": "the bot returns units it did not check against the bar",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 2: the keeper's port of the rule",
+    "file": "keeper/bot/units.mjs",
+    "test": "keeper/test/unit/units.test.mjs",
+    "edits": [
+      {
+        "old": "    return g.error === undefined && g.gain >= bar ? g.gain : null;",
+        "new": "    return g.error === undefined ? g.gain : null;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "U3",
+    "what": "the bot's lower cap rounds down, one unit under what the hub accepts",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 2: the keeper's port of the rule",
+    "file": "keeper/bot/units.mjs",
+    "test": "keeper/test/unit/units.test.mjs",
+    "edits": [
+      {
+        "old": "export const lowestOf = (current) => ceilDiv(current * (WAD - MAX_TURNOVER), WAD);",
+        "new": "export const lowestOf = (current) => (current * (WAD - MAX_TURNOVER)) / WAD;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "U4",
+    "what": "the bot's score truncates toward zero, above the hub's for a shrinking leg",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 2: the keeper's port of the rule",
+    "file": "keeper/bot/units.mjs",
+    "test": "keeper/test/unit/units.test.mjs",
+    "edits": [
+      {
+        "old": "  return floorDiv(numerator, SCORE_DENOMINATOR);",
+        "new": "  return numerator / SCORE_DENOMINATOR;"
       }
     ],
     "runner": "node"

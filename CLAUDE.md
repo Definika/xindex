@@ -193,17 +193,23 @@ Pyth-priced rebalance as it then was, and the last one says what replaced it.
   - Gone: Pyth's contract and interfaces, every price id, the price window, the confidence and moving-average checks,
     `μ`, `MIN_TRADE`, every payable entry point of the hub, and `GuardianRelay` (the Safe holds the guardian role
     itself again, since a start carries no update). `audit/2026-11-10-oracle-retirement.md` retires V5-L1, V5-M1,
-    V5R-1, DA-01, RB-3, RX-3, RX-27, AU-2 and RZ-26 in full and names every re-targeted test.
+    V5R-1, DA-01, RB-3, RX-3, RX-18, RX-27, AU-2 and RZ-26 in full and names every re-targeted test.
   - The exact model was rewritten from the spec (426 vectors), the rebalance, state-machine, invariant and security
     suites with it, and the mutants (the arithmetic's 24, the hub's 13): every contract mutant is killed. The hub is
     19,861 bytes, 4,715 under EIP-170. At a hundred coins `createIndex` costs 5.3M gas and a fill 4.2M.
-  - The keeper's executor follows: `fill(index, newUnits, routes, maxAmountsIn, maxSupply, minUsdcDelta, deadline)`,
-    not payable, its suite at 67 passing (`keeper/test/KeeperExecutor.t.sol`).
-  - Not done: the keeper's bot (`keeper/keeper.mjs`, `keeper/bot/`), which still builds the retired calls, fetches
-    Hermes updates and sends the relay's starts; it needs to name units from its own prices. A run of the fork suites, rewritten but waiting for an archive RPC; the app; a red team of the
-    mechanism by reviewers who did not design it; the Halmos harness; `test/vectors/proofs.py`, which still proves
-    the retired arithmetic; a new Sepolia deployment.
-- Before any mainnet: the keeper's bot on the new interface with its own price source; a run of the fork suites; a red
+  - The keeper follows. Its executor: `fill(index, newUnits, routes, maxAmountsIn, maxSupply, minUsdcDelta, deadline)`,
+    not payable, its suite at 67 passing (`keeper/test/KeeperExecutor.t.sol`). Its bot names the units of its own
+    fills (`keeper/bot/units.mjs`: the hub's arithmetic ported word for word and replayed against the 426 vectors,
+    and `nameUnits`, the units that clear the bar while leaving the index the least), sends plain starts, leaves alone
+    every leg it cannot value, and prices its own trades off chain at Pyth's prices from Hermes, each confirmed by
+    Pyth's contract, through a coin-to-id catalogue of its own (`keeper/bot/price-ids.mjs`). Mutants U1 to U4.
+  - Not done: a run of the fork suites, rewritten but waiting for an archive RPC; the app; a red team of the
+    mechanism by reviewers who did not design it; the Halmos harness; a new Sepolia deployment.
+    `test/vectors/proofs.py` is rewritten for the new arithmetic: it checks the proof's chain in exact rationals
+    (the derivative identity behind `L(x) ≤ ln(1 + x)`, the margin at the cap, every rounding, every second of the
+    bar, the amounts), standard library only.
+- Before any mainnet: a Hermes plan that serves the keeper its feeds (its price source is its own business now, and
+  no contract waits on it); a run of the fork suites; a red
   team of the oracle-free mechanism and an external audit, then `DeployWeighted`'s release hashes fixed at the
   audited commit (CF-5); the 26 attestations and RAY's update; the platform's fee policy and the legal reading. No
   Pyth plan, replay or Hermes settlement is needed any more. The two Universal Router
@@ -244,14 +250,15 @@ forge test                   # unit + fuzz + invariant tests, no RPC needed; for
 forge coverage               # must stay at 100% for every file (lines, statements, branches, functions)
 python3 -I test/vectors/settlement.py > test/vectors/settlement.json  # after a change to WeightedMath: regenerates the exact
                              # model's vectors, which test/WeightedMath.vectors.t.sol replays; commit the model, the vectors and the change together
-                             # test/vectors/proofs.py proves the arithmetic retired on 2026-11-10 and is not yet rewritten
+python3 -I test/vectors/proofs.py  # the proof's chain behind the settlement, checked in exact rationals (11 s, no dependency):
+                             # rerun it after any change to the model
 aderyn .                     # Aderyn on src/, configured by aderyn.toml: must report nothing; CI does not run it
 python3 -I test/mutants/run.py  # the mutation gate: every mutant of test/mutants/mutants.json must be killed (CI runs it);
                              # --only M3,V8 runs some, --check only that every edit still applies; a mutant with
                              # "runner": "node" names a keeper/test/unit suite instead of a forge one
 for c in IndexZap BasketBuilder MintRequests WeightedIndexFactory WeightedHub; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
 forge test --root keeper     # the keeper's executor, its own Foundry project; CI also runs its fmt, build and lint
-node --test keeper/test/unit/*.test.mjs  # the keeper bot's arithmetic, settings, Hermes client and tx tracker (no dependency)
+node --test keeper/test/unit/*.test.mjs  # the keeper bot's arithmetic, unit naming, settings, Hermes client and tx tracker (no dependency)
 
 # mainnet fork tests (real tokens, Universal Router, V3 and V4 pools); skipped when the env var is unset.
 # A rate-limited RPC throttles five suites in parallel: add -j 1.
@@ -340,14 +347,14 @@ deploy script resolves the router, WETH and the stablecoins from the address boo
      `test_RB1_...` in `test/CheckToken.t.sol`, and `test_RB2_RX12_...` and `test_RB3_...` in
      `test/WeightedHub.rebalance.t.sol`. RB-4 is fixed by documentation alone; RB-5 is informational and open.
    - The review of 2026-10-31: `AU-1`..`AU-3` (`audit/2026-10-31-review.md`), a test named `test_AU1_...` in
-     `test/WeightedHub.fees.t.sol`, `test_AU2_...` in `test/WeightedHub.rebalance.t.sol` with the node test named
-     `AU-2: ...` in `keeper/test/unit/hermes.test.mjs`, and `test_AU3_...` in `keeper/test/KeeperExecutor.t.sol`.
+     `test/WeightedHub.fees.t.sol`, and `test_AU3_...` in `keeper/test/KeeperExecutor.t.sol`; AU-2's tests went with Pyth
+     on 2026-11-10.
    - The red teams of 2026-10-31: `RY-1`..`RY-9` (`audit/2026-10-31-red-team.md`) and `RZ-1`..`RZ-33`
      (`audit/2026-10-31-red-team-ii.md`), both drafted with `RT` ids, which the red team of 2026-09-24 holds. A test
      named `test_RY1_...` in `test/IndexZap.t.sol`, `test_RZ23_...` in `keeper/test/KeeperExecutor.t.sol`,
      `test_RZ24_...` in `test/Scripts.t.sol` (RZ-26's, in `test/GuardianRelay.t.sol` and `test/Scripts.t.sol`, went
-     with the relay on 2026-11-10), and node tests named `RY-6, RZ-1: ...`, `RZ-2, RZ-22: ...`, `RZ-5: ...`, `RZ-26: ...` and
-     `RY-8: ...` in `keeper/test/unit/`, RZ-26's and RY-8's with their mutants G1 to G7, Y1 and Y2. Each record's
+     with the relay on 2026-11-10), and node tests named `RY-6, RZ-1: ...`, `RZ-2, RZ-22: ...`, `RZ-5: ...` and
+     `RY-8: ...` in `keeper/test/unit/` (RZ-26's went with the relay too), RY-8's with its mutants Y1 and Y2. Each record's
      "Status of the fixes" names every test; the ids fixed by documentation, the open ones and the keeper's wiring
      without a unit harness have none.
    - The protocol documentation review of 2026-11-01: `PD-1`..`PD-14` (`audit/2026-11-01-protocol-docs-review.md`),
@@ -401,13 +408,13 @@ deploy script resolves the router, WETH and the stablecoins from the address boo
    - `audit/2026-10-14-pancakeswap-retirement.md`: the removal of the zap's PancakeSwap legs. It retires SV-1, whose
      unit and fork tests went with them, and SV-I1 and SV-I2, recorded by documentation.
    - `audit/2026-11-10-oracle-retirement.md`: the removal of Pyth for the oracle-free rebalance. It retires V5-L1,
-     V5-M1, V5R-1, DA-01, RB-3, RX-3, RX-27, AU-2 and RZ-26 in full, and names the test of every re-targeted id
+     V5-M1, V5R-1, DA-01, RB-3, RX-3, RX-18, RX-27, AU-2 and RZ-26 in full, and names the test of every re-targeted id
      (V5-I4, V5-M2, V5-L2, RX-15, R04, R14, R08 and their neighbours).
 
    The ids tested at `v3.0.0`, less those tested at Stage A, are exactly the ids the Stage A record retires in full;
    the ids tested at `8e6148b`, less those tested at `4f40b67`, the v4 record's first section; those at `22d532a`,
    less those tested after it, its second; those at `04e936b`, less those tested after it, the Stage B record's; and
-   those at `19be477`, less those tested after the oracle-free rebalance, the oracle record's nine. A
+   those at `922da1d`, less those tested after the oracle-free rebalance, the oracle record's ten. A
    change that removes an id's last test adds its row to a retirement record in the same commit. Do not restore a
    retired id's test against the new design; if the property matters here, it gets a new id from the review of this
    surface.
@@ -460,10 +467,20 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   minutes) along a straight line, rounds up, and never reaches zero. Do not turn it into a premium on the traded
   amount: with the executor choosing the trade, a premium is won by the smallest trade, and the index would never
   rebalance. A fill that changes nothing has no gain, so none can restart the rebalance interval for free (V5-L2).
-- **A fair price needs a bidder; safety does not.** Executors compete by filling earlier, at a higher bar. With an
-  honest one bidding, ours first, holders keep the distance from the weights less its costs; a lone executor at the
-  last second keeps it (0.3 to 0.6% of an index in an ordinary week). That is the rebalance's proceeds, never the
-  holders' principal. Say so wherever the design is described; do not claim the price is fair without a bidder.
+- **A fair price needs a bidder, and without one the holders lose the distance.** Executors compete by filling
+  earlier, at a higher bar. With an honest one bidding, ours first, holders lose only its costs. A lone executor at
+  the last second takes the index's distance from its weights out of the holders' value: what a fee-less
+  constant-weight pool loses to arbitrage, and no more (the spec's Theorem 2). On the exact model that is 0.48% of an
+  index after one coin of four rose a quarter, 5.0% in one fill after one coin of two doubled, 8.7% after it tripled.
+  Say so wherever the design is described: do not call it harmless or "never the holders' principal", as the first
+  records of 2026-11-10 did, and do not claim the price is fair without a bidder.
+- **An index created off its weights can be drained by its creator.** Units and weights are the creator's to name,
+  and no contract can compare them without a price. A creator can name units far from the weights, let others mint,
+  and fill its own auction at the last second: 15.5% of a 50/50 index created 90/10 by value in one fill, and at the
+  worst a fifth of an index per fill, every interval. The cap is `MAX_TURNOVER`; nothing else on chain stands against
+  it. The app, which has prices, is the only check: it creates on the weights, shows every index's coins against its
+  weights, and must not offer a mint of an index far from them. Found on 2026-11-10 after creation was reopened;
+  the owner's call on it (the app's check alone, the creator gate back, or a tighter cap) is open.
 - **Weights and constituents are fixed at creation,** two to a hundred components, so no listing or delisting
   reaches an existing index. The CREATE2 salt commits to every component's token, units and weight, and to the
   index's config: its fee rates, referral share and rebalance interval
@@ -761,8 +778,8 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   - The settlement vectors live under `test/vectors/`: `settlement.py` is the exact model and the seeded generator,
     `settlement.json` its output, and `test/WeightedMath.vectors.t.sol` replays it through `vm.readFile` (the folder
     is in `fs_permissions`), never `ffi`. A change to `WeightedMath` regenerates the file in the same commit, and a
-    change to the arithmetic's rules changes the model first, then reruns `proofs.py`, the model's properties in z3
-    (`design/2026-10-29-settlement-proofs.md`). `test/WeightedMath.halmos.t.sol` is a Halmos harness: its
+    change to the arithmetic's rules changes the model first, then reruns `proofs.py`, which checks the proof's
+    chain on the model in exact rationals (`design/2026-11-10-oracle-free-rebalance.md`, section 3). `test/WeightedMath.halmos.t.sol` is a Halmos harness: its
     `check_` functions are symbolic and only Halmos runs them; forge runs them at the concrete points of its one
     `test_` function, which keeps the file at CI's 100% coverage.
   - Mocks go under `test/mocks/`. Mainnet constants live in `script/MainnetAddresses.sol`, re-exported with test-only
@@ -830,8 +847,10 @@ through an auction in which the executor names the units and the index checks a 
 (`design/2026-11-10-oracle-free-rebalance.md`). The owner's reason: "there are too many hacks nowadays", and this
 "will be really big step towards security". What it removes: three of Pyth's five keys could take a fifth of every
 index per fill. What it costs, said to the owner before the build: a fair price now needs an honest executor bidding, ours first, where Pyth gave one whoever filled;
-a lone executor keeps the index's distance from its weights (0.3 to 0.6% in an ordinary week), which is the
-rebalance's proceeds and never the holders' principal. It supersedes "Pyth is the only oracle" of 2026-10-05 and "leave
+a lone executor keeps the index's distance from its weights (0.3 to 0.6% in an ordinary week), which was described
+then as the rebalance's proceeds and never the holders' principal. That description was wrong, and was corrected the
+same day: the distance comes out of the holders' value, and it is about 5% after one coin of two doubles (the design
+rule above has the figures). It supersedes "Pyth is the only oracle" of 2026-10-05 and "leave
 rebalance as it is" of 2026-11-10, both below, and with them the guardian relay of 2026-11-02, the Pyth plan, the
 replay and the US-hours limits on stock legs. Dropping rebalancing for fixed amounts per token stays not taken.
 
@@ -842,7 +861,9 @@ the factory refused `createIndex` from any wallet its owner had not approved; th
 same day, never pushed or deployed. The costs the owner named when asking for the gate come back with open
 creation and are not answered in a contract: a stranger's look-alike index under our factory, served by our zap at
 the fee caps; a guardian and a keeper whose work grows with every index anyone makes; and creation spam while the
-creation fee is zero. The app answers the first by what it lists, and the fee policy's creation fee answers the
+creation fee is zero. A fourth cost was found only after the reversal, and is the owner's to weigh: with no price on
+chain, a creator can make an index far from its weights and drain it through its own auctions, up to a fifth a fill
+(the design rule "An index created off its weights"). The app answers the first by what it lists, and the fee policy's creation fee answers the
 last. A partner needs no handoff from the team any more, though the creator role still moves (`transferCreator`,
 `acceptCreator`). Dropping rebalancing for fixed amounts per token, discussed on 2026-11-10, was not taken.
 

@@ -1,5 +1,36 @@
 # External audit package (2026-11-02)
 
+> **Note of 2026-11-10: the rebalance this package describes was replaced.** Since 2026-11-10 no contract reads a
+> price. A rebalance settles at the units its executor names, and the index accepts them only when every leg is inside
+> its unit caps and a weighted gain in units clears a bar that falls with time. Pyth, the price window, the confidence
+> and moving-average checks, `μ`, `MIN_TRADE`, the hub's payable entry points and `GuardianRelay` are gone.
+> `design/2026-11-10-oracle-free-rebalance.md` is the spec, and `audit/2026-11-10-oracle-retirement.md` lists what was
+> removed, the review ids retired and every re-targeted test. The package below is kept as written for the candidate
+> `f2f4c18` and is not rewritten for the new build. `AGENTS.md`, which it cites as the rule book, is `CLAUDE.md` now.
+> Superseded:
+>
+> - **Section 1:** the candidate commit and its counts, the parameter replay (item 1), and the fifth release hash,
+>   `RELAY_INITCODE_HASH`: there are four.
+> - **Section 2:** the hub's "settlement at Pyth prices", `src/GuardianRelay.sol` and `src/interfaces/pyth/`, both
+>   deleted, and the listings "with their Pyth price ids": the list is `script/Listings.sol`, and a listing is a token
+>   and its decimals. The nSLOC figures are the candidate's.
+> - **Section 3:** the commit and the test counts.
+> - **Section 4:** the "Rebalancing" bullet.
+> - **Section 5:** the rows of the guardian (its Safe holds the role itself), the executor (it names the units; there
+>   is no price time) and Pyth (no party any more).
+> - **Section 6:** properties 3 and 4, property 1's "new units up" (the hub computes no units), and property 5's `μ`
+>   and `MIN_TRADE`.
+> - **Section 7:** items 1 (the arithmetic is new), 2 (there is no price path), 6 (there is no relay) and 8 (the gas).
+> - **Section 8:** the limitations named for `MU_MIN`, a wrong price, Hermes, price ids, `PYTH` and RZ-4, and the
+>   builder that sees further; `docs/known-limitations.md` has the current list.
+> - **Section 9:** V5-L1, V5-M1, V5R-1, DA-01, RB-3, RX-3, RX-27, AU-2 and RZ-26 are retired in full, and the open
+>   RZ-17 and RZ-27 concern a start's feeds and the moving-average check, which are gone.
+> - **Section 10:** the vector and mutant counts (the model now has 426 vectors), the end-to-end run's relay start,
+>   the Sepolia rehearsal as a rehearsal of this build, and "a settlement on a real Hermes update".
+>
+> What the package says of issue, redeem, claims, fees, the zap, the builder, `MintRequests` and the factory's
+> lifecycle stands. The oracle-free mechanism has not yet been red-teamed by reviewers who did not design it.
+
 The brief for the external auditors, step 5 of the logic-hardening plan: what to audit, at which commit, how to build
 it, what the system promises, who is trusted with what, where we want the most attention, and what every earlier
 review found. It points to the repository's own records rather than repeating them; `AGENTS.md` is the full rule
@@ -229,7 +260,9 @@ Still open, none of them in the primary scope's code:
 - **The state machine.** `test/WeightedHub.states.t.sol` takes every cell of the transition matrix.
 - **The exact model.** `test/vectors/settlement.py` (written from the spec, standard library only) generates 375
   vectors that `test/WeightedMath.vectors.t.sol` replays against the contract word for word.
-- **Proofs.** z3 on the model (`test/vectors/proofs.py`): two legs in full, three legs but one hand step.
+- **Proofs.** Since 2026-11-10 the settlement reads no price, and `test/vectors/proofs.py` checks its safety proof's
+  chain on the model in exact rationals (`design/2026-11-10-oracle-free-rebalance.md`, section 3). The z3 proofs of
+  the Pyth-priced arithmetic went with it.
 - **Mutation gate.** 87 mutants as exact edits (`test/mutants/mutants.json`), every one killed, in CI.
 - **Static analysis.** `forge lint` with notes denied, Wake (`wake detect all src`) and Aderyn report nothing on
   `src/`; each suppression carries its reason where it stands.

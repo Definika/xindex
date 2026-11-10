@@ -6,11 +6,16 @@ What the contracts do not protect against, and what an app built on them has to 
   the units a rebalance settles at, and the index accepts them when their weighted gain clears a bar that falls
   through the auction. Executors compete by filling earlier, at a higher bar, which leaves more with the holders. With
   an honest executor bidding, the keeper first, holders keep the whole distance less its costs. With none, an
-  executor waits for the auction's last second and keeps it: 0.3 to 0.6% of the index in an ordinary week, up to
-  about 1.8% after a week in which a tenth of the index halved. That distance is what a fair rebalance would have
-  earned the holders; it is never their principal, and on its weights an index has nothing to take
+  executor waits for the auction's last second and takes it out of the holders' value: 0.3 to 0.6% of the index in
+  an ordinary week, up to about 1.8% after a week in which a tenth of the index halved, 5.0% in one fill after one
+  coin of two doubled, 8.7% after it tripled. It is what a fee-less constant-weight pool loses to arbitrage, and no
+  fill can take more; on its weights an index has nothing to take
   (`design/2026-11-10-oracle-free-rebalance.md`, sections 3 and 6). A fair price therefore needs a bidder, where a
-  price feed gave one whoever filled.
+  price feed gave one whoever filled. An index created off its weights carries its distance from its first day:
+  units and weights are the creator's to name, and no contract can compare them without a price. A creator can name
+  units far from the weights, let others mint, and fill its own auction: 15.5% of a 50/50 index created 90/10 by
+  value in one fill, at the worst a fifth of an index per fill. Only the app, which has prices, can refuse to offer
+  such an index.
 - **No contract reads a price.** Nothing checks what a coin is worth, and nothing needs to: a fill is judged on
   units. Whatever the executor offers, one fill sends out at most 20% of each component's own units and at most
   doubles a component (V5-M2, RX-15), at most once every `MIN_REBALANCE_INTERVAL`, and it must raise the weighted

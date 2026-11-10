@@ -1,22 +1,25 @@
-// End-to-end test of the keeper on an anvil fork of Ethereum: real tokens and Uniswap V3 pools, the real Pyth
-// contract (verifying updates against five keys this test installs, see pnau.mjs), the protocol's own factory and
-// hubs, KeeperExecutor, and keeper.mjs running as its own process against a fake Hermes this file serves.
+// End-to-end test of the keeper on an anvil fork of Ethereum: real tokens and Uniswap V3 pools, the protocol's own
+// factory and hubs, which read no price, KeeperExecutor, and keeper.mjs running as its own process against a fake
+// Hermes this file serves. The keeper's prices are its own: it has the real Pyth contract confirm each one, against
+// five keys this test installs (see pnau.mjs).
 //
 // Opt-in, like the repo's fork suites: needs an archive RPC.
 //   forge build && forge build --root keeper        # at the repo root
 //   MAINNET_RPC_URL=https://... npm run e2e          # in keeper/; FORK_BLOCK optional (default: head - 8)
 //
 // Five indexes, each a scenario:
-//   LQ   WETH/WBTC/LINK/UNI. LINK's own pool is pushed up 12%. Held back while WBTC's feed is quiet; then started,
-//        filled only once the auction pays, through routes that include a two-hop buy. Its first fill is mined one
-//        slot late on purpose: it must revert cheaply (Expired) and be sent again.
-//   MIX  WETH/JUP/NVDAon. JUP up 20%: the index sells JUP, which has no pool (kept as stock, at Pyth), and buys
-//        NVDAon, which has none either: not started until the executor holds NVDAon and its owner allows that stock
-//        (CF-1), then filled from it.
+//   LQ   WETH/WBTC/LINK/UNI. LINK's own pool is pushed up 12%. Started, then filled only once the bar has fallen far
+//        enough for the fill to pay, through routes that include a two-hop buy. Later the guardian starts it again
+//        keeping UNI, and the keeper's fill leaves UNI's units alone.
+//   MIX  WETH/JUP/NVDAon. JUP up 20%: the index sells JUP, which has no pool (kept as stock, at the keeper's price),
+//        and buys NVDAon, which has none either: not started until the executor holds NVDAon and its owner allows
+//        that stock (CF-1), then filled from it.
 //   DRY  WETH/APT. APT down 20%: the index would buy APT, which nobody routes or holds: never started.
 //   SHR  WETH/JUP. JUP up 20%: the index sells JUP, kept as stock, and buys WETH: started and filled.
-//   ADV  WETH/SOL. SOL's feed up 20% while its own pool stays where mainnet has it, far below: the SOL a fill would
-//        keep counts at what that pool pays, not at Pyth (XS-5), so the auction never pays and is never started.
+//   ADV  WETH/SOL. SOL's price up 20% while its own pool stays where mainnet has it, far below: the SOL a fill would
+//        keep counts at what that pool pays, not at the keeper's price (XS-5), so the auction never pays and is never
+//        started.
+// One fill is mined a slot late on purpose: it must revert cheaply (Expired) and be sent again.
 
 import { execFileSync, spawn } from "node:child_process";
 import http from "node:http";
@@ -49,7 +52,6 @@ const KEEPER_DIR = new URL("../../", import.meta.url).pathname;
 const ROOT = new URL("../../../", import.meta.url).pathname;
 const json = (path) => JSON.parse(readFileSync(path, "utf8"));
 
-const PYTH = "0x4305FB66699C3B2702D4d05CF36551390A4c69C6";
 const SWAP_ROUTER02 = "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45";
 const V3_FACTORY = "0x1F98431c8aD98523631AE4a59f267346ea31F984";
 const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
@@ -148,7 +150,6 @@ const FACTORY = json(`${ROOT}out/WeightedIndexFactory.sol/WeightedIndexFactory.j
 const HUB = json(`${ROOT}abi/WeightedHub.json`);
 const EXECUTOR = json(`${KEEPER_DIR}out/KeeperExecutor.sol/KeeperExecutor.json`);
 const REQUESTS = json(`${ROOT}out/MintRequests.sol/MintRequests.json`);
-const RELAY = json(`${ROOT}out/GuardianRelay.sol/GuardianRelay.json`);
 
 step("anvil fork");
 const head = await createPublicClient({ transport: transport(UPSTREAM) }).getBlockNumber();
@@ -200,7 +201,6 @@ async function mid(token, quote, decT, decQ) {
   return { perToken: (t0 ? raw : 1 / raw) * 10 ** (decT - decQ), pool: best.p };
 }
 const prices = new Map(); // id without 0x -> {price, conf, expo}
-const quiet = new Set();
 const setUsd = (coin, usd) => {
   const price = BigInt(Math.round(usd * 1e8));
   prices.set(coin.id.slice(2).toLowerCase(), { price, conf: price / 2000n, expo: -8 });
@@ -226,19 +226,16 @@ hermesServer = http
         if (!p) throw new Error(`unknown id ${id}`);
         return { id: `0x${id}`, ...p };
       });
-      const timeOf = (f) => (latest && quiet.has(f.id.slice(2)) ? t - 3600 : t);
       const body = {
         parsed: feeds.map((f) => ({
           id: f.id.slice(2),
-          price: { price: String(f.price), conf: String(f.conf), expo: f.expo, publish_time: timeOf(f) },
-          ema_price: { price: String(f.price), conf: String(f.conf), expo: f.expo, publish_time: timeOf(f) },
+          price: { price: String(f.price), conf: String(f.conf), expo: f.expo, publish_time: t },
+          ema_price: { price: String(f.price), conf: String(f.conf), expo: f.expo, publish_time: t },
         })),
       };
       // Signed with the test's keys, as Hermes signs every answer: the bot values nothing Pyth's contract has not
-      // confirmed, latest prices included (RX-9, RY-7). One update per publish time, so a quiet feed stays old.
-      const times = [...new Set(feeds.map(timeOf))];
-      const data = await Promise.all(times.map(async (at) => (await encodeUpdate(feeds.filter((f) => timeOf(f) === at), at)).slice(2)));
-      body.binary = { encoding: "hex", data };
+      // confirmed (RX-9, RY-7).
+      body.binary = { encoding: "hex", data: [(await encodeUpdate(feeds, t)).slice(2)] };
       res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body));
     } catch (error) {
       res.writeHead(400).end(String(error.message));
@@ -251,24 +248,15 @@ hermesServer = http
 // ---------------------------------------------------------------------
 
 step("protocol");
-// The guardian is a relay the guardian's Safe controls, as DeployWeighted makes it (RZ-26).
-const relayHash = await wallet.deployContract({
-  account: deployer,
-  abi: RELAY.abi,
-  bytecode: RELAY.bytecode.object,
-  args: [guardian],
-  chain,
-});
-const relay = (await pub.waitForTransactionReceipt({ hash: relayHash })).contractAddress;
 const factoryHash = await wallet.deployContract({
   account: deployer,
   abi: FACTORY.abi,
   bytecode: FACTORY.bytecode.object,
-  args: [owner, relay, PYTH],
+  args: [owner, guardian],
   chain,
 });
 const factory = (await pub.waitForTransactionReceipt({ hash: factoryHash })).contractAddress;
-for (const c of Object.values(T)) await send(owner, factory, FACTORY.abi, "proposeListing", [c.a, c.id]);
+for (const c of Object.values(T)) await send(owner, factory, FACTORY.abi, "proposeListing", [c.a]);
 await test.setNextBlockTimestamp({ timestamp: (await now()) + 2n * 86_400n + 1n });
 await test.mine({ blocks: 1 });
 for (const c of Object.values(T)) await send(owner, factory, FACTORY.abi, "executeListing", [c.a]);
@@ -334,22 +322,26 @@ const exHash = await wallet.deployContract({
 const executor = (await pub.waitForTransactionReceipt({ hash: exHash })).contractAddress;
 await deal(USDC, executor, 200_000n * 10n ** 6n);
 
-// The market moves: LINK's own pool up 12% (and Pyth with it), SOL and JUP up 20%, APT down 20%.
-const link = await mid(T.LINK.a, T.WETH.a, 18, 18);
-let linkNow = link.perToken;
-for (let amount = 20n * 10n ** 18n; linkNow < link.perToken * 1.12; ) {
-  await deal(T.WETH.a, trader, amount);
-  await send(trader, T.WETH.a, erc20, "approve", [SWAP_ROUTER02, amount]);
-  await send(trader, SWAP_ROUTER02, router, "exactInputSingle", [
-    { tokenIn: T.WETH.a, tokenOut: T.LINK.a, fee: 3000, recipient: trader, amountIn: amount, amountOutMinimum: 0n, sqrtPriceLimitX96: 0n },
-  ]);
-  linkNow = (await mid(T.LINK.a, T.WETH.a, 18, 18)).perToken;
+/// Pushes LINK's own pool up by `factor`, and the keeper's price of LINK with it.
+async function pushLink(factor) {
+  const link = await mid(T.LINK.a, T.WETH.a, 18, 18);
+  let linkNow = link.perToken;
+  for (let amount = 20n * 10n ** 18n; linkNow < link.perToken * factor; ) {
+    await deal(T.WETH.a, trader, amount);
+    await send(trader, T.WETH.a, erc20, "approve", [SWAP_ROUTER02, amount]);
+    await send(trader, SWAP_ROUTER02, router, "exactInputSingle", [
+      { tokenIn: T.WETH.a, tokenOut: T.LINK.a, fee: 3000, recipient: trader, amountIn: amount, amountOutMinimum: 0n, sqrtPriceLimitX96: 0n },
+    ]);
+    linkNow = (await mid(T.LINK.a, T.WETH.a, 18, 18)).perToken;
+  }
+  setUsd(T.LINK, linkNow * ethUsd);
 }
-setUsd(T.LINK, linkNow * ethUsd);
+
+// The market moves: LINK's own pool up 12% (and the keeper's price with it), SOL and JUP up 20%, APT down 20%.
+await pushLink(1.12);
 setUsd(T.SOL, 180);
 setUsd(T.JUP, 0.6);
 setUsd(T.APT, 4);
-quiet.add(T.WBTC.id.slice(2).toLowerCase());
 
 await test.setNextBlockTimestamp({ timestamp: (await now()) + 7n * 86_400n + 1n });
 await test.mine({ blocks: 1 });
@@ -431,15 +423,16 @@ const logged = (text) => logLines.some((l) => l.includes(text));
 // Starts
 // ---------------------------------------------------------------------
 
-step("first start check: only SHR may start");
+step("first start check: one index starts, the best paying of those that can");
 await settle();
-ok((await proposals(LQ)) === 0n && logged("LQ not starting: feed closed or quiet"), "LQ held back while WBTC's feed is quiet");
 ok((await proposals(MIX)) === 0n && logged("MIX not starting: restock"), "MIX held back: no route and no stock of NVDAon");
-ok((await proposals(DRY)) === 0n && logged("DRY not starting: restock"), "DRY held back: no route and no stock of APT");
-ok((await proposals(SHR)) === 1n, "SHR started: its sold JUP is kept, its WETH bought");
+ok((await proposals(LQ)) + (await proposals(SHR)) === 1n, "one of LQ and SHR started: the bot starts one index a round");
+const startTx = await pub.getTransaction({
+  hash: (await pub.getContractEvents({ abi: HUB, eventName: "RebalanceStarted", fromBlock: BigInt(forkBlock) + 1n }))[0].transactionHash,
+});
+ok(startTx.value === 0n && startTx.from.toLowerCase() === keeperAccount.address.toLowerCase(), "the keeper's start is a plain call that carries no ether");
 
-step("WBTC's feed resumes; the executor gets NVDAon stock");
-quiet.clear();
+step("the executor gets NVDAon stock; the rest start");
 const [mixTokens, mixUnits] = await read(MIX, HUB, "components");
 const mixSupply = await read(MIX, HUB, "totalSupply");
 const nvdaStock = (mixSupply * mixUnits[2]) / 10n ** 18n / 2n;
@@ -448,16 +441,15 @@ await deal(T.NVDAON.a, executor, nvdaStock);
 await send(execOwner, executor, EXECUTOR.abi, "setStockAllowance", [T.NVDAON.a, nvdaStock]);
 // What request fills may turn of the float into stock (RX-1, RX-9): the whole float, for this rehearsal.
 await send(execOwner, executor, EXECUTOR.abi, "setRequestUsdcAllowance", [2n ** 256n - 1n]);
-await mineBlocks(25);
+for (let round = 0; round < 4; round++) await mineBlocks(25);
 ok((await proposals(LQ)) === 1n, "LQ started");
-await mineBlocks(25);
+ok((await proposals(SHR)) === 1n, "SHR started: its sold JUP is kept, its WETH bought");
 ok((await proposals(MIX)) === 1n, "MIX started from stock");
-await mineBlocks(25);
-ok((await proposals(DRY)) === 0n, "DRY still not started");
-// The keeper starts one index a block, so ADV, created last, is first judged here.
+// Five indexes are ready and four are judged a round, the richest first, so DRY, the smallest, is judged in a later one.
+ok((await proposals(DRY)) === 0n && logged("DRY not starting: restock"), "DRY held back: no route and no stock of APT");
 ok(
   (await proposals(ADV)) === 0n && logged("ADV not starting: best case pays -"),
-  "ADV held back: the SOL it would keep counts at what SOL's pool pays, not at Pyth (XS-5)",
+  "ADV held back: the SOL it would keep counts at what SOL's pool pays, not at the keeper's price (XS-5)",
 );
 
 // ---------------------------------------------------------------------
@@ -465,15 +457,17 @@ ok(
 // ---------------------------------------------------------------------
 
 step("auctions: every block a step further; one fill mined a slot late on purpose");
-const [shrEta] = await read(SHR, HUB, "pendingRebalance");
+const etas = await Promise.all([LQ, MIX, SHR].map(async (index) => (await read(index, HUB, "pendingRebalance"))[0]));
+const firstEta = etas.reduce((a, b) => (a < b ? a : b));
 const balances = async (coins) => Promise.all(coins.map((c) => read(c.a, erc20, "balanceOf", [executor])));
 const [jup0, nvda0] = await balances([T.JUP, T.NVDAON]);
 const usdc0 = await read(USDC, erc20, "balanceOf", [executor]);
 await test.request({ method: "evm_setAutomine", params: [false] });
 let lateHash = null;
 const filled = new Set();
-// Ten-minute steps: two dozen through each 4-hour auction (RX-3), as hourly steps were through the 24-hour one.
-for (let t = shrEta; t <= shrEta + 8n * 3600n && filled.size < 3; t += 600n) {
+// Ten-minute steps through the 4-hour auctions: the bar halves every twelve minutes, and each index is filled at the
+// first step where clearing it pays.
+for (let t = firstEta; t <= firstEta + 5n * 3600n && filled.size < 3; t += 600n) {
   await mineAt(t);
   // A transaction of the keeper's waits in the pool: mine it, the first fill one slot late.
   for (;;) {
@@ -503,10 +497,12 @@ async function settlement(index) {
   const tx = await pub.getTransaction({ hash: event.transactionHash });
   return { ...event.args, from: tx.from, call: decodeFunctionData({ abi: EXECUTOR.abi, data: tx.input }) };
 }
-const MU_MAX = 1_020_000_000_000_000_000n;
 for (const index of [LQ, MIX, SHR]) {
   const s = await settlement(index);
-  ok(s.from.toLowerCase() === keeperAccount.address.toLowerCase() && s.mu < MU_MAX, `${names[index]} filled by the keeper at mu ${Number(s.mu) / 1e18}, below MU_MAX`);
+  ok(
+    s.from.toLowerCase() === keeperAccount.address.toLowerCase() && s.gain >= s.bar && s.bar < 10n ** 16n,
+    `${names[index]} filled by the keeper at a bar of ${Number(s.bar) / 1e18}, its gain ${Number(s.gain) / 1e18}`,
+  );
 }
 const lq = await settlement(LQ);
 const [, , routes] = lq.call.args;
@@ -523,28 +519,26 @@ const usdc1 = await read(USDC, erc20, "balanceOf", [executor]);
 console.log(`  executor USDC float ${Number(usdc0) / 1e6} -> ${Number(usdc1) / 1e6}`);
 
 // ---------------------------------------------------------------------
-// The guardian's Safe, through its relay
+// The guardian keeps a coin
 // ---------------------------------------------------------------------
 
-step("the guardian's Safe authorizes a start of LQ keeping UNI; the keeper sends it through the relay (RZ-26)");
+step("the guardian starts LQ keeping UNI; LINK moves again; the keeper's fill leaves UNI alone");
 const KEEP_UNI = 8n; // LQ holds WETH, WBTC, LINK and UNI: UNI kept, three still move
 await mineAt(await read(LQ, HUB, "earliestRebalance"));
 const lqBefore = await proposals(LQ);
-const authorizedAt = await pub.getBlockNumber();
-await send(guardian, relay, RELAY.abi, "authorizeStart", [LQ, KEEP_UNI, (await now()) + 3600n]);
-await settle();
-await mineBlocks(1);
-const [, lqMask] = await read(LQ, HUB, "pendingRebalance");
-ok((await proposals(LQ)) === lqBefore + 1n && lqMask === KEEP_UNI, "LQ started with UNI kept");
-const lqStarts = await pub.getContractEvents({ address: LQ, abi: HUB, eventName: "RebalanceStarted", fromBlock: authorizedAt });
-const lqStart = lqStarts[lqStarts.length - 1];
-const lqStartTx = lqStart && (await pub.getTransaction({ hash: lqStart.transactionHash }));
-ok(
-  lqStart?.args.caller.toLowerCase() === relay.toLowerCase() && lqStartTx.from.toLowerCase() === keeperAccount.address.toLowerCase(),
-  "the relay started it, in a transaction the keeper sent",
-);
-const [, lqDeadline] = await read(relay, RELAY.abi, "authorizationOf", [LQ]);
-ok(lqDeadline === 0n, "and the authorization is spent");
+await send(guardian, LQ, HUB, "startRebalance", [KEEP_UNI]);
+const [lqEta, lqMask] = await read(LQ, HUB, "pendingRebalance");
+ok((await proposals(LQ)) === lqBefore + 1n && lqMask === KEEP_UNI, "LQ started by the guardian with UNI kept, in a plain call");
+await pushLink(1.1);
+const unitsBefore = await read(LQ, HUB, "recordedUnits");
+for (let t = lqEta; t <= lqEta + 4n * 3600n && (await nonceOf(LQ)) === 1n; t += 600n) {
+  await mineAt(t);
+  await mineBlocks(2);
+}
+const unitsAfter = await read(LQ, HUB, "recordedUnits");
+ok((await nonceOf(LQ)) === 2n, "the keeper filled the guardian's auction");
+ok(unitsAfter[3] === unitsBefore[3], "UNI's units are exactly what they were");
+ok(unitsAfter[2] < unitsBefore[2], "LINK, which rose, was sold");
 
 step(`done: ${passed} passed, ${failed} failed`);
 shutdown(failed === 0 ? 0 : 1);
