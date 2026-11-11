@@ -22,7 +22,7 @@
 
 import { renameSync, writeFileSync } from "node:fs";
 import { encodeFunctionData, getAddress } from "viem";
-import { FRESH_SECONDS, HUB_SLOTS, MAX_CONF_BPS, SHARE_PRICED_IDS, TX_GAS_CAP, parseConfig } from "./bot/config.mjs";
+import { FRESH_SECONDS, HUB_SLOTS, MAX_CONF_BPS, NO_QUOTE_PROPOSAL, SHARE_PRICED_IDS, TX_GAS_CAP, parseConfig } from "./bot/config.mjs";
 import { MAX_REVERTED_FILLS, MAX_REVERTED_REQUEST_FILLS, revertedFills } from "./bot/backoff.mjs";
 import { ABI, createChain, revertReason } from "./bot/chain.mjs";
 import { createHermes, priceKey } from "./bot/hermes.mjs";
@@ -158,9 +158,10 @@ async function pricesOf(st, L, keepMask) {
 async function preview(index, st, L, keepMask, eta) {
   const T = L.timestamp + 12n;
   const over = { block: { number: L.number + 1n, time: T } };
-  // A start of the keeper's posts no quote: an earlier proposal's is cleared for the simulation.
+  // A start of the keeper's posts no quote: the simulated auction is bound to no proposal's, an earlier one's or,
+  // on an index never started, the empty one zero would name.
   if (eta !== undefined) {
-    over.state = { [index]: { [HUB_SLOTS.eta]: eta, [HUB_SLOTS.keepMask]: keepMask, [HUB_SLOTS.quoteProposal]: 0n } };
+    over.state = { [index]: { [HUB_SLOTS.eta]: eta, [HUB_SLOTS.keepMask]: keepMask, [HUB_SLOTS.quoteProposal]: NO_QUOTE_PROPOSAL } };
   }
   // The quote the owner or guardian posted with this proposal, if any: prices of theirs that a fill must also hold.
   const [quotePrices, quoteTolerance] = await chain.call({ to: index, abi: ABI.hub, functionName: "rebalanceQuote", args: [] }, L.number, over);
@@ -530,6 +531,16 @@ async function onBlock(L) {
       );
     }
     if (kind === "request" && ok) filler?.forget(BigInt(index));
+    if (kind === "batch" && ok) for (const id of index.split(",")) filler?.forget(BigInt(id));
+    if (kind === "batch" && filler && done.receipt?.status === "reverted" && !done.replaced) {
+      const b = filler.revertedBatch(index.split(",").map(BigInt), L.number);
+      log(
+        `batch ${index}`,
+        b.stopped
+          ? `fill reverted on chain after its simulation passed: leaving its requests until the strikes lapse (a front-run, or an RPC whose simulation cannot be trusted)`
+          : `fill reverted on chain after its simulation passed: backing off until block ${b.until}`,
+      );
+    }
     if (kind === "request" && filler && done.receipt?.status === "reverted" && !done.replaced) {
       const b = filler.reverted(BigInt(index), L.number);
       log(
@@ -603,9 +614,11 @@ async function requestChecks(L) {
   }
   const pick = await filler.best(L, indexes, ethUsd, tip, feeCap);
   if (!pick) return;
-  if ((await chain.blockNumber()) !== L.number) return log(`request ${pick.id}`, "block passed before sending; next block");
-  log(`request ${pick.id}`, `filling: profit ${pick.profit.toFixed(2)} USD (float ${(Number(pick.usdcDelta) / 1e6).toFixed(2)}, stock ${pick.inventoryUsd.toFixed(2)}, gas ${pick.gasUsd.toFixed(2)})`);
-  await tracker.send(pick.tx, { label: `request ${pick.id}`, targetBlock: Number(L.number) + 1 });
+  // A batch is named by its requests' ids, joined without a space: the label is read back word by word.
+  const name = pick.ids ? `batch ${pick.ids.join(",")}` : `request ${pick.id}`;
+  if ((await chain.blockNumber()) !== L.number) return log(name, "block passed before sending; next block");
+  log(name, `filling: profit ${pick.profit.toFixed(2)} USD (float ${(Number(pick.usdcDelta) / 1e6).toFixed(2)}, stock ${pick.inventoryUsd.toFixed(2)}, gas ${pick.gasUsd.toFixed(2)})`);
+  await tracker.send(pick.tx, { label: name, targetBlock: Number(L.number) + 1 });
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

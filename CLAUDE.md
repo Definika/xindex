@@ -219,6 +219,30 @@ Pyth-priced rebalance as it then was, and the last one says what replaced it.
     `test/vectors/proofs.py` is rewritten for the new arithmetic: it checks the proof's chain in exact rationals
     (the derivative identity behind `L(x) ≤ ln(1 + x)`, the margin at the cap, every rounding, every second of the
     bar, the amounts), standard library only.
+- **Batch fills** were built on 2026-11-11 (the owner's call, after asking why a $100 buyer pays for a swap per
+  coin: "then build it"; `design/2026-11-11-batch-fills.md`). No protocol contract changed; the keeper's executor and
+  bot did:
+  - `KeeperExecutor.fillBatch` fills several requests on one index, in one stablecoin, in one call: the shares the
+    redeem requests escrowed go to the mint requests, the executor's own stock of the index's shares covers what they
+    do not, and one basket is bought or sold for the difference. A further request costs about 56k gas on the
+    three-coin test index, where a fill of its own costs a basket. `fillMint` and `fillRedeem` are unchanged.
+  - Shares a batch hands over beyond those it brings in spend `stockAllowance[index]`, which only the owner raises,
+    so a stolen keeper key takes no more of the share stock than the owner's figure (CF-1's bound, mutants B1 and
+    B2); the float's request allowance measures the batch as a whole, as a single fill's.
+  - The bot plans batches before single fills (`batchGroups`, `planBatch`): a request need not pay `MIN_PROFIT_USD`
+    alone, the batch must. `SHARE_STOCK_USD`, zero by default, is the share stock it aims to hold per index.
+  - Tests: the executor's batch section (78 passing in the suite), `keeper/test/unit/batch.test.mjs`, and
+    `keeper/test/harness/requests.test.mjs`, which drives the request filler against a fake chain and is not in CI
+    because it imports viem; mutants B1 to B12, all killed.
+  - Found on the way, in the bot since the quote (`6c871fb`): its start simulation wrote zero into the hub's
+    `quoteProposal` slot, which on an index never started names the auction being simulated, so every first start
+    failed with `Panic(50)` and the keeper would not have started a new index's first rebalance. It writes
+    `NO_QUOTE_PROPOSAL` now (`test_theBotsNoQuoteValueBindsNoProposal`). Nothing on chain was wrong. With it the
+    keeper's end-to-end test passed on a mainnet fork on 2026-11-11 (24 of 24); on `6c871fb` it fails at its first
+    start.
+  - Not done: the keeper's end-to-end test has no request scenario, so no batch has filled against real pools;
+    gasless signed orders and a limit that improves over time (the record's steps 2 and 3); a bot policy that builds
+    share stock ahead of demand.
 - Before any mainnet: a Hermes plan that serves the keeper its feeds (its price source is its own business now, and
   no contract waits on it); a run of the fork suites; a red
   team of the oracle-free mechanism and an external audit, then `DeployWeighted`'s release hashes fixed at the
@@ -270,6 +294,7 @@ python3 -I test/mutants/run.py  # the mutation gate: every mutant of test/mutant
 for c in IndexZap BasketBuilder MintRequests WeightedIndexFactory WeightedHub; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
 forge test --root keeper     # the keeper's executor, its own Foundry project; CI also runs its fmt, build and lint
 node --test keeper/test/unit/*.test.mjs  # the keeper bot's arithmetic, unit naming, settings, Hermes client and tx tracker (no dependency)
+node --test keeper/test/harness/*.test.mjs  # the request filler against a fake chain; needs `npm ci` in keeper/ and the executor's build; not in CI
 
 # mainnet fork tests (real tokens, Universal Router, V3 and V4 pools); skipped when the env var is unset.
 # A rate-limited RPC throttles five suites in parallel: add -j 1.

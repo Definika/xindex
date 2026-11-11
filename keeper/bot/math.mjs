@@ -314,3 +314,99 @@ export function stableLeg(request, usdc) {
     ? { token: request.stable, side: "sell", amount: request.escrow }
     : { token: request.stable, side: "buy", amount: request.limit };
 }
+
+// ---------------------------------------------------------------------
+// Batches
+// ---------------------------------------------------------------------
+
+/// Requests one batch fills at most: each costs its own reads and transfers, and the whole must fit a transaction.
+export const MAX_BATCH_REQUESTS = 16;
+
+/// The open requests one `fillBatch` could take, grouped by index and stablecoin, since a batch names one of each.
+/// A request joins its group when it is open, not past its deadline at second T, on a served and priced index, and
+/// its escrow is worth at least its limit at Pyth: one that is not could only take from the batch. A mint request on
+/// an index whose gate refuses the executor is left out, since its shares may have to be issued. A request need not
+/// pay `minProfitUsd` alone, as a single fill must (RY-8): the group as a whole must, which is what a batch is for,
+/// so a group whose escrows are worth less than that over its limits is dropped before any simulation, and reports
+/// no need either. Each group keeps the `cap` requests worth most over their limits; groups of fewer than `minSize`
+/// requests are left to the single fills. Returns `{key, index, stable, members, surplusUsd}` per group, each member
+/// its entry with `surplusUsd` added.
+export function batchGroups(entries, T, indexes, info, { cap = MAX_BATCH_REQUESTS, minSize = 2, minProfitUsd = 0 } = {}) {
+  const served = new Set(indexes.map((a) => a.toLowerCase()));
+  const groups = new Map();
+  for (const entry of entries) {
+    const r = entry.request;
+    const index = r.index.toLowerCase();
+    if (!r.open || BigInt(r.deadline) < T || !served.has(index)) continue;
+    const at = info.get(index);
+    if (!at || at.shareUsd === null) continue;
+    if (r.isMint && at.mintAllowed !== true) continue;
+    const { escrowUsd, limitUsd } = requestUsd(r, at.shareUsd);
+    if (limitUsd > escrowUsd) continue;
+    const key = `batch:${index}:${r.stable.toLowerCase()}`;
+    if (!groups.has(key)) groups.set(key, { key, index: r.index, stable: r.stable, members: [] });
+    groups.get(key).members.push({ ...entry, surplusUsd: escrowUsd - limitUsd });
+  }
+  const chosen = [];
+  for (const g of groups.values()) {
+    const members = g.members.sort((a, b) => b.surplusUsd - a.surplusUsd).slice(0, cap);
+    const surplusUsd = members.reduce((sum, m) => sum + m.surplusUsd, 0);
+    if (members.length < minSize || surplusUsd < minProfitUsd) continue;
+    chosen.push({ ...g, members, surplusUsd });
+  }
+  return chosen;
+}
+
+/// The back-off key of one batch: its group and exactly these requests, so a batch that was declined or whose
+/// simulation reverted is checked again as soon as a request joins or leaves it.
+export const batchKey = (group) => `${group.key}:${group.members.map((m) => m.id).join(",")}`;
+
+/// What one batch does with the shares it handles. `mints` and `redeems` are its requests, each filled at exactly its
+/// limit, as a single fill is; `held` is what the executor holds of the index's shares, `allowed` what the owner lets
+/// it deliver of them, and `target` what the bot aims to keep as stock. The shares the redeem requests escrowed go
+/// to the mint requests; the stock the executor may deliver covers what they do not; only the rest is issued. Shares
+/// left over stay as stock up to `target`, and the rest is redeemed, never below what the executor held before.
+/// Returns `fillBatch`'s amounts and `stockDelta`, the change in the shares the executor holds. It never both issues
+/// and redeems.
+export function planBatch({ mints, redeems, held = 0n, allowed = 0n, target = 0n }) {
+  const out = mints.reduce((sum, m) => sum + m.request.limit, 0n);
+  const brought = redeems.reduce((sum, r) => sum + r.request.escrow, 0n);
+  const deliverable = min(held, allowed);
+  let issue = 0n;
+  let redeem = 0n;
+  let stockDelta;
+  if (out > brought + deliverable) {
+    issue = out - brought - deliverable;
+    stockDelta = -deliverable;
+  } else {
+    const left = held + brought - out; // the shares held if nothing is redeemed
+    redeem = max(0n, left - max(target, held));
+    stockDelta = left - redeem - held;
+  }
+  return {
+    mintIds: mints.map((m) => m.id),
+    mintShares: mints.map((m) => m.request.limit),
+    redeemIds: redeems.map((r) => r.id),
+    redeemPay: redeems.map((r) => r.request.limit),
+    issue,
+    redeem,
+    stockDelta,
+  };
+}
+
+/// The shares worth `usd` dollars at `shareUsd` a share, rounded down to a millionth of a share.
+export function sharesFor(usd, shareUsd) {
+  if (!(usd > 0) || !(shareUsd > 0)) return 0n;
+  return BigInt(Math.floor((usd / shareUsd) * 1e6)) * 10n ** 12n;
+}
+
+/// The dollar change a batch makes to the share stock, each way against the bot. Shares added count at what
+/// redeeming them would bring (`sellUsd` a share: the redeem's basket at Pyth, after the index's fee), less
+/// `slippageBps`; shares delivered count at what issuing them again would cost (`buyUsd` a share: the issue's basket
+/// at Pyth, fee included), plus `slippageBps`. So a share bought from one request and sold to another earns the bot
+/// nothing it could not get by redeeming and issuing.
+export function shareStockUsd(delta, { buyUsd, sellUsd }, slippageBps) {
+  const shares = Number(delta) / 1e18;
+  const slip = Number(slippageBps) / 10_000;
+  return delta >= 0n ? shares * sellUsd * (1 - slip) : shares * buyUsd * (1 + slip);
+}

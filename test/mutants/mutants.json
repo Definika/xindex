@@ -1239,5 +1239,173 @@
       }
     ],
     "runner": "node"
+  },
+  {
+    "id": "B1",
+    "what": "a batch hands over share stock without spending the index's stock allowance (CF-1)",
+    "origin": "design/2026-11-11-batch-fills.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        _spendShareStock(address(f.index), deliver + f.redeem, sharesIn + f.issue);\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "B2",
+    "what": "a batch's own redeem does not count as shares handed over, so the share stock is run down unbounded (CF-1)",
+    "origin": "design/2026-11-11-batch-fills.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        _spendShareStock(address(f.index), deliver + f.redeem, sharesIn + f.issue);\n",
+        "new": "        _spendShareStock(address(f.index), deliver, sharesIn + f.issue);\n"
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "B3",
+    "what": "a batch fills a request on another index than it names",
+    "origin": "design/2026-11-11-batch-fills.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "            if (request.index != address(f.index)) revert WrongIndex(id);\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "B4",
+    "what": "a batch fills a request in another stablecoin than it names",
+    "origin": "design/2026-11-11-batch-fills.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "            if (request.stable != f.stable) revert WrongStable(id);\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "B5",
+    "what": "a batch that issues does not read the index's gate before its swaps (XS-6)",
+    "origin": "design/2026-11-11-batch-fills.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        if (f.issue != 0) _checkMintable(index);\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "B6",
+    "what": "a batch does not read its requests before its swaps, so a closed one costs a basket (XS-6)",
+    "origin": "design/2026-11-11-batch-fills.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "            if (!request.open) revert IMintRequests.RequestNotOpen(id);\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "B7",
+    "what": "a batch keeps the stablecoin its mint requests escrowed instead of selling it into the float",
+    "origin": "design/2026-11-11-batch-fills.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        if (stableAfter > stableBefore) _sellStable(stable, stableAfter - stableBefore, f.stableRoute, f.stableMinOut);\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "B8",
+    "what": "the bot plans to deliver share stock beyond the owner's allowance, so its batch reverts on chain",
+    "origin": "design/2026-11-11-batch-fills.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/batch.test.mjs",
+    "edits": [
+      {
+        "old": "  const deliverable = min(held, allowed);\n",
+        "new": "  const deliverable = held;\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "B9",
+    "what": "a request whose limit is worth more than its escrow joins a batch and is paid by the others",
+    "origin": "design/2026-11-11-batch-fills.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/batch.test.mjs",
+    "edits": [
+      {
+        "old": "    if (limitUsd > escrowUsd) continue;\n    const key = `batch:",
+        "new": "    const key = `batch:"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "B10",
+    "what": "a batch redeems the share stock the owner put above the target",
+    "origin": "design/2026-11-11-batch-fills.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/batch.test.mjs",
+    "edits": [
+      {
+        "old": "    redeem = max(0n, left - max(target, held));\n",
+        "new": "    redeem = max(0n, left - target);\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "B11",
+    "what": "shares delivered from stock count at what redeeming them brings, not at what issuing them costs",
+    "origin": "design/2026-11-11-batch-fills.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/batch.test.mjs",
+    "edits": [
+      {
+        "old": "  return delta >= 0n ? shares * sellUsd * (1 - slip) : shares * buyUsd * (1 + slip);\n",
+        "new": "  return shares * sellUsd * (1 - slip);\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "B12",
+    "what": "a group that cannot pay MIN_PROFIT_USD as a whole is simulated all the same (RY-8)",
+    "origin": "design/2026-11-11-batch-fills.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/batch.test.mjs",
+    "edits": [
+      {
+        "old": "    if (members.length < minSize || surplusUsd < minProfitUsd) continue;\n",
+        "new": "    if (members.length < minSize) continue;\n"
+      }
+    ],
+    "runner": "node"
   }
 ]

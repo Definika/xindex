@@ -54,10 +54,18 @@ export const CHAINS = Object.freeze({
 export const MAINNET = CHAINS[1];
 
 /// WeightedHub's storage slots for the pending auction (`forge inspect WeightedHub storageLayout`), which the start
-/// check overrides to simulate an auction before opening one; `quoteProposal` is zeroed there, since a start of the
-/// keeper's posts no quote and a past proposal's must not bind the simulation. The keeper verifies them at startup, and
-/// `test_XS8_theBotsHubSlotsAreTheHubs` (keeper/test/KeeperExecutor.t.sol) pins them against a real hub.
+/// check overrides to simulate an auction before opening one; `quoteProposal` is set to {NO_QUOTE_PROPOSAL} there,
+/// since a start of the keeper's posts no quote and a past proposal's must not bind the simulation. The keeper
+/// verifies them at startup, and `test_XS8_theBotsHubSlotsAreTheHubs` (keeper/test/KeeperExecutor.t.sol) pins them
+/// against a real hub.
 export const HUB_SLOTS = Object.freeze({ eta: 6n, keepMask: 7n, quoteProposal: 14n });
+
+/// What the start check writes into the hub's `quoteProposal` slot: a proposal id no index reaches, so the simulated
+/// auction carries no quote. The hub holds a fill to a quote when that slot equals `proposalCount`, and the
+/// simulation opens an auction without counting a proposal, so zero, the slot's own empty value, named the proposal
+/// of an index never started: every first start then simulated as quoted at no prices and failed with Panic(50).
+/// `test_theBotsNoQuoteValueBindsNoProposal` pins it.
+export const NO_QUOTE_PROPOSAL = 2n ** 256n - 1n;
 
 /// WeightedHub's slots for the recorded units and scale, which no view returns: `components()` reports units at the
 /// scale an accrual now would leave. The invariant checker (invariants.mjs) reads them to evaluate the backing
@@ -115,6 +123,7 @@ const DEFAULTS = {
   FILL_AUCTIONS: "1",
   CHAIN_ID: "1",
   SUBSIDY_BUDGET_USD: "0",
+  SHARE_STOCK_USD: "0",
 };
 
 /// The checks every setting of `env` goes through, with `defaults` for the ones left unset. Each records what is wrong
@@ -178,6 +187,10 @@ export function parseConfig(env) {
     // What fills below zero profit may cost in all, per rolling day, when MIN_PROFIT_USD is negative; requests are never
     // subsidised (RX-16).
     subsidyBudgetUsd: number("SUBSIDY_BUDGET_USD", { min: 0 }),
+    // The dollars of each index's own shares the request filler aims to hold as stock: a batch keeps what its
+    // sellers bring up to this instead of redeeming it, and delivers it to buyers within the owner's stock allowance
+    // for that index, so a cross between requests made at different times trades no basket. Zero holds none.
+    shareStockUsd: number("SHARE_STOCK_USD", { min: 0 }),
     // Where to write the coins fills are short of, for the restock service; unset, nothing is written.
     needsFile: get("NEEDS_FILE") || null,
   };
