@@ -79,6 +79,17 @@ Every block L, with T = L's timestamp + 12 (the one block a fill sent now can la
    - A fill that reverts on chain strikes the request, its requester and its index, so new request ids do not start
      over (RX-10); a request a check keeps declining without a revert is checked again 2, 4, 8... blocks later, at most
      200 (RX-24).
+   - **Batches** (`fillBatch`, `design/2026-11-11-batch-fills.md`). Before the single fills, the open requests of
+     each index in each stablecoin are planned as one fill, up to 16 of them: every request at exactly its limit, the
+     shares the redeem requests escrowed passed to the mint requests, and one basket bought or sold for the
+     difference. A request joins a batch when its escrow is worth at least its limit; it need not pay
+     `MIN_PROFIT_USD` alone, since the batch as a whole must, so a request too small to pay for a basket of its own
+     is filled with others. A further request costs a batch about 56k gas, whatever the index holds. A request in a
+     batch that pays is not checked alone; the most profitable fill of the block, batch or single, is sent. Each
+     request is read again at the batch's own block, and one closed since the scan is dropped. When a batch's
+     simulation reverts, each of its requests is checked alone that block, so the one whose own fill reverts is found
+     and backed off and the batch forms again without it. A batch that reverts on chain strikes each of its
+     requests, each requester and the index once.
 4. **One transaction in flight.** A transaction that misses its block is replaced on the same nonce by a 0-value
    transfer to itself, its fees raised each block, never above `MAX_FEE_GWEI` and at most 10 times, until something on
    that nonce is mined; after the tenth it only waits, and logs it. A nonce left pending by an earlier run is cleared
@@ -104,6 +115,17 @@ when its escrow is worth that much more than its limit. Stock brought in for a f
 cost the restock its swaps and bridge fees, there and back. A holder who makes a paying auction and leaves before its
 fill can still cause that, within the restock's daily and per-coin bounds.
 
+**Share stock.** An index's own shares are stock too. With `SHARE_STOCK_USD` above zero, a batch keeps the shares
+its sellers bring, up to that many dollars per index, instead of redeeming them, and a later batch delivers them to
+buyers without a basket: a cross between requests made at different times, and the one way a single small request is
+filled at once. Shares leave that stock only within the stock allowance `OWNER` sets for the index's address
+(`setStockAllowance(index, shares)`), which every batch that hands over more shares than it brings in spends; shares
+the executor acquires earn no allowance of their own. The bot counts a share coming in at what redeeming it would
+bring, less `SLIPPAGE_BPS`, and a share going out at what issuing it again would cost, plus `SLIPPAGE_BPS`. Shares
+held move with the index: that risk is the operator's, and the default holds none. The bot builds no stock ahead of
+demand; an operator who wants some sends the executor shares. An index holding a share-priced Ondo leg has shares the
+bot cannot value, so it keeps and delivers none of them.
+
 The twelve Ondo legs priced at their share's feed (AMZNon, TSMon, SPCXon, METAon, AVGOon, SKHYon, MUon, LLYon, AMDon,
 JPMon, WMTon, Von; `SHARE_PRICED_IDS` in `bot/config.mjs`) are worth sValue shares, which the bot cannot read. Keep
 their stock allowance at **zero**: the bot refuses any fill that would deliver them from stock, and counts any it keeps
@@ -117,7 +139,7 @@ routed coin too; only the rest is bought. The executor's address must be able to
   (`setStockAllowance`) and the **request allowance** (`setRequestUsdcAllowance`): how much of the USDC float request
   fills may still turn into anything else, which every request fill ending with less USDC than it started spends
   (RX-1, RX-9). With none, no request fill may cost the float anything. Keep it off the bot's machine.
-- `keeper`, the bot's hot key, can only `fill`, `fillMint` and `fillRedeem`, and only for an index the factory
+- `keeper`, the bot's hot key, can only `fill`, `fillMint`, `fillRedeem` and `fillBatch`, and only for an index the factory
   created, through the request escrow the executor was built with. Only a wallet the factory's owner
   approved creates a factory index (`setApprovedCreator`), so a thief cannot make one of its own. But anyone can hold
   the shares of an index that exists, or request a mint of one, so that check does not keep the stock from an index the
@@ -339,6 +361,7 @@ raising to what EIP-8037 allows (RX-36).
 | `FILL_REQUESTS` | `1` | `1` fills `MintRequests` requests too, `0` serves auctions only. The escrow is the one the executor was built with. |
 | `FILL_AUCTIONS` | `1` | `1` starts and fills auctions, `0` serves requests only, as on Sepolia, whose hub predates this keeper's start and preview. |
 | `CHAIN_ID` | `1` | The chain whose market the bot trades: `1` Ethereum, `11155111` Sepolia's test deployment (`bot/config.mjs`, `docs/deployment.md`). The bot refuses an RPC on any other chain. |
+| `SHARE_STOCK_USD` | `0` | The dollars of each index's own shares the request filler aims to hold as stock: a batch keeps its sellers' shares up to this instead of redeeming them, and delivers them to buyers within the owner's stock allowance for that index. Zero keeps and delivers none. |
 | `NEEDS_FILE` | none | Where to write what fills deliver from stock, for the restock service. |
 
 ## Invariant checker
@@ -394,6 +417,10 @@ of it, with WETH9's balance slot of the first index set to 5 wei, the next round
   back-offs, the Hermes client and the transaction tracker; the needs board; and the restock's coin table (pinned
   against `script/MainnetAddresses.sol` and `script/PythIds.sol`), planner, journal, settings and attestation clients;
   and the invariant checker's properties and settings; no install.
+- `node --test keeper/test/harness/*.test.mjs` (after `npm ci` in `keeper/` and `forge build --root keeper`): the
+  request filler itself against a fake chain, each call it would send encoded with the executor's real ABI: a batch
+  of requests too small to pay alone, a cross, the share stock, a request that reverts or closed since the scan, and
+  a single fill. It imports viem, so CI's unit step, which installs nothing, does not run it.
 - `forge test --root keeper` with `MAINNET_RPC_URL` also runs `test/KeeperExecutor.fork.t.sol`: `redeemBridged` and
   `bridgeOut` against Wormhole's real Token Bridge, with a test guardian installed in Wormhole's core on the fork.
 - `MAINNET_RPC_URL=<archive> npm run e2e` (in `keeper/`): an anvil fork with real pools and tokens, the real Pyth

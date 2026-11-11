@@ -18,7 +18,11 @@ import {ITokenBridge} from "./interfaces/ITokenBridge.sol";
 ///         passes with each fill, and it serves a coin with no route from its own inventory: it delivers that coin
 ///         from stock and keeps that coin when the index sells it. A mint request is filled the same way, the basket
 ///         bought and issued to this contract and the shares delivered for the escrowed stablecoin; a redeem request
-///         by paying the stablecoin, redeeming the escrowed shares here and selling the basket. Every fill reverts
+///         by paying the stablecoin, redeeming the escrowed shares here and selling the basket. Several requests on
+///         one index are filled in one call ({fillBatch}): the shares the redeem requests escrowed go to the mint
+///         requests, shares the executor holds as stock cover what they do not, and only the difference is issued
+///         or redeemed, in one basket for the whole batch, so a small request does not pay for a basket of its own.
+///         Every fill reverts
 ///         unless the USDC float ends at least `minUsdcDelta` above where it started, so a swap moved against the
 ///         bot's simulation cannot cost more than the bot accepted. A coin Ethereum has only as a Wormhole copy is
 ///         restocked through Wormhole's Token Bridge: the treasury bridges it in, what it bridges in is added to that
@@ -50,7 +54,8 @@ contract KeeperExecutor is IRebalanceExecutor {
     /// @notice The only account that fills.
     address public keeper;
     /// @notice How much of each coin the keeper may still deliver from stock, USDC aside, whose float the fill's floor
-    ///         bounds. Only the owner sets it, and every delivery from stock spends it (CF-1).
+    ///         bounds. Only the owner sets it, and every delivery from stock spends it (CF-1). An index's own shares
+    ///         are stock too: a batch that hands over more shares than it brings in spends the index's entry.
     mapping(address token => uint256 amount) public stockAllowance;
     /// @notice How much of the USDC float request fills may still turn into anything else: every request fill that
     ///         ends with less USDC than it started spends the difference. Nothing on chain checks a price, so a price
@@ -125,6 +130,49 @@ contract KeeperExecutor is IRebalanceExecutor {
         uint256 deadline;
     }
 
+    /// @notice A batch of request fills on one index, in one stablecoin, for {fillBatch}.
+    /// @param index The index every request of the batch names.
+    /// @param stable The stablecoin every request of the batch names.
+    /// @param mintIds The mint requests filled.
+    /// @param mintShares The shares delivered to each, at least its limit.
+    /// @param redeemIds The redeem requests filled.
+    /// @param redeemPay The stablecoin paid to each, at least its limit.
+    /// @param issue The shares issued here, their basket from stock and bought along `routes`: what the mint requests
+    ///        take beyond the shares the redeem requests escrowed and the share stock delivers, and anything the bot
+    ///        adds to that stock.
+    /// @param redeem The shares redeemed here, their basket sold along `routes`: what the redeem requests escrowed
+    ///        beyond what the mint requests take and the share stock keeps.
+    /// @param routes One per component of the index, as {fill}'s.
+    /// @param maxIn Empty, or one per component, zero meaning no bound: the most USDC a leg of the issue may cost
+    ///        (RX-10).
+    /// @param minOut Empty, or one per component, zero meaning no bound: the least USDC a leg of the redeem must
+    ///        return (RX-10).
+    /// @param stableRoute An exact-input path from `stable` to USDC; empty when `stable` is USDC.
+    /// @param stableMaxIn Zero for no bound: the most USDC buying what the redeem requests are paid may cost.
+    /// @param stableMinOut Zero for no bound: the least USDC selling what the mint requests escrowed must return.
+    /// @param expectedNonce The index's rebalanceNonce the batch was simulated at (RX-4).
+    /// @param minUsdcDelta The least the USDC float may change by.
+    /// @param deadline The latest block timestamp the batch may be mined at.
+    struct BatchFill {
+        IWeightedHub index;
+        address stable;
+        uint256[] mintIds;
+        uint256[] mintShares;
+        uint256[] redeemIds;
+        uint256[] redeemPay;
+        uint256 issue;
+        uint256 redeem;
+        bytes[] routes;
+        uint256[] maxIn;
+        uint256[] minOut;
+        bytes stableRoute;
+        uint256 stableMaxIn;
+        uint256 stableMinOut;
+        uint256 expectedNonce;
+        int256 minUsdcDelta;
+        uint256 deadline;
+    }
+
     /// @notice An address argument is zero.
     error ZeroAddress();
     /// @notice `caller` is not the owner.
@@ -157,6 +205,13 @@ contract KeeperExecutor is IRebalanceExecutor {
     error StaleRebalanceNonce(uint256 expected, uint256 actual);
     /// @notice A request fill would spend `spent` of the USDC float, above the `allowance` request fills have left.
     error OverRequestAllowance(uint256 spent, uint256 allowance);
+    /// @notice Request `id` is on another index than its batch names.
+    error WrongIndex(uint256 id);
+    /// @notice Request `id` is in another stablecoin than its batch names.
+    error WrongStable(uint256 id);
+    /// @notice A batch would hand over `spent` more shares of `index` than it brings in, above the `allowance` the
+    ///         owner left for delivering that index's shares from stock.
+    error OverStockAllowance(address index, uint256 spent, uint256 allowance);
     /// @notice `caller` is not the treasury.
     error NotTreasury(address caller);
     /// @notice The owner pinned no recipient on Wormhole chain `chain`.
@@ -366,16 +421,13 @@ contract KeeperExecutor is IRebalanceExecutor {
         (IMintRequests.Request memory request, IWeightedHub index, address[] memory tokens) = _openRequest(f, true);
         _checkMintable(index);
 
-        uint256[] memory need = index.previewIssue(f.amount);
-        _acquire(tokens, need, f.routes, f.legLimits);
-        for (uint256 i = 0; i < tokens.length; ++i) {
-            SafeERC20.forceApprove(IERC20(tokens[i]), address(index), need[i]);
-        }
-        index.issue(f.amount, address(this));
+        _issueHere(index, tokens, f.amount, f.routes, f.legLimits);
         SafeERC20.forceApprove(IERC20(address(index)), address(REQUESTS), f.amount);
         uint256 stableBefore = IERC20(request.stable).balanceOf(address(this));
         REQUESTS.fill(f.id, f.amount);
-        _sellStable(request.stable, IERC20(request.stable).balanceOf(address(this)) - stableBefore, f);
+        _sellStable(
+            request.stable, IERC20(request.stable).balanceOf(address(this)) - stableBefore, f.stableRoute, f.stableLimit
+        );
     }
 
     /// @notice Keeper only. Fills redeem request `f.id` by paying `f.amount` of its stablecoin, at least its limit,
@@ -398,7 +450,7 @@ contract KeeperExecutor is IRebalanceExecutor {
     function _redeemFor(RequestFill calldata f) private {
         (IMintRequests.Request memory request, IWeightedHub index, address[] memory tokens) = _openRequest(f, false);
 
-        _buyStable(request.stable, f);
+        _buyStable(request.stable, f.amount, f.stableRoute, f.stableLimit);
         SafeERC20.forceApprove(IERC20(request.stable), address(REQUESTS), f.amount);
         REQUESTS.fill(f.id, f.amount);
         // Read after the fill paid the stablecoin out, so a component that is the stablecoin itself counts only what
@@ -460,6 +512,154 @@ contract KeeperExecutor is IRebalanceExecutor {
         if (FACTORY.isGated(address(index)) && !FACTORY.isAllowedMinter(address(index), address(this))) {
             revert IWeightedHub.NotAllowedMinter(address(this));
         }
+    }
+
+    /// @notice Keeper only. Fills several requests on one index, in one stablecoin, in one call. `f.issue` shares are
+    ///         issued here, their basket from stock and along `f.routes`; the redeem requests are paid and their
+    ///         escrowed shares taken; the mint requests are delivered their shares and their escrows taken; and
+    ///         `f.redeem` shares are redeemed here and their basket sold. So shares pass from the requests that
+    ///         sell them to the requests that buy them, and one basket trades for the difference instead of one per
+    ///         request. Shares left over stay here as stock; shares handed over beyond what the batch brought in
+    ///         come out of that stock and spend the index's {stockAllowance}. With no request at all the call only
+    ///         builds or runs down the share stock.
+    /// @return usdcDelta What the batch changed the float by.
+    /// @return gasUsed The gas the call used inside this function, for the bot's simulation.
+    function fillBatch(BatchFill calldata f) external returns (int256 usdcDelta, uint256 gasUsed) {
+        uint256 gasStart = gasleft();
+        _checkKeeper();
+        if (block.timestamp > f.deadline) revert Expired(f.deadline);
+        uint256 before = IERC20(USDC).balanceOf(address(this));
+        _batch(f);
+        usdcDelta = _requestDelta(before, f.minUsdcDelta);
+        gasUsed = gasStart - gasleft();
+    }
+
+    /// @dev {fillBatch}'s steps, after every check that can stop it before a swap (XS-6).
+    function _batch(BatchFill calldata f) private {
+        address[] memory tokens = _checkBatch(f);
+        (uint256 pay, uint256 sharesIn) = _openSide(f, f.redeemIds, f.redeemPay, false);
+        (uint256 deliver,) = _openSide(f, f.mintIds, f.mintShares, true);
+        // Spent before anything moves. The index's shares are its own hub's, which transfers what it is asked to, so
+        // what the batch brings in and hands over is known here.
+        _spendShareStock(address(f.index), deliver + f.redeem, sharesIn + f.issue);
+
+        // The issue first: it is the one step that spends a coin's stock allowance, and it runs before any call
+        // into the escrow.
+        if (f.issue != 0) _issueHere(f.index, tokens, f.issue, f.routes, f.maxIn);
+        address stable = f.stable;
+        uint256 stableBefore = IERC20(stable).balanceOf(address(this));
+        if (pay != 0) {
+            _buyStable(stable, pay, f.stableRoute, f.stableMaxIn);
+            SafeERC20.forceApprove(IERC20(stable), address(REQUESTS), pay);
+            for (uint256 i = 0; i < f.redeemIds.length; ++i) {
+                REQUESTS.fill(f.redeemIds[i], f.redeemPay[i]);
+            }
+        }
+        if (deliver != 0) {
+            SafeERC20.forceApprove(IERC20(address(f.index)), address(REQUESTS), deliver);
+            for (uint256 i = 0; i < f.mintIds.length; ++i) {
+                REQUESTS.fill(f.mintIds[i], f.mintShares[i]);
+            }
+        }
+        // What the mint requests escrowed, measured: the stablecoin bought above left with the redeem requests. Sold
+        // before the redeem, so a stablecoin that is also a component counts here only as an escrow.
+        uint256 stableAfter = IERC20(stable).balanceOf(address(this));
+        if (stableAfter > stableBefore) _sellStable(stable, stableAfter - stableBefore, f.stableRoute, f.stableMinOut);
+        if (f.redeem != 0) _redeemHere(f.index, tokens, f.redeem, f.routes, f.minOut);
+    }
+
+    /// @dev The checks of a batch that need no request: a factory index at the nonce the batch was simulated at
+    ///      (RX-4), routes and limits that fit it, and a gate that lets this contract issue (XS-6). Returns the
+    ///      index's components.
+    function _checkBatch(BatchFill calldata f) private view returns (address[] memory tokens) {
+        IWeightedHub index = f.index;
+        if (!FACTORY.isIndex(address(index))) revert NotIndex(address(index));
+        uint256 nonce = index.rebalanceNonce();
+        if (nonce != f.expectedNonce) revert StaleRebalanceNonce(f.expectedNonce, nonce);
+        tokens = index.componentTokens();
+        _checkRoutes(tokens, f.routes);
+        uint256 n = tokens.length;
+        if ((f.maxIn.length != 0 && f.maxIn.length != n) || (f.minOut.length != 0 && f.minOut.length != n)) {
+            revert LengthMismatch();
+        }
+        _checkStableRoute(f.stable, f.stableRoute);
+        if (f.issue != 0) _checkMintable(index);
+    }
+
+    /// @dev One side of a batch, read before anything moves, so a request its requester cancelled or another filler
+    ///      filled since the simulation costs these reads rather than a basket (XS-6): each request open, not past
+    ///      its deadline, of the side named, and on the batch's index and stablecoin.
+    /// @return handed What the fills hand the requesters: shares for mint requests, the stablecoin for redeem requests.
+    /// @return escrowed What the fills take: the stablecoin for mint requests, shares for redeem requests.
+    function _openSide(BatchFill calldata f, uint256[] calldata ids, uint256[] calldata amounts, bool isMint)
+        private
+        view
+        returns (uint256 handed, uint256 escrowed)
+    {
+        if (ids.length != amounts.length) revert LengthMismatch();
+        for (uint256 i = 0; i < ids.length; ++i) {
+            uint256 id = ids[i];
+            IMintRequests.Request memory request = REQUESTS.getRequest(id);
+            if (!request.open) revert IMintRequests.RequestNotOpen(id);
+            if (block.timestamp > request.deadline) revert IMintRequests.RequestExpired(id, request.deadline);
+            if (request.isMint != isMint) revert WrongSide(id);
+            if (request.index != address(f.index)) revert WrongIndex(id);
+            if (request.stable != f.stable) revert WrongStable(id);
+            handed += amounts[i];
+            escrowed += request.escrow;
+        }
+    }
+
+    /// @dev Spends `index`'s stock allowance by the shares a batch hands over (`out`) beyond those it brings in
+    ///      (`in_`): those come out of the shares held here before the call. Without it a compromised keeper key could
+    ///      deliver the whole share stock to a request of its own, or redeem it and sell the basket into a pool it
+    ///      moved, where the float's allowance sees no loss because the float does not fall (CF-1).
+    function _spendShareStock(address index, uint256 out, uint256 in_) private {
+        if (out <= in_) return;
+        uint256 spent = out - in_;
+        uint256 allowance = stockAllowance[index];
+        if (spent > allowance) revert OverStockAllowance(index, spent, allowance);
+        stockAllowance[index] = allowance - spent;
+    }
+
+    /// @dev Issues `shares` of `index` here, their basket from stock and bought along `routes`, a leg for at most
+    ///      `maxIn`'s entry.
+    function _issueHere(
+        IWeightedHub index,
+        address[] memory tokens,
+        uint256 shares,
+        bytes[] calldata routes,
+        uint256[] calldata maxIn
+    ) private {
+        uint256[] memory need = index.previewIssue(shares);
+        _acquire(tokens, need, routes, maxIn);
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            SafeERC20.forceApprove(IERC20(tokens[i]), address(index), need[i]);
+        }
+        index.issue(shares, address(this));
+    }
+
+    /// @dev Redeems `shares` of `index` here and sells what the redeem brought in along `routes`, a leg for at least
+    ///      `minOut`'s entry; a component with no route is kept as stock. The balances are read here, after the batch
+    ///      paid its stablecoin out and took its escrows in, so a component that is the stablecoin itself counts only
+    ///      what the redeem brings (AU-3).
+    function _redeemHere(
+        IWeightedHub index,
+        address[] memory tokens,
+        uint256 shares,
+        bytes[] calldata routes,
+        uint256[] calldata minOut
+    ) private {
+        uint256[] memory held = new uint256[](tokens.length);
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            held[i] = IERC20(tokens[i]).balanceOf(address(this));
+        }
+        index.redeem(shares, address(this));
+        uint256[] memory got = new uint256[](tokens.length);
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            got[i] = IERC20(tokens[i]).balanceOf(address(this)) - held[i];
+        }
+        _sell(tokens, got, routes, minOut);
     }
 
     // ---------------------------------------------------------------------
@@ -610,31 +810,28 @@ contract KeeperExecutor is IRebalanceExecutor {
         }
     }
 
-    /// @dev Sells `amount` of `stable` into USDC along `f.stableRoute`, for at least `f.stableLimit`; nothing to do
-    ///      when it is USDC already.
-    function _sellStable(address stable, uint256 amount, RequestFill calldata f) private {
+    /// @dev Sells `amount` of `stable` into USDC along `route`, for at least `minOut`; nothing to do when it is USDC
+    ///      already.
+    function _sellStable(address stable, uint256 amount, bytes calldata route, uint256 minOut) private {
         if (stable == USDC || amount == 0) return;
         SafeERC20.forceApprove(IERC20(stable), address(ROUTER), amount);
         // forge-lint: disable-next-item(unused-return)
         ROUTER.exactInput(
             IV3SwapRouter.ExactInputParams({
-                path: f.stableRoute, recipient: address(this), amountIn: amount, amountOutMinimum: f.stableLimit
+                path: route, recipient: address(this), amountIn: amount, amountOutMinimum: minOut
             })
         );
     }
 
-    /// @dev Buys `f.amount` of `stable` with USDC along `f.stableRoute`, read backwards, for at most `f.stableLimit`
-    ///      (zero for the whole float); nothing to do when it is USDC already.
-    function _buyStable(address stable, RequestFill calldata f) private {
+    /// @dev Buys `amount` of `stable` with USDC along `route`, read backwards, for at most `maxIn` (zero for the
+    ///      whole float); nothing to do when it is USDC already.
+    function _buyStable(address stable, uint256 amount, bytes calldata route, uint256 maxIn) private {
         if (stable == USDC) return;
         uint256 float = IERC20(USDC).balanceOf(address(this));
         // forge-lint: disable-next-item(unused-return)
         ROUTER.exactOutput(
             IV3SwapRouter.ExactOutputParams({
-                path: f.stableRoute,
-                recipient: address(this),
-                amountOut: f.amount,
-                amountInMaximum: f.stableLimit != 0 ? f.stableLimit : float
+                path: route, recipient: address(this), amountOut: amount, amountInMaximum: maxIn != 0 ? maxIn : float
             })
         );
     }

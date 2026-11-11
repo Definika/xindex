@@ -1732,4 +1732,551 @@ contract KeeperExecutorTest is WeightedTest {
         assertEq(btc.balanceOf(address(executor)), 5e8, "a full allowance takes in the next arrival too");
         assertEq(executor.restockAllowance(address(btc)), 4e8, "earning nothing from it");
     }
+
+    // ---------------------------------------------------------------------
+    // Batches
+    // ---------------------------------------------------------------------
+
+    address bob = makeAddr("bob");
+
+    /// @dev A batch on `index` in USDC with nothing in it yet: no request, no issue, no redeem, no bound.
+    function _batch() internal view returns (KeeperExecutor.BatchFill memory f) {
+        f.index = IWeightedHub(address(index));
+        f.stable = address(usdc);
+        f.routes = _routes();
+        f.expectedNonce = reqNonce;
+        f.minUsdcDelta = type(int256).min;
+        f.deadline = block.timestamp;
+    }
+
+    function _one(uint256 a) internal pure returns (uint256[] memory list) {
+        list = new uint256[](1);
+        list[0] = a;
+    }
+
+    function _two(uint256 a, uint256 b) internal pure returns (uint256[] memory list) {
+        list = new uint256[](2);
+        list[0] = a;
+        list[1] = b;
+    }
+
+    function _three(uint256 a, uint256 b, uint256 c) internal pure returns (uint256[] memory list) {
+        list = new uint256[](3);
+        list[0] = a;
+        list[1] = b;
+        list[2] = c;
+    }
+
+    function _fillBatch(KeeperExecutor.BatchFill memory f) internal returns (int256 delta, uint256 gasUsed) {
+        vm.prank(keeper);
+        return executor.fillBatch(f);
+    }
+
+    /// @dev Three mint requests, one basket: the batch issues for all of them at once, each requester gets its
+    ///      shares, and the float moves by the escrows less that one basket's cost. The same three filled one by one
+    ///      use more gas, on a router whose swaps cost far less than a pool's.
+    function test_aBatchOfMintsBuysOneBasketForAll() public {
+        uint256 a = _requestMint(stranger, address(usdc), 250e6, 2e18);
+        uint256 b = _requestMint(alice, address(usdc), 250e6, 2e18);
+        uint256 c = _requestMint(bob, address(usdc), 130e6, 1e18);
+        uint256 aliceHeld = index.balanceOf(alice);
+        uint256 cost = _basketCost(5e18);
+        uint256 before = usdc.balanceOf(address(executor));
+
+        uint256 snapshot = vm.snapshotState();
+        uint256 apart = 0;
+        uint256[3] memory ids = [a, b, c];
+        uint256[3] memory shares = [uint256(2e18), 2e18, 1e18];
+        for (uint256 i = 0; i < 3; ++i) {
+            vm.prank(keeper);
+            (, uint256 used) =
+                executor.fillMint(_req(ids[i], shares[i], _routes(), "", type(int256).min, block.timestamp));
+            apart += used;
+        }
+        vm.revertToState(snapshot);
+
+        KeeperExecutor.BatchFill memory f = _batch();
+        f.mintIds = _three(a, b, c);
+        f.mintShares = _three(2e18, 2e18, 1e18);
+        f.issue = 5e18;
+        (int256 delta, uint256 gasUsed) = _fillBatch(f);
+
+        assertEq(delta, _int(630e6) - _int(cost), "the escrows less one basket for the five shares");
+        assertEq(_int(usdc.balanceOf(address(executor))) - _int(before), delta);
+        assertEq(index.balanceOf(stranger), 2e18);
+        assertEq(index.balanceOf(alice) - aliceHeld, 2e18);
+        assertEq(index.balanceOf(bob), 1e18);
+        assertEq(index.balanceOf(address(executor)), 0, "every share issued was delivered");
+        assertFalse(requests.getRequest(a).open);
+        assertFalse(requests.getRequest(b).open);
+        assertFalse(requests.getRequest(c).open);
+        assertEq(usdc.balanceOf(address(requests)), 0, "the escrows left with their requests");
+        assertLt(gasUsed, apart, "one basket costs less gas than three");
+    }
+
+    /// @dev A seller's shares go to a buyer: nothing is issued, nothing redeemed and no pool is touched. Every call
+    ///      to the router reverts here, so a batch that swapped anything would fail.
+    function test_aBatchCrossesARedeemWithAMintAndTradesNothing() public {
+        _issue(index, stranger, 2e18);
+        uint256 sell = _requestRedeem(stranger, 2e18, address(usdc), 180e6);
+        uint256 buy = _requestMint(bob, address(usdc), 250e6, 2e18);
+        uint256 supply = index.totalSupply();
+        vm.mockCallRevert(address(router), bytes(""), bytes("a swap ran"));
+
+        KeeperExecutor.BatchFill memory f = _batch();
+        f.redeemIds = _one(sell);
+        f.redeemPay = _one(180e6);
+        f.mintIds = _one(buy);
+        f.mintShares = _one(2e18);
+        (int256 delta,) = _fillBatch(f);
+
+        assertEq(delta, _int(250e6) - _int(180e6), "what the buyer escrowed less what the seller was paid");
+        assertEq(index.balanceOf(bob), 2e18, "the buyer holds the seller's shares");
+        assertEq(index.balanceOf(stranger), 0);
+        assertEq(usdc.balanceOf(stranger), 180e6);
+        assertEq(index.totalSupply(), supply, "no share was issued or redeemed");
+        assertEq(index.balanceOf(address(executor)), 0);
+        assertEq(executor.stockAllowance(address(index)), 0, "and no stock allowance was needed");
+    }
+
+    /// @dev More bought than sold: only the difference is issued.
+    function test_aBatchIssuesOnlyTheDifference() public {
+        _issue(index, stranger, 1e18);
+        uint256 sell = _requestRedeem(stranger, 1e18, address(usdc), 90e6);
+        uint256 buyA = _requestMint(bob, address(usdc), 250e6, 2e18);
+        uint256 buyB = _requestMint(alice, address(usdc), 130e6, 1e18);
+        uint256 supply = index.totalSupply();
+        uint256 cost = _basketCost(2e18);
+
+        KeeperExecutor.BatchFill memory f = _batch();
+        f.redeemIds = _one(sell);
+        f.redeemPay = _one(90e6);
+        f.mintIds = _two(buyA, buyB);
+        f.mintShares = _two(2e18, 1e18);
+        f.issue = 2e18;
+        (int256 delta,) = _fillBatch(f);
+
+        assertEq(delta, _int(380e6) - _int(90e6) - _int(cost), "the escrows, less the payment and a basket for two");
+        assertEq(index.totalSupply(), supply + 2e18, "three shares delivered, two issued");
+        assertEq(index.balanceOf(bob), 2e18);
+        assertEq(index.balanceOf(address(executor)), 0);
+    }
+
+    /// @dev More sold than bought: only the difference is redeemed, and its basket sold.
+    function test_aBatchRedeemsOnlyTheDifference() public {
+        _issue(index, stranger, 2e18);
+        _issue(index, bob, 1e18);
+        uint256 sellA = _requestRedeem(stranger, 2e18, address(usdc), 180e6);
+        uint256 sellB = _requestRedeem(bob, 1e18, address(usdc), 90e6);
+        uint256 buy = _requestMint(alice, address(usdc), 130e6, 1e18);
+        uint256 supply = index.totalSupply();
+        uint256 proceeds = _basketProceeds(2e18);
+
+        KeeperExecutor.BatchFill memory f = _batch();
+        f.redeemIds = _two(sellA, sellB);
+        f.redeemPay = _two(180e6, 90e6);
+        f.mintIds = _one(buy);
+        f.mintShares = _one(1e18);
+        f.redeem = 2e18;
+        (int256 delta,) = _fillBatch(f);
+
+        assertEq(delta, _int(130e6) + _int(proceeds) - _int(270e6), "the escrow and a basket of two, less the payments");
+        assertEq(index.totalSupply(), supply - 2e18, "three shares taken, two redeemed");
+        assertEq(usdc.balanceOf(stranger), 180e6);
+        assertEq(usdc.balanceOf(bob), 90e6);
+        assertEq(index.balanceOf(address(executor)), 0);
+        assertEq(eth.balanceOf(address(executor)), 0, "every component of the basket sold");
+    }
+
+    /// @dev Shares a redeem request escrowed stay here as stock when the batch redeems none of them, and a later
+    ///      batch delivers them to a mint request without a swap, as far as the owner's allowance for the index goes;
+    ///      what it does not cover is issued.
+    function test_aBatchKeepsSharesAsStockAndDeliversThemWithinTheAllowance() public {
+        _issue(index, stranger, 2e18);
+        uint256 sell = _requestRedeem(stranger, 2e18, address(usdc), 180e6);
+        KeeperExecutor.BatchFill memory f = _batch();
+        f.redeemIds = _one(sell);
+        f.redeemPay = _one(180e6);
+        (int256 delta,) = _fillBatch(f);
+        assertEq(delta, -_int(180e6), "the float paid the seller");
+        assertEq(index.balanceOf(address(executor)), 2e18, "and holds its shares as stock");
+
+        uint256 buy = _requestMint(bob, address(usdc), 250e6, 2e18);
+        f = _batch();
+        f.mintIds = _one(buy);
+        f.mintShares = _one(2e18);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.OverStockAllowance.selector, address(index), 2e18, 0));
+        executor.fillBatch(f);
+
+        _allow(address(index), 3e18);
+        vm.mockCallRevert(address(router), bytes(""), bytes("a swap ran"));
+        (delta,) = _fillBatch(f);
+        vm.clearMockedCalls();
+        assertEq(delta, _int(250e6), "the whole escrow: nothing was bought");
+        assertEq(index.balanceOf(bob), 2e18);
+        assertEq(index.balanceOf(address(executor)), 0);
+        assertEq(executor.stockAllowance(address(index)), 1e18, "the delivery spent the allowance");
+
+        // Stock for part of a request, an issue for the rest: the allowance covers one share, so one is issued.
+        _issue(index, address(executor), 1e18);
+        buy = _requestMint(alice, address(usdc), 250e6, 2e18);
+        f = _batch();
+        f.mintIds = _one(buy);
+        f.mintShares = _one(2e18);
+        f.issue = 1e18;
+        uint256 cost = _basketCost(1e18);
+        (delta,) = _fillBatch(f);
+        assertEq(delta, _int(250e6) - _int(cost), "the escrow less a basket for the one share issued");
+        assertEq(executor.stockAllowance(address(index)), 0);
+        assertEq(index.balanceOf(address(executor)), 0);
+    }
+
+    /// @dev With no request a batch only builds the share stock, or runs it down. Building it spends the float, which
+    ///      the request allowance bounds (RX-1, RX-9); running it down spends the index's stock allowance, because a
+    ///      redeem sold into a pool someone moved loses value while the float still rises (CF-1).
+    function test_CF1_RX1_aBatchWithNoRequestBuildsAndRunsDownTheShareStockWithinTheAllowances() public {
+        uint256 cost = _basketCost(4e18);
+        vm.prank(execOwner);
+        executor.setRequestUsdcAllowance(cost - 1);
+        KeeperExecutor.BatchFill memory f = _batch();
+        f.issue = 4e18;
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.OverRequestAllowance.selector, cost, cost - 1));
+        executor.fillBatch(f);
+
+        vm.prank(execOwner);
+        executor.setRequestUsdcAllowance(cost + 7);
+        (int256 delta,) = _fillBatch(f);
+        assertEq(delta, -_int(cost));
+        assertEq(index.balanceOf(address(executor)), 4e18, "the shares issued are stock");
+        assertEq(executor.requestUsdcAllowance(), 7, "bought with the float, within its allowance");
+        assertEq(executor.stockAllowance(address(index)), 0, "and earning no allowance of their own");
+
+        f = _batch();
+        f.redeem = 4e18;
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.OverStockAllowance.selector, address(index), 4e18, 0));
+        executor.fillBatch(f);
+
+        _allow(address(index), 4e18 - 1);
+        vm.prank(keeper);
+        vm.expectRevert(
+            abi.encodeWithSelector(KeeperExecutor.OverStockAllowance.selector, address(index), 4e18, 4e18 - 1)
+        );
+        executor.fillBatch(f);
+
+        _allow(address(index), 5e18);
+        uint256 proceeds = _basketProceeds(4e18);
+        (delta,) = _fillBatch(f);
+        assertEq(delta, _int(proceeds));
+        assertEq(index.balanceOf(address(executor)), 0);
+        assertEq(executor.stockAllowance(address(index)), 1e18, "the redeem spent the shares it ran down");
+        assertEq(executor.requestUsdcAllowance(), 7, "a batch that adds to the float spends none of its allowance");
+    }
+
+    /// @dev A batch in USDT buys what its redeem requests are paid and sells what its mint requests escrowed, each
+    ///      within its own bound.
+    function test_aBatchInUsdtBuysWhatItPaysAndSellsWhatItTakes() public {
+        _issue(index, stranger, 1e18);
+        uint256 sell = _requestRedeem(stranger, 1e18, address(usdt), 90e6);
+        uint256 buy = _requestMint(bob, address(usdt), 250e6, 2e18);
+        uint256 cost = _basketCost(1e18);
+        uint256 paid = router.quoteIn(address(usdc), address(usdt), 90e6);
+        uint256 sold = router.quoteOut(address(usdt), address(usdc), 250e6);
+
+        KeeperExecutor.BatchFill memory f = _batch();
+        f.stable = address(usdt);
+        f.stableRoute = _stableRoute(address(usdt));
+        f.redeemIds = _one(sell);
+        f.redeemPay = _one(90e6);
+        f.mintIds = _one(buy);
+        f.mintShares = _one(2e18);
+        f.issue = 1e18;
+
+        f.stableMaxIn = paid - 1;
+        vm.prank(keeper);
+        vm.expectRevert("Too much requested");
+        executor.fillBatch(f);
+        f.stableMaxIn = paid;
+        f.stableMinOut = sold + 1;
+        vm.prank(keeper);
+        vm.expectRevert("Too little received");
+        executor.fillBatch(f);
+
+        f.stableMinOut = sold;
+        (int256 delta,) = _fillBatch(f);
+        assertEq(delta, _int(sold) - _int(paid) - _int(cost));
+        assertEq(usdt.balanceOf(stranger), 90e6, "the seller was paid in USDT");
+        assertEq(usdt.balanceOf(address(executor)), 0, "and the buyer's USDT was sold");
+        assertEq(index.balanceOf(bob), 2e18);
+
+        // A batch that only pays USDT out has none to sell.
+        _issue(index, stranger, 1e18);
+        sell = _requestRedeem(stranger, 1e18, address(usdt), 90e6);
+        f = _batch();
+        f.stable = address(usdt);
+        f.stableRoute = _stableRoute(address(usdt));
+        f.redeemIds = _one(sell);
+        f.redeemPay = _one(90e6);
+        f.redeem = 1e18;
+        uint256 proceeds = _basketProceeds(1e18);
+        (delta,) = _fillBatch(f);
+        assertEq(delta, _int(proceeds) - _int(paid));
+        assertEq(usdt.balanceOf(address(executor)), 0);
+
+        // The stablecoin needs its route, and USDC takes none.
+        f.stableRoute = "";
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.BadRoute.selector, address(usdt)));
+        executor.fillBatch(f);
+        f = _batch();
+        f.stableRoute = _stableRoute(address(usdt));
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.BadRoute.selector, address(usdc)));
+        executor.fillBatch(f);
+    }
+
+    /// @dev Each leg of a batch's issue and of its redeem carries its own bound (RX-10).
+    function test_RX10_aBatchsLegsCarryTheirOwnBounds() public {
+        uint256 buy = _requestMint(bob, address(usdc), 250e6, 2e18);
+        uint256[] memory need = index.previewIssue(2e18);
+        KeeperExecutor.BatchFill memory f = _batch();
+        f.mintIds = _one(buy);
+        f.mintShares = _one(2e18);
+        f.issue = 2e18;
+        f.maxIn = new uint256[](3);
+        f.maxIn[1] = router.quoteIn(address(usdc), address(btc), need[1]) - 1;
+        vm.prank(keeper);
+        vm.expectRevert("Too much requested");
+        executor.fillBatch(f);
+        f.maxIn[1] += 1;
+        _fillBatch(f);
+        assertEq(index.balanceOf(bob), 2e18, "at its bound the leg fills");
+
+        uint256 sell = _requestRedeem(bob, 2e18, address(usdc), 180e6);
+        uint256[] memory got = index.previewRedeem(2e18);
+        f = _batch();
+        f.redeemIds = _one(sell);
+        f.redeemPay = _one(180e6);
+        f.redeem = 2e18;
+        f.minOut = new uint256[](3);
+        f.minOut[0] = router.quoteOut(address(eth), address(usdc), got[0]) + 1;
+        vm.prank(keeper);
+        vm.expectRevert("Too little received");
+        executor.fillBatch(f);
+        f.minOut[0] -= 1;
+        _fillBatch(f);
+        assertEq(usdc.balanceOf(bob), 180e6);
+    }
+
+    function test_aBatchChecksTheCall() public {
+        _issue(index, stranger, 1e18);
+        uint256 sell = _requestRedeem(stranger, 1e18, address(usdc), 90e6);
+        uint256 buy = _requestMint(bob, address(usdc), 250e6, 2e18);
+        KeeperExecutor.BatchFill memory f = _batch();
+        f.redeemIds = _one(sell);
+        f.redeemPay = _one(90e6);
+        f.mintIds = _one(buy);
+        f.mintShares = _one(2e18);
+        f.issue = 1e18;
+
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NotKeeper.selector, stranger));
+        vm.prank(stranger);
+        executor.fillBatch(f);
+
+        f.deadline = block.timestamp - 1;
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.Expired.selector, block.timestamp - 1));
+        executor.fillBatch(f);
+        f.deadline = block.timestamp;
+
+        f.index = IWeightedHub(address(usdc));
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NotIndex.selector, address(usdc)));
+        executor.fillBatch(f);
+        f.index = IWeightedHub(address(index));
+
+        f.expectedNonce = 1;
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.StaleRebalanceNonce.selector, 1, 0));
+        executor.fillBatch(f);
+        f.expectedNonce = 0;
+
+        // One route per component, and limits of that length or none.
+        f.routes = new bytes[](2);
+        vm.prank(keeper);
+        vm.expectRevert(KeeperExecutor.LengthMismatch.selector);
+        executor.fillBatch(f);
+        f.routes = _routes();
+        f.maxIn = new uint256[](2);
+        vm.prank(keeper);
+        vm.expectRevert(KeeperExecutor.LengthMismatch.selector);
+        executor.fillBatch(f);
+        f.maxIn = new uint256[](0);
+        f.minOut = new uint256[](4);
+        vm.prank(keeper);
+        vm.expectRevert(KeeperExecutor.LengthMismatch.selector);
+        executor.fillBatch(f);
+        f.minOut = new uint256[](0);
+
+        // An amount for each request, on each side.
+        f.mintShares = _two(2e18, 1);
+        vm.prank(keeper);
+        vm.expectRevert(KeeperExecutor.LengthMismatch.selector);
+        executor.fillBatch(f);
+        f.mintShares = _one(2e18);
+        f.redeemPay = new uint256[](0);
+        vm.prank(keeper);
+        vm.expectRevert(KeeperExecutor.LengthMismatch.selector);
+        executor.fillBatch(f);
+        f.redeemPay = _one(90e6);
+
+        // A request on the other side.
+        f.redeemIds = _one(buy);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.WrongSide.selector, buy));
+        executor.fillBatch(f);
+        f.redeemIds = _one(sell);
+        f.mintIds = _one(sell);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.WrongSide.selector, sell));
+        executor.fillBatch(f);
+        f.mintIds = _one(buy);
+
+        // The floor binds.
+        int256 expected = _int(250e6) - _int(90e6) - _int(_basketCost(1e18));
+        f.minUsdcDelta = expected + 1;
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.TooCostly.selector, expected, expected + 1));
+        executor.fillBatch(f);
+        f.minUsdcDelta = expected;
+
+        // Below a request's limit, the escrow refuses the fill.
+        f.redeemPay = _one(90e6 - 1);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IMintRequests.BelowLimit.selector, 90e6 - 1, 90e6));
+        executor.fillBatch(f);
+        f.redeemPay = _one(90e6);
+
+        (int256 delta,) = _fillBatch(f);
+        assertEq(delta, expected, "at its floor the batch fills");
+    }
+
+    /// @dev A batch names one index and one stablecoin, and every request in it must be on both: a request of another
+    ///      index would be delivered the wrong shares, and one in another stablecoin paid or sold through the wrong
+    ///      route.
+    function test_aBatchRefusesARequestOnAnotherIndexOrInAnotherStable() public {
+        IWeightedIndexFactory.IndexParams memory params = _params();
+        params.rebalanceInterval = 8 days; // another salt than `index`'s
+        WeightedHub other = _create(_defaultSpecs(), params);
+        usdc.mint(bob, 250e6);
+        vm.startPrank(bob);
+        usdc.approve(address(requests), 250e6);
+        uint256 elsewhere = requests.requestMint(address(other), address(usdc), 250e6, 2e18, block.timestamp + 1 days);
+        vm.stopPrank();
+        uint256 inUsdt = _requestMint(bob, address(usdt), 250e6, 2e18);
+        uint256 here = _requestMint(bob, address(usdc), 250e6, 2e18);
+
+        KeeperExecutor.BatchFill memory f = _batch();
+        f.issue = 4e18;
+        f.mintIds = _two(here, elsewhere);
+        f.mintShares = _two(2e18, 2e18);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.WrongIndex.selector, elsewhere));
+        executor.fillBatch(f);
+
+        f.mintIds = _two(here, inUsdt);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.WrongStable.selector, inUsdt));
+        executor.fillBatch(f);
+    }
+
+    /// @dev XS-6, for a batch: a request cancelled after the simulation, or past its deadline, stops the batch before
+    ///      any swap, on either side, and so does a gate that would refuse the issue. Every call to the router reverts
+    ///      here.
+    function test_XS6_aBatchWithAClosedRequestOrAGatedIssueRevertsBeforeAnySwap() public {
+        _issue(index, stranger, 2e18);
+        uint256 sell = _requestRedeem(stranger, 1e18, address(usdt), 90e6);
+        uint256 lateSell = _requestRedeem(stranger, 1e18, address(usdt), 90e6);
+        uint256 buy = _requestMint(bob, address(usdt), 250e6, 2e18);
+        uint256 lateBuy = _requestMint(bob, address(usdt), 250e6, 2e18);
+        uint256 deadline = requests.getRequest(lateBuy).deadline;
+        vm.prank(stranger);
+        requests.cancel(sell);
+        vm.prank(bob);
+        requests.cancel(buy);
+        vm.mockCallRevert(address(router), bytes(""), bytes("a swap ran"));
+
+        KeeperExecutor.BatchFill memory f = _batch();
+        f.stable = address(usdt);
+        f.stableRoute = _stableRoute(address(usdt));
+        f.issue = 3e18;
+        f.redeemIds = _two(lateSell, sell);
+        f.redeemPay = _two(90e6, 90e6);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IMintRequests.RequestNotOpen.selector, sell));
+        executor.fillBatch(f);
+
+        f.redeemIds = _one(lateSell);
+        f.redeemPay = _one(90e6);
+        f.mintIds = _two(lateBuy, buy);
+        f.mintShares = _two(2e18, 2e18);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IMintRequests.RequestNotOpen.selector, buy));
+        executor.fillBatch(f);
+
+        f.mintIds = _one(lateBuy);
+        f.mintShares = _one(2e18);
+        vm.warp(deadline + 1);
+        f.deadline = block.timestamp;
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IMintRequests.RequestExpired.selector, lateSell, deadline));
+        executor.fillBatch(f);
+        f.redeemIds = new uint256[](0);
+        f.redeemPay = new uint256[](0);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IMintRequests.RequestExpired.selector, lateBuy, deadline));
+        executor.fillBatch(f);
+    }
+
+    /// @dev XS-6, the gate: a batch that issues on a gated index reads the gate before any swap. One that only passes
+    ///      shares on issues nothing, and no gate stands between a seller and a buyer.
+    function test_XS6_aBatchOnAGatedIndexIssuesOnlyWhenAllowed() public {
+        IWeightedIndexFactory.IndexParams memory params = _params();
+        params.gated = true;
+        params.rebalanceInterval = 8 days;
+        WeightedHub gated = _create(_defaultSpecs(), params);
+        vm.prank(creator);
+        factory.setAllowedMinter(address(gated), stranger, true);
+        _issue(gated, stranger, 2e18);
+        vm.startPrank(stranger);
+        gated.approve(address(requests), 2e18);
+        uint256 sell = requests.requestRedeem(address(gated), 2e18, address(usdc), 180e6, block.timestamp + 1 days);
+        vm.stopPrank();
+        usdc.mint(bob, 500e6);
+        vm.startPrank(bob);
+        usdc.approve(address(requests), 500e6);
+        uint256 buy = requests.requestMint(address(gated), address(usdc), 250e6, 2e18, block.timestamp + 1 days);
+        uint256 more = requests.requestMint(address(gated), address(usdc), 250e6, 2e18, block.timestamp + 1 days);
+        vm.stopPrank();
+
+        KeeperExecutor.BatchFill memory f = _batch();
+        f.index = IWeightedHub(address(gated));
+        f.mintIds = _one(more);
+        f.mintShares = _one(2e18);
+        f.issue = 2e18;
+        vm.mockCallRevert(address(router), bytes(""), bytes("a swap ran"));
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.NotAllowedMinter.selector, address(executor)));
+        executor.fillBatch(f);
+
+        f.issue = 0;
+        f.mintIds = _one(buy);
+        f.redeemIds = _one(sell);
+        f.redeemPay = _one(180e6);
+        _fillBatch(f);
+        vm.clearMockedCalls();
+        assertEq(gated.balanceOf(bob), 2e18, "the seller's shares reach the buyer whatever the gate");
+    }
 }

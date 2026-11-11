@@ -256,7 +256,8 @@ least `minOut` of a stablecoin (`requestRedeem`), fillable until a deadline at m
 away. Anyone fills by sending the requester what they asked for, and takes the escrow; the requester cancels at any
 time, and anyone refunds the escrow to the requester after the deadline. It is how a hundred-coin index is bought with
 USDC: a filler assembles the basket, wrapped legs included, and bridges on its own account. The keeper in `keeper/`
-fills requests at their limits (`fillMint`, `fillRedeem`), and anyone else may.
+fills requests at their limits (`fillMint`, `fillRedeem`, and several at once with `fillBatch`, which passes a
+seller's shares to a buyer and trades one basket for the difference), and anyone else may.
 
 The contract reads no price: the requester's own limit is the valuation, and the app suggests it. Three rules keep the
 escrow exact:

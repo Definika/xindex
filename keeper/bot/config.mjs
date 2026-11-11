@@ -123,6 +123,7 @@ const DEFAULTS = {
   FILL_AUCTIONS: "1",
   CHAIN_ID: "1",
   SUBSIDY_BUDGET_USD: "0",
+  SHARE_STOCK_USD: "0",
 };
 
 /// The checks every setting of `env` goes through, with `defaults` for the ones left unset. Each records what is wrong
@@ -186,6 +187,10 @@ export function parseConfig(env) {
     // What fills below zero profit may cost in all, per rolling day, when MIN_PROFIT_USD is negative; requests are never
     // subsidised (RX-16).
     subsidyBudgetUsd: number("SUBSIDY_BUDGET_USD", { min: 0 }),
+    // The dollars of each index's own shares the request filler aims to hold as stock: a batch keeps what its
+    // sellers bring up to this instead of redeeming it, and delivers it to buyers within the owner's stock allowance
+    // for that index, so a cross between requests made at different times trades no basket. Zero holds none.
+    shareStockUsd: number("SHARE_STOCK_USD", { min: 0 }),
     // Where to write the coins fills are short of, for the restock service; unset, nothing is written.
     needsFile: get("NEEDS_FILE") || null,
   };

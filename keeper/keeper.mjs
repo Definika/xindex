@@ -531,6 +531,16 @@ async function onBlock(L) {
       );
     }
     if (kind === "request" && ok) filler?.forget(BigInt(index));
+    if (kind === "batch" && ok) for (const id of index.split(",")) filler?.forget(BigInt(id));
+    if (kind === "batch" && filler && done.receipt?.status === "reverted" && !done.replaced) {
+      const b = filler.revertedBatch(index.split(",").map(BigInt), L.number);
+      log(
+        `batch ${index}`,
+        b.stopped
+          ? `fill reverted on chain after its simulation passed: leaving its requests until the strikes lapse (a front-run, or an RPC whose simulation cannot be trusted)`
+          : `fill reverted on chain after its simulation passed: backing off until block ${b.until}`,
+      );
+    }
     if (kind === "request" && filler && done.receipt?.status === "reverted" && !done.replaced) {
       const b = filler.reverted(BigInt(index), L.number);
       log(
@@ -604,9 +614,11 @@ async function requestChecks(L) {
   }
   const pick = await filler.best(L, indexes, ethUsd, tip, feeCap);
   if (!pick) return;
-  if ((await chain.blockNumber()) !== L.number) return log(`request ${pick.id}`, "block passed before sending; next block");
-  log(`request ${pick.id}`, `filling: profit ${pick.profit.toFixed(2)} USD (float ${(Number(pick.usdcDelta) / 1e6).toFixed(2)}, stock ${pick.inventoryUsd.toFixed(2)}, gas ${pick.gasUsd.toFixed(2)})`);
-  await tracker.send(pick.tx, { label: `request ${pick.id}`, targetBlock: Number(L.number) + 1 });
+  // A batch is named by its requests' ids, joined without a space: the label is read back word by word.
+  const name = pick.ids ? `batch ${pick.ids.join(",")}` : `request ${pick.id}`;
+  if ((await chain.blockNumber()) !== L.number) return log(name, "block passed before sending; next block");
+  log(name, `filling: profit ${pick.profit.toFixed(2)} USD (float ${(Number(pick.usdcDelta) / 1e6).toFixed(2)}, stock ${pick.inventoryUsd.toFixed(2)}, gas ${pick.gasUsd.toFixed(2)})`);
+  await tracker.send(pick.tx, { label: name, targetBlock: Number(L.number) + 1 });
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
