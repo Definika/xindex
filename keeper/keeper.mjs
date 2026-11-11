@@ -22,7 +22,7 @@
 
 import { renameSync, writeFileSync } from "node:fs";
 import { encodeFunctionData, getAddress } from "viem";
-import { FRESH_SECONDS, HUB_SLOTS, MAX_CONF_BPS, SHARE_PRICED_IDS, TX_GAS_CAP, parseConfig } from "./bot/config.mjs";
+import { FRESH_SECONDS, HUB_SLOTS, MAX_CONF_BPS, NO_QUOTE_PROPOSAL, SHARE_PRICED_IDS, TX_GAS_CAP, parseConfig } from "./bot/config.mjs";
 import { MAX_REVERTED_FILLS, MAX_REVERTED_REQUEST_FILLS, revertedFills } from "./bot/backoff.mjs";
 import { ABI, createChain, revertReason } from "./bot/chain.mjs";
 import { createHermes, priceKey } from "./bot/hermes.mjs";
@@ -158,9 +158,10 @@ async function pricesOf(st, L, keepMask) {
 async function preview(index, st, L, keepMask, eta) {
   const T = L.timestamp + 12n;
   const over = { block: { number: L.number + 1n, time: T } };
-  // A start of the keeper's posts no quote: an earlier proposal's is cleared for the simulation.
+  // A start of the keeper's posts no quote: the simulated auction is bound to no proposal's, an earlier one's or,
+  // on an index never started, the empty one zero would name.
   if (eta !== undefined) {
-    over.state = { [index]: { [HUB_SLOTS.eta]: eta, [HUB_SLOTS.keepMask]: keepMask, [HUB_SLOTS.quoteProposal]: 0n } };
+    over.state = { [index]: { [HUB_SLOTS.eta]: eta, [HUB_SLOTS.keepMask]: keepMask, [HUB_SLOTS.quoteProposal]: NO_QUOTE_PROPOSAL } };
   }
   // The quote the owner or guardian posted with this proposal, if any: prices of theirs that a fill must also hold.
   const [quotePrices, quoteTolerance] = await chain.call({ to: index, abi: ABI.hub, functionName: "rebalanceQuote", args: [] }, L.number, over);

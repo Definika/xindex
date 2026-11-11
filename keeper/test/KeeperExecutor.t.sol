@@ -7,6 +7,7 @@ import {WeightedHub} from "xindex/src/WeightedHub.sol";
 import {WeightedIndexFactory} from "xindex/src/WeightedIndexFactory.sol";
 import {MintRequests} from "xindex/src/MintRequests.sol";
 import {IMintRequests} from "xindex/src/interfaces/IMintRequests.sol";
+import {stdError} from "forge-std/StdError.sol";
 import {WeightedTest} from "xindex/test/WeightedTest.sol";
 import {MockERC20} from "xindex/test/mocks/MockERC20.sol";
 import {MockSwapRouter} from "xindex/test/mocks/MockSwapRouter.sol";
@@ -1226,6 +1227,35 @@ contract KeeperExecutorTest is WeightedTest {
         vm.store(address(index), bytes32(QUOTE_PROPOSAL_SLOT), bytes32(0));
         (posted,) = index.rebalanceQuote();
         assertEq(posted.length, 0, "the quoteProposal slot is the hub's");
+    }
+
+    /// @dev The bot simulates a start by writing an eta into the hub, which opens an auction without counting a
+    ///      proposal. The hub holds a fill to a quote when `quoteProposal` equals `proposalCount`, so on an index
+    ///      never started, whose count is zero, the slot's own empty value names the simulated auction: its fill is
+    ///      held to a quote of no prices and fails with an out-of-bounds read. That stopped the keeper from starting
+    ///      any index's first auction. The bot writes a proposal id no index reaches instead, and config.mjs names it.
+    function test_theBotsNoQuoteValueBindsNoProposal() public {
+        string memory config = vm.readFile("bot/config.mjs");
+        assertTrue(
+            vm.indexOf(config, "NO_QUOTE_PROPOSAL = 2n ** 256n - 1n;") != type(uint256).max,
+            "config.mjs names the value written below"
+        );
+        assertEq(index.proposalCount(), 0, "an index never started");
+        // An auction at its last second, written as the bot's start check writes it.
+        vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
+        vm.store(address(index), bytes32(ETA_SLOT), bytes32(block.timestamp - index.AUCTION_DURATION()));
+        uint256[] memory units = _units();
+
+        // Left at zero, the quote slot names proposal zero, the one being simulated.
+        vm.expectRevert(stdError.indexOOBError);
+        index.previewRebalance(units);
+
+        vm.store(address(index), bytes32(QUOTE_PROPOSAL_SLOT), bytes32(type(uint256).max));
+        (uint256[] memory posted,) = index.rebalanceQuote();
+        assertEq(posted.length, 0, "no quote binds the simulated auction");
+        (, uint256[] memory in_) = _preview();
+        _fill(executor, _routes(), in_, type(int256).min);
+        assertEq(index.rebalanceNonce(), 1, "and its fill settles, as a start of the keeper's would");
     }
 
     uint256 constant COMPONENTS_SLOT = 0;
