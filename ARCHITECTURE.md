@@ -45,7 +45,7 @@ design it. Nothing has had an external audit, and nothing is deployed on a mainn
 | Trade the index into other coins | Standard ERC-20 (transferable, listable) plus `burnToToken` into any token |
 | USDC/USDT in, USDC/USDT out | The zap mints from either stable; the burner chooses the payout token |
 | Rebalancing and index price | The units are brought back toward the weights through an auction, at most once per the index's interval (7 to 91 days): an executor names the units, and the index accepts them when a weighted gain in units clears a bar that falls with time (section 3). The owner or guardian may post a quote with a start, which can only refuse a fill. No contract reads a price of its own; the index price is the basket's value, computed off chain |
-| Layer-1 coins | Ethereum tokens, Bitcoin as WBTC, and the coins Ethereum lacks as Wormhole-wrapped copies: SOL, XRP, ADA, AVAX and others |
+| Layer-1 coins | Ethereum tokens, Bitcoin as WBTC, and coins neither chain has in kind as Wormhole-wrapped copies on Ethereum: SOL, AVAX, SUI and others; XRP, ADA, LTC, DOT, ATOM and BNB on BNB Chain |
 
 Constraints kept from v3 and v4: in-kind backing, CREATE2 addresses that commit to their contents, fixed constituents,
 reentrancy-guarded untrusted executors, standard ERC-20s only, no admin over funds, and an owner Safe of at least three
@@ -646,8 +646,9 @@ math holds nothing and reads nothing. No price enters either.
   the home-chain wallets the executor's owner pins, to sell there; USDC for the buys moves by CCTP. What arrives earns
   the keeper stock allowance only within the restock allowance the executor's owner sets per coin, so restocking never
   raises what a stolen keeper key can deliver (RS-1), and the treasury holds at most the owner's figure of USDC off the
-  float (RS-2). It serves the eight EVM-homed coins with a market, XRP, ADA, LTC, DOT and BNB on BNB Chain, AVAX, OP and
-  AERO; ATOM has none, and JUP, PYTH, SUI, APT and ALGO wait for their chains' adapters (`keeper/README.md`,
+  float (RS-2). It was built for the eight EVM-homed coins with a market, XRP, ADA, LTC, DOT and BNB on BNB Chain, AVAX,
+  OP and AERO, and serves the last three by default since the first five left Ethereum's list on 2026-11-13; ATOM has
+  none, and JUP, PYTH, SUI, APT and ALGO wait for their chains' adapters (`keeper/README.md`,
   `audit/2026-10-25-restock-review.md`). None of it is a protocol contract or role: the hub sees an executor that
   delivers.
 - **Leaving.** Issue and redeem stay open through notice and auction. Once the auction is live an executor can order
@@ -690,7 +691,9 @@ exists, and it gives no power over funds.
 **One deployment, the missing coins wrapped.** About 71 of the top-300 candidates exist on Ethereum through their
 issuer; held on BNB Chain instead, the same universe would have wrapped 71 legs. Wormhole is the one bridge accepted for
 wrapping: anyone attests a coin on its home chain and the bridge deploys the copy on Ethereum. The cost is a new trusted
-party over every wrapped leg (section 7). The list (`script/Listings.sol`) stands at 91, 15 of them Wormhole copies:
+party over every wrapped leg (section 7). The list (`script/Listings.sol`) stood at 91, 15 of them Wormhole copies,
+until 2026-11-13, when the six copies wrapped from BNB Chain (XRP, ADA, LTC, DOT, ATOM, BNB) left it for BNB Chain's
+own deployment, which holds those coins in kind: it stands at 85, nine of them Wormhole copies. The fifteen were:
 SOL, listed first, 12 added on 2026-10-10, and BNB and SUI, whose copies the count of that day missed, added on
 2026-10-18; a 13th of 2026-10-10, DOGE's, left on 2026-10-14 on the owner's call, since Pyth, which then priced the
 rebalance, prices DOGE and not the copy. SAND and RLB left on 2026-10-18 after the source reading, and on 2026-10-19 BTT

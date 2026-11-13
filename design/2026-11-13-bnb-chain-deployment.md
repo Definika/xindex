@@ -199,12 +199,15 @@ first eleven passed earlier that day at block 133,342,099):
 
 ## 7. Not done, and what is the owner's
 
-- **Ethereum's list is unchanged: 91, with its 15 Wormhole copies.** The call says the list on Ethereum gets smaller.
-  Which copies leave is the owner's: the six whose source is BNB Chain (XRP, ADA, LTC, DOT, ATOM, BNB), which the BNB
-  Chain list now holds without Wormhole, or all fifteen. The other nine (SOL, AVAX, SUI, APT, JUP, PYTH, ALGO, OP,
-  AERO) have no in-kind home on either chain: off Ethereum's list they are in no index at all. The change touches
-  `script/Listings.sol`, its pinned table, the fork suites and the restock service, so it is one edit made once the
-  answer is known.
+- **Ethereum's list: decided and done the same day, 85 coins with nine Wormhole copies.** The owner: "we have to
+  delete bnb ones and that bnb ones should be on bnb chain that we built today". The six copies whose source is BNB
+  Chain (XRP, ADA, LTC, DOT, ATOM, BNB) left `script/Listings.sol`; the BNB Chain list holds those coins without
+  Wormhole. The other nine (SOL, AVAX, SUI, APT, JUP, PYTH, ALGO, OP, AERO) stay: they have no in-kind home on either
+  chain, and off Ethereum's list they would be in no index at all (asked whether all fifteen should go, the owner
+  kept them). What changed with it: the list's pinned table and tier counts (`test/ConfigureWeighted.t.sol`), the
+  keeper's price catalogue (85 coins), and the restock service's default coins (AVAX, OP and AERO; the five BNB
+  Chain coins stay in its table, as the six addresses stay in `script/MainnetAddresses.sol`, for a relisting). The
+  Ethereum fork suites have not been rerun on the shorter list.
 - **The owner Safe and the guardian's Safe on BNB Chain.** A Safe is per chain. The deploy script refuses a Safe of
   fewer than three signatures there, as on Ethereum.
 - **The `BNB_RPC_URL` secret,** an archive BNB Chain RPC, so CI runs the BNB Chain fork suite; until it exists the

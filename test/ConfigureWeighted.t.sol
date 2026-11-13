@@ -58,8 +58,8 @@ contract ConfigureWeightedTest is Test {
         assertEq(first.length + wide.length, tokens.length);
         assertEq(
             tokens.length,
-            91,
-            "the list of 2026-10-06, 2026-10-10's additions, less DOGE (10-14), with BNB and SUI, less SAND, RLB, BTT, SEI"
+            85,
+            "the list of 2026-10-06 and 2026-10-10's additions with SUI, less DOGE, SAND, RLB, BTT, SEI and BNB Chain's six"
         );
         for (uint256 i = 0; i < tokens.length; ++i) {
             assertEq(i < 4 ? first[i] : wide[i - 4], tokens[i]);
@@ -100,8 +100,8 @@ contract ConfigureWeightedTest is Test {
             ++count[uint256(tier)];
         }
         assertEq(count[uint256(Listings.Tier.Native)], 48, "22 of the wide list and 26 of the hundred-coin list");
-        assertEq(count[uint256(Listings.Tier.Bridged)], 19, "8, ZK and W, and 9 Wormhole copies");
-        assertEq(count[uint256(Listings.Tier.Custodial)], 24, "19, and 5 Wormhole copies of Binance-Peg coins");
+        assertEq(count[uint256(Listings.Tier.Bridged)], 18, "8, ZK and W, and 8 Wormhole copies");
+        assertEq(count[uint256(Listings.Tier.Custodial)], 19, "WBTC, Tether Gold and the 17 Ondo stocks");
         assertEq(uint8(Listings.tierOf(MainnetAddresses.WBTC)), uint8(Listings.Tier.Custodial));
         assertEq(uint8(Listings.tierOf(MainnetAddresses.ARB)), uint8(Listings.Tier.Bridged));
         assertEq(uint8(Listings.tierOf(MainnetAddresses.INJ)), uint8(Listings.Tier.Bridged));
@@ -117,13 +117,22 @@ contract ConfigureWeightedTest is Test {
         assertEq(uint8(Listings.tierOf(MainnetAddresses.W)), uint8(Listings.Tier.Bridged), "a mesh peer, home Solana");
         assertEq(uint8(Listings.tierOf(MainnetAddresses.JUP)), uint8(Listings.Tier.Bridged), "a Wormhole copy");
         assertEq(uint8(Listings.tierOf(MainnetAddresses.OP)), uint8(Listings.Tier.Bridged));
-        assertEq(uint8(Listings.tierOf(MainnetAddresses.BNB)), uint8(Listings.Tier.Bridged), "WBNB, not Binance-Peg");
         assertEq(uint8(Listings.tierOf(MainnetAddresses.SUI)), uint8(Listings.Tier.Bridged));
-        assertEq(
-            uint8(Listings.tierOf(MainnetAddresses.XRP)),
-            uint8(Listings.Tier.Custodial),
-            "a Wormhole copy of a Binance-Peg coin carries Binance's custody"
-        );
+        // Wormhole's copies of the six coins BNB Chain's deployment holds in kind, off the list since 2026-11-13
+        address[6] memory onBnbChain = [
+            MainnetAddresses.XRP,
+            MainnetAddresses.ADA,
+            MainnetAddresses.LTC,
+            MainnetAddresses.DOT,
+            MainnetAddresses.ATOM,
+            MainnetAddresses.BNB
+        ];
+        for (uint256 i = 0; i < onBnbChain.length; ++i) {
+            assertEq(uint8(Listings.tierOf(onBnbChain[i])), uint8(Listings.Tier.Unrecorded), "held on BNB Chain");
+            for (uint256 j = 0; j < tokens.length; ++j) {
+                assertTrue(tokens[j] != onBnbChain[i], "a copy of a coin BNB Chain holds is listed");
+            }
+        }
         assertEq(
             uint8(Listings.tierOf(0xd881A7F17Ed2c71FD671AfbA3A9b30Eb914Aea5F)),
             uint8(Listings.Tier.Unrecorded),
@@ -149,7 +158,6 @@ contract ConfigureWeightedTest is Test {
             uint8(Listings.Tier.Unrecorded),
             "RLB, off the list since 2026-10-18"
         );
-        assertEq(uint8(Listings.tierOf(MainnetAddresses.ATOM)), uint8(Listings.Tier.Custodial));
         assertEq(uint8(Listings.tierOf(MainnetAddresses.VON)), uint8(Listings.Tier.Custodial));
         assertEq(uint8(Listings.tierOf(MainnetAddresses.USDC)), uint8(Listings.Tier.Unrecorded));
         assertEq(Listings.tierName(Listings.Tier.Native), "Native");
@@ -165,7 +173,7 @@ contract ConfigureWeightedTest is Test {
     function test_CRL08_theListsAreTheReleaseRecord() public view {
         address[] memory first = configure.defaultMainnetList();
         address[] memory wide = configure.wideMainnetList();
-        address[91] memory tokens = [
+        address[85] memory tokens = [
             0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2, // WETH
             0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599, // WBTC
             0x514910771AF9Ca656af840dff83E8264EcF986CA, // LINK
@@ -243,23 +251,17 @@ contract ConfigureWeightedTest is Test {
             0xd1d2Eb1B1e90B638588728b4130137D262C87cae, // GALA
             0xB0fFa8000886e57F86dd5264b9582b2Ad87b2b91, // W
             0x320623b8E4fF03373931769A31Fc52A4E78B5d70, // RSR
-            0xc730d8256B8A1030eEA67f1Bc7ebed3898f7A535, // XRP
-            0x8EfFbF747d4A60Bc6b68D9A1bE4c4188bA8A3a0b, // ADA
-            0x1cA1Ef3fB8Ff4a480C0ae7eea5f91A24a5BB3344, // LTC
             0x85f138bfEE4ef8e540890CFb48F620571d67Eda3, // AVAX
-            0x1839a38E59536D88C25e8E6e0D0f59e05b143ab2, // DOT
             0x8687a10BCa6F139B25eb31020FCABB5782214764, // JUP
             0xe31Cfcd36FeD044ae4Cf9405B577fe875762194F, // ALGO
-            0x7845167B54253269624dBA0cA5Fee87933107b34, // ATOM
             0x750525C1877E30304F1E22b1b49b4C9DdE674ddF, // AERO
             0x8CDf7AF57E4c8B930e1B23c477c22f076530585e, // APT
             0xeFc0CED4B3D536103e76a1c4c74F0385C8F4Bdd3, // PYTH
             0x1df721D242E0783F8fCab4A9FfE4F35bdf329909, // OP
-            0x418D75f65a02b3D53B2418FB8E1fe493759c7605, // BNB (WBNB)
             0x84074EA631dEc7a4edcD5303d164D5dEa4c653D6 // SUI
         ];
         assertEq(first.length, 4);
-        assertEq(wide.length, 87);
+        assertEq(wide.length, 81);
         for (uint256 i = 0; i < tokens.length; ++i) {
             assertEq(i < 4 ? first[i] : wide[i - 4], tokens[i]);
         }

@@ -22,16 +22,19 @@ and guardian's Safe, each holding its own chain's tokens in kind. An index lives
 BNB Chain side is built as scripts and tests, with no contract changed: `script/BnbChainAddresses.sol` (twelve coins,
 nine of them Binance-Peg, labelled Custodial), `V5_WHITELIST=bnb`, `CHECK=bnb` and
 `test/fork/BnbChainAddresses.fork.t.sol`. The call reverses the owner's refusal of 2026-11-10 ("I want to stay on
-Ethereum") and, in part, the one-index decision below, which still describes the Ethereum deployment as it stands: its
-list keeps its 15 Wormhole copies until the owner names which leave.
+Ethereum") and, in part, the one-index decision below, which still describes the Ethereum deployment as it stands. On
+the same day the owner named which Wormhole copies leave Ethereum's list: the six wrapped from BNB Chain (XRP, ADA,
+LTC, DOT, ATOM and BNB), since BNB Chain's deployment holds those coins in kind; the nine from other chains stay.
 
 **The Ethereum deployment: one index holds up to 100 coins of the top 300** (the owner's decision
 of 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). `WeightedIndexFactory`, `WeightedHub`, `IndexZap` and
 `MintRequests` hold Ethereum ERC-20s in kind: the issuer's own contract where Ethereum has one (71 candidates of the
 top 300 today), and otherwise a copy wrapped by Wormhole's token bridge from the chain that has it (17 from BNB Chain,
 nine of them Binance-Peg; 31 from Solana, Sui, Aptos, Base and the other chains Wormhole serves), labelled Bridged,
-Custodial as well when the source is Binance-Peg. The list stands at 91
-(`script/Listings.sol`), 15 of them Wormhole copies, with 26 more copies to attest and FIL's held; DOGE's copy left it on
+Custodial as well when the source is Binance-Peg. The list stands at 85
+(`script/Listings.sol`), nine of them Wormhole copies (SOL, AVAX, JUP, ALGO, AERO, APT, PYTH, OP and SUI) since the six
+wrapped from BNB Chain left on 2026-11-13 (the owner's call: BNB Chain's deployment holds those coins in kind, so no
+listed copy has a Binance-Peg source any more), with 26 more copies to attest and FIL's held; DOGE's copy left it on
 2026-10-14 (the owner's call, below); on 2026-10-18 the copies of BNB, SUI and SEI, which the count of 2026-10-10
 missed, joined it, and SAND and RLB left it after the source reading (the owner's call); on 2026-10-19 BTT and SEI's
 copy left it, their bridges closed or closing, and ZK moved to Bridged (the owner's calls on the red team's RX-28,
@@ -56,7 +59,7 @@ Pyth-priced rebalance as it then was, and the last one says what replaced it.
   Ethereum-issued coins and 13 Wormhole copies that already existed, every one through `CheckToken` on a fork), and
   93 since DOGE's copy left on 2026-10-14, and on 2026-10-18 the copies of BNB, SUI and SEI, found already attested,
   joined and SAND and RLB left; on 2026-10-19 BTT and SEI's copy left, 91 in all, 73 of them coins that count toward
-  the hundred. 26 copies await an attestation on Wormhole's Portal (the queue of 31 less USX and CASH, stablecoins,
+  the hundred; on 2026-11-13 the six copies wrapped from BNB Chain left, 85 in all. 26 copies await an attestation on Wormhole's Portal (the queue of 31 less USX and CASH, stablecoins,
   BP, an exchange's token, S, which Wormhole does not serve, and FIL, held until its Binance-Peg source passes a
   source reading: RX-11, RX-20, RX-35, RX-64), a
   transaction on each home chain the owner sends (section 2a of the 2026-10-10 record lists them with the procedure,
@@ -93,7 +96,8 @@ Pyth-priced rebalance as it then was, and the last one says what replaced it.
   home-chain wallets the executor's owner pins, to sell there; USDC moves by CCTP, the treasury holding at most the
   owner's figure off the float (RS-2). It runs under a key of its own, the treasury, which the owner pins. Built for
   the eight EVM-homed coins with a market (XRP, ADA, LTC, DOT and, since 2026-11-01, BNB on BNB Chain; AVAX, OP,
-  AERO); ATOM has none on BNB Chain, and JUP, PYTH, SUI, APT and ALGO wait for their chains' adapters.
+  AERO); ATOM has none on BNB Chain, and JUP, PYTH, SUI, APT and ALGO wait for their chains' adapters. Since
+  2026-11-13 it serves AVAX, OP and AERO by default: the five BNB Chain coins' copies left Ethereum's list that day.
 - The security audit of 2026-10-13 (`audit/2026-10-13-security-audit.md`, Cloudflare's security-audit skill, ids
   `CF-1`..`CF-8`) found no exploitable path in the four contracts that hold index funds; its findings in the keeper,
   CheckToken, the deploy script and CI are fixed, CF-3 is a known limitation below, and CF-2 and CF-8 went with the
@@ -277,7 +281,8 @@ Pyth-priced rebalance as it then was, and the last one says what replaced it.
   - What it costs, said to the owner: no index spans both chains; nine of the twelve are in Binance's custody; and
     Uniswap, the zap's one venue, has a market worth routing for six of the twelve (PancakeSwap holds the rest), so
     the other six mint in kind or through `MintRequests`.
-  - Not done: Ethereum's list (which Wormhole copies leave is the owner's call); the owner Safe and the guardian's
+  - Ethereum's list lost the six copies wrapped from BNB Chain the same day (85 coins, `script/Listings.sol`).
+  - Not done: the owner Safe and the guardian's
     Safe on BNB Chain; the `BNB_RPC_URL` secret, without which CI skips the BNB Chain suite; the source reading of
     the twelve; the keeper's BNB Chain preset, executor and stock; the app.
 - Before any mainnet: a Hermes plan that serves the keeper its feeds (its price source is its own business now, and
@@ -351,7 +356,7 @@ Deployment, once on each chain, Ethereum and BNB Chain: `script/DeployWeighted.s
 to that chain's guardian's Safe,
 then `script/ConfigureWeighted.s.sol`, which lists each coin of `script/Listings.sol`; the owner then approves the
 wallets that create indexes (`setApprovedCreator`), and nobody can create one before. `script/CheckToken.s.sol` reports on every token before its first
-listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 91 in all, on Ethereum;
+listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 85 in all, on Ethereum;
 `V5_WHITELIST=bnb` is BNB Chain's twelve. On chains 1 and 56 the deploy script resolves the router, the wrapped coin
 (WETH, WBNB) and the stablecoins from that chain's address book and refuses any other address
 (`DeployChecks.isPinnedChain`). Sepolia first needs its test market from
@@ -369,7 +374,7 @@ listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` 
 3. `forge test` green. `forge coverage` at 100% for every file, including mocks and scripts.
 4. Fork tests green if the change touches `IndexZap`, the hub's rebalancing, routes, token behaviour, or anything
    router- or pool-related. Their summary must list the five Ethereum
-   `test/fork/` suites and 0 skipped. `WeightedHub.fork.t.sol` alone takes about an hour at the 91-coin list on an archive RPC
+   `test/fork/` suites and 0 skipped. `WeightedHub.fork.t.sol` alone took about an hour at the 91-coin list (85 since 2026-11-13) on an archive RPC
    (Alchemy, Tenderly), nearly all of it the admission quotes on a cold RPC cache; a public endpoint prunes the state
    before it ends. They are also required when the deploy checks or `script/MainnetAddresses.sol` change, which
    `MainnetAddresses.fork.t.sol` and `Security.fork.t.sol` exercise. A change to the deploy checks, the zap, the swap
@@ -955,9 +960,12 @@ vaults of our own, which stay refused. It reverses the owner's refusal of a BNB 
 in part, "One index on Ethereum" of 2026-10-10 below: no single index holds every listed coin any more. Said to the
 owner with it: a buyer who wants both chains' coins buys two tokens; nine of BNB Chain's twelve coins are Binance's
 custody, with Wormhole no party there; and Uniswap, still the zap's only venue, has a market for six of the twelve.
-Not decided: which Wormhole copies leave Ethereum's list (the six sourced from BNB Chain, or all fifteen; the nine
-from other chains have no in-kind home on either chain); PancakeSwap as a venue on BNB Chain, which the call of
-2026-10-14 below still refuses.
+Decided the same day (the owner: "we have to delete bnb ones and that bnb ones should be on bnb chain that we built
+today"): the six Wormhole copies wrapped from BNB Chain (XRP, ADA, LTC, DOT, ATOM, BNB) leave Ethereum's list, and
+those coins are held on BNB Chain in kind; the nine copies from other chains stay on Ethereum, since neither chain has
+an in-kind home for them (asked whether all fifteen should go, the owner kept them). Their addresses stay recorded in
+`script/MainnetAddresses.sol` for a relisting, and the keeper's restock serves AVAX, OP and AERO by default. Not
+decided: PancakeSwap as a venue on BNB Chain, which the call of 2026-10-14 below still refuses.
 
 **No oracle** (the owner's call of 2026-11-10: "we have to cut off oracles somehow and keep rebalance safely", then
 "yes build oracle free rebalance"). No contract reads a price. An index still rebalances toward its fixed percentages,
