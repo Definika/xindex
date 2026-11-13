@@ -13,33 +13,35 @@ import {IWETH9} from "../src/interfaces/IWETH9.sol";
 import {DeployChecks} from "./DeployChecks.sol";
 
 /// @notice Deploys Xindex: `WeightedIndexFactory`, which deploys the `WeightedHub` implementation every index is a
-///         clone of, then a zap, a basket builder and MintRequests for that factory. Run once, on Ethereum, with the
-///         owner Safe and the guardian's Safe (`design/2026-10-10-one-index-wormhole-legs.md`). The owner, the guardian
-///         and the market are checked by `DeployChecks`. No oracle is deployed, named or read: an index rebalances
-///         through an auction on units alone (`design/2026-11-10-oracle-free-rebalance.md`).
+///         clone of, then a zap, a basket builder and MintRequests for that factory. Run once on Ethereum and once
+///         on BNB Chain, each with that chain's owner Safe and guardian's Safe: two deployments that share nothing,
+///         each holding its chain's coins in kind (`design/2026-11-13-bnb-chain-deployment.md`). The owner, the
+///         guardian and the market are checked by `DeployChecks`. No oracle is deployed, named or read: an index
+///         rebalances through an auction on units alone (`design/2026-11-10-oracle-free-rebalance.md`).
 ///
 ///   OWNER=<safe address> GUARDIAN=<guardian address> forge script script/DeployWeighted.s.sol --rpc-url mainnet \
 ///     --account deployer --sender <deployer address> --broadcast --verify
 ///
 /// Env:
-///   OWNER               Required. Factory owner. On Ethereum it must be a contract that is not an
+///   OWNER               Required. Factory owner. On Ethereum and BNB Chain it must be a contract that is not an
 ///                       EIP-7702 delegated account, and a Safe must require at least three signatures and have no
 ///                       enabled module. Any other contract needs OWNER_IS_NOT_A_SAFE.
-///   OWNER_IS_NOT_A_SAFE Optional, OWNER's address again or unset. On Ethereum, the operator's acknowledgment that
+///   OWNER_IS_NOT_A_SAFE Optional, OWNER's address again or unset. On those two chains, the operator's acknowledgment that
 ///                       OWNER is a contract but not a Safe, such as a timelock; without it such an owner is refused
 ///                       (A7-08). Only OWNER's own address acknowledges OWNER, so one left in `.env` from an earlier
 ///                       run acknowledges no other owner. It lowers no Safe rule, and the owner's code hash is logged.
 ///   GUARDIAN            Required. The guardian's Safe, the factory's guardian. It cancels pending listings and
 ///                       rebalances, delists tokens, and starts a rebalance that leaves chosen components untouched.
 ///                       Must differ from OWNER; replacing the guardian later takes 7 days.
-///   UNIVERSAL_ROUTER    Uniswap's Universal Router, through which the zap swaps. Required off Ethereum; on Ethereum
-///                       it defaults to the address book, and nothing else is accepted there.
-///   WETH                Wrapped ether, which the zap's ether entry points wrap and unwrap. Resolved like the router.
+///   UNIVERSAL_ROUTER    Uniswap's Universal Router, through which the zap swaps. Required off Ethereum and BNB
+///                       Chain; on those two it defaults to the chain's address book, and nothing else is accepted.
+///   WETH                The chain's wrapped coin, which the zap's ether entry points wrap and unwrap: WETH on
+///                       Ethereum, WBNB on BNB Chain. Resolved like the router.
 ///   USDC, USDT          The two stablecoins MintRequests escrows. Resolved like the router.
 contract DeployWeighted is DeployChecks {
     /// @notice keccak256 of `WeightedIndexFactory`'s init code, which embeds the `WeightedHub` implementation's, as this
     ///         commit builds it with this repository's foundry.toml. With the two below, this is the release record a
-    ///         mainnet broadcast is bound to (CF-5): `deploy` refuses to broadcast on Ethereum from any other build (a
+    ///         mainnet broadcast is bound to (CF-5): `deploy` refuses to broadcast on a pinned chain from any other build (a
     ///         local edit, a lib/ checkout off foundry.lock, a FOUNDRY_* override), and `test_CF5_*` in
     ///         test/Scripts.t.sol fails until these equal the build, so only a reviewed, CI-green commit moves them.
     bytes32 public constant FACTORY_INITCODE_HASH = 0x50a356f1334595395487187b8c65c35987dea76ddf5a65c796b3e921b0557dba;
@@ -103,7 +105,7 @@ contract DeployWeighted is DeployChecks {
         usdc = resolveStable("USDC", usdc, pinnedUsdc());
         usdt = resolveStable("USDT", usdt, pinnedUsdt());
         checkRolesAreNotMarket(owner, guardian, router);
-        // What is broadcast on Ethereum is the build this commit records, never whatever the local tree compiles (CF-5).
+        // What is broadcast on a mainnet is the build this commit records, never whatever the local tree compiles (CF-5).
         if (isPinnedChain()) checkBuild(releaseInitCodeHashes());
 
         vm.startBroadcast();

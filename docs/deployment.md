@@ -17,8 +17,16 @@ source .env
 
 `DeployWeighted` deploys `WeightedIndexFactory` with the owner, `OWNER`, and the guardian's Safe, `GUARDIAN`, as its
 guardian. The factory's constructor deploys `WeightedMath` and the `WeightedHub` implementation every index is a clone
-of. The script then deploys the zap, the basket builder and `MintRequests` for that factory. It runs once, on
-Ethereum. Listings follow through the factory's timelock.
+of. The script then deploys the zap, the basket builder and `MintRequests` for that factory. It runs once on each
+chain, Ethereum and BNB Chain, each with that chain's own owner Safe and guardian's Safe. Listings follow through the
+factory's timelock.
+
+On BNB Chain the same commands run against a BNB Chain RPC, with `V5_WHITELIST=bnb` for the listings and `CHECK=bnb`
+for the admission check. The script resolves the router, WBNB (the zap's wrapped coin there), USDC and USDT from
+`script/BnbChainAddresses.sol` and refuses any other address, and it holds the owner to the same Safe rules as on
+Ethereum. Before a first run there: the two Safes on BNB Chain, the source reading of the twelve coins, and
+`BNB_RPC_URL=... forge test --match-path 'test/fork/BnbChainAddresses.fork.t.sol'` passing on an archive RPC
+([`design/2026-11-13-bnb-chain-deployment.md`](../design/2026-11-13-bnb-chain-deployment.md)).
 
 No oracle is deployed, named or read: there is no `PYTH` variable, and an index rebalances through an auction on units
 alone (`design/2026-11-10-oracle-free-rebalance.md`). There is no relay either. A start of a rebalance is a plain call,

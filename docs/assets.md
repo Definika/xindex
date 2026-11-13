@@ -42,6 +42,22 @@ FIL's waits for a reading of its Binance-Peg source. Every
 listed token passed `CheckToken` on a mainnet fork, and one fork test issues, rebalances and redeems an index holding
 every coin `forge-std` can fund.
 
+### BNB Chain
+
+`script/BnbChainAddresses.sol` lists 12 assets for the BNB Chain deployment (`V5_WHITELIST=bnb`), each held in kind
+there and none through Wormhole:
+
+- WBNB and ASTER, Native.
+- BTCB, ETH, XRP, ZEC, ADA, BCH, LTC, DOT and ATOM, Custodial: Binance-Peg tokens, which Binance backs and one key of
+  Binance's mints. None is a proxy.
+- STABLE, Bridged: a LayerZero token a 3-of-5 Safe upgrades.
+
+All twelve passed `CheckToken` on BNB Chain on 2026-11-13. Binance-Peg DOGE, AVAX and FIL are left out: each is a
+proxy whose code one key can replace. Six of the twelve (WBNB, BTCB, ETH, XRP, ZEC, ASTER) have a Uniswap market the
+zap can route a mint through; ADA, LTC, DOT, BCH, ATOM and STABLE trade mostly on PancakeSwap, which the zap does not
+use, so they mint in kind or through `MintRequests`
+([`design/2026-11-13-bnb-chain-deployment.md`](../design/2026-11-13-bnb-chain-deployment.md), section 6).
+
 ## Labels the app shows
 
 | Label | Meaning |

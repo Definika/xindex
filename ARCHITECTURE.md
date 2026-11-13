@@ -9,12 +9,18 @@ reads a price, a feed or an oracle, for any of it. The one place a price enters 
 post with a start: their own figures, used only to refuse a fill (section 3.9). No admin can touch user funds, and no
 protocol key or bot is involved in rebalancing.
 
-**Xindex is one deployment, on Ethereum, and one index holds up to 100 coins of the top 300** (the owner's decision of
+**Xindex is two deployments since 2026-11-13, on Ethereum and on BNB Chain** (the owner's call,
+`design/2026-11-13-bnb-chain-deployment.md`): the same contracts on each, sharing nothing, each holding its own chain's
+tokens in kind, so an index lives on one chain and none spans both. The BNB Chain side is its address book, list,
+deploy checks and fork suite (`script/BnbChainAddresses.sol`); no contract changed for it, and everything below
+describes both deployments unless it names Ethereum's list, Wormhole or the restock service, which are Ethereum's.
+
+**On Ethereum one index holds up to 100 coins of the top 300** (the owner's decision of
 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). An index holds Ethereum ERC-20s in kind: the issuer's own
 contract where Ethereum has one, and otherwise the copy Wormhole's token bridge wraps from the chain that has it.
 Nothing crosses a chain inside a protocol contract: the app and the fillers bridge, the keeper's own executor among
 them (section 5). There is no vault, no proof and no bridge of ours. The BNB Chain deployment of 2026-10-07 was shelved
-on 2026-10-10 and deleted on 2026-10-13.
+on 2026-10-10, deleted on 2026-10-13 and built again on 2026-11-13.
 
 This file describes the contracts **as built**: `WeightedIndexFactory`, the `WeightedHub` it clones, `WeightedMath`,
 `IndexZap`, `BasketBuilder` and `MintRequests`. The rebalance is the oracle-free one of 2026-11-10
