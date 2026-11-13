@@ -9,6 +9,7 @@ import {Listings} from "../script/Listings.sol";
 import {WeightedIndexFactory} from "../src/WeightedIndexFactory.sol";
 import {WeightedHub} from "../src/WeightedHub.sol";
 import {MainnetAddresses} from "../script/MainnetAddresses.sol";
+import {BnbChainAddresses} from "../script/BnbChainAddresses.sol";
 import {ConfigureWeighted} from "../script/ConfigureWeighted.s.sol";
 import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
 import {IndexZap} from "../src/IndexZap.sol";
@@ -608,6 +609,75 @@ contract ScriptsTest is Test {
         vm.setEnv("OWNER_IS_NOT_A_SAFE", vm.toString(timelock));
         (factory,,,) = mainnet.run();
         assertEq(factory.owner(), timelock, "acknowledged by name, a contract that is not a Safe owns the factory");
+    }
+
+    /// @dev On BNB Chain the market addresses are pinned to `BnbChainAddresses` as Ethereum's are to
+    ///      `MainnetAddresses`: zero takes the book's, any other address is refused, every token of the book is a
+    ///      market contract no role may hold, a key is refused as owner, only the recorded build is broadcast (CF-5),
+    ///      and a Safe deploys from the book alone, the zap wrapping BNB. Ethereum's router address has code there
+    ///      too, as on the real chain, and names nothing.
+    function test_deployWeighted_resolvesBnbChainsAddressBook() public {
+        vm.chainId(BnbChainAddresses.CHAIN_ID);
+        address bnbRouter = BnbChainAddresses.UNIVERSAL_ROUTER;
+        vm.etch(bnbRouter, address(new MockUniversalRouter(BnbChainAddresses.POOL_MANAGER)).code);
+        vm.etch(MAINNET_UNIVERSAL_ROUTER, hex"00");
+        vm.etch(BnbChainAddresses.WBNB, hex"00");
+        vm.etch(BnbChainAddresses.USDC, hex"00");
+        vm.etch(BnbChainAddresses.USDT, hex"00");
+        DeployWeighted bnb = new DeployWeightedThisBuild();
+        assertTrue(bnb.isPinnedChain());
+        assertTrue(bnb.onBnbChain());
+        assertEq(bnb.pinnedRouter(), bnbRouter);
+        assertEq(bnb.resolveRouter(address(0)), bnbRouter);
+        assertEq(bnb.resolveStable("WETH", address(0), bnb.pinnedWeth()), BnbChainAddresses.WBNB);
+        assertEq(bnb.resolveStable("USDC", address(0), bnb.pinnedUsdc()), BnbChainAddresses.USDC);
+        assertEq(bnb.resolveStable("USDT", address(0), bnb.pinnedUsdt()), BnbChainAddresses.USDT);
+        vm.expectRevert(
+            abi.encodeWithSelector(DeployChecks.MainnetOverride.selector, "UNIVERSAL_ROUTER", address(router))
+        );
+        bnb.resolveRouter(address(router));
+        vm.expectRevert(
+            abi.encodeWithSelector(DeployChecks.MainnetOverride.selector, "UNIVERSAL_ROUTER", MAINNET_UNIVERSAL_ROUTER)
+        );
+        bnb.resolveRouter(MAINNET_UNIVERSAL_ROUTER); // Ethereum's router is not BNB Chain's, code there or none
+        address bnbUsdc = bnb.pinnedUsdc();
+        vm.expectRevert(abi.encodeWithSelector(DeployChecks.MainnetOverride.selector, "USDC", MainnetAddresses.USDC));
+        bnb.resolveStable("USDC", MainnetAddresses.USDC, bnbUsdc);
+
+        address[] memory market = bnb.marketContracts(bnbRouter);
+        assertEq(market.length, 2 + BnbChainAddresses.COUNT + 2, "the router, its PoolManager, 12 tokens, 2 stables");
+        assertEq(market[0], bnbRouter);
+        assertEq(market[1], BnbChainAddresses.POOL_MANAGER);
+        assertEq(market[2], BnbChainAddresses.WBNB);
+        assertEq(market[13], BnbChainAddresses.STABLE);
+        assertEq(market[14], BnbChainAddresses.USDC);
+        assertEq(market[15], BnbChainAddresses.USDT);
+        vm.expectRevert(abi.encodeWithSelector(DeployChecks.RoleIsMarketContract.selector, BnbChainAddresses.BTCB));
+        bnb.checkRolesAreNotMarket(BnbChainAddresses.BTCB, guardian, bnbRouter);
+        vm.expectRevert(abi.encodeWithSelector(DeployChecks.RoleIsMarketContract.selector, BnbChainAddresses.USDT));
+        bnb.checkRolesAreNotMarket(owner, BnbChainAddresses.USDT, bnbRouter);
+
+        // A mainnet: a key may not own the factory, another build is not broadcast, a Safe deploys from the book alone.
+        vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerMustBeContract.selector, owner));
+        bnb.deploy(owner, guardian, address(0), address(0), address(0), address(0), address(0));
+        address safeOwner = address(new MockSafe(3));
+        DeployWeighted other = new DeployWeightedOtherBuild();
+        bytes32 built = other.buildInitCodeHashes()[0];
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                DeployWeighted.BuildNotReleased.selector, "WeightedIndexFactory", bytes32(uint256(1)), built
+            )
+        );
+        other.deploy(safeOwner, guardian, address(0), address(0), address(0), address(0), address(0));
+        (WeightedIndexFactory factory, IndexZap zap, BasketBuilder builder, MintRequests requests) =
+            bnb.deploy(safeOwner, guardian, address(0), address(0), address(0), address(0), address(0));
+        assertEq(factory.owner(), safeOwner);
+        assertEq(address(zap.ROUTER()), bnbRouter);
+        assertEq(zap.POOL_MANAGER(), BnbChainAddresses.POOL_MANAGER);
+        assertEq(address(zap.WETH()), BnbChainAddresses.WBNB);
+        assertEq(address(builder.ROUTER()), bnbRouter);
+        assertEq(requests.USDC(), BnbChainAddresses.USDC);
+        assertEq(requests.USDT(), BnbChainAddresses.USDT);
     }
 
     /// @dev The stablecoins MintRequests escrows resolve like the router: required off mainnet, mainnet's own on chain

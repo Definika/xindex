@@ -3,7 +3,10 @@
 [![CI](https://github.com/Definika/xindex/actions/workflows/test.yml/badge.svg)](https://github.com/Definika/xindex/actions/workflows/test.yml)
 [![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 
-Xindex is a protocol for index tokens on Ethereum. A wallet the factory's owner approved creates an index of 2 to 100
+Xindex is a protocol for index tokens on Ethereum and, since 2026-11-13, on BNB Chain: two deployments of the same
+contracts that share nothing, each holding its own chain's tokens
+([`design/2026-11-13-bnb-chain-deployment.md`](design/2026-11-13-bnb-chain-deployment.md)). A wallet the factory's
+owner approved creates an index of 2 to 100
 listed assets at weights it chooses, and anyone can mint, redeem and trade it. Each index is an ERC-20 fully backed in
 kind: minting deposits the basket and redeeming returns it. A permissionless auction brings an index back toward its
 weights. No contract reads a price, a feed or an oracle, for any of it.
@@ -82,6 +85,9 @@ token_i.balanceOf(index) >= floor(totalSupply × units_i × scale / 1e36) + tota
 ## Deployments
 
 **Ethereum:** not deployed yet. Mainnet follows an external audit.
+
+**BNB Chain:** not deployed yet. Its address book, list and fork suite are built
+(`script/BnbChainAddresses.sol`, `test/fork/BnbChainAddresses.fork.t.sol`); it follows the same audit.
 
 **Sepolia** (testnet):
 

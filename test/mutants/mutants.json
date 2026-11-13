@@ -1407,5 +1407,70 @@
       }
     ],
     "runner": "node"
+  },
+  {
+    "id": "N1",
+    "what": "Ethereum's router having code names Ethereum before BNB Chain is asked, as the checks read it until 2026-11-13: on BNB Chain, where that address has code too, the deploy resolves Ethereum's book",
+    "origin": "design/2026-11-13-bnb-chain-deployment.md",
+    "file": "script/DeployChecks.sol",
+    "test": "test/DeployChecks.t.sol",
+    "edits": [
+      {
+        "old": "        if (block.chainid == BnbChainAddresses.CHAIN_ID) return true;\n        return block.chainid != 1 && BNB_UNIVERSAL_ROUTER.code.length != 0;\n",
+        "new": "        if (MAINNET_UNIVERSAL_ROUTER.code.length != 0) return false;\n        if (block.chainid == BnbChainAddresses.CHAIN_ID) return true;\n        return block.chainid != 1 && BNB_UNIVERSAL_ROUTER.code.length != 0;\n"
+      }
+    ]
+  },
+  {
+    "id": "N2",
+    "what": "BNB Chain is told by its chain id alone, so a chain-id override unpins it against BNB Chain's state (RX-23)",
+    "origin": "design/2026-11-13-bnb-chain-deployment.md",
+    "file": "script/DeployChecks.sol",
+    "test": "test/DeployChecks.t.sol",
+    "edits": [
+      {
+        "old": "        return block.chainid != 1 && BNB_UNIVERSAL_ROUTER.code.length != 0;\n",
+        "new": "        return false;\n"
+      }
+    ]
+  },
+  {
+    "id": "N5",
+    "what": "BNB Chain's router having code names BNB Chain on chain 1 too: that router is a CREATE2 deployment anyone can replay onto Ethereum, and a deployment there would then resolve BNB Chain's book",
+    "origin": "design/2026-11-13-bnb-chain-deployment.md",
+    "file": "script/DeployChecks.sol",
+    "test": "test/DeployChecks.t.sol",
+    "edits": [
+      {
+        "old": "        return block.chainid != 1 && BNB_UNIVERSAL_ROUTER.code.length != 0;\n",
+        "new": "        return BNB_UNIVERSAL_ROUTER.code.length != 0;\n"
+      }
+    ]
+  },
+  {
+    "id": "N3",
+    "what": "BNB Chain's USDC and USDT may be proposed as components (A7-22)",
+    "origin": "design/2026-11-13-bnb-chain-deployment.md",
+    "file": "script/ConfigureWeighted.s.sol",
+    "test": "test/ConfigureWeighted.t.sol",
+    "edits": [
+      {
+        "old": "                || token == MainnetAddresses.USDT || token == BnbChainAddresses.USDC || token == BnbChainAddresses.USDT\n",
+        "new": "                || token == MainnetAddresses.USDT\n"
+      }
+    ]
+  },
+  {
+    "id": "N4",
+    "what": "on BNB Chain the mint currencies come from the environment, not from its address book (A7-22)",
+    "origin": "design/2026-11-13-bnb-chain-deployment.md",
+    "file": "script/ConfigureWeighted.s.sol",
+    "test": "test/ConfigureWeighted.t.sol",
+    "edits": [
+      {
+        "old": "        if (block.chainid == 1 || block.chainid == BnbChainAddresses.CHAIN_ID) {\n",
+        "new": "        if (block.chainid == 1) {\n"
+      }
+    ]
   }
 ]

@@ -15,7 +15,17 @@ the executor names the units a rebalance settles at, and the index accepts them 
 clears a bar that falls with time. Pyth, which priced the rebalance until then, is gone from the protocol. The web app
 lives in a separate repo.
 
-**Xindex is one deployment, on Ethereum, and one index holds up to 100 coins of the top 300** (the owner's decision
+**Two deployments since 2026-11-13: Ethereum, and BNB Chain** (the owner's call that day: "lets also create bnb chain
+factory or whatever is neccesery so on both sides we will have in kind tokens",
+`design/2026-11-13-bnb-chain-deployment.md`). They share nothing: the same contracts, each under its own owner Safe
+and guardian's Safe, each holding its own chain's tokens in kind. An index lives on one chain, and none spans both. The
+BNB Chain side is built as scripts and tests, with no contract changed: `script/BnbChainAddresses.sol` (twelve coins,
+nine of them Binance-Peg, labelled Custodial), `V5_WHITELIST=bnb`, `CHECK=bnb` and
+`test/fork/BnbChainAddresses.fork.t.sol`. The call reverses the owner's refusal of 2026-11-10 ("I want to stay on
+Ethereum") and, in part, the one-index decision below, which still describes the Ethereum deployment as it stands: its
+list keeps its 15 Wormhole copies until the owner names which leave.
+
+**The Ethereum deployment: one index holds up to 100 coins of the top 300** (the owner's decision
 of 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). `WeightedIndexFactory`, `WeightedHub`, `IndexZap` and
 `MintRequests` hold Ethereum ERC-20s in kind: the issuer's own contract where Ethereum has one (71 candidates of the
 top 300 today), and otherwise a copy wrapped by Wormhole's token bridge from the chain that has it (17 from BNB Chain,
@@ -31,7 +41,7 @@ value. Pyth's five keys, three of which signed any price (`design/2026-10-18-pre
 since 2026-11-10: nothing reads them. Nothing crosses a chain inside a protocol
 contract: the app and the fillers bridge. The keeper's own executor, which is a filler's and holds no role, calls
 Wormhole's Token Bridge to restock (2026-10-19). The BNB Chain deployment of 2026-10-07, shelved on 2026-10-10, was deleted on
-2026-10-13 with its address book, list and fork suite. No vault, no proof, no
+2026-10-13 with its address book, list and fork suite, and built again on 2026-11-13 (above). No vault, no proof, no
 bridge of our own, no speed limit and no freezer exist any more: Stage B (six vaults, eight state verifiers, the P1
 and P2 proofs of Ethereum's finality, the hybrid index) is tagged `stage-b-2026-10-07` and deleted, and
 `audit/2026-10-07-stage-b-retirement.md` records what went with it. Earlier: v3 (Chainlink prices, tagged `v3.0.0`),
@@ -243,6 +253,33 @@ Pyth-priced rebalance as it then was, and the last one says what replaced it.
   - Not done: the keeper's end-to-end test has no request scenario, so no batch has filled against real pools;
     gasless signed orders and a limit that improves over time (the record's steps 2 and 3); a bot policy that builds
     share stock ahead of demand.
+- **The BNB Chain deployment** was built on 2026-11-13 (the owner's call; `design/2026-11-13-bnb-chain-deployment.md`).
+  No contract under `src/` changed, and the release hashes did not move.
+  - `script/BnbChainAddresses.sol` is BNB Chain's address book: twelve coins (WBNB, BTCB, ETH, XRP, ZEC, ADA, BCH, LTC,
+    DOT, ATOM, ASTER, STABLE), the list of 2026-10-07 less SOL, DOGE, AVAX, FIL and TRX, each left out by a ruling
+    already made; Binance-Peg USDT and USDC, 18 decimals each; and Uniswap's Universal Router 2.0.0 there, the same
+    build as Ethereum's.
+  - `DeployChecks` pins chain 56 as it pins chain 1; `ConfigureWeighted` lists `V5_WHITELIST=bnb`; `CheckToken` takes
+    `CHECK=bnb` and reads depth against WBNB and USDT. The zap's wrapped coin there is WBNB, so its ether entry points
+    take and pay BNB.
+  - Found on the way: Ethereum's router address has code on BNB Chain, a byte-identical replay of Ethereum's
+    deployment, and `isPinnedChain` read that as "this is Ethereum", so a deployment on BNB Chain resolved Ethereum's
+    book and stopped at its WETH address. Nothing could have been deployed wrongly. The first fix that day told
+    BNB Chain by its own router's code before the chain id; the safety check of the same day found that anyone can
+    replay that router onto Ethereum (both routers are CREATE2 deployments from a public factory, and BNB Chain's
+    already stands on Base), which would have stopped every deployment on Ethereum at WBNB's address. A pinned
+    chain's own id decides now, and a router's code only under any other id (mutants N1, N2 and N5; the record's
+    sections 3 and 8).
+  - The fork suite passed on BNB Chain's state on 2026-11-13 (13 of 13, block 133,361,996): a deployment from the
+    book, the twelve listed and through `CheckToken`, an index of all twelve issued, rebalanced with real transfers
+    and redeemed in kind, `MintRequests` filled in USDT and USDC, and the zap minting and burning an index of WBNB,
+    BTCB and ETH in USDT and in BNB on Uniswap's real pools.
+  - What it costs, said to the owner: no index spans both chains; nine of the twelve are in Binance's custody; and
+    Uniswap, the zap's one venue, has a market worth routing for six of the twelve (PancakeSwap holds the rest), so
+    the other six mint in kind or through `MintRequests`.
+  - Not done: Ethereum's list (which Wormhole copies leave is the owner's call); the owner Safe and the guardian's
+    Safe on BNB Chain; the `BNB_RPC_URL` secret, without which CI skips the BNB Chain suite; the source reading of
+    the twelve; the keeper's BNB Chain preset, executor and stock; the app.
 - Before any mainnet: a Hermes plan that serves the keeper its feeds (its price source is its own business now, and
   no contract waits on it); a run of the fork suites; a red
   team of the oracle-free mechanism and an external audit, then `DeployWeighted`'s release hashes fixed at the
@@ -302,15 +339,21 @@ MAINNET_RPC_URL=https://... forge test --match-path 'test/fork/*' -vvv
 # public non-archive RPCs only serve recent state: pin near the head
 MAINNET_RPC_URL=https://ethereum-rpc.publicnode.com FORK_BLOCK=$(( $(cast block-number --rpc-url https://ethereum-rpc.publicnode.com) - 8 )) forge test --match-path 'test/fork/*'
 
+# the BNB Chain deployment's fork suite (real tokens, Universal Router, V3 pools); skipped when the env var is unset
+BNB_RPC_URL=https://bsc-rpc.publicnode.com BNB_FORK_BLOCK=$(( $(cast block-number --rpc-url https://bsc-rpc.publicnode.com) - 8 )) forge test --match-path 'test/fork/BnbChainAddresses.fork.t.sol'
+
 # the admission check, read-only, before any listing: one report per token for the Safe's signers
 CHECK=wide forge script script/CheckToken.s.sol --fork-url $MAINNET_RPC_URL
+CHECK=bnb forge script script/CheckToken.s.sol --fork-url $BNB_RPC_URL
 ```
 
-Deployment, once, on Ethereum: `script/DeployWeighted.s.sol`, which gives the guardian role to the guardian's Safe,
+Deployment, once on each chain, Ethereum and BNB Chain: `script/DeployWeighted.s.sol`, which gives the guardian role
+to that chain's guardian's Safe,
 then `script/ConfigureWeighted.s.sol`, which lists each coin of `script/Listings.sol`; the owner then approves the
 wallets that create indexes (`setApprovedCreator`), and nobody can create one before. `script/CheckToken.s.sol` reports on every token before its first
-listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 91 in all. On chain 1 the
-deploy script resolves the router, WETH and the stablecoins from the address book and refuses any other address
+listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 91 in all, on Ethereum;
+`V5_WHITELIST=bnb` is BNB Chain's twelve. On chains 1 and 56 the deploy script resolves the router, the wrapped coin
+(WETH, WBNB) and the stablecoins from that chain's address book and refuses any other address
 (`DeployChecks.isPinnedChain`). Sepolia first needs its test market from
 `script/testnet/SetupTestMarket.s.sol`.
 
@@ -329,7 +372,9 @@ deploy script resolves the router, WETH and the stablecoins from the address boo
    `test/fork/` suites and 0 skipped. `WeightedHub.fork.t.sol` alone takes about an hour at the 91-coin list on an archive RPC
    (Alchemy, Tenderly), nearly all of it the admission quotes on a cold RPC cache; a public endpoint prunes the state
    before it ends. They are also required when the deploy checks or `script/MainnetAddresses.sol` change, which
-   `MainnetAddresses.fork.t.sol` and `Security.fork.t.sol` exercise.
+   `MainnetAddresses.fork.t.sol` and `Security.fork.t.sol` exercise. A change to the deploy checks, the zap, the swap
+   engine or `script/BnbChainAddresses.sol` also needs the BNB Chain suite, `test/fork/BnbChainAddresses.fork.t.sol`,
+   run with `BNB_RPC_URL`: CI runs it only once that secret exists, so until then it is run by hand.
 5. The Wake VS Code analyzer reports no errors or warnings on `src/`. Its reentrancy detector does not model reentrancy
    guards; the documented suppressions are on the `redeem` call in `IndexZap._burnBasket`, the `permit` call in
    `IndexZap._tryPermit`, the `redeem` call in `BasketBuilder.redeem`, and the clone's `initialize` call in
@@ -875,9 +920,13 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   - When the owner is a Safe, neither the guardian nor the broadcasting key may be one of its signers (SA-06).
   - Neither role may be a market contract: the router and the PoolManager, and on a mainnet every token and mint
     currency in the address book (CR-I37).
-  - On chain 1 the market addresses are the address book's and nothing else (`MainnetOverride`); elsewhere they come
-    from the environment.
-  - On chain 1 `deploy` broadcasts only the build `DeployWeighted`'s `FACTORY_INITCODE_HASH`, `ZAP_INITCODE_HASH`,
+  - On chains 1 and 56 the market addresses are that chain's address book's and nothing else (`MainnetOverride`);
+    elsewhere they come from the environment. A pinned chain's own id decides its book: 56 is BNB Chain and 1 is
+    Ethereum, whatever code stands at either router's address, because both routers are CREATE2 deployments anyone
+    can replay onto the other chain (Ethereum's stands on BNB Chain). Under any other id, a chain-id override
+    included, BNB Chain's router having code names BNB Chain and is asked before Ethereum's (RX-23). Never tell a
+    real chain 1 or 56 by code alone (mutants N1, N2 and N5).
+  - On chains 1 and 56 `deploy` broadcasts only the build `DeployWeighted`'s `FACTORY_INITCODE_HASH`, `ZAP_INITCODE_HASH`,
     `BUILDER_INITCODE_HASH` and `REQUESTS_INITCODE_HASH` record (`BuildNotReleased`, CF-5). A
     change to `src/`, a dependency or the compiler settings fails `test_CF5_theReleaseHashesAreThisBuilds` until those
     four are set to the values it prints, in the same commit. The test stops at the first mismatch; `cast keccak` of
@@ -891,9 +940,24 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   against a table written independently of them. The WBTC
   address is `0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599`; an earlier draft had a wrong one. A Wormhole copy of a
   Binance-Peg coin the app labels Custodial. `script/PythIds.sol` holds each coin's Pyth id for the keeper alone,
-  which prices its own trades off chain; no contract or script reads it.
+  which prices its own trades off chain; no contract or script reads it. BNB Chain's addresses are
+  `script/BnbChainAddresses.sol`, checked the same way by `test/fork/BnbChainAddresses.fork.t.sol`, its list pinned by
+  `test_CRL08_theBnbListIsTheReleaseRecord`.
 
 ## Product decisions already made (do not re-litigate silently)
+
+**Two deployments, each holding its chain's coins in kind** (the owner's call of 2026-11-13: "we are the ones who
+create indexes now. lets also create bnb chain factory or whatever is neccesery so on both sides we will have in kind
+tokens. we will have more little list on ETH but no problem"; `design/2026-11-13-bnb-chain-deployment.md`). Ethereum
+and BNB Chain each get the same contracts under their own Safes; nothing crosses, and an index lives on one chain.
+It came after the owner asked whether an Ethereum index could keep its collateral on another chain: it can only with
+vaults of our own, which stay refused. It reverses the owner's refusal of a BNB Chain deployment on 2026-11-10 and,
+in part, "One index on Ethereum" of 2026-10-10 below: no single index holds every listed coin any more. Said to the
+owner with it: a buyer who wants both chains' coins buys two tokens; nine of BNB Chain's twelve coins are Binance's
+custody, with Wormhole no party there; and Uniswap, still the zap's only venue, has a market for six of the twelve.
+Not decided: which Wormhole copies leave Ethereum's list (the six sourced from BNB Chain, or all fifteen; the nine
+from other chains have no in-kind home on either chain); PancakeSwap as a venue on BNB Chain, which the call of
+2026-10-14 below still refuses.
 
 **No oracle** (the owner's call of 2026-11-10: "we have to cut off oracles somehow and keep rebalance safely", then
 "yes build oracle free rebalance"). No contract reads a price. An index still rebalances toward its fixed percentages,

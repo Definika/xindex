@@ -20,7 +20,7 @@ import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 contract RepoTest is Test {
     /// @dev keccak256 of the files `test_A712_theCiConfigIsPinnedWhole` pins whole: CI's workflow and the two Foundry
     ///      configs it runs. A change to one fails that test, which prints the new hash, until it is pinned here.
-    bytes32 private constant WORKFLOW_HASH = 0x50b1c23185427003b1c5a3a4af5c772025c7adaeaa2df9950bdb252e40415cef;
+    bytes32 private constant WORKFLOW_HASH = 0x09ce789055c1ca709d8d787b287b123d2ab770852a87ba4e199f72fd05cfbbf8;
     bytes32 private constant FOUNDRY_TOML_HASH = 0xed56be1c9acc47165fe8a9303665b35391357ee7d85ef998f8c0c74761a0c3c4;
     bytes32 private constant KEEPER_FOUNDRY_TOML_HASH =
         0x5426d5180cca7c4ac15d7fb182272a805a3ce19a143d6c6f8c158f61765d7592;
@@ -98,9 +98,10 @@ contract RepoTest is Test {
             string.concat(
                 "        run: forge test -vvv\n",
                 "        env:\n",
-                "          MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}\n"
+                "          MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}\n",
+                "          BNB_RPC_URL: ${{ secrets.BNB_RPC_URL }}\n"
             ),
-            "the fork-test RPC is passed to the tests"
+            "the fork-test RPCs are passed to the tests"
         );
         assertTrue(_contains(workflow, "forge lint -D notes"), "lint fails on notes");
         assertTrue(_contains(workflow, "wake detect all src"), "the Wake detectors run");
