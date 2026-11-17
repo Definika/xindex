@@ -9,7 +9,6 @@ import {BasketBuilder} from "../src/BasketBuilder.sol";
 import {MintRequests} from "../src/MintRequests.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
-import {IWETH9} from "../src/interfaces/IWETH9.sol";
 import {DeployChecks} from "./DeployChecks.sol";
 
 /// @notice Deploys Xindex: `WeightedIndexFactory`, which deploys the `WeightedHub` implementation every index is a
@@ -35,22 +34,21 @@ import {DeployChecks} from "./DeployChecks.sol";
 ///                       Must differ from OWNER; replacing the guardian later takes 7 days.
 ///   UNIVERSAL_ROUTER    Uniswap's Universal Router, through which the zap swaps. Required off Ethereum and BNB
 ///                       Chain; on those two it defaults to the chain's address book, and nothing else is accepted.
-///   WETH                The chain's wrapped coin, which the zap's ether entry points wrap and unwrap: WETH on
-///                       Ethereum, WBNB on BNB Chain. Resolved like the router.
-///   USDC, USDT          The two stablecoins MintRequests escrows. Resolved like the router.
+///   USDC, USDT          The two stablecoins, the only currencies the zap and the basket builder take and pay and
+///                       MintRequests escrows. Resolved like the router.
 contract DeployWeighted is DeployChecks {
     /// @notice keccak256 of `WeightedIndexFactory`'s init code, which embeds the `WeightedHub` implementation's, as this
     ///         commit builds it with this repository's foundry.toml. With the two below, this is the release record a
     ///         mainnet broadcast is bound to (CF-5): `deploy` refuses to broadcast on a pinned chain from any other build (a
     ///         local edit, a lib/ checkout off foundry.lock, a FOUNDRY_* override), and `test_CF5_*` in
     ///         test/Scripts.t.sol fails until these equal the build, so only a reviewed, CI-green commit moves them.
-    bytes32 public constant FACTORY_INITCODE_HASH = 0x493f6a3f55ec53cb9c131e2c298c3716ff4f2939d21dc9172f338e81eb73cb58;
+    bytes32 public constant FACTORY_INITCODE_HASH = 0xa598d1316b59812a8b21bf4d3563987b2063fc1dde0537cb6f8631fc96a1f78f;
     /// @notice keccak256 of `IndexZap`'s init code, as above.
-    bytes32 public constant ZAP_INITCODE_HASH = 0xd38f8bf448953f5233077032f82a154e7b05591a223aab4d2e5dac6b04221c9c;
+    bytes32 public constant ZAP_INITCODE_HASH = 0x9e7dc1ebb691c9447274d704da2c7235c2a08d37d9b424c3b79d60a5a1de62f6;
     /// @notice keccak256 of `BasketBuilder`'s init code, as above.
-    bytes32 public constant BUILDER_INITCODE_HASH = 0x7d5cc2866f55016cd970e79e513ca76a9044d7aab2bf3c3aa861faddbd477a4d;
+    bytes32 public constant BUILDER_INITCODE_HASH = 0xfefe7932b18456b13f2c217bb2461096e2a23d4bff029061fdccad2b17ba65a0;
     /// @notice keccak256 of `MintRequests`' init code, as above.
-    bytes32 public constant REQUESTS_INITCODE_HASH = 0x2a82edc39d681f4855b529a51c034b63f615f6f294c77ea618bdae0f7d0d44b3;
+    bytes32 public constant REQUESTS_INITCODE_HASH = 0x0b1cb66be1ad289c36bed6eda4183b82ae5814852bdb94ee9232739a344b39d9;
 
     /// @dev How many contracts the release record covers: the factory, the zap, the builder and MintRequests.
     uint256 private constant RELEASED = 4;
@@ -67,7 +65,6 @@ contract DeployWeighted is DeployChecks {
             vm.envAddress("OWNER"),
             vm.envAddress("GUARDIAN"),
             vm.envOr("UNIVERSAL_ROUTER", address(0)),
-            vm.envOr("WETH", address(0)),
             vm.envOr("USDC", address(0)),
             vm.envOr("USDT", address(0)),
             vm.envOr("OWNER_IS_NOT_A_SAFE", address(0))
@@ -80,28 +77,21 @@ contract DeployWeighted is DeployChecks {
     /// @param owner Factory owner; see {checkOwner}.
     /// @param guardian The guardian's Safe; see {checkGuardian}.
     /// @param router Uniswap's Universal Router, through which the zap and the builder swap; see {resolveRouter}.
-    /// @param weth Wrapped ether for the zap's ether entry points; see {resolveStable}.
-    /// @param usdc USDC for MintRequests; see {resolveStable}.
-    /// @param usdt USDT for MintRequests; see {resolveStable}.
+    /// @param usdc USDC for the zap, the builder and MintRequests; see {resolveStable}.
+    /// @param usdt USDT for the zap, the builder and MintRequests; see {resolveStable}.
     /// @param acknowledged The owner the operator acknowledges is a contract but not a Safe; see {checkOwner}.
     /// @return factory The deployed factory.
     /// @return zap The deployed zap.
     /// @return builder The deployed basket builder.
     /// @return requests The deployed MintRequests.
-    function deploy(
-        address owner,
-        address guardian,
-        address router,
-        address weth,
-        address usdc,
-        address usdt,
-        address acknowledged
-    ) public returns (WeightedIndexFactory factory, IndexZap zap, BasketBuilder builder, MintRequests requests) {
+    function deploy(address owner, address guardian, address router, address usdc, address usdt, address acknowledged)
+        public
+        returns (WeightedIndexFactory factory, IndexZap zap, BasketBuilder builder, MintRequests requests)
+    {
         checkBroadcaster();
         checkOwner(owner, acknowledged);
         checkGuardian(owner, guardian);
         router = resolveRouter(router);
-        weth = resolveStable("WETH", weth, pinnedWeth());
         usdc = resolveStable("USDC", usdc, pinnedUsdc());
         usdt = resolveStable("USDT", usdt, pinnedUsdt());
         checkRolesAreNotMarket(owner, guardian, router);
@@ -111,8 +101,8 @@ contract DeployWeighted is DeployChecks {
         vm.startBroadcast();
         factory = new WeightedIndexFactory(owner, guardian);
         // The zap types its factory as `IIndexFactory`, and calls only `isIndex` on it, which this factory answers.
-        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(router), IWETH9(weth));
-        builder = new BasketBuilder(IIndexFactory(address(factory)), IUniversalRouter(router));
+        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(router), usdc, usdt);
+        builder = new BasketBuilder(IIndexFactory(address(factory)), IUniversalRouter(router), usdc, usdt);
         requests = new MintRequests(address(factory), usdc, usdt);
         vm.stopBroadcast();
 
@@ -124,7 +114,6 @@ contract DeployWeighted is DeployChecks {
         console2.log("Guardian:                ", guardian);
         console2.log("Universal Router:        ", router);
         console2.log("PoolManager:             ", zap.POOL_MANAGER());
-        console2.log("WETH:                    ", weth);
         console2.log("MintRequests:            ", address(requests));
         console2.log("USDC:                    ", usdc);
         console2.log("USDT:                    ", usdt);
@@ -165,6 +154,9 @@ contract DeployWeighted is DeployChecks {
         if (requestsFactory != address(factory)) {
             revert WrongWiring("MintRequests.FACTORY", address(factory), requestsFactory);
         }
+        // The three take and pay the same two stablecoins.
+        _checkStables("IndexZap", zap.USDC(), zap.USDT(), requests);
+        _checkStables("BasketBuilder", builder.USDC(), builder.USDT(), requests);
         codehashes = [
             address(factory).codehash,
             address(implementation).codehash,
@@ -172,6 +164,12 @@ contract DeployWeighted is DeployChecks {
             address(builder).codehash,
             address(requests).codehash
         ];
+    }
+
+    /// @dev Reverts WrongWiring unless `name`'s stablecoins are MintRequests'.
+    function _checkStables(string memory name, address usdc, address usdt, MintRequests requests) private view {
+        if (usdc != requests.USDC()) revert WrongWiring(string.concat(name, ".USDC"), requests.USDC(), usdc);
+        if (usdt != requests.USDT()) revert WrongWiring(string.concat(name, ".USDT"), requests.USDT(), usdt);
     }
 
     /// @notice The init-code hashes a mainnet broadcast must match: the factory's, the zap's, the builder's and

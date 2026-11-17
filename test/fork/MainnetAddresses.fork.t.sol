@@ -215,7 +215,7 @@ contract MainnetAddressesForkTest is Test {
     /// @dev Every wide entry lists on a fresh factory with its token's own decimals.
     function testFork_wideWhitelistMatchesMainnet() public {
         address[] memory list = new ConfigureWeighted().wideMainnetList();
-        assertEq(list.length, 87);
+        assertEq(list.length, 81, "the 85 listed less the default four");
         _listOnAFreshFactory(list);
     }
 

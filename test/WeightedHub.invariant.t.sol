@@ -937,10 +937,11 @@ contract WeightedHubInvariantTest is Test {
         vm.prank(makeAddr("gatedCreator"));
         factory.acceptCreator(address(gated));
         router = new MockUniversalRouter(makeAddr("poolManager"));
-        builder = new BasketBuilder(IIndexFactory(address(factory)), router);
         // The router trades every component against USDC at the components' starting prices, from an inventory deep
         // enough for any buy or sale the handler makes (RX-57).
         usdc = new MockERC20("USDC", "USDC", 6);
+        // The builder's two stablecoins are USDC and the USD component, which a buy then passes through (RX-57).
+        builder = new BasketBuilder(IIndexFactory(address(factory)), router, address(usdc), address(comps[2]));
         uint256[4] memory usd = [uint256(60_000e18), 2000e18, 1e18, 0.5e18];
         for (uint256 i = 0; i < comps.length; ++i) {
             router.setPrice(address(comps[i]), usd[i], comps[i].decimals());

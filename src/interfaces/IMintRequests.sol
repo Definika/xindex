@@ -55,8 +55,6 @@ interface IMintRequests is IXindexErrors {
     /// @notice `caller` returned the escrow of a request whose deadline had passed.
     event RequestRefunded(uint256 indexed id, address indexed caller);
 
-    /// @notice `token` is neither of the two stablecoins.
-    error NotAStable(address token);
     /// @notice `deadline` is not after now, or more than MAX_REQUEST_DURATION away.
     error InvalidDeadline(uint256 deadline);
     /// @notice The transfer into escrow left the contract's balance unchanged.

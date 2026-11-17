@@ -29,8 +29,8 @@ contract DeployChecksTest is Test {
 
     /// @dev Nor against BNB Chain's state, which its own router names (RX-23): under an id that is no pinned chain's
     ///      the book stays BNB Chain's. Under an override to Ethereum's own id the id decides, as it must on the real
-    ///      chain 1: the run stays pinned, resolves Ethereum's book, and stops at Ethereum's WETH address, which has
-    ///      no code on BNB Chain.
+    ///      chain 1: the run stays pinned, resolves Ethereum's book, and stops at Ethereum's USDC address, which has
+    ///      no code on BNB Chain (read on 2026-11-18).
     function test_RX23_aChainIdOverrideCannotUnpinBnbChain() public {
         vm.chainId(137);
         vm.etch(checks.BNB_UNIVERSAL_ROUTER(), hex"00");
@@ -38,21 +38,22 @@ contract DeployChecksTest is Test {
         assertTrue(checks.isPinnedChain(), "BNB Chain's router is there, whatever the chain id says");
         assertTrue(checks.onBnbChain());
         assertEq(checks.pinnedRouter(), BnbChainAddresses.UNIVERSAL_ROUTER);
-        assertEq(checks.pinnedWeth(), BnbChainAddresses.WBNB);
+        assertEq(checks.pinnedUsdc(), BnbChainAddresses.USDC);
 
         vm.chainId(1);
         assertTrue(checks.isPinnedChain(), "still a mainnet, with every mainnet check");
         assertFalse(checks.onBnbChain());
-        address weth = checks.pinnedWeth();
-        assertEq(weth, MainnetAddresses.WETH);
-        vm.expectRevert(abi.encodeWithSelector(DeployChecks.AddressHasNoCode.selector, "WETH", weth));
-        checks.resolveStable("WETH", address(0), weth);
+        address usdc = checks.pinnedUsdc();
+        assertEq(usdc, MainnetAddresses.USDC);
+        vm.expectRevert(abi.encodeWithSelector(DeployChecks.AddressHasNoCode.selector, "USDC", usdc));
+        checks.resolveStable("USDC", address(0), usdc);
     }
 
     /// @dev On chain 1 nothing anyone deploys names BNB Chain. Its router is a CREATE2 deployment from a factory
     ///      anyone may call, so anyone can put it at its address on Ethereum, as someone did on Base (read on
     ///      2026-11-13); the first rule of that day asked for that code before the chain id, and a replay would have
-    ///      handed every deployment on Ethereum BNB Chain's book, stopping it at WBNB's address.
+    ///      handed every deployment on Ethereum BNB Chain's book, stopping it at that book's first address with no code
+    ///      on Ethereum.
     function test_bnbChainsRouterReplayedOnEthereumNamesNothing() public {
         vm.chainId(1);
         vm.etch(checks.MAINNET_UNIVERSAL_ROUTER(), hex"00");
@@ -60,7 +61,6 @@ contract DeployChecksTest is Test {
         assertTrue(checks.isPinnedChain());
         assertFalse(checks.onBnbChain(), "chain 1 is Ethereum, whatever stands at BNB Chain's router address");
         assertEq(checks.pinnedRouter(), MainnetAddresses.UNIVERSAL_ROUTER);
-        assertEq(checks.pinnedWeth(), MainnetAddresses.WETH);
         assertEq(checks.pinnedUsdc(), MainnetAddresses.USDC);
         assertEq(checks.pinnedUsdt(), MainnetAddresses.USDT);
         assertEq(checks.resolveRouter(address(0)), MainnetAddresses.UNIVERSAL_ROUTER);
@@ -88,7 +88,6 @@ contract DeployChecksTest is Test {
         assertTrue(checks.isPinnedChain());
         assertFalse(checks.onBnbChain());
         assertEq(checks.pinnedRouter(), MainnetAddresses.UNIVERSAL_ROUTER);
-        assertEq(checks.pinnedWeth(), MainnetAddresses.WETH);
         assertEq(checks.pinnedUsdc(), MainnetAddresses.USDC);
         assertEq(checks.pinnedUsdt(), MainnetAddresses.USDT);
 
@@ -96,7 +95,6 @@ contract DeployChecksTest is Test {
         assertTrue(checks.isPinnedChain());
         assertTrue(checks.onBnbChain());
         assertEq(checks.pinnedRouter(), BnbChainAddresses.UNIVERSAL_ROUTER);
-        assertEq(checks.pinnedWeth(), BnbChainAddresses.WBNB, "the zap wraps BNB there");
         assertEq(checks.pinnedUsdc(), BnbChainAddresses.USDC);
         assertEq(checks.pinnedUsdt(), BnbChainAddresses.USDT);
     }

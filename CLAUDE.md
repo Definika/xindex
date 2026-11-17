@@ -7,8 +7,9 @@ Claude Code reads it as the project's instructions.
 
 Xindex smart contracts: a Foundry project where wallets the owner approves create crypto index tokens (ERC-20)
 backed in kind (the Xindex team's), and
-users mint them with USDC/USDT, and burn them into any token
-through Uniswap's Universal Router, which reaches both V3 and V4 pools. Creators choose each coin's percentage, fixed
+users mint them with USDC/USDT, and burn them back into USDC/USDT (or in kind)
+through Uniswap's Universal Router, which reaches both V3 and V4 pools; the two stablecoins are the only currencies
+since 2026-11-18 (the owner's call: "lets leave payments with only stable coins usdt and usdc"). Creators choose each coin's percentage, fixed
 at creation with the coin list, and the index rebalances back toward those percentages through a permissionless
 auction. **No contract reads a price** (since 2026-11-10, the owner's call, `design/2026-11-10-oracle-free-rebalance.md`):
 the executor names the units a rebalance settles at, and the index accepts them only if a weighted gain in units
@@ -51,7 +52,7 @@ and P2 proofs of Ethereum's finality, the hybrid index) is tagged `stage-b-2026-
 v4's market-cap index (reference supplies and a price-free λ auction, deleted on 2026-10-06,
 `audit/2026-10-06-v4-retirement.md`). Nothing is deployed on a mainnet yet.
 
-Where it stands (2026-11-14). The bullets below are a history: those written before 2026-11-10 describe the
+Where it stands (2026-11-18). The bullets below are a history: those written before 2026-11-10 describe the
 Pyth-priced rebalance as it then was, the bullet of that day says what replaced it, and the ones after it what was
 built on it and found in it.
 - The weighted index is built and reviewed twice (`audit/2026-10-05-v5-review.md`, `audit/2026-10-07-v5-logic-review.md`).
@@ -131,7 +132,7 @@ built on it and found in it.
   nothing since RX-9's fix, and the restock's RY-6 fix would have stopped it, because viem returns Pyth's parse
   unwrapped (RZ-1); the restock's halving never quoted (RZ-2); stock left the needs board the moment it landed (RZ-3);
   the keeper values only prices Pyth's contract confirms, previews included (RY-7); the zap refuses WETH and the
-  call's own token as recipients (RY-1); BNB joined the restock (RZ-5). The owner's calls of 2026-11-02 on the four
+  call's own token as recipients (RY-1; its WETH half went with the ether entry points on 2026-11-18); BNB joined the restock (RZ-5). The owner's calls of 2026-11-02 on the four
   left open:
   - A start must land in one slot, which a Safe cannot time (RZ-26): the guardian is a `GuardianRelay` its Safe
     controls, which `DeployWeighted` deploys; the Safe authorizes a start and anyone, the keeper first, sends it.
@@ -191,10 +192,10 @@ built on it and found in it.
   state machine's 16, the math's 20, the hub's ten this file lists and eight of the later fixes', the keeper's
   AU-3 among them), `test/mutants/run.py` applies each and requires its suite to fail, and CI's `Mutation gate` job
   runs them all, in about two minutes here. Every one is killed.
-- The zap takes ether and permits since 2026-10-29 (the owner's call): `mintWithEth`, `burnToEth`,
+- The zap took ether and permits from 2026-10-29 (the owner's call): `mintWithEth`, `burnToEth`,
   `burnToEthWithPermit` and `mintWithTokenPermit`, the backlog's ETH in and out and one-signature USDC mint, with `WETH`
-  a construction argument the deploy script resolves (`abi/IndexZap.json`, the zap's unit and fork suites). Sepolia's
-  zap serves them since its redeploy alone on 2026-11-03.
+  a construction argument the deploy script resolved. Sepolia's zap serves them since its redeploy alone on
+  2026-11-03. The ether entry points were withdrawn on 2026-11-18 (below); the permits stay.
 - Only wallets the owner approves create an index (the owner's calls of 2026-11-09 and 2026-11-10, under "Product
   decisions"): the factory's `setApprovedCreator` and `isApprovedCreator`, `CreatorNotApproved` from `createIndex`,
   and mutants F1 and F2. The gate was removed for some hours on 2026-11-10, on the owner's call to reopen creation,
@@ -267,8 +268,8 @@ built on it and found in it.
     already made; Binance-Peg USDT and USDC, 18 decimals each; and Uniswap's Universal Router 2.0.0 there, the same
     build as Ethereum's.
   - `DeployChecks` pins chain 56 as it pins chain 1; `ConfigureWeighted` lists `V5_WHITELIST=bnb`; `CheckToken` takes
-    `CHECK=bnb` and reads depth against WBNB and USDT. The zap's wrapped coin there is WBNB, so its ether entry points
-    take and pay BNB.
+    `CHECK=bnb` and reads depth against WBNB and USDT. The zap's wrapped coin there was WBNB, so its ether entry points
+    took and paid BNB, until they went on 2026-11-18.
   - Found on the way: Ethereum's router address has code on BNB Chain, a byte-identical replay of Ethereum's
     deployment, and `isPinnedChain` read that as "this is Ethereum", so a deployment on BNB Chain resolved Ethereum's
     book and stopped at its WETH address. Nothing could have been deployed wrongly. The first fix that day told
@@ -280,7 +281,8 @@ built on it and found in it.
   - The fork suite passed on BNB Chain's state on 2026-11-13 (13 of 13, block 133,361,996): a deployment from the
     book, the twelve listed and through `CheckToken`, an index of all twelve issued, rebalanced with real transfers
     and redeemed in kind, `MintRequests` filled in USDT and USDC, and the zap minting and burning an index of WBNB,
-    BTCB and ETH in USDT and in BNB on Uniswap's real pools.
+    BTCB and ETH in USDT and in BNB on Uniswap's real pools (in BNB no longer since 2026-11-18: the suite shows a
+    payment in WBNB refused instead).
   - What it costs, said to the owner: no index spans both chains; nine of the twelve are in Binance's custody; and
     Uniswap, the zap's one venue, has a market worth routing for six of the twelve (PancakeSwap holds the rest), so
     the other six mint in kind or through `MintRequests`.
@@ -313,6 +315,28 @@ built on it and found in it.
     RW-10 (the zap and the engine), and they are what runs `MintRequests` on the real stablecoins (RW-2, RW-7).
     Also not done: the app and the backend; a Sepolia deployment, without which the keeper of this build decodes
     no request there (`docs/deployment.md`).
+- **USDC and USDT are the only currencies** since 2026-11-18 (the owner's call: "lets leave payments with only stable
+  coins usdt and usdc", and, asked how strict, the lock on chain rather than in the app alone;
+  `audit/2026-11-18-zap-ether-retirement.md`). On both chains:
+  - `IndexZap` takes and pays its `USDC` and `USDT` alone: every entry point reverts `NotAStable(token)` on any
+    other `tokenIn` or `tokenOut` before anything moves. `mintWithEth`, `burnToEth`, `burnToEthWithPermit`, the zap's
+    `WETH`, its `receive()`, `NotWETH` and `ValueMismatch` are gone; no entry point is payable. The burn no longer
+    pays out a component or any other token either.
+  - `BasketBuilder.buy` and `sell` take the builder's `USDC` and `USDT` alone; `deposit` and `withdraw` still move
+    any token in kind. Both constructors are `(factory, router, usdc, usdt)`, and `NotAStable` moved from
+    `IMintRequests` to `IXindexErrors`.
+  - `DeployWeighted` takes no `WETH`; it gives the zap, the builder and `MintRequests` the same two, and
+    `checkDeployment` refuses a zap or builder whose pair is not `MintRequests'`. `DeployChecks.pinnedWeth` is gone,
+    and `IWETH9` is back in `script/interfaces` for the Sepolia test market alone.
+  - Mutants S1 to S7, all killed; the release hashes moved. The pass-through leg's tests (DA-15) run on an index
+    holding USDC; tests whose currency was a token of their own build a zap or builder with it as its USDT.
+  - Fork suites, on public RPCs pinned near the head on 2026-11-18: BNB Chain's 13 of 13 (`testFork_theZapRefusesBnb`
+    among them), `Security.fork` 9 of 9, `MainnetAddresses.fork` 8 of 8 (its wide count, stale at 87 since `4e4751f`,
+    is 81), `IndexZap.fork` 11 of 12 and `WeightedHub.fork`'s four drills. Left: `IndexZap.fork`'s
+    `testFork_mintWithUSDC`, whose sanity floor of $100 the basket's $91 at the head misses (price, not code);
+    `WeightedHub.fork`'s two whole-list tests, which the public node refused for archive state; `CheckToken.fork`. An
+    archive run at the pinned block settles all four. Not done either: the app's ether paths (the app repository's
+    site and API still offer ETH), which go with its move to this build.
 - Before any mainnet: a Hermes plan that serves the keeper its feeds (its price source is its own business now, and
   no contract waits on it); a run of the fork suites; an external audit (the red
   team of the oracle-free mechanism ran on 2026-11-14), then `DeployWeighted`'s release hashes fixed at the
@@ -385,8 +409,8 @@ to that chain's guardian's Safe,
 then `script/ConfigureWeighted.s.sol`, which lists each coin of `script/Listings.sol`; the owner then approves the
 wallets that create indexes (`setApprovedCreator`), and nobody can create one before. `script/CheckToken.s.sol` reports on every token before its first
 listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 85 in all, on Ethereum;
-`V5_WHITELIST=bnb` is BNB Chain's twelve. On chains 1 and 56 the deploy script resolves the router, the wrapped coin
-(WETH, WBNB) and the stablecoins from that chain's address book and refuses any other address
+`V5_WHITELIST=bnb` is BNB Chain's twelve. On chains 1 and 56 the deploy script resolves the router and the
+stablecoins from that chain's address book and refuses any other address
 (`DeployChecks.isPinnedChain`). Sepolia first needs its test market from
 `script/testnet/SetupTestMarket.s.sol`.
 
@@ -801,19 +825,20 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   fill that lands after them, however the two are ordered (RT-02).
 - **The hub takes no ether.** None of its entry points is payable, a start and both fills included
   (`test_noRebalanceEntryPointTakesEther`): nobody is paid for a price.
-- **The zap is stateless and replaceable.** New UX features (ETH in/out, aggregators, mixed-venue legs) go in a new or
+- **The zap is stateless and replaceable.** New UX features (aggregators, mixed-venue legs) go in a new or
   extended zap, never in the hub or factory. The app caps a zap basket at about 35 components, which is where 16.78M gas
   runs out. Since 2026-10-16 the zap's swaps run through `UniversalRouterSwaps`, the engine it shares with the basket
   builder: the venue, command, payment, spend-bound, unsold-input, V4-route and check rules below are the engine's,
   and the swap errors both raise are declared in `IXindexErrors`.
-  - **Ether and permits** (built 2026-10-29, the owner's call to build the backlog's ETH entry and one-signature
-    mint, which widens the 2026-10-14 "USDC or USDT" entry to ether). `mintWithEth` and `burnToEth` are
-    `mintWithToken` and `burnToToken` with WETH as the token: `tokenIn` or `tokenOut` names `WETH`, a construction
-    argument `DeployWeighted` resolves like the stablecoins (`WETH` in the environment, the address book's on chain
-    1), `msg.value` must equal `maxAmountIn`, the zap wraps and unwraps, and a caller or `to` that refuses ether fails
-    the call. `mintWithTokenPermit`, `burnToTokenWithPermit` and `burnToEthWithPermit` try an EIP-2612 permit for the
-    whole amount pulled and accept one already submitted; USDT has none. Fiat and other-chain entry stay app-side and
-    undecided. Sepolia's zap serves these entry points since its redeploy alone on 2026-11-03.
+  - **USDC and USDT only** (the owner's call of 2026-11-18, which withdrew the ether entry points of 2026-10-29). A
+    mint's `tokenIn` and a burn's `tokenOut` must be the zap's `USDC` or `USDT`, construction arguments
+    `DeployWeighted` resolves from the chain's address book, else `NotAStable` before anything moves; the builder's
+    buy and sell take the same two. No entry point is payable and the zap has no `receive()`. Do not bring back an
+    ether path or a payout in any other token without the owner's call: an app that offers ether swaps it to a
+    stablecoin outside the zap. The pass-through leg is then a stablecoin the index holds itself, which no listed
+    index does (A7-22), and the rule stays for an index that would.
+  - **Permits.** `mintWithTokenPermit` and `burnToTokenWithPermit` try an EIP-2612 permit for the whole amount
+    pulled and accept one already submitted; USDT has none. Fiat and other-chain entry stay app-side and undecided.
   - **Venue.** It swaps through Uniswap's Universal Router, pinned to the 2.0.0 deployment, and nothing else (the
     owner's call on 2026-10-14). Each leg names exactly one venue: a packed `v3Path` or a hookless `PathKey[] v4Path`,
     never both and never neither, else `BadRoute(i)`; the pass-through leg names none.
@@ -840,8 +865,7 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
     both addresses of one ledger is credited twice by `BasketBuilder.redeem`.
   - **V4 routes.** A V4 route must be hookless (`hooks == 0` and empty `hookData`). A hookless key cannot carry the
     dynamic-fee flag, so that one equality covers the flag bits too. `address(0)` is allowed only as an intermediate,
-    because native ether must never reach the zap through a swap: its `receive()` takes ether from WETH alone, which
-    `withdraw` sends back for `mintWithEth`'s refund and `burnToEth`'s payout, and refuses every other sender.
+    because native ether must never reach the zap through a swap: it has no `receive()`, and takes ether from nobody.
   - **Checks.** The zap must: validate every route's endpoints; honour every leg's limit, including the pass-through
     leg (DA-15); check `expectedNonce`; measure what the user pays and receives as balance changes inside the call,
     never using tokens already in the zap; check each mint leg's delivered component balance against what the index
@@ -1049,6 +1073,13 @@ an in-kind home for them (asked whether all fifteen should go, the owner kept th
 `script/MainnetAddresses.sol` for a relisting, and the keeper's restock serves AVAX, OP and AERO by default. Not
 decided: PancakeSwap as a venue on BNB Chain, which the call of 2026-10-14 below still refuses.
 
+**USDC and USDT are the only currencies** (the owner's call of 2026-11-18: "lets leave payments with only stable coins
+usdt and usdc"). Asked whether the contracts should enforce it or the app alone, the owner chose the contracts: the zap
+and the basket builder take and pay the deployment's USDC and USDT and revert `NotAStable` on anything else, and no
+entry point takes ether. It reverses the ether entry of 2026-10-29, and narrows the burn, which had paid out any token
+the caller named. `MintRequests` already took the two alone. The app's ether paths follow when it moves to this build
+(asked the same day, the owner kept this change to the contracts for now).
+
 **No oracle** (the owner's call of 2026-11-10: "we have to cut off oracles somehow and keep rebalance safely", then
 "yes build oracle free rebalance"). No contract reads a price. An index still rebalances toward its fixed percentages,
 through an auction in which the executor names the units and the index checks a gain in units against a falling bar
@@ -1167,9 +1198,8 @@ cost the owner weighs before launch.
 **Swap venues** (the owner's call on 2026-10-14): the zap swaps through Uniswap's Universal Router 2.0.0 alone, V3 or
 V4 per leg, chosen by the caller. PancakeSwap's v3 Universal Router, a third venue per leg since 2026-10-06 (chiefly
 for CAKE), and THORChain, an app-side rail added the same day (`design/2026-10-06-swap-venues.md`), were both removed on
-2026-10-14: users come with USDC or USDT, and since 2026-10-29 with ether through the zap's `mintWithEth` and
-`burnToEth` (the owner's call to build the backlog's ETH entry; fiat and other-chain entry stay app-side and
-undecided). CAKE stays listed; its legs route through Uniswap's pools, or it mints in
+2026-10-14: users come with USDC or USDT (from 2026-10-29 to 2026-11-18 also with ether, through the zap's
+`mintWithEth` and `burnToEth`; fiat and other-chain entry stay app-side and undecided). CAKE stays listed; its legs route through Uniswap's pools, or it mints in
 kind or through `MintRequests`.
 
 **Fees, cadence and private indexes** (built 2026-10-14 on the research record's defaults): fees in shares with the
@@ -1182,7 +1212,8 @@ no Base deployment for now; the creation fee is zero. The platform's fee, the re
 streaming rate are not decided yet; the legal reading is counsel's.
 
 **Unchanged from earlier versions:** an owner Safe of at least three signatures; fixed constituents; no protocol bots
-or hot keys; component whitelist only; the burner chooses the exit token; the mint currency is not tracked per holder;
+or hot keys; component whitelist only; the burner chooses the exit stablecoin, USDC or USDT, or exits in kind; the mint
+currency is not tracked per holder;
 up to `MAX_COMPONENTS` (100) per index.
 
 If a change would alter any of these, say so explicitly.

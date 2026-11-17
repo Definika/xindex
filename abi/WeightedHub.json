@@ -1832,6 +1832,17 @@
   },
   {
     "type": "error",
+    "name": "NotAStable",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "NotAllowedMinter",
     "inputs": [
       {

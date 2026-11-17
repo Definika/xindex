@@ -37,12 +37,12 @@ V4 Quoter for a V4 one), sets per-leg limits and the overall `maxAmountIn`, read
 `maxAmountIn` expiring at `deadline`, `mintWithTokenPermit(MintParams, v, r, s)` needs no approval transaction; a permit
 someone already submitted is accepted, and USDT has none.
 
-**Mint with ether, burn to ether.** `mintWithEth(MintParams)` takes `tokenIn = WETH`, `maxAmountIn = msg.value` and
-legs that end at WETH, with WETH itself a pass-through leg when the index holds it; the zap wraps, buys, and refunds
-the unspent ether. `burnToEth(BurnParams)` and `burnToEthWithPermit` take `tokenOut = WETH` and legs that end at WETH,
-and pay `to` in ether. A caller or `to` that cannot receive ether reverts the call. The events name WETH.
+**USDC and USDT only.** The zap's `tokenIn` and `tokenOut`, and the basket builder's, must be that deployment's
+`USDC()` or `USDT()`, else `NotAStable(token)` before anything moves (the owner's call of 2026-11-18). No entry point
+takes ether: the ether entry points of 2026-10-29 are gone, so an app that offers ether swaps it to a stablecoin
+first, outside the zap. On BNB Chain the two are Binance-Peg USDC and USDT, 18 decimals each.
 
-**Burn to USDC/USDT/anything.** The app quotes each leg in the exact-input direction, sets per-leg minimums and a
+**Burn to USDC/USDT.** The app quotes each leg in the exact-input direction, sets per-leg minimums and a
 non-zero overall `minAmountOut`, passes `rebalanceNonce()`, and calls `burnToToken(BurnParams)` or
 `burnToTokenWithPermit`.
 
@@ -227,7 +227,7 @@ sits behind the id; compute the hash from the request you read, not from `reques
   last entry names `tokenOut`; the **mint** direction is walked backwards from the component, so the *first* entry
   names the stable and the list is the burn route reversed. Live V4 pools for these components are paired against
   **native ether**, `address(0)`, which may only ever be an intermediate: native ether never reaches the zap through a
-  swap, whose `receive()` takes ether from WETH alone. Example, USDC to LINK: burn `[{ETH, 3000, 60}, {USDC, 500, 10}]`, mint `[{USDC, 500, 10}, {ETH,
+  swap, and the zap has no `receive()`. Example, USDC to LINK: burn `[{ETH, 3000, 60}, {USDC, 500, 10}]`, mint `[{USDC, 500, 10}, {ETH,
   3000, 60}]`. Keep a route from visiting the same currency twice: on a mint, the pinned periphery does not hold a V4
   exact-output route that revisits `tokenIn` to its `amountInMaximum` (upstream issue #564), so the zap's pre-funding
   is then the only bound on that leg; on a burn, a route that revisits the component can fill a later hop partially
@@ -288,10 +288,10 @@ sits behind the id; compute the hash from the request you read, not from `reques
 - **Watch the ownership handover.** `transferOwnership(new owner)` emits `OwnershipTransferStarted` and
   `acceptOwnership()` emits `OwnershipTransferred`. It is the one admin change with no delay and no guardian veto.
 - **Errors.** `IndexZap`: `NotIndex`, `StaleRebalanceNonce`, `Expired`, `ZeroAddress`, `ZeroAmount`, `InvalidRecipient`
-  (the zap, the index, the router, the PoolManager or the factory, RT-21), `LegCountMismatch`, `BadRoute(i)`,
+  (the zap, the index, the router, the PoolManager or the factory, RT-21, or the call's own stablecoin, RY-1),
+  `NotAStable(token)` for a currency other than its USDC and USDT, `LegCountMismatch`, `BadRoute(i)`,
   `ShortFill(i, received, required)`, `InsufficientBudget`, `InsufficientOutput`, `TransferShortfall`,
-  `SharedBalance(token, other)` for a swap between two addresses of one ledger (RW-10), `NotWETH(token)`,
-  `ValueMismatch(value, maxAmountIn)`; the swap errors
+  `SharedBalance(token, other)` for a swap between two addresses of one ledger (RW-10); the swap errors
   are declared in `IXindexErrors`, shared with `BasketBuilder`, which adds `LengthMismatch`, `ComponentOutOfRange` and
   `InsufficientEscrow(token, held, needed)`, and whose `BadRoute` and `ShortFill` name a leg by its position in the
   call. `WeightedHub`: `NotFactory`, `NotInitialized`, `InvalidComponents`, `InvalidConfig`, `NotAllowedMinter`,

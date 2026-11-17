@@ -63,7 +63,9 @@ The four release hashes of `DeployWeighted` (CF-5) are unchanged. What changed i
 - `script/CheckToken.s.sol`: `CHECK=bnb`, and depth on BNB Chain, read against WBNB and USDT, where Uniswap's depth
   sits there.
 - `script/DeployWeighted.s.sol`: unchanged but for its notes. The zap's wrapped coin on BNB Chain is WBNB, so
-  `mintWithEth` and `burnToEth` take and pay BNB.
+  `mintWithEth` and `burnToEth` take and pay BNB. (Withdrawn on 2026-11-18, the owner's call: the zap and the builder
+  take and pay USDC and USDT alone on both chains, and no entry point takes BNB;
+  `audit/2026-11-18-zap-ether-retirement.md`.)
 - Tests: `test/DeployChecks.t.sol`, `test/Scripts.t.sol`, `test/ConfigureWeighted.t.sol`, `test/CheckToken.t.sol`,
   and the fork suite `test/fork/BnbChainAddresses.fork.t.sol` (section 6). Mutants N1 to N5.
 - CI passes `BNB_RPC_URL` to the test step; without that secret the BNB Chain fork suite skips.
@@ -195,7 +197,8 @@ first eleven passed earlier that day at block 133,342,099):
 - the zap mints an index of WBNB, BTCB and ETH from USDT alone and burns it back to USDT through Uniswap's real pools,
   the round trip held by the zap's own limit to under 1%: the command inputs the zap encodes for Ethereum's router
   hold on BNB Chain's;
-- the same in BNB, through `mintWithEth` and `burnToEth`.
+- the same in BNB, through `mintWithEth` and `burnToEth` (since 2026-11-18 the suite shows instead that a mint paid
+  in WBNB and a burn into it are refused, and that the zap takes no BNB).
 
 ## 7. Not done, and what is the owner's
 

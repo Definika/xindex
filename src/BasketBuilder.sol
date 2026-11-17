@@ -20,6 +20,8 @@ import {UniversalRouterSwaps} from "./UniversalRouterSwaps.sol";
 ///        a sale, or a withdrawal.
 ///      - The builder has no owner, no upgrade and nothing to configure. It holds only the escrows, plus whatever
 ///        strangers send it, which nothing may take (as in `MintRequests`).
+///      - A buy pays and a sale is paid in the builder's `USDC` or `USDT`, and nothing else, as at the zap (the owner's
+///        call of 2026-11-18). A deposit and a withdrawal take any token: they move legs in kind, not a payment.
 ///      - Every amount is measured where it lands:
 ///        - a deposit or a redeem credits the balance increase it caused;
 ///        - a buy credits what the engine measured as delivered;
@@ -46,11 +48,23 @@ contract BasketBuilder is ReentrancyGuard, UniversalRouterSwaps, IBasketBuilder 
     IIndexFactory public immutable FACTORY;
 
     /// @inheritdoc IBasketBuilder
+    address public immutable USDC;
+    /// @inheritdoc IBasketBuilder
+    address public immutable USDT;
+
+    /// @inheritdoc IBasketBuilder
     mapping(address user => mapping(address token => uint256 amount)) public escrowOf;
 
-    constructor(IIndexFactory factory, IUniversalRouter router) UniversalRouterSwaps(router) {
-        if (address(factory) == address(0)) revert ZeroAddress();
+    constructor(IIndexFactory factory, IUniversalRouter router, address usdc, address usdt)
+        UniversalRouterSwaps(router)
+    {
+        if (address(factory) == address(0) || usdc == address(0) || usdt == address(0)) {
+            revert ZeroAddress();
+        }
+        if (usdc == usdt) revert NotAStable(usdt);
         FACTORY = factory;
+        USDC = usdc;
+        USDT = usdt;
     }
 
     // ---------------------------------------------------------------------
@@ -87,7 +101,7 @@ contract BasketBuilder is ReentrancyGuard, UniversalRouterSwaps, IBasketBuilder 
     /// @inheritdoc IBasketBuilder
     function buy(BuyParams calldata p) external nonReentrant returns (uint256 amountSpent) {
         _checkIndex(p.index, p.expectedNonce, p.deadline);
-        if (p.tokenIn == address(0)) revert ZeroAddress();
+        _checkStable(p.tokenIn);
         if (p.shares == 0 || p.maxAmountIn == 0) revert ZeroAmount();
         if (p.legs.length != p.components.length) revert LengthMismatch();
 
@@ -224,7 +238,7 @@ contract BasketBuilder is ReentrancyGuard, UniversalRouterSwaps, IBasketBuilder 
     function sell(SellParams calldata p) external nonReentrant returns (uint256 amountOut) {
         if (block.timestamp > p.deadline) revert Expired();
         _checkRecipient(p.to);
-        if (p.tokenOut == address(0)) revert ZeroAddress();
+        _checkStable(p.tokenOut);
         if (p.minAmountOut == 0) revert ZeroAmount();
         if (p.legs.length != p.tokens.length || p.amounts.length != p.tokens.length) revert LengthMismatch();
 
@@ -301,6 +315,11 @@ contract BasketBuilder is ReentrancyGuard, UniversalRouterSwaps, IBasketBuilder 
         uint256 before = token.balanceOf(address(this));
         token.safeTransfer(address(this), 1);
         if (token.balanceOf(address(this)) < before) revert TransferShortfall(address(token));
+    }
+
+    /// @dev Reverts unless `token` is the builder's USDC or USDT, the only currencies a buy pays and a sale is paid in.
+    function _checkStable(address token) private view {
+        if (token != USDC && token != USDT) revert NotAStable(token);
     }
 
     /// @dev Reverts after `deadline`, for an address the factory did not deploy, or if a rebalance settled since the

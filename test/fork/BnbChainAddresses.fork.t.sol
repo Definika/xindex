@@ -15,6 +15,7 @@ import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
 import {IIndexHub} from "../../src/interfaces/IIndexHub.sol";
 import {IRebalanceExecutor} from "../../src/interfaces/IRebalanceExecutor.sol";
 import {IUniversalRouterSwaps} from "../../src/interfaces/IUniversalRouterSwaps.sol";
+import {IXindexErrors} from "../../src/interfaces/IXindexErrors.sol";
 import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
 import {CheckToken} from "../../script/CheckToken.s.sol";
 import {ConfigureWeighted} from "../../script/ConfigureWeighted.s.sol";
@@ -32,7 +33,7 @@ interface IRouterImmutables {
 ///         Ethereum's: tokens by symbol and decimals, the router, the PoolManager and Uniswap's V3 factory by their
 ///         runtime code hashes, the BNB Chain list listed on a fresh factory and through `CheckToken`, a whole
 ///         deployment from the address book alone, and an index of that deployment issued in kind, rebalanced with
-///         real transfers, minted and burned through the zap on Uniswap's real pools, in USDT and in BNB, and bought
+///         real transfers, minted and burned through the zap on Uniswap's real pools in USDT, BNB refused, and bought
 ///         and sold through `MintRequests` in both stablecoins. Skips when BNB_RPC_URL is unset.
 ///         Run: BNB_RPC_URL=... forge test --match-path 'test/fork/BnbChainAddresses.fork.t.sol' -vvv
 contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
@@ -136,22 +137,20 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
 
         // Under an override to Ethereum's own id the id decides, as it must on the real chain 1, where anyone can
         // replay BNB Chain's router. The run stays pinned, resolves Ethereum's book, and stops at the first address
-        // of it that is empty here: none of Ethereum's WETH, USDC and USDT has code on BNB Chain.
+        // of it that is empty here: neither of Ethereum's USDC and USDT has code on BNB Chain.
         vm.chainId(1);
         assertTrue(deployer.isPinnedChain());
         assertFalse(deployer.onBnbChain());
-        assertEq(M.WETH.code.length, 0);
         assertEq(M.USDC.code.length, 0);
         assertEq(M.USDT.code.length, 0);
-        vm.expectRevert(abi.encodeWithSelector(DeployChecks.AddressHasNoCode.selector, "WETH", M.WETH));
-        deployer.resolveStable("WETH", address(0), M.WETH);
+        vm.expectRevert(abi.encodeWithSelector(DeployChecks.AddressHasNoCode.selector, "USDC", M.USDC));
+        deployer.resolveStable("USDC", address(0), M.USDC);
     }
 
     /// @dev On chain 56 the deploy script resolves every market address from the address book and refuses any other.
     function testFork_deployResolvesTheBnbChainMarket() public {
         DeployWeighted deployer = new DeployWeighted();
         assertEq(deployer.resolveRouter(address(0)), B.UNIVERSAL_ROUTER);
-        assertEq(deployer.resolveStable("WETH", address(0), B.WBNB), B.WBNB);
         assertEq(deployer.resolveStable("USDC", address(0), B.USDC), B.USDC);
         assertEq(deployer.resolveStable("USDT", address(0), B.USDT), B.USDT);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.MainnetOverride.selector, "USDT", B.USDC));
@@ -165,9 +164,8 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
         returns (WeightedIndexFactory factory, IndexZap zap, BasketBuilder builder, MintRequests requests)
     {
         DeployWeighted deployer = new DeployWeighted();
-        (factory, zap, builder, requests) = deployer.deploy(
-            address(this), makeAddr("guardian"), address(0), address(0), address(0), address(0), address(this)
-        );
+        (factory, zap, builder, requests) =
+            deployer.deploy(address(this), makeAddr("guardian"), address(0), address(0), address(0), address(this));
         deployer.checkDeployment(factory, zap, builder, requests);
     }
 
@@ -176,8 +174,11 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
         assertEq(factory.owner(), address(this));
         assertEq(address(zap.ROUTER()), B.UNIVERSAL_ROUTER);
         assertEq(zap.POOL_MANAGER(), B.POOL_MANAGER);
-        assertEq(address(zap.WETH()), B.WBNB, "the zap's wrapped coin is WBNB");
+        assertEq(zap.USDC(), B.USDC, "the zap takes and pays BNB Chain's two stablecoins");
+        assertEq(zap.USDT(), B.USDT);
         assertEq(address(builder.ROUTER()), B.UNIVERSAL_ROUTER);
+        assertEq(builder.USDC(), B.USDC);
+        assertEq(builder.USDT(), B.USDT);
         assertEq(requests.USDC(), B.USDC);
         assertEq(requests.USDT(), B.USDT);
     }
@@ -528,51 +529,47 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
         assertLt(out, spent, "and gains nothing");
     }
 
-    /// @dev The zap's ether entry points take and pay BNB on BNB Chain: WBNB is its wrapped coin there, as WETH is
-    ///      on Ethereum. The WBNB leg passes through, the other two swap from WBNB.
-    function testFork_theZapMintsAndBurnsInBnb() public {
+    /// @dev The zap takes and pays only BNB Chain's USDC and USDT (the owner's call of 2026-11-18, which withdrew its
+    ///      ether entry points): a mint paid in WBNB and a burn into it are refused before anything moves, and no entry
+    ///      point takes BNB.
+    function testFork_theZapRefusesBnb() public {
         (IndexZap zap, WeightedHub index) = _threeCoinIndex();
-        uint256 shares = 10e18;
-        uint256 budget = 5 ether;
-        vm.deal(alice, budget);
-
         bytes[3] memory paths =
             [bytes(""), abi.encodePacked(B.BTCB, F500, B.WBNB), abi.encodePacked(B.ETH, F500, B.WBNB)];
+        deal(B.WBNB, alice, 5 ether);
         vm.startPrank(alice);
-        uint256 spent = zap.mintWithEth{value: budget}(
+        IERC20(B.WBNB).forceApprove(address(zap), 5 ether);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotAStable.selector, B.WBNB));
+        zap.mintWithToken(
             IIndexZap.MintParams({
                 index: address(index),
                 expectedNonce: 0,
                 tokenIn: B.WBNB,
-                maxAmountIn: budget,
-                shares: shares,
+                maxAmountIn: 5 ether,
+                shares: 10e18,
                 legs: _mintLegs(paths),
                 to: alice,
                 deadline: block.timestamp,
                 referrer: address(0)
             })
         );
-        assertEq(index.balanceOf(alice), shares);
-        assertGt(spent, shares * U_WBNB / 1e18, "the BNB leg and two swaps");
-        assertEq(alice.balance, budget - spent, "the rest of the BNB is refunded as BNB");
-
-        index.approve(address(zap), shares);
-        uint256 out = zap.burnToEth(
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotAStable.selector, B.WBNB));
+        zap.burnToToken(
             IIndexZap.BurnParams({
                 index: address(index),
                 expectedNonce: 0,
-                shares: shares,
+                shares: 1,
                 tokenOut: B.WBNB,
-                minAmountOut: spent * 99 / 100,
+                minAmountOut: 1,
                 legs: _burnLegs(paths),
                 to: alice,
                 deadline: block.timestamp
             })
         );
+        vm.deal(alice, 1 ether);
+        (bool ok,) = address(zap).call{value: 1 ether}("");
+        assertFalse(ok, "the zap takes no BNB");
         vm.stopPrank();
-        assertEq(alice.balance, budget - spent + out, "paid out as BNB");
-        assertGe(out, spent * 99 / 100);
-        assertLt(out, spent);
-        assertEq(IERC20(B.WBNB).balanceOf(address(zap)), 0);
+        assertEq(IERC20(B.WBNB).balanceOf(alice), 5 ether, "nothing moved");
     }
 }

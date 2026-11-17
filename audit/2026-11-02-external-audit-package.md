@@ -37,6 +37,11 @@
 > a `Request` has nine fields (RW-2, RW-7); `acceptCreator` accrues the streaming fee first (RW-6); the swap engine
 > tells a router's stray from unsold input and refuses a balance two addresses write (RW-9, RW-10). The model has
 > 431 vectors. Open from it, for section 9: RW-3 and RW-8's confirmation, the owner's, and RW-4, which is RY-3.
+>
+> **Note of 2026-11-18.** The zap and the basket builder take and pay USDC and USDT alone, the deployment's own pair,
+> and revert `NotAStable` on any other currency (the owner's call that day). The zap's ether entry points
+> (`mintWithEth`, `burnToEth`, `burnToEthWithPermit`), its `WETH` and its `receive()` are gone, so where this package
+> names ether in and out, read the two stablecoins (`audit/2026-11-18-zap-ether-retirement.md`).
 
 The brief for the external auditors, step 5 of the logic-hardening plan: what to audit, at which commit, how to build
 it, what the system promises, who is trusted with what, where we want the most attention, and what every earlier
@@ -72,7 +77,7 @@ nSLOC counts non-blank lines outside comments.
 | `src/WeightedHub.sol` | 681 | Each index: an ERC-20 clone that holds its components in kind; issue, redeem, `redeemSkipping`, claims, fees in shares, the streaming fee's unit scale, the rebalance auction and its settlement at Pyth prices |
 | `src/WeightedIndexFactory.sol` | 379 | Listings behind a timelock, index creation by CREATE2 clone, the guardian's timelocked change, the fee policy, the creator role, gates and allowlists |
 | `src/WeightedMath.sol` | 132 | The settlement arithmetic, stateless, called by STATICCALL (moved out of the hub for EIP-170) |
-| `src/IndexZap.sol` | 204 | Stateless: mints from and burns to USDC, USDT or ether through Uniswap's Universal Router; permits |
+| `src/IndexZap.sol` | 204 | Stateless: mints from and burns to USDC or USDT through Uniswap's Universal Router; permits |
 | `src/UniversalRouterSwaps.sol` | 177 | The swap engine the zap and the builder share: every router command built in-house, pre-funding and `SWEEP` |
 | `src/BasketBuilder.sol` | 189 | Stateful: per-user escrows for baskets too wide for one transaction (buy over several calls, then issue; redeem, then sell) |
 | `src/MintRequests.sol` | 117 | Escrowed limit orders (stablecoin for shares, shares for stablecoin) that anyone fills before a deadline |
@@ -206,7 +211,8 @@ In order:
 4. **Issue's guards**: the backing check that refuses a mint while a leg is below its backing (RX-8), the one-wei
    self-transfer that proves a grown leg can leave (RX-12), fee-on-transfer detection.
 5. **The zap and the builder**: command construction, balance measurement, the sweep, V4 routes that revisit
-   `tokenIn`, unsold input, ether in and out, permits, the builder's escrow accounting across buys, redeems and sells.
+   `tokenIn`, unsold input, the two-stablecoin lock, permits, the builder's escrow accounting across buys, redeems and
+   sells.
 6. **`GuardianRelay`**: that a start it sends is exactly the one the Safe authorized, once, before its deadline, and
    that the relay adds no power the guardian lacks.
 7. **Factory lifecycle**: listing proposals and their windows, delisting, the guardian change, clone initialization

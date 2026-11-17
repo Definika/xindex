@@ -196,7 +196,6 @@ contract ScriptsTest is Test {
     DeployWeighted deployer;
     SetupTestMarket testMarket;
     MockUniversalRouter router;
-    address weth;
     address usdc;
     address usdt;
     address owner = makeAddr("owner");
@@ -206,7 +205,6 @@ contract ScriptsTest is Test {
         deployer = new DeployWeighted();
         testMarket = new SetupTestMarket();
         router = new MockUniversalRouter(makeAddr("poolManager"));
-        weth = address(new MockWETH());
         usdc = address(new MockERC20("USD Coin", "USDC", 6));
         usdt = address(new MockUSDT());
     }
@@ -216,7 +214,7 @@ contract ScriptsTest is Test {
         internal
         returns (WeightedIndexFactory, IndexZap, BasketBuilder, MintRequests)
     {
-        return deployer.deploy(owner_, guardian_, address(router), weth, usdc, usdt, address(0));
+        return deployer.deploy(owner_, guardian_, address(router), usdc, usdt, address(0));
     }
 
     // ---------------------------------------------------------------------
@@ -276,7 +274,7 @@ contract ScriptsTest is Test {
 
         // Through `deploy`, which `run` hands OWNER_IS_NOT_A_SAFE (`test_A708_deployRun_readsEnvironment`).
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerNotASafe.selector, address(router)));
-        deployer.deploy(address(router), guardian, address(0), address(0), address(0), address(0), address(0));
+        deployer.deploy(address(router), guardian, address(0), address(0), address(0), address(0));
     }
 
     function test_XA07_checkOwnerRejectsASafeWithModules() public {
@@ -496,6 +494,10 @@ contract ScriptsTest is Test {
         assertEq(requests.FACTORY(), address(factory));
         assertEq(requests.USDC(), usdc);
         assertEq(requests.USDT(), usdt);
+        assertEq(zap.USDC(), usdc, "the zap takes and pays MintRequests' two stablecoins");
+        assertEq(zap.USDT(), usdt);
+        assertEq(builder.USDC(), usdc, "and so does the builder");
+        assertEq(builder.USDT(), usdt);
 
         bytes32[5] memory codehashes = deployer.checkDeployment(factory, zap, builder, requests);
         assertEq(codehashes[0], keccak256(address(factory).code));
@@ -534,7 +536,8 @@ contract ScriptsTest is Test {
         );
         deployer.checkDeployment(factory, zap, otherBuilder, requests);
         // A builder on this factory but another router.
-        BasketBuilder otherRouter = new BasketBuilder(factory, new MockUniversalRouter(makeAddr("poolManager")));
+        BasketBuilder otherRouter =
+            new BasketBuilder(factory, new MockUniversalRouter(makeAddr("poolManager")), usdc, usdt);
         vm.expectRevert(
             abi.encodeWithSelector(
                 DeployChecks.WrongWiring.selector,
@@ -561,6 +564,26 @@ contract ScriptsTest is Test {
         deployer.checkDeployment(WeightedIndexFactory(address(fake)), zap, builder, requests);
     }
 
+    /// @dev The zap, the builder and MintRequests of one deployment take the same two stablecoins: a zap or a builder
+    ///      naming another USDC or USDT is refused.
+    function test_deployWeighted_checkDeploymentRefusesOtherStables() public {
+        (WeightedIndexFactory factory, IndexZap zap, BasketBuilder builder, MintRequests requests) =
+            _deploy(owner, guardian);
+        address otherUsd = address(new MockERC20("Other USD", "OUSD", 6));
+        IndexZap zapUsdc = new IndexZap(factory, router, otherUsd, usdt);
+        vm.expectRevert(abi.encodeWithSelector(DeployChecks.WrongWiring.selector, "IndexZap.USDC", usdc, otherUsd));
+        deployer.checkDeployment(factory, zapUsdc, builder, requests);
+        IndexZap zapUsdt = new IndexZap(factory, router, usdc, otherUsd);
+        vm.expectRevert(abi.encodeWithSelector(DeployChecks.WrongWiring.selector, "IndexZap.USDT", usdt, otherUsd));
+        deployer.checkDeployment(factory, zapUsdt, builder, requests);
+        BasketBuilder builderUsdc = new BasketBuilder(factory, router, otherUsd, usdt);
+        vm.expectRevert(abi.encodeWithSelector(DeployChecks.WrongWiring.selector, "BasketBuilder.USDC", usdc, otherUsd));
+        deployer.checkDeployment(factory, zap, builderUsdc, requests);
+        BasketBuilder builderUsdt = new BasketBuilder(factory, router, usdc, otherUsd);
+        vm.expectRevert(abi.encodeWithSelector(DeployChecks.WrongWiring.selector, "BasketBuilder.USDT", usdt, otherUsd));
+        deployer.checkDeployment(factory, zap, builderUsdt, requests);
+    }
+
     /// @dev The deploy script reads these variables, which only this test sets. A7-08: on Ethereum `run` takes the
     ///      owner the operator acknowledges from OWNER_IS_NOT_A_SAFE, none while it is unset, and refuses an owner that
     ///      is not a Safe unless the variable names it: the old `true`, or another owner's address left in `.env` from
@@ -569,7 +592,6 @@ contract ScriptsTest is Test {
         vm.setEnv("OWNER", vm.toString(owner));
         vm.setEnv("GUARDIAN", vm.toString(guardian));
         vm.setEnv("UNIVERSAL_ROUTER", vm.toString(address(router)));
-        vm.setEnv("WETH", vm.toString(weth));
         vm.setEnv("USDC", vm.toString(usdc));
         vm.setEnv("USDT", vm.toString(usdt));
         (WeightedIndexFactory factory, IndexZap zap, BasketBuilder builder, MintRequests requests) = deployer.run();
@@ -578,7 +600,8 @@ contract ScriptsTest is Test {
         assertEq(factory.guardian(), guardian);
         assertEq(address(zap.FACTORY()), address(factory));
         assertEq(address(zap.ROUTER()), address(router));
-        assertEq(address(zap.WETH()), weth);
+        assertEq(zap.USDC(), usdc);
+        assertEq(builder.USDT(), usdt);
         assertEq(requests.FACTORY(), address(factory));
         assertEq(requests.USDC(), usdc);
         assertEq(requests.USDT(), usdt);
@@ -587,9 +610,7 @@ contract ScriptsTest is Test {
         vm.etch(MAINNET_UNIVERSAL_ROUTER, address(new MockUniversalRouter(MainnetAddresses.POOL_MANAGER)).code);
         vm.etch(MainnetAddresses.USDC, hex"00");
         vm.etch(MainnetAddresses.USDT, hex"00");
-        vm.etch(MainnetAddresses.WETH, hex"00");
         vm.setEnv("UNIVERSAL_ROUTER", vm.toString(MAINNET_UNIVERSAL_ROUTER));
-        vm.setEnv("WETH", vm.toString(MainnetAddresses.WETH));
         vm.setEnv("USDC", vm.toString(MainnetAddresses.USDC));
         vm.setEnv("USDT", vm.toString(MainnetAddresses.USDT));
         address timelock = address(new SilentFallback());
@@ -614,14 +635,13 @@ contract ScriptsTest is Test {
     /// @dev On BNB Chain the market addresses are pinned to `BnbChainAddresses` as Ethereum's are to
     ///      `MainnetAddresses`: zero takes the book's, any other address is refused, every token of the book is a
     ///      market contract no role may hold, a key is refused as owner, only the recorded build is broadcast (CF-5),
-    ///      and a Safe deploys from the book alone, the zap wrapping BNB. Ethereum's router address has code there
-    ///      too, as on the real chain, and names nothing.
+    ///      and a Safe deploys from the book alone, the zap and the builder paying in its USDC and USDT. Ethereum's
+    ///      router address has code there too, as on the real chain, and names nothing.
     function test_deployWeighted_resolvesBnbChainsAddressBook() public {
         vm.chainId(BnbChainAddresses.CHAIN_ID);
         address bnbRouter = BnbChainAddresses.UNIVERSAL_ROUTER;
         vm.etch(bnbRouter, address(new MockUniversalRouter(BnbChainAddresses.POOL_MANAGER)).code);
         vm.etch(MAINNET_UNIVERSAL_ROUTER, hex"00");
-        vm.etch(BnbChainAddresses.WBNB, hex"00");
         vm.etch(BnbChainAddresses.USDC, hex"00");
         vm.etch(BnbChainAddresses.USDT, hex"00");
         DeployWeighted bnb = new DeployWeightedThisBuild();
@@ -629,7 +649,6 @@ contract ScriptsTest is Test {
         assertTrue(bnb.onBnbChain());
         assertEq(bnb.pinnedRouter(), bnbRouter);
         assertEq(bnb.resolveRouter(address(0)), bnbRouter);
-        assertEq(bnb.resolveStable("WETH", address(0), bnb.pinnedWeth()), BnbChainAddresses.WBNB);
         assertEq(bnb.resolveStable("USDC", address(0), bnb.pinnedUsdc()), BnbChainAddresses.USDC);
         assertEq(bnb.resolveStable("USDT", address(0), bnb.pinnedUsdt()), BnbChainAddresses.USDT);
         vm.expectRevert(
@@ -659,7 +678,7 @@ contract ScriptsTest is Test {
 
         // A mainnet: a key may not own the factory, another build is not broadcast, a Safe deploys from the book alone.
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerMustBeContract.selector, owner));
-        bnb.deploy(owner, guardian, address(0), address(0), address(0), address(0), address(0));
+        bnb.deploy(owner, guardian, address(0), address(0), address(0), address(0));
         address safeOwner = address(new MockSafe(3));
         DeployWeighted other = new DeployWeightedOtherBuild();
         bytes32 built = other.buildInitCodeHashes()[0];
@@ -668,24 +687,25 @@ contract ScriptsTest is Test {
                 DeployWeighted.BuildNotReleased.selector, "WeightedIndexFactory", bytes32(uint256(1)), built
             )
         );
-        other.deploy(safeOwner, guardian, address(0), address(0), address(0), address(0), address(0));
+        other.deploy(safeOwner, guardian, address(0), address(0), address(0), address(0));
         (WeightedIndexFactory factory, IndexZap zap, BasketBuilder builder, MintRequests requests) =
-            bnb.deploy(safeOwner, guardian, address(0), address(0), address(0), address(0), address(0));
+            bnb.deploy(safeOwner, guardian, address(0), address(0), address(0), address(0));
         assertEq(factory.owner(), safeOwner);
         assertEq(address(zap.ROUTER()), bnbRouter);
         assertEq(zap.POOL_MANAGER(), BnbChainAddresses.POOL_MANAGER);
-        assertEq(address(zap.WETH()), BnbChainAddresses.WBNB);
+        assertEq(zap.USDC(), BnbChainAddresses.USDC);
+        assertEq(zap.USDT(), BnbChainAddresses.USDT);
         assertEq(address(builder.ROUTER()), bnbRouter);
+        assertEq(builder.USDC(), BnbChainAddresses.USDC);
+        assertEq(builder.USDT(), BnbChainAddresses.USDT);
         assertEq(requests.USDC(), BnbChainAddresses.USDC);
         assertEq(requests.USDT(), BnbChainAddresses.USDT);
     }
 
-    /// @dev The stablecoins MintRequests escrows resolve like the router: required off mainnet, mainnet's own on chain
-    ///      1 and nothing else there, and never an address without code.
+    /// @dev The stablecoins the zap, the builder and MintRequests take resolve like the router: required off
+    ///      mainnet, mainnet's own on chain 1 and nothing else there, and never an address without code.
     function test_resolveStable() public {
         assertEq(deployer.resolveStable("USDC", usdc, MainnetAddresses.USDC), usdc);
-        assertEq(deployer.resolveStable("WETH", weth, deployer.pinnedWeth()), weth);
-        assertEq(deployer.pinnedWeth(), MainnetAddresses.WETH);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.AddressRequired.selector, "USDT"));
         deployer.resolveStable("USDT", address(0), MainnetAddresses.USDT);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.AddressHasNoCode.selector, "USDC", owner));
@@ -693,7 +713,6 @@ contract ScriptsTest is Test {
 
         vm.chainId(1);
         vm.etch(MainnetAddresses.USDT, hex"00");
-        vm.etch(MainnetAddresses.WETH, hex"00");
         assertEq(deployer.resolveStable("USDT", address(0), MainnetAddresses.USDT), MainnetAddresses.USDT);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.MainnetOverride.selector, "USDT", usdt));
         deployer.resolveStable("USDT", usdt, MainnetAddresses.USDT);
@@ -734,7 +753,7 @@ contract ScriptsTest is Test {
         vm.chainId(1);
         vm.prank(DEFAULT_SENDER);
         vm.expectRevert(DeployChecks.BroadcasterRequired.selector);
-        deployer.deploy(owner, guardian, address(router), weth, usdc, usdt, address(0));
+        deployer.deploy(owner, guardian, address(router), usdc, usdt, address(0));
         deployer.checkBroadcaster();
         vm.chainId(31337);
         vm.prank(DEFAULT_SENDER);
@@ -757,10 +776,10 @@ contract ScriptsTest is Test {
 
         vm.chainId(1);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerMustBeContract.selector, owner));
-        deployer.deploy(owner, guardian, address(0), address(0), address(0), address(0), address(0));
+        deployer.deploy(owner, guardian, address(0), address(0), address(0), address(0));
         MockSafe singleSigner = new MockSafe(1);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerThresholdTooLow.selector, address(singleSigner), 1));
-        deployer.deploy(address(singleSigner), guardian, address(0), address(0), address(0), address(0), address(0));
+        deployer.deploy(address(singleSigner), guardian, address(0), address(0), address(0), address(0));
     }
 
     /// @dev CF-5. The constants are the release record: this build's init-code hashes. A change to src/, to a
@@ -783,7 +802,6 @@ contract ScriptsTest is Test {
         vm.etch(MAINNET_UNIVERSAL_ROUTER, address(new MockUniversalRouter(MainnetAddresses.POOL_MANAGER)).code);
         vm.etch(MainnetAddresses.USDC, hex"00");
         vm.etch(MainnetAddresses.USDT, hex"00");
-        vm.etch(MainnetAddresses.WETH, hex"00");
         address safe = address(new MockSafe(3));
 
         DeployWeighted other = new DeployWeightedOtherBuild();
@@ -794,7 +812,7 @@ contract ScriptsTest is Test {
                 DeployWeighted.BuildNotReleased.selector, "WeightedIndexFactory", bytes32(uint256(1)), built[0]
             )
         );
-        other.deploy(safe, guardian, address(0), address(0), address(0), address(0), address(0));
+        other.deploy(safe, guardian, address(0), address(0), address(0), address(0));
 
         bytes32[4] memory wrongZap = [built[0], bytes32(0), built[2], built[3]];
         vm.expectRevert(
@@ -814,8 +832,7 @@ contract ScriptsTest is Test {
 
         DeployWeighted same = new DeployWeightedThisBuild();
         assertEq(same.releaseInitCodeHashes()[1], built[1], "a record of this build");
-        (WeightedIndexFactory factory,,,) =
-            same.deploy(safe, guardian, address(0), address(0), address(0), address(0), address(0));
+        (WeightedIndexFactory factory,,,) = same.deploy(safe, guardian, address(0), address(0), address(0), address(0));
         assertEq(factory.owner(), safe, "the recorded build broadcasts on chain 1");
     }
 
@@ -898,11 +915,8 @@ contract ScriptsTest is Test {
         vm.etch(MainnetAddresses.WETH, address(new SilentFallback()).code);
         vm.etch(MainnetAddresses.USDC, hex"00");
         vm.etch(MainnetAddresses.USDT, hex"00");
-        vm.etch(MainnetAddresses.WETH, hex"00");
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.RoleIsMarketContract.selector, MainnetAddresses.WETH));
-        deployer.deploy(
-            MainnetAddresses.WETH, guardian, address(0), address(0), address(0), address(0), MainnetAddresses.WETH
-        );
+        deployer.deploy(MainnetAddresses.WETH, guardian, address(0), address(0), address(0), MainnetAddresses.WETH);
     }
 
     // ---------------------------------------------------------------------

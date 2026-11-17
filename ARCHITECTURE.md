@@ -43,7 +43,7 @@ on a mainnet.
 | Others can mint the same index | `issue`, `mintWithToken` and `requestMint` are permissionless |
 | Decentralized | No custody, no pause, no upgrade, no rebalancing key; listings take effect after a public 2-day delay with a guardian veto, guardian changes after 7 days |
 | Mint and burn | In-kind `issue` / `redeem` on the hub; USDC/USDT through the zap, or at a limit through `MintRequests` |
-| Trade the index into other coins | Standard ERC-20 (transferable, listable) plus `burnToToken` into any token |
+| Trade the index into other coins | Standard ERC-20 (transferable, listable); the zap burns into USDC or USDT only |
 | USDC/USDT in, USDC/USDT out | The zap mints from either stable; the burner chooses the payout token |
 | Rebalancing and index price | The units are brought back toward the weights through an auction, at most once per the index's interval (7 to 91 days): an executor names the units, and the index accepts them when a weighted gain in units clears a bar that falls with time (section 3). The owner or guardian may post a quote with a start, which can only refuse a fill. No contract reads a price of its own; the index price is the basket's value, computed off chain |
 | Layer-1 coins | Ethereum tokens, Bitcoin as WBTC, and coins neither chain has in kind as Wormhole-wrapped copies on Ethereum: SOL, AVAX, SUI and others; XRP, ADA, LTC, DOT, ATOM and BNB on BNB Chain |
@@ -196,15 +196,16 @@ which returned the zap to its earlier Uniswap-only build. The zap types its call
   mint. The leg whose component is already the mint's `tokenIn` or the burn's `tokenOut` carries no swap and honours
   its own limit too (DA-15). `burnToTokenWithPermit(BurnParams, v, r, s)` runs the same checks before the permit, and
   `mintWithTokenPermit(MintParams, v, r, s)` does the same for a `tokenIn` with an EIP-2612 permit, USDC among them;
-  a permit is tried, never required, so one already submitted is accepted. `mintWithEth(MintParams)`,
-  `burnToEth(BurnParams)` and `burnToEthWithPermit` (built 2026-10-29) are the same calls with WETH as the token: the
-  zap wraps `msg.value`, which must equal `maxAmountIn`, refunds the unspent part as ether, and unwraps a burn's
-  proceeds for `to`. `WETH` is a construction argument, resolved by the deploy script like the stablecoins.
+  a permit is tried, never required, so one already submitted is accepted.
+- **USDC and USDT only.** `tokenIn` and `tokenOut` must be the zap's `USDC` or `USDT`, construction arguments the
+  deploy script resolves from the chain's address book, or the call reverts `NotAStable` before anything moves; the
+  basket builder's `buy` and `sell` take the same two (the owner's call of 2026-11-18). No entry point is payable: the
+  ether entry points of 2026-10-29 (`mintWithEth`, `burnToEth`, `burnToEthWithPermit`) and the zap's `WETH` are gone
+  (`audit/2026-11-18-zap-ether-retirement.md`). The pass-through leg is then a stablecoin the index holds itself.
 - **One venue per leg.** A `MintLeg` or `BurnLeg` carries exactly one non-empty route, a packed `v3Path` or a
   `PathKey[] v4Path`, or `BadRoute(i)`; both empty is valid only for the pass-through leg. A V4 route must be hookless (`hooks` zero and
   `hookData` empty), which also rules out the dynamic-fee flag. `address(0)` is native ether and may appear only as an
-  intermediate; the zap's `receive()` takes ether from WETH alone, which `withdraw` sends back, and refuses every
-  other sender.
+  intermediate; the zap has no `receive()`, so no swap can send it ether.
 - **Every command is the zap's own.** Each swap is one `execute(commands, inputs)` built here, and nothing a caller
   supplied is forwarded, because the router's command set includes `TRANSFER` and `PERMIT2_TRANSFER_FROM`. The commands
   and V4 actions are declared with their input layouts in `src/libraries/`. The zap never encodes a swap amount of

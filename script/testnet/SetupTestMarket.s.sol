@@ -13,7 +13,7 @@ import {INonfungiblePositionManager} from "../interfaces/INonfungiblePositionMan
 import {IUniswapV3FactorySetup} from "../interfaces/IUniswapV3FactorySetup.sol";
 import {IUniswapV3PoolSetup} from "../interfaces/IUniswapV3PoolSetup.sol";
 import {ScriptUtils} from "../ScriptUtils.sol";
-import {IWETH9} from "../../src/interfaces/IWETH9.sol";
+import {IWETH9} from "../interfaces/IWETH9.sol";
 import {FaucetToken} from "./FaucetToken.sol";
 
 /// @notice Builds a Sepolia test market for Xindex: faucet stand-ins for USDC, WBTC, LINK and UNI, each with a Uniswap

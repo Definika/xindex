@@ -22,9 +22,9 @@ chain, Ethereum and BNB Chain, each with that chain's own owner Safe and guardia
 factory's timelock.
 
 On BNB Chain the same commands run against a BNB Chain RPC, with `V5_WHITELIST=bnb` for the listings and `CHECK=bnb`
-for the admission check. The script resolves the router, WBNB (the zap's wrapped coin there), USDC and USDT from
-`script/BnbChainAddresses.sol` and refuses any other address, and it holds the owner to the same Safe rules as on
-Ethereum. Before a first run there: the two Safes on BNB Chain, the source reading of the twelve coins, and
+for the admission check. The script resolves the router, USDC and USDT (the zap's and the builder's only currencies,
+there as on Ethereum) from `script/BnbChainAddresses.sol` and refuses any other address, and it holds the owner to
+the same Safe rules as on Ethereum. Before a first run there: the two Safes on BNB Chain, the source reading of the twelve coins, and
 `BNB_RPC_URL=... forge test --match-path 'test/fork/BnbChainAddresses.fork.t.sol'` passing on an archive RPC
 ([`design/2026-11-13-bnb-chain-deployment.md`](../design/2026-11-13-bnb-chain-deployment.md)).
 
@@ -51,7 +51,7 @@ cannot see later changes). The guardian must not be the broadcasting key, which 
 Safe, neither the guardian nor the broadcasting key may be one of its signers, since the guardian is the owner's veto
 (SA-06); a guardian Safe may share no signer with the owner's, and a Safe's enabled modules count as its signers
 (RZ-24); and neither role may be a market contract: the router and the PoolManager everywhere, and on a mainnet also
-every token and mint currency in the address book (CR-I37). `UNIVERSAL_ROUTER`, `WETH`, `USDC` and `USDT` default to
+every token and mint currency in the address book (CR-I37). `UNIVERSAL_ROUTER`, `USDC` and `USDT` default to
 the address book's on chain 1 (`script/MainnetAddresses.sol`), where any other value is rejected, and are required
 anywhere else; they are the script's only market addresses, because the hub and factory depend on no Uniswap contract
 and on no oracle.
@@ -193,7 +193,8 @@ externally owned account (a mainnet owner needs at least 3 signatures). The four
 were executed on 2026-10-28. Its zap was redeployed
 alone on 2026-11-03 from `70ffa6f`, for the factory above, with `forge create` and the node's gas estimate (23.85M gas
 used): it adds `mintWithEth`, `burnToEth`, `burnToEthWithPermit` and `mintWithTokenPermit`, and RY-1's recipient
-checks. The zap calls only the factory's `isIndex` and the hub's `issue`, `redeem`, `previewIssue`, `componentTokens`
+checks. The current build has no ether entry point and takes USDC and USDT alone (2026-11-18), so the app keeps no
+ether path once a new deployment replaces this one. The zap calls only the factory's `isIndex` and the hub's `issue`, `redeem`, `previewIssue`, `componentTokens`
 and `rebalanceNonce`, which the build of `07aeae1` answers alike. v3 also runs there, deployed from
 `4b4dbe4` (tag `v3.0.0`); nothing on `main` drives it.
 
@@ -254,7 +255,7 @@ MARKET_MODE=seed MARKET_TOKENS=<logged by create> forge script script/testnet/Se
 # 2. the factory (which deploys WeightedMath and the WeightedHub implementation), the zap, the basket builder and
 #    MintRequests; USDT is any second 6-decimal test token, a FaucetToken for instance (tUSDT above)
 OWNER=<Safe> GUARDIAN=<guardian> UNIVERSAL_ROUTER=0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b \
-  WETH=0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14 USDC=<tUSDC logged by create> USDT=<a second test stablecoin> \
+  USDC=<tUSDC logged by create> USDT=<a second test stablecoin> \
   forge script script/DeployWeighted.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast \
   --gas-estimate-multiplier 900
 

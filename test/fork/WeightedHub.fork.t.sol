@@ -16,7 +16,6 @@ import {IWeightedHub} from "../../src/interfaces/IWeightedHub.sol";
 import {IWeightedIndexFactory} from "../../src/interfaces/IWeightedIndexFactory.sol";
 import {IRebalanceExecutor} from "../../src/interfaces/IRebalanceExecutor.sol";
 import {IUniversalRouter} from "../../src/interfaces/IUniversalRouter.sol";
-import {IWETH9} from "../../src/interfaces/IWETH9.sol";
 import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
 import {Listings} from "../../script/Listings.sol";
 import {MainnetAddresses as M} from "../../script/MainnetAddresses.sol";
@@ -110,7 +109,7 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
 
         factory = new WeightedIndexFactory(address(this), guardian);
         factory.setApprovedCreator(creator, true);
-        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), IWETH9(A.WETH));
+        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), A.USDC, A.USDT);
 
         address[] memory tokens = Listings.all();
         for (uint256 i = 0; i < tokens.length; ++i) {

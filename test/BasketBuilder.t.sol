@@ -55,12 +55,12 @@ contract BasketBuilderTest is XindexTest {
         _deployFactory(address(0));
         poolManager = makeAddr("poolManager");
         router = new MockUniversalRouter(poolManager);
-        builder = new BasketBuilder(IIndexFactory(address(factory)), router);
 
         wbtc = new MockERC20("Wrapped BTC", "WBTC", 8);
         weth = market.weth();
         link = new MockERC20("Chainlink", "LINK", 18);
         usdc = market.usdc();
+        _payingIn(address(new MockERC20("Tether USD", "USDT", 6)));
 
         router.setPrice(address(wbtc), 60_000e18, 8);
         router.setPrice(address(weth), 3_000e18, 18);
@@ -87,6 +87,12 @@ contract BasketBuilderTest is XindexTest {
     // ---------------------------------------------------------------------
     // helpers
     // ---------------------------------------------------------------------
+
+    /// @dev Replaces the builder with one whose stablecoins are the suite's USDC and `usdt`, for a test whose
+    ///      currency is a token of its own: Tether's pattern, a fee, a hook, two addresses behind one balance.
+    function _payingIn(address usdt) internal {
+        builder = new BasketBuilder(IIndexFactory(address(factory)), router, address(usdc), usdt);
+    }
 
     function _noV4() internal pure returns (PathKey[] memory) {
         return new PathKey[](0);
@@ -241,13 +247,22 @@ contract BasketBuilderTest is XindexTest {
     // ---------------------------------------------------------------------
 
     function test_constructorWiresTheRouterAndRefusesZeroes() public {
+        address usdt = builder.USDT();
         assertEq(address(builder.FACTORY()), address(factory));
         assertEq(address(builder.ROUTER()), address(router));
         assertEq(builder.POOL_MANAGER(), poolManager);
+        assertEq(builder.USDC(), address(usdc));
+        assertTrue(usdt != address(0) && usdt != address(usdc));
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new BasketBuilder(IIndexFactory(address(0)), router);
+        new BasketBuilder(IIndexFactory(address(0)), router, address(usdc), usdt);
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new BasketBuilder(IIndexFactory(address(factory)), IUniversalRouter(address(0)));
+        new BasketBuilder(IIndexFactory(address(factory)), IUniversalRouter(address(0)), address(usdc), usdt);
+        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
+        new BasketBuilder(IIndexFactory(address(factory)), router, address(0), usdt);
+        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
+        new BasketBuilder(IIndexFactory(address(factory)), router, address(usdc), address(0));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotAStable.selector, address(usdc)));
+        new BasketBuilder(IIndexFactory(address(factory)), router, address(usdc), address(usdc));
     }
 
     // ---------------------------------------------------------------------
@@ -452,7 +467,11 @@ contract BasketBuilderTest is XindexTest {
         p.expectedNonce = 0;
 
         p.tokenIn = address(0);
-        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotAStable.selector, address(0)));
+        builder.buy(p);
+        // Only the builder's USDC and USDT pay for a buy (the owner's call of 2026-11-18).
+        p.tokenIn = address(weth);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotAStable.selector, address(weth)));
         builder.buy(p);
         p.tokenIn = address(usdc);
 
@@ -478,6 +497,7 @@ contract BasketBuilderTest is XindexTest {
     function test_buyRefusesAFeeOnTransferTokenIn() public {
         MockFeeToken fot = new MockFeeToken();
         router.setPrice(address(fot), 1e18, 18);
+        _payingIn(address(fot));
         fot.mint(alice, 300e18);
         IBasketBuilder.BuyParams memory p = _buyParams(index, 1e18, address(fot), 300e18, _one(1));
         p.legs[0] = _mintLeg(_path2(address(weth), address(fot)));
@@ -705,6 +725,7 @@ contract BasketBuilderTest is XindexTest {
     ///      land, and passed through from the buyer's own Tether. A builder already blocked takes neither (XS-10).
     function test_XS10_aBlockedBuilderBuysNothing() public {
         MockUSDT tether = new MockUSDT();
+        _payingIn(address(tether));
         _listWith(address(tether));
         WeightedHub idx = _createIndex("Tether pair", "TP", _pair(address(tether), address(weth)), _units2(10e6, 1e16));
         router.setPrice(address(tether), 1e18, 6);
@@ -827,26 +848,27 @@ contract BasketBuilderTest is XindexTest {
     }
 
     function test_sellPaysAPassThroughLegAsItIs() public {
-        _redeemFor(alice, 1e18);
-        uint256[] memory got = index.previewRedeem(1e18);
-        IBasketBuilder.SellParams memory p = _sellParams(address(weth), 1, _pair(address(wbtc), address(weth)), bob);
-        p.legs[0] = _burnLeg(_path2(address(wbtc), address(weth)), 0);
-        p.legs[1] = _burnLeg("", got[1]);
+        // Alice's escrow holds WETH and USDC, the payout stablecoin itself, whose leg carries no swap.
+        _depositFor(alice, weth, U_WETH);
+        _depositFor(alice, usdc, U_USDC);
+        IBasketBuilder.SellParams memory p = _sellParams(address(usdc), 1, _pair(address(weth), address(usdc)), bob);
+        p.legs[1] = _burnLeg("", U_USDC);
         vm.prank(alice);
         uint256 amountOut = builder.sell(p);
-        assertEq(amountOut, got[1] + router.quoteOut(address(wbtc), address(weth), got[0]));
-        assertEq(weth.balanceOf(bob), amountOut);
-        assertEq(builder.escrowOf(alice, address(weth)), 0);
+        assertEq(amountOut, U_USDC + router.quoteOut(address(weth), address(usdc), U_WETH));
+        assertEq(usdc.balanceOf(bob), amountOut);
+        assertEq(builder.escrowOf(alice, address(usdc)), 0);
 
         // The pass-through leg names no route and honours its own minimum (DA-15).
-        _redeemFor(alice, 1e18);
-        p.legs[1] = _burnLeg(_path2(address(weth), address(weth)), 0);
+        _depositFor(alice, weth, U_WETH);
+        _depositFor(alice, usdc, U_USDC);
+        p.legs[1] = _burnLeg(_path2(address(usdc), address(usdc)), 0);
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.BadRoute.selector, 1));
         builder.sell(p);
-        p.legs[1] = _burnLeg("", got[1] + 1);
+        p.legs[1] = _burnLeg("", U_USDC + 1);
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InsufficientOutput.selector, got[1], got[1] + 1));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InsufficientOutput.selector, U_USDC, U_USDC + 1));
         builder.sell(p);
     }
 
@@ -936,7 +958,11 @@ contract BasketBuilderTest is XindexTest {
         p.to = bob;
 
         p.tokenOut = address(0);
-        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotAStable.selector, address(0)));
+        builder.sell(p);
+        // Only the builder's USDC and USDT are a sale's proceeds (the owner's call of 2026-11-18).
+        p.tokenOut = address(wbtc);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotAStable.selector, address(wbtc)));
         builder.sell(p);
         p.tokenOut = address(usdc);
 
@@ -976,6 +1002,7 @@ contract BasketBuilderTest is XindexTest {
     function test_sellRefusesAFeeOnTransferPayout() public {
         MockFeeToken fot = new MockFeeToken();
         router.setPrice(address(fot), 1e18, 18);
+        _payingIn(address(fot));
         fot.mint(address(router.inventory()), 1_000_000e18);
         _redeemFor(alice, 1e18);
         IBasketBuilder.SellParams memory p = _sellParams(address(fot), 1, _one(address(weth)), bob);
@@ -992,10 +1019,12 @@ contract BasketBuilderTest is XindexTest {
     /// @dev A token with one balance behind two addresses, a dollar through either, and a pool the router pays from.
     ///      Alice escrows 1,000 under its first address. The router holds 500 more, as anyone can leave there: a
     ///      leg's sweep brings them back, and with them a leg measured against both addresses went through and paid
-    ///      out twice.
+    ///      out twice. The builder is one whose USDT is the second address, as a stablecoin behind a legacy address
+    ///      would be, so a buy can pay with it and a sale be paid in it.
     function _twoAddressToken() internal returns (MockTwoAddressToken token, address second) {
         token = new MockTwoAddressToken();
         second = address(token.second());
+        _payingIn(second);
         router.setPrice(address(token), 1e18, 18);
         router.setPrice(second, 1e18, 18);
         token.mint(address(router.inventory()), 1_000_000e18);

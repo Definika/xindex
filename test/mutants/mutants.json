@@ -1853,5 +1853,96 @@
         "new": "        try IWeightedHub(index).accrueFees() {} catch {}\n"
       }
     ]
+  },
+  {
+    "id": "S1",
+    "what": "the zap's mint takes any tokenIn, not only its USDC and USDT (the owner's call of 2026-11-18)",
+    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "file": "src/IndexZap.sol",
+    "test": "test/IndexZap.t.sol",
+    "edits": [
+      {
+        "old": "        _checkStable(p.tokenIn);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "S2",
+    "what": "the zap's burn pays out any tokenOut, not only its USDC and USDT",
+    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "file": "src/IndexZap.sol",
+    "test": "test/IndexZap.t.sol",
+    "edits": [
+      {
+        "old": "        _checkStable(p.tokenOut);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "S3",
+    "what": "the zap is built with one stablecoin twice, so it takes a single currency where it names two",
+    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "file": "src/IndexZap.sol",
+    "test": "test/IndexZap.t.sol",
+    "edits": [
+      {
+        "old": "        if (usdc == usdt) revert NotAStable(usdt);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "S4",
+    "what": "the builder's buy is paid in any tokenIn, not only its USDC and USDT",
+    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "file": "src/BasketBuilder.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        _checkStable(p.tokenIn);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "S5",
+    "what": "the builder's sale pays out any tokenOut, not only its USDC and USDT",
+    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "file": "src/BasketBuilder.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        _checkStable(p.tokenOut);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "S6",
+    "what": "the builder is built with one stablecoin twice",
+    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "file": "src/BasketBuilder.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        if (usdc == usdt) revert NotAStable(usdt);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "S7",
+    "what": "checkDeployment no longer compares the zap's and the builder's stablecoins with MintRequests', so a deployment whose zap takes another USDC passes as one",
+    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "file": "script/DeployWeighted.s.sol",
+    "test": "test/Scripts.t.sol",
+    "edits": [
+      {
+        "old": "        _checkStables(\"IndexZap\", zap.USDC(), zap.USDT(), requests);\n        _checkStables(\"BasketBuilder\", builder.USDC(), builder.USDT(), requests);\n",
+        "new": ""
+      }
+    ]
   }
 ]

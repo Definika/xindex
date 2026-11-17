@@ -13,7 +13,6 @@ import {IndexZap} from "../src/IndexZap.sol";
 import {IIndexZap} from "../src/interfaces/IIndexZap.sol";
 import {IUniversalRouterSwaps} from "../src/interfaces/IUniversalRouterSwaps.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
-import {IWETH9} from "../src/interfaces/IWETH9.sol";
 import {IWeightedHub} from "../src/interfaces/IWeightedHub.sol";
 import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
 import {IRebalanceExecutor} from "../src/interfaces/IRebalanceExecutor.sol";
@@ -134,12 +133,11 @@ contract SecurityRegressionTest is XindexTest {
         _deployFactory(guardian);
         poolManager = makeAddr("poolManager");
         router = new MockUniversalRouter(poolManager);
-        zap = new IndexZap(IIndexFactory(address(factory)), router, IWETH9(address(market.weth())));
-
         wbtc = new MockERC20("Wrapped BTC", "WBTC", 8);
         weth = market.weth();
         link = new MockERC20("Chainlink", "LINK", 18);
         usdc = market.usdc();
+        zap = new IndexZap(IIndexFactory(address(factory)), router, address(usdc), address(_usdt()));
 
         router.setPrice(address(wbtc), 60_000e18, 8);
         router.setPrice(address(weth), 3_000e18, 18);
@@ -161,6 +159,11 @@ contract SecurityRegressionTest is XindexTest {
     // ---------------------------------------------------------------------
     // helpers
     // ---------------------------------------------------------------------
+
+    /// @dev A second stablecoin for a zap's USDT: the suite pays and is paid in USDC.
+    function _usdt() internal returns (MockERC20) {
+        return new MockERC20("Tether USD", "USDT", 6);
+    }
 
     function _blueTokens() internal view returns (address[] memory t) {
         t = new address[](3);
@@ -462,11 +465,14 @@ contract SecurityRegressionTest is XindexTest {
         assertEq(probe.seenWethPerShare(), 1e18);
     }
 
+    /// @dev The zap takes only its two stablecoins, so the fee-charging currency here is its USDT, as Tether's own
+    ///      would be once its fee switch is on.
     function test_I02_feeChargingCurrenciesRevertEarlyWithAClearError() public {
         MockFeeToken fot = new MockFeeToken();
         router.setPrice(address(fot), 1e18, 18);
         fot.mint(address(router.inventory()), 1_000_000e18);
         fot.mint(alice, 200e18);
+        zap = new IndexZap(IIndexFactory(address(factory)), router, address(usdc), address(fot));
 
         vm.startPrank(alice);
         fot.approve(address(zap), 200e18);
@@ -808,7 +814,7 @@ contract SecurityRegressionTest is XindexTest {
         half.setPrice(address(usdc), 1e18, 18);
         weth.mint(address(half.inventory()), 100e18);
         usdc.mint(address(half.inventory()), 100e18);
-        halfZap = new IndexZap(IIndexFactory(address(factory)), half, IWETH9(address(weth)));
+        halfZap = new IndexZap(IIndexFactory(address(factory)), half, address(usdc), address(_usdt()));
 
         idx = _createIndex("Link One", "LNK1", _pair(address(link), address(usdc)), _pair(1e18, U_DUST));
 

@@ -21,6 +21,10 @@ interface IXindexErrors {
     /// @notice `to` cannot receive here: tokens sent to it would be stuck or would reach the wrong party.
     error InvalidRecipient(address to);
 
+    /// @notice `token` is neither of the two stablecoins. USDC and USDT are the only currencies the zap, the basket
+    ///         builder and MintRequests take and pay (the owner's call of 2026-11-18).
+    error NotAStable(address token);
+
     // The swap errors the zap and the basket builder share, from the engine in `UniversalRouterSwaps` and around it.
 
     /// @notice The index rebalanced since the legs were quoted; quote again.

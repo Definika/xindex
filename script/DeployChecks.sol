@@ -259,9 +259,9 @@ abstract contract DeployChecks is Script {
     ///         nothing there (read on 2026-11-13).
     /// @dev The id has to win on chain 1: both routers are CREATE2 deployments from a factory anyone may call, so
     ///      anyone can put BNB Chain's router at its address on Ethereum, as someone did on Base, and a rule that
-    ///      read that code first would hand a deployment on Ethereum BNB Chain's book, which stops it at WBNB's
-    ///      address, empty there. What is left is a run against BNB Chain's state under an override to exactly 1:
-    ///      it stays pinned, resolves Ethereum's book and stops at Ethereum's WETH address, empty on BNB Chain.
+    ///      read that code first would hand a deployment on Ethereum BNB Chain's book, which stops it at BNB Chain's
+    ///      USDC address, empty there. What is left is a run against BNB Chain's state under an override to exactly 1:
+    ///      it stays pinned, resolves Ethereum's book and stops at Ethereum's USDC address, empty on BNB Chain.
     function onBnbChain() public view returns (bool) {
         if (block.chainid == BnbChainAddresses.CHAIN_ID) return true;
         return block.chainid != 1 && BNB_UNIVERSAL_ROUTER.code.length != 0;
@@ -290,12 +290,6 @@ abstract contract DeployChecks is Script {
         return onBnbChain() ? BnbChainAddresses.USDT : MainnetAddresses.USDT;
     }
 
-    /// @notice The pinned chain's wrapped coin, which the zap's ether entry points wrap and unwrap: WETH on Ethereum,
-    ///         WBNB on BNB Chain.
-    function pinnedWeth() public view returns (address) {
-        return onBnbChain() ? BnbChainAddresses.WBNB : MainnetAddresses.WETH;
-    }
-
     /// @notice Fills a zero router with the chain's default on a pinned chain only, and requires it to have code. On a
     ///         pinned chain a given address must be the default, because the router is pinned there: the zap encodes
     ///         against one version's command inputs, and a later line changed them.
@@ -306,10 +300,10 @@ abstract contract DeployChecks is Script {
     }
 
     /// @notice Fills a zero address with the pinned chain's default, refuses any other there, and requires code, as
-    ///         {resolveRouter} does for the router. For the stablecoins and, in `DeployWeighted`, WETH.
-    /// @param name "USDC", "USDT" or "WETH", for the error.
+    ///         {resolveRouter} does for the router. For the stablecoins.
+    /// @param name "USDC" or "USDT", for the error.
     /// @param given Address from the environment; zero takes the default on a pinned chain.
-    /// @param pinnedDefault The pinned chain's address, from {pinnedUsdc}, {pinnedUsdt} or {pinnedWeth}.
+    /// @param pinnedDefault The pinned chain's address, from {pinnedUsdc} or {pinnedUsdt}.
     /// @return The resolved address.
     function resolveStable(string memory name, address given, address pinnedDefault) public view returns (address) {
         return _resolve(name, given, pinnedDefault);

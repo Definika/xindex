@@ -162,7 +162,7 @@ contract MintRequestsTest is XindexTest {
         new MintRequests(address(factory), address(0), address(usdt));
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
         new MintRequests(address(factory), address(usdc), address(0));
-        vm.expectRevert(abi.encodeWithSelector(IMintRequests.NotAStable.selector, address(usdc)));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotAStable.selector, address(usdc)));
         new MintRequests(address(factory), address(usdc), address(usdc));
     }
 
@@ -229,9 +229,9 @@ contract MintRequestsTest is XindexTest {
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotIndex.selector, address(usdc)));
         requests.requestRedeem(address(usdc), 1e18, address(usdc), 1e6, deadline);
 
-        vm.expectRevert(abi.encodeWithSelector(IMintRequests.NotAStable.selector, components[0]));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotAStable.selector, components[0]));
         requests.requestMint(address(index), components[0], 100e6, 1e18, deadline);
-        vm.expectRevert(abi.encodeWithSelector(IMintRequests.NotAStable.selector, address(index)));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotAStable.selector, address(index)));
         requests.requestRedeem(address(index), 1e18, address(index), 1e6, deadline);
 
         vm.expectRevert(IXindexErrors.ZeroAmount.selector);
