@@ -3,7 +3,10 @@
 ## Listing policy
 
 Components are standard ERC-20s: no fee-on-transfer, rebasing or callback tokens, 6 to 18 decimals, and the address
-must be a contract. `issue` checks the amount it receives. USDC and USDT are mint and burn currencies, never components.
+must be a contract. `issue` checks the amount it receives and that it can leave again: a holder must be able to send
+itself one raw unit at no cost, which every issue and every fill proves of the index (RW-8). A token whose ledger a
+second address also writes, a proxy beside a legacy address, is never listed: the swap engine refuses a swap measured
+across the two, but not an index that names both (RW-10). USDC and USDT are mint and burn currencies, never components.
 How a token's own supply changes does not matter, since nothing reads it.
 
 `script/CheckToken.s.sol` reports on every token before it is listed. It refuses a token whose issuer can both blacklist

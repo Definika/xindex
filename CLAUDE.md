@@ -51,8 +51,9 @@ and P2 proofs of Ethereum's finality, the hybrid index) is tagged `stage-b-2026-
 v4's market-cap index (reference supplies and a price-free λ auction, deleted on 2026-10-06,
 `audit/2026-10-06-v4-retirement.md`). Nothing is deployed on a mainnet yet.
 
-Where it stands (2026-11-10). The bullets below are a history: those written before 2026-11-10 describe the
-Pyth-priced rebalance as it then was, and the last one says what replaced it.
+Where it stands (2026-11-14). The bullets below are a history: those written before 2026-11-10 describe the
+Pyth-priced rebalance as it then was, the bullet of that day says what replaced it, and the ones after it what was
+built on it and found in it.
 - The weighted index is built and reviewed twice (`audit/2026-10-05-v5-review.md`, `audit/2026-10-07-v5-logic-review.md`).
 - The Ethereum deployment's scripts are built: `DeployWeighted`, `ConfigureWeighted` over `PythIds`, `CheckToken`.
 - The hundred-coin list is built as far as Ethereum holds it: 93 listed on 2026-10-10 (the 49 of before, 31 more
@@ -135,9 +136,10 @@ Pyth-priced rebalance as it then was, and the last one says what replaced it.
   - A start must land in one slot, which a Safe cannot time (RZ-26): the guardian is a `GuardianRelay` its Safe
     controls, which `DeployWeighted` deploys; the Safe authorizes a start and anyone, the keeper first, sends it.
   - A collapsed leg stops the fills far sooner than was documented (RZ-4): the stop stays.
-  - Issue does not probe a frozen leg (RZ-25): the app checks before it offers a mint; the hub is unchanged.
+  - Issue does not probe a frozen leg (RZ-25): the app checks before it offers a mint; the hub is unchanged. (The
+    hub makes the probe itself since 2026-11-14, RW-8.)
   - A need reaches the restock only for a fill that could pay `MIN_PROFIT_USD` at its best price (RY-8).
-  - RY-3's self-referral waits for the fee policy.
+  - RY-3's self-referral waits for the fee policy (found again as RW-4 on 2026-11-14, and still waiting).
 
   The fork suites ran on the zap's change in CI on 2026-11-02 (`f2f4c18`): the five suites' 45 tests, 0 skipped.
 - The protocol documentation review of 2026-11-01 (`audit/2026-11-01-protocol-docs-review.md`, ids `PD-1`..`PD-14`)
@@ -229,7 +231,8 @@ Pyth-priced rebalance as it then was, and the last one says what replaced it.
     `test/WeightedHub.quote.t.sol`, mutants Q1 to Q7 and the keeper's U5. The hub is 21,315 bytes, 3,261 under
     EIP-170.
   - Not done: the app's move to this build (it is converted to `5bbaf3e`, on a branch); a red team of the
-    mechanism by reviewers who did not design it; the Halmos harness; a new Sepolia deployment.
+    mechanism by reviewers who did not design it (it ran on 2026-11-14, below); the Halmos harness; a new Sepolia
+    deployment.
     `test/vectors/proofs.py` is rewritten for the new arithmetic: it checks the proof's chain in exact rationals
     (the derivative identity behind `L(x) ≤ ln(1 + x)`, the margin at the cap, every rounding, every second of the
     bar, the amounts), standard library only.
@@ -285,9 +288,34 @@ Pyth-priced rebalance as it then was, and the last one says what replaced it.
   - Not done: the owner Safe and the guardian's
     Safe on BNB Chain; the `BNB_RPC_URL` secret, without which CI skips the BNB Chain suite; the source reading of
     the twelve; the keeper's BNB Chain preset, executor and stock; the app.
+- **The red team of 2026-11-14** (`audit/2026-11-14-red-team.md`, ids `RW-1`..`RW-10`) read `src/` alone: the red
+  team of the oracle-free mechanism by reviewers who did not design it. It found no path that takes funds at rest
+  from an index with real, dispersed supply, from a zap user, or from a builder escrow of an ordinary token, and one
+  chain that took a requester's stablecoins on a dust index (RW-1 with RW-2). Six of the ten were already recorded
+  here, which a reading of `src/` alone could not know; the record says which. Fixed the same day:
+  - An index under one whole share does not rebalance (RW-1), which closes the free walk of a dust index, a known
+    limitation since 2026-11-10. The holder of a whole supply of a share or more can still walk the units.
+  - `MintRequests` fills a request only at the `rebalanceNonce` it was made at (RW-2), and a filler may bind its
+    fill to the request it priced (`fill(id, amount, expected)`, `requestHash`, RW-7). `fill(id, amount)` stays and
+    the keeper's executor is unchanged: a draft that removed it broke the keeper's build, seen only at the port.
+  - `acceptCreator` accrues the streaming fee to the outgoing creator first (RW-6).
+  - Issue probes that each leg it pulls can leave again (RW-8). RZ-25's call of 2026-11-02 had left that check to
+    the app, so this one is the owner's to confirm. The hub is 21,341 bytes, 3,235 under EIP-170.
+  - The engine tells a router's stray from a hop's unsold input, and the zap offers the stray where it forced it
+    (RW-9); a swap measured against a balance two addresses write reverts `SharedBalance` (RW-10).
+  - Recorded by documentation: a sliver fill, which a quote can make certain (RW-3), self-referral (RW-4, which is
+    RY-3) and a holder's top-up through a fill (RW-5).
+  - `getRequest` returns one more field and all four release hashes moved, so every decoder of a `Request` follows
+    and a new deployment is a whole one. The vectors are 431; the suite has 555 tests, twenty-three of them named
+    `test_RW..`; the mutants W1 to W29 are all killed.
+  - Not done: the fork suites, Ethereum's five and BNB Chain's, for want of an RPC where it was built. Gate 4
+    requires them for RW-1 (the hub's rebalancing), RW-8 (issue's probe, which has met no real token), RW-9 and
+    RW-10 (the zap and the engine), and they are what runs `MintRequests` on the real stablecoins (RW-2, RW-7).
+    Also not done: the app and the backend; a Sepolia deployment, without which the keeper of this build decodes
+    no request there (`docs/deployment.md`).
 - Before any mainnet: a Hermes plan that serves the keeper its feeds (its price source is its own business now, and
-  no contract waits on it); a run of the fork suites; a red
-  team of the oracle-free mechanism and an external audit, then `DeployWeighted`'s release hashes fixed at the
+  no contract waits on it); a run of the fork suites; an external audit (the red
+  team of the oracle-free mechanism ran on 2026-11-14), then `DeployWeighted`'s release hashes fixed at the
   audited commit (CF-5); the 26 attestations and RAY's update; the platform's fee policy and the legal reading. No
   Pyth plan, replay or Hermes settlement is needed any more. The two Universal Router
   files `IndexZap` and `BasketBuilder` compile, `IUniversalRouter` and `UniversalRouterCommands`, are declarations
@@ -372,6 +400,10 @@ listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` 
    one-line reason on the line above. The lint reads OpenZeppelin's internal `Math.mulDiv` as an external call.
    CI builds with `--deny warnings`, so a compiler warning fails it (A7-17).
 3. `forge test` green. `forge coverage` at 100% for every file, including mocks and scripts.
+   A change to an ABI or a struct the keeper reads (`MintRequests`, the hub, the factory, the builder) also runs the
+   keeper's gates, as CI does: `forge fmt --check`, `forge build --deny warnings`, `forge lint -D notes` and
+   `forge test` under `--root keeper`, and `node --test keeper/test/unit/*.test.mjs`. A draft of RW-7 that removed
+   `fill(id, amount)` passed every gate of the root project and broke the keeper's build.
 4. Fork tests green if the change touches `IndexZap`, the hub's rebalancing, routes, token behaviour, or anything
    router- or pool-related. Their summary must list the five Ethereum
    `test/fork/` suites and 0 skipped. `WeightedHub.fork.t.sol` alone took about an hour at the 91-coin list (85 since 2026-11-13) on an archive RPC
@@ -384,6 +416,8 @@ listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` 
    guards; the documented suppressions are on the `redeem` call in `IndexZap._burnBasket`, the `permit` call in
    `IndexZap._tryPermit`, the `redeem` call in `BasketBuilder.redeem`, and the clone's `initialize` call in
    `WeightedIndexFactory._initializeIndex`, which the creation fee's transfer now follows. v5 adds the executor callback in `WeightedHub`.
+   RW-6 adds the `accrueFees` call in `WeightedIndexFactory.acceptCreator`, as a block (`wake-disable reentrancy` to
+   `wake-enable reentrancy`), since forge lint's marker has to sit directly above that call and Aderyn's at its end.
    Aderyn (Cyfrin's analyzer, `aderyn .`, and its VS Code extension) reports nothing on `src/` either. `aderyn.toml`
    excludes the rules the design rejects, each with its reason, as `foundry.toml` does for lint; a verified false
    positive is marked where it stands with `// aderyn-fp-next-line(<detector>)` and its reason on the line above, or
@@ -449,6 +483,11 @@ listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` 
      attestation, advance, attest and signer-home suites), each with its mutants P1 to P24 in
      `test/mutants/mutants.json`. The record's "Status of the fixes" names every test; PD-14, a dashboard setting, is
      fixed by documentation alone.
+   - The red team of 2026-11-14: `RW-1`..`RW-10` (`audit/2026-11-14-red-team.md`), a test named `test_RW1_...`:
+     RW-1's and RW-8's in `test/WeightedHub.rebalance.t.sol`, RW-6's in `test/WeightedHub.fees.t.sol`, RW-2's and
+     RW-7's in `test/MintRequests.t.sol`, RW-9's in `test/IndexZap.t.sol` and, for the builder's half, in
+     `test/BasketBuilder.t.sol`, where RW-10's are too, with their mutants W1 to W29. The record's "Status of the
+     fixes" names every test; RW-3, RW-4 and RW-5 are recorded by documentation alone.
    - The skills audit of 2026-10-04: `A7-08`, `A7-12`, `A7-13`, `A7-17`, `A7-18`, `A7-22`, `A1a-05` and `A1a-06`, the
      eight of its findings still open on `main`, fixed on 2026-10-25 (`audit/2026-10-25-skills-audit-port.md`), a
      test named `test_A708_...` or `test_A1a05_...`. The record's status table names every test.
@@ -547,12 +586,14 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   ranges): prices of the caller's own, fixed at the start, never read from anywhere. A fill of that proposal must
   clear the bar as any fill and must also bring in, at those prices, at least `1 − tolerance` of what it takes out
   (`WeightedMath.quoteCheck`, `BelowQuote`). Both checks must pass, so a quote that is wrong, stale or hostile can
-  only stop its own proposal from filling, which a cancel already can; it can make no fill worse than a start
+  stop its own proposal from filling, which a cancel already can; it can make no fill worse than a start
   without one allows. Keep it that way: never let a quote accept a fill the bar refuses, replace the bar, outlive
   its proposal (mutant Q2), or reach an issue, a redeem or a claim. What it buys: a lone executor keeps at most the
   tolerance of what it trades, not the index's distance from its weights. Its limits: a stranger's start carries
-  none, so the guardian replaces such a proposal within its six hours; and the tolerance has to cover six hours of
-  market, or the proposal expires unfilled (the spec's section 10).
+  none, so the guardian replaces such a proposal within its six hours; the tolerance has to cover six hours of
+  market, or the proposal expires unfilled (the spec's section 10); and one thing it can do that a cancel cannot: a
+  quote that refuses every trade worth making still passes a fill that shrinks no leg, so the role that posted it
+  can settle a sliver and restart the index's whole interval, up to 91 days (RW-3, a known limitation).
 - **The executor names the units, and the index checks a gain.** `executeRebalance(newUnits, data)` settles at the
   units its caller names. `WeightedMath` accepts them when every leg is inside its unit caps and
   `⌊Σ w_i · L(x_i) / 10,000⌋ ≥ bar`, with `x_i` the leg's relative change in units, rounded down, and
@@ -598,10 +639,15 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   score's terms, the empty supply, and the backing post-check's (the claims dropped from the backing term, only the
   bought legs re-read, a shrinking leg paid as a difference of floored backings). The settlement vectors
   (`test/WeightedMath.vectors.t.sol`) kill the arithmetic's; run them again after any change to `WeightedMath`.
-- **An empty index does not rebalance.** Without shares a fill has nothing to trade and reverts
-  `NothingToRebalance`, so nobody moves an empty index's units for nothing (R14, XA-27). A dust index's units can
-  still be walked by whoever holds its shares, each fill a gain that costs nothing on a supply worth nothing: a
-  known limitation, which the app answers by showing an index's coins against its weights.
+- **An index under one whole share does not rebalance.** Below `SHARE_UNIT` of supply a fill reverts
+  `NothingToRebalance`, and the preview with it, so nobody moves an empty or a dust index's units for nothing (R14,
+  XA-27, RW-1). A fill's gain reads the units alone while its amounts scale with the supply, so on a few raw
+  shares every amount going out floored to zero, and a fill that doubled a leg cost one raw unit. The line is one
+  share because the factory sizes its unit bounds per whole share. What is left is a known limitation: whoever
+  holds an index's whole supply, a share or more, pays every fill to itself and can still walk the units over
+  several intervals, its own basket locked in the index, since no contract reads a price. The app answers by
+  showing an index's coins against its weights, and `MintRequests` by filling a request only at the basket it was
+  made on (RW-2). Do not lower the line: a fill's cost falls with it.
 - **A collapsing coin is still bought.** Fixed weights keep buying it, at most doubling its units per fill (RX-15),
   and units beyond `uint96` stop the fill rather than wrap, the preview with it (RX-61), until the guardian keeps it
   (V5-L3, a known limitation).
@@ -613,13 +659,18 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   after an issuer burned the index's balance, so no new deposit refills the hole for earlier holders (RX-8); and a fill
   that grows a leg must leave the index able to send that leg, measured by sending itself one raw unit, so a token that
   blocks only its sender, as Tether Gold's does, cannot have good legs moved into a leg nobody can take out (RX-12).
+  An issue makes the same probe on every leg it pulls (`_checkCanSendOut`, RW-8; until 2026-11-14 the check was the
+  app's alone, RZ-25): a deposit into a leg the index can no longer send reverts `CannotSendOut` instead of becoming
+  a claim nobody can pay. So a token that refuses a transfer to oneself, or charges for one, can be neither bought
+  by a fill nor issued.
 - **The notice is 2 hours.** `WeightedHub`'s `REBALANCE_DELAY` is 2 hours: the notice is for executors, not for
   holders' exits. `AUCTION_DURATION` is 4 hours, the bar's twenty halvings; the math's must equal the hub's
   (`test_theMathConstantsAreTheHubs`). The
   rebalance interval is the index's own, chosen at creation within [`MIN_REBALANCE_INTERVAL`, `MAX_REBALANCE_INTERVAL`]
   = [7, 91] days (the website's weekly to quarterly cadences; V5R-I2 set the floor). A fill with a keep mask restarts
-  only `MIN_REBALANCE_INTERVAL`, for any start (`earliestRebalance()`, XS-3): a guardian's sliver cannot hold the index
-  off for a quarter, and a keep can be renewed a week on. The cost, accepted: the owner or
+  only `MIN_REBALANCE_INTERVAL`, for any start (`earliestRebalance()`, XS-3): a guardian's sliver behind a mask cannot
+  hold the index off for a quarter (one under a quote and no mask can, RW-3), and a keep can be renewed a week on.
+  The cost, accepted: the owner or
   guardian can run keep-mask fills weekly on a quarterly index, each within the unit caps and above the bar. A cancel, or an auction that
   expired unfilled, holds strangers off for `REBALANCE_DELAY`, so the owner and guardian get the first restart;
   `canStartRebalance` answers whether strangers may, and false for a clone that was never initialized (DA-22; CR-I02
@@ -638,7 +689,10 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   each call (`feeTerms`): the index's creator (`creatorOf`, which the creator can offer on and the new creator must
   accept, RX-22) and the platform recipient;
   a referrer named at mint takes `referralShareBps` of the platform's part, so a self-referral discounts only the
-  platform's. A recipient that could not hold shares is replaced (the creator by the call's `to`, the platform's part
+  platform's (RY-3, RW-4: open, the fee policy's question). Only an issue and a redeem charge these: a fill that
+  grows every leg adds to the index for no entry fee and passes no gate, which is worth doing only to a holder of
+  nearly the whole supply, since the rest is shared with the others (RW-5, recorded).
+  A recipient that could not hold shares is replaced (the creator by the call's `to`, the platform's part
   folded into the creator's), so no recipient can block a mint or an exit. Rates are fixed per index; the policy
   reaches only later indexes, and a creator names the highest platform fee it accepts (`PlatformFeeTooHigh`). The
   creation fee, in ether, is forwarded whole in the same call.
@@ -659,6 +713,9 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   nothing included: a clock kept on a supply too small for one share of fee charged the whole idle time to the next
   minter's deposit (XS-1); what the restart forgoes is under one share per call. A gap long enough for `f` to reach
   one is capped just under it, so the arithmetic answers and the last holder can leave.
+  The creator is read at each accrual, so `acceptCreator` accrues the index before it writes the new one: what the
+  role earned up to the handover goes to the creator who held it (RW-6). A change of the platform's recipient
+  accrues nothing first, both recipients being the platform's.
   The scale pushed the settlement arithmetic out of the hub's EIP-170 budget into `WeightedMath`, a stateless contract
   the factory deploys with the implementation and the hub calls by STATICCALL (`MATH`); its constants are the hub's
   (`test_theMathConstantsAreTheHubs`), and the optimizer runs are 100 for the same reason.
@@ -708,7 +765,9 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
     holders redeem throughout. A cancel budget was considered and rejected (DA-12). A keep-mask start that leaves only
     a sliver moving can also restart `MIN_REBALANCE_INTERVAL` for everyone (XS-3 made that the bound: before, the
     sliver restarted the index's interval, up to 91 days), so the stall can outlast the guardian's replacement by up
-    to `MIN_REBALANCE_INTERVAL`. While a replacement is pending, the owner cancels the outgoing guardian's keep-mask
+    to `MIN_REBALANCE_INTERVAL`. A start with a quote and no mask is the longer stall: its sliver fill restarts the
+    index's whole interval, up to 91 days, which the owner and the new guardian wait out too (RW-3).
+    While a replacement is pending, the owner cancels the outgoing guardian's keep-mask
     starts, and monitors watch `RebalanceStarted` with a non-zero `keepMask` (RT-07). The owner has only
     `REBALANCE_DELAY`, 2 hours, to cancel one before the guardian's own executor can fill it at `eta`, so that cancel
     needs signers on call.
@@ -766,8 +825,19 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   - **Spend bound.** The sweep's minimum is zero, so it never fails a call. What bounds a leg's spend is the amount
     pre-funded. That is also the only bound on a V4 exact-output route that revisits `tokenIn`, since the pinned
     periphery does not hold such a route to its `amountInMaximum` (upstream #564; CR-I06, CR-I14).
-  - **Unsold input.** The sweep returns the router's whole balance of the token, a stray one included. So a hop's unsold
-    input is measured as what came back, `balance + given - before`, never as what was spent (CR-L02).
+  - **Unsold input.** The sweep returns the router's whole balance of the token, a stray one included. So what a hop
+    brought back is measured as `balance + given - before`, never as what was spent (CR-L02), and the router's
+    balance read before the pre-fund tells the stray from the hop's own unsold input (RW-9). The builder credits
+    both to the seller's escrow (RX-45). The zap offers both to the recipient in one transfer; if the token refuses
+    it, the zap sends the unsold part alone, which is the recipient's and must still arrive, and keeps the stray,
+    which nothing can move again. So one raw unit a stranger left in the router no longer reverts the burn of a
+    recipient the token will not pay.
+  - **One balance, one address.** Every amount is a balance change read at one address. A pre-fund that lowers the
+    balance a swap is about to be measured against (a sale hop's output or its leg's `tokenOut`, a buy's component)
+    means two addresses write one ledger, and the swap reverts `SharedBalance` (RW-10): measured both ways the same
+    tokens counted twice, and the builder paid the difference out of other users' escrows. Two shapes no probe
+    sees, which the listing rule excludes: a buy leg with a budget of zero pre-funds nothing, and an index naming
+    both addresses of one ledger is credited twice by `BasketBuilder.redeem`.
   - **V4 routes.** A V4 route must be hookless (`hooks == 0` and empty `hookData`). A hookless key cannot carry the
     dynamic-fee flag, so that one equality covers the flag bits too. `address(0)` is allowed only as an intermediate,
     because native ether must never reach the zap through a swap: its `receive()` takes ether from WETH alone, which
@@ -813,12 +883,24 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
     anyone may `refund` the escrow to the requester. A fill pays exactly what the filler sends, so any surplus over the
     limit goes to the fastest filler, which is why the app suggests limits. Stray tokens sent to the contract stay
     there, since nothing may take them.
+  - A request fills only at the basket it was made on. It records the index's `rebalanceNonce`, and a fill reverts
+    `StaleRebalanceNonce` once the index has settled a rebalance, for both kinds: a limit in shares set before a
+    settlement buys another basket, and the filler of a redeem request would pay for shares the settlement
+    re-denominated (RW-2). `cancel` and `refund` read no nonce, so a stale request's escrow always comes back.
+  - A filler may name the request it priced. `fill(id, amount, expected)` reverts `RequestChanged` unless
+    `keccak256(abi.encode(request))` is `expected`; `requestHash(id)` reports it, and it leaves the id out, so it
+    follows a request a re-org renumbered. A filler hashes the request it priced: calling `requestHash` at fill
+    time proves nothing. `fill(id, amount)` stays for a caller that reads the request in the same call, as the
+    keeper's executor does (RW-7).
   - The invariant suite holds the contract's balance of each token at exactly its open escrows plus donations, under
     any interleaving with Tether's fee switch.
 - **Checks-effects-interactions.** Emit events and write state before external calls where the data is available; make
   the call into a user-supplied address the last interaction when possible.
 - **Standard ERC-20s only as components** (whitelist policy). `issue` rejects fee-on-transfer tokens by checking the
-  received amount. Do not whitelist USDC/USDT as components in scripts or docs; they are fine as mint/burn currencies.
+  received amount, and a token that refuses or charges a transfer of one raw unit to oneself by making it (RW-8). A
+  token whose ledger two addresses write, a proxy beside a legacy address, is never listed: the engine refuses a swap
+  measured across the two, but not an index that names both (RW-10).
+  Do not whitelist USDC/USDT as components in scripts or docs; they are fine as mint/burn currencies.
   `ConfigureWeighted` refuses the deployment's own, `V5_USDC` and `V5_USDT` off Ethereum, as well as Ethereum's (A7-22).
   The policy wants 6 to 18 decimals, which matter only to display and to the unit cap at creation. The admission check is
   `CheckToken`, and the WBT rule (a token that can both blacklist a holder and destroy its balance is refused) stays its

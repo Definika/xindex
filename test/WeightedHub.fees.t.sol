@@ -2,14 +2,41 @@
 pragma solidity ^0.8.24;
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {WeightedHub} from "../src/WeightedHub.sol";
 import {IWeightedHub} from "../src/interfaces/IWeightedHub.sol";
 import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
+import {IRebalanceExecutor} from "../src/interfaces/IRebalanceExecutor.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {WeightedTest} from "./WeightedTest.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockHubFactory} from "./mocks/MockHubFactory.sol";
 import {MockWeightedExecutor} from "./mocks/MockWeightedExecutor.sol";
+
+/// @notice Fills a rebalance honestly and, inside the callback, tries to take the creator role the index's creator
+///         offered it, and records how that call ended.
+contract AcceptingExecutor is IRebalanceExecutor {
+    IWeightedIndexFactory internal immutable FACTORY;
+    bool public accepted;
+    bytes public acceptError;
+
+    constructor(IWeightedIndexFactory factory) {
+        FACTORY = factory;
+    }
+
+    function execute(IWeightedHub index, uint256[] calldata newUnits) external {
+        index.executeRebalance(newUnits, "");
+    }
+
+    function onXindexRebalance(uint256[] calldata, uint256[] calldata amountsIn, bytes calldata) external {
+        (accepted, acceptError) =
+            address(FACTORY).call(abi.encodeCall(IWeightedIndexFactory.acceptCreator, (msg.sender)));
+        address[] memory t = IWeightedHub(msg.sender).componentTokens();
+        for (uint256 i = 0; i < t.length; ++i) {
+            if (amountsIn[i] != 0) MockERC20(t[i]).mint(msg.sender, amountsIn[i]);
+        }
+    }
+}
 
 /// @notice The hub's fees in shares, its gate and its rebalance interval: what the website's creator fee, trading
 ///         fee, recommendator commission, private index and rebalance cadence come to on chain.
@@ -1099,6 +1126,72 @@ contract WeightedHubFeesTest is WeightedTest {
         assertEq(streaming.balanceOf(alice), aliceBefore - shares, "the redeemer gets no fee share");
         assertGe(streaming.balanceOf(creator) - creatorBefore, feeShares - platformShares);
         assertGe(streaming.balanceOf(platform) - platformBefore, platformShares);
+    }
+
+    /// @dev RW-6: an accrual pays whoever is creator when it runs, and the handover did not accrue. So a newcomer
+    ///      accepted the role, accrued, and took the streaming fee the outgoing creator had earned. The factory now
+    ///      accrues before it writes the new creator: the thirty days before the handover are the outgoing creator's,
+    ///      to the share, the newcomer starts with none, and the thirty days after it are the newcomer's.
+    function test_RW6_theHandoverAccruesToTheOutgoingCreator() public {
+        WeightedHub streaming = _streamingIndex();
+        _issueWith(streaming, alice, 1000e18, address(0));
+        uint256 supply = streaming.totalSupply();
+        uint256 creatorBefore = streaming.balanceOf(creator);
+        uint256 platformBefore = streaming.balanceOf(platform);
+        address newCreator = makeAddr("newCreator");
+
+        vm.warp(block.timestamp + 30 days);
+        (uint256 feeShares, uint256 scale) = _expectedAccrual(supply, 1e18, 30 days);
+        uint256 creatorShares = feeShares - feeShares * PLATFORM_STREAMING / STREAMING;
+        assertGt(creatorShares, 0);
+        vm.prank(creator);
+        factory.transferCreator(address(streaming), newCreator);
+        vm.prank(newCreator);
+        factory.acceptCreator(address(streaming));
+        assertEq(factory.creatorOf(address(streaming)), newCreator);
+        assertEq(streaming.balanceOf(creator), creatorBefore + creatorShares, "the thirty days it earned");
+        assertEq(streaming.balanceOf(platform), platformBefore + feeShares - creatorShares);
+        _assertPending(streaming, 0, scale);
+
+        // Nothing is left for the newcomer to take.
+        vm.prank(newCreator);
+        streaming.accrueFees();
+        assertEq(streaming.balanceOf(newCreator), 0, "none of the thirty days before it");
+
+        // From here on the newcomer earns.
+        vm.warp(block.timestamp + 30 days);
+        (uint256 next,) = _expectedAccrual(supply + feeShares, scale, 30 days);
+        vm.prank(stranger);
+        streaming.accrueFees();
+        assertEq(streaming.balanceOf(newCreator), next - next * PLATFORM_STREAMING / STREAMING, "the thirty after it");
+        assertEq(streaming.balanceOf(creator), creatorBefore + creatorShares, "and no more to the first");
+    }
+
+    /// @dev RW-6: the handover's accrual shares the index's guard, so the fix added a revert path no test took: an
+    ///      offer accepted from inside one of the index's own calls, which went through before. An executor the
+    ///      creator offered the role to accepts from its rebalance callback and is refused with the guard's error;
+    ///      it delivers all the same, so the fill settles. The role and the offer stand as they were, and the same
+    ///      account takes the role with a call of its own once the fill is over.
+    function test_RW6_theHandoverWaitsWhileTheIndexIsInsideItsOwnCall() public {
+        WeightedHub streaming = _streamingIndex();
+        _issueWith(streaming, alice, 100e18, address(0));
+        AcceptingExecutor executor = new AcceptingExecutor(factory);
+        vm.prank(creator);
+        factory.transferCreator(address(streaming), address(executor));
+
+        _openMidAuction(streaming);
+        uint256[] memory units = _onWeights(streaming, _market(2500, BTC_PRICE, USD_PRICE));
+        executor.execute(streaming, units);
+        assertFalse(executor.accepted(), "the handover did not go through inside the fill");
+        assertEq(executor.acceptError(), abi.encodeWithSelector(ReentrancyGuard.ReentrancyGuardReentrantCall.selector));
+        assertEq(streaming.rebalanceNonce(), 1, "the fill settled all the same");
+        assertEq(factory.creatorOf(address(streaming)), creator, "the role stayed where it was");
+        assertEq(factory.pendingCreatorOf(address(streaming)), address(executor), "and the offer stands");
+
+        vm.prank(address(executor));
+        factory.acceptCreator(address(streaming));
+        assertEq(factory.creatorOf(address(streaming)), address(executor), "taken once the fill is over");
+        assertEq(factory.pendingCreatorOf(address(streaming)), address(0));
     }
 
     /// @dev The accrual's fallbacks are the mint's: a creator that could not hold shares hands its part to the

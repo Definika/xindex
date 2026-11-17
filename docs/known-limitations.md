@@ -56,9 +56,10 @@ What the contracts do not protect against, and what an app built on them has to 
   afterwards (less a second, CR-I02) only the owner and guardian can restart it. When the distance is under an
   executor's costs, anyone may still fill at the auction's last second with a gift of the bar's floor, 4.77e-7 of
   the index, which pays the holders and restarts the interval.
-- **A dust index's units can be walked.** An index without shares does not rebalance (R14, XA-27). On a supply
-  worth nothing, though, a fill's gain costs nothing, so whoever holds a dust index's shares can move its units off
-  its weights over several intervals. A later minter deposits at those units, in kind and fairly, and the next
+- **An index one holder owns can be walked.** An index with less than one whole share does not rebalance (R14, XA-27,
+  RW-1): on a few raw shares a fill's gain cost nothing. From one share up a fill is paid for, but into the index, so
+  whoever holds the whole supply pays itself and can still move the units off the weights over several intervals,
+  with its own basket locked in the index. A later minter deposits at those units, in kind and fairly, and the next
   auction pays the distance to whoever fills first. The app shows an index's components against its weights before
   it offers a mint.
 - **An exit sent during the auction can be overtaken by the fill.** The executor picks the block, so it can order its
@@ -73,7 +74,10 @@ What the contracts do not protect against, and what an app built on them has to 
   filled with a gift to that sliver. Its fill restarts only `MIN_REBALANCE_INTERVAL` for a rebalance without a keep mask, not
   the index's own interval, so the stall can outlast the guardian's replacement by up to a week (XS-3), and by a
   keep-mask auction the outgoing guardian left pending, `REBALANCE_DELAY` + `AUCTION_DURATION` more (RX-44); the owner and
-  the new guardian can start a keep-mask rebalance then too. While a replacement is pending, the owner cancels the outgoing guardian's
+  the new guardian can start a keep-mask rebalance then too. A quote stalls longer than a keep mask: one that refuses
+  every trade worth making still lets a gift through, and a fill without a keep mask restarts the index's whole
+  interval, up to 91 days, which the owner and the new guardian wait out as everyone does (RW-3).
+  While a replacement is pending, the owner cancels the outgoing guardian's
   keep-mask proposals, and monitors alert on `RebalanceStarted` with a non-zero `keepMask` (RT-07). The owner has only
   `REBALANCE_DELAY`, 2 hours, to cancel one before the guardian's own executor can fill it at `eta`.
 - **Issuers can freeze components, and some can burn them.** WBTC can be paused by its custodian, and so can MANA,
@@ -86,12 +90,10 @@ What the contracts do not protect against, and what an app built on them has to 
   its balance, and the admins of H, PLUME, SNX and SYRUP can burn or move any holder's balance without a blacklist
   (`design/2026-10-18-token-source-reading.md`); the app names them. A paused component makes `redeem`, the zap and any fill that moves it revert; `redeemSkipping`, `claim`
   and the guardian's keep mask are the recourse, and a permanently frozen component needs the keep mask at every
-  rebalance. A destroyed balance is lost to the index's holders. Issue does not test that the index can still send each
-  leg, as a fill does (RX-12): a minter can deposit into a leg a sender-blocking blacklist has already frozen for the
-  index, and hold a claim on it that cannot be paid until the issuer lifts it (RZ-25). The owner's call of 2026-11-02
-  leaves the hub as it is, since a probe on every issue costs gas on every leg and code the hub's 98 spare bytes may not
-  hold: the app checks first, simulating a send of each coin from the index before it offers a mint, and a direct
-  caller checks for itself.
+  rebalance. A destroyed balance is lost to the index's holders. Issue tests that the index can still send each leg it
+  pulls, as a fill does (RX-12), since 2026-11-14 (RW-8; RZ-25 had left the check to the app): a deposit into a leg a
+  sender-blocking blacklist has already frozen for the index reverts `CannotSendOut`, for a direct caller too, at
+  about 4,600 gas a leg. A freeze that comes after a deposit still holds it until the issuer lifts it.
 - **A request's surplus goes to the fastest filler.** A fill delivers what the filler sends and at least the
   requester's limit, so a generous limit is value left for fillers. The app suggests limits from its own valuation.
 - **Circle and Tether freeze differently, and `MintRequests` cannot tell.**
@@ -113,11 +115,17 @@ What the contracts do not protect against, and what an app built on them has to 
 - **A request is an option held by every filler until it closes.** If something changes what a share is worth to the
   requester after they sign, for instance every component pausing, a filler can still deliver at the old limit, and a
   cancel sent to the public mempool can be overtaken by a fill. The loss is bounded by the requester's own limit. The
-  app should default to short deadlines and send cancels through a private relay.
+  app should default to short deadlines and send cancels through a private relay. One change does end the option: a
+  request fills only at the basket it was made on, so once the index settles a rebalance the request can only be
+  cancelled or refunded, and the requester asks again (RW-2).
 - **Fees in shares only.** Mint and redeem fees are minted as shares to the creator, the platform and a referrer; no
-  fee ever moves a component, and the platform's policy is zero until the owner sets one.
-- **The streaming fee is charged on the supply that was there.** Every issue, redeem, settlement and `accrueFees` first
-  mints the fee accrued since the last accrual, and the clock restarts on every one of them, one that mints nothing
+  fee ever moves a component, and the platform's policy is zero until the owner sets one. A minter may name itself
+  the referrer, so the referral share works as a discount on the platform's part for anyone who asks (RY-3, RW-4).
+  Only an issue and a redeem charge these fees: a holder of nearly the whole supply can add to its position through
+  a fill that grows every leg, paying no entry fee and passing no gate (RW-5).
+- **The streaming fee is charged on the supply that was there.** Every issue, redeem, settlement and `accrueFees`, and
+  a creator's handover (RW-6), first mints the fee accrued since the last accrual, and the clock restarts on every one
+  of them, one that mints nothing
   included, so a dust supply left idle never charges that time to the next minter (XS-1); what that forgoes is under
   one share per call. An integer scale backs the supply by up to `supply · units / 1e36` raw units less per accrual, a
   part in the scale (1e18 at first, less as fees accrue) of a leg, which stays in the index (RX-62). A lifetime's gap is capped just under the whole index, and a second
@@ -134,7 +142,9 @@ What the contracts do not protect against, and what an app built on them has to 
   `isBlocked`, since XAUT is not USDT and names it differently (RX-60). A holder whose exit through the builder is refused
   redeems on the index itself, with `redeemSkipping` and `claim` for a frozen leg. The probe does not catch a token
   that charges its sender a fee on transfer, which the whitelist excludes (RX-41); router strays swept back during a
-  call are booked to that call (RX-45); and an escrow owner's exit ignores a blacklist on that owner, so an issuer's
+  call are booked to that call (RX-45); a token whose ledger two addresses write must never be listed, since the
+  engine refuses a swap measured across the two (`SharedBalance`, RW-10) but a redeem of an index naming both would
+  be credited twice; and an escrow owner's exit ignores a blacklist on that owner, so an issuer's
   only lever over an escrow is freezing the whole builder (RX-51).
 - **Airdrops, rewards and governance votes** that accrue to tokens held by an index cannot be claimed or used; by design
   there is no admin who could sweep them.

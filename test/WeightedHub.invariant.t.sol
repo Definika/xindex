@@ -359,14 +359,20 @@ contract WeightedHandler is Test {
         }
     }
 
-    /// @dev The creator hands the role to the other creator of `feeHolders`: fees follow at once (the factory's answer
-    ///      at each call), and the index's rates do not change.
+    /// @dev The creator hands the role to the other creator of `feeHolders`. The handover accrues the streaming fee
+    ///      first, so what was earned so far goes to the outgoing creator; fees follow from then on (the factory's
+    ///      answer at each call), and the index's rates do not change.
     function handOnCreator() external {
         address next = feeCreator == feeHolders[0] ? feeHolders[3] : feeHolders[0];
         vm.prank(feeCreator);
         factory.transferCreator(address(index), next);
+        uint256 held = _recipientsHold();
+        uint256 supply = index.totalSupply();
+        uint256 streaming = _streamingFee();
         vm.prank(next);
         factory.acceptCreator(address(index));
+        _accountFee(held, streaming);
+        _clock(streaming, supply);
         feeCreator = next;
     }
 
@@ -996,7 +1002,9 @@ contract WeightedHubInvariantTest is Test {
         handler.accrueFees(0);
 
         // The first rebalance. At the auction's first second the bar is above anything a trade offers, so nothing
-        // fills; at its last the fill settles, and a short one does not.
+        // fills; at its last the fill settles, and a short one does not. The redeems above left the index under one
+        // whole share, which does not rebalance, so it is topped up first.
+        handler.issue(0, 0, 2e18);
         handler.startRebalance(0, 0, false);
         handler.startRebalance(0, 0, false); // already pending
         handler.executeRebalance(0, false);

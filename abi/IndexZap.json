@@ -1134,6 +1134,22 @@
   },
   {
     "type": "error",
+    "name": "SharedBalance",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "other",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "ShortFill",
     "inputs": [
       {

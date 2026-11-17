@@ -125,6 +125,18 @@ contract WeightedHubRebalanceTest is WeightedTest {
         }
     }
 
+    /// @dev Mints `to` the basket for `shares` of `hub`, approved to the hub, and returns it: the test issues.
+    function _fund(WeightedHub hub, address to, uint256 shares) internal returns (uint256[] memory basket) {
+        address[] memory tokens = hub.componentTokens();
+        basket = hub.previewIssue(shares);
+        vm.startPrank(to);
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            MockERC20(tokens[i]).mint(to, basket[i]);
+            MockERC20(tokens[i]).approve(address(hub), basket[i]);
+        }
+        vm.stopPrank();
+    }
+
     // ---------------------------------------------------------------------
     // Start
     // ---------------------------------------------------------------------
@@ -721,7 +733,8 @@ contract WeightedHubRebalanceTest is WeightedTest {
 
     /// @dev The probe reads the balance again after its transfer. A token whose transfer to oneself answers true but
     ///      loses the unit would otherwise pass as a leg the index can send (RX-12, RB-2). Sold, the leg leaves as any
-    ///      other.
+    ///      other. An issue runs the same probe on what it is paid, so the token starts losing only once the index
+    ///      holds it.
     function test_RB2_RX12_theProbeReadsTheBalanceAfterItsTransfer() public {
         MockSelfLosingToken losing = new MockSelfLosingToken();
         _list(address(losing));
@@ -729,7 +742,9 @@ contract WeightedHubRebalanceTest is WeightedTest {
         specs[0] = _spec(address(eth), 5000, ETH_UNITS);
         specs[1] = _spec(address(losing), 5000, 50e18);
         WeightedHub two = _create(specs);
+        losing.setLosing(false);
         _issue(two, alice, SHARES);
+        losing.setLosing(true);
 
         vm.warp(two.lastRebalance() + two.MIN_REBALANCE_INTERVAL());
         two.startRebalance(0);
@@ -747,6 +762,57 @@ contract WeightedHubRebalanceTest is WeightedTest {
         assertLt(fill[1], 50e18);
         executor.execute(two, fill, "");
         assertEq(two.rebalanceNonce(), 1);
+    }
+
+    /// @dev RW-8: issue took a deposit the index could not send out again. A token that blocks only its sender lets
+    ///      a transfer into a blocked index succeed, so a minter's basket went in and no holder could take it out.
+    ///      Issue now sends itself one raw unit of each component as it arrives, as a fill does for a leg it buys
+    ///      (RX-12): the mint reverts with the token named and the minter keeps the whole basket. Unblocked, the same
+    ///      mint goes through.
+    function test_RW8_anIssueCannotDepositALegTheIndexCannotSend() public {
+        MockSenderBlockToken gold = new MockSenderBlockToken(owner);
+        _list(address(gold));
+        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](3);
+        specs[0] = _spec(address(eth), 5000, ETH_UNITS);
+        specs[1] = _spec(address(btc), 3000, BTC_UNITS);
+        specs[2] = _spec(address(gold), 2000, 20e18);
+        vm.prank(creator);
+        WeightedHub three = WeightedHub(factory.createIndex("Gold", "GLD", specs, _params()));
+        _issue(three, alice, SHARES);
+        gold.addBlackList(address(three));
+
+        uint256[] memory basket = _fund(three, stranger, 1e18);
+        assertEq(basket, _three(ETH_UNITS, BTC_UNITS, 20e18));
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.CannotSendOut.selector, address(gold)));
+        vm.prank(stranger);
+        three.issue(1e18, stranger);
+        assertEq(eth.balanceOf(stranger), ETH_UNITS, "the minter keeps the legs that had already arrived");
+        assertEq(btc.balanceOf(stranger), BTC_UNITS);
+        assertEq(gold.balanceOf(stranger), 20e18, "and the gold that would have been trapped");
+        assertEq(three.totalSupply(), SHARES, "no share was minted");
+
+        // Unblocked, the same mint goes through.
+        gold.removeBlackList(address(three));
+        vm.prank(stranger);
+        three.issue(1e18, stranger);
+        assertEq(three.balanceOf(stranger), 1e18);
+        assertEq(gold.balanceOf(address(three)), 20e18 * 101);
+
+        // The probe reads the balance again, at an issue as at a fill (RB-2): a token that answers true and loses
+        // the unit is refused at the first mint, so an index never comes to hold it while it loses. It is this
+        // index's first leg, where the gold was the other's last: every leg is probed as it arrives.
+        MockSelfLosingToken losing = new MockSelfLosingToken();
+        _list(address(losing));
+        specs = _defaultSpecs();
+        specs[0] = _spec(address(losing), 5000, 50e18);
+        WeightedHub lossy = _create(specs);
+        basket = _fund(lossy, stranger, 1e18);
+        assertEq(basket, _three(50e18, BTC_UNITS, USD_UNITS));
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.CannotSendOut.selector, address(losing)));
+        vm.prank(stranger);
+        lossy.issue(1e18, stranger);
+        assertEq(losing.balanceOf(stranger), 50e18, "and the minter keeps it");
+        assertEq(lossy.totalSupply(), 0, "the index stays empty");
     }
 
     // ---------------------------------------------------------------------
@@ -805,6 +871,9 @@ contract WeightedHubRebalanceTest is WeightedTest {
     ///      a difference of floored backings a shrinking leg released its whole raw unit while no growing leg asked for
     ///      one, so an executor that delivered nothing was paid. Each leg rounds its own change the holders' way:
     ///      nothing leaves, and each growing leg asks for its raw unit, which an empty executor cannot deliver.
+    ///      An index under one whole share now does not rebalance at all: a fill there cost a few wei whatever units
+    ///      it named. So nobody is paid, the honest executor included, and the units stay. The per-leg rounding is
+    ///      still replayed against the exact model at every supply that settles (`WeightedMath.vectors.t.sol`).
     function test_RT12_SA07_anEmptyExecutorIsPaidNothingOnASubTokenSupply() public {
         vm.prank(creator);
         WeightedHub dust = WeightedHub(factory.createIndex("Dust", "DUST", _defaultSpecs(), _params()));
@@ -818,20 +887,55 @@ contract WeightedHubRebalanceTest is WeightedTest {
         vm.warp(eta + 2 hours);
 
         uint256[] memory fair = _three(0.0225e18, 0.0005625e8, 22.5e6);
-        (,, uint256[] memory out, uint256[] memory in_) = dust.previewRebalance(fair);
-        for (uint256 i = 0; i < 3; ++i) {
-            assertEq(out[i], 0, "no leg releases a raw unit for a fraction of one");
-        }
-        assertEq(in_[1], 1, "BTC grows, asking for its raw unit, rounded up");
-        assertEq(in_[2], 1);
+        vm.expectRevert(IWeightedHub.NothingToRebalance.selector);
+        dust.previewRebalance(fair);
 
         executor.setMode(MockWeightedExecutor.Mode.Noop);
-        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalanceUnderfunded.selector, address(btc), 1, 2));
+        vm.expectRevert(IWeightedHub.NothingToRebalance.selector);
         executor.execute(dust, fair, "");
         executor.setMode(MockWeightedExecutor.Mode.Honest);
+        vm.expectRevert(IWeightedHub.NothingToRebalance.selector);
         executor.execute(dust, fair, "");
         assertEq(eth.balanceOf(address(executor)), 0, "an honest executor is paid nothing either");
-        assertEq(dust.rebalanceNonce(), 1);
+        assertEq(eth.balanceOf(address(dust)), 1, "and the index keeps its raw unit");
+        assertEq(dust.rebalanceNonce(), 0, "the units stay");
+    }
+
+    /// @dev RW-1: the settlement refused only a supply of zero. A fill's gain never sees the supply, so on a few wei
+    ///      of shares it moved the index's units, what every share minted afterwards is backed by, for a few wei of
+    ///      tokens. The floor is one whole share. One wei under it the preview and the fill both refuse and the units
+    ///      stay; at exactly one share the same fill settles, and each leg moves by its whole change in units.
+    function test_RW1_oneWholeShareIsTheLeastSupplyThatRebalances() public {
+        vm.prank(creator);
+        WeightedHub small = WeightedHub(factory.createIndex("Small", "SML", _defaultSpecs(), _params()));
+        _issue(small, alice, 1e18 - 1);
+        vm.warp(small.lastRebalance() + small.MIN_REBALANCE_INTERVAL());
+        small.startRebalance(0);
+        (uint256 eta,) = small.pendingRebalance();
+        vm.warp(eta + _midpoint());
+
+        uint256[] memory fair = _onWeights(small, _market(2500, BTC_PRICE, USD_PRICE));
+        vm.expectRevert(IWeightedHub.NothingToRebalance.selector);
+        small.previewRebalance(fair);
+        vm.expectRevert(IWeightedHub.NothingToRebalance.selector);
+        executor.execute(small, fair, "");
+        assertEq(small.recordedUnits(), _three(ETH_UNITS, BTC_UNITS, USD_UNITS), "the units stay");
+        assertEq(small.rebalanceNonce(), 0);
+
+        // The share's last wei, in the same second of the same auction.
+        _issue(small, alice, 1);
+        assertEq(small.totalSupply(), 1e18);
+        uint256 btcHeld = btc.balanceOf(address(small));
+        uint256 usdHeld = usd.balanceOf(address(small));
+        (,, uint256[] memory out, uint256[] memory in_) = small.previewRebalance(fair);
+        assertEq(out, _three(ETH_UNITS - fair[0], 0, 0), "on one share an amount is the leg's change in units");
+        assertEq(in_, _three(0, fair[1] - BTC_UNITS, fair[2] - USD_UNITS));
+        executor.execute(small, fair, "");
+        assertEq(small.recordedUnits(), fair);
+        assertEq(small.rebalanceNonce(), 1);
+        assertEq(eth.balanceOf(address(executor)), 0.0025e18, "the executor is paid a tenth of the share's ETH");
+        assertEq(btc.balanceOf(address(small)), btcHeld + 0.0000625e8, "and pays an eighth more BTC and USD in full");
+        assertEq(usd.balanceOf(address(small)), usdHeld + 2.5e6);
     }
 
     // ---------------------------------------------------------------------

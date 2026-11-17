@@ -25,7 +25,9 @@ import {UniversalRouterSwaps} from "./UniversalRouterSwaps.sol";
 ///        - a buy credits what the engine measured as delivered;
 ///        - a sale debits what it gave the router, and credits back what the sweep returned.
 ///        So for every token, the builder's balance covers the sum of the escrows, whatever the token does on
-///        transfer.
+///        transfer. This assumes one balance behind one address. A swap measured against a balance two addresses
+///        share is refused (`SharedBalance`), but a redeem of an index naming both addresses would be credited
+///        twice, so such a token is never listed.
 ///      - Every swap runs through {UniversalRouterSwaps}, the engine shared with the zap. Its notes cover the pre-fund
 ///        and sweep, the spend bound, hookless V4 routes and hop-by-hop V3 sales.
 ///      - A buy is sized by the index's `previewIssue` at the call, minus what the escrow already holds. So a buy
@@ -265,10 +267,11 @@ contract BasketBuilder is ReentrancyGuard, UniversalRouterSwaps, IBasketBuilder 
         return passedThrough;
     }
 
-    /// @dev Credits what a hop did not sell (plus any balance of it the router already held) back to the seller's
+    /// @dev Credits what a hop did not sell, plus any balance of it the router already held, back to the seller's
     ///      escrow.
-    function _onUnsold(address token, uint256 amount, bytes memory ctx) internal override {
+    function _onUnsold(address token, uint256 unsold, uint256 stray, bytes memory ctx) internal override {
         address user = abi.decode(ctx, (address));
+        uint256 amount = unsold + stray;
         escrowOf[user][token] += amount;
         // forge-lint: disable-next-line(reentrancy-events)
         emit Unsold(user, token, amount);

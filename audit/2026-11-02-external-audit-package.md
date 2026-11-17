@@ -30,6 +30,13 @@
 >
 > What the package says of issue, redeem, claims, fees, the zap, the builder, `MintRequests` and the factory's
 > lifecycle stands. The oracle-free mechanism has not yet been red-teamed by reviewers who did not design it.
+>
+> **Note of 2026-11-14.** That red team has run (`audit/2026-11-14-red-team.md`, RW-1 to RW-10), and the paragraph
+> above no longer stands in full. An index under one whole share does not rebalance (RW-1); issue probes that each
+> leg can leave again (RW-8); `MintRequests` fills a request only at the nonce it was made at, has a bound fill, and
+> a `Request` has nine fields (RW-2, RW-7); `acceptCreator` accrues the streaming fee first (RW-6); the swap engine
+> tells a router's stray from unsold input and refuses a balance two addresses write (RW-9, RW-10). The model has
+> 431 vectors. Open from it, for section 9: RW-3 and RW-8's confirmation, the owner's, and RW-4, which is RY-3.
 
 The brief for the external auditors, step 5 of the logic-hardening plan: what to audit, at which commit, how to build
 it, what the system promises, who is trusted with what, where we want the most attention, and what every earlier

@@ -21,8 +21,8 @@ interface IWeightedMath {
     ///         Reverts, in this order:
     ///         - `IWeightedHub.AuctionOver` if `elapsed` is past AUCTION_DURATION;
     ///         - `LengthMismatch` if `newUnits` is not one entry per component;
-    ///         - `IWeightedHub.NothingToRebalance` if `supply` is zero: an empty index has nothing to trade, and its
-    ///           units stay as they are;
+    ///         - `IWeightedHub.NothingToRebalance` if `supply` is under one whole share (1e18): such an index has
+    ///           nothing to trade, and its units stay as they are;
     ///         - `IWeightedHub.LegOutOfBounds` at the first component outside its caps, a kept one that moved included;
     ///         - `SafeCastOverflowedUintDowncast(96, units)` at the first component above the 96 bits the hub records;
     ///         - `IWeightedHub.GainBelowBar` if the gain is under the bar.

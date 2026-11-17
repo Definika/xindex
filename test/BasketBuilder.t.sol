@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {XindexTest} from "./XindexTest.sol";
+import {Vm} from "forge-std/Vm.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -18,6 +19,7 @@ import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockFeeToken} from "./mocks/MockFeeToken.sol";
 import {MockHookToken, ITokenReceiverHook} from "./mocks/MockHookToken.sol";
 import {MockMarket} from "./mocks/MockMarket.sol";
+import {MockTwoAddressToken} from "./mocks/MockTwoAddressToken.sol";
 import {MockUniversalRouter} from "./mocks/MockUniversalRouter.sol";
 import {MockUSDT} from "./mocks/MockUSDT.sol";
 import {PathKey} from "../src/libraries/UniswapV4Types.sol";
@@ -864,6 +866,46 @@ contract BasketBuilderTest is XindexTest {
         _assertCovered(address(wbtc));
     }
 
+    /// @dev How many Unsold events of the builder's are among `logs`.
+    function _unsoldAnnounced(Vm.Log[] memory logs) internal view returns (uint256) {
+        uint256 count = 0;
+        for (uint256 i = 0; i < logs.length; ++i) {
+            if (logs[i].emitter == address(builder) && logs[i].topics[0] == IBasketBuilder.Unsold.selector) ++count;
+        }
+        return count;
+    }
+
+    /// @dev RW-9: a sale hop's sweep brings back what the router already held of the hop's input with what the hop did
+    ///      not sell, and the engine now hands the builder the two apart. The builder credits both to the seller, in
+    ///      one write under one event, but no test held it to the stray: crediting the unsold input alone passed, and
+    ///      left the stray in the builder as nobody's. Alice offers 2 of her 5 WETH to a pool that takes 1, with a
+    ///      stranger's 7 wei in the router. Her escrow ends at 4 WETH and 7 wei, and bob's 6 WETH stay his.
+    function test_RW9_theBuilderCreditsTheSellerTheUnsoldInputAndTheStray() public {
+        _depositFor(alice, weth, 5e18);
+        _depositFor(bob, weth, 6e18);
+        weth.mint(address(router), 7); // a stranger's leftover
+        router.setMode(MockUniversalRouter.Mode.PartialFirstHop); // the pool takes half the input
+        IBasketBuilder.SellParams memory p = _sellParams(address(usdc), 1, _one(address(weth)), alice);
+        p.amounts[0] = 2e18;
+
+        vm.recordLogs();
+        vm.prank(alice);
+        vm.expectEmit(address(builder));
+        emit IBasketBuilder.Unsold(alice, address(weth), 1e18 + 7);
+        uint256 amountOut = builder.sell(p);
+
+        assertEq(_unsoldAnnounced(vm.getRecordedLogs()), 1, "the unsold input and the stray go under one event");
+        assertEq(amountOut, 3_000e6, "the payout is what the 1 WETH sold bought");
+        assertEq(usdc.balanceOf(alice), 3_000e6, "and alice received it");
+        assertEq(builder.escrowOf(alice, address(weth)), 4e18 + 7, "the 3 kept, the 1 unsold and the stray are hers");
+        assertEq(weth.balanceOf(address(router)), 0, "the router keeps none of it");
+        assertEq(builder.escrowOf(bob, address(weth)), 6e18, "bob's escrow is as it was");
+        assertEq(weth.balanceOf(address(builder)), 10e18 + 7, "the builder holds both escrows and nothing else");
+        vm.prank(bob);
+        builder.withdraw(address(weth), 0, bob);
+        assertEq(weth.balanceOf(bob), 6e18, "bob withdrew all of his");
+    }
+
     function test_sellAV4Leg() public {
         _redeemFor(alice, 1e18);
         uint256 held = builder.escrowOf(alice, address(weth));
@@ -941,6 +983,131 @@ contract BasketBuilderTest is XindexTest {
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.TransferShortfall.selector, address(fot)));
         builder.sell(p);
+    }
+
+    // ---------------------------------------------------------------------
+    // One balance behind two addresses
+    // ---------------------------------------------------------------------
+
+    /// @dev A token with one balance behind two addresses, a dollar through either, and a pool the router pays from.
+    ///      Alice escrows 1,000 under its first address. The router holds 500 more, as anyone can leave there: a
+    ///      leg's sweep brings them back, and with them a leg measured against both addresses went through and paid
+    ///      out twice.
+    function _twoAddressToken() internal returns (MockTwoAddressToken token, address second) {
+        token = new MockTwoAddressToken();
+        second = address(token.second());
+        router.setPrice(address(token), 1e18, 18);
+        router.setPrice(second, 1e18, 18);
+        token.mint(address(router.inventory()), 1_000_000e18);
+        token.mint(address(router), 500e18);
+        _depositFor(alice, token, 1_000e18);
+    }
+
+    /// @dev Mints `amount` of `token` to `who` and deposits it into their escrow.
+    function _depositFor(address who, MockERC20 token, uint256 amount) internal {
+        token.mint(who, amount);
+        vm.startPrank(who);
+        token.approve(address(builder), amount);
+        builder.deposit(address(token), amount);
+        vm.stopPrank();
+    }
+
+    /// @dev What a refused leg leaves behind: bob's escrow as it was, the router's 500 where they were, and alice
+    ///      withdrawing every unit she escrowed.
+    function _assertNothingMoved(MockTwoAddressToken token, uint256 bobsEscrow) internal {
+        assertEq(builder.escrowOf(bob, address(token)), bobsEscrow, "bob's escrow is as it was");
+        assertEq(token.balanceOf(address(router)), 500e18, "the router holds what it held");
+        assertEq(token.balanceOf(address(builder)), 1_000e18 + bobsEscrow, "the builder holds both escrows");
+        vm.prank(alice);
+        builder.withdraw(address(token), 0, alice);
+        assertEq(token.balanceOf(alice), 1_000e18, "alice withdrew all of hers");
+    }
+
+    /// @dev RW-10: a sale from one address of a balance to the other counted what came back to the builder twice, as
+    ///      the seller's unsold input and as the sale's proceeds. For the 100 he sold, bob was credited 600 in escrow
+    ///      and paid the router's 500 as well, out of alice's escrow. The pre-fund now sees the output's balance fall
+    ///      with the input's and refuses the leg.
+    function test_RW10_aSaleBetweenTwoAddressesOfOneBalanceIsRefused() public {
+        (MockTwoAddressToken token, address second) = _twoAddressToken();
+        _depositFor(bob, token, 100e18);
+        IBasketBuilder.SellParams memory p = _sellParams(second, 1, _one(address(token)), bob);
+        p.legs[0] = _burnLeg(_path2(address(token), second), 0);
+        vm.prank(bob);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.SharedBalance.selector, second, address(token)));
+        builder.sell(p);
+        _assertNothingMoved(token, 100e18);
+    }
+
+    /// @dev RW-10: the same through an ordinary middle token. The first hop's input shares its balance with `tokenOut`,
+    ///      not with the hop's own output, so a check on a hop's two ends alone would miss it: the router's 500 were
+    ///      credited to bob's escrow and paid to him again in the proceeds. Each hop's pre-fund probes the leg's
+    ///      `tokenOut` as well.
+    function test_RW10_aTwoHopSaleEndingAtItsInputsOtherAddressIsRefused() public {
+        (MockTwoAddressToken token, address second) = _twoAddressToken();
+        _depositFor(bob, token, 100e18);
+        IBasketBuilder.SellParams memory p = _sellParams(second, 1, _one(address(token)), bob);
+        p.legs[0] = _burnLeg(_path3(address(token), address(weth), second), 0);
+        vm.prank(bob);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.SharedBalance.selector, second, address(token)));
+        builder.sell(p);
+        _assertNothingMoved(token, 100e18);
+    }
+
+    /// @dev RW-10: the same where the other address is only a stop on the way to an ordinary `tokenOut`. The first
+    ///      hop's output shares its balance with its input, so what came back to the builder counted as unsold input
+    ///      and as that hop's output: bob was credited 600 in escrow, and the 500 sold on paid him 500 USDC. A check
+    ///      on the leg's last hop alone would miss it, so every hop's pre-fund is checked against its own output.
+    function test_RW10_aSalePassingThroughItsInputsOtherAddressIsRefused() public {
+        (MockTwoAddressToken token, address second) = _twoAddressToken();
+        _depositFor(bob, token, 100e18);
+        IBasketBuilder.SellParams memory p = _sellParams(address(usdc), 1, _one(address(token)), bob);
+        p.legs[0] = _burnLeg(_path3(address(token), second, address(usdc)), 0);
+        vm.prank(bob);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.SharedBalance.selector, second, address(token)));
+        builder.sell(p);
+        _assertNothingMoved(token, 100e18);
+    }
+
+    /// @dev RW-10: the same on a V4 leg, which is one swap from the component to `tokenOut` whatever lies between. It
+    ///      made the same double count and meets the same check, on the direct route and through an ordinary middle
+    ///      currency.
+    function test_RW10_aV4SaleBetweenTwoAddressesOfOneBalanceIsRefused() public {
+        (MockTwoAddressToken token, address second) = _twoAddressToken();
+        _depositFor(bob, token, 100e18);
+        IBasketBuilder.SellParams memory p = _sellParams(second, 1, _one(address(token)), bob);
+        PathKey[] memory throughWeth = new PathKey[](2);
+        (throughWeth[0], throughWeth[1]) = (_hop(address(weth)), _hop(second));
+        bytes memory refusal = abi.encodeWithSelector(IXindexErrors.SharedBalance.selector, second, address(token));
+
+        p.legs[0] = IUniversalRouterSwaps.BurnLeg({v3Path: "", v4Path: _v4Path1(second), minAmountOut: 0});
+        vm.prank(bob);
+        vm.expectRevert(refusal);
+        builder.sell(p);
+        p.legs[0].v4Path = throughWeth;
+        vm.prank(bob);
+        vm.expectRevert(refusal);
+        builder.sell(p);
+        _assertNothingMoved(token, 100e18);
+    }
+
+    /// @dev RW-10: on a buy paid through the component's other address, what the swap delivered also counted as
+    ///      `tokenIn` it had not spent. Bob was credited the 100 he bought and refunded them too, out of alice's
+    ///      escrow. The pre-fund now sees the component's balance fall with `tokenIn`'s and refuses the leg.
+    function test_RW10_aBuyPaidThroughTheComponentsOtherAddressIsRefused() public {
+        (MockTwoAddressToken token, address second) = _twoAddressToken();
+        _listWith(address(token));
+        WeightedHub idx =
+            _createIndex("Two Address", "TWO", _pair(address(token), address(weth)), _units2(100e18, 1e16));
+        IBasketBuilder.BuyParams memory p = _buyParams(idx, 1e18, second, 200e18, _one(uint256(0)));
+        p.legs[0] = _mintLeg(_path2(address(token), second));
+        token.mint(bob, 200e18);
+        vm.startPrank(bob);
+        token.approve(address(builder), 200e18); // the one allowance, which the second address spends too
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.SharedBalance.selector, address(token), second));
+        builder.buy(p);
+        vm.stopPrank();
+        assertEq(token.balanceOf(bob), 200e18, "bob keeps what he offered");
+        _assertNothingMoved(token, 0);
     }
 
     // ---------------------------------------------------------------------

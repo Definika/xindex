@@ -73,9 +73,11 @@ interface IBasketBuilder is IUniversalRouterSwaps {
     event Redeemed(address indexed user, address indexed index, uint256 shares);
     /// @notice `user` sold legs of its escrow and `to` received `amountOut` of `tokenOut`.
     event Sold(address indexed user, address indexed to, address tokenOut, uint256 amountOut);
-    /// @notice A sale hop sold less of `token` than `user` gave it, and `amount` went back to its escrow.
-    ///         - `token` is the input of the hop that was not filled; on a multi-hop leg it can be a middle token.
-    ///         - `amount` includes any balance of it the router already held, which anyone could have swept.
+    /// @notice A sale hop sold less of `token` than `user` gave it, or the router already held some, and `amount`
+    ///         went back to its escrow.
+    ///         - `token` is the hop's input; on a multi-hop leg it can be a middle token.
+    ///         - `amount` is what the hop's sweep brought back. It includes any balance of `token` the router already
+    ///           held, which anyone could have swept.
     event Unsold(address indexed user, address indexed token, uint256 amount);
 
     /// @notice A leg names a component position at or beyond the index's component count.

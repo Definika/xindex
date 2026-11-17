@@ -44,13 +44,13 @@ contract DeployWeighted is DeployChecks {
     ///         mainnet broadcast is bound to (CF-5): `deploy` refuses to broadcast on a pinned chain from any other build (a
     ///         local edit, a lib/ checkout off foundry.lock, a FOUNDRY_* override), and `test_CF5_*` in
     ///         test/Scripts.t.sol fails until these equal the build, so only a reviewed, CI-green commit moves them.
-    bytes32 public constant FACTORY_INITCODE_HASH = 0x50a356f1334595395487187b8c65c35987dea76ddf5a65c796b3e921b0557dba;
+    bytes32 public constant FACTORY_INITCODE_HASH = 0x493f6a3f55ec53cb9c131e2c298c3716ff4f2939d21dc9172f338e81eb73cb58;
     /// @notice keccak256 of `IndexZap`'s init code, as above.
-    bytes32 public constant ZAP_INITCODE_HASH = 0xed164e7f9532363e7366b0163f7b344cfeeaa5d2c8dadddc8f09e4d745f42174;
+    bytes32 public constant ZAP_INITCODE_HASH = 0xd38f8bf448953f5233077032f82a154e7b05591a223aab4d2e5dac6b04221c9c;
     /// @notice keccak256 of `BasketBuilder`'s init code, as above.
-    bytes32 public constant BUILDER_INITCODE_HASH = 0x92395cab72b8fe960036e93050cc3c4902533372fe74472da92e79dd224ac408;
+    bytes32 public constant BUILDER_INITCODE_HASH = 0x7d5cc2866f55016cd970e79e513ca76a9044d7aab2bf3c3aa861faddbd477a4d;
     /// @notice keccak256 of `MintRequests`' init code, as above.
-    bytes32 public constant REQUESTS_INITCODE_HASH = 0xd3b3413a62913bc0091205d13253547060e4e4097339efda529b4f91f6b497f2;
+    bytes32 public constant REQUESTS_INITCODE_HASH = 0x2a82edc39d681f4855b529a51c034b63f615f6f294c77ea618bdae0f7d0d44b3;
 
     /// @dev How many contracts the release record covers: the factory, the zap, the builder and MintRequests.
     uint256 private constant RELEASED = 4;

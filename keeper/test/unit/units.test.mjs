@@ -16,14 +16,14 @@ function outcomeOf(v) {
   if (bar === null) return { outcome: ELAPSED };
   const g = U.gainOf(big(v.units), big(v.newUnits), v.weights.map(Number), BigInt(v.keepMask));
   if (g.error === "LengthMismatch") return { outcome: LENGTH };
-  if (BigInt(v.supply) === 0n) return { outcome: EMPTY };
+  if (BigInt(v.supply) < 10n ** 18n) return { outcome: EMPTY }; // under one whole share nothing trades
   if (g.error === "LegOutOfBounds") return { outcome: BOUNDS, ...g };
   if (g.error === "Overflow") return { outcome: OVERFLOW };
   return { outcome: g.gain < bar ? BELOW : SETTLES, bar, gain: g.gain };
 }
 
 test("the bot's arithmetic is WeightedMath's: every settlement vector, outcome, bar and gain", () => {
-  assert.equal(vectors.length, 426);
+  assert.equal(vectors.length, 431);
   const seen = new Set();
   for (const v of vectors) {
     const got = outcomeOf(v);

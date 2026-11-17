@@ -93,7 +93,8 @@ def settle(elapsed, supply, scale, units, new_units, weights, keep):
     """The settlement `elapsed` seconds into the auction: (SETTLES, bar, gain, amounts out, amounts in), or a refusal.
 
     Refusals, in the order the spec checks them: (ELAPSED,) past the auction; (LENGTH,) a list of another length;
-    (EMPTY,) no supply; (BOUNDS, i, v, lowest, highest) the first leg outside its caps; (OVERFLOW, v) the first leg
+    (EMPTY,) a supply under one whole share; (BOUNDS, i, v, lowest, highest) the first leg outside its caps;
+    (OVERFLOW, v) the first leg
     above uint96; (BELOW, gain, bar) a gain under the bar.
     """
     bar = bar_at(elapsed)
@@ -102,7 +103,8 @@ def settle(elapsed, supply, scale, units, new_units, weights, keep):
     n = len(units)
     if len(new_units) != n:
         return (LENGTH,)
-    if supply == 0:
+    # Under one whole share there is nothing to trade: the gain never sees the supply, and the amounts shrink with it.
+    if supply < WAD:
         return (EMPTY,)
     for i in range(n):
         u, v = units[i], new_units[i]
@@ -183,7 +185,7 @@ def make(rng, kind):
     n = rng.choice([2, 2, 3, 3, 3, 4, 5, 6, 8, 12])
     weights = partition(rng, n)
     units = [log_uniform(rng, MIN_RAW_UNITS, MAX_UNITS) for _ in range(n)]
-    supply = log_uniform(rng, 10**15, 10**30)
+    supply = log_uniform(rng, WAD, 10**30)
     scale = WAD
     keep = 0
     elapsed = rng.randrange(0, AUCTION_DURATION + 1)
@@ -225,7 +227,13 @@ def make(rng, kind):
         first = first_second(units, new_units, weights)
         elapsed = first if first is not None else AUCTION_DURATION
     elif kind == "dust":
-        supply = rng.choice([0, 0, 1, 2])
+        # No shares, a few wei of them, and one wei under a whole share: none settles.
+        supply = rng.choice([0, 1, 2, WAD - 1])
+        elapsed = AUCTION_DURATION
+        new_units = [min(u + max(1, u // 100), UINT96_MAX) for u in units]
+    elif kind == "share":
+        # Exactly one whole share, the least supply that settles, with the fill the dust vectors are refused.
+        supply = WAD
         elapsed = AUCTION_DURATION
         new_units = [min(u + max(1, u // 100), UINT96_MAX) for u in units]
     elif kind == "scaled":
@@ -260,7 +268,7 @@ def boundary(rng):
         n = rng.choice([2, 3, 4])
         weights = partition(rng, n)
         units = [log_uniform(rng, MIN_RAW_UNITS, MAX_UNITS) for _ in range(n)]
-        supply = log_uniform(rng, 10**15, 10**30)
+        supply = log_uniform(rng, WAD, 10**30)
         elapsed = rng.randrange(0, AUCTION_DURATION + 1)
         bar = bar_at(elapsed)
         new_units = list(units)
@@ -354,7 +362,7 @@ def quotes():
 
 def main():
     rng = random.Random(SEED)
-    plan = [("trade", 110), ("wide", 40), ("gift", 20), ("caps", 40), ("tiny", 30), ("kept", 40), ("dust", 15),
+    plan = [("trade", 110), ("wide", 40), ("gift", 20), ("caps", 40), ("tiny", 30), ("kept", 40), ("dust", 15), ("share", 5),
             ("scaled", 30), ("huge", 15), ("clock", 40), ("length", 6)]
     vectors = [with_outcome(make(rng, kind)) for kind, count in plan for _ in range(count)]
     for _ in range(20):

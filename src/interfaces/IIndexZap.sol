@@ -34,7 +34,7 @@ import {IWETH9} from "./IWETH9.sol";
 ///      - InvalidRecipient: a recipient that is the zap, the index, the router, the PoolManager or the factory (RT-21),
 ///        WETH, or the call's own `tokenIn` or `tokenOut` (RY-1).
 ///      - The swap errors, shared with `BasketBuilder`: StaleRebalanceNonce, Expired, ZeroAmount, BadRoute, ShortFill,
-///        InsufficientBudget, InsufficientOutput and TransferShortfall.
+///        InsufficientBudget, InsufficientOutput, TransferShortfall and SharedBalance.
 interface IIndexZap is IUniversalRouterSwaps {
     /// @param index Index to mint; must be registered in the factory.
     /// @param expectedNonce The index's `rebalanceNonce` when the legs were quoted.
@@ -92,10 +92,12 @@ interface IIndexZap is IUniversalRouterSwaps {
         uint256 amountSpent,
         uint256 shares
     );
-    /// @notice The router sold less of `component` than the zap gave it, and `amount` went to `to` instead.
-    ///         - `component` is the input of the hop that was not filled; on a multi-hop leg it can be a middle token.
-    ///         - `amount` is everything the hop's sweep brought back. It includes any balance of that token the router
-    ///           already held, which anyone could have swept.
+    /// @notice The router sold less of `component` than the zap gave it, or already held some, and `amount` went to
+    ///         `to` instead.
+    ///         - `component` is the hop's input; on a multi-hop leg it can be a middle token.
+    ///         - `amount` is what the hop's sweep brought back and `to` received. It includes any balance of that
+    ///           token the router already held, which anyone could have swept, unless `to` could not receive it: that
+    ///           part then stays in the zap, and only what the hop did not sell is sent.
     ///         Unsold `tokenOut` raises the payout instead, and is not reported here.
     event ComponentReturned(address indexed index, address indexed to, address indexed component, uint256 amount);
     /// @notice `user` burned `shares` of `index` and `to` received `amountOut` of `tokenOut`.

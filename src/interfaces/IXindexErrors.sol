@@ -42,4 +42,7 @@ interface IXindexErrors {
     error InsufficientOutput(uint256 amountOut, uint256 minAmountOut);
     /// @notice A transfer delivered less `token` than it should (a fee-on-transfer token).
     error TransferShortfall(address token);
+    /// @notice Sending `other` to the router lowered the contract's balance of `token`: one balance behind two
+    ///         addresses. A swap measured against both would count the same tokens twice.
+    error SharedBalance(address token, address other);
 }

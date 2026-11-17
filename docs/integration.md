@@ -22,7 +22,9 @@ token worth $100 can hold it at 30% or more; for WBTC, 0.0001 BTC, about $11, at
 18-decimal component the floor binds on nothing (RX-38). Names and symbols are free-form and not unique; the UI must
 show the index address and `creatorOf` to avoid spoofing. The creator role is handed on in two steps: `transferCreator`
 offers it and the new creator takes it with `acceptCreator`, so `creatorOf` only ever names an account that agreed
-(RX-22). The new creator needs no approval: the approval is read at creation and nowhere else.
+(RX-22). `acceptCreator` accrues the index's streaming fee first, to the outgoing creator (RW-6), so the accrual's
+events precede `CreatorTransferred`, and it reverts if called from inside one of the index's own calls. The new
+creator needs no approval: the approval is read at creation and nowhere else.
 
 The address commits to the creator, the name, the symbol, every component's token, units and weight, and the index's
 fee rates, referral share and rebalance interval. A change of the fee policy that lands between the preview and the
@@ -72,8 +74,8 @@ non-zero overall `minAmountOut`, passes `rebalanceNonce()`, and calls `burnToTok
    block, so an executor sizes itself from the callback's arguments. `executeRebalance(newUnits, data,
    maxAmountsIn)` is the same settlement bounded: it reverts `RebalanceMovedOn(token, required, maxAmountIn)` when
    the index has come to need more of a component than the caller said it would deliver (DA-13).
-4. A fill that changes nothing has no gain, so it never clears the bar, and an index without shares reverts
-   `NothingToRebalance`. Nobody restarts the interval, or moves an empty index's units, for nothing.
+4. A fill that changes nothing has no gain, so it never clears the bar, and an index with less than one whole share
+   reverts `NothingToRebalance`. Nobody restarts the interval, or moves an empty or a dust index's units, for nothing.
 5. The bar falls until some executor finds the trade worth making, and the first to clear it settles. The fill that
    clears the highest bar is the one that puts the index on its weights at the market's prices, so executors compete by
    filling earlier, which leaves more with the holders. A fair price therefore needs an executor bidding, the keeper in
@@ -113,7 +115,9 @@ has none.
   the start, and they only refuse.
 - It can only tighten. A fill must clear the bar and hold the quote, so a quote that is wrong, stale or hostile can
   stop its own proposal from filling, which a cancel already can, and can make no fill worse than a start without one
-  allows. A compromised owner or guardian gains nothing over funds from it.
+  allows. A compromised owner or guardian gains nothing over funds from it. One thing it can do that a cancel
+  cannot: a quote that refuses every trade worth making still passes a fill that shrinks no leg, so the role that
+  posted it can settle a sliver and restart the index's whole interval, up to 91 days (RW-3, a known limitation).
 - What it buys: an executor alone at the auction's last second keeps at most `tolerance` of what it trades, where
   without a quote it keeps the index's whole distance from its weights (0.48% of an index after one coin of four rose
   a quarter, 5.0% after one coin of two doubled).
@@ -138,7 +142,11 @@ suggests from its own valuation, for example 1% under the index's value. A minte
 kind, calls `fill(id, amount)`: at least `minShares` shares go from the minter to the requester, measured at the
 requester, and the escrowed USDC goes to the minter. A redemption is the mirror image, and a USDT fee comes out of the
 filler's delivery, so the requester still receives the limit. Unfilled, the escrow goes back on `cancel` (the requester,
-at any time) or `refund` (anyone, after the deadline).
+at any time) or `refund` (anyone, after the deadline). A request fills only while the index's `rebalanceNonce` is the
+one it was made at: after a settlement a fill reverts `StaleRebalanceNonce`, so show such a request as stale and offer
+to cancel it and ask again. A filler that priced a request off chain calls `fill(id, amount, expected)` with the hash
+of the request it priced, `keccak256(abi.encode(request))`, and is refused with `RequestChanged` if anything else
+sits behind the id; compute the hash from the request you read, not from `requestHash(id)` at fill time.
 
 ## Integration notes
 
@@ -176,7 +184,8 @@ at any time) or `refund` (anyone, after the deadline).
 - **During a rebalance.** In the notice, show `pendingRebalance()`, which returns `(eta, keepMask)`. In the auction,
   show `currentBar()` (0 outside an auction). `previewRebalance(newUnits)` returns `(bar, gain, amountsOut, amountsIn)`
   for units the caller names, as a fill in this block would settle them, and reverts as the fill would: outside an
-  auction, on a component outside its caps, on a gain under the bar, and on a fill under the proposal's quote. It takes
+  auction, on an index with less than one whole share (`NothingToRebalance`), on a component outside its caps, on a
+  gain under the bar, and on a fill under the proposal's quote. It takes
   no price, so an app that wants to show a fill names candidate units from its own prices. `recordedUnits()`, a fill's
   `newUnits` and the `units` of `Rebalanced` are recorded units, which carry the index's scale: show them as units per
   index token only after multiplying by the scale `pendingStreamingFee()` reports, divided by 1e18, as `components()`
@@ -202,7 +211,8 @@ at any time) or `refund` (anyone, after the deadline).
   checks what a coin is worth, and a listing carries no price id: the guardian's `cancelListing` during a listing's 2
   days is the check on the token itself.
 - **Zap calls take a params struct.** `MintParams {index, expectedNonce, tokenIn, maxAmountIn, shares, legs, to,
-  deadline}` with `MintLeg {v3Path, v4Path, maxAmountIn}`, and `BurnParams {index, expectedNonce, shares, tokenOut,
+  deadline, referrer}`
+  with `MintLeg {v3Path, v4Path, maxAmountIn}`, and `BurnParams {index, expectedNonce, shares, tokenOut,
   minAmountOut, legs, to, deadline}` with `BurnLeg {v3Path, v4Path, minAmountOut}`. `legs` has one entry per component,
   in component order. `expectedNonce` is `rebalanceNonce()` when the legs were quoted; after a rebalance, re-quote.
 - **One venue per leg.** A leg carries exactly one of a packed `v3Path` (Uniswap V3) and a `v4Path` (Uniswap V4). Both
@@ -255,7 +265,8 @@ at any time) or `refund` (anyone, after the deadline).
 - **Returned components.** Whenever the router takes less than it was given, the unsold part goes to the recipient
   with a `ComponentReturned` event: every hop of a V3 burn leg, and as a rule only the first hop of a V4 burn leg,
   whose intermediate partial fill reverts the whole leg (CR-I07). A returned amount includes anything a stranger had
-  left on the router, and a stray balance never makes a burn revert (CR-L02). Show them on the receipt.
+  left on the router when the recipient can receive it, and a stray balance never makes a burn revert (CR-L02, RW-9).
+  Show them on the receipt.
 - **ABIs.** `abi/WeightedIndexFactory.json`, `abi/WeightedHub.json`, `abi/IndexZap.json`, `abi/BasketBuilder.json`
   and `abi/MintRequests.json` are committed and regenerated by CI, which fails on a diff; decode every event and revert with them
   (`forge inspect <contract> abi --json` reproduces them, and the interfaces in `src/interfaces/` carry the NatSpec).
@@ -278,7 +289,9 @@ at any time) or `refund` (anyone, after the deadline).
   `acceptOwnership()` emits `OwnershipTransferred`. It is the one admin change with no delay and no guardian veto.
 - **Errors.** `IndexZap`: `NotIndex`, `StaleRebalanceNonce`, `Expired`, `ZeroAddress`, `ZeroAmount`, `InvalidRecipient`
   (the zap, the index, the router, the PoolManager or the factory, RT-21), `LegCountMismatch`, `BadRoute(i)`,
-  `ShortFill(i, received, required)`, `InsufficientBudget`, `InsufficientOutput`, `TransferShortfall`; the swap errors
+  `ShortFill(i, received, required)`, `InsufficientBudget`, `InsufficientOutput`, `TransferShortfall`,
+  `SharedBalance(token, other)` for a swap between two addresses of one ledger (RW-10), `NotWETH(token)`,
+  `ValueMismatch(value, maxAmountIn)`; the swap errors
   are declared in `IXindexErrors`, shared with `BasketBuilder`, which adds `LengthMismatch`, `ComponentOutOfRange` and
   `InsufficientEscrow(token, held, needed)`, and whose `BadRoute` and `ShortFill` name a leg by its position in the
   call. `WeightedHub`: `NotFactory`, `NotInitialized`, `InvalidComponents`, `InvalidConfig`, `NotAllowedMinter`,
@@ -298,11 +311,13 @@ at any time) or `refund` (anyone, after the deadline).
   errors.
 - **Requests.** Suggest a limit from the app's own valuation and show the deadline; a fill pays exactly what the filler
   sends, so any surplus over the limit goes to the fastest filler. Read a request with `getRequest(id)` (`requester`,
-  `deadline`, `isMint`, `open`, `index`, `stable`, `escrow`, `limit`) and follow `MintRequested`, `RedeemRequested`,
+  `deadline`, `isMint`, `open`, `rebalanceNonce`, `index`, `stable`, `escrow`, `limit`; the nonce is new on
+  2026-11-14, RW-2, so a decoder of the old tuple must follow) and its hash with `requestHash(id)`,
+  and follow `MintRequested`, `RedeemRequested`,
   `RequestFilled(id, filler, delivered)`, `RequestCancelled` and `RequestRefunded`. `escrow` is what arrived, which is
   less than the amount asked when USDT charges a fee. Errors: `NotIndex`, `NotAStable`, `ZeroAmount`,
   `InvalidDeadline`, `NothingEscrowed`, `RequestNotOpen`, `RequestExpired`, `RequestNotExpired`,
-  `BelowLimit(delivered, limit)`, `Unauthorized`.
+  `BelowLimit(delivered, limit)`, `Unauthorized`, `StaleRebalanceNonce(expected, actual)` and `RequestChanged(id)`.
 - **Swap failures arrive unwrapped.** The Universal Router wraps a command in `ExecutionFailed` only when it dispatched
   it with a low-level call, and swaps are internal calls, so the app decodes the pool's own error:
   `V3TooMuchRequested()`, `V3TooLittleReceived()`, `V4TooMuchRequested(uint256,uint256)`,

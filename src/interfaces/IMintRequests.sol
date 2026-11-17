@@ -12,11 +12,14 @@ interface IMintRequests is IXindexErrors {
     ///         - `escrow`: what the contract holds for it, measured as the balance increase when it was made. In
     ///           `stable` for a mint, in `index` shares for a redemption.
     ///         - `limit`: the least the requester must receive. In shares for a mint, in `stable` for a redemption.
+    ///         - `rebalanceNonce`: the index's `rebalanceNonce` when the request was made. A settlement changes what a
+    ///           share is backed by, so the request can be filled only while the index still reads this value.
     struct Request {
         address requester;
         uint40 deadline;
         bool isMint;
         bool open;
+        uint40 rebalanceNonce;
         address index;
         address stable;
         uint256 escrow;
@@ -66,6 +69,8 @@ interface IMintRequests is IXindexErrors {
     error RequestNotExpired(uint256 id, uint256 deadline);
     /// @notice The requester received `delivered`, less than their `limit`.
     error BelowLimit(uint256 delivered, uint256 limit);
+    /// @notice Request `id` is open, but it is not the request the filler priced: its terms differ.
+    error RequestChanged(uint256 id);
 
     /// @notice The longest a request may stay fillable: 30 days.
     function MAX_REQUEST_DURATION() external view returns (uint256);
@@ -85,6 +90,13 @@ interface IMintRequests is IXindexErrors {
     /// @notice Request `id`; all zero for one never made.
     function getRequest(uint256 id) external view returns (Request memory);
 
+    /// @notice The hash of request `id` as {getRequest} returns it: `keccak256(abi.encode(request))`, nine 32-byte
+    ///         words, not packed. A filler computes it from the very request it priced: the struct it read, or for a
+    ///         request still pending its terms, with `open` true and the index's current `rebalanceNonce`. Reading
+    ///         this view by id in another call, or at another block, proves nothing: it hashes whatever then sits
+    ///         behind the id.
+    function requestHash(uint256 id) external view returns (bytes32);
+
     /// @notice Escrows `amount` of `stable` (USDC or USDT) from the caller, for at least `minShares` shares of the
     ///         factory index `index`, fillable until `deadline`. The escrow is the balance increase this transfer
     ///         caused: less than `amount` if USDT charges a fee. Needs an allowance of `amount` on `stable`.
@@ -100,14 +112,24 @@ interface IMintRequests is IXindexErrors {
         external
         returns (uint256 id);
 
-    /// @notice Anyone, before the deadline. Fills request `id`:
+    /// @notice Anyone, until the deadline. Fills request `id`, whichever request that id names when the call lands.
+    ///         An id is only a counter: after a re-org, or for a request that was still pending when the caller
+    ///         priced it, it may name another request. A caller that has not read the request in this same
+    ///         transaction uses the bound {fill} below.
     ///         - Mint: sends `amount` shares of the index from the caller to the requester, and pays the caller the
     ///           escrowed stablecoin.
     ///         - Redemption: sends `amount` of the stablecoin from the caller to the requester, and pays the caller the
     ///           escrowed shares.
     ///         The requester must receive at least the request's limit, after any fee. The request is closed before
     ///         any token moves. Needs the caller's allowance of `amount` on what it sends.
+    ///         Reverts StaleRebalanceNonce if the index rebalanced since the request was made. Its limit and its
+    ///         escrow were set for the old basket, so the requester cancels it and asks again.
     function fill(uint256 id, uint256 amount) external;
+
+    /// @notice As {fill}, and only if request `id` is still exactly the one the caller priced: `expected` is its hash
+    ///         ({requestHash}), and the fill reverts RequestChanged otherwise. So a filler never delivers against
+    ///         another request's escrow, kind, index or stablecoin.
+    function fill(uint256 id, uint256 amount, bytes32 expected) external;
 
     /// @notice The requester only, at any time while the request is open: closes it and returns the escrow.
     function cancel(uint256 id) external;

@@ -12,11 +12,15 @@ import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockHookToken} from "./mocks/MockHookToken.sol";
 import {MockMarket} from "./mocks/MockMarket.sol";
 import {MockUSDT} from "./mocks/MockUSDT.sol";
+import {MockWeightedExecutor} from "./mocks/MockWeightedExecutor.sol";
 
-/// @notice A filler that, when it is paid, tries to re-enter the contract that paid it and records how that ended.
+/// @notice A filler that, when it is paid, tries to re-enter the contract that paid it and records how that ended. It
+///         fills by id alone or bound to a hash, and re-enters `cancel(target)` or, once it is given one, another call.
 contract ReentrantFiller {
     MintRequests internal immutable REQUESTS;
     uint256 public target;
+    /// @dev The call it re-enters with in place of `cancel(target)`. Empty until `setReentry`.
+    bytes internal reentry;
     bytes public reentryError;
     bool public reentered;
 
@@ -28,18 +32,29 @@ contract ReentrantFiller {
         target = id;
     }
 
+    function setReentry(bytes calldata data) external {
+        reentry = data;
+    }
+
     function fill(uint256 id, uint256 amount, address token) external {
         MockERC20(token).approve(address(REQUESTS), amount);
         REQUESTS.fill(id, amount);
     }
 
+    function fillBound(uint256 id, uint256 amount, address token, bytes32 expected) external {
+        MockERC20(token).approve(address(REQUESTS), amount);
+        REQUESTS.fill(id, amount, expected);
+    }
+
     function onTokenReceived(address, uint256) external {
-        (reentered, reentryError) = address(REQUESTS).call(abi.encodeCall(MintRequests.cancel, (target)));
+        bytes memory data = reentry.length == 0 ? abi.encodeCall(MintRequests.cancel, (target)) : reentry;
+        (reentered, reentryError) = address(REQUESTS).call(data);
     }
 }
 
 /// @notice Escrowed mint and redeem requests: the escrow is what arrived, the requester gets at least their limit,
-///         every request closes once, and nothing reads a price.
+///         every request closes once, and nothing reads a price. A request is filled only while the index reads the
+///         rebalance nonce it was made at, and a bound fill only as the request its caller priced.
 /// @dev An index of two 18-decimal components listed at 100e18 each and created at k = 1e36, so a share needs 100e18 of
 ///      each. USDC is the market's 6-decimal mock and USDT the mainnet-shaped mock with its fee switch.
 contract MintRequestsTest is XindexTest {
@@ -111,6 +126,23 @@ contract MintRequestsTest is XindexTest {
 
     function _balance(address token, address who) internal view returns (uint256) {
         return MockERC20(token).balanceOf(who);
+    }
+
+    /// @dev Settles a rebalance of the index, which takes its nonce up by one. The rebalance starts at the first second
+    ///      it may and is filled six hours later, in its auction's last second. The fill adds a hundredth to every
+    ///      component, which clears the bar the auction ends at.
+    function _settleRebalance() internal {
+        uint256 earliest = index.earliestRebalance();
+        if (block.timestamp < earliest) vm.warp(earliest);
+        index.startRebalance(0);
+        (uint256 eta,) = index.pendingRebalance();
+        vm.warp(eta + index.AUCTION_DURATION());
+
+        uint256[] memory units = index.recordedUnits();
+        for (uint256 i = 0; i < units.length; ++i) {
+            units[i] += units[i] / 100;
+        }
+        new MockWeightedExecutor().execute(index, units, "");
     }
 
     // ---------------------------------------------------------------------
@@ -429,6 +461,186 @@ contract MintRequestsTest is XindexTest {
     }
 
     // ---------------------------------------------------------------------
+    // a settlement since the request
+    // ---------------------------------------------------------------------
+
+    /// @dev RW-2: a request named no basket, so it stayed fillable across a rebalance that changed what a share is
+    ///      backed by. It now records the index's nonce when it is made: 0 before the first settlement and 1 after
+    ///      it, for either kind. A request made at the index's nonce fills, by its id alone or bound to its hash, which
+    ///      covers the nonce.
+    function test_RW2_aRequestRecordsTheNonceItWasMadeAt() public {
+        uint256 first = _requestMint(address(usdc), 300e6, 1e18);
+        assertEq(requests.getRequest(first).rebalanceNonce, 0);
+
+        _settleRebalance();
+        assertEq(index.rebalanceNonce(), 1);
+        uint256 mintId = _requestMint(address(usdc), 300e6, 1e18);
+        uint256 redeemId = _requestRedeem(2e18, address(usdc), 500e6);
+        assertEq(requests.getRequest(mintId).rebalanceNonce, 1, "a mint request made after the settlement");
+        assertEq(requests.getRequest(redeemId).rebalanceNonce, 1, "and a redeem request");
+        assertEq(requests.getRequest(first).rebalanceNonce, 0, "the earlier one keeps the nonce it was made at");
+
+        vm.startPrank(minter);
+        index.approve(address(requests), 1e18);
+        requests.fill(mintId, 1e18);
+        vm.stopPrank();
+        assertEq(index.balanceOf(alice), 1e18, "a request made at the index's nonce fills");
+
+        _fund(minter, address(usdc), 500e6);
+        bytes32 priced = requests.requestHash(redeemId);
+        vm.prank(minter);
+        requests.fill(redeemId, 500e6, priced);
+        assertEq(_balance(address(usdc), alice), 500e6, "and so does one bound to its hash at that nonce");
+        assertEq(index.balanceOf(minter), 9e18, "whose filler takes the escrowed shares");
+    }
+
+    /// @dev RW-2: a mint request's limit counts shares of the basket it was made for. A filler that settled a rebalance
+    ///      first could deliver shares backed by less and take the whole escrow. Either `fill` now refuses a request
+    ///      made before a settlement, and the requester cancels it with the escrow whole.
+    function test_RW2_aMintRequestIsNotFilledAfterASettlement() public {
+        vm.warp(index.earliestRebalance()); // a rebalance may start at once, so it settles inside the request's day
+        uint256 id = _requestMint(address(usdc), 300e6, 1e18);
+        bytes32 priced = requests.requestHash(id);
+        _settleRebalance();
+
+        vm.startPrank(minter);
+        index.approve(address(requests), 1e18);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.StaleRebalanceNonce.selector, 0, 1));
+        requests.fill(id, 1e18);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.StaleRebalanceNonce.selector, 0, 1));
+        requests.fill(id, 1e18, priced); // the request is still the one priced; the index is not
+        vm.stopPrank();
+        assertTrue(requests.getRequest(id).open, "a refused fill leaves the request open");
+
+        vm.prank(alice);
+        requests.cancel(id);
+        assertEq(_balance(address(usdc), alice), 300e6, "the requester has the whole escrow back");
+        assertEq(_balance(address(usdc), address(requests)), 0);
+    }
+
+    /// @dev RW-2, a redeem request: its limit was set for what the escrowed shares were backed by. After a settlement
+    ///      it is refused the same way, and once its deadline passes anyone sends the shares back.
+    function test_RW2_aRedeemRequestIsNotFilledAfterASettlement() public {
+        vm.warp(index.earliestRebalance()); // a rebalance may start at once, so it settles inside the request's day
+        uint256 id = _requestRedeem(2e18, address(usdc), 500e6);
+        uint256 deadline = requests.getRequest(id).deadline;
+        _settleRebalance();
+
+        _fund(minter, address(usdc), 500e6);
+        vm.prank(minter);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.StaleRebalanceNonce.selector, 0, 1));
+        requests.fill(id, 500e6);
+
+        vm.warp(deadline + 1);
+        vm.prank(stranger);
+        requests.refund(id);
+        assertEq(index.balanceOf(alice), 2e18, "the escrowed shares are back with the requester");
+        assertEq(index.balanceOf(address(requests)), 0);
+        assertEq(_balance(address(usdc), minter), 500e6, "and the filler kept its USDC");
+    }
+
+    // ---------------------------------------------------------------------
+    // the bound fill
+    // ---------------------------------------------------------------------
+
+    /// @dev RW-7: an id is only a counter. A filler prices a request that is still pending and expects it at the next
+    ///      id; a dust request ordered first takes that id, and a fill by id alone delivers the shares for one raw unit
+    ///      of USDC. Bound to the hash of what it priced, the fill refuses the dust request, and takes the priced one
+    ///      at its own id under the same hash.
+    function test_RW7_aBoundFillRefusesAnotherRequestBehindTheId() public {
+        uint256 deadline = block.timestamp + DAY;
+        // What the filler priced: the requester's request as it will be recorded, from its pending terms.
+        bytes32 priced = keccak256(
+            abi.encode(
+                IMintRequests.Request({
+                    requester: alice,
+                    deadline: uint40(deadline),
+                    isMint: true,
+                    open: true,
+                    rebalanceNonce: 0,
+                    index: address(index),
+                    stable: address(usdc),
+                    escrow: 300e6,
+                    limit: 1e18
+                })
+            )
+        );
+
+        _fund(stranger, address(usdc), 1);
+        vm.prank(stranger);
+        uint256 dust = requests.requestMint(address(index), address(usdc), 1, 1, deadline);
+        uint256 id = _requestMint(address(usdc), 300e6, 1e18);
+        assertEq(dust, 1, "the dust request took the id the filler expected");
+
+        vm.startPrank(minter);
+        index.approve(address(requests), 1e18);
+        vm.expectRevert(abi.encodeWithSelector(IMintRequests.RequestChanged.selector, dust));
+        requests.fill(dust, 1e18, priced);
+        vm.stopPrank();
+        assertEq(index.balanceOf(minter), 10e18, "the filler keeps its shares");
+        assertTrue(requests.getRequest(dust).open, "and the dust request stays as it was");
+
+        vm.prank(minter);
+        requests.fill(id, 1e18, priced);
+        assertEq(index.balanceOf(alice), 1e18, "the priced request fills under the same hash");
+        assertEq(_balance(address(usdc), minter), 300e6, "for the escrow the filler priced");
+    }
+
+    /// @dev RW-7: `requestHash` is the hash of the request as `getRequest` returns it, and the bound fill takes that
+    ///      hash alone: zero is no wildcard. A request closed by its fill is not open under the hash it filled at, nor
+    ///      under the hash it has now, so nothing fills twice.
+    function test_RW7_aBoundFillTakesOnlyTheHashOfItsRequest() public {
+        uint256 id = _requestMint(address(usdc), 300e6, 1e18);
+        bytes32 priced = keccak256(abi.encode(requests.getRequest(id)));
+        assertEq(requests.requestHash(id), priced, "the view hashes what getRequest returns");
+
+        vm.startPrank(minter);
+        index.approve(address(requests), 2e18);
+        vm.expectRevert(abi.encodeWithSelector(IMintRequests.RequestChanged.selector, id));
+        requests.fill(id, 1e18, bytes32(0));
+        requests.fill(id, 1e18, priced);
+        vm.stopPrank();
+        assertEq(index.balanceOf(alice), 1e18);
+        assertEq(_balance(address(usdc), minter), 300e6);
+
+        bytes32 closed = requests.requestHash(id);
+        assertNotEq(closed, priced, "the hash covers the open flag");
+        vm.startPrank(minter);
+        vm.expectRevert(abi.encodeWithSelector(IMintRequests.RequestNotOpen.selector, id));
+        requests.fill(id, 1e18, priced);
+        vm.expectRevert(abi.encodeWithSelector(IMintRequests.RequestNotOpen.selector, id));
+        requests.fill(id, 1e18, closed);
+        vm.stopPrank();
+    }
+
+    /// @dev RW-2, RW-7: the order of the bound fill's checks. An open request is compared with the hash first, so a
+    ///      filler whose id names another request is told RequestChanged even when that request is stale or expired.
+    ///      Under its own hash a request is expired before it is stale, as it is through the fill by id alone.
+    function test_RW2_RW7_aBoundFillChecksTheHashThenTheDeadlineThenTheNonce() public {
+        vm.warp(index.earliestRebalance()); // a rebalance may start at once, so it settles inside the request's day
+        uint256 id = _requestMint(address(usdc), 300e6, 1e18);
+        uint256 deadline = requests.getRequest(id).deadline;
+        bytes32 priced = requests.requestHash(id);
+        _settleRebalance();
+
+        vm.startPrank(minter);
+        index.approve(address(requests), 1e18);
+        vm.expectRevert(abi.encodeWithSelector(IMintRequests.RequestChanged.selector, id));
+        requests.fill(id, 1e18, bytes32(0)); // stale, under another hash: the hash is compared before the nonce
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.StaleRebalanceNonce.selector, 0, 1));
+        requests.fill(id, 1e18, priced);
+
+        vm.warp(deadline + 1);
+        vm.expectRevert(abi.encodeWithSelector(IMintRequests.RequestChanged.selector, id));
+        requests.fill(id, 1e18, bytes32(0)); // expired too: still the hash first
+        vm.expectRevert(abi.encodeWithSelector(IMintRequests.RequestExpired.selector, id, deadline));
+        requests.fill(id, 1e18, priced); // under its own hash: the deadline before the nonce
+        vm.expectRevert(abi.encodeWithSelector(IMintRequests.RequestExpired.selector, id, deadline));
+        requests.fill(id, 1e18);
+        vm.stopPrank();
+    }
+
+    // ---------------------------------------------------------------------
     // reentrancy
     // ---------------------------------------------------------------------
 
@@ -455,5 +667,55 @@ contract MintRequestsTest is XindexTest {
         assertEq(filler.reentryError(), abi.encodeWithSelector(ReentrancyGuard.ReentrancyGuardReentrantCall.selector));
         assertTrue(hooked.getRequest(other).open, "the other request is untouched");
         assertEq(hook.balanceOf(address(filler)), 100e18, "and the fill paid its filler");
+    }
+
+    /// @dev RW-7: the bound fill is an entry point of its own, and the test above enters only by id and re-enters only
+    ///      `cancel`, so the bound fill could lose `nonReentrant` unseen. It shares the guard both ways: a filler paid
+    ///      by the bound fill is refused a fill by id alone from inside the payment, and a filler paid by the fill by
+    ///      id alone is refused a bound one. Each re-entry fills a redeem request with the payment itself, a fill
+    ///      that is valid on its own and ran to completion without the guard.
+    function test_RW7_theBoundFillSharesTheGuard() public {
+        MockHookToken hook = new MockHookToken();
+        MintRequests hooked = new MintRequests(address(factory), address(hook), address(usdt));
+        ReentrantFiller fromBound = new ReentrantFiller(hooked);
+        ReentrantFiller intoBound = new ReentrantFiller(hooked);
+        bytes memory refused = abi.encodeWithSelector(ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
+
+        hook.mint(alice, 200e18);
+        vm.startPrank(minter);
+        index.transfer(alice, 1e18);
+        index.transfer(address(fromBound), 1e18);
+        index.transfer(address(intoBound), 1e18);
+        vm.stopPrank();
+        vm.startPrank(alice);
+        hook.approve(address(hooked), 200e18);
+        index.approve(address(hooked), 1e18);
+        uint256 first = hooked.requestMint(address(index), address(hook), 100e18, 1e18, block.timestamp + DAY);
+        uint256 second = hooked.requestMint(address(index), address(hook), 100e18, 1e18, block.timestamp + DAY);
+        uint256 other = hooked.requestRedeem(address(index), 1e18, address(hook), 100e18, block.timestamp + DAY);
+        vm.stopPrank();
+        bytes32 priced = hooked.requestHash(first);
+        bytes32 otherPriced = hooked.requestHash(other);
+        // Each filler lets the contract take what its fill pays it, which is what the redeem request asks for.
+        vm.prank(address(fromBound));
+        hook.approve(address(hooked), 100e18);
+        vm.prank(address(intoBound));
+        hook.approve(address(hooked), 100e18);
+
+        fromBound.setReentry(abi.encodeWithSignature("fill(uint256,uint256)", other, 100e18));
+        fromBound.fillBound(first, 1e18, address(index), priced);
+        assertFalse(fromBound.reentered(), "no re-entry from inside the bound fill went through");
+        assertEq(fromBound.reentryError(), refused, "the bound fill holds the guard the fill by id alone checks");
+        assertEq(hook.balanceOf(address(fromBound)), 100e18, "and its filler holds what the bound fill paid it");
+
+        intoBound.setReentry(abi.encodeWithSignature("fill(uint256,uint256,bytes32)", other, 100e18, otherPriced));
+        intoBound.fill(second, 1e18, address(index));
+        assertFalse(intoBound.reentered(), "no re-entry into the bound fill went through");
+        assertEq(intoBound.reentryError(), refused, "the bound fill checks the guard the fill by id alone holds");
+        assertEq(hook.balanceOf(address(intoBound)), 100e18, "and its filler holds what that fill paid it");
+
+        assertEq(hooked.requestHash(other), otherPriced, "the redeem request is as it was, still open");
+        assertEq(index.balanceOf(address(hooked)), 1e18, "with its shares in escrow");
+        assertEq(index.balanceOf(alice), 2e18, "and each fill delivered its share to the requester");
     }
 }

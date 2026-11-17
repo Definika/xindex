@@ -152,7 +152,7 @@ contract RepoTest is Test {
             "**A collapsing coin is still bought.**",
             "**An issuer's corporate action is not accounted for.**",
             "**Rebalances clear only when the distance pays for the fill.**",
-            "**A dust index's units can be walked.**",
+            "**An index one holder owns can be walked.**",
             "**An exit sent during the auction can be overtaken by the fill.**",
             "**The guardian can stall rebalancing.**",
             "**Issuers can freeze components, and some can burn them.**",

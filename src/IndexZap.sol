@@ -18,8 +18,10 @@ import {UniversalRouterSwaps} from "./UniversalRouterSwaps.sol";
 /// @notice Stateless convenience router: mint any index with a single token (USDC, USDT, ...) or with ether, and burn
 ///         any index straight into a single token or ether, swapping through Uniswap's Universal Router.
 /// @dev Design notes
-///      - The zap holds no state and no funds between transactions. Anyone can deploy a competing zap; the indexes do
-///        not depend on this one.
+///      - The zap holds no state, and nothing a user is owed between transactions. The only tokens that can rest
+///        here are ones nobody is owed: what strangers send it, and a router leftover a burn's recipient refused
+///        ({_onUnsold}). No call pays out a balance the zap held before it, for a token that keeps one balance
+///        behind one address. Anyone can deploy a competing zap; the indexes do not depend on this one.
 ///      - Every swap runs through {UniversalRouterSwaps}, the engine shared with `BasketBuilder`. Its notes cover
 ///        venues, commands, pre-fund and sweep, the spend bound, measurement, hookless V4 routes and hop-by-hop V3
 ///        sales. The zap's own rules follow.
@@ -281,12 +283,22 @@ contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
         }
     }
 
-    /// @dev Pays what a hop did not sell (plus any balance of it the router already held) to the burn's recipient.
-    function _onUnsold(address token, uint256 amount, bytes memory ctx) internal override {
+    /// @dev Pays what a hop did not sell to the burn's recipient, and offers it what the router already held.
+    ///      The second is a stranger's leftover, not this burn's. Insisting on it would let one wei left in the router
+    ///      revert every burn whose recipient cannot receive that token, such as an account its issuer froze. So it
+    ///      goes out with the unsold input when the token allows, and stays here when it does not.
+    function _onUnsold(address token, uint256 unsold, uint256 stray, bytes memory ctx) internal override {
         (address index, address to) = abi.decode(ctx, (address, address));
+        if (stray != 0 && IERC20(token).trySafeTransfer(to, unsold + stray)) {
+            // The event tells of a transfer that was made; the function is nonReentrant.
+            // forge-lint: disable-next-line(reentrancy-events)
+            emit ComponentReturned(index, to, token, unsold + stray);
+            return;
+        }
+        if (unsold == 0) return;
         // forge-lint: disable-next-line(reentrancy-events)
-        emit ComponentReturned(index, to, token, amount);
-        IERC20(token).safeTransfer(to, amount);
+        emit ComponentReturned(index, to, token, unsold);
+        IERC20(token).safeTransfer(to, unsold);
     }
 
     // ---------------------------------------------------------------------

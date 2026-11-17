@@ -23,6 +23,7 @@ import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockUSDT} from "./mocks/MockUSDT.sol";
 import {MockFeeToken} from "./mocks/MockFeeToken.sol";
+import {MockBlacklistToken} from "./mocks/MockAdminTokens.sol";
 import {MockHookToken, ITokenReceiverHook} from "./mocks/MockHookToken.sol";
 import {MockWeightedExecutor} from "./mocks/MockWeightedExecutor.sol";
 import {MockMarket} from "./mocks/MockMarket.sol";
@@ -2262,6 +2263,179 @@ contract IndexZapTest is XindexTest {
         _shortBurn(idx, short);
         assertEq(short.balanceOf(address(zap)), 5, "the zap's own five wei are untouched");
         assertEq(short.balanceOf(address(router.inventory())), sent - 1, "only what arrived is sold");
+    }
+
+    // ---------------------------------------------------------------------
+    // RW: the red team of 2026-11-14
+    // ---------------------------------------------------------------------
+
+    /// @dev An index of `blk`, whose issuer can freeze an account, beside USDC's smallest holding, one token of it
+    ///      issued to alice in kind and approved to the zap. A token holds one `blk`, priced as LINK is: 15 USDC.
+    function _freezableIndex(MockBlacklistToken blk) internal returns (WeightedHub idx) {
+        router.setPrice(address(blk), 15e18, 18);
+        _listWith(address(blk));
+        idx = _createIndex("Freezable", "FRZ", _pair(address(blk), address(usdc)), _pair(U_LINK, U_DUST));
+        blk.mint(alice, U_LINK);
+        usdc.mint(alice, U_DUST);
+        vm.startPrank(alice);
+        blk.approve(address(idx), U_LINK);
+        usdc.approve(address(idx), U_DUST);
+        idx.issue(1e18, alice);
+        idx.approve(address(zap), 1e18);
+        vm.stopPrank();
+    }
+
+    /// @dev A burn of alice's token of `_freezableIndex` into USDC, paid to herself, for at least one unit: `blk` sold
+    ///      along the given route and USDC passed through.
+    function _freezableBurnParams(WeightedHub idx, bytes memory v3Path, PathKey[] memory v4Path)
+        internal
+        view
+        returns (IIndexZap.BurnParams memory)
+    {
+        return _burnParams(address(idx), 1e18, address(usdc), 1, _etherBurnLegs(v3Path, v4Path), alice);
+    }
+
+    /// @dev How many ComponentReturned events of the zap's are among `logs`.
+    function _returnsAnnounced(Vm.Log[] memory logs) internal view returns (uint256) {
+        uint256 count = 0;
+        for (uint256 i = 0; i < logs.length; ++i) {
+            if (logs[i].emitter == address(zap) && logs[i].topics[0] == IIndexZap.ComponentReturned.selector) ++count;
+        }
+        return count;
+    }
+
+    /// @dev RW-9: a sale hop's sweep returns whatever the router held of the hop's input, and the zap sent all of it
+    ///      to the burn's recipient with a hard transfer. So one raw unit a stranger left in the router reverted every
+    ///      burn whose recipient the token refuses, such as an account its issuer froze, and the revert left the unit
+    ///      there for the next try. The engine now names that part apart and the zap only offers it: refused, it rests
+    ///      in the zap, no event announces it, and the burn pays out.
+    function test_RW9_aStrayInTheRouterDoesNotBlockAFrozenRecipientsBurn() public {
+        MockBlacklistToken blk = new MockBlacklistToken(owner);
+        WeightedHub idx = _freezableIndex(blk);
+        blk.addBlackList(alice); // the issuer freezes her after she minted
+        blk.mint(address(router), 1); // and a stranger leaves one raw unit in the router
+        IIndexZap.BurnParams memory p = _freezableBurnParams(idx, _path2(address(blk), address(usdc)), _noV4());
+
+        vm.recordLogs();
+        vm.prank(alice);
+        uint256 out = zap.burnToToken(p);
+
+        assertEq(out, 15e6 + U_DUST, "the burn sold its whole basket");
+        assertEq(usdc.balanceOf(alice), 15e6 + U_DUST, "and paid the recipient");
+        assertEq(blk.balanceOf(address(zap)), 1, "the stray rests in the zap");
+        assertEq(blk.balanceOf(address(router)), 0, "not in the router, where the next burn would meet it");
+        assertEq(_returnsAnnounced(vm.getRecordedLogs()), 0, "and nothing is announced as returned");
+    }
+
+    /// @dev RW-9 on a V4 leg, whose one swap is swept the same way: the stray is named apart and only offered there
+    ///      too.
+    function test_RW9_aStrayInTheRouterDoesNotBlockAFrozenRecipientsV4Burn() public {
+        MockBlacklistToken blk = new MockBlacklistToken(owner);
+        WeightedHub idx = _freezableIndex(blk);
+        blk.addBlackList(alice);
+        blk.mint(address(router), 1);
+        IIndexZap.BurnParams memory p = _freezableBurnParams(idx, "", _v4Path1(address(usdc)));
+
+        vm.recordLogs();
+        vm.prank(alice);
+        uint256 out = zap.burnToToken(p);
+
+        assertEq(out, 15e6 + U_DUST, "the burn sold its whole basket");
+        assertEq(usdc.balanceOf(alice), 15e6 + U_DUST, "and paid the recipient");
+        assertEq(blk.balanceOf(address(zap)), 1, "the stray rests in the zap");
+        assertEq(blk.balanceOf(address(router)), 0);
+        assertEq(_returnsAnnounced(vm.getRecordedLogs()), 0, "and nothing is announced as returned");
+    }
+
+    /// @dev RW-9, for a recipient the token accepts: nothing changed. What the hop did not sell and what the router
+    ///      held go out together, in one transfer under one event, as before the fix. The stray alone is the CR-L02
+    ///      tests' case; here the pool takes half the input, so both parts are there.
+    function test_RW9_anOrdinaryRecipientReceivesTheUnsoldInputAndTheStrayInOneTransfer() public {
+        MockBlacklistToken blk = new MockBlacklistToken(owner);
+        WeightedHub idx = _freezableIndex(blk);
+        blk.mint(address(router), 1);
+        router.setMode(MockUniversalRouter.Mode.PartialFirstHop); // the pool takes half the input
+        IIndexZap.BurnParams memory p = _freezableBurnParams(idx, _path2(address(blk), address(usdc)), _noV4());
+
+        vm.expectCall(address(blk), abi.encodeCall(IERC20.transfer, (alice, 5e17 + 1)), 1);
+        vm.recordLogs();
+        vm.expectEmit(true, true, true, true, address(zap));
+        emit IIndexZap.ComponentReturned(address(idx), alice, address(blk), 5e17 + 1);
+        vm.prank(alice);
+        uint256 out = zap.burnToToken(p);
+
+        assertEq(out, 7.5e6 + U_DUST, "half the BLK sold, and the USDC held as it is");
+        assertEq(blk.balanceOf(alice), 5e17 + 1, "the unsold half and the stray reached the recipient");
+        assertEq(blk.balanceOf(address(zap)), 0, "none of it is left in the zap");
+        assertEq(blk.balanceOf(address(router)), 0, "or in the router");
+        assertEq(_returnsAnnounced(vm.getRecordedLogs()), 1, "under one event");
+    }
+
+    /// @dev RW-9, and where it stops: what a hop did not sell is the recipient's own, and the zap still insists on it.
+    ///      With the pool taking half, the token refuses the offer of both parts to the frozen recipient, and the
+    ///      unsold half then goes out alone, with a hard transfer. So her burn reverts with the token's own error, as
+    ///      it did, rather than pay out and keep her input in the zap.
+    function test_RW9_unsoldInputAFrozenRecipientCannotReceiveStillRevertsTheBurn() public {
+        MockBlacklistToken blk = new MockBlacklistToken(owner);
+        WeightedHub idx = _freezableIndex(blk);
+        blk.addBlackList(alice);
+        blk.mint(address(router), 1);
+        router.setMode(MockUniversalRouter.Mode.PartialFirstHop); // the pool takes half the input
+        IIndexZap.BurnParams memory p = _freezableBurnParams(idx, _path2(address(blk), address(usdc)), _noV4());
+
+        // The offer is refused quietly: the transfer that reverts the burn is the unsold half's alone.
+        vm.expectCall(address(blk), abi.encodeCall(IERC20.transfer, (alice, 5e17)), 1);
+        vm.prank(alice);
+        vm.expectRevert("blocked");
+        zap.burnToToken(p);
+        assertEq(idx.balanceOf(alice), 1e18, "her token is not burnt");
+    }
+
+    /// @dev RW-9, the same refusal by a token that still takes the recipient's own part, as one that caps what an
+    ///      account may hold can. The offer of both parts fails quietly, the unsold half is paid alone under an event
+    ///      naming it alone, and the stray rests in the zap. No token of the suite's refuses one amount and takes
+    ///      another, so the one transfer of both parts is made to revert.
+    function test_RW9_aRefusedOfferStillPaysTheRecipientWhatTheHopDidNotSell() public {
+        MockBlacklistToken blk = new MockBlacklistToken(owner);
+        WeightedHub idx = _freezableIndex(blk);
+        blk.mint(address(router), 1);
+        router.setMode(MockUniversalRouter.Mode.PartialFirstHop); // the pool takes half the input
+        IIndexZap.BurnParams memory p = _freezableBurnParams(idx, _path2(address(blk), address(usdc)), _noV4());
+        vm.mockCallRevert(address(blk), abi.encodeCall(IERC20.transfer, (alice, 5e17 + 1)), "refused");
+
+        vm.recordLogs();
+        vm.expectEmit(true, true, true, true, address(zap));
+        emit IIndexZap.ComponentReturned(address(idx), alice, address(blk), 5e17);
+        vm.prank(alice);
+        uint256 out = zap.burnToToken(p);
+
+        assertEq(out, 7.5e6 + U_DUST, "half the BLK sold, and the USDC held as it is");
+        assertEq(blk.balanceOf(alice), 5e17, "the unsold half reached the recipient");
+        assertEq(blk.balanceOf(address(zap)), 1, "the stray rests in the zap");
+        assertEq(blk.balanceOf(address(router)), 0, "not in the router");
+        assertEq(_returnsAnnounced(vm.getRecordedLogs()), 1, "under one event");
+    }
+
+    /// @dev RW-9: what the router held is named apart only up to what the sweep brought back. A token that arrives one
+    ///      wei short leaves the router paying the pool that wei out of what it held, so less comes back than it held.
+    ///      Taking the one from the other uncapped would revert the burn with Panic(0x11), as CR-L02's stray did.
+    ///      Here the pool takes one of a stranger's three wei, and the two that come back are what is offered.
+    function test_RW9_aSweepOfLessThanTheRouterHeldDoesNotRevertTheBurn() public {
+        ShortToken short = new ShortToken();
+        WeightedHub idx = _shortIndex(short);
+        short.setShortFrom(address(zap)); // the pre-fund, not the redeem, now arrives one wei short
+        short.mint(address(router), 3);
+        uint256 sent = idx.previewRedeem(1e18)[0];
+
+        vm.expectEmit(true, true, true, true, address(zap));
+        emit IIndexZap.ComponentReturned(address(idx), alice, address(short), 2);
+        uint256 out = _shortBurn(idx, short);
+
+        assertEq(out, 15e6 + U_DUST, "the burn sold its whole basket");
+        assertEq(short.balanceOf(address(router.inventory())), sent, "the pool was paid in full, a wei by the stray");
+        assertEq(short.balanceOf(alice), 1, "the two wei went on to her, one short as all the zap sends");
+        assertEq(short.balanceOf(address(zap)), 0, "none of it is left in the zap");
+        assertEq(short.balanceOf(address(router)), 0, "or in the router");
     }
 }
 

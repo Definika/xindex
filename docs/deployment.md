@@ -185,7 +185,9 @@ this repository now holds. It is still live, and the table below is the record o
 a rebalance from Pyth: its factory lists with `proposeListing(token, priceId)`, its `executeRebalance(data,
 priceUpdate)` is payable and reads a signed Pyth update, its `startRebalance(keepMask)` takes no price update, since it
 predates the RX-3 fix, and its auctions run 24 hours. `abi/` and `src/` are the oracle-free build's, so they do not
-decode that deployment's listings, its rebalance calls or its `Rebalanced` event. A new deployment of the current
+decode that deployment's listings, its rebalance calls or its `Rebalanced` event, nor, since 2026-11-14, its
+`getRequest`, which returns one field fewer than a `Request` now has (`rebalanceNonce`, RW-2).
+A new deployment of the current
 build is described under "A new deployment" below. The deployment's owner is a 2-of-3 test Safe and its guardian an
 externally owned account (a mainnet owner needs at least 3 signatures). The four listings (tWBTC, WETH, tLINK, tUNI)
 were executed on 2026-10-28. Its zap was redeployed
@@ -277,6 +279,11 @@ nobody arbitrages them, so zap prices on this market say nothing about mainnet. 
 auctions through SwapRouter02; it is a test fixture without slippage limits, so never fund it on mainnet.
 
 ### The keeper on Sepolia
+
+Until the new deployment the keeper of this build serves nothing on Sepolia. Since 2026-11-14 its executor and its
+bot decode a `Request` of nine fields (`rebalanceNonce`, RW-2), and the `MintRequests` deployed there returns eight,
+so `getRequest` does not decode in either. What follows describes the keeper of the build before that, and holds
+again once `MintRequests` is redeployed with the rest.
 
 The keeper (`keeper/`) runs on Sepolia with `CHAIN_ID=11155111`, which takes the market of the table above. It serves
 `MintRequests` requests only, `FILL_AUCTIONS=0`: the hub deployed there is the Pyth-priced build of `07aeae1`, whose

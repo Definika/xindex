@@ -391,13 +391,13 @@
   },
   {
     "id": "V15",
-    "what": "an index without shares settles",
+    "what": "an index with less than one whole share settles",
     "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
       {
-        "old": "        if (supply == 0) revert IWeightedHub.NothingToRebalance();\n",
+        "old": "        if (supply < SHARE_UNIT) revert IWeightedHub.NothingToRebalance();\n",
         "new": ""
       }
     ]
@@ -631,7 +631,7 @@
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
       {
-        "old": "if (!IERC20(token).trySafeTransfer(address(this), 1) || IERC20(token).balanceOf(address(this)) < balance) {",
+        "old": "if (!IERC20(token).trySafeTransfer(address(this), 1) || IERC20(token).balanceOf(address(this)) < atLeast) {",
         "new": "if (!IERC20(token).trySafeTransfer(address(this), 1)) {"
       }
     ]
@@ -644,8 +644,8 @@
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
       {
-        "old": "if (!IERC20(token).trySafeTransfer(address(this), 1) || IERC20(token).balanceOf(address(this)) < balance) {",
-        "new": "if (balance == type(uint256).max) {"
+        "old": "if (!IERC20(token).trySafeTransfer(address(this), 1) || IERC20(token).balanceOf(address(this)) < atLeast) {",
+        "new": "if (atLeast == type(uint256).max) {"
       }
     ]
   },
@@ -1470,6 +1470,387 @@
       {
         "old": "        if (block.chainid == 1 || block.chainid == BnbChainAddresses.CHAIN_ID) {\n",
         "new": "        if (block.chainid == 1) {\n"
+      }
+    ]
+  },
+  {
+    "id": "W1",
+    "what": "a fill does not compare the index's rebalance nonce with the request's, so a request made before a settlement is filled after it (RW-2)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "        uint256 nonce = IIndexHub(request.index).rebalanceNonce();\n        if (nonce != request.rebalanceNonce) revert StaleRebalanceNonce(request.rebalanceNonce, nonce);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "W2",
+    "what": "a request records rebalance nonce 0 whatever the index's nonce is (RW-2)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "            rebalanceNonce: SafeCast.toUint40(IIndexHub(index).rebalanceNonce()),\n",
+        "new": "            rebalanceNonce: 0,\n"
+      }
+    ]
+  },
+  {
+    "id": "W3",
+    "what": "the bound fill does not compare the request with the hash its caller priced, so it fills whatever request sits behind the id (RW-7)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "        if (keccak256(abi.encode(request)) != expected) revert RequestChanged(id);\n",
+        "new": "        expected;\n"
+      }
+    ]
+  },
+  {
+    "id": "W4",
+    "what": "the bound fill does not require the request to be open, so a closed request fills again under the hash it has now (RW-7)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "        Request storage request = _open(id);\n",
+        "new": "        Request storage request = _requests[id];\n"
+      }
+    ]
+  },
+  {
+    "id": "W5",
+    "what": "requestHash hashes the id with the request, so it is not the hash the bound fill compares (RW-7)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "        return keccak256(abi.encode(_requests[id]));\n",
+        "new": "        return keccak256(abi.encode(id, _requests[id]));\n"
+      }
+    ]
+  },
+  {
+    "id": "W6",
+    "what": "the settlement refuses only a supply of zero, so an index with a few wei of shares rebalances (RW-1)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "        if (supply < SHARE_UNIT) revert IWeightedHub.NothingToRebalance();\n",
+        "new": "        if (supply == 0) revert IWeightedHub.NothingToRebalance();\n"
+      }
+    ]
+  },
+  {
+    "id": "W7",
+    "what": "the handover does not accrue, so the newcomer collects the streaming fee the outgoing creator earned (RW-6)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.fees.t.sol",
+    "edits": [
+      {
+        "old": "        IWeightedHub(index).accrueFees(); // aderyn-fp(reentrancy-state-change)\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "W8",
+    "what": "issue does not probe a deposit, so a token that blocks the index as a sender traps the minter's basket (RW-8)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "            _checkCanSendOut(address(token), arrived);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "W9",
+    "what": "the handover accrues after it writes the new creator, so the accrual pays the newcomer (RW-6)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.fees.t.sol",
+    "edits": [
+      {
+        "old": "        IWeightedHub(index).accrueFees(); // aderyn-fp(reentrancy-state-change)\n        // wake-enable reentrancy\n        // CreatorTransferred, two lines down, records the change the lint asks an event for.\n        // forge-lint: disable-next-line(missing-events-access-control)\n        creatorOf[index] = msg.sender;\n",
+        "new": "        // wake-enable reentrancy\n        // CreatorTransferred, two lines down, records the change the lint asks an event for.\n        // forge-lint: disable-next-line(missing-events-access-control)\n        creatorOf[index] = msg.sender;\n        IWeightedHub(index).accrueFees();\n"
+      }
+    ]
+  },
+  {
+    "id": "W10",
+    "what": "issue's probe is measured against the balance before the deposit, so a token that loses the probe's unit passes (RW-8)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "_checkCanSendOut(address(token), arrived);",
+        "new": "_checkCanSendOut(address(token), before);"
+      }
+    ]
+  },
+  {
+    "id": "W11",
+    "what": "a sale hop hands the hook all its sweep brought back as unsold input, what the router already held included, so one wei left in the router reverts a frozen recipient's burn (RW-9)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/IndexZap.t.sol",
+    "edits": [
+      {
+        "old": "_onUnsold(token, returned - stray, stray, ctx);",
+        "new": "_onUnsold(token, returned, 0, ctx);"
+      }
+    ]
+  },
+  {
+    "id": "W12",
+    "what": "what the router held is not capped at what the sweep brought back, so a stray that a short-delivering hop drew on underflows and reverts the burn (RW-9)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/IndexZap.t.sol",
+    "edits": [
+      {
+        "old": "        stray = Math.min(stray, returned);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "W13",
+    "what": "what a hop did not sell is only offered too: a recipient the token refuses is paid out while its unsold input stays in the zap, which no later call pays out (RW-9)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/IndexZap.sol",
+    "test": "test/IndexZap.t.sol",
+    "edits": [
+      {
+        "old": "IERC20(token).safeTransfer(to, unsold);",
+        "new": "IERC20(token).trySafeTransfer(to, unsold);"
+      }
+    ]
+  },
+  {
+    "id": "W14",
+    "what": "an accepted offer sends what the router held alone: the unsold input it announces with it stays in the zap (RW-9)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/IndexZap.sol",
+    "test": "test/IndexZap.t.sol",
+    "edits": [
+      {
+        "old": "trySafeTransfer(to, unsold + stray)",
+        "new": "trySafeTransfer(to, stray)"
+      }
+    ]
+  },
+  {
+    "id": "W15",
+    "what": "a buy's pre-fund is not checked against the component's balance, so a buy paid through the component's other address is credited what it bought and refunded it too (RW-10)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        if (IERC20(component).balanceOf(address(this)) < outBefore) revert SharedBalance(component, tokenIn);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "W16",
+    "what": "a sale hop's pre-fund is not checked against the hop's output, so a sale between two addresses of one balance credits what the sweep returned as unsold input and pays it as proceeds (RW-10)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        if (IERC20(out).balanceOf(address(this)) < outBefore) revert SharedBalance(out, token);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "W17",
+    "what": "a sale hop's pre-fund is not checked against the leg's tokenOut, so a first hop whose input shares tokenOut's balance is sold through an ordinary middle token (RW-10)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        if (probeEnd && IERC20(end).balanceOf(address(this)) < endBefore) revert SharedBalance(end, token);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "W18",
+    "what": "a sale hop's pre-fund is checked against the hop's output only on the leg's last hop, so a sale passing through its input's other address credits what the sweep returned as unsold input and sells it on as the hop's output (RW-10)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        if (IERC20(out).balanceOf(address(this)) < outBefore) revert SharedBalance(out, token);\n",
+        "new": "        if (end == out && IERC20(out).balanceOf(address(this)) < outBefore) revert SharedBalance(out, token);\n"
+      }
+    ]
+  },
+  {
+    "id": "W19",
+    "what": "a hop that spends tokenOut itself is probed against tokenOut too, so a sale routed back through tokenOut is refused (RW-10)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/Security.t.sol",
+    "edits": [
+      {
+        "old": "        bool probeEnd = end != out && end != token;\n",
+        "new": "        bool probeEnd = end != out;\n"
+      }
+    ]
+  },
+  {
+    "id": "W20",
+    "what": "a refused offer with nothing unsold falls through: the zap announces a return of zero and hard-transfers zero to a recipient the token refuses, which reverts the burn (RW-9)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/IndexZap.sol",
+    "test": "test/IndexZap.t.sol",
+    "edits": [
+      {
+        "old": "        if (unsold == 0) return;\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "W21",
+    "what": "the settlement refuses one whole share too, so the least supply that rebalances is a raw share over it (RW-1)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "        if (supply < SHARE_UNIT) revert IWeightedHub.NothingToRebalance();\n",
+        "new": "        if (supply <= SHARE_UNIT) revert IWeightedHub.NothingToRebalance();\n"
+      }
+    ]
+  },
+  {
+    "id": "W22",
+    "what": "the settlement's floor is a raw share lower, so a supply one raw share under a whole one rebalances (RW-1)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "        if (supply < SHARE_UNIT) revert IWeightedHub.NothingToRebalance();\n",
+        "new": "        if (supply < SHARE_UNIT - 1) revert IWeightedHub.NothingToRebalance();\n"
+      }
+    ]
+  },
+  {
+    "id": "W23",
+    "what": "a fill checks the index's nonce before the request's deadline, so an expired request made before a settlement answers for its nonce (RW-2)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "        uint256 deadline = request.deadline;\n        if (block.timestamp > deadline) revert RequestExpired(id, deadline);\n",
+        "new": ""
+      },
+      {
+        "old": "        request.open = false;\n\n        address requester = request.requester;\n",
+        "new": "        uint256 deadline = request.deadline;\n        if (block.timestamp > deadline) revert RequestExpired(id, deadline);\n        request.open = false;\n\n        address requester = request.requester;\n"
+      }
+    ]
+  },
+  {
+    "id": "W24",
+    "what": "the bound fill compares the hash after the deadline and the nonce, so a request that is not the one priced answers for those first (RW-7)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "        if (keccak256(abi.encode(request)) != expected) revert RequestChanged(id);\n        _fill(request, id, amount);\n",
+        "new": "        bytes32 found = keccak256(abi.encode(request));\n        _fill(request, id, amount);\n        if (found != expected) revert RequestChanged(id);\n"
+      }
+    ]
+  },
+  {
+    "id": "W25",
+    "what": "issue's probe skips its last leg, so a deposit into a last component the index cannot send is taken (RW-8)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "            _checkCanSendOut(address(token), arrived);\n",
+        "new": "            if (i != n - 1) _checkCanSendOut(address(token), arrived);\n"
+      }
+    ]
+  },
+  {
+    "id": "W26",
+    "what": "issue's probe skips its first leg, so a deposit into a first component the index cannot send is taken (RW-8)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "            _checkCanSendOut(address(token), arrived);\n",
+        "new": "            if (i != 0) _checkCanSendOut(address(token), arrived);\n"
+      }
+    ]
+  },
+  {
+    "id": "W27",
+    "what": "the builder credits a seller only what its hop did not sell, so a router leftover swept back with it is credited to nobody (RW-9)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/BasketBuilder.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        uint256 amount = unsold + stray;\n",
+        "new": "        stray;\n        uint256 amount = unsold;\n"
+      }
+    ]
+  },
+  {
+    "id": "W28",
+    "what": "the bound fill does not take the reentrancy guard, so a filler paid through it re-enters the contract, and a filler paid through the fill by id alone re-enters the bound fill (RW-7)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "    function fill(uint256 id, uint256 amount, bytes32 expected) external nonReentrant {\n",
+        "new": "    function fill(uint256 id, uint256 amount, bytes32 expected) external {\n"
+      }
+    ]
+  },
+  {
+    "id": "W29",
+    "what": "the handover swallows a failed accrual, so it goes through inside one of the index's own calls, without the accrual (RW-6)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.fees.t.sol",
+    "edits": [
+      {
+        "old": "        IWeightedHub(index).accrueFees(); // aderyn-fp(reentrancy-state-change)\n",
+        "new": "        try IWeightedHub(index).accrueFees() {} catch {}\n"
       }
     ]
   }
