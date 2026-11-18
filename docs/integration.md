@@ -47,19 +47,24 @@ non-zero overall `minAmountOut`, passes `rebalanceNonce()`, and calls `burnToTok
 **Rebalance.**
 1. Once the index's interval has passed since its creation or last rebalance (`earliestRebalance()`; a week after a
    guardian's keep-mask fill, XS-3), anyone calls `startRebalance(0)`. It is a plain call: it takes no ether and no
-   data and reads no price. It calls no component and only sets the auction's start, `eta`, 2 hours ahead.
+   data and reads no price. It calls no component and only sets the auction's start, `eta`, 2 hours ahead. The owner
+   or guardian may start with a quote instead, `startRebalance(keepMask, prices, tolerance)` (see "Start with a
+   quote" below).
 2. For 2 hours nothing changes. The units a fill settles at are named at the fill, so the notice is for executors to
    ready their stock, routes and prices, not a window holders need. Issue and redeem stay open throughout.
 3. A 4-hour auction follows. Its bar, `currentBar()`, starts at a half (`BAR_MAX`), halves every 12 minutes
    (`BAR_HALF_LIFE`) along a straight line, rounds up, and ends at 476,837,158,204 in 1e18ths at the auction's last
    second. An executor contract calls `executeRebalance(newUnits, data)`, naming the recorded units every component
    is to have, in component order; `recordedUnits()` returns the current ones, and a component the executor leaves
-   alone gets its current units. The hub reads no price. It accepts the units when both of these hold:
+   alone gets its current units. The hub reads no price of its own. It accepts the units when these hold:
    - every component keeps at least four fifths of its own units, rounded up, and at most twice them, and a kept
      component exactly its units, or the call reverts `LegOutOfBounds(index, units, lowest, highest)`;
    - the weighted gain `⌊Σ w_i · L(x_i) / 10,000⌋` is at least the bar, or the call reverts `GainBelowBar(gain,
      bar)`, with `x_i` the component's relative change in units and `L(x) = x − x²/2 + x³/3 − 3x⁴/10`, both rounded
-     down.
+     down;
+   - when the proposal's start posted a quote, the fill brings in, at the quote's prices, at least `1 − tolerance` of
+     the value it takes out: `Σ p_i · (v_i − u_i)` over the components that grow is at least `⌈Σ p_i · (u_i − v_i)
+     over those that shrink · (1e18 − tolerance) / 1e18⌉`, or the call reverts `BelowQuote(valueIn, floor)`.
 
    The executor receives what the shrinking components release and, inside its `onXindexRebalance` callback, must
    send back what the growing ones need; the fill stands only if every component then backs the new units, with the
@@ -70,11 +75,12 @@ non-zero overall `minAmountOut`, passes `rebalanceNonce()`, and calls `burnToTok
 4. A fill that changes nothing has no gain, so it never clears the bar, and an index without shares reverts
    `NothingToRebalance`. Nobody restarts the interval, or moves an empty index's units, for nothing.
 5. The bar falls until some executor finds the trade worth making, and the first to clear it settles. The fill that
-   clears the highest bar is the one that puts the index on its weights at the market's prices, so executors compete
-   by filling earlier, which leaves more with the holders. A fair price therefore needs an executor bidding, the
-   keeper in `keeper/` first. A lone executor that waits for the last second keeps the index's distance from its
-   weights, out of the holders' value: 0.3 to 0.6% of an index in an ordinary week, 5.0% after one coin of two
-   doubled. On its weights an index has nothing to take (see "Known limitations").
+   clears the highest bar is the one that puts the index on its weights at the market's prices, so executors compete by
+   filling earlier, which leaves more with the holders. A fair price therefore needs an executor bidding, the keeper in
+   `keeper/` first. A lone executor that waits for the last second keeps the index's distance from its weights, out of
+   the holders' value: 0.3 to 0.6% of an index in an ordinary week, 5.0% after one coin of two doubled. A quote posted
+   with the start caps it at the quote's tolerance of what the executor trades. On its weights an index has nothing to
+   take (see "Known limitations").
 6. If nobody fills, the auction expires. The owner or guardian can start a fresh one at once; anyone else can 2 hours
    after the auction's last second.
 7. The owner or guardian can cancel a rebalance. Cancelling a live one makes others wait 2 hours from the cancel to
@@ -93,6 +99,29 @@ mask also routes around a component whose contract stops answering (DA-14, RT-01
 moving (`InvalidKeepMask`). The guardian is the guardian's Safe: `cancelRebalance()` and `startRebalance(keepMask)`
 are plain calls on the index, which a Safe sends like any other transaction. An executor needs no mask to leave a
 component alone: it names that component's current units.
+
+**Start with a quote.** The owner or guardian may post a quote with a start: `startRebalance(keepMask, prices,
+tolerance)`, a plain call a Safe sends, under the same clock and keep-mask rules as `startRebalance(keepMask)`, which
+is unchanged; any other caller gets `Unauthorized`. `prices` has one entry per component, in component order
+(`LengthMismatch` otherwise): the price of one raw unit of the token in any one unit of account, from 1 to 2^128 − 1
+for a component the mask leaves moving. A kept component's entry is ignored and recorded as zero. `tolerance` is at
+1e18 = 100% and must be under 1e18. Anything else reverts `InvalidQuote`. The start emits `RebalanceQuoted(proposalId,
+prices, tolerance)`, and `rebalanceQuote()` returns the pending proposal's prices and tolerance, empty and zero when it
+has none.
+
+- The index still reads no price of its own: no feed, no oracle, no pool. These prices are the caller's, fixed at
+  the start, and they only refuse.
+- It can only tighten. A fill must clear the bar and hold the quote, so a quote that is wrong, stale or hostile can
+  stop its own proposal from filling, which a cancel already can, and can make no fill worse than a start without one
+  allows. A compromised owner or guardian gains nothing over funds from it.
+- What it buys: an executor alone at the auction's last second keeps at most `tolerance` of what it trades, where
+  without a quote it keeps the index's whole distance from its weights (0.48% of an index after one coin of four rose
+  a quarter, 5.0% after one coin of two doubled).
+- The quote belongs to its proposal alone: a later start without one is bound by the bar alone. A stranger's
+  `startRebalance(0)` carries none; the guardian then has the 2 hours of notice and the 4 of auction to cancel that
+  proposal and start one with a quote, in one Safe transaction.
+- A quote is hours old by the time the auction ends, so its tolerance has to cover the market's move over about six
+  hours, or nothing fills and the proposal expires.
 
 **Exit while a component is frozen.** If, say, WBTC is paused, `redeem` and the zap revert. The holder calls
 `redeemSkipping(shares, to, skipMask)` with the WBTC bit set: every other component arrives now and the WBTC amount is
@@ -145,16 +174,22 @@ at any time) or `refund` (anyone, after the deadline).
   the `restartAllowedAt` that `RebalanceCancelled` carries rather than computing either wait; `restartAllowedAt()`
   alone reflects cancels only (RT-08, RT-09).
 - **During a rebalance.** In the notice, show `pendingRebalance()`, which returns `(eta, keepMask)`. In the auction,
-  show `currentBar()` (0 outside an auction). `previewRebalance(newUnits)` returns `(bar, gain, amountsOut,
-  amountsIn)` for units the caller names, as a fill in this block would settle them, and reverts as the fill would:
-  outside an auction, on a component outside its caps, and on a gain under the bar. It takes no price, so an app that
-  wants to show a fill names candidate units from its own prices. `recordedUnits()`, a fill's `newUnits` and the
-  `units` of `Rebalanced` are recorded units, which carry the index's scale: show them as units per index token only
-  after multiplying by the scale `pendingStreamingFee()` reports, divided by 1e18, as `components()` does. While a
-  rebalance is pending, warn before a mint that
-  the new shares share the coming settlement's outcome; during the auction, also warn before a burn that the fill can
-  be ordered ahead of it, and that a private relay is the protection (RT-02).
-- **Rebalance events.** `RebalanceStarted(proposalId, id, caller, keepMask, eta)`, `RebalanceCancelled(proposalId,
+  show `currentBar()` (0 outside an auction). `previewRebalance(newUnits)` returns `(bar, gain, amountsOut, amountsIn)`
+  for units the caller names, as a fill in this block would settle them, and reverts as the fill would: outside an
+  auction, on a component outside its caps, on a gain under the bar, and on a fill under the proposal's quote. It takes
+  no price, so an app that wants to show a fill names candidate units from its own prices. `recordedUnits()`, a fill's
+  `newUnits` and the `units` of `Rebalanced` are recorded units, which carry the index's scale: show them as units per
+  index token only after multiplying by the scale `pendingStreamingFee()` reports, divided by 1e18, as `components()`
+  does. While a rebalance is pending, warn before a mint that the new shares share the coming settlement's outcome;
+  during the auction, also warn before a burn that the fill can be ordered ahead of it, and that a private relay is the
+  protection (RT-02).
+- **A proposal may carry a quote.** An executor reads `rebalanceQuote()` before it names units: when it returns
+  prices, a fill must hold the quote as well as clear the bar, or it reverts `BelowQuote(valueIn, floor)`.
+  `previewRebalance` applies both checks. The prices are in one unit of account per raw unit, zero for a kept
+  component, and only their ratios matter; the tolerance is at 1e18 = 100%. A quote no honest fill can hold leaves
+  the proposal to expire. The keeper in `keeper/` reads the quote and names units that hold it.
+- **Rebalance events.** `RebalanceStarted(proposalId, id, caller, keepMask, eta)`, `RebalanceQuoted(proposalId, prices,
+  tolerance)` after it when the start posted a quote, `RebalanceCancelled(proposalId,
   caller, restartAllowedAt)` and `Rebalanced(proposalId, id, executor, bar, gain, units, amountsOut, amountsIn)`,
   whose `bar` and `gain` are at 1e18 = 100%, the gain at least the bar, and whose `units` are the recorded units the
   executor named. `proposalId` counts every
@@ -162,9 +197,10 @@ at any time) or `refund` (anyone, after the deadline).
   settlement takes. Nothing is emitted when an auction expires unfilled: the next `RebalanceStarted` is the first sign.
 - **Guardian duty.** Watch every pending rebalance: its keep mask (RT-07), and the components themselves. Fixed weights
   keep buying a coin its issuer mints without limit or whose bridge has failed, at most doubling its units per fill,
-  until a rebalance keeps it; `cancelRebalance` and a start with a keep mask are the check. No contract checks what a
-  coin is worth, and a listing carries no price id: the guardian's `cancelListing` during a listing's 2 days is the
-  check on the token itself.
+  until a rebalance keeps it; `cancelRebalance` and a start with a keep mask are the check. Start due rebalances with a
+  quote, and replace a stranger's plain start, one whose `rebalanceQuote()` is empty, within its six hours. No contract
+  checks what a coin is worth, and a listing carries no price id: the guardian's `cancelListing` during a listing's 2
+  days is the check on the token itself.
 - **Zap calls take a params struct.** `MintParams {index, expectedNonce, tokenIn, maxAmountIn, shares, legs, to,
   deadline}` with `MintLeg {v3Path, v4Path, maxAmountIn}`, and `BurnParams {index, expectedNonce, shares, tokenOut,
   minAmountOut, legs, to, deadline}` with `BurnLeg {v3Path, v4Path, minAmountOut}`. `legs` has one entry per component,
@@ -227,7 +263,8 @@ at any time) or `refund` (anyone, after the deadline).
   `MIN_COMPONENTS`, `MAX_COMPONENTS`, `TOTAL_WEIGHT`, `MIN_RAW_UNITS`, `MAX_UNITS`, `MAX_WHOLE_TOKENS`,
   `MAX_REBALANCE_INTERVAL` and the four fee caps on the factory; `MIN_REBALANCE_INTERVAL`, `REBALANCE_DELAY`,
   `AUCTION_DURATION` and `MAX_TURNOVER` on the hub; and `MAX_GROWTH`, `BAR_MAX` and `BAR_HALF_LIFE` on the math, the
-  contract at the hub's `MATH()` (`src/interfaces/IWeightedMath.sol`).
+  contract at the hub's `MATH()` (`src/interfaces/IWeightedMath.sol`). A quote has no constant: its prices and its
+  tolerance are its poster's, read with `rebalanceQuote()`.
   Errors that several contracts raise (`ZeroAddress`, `LengthMismatch`, `Unauthorized`, `NotIndex`, `InvalidRecipient`)
   are declared once, in `IXindexErrors`.
 - **Events.** `WeightedIndexFactory`: `IndexCreated` (every component's token, units and weight, the config and the
@@ -235,8 +272,8 @@ at any time) or `refund` (anyone, after the deadline).
   `MintingOpened`, `ListingProposed`, `ListingCancelled`, `TokenDecimalsSet`, `TokenWhitelisted`, `GuardianProposed`,
   `GuardianChangeCancelled`, `GuardianSet`, `OwnershipTransferStarted`, `OwnershipTransferred`. `WeightedHub`: `Issued`,
   `Redeemed`, `ClaimRecorded`, `Claimed`, `StreamingFeeAccrued`, `FeeSharesMinted`, `RebalanceStarted`,
-  `RebalanceCancelled`, `Rebalanced`, and the ERC-20 events. `IndexZap`: `ZapMint`, `ZapBurn`, `ComponentReturned`.
-  `BasketBuilder`: `Deposited`, `Withdrawn`, `Bought`, `Minted`, `Redeemed`, `Sold`, `Unsold`.
+  `RebalanceQuoted`, `RebalanceCancelled`, `Rebalanced`, and the ERC-20 events. `IndexZap`: `ZapMint`, `ZapBurn`,
+  `ComponentReturned`. `BasketBuilder`: `Deposited`, `Withdrawn`, `Bought`, `Minted`, `Redeemed`, `Sold`, `Unsold`.
 - **Watch the ownership handover.** `transferOwnership(new owner)` emits `OwnershipTransferStarted` and
   `acceptOwnership()` emits `OwnershipTransferred`. It is the one admin change with no delay and no guardian veto.
 - **Errors.** `IndexZap`: `NotIndex`, `StaleRebalanceNonce`, `Expired`, `ZeroAddress`, `ZeroAmount`, `InvalidRecipient`
@@ -249,15 +286,16 @@ at any time) or `refund` (anyone, after the deadline).
   `InvalidSkipMask`, `NothingToClaim`, `TransferAmountMismatch`, `Underbacked(token, balance, required)`,
   `Unauthorized`, `RebalanceTooSoon`, `RebalancePending`, `InvalidKeepMask`, `NoPendingRebalance`, `RebalanceNotReady`,
   `RebalanceExpired`, `RebalanceUnderfunded`, `RebalanceMovedOn`, `NothingToRebalance`, `LegOutOfBounds(index, units,
-  lowest, highest)`, `GainBelowBar(gain, bar)`, `CannotSendOut(token)`, `LengthMismatch`, OpenZeppelin's
-  `SafeCastOverflowedUintDowncast(96, units)` for units beyond 96 bits, and its ERC-20 and ERC-2612 errors.
-  `AuctionOver(elapsed)` comes only from a direct call to the math past the auction's end. `WeightedIndexFactory`:
-  `CreatorNotApproved(account)`, `EmptyString`, `InvalidComponentCount`, `TokenNotWhitelisted`, `DuplicateToken`,
-  `UnitsOutOfRange(token, units)`, `InvalidWeights`, `IndexAlreadyExists`, `CreatorFeeTooHigh`, `StreamingFeeTooHigh`,
-  `PlatformFeeTooHigh`, `PlatformStreamingFeeTooHigh`, `IntervalOutOfRange`, `WrongCreationFee`, `InvalidFeePolicy`,
-  `NotGated`, `NotAContract`, `InvalidDecimals`, `AlreadyListed`, `ListingPending`, `NoPendingListing`,
-  `ListingNotReady`, `ListingExpired`, `NotWhitelisted`, `NoPendingGuardianChange`, `GuardianChangeNotReady`,
-  `GuardianChangeExpired`, `Unauthorized`, `RenounceDisabled`, and OpenZeppelin's `Ownable` errors.
+  lowest, highest)`, `GainBelowBar(gain, bar)`, `InvalidQuote`, `BelowQuote(valueIn, floor)`, `CannotSendOut(token)`,
+  `LengthMismatch`, OpenZeppelin's `SafeCastOverflowedUintDowncast(96, units)` for units beyond 96 bits, and its ERC-20
+  and ERC-2612 errors. `AuctionOver(elapsed)` comes only from a direct call to the math past the auction's end.
+  `WeightedIndexFactory`: `CreatorNotApproved(account)`, `EmptyString`, `InvalidComponentCount`, `TokenNotWhitelisted`,
+  `DuplicateToken`, `UnitsOutOfRange(token, units)`, `InvalidWeights`, `IndexAlreadyExists`, `CreatorFeeTooHigh`,
+  `StreamingFeeTooHigh`, `PlatformFeeTooHigh`, `PlatformStreamingFeeTooHigh`, `IntervalOutOfRange`, `WrongCreationFee`,
+  `InvalidFeePolicy`, `NotGated`, `NotAContract`, `InvalidDecimals`, `AlreadyListed`, `ListingPending`,
+  `NoPendingListing`, `ListingNotReady`, `ListingExpired`, `NotWhitelisted`, `NoPendingGuardianChange`,
+  `GuardianChangeNotReady`, `GuardianChangeExpired`, `Unauthorized`, `RenounceDisabled`, and OpenZeppelin's `Ownable`
+  errors.
 - **Requests.** Suggest a limit from the app's own valuation and show the deadline; a fill pays exactly what the filler
   sends, so any surplus over the limit goes to the fastest filler. Read a request with `getRequest(id)` (`requester`,
   `deadline`, `isMint`, `open`, `index`, `stable`, `escrow`, `limit`) and follow `MintRequested`, `RedeemRequested`,

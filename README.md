@@ -26,7 +26,9 @@ weights. No contract reads a price, a feed or an oracle, for any of it.
   the index accepts them only if their weighted gain clears a bar that halves every twelve minutes. No price is read:
   the bar falls until some executor finds the trade worth making, and competition between executors is what makes it
   fair. One fill takes at most 20% of a component and at most doubles one, and never lowers the weighted product of
-  the units, a constant-weight pool's invariant.
+  the units, a constant-weight pool's invariant. The owner or guardian may start a rebalance with a quote, their own
+  prices and a tolerance: it can only refuse a fill, and with it an executor bidding alone keeps at most the
+  tolerance of what it trades.
 - **Fees.** Creator and platform fees on mint and redeem, and an optional streaming fee, all paid in new shares. No fee
   moves a component.
 

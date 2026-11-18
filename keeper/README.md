@@ -25,6 +25,8 @@ Every block L, with T = L's timestamp + 12 (the one block a fill sent now can la
      That is the fill that leaves the index the least value at the keeper's prices among those the index accepts, so
      it is the keeper's best at that second. What it names is checked in the hub's own arithmetic, ported word for
      word and replayed against the contracts' vectors, before anything is asked of the chain.
+   - When the owner or guardian posted a quote with the proposal (`rebalanceQuote()`), the units named must hold it
+     too: the bot gives the index as much more as the quote asks, and names nothing it would have to give away.
    - A leg it cannot value keeps its units: a kept leg, a coin outside the catalogue, a share-priced Ondo leg
      (RX-2), and a coin whose price is not the signed one, is older than a minute or carries a confidence interval
      wider than 2% (RX-1, RX-9). A leg within `TRADE_COST_BPS` of its weight is not traded for its own sake.

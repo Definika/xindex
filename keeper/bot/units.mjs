@@ -75,6 +75,20 @@ export function gainOf(units, newUnits, weights, keepMask = 0n) {
   return { gain: floorDiv(total, TOTAL_WEIGHT) };
 }
 
+/// A quote the owner or guardian posted with a proposal's start, against a fill, as `WeightedMath.quoteCheck`: at
+/// `prices`, one per component per raw unit, the units the fill adds must be worth at least the units it takes, less
+/// `tolerance` (1e18 = 100%), rounded up. `holds` is the hub's verdict.
+export function quoteOf(units, newUnits, prices, tolerance) {
+  let valueOut = 0n;
+  let valueIn = 0n;
+  for (let i = 0; i < units.length; i++) {
+    if (newUnits[i] < units[i]) valueOut += prices[i] * (units[i] - newUnits[i]);
+    else if (newUnits[i] > units[i]) valueIn += prices[i] * (newUnits[i] - units[i]);
+  }
+  const floor = ceilDiv(valueOut * (WAD - tolerance), WAD);
+  return { valueOut, valueIn, floor, holds: valueIn >= floor };
+}
+
 /// The units the keeper names for a fill that must clear `bar`: for every leg it may move, `λ · weight / price`, with
 /// `λ` the smallest that clears the bar. That is the fill that leaves the index the least value at `prices` among
 /// those the index accepts (the first-order condition of maximising what is taken under a gain of logarithms), so it
@@ -83,9 +97,11 @@ export function gainOf(units, newUnits, weights, keepMask = 0n) {
 /// `prices[i]` is dollars per raw unit of leg `i`, or null for a leg the keeper cannot value, which it leaves alone,
 /// as it does a kept one. `costBps` is what trading a leg is taken to cost: a leg is grown only past its target at the
 /// price plus that cost, shrunk only past it at the price less that cost, and otherwise left, so a leg within the
-/// cost of its weight is not traded for nothing. Returns `{newUnits, gain}`, checked in the hub's exact arithmetic, or
-/// null when fewer than two legs can move or nothing this function can name clears the bar.
-export function nameUnits({ units, weights, keepMask = 0n, prices, bar, costBps = 0 }) {
+/// cost of its weight is not traded for nothing. `quote`, `{prices, tolerance}` as the hub reports it, is the quote
+/// posted with the proposal, which the fill must also hold: the units named then give the index more, as much as the
+/// quote asks. Returns `{newUnits, gain}`, checked in the hub's exact arithmetic, or null when fewer than two legs can
+/// move or nothing this function can name clears the bar and holds the quote.
+export function nameUnits({ units, weights, keepMask = 0n, prices, bar, costBps = 0, quote = null }) {
   const free = [];
   for (let i = 0; i < units.length; i++) {
     const kept = ((keepMask >> BigInt(i)) & 1n) === 1n;
@@ -117,7 +133,9 @@ export function nameUnits({ units, weights, keepMask = 0n, prices, bar, costBps 
   };
   const clears = (named) => {
     const g = gainOf(units, named, weights, keepMask);
-    return g.error === undefined && g.gain >= bar ? g.gain : null;
+    if (g.error !== undefined || g.gain < bar) return null;
+    if (quote !== null && !quoteOf(units, named, quote.prices, quote.tolerance).holds) return null;
+    return g.gain;
   };
 
   // Every leg sits at its lower cap below `low` and at its upper one above `high`; the gain rises with λ between.

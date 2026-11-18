@@ -5,7 +5,8 @@ import * as U from "../../bot/units.mjs";
 
 const read = (path) => readFileSync(new URL(`../../../${path}`, import.meta.url), "utf8");
 /// The vectors hold integers past 2^53: every bare integer is read as a BigInt.
-const vectors = JSON.parse(read("test/vectors/settlement.json").replace(/([:[,]\s*)(-?\d+)(?=\s*[,\]}])/g, '$1"$2"')).vectors;
+const model = JSON.parse(read("test/vectors/settlement.json").replace(/([:[,]\s*)(-?\d+)(?=\s*[,\]}])/g, '$1"$2"'));
+const vectors = model.vectors;
 const big = (xs) => xs.map(BigInt);
 const [SETTLES, EMPTY, BOUNDS, OVERFLOW, BELOW, LENGTH, ELAPSED] = [0, 1, 2, 3, 4, 5, 6];
 
@@ -41,6 +42,20 @@ test("the bot's arithmetic is WeightedMath's: every settlement vector, outcome, 
     }
   }
   assert.equal(seen.size, 7, "every outcome is among the vectors");
+});
+
+test("the bot's quote check is WeightedMath's: both sums, the floor and the verdict of every quote vector", () => {
+  assert.equal(model.quotes.length, 77);
+  let held = 0;
+  for (const q of model.quotes) {
+    const got = U.quoteOf(big(q.units), big(q.newUnits), big(q.prices), BigInt(q.tolerance));
+    assert.equal(got.valueOut, BigInt(q.valueOut));
+    assert.equal(got.valueIn, BigInt(q.valueIn));
+    assert.equal(got.floor, BigInt(q.floor));
+    assert.equal(got.holds, q.holds === "1");
+    if (got.holds) held++;
+  }
+  assert.ok(held >= 15 && model.quotes.length - held >= 15, "both verdicts are among the vectors");
 });
 
 test("the bot's unit constants are WeightedMath's", () => {
@@ -145,6 +160,28 @@ test("nameUnits does not trade a leg that sits within its trading cost of its we
   const moved = banded.newUnits.filter((x, i) => x !== ON_WEIGHTS[i]).length;
   assert.ok(moved < 3, "a leg inside the band is left alone");
   assert.ok(U.gainOf(ON_WEIGHTS, banded.newUnits, WEIGHTS).gain >= bar);
+});
+
+test("under a quote, nameUnits gives the index what the quote asks, where alone it would keep the distance", () => {
+  const prices = [2500 / 1e18, PRICES[1], PRICES[2]];
+  const bar = U.barAt(14_400n);
+  // The quote: the same prices, per raw unit at one scale (1e18 a dollar), and half a percent of tolerance.
+  const quote = { prices: [2500n, 60_000n * 10n ** 10n, 20n * 10n ** 12n], tolerance: 5n * 10n ** 15n };
+  const alone = U.nameUnits({ units: ON_WEIGHTS, weights: WEIGHTS, prices, bar });
+  const quoted = U.nameUnits({ units: ON_WEIGHTS, weights: WEIGHTS, prices, bar, quote });
+  assert.equal(U.quoteOf(ON_WEIGHTS, alone.newUnits, quote.prices, quote.tolerance).holds, false, "the lone fill fails the quote");
+  const held = U.quoteOf(ON_WEIGHTS, quoted.newUnits, quote.prices, quote.tolerance);
+  assert.ok(held.holds, "what it names under a quote holds it");
+  assert.ok(U.gainOf(ON_WEIGHTS, quoted.newUnits, WEIGHTS).gain >= bar);
+  const kept = Number(held.valueOut - held.valueIn) / Number(held.valueOut);
+  assert.ok(kept > 0.004 && kept <= 0.005, `it keeps ${kept} of what it trades: the tolerance, no more`);
+  assert.ok(U.takeUsd(ON_WEIGHTS, quoted.newUnits, prices) < U.takeUsd(ON_WEIGHTS, alone.newUnits, prices));
+  // A wrong quote, the first coin posted at a thousand times its price: a sale of it must be paid a thousand times
+  // over, so the only units that hold it are a gift, which the keeper's simulation then refuses to send.
+  const wrong = { prices: [2_500_000n, quote.prices[1], quote.prices[2]], tolerance: 0n };
+  const gift = U.nameUnits({ units: ON_WEIGHTS, weights: WEIGHTS, prices, bar, quote: wrong });
+  assert.ok(U.quoteOf(ON_WEIGHTS, gift.newUnits, wrong.prices, wrong.tolerance).holds);
+  assert.ok(U.takeUsd(ON_WEIGHTS, gift.newUnits, prices) < 0, "holding a wrong quote costs the keeper");
 });
 
 test("whatever nameUnits returns is inside every cap and clears its bar", () => {

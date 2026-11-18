@@ -11,7 +11,11 @@ What the contracts do not protect against, and what an app built on them has to 
   coin of two doubled, 8.7% after it tripled. It is what a fee-less constant-weight pool loses to arbitrage, and no
   fill can take more; on its weights an index has nothing to take
   (`design/2026-11-10-oracle-free-rebalance.md`, sections 3 and 6). A fair price therefore needs a bidder, where a
-  price feed gave one whoever filled. An index created off its weights carries its distance from its first day:
+  price feed gave one whoever filled. The owner or guardian can cap it for a proposal by starting it with a quote
+  (`startRebalance(keepMask, prices, tolerance)`): a lone executor then keeps at most the tolerance of what it
+  trades. A stranger's start carries no quote, so the guardian replaces such a proposal within its six hours, and a
+  quote too tight for six hours of market lets its proposal expire unfilled. An index created off its weights
+  carries its distance from its first day:
   units and weights are the creator's to name, and no contract can compare them without a price. A creator could name
   units far from the weights, let others mint, and fill its own auction: 15.5% of a 50/50 index created 90/10 by
   value in one fill, at the worst a fifth of an index per fill. That is why only wallets the factory's owner approved

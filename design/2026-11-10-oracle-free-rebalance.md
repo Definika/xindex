@@ -223,13 +223,62 @@ Built on `feat/oracle-free-rebalance`: `WeightedMath`, `WeightedHub`, the factor
 and invariant suite, the state-machine suite, the mutants, and the ABIs. `GuardianRelay` and the Pyth interfaces are
 deleted. `audit/2026-11-10-oracle-retirement.md` records the review ids that went with Pyth.
 
+Done since, the same day: the keeper's bot names its own units (`keeper/bot/units.mjs`) and its end-to-end test passes
+on a mainnet fork (24 of 24); the five fork suites ran in CI (559 tests, none skipped); the web app is converted on a
+branch of its own; `test/vectors/proofs.py` checks this arithmetic's proof in exact rationals, with no solver.
+
 Left:
 
-- The keeper's bot (`keeper/keeper.mjs`, `keeper/bot/`): it still builds the retired calls. It needs to name units
-  (an optimiser) from its own price source. The executor contract is converted: `fill` takes the units and no ether.
-- The fork suites are rewritten and compile, and have not run: they need an archive RPC.
-- The web app and its backend, which read `previewRebalance` and the listings.
 - A red team of this mechanism, by reviewers who did not design it.
-- The Halmos harness, not run yet. (`test/vectors/proofs.py` was rewritten for this arithmetic on 2026-11-10: it
-  checks the proof's chain in exact rationals, and needs no solver.)
+- The Halmos harness, not run yet.
 - A new Sepolia deployment.
+
+## 10. The quote posted with a start
+
+Added on 2026-11-10, the owner's call ("lets add it to our contracts"), after sections 6 and 8 put figures on what a
+lone executor takes. It is modelled on Reserve's Index DTFs, where each index's rebalance manager posts a price range
+for every coin and no bidder can do better than the worst of it. Here it is optional, and it sits on top of the rule
+that needs no price.
+
+**The rule.** The owner or guardian may start a rebalance with a quote: `startRebalance(keepMask, prices, tolerance)`,
+one price per component, per raw unit, in any one unit of account, and a tolerance under 100%. A fill of that proposal
+must clear the bar, as any fill, and must also bring in at those prices at least `1 − tolerance` of what it takes out:
+
+    Σ_{v_i > u_i} p_i · (v_i − u_i)  ≥  ⌈ Σ_{v_i < u_i} p_i · (u_i − v_i) · (1 − tolerance) ⌉
+
+Both sums are exact integers, and the floor rounds up, against the executor (`WeightedMath.quoteCheck`,
+`quote_floor` in the model, 77 vectors). A kept component is recorded at zero and moves in no fill. The quote belongs
+to its proposal: a later start without one is bound by the bar alone (`rebalanceQuote()` reports the pending one).
+
+**Why it cannot hurt.** A fill must pass both checks, so the set of fills a quoted proposal accepts is a subset of
+the fills the bar accepts. Theorems 1 and 2 hold for every one of them, whatever the prices posted. A quote that is
+wrong, stale or hostile can therefore do one thing: refuse fills, up to all of them, so that its proposal expires.
+The guardian's cancel already does that. It can make no fill worse than a start without a quote allows, so a
+compromised owner or guardian gains nothing over the holders' coins from it. The index still reads no feed, no
+oracle and no pool: these prices are a governance input, fixed at the start, and used only to refuse.
+
+**What it buys.** At prices near the market's, an executor alone at the auction's last second keeps at most the
+tolerance of what it trades, where without a quote it keeps the index's distance from its weights. On the default
+index with one coin up a quarter (`test_aQuoteCapsWhatALoneExecutorKeeps`): the fill that kept 0.6166% of the index
+is refused, and the most a fill keeps is under 0.06%, half a percent of the tenth of the index it trades.
+
+**Its limits.**
+
+- It protects only a proposal whose start posted one. A stranger may still start without a quote once the waits are
+  over. The guardian then has the notice and the auction, six hours, to cancel that proposal and start one with a
+  quote, in one Safe transaction; a proposal nobody replaced falls back to the bar alone, which is section 3's
+  guarantee and no worse.
+- The prices are fixed at the start and the auction ends six hours later. The tolerance has to cover the market's
+  move over that time, or no honest executor can hold the quote and the proposal expires unfilled. A wide tolerance
+  caps less; a tight one fills less often. Reserve narrows its ranges with a launcher's hot key before each auction;
+  this design has no such key.
+- It does nothing for an index created off its weights beyond the same cap: section 8's answer there is the creator
+  gate.
+
+**The keeper.** It reads `rebalanceQuote()` and names units that clear the bar and hold the quote, the smallest step
+that does both (`nameUnits`, mutant U5). Under a quote nothing honest can hold, what it names is a gift, and its
+simulation refuses to send it.
+
+Tested by `test/WeightedHub.quote.t.sol` (who may post one, what a quote must contain, the cap, that it only refuses,
+that a wrong one stops its own proposal and nothing else, that it ends with its proposal), by the 77 vectors, and by
+mutants Q1 to Q7 and U5.

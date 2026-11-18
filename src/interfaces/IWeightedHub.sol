@@ -117,6 +117,10 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     ///         clears the stale proposal: the wait the expiry set still stands.
     /// @param restartAllowedAt Before this time only the factory owner or guardian can start a rebalance.
     event RebalanceCancelled(uint256 indexed proposalId, address indexed caller, uint256 restartAllowedAt);
+    /// @notice The owner or guardian posted a quote with proposal `proposalId`: one price per component, in any one
+    ///         unit per raw unit of the token (zero for a kept component), and the tolerance, 1e18 = 100%. A fill of
+    ///         this proposal must also bring in, at these prices, at least `1 − tolerance` of what it takes out.
+    event RebalanceQuoted(uint256 indexed proposalId, uint256[] prices, uint256 tolerance);
     /// @notice The proposal with this `proposalId` settled, and {rebalanceNonce} is now `id`.
     /// @param executor The contract that filled the auction.
     /// @param bar The gain the auction asked for in the settling block (1e18 = 100%).
@@ -197,6 +201,12 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     /// @notice The math was asked for a bar `elapsed` seconds into an auction, past AUCTION_DURATION. The hub refuses
     ///         an expired auction first (RebalanceExpired), so only a direct call to the math sees this.
     error AuctionOver(uint256 elapsed);
+    /// @notice A quote must name a price from 1 to 2^128 − 1 for every component the keep mask leaves moving, and a
+    ///         tolerance under 100%.
+    error InvalidQuote();
+    /// @notice The fill brings in `valueIn` at the prices the owner or guardian posted with this proposal, under the
+    ///         `floor` the quote asks: the value it takes out, less the tolerance, rounded up.
+    error BelowQuote(uint256 valueIn, uint256 floor);
     /// @notice After a fill, the index could not send itself one raw unit of `token`, a leg it bought, or lost some
     ///         doing so: a token that blocks the index as a sender would trap what the fill bought (RX-12).
     error CannotSendOut(address token);
@@ -322,6 +332,23 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     ///        mask to leave a component alone: it names that component's current units.
     function startRebalance(uint256 keepMask) external;
 
+    /// @notice Owner or guardian only. Starts a rebalance as {startRebalance} does, under the same clock, and posts a
+    ///         quote with it: a fill of this proposal must clear the bar, as any fill, and must also bring in, at
+    ///         `prices`, at least `1 − tolerance` of the value it takes out (BelowQuote otherwise).
+    ///         - The index still reads no price of its own: these are the caller's, fixed at the start, and they
+    ///           only ever refuse a fill the bar would accept. A quote that is wrong, stale or hostile can stop the
+    ///           proposal from filling, which a cancel already can; it can make no fill worse than a start without
+    ///           one allows.
+    ///         - What it buys: an executor alone at the auction's last second keeps at most `tolerance` of what it
+    ///           trades, where without a quote it keeps the index's whole distance from its weights.
+    ///         - The quote belongs to this proposal alone and ends with it.
+    /// @param keepMask As in {startRebalance}.
+    /// @param prices One per component, in component order: the price of one raw unit of the token, in any one unit
+    ///        of account, from 1 to 2^128 − 1 for a component the mask leaves moving (InvalidQuote otherwise). Only
+    ///        their ratios matter. A kept component's entry is ignored.
+    /// @param tolerance How far under the quoted value a fill may bring in, 1e18 = 100%; under 1e18 (InvalidQuote).
+    function startRebalance(uint256 keepMask, uint256[] calldata prices, uint256 tolerance) external;
+
     /// @notice Factory owner or guardian. Cancels the pending rebalance. Anyone else must then wait REBALANCE_DELAY
     ///         before starting a new one.
     function cancelRebalance() external;
@@ -357,6 +384,10 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     /// @notice The gain a fill in this block must reach (1e18 = 100%), or 0 outside an auction.
     function currentBar() external view returns (uint256);
 
+    /// @notice The quote posted with the pending rebalance: its prices, one per component (zero for a kept one), and
+    ///         its tolerance. Empty and zero when no rebalance is pending or its start posted none.
+    function rebalanceQuote() external view returns (uint256[] memory prices, uint256 tolerance);
+
     /// @notice Whether anyone can start a rebalance now: {earliestRebalance} has passed, no auction is live, and the
     ///         waits after a cancel and after an unfilled auction are over.
     function canStartRebalance() external view returns (bool);
@@ -367,7 +398,8 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     function recordedUnits() external view returns (uint256[] memory units);
 
     /// @notice The exact settlement an execution in this block would make of `newUnits`. Reverts like
-    ///         {executeRebalance}: outside an auction, on a component outside its caps, and on a gain under the bar.
+    ///         {executeRebalance}: outside an auction, on a component outside its caps, on a gain under the bar, and,
+    ///         when the proposal's start posted a quote, on a fill that brings in less than it asks (BelowQuote).
     /// @param newUnits The recorded units each component is to have, in component order.
     /// @return bar The gain the auction asks for in this block.
     /// @return gain The weighted gain of `newUnits`.

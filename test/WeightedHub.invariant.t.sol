@@ -593,7 +593,7 @@ contract WeightedHandler is Test {
         if (block.timestamp < earliest - 1) vm.warp(earliest - 1);
         if (block.timestamp < earliest) {
             vm.prank(guardian);
-            (bool early,) = address(index).call(abi.encodeCall(IWeightedHub.startRebalance, (0)));
+            (bool early,) = address(index).call(abi.encodeWithSignature("startRebalance(uint256)", 0));
             restartMisjudged = restartMisjudged || early;
         }
         if (!asGuardian) {
@@ -604,7 +604,7 @@ contract WeightedHandler is Test {
             if (holdOff > earliest && block.timestamp < holdOff) {
                 vm.warp(holdOff - 1);
                 vm.prank(_actor(seed));
-                (bool started,) = address(index).call(abi.encodeCall(IWeightedHub.startRebalance, (0)));
+                (bool started,) = address(index).call(abi.encodeWithSignature("startRebalance(uint256)", 0));
                 holdOffMisjudged = holdOffMisjudged || started || index.canStartRebalance();
             }
             earliest = Math.max(earliest, holdOff);

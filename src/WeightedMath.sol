@@ -62,6 +62,28 @@ contract WeightedMath is IWeightedMath {
     }
 
     /// @inheritdoc IWeightedMath
+    /// @dev Exact: the two sums are integers, and the floor is the value out less the tolerance, rounded up, so the
+    ///      rounding goes against the executor.
+    function quoteCheck(
+        uint256[] memory currentUnits,
+        uint256[] memory newUnits,
+        uint256[] memory prices,
+        uint256 tolerance
+    ) external pure {
+        uint256 valueOut = 0;
+        uint256 valueIn = 0;
+        uint256 n = currentUnits.length;
+        for (uint256 i = 0; i < n; ++i) {
+            uint256 current = currentUnits[i];
+            uint256 next = newUnits[i];
+            if (next < current) valueOut += prices[i] * (current - next);
+            else if (next > current) valueIn += prices[i] * (next - current);
+        }
+        uint256 floor = Math.mulDiv(valueOut, WAD - tolerance, WAD, Math.Rounding.Ceil);
+        if (valueIn < floor) revert IWeightedHub.BelowQuote(valueIn, floor);
+    }
+
+    /// @inheritdoc IWeightedMath
     function barAt(uint256 elapsed) public pure returns (uint256) {
         if (elapsed > AUCTION_DURATION) revert IWeightedHub.AuctionOver(elapsed);
         uint256 halvings = elapsed / BAR_HALF_LIFE;

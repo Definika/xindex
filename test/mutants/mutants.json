@@ -553,8 +553,8 @@
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
       {
-        "old": "_recordedUnits(), newUnits, weights, _keepMask);",
-        "new": "_recordedUnits(), newUnits, weights, 0);"
+        "old": "scale, units, newUnits, weights, _keepMask);",
+        "new": "scale, units, newUnits, weights, 0);"
       }
     ]
   },
@@ -1075,8 +1075,8 @@
     "test": "keeper/test/unit/units.test.mjs",
     "edits": [
       {
-        "old": "    return g.error === undefined && g.gain >= bar ? g.gain : null;",
-        "new": "    return g.error === undefined ? g.gain : null;"
+        "old": "    if (g.error !== undefined || g.gain < bar) return null;\n",
+        "new": "    if (g.error !== undefined) return null;\n"
       }
     ],
     "runner": "node"
@@ -1134,5 +1134,110 @@
         "new": "function setApprovedCreator(address account, bool approved) external {"
       }
     ]
+  },
+  {
+    "id": "Q1",
+    "what": "a fill is never checked against its proposal's quote",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 10: the quote posted with a start",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.quote.t.sol",
+    "edits": [
+      {
+        "old": "        if (_quoteProposal == proposalCount) {\n",
+        "new": "        if (_quoteProposal == type(uint256).max) {\n"
+      }
+    ]
+  },
+  {
+    "id": "Q2",
+    "what": "a quote outlives its proposal and binds a later start that posted none",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 10: the quote posted with a start",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.quote.t.sol",
+    "edits": [
+      {
+        "old": "        if (_quoteProposal == proposalCount) {\n",
+        "new": "        if (_quoteProposal != 0) {\n"
+      }
+    ]
+  },
+  {
+    "id": "Q3",
+    "what": "anyone posts a quote with a start, not only the owner or guardian",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 10: the quote posted with a start",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.quote.t.sol",
+    "edits": [
+      {
+        "old": "        if (!IWeightedIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender)) revert Unauthorized(msg.sender);\n        uint256 n = _components.length;\n        if (prices.length != n) revert LengthMismatch();\n",
+        "new": "        uint256 n = _components.length;\n        if (prices.length != n) revert LengthMismatch();\n"
+      }
+    ]
+  },
+  {
+    "id": "Q4",
+    "what": "a moving component is quoted at zero, so selling it asks nothing back",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 10: the quote posted with a start",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.quote.t.sol",
+    "edits": [
+      {
+        "old": "                if (price == 0 || price > type(uint128).max) revert InvalidQuote();\n",
+        "new": "                if (price > type(uint128).max) revert InvalidQuote();\n"
+      }
+    ]
+  },
+  {
+    "id": "Q5",
+    "what": "a tolerance of 100% is accepted, a quote that asks nothing",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 10: the quote posted with a start",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.quote.t.sol",
+    "edits": [
+      {
+        "old": "        if (tolerance >= WAD) revert InvalidQuote();\n",
+        "new": "        if (tolerance > WAD) revert InvalidQuote();\n"
+      }
+    ]
+  },
+  {
+    "id": "Q6",
+    "what": "the quote's floor rounds down, one unit in the executor's favour",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 10: the quote posted with a start",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "        uint256 floor = Math.mulDiv(valueOut, WAD - tolerance, WAD, Math.Rounding.Ceil);\n",
+        "new": "        uint256 floor = Math.mulDiv(valueOut, WAD - tolerance, WAD);\n"
+      }
+    ]
+  },
+  {
+    "id": "Q7",
+    "what": "a fill exactly on the quote's floor is refused",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 10: the quote posted with a start",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "        if (valueIn < floor) revert IWeightedHub.BelowQuote(valueIn, floor);\n",
+        "new": "        if (valueIn <= floor) revert IWeightedHub.BelowQuote(valueIn, floor);\n"
+      }
+    ]
+  },
+  {
+    "id": "U5",
+    "what": "the bot names units that fail the quote posted with the proposal",
+    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 10: the quote posted with a start",
+    "file": "keeper/bot/units.mjs",
+    "test": "keeper/test/unit/units.test.mjs",
+    "edits": [
+      {
+        "old": "    if (quote !== null && !quoteOf(units, named, quote.prices, quote.tolerance).holds) return null;\n",
+        "new": ""
+      }
+    ],
+    "runner": "node"
   }
 ]

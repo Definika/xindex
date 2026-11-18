@@ -875,6 +875,24 @@
   },
   {
     "type": "function",
+    "name": "rebalanceQuote",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "prices",
+        "type": "uint256[]",
+        "internalType": "uint256[]"
+      },
+      {
+        "name": "tolerance",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "recordedUnits",
     "inputs": [],
     "outputs": [
@@ -939,6 +957,29 @@
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "startRebalance",
+    "inputs": [
+      {
+        "name": "keepMask",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "prices",
+        "type": "uint256[]",
+        "internalType": "uint256[]"
+      },
+      {
+        "name": "tolerance",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -1252,6 +1293,31 @@
   },
   {
     "type": "event",
+    "name": "RebalanceQuoted",
+    "inputs": [
+      {
+        "name": "proposalId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "prices",
+        "type": "uint256[]",
+        "indexed": false,
+        "internalType": "uint256[]"
+      },
+      {
+        "name": "tolerance",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "RebalanceStarted",
     "inputs": [
       {
@@ -1434,6 +1500,22 @@
     "inputs": [
       {
         "name": "i",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "BelowQuote",
+    "inputs": [
+      {
+        "name": "valueIn",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "floor",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -1684,6 +1766,11 @@
         "internalType": "uint256"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "InvalidQuote",
+    "inputs": []
   },
   {
     "type": "error",
