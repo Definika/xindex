@@ -124,6 +124,7 @@ const DEFAULTS = {
   CHAIN_ID: "1",
   SUBSIDY_BUDGET_USD: "0",
   SHARE_STOCK_USD: "0",
+  PRESTOCK_LEAD_SECONDS: "86400",
 };
 
 /// The checks every setting of `env` goes through, with `defaults` for the ones left unset. Each records what is wrong
@@ -193,6 +194,9 @@ export function parseConfig(env) {
     shareStockUsd: number("SHARE_STOCK_USD", { min: 0 }),
     // Where to write the coins fills are short of, for the restock service; unset, nothing is written.
     needsFile: get("NEEDS_FILE") || null,
+    // How long before an index may be started its auction's needs go on that board, so the restock brings the stock
+    // in before the auction rather than during it. Zero reports an auction only once it can be started.
+    prestockLeadSeconds: number("PRESTOCK_LEAD_SECONDS", { min: 0, integer: true }),
   };
   if (!["0", "1"].includes(get("FILL_REQUESTS"))) problems.push("FILL_REQUESTS must be 0 or 1");
   if (!["0", "1"].includes(get("FILL_AUCTIONS"))) problems.push("FILL_AUCTIONS must be 0 or 1");

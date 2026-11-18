@@ -32,9 +32,11 @@ of 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). `WeightedIndexFa
 `MintRequests` hold Ethereum ERC-20s in kind: the issuer's own contract where Ethereum has one (71 candidates of the
 top 300 today), and otherwise a copy wrapped by Wormhole's token bridge from the chain that has it (17 from BNB Chain,
 nine of them Binance-Peg; 31 from Solana, Sui, Aptos, Base and the other chains Wormhole serves), labelled Bridged,
-Custodial as well when the source is Binance-Peg. The list stands at 85
-(`script/Listings.sol`), nine of them Wormhole copies (SOL, AVAX, JUP, ALGO, AERO, APT, PYTH, OP and SUI) since the six
-wrapped from BNB Chain left on 2026-11-13 (the owner's call: BNB Chain's deployment holds those coins in kind, so no
+Custodial as well when the source is Binance-Peg. The list stands at 80
+(`script/Listings.sol`), four of them Wormhole copies (SOL, AVAX, AERO and OP) since the copies of JUP, PYTH, SUI, APT
+and ALGO left on 2026-11-18 (the owner's call: no Ethereum pool trades them, and the restock that would bridge their
+stock in from Solana, Sui, Aptos or Algorand has never run, `design/2026-11-18-bridged-coins-in-a-rebalance.md`), and
+the six wrapped from BNB Chain on 2026-11-13 (the owner's call: BNB Chain's deployment holds those coins in kind, so no
 listed copy has a Binance-Peg source any more), with 26 more copies to attest and FIL's held; DOGE's copy left it on
 2026-10-14 (the owner's call, below); on 2026-10-18 the copies of BNB, SUI and SEI, which the count of 2026-10-10
 missed, joined it, and SAND and RLB left it after the source reading (the owner's call); on 2026-10-19 BTT and SEI's
@@ -61,7 +63,8 @@ built on it and found in it.
   Ethereum-issued coins and 13 Wormhole copies that already existed, every one through `CheckToken` on a fork), and
   93 since DOGE's copy left on 2026-10-14, and on 2026-10-18 the copies of BNB, SUI and SEI, found already attested,
   joined and SAND and RLB left; on 2026-10-19 BTT and SEI's copy left, 91 in all, 73 of them coins that count toward
-  the hundred; on 2026-11-13 the six copies wrapped from BNB Chain left, 85 in all. 26 copies await an attestation on Wormhole's Portal (the queue of 31 less USX and CASH, stablecoins,
+  the hundred; on 2026-11-13 the six copies wrapped from BNB Chain left, 85 in all; on 2026-11-18 the copies of JUP,
+  PYTH, SUI, APT and ALGO left, 80 in all, 62 of them coins that count toward the hundred. 26 copies await an attestation on Wormhole's Portal (the queue of 31 less USX and CASH, stablecoins,
   BP, an exchange's token, S, which Wormhole does not serve, and FIL, held until its Binance-Peg source passes a
   source reading: RX-11, RX-20, RX-35, RX-64), a
   transaction on each home chain the owner sends (section 2a of the 2026-10-10 record lists them with the procedure,
@@ -337,6 +340,19 @@ built on it and found in it.
     `WeightedHub.fork`'s two whole-list tests, which the public node refused for archive state; `CheckToken.fork`. An
     archive run at the pinned block settles all four. Not done either: the app's ether paths (the app repository's
     site and API still offer ETH), which go with its move to this build.
+- **Bridged coins in a rebalance** (2026-11-18, `design/2026-11-18-bridged-coins-in-a-rebalance.md`). Asked how an
+  index rebalances a coin no Ethereum pool trades, the answer kept: the keeper's executor holds it as stock and the
+  restock carries only the net through its home chain, since every index rebalances a coin the same way at once and
+  nothing on Ethereum nets it. Built on it, in the keeper alone:
+  - An auction's needs go on the restock's board before it opens: a proposal through its two-hour notice, which no
+    check had read, so its entry lapsed after 15 minutes and the restock could send its stock home; and an index the
+    keeper may start within `PRESTOCK_LEAD_SECONDS`, a day by default (`bestCase`, `prestock`, `M.startStage`,
+    mutants K1 to K3). The keeper's end-to-end test checks the board at a start, through a notice and a day ahead,
+    and passed 29 of 29 on a mainnet fork that day (block 26,441,062), with NVDAon priced under the Uniswap pool it
+    has grown since, so that stock still serves it.
+  - The stock's price is the operator's, accepted at launch sizes with no hedge (the owner's call).
+  - The copies of JUP, PYTH, SUI, APT and ALGO left Ethereum's list (the owner's call, below): 80 coins. Their
+    restock signers stay, unrun.
 - Before any mainnet: a Hermes plan that serves the keeper its feeds (its price source is its own business now, and
   no contract waits on it); a run of the fork suites; an external audit (the red
   team of the oracle-free mechanism ran on 2026-11-14), then `DeployWeighted`'s release hashes fixed at the
@@ -408,7 +424,7 @@ Deployment, once on each chain, Ethereum and BNB Chain: `script/DeployWeighted.s
 to that chain's guardian's Safe,
 then `script/ConfigureWeighted.s.sol`, which lists each coin of `script/Listings.sol`; the owner then approves the
 wallets that create indexes (`setApprovedCreator`), and nobody can create one before. `script/CheckToken.s.sol` reports on every token before its first
-listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 85 in all, on Ethereum;
+listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 80 in all, on Ethereum;
 `V5_WHITELIST=bnb` is BNB Chain's twelve. On chains 1 and 56 the deploy script resolves the router and the
 stablecoins from that chain's address book and refuses any other address
 (`DeployChecks.isPinnedChain`). Sepolia first needs its test market from
@@ -1079,6 +1095,17 @@ and the basket builder take and pay the deployment's USDC and USDT and revert `N
 entry point takes ether. It reverses the ether entry of 2026-10-29, and narrows the burn, which had paid out any token
 the caller named. `MintRequests` already took the two alone. The app's ether paths follow when it moves to this build
 (asked the same day, the owner kept this change to the contracts for now).
+
+**Five Wormhole copies off the list** (the owner's call of 2026-11-18: "for now, let's just remove" them, since the
+team creates every index and tells partners what it holds). JUP, PYTH, SUI, APT and ALGO left `script/Listings.sol`:
+no Ethereum pool trades their copies, so a rebalance buys them only from stock bridged in from Solana, Sui, Aptos or
+Algorand, and that restock has never sent a transaction; the local chains cannot run their venues, so proving it
+would take a live run with funded wallets. SOL's copy stays, which a Uniswap V3 pool against WETH trades at the
+market (read that day: $74.63 a coin against OKX's $74.76, a $22k sale 0.5% worse than one coin), and so do AVAX,
+OP and AERO, which the EVM restock serves. The addresses stay in `MainnetAddresses` and the signers in
+`keeper/restock/`, for a relisting once a live run has proven them. Asked before it, the owner weighed a token that
+tracks prices without holding the coins; it was not taken, since it needs a price feed and a counterparty to every
+gain, the opposite of "No oracle" below.
 
 **No oracle** (the owner's call of 2026-11-10: "we have to cut off oracles somehow and keep rebalance safely", then
 "yes build oracle free rebalance"). No contract reads a price. An index still rebalances toward its fixed percentages,

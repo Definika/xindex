@@ -12,8 +12,10 @@
 //        enough for the fill to pay, through routes that include a two-hop buy. Later the guardian starts it again
 //        keeping UNI, and the keeper's fill leaves UNI's units alone.
 //   MIX  WETH/JUP/NVDAon. JUP up 20%: the index sells JUP, which has no pool (kept as stock, at the keeper's price),
-//        and buys NVDAon, which has none either: not started until the executor holds NVDAon and its owner allows
-//        that stock (CF-1), then filled from it.
+//        and buys NVDAon, whose one pool asks far more than the keeper's price, so no route buys it within
+//        ROUTE_MAX_LOSS_BPS: not started until the executor holds NVDAon and its owner allows that stock (CF-1),
+//        then filled from it. Its need of NVDAon stands on the restock's board (NEEDS_FILE) while
+//        it cannot start, through its notice, and, once JUP moves again, a day before its next auction can start.
 //   DRY  WETH/APT. APT down 20%: the index would buy APT, which nobody routes or holds: never started.
 //   SHR  WETH/JUP. JUP up 20%: the index sells JUP, kept as stock, and buys WETH: started and filled.
 //   ADV  WETH/SOL. SOL's price up 20% while its own pool stays where mainnet has it, far below: the SOL a fill would
@@ -23,7 +25,9 @@
 
 import { execFileSync, spawn } from "node:child_process";
 import http from "node:http";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   createPublicClient,
   createTestClient,
@@ -63,7 +67,8 @@ const T = {
   LINK: { a: "0x514910771AF9Ca656af840dff83E8264EcF986CA", id: "0x8ac0c70fff57e9aefdf5edf44b51d62c2d433653cbb2cf5cc06bb115af04d221", d: 18 },
   UNI: { a: "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984", id: "0x78d185a741d07edb3412b09008b7c5cfb9bbbd7d568bf00ba737b456ba171501", d: 18 },
   SOL: { a: "0xD31a59c85aE9D8edEFeC411D448f90841571b89c", id: "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d", d: 9, usd: 150 },
-  NVDAON: { a: "0x2D1F7226Bd1F780AF6B9A49DCC0aE00E8Df4bDEE", id: "0x207ddea2a443d30b7e13a7c88a9e3f106765deb97049afc65a18cede50fffc82", d: 18, usd: 180 },
+  // Priced far under its USDC pool (which asked about $161 in November 2026), so the pool is no route and stock serves it.
+  NVDAON: { a: "0x2D1F7226Bd1F780AF6B9A49DCC0aE00E8Df4bDEE", id: "0x207ddea2a443d30b7e13a7c88a9e3f106765deb97049afc65a18cede50fffc82", d: 18, usd: 100 },
   APT: { a: "0x8CDf7AF57E4c8B930e1B23c477c22f076530585e", id: "0x03ae4db29ed4ae33d323568895aa00337e658e348b37509f5372ae51f0af00d5", d: 8, usd: 5 },
   JUP: { a: "0x8687a10BCa6F139B25eb31020FCABB5782214764", id: "0x0a0408d619e9380abad35060f9192039ed5042fa6f82301d0e48bb52be830996", d: 6, usd: 0.5 },
 };
@@ -354,6 +359,8 @@ await test.request({ method: "anvil_setBlockTimestampInterval", params: [12] });
 
 const logLines = [];
 let lastDone = -1n;
+// The board the keeper writes for the restock service, which this test reads as the restock would.
+const NEEDS_FILE = join(mkdtempSync(join(tmpdir(), "xindex-keeper-e2e-")), "needs.json");
 const keeper = spawn(process.execPath, ["keeper.mjs"], {
   cwd: KEEPER_DIR,
   env: {
@@ -369,6 +376,10 @@ const keeper = spawn(process.execPath, ["keeper.mjs"], {
     MIN_PROFIT_USD: "1",
     MIN_TVL_USD: "1000",
     KEEPER_DEBUG: "1",
+    NEEDS_FILE,
+    // JUP's and APT's copies left the list, and the keeper's catalogue, on 2026-11-18; they stay this test's coins with
+    // no pool, priced as an operator prices a coin the catalogue does not hold.
+    PRICE_IDS: `${T.JUP.a}=${T.JUP.id},${T.APT.a}=${T.APT.id}`,
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -419,6 +430,11 @@ const mineBlocks = async (n) => {
 const proposals = async (index) => read(index, HUB, "proposalCount");
 const nonceOf = async (index) => read(index, HUB, "rebalanceNonce");
 const logged = (text) => logLines.some((l) => l.includes(text));
+/// Whether the board asks for `coin` under `index`'s proposal `proposal`, reported at `source`.
+const onBoard = (index, proposal, source, coin) =>
+  JSON.parse(readFileSync(NEEDS_FILE, "utf8")).needs.some(
+    (n) => n.key.toLowerCase() === `${index}:${proposal}`.toLowerCase() && n.source === source && n.token === coin.a.toLowerCase() && BigInt(n.amount) > 0n,
+  );
 
 // ---------------------------------------------------------------------
 // Starts
@@ -427,6 +443,7 @@ const logged = (text) => logLines.some((l) => l.includes(text));
 step("first start check: one index starts, the best paying of those that can");
 await settle();
 ok((await proposals(MIX)) === 0n && logged("MIX not starting: restock"), "MIX held back: no route and no stock of NVDAon");
+ok(onBoard(MIX, 1n, "start", T.NVDAON), "the board asks for MIX's NVDAon under the proposal a start would open");
 ok((await proposals(LQ)) + (await proposals(SHR)) === 1n, "one of LQ and SHR started: the bot starts one index a round");
 const startTx = await pub.getTransaction({
   hash: (await pub.getContractEvents({ abi: HUB, eventName: "RebalanceStarted", fromBlock: BigInt(forkBlock) + 1n }))[0].transactionHash,
@@ -446,6 +463,11 @@ for (let round = 0; round < 4; round++) await mineBlocks(25);
 ok((await proposals(LQ)) === 1n, "LQ started");
 ok((await proposals(SHR)) === 1n, "SHR started: its sold JUP is kept, its WETH bought");
 ok((await proposals(MIX)) === 1n, "MIX started from stock");
+await mineBlocks(25);
+ok(
+  onBoard(MIX, 1n, "notice", T.NVDAON),
+  "through MIX's notice, which no fill check reads, the board still asks for its NVDAon, under the key its fill carries",
+);
 // Five indexes are ready and four are judged a round, the richest first, so DRY, the smallest, is judged in a later one.
 ok((await proposals(DRY)) === 0n && logged("DRY not starting: restock"), "DRY held back: no route and no stock of APT");
 ok(
@@ -518,6 +540,22 @@ ok(jup1 - jup0 === shr.amountsOut[1] + mix.amountsOut[1], "SHR's and MIX's JUP a
 ok(nvda0 - nvda1 === mix.amountsIn[2], "MIX's NVDAon came out of stock");
 const usdc1 = await read(USDC, erc20, "balanceOf", [executor]);
 console.log(`  executor USDC float ${Number(usdc0) / 1e6} -> ${Number(usdc1) / 1e6}`);
+
+// ---------------------------------------------------------------------
+// Stock ahead of the next auction
+// ---------------------------------------------------------------------
+
+step("JUP rises again: a day before MIX may be started, the board asks for the NVDAon its auction would buy");
+setUsd(T.JUP, 0.72);
+const mixEarliest = await read(MIX, HUB, "earliestRebalance");
+await mineAt(mixEarliest - 3n * 86_400n);
+await mineBlocks(25);
+ok(!onBoard(MIX, 2n, "soon", T.NVDAON), "three days ahead, past PRESTOCK_LEAD_SECONDS, the board asks nothing of MIX");
+await mineAt(mixEarliest - 43_200n);
+await mineBlocks(25);
+ok((await proposals(MIX)) === 1n, "MIX is not started before it may be");
+ok(onBoard(MIX, 2n, "soon", T.NVDAON), "half a day ahead, the board asks for the NVDAon of MIX's next auction");
+setUsd(T.JUP, 0.6);
 
 // ---------------------------------------------------------------------
 // The guardian keeps a coin

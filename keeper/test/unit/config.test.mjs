@@ -25,7 +25,15 @@ test("defaults fill the optional settings", () => {
   assert.equal(c.indexes, null);
   assert.equal(c.chain, MAINNET);
   assert.equal(c.fillAuctions, true);
+  assert.equal(c.prestockLeadSeconds, 86_400);
   assert.ok(Object.isFrozen(c));
+});
+
+test("PRESTOCK_LEAD_SECONDS is a whole number of seconds, zero turning the restock-ahead off", () => {
+  assert.equal(parseConfig({ ...VALID, PRESTOCK_LEAD_SECONDS: "0" }).prestockLeadSeconds, 0);
+  assert.equal(parseConfig({ ...VALID, PRESTOCK_LEAD_SECONDS: "172800" }).prestockLeadSeconds, 172_800);
+  assert.throws(() => parseConfig({ ...VALID, PRESTOCK_LEAD_SECONDS: "-1" }), /PRESTOCK_LEAD_SECONDS must be at least 0/);
+  assert.throws(() => parseConfig({ ...VALID, PRESTOCK_LEAD_SECONDS: "1.5" }), /PRESTOCK_LEAD_SECONDS must be an integer/);
 });
 
 test("CHAIN_ID picks the chain's addresses, and the Sepolia keeper can serve requests alone", () => {
@@ -110,12 +118,12 @@ test("the keeper values a chain's own coins, and PRICE_IDS adds to them or chang
   const token = `0x${"Cd".repeat(20)}`;
   const id = `0x${"ab".repeat(32)}`;
   const weth = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
-  assert.equal(Object.keys(parseConfig(VALID).priceIds).length, 85);
+  assert.equal(Object.keys(parseConfig(VALID).priceIds).length, 80);
   assert.equal(parseConfig(VALID).priceIds[weth], "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace");
   const c = parseConfig({ ...VALID, PRICE_IDS: `${token}=${id}, ${weth}=${id}` });
   assert.equal(c.priceIds[token.toLowerCase()], id);
   assert.equal(c.priceIds[weth], id, "an entry replaces the catalogue's");
-  assert.equal(Object.keys(c.priceIds).length, 86);
+  assert.equal(Object.keys(c.priceIds).length, 81);
   assert.equal(Object.keys(parseConfig({ ...VALID, CHAIN_ID: "11155111" }).priceIds).length, 4, "Sepolia's test tokens");
   for (const bad of ["junk", `${token}`, `${token}=0x12`, `${token}=${id}=${id}`, `0x12=${id}`]) {
     assert.throws(() => parseConfig({ ...VALID, PRICE_IDS: bad }), /PRICE_IDS has an entry that is not token=id/, bad);

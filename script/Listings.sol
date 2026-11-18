@@ -20,9 +20,13 @@ import {MainnetAddresses as M} from "./MainnetAddresses.sol";
 ///         - 2026-11-13: Wormhole's copies of the six coins BNB Chain's deployment holds in kind left (XRP, ADA, LTC,
 ///           DOT, ATOM and BNB, each wrapped from BNB Chain): those coins are on `BnbChainAddresses`' list, with no
 ///           bridge under them (design/2026-11-13-bnb-chain-deployment.md). The nine copies from other chains stay.
+///         - 2026-11-18: Wormhole's copies of JUP, PYTH, SUI, APT and ALGO left: no Ethereum pool trades them, so a
+///           rebalance can buy them only from stock bridged in from Solana, Sui, Aptos or Algorand, and the restock
+///           that would bridge them has never run (design/2026-11-18-bridged-coins-in-a-rebalance.md). SOL's copy,
+///           which a Uniswap pool trades, and AVAX's, OP's and AERO's, which the EVM restock serves, stay.
 library Listings {
     /// @notice How many coins the list names.
-    uint256 internal constant COUNT = 85;
+    uint256 internal constant COUNT = 80;
 
     /// @notice A token's trust tier (design/2026-10-05-wide-asset-support.md, section 1), shown by the app beside every
     ///         index that holds it and by `ConfigureWeighted`'s safe mode beside every listing.
@@ -47,8 +51,7 @@ library Listings {
         if (
             token == M.CRO || token == M.ICP || token == M.ARB || token == M.RENDER || token == M.CAKE || token == M.ZRO
                 || token == M.INJ || token == M.SOL || token == M.W || token == M.ZK || token == M.AVAX
-                || token == M.JUP || token == M.ALGO || token == M.AERO || token == M.APT || token == M.PYTH_TOKEN
-                || token == M.OP || token == M.SUI
+                || token == M.AERO || token == M.OP
         ) return Tier.Bridged;
         if (
             token == M.WETH || token == M.LINK || token == M.UNI || token == M.QNT || token == M.AAVE || token == M.ENA
@@ -75,8 +78,9 @@ library Listings {
 
     /// @notice Every coin of the list: WETH, WBTC, LINK and UNI first, the `default` list, then the wide
     ///         list: the 45 of 2026-10-06 and 2026-10-10's first additions, then the hundred-coin list's 28
-    ///         Ethereum-issued coins (31, less SAND, RLB and BTT) and 7 Wormhole copies (12, less the five from BNB
-    ///         Chain), then the copy found on 2026-10-18 that stayed (SUI), each group by market cap.
+    ///         Ethereum-issued coins (31, less SAND, RLB and BTT) and 3 Wormhole copies (12, less the five from BNB
+    ///         Chain and the four from Solana, Aptos and Algorand), each group by market cap. The copy found on
+    ///         2026-10-18 that stayed until 2026-11-18, SUI's, has left too.
     function all() internal pure returns (address[] memory tokens) {
         tokens = new address[](COUNT);
         tokens[0] = M.WETH;
@@ -157,12 +161,7 @@ library Listings {
         tokens[75] = M.W;
         tokens[76] = M.RSR;
         tokens[77] = M.AVAX;
-        tokens[78] = M.JUP;
-        tokens[79] = M.ALGO;
-        tokens[80] = M.AERO;
-        tokens[81] = M.APT;
-        tokens[82] = M.PYTH_TOKEN;
-        tokens[83] = M.OP;
-        tokens[84] = M.SUI;
+        tokens[78] = M.AERO;
+        tokens[79] = M.OP;
     }
 }

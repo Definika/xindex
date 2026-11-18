@@ -58,8 +58,8 @@ contract ConfigureWeightedTest is Test {
         assertEq(first.length + wide.length, tokens.length);
         assertEq(
             tokens.length,
-            85,
-            "the list of 2026-10-06 and 2026-10-10's additions with SUI, less DOGE, SAND, RLB, BTT, SEI and BNB Chain's six"
+            80,
+            "the list of 2026-10-06 and 2026-10-10's additions, less DOGE, SAND, RLB, BTT, SEI, BNB Chain's six and the five no restock has served"
         );
         for (uint256 i = 0; i < tokens.length; ++i) {
             assertEq(i < 4 ? first[i] : wide[i - 4], tokens[i]);
@@ -89,8 +89,7 @@ contract ConfigureWeightedTest is Test {
     }
 
     /// @dev Every coin of the table carries a tier, as the app and safe mode show it: WBTC, Tether Gold and the Ondo stocks
-    ///         custodial, eight bridged
-    ///         copies, and the rest issued on Ethereum.
+    ///         custodial, three Wormhole copies and ten other bridged coins, and the rest issued on Ethereum.
     function test_everyListedCoinHasItsTier() public view {
         address[] memory tokens = Listings.all();
         uint256[4] memory count;
@@ -100,7 +99,7 @@ contract ConfigureWeightedTest is Test {
             ++count[uint256(tier)];
         }
         assertEq(count[uint256(Listings.Tier.Native)], 48, "22 of the wide list and 26 of the hundred-coin list");
-        assertEq(count[uint256(Listings.Tier.Bridged)], 18, "8, ZK and W, and 8 Wormhole copies");
+        assertEq(count[uint256(Listings.Tier.Bridged)], 13, "8, ZK and W, and 3 Wormhole copies");
         assertEq(count[uint256(Listings.Tier.Custodial)], 19, "WBTC, Tether Gold and the 17 Ondo stocks");
         assertEq(uint8(Listings.tierOf(MainnetAddresses.WBTC)), uint8(Listings.Tier.Custodial));
         assertEq(uint8(Listings.tierOf(MainnetAddresses.ARB)), uint8(Listings.Tier.Bridged));
@@ -115,9 +114,23 @@ contract ConfigureWeightedTest is Test {
             "ZKsync's bridge issues it (RX-19)"
         );
         assertEq(uint8(Listings.tierOf(MainnetAddresses.W)), uint8(Listings.Tier.Bridged), "a mesh peer, home Solana");
-        assertEq(uint8(Listings.tierOf(MainnetAddresses.JUP)), uint8(Listings.Tier.Bridged), "a Wormhole copy");
+        assertEq(uint8(Listings.tierOf(MainnetAddresses.AVAX)), uint8(Listings.Tier.Bridged), "a Wormhole copy");
         assertEq(uint8(Listings.tierOf(MainnetAddresses.OP)), uint8(Listings.Tier.Bridged));
-        assertEq(uint8(Listings.tierOf(MainnetAddresses.SUI)), uint8(Listings.Tier.Bridged));
+        assertEq(uint8(Listings.tierOf(MainnetAddresses.AERO)), uint8(Listings.Tier.Bridged));
+        // Wormhole's copies of the five coins with no Ethereum pool and no restock that has run, off since 2026-11-18
+        address[5] memory unserved = [
+            MainnetAddresses.JUP,
+            MainnetAddresses.PYTH_TOKEN,
+            MainnetAddresses.SUI,
+            MainnetAddresses.APT,
+            MainnetAddresses.ALGO
+        ];
+        for (uint256 i = 0; i < unserved.length; ++i) {
+            assertEq(uint8(Listings.tierOf(unserved[i])), uint8(Listings.Tier.Unrecorded), "no restock serves it");
+            for (uint256 j = 0; j < tokens.length; ++j) {
+                assertTrue(tokens[j] != unserved[i], "a copy no restock serves is listed");
+            }
+        }
         // Wormhole's copies of the six coins BNB Chain's deployment holds in kind, off the list since 2026-11-13
         address[6] memory onBnbChain = [
             MainnetAddresses.XRP,
@@ -173,7 +186,7 @@ contract ConfigureWeightedTest is Test {
     function test_CRL08_theListsAreTheReleaseRecord() public view {
         address[] memory first = configure.defaultMainnetList();
         address[] memory wide = configure.wideMainnetList();
-        address[85] memory tokens = [
+        address[80] memory tokens = [
             0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2, // WETH
             0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599, // WBTC
             0x514910771AF9Ca656af840dff83E8264EcF986CA, // LINK
@@ -252,16 +265,11 @@ contract ConfigureWeightedTest is Test {
             0xB0fFa8000886e57F86dd5264b9582b2Ad87b2b91, // W
             0x320623b8E4fF03373931769A31Fc52A4E78B5d70, // RSR
             0x85f138bfEE4ef8e540890CFb48F620571d67Eda3, // AVAX
-            0x8687a10BCa6F139B25eb31020FCABB5782214764, // JUP
-            0xe31Cfcd36FeD044ae4Cf9405B577fe875762194F, // ALGO
             0x750525C1877E30304F1E22b1b49b4C9DdE674ddF, // AERO
-            0x8CDf7AF57E4c8B930e1B23c477c22f076530585e, // APT
-            0xeFc0CED4B3D536103e76a1c4c74F0385C8F4Bdd3, // PYTH
-            0x1df721D242E0783F8fCab4A9FfE4F35bdf329909, // OP
-            0x84074EA631dEc7a4edcD5303d164D5dEa4c653D6 // SUI
+            0x1df721D242E0783F8fCab4A9FfE4F35bdf329909 // OP
         ];
         assertEq(first.length, 4);
-        assertEq(wide.length, 81);
+        assertEq(wide.length, 76);
         for (uint256 i = 0; i < tokens.length; ++i) {
             assertEq(i < 4 ? first[i] : wide[i - 4], tokens[i]);
         }

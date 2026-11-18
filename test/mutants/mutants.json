@@ -1944,5 +1944,47 @@
         "new": ""
       }
     ]
+  },
+  {
+    "id": "K1",
+    "what": "startStage no longer reports a proposal waiting out its notice, so its need lapses from the board while no check reads it and the restock can send its stock home",
+    "origin": "design/2026-11-18-bridged-coins-in-a-rebalance.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/math.test.mjs",
+    "edits": [
+      {
+        "old": "  if (eta !== 0n && T < eta) return \"notice\";\n",
+        "new": ""
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "K2",
+    "what": "startStage reports an index ahead only once it is less than the lead from its start, not at the lead exactly",
+    "origin": "design/2026-11-18-bridged-coins-in-a-rebalance.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/math.test.mjs",
+    "edits": [
+      {
+        "old": "earliest <= T + lead) return \"soon\";",
+        "new": "earliest < T + lead) return \"soon\";"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "K3",
+    "what": "a PRESTOCK_LEAD_SECONDS of zero still reports an index that a cancel or an expiry holds off strangers, so zero no longer turns the lead off",
+    "origin": "design/2026-11-18-bridged-coins-in-a-rebalance.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/math.test.mjs",
+    "edits": [
+      {
+        "old": "if (lead > 0n && earliest <= T + lead)",
+        "new": "if (earliest <= T + lead)"
+      }
+    ],
+    "runner": "node"
   }
 ]

@@ -115,6 +115,28 @@ when its escrow is worth that much more than its limit. Stock brought in for a f
 cost the restock its swaps and bridge fees, there and back. A holder who makes a paying auction and leaves before its
 fill can still cause that, within the restock's daily and per-coin bounds.
 
+**Ahead of the auction.** The board carries an auction before it opens, so the stock its fill wants has arrived by
+then (2026-11-18). Every 25 blocks, beside the start checks, the keeper looks at the richest four indexes whose
+auction is coming: a proposal waiting out its two-hour notice, and an index it may start within
+`PRESTOCK_LEAD_SECONDS`, a day by default, or one past its interval that a cancel or an expiry holds off strangers. Each
+is simulated as a start is, at its auction's last second, where the bar is lowest, and what stock would serve goes on
+the board under the key its fill will carry, if that fill could pay `MIN_PROFIT_USD` (RY-8). So one entry stands from
+a day before the start to the fill, refreshed every five minutes, where it once stood only while the index could be
+started and while its auction was open: during the notice, which no check read, it lapsed after `NEEDS_MAX_AGE_SECONDS`
+and the restock could send the stock home before the auction opened. An index on its weights names no units that clear
+the bar and puts nothing on the board, so stock is brought in for the drift there is, at the keeper's prices of the
+moment, and the restock's buffer (`RESTOCK_BUFFER_BPS`) covers what the market does by the fill. A proposal's quote is
+left out of the simulation, as the restock's question about any fill leaves it out. Nothing is sent: the start is
+still sent only once the index can be started and the fill pays.
+
+**Stock carries the coin's price.** Every coin the executor holds, kept from a fill, brought in ahead of an auction or
+left by the restock's keep, rises and falls with that coin until a fill delivers it or the restock sells it at home.
+That risk is the operator's, as the share stock's is, and nothing hedges it: at launch sizes it is accepted (the owner's
+call of 2026-11-18). What bounds it is what bounds the stock: the restock buys only for the needs on the board and their
+buffer, within the owner's restock allowance per coin and `RESTOCK_DAILY_USD`, and keeps at most `RESTOCK_KEEP_USD` of
+a coin nobody needs; a shorter `PRESTOCK_LEAD_SECONDS` holds it for less time. A hedge, such as a short position in the coin sized to the stock, is
+for when the stock grows past what the operator will carry.
+
 **Share stock.** An index's own shares are stock too. With `SHARE_STOCK_USD` above zero, a batch keeps the shares
 its sellers bring, up to that many dollars per index, instead of redeeming them, and a later batch delivers them to
 buyers without a basket: a cross between requests made at different times, and the one way a single small request is
@@ -241,8 +263,11 @@ for, has almost no market on BNB Chain (selling $500 lost 305 bps on PancakeSwap
 Ethereum's other ATOM tokens, Gravity Bridge's and Axelar's, are other bridges with no Uniswap market. An index holding
 ATOM fills only from stock the operator adds, within its stock allowance.
 
-**JUP and PYTH (Solana), SUI, APT and ALGO** (opt-in, named in `RESTOCK_COINS`; `design/2026-11-01-non-evm-restock.md`):
-each chain's libraries and key live in a process of their own, its signer (`restock/solana/`, `restock/sui/`,
+**JUP and PYTH (Solana), SUI, APT and ALGO** (opt-in, named in `RESTOCK_COINS`; `design/2026-11-01-non-evm-restock.md`).
+None of the five is on Ethereum's list since 2026-11-18 (the owner's call,
+`design/2026-11-18-bridged-coins-in-a-rebalance.md`): their signers have never run end to end, and with no Ethereum
+pool an index holding one could rebalance only from stock they bring in. The code stays for a relisting once a run
+has proven it. Each chain's libraries and key live in a process of their own, its signer (`restock/solana/`, `restock/sui/`,
 `restock/aptos/`, `restock/algorand/`, each with its own `package.json` and lockfile: run `npm ci --ignore-scripts` in
 each one served),
 which the service starts with an environment naming only that chain's RPC, its key and its venue's key, never the
@@ -347,7 +372,7 @@ raising to what EIP-8037 allows (RX-36).
 | `EXECUTOR` | required | This bot's `KeeperExecutor`. |
 | `PYTH_API_KEY` | required | Hermes' API key, sent as `Authorization: Bearer`: the keeper's own price source. No contract reads a price. |
 | `HERMES_URL` | `https://pyth.dourolabs.app/hermes` | Hermes since 2026-08-26. |
-| `PRICE_IDS` | none | `token=id` pairs, comma-separated: Pyth ids for coins the catalogue (`bot/price-ids.mjs`, the 85 listed coins) does not hold, a testnet's for instance, or another feed for one it does. A coin without an id is left alone. |
+| `PRICE_IDS` | none | `token=id` pairs, comma-separated: Pyth ids for coins the catalogue (`bot/price-ids.mjs`, the 80 listed coins) does not hold, a testnet's for instance, or another feed for one it does. A coin without an id is left alone. |
 | `TRADE_COST_BPS` | `30` | What trading a leg is taken to cost when the bot names a fill's units: a leg within this of its weight is not traded for its own sake. |
 | `INDEXES` | every index | Comma-separated indexes to serve. Only wallets the factory's owner approved create indexes, so the set is the team's; a list still caps the bot's work. |
 | `MIN_PROFIT_USD` | `5` | Least profit a fill or a start must promise; negative is a subsidy the operator accepts, for auctions only and within `SUBSIDY_BUDGET_USD`. |
@@ -363,6 +388,7 @@ raising to what EIP-8037 allows (RX-36).
 | `CHAIN_ID` | `1` | The chain whose market the bot trades: `1` Ethereum, `11155111` Sepolia's test deployment (`bot/config.mjs`, `docs/deployment.md`). The bot refuses an RPC on any other chain. |
 | `SHARE_STOCK_USD` | `0` | The dollars of each index's own shares the request filler aims to hold as stock: a batch keeps its sellers' shares up to this instead of redeeming them, and delivers them to buyers within the owner's stock allowance for that index. Zero keeps and delivers none. |
 | `NEEDS_FILE` | none | Where to write what fills deliver from stock, for the restock service. |
+| `PRESTOCK_LEAD_SECONDS` | `86400` | How long before an index may be started the stock its auction would need goes on `NEEDS_FILE`, so the restock brings it in before the auction rather than during it. Zero reports an auction only once it can be started. A proposal waiting out its notice is reported either way. |
 
 ## Invariant checker
 

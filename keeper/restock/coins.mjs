@@ -115,7 +115,9 @@ export const PRICE_IDS = Object.freeze({
 /// The coins served when `RESTOCK_COINS` is unset: those whose chain has an adapter and whose home market can take a
 /// restock within the loss bound. ATOM is left out, the owner's call of 2026-10-20: Binance-Peg ATOM, the only source its
 /// copy redeems for, has almost no market on BNB Chain (read on 2026-10-19: selling $500 lost 305 bps on PancakeSwap
-/// v3). JUP, PYTH, SUI, APT and ALGO wait for their chains' adapters. XRP, ADA, LTC, DOT and BNB, served until
+/// v3). JUP, PYTH, SUI, APT and ALGO, whose chains' adapters have never run end to end, left Ethereum's list on
+/// 2026-11-18 (the owner's call, design/2026-11-18-bridged-coins-in-a-rebalance.md); they stay in the table, and their
+/// signers in their folders, for a relisting once a run has proven them. XRP, ADA, LTC, DOT and BNB, served until
 /// 2026-11-13, are no longer on Ethereum's list (the owner's call: BNB Chain's deployment holds those coins in kind),
 /// so nothing on Ethereum needs their copies; they stay in the table above, as their addresses stay in
 /// `MainnetAddresses`, for a relisting, and `RESTOCK_COINS` can still name one.

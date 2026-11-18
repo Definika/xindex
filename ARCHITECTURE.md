@@ -720,14 +720,19 @@ issuer; held on BNB Chain instead, the same universe would have wrapped 71 legs.
 wrapping: anyone attests a coin on its home chain and the bridge deploys the copy on Ethereum. The cost is a new trusted
 party over every wrapped leg (section 7). The list (`script/Listings.sol`) stood at 91, 15 of them Wormhole copies,
 until 2026-11-13, when the six copies wrapped from BNB Chain (XRP, ADA, LTC, DOT, ATOM, BNB) left it for BNB Chain's
-own deployment, which holds those coins in kind: it stands at 85, nine of them Wormhole copies. The fifteen were:
+own deployment, which holds those coins in kind, and stood at 85, nine of them Wormhole copies, until 2026-11-18, when
+the copies of JUP, PYTH, SUI, APT and ALGO left it: no Ethereum pool trades them, so a rebalance could buy them only
+from stock bridged in from Solana, Sui, Aptos or Algorand, and the restock that would bridge it has never run
+(`design/2026-11-18-bridged-coins-in-a-rebalance.md`). It stands at 80, four of them Wormhole copies: SOL's, which a
+Uniswap pool trades, and AVAX's, OP's and AERO's, which the restock serves from their EVM home chains. The fifteen were:
 SOL, listed first, 12 added on 2026-10-10, and BNB and SUI, whose copies the count of that day missed, added on
 2026-10-18; a 13th of 2026-10-10, DOGE's, left on 2026-10-14 on the owner's call, since Pyth, which then priced the
 rebalance, prices DOGE and not the copy. SAND and RLB left on 2026-10-18 after the source reading, and on 2026-10-19 BTT
 and SEI's copy, added with BNB's and SUI's, their bridges closed or closing (RX-28, RX-32), the owner's calls; ZK is
 tiered Bridged, ZKsync's bridge copy of a token issued on ZKsync Era (RX-19). Tether Gold and the 17 Ondo stocks do not
-count toward the hundred, so 73 coins of the top 300 are listed; 26 more copies await an attestation on Wormhole's
-Portal, and FIL's waits for a reading of its Binance-Peg source (`design/2026-10-10-one-index-wormhole-legs.md`, section
+count toward the hundred, so 62 coins of the top 300 are listed; 26 more copies await an attestation on Wormhole's
+Portal, each of which, without an Ethereum pool or a restock that has run from its home chain, would meet the same bar
+as the five, and FIL's waits for a reading of its Binance-Peg source (`design/2026-10-10-one-index-wormhole-legs.md`, section
 2a, and `design/2026-10-18-pre-mainnet-readings.md`, section 3).
 
 **Up to 100 components.** Every path of the hub and the factory fits EIP-7825's per-transaction cap of 2^24 gas at

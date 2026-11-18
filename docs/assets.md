@@ -30,13 +30,17 @@ catalogue: the keeper prices its own trades off chain, and no contract or script
 
 ## The list
 
-`script/Listings.sol` lists 85 assets with their tiers: `default` is the first four (WETH, WBTC, LINK, UNI) and `wide`
-the other 81.
+`script/Listings.sol` lists 80 assets with their tiers: `default` is the first four (WETH, WBTC, LINK, UNI) and `wide`
+the other 76.
 
-- 67 coins of the top 300, held as the issuer's own Ethereum contract where one exists, and otherwise as the copy
-  Wormhole's token bridge wraps from the coin's home chain (9 copies: SOL, AVAX, JUP, ALGO, AERO, APT, PYTH, OP and
-  SUI). The copies of XRP, ADA, LTC, DOT, ATOM and BNB, each wrapped from BNB Chain, left the list on 2026-11-13 (the
-  owner's call): BNB Chain's deployment holds those six coins in kind, below.
+- 62 coins of the top 300, held as the issuer's own Ethereum contract where one exists, and otherwise as the copy
+  Wormhole's token bridge wraps from the coin's home chain (4 copies: SOL, AVAX, AERO and OP). The copies of XRP,
+  ADA, LTC, DOT, ATOM and BNB, each wrapped from BNB Chain, left the list on 2026-11-13 (the owner's call): BNB Chain's
+  deployment holds those six coins in kind, below. The copies of JUP, PYTH, SUI, APT and ALGO left it on 2026-11-18
+  (the owner's call): no Ethereum pool trades them, so a rebalance could buy them only from stock bridged in from
+  Solana, Sui, Aptos or Algorand, whose restock has never run
+  ([`design/2026-11-18-bridged-coins-in-a-rebalance.md`](../design/2026-11-18-bridged-coins-in-a-rebalance.md)).
+  SOL's copy trades on Uniswap, and the restock serves AVAX's, OP's and AERO's from their EVM home chains.
 - Tether Gold.
 - 17 tokenized US stocks issued by Ondo.
 

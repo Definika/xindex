@@ -140,6 +140,18 @@ export function startsToCheck(ready, cap) {
   return { chosen: sorted.slice(0, cap), rest: sorted.slice(cap) };
 }
 
+/// Where the start check finds an index with no auction open, `T` being the next block's timestamp, as {auctionOpen}
+/// takes it: "ready" when a start may be sent now; "notice" when a proposal waits out its notice, a fill nobody checks
+/// until it opens; "soon" when a start may be sent within `lead` seconds (PRESTOCK_LEAD_SECONDS, zero turning it off);
+/// otherwise null. The needs of a "notice" or "soon" auction go on the restock's board ahead of it, so the stock its
+/// fill wants has arrived when it opens, and is not sent home while it waits (RZ-3).
+export function startStage({ can, eta, earliest, T, lead }) {
+  if (can) return "ready";
+  if (eta !== 0n && T < eta) return "notice";
+  if (lead > 0n && earliest <= T + lead) return "soon";
+  return null;
+}
+
 /// What a fill costs in dollars: its gas at the next block's base fee plus the tip. Nothing else is paid: no call of
 /// the hub takes ether.
 export const fillCostUsd = ({ used, nextBase, tip, ethUsd }) => (Number(used * (nextBase + tip)) / 1e18) * ethUsd;
