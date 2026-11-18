@@ -74,9 +74,12 @@ import {IRebalanceExecutor} from "./interfaces/IRebalanceExecutor.sol";
 ///      - The caps do not depend on what anything is worth. One fill sends out at most MAX_TURNOVER of each
 ///        component's own units and adds at most the math's MAX_GROWTH of them (V5-M2, RX-15).
 ///      - A fill that changes nothing has no gain, so none can restart the rebalance interval for free (V5-L2). An
-///        index without shares does not rebalance.
-///      - A fill with a keep mask restarts only MIN_REBALANCE_INTERVAL. A sliver the owner or guardian fills cannot
-///        hold the index off for its whole interval, and a keep can be renewed a week later (XS-3).
+///        index with less than one whole share does not rebalance.
+///      - A fill with a keep mask restarts only MIN_REBALANCE_INTERVAL. A sliver the owner or guardian fills behind a
+///        mask cannot hold the index off for its whole interval, and a keep can be renewed a week later (XS-3).
+///      - Any other fill restarts the whole interval, for everyone, however little it trades, and the least a fill
+///        can give at an auction's last second is about 4.8e-7. So where nothing else filled, or could fill (a
+///        component paused, or a quote that refuses every trade worth making), a sliver uses the interval up.
 ///      - Transfer amounts come from supply and units alone. The settlement stands only if the invariant holds with
 ///        the new units, and the whole of `amountsIn` arrived on top of what the index held.
 contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, ReentrancyGuard, IWeightedHub {
@@ -247,7 +250,7 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         _accrueStreamingFee(to, creator, platform, cfg);
 
         // Effects and event first, then pull the basket. The checks in the loop below revert the whole mint unless
-        // every leg already backs the existing supply and every component arrives in full.
+        // every leg already backs the existing supply, and every component arrives in full and can leave again.
         uint256 supply = totalSupply();
         uint256 scale = _scale;
         uint256 gross = _grossShares(shares, cfg);
@@ -275,10 +278,12 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
                 _backing(supply, _components[i].units, scale, Math.Rounding.Floor) + totalClaims[address(token)];
             if (before < required) revert Underbacked(address(token), before, required);
             token.safeTransferFrom(msg.sender, address(this), amounts[i]);
+            uint256 arrived = token.balanceOf(address(this));
             // Rejects fee-on-transfer tokens, even a listed token that starts charging a fee later.
-            if (token.balanceOf(address(this)) - before < amounts[i]) {
-                revert TransferAmountMismatch(address(token));
-            }
+            if (arrived - before < amounts[i]) revert TransferAmountMismatch(address(token));
+            // And a deposit that could not leave again. A token that blocks only its sender, as Tether's freeze does,
+            // still lets a transfer into a frozen index succeed, and nothing could take it out until the freeze ends.
+            _checkCanSendOut(address(token), arrived);
         }
     }
 
@@ -569,8 +574,9 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
 
     /// @dev The earliest time the next rebalance may start: the index's interval after the last settlement, or only
     ///      MIN_REBALANCE_INTERVAL if that settlement had a keep mask, whatever mask the next start names (XS-3).
-    ///      So a sliver fill holds the index off a week at most. And the guardian can renew a keep around a frozen
-    ///      component as soon as anyone could start without one.
+    ///      So a sliver filled behind a mask holds the index off a week at most. And the guardian can renew a keep
+    ///      around a frozen component as soon as anyone could start without one. Any other fill, a sliver included,
+    ///      restarts the index's own interval, for the owner and guardian as for anyone.
     function _earliestRebalance() private view returns (uint256) {
         return lastRebalance + (_maskedFill ? MIN_REBALANCE_INTERVAL : _config.rebalanceInterval);
     }
@@ -749,9 +755,7 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
             if (balance < required) revert RebalanceUnderfunded(token, balance, required);
             if (amountsIn[i] == 0) continue;
             // Under the guard, and after every check of the settlement has read its balances.
-            if (!IERC20(token).trySafeTransfer(address(this), 1) || IERC20(token).balanceOf(address(this)) < balance) {
-                revert CannotSendOut(token);
-            }
+            _checkCanSendOut(token, balance);
         }
     }
 
@@ -810,6 +814,15 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
     function _checkRecipient(address to) private view {
         if (to == address(0)) revert ZeroAddress();
         if (_cannotHoldShares(to)) revert InvalidRecipient(to);
+    }
+
+    /// @dev Reverts unless the index can still send `token` out: it sends itself one raw unit, and must then hold at
+    ///      least `atLeast`, its balance before the probe. A token that blocks only its sender lets a deposit or a
+    ///      bought leg in and nothing out. A fill's bought legs and an issue's deposits both pass through it (RX-12).
+    function _checkCanSendOut(address token, uint256 atLeast) private {
+        if (!IERC20(token).trySafeTransfer(address(this), 1) || IERC20(token).balanceOf(address(this)) < atLeast) {
+            revert CannotSendOut(token);
+        }
     }
 
     /// @dev Every transfer refuses an address that cannot hold shares, as issue, redeem and claim do (CR-I01, RT-21).

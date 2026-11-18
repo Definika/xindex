@@ -291,7 +291,9 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     function pendingCreatorOf(address index) external view returns (address);
 
     /// @notice The pending creator of `index` only (Unauthorized otherwise). Takes the creator role, so `creatorOf`
-    ///         never names an account that did not agree to it (RX-22).
+    ///         never names an account that did not agree to it (RX-22). The index's streaming fee is accrued first,
+    ///         so what was earned up to the handover goes to the outgoing creator. Reverts if called from inside one
+    ///         of the index's own calls, such as a rebalance callback.
     function acceptCreator(address index) external;
 
     /// @notice `index`'s creator only. Lets `account` be issued shares of `index` (`allowed`), or no longer. Only a
@@ -347,8 +349,10 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     ///         zero, the factory or an index (InvalidFeePolicy), since none could hold the shares.
     /// @param platformFeeBps_ The platform's fee on every issue and redeem, at most MAX_PLATFORM_FEE_BPS.
     /// @param platformStreamingBps_ The platform's streaming fee per year, at most MAX_PLATFORM_STREAMING_BPS.
-    /// @param referralShareBps_ The referrer's share of the platform's fee, at most 10,000 basis points.
-    /// @param recipient Receives the platform's fee shares and the creation fees.
+    /// @param referralShareBps_ The referrer's share of the platform's fee, at most 10,000 basis points. A minter may
+    ///        name itself as the referrer, so size it as a rebate every minter can take.
+    /// @param recipient Receives the platform's fee shares and the creation fees. It takes the platform's part from
+    ///        the next call on: what an index has not accrued yet of the streaming fee goes to the new recipient.
     /// @param creationFee_ What {createIndex} must be sent from now on, in wei.
     function setFeePolicy(
         uint16 platformFeeBps_,

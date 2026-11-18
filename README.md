@@ -3,7 +3,10 @@
 [![CI](https://github.com/Definika/xindex/actions/workflows/test.yml/badge.svg)](https://github.com/Definika/xindex/actions/workflows/test.yml)
 [![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 
-Xindex is a protocol for index tokens on Ethereum. A wallet the factory's owner approved creates an index of 2 to 100
+Xindex is a protocol for index tokens on Ethereum and, since 2026-11-13, on BNB Chain: two deployments of the same
+contracts that share nothing, each holding its own chain's tokens
+([`design/2026-11-13-bnb-chain-deployment.md`](design/2026-11-13-bnb-chain-deployment.md)). A wallet the factory's
+owner approved creates an index of 2 to 100
 listed assets at weights it chooses, and anyone can mint, redeem and trade it. Each index is an ERC-20 fully backed in
 kind: minting deposits the basket and redeeming returns it. A permissionless auction brings an index back toward its
 weights. No contract reads a price, a feed or an oracle, for any of it.
@@ -18,9 +21,11 @@ weights. No contract reads a price, a feed or an oracle, for any of it.
 - **Mint and redeem.** `issue` takes each component in proportion to the shares minted, and `redeem` burns shares and
   pays the components out. No oracle sits on either path, so nothing can block an exit. `redeemSkipping` exits around a
   frozen component, which can be claimed later.
-- **Trade with stablecoins or ether.** `IndexZap` mints with USDC, USDT or ether and burns to any token or to ether
-  in one transaction, through Uniswap's Universal Router (V3 and V4 pools); a USDC permit makes the mint one signature. `BasketBuilder` does the same over several transactions for baskets too
-  wide for one. `MintRequests` holds limit orders anyone can fill.
+- **Trade with stablecoins.** `IndexZap` mints with USDC or USDT and burns to USDC or USDT in one transaction,
+  through Uniswap's Universal Router (V3 and V4 pools); a USDC permit makes the mint one signature. The two stablecoins
+  are the only currencies, on each chain its own (the owner's call of 2026-11-18): no contract takes ether.
+  `BasketBuilder` does the same over several transactions for baskets too wide for one. `MintRequests` holds limit
+  orders anyone can fill.
 - **Rebalance.** Once an index's interval (7 to 91 days) has passed, anyone can start a rebalance. After 2 hours of
   notice, a 4-hour auction lets any contract settle it. The executor names the units each component is to have, and
   the index accepts them only if their weighted gain clears a bar that halves every twelve minutes. No price is read:
@@ -74,7 +79,7 @@ token_i.balanceOf(index) >= floor(totalSupply × units_i × scale / 1e36) + tota
 | [`WeightedIndexFactory`](src/WeightedIndexFactory.sol) | Lists assets, creates indexes, and holds the registry and the fee policy. |
 | [`WeightedHub`](src/WeightedHub.sol) | The index token: issue, redeem, claims, fees and rebalancing. |
 | [`WeightedMath`](src/WeightedMath.sol) | The rebalance settlement's arithmetic, shared by every index. |
-| [`IndexZap`](src/IndexZap.sol) | Mints with stablecoins or ether and burns to any token or ether in one transaction. |
+| [`IndexZap`](src/IndexZap.sol) | Mints with USDC or USDT and burns to USDC or USDT in one transaction. |
 | [`BasketBuilder`](src/BasketBuilder.sol) | The same over several transactions, for baskets of any size. |
 | [`MintRequests`](src/MintRequests.sol) | Limit orders in USDC or USDT, escrowed until filled, cancelled or expired. |
 | [`KeeperExecutor`](keeper/src/KeeperExecutor.sol) | The keeper bot's executor. It starts and fills auctions and holds no role. |
@@ -83,13 +88,16 @@ token_i.balanceOf(index) >= floor(totalSupply × units_i × scale / 1e36) + tota
 
 **Ethereum:** not deployed yet. Mainnet follows an external audit.
 
+**BNB Chain:** not deployed yet. Its address book, list and fork suite are built
+(`script/BnbChainAddresses.sol`, `test/fork/BnbChainAddresses.fork.t.sol`); it follows the same audit.
+
 **Sepolia** (testnet):
 
 | Contract | Address |
 |---|---|
 | WeightedIndexFactory | [`0x787139b915753F0CfFfa14708D1e665dCf5AA0bA`](https://sepolia.etherscan.io/address/0x787139b915753F0CfFfa14708D1e665dCf5AA0bA) |
 | WeightedHub (implementation) | [`0x3ae717ffeE17D3FAd861447703F31011eB8DC609`](https://sepolia.etherscan.io/address/0x3ae717ffeE17D3FAd861447703F31011eB8DC609) |
-| IndexZap (redeployed alone on 2026-11-03 from `70ffa6f`, with the ether and permit-mint entry points) | [`0xa0CD6C2DB622d28F350423119cAab2C331b759ff`](https://sepolia.etherscan.io/address/0xa0CD6C2DB622d28F350423119cAab2C331b759ff) |
+| IndexZap (redeployed alone on 2026-11-03 from `70ffa6f`, with the ether and permit-mint entry points, which this build has withdrawn but for the permits) | [`0xa0CD6C2DB622d28F350423119cAab2C331b759ff`](https://sepolia.etherscan.io/address/0xa0CD6C2DB622d28F350423119cAab2C331b759ff) |
 | BasketBuilder | [`0xa4AB1233D1Eb2ddcA77C27579A8cB41156452E13`](https://sepolia.etherscan.io/address/0xa4AB1233D1Eb2ddcA77C27579A8cB41156452E13) |
 | MintRequests | [`0x5b092e8A8ab29A12e2D91bE96C307759B2a12b81`](https://sepolia.etherscan.io/address/0x5b092e8A8ab29A12e2D91bE96C307759B2a12b81) |
 

@@ -391,13 +391,13 @@
   },
   {
     "id": "V15",
-    "what": "an index without shares settles",
+    "what": "an index with less than one whole share settles",
     "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
       {
-        "old": "        if (supply == 0) revert IWeightedHub.NothingToRebalance();\n",
+        "old": "        if (supply < SHARE_UNIT) revert IWeightedHub.NothingToRebalance();\n",
         "new": ""
       }
     ]
@@ -631,7 +631,7 @@
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
       {
-        "old": "if (!IERC20(token).trySafeTransfer(address(this), 1) || IERC20(token).balanceOf(address(this)) < balance) {",
+        "old": "if (!IERC20(token).trySafeTransfer(address(this), 1) || IERC20(token).balanceOf(address(this)) < atLeast) {",
         "new": "if (!IERC20(token).trySafeTransfer(address(this), 1)) {"
       }
     ]
@@ -644,8 +644,8 @@
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
       {
-        "old": "if (!IERC20(token).trySafeTransfer(address(this), 1) || IERC20(token).balanceOf(address(this)) < balance) {",
-        "new": "if (balance == type(uint256).max) {"
+        "old": "if (!IERC20(token).trySafeTransfer(address(this), 1) || IERC20(token).balanceOf(address(this)) < atLeast) {",
+        "new": "if (atLeast == type(uint256).max) {"
       }
     ]
   },
@@ -1236,6 +1236,809 @@
       {
         "old": "    if (quote !== null && !quoteOf(units, named, quote.prices, quote.tolerance).holds) return null;\n",
         "new": ""
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "B1",
+    "what": "a batch hands over share stock without spending the index's stock allowance (CF-1)",
+    "origin": "design/2026-11-11-batch-fills.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        _spendShareStock(address(f.index), deliver + f.redeem, sharesIn + f.issue);\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "B2",
+    "what": "a batch's own redeem does not count as shares handed over, so the share stock is run down unbounded (CF-1)",
+    "origin": "design/2026-11-11-batch-fills.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        _spendShareStock(address(f.index), deliver + f.redeem, sharesIn + f.issue);\n",
+        "new": "        _spendShareStock(address(f.index), deliver, sharesIn + f.issue);\n"
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "B3",
+    "what": "a batch fills a request on another index than it names",
+    "origin": "design/2026-11-11-batch-fills.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "            if (request.index != address(f.index)) revert WrongIndex(id);\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "B4",
+    "what": "a batch fills a request in another stablecoin than it names",
+    "origin": "design/2026-11-11-batch-fills.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "            if (request.stable != f.stable) revert WrongStable(id);\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "B5",
+    "what": "a batch that issues does not read the index's gate before its swaps (XS-6)",
+    "origin": "design/2026-11-11-batch-fills.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        if (f.issue != 0) _checkMintable(index);\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "B6",
+    "what": "a batch does not read its requests before its swaps, so a closed one costs a basket (XS-6)",
+    "origin": "design/2026-11-11-batch-fills.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "            if (!request.open) revert IMintRequests.RequestNotOpen(id);\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "B7",
+    "what": "a batch keeps the stablecoin its mint requests escrowed instead of selling it into the float",
+    "origin": "design/2026-11-11-batch-fills.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        if (stableAfter > stableBefore) _sellStable(stable, stableAfter - stableBefore, f.stableRoute, f.stableMinOut);\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "B8",
+    "what": "the bot plans to deliver share stock beyond the owner's allowance, so its batch reverts on chain",
+    "origin": "design/2026-11-11-batch-fills.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/batch.test.mjs",
+    "edits": [
+      {
+        "old": "  const deliverable = min(held, allowed);\n",
+        "new": "  const deliverable = held;\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "B9",
+    "what": "a request whose limit is worth more than its escrow joins a batch and is paid by the others",
+    "origin": "design/2026-11-11-batch-fills.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/batch.test.mjs",
+    "edits": [
+      {
+        "old": "    if (limitUsd > escrowUsd) continue;\n    const key = `batch:",
+        "new": "    const key = `batch:"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "B10",
+    "what": "a batch redeems the share stock the owner put above the target",
+    "origin": "design/2026-11-11-batch-fills.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/batch.test.mjs",
+    "edits": [
+      {
+        "old": "    redeem = max(0n, left - max(target, held));\n",
+        "new": "    redeem = max(0n, left - target);\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "B11",
+    "what": "shares delivered from stock count at what redeeming them brings, not at what issuing them costs",
+    "origin": "design/2026-11-11-batch-fills.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/batch.test.mjs",
+    "edits": [
+      {
+        "old": "  return delta >= 0n ? shares * sellUsd * (1 - slip) : shares * buyUsd * (1 + slip);\n",
+        "new": "  return shares * sellUsd * (1 - slip);\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "B12",
+    "what": "a group that cannot pay MIN_PROFIT_USD as a whole is simulated all the same (RY-8)",
+    "origin": "design/2026-11-11-batch-fills.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/batch.test.mjs",
+    "edits": [
+      {
+        "old": "    if (members.length < minSize || surplusUsd < minProfitUsd) continue;\n",
+        "new": "    if (members.length < minSize) continue;\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "N1",
+    "what": "Ethereum's router having code names Ethereum before BNB Chain is asked, as the checks read it until 2026-11-13: on BNB Chain, where that address has code too, the deploy resolves Ethereum's book",
+    "origin": "design/2026-11-13-bnb-chain-deployment.md",
+    "file": "script/DeployChecks.sol",
+    "test": "test/DeployChecks.t.sol",
+    "edits": [
+      {
+        "old": "        if (block.chainid == BnbChainAddresses.CHAIN_ID) return true;\n        return block.chainid != 1 && BNB_UNIVERSAL_ROUTER.code.length != 0;\n",
+        "new": "        if (MAINNET_UNIVERSAL_ROUTER.code.length != 0) return false;\n        if (block.chainid == BnbChainAddresses.CHAIN_ID) return true;\n        return block.chainid != 1 && BNB_UNIVERSAL_ROUTER.code.length != 0;\n"
+      }
+    ]
+  },
+  {
+    "id": "N2",
+    "what": "BNB Chain is told by its chain id alone, so a chain-id override unpins it against BNB Chain's state (RX-23)",
+    "origin": "design/2026-11-13-bnb-chain-deployment.md",
+    "file": "script/DeployChecks.sol",
+    "test": "test/DeployChecks.t.sol",
+    "edits": [
+      {
+        "old": "        return block.chainid != 1 && BNB_UNIVERSAL_ROUTER.code.length != 0;\n",
+        "new": "        return false;\n"
+      }
+    ]
+  },
+  {
+    "id": "N5",
+    "what": "BNB Chain's router having code names BNB Chain on chain 1 too: that router is a CREATE2 deployment anyone can replay onto Ethereum, and a deployment there would then resolve BNB Chain's book",
+    "origin": "design/2026-11-13-bnb-chain-deployment.md",
+    "file": "script/DeployChecks.sol",
+    "test": "test/DeployChecks.t.sol",
+    "edits": [
+      {
+        "old": "        return block.chainid != 1 && BNB_UNIVERSAL_ROUTER.code.length != 0;\n",
+        "new": "        return BNB_UNIVERSAL_ROUTER.code.length != 0;\n"
+      }
+    ]
+  },
+  {
+    "id": "N3",
+    "what": "BNB Chain's USDC and USDT may be proposed as components (A7-22)",
+    "origin": "design/2026-11-13-bnb-chain-deployment.md",
+    "file": "script/ConfigureWeighted.s.sol",
+    "test": "test/ConfigureWeighted.t.sol",
+    "edits": [
+      {
+        "old": "                || token == MainnetAddresses.USDT || token == BnbChainAddresses.USDC || token == BnbChainAddresses.USDT\n",
+        "new": "                || token == MainnetAddresses.USDT\n"
+      }
+    ]
+  },
+  {
+    "id": "N4",
+    "what": "on BNB Chain the mint currencies come from the environment, not from its address book (A7-22)",
+    "origin": "design/2026-11-13-bnb-chain-deployment.md",
+    "file": "script/ConfigureWeighted.s.sol",
+    "test": "test/ConfigureWeighted.t.sol",
+    "edits": [
+      {
+        "old": "        if (block.chainid == 1 || block.chainid == BnbChainAddresses.CHAIN_ID) {\n",
+        "new": "        if (block.chainid == 1) {\n"
+      }
+    ]
+  },
+  {
+    "id": "W1",
+    "what": "a fill does not compare the index's rebalance nonce with the request's, so a request made before a settlement is filled after it (RW-2)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "        uint256 nonce = IIndexHub(request.index).rebalanceNonce();\n        if (nonce != request.rebalanceNonce) revert StaleRebalanceNonce(request.rebalanceNonce, nonce);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "W2",
+    "what": "a request records rebalance nonce 0 whatever the index's nonce is (RW-2)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "            rebalanceNonce: SafeCast.toUint40(IIndexHub(index).rebalanceNonce()),\n",
+        "new": "            rebalanceNonce: 0,\n"
+      }
+    ]
+  },
+  {
+    "id": "W3",
+    "what": "the bound fill does not compare the request with the hash its caller priced, so it fills whatever request sits behind the id (RW-7)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "        if (keccak256(abi.encode(request)) != expected) revert RequestChanged(id);\n",
+        "new": "        expected;\n"
+      }
+    ]
+  },
+  {
+    "id": "W4",
+    "what": "the bound fill does not require the request to be open, so a closed request fills again under the hash it has now (RW-7)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "        Request storage request = _open(id);\n",
+        "new": "        Request storage request = _requests[id];\n"
+      }
+    ]
+  },
+  {
+    "id": "W5",
+    "what": "requestHash hashes the id with the request, so it is not the hash the bound fill compares (RW-7)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "        return keccak256(abi.encode(_requests[id]));\n",
+        "new": "        return keccak256(abi.encode(id, _requests[id]));\n"
+      }
+    ]
+  },
+  {
+    "id": "W6",
+    "what": "the settlement refuses only a supply of zero, so an index with a few wei of shares rebalances (RW-1)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "        if (supply < SHARE_UNIT) revert IWeightedHub.NothingToRebalance();\n",
+        "new": "        if (supply == 0) revert IWeightedHub.NothingToRebalance();\n"
+      }
+    ]
+  },
+  {
+    "id": "W7",
+    "what": "the handover does not accrue, so the newcomer collects the streaming fee the outgoing creator earned (RW-6)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.fees.t.sol",
+    "edits": [
+      {
+        "old": "        IWeightedHub(index).accrueFees(); // aderyn-fp(reentrancy-state-change)\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "W8",
+    "what": "issue does not probe a deposit, so a token that blocks the index as a sender traps the minter's basket (RW-8)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "            _checkCanSendOut(address(token), arrived);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "W9",
+    "what": "the handover accrues after it writes the new creator, so the accrual pays the newcomer (RW-6)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.fees.t.sol",
+    "edits": [
+      {
+        "old": "        IWeightedHub(index).accrueFees(); // aderyn-fp(reentrancy-state-change)\n        // wake-enable reentrancy\n        // CreatorTransferred, two lines down, records the change the lint asks an event for.\n        // forge-lint: disable-next-line(missing-events-access-control)\n        creatorOf[index] = msg.sender;\n",
+        "new": "        // wake-enable reentrancy\n        // CreatorTransferred, two lines down, records the change the lint asks an event for.\n        // forge-lint: disable-next-line(missing-events-access-control)\n        creatorOf[index] = msg.sender;\n        IWeightedHub(index).accrueFees();\n"
+      }
+    ]
+  },
+  {
+    "id": "W10",
+    "what": "issue's probe is measured against the balance before the deposit, so a token that loses the probe's unit passes (RW-8)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "_checkCanSendOut(address(token), arrived);",
+        "new": "_checkCanSendOut(address(token), before);"
+      }
+    ]
+  },
+  {
+    "id": "W11",
+    "what": "a sale hop hands the hook all its sweep brought back as unsold input, what the router already held included, so one wei left in the router reverts a frozen recipient's burn (RW-9)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/IndexZap.t.sol",
+    "edits": [
+      {
+        "old": "_onUnsold(token, returned - stray, stray, ctx);",
+        "new": "_onUnsold(token, returned, 0, ctx);"
+      }
+    ]
+  },
+  {
+    "id": "W12",
+    "what": "what the router held is not capped at what the sweep brought back, so a stray that a short-delivering hop drew on underflows and reverts the burn (RW-9)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/IndexZap.t.sol",
+    "edits": [
+      {
+        "old": "        stray = Math.min(stray, returned);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "W13",
+    "what": "what a hop did not sell is only offered too: a recipient the token refuses is paid out while its unsold input stays in the zap, which no later call pays out (RW-9)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/IndexZap.sol",
+    "test": "test/IndexZap.t.sol",
+    "edits": [
+      {
+        "old": "IERC20(token).safeTransfer(to, unsold);",
+        "new": "IERC20(token).trySafeTransfer(to, unsold);"
+      }
+    ]
+  },
+  {
+    "id": "W14",
+    "what": "an accepted offer sends what the router held alone: the unsold input it announces with it stays in the zap (RW-9)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/IndexZap.sol",
+    "test": "test/IndexZap.t.sol",
+    "edits": [
+      {
+        "old": "trySafeTransfer(to, unsold + stray)",
+        "new": "trySafeTransfer(to, stray)"
+      }
+    ]
+  },
+  {
+    "id": "W15",
+    "what": "a buy's pre-fund is not checked against the component's balance, so a buy paid through the component's other address is credited what it bought and refunded it too (RW-10)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        if (IERC20(component).balanceOf(address(this)) < outBefore) revert SharedBalance(component, tokenIn);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "W16",
+    "what": "a sale hop's pre-fund is not checked against the hop's output, so a sale between two addresses of one balance credits what the sweep returned as unsold input and pays it as proceeds (RW-10)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        if (IERC20(out).balanceOf(address(this)) < outBefore) revert SharedBalance(out, token);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "W17",
+    "what": "a sale hop's pre-fund is not checked against the leg's tokenOut, so a first hop whose input shares tokenOut's balance is sold through an ordinary middle token (RW-10)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        if (probeEnd && IERC20(end).balanceOf(address(this)) < endBefore) revert SharedBalance(end, token);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "W18",
+    "what": "a sale hop's pre-fund is checked against the hop's output only on the leg's last hop, so a sale passing through its input's other address credits what the sweep returned as unsold input and sells it on as the hop's output (RW-10)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        if (IERC20(out).balanceOf(address(this)) < outBefore) revert SharedBalance(out, token);\n",
+        "new": "        if (end == out && IERC20(out).balanceOf(address(this)) < outBefore) revert SharedBalance(out, token);\n"
+      }
+    ]
+  },
+  {
+    "id": "W19",
+    "what": "a hop that spends tokenOut itself is probed against tokenOut too, so a sale routed back through tokenOut is refused (RW-10)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/Security.t.sol",
+    "edits": [
+      {
+        "old": "        bool probeEnd = end != out && end != token;\n",
+        "new": "        bool probeEnd = end != out;\n"
+      }
+    ]
+  },
+  {
+    "id": "W20",
+    "what": "a refused offer with nothing unsold falls through: the zap announces a return of zero and hard-transfers zero to a recipient the token refuses, which reverts the burn (RW-9)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/IndexZap.sol",
+    "test": "test/IndexZap.t.sol",
+    "edits": [
+      {
+        "old": "        if (unsold == 0) return;\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "W21",
+    "what": "the settlement refuses one whole share too, so the least supply that rebalances is a raw share over it (RW-1)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "        if (supply < SHARE_UNIT) revert IWeightedHub.NothingToRebalance();\n",
+        "new": "        if (supply <= SHARE_UNIT) revert IWeightedHub.NothingToRebalance();\n"
+      }
+    ]
+  },
+  {
+    "id": "W22",
+    "what": "the settlement's floor is a raw share lower, so a supply one raw share under a whole one rebalances (RW-1)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "        if (supply < SHARE_UNIT) revert IWeightedHub.NothingToRebalance();\n",
+        "new": "        if (supply < SHARE_UNIT - 1) revert IWeightedHub.NothingToRebalance();\n"
+      }
+    ]
+  },
+  {
+    "id": "W23",
+    "what": "a fill checks the index's nonce before the request's deadline, so an expired request made before a settlement answers for its nonce (RW-2)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "        uint256 deadline = request.deadline;\n        if (block.timestamp > deadline) revert RequestExpired(id, deadline);\n",
+        "new": ""
+      },
+      {
+        "old": "        request.open = false;\n\n        address requester = request.requester;\n",
+        "new": "        uint256 deadline = request.deadline;\n        if (block.timestamp > deadline) revert RequestExpired(id, deadline);\n        request.open = false;\n\n        address requester = request.requester;\n"
+      }
+    ]
+  },
+  {
+    "id": "W24",
+    "what": "the bound fill compares the hash after the deadline and the nonce, so a request that is not the one priced answers for those first (RW-7)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "        if (keccak256(abi.encode(request)) != expected) revert RequestChanged(id);\n        _fill(request, id, amount);\n",
+        "new": "        bytes32 found = keccak256(abi.encode(request));\n        _fill(request, id, amount);\n        if (found != expected) revert RequestChanged(id);\n"
+      }
+    ]
+  },
+  {
+    "id": "W25",
+    "what": "issue's probe skips its last leg, so a deposit into a last component the index cannot send is taken (RW-8)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "            _checkCanSendOut(address(token), arrived);\n",
+        "new": "            if (i != n - 1) _checkCanSendOut(address(token), arrived);\n"
+      }
+    ]
+  },
+  {
+    "id": "W26",
+    "what": "issue's probe skips its first leg, so a deposit into a first component the index cannot send is taken (RW-8)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "            _checkCanSendOut(address(token), arrived);\n",
+        "new": "            if (i != 0) _checkCanSendOut(address(token), arrived);\n"
+      }
+    ]
+  },
+  {
+    "id": "W27",
+    "what": "the builder credits a seller only what its hop did not sell, so a router leftover swept back with it is credited to nobody (RW-9)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/BasketBuilder.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        uint256 amount = unsold + stray;\n",
+        "new": "        stray;\n        uint256 amount = unsold;\n"
+      }
+    ]
+  },
+  {
+    "id": "W28",
+    "what": "the bound fill does not take the reentrancy guard, so a filler paid through it re-enters the contract, and a filler paid through the fill by id alone re-enters the bound fill (RW-7)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "    function fill(uint256 id, uint256 amount, bytes32 expected) external nonReentrant {\n",
+        "new": "    function fill(uint256 id, uint256 amount, bytes32 expected) external {\n"
+      }
+    ]
+  },
+  {
+    "id": "W29",
+    "what": "the handover swallows a failed accrual, so it goes through inside one of the index's own calls, without the accrual (RW-6)",
+    "origin": "audit/2026-11-14-red-team.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.fees.t.sol",
+    "edits": [
+      {
+        "old": "        IWeightedHub(index).accrueFees(); // aderyn-fp(reentrancy-state-change)\n",
+        "new": "        try IWeightedHub(index).accrueFees() {} catch {}\n"
+      }
+    ]
+  },
+  {
+    "id": "S1",
+    "what": "the zap's mint takes any tokenIn, not only its USDC and USDT (the owner's call of 2026-11-18)",
+    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "file": "src/IndexZap.sol",
+    "test": "test/IndexZap.t.sol",
+    "edits": [
+      {
+        "old": "        _checkStable(p.tokenIn);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "S2",
+    "what": "the zap's burn pays out any tokenOut, not only its USDC and USDT",
+    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "file": "src/IndexZap.sol",
+    "test": "test/IndexZap.t.sol",
+    "edits": [
+      {
+        "old": "        _checkStable(p.tokenOut);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "S3",
+    "what": "the zap is built with one stablecoin twice, so it takes a single currency where it names two",
+    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "file": "src/IndexZap.sol",
+    "test": "test/IndexZap.t.sol",
+    "edits": [
+      {
+        "old": "        if (usdc == usdt) revert NotAStable(usdt);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "S4",
+    "what": "the builder's buy is paid in any tokenIn, not only its USDC and USDT",
+    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "file": "src/BasketBuilder.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        _checkStable(p.tokenIn);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "S5",
+    "what": "the builder's sale pays out any tokenOut, not only its USDC and USDT",
+    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "file": "src/BasketBuilder.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        _checkStable(p.tokenOut);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "S6",
+    "what": "the builder is built with one stablecoin twice",
+    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "file": "src/BasketBuilder.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        if (usdc == usdt) revert NotAStable(usdt);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "S7",
+    "what": "checkDeployment no longer compares the zap's and the builder's stablecoins with MintRequests', so a deployment whose zap takes another USDC passes as one",
+    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "file": "script/DeployWeighted.s.sol",
+    "test": "test/Scripts.t.sol",
+    "edits": [
+      {
+        "old": "        _checkStables(\"IndexZap\", zap.USDC(), zap.USDT(), requests);\n        _checkStables(\"BasketBuilder\", builder.USDC(), builder.USDT(), requests);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "K1",
+    "what": "startStage no longer reports a proposal waiting out its notice, so its need lapses from the board while no check reads it and the restock can send its stock home",
+    "origin": "design/2026-11-18-bridged-coins-in-a-rebalance.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/math.test.mjs",
+    "edits": [
+      {
+        "old": "  if (eta !== 0n && T < eta) return \"notice\";\n",
+        "new": ""
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "K2",
+    "what": "startStage reports an index ahead only once it is less than the lead from its start, not at the lead exactly",
+    "origin": "design/2026-11-18-bridged-coins-in-a-rebalance.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/math.test.mjs",
+    "edits": [
+      {
+        "old": "earliest <= T + lead) return \"soon\";",
+        "new": "earliest < T + lead) return \"soon\";"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "K3",
+    "what": "a PRESTOCK_LEAD_SECONDS of zero still reports an index that a cancel or an expiry holds off strangers, so zero no longer turns the lead off",
+    "origin": "design/2026-11-18-bridged-coins-in-a-rebalance.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/math.test.mjs",
+    "edits": [
+      {
+        "old": "if (lead > 0n && earliest <= T + lead)",
+        "new": "if (earliest <= T + lead)"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "T1",
+    "what": "the tracker replaces a fill a block before its target, so every fill the keeper sends is cancelled by its own replacement; the test saw only the null a replacement returns too",
+    "origin": "the test review of 2026-11-18",
+    "file": "keeper/bot/nonce.mjs",
+    "test": "keeper/test/unit/nonce.test.mjs",
+    "edits": [
+      {
+        "old": "    if (blockNumber >= f.targetBlock) {\n",
+        "new": "    if (blockNumber >= f.targetBlock - 1) {\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "T2",
+    "what": "the tracker replaces a fill only a block after the target block it missed",
+    "origin": "the test review of 2026-11-18",
+    "file": "keeper/bot/nonce.mjs",
+    "test": "keeper/test/unit/nonce.test.mjs",
+    "edits": [
+      {
+        "old": "    if (blockNumber >= f.targetBlock) {\n",
+        "new": "    if (blockNumber > f.targetBlock) {\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "T3",
+    "what": "a home-chain signer inherits the restock's whole environment, its keys included; the test looked for a key the test process never has",
+    "origin": "the test review of 2026-11-18",
+    "file": "keeper/restock/signer-home.mjs",
+    "test": "keeper/test/unit/restock-solana.test.mjs",
+    "edits": [
+      {
+        "old": "spawn(process.execPath, [path], { env, stdio",
+        "new": "spawn(process.execPath, [path], { env: { ...process.env, ...env }, stdio"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "T4",
+    "what": "the Hermes client ignores Retry-After and waits its one-second floor; the test's header asked for that floor",
+    "origin": "the test review of 2026-11-18",
+    "file": "keeper/bot/hermes.mjs",
+    "test": "keeper/test/unit/hermes.test.mjs",
+    "edits": [
+      {
+        "old": "Math.max(1000, Number.isFinite(retryAfter) ? retryAfter * 1000 : 0)",
+        "new": "Math.max(1000, 0)"
       }
     ],
     "runner": "node"

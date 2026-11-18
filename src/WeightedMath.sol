@@ -52,8 +52,10 @@ contract WeightedMath is IWeightedMath {
     ) external pure returns (uint256 bar, int256 gain, uint256[] memory amountsOut, uint256[] memory amountsIn) {
         bar = barAt(elapsed);
         if (newUnits.length != currentUnits.length) revert IXindexErrors.LengthMismatch();
-        // An empty index has nothing to trade. Its units stay, so nobody moves them for nothing.
-        if (supply == 0) revert IWeightedHub.NothingToRebalance();
+        // An index with less than one whole share has nothing to trade. The gain is a ratio of units and never sees
+        // the supply, while each amount is the supply's part of a leg's change. So on a nearly empty index a fill
+        // would move the units for a few wei. Its units stay.
+        if (supply < SHARE_UNIT) revert IWeightedHub.NothingToRebalance();
         gain = _gain(currentUnits, newUnits, weights, keepMask);
         // The bar is at most BAR_MAX, far inside int256.
         // forge-lint: disable-next-line(unsafe-typecast)

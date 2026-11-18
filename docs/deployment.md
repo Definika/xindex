@@ -17,8 +17,16 @@ source .env
 
 `DeployWeighted` deploys `WeightedIndexFactory` with the owner, `OWNER`, and the guardian's Safe, `GUARDIAN`, as its
 guardian. The factory's constructor deploys `WeightedMath` and the `WeightedHub` implementation every index is a clone
-of. The script then deploys the zap, the basket builder and `MintRequests` for that factory. It runs once, on
-Ethereum. Listings follow through the factory's timelock.
+of. The script then deploys the zap, the basket builder and `MintRequests` for that factory. It runs once on each
+chain, Ethereum and BNB Chain, each with that chain's own owner Safe and guardian's Safe. Listings follow through the
+factory's timelock.
+
+On BNB Chain the same commands run against a BNB Chain RPC, with `V5_WHITELIST=bnb` for the listings and `CHECK=bnb`
+for the admission check. The script resolves the router, USDC and USDT (the zap's and the builder's only currencies,
+there as on Ethereum) from `script/BnbChainAddresses.sol` and refuses any other address, and it holds the owner to
+the same Safe rules as on Ethereum. Before a first run there: the two Safes on BNB Chain, the source reading of the twelve coins, and
+`BNB_RPC_URL=... forge test --match-path 'test/fork/BnbChainAddresses.fork.t.sol'` passing on an archive RPC
+([`design/2026-11-13-bnb-chain-deployment.md`](../design/2026-11-13-bnb-chain-deployment.md)).
 
 No oracle is deployed, named or read: there is no `PYTH` variable, and an index rebalances through an auction on units
 alone (`design/2026-11-10-oracle-free-rebalance.md`). There is no relay either. A start of a rebalance is a plain call,
@@ -43,7 +51,7 @@ cannot see later changes). The guardian must not be the broadcasting key, which 
 Safe, neither the guardian nor the broadcasting key may be one of its signers, since the guardian is the owner's veto
 (SA-06); a guardian Safe may share no signer with the owner's, and a Safe's enabled modules count as its signers
 (RZ-24); and neither role may be a market contract: the router and the PoolManager everywhere, and on a mainnet also
-every token and mint currency in the address book (CR-I37). `UNIVERSAL_ROUTER`, `WETH`, `USDC` and `USDT` default to
+every token and mint currency in the address book (CR-I37). `UNIVERSAL_ROUTER`, `USDC` and `USDT` default to
 the address book's on chain 1 (`script/MainnetAddresses.sol`), where any other value is rejected, and are required
 anywhere else; they are the script's only market addresses, because the hub and factory depend on no Uniswap contract
 and on no oracle.
@@ -160,7 +168,7 @@ No bot holds a role in Xindex, so these duties have owners and deadlines. Watch 
 | Watch keep-mask rebalances | `RebalanceStarted` with a non-zero `keepMask` | before `eta` (2 hours) | owner signers | while a guardian replacement is pending, cancel the outgoing guardian's keep-mask proposals (RT-07) |
 | Fill auctions | the auction opens at `eta` | `eta + AUCTION_DURATION` | any executor contract | anyone may run the keeper in `keeper/`, which holds no role; executors competing to fill earlier are what make the price fair, and a lone one keeps the index's distance from its weights |
 | Fill requests | a `MintRequested` or `RedeemRequested` event | the request's `deadline` | anyone who holds or can issue the shares, or the stablecoin | the keeper in `keeper/` fills at the request's limit when that pays; the surplus over the limit is the filler's |
-| Restock the wrapped and real-world legs | the keeper's `restock <coins>` log | before the auction that needs them | the restock service for XRP, ADA, LTC, DOT, BNB, AVAX, OP and AERO; the keeper's operator for the rest | the service buys each on its home chain and bridges it into the executor through Wormhole's Token Bridge (`keeper/restock.mjs`); for ATOM, the copies from chains it has no adapter for, Tether Gold and the Ondo stocks, bridge through Wormhole's Portal or acquire the token, and send it to the executor |
+| Restock the wrapped and real-world legs | the keeper's `restock <coins>` log | before the auction that needs them | the restock service for AVAX, OP and AERO (XRP, ADA, LTC, DOT and BNB left Ethereum's list on 2026-11-13); the keeper's operator for the rest | the service buys each on its home chain and bridges it into the executor through Wormhole's Token Bridge (`keeper/restock.mjs`); for ATOM, the copies from chains it has no adapter for, Tether Gold and the Ondo stocks, bridge through Wormhole's Portal or acquire the token, and send it to the executor |
 | Keep the restock service running | its `gas below its minimum`, `top up its USDT float by hand` or `still pending` log | before the next restock | the treasury's operator | send gas to the treasury's wallet on that chain, top up the BNB Chain USDT float, or cancel the transaction stuck past a fee spike (`keeper/README.md`, Restock) |
 | Renew a restock allowance | its `restock allowance ... is spent` log | before that coin's stock runs out | the executor's owner | `setRestockAllowance(<copy>, <amount>)`, or the other allowance the log names; what arrives through the bridge earns the keeper stock allowance only within it (RS-1) |
 | Rebalance around a frozen component | a paused or blacklisting component | each auction | guardian | the guardian's Safe calls `cancelRebalance()`, then `startRebalance(keepMask)`, on the index; an executor fills it like any other auction, naming the kept component's units unchanged |
@@ -177,13 +185,16 @@ this repository now holds. It is still live, and the table below is the record o
 a rebalance from Pyth: its factory lists with `proposeListing(token, priceId)`, its `executeRebalance(data,
 priceUpdate)` is payable and reads a signed Pyth update, its `startRebalance(keepMask)` takes no price update, since it
 predates the RX-3 fix, and its auctions run 24 hours. `abi/` and `src/` are the oracle-free build's, so they do not
-decode that deployment's listings, its rebalance calls or its `Rebalanced` event. A new deployment of the current
+decode that deployment's listings, its rebalance calls or its `Rebalanced` event, nor, since 2026-11-14, its
+`getRequest`, which returns one field fewer than a `Request` now has (`rebalanceNonce`, RW-2).
+A new deployment of the current
 build is described under "A new deployment" below. The deployment's owner is a 2-of-3 test Safe and its guardian an
 externally owned account (a mainnet owner needs at least 3 signatures). The four listings (tWBTC, WETH, tLINK, tUNI)
 were executed on 2026-10-28. Its zap was redeployed
 alone on 2026-11-03 from `70ffa6f`, for the factory above, with `forge create` and the node's gas estimate (23.85M gas
 used): it adds `mintWithEth`, `burnToEth`, `burnToEthWithPermit` and `mintWithTokenPermit`, and RY-1's recipient
-checks. The zap calls only the factory's `isIndex` and the hub's `issue`, `redeem`, `previewIssue`, `componentTokens`
+checks. The current build has no ether entry point and takes USDC and USDT alone (2026-11-18), so the app keeps no
+ether path once a new deployment replaces this one. The zap calls only the factory's `isIndex` and the hub's `issue`, `redeem`, `previewIssue`, `componentTokens`
 and `rebalanceNonce`, which the build of `07aeae1` answers alike. v3 also runs there, deployed from
 `4b4dbe4` (tag `v3.0.0`); nothing on `main` drives it.
 
@@ -244,7 +255,7 @@ MARKET_MODE=seed MARKET_TOKENS=<logged by create> forge script script/testnet/Se
 # 2. the factory (which deploys WeightedMath and the WeightedHub implementation), the zap, the basket builder and
 #    MintRequests; USDT is any second 6-decimal test token, a FaucetToken for instance (tUSDT above)
 OWNER=<Safe> GUARDIAN=<guardian> UNIVERSAL_ROUTER=0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b \
-  WETH=0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14 USDC=<tUSDC logged by create> USDT=<a second test stablecoin> \
+  USDC=<tUSDC logged by create> USDT=<a second test stablecoin> \
   forge script script/DeployWeighted.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast \
   --gas-estimate-multiplier 900
 
@@ -269,6 +280,11 @@ nobody arbitrages them, so zap prices on this market say nothing about mainnet. 
 auctions through SwapRouter02; it is a test fixture without slippage limits, so never fund it on mainnet.
 
 ### The keeper on Sepolia
+
+Until the new deployment the keeper of this build serves nothing on Sepolia. Since 2026-11-14 its executor and its
+bot decode a `Request` of nine fields (`rebalanceNonce`, RW-2), and the `MintRequests` deployed there returns eight,
+so `getRequest` does not decode in either. What follows describes the keeper of the build before that, and holds
+again once `MintRequests` is redeployed with the rest.
 
 The keeper (`keeper/`) runs on Sepolia with `CHAIN_ID=11155111`, which takes the market of the table above. It serves
 `MintRequests` requests only, `FILL_AUCTIONS=0`: the hub deployed there is the Pyth-priced build of `07aeae1`, whose

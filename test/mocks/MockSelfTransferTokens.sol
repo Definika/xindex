@@ -17,14 +17,22 @@ contract MockSelfRefusingToken is ERC20 {
 
 /// @notice A token whose transfer to oneself answers true but burns the amount, so the sender's balance falls. The
 ///         hub's probe reads the balance again after the transfer, which catches it where the answer alone would not.
+///         It can be switched off and on: an issue runs the same probe, so an index can only come to hold such a
+///         token if it starts losing afterwards.
 contract MockSelfLosingToken is ERC20 {
+    bool public losing = true;
+
     constructor() ERC20("Self Losing", "SLT") {}
 
     function mint(address to, uint256 amount) external {
         _mint(to, amount);
     }
 
+    function setLosing(bool on) external {
+        losing = on;
+    }
+
     function _update(address from, address to, uint256 value) internal override {
-        super._update(from, from == to ? address(0) : to, value);
+        super._update(from, losing && from == to ? address(0) : to, value);
     }
 }

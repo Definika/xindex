@@ -46,7 +46,9 @@ import {WeightedMath} from "./WeightedMath.sol";
 ///      - A creator names the highest platform fee and streaming fee it accepts. So no higher rate can land between
 ///        its quote and its creation. The referral share is not bounded: it only splits the platform's part, so it
 ///        costs neither the creator nor a minter (RZ-28).
-///      - The recipients are read live, through `feeTerms`, so changing a recipient strands nothing.
+///      - The recipients are read live, through `feeTerms`, so changing a recipient strands nothing. A creator
+///        handover accrues the streaming fee first, so each creator is paid for its own time. A change of the
+///        platform's recipient does not: what an index has not accrued yet goes to the new one.
 ///      - The creation fee is forwarded to the recipient in the same call. The factory holds no ether.
 ///
 ///      Creators
@@ -63,7 +65,14 @@ import {WeightedMath} from "./WeightedMath.sol";
 ///      Whitelist policy (enforced by the listing process, not on chain)
 ///      - Standard ERC-20s only: no fee-on-transfer, rebasing or callback (ERC-777 style) tokens; 6 to 18 decimals.
 ///      - Components an issuer can pause or blacklist, such as WBTC, must be labelled in the app. While one is frozen,
-///        holders can still take the other components out with `WeightedHub.redeemSkipping`.
+///        holders can still take the other components out with `WeightedHub.redeemSkipping`. While an index itself
+///        is blocked as a sender, nothing can be issued into it (CannotSendOut).
+///      - A holder must be able to send itself one raw unit of the token at no cost. Every issue and every fill
+///        proves a component can leave that way, so a token that refuses a transfer to oneself, as a Compound cToken
+///        does, can never be issued into an index.
+///      - One balance, one address. A token whose balance is also reachable through a second address is never
+///        listed: the basket builder keeps its ledger by address and refuses only the swaps that would count such a
+///        balance twice, and an index naming both addresses would count one balance as backing two components.
 // The one payable entry point, `createIndex`, forwards all of msg.value to the platform recipient in the same call
 // (`test_theCreationFeeIsForwardedWhole`), so no ether stays here.
 // aderyn-fp-next-line(contract-locks-ether)
@@ -247,12 +256,29 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         // The new creator accepts, so creatorOf never names an account that did not agree to it (RX-22).
         if (pendingCreatorOf[index] != msg.sender) revert Unauthorized(msg.sender);
         address previous = creatorOf[index];
+        // Settle the streaming fee owed so far while `feeTerms` still names the outgoing creator. Every accrual pays
+        // whoever is creator when it runs, so without this the newcomer would collect what the other one earned.
+        // - `index` is this factory's own clone: only {transferCreator} writes `pendingCreatorOf`, and it refuses an
+        //   address the factory did not deploy. The call mints fee shares and reads `feeTerms` back by STATICCALL.
+        // - The outgoing creator can always hold shares. The first is whoever called {createIndex}, never the
+        //   factory or an index that did not exist yet, and {transferCreator} refuses the factory and every index
+        //   for a later one. So the accrual never falls back to minting to its caller, which here is the factory.
+        // - It reverts while the index is inside one of its own calls. The handover is then made after that call.
+        // The write of `creatorOf` has to follow it, so the lints see a call before an effect. Nothing can re-enter:
+        // the clone runs this factory's implementation, which calls no token and no account here. Wake's marker is
+        // a block, since forge lint's has to sit directly above the call and Aderyn's at its end.
+        // wake-disable reentrancy
+        // forge-lint: disable-next-line(reentrancy-no-eth)
+        IWeightedHub(index).accrueFees(); // aderyn-fp(reentrancy-state-change)
+        // wake-enable reentrancy
         // CreatorTransferred, two lines down, records the change the lint asks an event for.
         // forge-lint: disable-next-line(missing-events-access-control)
         creatorOf[index] = msg.sender;
         // CreatorTransferred, on the next line, records the offer taken.
         // forge-lint: disable-next-line(missing-events-access-control)
         delete pendingCreatorOf[index];
+        // Only the accrual on this factory's own clone precedes it, and that runs no other account's code.
+        // forge-lint: disable-next-line(reentrancy-events)
         emit CreatorTransferred(index, previous, msg.sender);
     }
 

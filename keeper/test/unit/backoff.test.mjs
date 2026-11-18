@@ -26,8 +26,13 @@ test("XS-4: an auction whose fills revert on chain waits, then is left after thr
   assert.equal(b.blocked(key, 115 + STRIKE_LAPSE_BLOCKS), false, "RX-26: the strikes lapse, and the auction is open again");
   assert.equal(b.failures(key), 0, "afresh");
   assert.equal(b.blocked("0xindex:2", 116), false, "the index's next auction starts afresh");
+  b.fail(key, 116);
+  b.fail("0xindex:2", 116);
+  assert.equal(b.blocked(key, 117), true, "a fresh strike holds the auction");
   b.keep(["0xindex:2"]);
-  assert.equal(b.blocked(key, 116), false, "an auction that closed is forgotten");
+  assert.equal(b.blocked(key, 117), false, "an auction that closed is forgotten");
+  assert.equal(b.failures(key), 0);
+  assert.equal(b.blocked("0xindex:2", 117), true, "and one still open is kept");
 });
 
 test("XS-7: a request whose simulation failed waits 2, 4, 8... blocks, at most 200, and is never stopped", () => {

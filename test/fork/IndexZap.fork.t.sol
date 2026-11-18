@@ -14,7 +14,6 @@ import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
 import {IUniversalRouterSwaps} from "../../src/interfaces/IUniversalRouterSwaps.sol";
 import {IXindexErrors} from "../../src/interfaces/IXindexErrors.sol";
 import {IUniversalRouter} from "../../src/interfaces/IUniversalRouter.sol";
-import {IWETH9} from "../../src/interfaces/IWETH9.sol";
 import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
 
@@ -47,8 +46,6 @@ contract IndexZapForkTest is Test {
     IndexZap zap;
     WeightedHub index;
     IQuoterV2 quoter = IQuoterV2(A.QUOTER_V2);
-    /// @dev What the zap's deterministic address already held on mainnet, dust included: a call must leave it there.
-    uint256 zapEther;
 
     address alice = makeAddr("alice");
 
@@ -61,8 +58,8 @@ contract IndexZapForkTest is Test {
     uint24 constant F3000 = 3000;
 
     /// @dev Native ether, which is how a V4 pool names it. Every live V4 pool for these components is paired against
-    ///      it rather than WETH, so a V4 route reaches LINK through `address(0)`. It never reaches the zap, whose
-    ///      `receive()` takes ether from WETH alone: the router settles the middle of the route inside the PoolManager.
+    ///      it rather than WETH, so a V4 route reaches LINK through `address(0)`. It never reaches the zap, which has no
+    ///      `receive()`: the router settles the middle of the route inside the PoolManager.
     address constant NATIVE = address(0);
 
     function setUp() public {
@@ -88,8 +85,7 @@ contract IndexZapForkTest is Test {
         alice = _eoa(alice);
         factory = new WeightedIndexFactory(address(this), address(0));
         factory.setApprovedCreator(address(this), true);
-        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), IWETH9(A.WETH));
-        zapEther = address(zap).balance;
+        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), A.USDC, A.USDT);
 
         factory.proposeListing(A.WBTC);
         factory.proposeListing(A.WETH);
@@ -273,38 +269,6 @@ contract IndexZapForkTest is Test {
         IERC20(stable).forceApprove(address(zap), maxIn); // USDT returns no bool
         spent = _mintCall(index, stable, maxIn, shares, _mintLegs(_mintPaths(stable)));
         vm.stopPrank();
-    }
-
-    /// @dev Legs paid in ether: WBTC and LINK each one V3 hop from WETH, and WETH itself passed through.
-    function _wethMintLegs() internal pure returns (IUniversalRouterSwaps.MintLeg[] memory) {
-        bytes[] memory p = new bytes[](3);
-        p[0] = abi.encodePacked(A.WBTC, F500, A.WETH);
-        p[1] = "";
-        p[2] = abi.encodePacked(A.LINK, F3000, A.WETH);
-        return _mintLegs(p);
-    }
-
-    function _wethBurnLegs() internal pure returns (IUniversalRouterSwaps.BurnLeg[] memory) {
-        bytes[] memory p = new bytes[](3);
-        p[0] = abi.encodePacked(A.WBTC, F500, A.WETH);
-        p[1] = "";
-        p[2] = abi.encodePacked(A.LINK, F3000, A.WETH);
-        return _burnLegs(p);
-    }
-
-    /// @dev The frontend's quote for a mint paid in ether: the two swapped legs through QuoterV2, the WETH leg as is.
-    function _quoteEthMint(uint256 shares) internal returns (uint256 total) {
-        uint256[] memory need = index.previewIssue(shares);
-        (uint256 wbtcIn,,,) = quoter.quoteExactOutput(abi.encodePacked(A.WBTC, F500, A.WETH), need[0]);
-        (uint256 linkIn,,,) = quoter.quoteExactOutput(abi.encodePacked(A.LINK, F3000, A.WETH), need[2]);
-        total = wbtcIn + need[1] + linkIn;
-    }
-
-    function _quoteEthBurn(uint256 shares) internal returns (uint256 total) {
-        uint256[] memory got = index.previewRedeem(shares);
-        (uint256 wbtcOut,,,) = quoter.quoteExactInput(abi.encodePacked(A.WBTC, F500, A.WETH), got[0]);
-        (uint256 linkOut,,,) = quoter.quoteExactInput(abi.encodePacked(A.LINK, F3000, A.WETH), got[2]);
-        total = wbtcOut + got[1] + linkOut;
     }
 
     /// @dev An EIP-2612 permit on `token` for the zap, under the domain the token itself publishes.
@@ -502,30 +466,21 @@ contract IndexZapForkTest is Test {
         assertGt(out, spent - spent / 50);
     }
 
-    function testFork_burnToWBTC() public {
+    /// @dev The zap takes and pays only USDC and USDT (the owner's call of 2026-11-18): a burn into WBTC, the index's
+    ///      own component, and a mint paid in WETH, another, are refused before anything moves.
+    function testFork_aCurrencyOtherThanTheTwoStablecoinsIsRefused() public {
         _mint(A.USDC, 1e18, 100);
-
-        IUniversalRouterSwaps.BurnLeg[] memory legs = new IUniversalRouterSwaps.BurnLeg[](3);
-        legs[0] = IUniversalRouterSwaps.BurnLeg({v3Path: "", v4Path: new PathKey[](0), minAmountOut: 0}); // WBTC is the payout token
-        legs[1] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: abi.encodePacked(A.WETH, F500, A.WBTC), v4Path: new PathKey[](0), minAmountOut: 0
-        });
-        legs[2] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: abi.encodePacked(A.LINK, F3000, A.WETH, F500, A.WBTC), v4Path: new PathKey[](0), minAmountOut: 0
-        });
-
-        (uint256 wethOut,,,) = quoter.quoteExactInput(legs[1].v3Path, U_WETH);
-        (uint256 linkOut,,,) = quoter.quoteExactInput(legs[2].v3Path, U_LINK);
-        uint256 quote = U_WBTC + wethOut + linkOut;
-
         vm.startPrank(alice);
         index.approve(address(zap), 1e18);
-        uint256 out = _burnCall(index, 1e18, A.WBTC, quote - quote / 100, legs);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotAStable.selector, A.WBTC));
+        _burnCall(index, 1e18, A.WBTC, 1, _burnLegs(_burnPaths(A.WBTC)));
+        deal(A.WETH, alice, 1 ether);
+        IERC20(A.WETH).forceApprove(address(zap), 1 ether);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotAStable.selector, A.WETH));
+        _mintCall(index, A.WETH, 1 ether, 1e18, _mintLegs(_mintPaths(A.WETH)));
         vm.stopPrank();
-
-        assertApproxEqRel(out, quote, 1e14);
-        assertEq(IERC20(A.WBTC).balanceOf(alice), out);
-        assertGt(out, U_WBTC);
+        assertEq(index.balanceOf(alice), 1e18, "nothing moved");
+        assertEq(IERC20(A.WETH).balanceOf(alice), 1 ether);
     }
 
     function testFork_burnRevertsBelowMinOut() public {
@@ -607,67 +562,8 @@ contract IndexZapForkTest is Test {
     }
 
     // ---------------------------------------------------------------------
-    // ether and permits
+    // permits
     // ---------------------------------------------------------------------
-
-    function testFork_mintWithEth() public {
-        uint256 quote = _quoteEthMint(1e18);
-        uint256 maxIn = quote + quote / 100;
-        vm.deal(alice, maxIn);
-        vm.prank(alice);
-        uint256 spent = zap.mintWithEth{value: maxIn}(
-            IIndexZap.MintParams({
-                index: address(index),
-                expectedNonce: 0,
-                tokenIn: A.WETH,
-                maxAmountIn: maxIn,
-                shares: 1e18,
-                legs: _wethMintLegs(),
-                to: alice,
-                deadline: block.timestamp,
-                referrer: address(0)
-            })
-        );
-
-        assertEq(index.balanceOf(alice), 1e18);
-        assertEq(IERC20(A.WETH).balanceOf(address(index)), U_WETH, "the WETH leg was taken from the deposit");
-        assertApproxEqRel(spent, quote, 1e14, "spend vs quote"); // 0.01%
-        assertEq(alice.balance, maxIn - spent, "the unspent ether came back unwrapped");
-        assertEq(IERC20(A.WETH).balanceOf(alice), 0, "and none as WETH");
-        assertEq(address(zap).balance, zapEther, "the zap keeps none of the call's ether");
-        assertEq(IERC20(A.WETH).balanceOf(address(zap)), 0);
-        assertGt(spent, 0.01 ether);
-        assertLt(spent, 1 ether);
-    }
-
-    function testFork_burnToEth() public {
-        _mint(A.USDC, 1e18, 100);
-        uint256 quote = _quoteEthBurn(1e18);
-        address bob = _eoa(makeAddr("bob"));
-
-        vm.startPrank(alice);
-        index.approve(address(zap), 1e18);
-        uint256 out = zap.burnToEth(
-            IIndexZap.BurnParams({
-                index: address(index),
-                expectedNonce: 0,
-                shares: 1e18,
-                tokenOut: A.WETH,
-                minAmountOut: quote - quote / 100,
-                legs: _wethBurnLegs(),
-                to: bob,
-                deadline: block.timestamp
-            })
-        );
-        vm.stopPrank();
-
-        assertApproxEqRel(out, quote, 1e14, "payout vs quote");
-        assertEq(bob.balance, out, "paid in ether");
-        assertEq(IERC20(A.WETH).balanceOf(bob), 0, "and none as WETH");
-        assertEq(index.balanceOf(alice), 0);
-        assertEq(address(zap).balance, zapEther, "the zap keeps none of the call's ether");
-        assertEq(IERC20(A.WETH).balanceOf(address(zap)), 0);
-    }
 
     /// @dev USDC's own EIP-2612 permit, signed under the domain its contract publishes, carries the whole mint.
     function testFork_mintWithUSDC_permit() public {
@@ -697,34 +593,5 @@ contract IndexZapForkTest is Test {
         assertEq(IERC20(A.USDC).balanceOf(signer), maxIn - spent, "refund");
         assertEq(IERC20Permit(A.USDC).nonces(signer), 1, "USDC consumed the permit");
         assertEq(IERC20(A.USDC).allowance(signer, address(zap)), 0, "it was for exactly what was pulled");
-    }
-
-    function testFork_burnToEth_permit() public {
-        (address signer, uint256 pk) = makeAddrAndKey("signer");
-        _eoa(signer);
-        _mint(A.USDC, 1e18, 100);
-        vm.prank(alice);
-        index.transfer(signer, 1e18);
-        uint256 quote = _quoteEthBurn(1e18);
-        IIndexZap.BurnParams memory p = IIndexZap.BurnParams({
-            index: address(index),
-            expectedNonce: 0,
-            shares: 1e18,
-            tokenOut: A.WETH,
-            minAmountOut: quote - quote / 100,
-            legs: _wethBurnLegs(),
-            to: signer,
-            deadline: block.timestamp
-        });
-        (uint8 v, bytes32 r, bytes32 s) = _permitSig(address(index), pk, signer, 1e18, p.deadline);
-
-        vm.prank(signer);
-        uint256 out = zap.burnToEthWithPermit(p, v, r, s);
-
-        assertApproxEqRel(out, quote, 1e14);
-        assertEq(signer.balance, out, "paid in ether");
-        assertEq(index.balanceOf(signer), 0);
-        assertEq(index.nonces(signer), 1);
-        assertEq(address(zap).balance, zapEther, "the zap keeps none of the call's ether");
     }
 }

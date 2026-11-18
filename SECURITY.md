@@ -20,6 +20,7 @@ Internal reviews of the current design:
 | Red team | [audit/2026-10-18-red-team.md](audit/2026-10-18-red-team.md) |
 | Keeper restock review | [audit/2026-10-25-restock-review.md](audit/2026-10-25-restock-review.md) |
 | Skills audit | [audit/2026-10-25-skills-audit-port.md](audit/2026-10-25-skills-audit-port.md) |
+| Red team of the oracle-free rebalance | [audit/2026-11-14-red-team.md](audit/2026-11-14-red-team.md) |
 
 Each finding is fixed or recorded as a known limitation ([docs/known-limitations.md](docs/known-limitations.md)). Every
 testable finding keeps a regression test named after its id, so `grep -r RX8 test/` finds the test for RX-8. Reviews

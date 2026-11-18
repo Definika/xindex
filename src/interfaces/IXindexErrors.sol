@@ -21,6 +21,10 @@ interface IXindexErrors {
     /// @notice `to` cannot receive here: tokens sent to it would be stuck or would reach the wrong party.
     error InvalidRecipient(address to);
 
+    /// @notice `token` is neither of the two stablecoins. USDC and USDT are the only currencies the zap, the basket
+    ///         builder and MintRequests take and pay (the owner's call of 2026-11-18).
+    error NotAStable(address token);
+
     // The swap errors the zap and the basket builder share, from the engine in `UniversalRouterSwaps` and around it.
 
     /// @notice The index rebalanced since the legs were quoted; quote again.
@@ -42,4 +46,7 @@ interface IXindexErrors {
     error InsufficientOutput(uint256 amountOut, uint256 minAmountOut);
     /// @notice A transfer delivered less `token` than it should (a fee-on-transfer token).
     error TransferShortfall(address token);
+    /// @notice Sending `other` to the router lowered the contract's balance of `token`: one balance behind two
+    ///         addresses. A swap measured against both would count the same tokens twice.
+    error SharedBalance(address token, address other);
 }

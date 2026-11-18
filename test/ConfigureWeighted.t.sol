@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {ConfigureWeighted} from "../script/ConfigureWeighted.s.sol";
 import {MainnetAddresses} from "../script/MainnetAddresses.sol";
+import {BnbChainAddresses} from "../script/BnbChainAddresses.sol";
 import {Listings} from "../script/Listings.sol";
 import {WeightedIndexFactory} from "../src/WeightedIndexFactory.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
@@ -57,8 +58,8 @@ contract ConfigureWeightedTest is Test {
         assertEq(first.length + wide.length, tokens.length);
         assertEq(
             tokens.length,
-            91,
-            "the list of 2026-10-06, 2026-10-10's additions, less DOGE (10-14), with BNB and SUI, less SAND, RLB, BTT, SEI"
+            80,
+            "the list of 2026-10-06 and 2026-10-10's additions, less DOGE, SAND, RLB, BTT, SEI, BNB Chain's six and the five no restock has served"
         );
         for (uint256 i = 0; i < tokens.length; ++i) {
             assertEq(i < 4 ? first[i] : wide[i - 4], tokens[i]);
@@ -88,8 +89,7 @@ contract ConfigureWeightedTest is Test {
     }
 
     /// @dev Every coin of the table carries a tier, as the app and safe mode show it: WBTC, Tether Gold and the Ondo stocks
-    ///         custodial, eight bridged
-    ///         copies, and the rest issued on Ethereum.
+    ///         custodial, three Wormhole copies and ten other bridged coins, and the rest issued on Ethereum.
     function test_everyListedCoinHasItsTier() public view {
         address[] memory tokens = Listings.all();
         uint256[4] memory count;
@@ -99,8 +99,8 @@ contract ConfigureWeightedTest is Test {
             ++count[uint256(tier)];
         }
         assertEq(count[uint256(Listings.Tier.Native)], 48, "22 of the wide list and 26 of the hundred-coin list");
-        assertEq(count[uint256(Listings.Tier.Bridged)], 19, "8, ZK and W, and 9 Wormhole copies");
-        assertEq(count[uint256(Listings.Tier.Custodial)], 24, "19, and 5 Wormhole copies of Binance-Peg coins");
+        assertEq(count[uint256(Listings.Tier.Bridged)], 13, "8, ZK and W, and 3 Wormhole copies");
+        assertEq(count[uint256(Listings.Tier.Custodial)], 19, "WBTC, Tether Gold and the 17 Ondo stocks");
         assertEq(uint8(Listings.tierOf(MainnetAddresses.WBTC)), uint8(Listings.Tier.Custodial));
         assertEq(uint8(Listings.tierOf(MainnetAddresses.ARB)), uint8(Listings.Tier.Bridged));
         assertEq(uint8(Listings.tierOf(MainnetAddresses.INJ)), uint8(Listings.Tier.Bridged));
@@ -114,15 +114,38 @@ contract ConfigureWeightedTest is Test {
             "ZKsync's bridge issues it (RX-19)"
         );
         assertEq(uint8(Listings.tierOf(MainnetAddresses.W)), uint8(Listings.Tier.Bridged), "a mesh peer, home Solana");
-        assertEq(uint8(Listings.tierOf(MainnetAddresses.JUP)), uint8(Listings.Tier.Bridged), "a Wormhole copy");
+        assertEq(uint8(Listings.tierOf(MainnetAddresses.AVAX)), uint8(Listings.Tier.Bridged), "a Wormhole copy");
         assertEq(uint8(Listings.tierOf(MainnetAddresses.OP)), uint8(Listings.Tier.Bridged));
-        assertEq(uint8(Listings.tierOf(MainnetAddresses.BNB)), uint8(Listings.Tier.Bridged), "WBNB, not Binance-Peg");
-        assertEq(uint8(Listings.tierOf(MainnetAddresses.SUI)), uint8(Listings.Tier.Bridged));
-        assertEq(
-            uint8(Listings.tierOf(MainnetAddresses.XRP)),
-            uint8(Listings.Tier.Custodial),
-            "a Wormhole copy of a Binance-Peg coin carries Binance's custody"
-        );
+        assertEq(uint8(Listings.tierOf(MainnetAddresses.AERO)), uint8(Listings.Tier.Bridged));
+        // Wormhole's copies of the five coins with no Ethereum pool and no restock that has run, off since 2026-11-18
+        address[5] memory unserved = [
+            MainnetAddresses.JUP,
+            MainnetAddresses.PYTH_TOKEN,
+            MainnetAddresses.SUI,
+            MainnetAddresses.APT,
+            MainnetAddresses.ALGO
+        ];
+        for (uint256 i = 0; i < unserved.length; ++i) {
+            assertEq(uint8(Listings.tierOf(unserved[i])), uint8(Listings.Tier.Unrecorded), "no restock serves it");
+            for (uint256 j = 0; j < tokens.length; ++j) {
+                assertTrue(tokens[j] != unserved[i], "a copy no restock serves is listed");
+            }
+        }
+        // Wormhole's copies of the six coins BNB Chain's deployment holds in kind, off the list since 2026-11-13
+        address[6] memory onBnbChain = [
+            MainnetAddresses.XRP,
+            MainnetAddresses.ADA,
+            MainnetAddresses.LTC,
+            MainnetAddresses.DOT,
+            MainnetAddresses.ATOM,
+            MainnetAddresses.BNB
+        ];
+        for (uint256 i = 0; i < onBnbChain.length; ++i) {
+            assertEq(uint8(Listings.tierOf(onBnbChain[i])), uint8(Listings.Tier.Unrecorded), "held on BNB Chain");
+            for (uint256 j = 0; j < tokens.length; ++j) {
+                assertTrue(tokens[j] != onBnbChain[i], "a copy of a coin BNB Chain holds is listed");
+            }
+        }
         assertEq(
             uint8(Listings.tierOf(0xd881A7F17Ed2c71FD671AfbA3A9b30Eb914Aea5F)),
             uint8(Listings.Tier.Unrecorded),
@@ -148,7 +171,6 @@ contract ConfigureWeightedTest is Test {
             uint8(Listings.Tier.Unrecorded),
             "RLB, off the list since 2026-10-18"
         );
-        assertEq(uint8(Listings.tierOf(MainnetAddresses.ATOM)), uint8(Listings.Tier.Custodial));
         assertEq(uint8(Listings.tierOf(MainnetAddresses.VON)), uint8(Listings.Tier.Custodial));
         assertEq(uint8(Listings.tierOf(MainnetAddresses.USDC)), uint8(Listings.Tier.Unrecorded));
         assertEq(Listings.tierName(Listings.Tier.Native), "Native");
@@ -164,7 +186,7 @@ contract ConfigureWeightedTest is Test {
     function test_CRL08_theListsAreTheReleaseRecord() public view {
         address[] memory first = configure.defaultMainnetList();
         address[] memory wide = configure.wideMainnetList();
-        address[91] memory tokens = [
+        address[80] memory tokens = [
             0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2, // WETH
             0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599, // WBTC
             0x514910771AF9Ca656af840dff83E8264EcF986CA, // LINK
@@ -242,36 +264,126 @@ contract ConfigureWeightedTest is Test {
             0xd1d2Eb1B1e90B638588728b4130137D262C87cae, // GALA
             0xB0fFa8000886e57F86dd5264b9582b2Ad87b2b91, // W
             0x320623b8E4fF03373931769A31Fc52A4E78B5d70, // RSR
-            0xc730d8256B8A1030eEA67f1Bc7ebed3898f7A535, // XRP
-            0x8EfFbF747d4A60Bc6b68D9A1bE4c4188bA8A3a0b, // ADA
-            0x1cA1Ef3fB8Ff4a480C0ae7eea5f91A24a5BB3344, // LTC
             0x85f138bfEE4ef8e540890CFb48F620571d67Eda3, // AVAX
-            0x1839a38E59536D88C25e8E6e0D0f59e05b143ab2, // DOT
-            0x8687a10BCa6F139B25eb31020FCABB5782214764, // JUP
-            0xe31Cfcd36FeD044ae4Cf9405B577fe875762194F, // ALGO
-            0x7845167B54253269624dBA0cA5Fee87933107b34, // ATOM
             0x750525C1877E30304F1E22b1b49b4C9DdE674ddF, // AERO
-            0x8CDf7AF57E4c8B930e1B23c477c22f076530585e, // APT
-            0xeFc0CED4B3D536103e76a1c4c74F0385C8F4Bdd3, // PYTH
-            0x1df721D242E0783F8fCab4A9FfE4F35bdf329909, // OP
-            0x418D75f65a02b3D53B2418FB8E1fe493759c7605, // BNB (WBNB)
-            0x84074EA631dEc7a4edcD5303d164D5dEa4c653D6 // SUI
+            0x1df721D242E0783F8fCab4A9FfE4F35bdf329909 // OP
         ];
         assertEq(first.length, 4);
-        assertEq(wide.length, 87);
+        assertEq(wide.length, 76);
         for (uint256 i = 0; i < tokens.length; ++i) {
             assertEq(i < 4 ? first[i] : wide[i - 4], tokens[i]);
         }
     }
 
-    /// @dev The named lists are Ethereum's and resolve on chain 1 only.
+    /// @dev Each named list resolves on its own chain only: Ethereum's two on chain 1, BNB Chain's on chain 56.
     function test_theNamedListsResolveOnlyOnTheirChain() public {
         vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "default", block.chainid));
         configure.resolveList("default");
         vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "wide", block.chainid));
         configure.resolveList("wide");
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "bnb", block.chainid));
+        configure.resolveList("bnb");
         vm.chainId(1);
         assertEq(configure.resolveList("default").length, configure.DEFAULT_COUNT());
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "bnb", 1));
+        configure.resolveList("bnb");
+        vm.chainId(BnbChainAddresses.CHAIN_ID);
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "wide", 56));
+        configure.resolveList("wide");
+        assertEq(configure.resolveList("bnb").length, BnbChainAddresses.COUNT);
+    }
+
+    /// @dev The BNB Chain list is `BnbChainAddresses`' table: WBNB, BTCB and ETH first, one entry per token, every coin
+    ///      carrying its tier, and none of the coins the owner's rulings exclude.
+    function test_theBnbListIsTheTable() public {
+        vm.chainId(BnbChainAddresses.CHAIN_ID);
+        address[] memory list = configure.resolveList("bnb");
+        address[] memory tokens = BnbChainAddresses.all();
+        assertEq(list.length, 12, "the BNB Chain list of 2026-10-07, less SOL, DOGE, AVAX, FIL and TRX");
+        assertEq(list, tokens);
+        uint256[4] memory count;
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            for (uint256 j = 0; j < i; ++j) {
+                assertTrue(tokens[i] != tokens[j], "one entry per token");
+            }
+            Listings.Tier tier = BnbChainAddresses.tierOf(tokens[i]);
+            assertTrue(tier != Listings.Tier.Unrecorded, "every listed coin is recorded");
+            assertEq(uint8(Listings.tierOf(tokens[i])), uint8(Listings.Tier.Unrecorded), "and is no Ethereum token");
+            ++count[uint256(tier)];
+        }
+        assertEq(list[0], BnbChainAddresses.WBNB);
+        assertEq(count[uint256(Listings.Tier.Native)], 2, "WBNB and ASTER");
+        assertEq(count[uint256(Listings.Tier.Bridged)], 1, "STABLE");
+        assertEq(count[uint256(Listings.Tier.Custodial)], 9, "BTCB, ETH and the seven Binance-Peg coins");
+        assertEq(configure.tierLabel(BnbChainAddresses.BTCB), " (Custodial)");
+        assertEq(configure.tierLabel(BnbChainAddresses.WBNB), " (Native)");
+        assertEq(configure.tierLabel(BnbChainAddresses.STABLE), " (Bridged)");
+        assertEq(configure.tierLabel(MainnetAddresses.WBTC), " (Custodial)", "Ethereum's labels are unchanged");
+        assertEq(configure.tierLabel(BnbChainAddresses.USDC), "", "a mint currency carries no tier");
+        address[5] memory excluded = [
+            0x570A5D26f7765Ecb712C0924E4De545B89fD43dF, // Binance-Peg SOL: held on Ethereum as Wormhole's copy
+            0xbA2aE424d960c26247Dd6c32edC70B295c744C43, // DOGE: a proxy one key upgrades
+            0x1CE0c2827e2eF14D5C4f29a091d735A204794041, // AVAX: the same proxy admin
+            0x0D8Ce2A99Bb6e3B7Db580eD848240e4a0F9aE153, // FIL: the same
+            0xCE7de646e7208a4Ef112cb6ed5038FA6cC6b12e3 // TRX: its bridge closed
+        ];
+        for (uint256 i = 0; i < excluded.length; ++i) {
+            assertEq(uint8(BnbChainAddresses.tierOf(excluded[i])), uint8(Listings.Tier.Unrecorded));
+        }
+    }
+
+    /// @dev CR-L08 for BNB Chain: the list is the release record, pinned against this table, written out by hand.
+    function test_CRL08_theBnbListIsTheReleaseRecord() public view {
+        address[] memory list = configure.bnbList();
+        address[12] memory tokens = [
+            0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c, // WBNB
+            0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c, // BTCB
+            0x2170Ed0880ac9A755fd29B2688956BD959F933F8, // ETH
+            0x1D2F0da169ceB9fC7B3144628dB156f3F6c60dBE, // XRP
+            0x1Ba42e5193dfA8B03D15dd1B86a3113bbBEF8Eeb, // ZEC
+            0x3EE2200Efb3400fAbB9AacF31297cBdD1d435D47, // ADA
+            0x8fF795a6F4D97E7887C79beA79aba5cc76444aDf, // BCH
+            0x4338665CBB7B2485A8855A139b75D5e34AB0DB94, // LTC
+            0x7083609fCE4d1d8Dc0C979AAb8c869Ea2C873402, // DOT
+            0x0Eb3a705fc54725037CC9e008bDede697f62F335, // ATOM
+            0x000Ae314E2A2172a039B26378814C252734f556A, // ASTER
+            0x011EBe7d75E2C9D1E0bD0be0bEf5C36f0A90075F // STABLE
+        ];
+        assertEq(list.length, tokens.length);
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            assertEq(list[i], tokens[i]);
+        }
+        // The mint currencies and Uniswap's contracts, by hand too: the fork suite that reads them on chain runs
+        // only with BNB_RPC_URL, and a stablecoin address changed to another contract with code would deploy
+        // `MintRequests` on the wrong currency.
+        assertEq(BnbChainAddresses.USDT, 0x55d398326f99059fF775485246999027B3197955);
+        assertEq(BnbChainAddresses.USDC, 0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d);
+        assertEq(BnbChainAddresses.UNIVERSAL_ROUTER, 0x1906c1d672b88cD1B9aC7593301cA990F94Eae07);
+        assertEq(BnbChainAddresses.POOL_MANAGER, 0x28e2Ea090877bF75740558f6BFB36A5ffeE9e9dF);
+        assertEq(BnbChainAddresses.UNISWAP_V3_FACTORY, 0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7);
+    }
+
+    /// @dev BNB Chain's mint currencies are never components, whatever a list names and whatever the deployment's own
+    ///      are (the whitelist policy, A7-22): each is a token with code and 18 decimals, which only the policy's own
+    ///      rule on mint currencies refuses.
+    function test_A722_theBnbMintCurrenciesAreNeverComponents() public {
+        address[2] memory stables = [BnbChainAddresses.USDT, BnbChainAddresses.USDC];
+        for (uint256 i = 0; i < stables.length; ++i) {
+            vm.etch(stables[i], hex"00");
+            vm.mockCall(stables[i], abi.encodeWithSignature("decimals()"), abi.encode(uint8(18)));
+            address[] memory list = new address[](1);
+            list[0] = stables[i];
+            (bytes[] memory calls,) = configure.safeCalldata(factory, list, list, _none(), _currencies());
+            assertEq(calls.length, 0, "a mint currency is skipped");
+        }
+        // The same token under any other address is proposed: the rule, not the token, refused it.
+        address twin = makeAddr("twin");
+        vm.etch(twin, hex"00");
+        vm.mockCall(twin, abi.encodeWithSignature("decimals()"), abi.encode(uint8(18)));
+        address[] memory one = new address[](1);
+        one[0] = twin;
+        (bytes[] memory proposed,) = configure.safeCalldata(factory, one, one, _none(), _currencies());
+        assertEq(proposed.length, 1);
     }
 
     function test_entriesParse() public view {
@@ -501,6 +613,22 @@ contract ConfigureWeightedTest is Test {
         configure.mintCurrencies(HERE_USDC, address(0));
         vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.MintCurrencyOverride.selector, "V5_USDT", HERE_USDT));
         configure.mintCurrencies(address(0), HERE_USDT);
+
+        // BNB Chain's are its own address book's, pinned the same way: Ethereum's are another address there.
+        vm.chainId(BnbChainAddresses.CHAIN_ID);
+        pinned = configure.mintCurrencies(address(0), address(0));
+        assertEq(pinned[0], BnbChainAddresses.USDC);
+        assertEq(pinned[1], BnbChainAddresses.USDT);
+        pinned = configure.mintCurrencies(BnbChainAddresses.USDC, BnbChainAddresses.USDT);
+        assertEq(pinned[0], BnbChainAddresses.USDC, "naming the address book's own is no override");
+        vm.expectRevert(
+            abi.encodeWithSelector(ConfigureWeighted.MintCurrencyOverride.selector, "V5_USDC", MainnetAddresses.USDC)
+        );
+        configure.mintCurrencies(MainnetAddresses.USDC, address(0));
+        vm.expectRevert(
+            abi.encodeWithSelector(ConfigureWeighted.MintCurrencyOverride.selector, "V5_USDT", MainnetAddresses.USDT)
+        );
+        configure.mintCurrencies(address(0), MainnetAddresses.USDT);
     }
 
     /// @dev The script reads these variables, which only this test sets. A7-22: `run` takes the deployment's mint

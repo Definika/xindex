@@ -22,7 +22,7 @@
 
 import { renameSync, writeFileSync } from "node:fs";
 import { encodeFunctionData, getAddress } from "viem";
-import { FRESH_SECONDS, HUB_SLOTS, MAX_CONF_BPS, SHARE_PRICED_IDS, TX_GAS_CAP, parseConfig } from "./bot/config.mjs";
+import { FRESH_SECONDS, HUB_SLOTS, MAX_CONF_BPS, NO_QUOTE_PROPOSAL, SHARE_PRICED_IDS, TX_GAS_CAP, parseConfig } from "./bot/config.mjs";
 import { MAX_REVERTED_FILLS, MAX_REVERTED_REQUEST_FILLS, revertedFills } from "./bot/backoff.mjs";
 import { ABI, createChain, revertReason } from "./bot/chain.mjs";
 import { createHermes, priceKey } from "./bot/hermes.mjs";
@@ -158,9 +158,10 @@ async function pricesOf(st, L, keepMask) {
 async function preview(index, st, L, keepMask, eta) {
   const T = L.timestamp + 12n;
   const over = { block: { number: L.number + 1n, time: T } };
-  // A start of the keeper's posts no quote: an earlier proposal's is cleared for the simulation.
+  // A start of the keeper's posts no quote: the simulated auction is bound to no proposal's, an earlier one's or,
+  // on an index never started, the empty one zero would name.
   if (eta !== undefined) {
-    over.state = { [index]: { [HUB_SLOTS.eta]: eta, [HUB_SLOTS.keepMask]: keepMask, [HUB_SLOTS.quoteProposal]: 0n } };
+    over.state = { [index]: { [HUB_SLOTS.eta]: eta, [HUB_SLOTS.keepMask]: keepMask, [HUB_SLOTS.quoteProposal]: NO_QUOTE_PROPOSAL } };
   }
   // The quote the owner or guardian posted with this proposal, if any: prices of theirs that a fill must also hold.
   const [quotePrices, quoteTolerance] = await chain.call({ to: index, abi: ABI.hub, functionName: "rebalanceQuote", args: [] }, L.number, over);
@@ -395,20 +396,32 @@ async function evaluateFill(index, keepMask, proposal, L) {
   return { index, proposal, bar, ...priced };
 }
 
-/// Whether to start `index`: its auction, simulated at its last second, where the bar is lowest, must pay.
-async function evaluateStart(index, proposal, L) {
+/// An auction of `index` that is not open, seen at its last second, where the bar is lowest: the one a start would
+/// open now, or, with `keepMask`, the proposal waiting out its notice. Returns its settlement, the most it may ask of
+/// each coin and its legs, or null with the reason logged. What stock would serve, when that fill could pay
+/// MIN_PROFIT_USD (RY-8), goes on the board under `key`, the key its fill carries, so the need stands unbroken from
+/// before the start to the fill (RZ-3). A proposal's quote, if one was posted, is left out, as {mayPay} leaves it out.
+async function bestCase(index, key, source, L, keepMask = 0n) {
   const st = await staticsOf(index, L.number);
-  const T = L.timestamp + 12n;
   let best;
   try {
-    best = await preview(index, st, L, 0n, T - setup.duration);
+    best = await preview(index, st, L, keepMask, L.timestamp + 12n - setup.duration);
   } catch (error) {
-    return say(index, `not starting: ${revertReason(error)}`);
+    say(index, `${source === "start" ? "not starting" : "no restock ahead"}: ${revertReason(error)}`);
+    return null;
   }
   const maxIn = best.in.map((x) => M.withTolerance(x, cfg.supplyToleranceBps));
-  const leg = await legs(index, st, best, maxIn, L, `${index}:${proposal + 1n}`);
-  const pays = await mayPay(index, st, L, 0n, leg.stocked, best, best);
-  needs.report(`${index}:${proposal + 1n}`, "start", pays ? leg.stocked : []);
+  const leg = await legs(index, st, best, maxIn, L, key);
+  const pays = await mayPay(index, st, L, keepMask, leg.stocked, best, best);
+  needs.report(key, source, pays ? leg.stocked : []);
+  return { best, maxIn, leg, pays };
+}
+
+/// Whether to start `index`: its auction, simulated at its last second, where the bar is lowest, must pay.
+async function evaluateStart(index, proposal, L) {
+  const seen = await bestCase(index, `${index}:${proposal + 1n}`, "start", L);
+  if (!seen) return;
+  const { best, maxIn, leg, pays } = seen;
   if (leg.short.length) return say(index, `not starting: restock${pays ? "" : NOT_ASKED} ${tokensOf(leg.short)}`);
   const priced = await priceFill(index, best, leg, maxIn, L);
   if (priced.skip) return say(index, `not starting: ${priced.skip}`);
@@ -420,6 +433,17 @@ async function evaluateStart(index, proposal, L) {
     return say(index, `not starting: best case pays ${profit.toFixed(2)} USD after the start's ${startUsd.toFixed(2)}`);
   }
   return { index, profit, T: best.T };
+}
+
+/// The key a start check of `r` reports and searches routes under: its own proposal's in the notice, which the fill
+/// will carry, and otherwise the proposal a start would open.
+const stageKey = (r) => `${r.index}:${r.stage === "notice" ? r.proposal : r.proposal + 1n}`;
+
+/// The board's need for an auction that is not open yet (`r.stage`, {M.startStage}): a proposal in its notice, or the
+/// one a start could open within PRESTOCK_LEAD_SECONDS. Nothing is sent.
+async function prestock(r, L) {
+  const seen = await bestCase(r.index, stageKey(r), r.stage, L, r.stage === "notice" ? r.keepMask : 0n);
+  if (seen?.leg.short.length) say(r.index, `restock ahead of the auction${seen.pays ? "" : NOT_ASKED}: ${tokensOf(seen.leg.short)}`);
 }
 
 /// Whether the auction of `index` could pay MIN_PROFIT_USD at its last second, where the bar is lowest, so that the
@@ -443,39 +467,53 @@ async function startChecks(L, open) {
       { address, abi: ABI.hub, functionName: "totalSupply" },
       { address, abi: ABI.hub, functionName: "components" },
       { address, abi: ABI.hub, functionName: "proposalCount" },
+      { address, abi: ABI.hub, functionName: "pendingRebalance" },
+      { address, abi: ABI.hub, functionName: "earliestRebalance" },
     ]),
     L.number,
   );
+  const T = L.timestamp + 12n;
+  const lead = BigInt(cfg.prestockLeadSeconds);
   const ready = [];
+  const ahead = []; // auctions not open yet, whose needs go on the restock's board before they open
   for (let k = 0; k < candidates.length; k++) {
-    const four = reads.slice(4 * k, 4 * k + 4);
-    if (four.some((r) => r.status !== "success")) continue;
-    const [can, supply, comps, proposal] = four;
-    if (!can.result || supply.result === 0n) continue;
-    const since = started.get(candidates[k]);
-    if (since !== undefined && L.timestamp - since < START_COOLDOWN) continue;
-    ready.push({ index: candidates[k], supply: supply.result, units: comps.result[1], proposal: proposal.result });
+    const six = reads.slice(6 * k, 6 * k + 6);
+    if (six.some((r) => r.status !== "success")) continue;
+    const [can, supply, comps, proposal, pending, earliest] = six;
+    if (supply.result === 0n) continue;
+    const stage = M.startStage({ can: can.result, eta: pending.result[0], earliest: earliest.result, T, lead });
+    const r = { index: candidates[k], supply: supply.result, units: comps.result[1], proposal: proposal.result, keepMask: pending.result[1], stage };
+    if (stage === "ready") {
+      const since = started.get(candidates[k]);
+      if (since === undefined || L.timestamp - since >= START_COOLDOWN) ready.push(r);
+    } else if (stage !== null && cfg.needsFile) {
+      ahead.push(r);
+    }
   }
-  if (ready.length === 0) return;
+  if (ready.length === 0 && ahead.length === 0) return;
 
   const ids = new Set();
-  for (const r of ready) for (const id of (await staticsOf(r.index, L.number)).ids) if (id) ids.add(id);
+  for (const r of [...ready, ...ahead]) for (const id of (await staticsOf(r.index, L.number)).ids) if (id) ids.add(id);
   const latest = ids.size ? await hermes.latest([...ids], Date.now() + HERMES_MS) : new Map();
   const worthy = [];
-  for (const r of ready) {
+  const worthyAhead = [];
+  for (const r of [...ready, ...ahead]) {
     const st = statics.get(r.index);
     const tvl = M.tvlUsd({ supply: r.supply, units: r.units, decimals: st.decimals, prices: pricesFrom(latest, st.ids) });
     if (tvl < cfg.minTvlUsd) {
-      say(r.index, `not starting: worth ${tvl.toFixed(0)} USD, below MIN_TVL_USD`);
+      if (r.stage === "ready") say(r.index, `not starting: worth ${tvl.toFixed(0)} USD, below MIN_TVL_USD`);
       continue;
     }
-    worthy.push({ ...r, tvl });
+    (r.stage === "ready" ? worthy : worthyAhead).push({ ...r, tvl });
   }
   // The richest few, simulated side by side, their routes kept until the next round, so the start checks cannot hold
-  // the main loop for blocks every 25 (RX-34).
+  // the main loop for blocks every 25 (RX-34). The auctions ahead get as many checks again.
   const { chosen, rest } = M.startsToCheck(worthy, MAX_START_CHECKS);
   for (const r of rest) say(r.index, `not starting this round: past the ${MAX_START_CHECKS} richest ready indexes`);
-  startKeys = chosen.map((r) => `${r.index}:${r.proposal + 1n}`);
+  const early = M.startsToCheck(worthyAhead, MAX_START_CHECKS);
+  for (const r of early.rest) say(r.index, `no restock ahead this round: past the ${MAX_START_CHECKS} richest auctions ahead`);
+  startKeys = [...chosen, ...early.chosen].map(stageKey);
+  await Promise.all(early.chosen.map((r) => prestock(r, L).catch((error) => say(r.index, `restock-ahead check failed: ${revertReason(error)}`))));
   const verdicts = await Promise.all(
     chosen.map((r) => evaluateStart(r.index, r.proposal, L).catch((error) => say(r.index, `start check failed: ${revertReason(error)}`))),
   );
@@ -530,6 +568,16 @@ async function onBlock(L) {
       );
     }
     if (kind === "request" && ok) filler?.forget(BigInt(index));
+    if (kind === "batch" && ok) for (const id of index.split(",")) filler?.forget(BigInt(id));
+    if (kind === "batch" && filler && done.receipt?.status === "reverted" && !done.replaced) {
+      const b = filler.revertedBatch(index.split(",").map(BigInt), L.number);
+      log(
+        `batch ${index}`,
+        b.stopped
+          ? `fill reverted on chain after its simulation passed: leaving its requests until the strikes lapse (a front-run, or an RPC whose simulation cannot be trusted)`
+          : `fill reverted on chain after its simulation passed: backing off until block ${b.until}`,
+      );
+    }
     if (kind === "request" && filler && done.receipt?.status === "reverted" && !done.replaced) {
       const b = filler.reverted(BigInt(index), L.number);
       log(
@@ -603,9 +651,11 @@ async function requestChecks(L) {
   }
   const pick = await filler.best(L, indexes, ethUsd, tip, feeCap);
   if (!pick) return;
-  if ((await chain.blockNumber()) !== L.number) return log(`request ${pick.id}`, "block passed before sending; next block");
-  log(`request ${pick.id}`, `filling: profit ${pick.profit.toFixed(2)} USD (float ${(Number(pick.usdcDelta) / 1e6).toFixed(2)}, stock ${pick.inventoryUsd.toFixed(2)}, gas ${pick.gasUsd.toFixed(2)})`);
-  await tracker.send(pick.tx, { label: `request ${pick.id}`, targetBlock: Number(L.number) + 1 });
+  // A batch is named by its requests' ids, joined without a space: the label is read back word by word.
+  const name = pick.ids ? `batch ${pick.ids.join(",")}` : `request ${pick.id}`;
+  if ((await chain.blockNumber()) !== L.number) return log(name, "block passed before sending; next block");
+  log(name, `filling: profit ${pick.profit.toFixed(2)} USD (float ${(Number(pick.usdcDelta) / 1e6).toFixed(2)}, stock ${pick.inventoryUsd.toFixed(2)}, gas ${pick.gasUsd.toFixed(2)})`);
+  await tracker.send(pick.tx, { label: name, targetBlock: Number(L.number) + 1 });
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

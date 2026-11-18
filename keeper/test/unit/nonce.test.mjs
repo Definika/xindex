@@ -45,6 +45,7 @@ test("a sent fill that lands is reported and frees the tracker", async () => {
   assert.ok(t.busy());
   await assert.rejects(t.send(FILL, { label: "again", targetBlock: 11 }), /already in flight/);
   assert.equal(await t.onBlock(10, 50n), null, "nothing to do before the target block");
+  assert.equal(chain.sent.length, 1, "and nothing replaced it: a replacement returns null too");
   chain.mine(hash);
   assert.deepEqual(await t.onBlock(11, 50n), { label: "fill", receipt: { status: "success", transactionHash: hash }, replaced: false });
   assert.equal(t.busy(), false);
@@ -54,7 +55,9 @@ test("a fill that misses its block is replaced by a self-transfer, bumped every 
   const chain = fakeChain();
   const t = new TxTracker(chain);
   await t.send(FILL, { label: "fill", targetBlock: 11 });
-  assert.equal(await t.onBlock(12, 50n), null);
+  // Block 11 exists without the fill: it missed, and is replaced at once.
+  assert.equal(await t.onBlock(11, 50n), null);
+  assert.equal(chain.sent.length, 2, "one replacement");
   const cancel = chain.sent[1];
   assert.deepEqual(
     { nonce: cancel.nonce, to: cancel.to, data: cancel.data, value: cancel.value, gas: cancel.gas },
@@ -63,14 +66,16 @@ test("a fill that misses its block is replaced by a self-transfer, bumped every 
   assert.ok(cancel.maxPriorityFeePerGas * 1000n >= FILL.maxPriorityFeePerGas * 1100n, "tip up at least 10%");
   assert.ok(cancel.maxFeePerGas * 1000n >= FILL.maxFeePerGas * 1100n, "ceiling up at least 10%");
 
-  assert.equal(await t.onBlock(13, 50n), null);
+  assert.equal(await t.onBlock(12, 50n), null);
+  assert.equal(chain.sent.length, 3, "one more bump, a block later");
   const again = chain.sent[2];
   assert.ok(again.maxPriorityFeePerGas > cancel.maxPriorityFeePerGas, "bumped again");
   assert.ok(again.maxFeePerGas >= 2n * 50n + again.maxPriorityFeePerGas, "above the next base fee");
 
   chain.mine(`0x${(3).toString(16).padStart(64, "0")}`);
-  const outcome = await t.onBlock(14, 50n);
+  const outcome = await t.onBlock(13, 50n);
   assert.equal(outcome.replaced, true);
+  assert.equal(chain.sent.length, 3, "nothing sent once the nonce is mined");
   assert.equal(t.busy(), false);
 });
 

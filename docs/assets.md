@@ -3,7 +3,10 @@
 ## Listing policy
 
 Components are standard ERC-20s: no fee-on-transfer, rebasing or callback tokens, 6 to 18 decimals, and the address
-must be a contract. `issue` checks the amount it receives. USDC and USDT are mint and burn currencies, never components.
+must be a contract. `issue` checks the amount it receives and that it can leave again: a holder must be able to send
+itself one raw unit at no cost, which every issue and every fill proves of the index (RW-8). A token whose ledger a
+second address also writes, a proxy beside a legacy address, is never listed: the swap engine refuses a swap measured
+across the two, but not an index that names both (RW-10). USDC and USDT are mint and burn currencies, never components.
 How a token's own supply changes does not matter, since nothing reads it.
 
 `script/CheckToken.s.sol` reports on every token before it is listed. It refuses a token whose issuer can both blacklist
@@ -27,11 +30,17 @@ catalogue: the keeper prices its own trades off chain, and no contract or script
 
 ## The list
 
-`script/Listings.sol` lists 91 assets with their tiers: `default` is the first four (WETH, WBTC, LINK, UNI) and `wide`
-the other 87.
+`script/Listings.sol` lists 80 assets with their tiers: `default` is the first four (WETH, WBTC, LINK, UNI) and `wide`
+the other 76.
 
-- 73 coins of the top 300, held as the issuer's own Ethereum contract where one exists, and otherwise as the copy
-  Wormhole's token bridge wraps from the coin's home chain (15 copies, among them SOL, BNB and SUI).
+- 62 coins of the top 300, held as the issuer's own Ethereum contract where one exists, and otherwise as the copy
+  Wormhole's token bridge wraps from the coin's home chain (4 copies: SOL, AVAX, AERO and OP). The copies of XRP,
+  ADA, LTC, DOT, ATOM and BNB, each wrapped from BNB Chain, left the list on 2026-11-13 (the owner's call): BNB Chain's
+  deployment holds those six coins in kind, below. The copies of JUP, PYTH, SUI, APT and ALGO left it on 2026-11-18
+  (the owner's call): no Ethereum pool trades them, so a rebalance could buy them only from stock bridged in from
+  Solana, Sui, Aptos or Algorand, whose restock has never run
+  ([`design/2026-11-18-bridged-coins-in-a-rebalance.md`](../design/2026-11-18-bridged-coins-in-a-rebalance.md)).
+  SOL's copy trades on Uniswap, and the restock serves AVAX's, OP's and AERO's from their EVM home chains.
 - Tether Gold.
 - 17 tokenized US stocks issued by Ondo.
 
@@ -41,6 +50,22 @@ Portal closed on 2026-06-30) before they can be checked and listed
 FIL's waits for a reading of its Binance-Peg source. Every
 listed token passed `CheckToken` on a mainnet fork, and one fork test issues, rebalances and redeems an index holding
 every coin `forge-std` can fund.
+
+### BNB Chain
+
+`script/BnbChainAddresses.sol` lists 12 assets for the BNB Chain deployment (`V5_WHITELIST=bnb`), each held in kind
+there and none through Wormhole:
+
+- WBNB and ASTER, Native.
+- BTCB, ETH, XRP, ZEC, ADA, BCH, LTC, DOT and ATOM, Custodial: Binance-Peg tokens, which Binance backs and one key of
+  Binance's mints. None is a proxy.
+- STABLE, Bridged: a LayerZero token a 3-of-5 Safe upgrades.
+
+All twelve passed `CheckToken` on BNB Chain on 2026-11-13. Binance-Peg DOGE, AVAX and FIL are left out: each is a
+proxy whose code one key can replace. Six of the twelve (WBNB, BTCB, ETH, XRP, ZEC, ASTER) have a Uniswap market the
+zap can route a mint through; ADA, LTC, DOT, BCH, ATOM and STABLE trade mostly on PancakeSwap, which the zap does not
+use, so they mint in kind or through `MintRequests`
+([`design/2026-11-13-bnb-chain-deployment.md`](../design/2026-11-13-bnb-chain-deployment.md), section 6).
 
 ## Labels the app shows
 

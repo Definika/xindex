@@ -23,10 +23,16 @@ import {IXindexErrors} from "./IXindexErrors.sol";
 ///         - The rates are fixed at creation. The creator picks its own rate, up to the factory's caps. The platform's
 ///           rate is the factory's policy at that moment. A referrer named at mint takes the referral share of the
 ///           platform's part, unless the index is gated and its gate would refuse the referrer as a recipient.
+///           The minter names the referrer and may name itself, or an account it controls: the referral share is
+///           in effect a rebate every minter can take.
+///         - Only an issue and a redeem charge the entry and exit fee. A fill that shrinks no leg takes nothing out
+///           and mints no share for what it adds: it is a gift to the holders, in proportion to their shares, the
+///           fee recipients' included. So a holder of nearly all the supply can add to its own position through a
+///           fill, with no entry fee and no gate.
 ///         - A streaming fee is a yearly rate on the index's value. It accrues on every issue, redeem and settlement,
-///           and on {accrueFees}. Each accrual mints the recipients their share of the index, and shrinks every share's
-///           units by the same factor ({pendingStreamingFee}). So every share's backing stays exactly what the index
-///           holds.
+///           on {accrueFees}, and when the creator role is handed over. Each accrual mints the recipients their share
+///           of the index, and shrinks every share's units by the same factor ({pendingStreamingFee}). So every
+///           share's backing stays exactly what the index holds.
 ///         - The yearly rate is a ceiling. Each accrual charges the rate for the time since the last one, on what is
 ///           left, so the more often anyone accrues, the less a year takes: at 500 basis points, 5.00% with one
 ///           accrual a year and 4.88% with one a day. Anyone can call {accrueFees}; holders never pay more than the
@@ -187,8 +193,9 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     /// @notice The settlement needs more of `token` than the caller said it would fill. Only raised by the bounded
     ///         `executeRebalance`.
     error RebalanceMovedOn(address token, uint256 required, uint256 maxAmountIn);
-    /// @notice The index has no shares, so it has nothing to trade. Its units stay as they are: nobody moves an empty
-    ///         index's units for nothing.
+    /// @notice The index has less than one whole share (SHARE_UNIT), so it has nothing to trade. Its units stay as
+    ///         they are. A fill pays in proportion to the supply, so on a nearly empty index the units would move for
+    ///         a few wei.
     error NothingToRebalance();
     /// @notice The fill names `units` for component `index`, outside what one fill may leave it with: at least
     ///         `lowest` (what MAX_TURNOVER leaves, rounded up) and at most `highest` (what MAX_GROWTH adds). A kept
@@ -196,7 +203,9 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     error LegOutOfBounds(uint256 index, uint256 units, uint256 lowest, uint256 highest);
     /// @notice The fill's weighted gain is `gain`, under the `bar` the auction asks for in this block. It will be
     ///         accepted once the bar has fallen to it, if nobody fills first. A fill that changes nothing has no gain,
-    ///         so none can restart the rebalance interval for free (V5-L2).
+    ///         so none can restart the rebalance interval for free (V5-L2). The least a fill can give is the bar at
+    ///         the auction's last second, about 4.8e-7. In an auction nothing else filled, or could fill, a fill that
+    ///         gives only that restarts the interval like any other, for everyone, the owner and guardian included.
     error GainBelowBar(int256 gain, uint256 bar);
     /// @notice The math was asked for a bar `elapsed` seconds into an auction, past AUCTION_DURATION. The hub refuses
     ///         an expired auction first (RebalanceExpired), so only a direct call to the math sees this.
@@ -207,8 +216,9 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     /// @notice The fill brings in `valueIn` at the prices the owner or guardian posted with this proposal, under the
     ///         `floor` the quote asks: the value it takes out, less the tolerance, rounded up.
     error BelowQuote(uint256 valueIn, uint256 floor);
-    /// @notice After a fill, the index could not send itself one raw unit of `token`, a leg it bought, or lost some
-    ///         doing so: a token that blocks the index as a sender would trap what the fill bought (RX-12).
+    /// @notice After a fill or an issue, the index could not send itself one raw unit of `token`, a leg it bought or
+    ///         was just paid, or lost some doing so: a token that blocks the index as a sender would trap what came
+    ///         in (RX-12).
     error CannotSendOut(address token);
 
     /// @notice Number of shares that make up one whole index token (1e18).
@@ -338,7 +348,9 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     ///         - The index still reads no price of its own: these are the caller's, fixed at the start, and they
     ///           only ever refuse a fill the bar would accept. A quote that is wrong, stale or hostile can stop the
     ///           proposal from filling, which a cancel already can; it can make no fill worse than a start without
-    ///           one allows.
+    ///           one allows. One thing it can do that a cancel cannot: prices that refuse every trade worth making
+    ///           still pass a fill that shrinks no leg, and such a fill, however small, settles the proposal and
+    ///           restarts the index's whole interval. The one-week restart of XS-3 covers keep masks only.
     ///         - What it buys: an executor alone at the auction's last second keeps at most `tolerance` of what it
     ///           trades, where without a quote it keeps the index's whole distance from its weights.
     ///         - The quote belongs to this proposal alone and ends with it.
@@ -362,7 +374,8 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     ///         4. reverts unless the index then holds every component's new backing, and the whole of `amountsIn` on
     ///            top of what it held before.
     ///         Only a contract can execute. It reads no price: the bar falls until some executor finds the trade worth
-    ///         making, and the first to clear it settles. Reverts NothingToRebalance on an index without shares.
+    ///         making, and the first to clear it settles. Reverts NothingToRebalance on an index with less than one
+    ///         whole share.
     /// @dev `amountsOut` and `amountsIn` are computed from `totalSupply()` in the settling block, so the callback's
     ///      arguments are the ones to trust.
     /// @param newUnits The recorded units each component is to have, in component order. Like {previewRebalance}'s
@@ -398,8 +411,9 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     function recordedUnits() external view returns (uint256[] memory units);
 
     /// @notice The exact settlement an execution in this block would make of `newUnits`. Reverts like
-    ///         {executeRebalance}: outside an auction, on a component outside its caps, on a gain under the bar, and,
-    ///         when the proposal's start posted a quote, on a fill that brings in less than it asks (BelowQuote).
+    ///         {executeRebalance}: outside an auction, on an index with less than one whole share, on a component
+    ///         outside its caps, on a gain under the bar, and, when the proposal's start posted a quote, on a fill that
+    ///         brings in less than it asks (BelowQuote).
     /// @param newUnits The recorded units each component is to have, in component order.
     /// @return bar The gain the auction asks for in this block.
     /// @return gain The weighted gain of `newUnits`.

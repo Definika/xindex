@@ -24,10 +24,10 @@ test("PD-6: a completing step is sent again while it may still execute; a move i
   const sent = [];
   const inflight = createInflight(async () => ({ state: "pending" }));
   inflight.sent({ id: "redeem", resend: async () => sent.push("redeem") });
-  await assert.rejects(inflight.idle());
+  await assert.rejects(inflight.idle(), /redeem may still execute \(pending\)/);
   assert.deepEqual(sent, ["redeem"]);
   inflight.sent({ id: "move" });
-  await assert.rejects(inflight.idle());
+  await assert.rejects(inflight.idle(), /move may still execute \(pending\)/);
   assert.deepEqual(sent, ["redeem"], "the move is not sent from here");
   inflight.clear("other");
   assert.equal(inflight.current().id, "move", "clearing another transaction leaves this one");

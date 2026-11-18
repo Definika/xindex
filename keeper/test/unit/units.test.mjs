@@ -11,19 +11,21 @@ const big = (xs) => xs.map(BigInt);
 const [SETTLES, EMPTY, BOUNDS, OVERFLOW, BELOW, LENGTH, ELAPSED] = [0, 1, 2, 3, 4, 5, 6];
 
 /// The outcome of a settlement in the hub's order of checks: the clock, the length, the supply, each leg's caps, the bar.
+/// The supply's check is this test's alone: the bot has no rule for a dust index and meets the hub's (RW-1) as the
+/// revert of `previewRebalance`, so the EMPTY vectors pin no keeper code. They are matched here so the rest line up.
 function outcomeOf(v) {
   const bar = U.barAt(BigInt(v.elapsed));
   if (bar === null) return { outcome: ELAPSED };
   const g = U.gainOf(big(v.units), big(v.newUnits), v.weights.map(Number), BigInt(v.keepMask));
   if (g.error === "LengthMismatch") return { outcome: LENGTH };
-  if (BigInt(v.supply) === 0n) return { outcome: EMPTY };
+  if (BigInt(v.supply) < 10n ** 18n) return { outcome: EMPTY }; // the hub's NothingToRebalance, not the bot's
   if (g.error === "LegOutOfBounds") return { outcome: BOUNDS, ...g };
   if (g.error === "Overflow") return { outcome: OVERFLOW };
   return { outcome: g.gain < bar ? BELOW : SETTLES, bar, gain: g.gain };
 }
 
-test("the bot's arithmetic is WeightedMath's: every settlement vector, outcome, bar and gain", () => {
-  assert.equal(vectors.length, 426);
+test("the bot's arithmetic is WeightedMath's: every settlement vector, outcome, bar and gain (the supply's the hub's)", () => {
+  assert.equal(vectors.length, 431);
   const seen = new Set();
   for (const v of vectors) {
     const got = outcomeOf(v);

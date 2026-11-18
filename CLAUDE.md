@@ -7,21 +7,37 @@ Claude Code reads it as the project's instructions.
 
 Xindex smart contracts: a Foundry project where wallets the owner approves create crypto index tokens (ERC-20)
 backed in kind (the Xindex team's), and
-users mint them with USDC/USDT, and burn them into any token
-through Uniswap's Universal Router, which reaches both V3 and V4 pools. Creators choose each coin's percentage, fixed
+users mint them with USDC/USDT, and burn them back into USDC/USDT (or in kind)
+through Uniswap's Universal Router, which reaches both V3 and V4 pools; the two stablecoins are the only currencies
+since 2026-11-18 (the owner's call: "lets leave payments with only stable coins usdt and usdc"). Creators choose each coin's percentage, fixed
 at creation with the coin list, and the index rebalances back toward those percentages through a permissionless
 auction. **No contract reads a price** (since 2026-11-10, the owner's call, `design/2026-11-10-oracle-free-rebalance.md`):
 the executor names the units a rebalance settles at, and the index accepts them only if a weighted gain in units
 clears a bar that falls with time. Pyth, which priced the rebalance until then, is gone from the protocol. The web app
 lives in a separate repo.
 
-**Xindex is one deployment, on Ethereum, and one index holds up to 100 coins of the top 300** (the owner's decision
+**Two deployments since 2026-11-13: Ethereum, and BNB Chain** (the owner's call that day: "lets also create bnb chain
+factory or whatever is neccesery so on both sides we will have in kind tokens",
+`design/2026-11-13-bnb-chain-deployment.md`). They share nothing: the same contracts, each under its own owner Safe
+and guardian's Safe, each holding its own chain's tokens in kind. An index lives on one chain, and none spans both. The
+BNB Chain side is built as scripts and tests, with no contract changed: `script/BnbChainAddresses.sol` (twelve coins,
+nine of them Binance-Peg, labelled Custodial), `V5_WHITELIST=bnb`, `CHECK=bnb` and
+`test/fork/BnbChainAddresses.fork.t.sol`. The call reverses the owner's refusal of 2026-11-10 ("I want to stay on
+Ethereum") and, in part, the one-index decision below, which still describes the Ethereum deployment as it stands. On
+the same day the owner named which Wormhole copies leave Ethereum's list: the six wrapped from BNB Chain (XRP, ADA,
+LTC, DOT, ATOM and BNB), since BNB Chain's deployment holds those coins in kind; the nine from other chains stay.
+
+**The Ethereum deployment: one index holds up to 100 coins of the top 300** (the owner's decision
 of 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). `WeightedIndexFactory`, `WeightedHub`, `IndexZap` and
 `MintRequests` hold Ethereum ERC-20s in kind: the issuer's own contract where Ethereum has one (71 candidates of the
 top 300 today), and otherwise a copy wrapped by Wormhole's token bridge from the chain that has it (17 from BNB Chain,
 nine of them Binance-Peg; 31 from Solana, Sui, Aptos, Base and the other chains Wormhole serves), labelled Bridged,
-Custodial as well when the source is Binance-Peg. The list stands at 91
-(`script/Listings.sol`), 15 of them Wormhole copies, with 26 more copies to attest and FIL's held; DOGE's copy left it on
+Custodial as well when the source is Binance-Peg. The list stands at 80
+(`script/Listings.sol`), four of them Wormhole copies (SOL, AVAX, AERO and OP) since the copies of JUP, PYTH, SUI, APT
+and ALGO left on 2026-11-18 (the owner's call: no Ethereum pool trades them, and the restock that would bridge their
+stock in from Solana, Sui, Aptos or Algorand has never run, `design/2026-11-18-bridged-coins-in-a-rebalance.md`), and
+the six wrapped from BNB Chain on 2026-11-13 (the owner's call: BNB Chain's deployment holds those coins in kind, so no
+listed copy has a Binance-Peg source any more), with 26 more copies to attest and FIL's held; DOGE's copy left it on
 2026-10-14 (the owner's call, below); on 2026-10-18 the copies of BNB, SUI and SEI, which the count of 2026-10-10
 missed, joined it, and SAND and RLB left it after the source reading (the owner's call); on 2026-10-19 BTT and SEI's
 copy left it, their bridges closed or closing, and ZK moved to Bridged (the owner's calls on the red team's RX-28,
@@ -31,22 +47,24 @@ value. Pyth's five keys, three of which signed any price (`design/2026-10-18-pre
 since 2026-11-10: nothing reads them. Nothing crosses a chain inside a protocol
 contract: the app and the fillers bridge. The keeper's own executor, which is a filler's and holds no role, calls
 Wormhole's Token Bridge to restock (2026-10-19). The BNB Chain deployment of 2026-10-07, shelved on 2026-10-10, was deleted on
-2026-10-13 with its address book, list and fork suite. No vault, no proof, no
+2026-10-13 with its address book, list and fork suite, and built again on 2026-11-13 (above). No vault, no proof, no
 bridge of our own, no speed limit and no freezer exist any more: Stage B (six vaults, eight state verifiers, the P1
 and P2 proofs of Ethereum's finality, the hybrid index) is tagged `stage-b-2026-10-07` and deleted, and
 `audit/2026-10-07-stage-b-retirement.md` records what went with it. Earlier: v3 (Chainlink prices, tagged `v3.0.0`),
 v4's market-cap index (reference supplies and a price-free λ auction, deleted on 2026-10-06,
 `audit/2026-10-06-v4-retirement.md`). Nothing is deployed on a mainnet yet.
 
-Where it stands (2026-11-10). The bullets below are a history: those written before 2026-11-10 describe the
-Pyth-priced rebalance as it then was, and the last one says what replaced it.
+Where it stands (2026-11-18). The bullets below are a history: those written before 2026-11-10 describe the
+Pyth-priced rebalance as it then was, the bullet of that day says what replaced it, and the ones after it what was
+built on it and found in it.
 - The weighted index is built and reviewed twice (`audit/2026-10-05-v5-review.md`, `audit/2026-10-07-v5-logic-review.md`).
 - The Ethereum deployment's scripts are built: `DeployWeighted`, `ConfigureWeighted` over `PythIds`, `CheckToken`.
 - The hundred-coin list is built as far as Ethereum holds it: 93 listed on 2026-10-10 (the 49 of before, 31 more
   Ethereum-issued coins and 13 Wormhole copies that already existed, every one through `CheckToken` on a fork), and
   93 since DOGE's copy left on 2026-10-14, and on 2026-10-18 the copies of BNB, SUI and SEI, found already attested,
   joined and SAND and RLB left; on 2026-10-19 BTT and SEI's copy left, 91 in all, 73 of them coins that count toward
-  the hundred. 26 copies await an attestation on Wormhole's Portal (the queue of 31 less USX and CASH, stablecoins,
+  the hundred; on 2026-11-13 the six copies wrapped from BNB Chain left, 85 in all; on 2026-11-18 the copies of JUP,
+  PYTH, SUI, APT and ALGO left, 80 in all, 62 of them coins that count toward the hundred. 26 copies await an attestation on Wormhole's Portal (the queue of 31 less USX and CASH, stablecoins,
   BP, an exchange's token, S, which Wormhole does not serve, and FIL, held until its Binance-Peg source passes a
   source reading: RX-11, RX-20, RX-35, RX-64), a
   transaction on each home chain the owner sends (section 2a of the 2026-10-10 record lists them with the procedure,
@@ -83,7 +101,8 @@ Pyth-priced rebalance as it then was, and the last one says what replaced it.
   home-chain wallets the executor's owner pins, to sell there; USDC moves by CCTP, the treasury holding at most the
   owner's figure off the float (RS-2). It runs under a key of its own, the treasury, which the owner pins. Built for
   the eight EVM-homed coins with a market (XRP, ADA, LTC, DOT and, since 2026-11-01, BNB on BNB Chain; AVAX, OP,
-  AERO); ATOM has none on BNB Chain, and JUP, PYTH, SUI, APT and ALGO wait for their chains' adapters.
+  AERO); ATOM has none on BNB Chain, and JUP, PYTH, SUI, APT and ALGO wait for their chains' adapters. Since
+  2026-11-13 it serves AVAX, OP and AERO by default: the five BNB Chain coins' copies left Ethereum's list that day.
 - The security audit of 2026-10-13 (`audit/2026-10-13-security-audit.md`, Cloudflare's security-audit skill, ids
   `CF-1`..`CF-8`) found no exploitable path in the four contracts that hold index funds; its findings in the keeper,
   CheckToken, the deploy script and CI are fixed, CF-3 is a known limitation below, and CF-2 and CF-8 went with the
@@ -116,14 +135,15 @@ Pyth-priced rebalance as it then was, and the last one says what replaced it.
   nothing since RX-9's fix, and the restock's RY-6 fix would have stopped it, because viem returns Pyth's parse
   unwrapped (RZ-1); the restock's halving never quoted (RZ-2); stock left the needs board the moment it landed (RZ-3);
   the keeper values only prices Pyth's contract confirms, previews included (RY-7); the zap refuses WETH and the
-  call's own token as recipients (RY-1); BNB joined the restock (RZ-5). The owner's calls of 2026-11-02 on the four
+  call's own token as recipients (RY-1; its WETH half went with the ether entry points on 2026-11-18); BNB joined the restock (RZ-5). The owner's calls of 2026-11-02 on the four
   left open:
   - A start must land in one slot, which a Safe cannot time (RZ-26): the guardian is a `GuardianRelay` its Safe
     controls, which `DeployWeighted` deploys; the Safe authorizes a start and anyone, the keeper first, sends it.
   - A collapsed leg stops the fills far sooner than was documented (RZ-4): the stop stays.
-  - Issue does not probe a frozen leg (RZ-25): the app checks before it offers a mint; the hub is unchanged.
+  - Issue does not probe a frozen leg (RZ-25): the app checks before it offers a mint; the hub is unchanged. (The
+    hub makes the probe itself since 2026-11-14, RW-8.)
   - A need reaches the restock only for a fill that could pay `MIN_PROFIT_USD` at its best price (RY-8).
-  - RY-3's self-referral waits for the fee policy.
+  - RY-3's self-referral waits for the fee policy (found again as RW-4 on 2026-11-14, and still waiting).
 
   The fork suites ran on the zap's change in CI on 2026-11-02 (`f2f4c18`): the five suites' 45 tests, 0 skipped.
 - The protocol documentation review of 2026-11-01 (`audit/2026-11-01-protocol-docs-review.md`, ids `PD-1`..`PD-14`)
@@ -175,10 +195,10 @@ Pyth-priced rebalance as it then was, and the last one says what replaced it.
   state machine's 16, the math's 20, the hub's ten this file lists and eight of the later fixes', the keeper's
   AU-3 among them), `test/mutants/run.py` applies each and requires its suite to fail, and CI's `Mutation gate` job
   runs them all, in about two minutes here. Every one is killed.
-- The zap takes ether and permits since 2026-10-29 (the owner's call): `mintWithEth`, `burnToEth`,
+- The zap took ether and permits from 2026-10-29 (the owner's call): `mintWithEth`, `burnToEth`,
   `burnToEthWithPermit` and `mintWithTokenPermit`, the backlog's ETH in and out and one-signature USDC mint, with `WETH`
-  a construction argument the deploy script resolves (`abi/IndexZap.json`, the zap's unit and fork suites). Sepolia's
-  zap serves them since its redeploy alone on 2026-11-03.
+  a construction argument the deploy script resolved. Sepolia's zap serves them since its redeploy alone on
+  2026-11-03. The ether entry points were withdrawn on 2026-11-18 (below); the permits stay.
 - Only wallets the owner approves create an index (the owner's calls of 2026-11-09 and 2026-11-10, under "Product
   decisions"): the factory's `setApprovedCreator` and `isApprovedCreator`, `CreatorNotApproved` from `createIndex`,
   and mutants F1 and F2. The gate was removed for some hours on 2026-11-10, on the owner's call to reopen creation,
@@ -215,13 +235,127 @@ Pyth-priced rebalance as it then was, and the last one says what replaced it.
     `test/WeightedHub.quote.t.sol`, mutants Q1 to Q7 and the keeper's U5. The hub is 21,315 bytes, 3,261 under
     EIP-170.
   - Not done: the app's move to this build (it is converted to `5bbaf3e`, on a branch); a red team of the
-    mechanism by reviewers who did not design it; the Halmos harness; a new Sepolia deployment.
+    mechanism by reviewers who did not design it (it ran on 2026-11-14, below); the Halmos harness; a new Sepolia
+    deployment.
     `test/vectors/proofs.py` is rewritten for the new arithmetic: it checks the proof's chain in exact rationals
     (the derivative identity behind `L(x) ≤ ln(1 + x)`, the margin at the cap, every rounding, every second of the
     bar, the amounts), standard library only.
+- **Batch fills** were built on 2026-11-11 (the owner's call, after asking why a $100 buyer pays for a swap per
+  coin: "then build it"; `design/2026-11-11-batch-fills.md`). No protocol contract changed; the keeper's executor and
+  bot did:
+  - `KeeperExecutor.fillBatch` fills several requests on one index, in one stablecoin, in one call: the shares the
+    redeem requests escrowed go to the mint requests, the executor's own stock of the index's shares covers what they
+    do not, and one basket is bought or sold for the difference. A further request costs about 56k gas on the
+    three-coin test index, where a fill of its own costs a basket. `fillMint` and `fillRedeem` are unchanged.
+  - Shares a batch hands over beyond those it brings in spend `stockAllowance[index]`, which only the owner raises,
+    so a stolen keeper key takes no more of the share stock than the owner's figure (CF-1's bound, mutants B1 and
+    B2); the float's request allowance measures the batch as a whole, as a single fill's.
+  - The bot plans batches before single fills (`batchGroups`, `planBatch`): a request need not pay `MIN_PROFIT_USD`
+    alone, the batch must. `SHARE_STOCK_USD`, zero by default, is the share stock it aims to hold per index.
+  - Tests: the executor's batch section (78 passing in the suite), `keeper/test/unit/batch.test.mjs`, and
+    `keeper/test/harness/requests.test.mjs`, which drives the request filler against a fake chain and is not in CI
+    because it imports viem; mutants B1 to B12, all killed.
+  - Found on the way, in the bot since the quote (`6c871fb`): its start simulation wrote zero into the hub's
+    `quoteProposal` slot, which on an index never started names the auction being simulated, so every first start
+    failed with `Panic(50)` and the keeper would not have started a new index's first rebalance. It writes
+    `NO_QUOTE_PROPOSAL` now (`test_theBotsNoQuoteValueBindsNoProposal`). Nothing on chain was wrong. With it the
+    keeper's end-to-end test passed on a mainnet fork on 2026-11-11 (24 of 24); on `6c871fb` it fails at its first
+    start.
+  - Not done: the keeper's end-to-end test has no request scenario, so no batch has filled against real pools;
+    gasless signed orders and a limit that improves over time (the record's steps 2 and 3); a bot policy that builds
+    share stock ahead of demand.
+- **The BNB Chain deployment** was built on 2026-11-13 (the owner's call; `design/2026-11-13-bnb-chain-deployment.md`).
+  No contract under `src/` changed, and the release hashes did not move.
+  - `script/BnbChainAddresses.sol` is BNB Chain's address book: twelve coins (WBNB, BTCB, ETH, XRP, ZEC, ADA, BCH, LTC,
+    DOT, ATOM, ASTER, STABLE), the list of 2026-10-07 less SOL, DOGE, AVAX, FIL and TRX, each left out by a ruling
+    already made; Binance-Peg USDT and USDC, 18 decimals each; and Uniswap's Universal Router 2.0.0 there, the same
+    build as Ethereum's.
+  - `DeployChecks` pins chain 56 as it pins chain 1; `ConfigureWeighted` lists `V5_WHITELIST=bnb`; `CheckToken` takes
+    `CHECK=bnb` and reads depth against WBNB and USDT. The zap's wrapped coin there was WBNB, so its ether entry points
+    took and paid BNB, until they went on 2026-11-18.
+  - Found on the way: Ethereum's router address has code on BNB Chain, a byte-identical replay of Ethereum's
+    deployment, and `isPinnedChain` read that as "this is Ethereum", so a deployment on BNB Chain resolved Ethereum's
+    book and stopped at its WETH address. Nothing could have been deployed wrongly. The first fix that day told
+    BNB Chain by its own router's code before the chain id; the safety check of the same day found that anyone can
+    replay that router onto Ethereum (both routers are CREATE2 deployments from a public factory, and BNB Chain's
+    already stands on Base), which would have stopped every deployment on Ethereum at WBNB's address. A pinned
+    chain's own id decides now, and a router's code only under any other id (mutants N1, N2 and N5; the record's
+    sections 3 and 8).
+  - The fork suite passed on BNB Chain's state on 2026-11-13 (13 of 13, block 133,361,996): a deployment from the
+    book, the twelve listed and through `CheckToken`, an index of all twelve issued, rebalanced with real transfers
+    and redeemed in kind, `MintRequests` filled in USDT and USDC, and the zap minting and burning an index of WBNB,
+    BTCB and ETH in USDT and in BNB on Uniswap's real pools (in BNB no longer since 2026-11-18: the suite shows a
+    payment in WBNB refused instead).
+  - What it costs, said to the owner: no index spans both chains; nine of the twelve are in Binance's custody; and
+    Uniswap, the zap's one venue, has a market worth routing for six of the twelve (PancakeSwap holds the rest), so
+    the other six mint in kind or through `MintRequests`.
+  - Ethereum's list lost the six copies wrapped from BNB Chain the same day (85 coins, `script/Listings.sol`).
+  - Not done: the owner Safe and the guardian's
+    Safe on BNB Chain; the `BNB_RPC_URL` secret, without which CI skips the BNB Chain suite; the source reading of
+    the twelve; the keeper's BNB Chain preset, executor and stock; the app.
+- **The red team of 2026-11-14** (`audit/2026-11-14-red-team.md`, ids `RW-1`..`RW-10`) read `src/` alone: the red
+  team of the oracle-free mechanism by reviewers who did not design it. It found no path that takes funds at rest
+  from an index with real, dispersed supply, from a zap user, or from a builder escrow of an ordinary token, and one
+  chain that took a requester's stablecoins on a dust index (RW-1 with RW-2). Six of the ten were already recorded
+  here, which a reading of `src/` alone could not know; the record says which. Fixed the same day:
+  - An index under one whole share does not rebalance (RW-1), which closes the free walk of a dust index, a known
+    limitation since 2026-11-10. The holder of a whole supply of a share or more can still walk the units.
+  - `MintRequests` fills a request only at the `rebalanceNonce` it was made at (RW-2), and a filler may bind its
+    fill to the request it priced (`fill(id, amount, expected)`, `requestHash`, RW-7). `fill(id, amount)` stays and
+    the keeper's executor is unchanged: a draft that removed it broke the keeper's build, seen only at the port.
+  - `acceptCreator` accrues the streaming fee to the outgoing creator first (RW-6).
+  - Issue probes that each leg it pulls can leave again (RW-8). RZ-25's call of 2026-11-02 had left that check to
+    the app, so this one is the owner's to confirm. The hub is 21,341 bytes, 3,235 under EIP-170.
+  - The engine tells a router's stray from a hop's unsold input, and the zap offers the stray where it forced it
+    (RW-9); a swap measured against a balance two addresses write reverts `SharedBalance` (RW-10).
+  - Recorded by documentation: a sliver fill, which a quote can make certain (RW-3), self-referral (RW-4, which is
+    RY-3) and a holder's top-up through a fill (RW-5).
+  - `getRequest` returns one more field and all four release hashes moved, so every decoder of a `Request` follows
+    and a new deployment is a whole one. The vectors are 431; the suite has 555 tests, twenty-three of them named
+    `test_RW..`; the mutants W1 to W29 are all killed.
+  - Not done: the fork suites, Ethereum's five and BNB Chain's, for want of an RPC where it was built. Gate 4
+    requires them for RW-1 (the hub's rebalancing), RW-8 (issue's probe, which has met no real token), RW-9 and
+    RW-10 (the zap and the engine), and they are what runs `MintRequests` on the real stablecoins (RW-2, RW-7).
+    Also not done: the app and the backend; a Sepolia deployment, without which the keeper of this build decodes
+    no request there (`docs/deployment.md`).
+- **USDC and USDT are the only currencies** since 2026-11-18 (the owner's call: "lets leave payments with only stable
+  coins usdt and usdc", and, asked how strict, the lock on chain rather than in the app alone;
+  `audit/2026-11-18-zap-ether-retirement.md`). On both chains:
+  - `IndexZap` takes and pays its `USDC` and `USDT` alone: every entry point reverts `NotAStable(token)` on any
+    other `tokenIn` or `tokenOut` before anything moves. `mintWithEth`, `burnToEth`, `burnToEthWithPermit`, the zap's
+    `WETH`, its `receive()`, `NotWETH` and `ValueMismatch` are gone; no entry point is payable. The burn no longer
+    pays out a component or any other token either.
+  - `BasketBuilder.buy` and `sell` take the builder's `USDC` and `USDT` alone; `deposit` and `withdraw` still move
+    any token in kind. Both constructors are `(factory, router, usdc, usdt)`, and `NotAStable` moved from
+    `IMintRequests` to `IXindexErrors`.
+  - `DeployWeighted` takes no `WETH`; it gives the zap, the builder and `MintRequests` the same two, and
+    `checkDeployment` refuses a zap or builder whose pair is not `MintRequests'`. `DeployChecks.pinnedWeth` is gone,
+    and `IWETH9` is back in `script/interfaces` for the Sepolia test market alone.
+  - Mutants S1 to S7, all killed; the release hashes moved. The pass-through leg's tests (DA-15) run on an index
+    holding USDC; tests whose currency was a token of their own build a zap or builder with it as its USDT.
+  - Fork suites, on public RPCs pinned near the head on 2026-11-18: BNB Chain's 13 of 13 (`testFork_theZapRefusesBnb`
+    among them), `Security.fork` 9 of 9, `MainnetAddresses.fork` 8 of 8 (its wide count, stale at 87 since `4e4751f`,
+    is 81), `IndexZap.fork` 11 of 12 and `WeightedHub.fork`'s four drills. Left: `IndexZap.fork`'s
+    `testFork_mintWithUSDC`, whose sanity floor of $100 the basket's $91 at the head misses (price, not code);
+    `WeightedHub.fork`'s two whole-list tests, which the public node refused for archive state; `CheckToken.fork`. An
+    archive run at the pinned block settles all four. Not done either: the app's ether paths (the app repository's
+    site and API still offer ETH), which go with its move to this build.
+- **Bridged coins in a rebalance** (2026-11-18, `design/2026-11-18-bridged-coins-in-a-rebalance.md`). Asked how an
+  index rebalances a coin no Ethereum pool trades, the answer kept: the keeper's executor holds it as stock and the
+  restock carries only the net through its home chain, since every index rebalances a coin the same way at once and
+  nothing on Ethereum nets it. Built on it, in the keeper alone:
+  - An auction's needs go on the restock's board before it opens: a proposal through its two-hour notice, which no
+    check had read, so its entry lapsed after 15 minutes and the restock could send its stock home; and an index the
+    keeper may start within `PRESTOCK_LEAD_SECONDS`, a day by default (`bestCase`, `prestock`, `M.startStage`,
+    mutants K1 to K3). The keeper's end-to-end test checks the board at a start, through a notice and a day ahead,
+    and passed 29 of 29 on a mainnet fork that day (block 26,441,062), with NVDAon priced under the Uniswap pool it
+    has grown since, so that stock still serves it.
+  - The stock's price is the operator's, accepted at launch sizes with no hedge (the owner's call).
+  - The copies of JUP, PYTH, SUI, APT and ALGO left Ethereum's list (the owner's call, below): 80 coins. Their
+    restock signers stay, unrun.
 - Before any mainnet: a Hermes plan that serves the keeper its feeds (its price source is its own business now, and
-  no contract waits on it); a run of the fork suites; a red
-  team of the oracle-free mechanism and an external audit, then `DeployWeighted`'s release hashes fixed at the
+  no contract waits on it); a run of the fork suites; an external audit (the red
+  team of the oracle-free mechanism ran on 2026-11-14), then `DeployWeighted`'s release hashes fixed at the
   audited commit (CF-5); the 26 attestations and RAY's update; the platform's fee policy and the legal reading. No
   Pyth plan, replay or Hermes settlement is needed any more. The two Universal Router
   files `IndexZap` and `BasketBuilder` compile, `IUniversalRouter` and `UniversalRouterCommands`, are declarations
@@ -270,6 +404,7 @@ python3 -I test/mutants/run.py  # the mutation gate: every mutant of test/mutant
 for c in IndexZap BasketBuilder MintRequests WeightedIndexFactory WeightedHub; do forge inspect $c abi --json > abi/$c.json; done  # after an ABI change
 forge test --root keeper     # the keeper's executor, its own Foundry project; CI also runs its fmt, build and lint
 node --test keeper/test/unit/*.test.mjs  # the keeper bot's arithmetic, unit naming, settings, Hermes client and tx tracker (no dependency)
+node --test keeper/test/harness/*.test.mjs  # the request filler against a fake chain; needs `npm ci` in keeper/ and the executor's build; not in CI
 
 # mainnet fork tests (real tokens, Universal Router, V3 and V4 pools); skipped when the env var is unset.
 # A rate-limited RPC throttles five suites in parallel: add -j 1.
@@ -277,15 +412,21 @@ MAINNET_RPC_URL=https://... forge test --match-path 'test/fork/*' -vvv
 # public non-archive RPCs only serve recent state: pin near the head
 MAINNET_RPC_URL=https://ethereum-rpc.publicnode.com FORK_BLOCK=$(( $(cast block-number --rpc-url https://ethereum-rpc.publicnode.com) - 8 )) forge test --match-path 'test/fork/*'
 
+# the BNB Chain deployment's fork suite (real tokens, Universal Router, V3 pools); skipped when the env var is unset
+BNB_RPC_URL=https://bsc-rpc.publicnode.com BNB_FORK_BLOCK=$(( $(cast block-number --rpc-url https://bsc-rpc.publicnode.com) - 8 )) forge test --match-path 'test/fork/BnbChainAddresses.fork.t.sol'
+
 # the admission check, read-only, before any listing: one report per token for the Safe's signers
 CHECK=wide forge script script/CheckToken.s.sol --fork-url $MAINNET_RPC_URL
+CHECK=bnb forge script script/CheckToken.s.sol --fork-url $BNB_RPC_URL
 ```
 
-Deployment, once, on Ethereum: `script/DeployWeighted.s.sol`, which gives the guardian role to the guardian's Safe,
+Deployment, once on each chain, Ethereum and BNB Chain: `script/DeployWeighted.s.sol`, which gives the guardian role
+to that chain's guardian's Safe,
 then `script/ConfigureWeighted.s.sol`, which lists each coin of `script/Listings.sol`; the owner then approves the
 wallets that create indexes (`setApprovedCreator`), and nobody can create one before. `script/CheckToken.s.sol` reports on every token before its first
-listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 91 in all. On chain 1 the
-deploy script resolves the router, WETH and the stablecoins from the address book and refuses any other address
+listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 80 in all, on Ethereum;
+`V5_WHITELIST=bnb` is BNB Chain's twelve. On chains 1 and 56 the deploy script resolves the router and the
+stablecoins from that chain's address book and refuses any other address
 (`DeployChecks.isPinnedChain`). Sepolia first needs its test market from
 `script/testnet/SetupTestMarket.s.sol`.
 
@@ -299,16 +440,24 @@ deploy script resolves the router, WETH and the stablecoins from the address boo
    one-line reason on the line above. The lint reads OpenZeppelin's internal `Math.mulDiv` as an external call.
    CI builds with `--deny warnings`, so a compiler warning fails it (A7-17).
 3. `forge test` green. `forge coverage` at 100% for every file, including mocks and scripts.
+   A change to an ABI or a struct the keeper reads (`MintRequests`, the hub, the factory, the builder) also runs the
+   keeper's gates, as CI does: `forge fmt --check`, `forge build --deny warnings`, `forge lint -D notes` and
+   `forge test` under `--root keeper`, and `node --test keeper/test/unit/*.test.mjs`. A draft of RW-7 that removed
+   `fill(id, amount)` passed every gate of the root project and broke the keeper's build.
 4. Fork tests green if the change touches `IndexZap`, the hub's rebalancing, routes, token behaviour, or anything
    router- or pool-related. Their summary must list the five Ethereum
-   `test/fork/` suites and 0 skipped. `WeightedHub.fork.t.sol` alone takes about an hour at the 91-coin list on an archive RPC
+   `test/fork/` suites and 0 skipped. `WeightedHub.fork.t.sol` alone took about an hour at the 91-coin list (85 since 2026-11-13) on an archive RPC
    (Alchemy, Tenderly), nearly all of it the admission quotes on a cold RPC cache; a public endpoint prunes the state
    before it ends. They are also required when the deploy checks or `script/MainnetAddresses.sol` change, which
-   `MainnetAddresses.fork.t.sol` and `Security.fork.t.sol` exercise.
+   `MainnetAddresses.fork.t.sol` and `Security.fork.t.sol` exercise. A change to the deploy checks, the zap, the swap
+   engine or `script/BnbChainAddresses.sol` also needs the BNB Chain suite, `test/fork/BnbChainAddresses.fork.t.sol`,
+   run with `BNB_RPC_URL`: CI runs it only once that secret exists, so until then it is run by hand.
 5. The Wake VS Code analyzer reports no errors or warnings on `src/`. Its reentrancy detector does not model reentrancy
    guards; the documented suppressions are on the `redeem` call in `IndexZap._burnBasket`, the `permit` call in
    `IndexZap._tryPermit`, the `redeem` call in `BasketBuilder.redeem`, and the clone's `initialize` call in
    `WeightedIndexFactory._initializeIndex`, which the creation fee's transfer now follows. v5 adds the executor callback in `WeightedHub`.
+   RW-6 adds the `accrueFees` call in `WeightedIndexFactory.acceptCreator`, as a block (`wake-disable reentrancy` to
+   `wake-enable reentrancy`), since forge lint's marker has to sit directly above that call and Aderyn's at its end.
    Aderyn (Cyfrin's analyzer, `aderyn .`, and its VS Code extension) reports nothing on `src/` either. `aderyn.toml`
    excludes the rules the design rejects, each with its reason, as `foundry.toml` does for lint; a verified false
    positive is marked where it stands with `// aderyn-fp-next-line(<detector>)` and its reason on the line above, or
@@ -374,6 +523,11 @@ deploy script resolves the router, WETH and the stablecoins from the address boo
      attestation, advance, attest and signer-home suites), each with its mutants P1 to P24 in
      `test/mutants/mutants.json`. The record's "Status of the fixes" names every test; PD-14, a dashboard setting, is
      fixed by documentation alone.
+   - The red team of 2026-11-14: `RW-1`..`RW-10` (`audit/2026-11-14-red-team.md`), a test named `test_RW1_...`:
+     RW-1's and RW-8's in `test/WeightedHub.rebalance.t.sol`, RW-6's in `test/WeightedHub.fees.t.sol`, RW-2's and
+     RW-7's in `test/MintRequests.t.sol`, RW-9's in `test/IndexZap.t.sol` and, for the builder's half, in
+     `test/BasketBuilder.t.sol`, where RW-10's are too, with their mutants W1 to W29. The record's "Status of the
+     fixes" names every test; RW-3, RW-4 and RW-5 are recorded by documentation alone.
    - The skills audit of 2026-10-04: `A7-08`, `A7-12`, `A7-13`, `A7-17`, `A7-18`, `A7-22`, `A1a-05` and `A1a-06`, the
      eight of its findings still open on `main`, fixed on 2026-10-25 (`audit/2026-10-25-skills-audit-port.md`), a
      test named `test_A708_...` or `test_A1a05_...`. The record's status table names every test.
@@ -472,12 +626,14 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   ranges): prices of the caller's own, fixed at the start, never read from anywhere. A fill of that proposal must
   clear the bar as any fill and must also bring in, at those prices, at least `1 − tolerance` of what it takes out
   (`WeightedMath.quoteCheck`, `BelowQuote`). Both checks must pass, so a quote that is wrong, stale or hostile can
-  only stop its own proposal from filling, which a cancel already can; it can make no fill worse than a start
+  stop its own proposal from filling, which a cancel already can; it can make no fill worse than a start
   without one allows. Keep it that way: never let a quote accept a fill the bar refuses, replace the bar, outlive
   its proposal (mutant Q2), or reach an issue, a redeem or a claim. What it buys: a lone executor keeps at most the
   tolerance of what it trades, not the index's distance from its weights. Its limits: a stranger's start carries
-  none, so the guardian replaces such a proposal within its six hours; and the tolerance has to cover six hours of
-  market, or the proposal expires unfilled (the spec's section 10).
+  none, so the guardian replaces such a proposal within its six hours; the tolerance has to cover six hours of
+  market, or the proposal expires unfilled (the spec's section 10); and one thing it can do that a cancel cannot: a
+  quote that refuses every trade worth making still passes a fill that shrinks no leg, so the role that posted it
+  can settle a sliver and restart the index's whole interval, up to 91 days (RW-3, a known limitation).
 - **The executor names the units, and the index checks a gain.** `executeRebalance(newUnits, data)` settles at the
   units its caller names. `WeightedMath` accepts them when every leg is inside its unit caps and
   `⌊Σ w_i · L(x_i) / 10,000⌋ ≥ bar`, with `x_i` the leg's relative change in units, rounded down, and
@@ -523,10 +679,15 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   score's terms, the empty supply, and the backing post-check's (the claims dropped from the backing term, only the
   bought legs re-read, a shrinking leg paid as a difference of floored backings). The settlement vectors
   (`test/WeightedMath.vectors.t.sol`) kill the arithmetic's; run them again after any change to `WeightedMath`.
-- **An empty index does not rebalance.** Without shares a fill has nothing to trade and reverts
-  `NothingToRebalance`, so nobody moves an empty index's units for nothing (R14, XA-27). A dust index's units can
-  still be walked by whoever holds its shares, each fill a gain that costs nothing on a supply worth nothing: a
-  known limitation, which the app answers by showing an index's coins against its weights.
+- **An index under one whole share does not rebalance.** Below `SHARE_UNIT` of supply a fill reverts
+  `NothingToRebalance`, and the preview with it, so nobody moves an empty or a dust index's units for nothing (R14,
+  XA-27, RW-1). A fill's gain reads the units alone while its amounts scale with the supply, so on a few raw
+  shares every amount going out floored to zero, and a fill that doubled a leg cost one raw unit. The line is one
+  share because the factory sizes its unit bounds per whole share. What is left is a known limitation: whoever
+  holds an index's whole supply, a share or more, pays every fill to itself and can still walk the units over
+  several intervals, its own basket locked in the index, since no contract reads a price. The app answers by
+  showing an index's coins against its weights, and `MintRequests` by filling a request only at the basket it was
+  made on (RW-2). Do not lower the line: a fill's cost falls with it.
 - **A collapsing coin is still bought.** Fixed weights keep buying it, at most doubling its units per fill (RX-15),
   and units beyond `uint96` stop the fill rather than wrap, the preview with it (RX-61), until the guardian keeps it
   (V5-L3, a known limitation).
@@ -538,13 +699,18 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   after an issuer burned the index's balance, so no new deposit refills the hole for earlier holders (RX-8); and a fill
   that grows a leg must leave the index able to send that leg, measured by sending itself one raw unit, so a token that
   blocks only its sender, as Tether Gold's does, cannot have good legs moved into a leg nobody can take out (RX-12).
+  An issue makes the same probe on every leg it pulls (`_checkCanSendOut`, RW-8; until 2026-11-14 the check was the
+  app's alone, RZ-25): a deposit into a leg the index can no longer send reverts `CannotSendOut` instead of becoming
+  a claim nobody can pay. So a token that refuses a transfer to oneself, or charges for one, can be neither bought
+  by a fill nor issued.
 - **The notice is 2 hours.** `WeightedHub`'s `REBALANCE_DELAY` is 2 hours: the notice is for executors, not for
   holders' exits. `AUCTION_DURATION` is 4 hours, the bar's twenty halvings; the math's must equal the hub's
   (`test_theMathConstantsAreTheHubs`). The
   rebalance interval is the index's own, chosen at creation within [`MIN_REBALANCE_INTERVAL`, `MAX_REBALANCE_INTERVAL`]
   = [7, 91] days (the website's weekly to quarterly cadences; V5R-I2 set the floor). A fill with a keep mask restarts
-  only `MIN_REBALANCE_INTERVAL`, for any start (`earliestRebalance()`, XS-3): a guardian's sliver cannot hold the index
-  off for a quarter, and a keep can be renewed a week on. The cost, accepted: the owner or
+  only `MIN_REBALANCE_INTERVAL`, for any start (`earliestRebalance()`, XS-3): a guardian's sliver behind a mask cannot
+  hold the index off for a quarter (one under a quote and no mask can, RW-3), and a keep can be renewed a week on.
+  The cost, accepted: the owner or
   guardian can run keep-mask fills weekly on a quarterly index, each within the unit caps and above the bar. A cancel, or an auction that
   expired unfilled, holds strangers off for `REBALANCE_DELAY`, so the owner and guardian get the first restart;
   `canStartRebalance` answers whether strangers may, and false for a clone that was never initialized (DA-22; CR-I02
@@ -563,7 +729,10 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   each call (`feeTerms`): the index's creator (`creatorOf`, which the creator can offer on and the new creator must
   accept, RX-22) and the platform recipient;
   a referrer named at mint takes `referralShareBps` of the platform's part, so a self-referral discounts only the
-  platform's. A recipient that could not hold shares is replaced (the creator by the call's `to`, the platform's part
+  platform's (RY-3, RW-4: open, the fee policy's question). Only an issue and a redeem charge these: a fill that
+  grows every leg adds to the index for no entry fee and passes no gate, which is worth doing only to a holder of
+  nearly the whole supply, since the rest is shared with the others (RW-5, recorded).
+  A recipient that could not hold shares is replaced (the creator by the call's `to`, the platform's part
   folded into the creator's), so no recipient can block a mint or an exit. Rates are fixed per index; the policy
   reaches only later indexes, and a creator names the highest platform fee it accepts (`PlatformFeeTooHigh`). The
   creation fee, in ether, is forwarded whole in the same call.
@@ -584,6 +753,9 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   nothing included: a clock kept on a supply too small for one share of fee charged the whole idle time to the next
   minter's deposit (XS-1); what the restart forgoes is under one share per call. A gap long enough for `f` to reach
   one is capped just under it, so the arithmetic answers and the last holder can leave.
+  The creator is read at each accrual, so `acceptCreator` accrues the index before it writes the new one: what the
+  role earned up to the handover goes to the creator who held it (RW-6). A change of the platform's recipient
+  accrues nothing first, both recipients being the platform's.
   The scale pushed the settlement arithmetic out of the hub's EIP-170 budget into `WeightedMath`, a stateless contract
   the factory deploys with the implementation and the hub calls by STATICCALL (`MATH`); its constants are the hub's
   (`test_theMathConstantsAreTheHubs`), and the optimizer runs are 100 for the same reason.
@@ -633,7 +805,9 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
     holders redeem throughout. A cancel budget was considered and rejected (DA-12). A keep-mask start that leaves only
     a sliver moving can also restart `MIN_REBALANCE_INTERVAL` for everyone (XS-3 made that the bound: before, the
     sliver restarted the index's interval, up to 91 days), so the stall can outlast the guardian's replacement by up
-    to `MIN_REBALANCE_INTERVAL`. While a replacement is pending, the owner cancels the outgoing guardian's keep-mask
+    to `MIN_REBALANCE_INTERVAL`. A start with a quote and no mask is the longer stall: its sliver fill restarts the
+    index's whole interval, up to 91 days, which the owner and the new guardian wait out too (RW-3).
+    While a replacement is pending, the owner cancels the outgoing guardian's keep-mask
     starts, and monitors watch `RebalanceStarted` with a non-zero `keepMask` (RT-07). The owner has only
     `REBALANCE_DELAY`, 2 hours, to cancel one before the guardian's own executor can fill it at `eta`, so that cancel
     needs signers on call.
@@ -667,19 +841,20 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   fill that lands after them, however the two are ordered (RT-02).
 - **The hub takes no ether.** None of its entry points is payable, a start and both fills included
   (`test_noRebalanceEntryPointTakesEther`): nobody is paid for a price.
-- **The zap is stateless and replaceable.** New UX features (ETH in/out, aggregators, mixed-venue legs) go in a new or
+- **The zap is stateless and replaceable.** New UX features (aggregators, mixed-venue legs) go in a new or
   extended zap, never in the hub or factory. The app caps a zap basket at about 35 components, which is where 16.78M gas
   runs out. Since 2026-10-16 the zap's swaps run through `UniversalRouterSwaps`, the engine it shares with the basket
   builder: the venue, command, payment, spend-bound, unsold-input, V4-route and check rules below are the engine's,
   and the swap errors both raise are declared in `IXindexErrors`.
-  - **Ether and permits** (built 2026-10-29, the owner's call to build the backlog's ETH entry and one-signature
-    mint, which widens the 2026-10-14 "USDC or USDT" entry to ether). `mintWithEth` and `burnToEth` are
-    `mintWithToken` and `burnToToken` with WETH as the token: `tokenIn` or `tokenOut` names `WETH`, a construction
-    argument `DeployWeighted` resolves like the stablecoins (`WETH` in the environment, the address book's on chain
-    1), `msg.value` must equal `maxAmountIn`, the zap wraps and unwraps, and a caller or `to` that refuses ether fails
-    the call. `mintWithTokenPermit`, `burnToTokenWithPermit` and `burnToEthWithPermit` try an EIP-2612 permit for the
-    whole amount pulled and accept one already submitted; USDT has none. Fiat and other-chain entry stay app-side and
-    undecided. Sepolia's zap serves these entry points since its redeploy alone on 2026-11-03.
+  - **USDC and USDT only** (the owner's call of 2026-11-18, which withdrew the ether entry points of 2026-10-29). A
+    mint's `tokenIn` and a burn's `tokenOut` must be the zap's `USDC` or `USDT`, construction arguments
+    `DeployWeighted` resolves from the chain's address book, else `NotAStable` before anything moves; the builder's
+    buy and sell take the same two. No entry point is payable and the zap has no `receive()`. Do not bring back an
+    ether path or a payout in any other token without the owner's call: an app that offers ether swaps it to a
+    stablecoin outside the zap. The pass-through leg is then a stablecoin the index holds itself, which no listed
+    index does (A7-22), and the rule stays for an index that would.
+  - **Permits.** `mintWithTokenPermit` and `burnToTokenWithPermit` try an EIP-2612 permit for the whole amount
+    pulled and accept one already submitted; USDT has none. Fiat and other-chain entry stay app-side and undecided.
   - **Venue.** It swaps through Uniswap's Universal Router, pinned to the 2.0.0 deployment, and nothing else (the
     owner's call on 2026-10-14). Each leg names exactly one venue: a packed `v3Path` or a hookless `PathKey[] v4Path`,
     never both and never neither, else `BadRoute(i)`; the pass-through leg names none.
@@ -691,12 +866,22 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   - **Spend bound.** The sweep's minimum is zero, so it never fails a call. What bounds a leg's spend is the amount
     pre-funded. That is also the only bound on a V4 exact-output route that revisits `tokenIn`, since the pinned
     periphery does not hold such a route to its `amountInMaximum` (upstream #564; CR-I06, CR-I14).
-  - **Unsold input.** The sweep returns the router's whole balance of the token, a stray one included. So a hop's unsold
-    input is measured as what came back, `balance + given - before`, never as what was spent (CR-L02).
+  - **Unsold input.** The sweep returns the router's whole balance of the token, a stray one included. So what a hop
+    brought back is measured as `balance + given - before`, never as what was spent (CR-L02), and the router's
+    balance read before the pre-fund tells the stray from the hop's own unsold input (RW-9). The builder credits
+    both to the seller's escrow (RX-45). The zap offers both to the recipient in one transfer; if the token refuses
+    it, the zap sends the unsold part alone, which is the recipient's and must still arrive, and keeps the stray,
+    which nothing can move again. So one raw unit a stranger left in the router no longer reverts the burn of a
+    recipient the token will not pay.
+  - **One balance, one address.** Every amount is a balance change read at one address. A pre-fund that lowers the
+    balance a swap is about to be measured against (a sale hop's output or its leg's `tokenOut`, a buy's component)
+    means two addresses write one ledger, and the swap reverts `SharedBalance` (RW-10): measured both ways the same
+    tokens counted twice, and the builder paid the difference out of other users' escrows. Two shapes no probe
+    sees, which the listing rule excludes: a buy leg with a budget of zero pre-funds nothing, and an index naming
+    both addresses of one ledger is credited twice by `BasketBuilder.redeem`.
   - **V4 routes.** A V4 route must be hookless (`hooks == 0` and empty `hookData`). A hookless key cannot carry the
     dynamic-fee flag, so that one equality covers the flag bits too. `address(0)` is allowed only as an intermediate,
-    because native ether must never reach the zap through a swap: its `receive()` takes ether from WETH alone, which
-    `withdraw` sends back for `mintWithEth`'s refund and `burnToEth`'s payout, and refuses every other sender.
+    because native ether must never reach the zap through a swap: it has no `receive()`, and takes ether from nobody.
   - **Checks.** The zap must: validate every route's endpoints; honour every leg's limit, including the pass-through
     leg (DA-15); check `expectedNonce`; measure what the user pays and receives as balance changes inside the call,
     never using tokens already in the zap; check each mint leg's delivered component balance against what the index
@@ -738,12 +923,24 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
     anyone may `refund` the escrow to the requester. A fill pays exactly what the filler sends, so any surplus over the
     limit goes to the fastest filler, which is why the app suggests limits. Stray tokens sent to the contract stay
     there, since nothing may take them.
+  - A request fills only at the basket it was made on. It records the index's `rebalanceNonce`, and a fill reverts
+    `StaleRebalanceNonce` once the index has settled a rebalance, for both kinds: a limit in shares set before a
+    settlement buys another basket, and the filler of a redeem request would pay for shares the settlement
+    re-denominated (RW-2). `cancel` and `refund` read no nonce, so a stale request's escrow always comes back.
+  - A filler may name the request it priced. `fill(id, amount, expected)` reverts `RequestChanged` unless
+    `keccak256(abi.encode(request))` is `expected`; `requestHash(id)` reports it, and it leaves the id out, so it
+    follows a request a re-org renumbered. A filler hashes the request it priced: calling `requestHash` at fill
+    time proves nothing. `fill(id, amount)` stays for a caller that reads the request in the same call, as the
+    keeper's executor does (RW-7).
   - The invariant suite holds the contract's balance of each token at exactly its open escrows plus donations, under
     any interleaving with Tether's fee switch.
 - **Checks-effects-interactions.** Emit events and write state before external calls where the data is available; make
   the call into a user-supplied address the last interaction when possible.
 - **Standard ERC-20s only as components** (whitelist policy). `issue` rejects fee-on-transfer tokens by checking the
-  received amount. Do not whitelist USDC/USDT as components in scripts or docs; they are fine as mint/burn currencies.
+  received amount, and a token that refuses or charges a transfer of one raw unit to oneself by making it (RW-8). A
+  token whose ledger two addresses write, a proxy beside a legacy address, is never listed: the engine refuses a swap
+  measured across the two, but not an index that names both (RW-10).
+  Do not whitelist USDC/USDT as components in scripts or docs; they are fine as mint/burn currencies.
   `ConfigureWeighted` refuses the deployment's own, `V5_USDC` and `V5_USDT` off Ethereum, as well as Ethereum's (A7-22).
   The policy wants 6 to 18 decimals, which matter only to display and to the unit cap at creation. The admission check is
   `CheckToken`, and the WBT rule (a token that can both blacklist a holder and destroy its balance is refused) stays its
@@ -850,9 +1047,13 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   - When the owner is a Safe, neither the guardian nor the broadcasting key may be one of its signers (SA-06).
   - Neither role may be a market contract: the router and the PoolManager, and on a mainnet every token and mint
     currency in the address book (CR-I37).
-  - On chain 1 the market addresses are the address book's and nothing else (`MainnetOverride`); elsewhere they come
-    from the environment.
-  - On chain 1 `deploy` broadcasts only the build `DeployWeighted`'s `FACTORY_INITCODE_HASH`, `ZAP_INITCODE_HASH`,
+  - On chains 1 and 56 the market addresses are that chain's address book's and nothing else (`MainnetOverride`);
+    elsewhere they come from the environment. A pinned chain's own id decides its book: 56 is BNB Chain and 1 is
+    Ethereum, whatever code stands at either router's address, because both routers are CREATE2 deployments anyone
+    can replay onto the other chain (Ethereum's stands on BNB Chain). Under any other id, a chain-id override
+    included, BNB Chain's router having code names BNB Chain and is asked before Ethereum's (RX-23). Never tell a
+    real chain 1 or 56 by code alone (mutants N1, N2 and N5).
+  - On chains 1 and 56 `deploy` broadcasts only the build `DeployWeighted`'s `FACTORY_INITCODE_HASH`, `ZAP_INITCODE_HASH`,
     `BUILDER_INITCODE_HASH` and `REQUESTS_INITCODE_HASH` record (`BuildNotReleased`, CF-5). A
     change to `src/`, a dependency or the compiler settings fails `test_CF5_theReleaseHashesAreThisBuilds` until those
     four are set to the values it prints, in the same commit. The test stops at the first mismatch; `cast keccak` of
@@ -866,9 +1067,45 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   against a table written independently of them. The WBTC
   address is `0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599`; an earlier draft had a wrong one. A Wormhole copy of a
   Binance-Peg coin the app labels Custodial. `script/PythIds.sol` holds each coin's Pyth id for the keeper alone,
-  which prices its own trades off chain; no contract or script reads it.
+  which prices its own trades off chain; no contract or script reads it. BNB Chain's addresses are
+  `script/BnbChainAddresses.sol`, checked the same way by `test/fork/BnbChainAddresses.fork.t.sol`, its list pinned by
+  `test_CRL08_theBnbListIsTheReleaseRecord`.
 
 ## Product decisions already made (do not re-litigate silently)
+
+**Two deployments, each holding its chain's coins in kind** (the owner's call of 2026-11-13: "we are the ones who
+create indexes now. lets also create bnb chain factory or whatever is neccesery so on both sides we will have in kind
+tokens. we will have more little list on ETH but no problem"; `design/2026-11-13-bnb-chain-deployment.md`). Ethereum
+and BNB Chain each get the same contracts under their own Safes; nothing crosses, and an index lives on one chain.
+It came after the owner asked whether an Ethereum index could keep its collateral on another chain: it can only with
+vaults of our own, which stay refused. It reverses the owner's refusal of a BNB Chain deployment on 2026-11-10 and,
+in part, "One index on Ethereum" of 2026-10-10 below: no single index holds every listed coin any more. Said to the
+owner with it: a buyer who wants both chains' coins buys two tokens; nine of BNB Chain's twelve coins are Binance's
+custody, with Wormhole no party there; and Uniswap, still the zap's only venue, has a market for six of the twelve.
+Decided the same day (the owner: "we have to delete bnb ones and that bnb ones should be on bnb chain that we built
+today"): the six Wormhole copies wrapped from BNB Chain (XRP, ADA, LTC, DOT, ATOM, BNB) leave Ethereum's list, and
+those coins are held on BNB Chain in kind; the nine copies from other chains stay on Ethereum, since neither chain has
+an in-kind home for them (asked whether all fifteen should go, the owner kept them). Their addresses stay recorded in
+`script/MainnetAddresses.sol` for a relisting, and the keeper's restock serves AVAX, OP and AERO by default. Not
+decided: PancakeSwap as a venue on BNB Chain, which the call of 2026-10-14 below still refuses.
+
+**USDC and USDT are the only currencies** (the owner's call of 2026-11-18: "lets leave payments with only stable coins
+usdt and usdc"). Asked whether the contracts should enforce it or the app alone, the owner chose the contracts: the zap
+and the basket builder take and pay the deployment's USDC and USDT and revert `NotAStable` on anything else, and no
+entry point takes ether. It reverses the ether entry of 2026-10-29, and narrows the burn, which had paid out any token
+the caller named. `MintRequests` already took the two alone. The app's ether paths follow when it moves to this build
+(asked the same day, the owner kept this change to the contracts for now).
+
+**Five Wormhole copies off the list** (the owner's call of 2026-11-18: "for now, let's just remove" them, since the
+team creates every index and tells partners what it holds). JUP, PYTH, SUI, APT and ALGO left `script/Listings.sol`:
+no Ethereum pool trades their copies, so a rebalance buys them only from stock bridged in from Solana, Sui, Aptos or
+Algorand, and that restock has never sent a transaction; the local chains cannot run their venues, so proving it
+would take a live run with funded wallets. SOL's copy stays, which a Uniswap V3 pool against WETH trades at the
+market (read that day: $74.63 a coin against OKX's $74.76, a $22k sale 0.5% worse than one coin), and so do AVAX,
+OP and AERO, which the EVM restock serves. The addresses stay in `MainnetAddresses` and the signers in
+`keeper/restock/`, for a relisting once a live run has proven them. Asked before it, the owner weighed a token that
+tracks prices without holding the coins; it was not taken, since it needs a price feed and a counterparty to every
+gain, the opposite of "No oracle" below.
 
 **No oracle** (the owner's call of 2026-11-10: "we have to cut off oracles somehow and keep rebalance safely", then
 "yes build oracle free rebalance"). No contract reads a price. An index still rebalances toward its fixed percentages,
@@ -988,9 +1225,8 @@ cost the owner weighs before launch.
 **Swap venues** (the owner's call on 2026-10-14): the zap swaps through Uniswap's Universal Router 2.0.0 alone, V3 or
 V4 per leg, chosen by the caller. PancakeSwap's v3 Universal Router, a third venue per leg since 2026-10-06 (chiefly
 for CAKE), and THORChain, an app-side rail added the same day (`design/2026-10-06-swap-venues.md`), were both removed on
-2026-10-14: users come with USDC or USDT, and since 2026-10-29 with ether through the zap's `mintWithEth` and
-`burnToEth` (the owner's call to build the backlog's ETH entry; fiat and other-chain entry stay app-side and
-undecided). CAKE stays listed; its legs route through Uniswap's pools, or it mints in
+2026-10-14: users come with USDC or USDT (from 2026-10-29 to 2026-11-18 also with ether, through the zap's
+`mintWithEth` and `burnToEth`; fiat and other-chain entry stay app-side and undecided). CAKE stays listed; its legs route through Uniswap's pools, or it mints in
 kind or through `MintRequests`.
 
 **Fees, cadence and private indexes** (built 2026-10-14 on the research record's defaults): fees in shares with the
@@ -1003,7 +1239,8 @@ no Base deployment for now; the creation fee is zero. The platform's fee, the re
 streaming rate are not decided yet; the legal reading is counsel's.
 
 **Unchanged from earlier versions:** an owner Safe of at least three signatures; fixed constituents; no protocol bots
-or hot keys; component whitelist only; the burner chooses the exit token; the mint currency is not tracked per holder;
+or hot keys; component whitelist only; the burner chooses the exit stablecoin, USDC or USDT, or exits in kind; the mint
+currency is not tracked per holder;
 up to `MAX_COMPONENTS` (100) per index.
 
 If a change would alter any of these, say so explicitly.

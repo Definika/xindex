@@ -9,6 +9,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {ConfigureWeighted} from "./ConfigureWeighted.s.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
+import {BnbChainAddresses} from "./BnbChainAddresses.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
 import {IAdminReads} from "./interfaces/IAdminReads.sol";
 import {IPoolManagerStorage} from "./interfaces/IPoolManagerStorage.sol";
@@ -22,6 +23,7 @@ import {IUniswapV3PoolRead} from "./interfaces/IUniswapV3PoolRead.sol";
 ///         day passing) is undone after each token.
 ///
 ///   CHECK=wide forge script script/CheckToken.s.sol --fork-url <mainnet rpc>
+///   CHECK=bnb forge script script/CheckToken.s.sol --fork-url <bnb chain rpc>
 ///   CHECK=<token,...> forge script script/CheckToken.s.sol --fork-url <any evm rpc>
 ///
 /// What it checks, and what each finding does:
@@ -36,9 +38,12 @@ import {IUniswapV3PoolRead} from "./interfaces/IUniswapV3PoolRead.sol";
 ///     WBT rule refuses a token that can both blacklist a holder and destroy its balance
 ///     (design/2026-09-30-wbt-check.md). A blacklist with a burn from another account is left for review, because
 ///     OpenZeppelin's `burnFrom` spends the holder's allowance and only the source says whether this one does.
-///   - Depth, on Ethereum: each Uniswap V3 pool against WETH and USDC at the four standard fees, and each hookless V4
-///     pool against ether and USDC at the standard fee and tick spacing pairs, with the token within 2% of the pool's
-///     price on either side from the liquidity active now. Recorded only.
+///   - Depth, on Ethereum and BNB Chain: each Uniswap V3 pool against the wrapped coin and the chain's stablecoin
+///     (WETH and USDC on Ethereum, WBNB and USDT on BNB Chain) at the four standard fees, and each hookless V4 pool
+///     against the coin and that stablecoin at the standard fee and tick spacing pairs, with the token within 2% of
+///     the pool's price on either side from the liquidity active now. Recorded only. PancakeSwap's pools are not
+///     read: the zap does not swap there, so on BNB Chain, where most depth sits there, the figure is what the zap
+///     reaches and not the coin's market.
 ///   - Supply: the token's symbol, decimals and on-chain `totalSupply`.
 ///
 /// The selector scan is a heuristic: a power under a name the table does not list is missed, and a listed name says
@@ -49,11 +54,11 @@ import {IUniswapV3PoolRead} from "./interfaces/IUniswapV3PoolRead.sol";
 /// deployed.
 ///
 /// Env:
-///   CHECK          `default` or `wide`, the tokens of `ConfigureWeighted`'s Ethereum lists (chain 1 only), or
-///                  comma-separated token addresses.
+///   CHECK          `default` or `wide`, the tokens of `ConfigureWeighted`'s Ethereum lists (chain 1 only), `bnb`,
+///                  its BNB Chain list (chain 56 only), or comma-separated token addresses.
 ///   CHECK_HOLDERS  Optional comma-separated `token:holder` pairs: an account the transfer check may take the test
 ///                  balance from when the token's balance slot cannot be written (balances kept elsewhere, or shares).
-///                  On Ethereum the token's own pools are tried after it.
+///                  On Ethereum and BNB Chain the token's own pools are tried after it.
 contract CheckToken is Script {
     /// @notice What the transfer simulation found. The zero value is `Untested`, so a report never claims a check it
     ///         did not run.
@@ -96,7 +101,12 @@ contract CheckToken is Script {
         uint256 delay;
     }
 
-    /// @notice Where depth is measured. All zero off Ethereum, where depth is skipped.
+    /// @notice Where depth is measured. All zero off Ethereum and BNB Chain, where depth is skipped.
+    /// @param v3Factory Uniswap V3's factory.
+    /// @param poolManager Uniswap V4's PoolManager.
+    /// @param weth The chain's wrapped coin: WETH on Ethereum, WBNB on BNB Chain.
+    /// @param usdc The stablecoin pools are read against: USDC on Ethereum, USDT on BNB Chain, where Uniswap's depth
+    ///        sits against it.
     struct Markets {
         address v3Factory;
         address poolManager;
@@ -274,17 +284,17 @@ contract CheckToken is Script {
         console2.log(passed);
     }
 
-    /// @notice CHECK's tokens: those of `ConfigureWeighted`'s `default` or `wide` list, which only chain 1 resolves, or
-    ///         comma-separated addresses.
+    /// @notice CHECK's tokens: those of `ConfigureWeighted`'s `default` or `wide` list, which only chain 1 resolves,
+    ///         its `bnb` list, which only chain 56 resolves, or comma-separated addresses.
     function resolveTokens(string memory raw) public returns (address[] memory tokens) {
         ConfigureWeighted lists = new ConfigureWeighted();
-        if (!ScriptUtils.same(raw, "default") && !ScriptUtils.same(raw, "wide")) {
+        if (!ScriptUtils.same(raw, "default") && !ScriptUtils.same(raw, "wide") && !ScriptUtils.same(raw, "bnb")) {
             return lists.parseAddresses(raw);
         }
         return lists.resolveList(raw);
     }
 
-    /// @notice Where depth is measured on this chain: Uniswap on Ethereum, and nowhere elsewhere.
+    /// @notice Where depth is measured on this chain: Uniswap on Ethereum and on BNB Chain, and nowhere elsewhere.
     function markets() public view returns (Markets memory m) {
         if (block.chainid == 1) {
             m = Markets({
@@ -292,6 +302,13 @@ contract CheckToken is Script {
                 poolManager: MainnetAddresses.POOL_MANAGER,
                 weth: MainnetAddresses.WETH,
                 usdc: MainnetAddresses.USDC
+            });
+        } else if (block.chainid == BnbChainAddresses.CHAIN_ID) {
+            m = Markets({
+                v3Factory: BnbChainAddresses.UNISWAP_V3_FACTORY,
+                poolManager: BnbChainAddresses.POOL_MANAGER,
+                weth: BnbChainAddresses.WBNB,
+                usdc: BnbChainAddresses.USDT
             });
         }
     }
@@ -892,7 +909,9 @@ contract CheckToken is Script {
         );
         if (r.pools.length == 0) {
             console2.log(
-                block.chainid == 1 ? "  no standard V3 pool or hookless V4 pool" : "  measured on Ethereum only"
+                block.chainid == 1 || block.chainid == BnbChainAddresses.CHAIN_ID
+                    ? "  no standard V3 pool or hookless V4 pool"
+                    : "  measured on Ethereum and BNB Chain only"
             );
         }
         for (uint256 i = 0; i < r.pools.length; ++i) {
@@ -976,11 +995,14 @@ contract CheckToken is Script {
         return "REFUSED";
     }
 
-    /// @notice A pool's other currency, by name when it is ether or one of Ethereum's WETH and USDC.
-    function pairName(address pair) public pure returns (string memory) {
-        if (pair == address(0)) return "ether";
+    /// @notice A pool's other currency, by name when it is the chain's coin, Ethereum's WETH or USDC, or BNB Chain's
+    ///         WBNB or USDT.
+    function pairName(address pair) public view returns (string memory) {
+        if (pair == address(0)) return block.chainid == BnbChainAddresses.CHAIN_ID ? "BNB" : "ether";
         if (pair == MainnetAddresses.WETH) return "WETH";
         if (pair == MainnetAddresses.USDC) return "USDC";
+        if (pair == BnbChainAddresses.WBNB) return "WBNB";
+        if (pair == BnbChainAddresses.USDT) return "USDT";
         return vm.toString(pair);
     }
 

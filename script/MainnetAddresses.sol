@@ -209,6 +209,15 @@ library MainnetAddresses {
     // BNB Chain) was taken off the list on 2026-10-14, the owner's call, for now: Pyth prices DOGE, not the copy, so
     // a broken peg or bridge leaves the copy priced as DOGE, and the source is a proxy whose admin, one externally
     // owned key, can replace its code (read on BNB Chain that day).
+    //
+    // The six copies wrapped from BNB Chain (XRP, ADA, LTC, DOT, ATOM and BNB, Wormhole chain 4) were taken off the
+    // list on 2026-11-13, the owner's call: BNB Chain's deployment holds those coins in kind (`BnbChainAddresses`),
+    // with no bridge under them. Their addresses stay recorded here for a relisting, and
+    // `test/fork/MainnetAddresses.fork.t.sol` still checks each against its source.
+    //
+    // JUP, PYTH, SUI, APT and ALGO were taken off the list on 2026-11-18, the owner's call: with no Ethereum pool, a
+    // rebalance can buy them only from stock bridged in from Solana, Sui, Aptos or Algorand, whose restock has never
+    // run (design/2026-11-18-bridged-coins-in-a-rebalance.md). Their addresses stay here too, for a relisting.
     // ---------------------------------------------------------------------
     /// @dev XRP as the bridge wraps Binance-Peg XRP (0x1d2f0da169ceb9fc7b3144628db156f3f6c60dbe on BNB Chain, Wormhole chain 4): symbol XRP, 18 decimals.
     address internal constant XRP = 0xc730d8256B8A1030eEA67f1Bc7ebed3898f7A535;

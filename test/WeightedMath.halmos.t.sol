@@ -34,7 +34,8 @@ contract WeightedMathProofs is Test {
         v[1] = b;
     }
 
-    /// @dev The properties every rung checks on a settlement that returns.
+    /// @dev The properties every rung checks on a settlement that returns, and whether it returned: a refusal has
+    ///      nothing to check.
     function _check(
         uint256 elapsed,
         uint256 supply,
@@ -42,10 +43,11 @@ contract WeightedMathProofs is Test {
         uint256[] memory units,
         uint256[] memory next,
         uint256[] memory weights
-    ) internal view {
+    ) internal view returns (bool settled) {
         try math.settlement(elapsed, supply, scale, units, next, weights, 0) returns (
             uint256 bar, int256 gain, uint256[] memory amountsOut, uint256[] memory amountsIn
         ) {
+            settled = true;
             assert(bar != 0);
             assert(gain >= int256(bar));
             assert(next[0] > units[0] || next[1] > units[1]);
@@ -92,12 +94,29 @@ contract WeightedMathProofs is Test {
     }
 
     /// @dev Every rung at concrete points, which forge runs: a tenth of the ETH out for an eighth more BTC settles;
-    ///      the same units again gain nothing and are refused, so the check has nothing to assert.
+    ///      the same units again gain nothing and are refused, so the check has nothing to assert. The rungs swallow
+    ///      a refusal, so each point is also asserted to settle or to be refused as said: a point that stopped
+    ///      settling would otherwise pass with nothing checked.
     function test_everyRungHoldsAtConcretePoints() public view {
         check_rung1_newUnits(0.0225e18, 0.0005625e8);
         check_rung1_newUnits(uint64(ETH_UNITS), uint64(BTC_UNITS));
         check_rung2_newUnitsAndTheClock(0.0225e18, 0.0005625e8, 3 hours);
         check_rung3_newUnitsClockAndWeights(0.0225e18, 0.0005625e8, AUCTION_DURATION, 2500);
         check_rung4_everything(1e18, 1e7, 0.9e18, 1.2e7, AUCTION_DURATION, 5000, 1e24, 0.9e18);
+
+        uint256[] memory units = _pair(ETH_UNITS, BTC_UNITS);
+        uint256[] memory next = _pair(0.0225e18, 0.0005625e8);
+        uint256[] memory even = _pair(5000, 5000);
+        assertTrue(_check(AUCTION_DURATION, 1e18, WAD, units, next, even), "rung 1: the fair fill settles");
+        assertFalse(_check(AUCTION_DURATION, 1e18, WAD, units, units, even), "rung 1: the same units are refused");
+        assertTrue(_check(3 hours, 1e18, WAD, units, next, even), "rung 2: three hours in");
+        assertTrue(
+            _check(AUCTION_DURATION, 1e18, WAD, units, next, _pair(2500, TOTAL_WEIGHT - 2500)),
+            "rung 3: a quarter's weight"
+        );
+        assertTrue(
+            _check(AUCTION_DURATION, 1e24, 0.9e18, _pair(1e18, 1e7), _pair(0.9e18, 1.2e7), even),
+            "rung 4: other units, supply and scale"
+        );
     }
 }

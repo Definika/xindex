@@ -14,7 +14,9 @@ import {IUniversalRouterSwaps} from "./IUniversalRouterSwaps.sol";
 ///
 ///      Errors the builder raises, of the shared ones:
 ///      - NotIndex: an index the factory did not deploy.
-///      - ZeroAddress: a zero factory, router, `tokenIn`, `tokenOut` or recipient.
+///      - ZeroAddress: a zero factory, router, USDC, USDT or recipient.
+///      - NotAStable: a buy's `tokenIn` or a sale's `tokenOut` that is neither the builder's USDC nor its USDT, or a
+///        USDT equal to USDC at construction. A deposit and a withdrawal take any token.
 ///      - InvalidRecipient: a recipient that is the builder, the router, the PoolManager, the factory or an index
 ///        (RT-21).
 ///      The one-unit send-out probe runs on every credit that brings a token in, by deposit, buy or redeem; a sale's
@@ -26,7 +28,8 @@ interface IBasketBuilder is IUniversalRouterSwaps {
     /// @param expectedNonce The index's `rebalanceNonce` when the legs were quoted.
     /// @param shares The shares the basket is for. Each leg buys what `previewIssue(shares)` needs of its component,
     ///        minus what the caller's escrow already holds (nothing, if the escrow already covers it).
-    /// @param tokenIn Token the caller pays with. The full `maxAmountIn` is pulled first and the unspent part refunded.
+    /// @param tokenIn The stablecoin the caller pays with: the builder's `USDC` or `USDT`. The full `maxAmountIn` is
+    ///        pulled first and the unspent part refunded.
     /// @param maxAmountIn Most `tokenIn` the whole call may spend; non-zero.
     /// @param components The position in the index's `componentTokens` of each leg's component.
     /// @param legs One route per entry of `components`, in the zap's mint-leg format. A leg whose component is
@@ -43,7 +46,7 @@ interface IBasketBuilder is IUniversalRouterSwaps {
         uint256 deadline;
     }
 
-    /// @param tokenOut Token the proceeds are paid in.
+    /// @param tokenOut The stablecoin the proceeds are paid in: the builder's `USDC` or `USDT`.
     /// @param minAmountOut Least `tokenOut` the whole call must pay; non-zero.
     /// @param tokens The escrowed tokens to sell.
     /// @param amounts How much of each, or 0 for the whole escrow of it.
@@ -73,9 +76,11 @@ interface IBasketBuilder is IUniversalRouterSwaps {
     event Redeemed(address indexed user, address indexed index, uint256 shares);
     /// @notice `user` sold legs of its escrow and `to` received `amountOut` of `tokenOut`.
     event Sold(address indexed user, address indexed to, address tokenOut, uint256 amountOut);
-    /// @notice A sale hop sold less of `token` than `user` gave it, and `amount` went back to its escrow.
-    ///         - `token` is the input of the hop that was not filled; on a multi-hop leg it can be a middle token.
-    ///         - `amount` includes any balance of it the router already held, which anyone could have swept.
+    /// @notice A sale hop sold less of `token` than `user` gave it, or the router already held some, and `amount`
+    ///         went back to its escrow.
+    ///         - `token` is the hop's input; on a multi-hop leg it can be a middle token.
+    ///         - `amount` is what the hop's sweep brought back. It includes any balance of `token` the router already
+    ///           held, which anyone could have swept.
     event Unsold(address indexed user, address indexed token, uint256 amount);
 
     /// @notice A leg names a component position at or beyond the index's component count.
@@ -85,6 +90,12 @@ interface IBasketBuilder is IUniversalRouterSwaps {
 
     /// @notice Factory whose registry proves an address is an index.
     function FACTORY() external view returns (IIndexFactory);
+
+    /// @notice USDC, one of the two stablecoins a buy may pay with and a sale may pay out.
+    function USDC() external view returns (address);
+
+    /// @notice USDT, the other.
+    function USDT() external view returns (address);
 
     /// @notice What `user` holds of `token` here.
     function escrowOf(address user, address token) external view returns (uint256);

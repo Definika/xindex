@@ -96,7 +96,8 @@ grows with `x`, the computed score of a leg is at most `L(x̃) ≤ ln(1 + x̃) �
   inside the lemma's range for every leg up to 399 units and at the boundaries of large ones, every second of the
   bar, and that the amounts keep the backing.
 - The two theorems: by hand, above.
-- That the contract computes exactly this rule: the exact model and its 426 vectors, replayed word for word
+- That the contract computes exactly this rule: the exact model and its 431 vectors (426 until 2026-11-14, RW-1),
+  replayed word for word
   (`test/WeightedMath.vectors.t.sol`).
 - Theorem 2 on its weights: `testFuzz_R04_onItsWeightsNoFillTakesValue`, any units, any second.
 - Theorem 2 off them: `test_aLoneExecutorKeepsAtMostTheDistanceFromTheWeights`, the greediest fill at the auction's
@@ -111,7 +112,7 @@ executor names `v`, the weights `w` in basis points, the keep mask. In this orde
 
 1. `elapsed > AUCTION_DURATION`: `AuctionOver`. The hub refuses an expired auction first.
 2. `v` is not one entry per coin: `LengthMismatch`.
-3. The supply is zero: `NothingToRebalance`.
+3. The supply is under one whole share, 1e18: `NothingToRebalance` (zero alone until 2026-11-14, RW-1).
 4. For each coin, in order:
    - its bounds are `lowest = ⌈u · (1 − MAX_TURNOVER)⌉` and `highest = u + ⌊u · MAX_GROWTH⌋`, or both `u` if kept;
    - `v < lowest` or `v > highest`: `LegOutOfBounds(i, v, lowest, highest)`;
@@ -200,6 +201,8 @@ The hub is 19,861 bytes, 4,715 under EIP-170 (it was 98 under).
   An executor that holds the only shares can move the units off the weights over several intervals, and a later
   minter deposits at those units. The mint is in kind and fair; the next auction pays the distance to whoever fills
   first. An index without shares does not rebalance at all. The app shows an index's coins against its weights.
+  Since 2026-11-14 an index under one whole share does not rebalance either (RW-1,
+  `audit/2026-11-14-red-team.md`): what is left is the holder of a whole supply of one share or more.
 - **An index created off its weights can be drained by its creator.** `createIndex` takes units and weights, and
   nothing compares them: that would need a price. A creator can name units far from the weights, let others mint in
   kind at those units, and fill its own auction at the last second. On the exact model, one such fill takes 15.5% of
@@ -229,7 +232,8 @@ branch of its own; `test/vectors/proofs.py` checks this arithmetic's proof in ex
 
 Left:
 
-- A red team of this mechanism, by reviewers who did not design it.
+- A red team of this mechanism, by reviewers who did not design it: run on 2026-11-14
+  (`audit/2026-11-14-red-team.md`).
 - The Halmos harness, not run yet.
 - A new Sepolia deployment.
 

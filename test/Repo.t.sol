@@ -6,7 +6,6 @@ import {Vm, VmSafe} from "forge-std/Vm.sol";
 import {IndexZap} from "../src/IndexZap.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
-import {IWETH9} from "../src/interfaces/IWETH9.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 
 /// @notice Repository facts that security-review findings rest on and that no contract test can reach: the pinned
@@ -20,7 +19,7 @@ import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 contract RepoTest is Test {
     /// @dev keccak256 of the files `test_A712_theCiConfigIsPinnedWhole` pins whole: CI's workflow and the two Foundry
     ///      configs it runs. A change to one fails that test, which prints the new hash, until it is pinned here.
-    bytes32 private constant WORKFLOW_HASH = 0x50b1c23185427003b1c5a3a4af5c772025c7adaeaa2df9950bdb252e40415cef;
+    bytes32 private constant WORKFLOW_HASH = 0x09ce789055c1ca709d8d787b287b123d2ab770852a87ba4e199f72fd05cfbbf8;
     bytes32 private constant FOUNDRY_TOML_HASH = 0xed56be1c9acc47165fe8a9303665b35391357ee7d85ef998f8c0c74761a0c3c4;
     bytes32 private constant KEEPER_FOUNDRY_TOML_HASH =
         0x5426d5180cca7c4ac15d7fb182272a805a3ce19a143d6c6f8c158f61765d7592;
@@ -98,9 +97,10 @@ contract RepoTest is Test {
             string.concat(
                 "        run: forge test -vvv\n",
                 "        env:\n",
-                "          MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}\n"
+                "          MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}\n",
+                "          BNB_RPC_URL: ${{ secrets.BNB_RPC_URL }}\n"
             ),
-            "the fork-test RPC is passed to the tests"
+            "the fork-test RPCs are passed to the tests"
         );
         assertTrue(_contains(workflow, "forge lint -D notes"), "lint fails on notes");
         assertTrue(_contains(workflow, "wake detect all src"), "the Wake detectors run");
@@ -151,7 +151,7 @@ contract RepoTest is Test {
             "**A collapsing coin is still bought.**",
             "**An issuer's corporate action is not accounted for.**",
             "**Rebalances clear only when the distance pays for the fill.**",
-            "**A dust index's units can be walked.**",
+            "**An index one holder owns can be walked.**",
             "**An exit sent during the auction can be overtaken by the fill.**",
             "**The guardian can stall rebalancing.**",
             "**Issuers can freeze components, and some can burn them.**",
@@ -667,7 +667,7 @@ contract RepoTest is Test {
     function test_LR01_checksAfterAnExpectedConstructorRevertStillRun() public {
         assertTrue(_contains(_read("foundry.toml"), "\ndynamic_test_linking = false\n"), "test linking stays static");
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new IndexZap(IIndexFactory(address(0)), IUniversalRouter(address(0)), IWETH9(address(0)));
+        new IndexZap(IIndexFactory(address(0)), IUniversalRouter(address(0)), address(0), address(0));
         vm.expectCall(address(this), abi.encodeCall(this.reachedAfterTheRevert, ()));
         this.reachedAfterTheRevert();
     }

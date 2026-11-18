@@ -208,6 +208,21 @@ test("RX-34: the start checks take the richest ready indexes, at most the cap", 
   assert.deepEqual(rest.map((r) => r.index), ["a"]);
 });
 
+test("startStage: ready, in its notice, startable within the lead, or none", () => {
+  const day = 86_400n;
+  const T = 1_000_000n;
+  const at = (o) => M.startStage({ can: false, eta: 0n, earliest: T + 2n * day, T, lead: day, ...o });
+  assert.equal(at({ can: true }), "ready");
+  assert.equal(at({ can: true, eta: T + 10n }), "ready", "a start the hub allows is a start");
+  assert.equal(at({ eta: T + 1n }), "notice", "a proposal whose auction opens after T waits out its notice");
+  assert.equal(at({ eta: T + 1n, lead: 0n }), "notice", "the notice is reported whatever the lead");
+  assert.equal(at({ eta: T }), null, "an auction open at T is the fill check's, not the start check's");
+  assert.equal(at({ earliest: T + day }), "soon", "startable at T plus the lead exactly");
+  assert.equal(at({ earliest: T + day + 1n }), null, "a second past the lead is not yet");
+  assert.equal(at({ earliest: T - day }), "soon", "past its interval but held off strangers, after a cancel or an expiry");
+  assert.equal(at({ earliest: T - day, lead: 0n }), null, "a lead of zero reports nothing ahead of a start, held off or not");
+});
+
 test("a fill costs its gas at the next block's base fee plus the tip, and nothing else", () => {
   const gwei = 10n ** 9n;
   assert.equal(M.fillCostUsd({ used: 1_000_000n, nextBase: 10n * gwei, tip: 2n * gwei, ethUsd: 3_000 }), 36);

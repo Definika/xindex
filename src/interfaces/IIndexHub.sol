@@ -12,14 +12,15 @@ import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC2
 interface IIndexHub is IERC20, IERC20Permit {
     /// @notice Pulls the basket for `shares` plus the index's fee from msg.sender, and mints `shares` to `to`. The
     ///         fee's shares go to the index's fee recipients. Amounts are rounded up per component. The caller must
-    ///         have approved every component. Reads no price.
+    ///         have approved every component. Reads no price. Reverts if a component arrives short, or could not be
+    ///         sent out of the index again.
     /// @param shares Shares `to` receives; 1e18 is one whole index token.
     /// @param to Receives the shares.
     function issue(uint256 shares, address to) external;
 
     /// @notice As {issue}, naming `referrer`, who takes the referral share of the platform's part of the fee. Zero
     ///         names nobody, and so does a referrer a gated index would not issue to as `to`: the platform keeps its
-    ///         part.
+    ///         part. Nothing ties the referrer to a third party: the minter may name itself.
     function issue(uint256 shares, address to, address referrer) external;
 
     /// @notice Burns `shares` from msg.sender and sends `to` the basket of those shares less the exit fee's, rounded

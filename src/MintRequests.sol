@@ -7,6 +7,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IMintRequests} from "./interfaces/IMintRequests.sol";
 import {IIndexFactory} from "./interfaces/IIndexFactory.sol";
+import {IIndexHub} from "./interfaces/IIndexHub.sol";
 
 /// @title MintRequests
 /// @notice Escrowed requests to mint or redeem an index's shares for USDC or USDT.
@@ -20,6 +21,8 @@ import {IIndexFactory} from "./interfaces/IIndexFactory.sol";
 ///      - Stray tokens sent here stay here.
 ///      - A request is closed before any token moves. Fillers pay requesters directly. The contract never calls
 ///        `approve`.
+///      - A request records the index's `rebalanceNonce`. A settlement changes what a share is backed by, so a
+///        request made before one can no longer be filled, as the zap and the builder refuse a stale quote.
 contract MintRequests is IMintRequests, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -81,10 +84,35 @@ contract MintRequests is IMintRequests, ReentrancyGuard {
 
     /// @inheritdoc IMintRequests
     function fill(uint256 id, uint256 amount) external nonReentrant {
-        Request storage request = _requests[id];
+        _fill(_open(id), id, amount);
+    }
+
+    /// @inheritdoc IMintRequests
+    function fill(uint256 id, uint256 amount, bytes32 expected) external nonReentrant {
+        Request storage request = _open(id);
+        // An id is only a counter. After a re-org, or for a request that was still pending when the caller priced
+        // it, another request may sit behind it, and the caller would deliver against an escrow it never priced.
+        if (keccak256(abi.encode(request)) != expected) revert RequestChanged(id);
+        _fill(request, id, amount);
+    }
+
+    /// @dev Request `id`, which must be open.
+    function _open(uint256 id) private view returns (Request storage request) {
+        request = _requests[id];
         if (!request.open) revert RequestNotOpen(id);
+    }
+
+    /// @dev Fills the open `request`, whose id is `id`: checks its deadline and the index's nonce, closes it, takes
+    ///      `amount` from the caller to the requester and pays the caller the escrow.
+    function _fill(Request storage request, uint256 id, uint256 amount) private {
         uint256 deadline = request.deadline;
         if (block.timestamp > deadline) revert RequestExpired(id, deadline);
+        // A settlement since the request was made changed what a share is backed by. The limit and the escrow were
+        // set for the old basket, so the request is refused; its requester cancels it and asks again.
+        // A view on a factory index, by STATICCALL: nothing it reaches can change state, so nothing re-enters.
+        // aderyn-fp-next-line(reentrancy-state-change)
+        uint256 nonce = IIndexHub(request.index).rebalanceNonce();
+        if (nonce != request.rebalanceNonce) revert StaleRebalanceNonce(request.rebalanceNonce, nonce);
         request.open = false;
 
         address requester = request.requester;
@@ -160,6 +188,8 @@ contract MintRequests is IMintRequests, ReentrancyGuard {
             deadline: SafeCast.toUint40(deadline),
             isMint: isMint,
             open: true,
+            // An index settles at most once per MIN_REBALANCE_INTERVAL, so its nonce never outgrows 40 bits.
+            rebalanceNonce: SafeCast.toUint40(IIndexHub(index).rebalanceNonce()),
             index: index,
             stable: stable,
             escrow: escrow,
@@ -179,5 +209,10 @@ contract MintRequests is IMintRequests, ReentrancyGuard {
     /// @inheritdoc IMintRequests
     function getRequest(uint256 id) external view returns (Request memory) {
         return _requests[id];
+    }
+
+    /// @inheritdoc IMintRequests
+    function requestHash(uint256 id) external view returns (bytes32) {
+        return keccak256(abi.encode(_requests[id]));
     }
 }

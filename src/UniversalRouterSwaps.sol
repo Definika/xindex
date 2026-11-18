@@ -32,10 +32,18 @@ import {PathKey, UniswapV4Types as V4, V4ExactInputParams, V4ExactOutputParams} 
 ///        third token. A V4 route must be hookless: a hook is arbitrary code that runs inside the swap and can move
 ///        the deltas. Hookless also rules out a dynamic fee, which only a hooked pool can carry.
 ///      - Measuring: what a swap took and produced is measured as balance changes, never from router reports. The
-///        sweep also returns any balance the router already held. On a buy that enlarges the refund; on a sale it is
-///        returned with the unsold input. Neither is a shortfall. So a sale hop measures what the sweep brought back,
-///        not what the swap sold. Do not measure what was sold: a donation to the router larger than the sale would
-///        underflow, and anyone could revert a public burn (CR-L02).
+///        sweep also returns any balance the router already held. On a buy that enlarges the refund; on a sale it
+///        comes back with the unsold input, and is told apart from it: a hop never spends more than its pre-fund,
+///        so it is the part of the sweep the router held before the pre-fund. Neither is a shortfall. So a sale hop
+///        measures what the sweep brought back, not what the swap sold. Do not measure what was sold: a donation to
+///        the router larger than the sale would underflow, and anyone could revert a public burn (CR-L02).
+///      - One balance, one address: every measurement here assumes that moving one token leaves the balance of
+///        another alone. With one balance behind two addresses it does not, and the same tokens would be counted
+///        twice: as a hop's output and as input its sweep brought back, as a sale's proceeds and as unsold input, or
+///        as a component delivered and as `tokenIn` not spent. So each pre-fund that sends anything checks that it
+///        did not lower the balance it is about to be measured against, and the leg reverts `SharedBalance` if it
+///        did. A buy leg with nothing left to spend sends nothing, so nothing is checked there; with plain tokens
+///        and one address of the balance listed, such a leg cannot be filled.
 ///      - V3 sales go one hop at a time, because a V3 pool can stop at its price limit, and a multi-hop call would
 ///        leave the unsold middle token in the router.
 ///      - A V4 sale is one swap. If a middle hop fills short, the pool manager is left unsettled and the whole leg
@@ -44,8 +52,10 @@ import {PathKey, UniswapV4Types as V4, V4ExactInputParams, V4ExactOutputParams} 
 ///        unsold input.
 ///      - Native ether never reaches the engine, which cannot receive it: the take only ever takes the leg's far end,
 ///        the component on a buy and `tokenOut` on a sale, neither of which may be native ether (RX-53).
-///      - What a hop did not sell goes to {_onUnsold}. The zap pays it to the burn's recipient; the builder credits it
-///        to the user's escrow. Unsold `tokenOut` stays with the proceeds.
+///      - What a hop did not sell goes to {_onUnsold}, with what the router already held named apart. The builder
+///        credits both to the user's escrow. The zap pays the first to the burn's recipient and only offers the
+///        second: a stranger's wei left in the router must not force a transfer the recipient may refuse. Unsold
+///        `tokenOut` stays with the proceeds.
 abstract contract UniversalRouterSwaps is IUniversalRouterSwaps {
     using SafeERC20 for IERC20;
     using PathLib for bytes;
@@ -90,6 +100,9 @@ abstract contract UniversalRouterSwaps is IUniversalRouterSwaps {
         uint256 inBefore = token.balanceOf(address(this));
         uint256 outBefore = IERC20(component).balanceOf(address(this));
         token.safeTransfer(address(ROUTER), cap);
+        // One balance behind both addresses: the component delivered would also count as `tokenIn` the swap did not
+        // spend, and be refunded on top of being delivered. A cap of zero sends nothing and so shows nothing.
+        if (IERC20(component).balanceOf(address(this)) < outBefore) revert SharedBalance(component, tokenIn);
 
         bytes memory commands;
         bytes[] memory inputs = new bytes[](2);
@@ -184,10 +197,10 @@ abstract contract UniversalRouterSwaps is IUniversalRouterSwaps {
         }
     }
 
-    /// @dev One V3 hop: pre-fund the router, swap, sweep it clean, and return what arrived. The unsold input goes to
-    ///      {_onUnsold}, not left where anyone could sweep it. It is measured as what the sweep brought back: the
-    ///      balance above what remained after the pre-fund. The sweep only adds to that, so it cannot underflow,
-    ///      whatever the router held before (CR-L02).
+    /// @dev One V3 hop: pre-fund the router, swap, sweep it clean, and return what arrived. What the sweep brought
+    ///      back goes to {_onUnsold}, not left where anyone could sweep it. It is measured as the balance above what
+    ///      remained after the pre-fund. The sweep only adds to that, so it cannot underflow, whatever the router
+    ///      held before (CR-L02).
     function _sellV3Hop(
         address tokenOut,
         bytes calldata hopPath,
@@ -197,10 +210,7 @@ abstract contract UniversalRouterSwaps is IUniversalRouterSwaps {
         uint256 minOut,
         bytes memory ctx
     ) private returns (uint256 produced) {
-        IERC20 token = IERC20(hopIn);
-        uint256 inBefore = token.balanceOf(address(this));
-        uint256 outBefore = IERC20(hopOut).balanceOf(address(this));
-        token.safeTransfer(address(ROUTER), given);
+        (uint256 inBefore, uint256 outBefore, uint256 stray) = _prefund(tokenOut, hopIn, hopOut, given);
 
         bytes[] memory inputs = new bytes[](2);
         inputs[0] = abi.encode(address(this), given, minOut, hopPath, false);
@@ -208,7 +218,7 @@ abstract contract UniversalRouterSwaps is IUniversalRouterSwaps {
         ROUTER.execute(abi.encodePacked(Cmd.V3_SWAP_EXACT_IN, Cmd.SWEEP), inputs);
 
         produced = IERC20(hopOut).balanceOf(address(this)) - outBefore;
-        _returnUnsold(tokenOut, hopIn, token.balanceOf(address(this)) + given - inBefore, ctx);
+        _returnUnsold(tokenOut, hopIn, IERC20(hopIn).balanceOf(address(this)) + given - inBefore, stray, ctx);
     }
 
     /// @dev Sells `amountIn` of `component` along the leg's V4 route as one swap.
@@ -225,9 +235,7 @@ abstract contract UniversalRouterSwaps is IUniversalRouterSwaps {
         uint256 minAmountOut,
         bytes memory ctx
     ) private {
-        IERC20 token = IERC20(component);
-        uint256 inBefore = token.balanceOf(address(this));
-        token.safeTransfer(address(ROUTER), amountIn);
+        (uint256 inBefore,, uint256 stray) = _prefund(tokenOut, component, tokenOut, amountIn);
 
         bytes[] memory params = new bytes[](V4_ACTIONS);
         params[0] = abi.encode(
@@ -246,20 +254,47 @@ abstract contract UniversalRouterSwaps is IUniversalRouterSwaps {
         inputs[1] = abi.encode(component, address(this), SWEEP_NO_MINIMUM);
         ROUTER.execute(abi.encodePacked(Cmd.V4_SWAP, Cmd.SWEEP), inputs);
 
-        _returnUnsold(tokenOut, component, token.balanceOf(address(this)) + amountIn - inBefore, ctx);
+        _returnUnsold(tokenOut, component, IERC20(component).balanceOf(address(this)) + amountIn - inBefore, stray, ctx);
     }
 
-    /// @dev Hands what a hop did not sell (plus any balance of it the router already held) to {_onUnsold}.
+    /// @dev Pre-funds the router with `amount` of `token` for one sale hop into `out`, on a leg that ends in `end`.
+    ///      Returns what the hop is measured against: this contract's balance of `token` and of `out` before, and the
+    ///      router's own balance of `token`.
+    ///      Sending `token` must not lower this contract's balance of `out` or of `end`. If it does, two addresses
+    ///      share one balance, and what the sweep brings back of `token` would be counted twice: handed to
+    ///      {_onUnsold}, and again as the hop's output or as the leg's proceeds. In the builder the seller would be
+    ///      credited tokens that are other users' escrow.
+    function _prefund(address end, address token, address out, uint256 amount)
+        private
+        returns (uint256 inBefore, uint256 outBefore, uint256 stray)
+    {
+        inBefore = IERC20(token).balanceOf(address(this));
+        outBefore = IERC20(out).balanceOf(address(this));
+        // A hop that spends `end` itself hands none of it to {_onUnsold}: its leftover stays with the proceeds.
+        bool probeEnd = end != out && end != token;
+        uint256 endBefore = probeEnd ? IERC20(end).balanceOf(address(this)) : 0;
+        stray = IERC20(token).balanceOf(address(ROUTER));
+        IERC20(token).safeTransfer(address(ROUTER), amount);
+        if (IERC20(out).balanceOf(address(this)) < outBefore) revert SharedBalance(out, token);
+        if (probeEnd && IERC20(end).balanceOf(address(this)) < endBefore) revert SharedBalance(end, token);
+    }
+
+    /// @dev Hands what the sweep of `token` brought back to {_onUnsold}: `returned` in all, of which the router held
+    ///      `stray` before the hop. A hop never spends more than its pre-fund, so that part is a stranger's leftover,
+    ///      not input the hop did not sell.
     ///      Unsold `tokenOut` stays here. It is counted in the caller's `tokenOut` balance change and reaches the
     ///      recipient with the proceeds, so it is not paid out twice.
-    function _returnUnsold(address tokenOut, address token, uint256 unsold, bytes memory ctx) private {
-        if (unsold == 0 || token == tokenOut) return;
-        _onUnsold(token, unsold, ctx);
+    function _returnUnsold(address tokenOut, address token, uint256 returned, uint256 stray, bytes memory ctx) private {
+        if (returned == 0 || token == tokenOut) return;
+        // Never more than came back: a token that delivers short makes the router pay partly out of what it held.
+        stray = Math.min(stray, returned);
+        _onUnsold(token, returned - stray, stray, ctx);
     }
 
-    /// @dev Hook for `amount` of `token` that a sale hop did not sell. The tokens are already in this contract's
-    ///      balance. `ctx` is what the sale was called with.
-    function _onUnsold(address token, uint256 amount, bytes memory ctx) internal virtual;
+    /// @dev Hook for what a sale hop's sweep brought back of its input `token`: `unsold`, which the hop did not sell,
+    ///      and `stray`, which the router already held. At least one is not zero, and both are already in this
+    ///      contract's balance. `ctx` is what the sale was called with.
+    function _onUnsold(address token, uint256 unsold, uint256 stray, bytes memory ctx) internal virtual;
 
     // ---------------------------------------------------------------------
     // Routes

@@ -15,7 +15,6 @@ import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
 import {IUniversalRouterSwaps} from "../../src/interfaces/IUniversalRouterSwaps.sol";
 import {IXindexErrors} from "../../src/interfaces/IXindexErrors.sol";
 import {IUniversalRouter} from "../../src/interfaces/IUniversalRouter.sol";
-import {IWETH9} from "../../src/interfaces/IWETH9.sol";
 import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
 import {DeployWeighted} from "../../script/DeployWeighted.s.sol";
@@ -131,7 +130,7 @@ contract SecurityForkTest is Test {
         }
         factory = new WeightedIndexFactory(address(this), address(0));
         factory.setApprovedCreator(address(this), true);
-        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), IWETH9(A.WETH));
+        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), A.USDC, A.USDT);
 
         factory.proposeListing(A.WBTC);
         factory.proposeListing(A.WETH);
@@ -271,26 +270,27 @@ contract SecurityForkTest is Test {
         vm.stopPrank();
     }
 
+    /// @dev Paid in USDC through WETH, the zap's only currencies being the two stablecoins since 2026-11-18.
     function test_I03_strayRouterEthIsRefundedNotLocked() public {
         WeightedHub idx = _create(A.WBTC, A.LINK);
         IUniversalRouterSwaps.MintLeg[] memory legs = new IUniversalRouterSwaps.MintLeg[](2);
         legs[0] = IUniversalRouterSwaps.MintLeg({
-            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH), v4Path: new PathKey[](0), maxAmountIn: 0
+            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDC), v4Path: new PathKey[](0), maxAmountIn: 0
         });
         legs[1] = IUniversalRouterSwaps.MintLeg({
-            v3Path: abi.encodePacked(A.LINK, F3000, A.WETH), v4Path: new PathKey[](0), maxAmountIn: 0
+            v3Path: abi.encodePacked(A.LINK, F3000, A.WETH, F500, A.USDC), v4Path: new PathKey[](0), maxAmountIn: 0
         });
 
         vm.deal(A.UNIVERSAL_ROUTER, 10 ether); // stray ether sitting in the router
-        uint256 maxIn = 1 ether;
-        deal(A.WETH, user, maxIn);
+        uint256 maxIn = 5_000e6;
+        deal(A.USDC, user, maxIn);
         vm.startPrank(user);
-        IERC20(A.WETH).forceApprove(address(zap), maxIn);
+        IERC20(A.USDC).forceApprove(address(zap), maxIn);
         uint256 spent = zap.mintWithToken(
             IIndexZap.MintParams({
                 index: address(idx),
                 expectedNonce: 0,
-                tokenIn: A.WETH,
+                tokenIn: A.USDC,
                 maxAmountIn: maxIn,
                 shares: 1e18,
                 legs: legs,
@@ -302,9 +302,10 @@ contract SecurityForkTest is Test {
         vm.stopPrank();
 
         assertEq(idx.balanceOf(user), 1e18);
-        assertGt(spent, 0, "the mint is paid for out of the user's own WETH");
-        assertEq(IERC20(A.WETH).balanceOf(user), maxIn - spent, "and the rest comes back");
-        assertEq(IERC20(A.WETH).balanceOf(address(zap)), 0, "nothing is left in the zap");
+        assertGt(spent, 0, "the mint is paid for out of the user's own USDC");
+        assertEq(IERC20(A.USDC).balanceOf(user), maxIn - spent, "and the rest comes back");
+        assertEq(IERC20(A.USDC).balanceOf(address(zap)), 0, "nothing is left in the zap");
+        assertEq(IERC20(A.WETH).balanceOf(address(zap)), 0, "no intermediate either");
         assertEq(IERC20(A.WETH).balanceOf(A.UNIVERSAL_ROUTER), 0, "or in the router");
         assertEq(A.UNIVERSAL_ROUTER.balance, 10 ether, "and the stray ether is untouched: nothing here wraps it");
     }
