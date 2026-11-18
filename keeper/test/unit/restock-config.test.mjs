@@ -15,7 +15,7 @@ const VALID = {
 
 test("the defaults, and only the served coins' chains need settings", () => {
   const { RESTOCK_COINS, ...unset } = VALID;
-  assert.throws(() => parseRestockConfig(unset), /AVALANCHE_RPC_URL is required/, "by default, the seven served coins' chains");
+  assert.throws(() => parseRestockConfig(unset), /AVALANCHE_RPC_URL is required/, "by default, the three served coins' chains");
   const cfg = parseRestockConfig(VALID);
   assert.deepEqual(cfg.coins.map((c) => c.symbol), ["XRP", "ADA"]);
   assert.deepEqual(Object.keys(cfg.chains), ["bsc"]);

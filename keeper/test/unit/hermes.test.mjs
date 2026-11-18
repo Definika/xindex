@@ -91,12 +91,13 @@ test("429 waits at least a second, and gives up when the deadline comes first", 
 
   let n = 0;
   reset((req, res) => {
-    if (n++ === 0) return json(res, { error: "slow down" }, 429, { "retry-after": "1" });
+    if (n++ === 0) return json(res, { error: "slow down" }, 429, { "retry-after": "2" });
     json(res, { binary: { data: ["00"] }, parsed: [entry(A, 1000)] });
   });
   const started = Date.now();
-  await hermes().latest([A], soon(3000));
-  assert.ok(Date.now() - started >= 1000, "honoured Retry-After");
+  await hermes().latest([A], soon(4000));
+  // Above the one-second floor, so a client that ignored the header would answer a second early.
+  assert.ok(Date.now() - started >= 2000, "honoured Retry-After");
 });
 
 test("an unreachable Hermes fails at the deadline", async () => {

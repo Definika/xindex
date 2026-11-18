@@ -330,8 +330,12 @@ contract SecurityRegressionTest is XindexTest {
 
         // Re-org: creator B's createIndex is included first on the canonical chain.
         vm.revertToState(snap);
+        // Built before the prank: `_specs` reads the factory, and that call would take the prank, leaving this contract
+        // to create the index in creator B's place.
+        IWeightedIndexFactory.ComponentSpec[] memory otherSpecs = _specs(_blueTokens(), _blueUnits(2));
         vm.prank(creatorB);
-        address other = factory.createIndex("Ether Heavy", "ETHH", _specs(_blueTokens(), _blueUnits(2)), _params());
+        address other = factory.createIndex("Ether Heavy", "ETHH", otherSpecs, _params());
+        assertEq(factory.creatorOf(other), creatorB, "creator B's transaction is the one included");
         assertTrue(other != seen, "a different basket can never land at the address the user saw");
 
         // Until creator A's transaction is included again, the user's mint to `seen` cannot execute.

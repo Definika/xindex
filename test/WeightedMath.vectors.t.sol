@@ -113,11 +113,6 @@ contract WeightedMathVectorsTest is Test {
         }
     }
 
-    /// @dev The committed vectors reach every path the model has: settlements and each refusal, kept legs, a scale
-    ///      below one, a gain exactly on the bar, a negative gain, and both caps binding. Counted here from the vectors
-    ///      themselves, not read from the file's summary, so a regenerated file that lost a path fails. And the facts
-    ///      the model owes the spec hold on every settled vector: the gain clears the bar, the bar is positive, a leg
-    ///      never both sends and receives, a kept leg's units do not move, and every leg is inside its caps.
     /// @dev The quote's check against the exact model: it passes where the model's quote holds, and where it does
     ///      not it reverts with the model's value in and floor, to the unit.
     function test_everyQuoteHoldsOrFailsAsTheExactModelSays() public view {
@@ -144,6 +139,11 @@ contract WeightedMathVectorsTest is Test {
         assertGe(quotes.length - held, 15, "and fail others");
     }
 
+    /// @dev The committed vectors reach every path the model has: settlements and each refusal, kept legs, a scale
+    ///      below one, a gain exactly on the bar, a negative gain, and both caps binding. Counted here from the vectors
+    ///      themselves, not read from the file's summary, so a regenerated file that lost a path fails. And the facts
+    ///      the model owes the spec hold on every settled vector: the gain clears the bar, the bar is positive, a leg
+    ///      never both sends and receives, a kept leg's units do not move, and every leg is inside its caps.
     function test_theVectorsReachEveryPath() public view {
         uint256[7] memory outcomes;
         uint256 kept = 0;

@@ -57,6 +57,29 @@ contract HoldingExecutor is IRebalanceExecutor {
     }
 }
 
+/// @notice Sends a fill with whatever ether it is given and delivers what the fill asks for, so a refused fill was
+///         refused for its ether: from a caller with no callback, a fill reverts with or without it.
+contract PayingExecutor is IRebalanceExecutor {
+    /// @return filled Whether the hub took the fill, bounded by `maxAmountsIn` when `bounded`.
+    function fill(IWeightedHub index, uint256[] calldata newUnits, bool bounded, uint256[] calldata maxAmountsIn)
+        external
+        payable
+        returns (bool filled)
+    {
+        bytes memory call = bounded
+            ? abi.encodeWithSignature("executeRebalance(uint256[],bytes,uint256[])", newUnits, bytes(""), maxAmountsIn)
+            : abi.encodeWithSignature("executeRebalance(uint256[],bytes)", newUnits, bytes(""));
+        (filled,) = address(index).call{value: msg.value}(call);
+    }
+
+    function onXindexRebalance(uint256[] calldata, uint256[] calldata amountsIn, bytes calldata) external {
+        address[] memory t = IWeightedHub(msg.sender).componentTokens();
+        for (uint256 i = 0; i < t.length; ++i) {
+            if (amountsIn[i] != 0) MockERC20(t[i]).mint(msg.sender, amountsIn[i]);
+        }
+    }
+}
+
 /// @notice The weighted hub's rebalance: start, notice, auction, the fill an executor names, and cancellation. No
 ///         price is read anywhere: only the tests know what the market says, as an executor would.
 /// @dev The default index (ETH 50%, BTC 30%, USD 20%, $100 a token) with 100 tokens issued. In most tests the market
@@ -206,7 +229,9 @@ contract WeightedHubRebalanceTest is WeightedTest {
     }
 
     /// @dev A rebalance pays nobody for a price, so none of its entry points takes ether and the index never holds
-    ///      any: a start, a fill and a bounded fill sent with a wei all revert.
+    ///      any: a start, a fill and a bounded fill sent with a wei all revert, and each goes through without it. The
+    ///      fills go through an executor that delivers: sent from this contract, which has no callback, they reverted
+    ///      whether or not they took ether, and the check passed with either overload made payable.
     function test_noRebalanceEntryPointTakesEther() public {
         vm.warp(index.lastRebalance() + index.MIN_REBALANCE_INTERVAL());
         vm.deal(address(this), 3);
@@ -216,14 +241,16 @@ contract WeightedHubRebalanceTest is WeightedTest {
         (uint256 eta,) = index.pendingRebalance();
         vm.warp(eta + _midpoint());
         uint256[] memory fair = _fair();
-        (bool filled,) =
-            address(index).call{value: 1}(abi.encodeWithSignature("executeRebalance(uint256[],bytes)", fair, ""));
-        assertFalse(filled, "a fill takes no ether");
-        (bool bounded,) = address(index).call{value: 1}(
-            abi.encodeWithSignature("executeRebalance(uint256[],bytes,uint256[])", fair, "", new uint256[](0))
-        );
-        assertFalse(bounded, "nor does a bounded fill");
+        (,,, uint256[] memory in_) = index.previewRebalance(fair);
+        PayingExecutor payer = new PayingExecutor();
+        assertFalse(payer.fill{value: 1}(index, fair, false, in_), "a fill takes no ether");
+        assertFalse(payer.fill{value: 1}(index, fair, true, in_), "nor does a bounded fill");
         assertEq(address(index).balance, 0);
+
+        uint256 snapshot = vm.snapshotState();
+        assertTrue(payer.fill(index, fair, false, in_), "without ether the fill settles");
+        vm.revertToState(snapshot);
+        assertTrue(payer.fill(index, fair, true, in_), "and so does the bounded one");
     }
 
     // ---------------------------------------------------------------------

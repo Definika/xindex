@@ -356,14 +356,24 @@ process.stdin.on("data", (c) => {
 `,
   );
   const ask = startSigner({ env: { PATH: process.env.PATH, ONLY: "this" }, path: fake, label: "solana", timeoutMs: 5_000 });
-  const [slow, fast] = await Promise.all([ask("echo", { wait: 50, n: 1 }), ask("echo", { wait: 0, n: 2 })]);
-  assert.equal(slow.n, 1, "each answer reaches its own request");
-  assert.equal(fast.n, 2);
-  const keys = await ask("env");
-  assert.ok(keys.includes("ONLY") && !keys.includes("TREASURY_KEY"), "the child sees only the environment it was given");
-  await assert.rejects(ask("boom"), /solana: no route/);
-  await assert.rejects(ask("exit"), /the solana signer exited \(3\)/);
-  assert.equal((await ask("echo", { wait: 0, n: 3 })).n, 3, "started again on the next request");
-  await assert.rejects(ask("echo", { wait: 60_000 }, 100), /did not answer echo/);
-  await ask("exit").catch(() => {});
+  // The signer is stopped however the test ends: a child left running keeps this file's process alive, and a failed
+  // assertion would hang the suite rather than fail it.
+  try {
+    const [slow, fast] = await Promise.all([ask("echo", { wait: 50, n: 1 }), ask("echo", { wait: 0, n: 2 })]);
+    assert.equal(slow.n, 1, "each answer reaches its own request");
+    assert.equal(fast.n, 2);
+    const keys = await ask("env");
+    // macOS adds __CF_USER_TEXT_ENCODING to every child; anything else of this process's (HOME, say) would be a leak.
+    assert.deepEqual(
+      keys.filter((k) => !k.startsWith("__CF_")),
+      ["ONLY", "PATH"],
+      "the child sees only the environment it was given",
+    );
+    await assert.rejects(ask("boom"), /solana: no route/);
+    await assert.rejects(ask("exit"), /the solana signer exited \(3\)/);
+    assert.equal((await ask("echo", { wait: 0, n: 3 })).n, 3, "started again on the next request");
+    await assert.rejects(ask("echo", { wait: 60_000 }, 100), /did not answer echo/);
+  } finally {
+    await ask("exit").catch(() => {});
+  }
 });

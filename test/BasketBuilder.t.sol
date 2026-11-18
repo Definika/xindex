@@ -810,6 +810,7 @@ contract BasketBuilderTest is XindexTest {
         uint256 amountOut = builder.sell(p);
         assertGt(amountOut, 0);
         assertEq(usdc.balanceOf(bob), amountOut);
+        uint256 firstSale = amountOut;
         assertEq(builder.escrowOf(alice, address(wbtc)), 0);
         assertEq(builder.escrowOf(alice, address(weth)), 0);
         assertEq(builder.escrowOf(alice, address(link)), got[2], "the leg not named stays");
@@ -825,7 +826,8 @@ contract BasketBuilderTest is XindexTest {
         p.minAmountOut = 1;
         vm.prank(alice);
         amountOut = builder.sell(p);
-        assertEq(usdc.balanceOf(bob), usdc.balanceOf(bob));
+        assertEq(amountOut, 15e6, "the LINK leg's worth, as the refusal above reported");
+        assertEq(usdc.balanceOf(bob), firstSale + amountOut, "the recipient is paid the second sale too");
         assertEq(builder.escrowOf(alice, address(link)), 0);
         assertEq(link.balanceOf(address(builder)), 0);
     }

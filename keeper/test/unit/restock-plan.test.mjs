@@ -138,10 +138,10 @@ test("a chain without gas is left alone and flagged, a coin without a price too"
 });
 
 test("idle float above twice its target comes home to the treasury, and the treasury repays beyond twice its own", () => {
-  const algoChain = coinsOf(["SUI"]);
+  const suiChain = coinsOf(["SUI"]);
   const r = plan(
     round({
-      coins: algoChain,
+      coins: suiChain,
       prices: new Map([["SUI", 3]]),
       home: { coins: new Map(), floats: new Map([["sui", usdc(12_000)]]), gas: new Map([["sui", 10n ** 9n]]), funding: new Map() },
       treasury: { usdc: usdc(25_000), allowance: 0n },

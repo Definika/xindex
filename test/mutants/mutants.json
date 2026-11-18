@@ -1986,5 +1986,61 @@
       }
     ],
     "runner": "node"
+  },
+  {
+    "id": "T1",
+    "what": "the tracker replaces a fill a block before its target, so every fill the keeper sends is cancelled by its own replacement; the test saw only the null a replacement returns too",
+    "origin": "the test review of 2026-11-18",
+    "file": "keeper/bot/nonce.mjs",
+    "test": "keeper/test/unit/nonce.test.mjs",
+    "edits": [
+      {
+        "old": "    if (blockNumber >= f.targetBlock) {\n",
+        "new": "    if (blockNumber >= f.targetBlock - 1) {\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "T2",
+    "what": "the tracker replaces a fill only a block after the target block it missed",
+    "origin": "the test review of 2026-11-18",
+    "file": "keeper/bot/nonce.mjs",
+    "test": "keeper/test/unit/nonce.test.mjs",
+    "edits": [
+      {
+        "old": "    if (blockNumber >= f.targetBlock) {\n",
+        "new": "    if (blockNumber > f.targetBlock) {\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "T3",
+    "what": "a home-chain signer inherits the restock's whole environment, its keys included; the test looked for a key the test process never has",
+    "origin": "the test review of 2026-11-18",
+    "file": "keeper/restock/signer-home.mjs",
+    "test": "keeper/test/unit/restock-solana.test.mjs",
+    "edits": [
+      {
+        "old": "spawn(process.execPath, [path], { env, stdio",
+        "new": "spawn(process.execPath, [path], { env: { ...process.env, ...env }, stdio"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "T4",
+    "what": "the Hermes client ignores Retry-After and waits its one-second floor; the test's header asked for that floor",
+    "origin": "the test review of 2026-11-18",
+    "file": "keeper/bot/hermes.mjs",
+    "test": "keeper/test/unit/hermes.test.mjs",
+    "edits": [
+      {
+        "old": "Math.max(1000, Number.isFinite(retryAfter) ? retryAfter * 1000 : 0)",
+        "new": "Math.max(1000, 0)"
+      }
+    ],
+    "runner": "node"
   }
 ]
