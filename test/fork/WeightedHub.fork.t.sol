@@ -386,14 +386,17 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         }
     }
 
+    /// @dev The coins `keep` accepts, in the table's order, and at most an index's `MAX_COMPONENTS` of them: the table
+    ///      holds more since the wrapped xStocks joined on 2026-11-21, and they come last.
     function _pick(function(Coin storage) view returns (bool) keep) internal view returns (Coin[] memory picked) {
+        uint256 most = factory.MAX_COMPONENTS();
         uint256 count = 0;
-        for (uint256 i = 0; i < coins.length; ++i) {
+        for (uint256 i = 0; i < coins.length && count < most; ++i) {
             if (keep(coins[i])) ++count;
         }
         picked = new Coin[](count);
         uint256 k = 0;
-        for (uint256 i = 0; i < coins.length; ++i) {
+        for (uint256 i = 0; i < coins.length && k < count; ++i) {
             if (keep(coins[i])) picked[k++] = coins[i];
         }
     }

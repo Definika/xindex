@@ -10,8 +10,9 @@ across the two, but not an index that names both (RW-10). USDC and USDT are mint
 How a token's own supply changes does not matter, since nothing reads it.
 
 `script/CheckToken.s.sol` reports on every token before it is listed. It refuses a token whose issuer can both blacklist
-a holder and destroy its balance; Tether Gold and Ondo's stocks, whose issuers hold that power, are listed by an explicit
-waiver.
+a holder and destroy its balance; Tether Gold, whose issuer holds that power, is listed by an explicit waiver, as
+Ondo's stocks were until 2026-11-21. A token whose balances move without a transfer is never listed: Backed's xStocks
+report each holder's shares times a multiplier, so the list holds Backed's wrapper of each, whose balances stay fixed.
 
 ## What a listing records
 
@@ -30,8 +31,8 @@ catalogue: the keeper prices its own trades off chain, and no contract or script
 
 ## The list
 
-`script/Listings.sol` lists 80 assets with their tiers: `default` is the first four (WETH, WBTC, LINK, UNI) and `wide`
-the other 76.
+`script/Listings.sol` lists 172 assets with their tiers: `default` is the first four (WETH, WBTC, LINK, UNI) and `wide`
+the other 168.
 
 - 62 coins of the top 300, held as the issuer's own Ethereum contract where one exists, and otherwise as the copy
   Wormhole's token bridge wraps from the coin's home chain (4 copies: SOL, AVAX, AERO and OP). The copies of XRP,
@@ -42,7 +43,11 @@ the other 76.
   ([`design/2026-11-18-bridged-coins-in-a-rebalance.md`](../design/2026-11-18-bridged-coins-in-a-rebalance.md)).
   SOL's copy trades on Uniswap, and the restock serves AVAX's, OP's and AERO's from their EVM home chains.
 - Tether Gold.
-- 17 tokenized US stocks issued by Ondo.
+- 109 US stocks and ETFs as Backed's wrapped xStocks (`w<ticker>x`), Custodial, since 2026-11-21 (the owner's call,
+  [`design/2026-11-21-xstocks.md`](../design/2026-11-21-xstocks.md)). Each is an ERC-4626 vault over one xStock;
+  a dividend raises what a wrapper redeems for, never a balance. They replace the 17 Ondo stocks listed from
+  2026-10-10. Every wrapper Backed has deployed is listed, less nine whose share has no Pyth feed that names it.
+  Backed's 2-of-3 Safe can upgrade every wrapper and xStock, and one key of Backed's sets every xStock's multiplier.
 
 26 more Wormhole copies wait for an attestation (`node keeper/restock.mjs --attest <chain> <token>`, since legacy
 Portal closed on 2026-06-30) before they can be checked and listed
@@ -53,15 +58,17 @@ every coin `forge-std` can fund.
 
 ### BNB Chain
 
-`script/BnbChainAddresses.sol` lists 12 assets for the BNB Chain deployment (`V5_WHITELIST=bnb`), each held in kind
+`script/BnbChainAddresses.sol` lists 116 assets for the BNB Chain deployment (`V5_WHITELIST=bnb`), each held in kind
 there and none through Wormhole:
 
 - WBNB and ASTER, Native.
 - BTCB, ETH, XRP, ZEC, ADA, BCH, LTC, DOT and ATOM, Custodial: Binance-Peg tokens, which Binance backs and one key of
   Binance's mints. None is a proxy.
 - STABLE, Bridged: a LayerZero token a 3-of-5 Safe upgrades.
+- 104 wrapped xStocks, Custodial, since 2026-11-21: Ethereum's 109 less AMD, MARA, OKLO, SLV and SPGI, which Backed
+  has not wrapped there. Each stands at its Ethereum address, over the same xStock.
 
-All twelve passed `CheckToken` on BNB Chain on 2026-11-13. Binance-Peg DOGE, AVAX and FIL are left out: each is a
+All twelve passed `CheckToken` on BNB Chain on 2026-11-13, and the 104 wrappers on 2026-11-21. Binance-Peg DOGE, AVAX and FIL are left out: each is a
 proxy whose code one key can replace. Six of the twelve (WBNB, BTCB, ETH, XRP, ZEC, ASTER) have a Uniswap market the
 zap can route a mint through; ADA, LTC, DOT, BCH, ATOM and STABLE trade mostly on PancakeSwap, which the zap does not
 use, so they mint in kind or through `MintRequests`
@@ -73,8 +80,8 @@ use, so they mint in kind or through `MintRequests`
 |---|---|
 | Native | Issued on Ethereum by the coin's own issuer. |
 | Bridged | A copy wrapped by a bridge, Wormhole's for every non-Ethereum coin. ZK is ZKsync's bridge copy. |
-| Custodial | Backed by a custodian: WBTC (BitGo), Tether Gold (Tether), Ondo's stocks, and any copy of a Binance-Peg coin. |
-| Pausable | The issuer can pause transfers: WBTC, MANA, CHZ, SENT, FLUID, GALA, FET, SNX, PLUME and the Ondo tokens. |
+| Custodial | Backed by a custodian: WBTC (BitGo), Tether Gold (Tether), the wrapped xStocks (Backed), and any copy of a Binance-Peg coin. |
+| Pausable | The issuer can pause transfers: WBTC, MANA, CHZ, SENT, FLUID, GALA, FET, SNX, PLUME and the wrapped xStocks. |
 
 ## Left out
 
@@ -84,7 +91,7 @@ use, so they mint in kind or through `MintRequests`
 
 ## Liquidity
 
-Most Wormhole copies and real-world assets have no Uniswap liquidity. They mint in kind or through `MintRequests`, and a
+Most Wormhole copies and real-world assets have no Uniswap liquidity, and no wrapped xStock has any. They mint in kind or through `MintRequests`, and a
 rebalance that buys them needs an executor that holds them. Nothing on chain waits for a market to be open: an
 executor that cannot value a stock outside US hours leaves it alone, naming its units unchanged, and trades the rest.
 

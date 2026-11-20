@@ -139,8 +139,8 @@ async function refresh(L) {
 const pythChain = (L) => ({ read: chain.read, call: chain.call, pyth: setup.pyth, abi: ABI.pyth, blockNumber: L.number });
 
 /// The keeper's price of each leg of `st` it may move, as Pyth's {price, expo}, and null for the rest: a kept leg, a
-/// coin without an id, a share-priced Ondo leg, which the bot cannot value (RX-2), and a price that is not Hermes'
-/// signed one as Pyth's contract parses it, or is stale or wide (RX-1, RX-9, RY-7).
+/// coin without an id, a share-priced leg (a wrapped xStock), which the bot cannot value (RX-2), and a price that
+/// is not Hermes' signed one as Pyth's contract parses it, or is stale or wide (RX-1, RX-9, RY-7).
 async function pricesOf(st, L, keepMask) {
   const wanted = st.ids.map((id, i) => (id && !sharePriced(id) && !kept(keepMask, i) ? id : null));
   const ids = wanted.filter(Boolean);

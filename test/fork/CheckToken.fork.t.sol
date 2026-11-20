@@ -12,6 +12,10 @@ import {ForkAddresses as A} from "./ForkAddresses.sol";
 ///         recorded, and WhiteBIT's WBT, which the WBT rule keeps off, is refused by it. Skips when MAINNET_RPC_URL is
 ///         unset.
 contract CheckTokenForkTest is Test {
+    /// @dev The wide list's coins before its wrapped xStocks: the 172 listed less the default four and the 109
+    ///      wrappers.
+    uint256 constant WIDE_COINS = 59;
+
     CheckToken checker;
 
     function setUp() public {
@@ -75,15 +79,36 @@ contract CheckTokenForkTest is Test {
     ///      added its `blocklist`, which sits beside a `burnFrom` that spends an allowance
     ///      (design/2026-10-18-token-source-reading.md), and the owner kept it.
     function testFork_everyWideTokenPassesTheCheck() public {
+        _checkWide(0, WIDE_COINS);
+    }
+
+    /// @dev The wide list from `from` up to `to`, each entry as the test above says. A wrapped xStock passes as
+    ///      listable with its one power the check reads, the upgrade of its proxy, behind Backed's implementation.
+    ///      The wrappers are checked in two halves, since a check costs about twelve million gas and the whole list
+    ///      would pass a test's limit of 2^30.
+    function _checkWide(uint256 from, uint256 to) internal {
         address[] memory list = new ConfigureWeighted().wideMainnetList();
-        for (uint256 i = 0; i < list.length; ++i) {
+        assertEq(list.length, WIDE_COINS + 109);
+        for (uint256 i = from; i < to; ++i) {
             CheckToken.Report memory r = _check(list[i]);
             assertEq(uint8(r.transfers), uint8(CheckToken.Transfers.Exact), r.symbol);
             CheckToken.Verdict expected = CheckToken.Verdict.Listable;
             if (list[i] == MainnetAddresses.XAUT) expected = CheckToken.Verdict.Refused;
             if (list[i] == MainnetAddresses.GALA) expected = CheckToken.Verdict.Review;
             assertEq(uint8(r.verdict), uint8(expected), r.symbol);
+            if (i >= WIDE_COINS) {
+                assertEq(r.implementation, 0x14f37168AB9eAFCD94d5b142a00E6e9B261Bad48, r.symbol);
+                assertEq(r.powers & checker.UPGRADE(), checker.UPGRADE(), r.symbol);
+            }
         }
+    }
+
+    function testFork_theFirstWrappedXStocksPassTheCheck() public {
+        _checkWide(WIDE_COINS, WIDE_COINS + 55);
+    }
+
+    function testFork_theOtherWrappedXStocksPassTheCheck() public {
+        _checkWide(WIDE_COINS + 55, WIDE_COINS + 109);
     }
 
     /// @dev CF-4: SAND goes to review with its admin named. The audit of 2026-10-13 added The Sandbox's

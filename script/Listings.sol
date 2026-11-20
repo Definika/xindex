@@ -24,9 +24,13 @@ import {MainnetAddresses as M} from "./MainnetAddresses.sol";
 ///           rebalance can buy them only from stock bridged in from Solana, Sui, Aptos or Algorand, and the restock
 ///           that would bridge them has never run (design/2026-11-18-bridged-coins-in-a-rebalance.md). SOL's copy,
 ///           which a Uniswap pool trades, and AVAX's, OP's and AERO's, which the EVM restock serves, stay.
+///         - 2026-11-21: the 17 Ondo stocks left, and 109 of Backed's wrapped xStocks joined, each `Custodial` (the
+///           owner's call: xStocks in place of Ondo, design/2026-11-21-xstocks.md). They are every wrapper Backed's
+///           factory has deployed less the nine whose share has no Pyth feed that names it. An xStock itself is never
+///           listed: its balances move with a multiplier, and only its wrapper's stay fixed.
 library Listings {
     /// @notice How many coins the list names.
-    uint256 internal constant COUNT = 80;
+    uint256 internal constant COUNT = 172;
 
     /// @notice A token's trust tier (design/2026-10-05-wide-asset-support.md, section 1), shown by the app beside every
     ///         index that holds it and by `ConfigureWeighted`'s safe mode beside every listing.
@@ -38,15 +42,35 @@ library Listings {
     }
 
     /// @notice The tier of a token in the table: `Custodial` for WBTC (BitGo holds the bitcoin), Tether Gold and the
-    ///         Ondo stocks; `Bridged` for a bridge's copy of a coin issued elsewhere, Wormhole's copies among them;
-    ///         `Native` for a token issued on Ethereum, ether's WETH among them; and `Unrecorded` for any token off the
-    ///         table. No copy of a Binance-Peg coin is listed since 2026-11-13: those were the `Custodial` copies.
+    ///         wrapped xStocks (Backed's custodian holds the shares); `Bridged` for a bridge's copy of a coin issued
+    ///         elsewhere, Wormhole's copies among them; `Native` for a token issued on Ethereum, ether's WETH among
+    ///         them; and `Unrecorded` for any token off the table. No copy of a Binance-Peg coin is listed since
+    ///         2026-11-13: those were the `Custodial` copies.
     function tierOf(address token) internal pure returns (Tier) {
         if (
-            token == M.WBTC || token == M.XAUT || token == M.NVDAON || token == M.AAPLON || token == M.GOOGLON
-                || token == M.MSFTON || token == M.AMZNON || token == M.TSMON || token == M.SPCXON || token == M.METAON
-                || token == M.AVGOON || token == M.TSLAON || token == M.SKHYON || token == M.MUON || token == M.LLYON
-                || token == M.AMDON || token == M.JPMON || token == M.WMTON || token == M.VON
+            token == M.WBTC || token == M.XAUT || token == M.WAAPLX || token == M.WABBVX || token == M.WABTX
+                || token == M.WACNX || token == M.WADBEX || token == M.WAMDX || token == M.WAMZNX || token == M.WAPPX
+                || token == M.WASMLX || token == M.WASTSX || token == M.WAVGOX || token == M.WAXPX || token == M.WAZNX
+                || token == M.WBACX || token == M.WBKNGX || token == M.WBLKX || token == M.WBLSHX || token == M.WBMNRX
+                || token == M.WBRKBX || token == M.WBTBTX || token == M.WCLSKX || token == M.WCMCSAX
+                || token == M.WCOINX || token == M.WCORZX || token == M.WCOSTX || token == M.WCRCLX || token == M.WCRMX
+                || token == M.WCRWDX || token == M.WCSCOX || token == M.WCVXX || token == M.WDHRX || token == M.WEBAYX
+                || token == M.WEXPEX || token == M.WFIGX || token == M.WGLDX || token == M.WGLXYX || token == M.WGMEX
+                || token == M.WGOOGLX || token == M.WGSX || token == M.WHDX || token == M.WHONX || token == M.WHOODX
+                || token == M.WHSDTX || token == M.WHUTX || token == M.WIBMX || token == M.WIEMGX || token == M.WIJRX
+                || token == M.WINTCX || token == M.WIWMX || token == M.WJNJX || token == M.WJPMX || token == M.WKOX
+                || token == M.WLINX || token == M.WLLYX || token == M.WLULUX || token == M.WMAX || token == M.WMARAX
+                || token == M.WMCDX || token == M.WMDTX || token == M.WMETAX || token == M.WMNSTX || token == M.WMRKX
+                || token == M.WMRVLX || token == M.WMSFTX || token == M.WMSTRX || token == M.WMUX || token == M.WNFLXX
+                || token == M.WNVDAX || token == M.WNVOX || token == M.WOKLOX || token == M.WOPENX || token == M.WORCLX
+                || token == M.WPANWX || token == M.WPEPX || token == M.WPFEX || token == M.WPGX || token == M.WPLX
+                || token == M.WPLTRX || token == M.WPMX || token == M.WPYPLX || token == M.WQQQX || token == M.WRBLXX
+                || token == M.WRIOTX || token == M.WRKLBX || token == M.WSBETX || token == M.WSCHFX || token == M.WSLVX
+                || token == M.WSPCEX || token == M.WSPGIX || token == M.WSPYX || token == M.WSTRCX || token == M.WTX
+                || token == M.WTEMX || token == M.WTGTX || token == M.WTMOX || token == M.WTMUSX || token == M.WTQQQX
+                || token == M.WTSLAX || token == M.WTSMX || token == M.WUBERX || token == M.WUNHX || token == M.WVX
+                || token == M.WVSTX || token == M.WVTX || token == M.WVTIX || token == M.WWENX || token == M.WWMTX
+                || token == M.WWULFX || token == M.WXOMX
         ) return Tier.Custodial;
         if (
             token == M.CRO || token == M.ICP || token == M.ARB || token == M.RENDER || token == M.CAKE || token == M.ZRO
@@ -77,10 +101,12 @@ library Listings {
     }
 
     /// @notice Every coin of the list: WETH, WBTC, LINK and UNI first, the `default` list, then the wide
-    ///         list: the 45 of 2026-10-06 and 2026-10-10's first additions, then the hundred-coin list's 28
+    ///         list: the 28 of 2026-10-06 and 2026-10-10's first additions that stay (the 17 Ondo stocks left on
+    ///         2026-11-21), then the hundred-coin list's 28
     ///         Ethereum-issued coins (31, less SAND, RLB and BTT) and 3 Wormhole copies (12, less the five from BNB
     ///         Chain and the four from Solana, Aptos and Algorand), each group by market cap. The copy found on
-    ///         2026-10-18 that stayed until 2026-11-18, SUI's, has left too.
+    ///         2026-10-18 that stayed until 2026-11-18, SUI's, has left too. Last, the 109 wrapped xStocks of
+    ///         2026-11-21, by ticker.
     function all() internal pure returns (address[] memory tokens) {
         tokens = new address[](COUNT);
         tokens[0] = M.WETH;
@@ -115,53 +141,145 @@ library Listings {
         tokens[29] = M.PEPE;
         tokens[30] = M.SOL;
         tokens[31] = M.XAUT;
-        tokens[32] = M.NVDAON;
-        tokens[33] = M.AAPLON;
-        tokens[34] = M.GOOGLON;
-        tokens[35] = M.MSFTON;
-        tokens[36] = M.AMZNON;
-        tokens[37] = M.TSMON;
-        tokens[38] = M.SPCXON;
-        tokens[39] = M.METAON;
-        tokens[40] = M.AVGOON;
-        tokens[41] = M.TSLAON;
-        tokens[42] = M.SKHYON;
-        tokens[43] = M.MUON;
-        tokens[44] = M.LLYON;
-        tokens[45] = M.AMDON;
-        tokens[46] = M.JPMON;
-        tokens[47] = M.WMTON;
-        tokens[48] = M.VON;
-        tokens[49] = M.FF;
-        tokens[50] = M.GNO;
-        tokens[51] = M.OHM;
-        tokens[52] = M.GRT;
-        tokens[53] = M.SYRUP;
-        tokens[54] = M.ENS;
-        tokens[55] = M.JASMY;
-        tokens[56] = M.COMP;
-        tokens[57] = M.EIGEN;
-        tokens[58] = M.AXS;
-        tokens[59] = M.BAT;
-        tokens[60] = M.CVX;
-        tokens[61] = M.MANA;
-        tokens[62] = M.IMX;
-        tokens[63] = M.FLUID;
-        tokens[64] = M.CHZ;
-        tokens[65] = M.ZK;
-        tokens[66] = M.APE;
-        tokens[67] = M.SENT;
-        tokens[68] = M.SNX;
-        tokens[69] = M.ONEINCH;
-        tokens[70] = M.GLM;
-        tokens[71] = M.ATH;
-        tokens[72] = M.H;
-        tokens[73] = M.PLUME;
-        tokens[74] = M.GALA;
-        tokens[75] = M.W;
-        tokens[76] = M.RSR;
-        tokens[77] = M.AVAX;
-        tokens[78] = M.AERO;
-        tokens[79] = M.OP;
+        tokens[32] = M.FF;
+        tokens[33] = M.GNO;
+        tokens[34] = M.OHM;
+        tokens[35] = M.GRT;
+        tokens[36] = M.SYRUP;
+        tokens[37] = M.ENS;
+        tokens[38] = M.JASMY;
+        tokens[39] = M.COMP;
+        tokens[40] = M.EIGEN;
+        tokens[41] = M.AXS;
+        tokens[42] = M.BAT;
+        tokens[43] = M.CVX;
+        tokens[44] = M.MANA;
+        tokens[45] = M.IMX;
+        tokens[46] = M.FLUID;
+        tokens[47] = M.CHZ;
+        tokens[48] = M.ZK;
+        tokens[49] = M.APE;
+        tokens[50] = M.SENT;
+        tokens[51] = M.SNX;
+        tokens[52] = M.ONEINCH;
+        tokens[53] = M.GLM;
+        tokens[54] = M.ATH;
+        tokens[55] = M.H;
+        tokens[56] = M.PLUME;
+        tokens[57] = M.GALA;
+        tokens[58] = M.W;
+        tokens[59] = M.RSR;
+        tokens[60] = M.AVAX;
+        tokens[61] = M.AERO;
+        tokens[62] = M.OP;
+        tokens[63] = M.WAAPLX;
+        tokens[64] = M.WABBVX;
+        tokens[65] = M.WABTX;
+        tokens[66] = M.WACNX;
+        tokens[67] = M.WADBEX;
+        tokens[68] = M.WAMDX;
+        tokens[69] = M.WAMZNX;
+        tokens[70] = M.WAPPX;
+        tokens[71] = M.WASMLX;
+        tokens[72] = M.WASTSX;
+        tokens[73] = M.WAVGOX;
+        tokens[74] = M.WAXPX;
+        tokens[75] = M.WAZNX;
+        tokens[76] = M.WBACX;
+        tokens[77] = M.WBKNGX;
+        tokens[78] = M.WBLKX;
+        tokens[79] = M.WBLSHX;
+        tokens[80] = M.WBMNRX;
+        tokens[81] = M.WBRKBX;
+        tokens[82] = M.WBTBTX;
+        tokens[83] = M.WCLSKX;
+        tokens[84] = M.WCMCSAX;
+        tokens[85] = M.WCOINX;
+        tokens[86] = M.WCORZX;
+        tokens[87] = M.WCOSTX;
+        tokens[88] = M.WCRCLX;
+        tokens[89] = M.WCRMX;
+        tokens[90] = M.WCRWDX;
+        tokens[91] = M.WCSCOX;
+        tokens[92] = M.WCVXX;
+        tokens[93] = M.WDHRX;
+        tokens[94] = M.WEBAYX;
+        tokens[95] = M.WEXPEX;
+        tokens[96] = M.WFIGX;
+        tokens[97] = M.WGLDX;
+        tokens[98] = M.WGLXYX;
+        tokens[99] = M.WGMEX;
+        tokens[100] = M.WGOOGLX;
+        tokens[101] = M.WGSX;
+        tokens[102] = M.WHDX;
+        tokens[103] = M.WHONX;
+        tokens[104] = M.WHOODX;
+        tokens[105] = M.WHSDTX;
+        tokens[106] = M.WHUTX;
+        tokens[107] = M.WIBMX;
+        tokens[108] = M.WIEMGX;
+        tokens[109] = M.WIJRX;
+        tokens[110] = M.WINTCX;
+        tokens[111] = M.WIWMX;
+        tokens[112] = M.WJNJX;
+        tokens[113] = M.WJPMX;
+        tokens[114] = M.WKOX;
+        tokens[115] = M.WLINX;
+        tokens[116] = M.WLLYX;
+        tokens[117] = M.WLULUX;
+        tokens[118] = M.WMAX;
+        tokens[119] = M.WMARAX;
+        tokens[120] = M.WMCDX;
+        tokens[121] = M.WMDTX;
+        tokens[122] = M.WMETAX;
+        tokens[123] = M.WMNSTX;
+        tokens[124] = M.WMRKX;
+        tokens[125] = M.WMRVLX;
+        tokens[126] = M.WMSFTX;
+        tokens[127] = M.WMSTRX;
+        tokens[128] = M.WMUX;
+        tokens[129] = M.WNFLXX;
+        tokens[130] = M.WNVDAX;
+        tokens[131] = M.WNVOX;
+        tokens[132] = M.WOKLOX;
+        tokens[133] = M.WOPENX;
+        tokens[134] = M.WORCLX;
+        tokens[135] = M.WPANWX;
+        tokens[136] = M.WPEPX;
+        tokens[137] = M.WPFEX;
+        tokens[138] = M.WPGX;
+        tokens[139] = M.WPLX;
+        tokens[140] = M.WPLTRX;
+        tokens[141] = M.WPMX;
+        tokens[142] = M.WPYPLX;
+        tokens[143] = M.WQQQX;
+        tokens[144] = M.WRBLXX;
+        tokens[145] = M.WRIOTX;
+        tokens[146] = M.WRKLBX;
+        tokens[147] = M.WSBETX;
+        tokens[148] = M.WSCHFX;
+        tokens[149] = M.WSLVX;
+        tokens[150] = M.WSPCEX;
+        tokens[151] = M.WSPGIX;
+        tokens[152] = M.WSPYX;
+        tokens[153] = M.WSTRCX;
+        tokens[154] = M.WTX;
+        tokens[155] = M.WTEMX;
+        tokens[156] = M.WTGTX;
+        tokens[157] = M.WTMOX;
+        tokens[158] = M.WTMUSX;
+        tokens[159] = M.WTQQQX;
+        tokens[160] = M.WTSLAX;
+        tokens[161] = M.WTSMX;
+        tokens[162] = M.WUBERX;
+        tokens[163] = M.WUNHX;
+        tokens[164] = M.WVX;
+        tokens[165] = M.WVSTX;
+        tokens[166] = M.WVTX;
+        tokens[167] = M.WVTIX;
+        tokens[168] = M.WWENX;
+        tokens[169] = M.WWMTX;
+        tokens[170] = M.WWULFX;
+        tokens[171] = M.WXOMX;
     }
 }

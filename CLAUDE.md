@@ -21,7 +21,7 @@ factory or whatever is neccesery so on both sides we will have in kind tokens",
 `design/2026-11-13-bnb-chain-deployment.md`). They share nothing: the same contracts, each under its own owner Safe
 and guardian's Safe, each holding its own chain's tokens in kind. An index lives on one chain, and none spans both. The
 BNB Chain side is built as scripts and tests, with no contract changed: `script/BnbChainAddresses.sol` (twelve coins,
-nine of them Binance-Peg, labelled Custodial), `V5_WHITELIST=bnb`, `CHECK=bnb` and
+nine of them Binance-Peg, labelled Custodial, and 104 wrapped xStocks since 2026-11-21), `V5_WHITELIST=bnb`, `CHECK=bnb` and
 `test/fork/BnbChainAddresses.fork.t.sol`. The call reverses the owner's refusal of 2026-11-10 ("I want to stay on
 Ethereum") and, in part, the one-index decision below, which still describes the Ethereum deployment as it stands. On
 the same day the owner named which Wormhole copies leave Ethereum's list: the six wrapped from BNB Chain (XRP, ADA,
@@ -32,8 +32,9 @@ of 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). `WeightedIndexFa
 `MintRequests` hold Ethereum ERC-20s in kind: the issuer's own contract where Ethereum has one (71 candidates of the
 top 300 today), and otherwise a copy wrapped by Wormhole's token bridge from the chain that has it (17 from BNB Chain,
 nine of them Binance-Peg; 31 from Solana, Sui, Aptos, Base and the other chains Wormhole serves), labelled Bridged,
-Custodial as well when the source is Binance-Peg. The list stands at 80
-(`script/Listings.sol`), four of them Wormhole copies (SOL, AVAX, AERO and OP) since the copies of JUP, PYTH, SUI, APT
+Custodial as well when the source is Binance-Peg. The list stands at 172
+(`script/Listings.sol`): 109 of them Backed's wrapped xStocks, US stocks and ETFs, since 2026-11-21 (the owner's call:
+xStocks in place of Ondo's 17 stocks, `design/2026-11-21-xstocks.md`), and of the 63 coins four Wormhole copies (SOL, AVAX, AERO and OP) since the copies of JUP, PYTH, SUI, APT
 and ALGO left on 2026-11-18 (the owner's call: no Ethereum pool trades them, and the restock that would bridge their
 stock in from Solana, Sui, Aptos or Algorand has never run, `design/2026-11-18-bridged-coins-in-a-rebalance.md`), and
 the six wrapped from BNB Chain on 2026-11-13 (the owner's call: BNB Chain's deployment holds those coins in kind, so no
@@ -54,7 +55,7 @@ and P2 proofs of Ethereum's finality, the hybrid index) is tagged `stage-b-2026-
 v4's market-cap index (reference supplies and a price-free λ auction, deleted on 2026-10-06,
 `audit/2026-10-06-v4-retirement.md`). Nothing is deployed on a mainnet yet.
 
-Where it stands (2026-11-18). The bullets below are a history: those written before 2026-11-10 describe the
+Where it stands (2026-11-21). The bullets below are a history: those written before 2026-11-10 describe the
 Pyth-priced rebalance as it then was, the bullet of that day says what replaced it, and the ones after it what was
 built on it and found in it.
 - The weighted index is built and reviewed twice (`audit/2026-10-05-v5-review.md`, `audit/2026-10-07-v5-logic-review.md`).
@@ -353,6 +354,31 @@ built on it and found in it.
   - The stock's price is the operator's, accepted at launch sizes with no hedge (the owner's call).
   - The copies of JUP, PYTH, SUI, APT and ALGO left Ethereum's list (the owner's call, below): 80 coins. Their
     restock signers stay, unrun.
+- **Backed's wrapped xStocks in place of Ondo's stocks** (2026-11-21, the owner's call: "use xstock 100 percent and
+  delte ondo cause our team will contact them", `design/2026-11-21-xstocks.md`). No contract under `src/` changed:
+  - An xStock's balance is its holder's shares times a multiplier, which a dividend raises and a fee or a reverse split
+    lowers, so a bare xStock would strand dividends (CF-3) and fall below its backing on a cut (RX-8). Backed's
+    ERC-4626 wrapper keeps balances fixed and carries the multiplier in `convertToAssets`: the list holds wrappers.
+  - Read on chain that day: Backed's factories had deployed 1,560 xStocks and 118 wrappers on Ethereum, 113 of them on
+    BNB Chain at the same address. Listed: every wrapper whose share has a Pyth feed that names it, the owner's rule for
+    Ondo of 2026-11-19, 109 on Ethereum (172 coins) and 104 on BNB Chain (116). The 17 Ondo stocks left; their
+    addresses and ids stay for a relisting, and the 352 of 2026-11-19 are committed unmerged on `feat/ondo-stocks`.
+  - Who holds what: a 2-of-3 Safe upgrades every wrapper and xStock; one externally owned key mints xStocks, another
+    burns only its own balance and sets any multiplier above zero, so it reprices every wrapped leg; that key owns 53
+    of Ethereum's wrappers. Both layers pause (a 2-of-4 Safe) and refuse Chainalysis' sanctioned addresses. `CheckToken`
+    finds every wrapper listable. No wrapper has a Uniswap pool.
+  - The keeper does not value a wrapper yet: every wrapped id is on `SHARE_PRICED_IDS` (RX-2) until it reads
+    `convertToAssets` on chain.
+  - Fork suites that day, on public RPCs near the head: BNB Chain's 17 of 17 at block 134,768,771, its new pin, among
+    them every wrapper checked on chain and through `CheckToken`, and an index of WBNB and five wrappers issued and
+    redeemed in kind on Backed's contracts (RW-8's probe included); Ethereum's `MainnetAddresses.fork` 9 of 9 and
+    `CheckToken.fork` 9 of 9 at block 26,458,930, the wrappers checked in two halves (about twelve million gas each, so
+    the whole list passes a test's 2^30); at block 26,459,085 `Security.fork` 9 of 9, `IndexZap.fork` 11 of 12 and
+    `WeightedHub.fork`'s four drills. Left, as on 2026-11-18: `testFork_mintWithUSDC`, whose $100 sanity floor the
+    basket's $83.75 misses (price, not code), and the hub's two whole-list tests, which the public node refused for
+    archive state (HTTP 403) partway through discovery. An archive run settles all three.
+  - Not done: the keeper's `convertToAssets` pricing; the app; the authorized-participant route with Backed (the
+    owner's and counsel's); the hub's whole-list fork tests on an archive RPC.
 - Before any mainnet: a Hermes plan that serves the keeper its feeds (its price source is its own business now, and
   no contract waits on it); a run of the fork suites; an external audit (the red
   team of the oracle-free mechanism ran on 2026-11-14), then `DeployWeighted`'s release hashes fixed at the
@@ -424,8 +450,8 @@ Deployment, once on each chain, Ethereum and BNB Chain: `script/DeployWeighted.s
 to that chain's guardian's Safe,
 then `script/ConfigureWeighted.s.sol`, which lists each coin of `script/Listings.sol`; the owner then approves the
 wallets that create indexes (`setApprovedCreator`), and nobody can create one before. `script/CheckToken.s.sol` reports on every token before its first
-listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 80 in all, on Ethereum;
-`V5_WHITELIST=bnb` is BNB Chain's twelve. On chains 1 and 56 the deploy script resolves the router and the
+listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 172 in all, on Ethereum;
+`V5_WHITELIST=bnb` is BNB Chain's 116. On chains 1 and 56 the deploy script resolves the router and the
 stablecoins from that chain's address book and refuses any other address
 (`DeployChecks.isPinnedChain`). Sepolia first needs its test market from
 `script/testnet/SetupTestMarket.s.sol`.
@@ -446,7 +472,8 @@ stablecoins from that chain's address book and refuses any other address
    `fill(id, amount)` passed every gate of the root project and broke the keeper's build.
 4. Fork tests green if the change touches `IndexZap`, the hub's rebalancing, routes, token behaviour, or anything
    router- or pool-related. Their summary must list the five Ethereum
-   `test/fork/` suites and 0 skipped. `WeightedHub.fork.t.sol` alone took about an hour at the 91-coin list (85 since 2026-11-13) on an archive RPC
+   `test/fork/` suites and 0 skipped. `WeightedHub.fork.t.sol` alone took about an hour at the 91-coin list (172 since 2026-11-21, its whole-list index
+   capped at `MAX_COMPONENTS`) on an archive RPC
    (Alchemy, Tenderly), nearly all of it the admission quotes on a cold RPC cache; a public endpoint prunes the state
    before it ends. They are also required when the deploy checks or `script/MainnetAddresses.sol` change, which
    `MainnetAddresses.fork.t.sol` and `Security.fork.t.sol` exercise. A change to the deploy checks, the zap, the swap
@@ -945,15 +972,18 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   The policy wants 6 to 18 decimals, which matter only to display and to the unit cap at creation. The admission check is
   `CheckToken`, and the WBT rule (a token that can both blacklist a holder and destroy its balance is refused) stays its
   default. On 2026-10-10 the owner ruled that a blacklist is no bar to listing and admitted Tether Gold, which the rule
-  refuses, and Ondo's stock tokens, whose compliance contract and burner role amount to the same power;
+  refuses, and Ondo's stock tokens, whose compliance contract and burner role amount to the same power (off the list
+  since 2026-11-21). A token whose balances move without a transfer is never a component: Backed's xStocks report
+  shares times a multiplier one key sets, so the list holds each one's ERC-4626 wrapper, whose balances stay fixed and
+  whose `convertToAssets` carries the multiplier (`design/2026-11-21-xstocks.md`, section 2);
   `testFork_everyWideTokenPassesTheCheck` pins Tether Gold as the one refused entry and GALA, whose blocklist sits
   beside a `burnFrom`, as the one for review (CF-4). SAND, whose two admins' operators move any holder's balance, and
   RLB, whose code is unverified, left the list on 2026-10-18 after the source reading
   (`design/2026-10-18-token-source-reading.md`), the owner's call; `testFork_CF4_sandGoesToReviewWithItsAdmin` still
-  pins SAND as review. Pausable components such as WBTC, MANA, CHZ, SENT, FLUID, GALA, FET, SNX, PLUME and the Ondo
-  tokens (their pause manager, RX-55)
+  pins SAND as review. Pausable components such as WBTC, MANA, CHZ, SENT, FLUID, GALA, FET, SNX, PLUME and the wrapped
+  xStocks (both layers, through Backed's pausing Safe; RX-55)
   must be labelled in the app, and so must every other issuer a component adds: BitGo for WBTC, Binance for BTCB and
-  every Binance-Peg coin, Tether for Tether Gold, Ondo for every `<ticker>on` stock, Wormhole for every wrapped copy,
+  every Binance-Peg coin, Tether for Tether Gold, Backed for every wrapped xStock, Wormhole for every wrapped copy,
   and both Binance and Wormhole for a copy wrapped from a Binance-Peg coin.
 
 ## Conventions
@@ -1096,6 +1126,15 @@ entry point takes ether. It reverses the ether entry of 2026-10-29, and narrows 
 the caller named. `MintRequests` already took the two alone. The app's ether paths follow when it moves to this build
 (asked the same day, the owner kept this change to the contracts for now).
 
+**Backed's wrapped xStocks in place of Ondo's stocks** (the owner's call of 2026-11-21: "we will use wrpped versions",
+then "i think it will be better to use xstock 100 percent and delte ondo cause our team will contact them and we will
+have nice collaborations"). Every US stock and ETF the list holds is Backed's ERC-4626 wrapper of an xStock, never the
+xStock, whose balances move with a multiplier; the 17 Ondo stocks of 2026-10-10 left, and the call of 2026-11-19 to keep
+Ondo and add xStocks only where it had none is reversed. Said to the owner before the build: no wrapper has a pool, so
+those legs need a filler with stock, which the collaboration (an authorized participant at Backed) is meant to give;
+one key of Backed's sets every multiplier and so every wrapped leg's value; a 2-of-3 Safe upgrades them all; and the
+keeper does not value a wrapper until it reads `convertToAssets` (`design/2026-11-21-xstocks.md`, section 5).
+
 **Five Wormhole copies off the list** (the owner's call of 2026-11-18: "for now, let's just remove" them, since the
 team creates every index and tells partners what it holds). JUP, PYTH, SUI, APT and ALGO left `script/Listings.sol`:
 no Ethereum pool trades their copies, so a rebalance buys them only from stock bridged in from Solana, Sui, Aptos or
@@ -1185,7 +1224,8 @@ cost the owner weighs before launch.
   no Uniswap liquidity, so they mint in kind or through `MintRequests` and a rebalance needs an executor that holds or
   mints them, against the 2026-10-06 rule that refused BGB and GT for want of a route; and six (TSM, AVGO, LLY, JPM,
   WMT, V) have only US-hours Pyth feeds, so an index holding one can settle a rebalance only while that market is
-  open, or with the stock kept. The legal question of offering stocks is the owner's.
+  open, or with the stock kept. The legal question of offering stocks is the owner's. The 17 Ondo stocks left on
+  2026-11-21 for Backed's wrapped xStocks (below); Tether Gold stays.
 - TRX was held as the BEP-20 TRX of TRON's closed BTTC bridge, on BNB Chain; with that deployment deleted it is not
   listed, and its Ethereum copy is not either.
 - Bitcoin is held as WBTC (the owner's call on 2026-09-29; do not reopen it).
@@ -1204,7 +1244,8 @@ cost the owner weighs before launch.
   and a leg is relisted at its token's own feed once Pyth publishes one. The procedure also has the guardian cancel each
   auction of an index that cannot keep such a leg around a split (a two-leg index), the keeper's stock allowance for
   those legs stays at zero, and Ondo's terminations, paid only to KYC'd redeemers, are a loss for holders still in at
-  the date, so the app tells them to exit first (RX-2, RX-7, RX-29).
+  the date, so the app tells them to exit first (RX-2, RX-7, RX-29). Moot since 2026-11-21, when the Ondo legs left
+  the list; it applies again to any relisting.
 - The owner's calls of 2026-10-19 on the red team (`audit/2026-10-18-red-team.md`): BTT and SEI's Wormhole copy are off
   the list (BTTC's bridge closed in June 2026; the copy of SEI redeems only through Sei's CosmWasm side, which Sei is
   shutting down; RX-28, RX-32), their addresses kept in `script/MainnetAddresses.sol` for a relisting; ZK is tiered

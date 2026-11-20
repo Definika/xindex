@@ -664,13 +664,13 @@ contract ScriptsTest is Test {
         bnb.resolveStable("USDC", MainnetAddresses.USDC, bnbUsdc);
 
         address[] memory market = bnb.marketContracts(bnbRouter);
-        assertEq(market.length, 2 + BnbChainAddresses.COUNT + 2, "the router, its PoolManager, 12 tokens, 2 stables");
+        assertEq(market.length, 2 + BnbChainAddresses.COUNT + 2, "the router, its PoolManager, the tokens, 2 stables");
         assertEq(market[0], bnbRouter);
         assertEq(market[1], BnbChainAddresses.POOL_MANAGER);
         assertEq(market[2], BnbChainAddresses.WBNB);
         assertEq(market[13], BnbChainAddresses.STABLE);
-        assertEq(market[14], BnbChainAddresses.USDC);
-        assertEq(market[15], BnbChainAddresses.USDT);
+        assertEq(market[2 + BnbChainAddresses.COUNT], BnbChainAddresses.USDC);
+        assertEq(market[3 + BnbChainAddresses.COUNT], BnbChainAddresses.USDT);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.RoleIsMarketContract.selector, BnbChainAddresses.BTCB));
         bnb.checkRolesAreNotMarket(BnbChainAddresses.BTCB, guardian, bnbRouter);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.RoleIsMarketContract.selector, BnbChainAddresses.USDT));

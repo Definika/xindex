@@ -58,8 +58,8 @@ contract ConfigureWeightedTest is Test {
         assertEq(first.length + wide.length, tokens.length);
         assertEq(
             tokens.length,
-            80,
-            "the list of 2026-10-06 and 2026-10-10's additions, less DOGE, SAND, RLB, BTT, SEI, BNB Chain's six and the five no restock has served"
+            172,
+            "the list of 2026-10-06 and 2026-10-10's additions, less DOGE, SAND, RLB, BTT, SEI, BNB Chain's six, the five no restock has served and the 17 Ondo stocks, and the 109 wrapped xStocks of 2026-11-21"
         );
         for (uint256 i = 0; i < tokens.length; ++i) {
             assertEq(i < 4 ? first[i] : wide[i - 4], tokens[i]);
@@ -88,8 +88,8 @@ contract ConfigureWeightedTest is Test {
         }
     }
 
-    /// @dev Every coin of the table carries a tier, as the app and safe mode show it: WBTC, Tether Gold and the Ondo stocks
-    ///         custodial, three Wormhole copies and ten other bridged coins, and the rest issued on Ethereum.
+    /// @dev Every coin of the table carries a tier, as the app and safe mode show it: WBTC, Tether Gold and the wrapped
+    ///         xStocks custodial, three Wormhole copies and ten other bridged coins, and the rest issued on Ethereum.
     function test_everyListedCoinHasItsTier() public view {
         address[] memory tokens = Listings.all();
         uint256[4] memory count;
@@ -100,7 +100,7 @@ contract ConfigureWeightedTest is Test {
         }
         assertEq(count[uint256(Listings.Tier.Native)], 48, "22 of the wide list and 26 of the hundred-coin list");
         assertEq(count[uint256(Listings.Tier.Bridged)], 13, "8, ZK and W, and 3 Wormhole copies");
-        assertEq(count[uint256(Listings.Tier.Custodial)], 19, "WBTC, Tether Gold and the 17 Ondo stocks");
+        assertEq(count[uint256(Listings.Tier.Custodial)], 111, "WBTC, Tether Gold and the 109 wrapped xStocks");
         assertEq(uint8(Listings.tierOf(MainnetAddresses.WBTC)), uint8(Listings.Tier.Custodial));
         assertEq(uint8(Listings.tierOf(MainnetAddresses.ARB)), uint8(Listings.Tier.Bridged));
         assertEq(uint8(Listings.tierOf(MainnetAddresses.INJ)), uint8(Listings.Tier.Bridged));
@@ -171,7 +171,38 @@ contract ConfigureWeightedTest is Test {
             uint8(Listings.Tier.Unrecorded),
             "RLB, off the list since 2026-10-18"
         );
-        assertEq(uint8(Listings.tierOf(MainnetAddresses.VON)), uint8(Listings.Tier.Custodial));
+        assertEq(uint8(Listings.tierOf(MainnetAddresses.WTSLAX)), uint8(Listings.Tier.Custodial), "a wrapped xStock");
+        assertEq(
+            uint8(Listings.tierOf(0x8aD3c73F833d3F9A523aB01476625F269aEB7Cf0)),
+            uint8(Listings.Tier.Unrecorded),
+            "TSLAx itself, whose balances move with its multiplier, is never listed"
+        );
+        // The 17 Ondo stocks, off the list since 2026-11-21: Backed's wrapped xStocks took their place
+        address[17] memory ondo = [
+            MainnetAddresses.NVDAON,
+            MainnetAddresses.AAPLON,
+            MainnetAddresses.GOOGLON,
+            MainnetAddresses.MSFTON,
+            MainnetAddresses.AMZNON,
+            MainnetAddresses.TSMON,
+            MainnetAddresses.SPCXON,
+            MainnetAddresses.METAON,
+            MainnetAddresses.AVGOON,
+            MainnetAddresses.TSLAON,
+            MainnetAddresses.SKHYON,
+            MainnetAddresses.MUON,
+            MainnetAddresses.LLYON,
+            MainnetAddresses.AMDON,
+            MainnetAddresses.JPMON,
+            MainnetAddresses.WMTON,
+            MainnetAddresses.VON
+        ];
+        for (uint256 i = 0; i < ondo.length; ++i) {
+            assertEq(uint8(Listings.tierOf(ondo[i])), uint8(Listings.Tier.Unrecorded), "Ondo's, off since 2026-11-21");
+            for (uint256 j = 0; j < tokens.length; ++j) {
+                assertTrue(tokens[j] != ondo[i], "an Ondo stock is listed");
+            }
+        }
         assertEq(uint8(Listings.tierOf(MainnetAddresses.USDC)), uint8(Listings.Tier.Unrecorded));
         assertEq(Listings.tierName(Listings.Tier.Native), "Native");
         assertEq(Listings.tierName(Listings.Tier.Bridged), "Bridged");
@@ -186,7 +217,7 @@ contract ConfigureWeightedTest is Test {
     function test_CRL08_theListsAreTheReleaseRecord() public view {
         address[] memory first = configure.defaultMainnetList();
         address[] memory wide = configure.wideMainnetList();
-        address[80] memory tokens = [
+        address[172] memory tokens = [
             0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2, // WETH
             0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599, // WBTC
             0x514910771AF9Ca656af840dff83E8264EcF986CA, // LINK
@@ -219,23 +250,6 @@ contract ConfigureWeightedTest is Test {
             0x6982508145454Ce325dDbE47a25d4ec3d2311933, // PEPE
             0xD31a59c85aE9D8edEFeC411D448f90841571b89c, // SOL
             0x68749665FF8D2d112Fa859AA293F07A622782F38, // XAUt
-            0x2D1F7226Bd1F780AF6B9A49DCC0aE00E8Df4bDEE, // NVDAon
-            0x14c3abF95Cb9C93a8b82C1CdCB76D72Cb87b2d4c, // AAPLon
-            0xbA47214eDd2bb43099611b208f75E4b42FDcfEDc, // GOOGLon
-            0xB812837b81a3a6b81d7CD74CfB19A7f2784555E5, // MSFTon
-            0xbb8774FB97436d23d74C1b882E8E9A69322cFD31, // AMZNon
-            0x3Cafdbfe682aec17d5acE2f97A2f3ab3dCf6a4A9, // TSMon
-            0xc9eef266834730340A55B6CC24621B31BAF55581, // SPCXon
-            0x59644165402b611b350645555B50Afb581C71EB2, // METAon
-            0x0d54D4279B9E8c54cD8547c2C75A8Ee81A0BcaE8, // AVGOon
-            0xf6b1117ec07684D3958caD8BEb1b302bfD21103f, // TSLAon
-            0xc0fE36F4FFBDf1B38E192215073590a68f9A2Af7, // SKHYon
-            0x050362Ab1072Cb2Ce74d74770E22A3203Ad04ee5, // MUon
-            0xf192957AE52dB3eb088654403CC2eDeD014ae556, // LLYon
-            0x0C1f3412A44Ff99E40bF14e06e5Ea321aE7B3938, // AMDon
-            0x03C1EC4CA9DBb168E6Db0DeF827c085999CBffaF, // JPMon
-            0x82106347dDbB23cE44Cf4cE4053Ef1adf8b9323B, // WMTon
-            0xaC37c20C1d0E5285035e056101a64e263Ff94a41, // Von
             0xFA1C09fC8B491B6A4d3Ff53A10CAd29381b3F949, // FF
             0x6810e776880C02933D47DB1b9fc05908e5386b96, // GNO
             0x64aa3364F17a4D01c6f1751Fd97C2BD3D7e7f1D5, // OHM
@@ -266,10 +280,119 @@ contract ConfigureWeightedTest is Test {
             0x320623b8E4fF03373931769A31Fc52A4E78B5d70, // RSR
             0x85f138bfEE4ef8e540890CFb48F620571d67Eda3, // AVAX
             0x750525C1877E30304F1E22b1b49b4C9DdE674ddF, // AERO
-            0x1df721D242E0783F8fCab4A9FfE4F35bdf329909 // OP
+            0x1df721D242E0783F8fCab4A9FfE4F35bdf329909, // OP
+            0x5AA7649fdbDa47De64A07aC81D64B682AF9C0724, // wAAPLx
+            0x5CC079963Fb70C0f987F65F539E3B61a6EBdf6Db, // wABBVx
+            0xD812B37181Ae89801e4BB3F49E4C1FAF11fC0b57, // wABTx
+            0xc262Bea18cb810Cc7715EE48fe3cbD3D79B4aFe1, // wACNx
+            0x444DE06b76C9a1417A21A877038F49A1f0D8A1cD, // wADBEx
+            0x1eb8909B5C46A24F005A76C469912f5518F448eF, // wAMDx
+            0xac85d37acbadCa37545E21ab0fB991bcE8c1187C, // wAMZNx
+            0xd17E483364D849e3B3A52464bb2CA56626EDfc31, // wAPPx
+            0xD0798d3c30F4408350C8448d75DA1c7721227dBa, // wASMLx
+            0x720347faf9D745B841541De0d7B2abc8A4b87531, // wASTSx
+            0x8DEb752aAA807E0258afd5cCFFe2b5A804026f28, // wAVGOx
+            0x0b306951161b856Ad02c8566B4eF184c6BB08564, // wAXPx
+            0xB908FEAeab7E671dB697d77c3acFD8859E92a4e2, // wAZNx
+            0xA2b1335256cd663Da89F650180508dd1f0DC3BAa, // wBACx
+            0x277f724d12DD0249b48CBD7eB2623c5e5042b970, // wBKNGx
+            0xE5365A5A16A7D1DD37b33e6F8D78aeB89847398B, // wBLKx
+            0x7a1d054e09eAe0294D53959674EE9DE14a1f70B1, // wBLSHx
+            0xBFd29b7F395d30932033c2F45ab792024E71AA94, // wBMNRx
+            0xa150245f155778e749185C9446e9e59E406674eF, // wBRK.Bx
+            0x88E437dbebdDe3D75Ff7c0cb830F54dd834538f0, // wBTBTx
+            0xdCE0CA61bC9F95b771e0764dc4C553288b7F2f13, // wCLSKx
+            0xd1A01e3F9c7565e88b1CF2413ba0a0E671e57b33, // wCMCSAx
+            0x3a98E79cDc7D8B2716A8696E25af028E429f11dA, // wCOINx
+            0x89E2B6cA78DBee629544679780963b85Ba76fe2a, // wCORZx
+            0xFa48FeE923600Fecaa7af0DfB4a66E3109Ad51bf, // wCOSTx
+            0xA90872ACa656eBE47bDEBF3B19Ec9Dd9C5ADC7f8, // wCRCLx
+            0xc6B6B8D50A6673C04C495e30B411da5A7adF39f5, // wCRMx
+            0xD71a6aDBc40c2674591CDB11B8C7ae03A880b06E, // wCRWDx
+            0xCFa485bc42c2492917351F89F5cf5c7b2C5a66aa, // wCSCOx
+            0x7F88888b7A81546a036554Aa67a289Ea428b20d4, // wCVXx
+            0x6c7AD1886a6Da37766fED060d5F08fF43285DcdD, // wDHRx
+            0x0c4F0256FB31cC71666Fee3f0cE1De3B1abE347B, // wEBAYx
+            0x5230C4b621bd2d1f22933903F9a4fA82a9F17fcf, // wEXPEx
+            0x91049e9586301c54B2eF410C2b7e9040Ffb02182, // wFIGx
+            0x61532Ce3f1DF7fBf5fFb7B891d184226e85B37c6, // wGLDx
+            0x4c79D4A1a863830EF845431578FB40E31bD51f4A, // wGLXYx
+            0xb2f6ED0ED3eEb22bEF7A648794FFC19b8aF3761C, // wGMEx
+            0x1630F08370917E79df0B7572395a5e907508bBBc, // wGOOGLx
+            0x6eEd78e2780d82BE4E37d9937C27Bcf32C8DA072, // wGSx
+            0xC641E2eBF6E076e2AE53477C2E725b3c67C0fd94, // wHDx
+            0xBd1B73b2E89967e83507B500D798998200A53380, // wHONx
+            0x953707d7A1cB30cc5C636bDA8EaeBe410341eB14, // wHOODx
+            0x6Ec2763859C5b04F5598017880744081aFeFa3Bb, // wHSDTx
+            0x154f25Cfd146d2DF6420ec1f575C3c46D45f4Db7, // wHUTx
+            0xa8F31436FFE4E71f51B2D65b7D5a5c457AE2000f, // wIBMx
+            0x59361E881b186e48D71EC61E969dCF50a4dbC75b, // wIEMGx
+            0x3ab20fd7c57146AF128E8565261CBdaDa0F015E6, // wIJRx
+            0x6A2a68Ca7FC793D8CEa36326a6Ec1eF7AC3D9742, // wINTCx
+            0x5A47DE111D731Fd2Df90E4A2d7a9b459b31Bd643, // wIWMx
+            0xcdB53A7cBa9Ec6d55dfE8f58bd6772826722D7BD, // wJNJx
+            0xaB635f839f81A12dC8Db8Ab31006af14E26292fE, // wJPMx
+            0x9a2486fbe7bC17C9100be65c31aBE7c9Bf84C23c, // wKOx
+            0x316fFEa434348c2cB72024e62Ae845770315351E, // wLINx
+            0x3644971A7E971f60e707F7E8716cCaC5a0461290, // wLLYx
+            0xD395C4dAd12eb071714d2b86cB5bC16acE9996B6, // wLULUx
+            0x5b32624f352d2FC6cC70889967A143ba1814f82b, // wMAx
+            0x34f5273693C880a9B2d9B6cfc8e13A2f3B8C0F06, // wMARAx
+            0x1717D8Be2Bcb27f4E8f36c817088Fa6a2c0b3B30, // wMCDx
+            0x02C1b10e5329c4502469396B2ce9f200E60b4a77, // wMDTx
+            0x4E41a262cAA93C6575d336E0a4eb79f3c67caa06, // wMETAx
+            0x61a6Cd11f658D1b418e1082b564678983b71Fb7F, // wMNSTx
+            0x4728E48c2C201E32fe210AaB68A71E419FEAc74a, // wMRKx
+            0x0d6fce45796D5c00689c0916b976645a0FF1F0cE, // wMRVLx
+            0x63Ad27614231767C8C489745B9145272De50D09b, // wMSFTx
+            0x266E5923F6118F8b340cA5a23AE7f71897361476, // wMSTRx
+            0x529E286229963bE57F0EC6F57d2D70A2F3E29935, // wMUx
+            0xfE0D2545f9E7f3678CB35Ed3CDf70488C5570D11, // wNFLXx
+            0x93E62845C1DD5822EbC807ab71A5Fb750DecD15A, // wNVDAx
+            0x16E443AEbc83E2089AA90431A1C0d311854EEC69, // wNVOx
+            0x9608a6eB064dd1C35eC9A4332bD9F8b05D1dE66C, // wOKLOx
+            0x9836479c80823f5f8B60FD0171F8D96301185714, // wOPENx
+            0x54f34Ceb15313Caaee838F77c1c3C2Fe2E94526A, // wORCLx
+            0x7FbE0E7ACB47DCb053BF6146cCA6Bfb81A5D1319, // wPANWx
+            0xA00A5538708b5aca7045F2ca15104707965bac94, // wPEPx
+            0x4E6894c3481B3A45393ce8ac9552945Ad50A3758, // wPFEx
+            0x0afC19943fA98E9E9E90Fc4ab4d4D3c13E162232, // wPGx
+            0xF429759BBf687118efd6B3713303006C356b8765, // wPLx
+            0xa3B6Fe1a923585bb828fCFAa460B78EeFD5aE2EC, // wPLTRx
+            0x7C2e00e6b0d519a8C492d20c2524342A4398FF34, // wPMx
+            0xCf4953c617CD1306A1f9236084204fBc67FDA2Ac, // wPYPLx
+            0xdbD9232fee15351068Fe02F0683146e16D9f2cEa, // wQQQx
+            0xc1de0BA489E6a5df9ebbA3911e382b455DeDF8c3, // wRBLXx
+            0xE99c177Bcb254bE2A0333c3B7071c696400Df1cF, // wRIOTx
+            0xf3f249dBaA9E3e9C9B78b1784cECd954e829aC81, // wRKLBx
+            0x9Fd163B1020535C24A3140DB9BB1153E6dEf8fCd, // wSBETx
+            0xB9FCE7dcDfa1962EB53B3e2000554A77F0c10E8b, // wSCHFx
+            0x93bd84EE978b60f37df0639f70EAC621e542AD4b, // wSLVx
+            0x382567e5D72eca3eD2Bb97a4e42918107E09fab0, // wSPCEx
+            0x2f5a59Dd87C57fBfA10a5Ab12fD902C8AFdA2dfD, // wSPGIx
+            0xc88FcD8B874fDb3256E8B55b3decB8c24EAb4c02, // wSPYx
+            0x34D78E7B06542Dab48f9bf9f0835c7582141314e, // wSTRCx
+            0xb10F7AA3BC0ad9FcE5Fc99702C2022d47BA93827, // wTx
+            0xfa4fFDbf6D53E1539B03823D72886Ab9510250E7, // wTEMx
+            0x0420112790C619Fbbd44106bC72ce217b515269A, // wTGTx
+            0x89EA0284308dEEF33a22abd7ea33888b4349108C, // wTMOx
+            0xF940Fd9D8B80412C47691442075848cc05cD6732, // wTMUSx
+            0x3D843414E617CBb9D2328c7eCF155d7C18139D6A, // wTQQQx
+            0x43680aBF18cf54898Be84C6eF78237CFBD441883, // wTSLAx
+            0x083283FAfD9CEC6145ce6a4A50F020A01737De52, // wTSMx
+            0x4BEa51f138A30329b8855bf0DaE85EA5644Ada82, // wUBERx
+            0xA0412CE46fE877b7f174B82aCD95E70063BbaF2a, // wUNHx
+            0x3cf193acf378Ec224a0209Be888b4b0B963E1896, // wVx
+            0x92DB84B2358E97976DAD16f91E6aeb9B2A757e76, // wVSTx
+            0x48Da55D8FE70A4E3ec421736369BACB8D62Fa089, // wVTx
+            0xE9161F111c55Bdd67525C1d4F9bbca07750aaAb7, // wVTIx
+            0x97C4C1704111B7c2304B177C37858B7169c667f9, // wWENx
+            0xa24D9c43D64c76aCD962003647FD43a85eb44Db8, // wWMTx
+            0xf068165CFf011A56562F855b44CF690e371232C8, // wWULFx
+            0x448bC811F60eac772775dD53421380E8D4DC4338 // wXOMx
         ];
         assertEq(first.length, 4);
-        assertEq(wide.length, 76);
+        assertEq(wide.length, 168);
         for (uint256 i = 0; i < tokens.length; ++i) {
             assertEq(i < 4 ? first[i] : wide[i - 4], tokens[i]);
         }
@@ -299,7 +422,11 @@ contract ConfigureWeightedTest is Test {
         vm.chainId(BnbChainAddresses.CHAIN_ID);
         address[] memory list = configure.resolveList("bnb");
         address[] memory tokens = BnbChainAddresses.all();
-        assertEq(list.length, 12, "the BNB Chain list of 2026-10-07, less SOL, DOGE, AVAX, FIL and TRX");
+        assertEq(
+            list.length,
+            116,
+            "the BNB Chain list of 2026-10-07, less SOL, DOGE, AVAX, FIL and TRX, and the 104 wrapped xStocks of 2026-11-21"
+        );
         assertEq(list, tokens);
         uint256[4] memory count;
         for (uint256 i = 0; i < tokens.length; ++i) {
@@ -308,13 +435,22 @@ contract ConfigureWeightedTest is Test {
             }
             Listings.Tier tier = BnbChainAddresses.tierOf(tokens[i]);
             assertTrue(tier != Listings.Tier.Unrecorded, "every listed coin is recorded");
-            assertEq(uint8(Listings.tierOf(tokens[i])), uint8(Listings.Tier.Unrecorded), "and is no Ethereum token");
+            if (i < 12) {
+                assertEq(uint8(Listings.tierOf(tokens[i])), uint8(Listings.Tier.Unrecorded), "and is no Ethereum token");
+            } else {
+                // A wrapped xStock is one contract at one address on both chains, listed on each
+                assertEq(uint8(Listings.tierOf(tokens[i])), uint8(Listings.Tier.Custodial), "a wrapped xStock on both");
+            }
             ++count[uint256(tier)];
         }
         assertEq(list[0], BnbChainAddresses.WBNB);
         assertEq(count[uint256(Listings.Tier.Native)], 2, "WBNB and ASTER");
         assertEq(count[uint256(Listings.Tier.Bridged)], 1, "STABLE");
-        assertEq(count[uint256(Listings.Tier.Custodial)], 9, "BTCB, ETH and the seven Binance-Peg coins");
+        assertEq(
+            count[uint256(Listings.Tier.Custodial)],
+            113,
+            "BTCB, ETH, the seven Binance-Peg coins and the 104 wrapped xStocks"
+        );
         assertEq(configure.tierLabel(BnbChainAddresses.BTCB), " (Custodial)");
         assertEq(configure.tierLabel(BnbChainAddresses.WBNB), " (Native)");
         assertEq(configure.tierLabel(BnbChainAddresses.STABLE), " (Bridged)");
@@ -330,12 +466,26 @@ contract ConfigureWeightedTest is Test {
         for (uint256 i = 0; i < excluded.length; ++i) {
             assertEq(uint8(BnbChainAddresses.tierOf(excluded[i])), uint8(Listings.Tier.Unrecorded));
         }
+        // The five wrapped xStocks Backed has deployed on Ethereum alone
+        address[5] memory ethereumOnly = [
+            MainnetAddresses.WAMDX,
+            MainnetAddresses.WMARAX,
+            MainnetAddresses.WOKLOX,
+            MainnetAddresses.WSLVX,
+            MainnetAddresses.WSPGIX
+        ];
+        for (uint256 i = 0; i < ethereumOnly.length; ++i) {
+            assertEq(
+                uint8(BnbChainAddresses.tierOf(ethereumOnly[i])), uint8(Listings.Tier.Unrecorded), "no wrapper there"
+            );
+            assertEq(uint8(Listings.tierOf(ethereumOnly[i])), uint8(Listings.Tier.Custodial));
+        }
     }
 
     /// @dev CR-L08 for BNB Chain: the list is the release record, pinned against this table, written out by hand.
     function test_CRL08_theBnbListIsTheReleaseRecord() public view {
         address[] memory list = configure.bnbList();
-        address[12] memory tokens = [
+        address[116] memory tokens = [
             0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c, // WBNB
             0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c, // BTCB
             0x2170Ed0880ac9A755fd29B2688956BD959F933F8, // ETH
@@ -347,7 +497,111 @@ contract ConfigureWeightedTest is Test {
             0x7083609fCE4d1d8Dc0C979AAb8c869Ea2C873402, // DOT
             0x0Eb3a705fc54725037CC9e008bDede697f62F335, // ATOM
             0x000Ae314E2A2172a039B26378814C252734f556A, // ASTER
-            0x011EBe7d75E2C9D1E0bD0be0bEf5C36f0A90075F // STABLE
+            0x011EBe7d75E2C9D1E0bD0be0bEf5C36f0A90075F, // STABLE
+            0x5AA7649fdbDa47De64A07aC81D64B682AF9C0724, // wAAPLx
+            0x5CC079963Fb70C0f987F65F539E3B61a6EBdf6Db, // wABBVx
+            0xD812B37181Ae89801e4BB3F49E4C1FAF11fC0b57, // wABTx
+            0xc262Bea18cb810Cc7715EE48fe3cbD3D79B4aFe1, // wACNx
+            0x444DE06b76C9a1417A21A877038F49A1f0D8A1cD, // wADBEx
+            0xac85d37acbadCa37545E21ab0fB991bcE8c1187C, // wAMZNx
+            0xd17E483364D849e3B3A52464bb2CA56626EDfc31, // wAPPx
+            0xD0798d3c30F4408350C8448d75DA1c7721227dBa, // wASMLx
+            0x720347faf9D745B841541De0d7B2abc8A4b87531, // wASTSx
+            0x8DEb752aAA807E0258afd5cCFFe2b5A804026f28, // wAVGOx
+            0x0b306951161b856Ad02c8566B4eF184c6BB08564, // wAXPx
+            0xB908FEAeab7E671dB697d77c3acFD8859E92a4e2, // wAZNx
+            0xA2b1335256cd663Da89F650180508dd1f0DC3BAa, // wBACx
+            0x277f724d12DD0249b48CBD7eB2623c5e5042b970, // wBKNGx
+            0xE5365A5A16A7D1DD37b33e6F8D78aeB89847398B, // wBLKx
+            0x7a1d054e09eAe0294D53959674EE9DE14a1f70B1, // wBLSHx
+            0xBFd29b7F395d30932033c2F45ab792024E71AA94, // wBMNRx
+            0xa150245f155778e749185C9446e9e59E406674eF, // wBRK.Bx
+            0x88E437dbebdDe3D75Ff7c0cb830F54dd834538f0, // wBTBTx
+            0xdCE0CA61bC9F95b771e0764dc4C553288b7F2f13, // wCLSKx
+            0xd1A01e3F9c7565e88b1CF2413ba0a0E671e57b33, // wCMCSAx
+            0x3a98E79cDc7D8B2716A8696E25af028E429f11dA, // wCOINx
+            0x89E2B6cA78DBee629544679780963b85Ba76fe2a, // wCORZx
+            0xFa48FeE923600Fecaa7af0DfB4a66E3109Ad51bf, // wCOSTx
+            0xA90872ACa656eBE47bDEBF3B19Ec9Dd9C5ADC7f8, // wCRCLx
+            0xc6B6B8D50A6673C04C495e30B411da5A7adF39f5, // wCRMx
+            0xD71a6aDBc40c2674591CDB11B8C7ae03A880b06E, // wCRWDx
+            0xCFa485bc42c2492917351F89F5cf5c7b2C5a66aa, // wCSCOx
+            0x7F88888b7A81546a036554Aa67a289Ea428b20d4, // wCVXx
+            0x6c7AD1886a6Da37766fED060d5F08fF43285DcdD, // wDHRx
+            0x0c4F0256FB31cC71666Fee3f0cE1De3B1abE347B, // wEBAYx
+            0x5230C4b621bd2d1f22933903F9a4fA82a9F17fcf, // wEXPEx
+            0x91049e9586301c54B2eF410C2b7e9040Ffb02182, // wFIGx
+            0x61532Ce3f1DF7fBf5fFb7B891d184226e85B37c6, // wGLDx
+            0x4c79D4A1a863830EF845431578FB40E31bD51f4A, // wGLXYx
+            0xb2f6ED0ED3eEb22bEF7A648794FFC19b8aF3761C, // wGMEx
+            0x1630F08370917E79df0B7572395a5e907508bBBc, // wGOOGLx
+            0x6eEd78e2780d82BE4E37d9937C27Bcf32C8DA072, // wGSx
+            0xC641E2eBF6E076e2AE53477C2E725b3c67C0fd94, // wHDx
+            0xBd1B73b2E89967e83507B500D798998200A53380, // wHONx
+            0x953707d7A1cB30cc5C636bDA8EaeBe410341eB14, // wHOODx
+            0x6Ec2763859C5b04F5598017880744081aFeFa3Bb, // wHSDTx
+            0x154f25Cfd146d2DF6420ec1f575C3c46D45f4Db7, // wHUTx
+            0xa8F31436FFE4E71f51B2D65b7D5a5c457AE2000f, // wIBMx
+            0x59361E881b186e48D71EC61E969dCF50a4dbC75b, // wIEMGx
+            0x3ab20fd7c57146AF128E8565261CBdaDa0F015E6, // wIJRx
+            0x6A2a68Ca7FC793D8CEa36326a6Ec1eF7AC3D9742, // wINTCx
+            0x5A47DE111D731Fd2Df90E4A2d7a9b459b31Bd643, // wIWMx
+            0xcdB53A7cBa9Ec6d55dfE8f58bd6772826722D7BD, // wJNJx
+            0xaB635f839f81A12dC8Db8Ab31006af14E26292fE, // wJPMx
+            0x9a2486fbe7bC17C9100be65c31aBE7c9Bf84C23c, // wKOx
+            0x316fFEa434348c2cB72024e62Ae845770315351E, // wLINx
+            0x3644971A7E971f60e707F7E8716cCaC5a0461290, // wLLYx
+            0xD395C4dAd12eb071714d2b86cB5bC16acE9996B6, // wLULUx
+            0x5b32624f352d2FC6cC70889967A143ba1814f82b, // wMAx
+            0x1717D8Be2Bcb27f4E8f36c817088Fa6a2c0b3B30, // wMCDx
+            0x02C1b10e5329c4502469396B2ce9f200E60b4a77, // wMDTx
+            0x4E41a262cAA93C6575d336E0a4eb79f3c67caa06, // wMETAx
+            0x61a6Cd11f658D1b418e1082b564678983b71Fb7F, // wMNSTx
+            0x4728E48c2C201E32fe210AaB68A71E419FEAc74a, // wMRKx
+            0x0d6fce45796D5c00689c0916b976645a0FF1F0cE, // wMRVLx
+            0x63Ad27614231767C8C489745B9145272De50D09b, // wMSFTx
+            0x266E5923F6118F8b340cA5a23AE7f71897361476, // wMSTRx
+            0x529E286229963bE57F0EC6F57d2D70A2F3E29935, // wMUx
+            0xfE0D2545f9E7f3678CB35Ed3CDf70488C5570D11, // wNFLXx
+            0x93E62845C1DD5822EbC807ab71A5Fb750DecD15A, // wNVDAx
+            0x16E443AEbc83E2089AA90431A1C0d311854EEC69, // wNVOx
+            0x9836479c80823f5f8B60FD0171F8D96301185714, // wOPENx
+            0x54f34Ceb15313Caaee838F77c1c3C2Fe2E94526A, // wORCLx
+            0x7FbE0E7ACB47DCb053BF6146cCA6Bfb81A5D1319, // wPANWx
+            0xA00A5538708b5aca7045F2ca15104707965bac94, // wPEPx
+            0x4E6894c3481B3A45393ce8ac9552945Ad50A3758, // wPFEx
+            0x0afC19943fA98E9E9E90Fc4ab4d4D3c13E162232, // wPGx
+            0xF429759BBf687118efd6B3713303006C356b8765, // wPLx
+            0xa3B6Fe1a923585bb828fCFAa460B78EeFD5aE2EC, // wPLTRx
+            0x7C2e00e6b0d519a8C492d20c2524342A4398FF34, // wPMx
+            0xCf4953c617CD1306A1f9236084204fBc67FDA2Ac, // wPYPLx
+            0xdbD9232fee15351068Fe02F0683146e16D9f2cEa, // wQQQx
+            0xc1de0BA489E6a5df9ebbA3911e382b455DeDF8c3, // wRBLXx
+            0xE99c177Bcb254bE2A0333c3B7071c696400Df1cF, // wRIOTx
+            0xf3f249dBaA9E3e9C9B78b1784cECd954e829aC81, // wRKLBx
+            0x9Fd163B1020535C24A3140DB9BB1153E6dEf8fCd, // wSBETx
+            0xB9FCE7dcDfa1962EB53B3e2000554A77F0c10E8b, // wSCHFx
+            0x382567e5D72eca3eD2Bb97a4e42918107E09fab0, // wSPCEx
+            0xc88FcD8B874fDb3256E8B55b3decB8c24EAb4c02, // wSPYx
+            0x34D78E7B06542Dab48f9bf9f0835c7582141314e, // wSTRCx
+            0xb10F7AA3BC0ad9FcE5Fc99702C2022d47BA93827, // wTx
+            0xfa4fFDbf6D53E1539B03823D72886Ab9510250E7, // wTEMx
+            0x0420112790C619Fbbd44106bC72ce217b515269A, // wTGTx
+            0x89EA0284308dEEF33a22abd7ea33888b4349108C, // wTMOx
+            0xF940Fd9D8B80412C47691442075848cc05cD6732, // wTMUSx
+            0x3D843414E617CBb9D2328c7eCF155d7C18139D6A, // wTQQQx
+            0x43680aBF18cf54898Be84C6eF78237CFBD441883, // wTSLAx
+            0x083283FAfD9CEC6145ce6a4A50F020A01737De52, // wTSMx
+            0x4BEa51f138A30329b8855bf0DaE85EA5644Ada82, // wUBERx
+            0xA0412CE46fE877b7f174B82aCD95E70063BbaF2a, // wUNHx
+            0x3cf193acf378Ec224a0209Be888b4b0B963E1896, // wVx
+            0x92DB84B2358E97976DAD16f91E6aeb9B2A757e76, // wVSTx
+            0x48Da55D8FE70A4E3ec421736369BACB8D62Fa089, // wVTx
+            0xE9161F111c55Bdd67525C1d4F9bbca07750aaAb7, // wVTIx
+            0x97C4C1704111B7c2304B177C37858B7169c667f9, // wWENx
+            0xa24D9c43D64c76aCD962003647FD43a85eb44Db8, // wWMTx
+            0xf068165CFf011A56562F855b44CF690e371232C8, // wWULFx
+            0x448bC811F60eac772775dD53421380E8D4DC4338 // wXOMx
         ];
         assertEq(list.length, tokens.length);
         for (uint256 i = 0; i < tokens.length; ++i) {
