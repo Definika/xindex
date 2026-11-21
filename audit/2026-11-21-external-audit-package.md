@@ -10,13 +10,14 @@ Every earlier review in this repository is internal, the work of agents and of t
 
 ## 1. Commit
 
-The candidate is the branch `release/2026-11-21-candidate` at `fd3ef11e543bcfacff30a14a61e0663dc165b670`. It is
+The candidate is the branch `release/2026-11-21-candidate` at `e2508f71d98209ae2db5422bc1d50cd1bb9da903`. It is
 `main` at `5b7635f` with five things on top: the fixes of the audit of 2026-11-21
 (`audit/2026-11-21-consolidated-audit.md`), which changed all four deployed contracts; the listing of Backed's
 wrapped xStocks (`design/2026-11-21-xstocks.md`), which changed no contract; `MAX_COMPONENTS` raised from 100 to
 200, which moved the factory's release hash; OP's Wormhole copy off Ethereum's list; and a third deployment, on
 Base (`design/2026-11-21-base-deployment.md`), an address book, a list, deploy checks and a fork suite, which
-changed no contract either. `src/` is as it was at `720a2f7`. This file is the one commit after it.
+changed no contract either, with Coinbase's coins and stock tokens on its list since 2026-11-22
+(`design/2026-11-22-coinbase-on-base.md`). `src/` is as it was at `720a2f7`. This file is the one commit after it.
 Its gates were run where it was built, not in CI, since the branch has not been pushed:
 
 | Gate | Result |
@@ -104,7 +105,7 @@ and the web app (its own repository).
 ## 3. Build and run
 
 ```bash
-git clone --recurse-submodules <repo> && cd <repo> && git checkout fd3ef11
+git clone --recurse-submodules <repo> && cd <repo> && git checkout e2508f7
 forge build --sizes --deny warnings
 forge test                           # 566 tests without an RPC; the fork suites skip
 MAINNET_RPC_URL=<archive RPC> forge test --match-path 'test/fork/*'   # Ethereum's five fork suites

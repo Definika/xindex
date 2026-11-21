@@ -498,8 +498,8 @@ built on it and found in it.
     every honestly quoted rebalance would then open its index to an unquoted auction a week later. The other
     rules, the owner and guardian, or the owner alone, starting a week after such a fill, give a role a start the
     state machine does not have today. Which rule, or none, is the owner's to choose.
-  - The candidate's head after that day's last changes is the Base deployment's commit, `fd3ef11`; `src/` is as it
-    was at `720a2f7`. On it the whole mutation gate ran again: 223 of 223 killed.
+  - The candidate's head is Coinbase's listing on Base, `e2508f7` (2026-11-22), after the Base deployment's `fd3ef11`;
+    `src/` is as it was at `720a2f7`. On it the whole mutation gate ran again: 232 of 232 killed.
   - Not done: a push (the branch is local, so CI has not run on it); the app, which is pinned to the build
     Sepolia runs, `5b7635f`, and moves with a Sepolia deployment of this candidate, the deployer's keystore being
     the owner's; the keeper on BNB Chain, whose bot assumes a float of six decimals and twelve-second blocks; the
