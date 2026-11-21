@@ -4,7 +4,7 @@ import { mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as nodeFs from "node:fs";
-import { createJournal, fileStore, resumeOrder } from "../../restock/journal.mjs";
+import { createJournal, fileStore, movedOn, resumeOrder, subjectOf } from "../../restock/journal.mjs";
 
 const XRP = `0x${"c7".repeat(20)}`;
 
@@ -193,4 +193,27 @@ test("CA-M12: the journal has one writer at a time, and a lock nobody holds is t
   writeFileSync(lock, "111\n");
   stale();
   assert.equal(readFileSync(lock, "utf8").trim(), "111");
+});
+
+test("RZ-19: a move that moved on within a round keeps its coin, its chain or the treasury out of that round's plan", () => {
+  const moves = [
+    { id: "a", kind: "bridgeIn", coin: "AVAX", chain: "avalanche", stage: "sent" },
+    { id: "b", kind: "bridgeOut", coin: "OP", chain: "optimism", stage: "sent" },
+    { id: "c", kind: "buy", coin: "AERO", chain: "base", stage: "sent" },
+    { id: "d", kind: "fund", chain: "base", stage: "sent" },
+    { id: "e", kind: "sweep", chain: "optimism", stage: "attested" },
+    { id: "f", kind: "draw", stage: "sent" },
+    { id: "g", kind: "repay", stage: "sent" },
+    { id: "h", kind: "sell", coin: "XRP", chain: "bsc", stage: "sent" },
+  ];
+  assert.deepEqual(moves.map(subjectOf), ["AVAX", "OP", "AERO", "base", "optimism", "treasury", "treasury", "XRP"]);
+
+  // The bridge transfer of AVAX was redeemed this round, and base's funding was received: both settled just now,
+  // which the journal's own busy set, of moves still to settle, no longer shows. The rest stayed where they were.
+  const now = { a: "redeemed", b: "sent", c: "sent", d: "received", e: "attested", f: "sent", g: "sent", h: "sent" };
+  assert.deepEqual([...movedOn(moves, (id) => now[id])].sort(), ["AVAX", "base"]);
+  // A move dropped or pruned in the round moved on too; one that stayed, however long it has waited, did not.
+  assert.deepEqual([...movedOn(moves.slice(5, 6), () => undefined)], ["treasury"]);
+  assert.equal(movedOn(moves, (id) => moves.find((m) => m.id === id).stage).size, 0);
+  assert.equal(movedOn([], () => "sent").size, 0);
 });

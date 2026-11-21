@@ -27,9 +27,9 @@ function fakeChain() {
       if (tx.nonce + 1n > chain.pending) chain.pending = tx.nonce + 1n;
       return hash;
     },
-    mine(hash, status = "success") {
+    mine(hash, status = "success", blockNumber = undefined) {
       chain.latest += 1n;
-      chain.receipts.set(hash, { status, transactionHash: hash });
+      chain.receipts.set(hash, blockNumber === undefined ? { status, transactionHash: hash } : { status, transactionHash: hash, blockNumber });
     },
   };
   return chain;
@@ -47,7 +47,7 @@ test("a sent fill that lands is reported and frees the tracker", async () => {
   assert.equal(await t.onBlock(10, 50n), null, "nothing to do before the target block");
   assert.equal(chain.sent.length, 1, "and nothing replaced it: a replacement returns null too");
   chain.mine(hash);
-  assert.deepEqual(await t.onBlock(11, 50n), { label: "fill", receipt: { status: "success", transactionHash: hash }, replaced: false });
+  assert.deepEqual(await t.onBlock(11, 50n), { label: "fill", receipt: { status: "success", transactionHash: hash }, replaced: false, deadline: null });
   assert.equal(t.busy(), false);
 });
 
@@ -188,4 +188,43 @@ test("XS-13: replacements stay under MAX_FEE_GWEI and stop after MAX_REPLACEMENT
   const u = new TxTracker(other, () => {}, { feeCap: 150n });
   await u.clearStuck(20, 50n, 2_000_000_000n);
   assert.ok(other.sent[0].maxFeePerGas <= 150n && other.sent[0].maxPriorityFeePerGas <= 150n);
+});
+
+test("RZ-15: a fill's deadline comes back with its outcome, whichever transaction took the nonce", async () => {
+  const chain = fakeChain();
+  const t = new TxTracker(chain);
+  const fill = await t.send(FILL, { label: "fill", targetBlock: 11, deadline: 1_700_000_012n });
+  chain.mine(fill, "reverted", 11n);
+  const done = await t.onBlock(11, 50n);
+  assert.equal(done.deadline, 1_700_000_012n, "by which the caller tells a fill mined past it");
+  assert.equal(done.replaced, false);
+  assert.equal(done.receipt.blockNumber, 11n);
+
+  // A start carries none.
+  const start = await t.send(FILL, { label: "start", targetBlock: 12 });
+  chain.mine(start);
+  assert.equal((await t.onBlock(12, 50n)).deadline, null);
+});
+
+test("RZ-6: a receipt the node could not be asked for leaves the fill in flight, and its outcome is kept", async () => {
+  const chain = fakeChain();
+  const lines = [];
+  const t = new TxTracker(chain, (line) => lines.push(line));
+  const hash = await t.send(FILL, { label: "fill", targetBlock: 11 });
+  chain.mine(hash, "reverted", 11n);
+  // The nonce is used, and the lookup times out: nothing is known yet. Read as "no receipt", this was scored as a
+  // replacement, and the revert went unseen.
+  const asked = chain.receipt;
+  chain.receipt = async () => {
+    throw new Error("request timed out");
+  };
+  assert.equal(await t.onBlock(11, 50n), null);
+  assert.ok(t.busy(), "still in flight");
+  assert.ok(lines.some((l) => l.includes("its receipt could not be read (request timed out)")), lines.join("\n"));
+  assert.equal(chain.sent.length, 1, "and nothing was sent over it");
+  chain.receipt = asked;
+  const done = await t.onBlock(12, 50n);
+  assert.equal(done.replaced, false);
+  assert.equal(done.receipt.status, "reverted");
+  assert.equal(t.busy(), false);
 });

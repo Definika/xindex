@@ -29,6 +29,19 @@ export function resumeOrder(moves) {
 }
 
 /// `load()` returns the saved text or null; `save(text)` stores it; `now()` is the clock, in seconds.
+/// What a move is about, as the plan names what it leaves alone: the treasury for a draw or a repayment, the chain
+/// for a funding or a sweep, and the coin for a trade or a bridge transfer.
+export const subjectOf = (move) =>
+  move.kind === "draw" || move.kind === "repay" ? "treasury" : move.kind === "fund" || move.kind === "sweep" ? move.chain : move.coin;
+
+/// What the plan of a round leaves alone because a move of the journal moved on in that very round: the subject of
+/// each move of `before`, the moves still to settle when the round began, whose stage `stageNow(id)` no longer is
+/// the one it had. Such a move may have settled a moment ago, by a transaction the round itself sent, and the state
+/// the plan is made from is then read at a node's latest block: a node one block behind shows the coin still short,
+/// or the float still unfunded, and the plan bought or funded it a second time (RZ-19). The next round reads it
+/// settled.
+export const movedOn = (before, stageNow) => new Set(before.filter((m) => stageNow(m.id) !== m.stage).map(subjectOf));
+
 export function createJournal({ load, save, now = () => Math.floor(Date.now() / 1000) }) {
   let state = parse(load());
   const settled = (m) => m.stage === "dropped" || m.stage === STAGES[m.kind].at(-1);

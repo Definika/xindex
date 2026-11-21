@@ -297,3 +297,31 @@ test("a feed's price at a wrapper's rate: the price down, the confidence up, and
   // A wrapper's value is the feed's at its rate: 3 wrappers of 18 decimals at $142.35001 and a rate of 1.5.
   assert.equal(M.amountUsd(3n * 10n ** 18n, 18, M.atRate(p, 15n * 10n ** 17n)).toFixed(4), "640.5750");
 });
+
+test("RZ-16: a subsidised fill is charged what its floor lets it lose, not what it simulated", () => {
+  // A fill simulated at a float change of -40 USDC, with $30 of stock and $5 of gas: -$15. It trades $20,000 through
+  // routes at 30 bps of slippage, so its floor lets the float end $60 lower still.
+  const fill = { simDelta: -40_000_000n, gasUsd: 5, inventoryUsd: 30, routedVolumeUsdc: 20_000_000_000n, slippageBps: 30 };
+  assert.equal(M.profitUsd({ usdcDelta: fill.simDelta, inventoryUsd: 30, gasUsd: 5 }), -15);
+  // With a subsidy of up to $100 a fill the floor is the simulation less the slack, and the charge is $75.
+  assert.equal(M.worstProfitUsd({ ...fill, minProfitUsd: -100 }), -75);
+  // With one of up to $20 the decision's own least binds first: the fill cannot land below it.
+  assert.equal(M.worstProfitUsd({ ...fill, minProfitUsd: -20 }), -20);
+  // Without a subsidy no fill can land at a loss, so nothing is ever charged.
+  assert.ok(M.worstProfitUsd({ ...fill, simDelta: 10_000_000n, minProfitUsd: 5 }) >= 5);
+  // The budget is held to the worst case: three such fills pass a $200 day where their simulations, $45, would not.
+  const spent = [{ at: 100n, usd: 75 }, { at: 200n, usd: 75 }];
+  assert.equal(M.subsidyFits(spent, M.worstProfitUsd({ ...fill, minProfitUsd: -100 }), 300n, 200).ok, false);
+  assert.equal(M.subsidyFits(spent, -15, 300n, 200).ok, true);
+});
+
+test("RZ-15: a fill mined past its own deadline is late; one mined at it, or sent without one, is not", () => {
+  const deadline = 1_700_000_012n; // the next block's second: a fill is priced for that block alone
+  assert.equal(M.minedLate(deadline, deadline), false, "mined in the block it was priced for");
+  assert.equal(M.minedLate(deadline - 12n, deadline), false);
+  assert.equal(M.minedLate(deadline + 12n, deadline), true, "a block later, or the same block after a missed slot");
+  assert.equal(M.minedLate(deadline + 1n, deadline), true);
+  assert.equal(M.minedLate(Number(deadline) + 12, deadline), true, "whatever type the node returned its time in");
+  assert.equal(M.minedLate(deadline + 12n, null), false, "a start carries no deadline");
+  assert.equal(M.minedLate(deadline + 12n, undefined), false);
+});

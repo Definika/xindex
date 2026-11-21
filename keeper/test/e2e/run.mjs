@@ -572,6 +572,10 @@ await test.request({ method: "evm_setAutomine", params: [true] });
 
 const late = lateHash && (await pub.getTransactionReceipt({ hash: lateHash }));
 ok(late && late.status === "reverted" && late.gasUsed < 150_000n, `a fill mined a slot late reverts early (${late?.gasUsed} gas)`);
+ok(
+  logged("mined past its deadline and reverted on it: not counted against it") && !logged("reverted on chain after its simulation passed (1 of 3)"),
+  "and the keeper counts no strike for it: it reverted on its own deadline, which says nothing of the auction (RZ-15)",
+);
 for (const index of [LQ, MIX, SHR, WRP]) ok((await nonceOf(index)) === 1n, `${names[index]} filled`);
 ok((await nonceOf(DRY)) === 0n && (await proposals(DRY)) === 0n, "DRY never started");
 ok((await proposals(ADV)) === 0n, "ADV never started: a coin trading under its feed is not booked at the feed");

@@ -246,7 +246,11 @@ xStocks listing). The first two items below are settled, and the third in part:
   claim and the bound cancel are still covered by the unit suites alone.
 - The keeper's end-to-end test ran, 42 of 42 on a mainnet fork at block 26,441,062: the bot's solver and the fills' `expected` on four auctions,
   and a bound mint and a bound redeem request filled in one `fillBatch` against real pools, the first requests any
-  run of it has filled. The restock's end-to-end tests have not run on this change.
+  run of it has filled.
+- The restock's end-to-end test ran on Base and on Avalanche, 29 of 29 each: the planner's funding order, the
+  budget, the completion read back and the journal, with real CCTP and Wormhole contracts on the forks. On Optimism
+  it stopped at the buy, 17 of 29: no route bought $1,430 of OP within `ROUTE_MAX_LOSS_BPS`, on the depth of OP's
+  pools that day and not on this change (`keeper/README.md`, Restock).
 
 - **An archive run of the fork suites.** What a public node served passed (Gates, above). Left for an archive RPC at
   the pinned block: `WeightedHub.fork`'s two whole-list tests, `CheckToken.fork`, and `IndexZap.fork`'s

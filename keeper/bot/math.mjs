@@ -252,6 +252,20 @@ export function usdcFloor({ simDelta, minProfitUsd, gasUsd, inventoryUsd, routed
   return max(decision, simDelta - slack);
 }
 
+/// Whether a transaction sent with `deadline`, the last second it does anything but revert, was mined in a block of
+/// `minedAt`, after it. A fill is priced for the next block and carries that block's second as its deadline; mined a
+/// block later, or in that block after a missed slot, it reverts on the deadline in its first lines, which says
+/// nothing of the auction or the request it was for, so it is no strike against them (RZ-15). A transaction sent
+/// without a deadline is never late.
+export const minedLate = (minedAt, deadline) => deadline !== null && deadline !== undefined && BigInt(minedAt) > BigInt(deadline);
+
+/// What a fill pays if the float ends at the floor it is sent with rather than at its simulated outcome: the least it
+/// can pay and still land. The floor lets a fill realise less than it simulated, by the routes' slippage, down to the
+/// decision's own least; a subsidised fill, whose least is below zero, is charged to SUBSIDY_BUDGET_USD at this and
+/// not at the simulation, or the day's budget could be passed by that slack on every fill (RZ-16).
+export const worstProfitUsd = ({ simDelta, minProfitUsd, gasUsd, inventoryUsd, routedVolumeUsdc, slippageBps }) =>
+  profitUsd({ usdcDelta: usdcFloor({ simDelta, minProfitUsd, gasUsd, inventoryUsd, routedVolumeUsdc, slippageBps }), inventoryUsd, gasUsd });
+
 /// How many basis points a route loses against Pyth: a sale that returns `usdc` for coins worth `fairUsd`, or a
 /// purchase that costs `usdc` for them, `usdc` in `decimals` (a home chain's float may have more than USDC's six).
 /// Negative when the route beats Pyth.

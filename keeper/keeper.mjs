@@ -296,14 +296,15 @@ async function priceFill(index, sim, leg, maxIn, L) {
   if (nextBase + tip > feeCap) return { skip: `base fee ${M.weiToGwei(nextBase)} gwei above MAX_FEE_GWEI` };
   const gasUsd = M.fillCostUsd({ used, nextBase, tip, ethUsd });
   const profit = M.profitUsd({ usdcDelta, inventoryUsd: leg.inventoryUsd, gasUsd });
-  const floor = M.usdcFloor({
+  const bounds = {
     simDelta: usdcDelta,
     minProfitUsd: cfg.minProfitUsd,
     gasUsd,
     inventoryUsd: leg.inventoryUsd,
     routedVolumeUsdc: leg.routedVolumeUsdc,
     slippageBps: cfg.slippageBps,
-  });
+  };
+  const floor = M.usdcFloor(bounds);
   const data = encodeFunctionData({
     abi: ABI.executor,
     functionName: "fill",
@@ -317,7 +318,8 @@ async function priceFill(index, sim, leg, maxIn, L) {
     maxFeePerGas: M.min(2n * nextBase + tip, feeCap),
     maxPriorityFeePerGas: tip,
   };
-  return { profit, usdcDelta, gasUsd, inventoryUsd: leg.inventoryUsd, tx, over: sim.over };
+  // `worst` is what the fill pays if the float ends at that floor: what a subsidy is charged at (RZ-16).
+  return { profit, worst: M.worstProfitUsd(bounds), usdcDelta, gasUsd, inventoryUsd: leg.inventoryUsd, tx, over: sim.over, deadline: sim.T };
 }
 
 /// Whether `tx` runs within its own gas limit: the call again, with that limit, at L, as block L+1. A fill that fits
@@ -593,7 +595,15 @@ async function onBlock(L) {
       started.delete(index);
       said.delete(index);
     }
-    if (kind === "fill" && done.receipt?.status === "reverted" && !done.replaced) {
+    // A fill mined past its own deadline reverted on it: no strike (RZ-15). When the block it was mined in cannot be
+    // read, it counts as before.
+    let late = false;
+    if (done.receipt?.status === "reverted" && !done.replaced && done.deadline !== null) {
+      const mined = await chain.block(done.receipt.blockNumber).catch(() => null);
+      late = mined !== null && M.minedLate(mined.timestamp, done.deadline);
+      if (late) log(done.label, "mined past its deadline and reverted on it: not counted against it");
+    }
+    if (kind === "fill" && done.receipt?.status === "reverted" && !done.replaced && !late) {
       const b = reverted.fail(`${index}:${proposal}`, L.number);
       routes.forgetKey(`${index}:${proposal}`); // its routes are searched again (RX-13)
       log(
@@ -605,7 +615,7 @@ async function onBlock(L) {
     }
     if (kind === "request" && ok) filler?.forget(BigInt(index));
     if (kind === "batch" && ok) for (const id of index.split(",")) filler?.forget(BigInt(id));
-    if (kind === "batch" && filler && done.receipt?.status === "reverted" && !done.replaced) {
+    if (kind === "batch" && filler && done.receipt?.status === "reverted" && !done.replaced && !late) {
       const b = filler.revertedBatch(index.split(",").map(BigInt), L.number);
       log(
         `batch ${index}`,
@@ -614,7 +624,7 @@ async function onBlock(L) {
           : `fill reverted on chain after its simulation passed: backing off until block ${b.until}`,
       );
     }
-    if (kind === "request" && filler && done.receipt?.status === "reverted" && !done.replaced) {
+    if (kind === "request" && filler && done.receipt?.status === "reverted" && !done.replaced && !late) {
       const b = filler.reverted(BigInt(index), L.number);
       log(
         `request ${index}`,
@@ -660,8 +670,8 @@ async function onBlock(L) {
     }),
   );
   const best = fills.filter(Boolean).sort((a, b) => b.profit - a.profit)[0];
-  if (best && !subsidyFits(best.profit, L.timestamp)) {
-    say(best.index, `waiting: a fill at ${best.profit.toFixed(2)} USD would pass SUBSIDY_BUDGET_USD for the day`);
+  if (best && !subsidyFits(best.worst, L.timestamp)) {
+    say(best.index, `waiting: a fill that may pay as little as ${best.worst.toFixed(2)} USD would pass SUBSIDY_BUDGET_USD for the day`);
   } else if (best && !(await fitsItsGas(best.tx, L, best.over))) {
     say(best.index, `not filling: the fill does not run within its gas limit of ${best.tx.gas}`);
   } else if (best) {
@@ -669,9 +679,12 @@ async function onBlock(L) {
       log(best.index, "block passed before sending; next block");
       return false;
     }
-    if (best.profit < 0) subsidies.push({ at: L.timestamp, usd: -best.profit });
     log(best.index, `filling at a bar of ${best.bar.toFixed(6)}: profit ${best.profit.toFixed(2)} USD (float ${(Number(best.usdcDelta) / 1e6).toFixed(2)}, stock ${best.inventoryUsd.toFixed(2)}, gas ${best.gasUsd.toFixed(2)})`);
-    await tracker.send(best.tx, { label: `fill ${best.index} ${best.proposal}`, targetBlock: Number(L.number) + 1 });
+    const sent = await tracker.send(best.tx, { label: `fill ${best.index} ${best.proposal}`, targetBlock: Number(L.number) + 1, deadline: best.deadline });
+    // The budget is charged for a fill that went out, at what its floor lets it lose: one the node refused costs
+    // nothing (RZ-9, RZ-16).
+    if (sent === null) log(best.index, "not sent: the node refused it, its nonce taken; checked again at the next block");
+    else if (best.worst < 0) subsidies.push({ at: L.timestamp, usd: -best.worst });
     return false;
   }
   if (cfg.fillAuctions && (lastStartCheck === null || L.number - lastStartCheck >= START_EVERY_BLOCKS)) {
@@ -697,7 +710,7 @@ async function requestChecks(L) {
   const name = pick.ids ? `batch ${pick.ids.join(",")}` : `request ${pick.id}`;
   if ((await chain.blockNumber()) !== L.number) return log(name, "block passed before sending; next block");
   log(name, `filling: profit ${pick.profit.toFixed(2)} USD (float ${(Number(pick.usdcDelta) / 1e6).toFixed(2)}, stock ${pick.inventoryUsd.toFixed(2)}, gas ${pick.gasUsd.toFixed(2)})`);
-  await tracker.send(pick.tx, { label: name, targetBlock: Number(L.number) + 1 });
+  await tracker.send(pick.tx, { label: name, targetBlock: Number(L.number) + 1, deadline: pick.deadline });
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

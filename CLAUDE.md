@@ -459,9 +459,21 @@ built on it and found in it.
     arrival moves it once, so a receipt missed at that one look timed the run out on a mined transaction: the test
     polls the receipt itself. And a run that is killed leaves its anvil on the port, which later runs then
     silently talked to: the test refuses to start while something answers there.
+  - Six keeper findings of the red team of 2026-10-31, open since, fixed the same day
+    (`audit/2026-10-31-red-team-ii.md`): a fill mined after the block it was sent for strikes nothing (RZ-15); a
+    receipt the node could not be asked for leaves the fill in flight instead of scoring it replaced (RZ-6); a
+    request forgotten on its fill is read once more, so a re-org that dropped the fill does not hide it (RZ-13);
+    the subsidy budget is charged what a fill's floor lets it lose, and only for a fill that went out (RZ-16,
+    RZ-9); and what a restock move that moved on within a round is about is left out of that round's plan, which
+    is made from a node that may be a block behind (RZ-19). Mutants Z1 to Z6. Open from that record: RZ-8, RZ-10,
+    RZ-11, RZ-20 and RZ-21, informational.
+  - The restock's end-to-end test on the audit's changes: Base and Avalanche 29 of 29 each. Optimism 17 of 29: no
+    route bought $1,430 of OP within `ROUTE_MAX_LOSS_BPS`, Uniswap v3's deepest OP pool there holding about
+    $35,000 of USDC with OP near $0.07, so the buy and what follows it failed, on depth and not on code. Until
+    the pools deepen or the restock has another venue there, OP's stock is the operator's to add.
   - Gates on the candidate: 555 forge tests without an RPC, coverage 100% on every file, the mutation gate's
-    212 mutants all killed, Aderyn and Wake silent, the executor's 86 tests with its fork suite, the bot's 247 unit
-    tests and the filler's 16 in its harness.
+    218 mutants all killed, Aderyn and Wake silent, the executor's 86 tests with its fork suite, the bot's 251 unit
+    tests and the filler's 17 in its harness.
   - RW-3 is not fixed, and the hub is unchanged. The rule noted on 2026-11-19 as the one to build, a fill under a
     quote restarting only `MIN_REBALANCE_INTERVAL`, is the first of the two the red team's record had withdrawn:
     every honestly quoted rebalance would then open its index to an unquoted auction a week later. The other
@@ -470,7 +482,7 @@ built on it and found in it.
   - Not done: a push (the branch is local, so CI has not run on it); the app, which is pinned to the build
     Sepolia runs, `5b7635f`, and moves with a Sepolia deployment of this candidate, the deployer's keystore being
     the owner's; the keeper on BNB Chain, whose bot assumes a float of six decimals and twelve-second blocks; the
-    restock's end-to-end tests on the audit's changes; the external audit.
+    external audit.
 - Before any mainnet: a Hermes plan that serves the keeper its feeds (its price source is its own business now, and
   no contract waits on it); a run of the fork suites; an external audit (the red
   team of the oracle-free mechanism ran on 2026-11-14), then `DeployWeighted`'s release hashes fixed at the
@@ -635,8 +647,10 @@ stablecoins from that chain's address book and refuses any other address
      (`audit/2026-10-31-red-team-ii.md`), both drafted with `RT` ids, which the red team of 2026-09-24 holds. A test
      named `test_RY1_...` in `test/IndexZap.t.sol`, `test_RZ23_...` in `keeper/test/KeeperExecutor.t.sol`,
      `test_RZ24_...` in `test/Scripts.t.sol` (RZ-26's, in `test/GuardianRelay.t.sol` and `test/Scripts.t.sol`, went
-     with the relay on 2026-11-10), and node tests named `RY-6, RZ-1: ...`, `RZ-2, RZ-22: ...`, `RZ-5: ...` and
-     `RY-8: ...` in `keeper/test/unit/` (RZ-26's went with the relay too), RY-8's with its mutants Y1 and Y2. Each record's
+     with the relay on 2026-11-10), and node tests named `RY-6, RZ-1: ...`, `RZ-2, RZ-22: ...`, `RZ-5: ...`,
+     `RZ-6: ...`, `RZ-15: ...`, `RZ-16: ...`, `RZ-19: ...` and `RY-8: ...` in `keeper/test/unit/` (RZ-26's went with
+     the relay too; RZ-13's is in the harness, which CI does not run), RY-8's with its mutants Y1 and Y2 and
+     those fixed on 2026-11-21 with Z1 to Z6. Each record's
      "Status of the fixes" names every test; the ids fixed by documentation, the open ones and the keeper's wiring
      without a unit harness have none.
    - The protocol documentation review of 2026-11-01: `PD-1`..`PD-14` (`audit/2026-11-01-protocol-docs-review.md`),

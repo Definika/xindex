@@ -30,7 +30,7 @@ import { createSolanaHome } from "./restock/solana.mjs";
 import { createSuiHome } from "./restock/sui.mjs";
 import { createAptosHome } from "./restock/aptos.mjs";
 import { createAlgorandHome } from "./restock/algorand.mjs";
-import { createJournal, fileStore, lockJournal, resumeOrder } from "./restock/journal.mjs";
+import { createJournal, fileStore, lockJournal, movedOn, resumeOrder } from "./restock/journal.mjs";
 import { plan } from "./restock/plan.mjs";
 
 const ONCE = process.argv.includes("--once");
@@ -240,9 +240,13 @@ async function reclaimRent() {
 
 async function round() {
   for (const h of Object.values(homes)) h.forgetRoutes(); // each round searches its routes afresh
-  for (const move of resumeOrder(journal.pending())) {
+  const pending = resumeOrder(journal.pending());
+  for (const move of pending) {
     await advance(move).catch((error) => log(`move ${move.id}`, `not moved on: ${revertReason(error)}`));
   }
+  // What moved on just now is left out of this round's plan: the state below may be read from a node a block
+  // behind the one that mined it (RZ-19).
+  const moved = movedOn(pending, (id) => journal.get(id)?.stage);
   await reclaimRent();
   const p = await prices();
   const state = await readState();
@@ -251,7 +255,7 @@ async function round() {
     inflight: journal.inflight(),
     prices: p,
     spentUsd: journal.spentUsd(),
-    busy: journal.busy(),
+    busy: new Set([...journal.busy(), ...moved]),
     cfg: cfg.plan,
   });
   for (const n of notes) log("plan", n);

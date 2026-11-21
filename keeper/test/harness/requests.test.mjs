@@ -390,3 +390,24 @@ test("the share stock of an index holding a wrapper is counted at the wrapper's 
   await moved.scan();
   assert.equal(await moved.best(), null);
 });
+
+test("RZ-13: a request forgotten on its fill's receipt is read once more, and comes back if a re-org dropped the fill", async () => {
+  const w = world();
+  const id = w.mint(120, 2);
+  await w.scan();
+  assert.equal((await w.best()).id, id);
+  // The fill's receipt arrived: the bot forgets the request. The block is then re-orged away, and the request is
+  // open on chain again, with no new id above the last one read to bring it back.
+  w.filler.forget(id);
+  assert.equal(await w.best(), null, "forgotten until the next scan");
+  await w.scan();
+  assert.equal((await w.best())?.id, id, "the next scan reads it once more and finds it open");
+
+  // One whose fill stood is read once more, found closed, and dropped for good.
+  w.filler.forget(id);
+  w.requests.set(id, { ...w.requests.get(id), open: false });
+  await w.scan();
+  assert.equal(await w.best(), null);
+  await w.scan();
+  assert.equal(await w.best(), null);
+});

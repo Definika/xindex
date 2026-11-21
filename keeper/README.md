@@ -44,10 +44,13 @@ Every block L, with T = L's timestamp + 12 (the one block a fill sent now can la
      distance. An index on its weights never pays: clearing any bar from there is a gift.
    - A fill that reverts on chain all the same, after its simulation passed, holds its auction off for 5 blocks, then
      10, and after the third this bot leaves that auction until the strikes lapse, 300 blocks after the last (RX-26);
-     its routes are searched again. The chosen fill is simulated again with the gas limit it will carry before it is
+     its routes are searched again. A fill mined after the block it was sent for reverts on its own deadline, which
+     says nothing of the auction, and is no strike (RZ-15); one whose receipt the node could not be asked for stays
+     in flight until it can (RZ-6). The chosen fill is simulated again with the gas limit it will carry before it is
      sent (RX-21), and a fill below zero profit, which only a negative `MIN_PROFIT_USD` allows, is sent only within
-     `SUBSIDY_BUDGET_USD` a day (RX-16). An auction the bot is backed off from does not take one of the 8 check
-     slots (RX-24).
+     `SUBSIDY_BUDGET_USD` a day (RX-16), counted at what the fill pays if its float ends at the floor it is sent
+     with, not at its simulation, and only once it has gone out (RZ-9, RZ-16). An auction the bot is backed off
+     from does not take one of the 8 check slots (RX-24).
 2. **Starts.** Every 25 blocks, for each index anyone may restart, it simulates the auction at its last second, where
    the bar is lowest (by overriding the hub's pending slot), and starts it only when a fill then would pay after the
    start's own gas, the index is worth `MIN_TVL_USD`, and the executor can deliver every coin that fill asks for. A
@@ -298,6 +301,12 @@ address was read on its chain on 2026-10-19:
 | Avalanche | AVAX (WAVAX) | Uniswap v3 | USDC, by CCTP |
 | Optimism | OP | Uniswap v3 | USDC, by CCTP |
 | Base | AERO | Uniswap v3 | USDC, by CCTP |
+
+OP was not bought on 2026-11-21: with OP near $0.07, Uniswap v3's deepest OP pool on Optimism held about $35,000 of
+USDC, and a purchase of $1,430 cost 4.7% over the pools' price, so no route passed `ROUTE_MAX_LOSS_BPS`, at that size
+or at any the halving reached (block 159,839,933; the end-to-end test's buy step and what follows it failed for
+that, 17 of its 29 checks passing). Until the pools deepen, or the restock is given another venue there, OP's stock is
+the operator's to add. Base and Avalanche passed the same test that day, 29 of 29 each.
 
 Depth read on 2026-10-19, selling $3,000: LTC 88 bps, DOT 73, OP 88; selling $10,000: XRP 26, ADA 102, AVAX 19,
 AERO 46. **ATOM is not served** (the owner's call of 2026-10-20): Binance-Peg ATOM, the only source its copy redeems

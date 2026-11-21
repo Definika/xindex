@@ -164,11 +164,15 @@ export function createChain(cfg) {
     address: account.address,
     latestNonce: async () => BigInt(await client.getTransactionCount({ address: account.address, blockTag: "latest" })),
     pendingNonce: async () => BigInt(await client.getTransactionCount({ address: account.address, blockTag: "pending" })),
+    /// The receipt of `hash`, or null when the node holds none. Any other failure throws: a timeout or a node behind
+    /// says nothing about the transaction, and read as "no receipt" it scored a mined fill as replaced, its outcome
+    /// dropped (RZ-6).
     receipt: async (hash) => {
       try {
         return await client.getTransactionReceipt({ hash });
-      } catch {
-        return null;
+      } catch (error) {
+        if (error?.name === "TransactionReceiptNotFoundError") return null;
+        throw error;
       }
     },
     send,

@@ -48,6 +48,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, rates, request
   const skips = skippedRequests(); // `request:id` -> checks that declined it without a revert (RX-24)
   const waits = shortRequests(); // `request:id` -> checks that found the executor short of stock for it
   let scanned = 0n; // the last id read, every one before it read too
+  const recheck = new Set(); // ids forgotten since the last scan, read once more at the next (RZ-13)
 
   function say(id, reason) {
     if (said.get(id) === reason) return;
@@ -82,7 +83,11 @@ export function createRequestFiller({ chain, cfg, hermes, routes, rates, request
   async function scan(L, indexes) {
     const count = await chain.read(requests, ABI.requests, "requestCount", [], L.number);
     const ids = [...known.keys()];
-    for (let id = scanned + 1n; id <= count; id++) if (!known.has(id)) ids.push(id);
+    // A request forgotten on its fill's receipt is read once more: a re-org that dropped the fill leaves it open on
+    // chain, where nothing else would look at it again until a restart (RZ-13).
+    for (const id of recheck) if (!known.has(id)) ids.push(id);
+    recheck.clear();
+    for (let id = scanned + 1n; id <= count; id++) if (!known.has(id) && !ids.includes(id)) ids.push(id);
     if (ids.length === 0) {
       scanned = count;
       return;
@@ -293,7 +298,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, rates, request
       maxFeePerGas: M.min(2n * nextBase + tip, feeCap),
       maxPriorityFeePerGas: tip,
     };
-    return { profit, usdcDelta, gasUsd, inventoryUsd, tx };
+    return { profit, usdcDelta, gasUsd, inventoryUsd, tx, deadline: T };
   }
 
   /// Request `id`, as a fill this bot could send now: its profit after gas and the transaction, or why not. With
@@ -551,6 +556,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, rates, request
 
   function forget(id) {
     known.delete(id);
+    recheck.add(id);
     said.delete(id);
     failed.forget(`request:${id}`);
     reverts.forget(`request:${id}`);

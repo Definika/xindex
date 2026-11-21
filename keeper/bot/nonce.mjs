@@ -43,9 +43,10 @@ export class TxTracker {
     return this.inFlight !== null;
   }
 
-  /// Sends `tx` (no nonce) on the next nonce, to land in block `targetBlock`. Returns the hash, or null when the nonce
-  /// turned out to be taken.
-  async send(tx, { label, targetBlock }) {
+  /// Sends `tx` (no nonce) on the next nonce, to land in block `targetBlock`. `deadline`, when the transaction
+  /// carries one, is the second after which it reverts, handed back with its outcome. Returns the hash, or null
+  /// when the nonce turned out to be taken.
+  async send(tx, { label, targetBlock, deadline = null }) {
     if (this.inFlight) throw new Error("a transaction is already in flight");
     const nonce = await this.io.latestNonce();
     const full = { ...tx, nonce };
@@ -58,12 +59,15 @@ export class TxTracker {
       throw error;
     }
     if (hash === null) return null;
-    this.inFlight = { label, nonce, tx: full, hashes: [hash], targetBlock, cancelling: false, replacements: 0 };
+    this.inFlight = { label, nonce, tx: full, hashes: [hash], targetBlock, deadline, cancelling: false, replacements: 0 };
     this.log(`sent ${label} nonce ${nonce} ${hash}`);
     return hash;
   }
 
-  /// Called once per new block. Returns `{label, receipt, replaced}` when the nonce in flight was used, else null.
+  /// Called once per new block. Returns `{label, receipt, replaced, deadline}` when the nonce in flight was used,
+  /// else null; `deadline` is the one it was sent with, by which the caller tells a fill mined too late to do
+  /// anything but revert (RZ-15). A receipt the node could not be asked for leaves the transaction in flight, to be
+  /// asked again at the next block (RZ-6).
   async onBlock(blockNumber, nextBase) {
     const f = this.inFlight;
     if (!f) return null;
@@ -71,7 +75,12 @@ export class TxTracker {
       let receipt = null;
       let mined = null;
       for (const hash of f.hashes) {
-        receipt = await this.io.receipt(hash);
+        try {
+          receipt = await this.io.receipt(hash);
+        } catch (error) {
+          this.log(`${f.label} nonce ${f.nonce}: its receipt could not be read (${error?.shortMessage ?? error?.message ?? error}); asked again at the next block`);
+          return null;
+        }
         if (receipt) {
           mined = hash;
           break;
@@ -81,7 +90,7 @@ export class TxTracker {
       // Replaced: what landed on the nonce is not the transaction first sent (a replacement, or one sent elsewhere).
       const replaced = mined !== f.hashes[0];
       this.log(`${f.label} nonce ${f.nonce}: ${receipt ? receipt.status : "used by another transaction"}${replaced ? " (replaced)" : ""}`);
-      return { label: f.label, receipt, replaced };
+      return { label: f.label, receipt, replaced, deadline: f.deadline };
     }
     // Block `targetBlock` exists without the transaction: it missed.
     if (blockNumber >= f.targetBlock) {

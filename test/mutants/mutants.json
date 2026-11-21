@@ -2850,5 +2850,89 @@
       }
     ],
     "runner": "node"
+  },
+  {
+    "id": "Z3",
+    "what": "a receipt that could not be read counts as no receipt: the fill is scored as replaced (RZ-6)",
+    "origin": "audit/2026-10-31-red-team-ii.md",
+    "file": "keeper/bot/nonce.mjs",
+    "test": "keeper/test/unit/nonce.test.mjs",
+    "edits": [
+      {
+        "old": "asked again at the next block`);\n          return null;\n        }",
+        "new": "asked again at the next block`);\n        }"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "Z4",
+    "what": "a subsidised fill is charged its simulated loss, not what its floor allows (RZ-16)",
+    "origin": "audit/2026-10-31-red-team-ii.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/math.test.mjs",
+    "edits": [
+      {
+        "old": "profitUsd({ usdcDelta: usdcFloor({ simDelta, minProfitUsd, gasUsd, inventoryUsd, routedVolumeUsdc, slippageBps }), inventoryUsd, gasUsd });",
+        "new": "profitUsd({ usdcDelta: simDelta, inventoryUsd, gasUsd });"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "Z5",
+    "what": "only a move that left the journal counts as having moved on: one that settled this round does not (RZ-19)",
+    "origin": "audit/2026-10-31-red-team-ii.md",
+    "file": "keeper/restock/journal.mjs",
+    "test": "keeper/test/unit/restock-journal.test.mjs",
+    "edits": [
+      {
+        "old": "new Set(before.filter((m) => stageNow(m.id) !== m.stage).map(subjectOf));",
+        "new": "new Set(before.filter((m) => stageNow(m.id) === undefined).map(subjectOf));"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "Z6",
+    "what": "a funding that moved on holds its coin, which it has none of, instead of its chain (RZ-19)",
+    "origin": "audit/2026-10-31-red-team-ii.md",
+    "file": "keeper/restock/journal.mjs",
+    "test": "keeper/test/unit/restock-journal.test.mjs",
+    "edits": [
+      {
+        "old": "move.kind === \"fund\" || move.kind === \"sweep\" ? move.chain : move.coin;",
+        "new": "move.kind === \"fund\" || move.kind === \"sweep\" ? move.coin : move.coin;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "Z1",
+    "what": "a fill mined at its deadline is late, so one that reverted in time is no strike (RZ-15)",
+    "origin": "audit/2026-10-31-red-team-ii.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/math.test.mjs",
+    "edits": [
+      {
+        "old": "deadline !== null && deadline !== undefined && BigInt(minedAt) > BigInt(deadline);",
+        "new": "deadline !== null && deadline !== undefined && BigInt(minedAt) >= BigInt(deadline);"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "Z2",
+    "what": "a fill's deadline is not kept with it, so none is ever told late (RZ-15)",
+    "origin": "audit/2026-10-31-red-team-ii.md",
+    "file": "keeper/bot/nonce.mjs",
+    "test": "keeper/test/unit/nonce.test.mjs",
+    "edits": [
+      {
+        "old": "hashes: [hash], targetBlock, deadline, cancelling: false",
+        "new": "hashes: [hash], targetBlock, deadline: null, cancelling: false"
+      }
+    ],
+    "runner": "node"
   }
 ]
