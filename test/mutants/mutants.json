@@ -1416,8 +1416,8 @@
     "test": "test/DeployChecks.t.sol",
     "edits": [
       {
-        "old": "        if (block.chainid == BnbChainAddresses.CHAIN_ID) return true;\n        return block.chainid != 1 && BNB_UNIVERSAL_ROUTER.code.length != 0;\n",
-        "new": "        if (MAINNET_UNIVERSAL_ROUTER.code.length != 0) return false;\n        if (block.chainid == BnbChainAddresses.CHAIN_ID) return true;\n        return block.chainid != 1 && BNB_UNIVERSAL_ROUTER.code.length != 0;\n"
+        "old": "        if (block.chainid == BnbChainAddresses.CHAIN_ID) return true;\n        // Base's id decides for Base as Ethereum's does for Ethereum: BNB Chain's router has code on Base.\n        return block.chainid != 1 && !onBase() && BNB_UNIVERSAL_ROUTER.code.length != 0;\n",
+        "new": "        if (MAINNET_UNIVERSAL_ROUTER.code.length != 0) return false;\n        if (block.chainid == BnbChainAddresses.CHAIN_ID) return true;\n        // Base's id decides for Base as Ethereum's does for Ethereum: BNB Chain's router has code on Base.\n        return block.chainid != 1 && !onBase() && BNB_UNIVERSAL_ROUTER.code.length != 0;\n"
       }
     ]
   },
@@ -1429,7 +1429,7 @@
     "test": "test/DeployChecks.t.sol",
     "edits": [
       {
-        "old": "        return block.chainid != 1 && BNB_UNIVERSAL_ROUTER.code.length != 0;\n",
+        "old": "        return block.chainid != 1 && !onBase() && BNB_UNIVERSAL_ROUTER.code.length != 0;\n",
         "new": "        return false;\n"
       }
     ]
@@ -1442,8 +1442,8 @@
     "test": "test/DeployChecks.t.sol",
     "edits": [
       {
-        "old": "        return block.chainid != 1 && BNB_UNIVERSAL_ROUTER.code.length != 0;\n",
-        "new": "        return BNB_UNIVERSAL_ROUTER.code.length != 0;\n"
+        "old": "        return block.chainid != 1 && !onBase() && BNB_UNIVERSAL_ROUTER.code.length != 0;\n",
+        "new": "        return !onBase() && BNB_UNIVERSAL_ROUTER.code.length != 0;\n"
       }
     ]
   },
@@ -1468,8 +1468,8 @@
     "test": "test/ConfigureWeighted.t.sol",
     "edits": [
       {
-        "old": "        if (block.chainid == 1 || block.chainid == BnbChainAddresses.CHAIN_ID) {\n",
-        "new": "        if (block.chainid == 1) {\n"
+        "old": "        if (\n            block.chainid == 1 || block.chainid == BnbChainAddresses.CHAIN_ID || block.chainid == BaseAddresses.CHAIN_ID\n        ) {\n",
+        "new": "        if (block.chainid == 1 || block.chainid == BaseAddresses.CHAIN_ID) {\n"
       }
     ]
   },
@@ -2934,5 +2934,70 @@
       }
     ],
     "runner": "node"
+  },
+  {
+    "id": "N6",
+    "what": "no chain id names Base: a deployment there falls to the routers' code, which names BNB Chain",
+    "origin": "design/2026-11-21-base-deployment.md",
+    "file": "script/DeployChecks.sol",
+    "test": "test/DeployChecks.t.sol",
+    "edits": [
+      {
+        "old": "        return block.chainid == BaseAddresses.CHAIN_ID;",
+        "new": "        return false;"
+      }
+    ]
+  },
+  {
+    "id": "N7",
+    "what": "BNB Chain's router, replayed on Base, names BNB Chain there",
+    "origin": "design/2026-11-21-base-deployment.md",
+    "file": "script/DeployChecks.sol",
+    "test": "test/DeployChecks.t.sol",
+    "edits": [
+      {
+        "old": "        return block.chainid != 1 && !onBase() && BNB_UNIVERSAL_ROUTER.code.length != 0;\n",
+        "new": "        return block.chainid != 1 && BNB_UNIVERSAL_ROUTER.code.length != 0;\n"
+      }
+    ]
+  },
+  {
+    "id": "N8",
+    "what": "the Base list resolves on any chain",
+    "origin": "design/2026-11-21-base-deployment.md",
+    "file": "script/ConfigureWeighted.s.sol",
+    "test": "test/ConfigureWeighted.t.sol",
+    "edits": [
+      {
+        "old": "            if (block.chainid != BaseAddresses.CHAIN_ID) revert ListOffItsChain(raw, block.chainid);\n            list = baseList();",
+        "new": "            list = baseList();"
+      }
+    ]
+  },
+  {
+    "id": "N9",
+    "what": "on Base the mint currencies may be replaced",
+    "origin": "design/2026-11-21-base-deployment.md",
+    "file": "script/ConfigureWeighted.s.sol",
+    "test": "test/ConfigureWeighted.t.sol",
+    "edits": [
+      {
+        "old": "        if (\n            block.chainid == 1 || block.chainid == BnbChainAddresses.CHAIN_ID || block.chainid == BaseAddresses.CHAIN_ID\n        ) {\n",
+        "new": "        if (block.chainid == 1 || block.chainid == BnbChainAddresses.CHAIN_ID) {\n"
+      }
+    ]
+  },
+  {
+    "id": "N10",
+    "what": "a copy of Base's bridge is listed with no tier",
+    "origin": "design/2026-11-21-base-deployment.md",
+    "file": "script/BaseAddresses.sol",
+    "test": "test/ConfigureWeighted.t.sol",
+    "edits": [
+      {
+        "old": "        if (token == ZRO || remoteOf(token) != address(0)) return Listings.Tier.Bridged;",
+        "new": "        if (token == ZRO) return Listings.Tier.Bridged;"
+      }
+    ]
   }
 ]

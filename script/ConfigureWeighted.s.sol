@@ -6,6 +6,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
 import {BnbChainAddresses} from "./BnbChainAddresses.sol";
+import {BaseAddresses} from "./BaseAddresses.sol";
 import {Listings} from "./Listings.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
 
@@ -29,7 +30,8 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///   V5_MODE       `propose`, `safe`, `execute`, or `status` (read-only: what is listed and pending, per token).
 ///   V5_FACTORY    Deployed WeightedIndexFactory.
 ///   V5_WHITELIST  `default` for the first four of `Listings`, `wide` for the rest (both chain 1 only), `bnb` for the
-///                 BNB Chain list of `BnbChainAddresses` (chain 56 only), or comma-separated token addresses.
+///                 BNB Chain list of `BnbChainAddresses` (chain 56 only), `base` for the Base list of `BaseAddresses`
+///                 (chain 8453 only), or comma-separated token addresses.
 ///   V5_LIST       Optional. Tokens never listed that propose and safe mode may propose: comma-separated addresses, or
 ///                 `all` for every token of the list. Leave it unset on a routine run.
 ///   V5_RELIST     Optional. Comma-separated delisted tokens that propose and safe mode may list again.
@@ -55,16 +57,18 @@ contract ConfigureWeighted is Script {
 
     /// @notice V5_MODE is not one of the modes above.
     error UnknownMode(string mode);
-    /// @notice V5_WHITELIST names a chain's list on another chain: `default` or `wide` off chain 1, `bnb` off chain 56.
+    /// @notice V5_WHITELIST names a chain's list on another chain: `default` or `wide` off chain 1, `bnb` off chain 56,
+    ///         `base` off chain 8453.
     error ListOffItsChain(string list, uint256 chainId);
     /// @notice A broadcasting mode needs an owner that can sign, and this factory's owner is a contract (a Safe on
     ///         mainnet). Use `safe` and submit the calldata it logs from the owner.
     error OwnerIsContract(address owner);
     /// @notice The list names `token` twice (RT-24).
     error DuplicateEntry(address token);
-    /// @notice Off Ethereum and BNB Chain the mint currency `name` must be given: only the deployment knows it.
+    /// @notice Off Ethereum, BNB Chain and Base the mint currency `name` must be given: only the deployment knows it.
     error MintCurrencyRequired(string name);
-    /// @notice On Ethereum and BNB Chain the mint currencies are the chain's address book's; `name` named another.
+    /// @notice On Ethereum, BNB Chain and Base the mint currencies are the chain's address book's; `name` named
+    ///         another.
     error MintCurrencyOverride(string name, address given);
 
     /// @notice Reads the V5_ variables and runs the mode.
@@ -117,6 +121,11 @@ contract ConfigureWeighted is Script {
         return BnbChainAddresses.all();
     }
 
+    /// @notice The Base list, every coin of `BaseAddresses`.
+    function baseList() public pure returns (address[] memory list) {
+        return BaseAddresses.all();
+    }
+
     function _slice(uint256 from, uint256 to) private pure returns (address[] memory list) {
         address[] memory tokens = Listings.all();
         list = new address[](to - from);
@@ -125,8 +134,8 @@ contract ConfigureWeighted is Script {
         }
     }
 
-    /// @notice `default` and `wide` on chain 1 only, `bnb` on chain 56 only; anything else is parsed as
-    ///         comma-separated token addresses. Reverts on a token named twice (RT-24).
+    /// @notice `default` and `wide` on chain 1 only, `bnb` on chain 56 only, `base` on chain 8453 only; anything else
+    ///         is parsed as comma-separated token addresses. Reverts on a token named twice (RT-24).
     function resolveList(string memory raw) public view returns (address[] memory list) {
         bool isDefault = ScriptUtils.same(raw, "default");
         if (isDefault || ScriptUtils.same(raw, "wide")) {
@@ -135,6 +144,9 @@ contract ConfigureWeighted is Script {
         } else if (ScriptUtils.same(raw, "bnb")) {
             if (block.chainid != BnbChainAddresses.CHAIN_ID) revert ListOffItsChain(raw, block.chainid);
             list = bnbList();
+        } else if (ScriptUtils.same(raw, "base")) {
+            if (block.chainid != BaseAddresses.CHAIN_ID) revert ListOffItsChain(raw, block.chainid);
+            list = baseList();
         } else {
             list = parseAddresses(raw);
         }
@@ -210,10 +222,11 @@ contract ConfigureWeighted is Script {
         }
     }
 
-    /// @notice ` (<tier>)` for a token either chain's list records a tier for, and nothing for any other.
+    /// @notice ` (<tier>)` for a token a chain's list records a tier for, and nothing for any other.
     function tierLabel(address token) public pure returns (string memory) {
         Listings.Tier tier = Listings.tierOf(token);
         if (tier == Listings.Tier.Unrecorded) tier = BnbChainAddresses.tierOf(token);
+        if (tier == Listings.Tier.Unrecorded) tier = BaseAddresses.tierOf(token);
         return tier == Listings.Tier.Unrecorded ? "" : string.concat(" (", Listings.tierName(tier), ")");
     }
 
@@ -272,11 +285,12 @@ contract ConfigureWeighted is Script {
     }
 
     /// @dev The parts of the whitelist policy a script can check: a token with code and 6 to 18 decimals, and no mint
-    ///      currency as a component, neither the deployment's (`currencies`) nor Ethereum's or BNB Chain's.
+    ///      currency as a component, neither the deployment's (`currencies`) nor Ethereum's, BNB Chain's or Base's.
     function _followsPolicy(address token, address[2] memory currencies) private view returns (bool) {
         if (
             token == currencies[0] || token == currencies[1] || token == MainnetAddresses.USDC
                 || token == MainnetAddresses.USDT || token == BnbChainAddresses.USDC || token == BnbChainAddresses.USDT
+                || token == BaseAddresses.USDC || token == BaseAddresses.USDT
         ) {
             console2.log("skipped, a mint currency is not a component", token);
             return false;
@@ -299,12 +313,17 @@ contract ConfigureWeighted is Script {
     ///         both required.
     function mintCurrencies(address usdc, address usdt) public view returns (address[2] memory currencies) {
         bool bnb = block.chainid == BnbChainAddresses.CHAIN_ID;
-        currencies[0] = _mintCurrency("V5_USDC", usdc, bnb ? BnbChainAddresses.USDC : MainnetAddresses.USDC);
-        currencies[1] = _mintCurrency("V5_USDT", usdt, bnb ? BnbChainAddresses.USDT : MainnetAddresses.USDT);
+        bool base = block.chainid == BaseAddresses.CHAIN_ID;
+        address bookUsdc = base ? BaseAddresses.USDC : bnb ? BnbChainAddresses.USDC : MainnetAddresses.USDC;
+        address bookUsdt = base ? BaseAddresses.USDT : bnb ? BnbChainAddresses.USDT : MainnetAddresses.USDT;
+        currencies[0] = _mintCurrency("V5_USDC", usdc, bookUsdc);
+        currencies[1] = _mintCurrency("V5_USDT", usdt, bookUsdt);
     }
 
     function _mintCurrency(string memory name, address given, address pinned) private view returns (address) {
-        if (block.chainid == 1 || block.chainid == BnbChainAddresses.CHAIN_ID) {
+        if (
+            block.chainid == 1 || block.chainid == BnbChainAddresses.CHAIN_ID || block.chainid == BaseAddresses.CHAIN_ID
+        ) {
             if (given != address(0) && given != pinned) revert MintCurrencyOverride(name, given);
             return pinned;
         }

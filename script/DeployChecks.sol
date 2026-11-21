@@ -6,20 +6,24 @@ import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
 import {ISafeThreshold} from "./interfaces/ISafeThreshold.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
 import {BnbChainAddresses} from "./BnbChainAddresses.sol";
+import {BaseAddresses} from "./BaseAddresses.sol";
 import {Listings} from "./Listings.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
 
 /// @notice The checks every deployment of a factory runs before it broadcasts: the owner, the guardian, the roles
 ///         against the market, and the market addresses themselves. `DeployWeighted` runs them on each chain it
-///         deploys to, so the rules on who may own a factory exist once. Two chains are pinned, each to its address
-///         book: Ethereum (1) to `MainnetAddresses` and BNB Chain (56) to `BnbChainAddresses`
-///         (`design/2026-11-13-bnb-chain-deployment.md`). On a pinned chain the market addresses are the book's and
+///         deploys to, so the rules on who may own a factory exist once. Three chains are pinned, each to its address
+///         book: Ethereum (1) to `MainnetAddresses`, BNB Chain (56) to `BnbChainAddresses`
+///         (`design/2026-11-13-bnb-chain-deployment.md`) and Base (8453) to `BaseAddresses`
+///         (`design/2026-11-21-base-deployment.md`). On a pinned chain the market addresses are the book's and
 ///         nothing else; elsewhere they come from the environment.
 abstract contract DeployChecks is Script {
     /// @notice Default {resolveRouter} uses on chain 1, from `MainnetAddresses`.
     address public constant MAINNET_UNIVERSAL_ROUTER = MainnetAddresses.UNIVERSAL_ROUTER;
     /// @notice Default {resolveRouter} uses on chain 56, from `BnbChainAddresses`.
     address public constant BNB_UNIVERSAL_ROUTER = BnbChainAddresses.UNIVERSAL_ROUTER;
+    /// @notice Default {resolveRouter} uses on chain 8453, from `BaseAddresses`.
+    address public constant BASE_UNIVERSAL_ROUTER = BaseAddresses.UNIVERSAL_ROUTER;
     /// @notice Fewest signatures a Safe owner may need on a mainnet: the design's 3-of-5 hardware wallets held by
     ///         separate people (the owner's call on 2026-09-30).
     uint256 public constant MIN_OWNER_THRESHOLD = 3;
@@ -235,7 +239,9 @@ abstract contract DeployChecks is Script {
     /// @return list The router and the PoolManager it settles against, then, on a pinned chain, every token and mint
     ///         currency in that chain's address book.
     function marketContracts(address router) public view returns (address[] memory list) {
-        address[] memory book = onBnbChain() ? _bnbMarket() : isPinnedChain() ? _mainnetMarket() : new address[](0);
+        address[] memory book = onBase()
+            ? _baseMarket()
+            : onBnbChain() ? _bnbMarket() : isPinnedChain() ? _mainnetMarket() : new address[](0);
         list = new address[](book.length + 2);
         list[0] = router;
         list[1] = IUniversalRouter(router).poolManager();
@@ -254,6 +260,11 @@ abstract contract DeployChecks is Script {
         return _withStables(BnbChainAddresses.all(), BnbChainAddresses.USDC, BnbChainAddresses.USDT);
     }
 
+    /// @dev Every token the Base address book lists, then its two mint currencies.
+    function _baseMarket() private pure returns (address[] memory) {
+        return _withStables(BaseAddresses.all(), BaseAddresses.USDC, BaseAddresses.USDT);
+    }
+
     /// @dev `tokens`, then the chain's two mint currencies.
     function _withStables(address[] memory tokens, address usdc, address usdt)
         private
@@ -268,12 +279,21 @@ abstract contract DeployChecks is Script {
         (list[n], list[n + 1]) = (usdc, usdt);
     }
 
-    /// @notice Whether this chain's market addresses are pinned to an address book: Ethereum's or BNB Chain's. Keyed on
-    ///         the chain id and, which a chain-id override (`--chain-id`, FOUNDRY_CHAIN_ID, `chain_id` in foundry.toml)
-    ///         cannot change, on the chain's router having code here: a run against a mainnet's state keeps every
-    ///         mainnet check however the script's chain id is set, while forge still signs for that chain (RX-23).
+    /// @notice Whether this chain's market addresses are pinned to an address book: Ethereum's, BNB Chain's or
+    ///         Base's. Keyed on the chain id and, which a chain-id override (`--chain-id`, FOUNDRY_CHAIN_ID, `chain_id`
+    ///         in foundry.toml) cannot change, on a router having code here: a run against a mainnet's state keeps
+    ///         every mainnet check however the script's chain id is set, while forge still signs for that chain (RX-23).
     function isPinnedChain() public view returns (bool) {
-        return onBnbChain() || block.chainid == 1 || MAINNET_UNIVERSAL_ROUTER.code.length != 0;
+        return onBase() || onBnbChain() || block.chainid == 1 || MAINNET_UNIVERSAL_ROUTER.code.length != 0;
+    }
+
+    /// @notice Whether the pinned chain is Base: its own id, 8453, and nothing else. No router's code tells Base:
+    ///         Base's router address has code on Ethereum and on BNB Chain too, and theirs on Base (read on
+    ///         2026-11-21), each a replay that settles against nothing where it stands. A run against Base's state
+    ///         under another id is still pinned, by BNB Chain's router standing there: it resolves BNB Chain's book
+    ///         and stops at BNB Chain's USDC address, empty on Base.
+    function onBase() public view returns (bool) {
+        return block.chainid == BaseAddresses.CHAIN_ID;
     }
 
     /// @notice Whether the pinned chain is BNB Chain. A pinned chain's own id decides wherever the script runs under
@@ -289,7 +309,8 @@ abstract contract DeployChecks is Script {
     ///      it stays pinned, resolves Ethereum's book and stops at Ethereum's USDC address, empty on BNB Chain.
     function onBnbChain() public view returns (bool) {
         if (block.chainid == BnbChainAddresses.CHAIN_ID) return true;
-        return block.chainid != 1 && BNB_UNIVERSAL_ROUTER.code.length != 0;
+        // Base's id decides for Base as Ethereum's does for Ethereum: BNB Chain's router has code on Base.
+        return block.chainid != 1 && !onBase() && BNB_UNIVERSAL_ROUTER.code.length != 0;
     }
 
     /// @notice On a pinned chain, refuses Foundry's default sender as the broadcaster: with `--account` but no
@@ -300,18 +321,21 @@ abstract contract DeployChecks is Script {
         if (isPinnedChain() && msg.sender == DEFAULT_SENDER) revert BroadcasterRequired();
     }
 
-    /// @notice The pinned chain's Universal Router: BNB Chain's there, Ethereum's otherwise.
+    /// @notice The pinned chain's Universal Router: Base's there, BNB Chain's there, Ethereum's otherwise.
     function pinnedRouter() public view returns (address) {
+        if (onBase()) return BASE_UNIVERSAL_ROUTER;
         return onBnbChain() ? BNB_UNIVERSAL_ROUTER : MAINNET_UNIVERSAL_ROUTER;
     }
 
     /// @notice The pinned chain's USDC.
     function pinnedUsdc() public view returns (address) {
+        if (onBase()) return BaseAddresses.USDC;
         return onBnbChain() ? BnbChainAddresses.USDC : MainnetAddresses.USDC;
     }
 
     /// @notice The pinned chain's USDT.
     function pinnedUsdt() public view returns (address) {
+        if (onBase()) return BaseAddresses.USDT;
         return onBnbChain() ? BnbChainAddresses.USDT : MainnetAddresses.USDT;
     }
 

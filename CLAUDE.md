@@ -27,6 +27,13 @@ Ethereum") and, in part, the one-index decision below, which still describes the
 the same day the owner named which Wormhole copies leave Ethereum's list: the six wrapped from BNB Chain (XRP, ADA,
 LTC, DOT, ATOM and BNB), since BNB Chain's deployment holds those coins in kind; the nine from other chains stay.
 
+**A third deployment, on Base, since 2026-11-21** (the owner's call that day: "we have to add base",
+`design/2026-11-21-base-deployment.md`), built as scripts and tests like BNB Chain's, with no contract changed:
+`script/BaseAddresses.sol` (sixteen coins: WETH and AERO, issued there, ZRO, and thirteen copies Base's own bridge
+mints of coins on Ethereum's list, each proven on chain and labelled Bridged), `V5_WHITELIST=base`, `CHECK=base` and
+`test/fork/BaseAddresses.fork.t.sol`. Base has none of Backed's stocks: its factories stand there and have deployed
+no wrapper. The three deployments share nothing, and only wallets the owner approves create an index on any of them.
+
 **The Ethereum deployment: one index holds up to 200 coins (100 until 2026-11-21), of the top 300** (the owner's decision
 of 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). `WeightedIndexFactory`, `WeightedHub`, `IndexZap` and
 `MintRequests` hold Ethereum ERC-20s in kind: the issuer's own contract where Ethereum has one (71 candidates of the
@@ -492,6 +499,36 @@ built on it and found in it.
     Sepolia runs, `5b7635f`, and moves with a Sepolia deployment of this candidate, the deployer's keystore being
     the owner's; the keeper on BNB Chain, whose bot assumes a float of six decimals and twelve-second blocks; the
     external audit.
+- **The Base deployment** was built on 2026-11-21 (the owner's call; `design/2026-11-21-base-deployment.md`). No
+  contract under `src/` changed, and the release hashes did not move.
+  - `script/BaseAddresses.sol` is Base's address book: sixteen coins (WETH, AERO, ZRO, and the copies Base's standard
+    bridge mints of UNI, AAVE, MORPHO, FET, CRV, VIRTUAL, PENDLE, PEPE, GRT, COMP, SNX, 1INCH and RSR), each copy
+    with the Ethereum token it names (`remoteOf`, `bridged`); USDC and USDT, six decimals each; both halves of the
+    bridge; and Uniswap's Universal Router, PoolManager and V3 factory there.
+  - How a copy was proven, each of three readings on chain: its `remoteToken()` is the coin's address in
+    `MainnetAddresses`, its `bridge()` is Base's standard bridge, and the bridge's other half on Ethereum holds at
+    least the copy's supply (`deposits(remote, copy)`). SHIB and EIGEN, which the bridge holds and for which no copy
+    was found, LINK, whose Base token is Chainlink's own, and cbBTC are not listed.
+  - `DeployChecks` pins chain 8453 by its id alone (`onBase`); `ConfigureWeighted` lists `V5_WHITELIST=base` there
+    and nowhere else and pins its mint currencies; `CheckToken` takes `CHECK=base` and reads depth against WETH and
+    USDC.
+  - Found on the way: BNB Chain's router address has code on Base, so until this change the checks read a
+    deployment on Base as BNB Chain's and stopped at BNB Chain's USDC address. Nothing could have been deployed
+    wrongly. Mutants N6 to N10, all killed; N1, N2, N4 and N5 follow the rewritten lines (223 mutants in all).
+  - The fork suite passed on Base's state that day, 11 of 11 at block 60,498,455, its pin: the tokens, every copy's
+    two readings on Base's side, the three code hashes, the two replayed routers naming nothing, a deployment from
+    the book, the list on a fresh factory, every coin through `CheckToken` as listable, an index of all sixteen
+    issued in kind, rebalanced with real transfers and redeemed, `MintRequests` filled in USDC and USDT through
+    bound requests, the zap minting and burning an index of WETH, AERO and VIRTUAL in USDC along two-hop routes on
+    Uniswap's pools, and ether refused. Ethereum's five suites and BNB Chain's ran with it on archive nodes at their
+    pins: 64 tests, none failed or skipped. The suite has 561 tests without an RPC, coverage 100% on every file.
+  - CI passes `BASE_RPC_URL` to the test step; without that secret the Base suite skips. The archive key the other
+    suites ran on has Base switched off, so the suite ran on a public node, which serves its pin only while the
+    block is recent.
+  - What it costs, said to the owner: Base has no stock; Base's bridge is a party to thirteen of the sixteen coins;
+    Uniswap routes few of them, Aerodrome holding most of Base's depth; an index lives on one chain.
+  - Not done: the owner Safe and the guardian's Safe on Base; the `BASE_RPC_URL` secret; a reading of who mints
+    Base's USDT and can replace its code; the keeper on Base, which has no preset or executor there; the app.
 - Before any mainnet: a Hermes plan that serves the keeper its feeds (its price source is its own business now, and
   no contract waits on it); a run of the fork suites; an external audit (the red
   team of the oracle-free mechanism ran on 2026-11-14), then `DeployWeighted`'s release hashes fixed at the
@@ -556,17 +593,21 @@ MAINNET_RPC_URL=https://ethereum-rpc.publicnode.com FORK_BLOCK=$(( $(cast block-
 # the BNB Chain deployment's fork suite (real tokens, Universal Router, V3 pools); skipped when the env var is unset
 BNB_RPC_URL=https://bsc-rpc.publicnode.com BNB_FORK_BLOCK=$(( $(cast block-number --rpc-url https://bsc-rpc.publicnode.com) - 8 )) forge test --match-path 'test/fork/BnbChainAddresses.fork.t.sol'
 
+# the Base deployment's fork suite, the same way
+BASE_RPC_URL=https://base-rpc.publicnode.com BASE_FORK_BLOCK=$(( $(cast block-number --rpc-url https://base-rpc.publicnode.com) - 8 )) forge test --match-path 'test/fork/BaseAddresses.fork.t.sol'
+
 # the admission check, read-only, before any listing: one report per token for the Safe's signers
 CHECK=wide forge script script/CheckToken.s.sol --fork-url $MAINNET_RPC_URL
 CHECK=bnb forge script script/CheckToken.s.sol --fork-url $BNB_RPC_URL
+CHECK=base forge script script/CheckToken.s.sol --fork-url $BASE_RPC_URL
 ```
 
-Deployment, once on each chain, Ethereum and BNB Chain: `script/DeployWeighted.s.sol`, which gives the guardian role
+Deployment, once on each chain, Ethereum, BNB Chain and Base: `script/DeployWeighted.s.sol`, which gives the guardian role
 to that chain's guardian's Safe,
 then `script/ConfigureWeighted.s.sol`, which lists each coin of `script/Listings.sol`; the owner then approves the
 wallets that create indexes (`setApprovedCreator`), and nobody can create one before. `script/CheckToken.s.sol` reports on every token before its first
 listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 171 in all, on Ethereum;
-`V5_WHITELIST=bnb` is BNB Chain's 116. On chains 1 and 56 the deploy script resolves the router and the
+`V5_WHITELIST=bnb` is BNB Chain's 116 and `V5_WHITELIST=base` Base's sixteen. On chains 1, 56 and 8453 the deploy script resolves the router and the
 stablecoins from that chain's address book and refuses any other address
 (`DeployChecks.isPinnedChain`). Sepolia first needs its test market from
 `script/testnet/SetupTestMarket.s.sol`.
@@ -593,7 +634,10 @@ stablecoins from that chain's address book and refuses any other address
    before it ends. They are also required when the deploy checks or `script/MainnetAddresses.sol` change, which
    `MainnetAddresses.fork.t.sol` and `Security.fork.t.sol` exercise. A change to the deploy checks, the zap, the swap
    engine or `script/BnbChainAddresses.sol` also needs the BNB Chain suite, `test/fork/BnbChainAddresses.fork.t.sol`,
-   run with `BNB_RPC_URL`: CI runs it only once that secret exists, so until then it is run by hand.
+   run with `BNB_RPC_URL`: CI runs it only once that secret exists, so until then it is run by hand. The same change,
+   or one to `script/BaseAddresses.sol`, needs Base's suite, `test/fork/BaseAddresses.fork.t.sol`, run with
+   `BASE_RPC_URL` under the same rule. With all three variables set, `forge test --match-path 'test/fork/*'` lists
+   seven suites.
 5. The Wake VS Code analyzer reports no errors or warnings on `src/`. Its reentrancy detector does not model reentrancy
    guards; the documented suppressions are on the `redeem` call in `IndexZap._burnBasket`, the `permit` call in
    `IndexZap._tryPermit`, the `redeem` call in `BasketBuilder.redeem`, and the clone's `initialize` call in
@@ -1253,13 +1297,16 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   - When the owner is a Safe, neither the guardian nor the broadcasting key may be one of its signers (SA-06).
   - Neither role may be a market contract: the router and the PoolManager, and on a mainnet every token and mint
     currency in the address book (CR-I37).
-  - On chains 1 and 56 the market addresses are that chain's address book's and nothing else (`MainnetOverride`);
+  - On chains 1, 56 and 8453 the market addresses are that chain's address book's and nothing else (`MainnetOverride`);
     elsewhere they come from the environment. A pinned chain's own id decides its book: 56 is BNB Chain and 1 is
     Ethereum, whatever code stands at either router's address, because both routers are CREATE2 deployments anyone
     can replay onto the other chain (Ethereum's stands on BNB Chain). Under any other id, a chain-id override
     included, BNB Chain's router having code names BNB Chain and is asked before Ethereum's (RX-23). Never tell a
-    real chain 1 or 56 by code alone (mutants N1, N2 and N5).
-  - On chains 1 and 56 `deploy` broadcasts only the build `DeployWeighted`'s `FACTORY_INITCODE_HASH`, `ZAP_INITCODE_HASH`,
+    real chain 1 or 56 by code alone (mutants N1, N2 and N5). Base is told by its id, 8453, and by nothing else:
+    all three routers' addresses have code on the other two chains, so no router's code names Base, and BNB Chain's
+    standing there read a deployment on Base as BNB Chain's until 2026-11-21 (mutants N6 and N7). A run against
+    Base's state under another id stays pinned, to BNB Chain's book, and stops at its USDC address.
+  - On chains 1, 56 and 8453 `deploy` broadcasts only the build `DeployWeighted`'s `FACTORY_INITCODE_HASH`, `ZAP_INITCODE_HASH`,
     `BUILDER_INITCODE_HASH` and `REQUESTS_INITCODE_HASH` record (`BuildNotReleased`, CF-5). A
     change to `src/`, a dependency or the compiler settings fails `test_CF5_theReleaseHashesAreThisBuilds` until those
     four are set to the values it prints, in the same commit. The test stops at the first mismatch; `cast keccak` of
@@ -1278,6 +1325,20 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   `test_CRL08_theBnbListIsTheReleaseRecord`.
 
 ## Product decisions already made (do not re-litigate silently)
+
+**A third deployment, on Base** (the owner's call of 2026-11-21: "we have to add base . users should be able create
+indexes on bnb eth and base"; `design/2026-11-21-base-deployment.md`). It reverses "no Base deployment for now" of
+2026-10-18. Asked whether "users create" reopens creation, the owner kept the gate: "it should be like this. we have
+to approve and give them acces to out infrastructure and index creationg", so "Only the team creates indexes" below
+stands on every chain, a partner being a wallet the owner approves. Asked what Base lists, the owner first chose the
+coins issued there; told that only WETH, AERO and ZRO are, MORPHO and VIRTUAL being copies of Base's own bridge, the
+owner chose to add those copies: each coin of Ethereum's list whose copy Base's standard bridge mints, proven on
+chain by the Ethereum token and the bridge the copy names and by the backing the bridge holds on Ethereum, labelled
+Bridged, thirteen that day. It bends "Wormhole is the one bridge accepted for wrapping" for Base alone, said to the
+owner: Base's bridge is run by the keys that secure Base itself, so it adds little trust beyond using Base at all.
+Said with it: Base has no stock, Backed having deployed no wrapper there; Uniswap, the zap's one venue, routes a few
+of the sixteen, Aerodrome holding most of Base's depth; cbBTC, a custodian the lists do not have, is not listed; and
+an index lives on one chain.
 
 **Up to 200 coins in one index** (the owner's call of 2026-11-21). The owner asked for 1,000, then 500, then, told
 why neither can work, for "as much as our contracts support". Measured that day: Ethereum caps a transaction at
@@ -1473,7 +1534,7 @@ rebalance interval per index from 7 to 91 days; a private index is one the app d
 chose it, a mint allowlist the creator keeps. The owner's calls of 2026-10-18 on the record's section 9: the cadence
 menu is {7, 14, 30, 91} days; private indexes are unlisted and mint-gated, both opt-in; Xindex runs the first filler;
 the basket builder ships at launch; the replay decides the hardenings; the coin pages show the listed set and tiers;
-no Base deployment for now; the creation fee is zero. The platform's fee, the referrer's share and the platform's
+no Base deployment for now (reversed on 2026-11-21, above); the creation fee is zero. The platform's fee, the referrer's share and the platform's
 streaming rate are not decided yet; the legal reading is counsel's.
 
 **Unchanged from earlier versions:** an owner Safe of at least three signatures; fixed constituents; no protocol bots
@@ -1492,4 +1553,5 @@ If a change would alter any of these, say so explicitly.
   subsidy (`MIN_PROFIT_USD` below zero).
 - An aggregator or Universal Router 2.1 zap.
 - V4 pools on Sepolia, so the V4 legs get a testnet rehearsal rather than only fork and mock coverage.
-- One L2 deployment, if cheap minting for small buyers matters after the two launches.
+- A deployment on a second L2: Base is built since 2026-11-21, and no other is planned.
+- Aerodrome as a venue on Base, where most of that chain's depth sits: the zap swaps through Uniswap alone.

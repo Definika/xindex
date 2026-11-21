@@ -33,6 +33,14 @@ MAINNET_RPC_URL=https://... FORK_BLOCK=<recent block> forge test --match-path 't
 
 `WeightedHub.fork.t.sol` takes about an hour on a cold RPC cache. `-j 1` keeps a keyed RPC under its rate limit.
 
+BNB Chain's deployment and Base's each have a suite of their own, skipped when its variable is unset:
+
+```bash
+BNB_RPC_URL=https://... forge test --match-path 'test/fork/BnbChainAddresses.fork.t.sol'
+BASE_RPC_URL=https://... forge test --match-path 'test/fork/BaseAddresses.fork.t.sol'
+# on a non-archive RPC, pin near the head: BNB_FORK_BLOCK=<recent block>, BASE_FORK_BLOCK=<recent block>
+```
+
 ## CI
 
 `.github/workflows/test.yml` checks that every submodule commit matches `foundry.lock` and that no committed file names

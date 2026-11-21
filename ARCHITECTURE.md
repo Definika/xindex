@@ -9,11 +9,14 @@ reads a price, a feed or an oracle, for any of it. The one place a price enters 
 post with a start: their own figures, used only to refuse a fill (section 3.9). No admin can touch user funds, and no
 protocol key or bot is involved in rebalancing.
 
-**Xindex is two deployments since 2026-11-13, on Ethereum and on BNB Chain** (the owner's call,
-`design/2026-11-13-bnb-chain-deployment.md`): the same contracts on each, sharing nothing, each holding its own chain's
-tokens in kind, so an index lives on one chain and none spans both. The BNB Chain side is its address book, list,
-deploy checks and fork suite (`script/BnbChainAddresses.sol`); no contract changed for it, and everything below
-describes both deployments unless it names Ethereum's list, Wormhole or the restock service, which are Ethereum's.
+**Xindex is three deployments: on Ethereum, on BNB Chain since 2026-11-13 and on Base since 2026-11-21** (the owner's
+calls, `design/2026-11-13-bnb-chain-deployment.md` and `design/2026-11-21-base-deployment.md`): the same contracts on
+each, sharing nothing, each holding its own chain's tokens in kind, so an index lives on one chain and none spans two.
+The BNB Chain side and the Base side are each an address book, a list, deploy checks and a fork suite
+(`script/BnbChainAddresses.sol`, `script/BaseAddresses.sol`); no contract changed for either, and everything below
+describes all three deployments unless it names Ethereum's list, Wormhole or the restock service, which are
+Ethereum's. Base lists sixteen coins: WETH and AERO, issued there, ZRO, and thirteen copies its own bridge mints of
+coins on Ethereum's list; it has none of Backed's stocks.
 
 **On Ethereum one index holds up to 200 coins (100 until 2026-11-21), of the top 300 and of Backed's stocks** (the owner's decision of
 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). An index holds Ethereum ERC-20s in kind: the issuer's own

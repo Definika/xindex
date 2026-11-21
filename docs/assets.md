@@ -58,6 +58,26 @@ FIL's waits for a reading of its Binance-Peg source. Every
 listed token passed `CheckToken` on a mainnet fork, and one fork test issues, rebalances and redeems an index holding
 every coin `forge-std` can fund.
 
+### Base
+
+`script/BaseAddresses.sol` lists sixteen assets for the Base deployment (`V5_WHITELIST=base`), the owner's call of
+2026-11-21 ([`design/2026-11-21-base-deployment.md`](../design/2026-11-21-base-deployment.md)), each held in kind
+there and none through Wormhole:
+
+- WETH and AERO, Native: ether wrapped, and Aerodrome's token, which its own Minter contract mints.
+- ZRO, Bridged, as on Ethereum: LayerZero's own omnichain token.
+- UNI, AAVE, MORPHO, FET, CRV, VIRTUAL, PENDLE, PEPE, GRT, COMP, SNX, 1INCH and RSR, Bridged: the copies Base's
+  standard bridge mints of those coins on Ethereum's list. Each names its Ethereum token and the bridge on chain, and
+  the bridge's other half on Ethereum held each copy's whole supply in backing when it was read. The bridge mints a
+  copy and can burn it out of any holder's balance, which is how a withdrawal to Ethereum works; the keys that
+  upgrade Base can upgrade both halves, so the app labels each with Base's bridge as its issuer. MORPHO's copy is a
+  proxy its issuer's Safe, 5 of 9, upgrades.
+
+Base has no stock: Backed's factories stand there and have deployed no wrapper. Its mint currencies are Circle's USDC
+and the token that answers USDT there, six decimals each; who can mint that USDT and replace its code is to be read
+before a deployment. Uniswap, the zap's one venue, routes WETH, AERO and VIRTUAL there; most of Base's depth sits on
+Aerodrome, so the other coins mint in kind or through `MintRequests`.
+
 ### BNB Chain
 
 `script/BnbChainAddresses.sol` lists 116 assets for the BNB Chain deployment (`V5_WHITELIST=bnb`), each held in kind

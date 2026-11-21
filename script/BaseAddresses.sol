@@ -1,0 +1,172 @@
+// SPDX-License-Identifier: BUSL-1.1
+pragma solidity 0.8.28;
+
+import {Listings} from "./Listings.sol";
+import {MainnetAddresses} from "./MainnetAddresses.sol";
+
+/// @notice The Base contracts the deploy and listing scripts use for the Base deployment (the owner's call of
+///         2026-11-21, `design/2026-11-21-base-deployment.md`): the tokens its indexes may hold, each with its trust
+///         tier, the mint currencies and Uniswap's contracts there. This is the only copy: `DeployChecks`,
+///         `ConfigureWeighted` and `CheckToken` read it on chain 8453, and `test/fork/BaseAddresses.fork.t.sol` checks
+///         it on chain (tokens by symbol and decimals, each bridged copy by the Ethereum token and the bridge it
+///         names, the router, the PoolManager and the V3 factory by their runtime code). No coin carries a price
+///         feed: an index rebalances on units alone (`design/2026-11-10-oracle-free-rebalance.md`). Every address
+///         here was read on chain 8453 on 2026-11-21, at block 60,490,874.
+/// @dev The list is the owner's rule of that day: the coins issued on Base itself, and each coin of Ethereum's list
+///      whose copy Base's own bridge mints, proven on chain. Proven means three readings: the copy's `remoteToken()`
+///      is the coin's address in `MainnetAddresses`, its `bridge()` is Base's standard bridge ({STANDARD_BRIDGE}),
+///      and on Ethereum the other half of that bridge ({L1_STANDARD_BRIDGE}) holds the copy's backing
+///      (`deposits(remote, copy)`, at or above the copy's supply on Base for every one listed).
+///      - Thirteen coins pass: UNI, AAVE, MORPHO, FET, CRV, VIRTUAL, PENDLE, PEPE, GRT, COMP, SNX, 1INCH and RSR.
+///      - SHIB and EIGEN have a balance in the bridge on Ethereum and no copy was found for them: not listed.
+///      - LINK on Base is Chainlink's own cross-chain token, not the bridge's copy: not listed.
+///      - No wrapped xStock is listed: Backed's factories stand on Base and have deployed no wrapper there (none of
+///        Ethereum's 109 has code at its address). A Base index holds crypto only.
+///      - cbBTC, Coinbase's bitcoin, is a custodian the lists do not have: not listed (the owner's call).
+library BaseAddresses {
+    /// @notice Base's chain id.
+    uint256 internal constant CHAIN_ID = 8453;
+    /// @notice How many coins the list names.
+    uint256 internal constant COUNT = 16;
+    /// @notice How many of them are copies Base's bridge mints.
+    uint256 internal constant BRIDGED = 13;
+
+    // ---------------------------------------------------------------------
+    // Coins issued on Base, `Native`: ether wrapped as on Ethereum, and Aerodrome's AERO, minted by its own Minter
+    // contract (`minter()`), which no bridge stands behind. On Ethereum AERO is held as Wormhole's copy of this token.
+    // 18 decimals each.
+    // ---------------------------------------------------------------------
+    /// @dev "Wrapped Ether", symbol WETH, 18 decimals: the WETH9 predeploy every OP Stack chain has at this address.
+    address internal constant WETH = 0x4200000000000000000000000000000000000006;
+    /// @dev "Aerodrome", symbol AERO, 18 decimals.
+    address internal constant AERO = 0x940181a94A35A4569E4529A3CDfB74e38FD98631;
+
+    // ---------------------------------------------------------------------
+    // LayerZero's ZRO, `Bridged` as on Ethereum: the issuer's own omnichain token, at the address it has on every
+    // chain, minted here on a message through LayerZero's endpoint (`endpoint()`), which its owner configures.
+    // ---------------------------------------------------------------------
+    /// @dev "LayerZero", symbol ZRO, 18 decimals.
+    address internal constant ZRO = 0x6985884C4392D348587B19cb9eAAf157F13271cd;
+
+    // ---------------------------------------------------------------------
+    // Copies Base's standard bridge mints of coins on Ethereum's list, `Bridged`: a deposit into the bridge on
+    // Ethereum mints the copy here and a withdrawal burns it, so each rests on that bridge and on Base's own
+    // security, whose keys can upgrade both halves. Each names its Ethereum token ({remoteOf}) and the bridge;
+    // 18 decimals each, as on Ethereum. MORPHO's is not the bridge factory's token: it answers `owner()`, which the
+    // admission check reports.
+    // ---------------------------------------------------------------------
+    /// @dev Symbol UNI.
+    address internal constant UNI = 0xc3De830EA07524a0761646a6a4e4be0e114a3C83;
+    /// @dev Symbol AAVE.
+    address internal constant AAVE = 0x63706e401c06ac8513145b7687A14804d17f814b;
+    /// @dev Symbol MORPHO.
+    address internal constant MORPHO = 0xBAa5CC21fd487B8Fcc2F632f3F4E8D37262a0842;
+    /// @dev Symbol FET.
+    address internal constant FET = 0x74F804B4140ee70830B3Eef4e690325841575F89;
+    /// @dev Symbol CRV.
+    address internal constant CRV = 0x8Ee73c484A26e0A5df2Ee2a4960B789967dd0415;
+    /// @dev Symbol VIRTUAL. 498 million VIRTUAL sat in the bridge on Ethereum that day: the coin trades here.
+    address internal constant VIRTUAL = 0x0b3e328455c4059EEb9e3f84b5543F74E24e7E1b;
+    /// @dev Symbol PENDLE.
+    address internal constant PENDLE = 0xA99F6e6785Da0F5d6fB42495Fe424BCE029Eeb3E;
+    /// @dev Symbol PEPE.
+    address internal constant PEPE = 0xB4fDe59a779991bfB6a52253B51947828b982be3;
+    /// @dev Symbol GRT.
+    address internal constant GRT = 0x0F4d237B09Cb37d207BA60353Dc254d4530D4dF1;
+    /// @dev Symbol COMP.
+    address internal constant COMP = 0x9e1028F5F1D5eDE59748FFceE5532509976840E0;
+    /// @dev Symbol SNX.
+    address internal constant SNX = 0x22e6966B799c4D5B13BE962E1D117b56327FDa66;
+    /// @dev Symbol 1INCH.
+    address internal constant ONEINCH = 0xc5fecC3a29Fb57B5024eEc8a2239d4621e111CBE;
+    /// @dev Symbol RSR.
+    address internal constant RSR = 0xaB36452DbAC151bE02b16Ca17d8919826072f64a;
+
+    // ---------------------------------------------------------------------
+    // The mint currencies, never components: Circle's USDC, issued on Base, and the token that answers "Tether USD"
+    // and USDT there, which is no copy of the standard bridge's (it names no bridge); who can mint it and replace
+    // its code was not read on 2026-11-21, and is to be read before a deployment. Six decimals each, as on Ethereum.
+    // ---------------------------------------------------------------------
+    address internal constant USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
+    address internal constant USDT = 0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2;
+
+    // ---------------------------------------------------------------------
+    // The bridge the copies above name, and its other half on Ethereum, which holds their backing.
+    // ---------------------------------------------------------------------
+    /// @dev Base's L2StandardBridge, a predeploy: what every listed copy answers to `bridge()`.
+    address internal constant STANDARD_BRIDGE = 0x4200000000000000000000000000000000000010;
+    /// @dev Base's L1StandardBridge, on Ethereum: `deposits(remote, copy)` is the backing it holds for a copy.
+    address internal constant L1_STANDARD_BRIDGE = 0x3154Cf16ccdb4C6d922629664174b904d80F2C35;
+
+    // ---------------------------------------------------------------------
+    // Uniswap on Base, the zap's and the builder's one venue. Most of Base's depth sits on Aerodrome, which neither
+    // the zap nor `CheckToken` reads. `DeployChecks` tells chain 8453 by its chain id: Ethereum's and BNB Chain's
+    // router addresses both have code on Base, replays that settle against nothing here.
+    // ---------------------------------------------------------------------
+    /// @dev Uniswap's Universal Router on Base, which routes both V3 and V4 pools; answers {POOL_MANAGER}.
+    address internal constant UNIVERSAL_ROUTER = 0x6fF5693b99212Da76ad316178A184AB56D299b43;
+    /// @dev Uniswap V4's PoolManager on Base, which the zap reads off the router.
+    address internal constant POOL_MANAGER = 0x498581fF718922c3f8e6A244956aF099B2652b2b;
+    /// @dev Uniswap V3's factory on Base, where `CheckToken` looks up a token's Uniswap pools.
+    address internal constant UNISWAP_V3_FACTORY = 0x33128a8fC17869897dcE68Ed026d694621f6FDfD;
+
+    /// @notice Every coin of the list: the two issued on Base, ZRO, then the bridge's copies in the order Ethereum's
+    ///         list holds their coins.
+    function all() internal pure returns (address[] memory tokens) {
+        tokens = new address[](COUNT);
+        tokens[0] = WETH;
+        tokens[1] = AERO;
+        tokens[2] = ZRO;
+        tokens[3] = UNI;
+        tokens[4] = AAVE;
+        tokens[5] = MORPHO;
+        tokens[6] = FET;
+        tokens[7] = CRV;
+        tokens[8] = VIRTUAL;
+        tokens[9] = PENDLE;
+        tokens[10] = PEPE;
+        tokens[11] = GRT;
+        tokens[12] = COMP;
+        tokens[13] = SNX;
+        tokens[14] = ONEINCH;
+        tokens[15] = RSR;
+    }
+
+    /// @notice The tier of a token in the list, as `Listings.tierOf` gives Ethereum's: `Native` for WETH and AERO,
+    ///         `Bridged` for ZRO and every copy the bridge mints, `Unrecorded` for any token off the list.
+    function tierOf(address token) internal pure returns (Listings.Tier) {
+        if (token == WETH || token == AERO) return Listings.Tier.Native;
+        if (token == ZRO || remoteOf(token) != address(0)) return Listings.Tier.Bridged;
+        return Listings.Tier.Unrecorded;
+    }
+
+    /// @notice The Ethereum token a listed copy of the bridge's names (`remoteToken()`), from `MainnetAddresses`;
+    ///         zero for a token the bridge does not mint, the two issued on Base and ZRO among them.
+    function remoteOf(address token) internal pure returns (address) {
+        (address[BRIDGED] memory copies, address[BRIDGED] memory remotes) = bridged();
+        for (uint256 i = 0; i < copies.length; ++i) {
+            if (token == copies[i]) return remotes[i];
+        }
+        return address(0);
+    }
+
+    /// @notice The thirteen copies the bridge mints, each with the Ethereum token it names, in the list's order.
+    function bridged() internal pure returns (address[BRIDGED] memory copies, address[BRIDGED] memory remotes) {
+        copies = [UNI, AAVE, MORPHO, FET, CRV, VIRTUAL, PENDLE, PEPE, GRT, COMP, SNX, ONEINCH, RSR];
+        remotes = [
+            MainnetAddresses.UNI,
+            MainnetAddresses.AAVE,
+            MainnetAddresses.MORPHO,
+            MainnetAddresses.FET,
+            MainnetAddresses.CRV,
+            MainnetAddresses.VIRTUAL,
+            MainnetAddresses.PENDLE,
+            MainnetAddresses.PEPE,
+            MainnetAddresses.GRT,
+            MainnetAddresses.COMP,
+            MainnetAddresses.SNX,
+            MainnetAddresses.ONEINCH,
+            MainnetAddresses.RSR
+        ];
+    }
+}

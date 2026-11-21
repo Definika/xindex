@@ -11,6 +11,7 @@ import {CheckToken} from "../script/CheckToken.s.sol";
 import {ConfigureWeighted} from "../script/ConfigureWeighted.s.sol";
 import {MainnetAddresses} from "../script/MainnetAddresses.sol";
 import {BnbChainAddresses} from "../script/BnbChainAddresses.sol";
+import {BaseAddresses} from "../script/BaseAddresses.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockFeeToken} from "./mocks/MockFeeToken.sol";
 import {MockRebasingToken} from "./mocks/MockRebasingToken.sol";
@@ -734,6 +735,12 @@ contract CheckTokenTest is Test {
         assertEq(m.poolManager, BnbChainAddresses.POOL_MANAGER);
         assertEq(m.weth, BnbChainAddresses.WBNB);
         assertEq(m.usdc, BnbChainAddresses.USDT, "Uniswap's depth on BNB Chain sits against USDT");
+        vm.chainId(BaseAddresses.CHAIN_ID);
+        m = checker.markets();
+        assertEq(m.v3Factory, BaseAddresses.UNISWAP_V3_FACTORY);
+        assertEq(m.poolManager, BaseAddresses.POOL_MANAGER);
+        assertEq(m.weth, BaseAddresses.WETH);
+        assertEq(m.usdc, BaseAddresses.USDC);
     }
 
     // ---------------------------------------------------------------------
@@ -814,6 +821,8 @@ contract CheckTokenTest is Test {
         assertEq(checker.pairName(MainnetAddresses.USDC), "USDC");
         assertEq(checker.pairName(BnbChainAddresses.WBNB), "WBNB");
         assertEq(checker.pairName(BnbChainAddresses.USDT), "USDT");
+        assertEq(checker.pairName(BaseAddresses.WETH), "WETH");
+        assertEq(checker.pairName(BaseAddresses.USDC), "USDC");
         assertEq(checker.pairName(key), vm.toString(key));
         vm.chainId(BnbChainAddresses.CHAIN_ID);
         assertEq(checker.pairName(address(0)), "BNB", "BNB Chain's coin is BNB");
@@ -843,6 +852,8 @@ contract CheckTokenTest is Test {
         vm.chainId(1);
         checker.log(r);
         vm.chainId(BnbChainAddresses.CHAIN_ID);
+        checker.log(r);
+        vm.chainId(BaseAddresses.CHAIN_ID);
         checker.log(r);
     }
 
@@ -888,6 +899,11 @@ contract CheckTokenTest is Test {
         assertEq(bnb.length, BnbChainAddresses.COUNT);
         assertEq(bnb[0], BnbChainAddresses.WBNB);
         assertEq(bnb[11], BnbChainAddresses.STABLE);
+        vm.chainId(BaseAddresses.CHAIN_ID);
+        address[] memory base = checker.resolveTokens("base");
+        assertEq(base.length, BaseAddresses.COUNT);
+        assertEq(base[0], BaseAddresses.WETH);
+        assertEq(base[15], BaseAddresses.RSR);
     }
 
     function test_run_readsTheEnvironment() public {

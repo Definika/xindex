@@ -10,6 +10,7 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {ConfigureWeighted} from "./ConfigureWeighted.s.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
 import {BnbChainAddresses} from "./BnbChainAddresses.sol";
+import {BaseAddresses} from "./BaseAddresses.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
 import {IAdminReads} from "./interfaces/IAdminReads.sol";
 import {IPoolManagerStorage} from "./interfaces/IPoolManagerStorage.sol";
@@ -24,6 +25,7 @@ import {IUniswapV3PoolRead} from "./interfaces/IUniswapV3PoolRead.sol";
 ///
 ///   CHECK=wide forge script script/CheckToken.s.sol --fork-url <mainnet rpc>
 ///   CHECK=bnb forge script script/CheckToken.s.sol --fork-url <bnb chain rpc>
+///   CHECK=base forge script script/CheckToken.s.sol --fork-url <base rpc>
 ///   CHECK=<token,...> forge script script/CheckToken.s.sol --fork-url <any evm rpc>
 ///
 /// What it checks, and what each finding does:
@@ -55,7 +57,8 @@ import {IUniswapV3PoolRead} from "./interfaces/IUniswapV3PoolRead.sol";
 ///
 /// Env:
 ///   CHECK          `default` or `wide`, the tokens of `ConfigureWeighted`'s Ethereum lists (chain 1 only), `bnb`,
-///                  its BNB Chain list (chain 56 only), or comma-separated token addresses.
+///                  its BNB Chain list (chain 56 only), `base`, its Base list (chain 8453 only), or comma-separated
+///                  token addresses.
 ///   CHECK_HOLDERS  Optional comma-separated `token:holder` pairs: an account the transfer check may take the test
 ///                  balance from when the token's balance slot cannot be written (balances kept elsewhere, or shares).
 ///                  On Ethereum and BNB Chain the token's own pools are tried after it.
@@ -286,16 +289,21 @@ contract CheckToken is Script {
     }
 
     /// @notice CHECK's tokens: those of `ConfigureWeighted`'s `default` or `wide` list, which only chain 1 resolves,
-    ///         its `bnb` list, which only chain 56 resolves, or comma-separated addresses.
+    ///         its `bnb` list, which only chain 56 resolves, its `base` list, which only chain 8453 resolves, or
+    ///         comma-separated addresses.
     function resolveTokens(string memory raw) public returns (address[] memory tokens) {
         ConfigureWeighted lists = new ConfigureWeighted();
-        if (!ScriptUtils.same(raw, "default") && !ScriptUtils.same(raw, "wide") && !ScriptUtils.same(raw, "bnb")) {
+        if (
+            !ScriptUtils.same(raw, "default") && !ScriptUtils.same(raw, "wide") && !ScriptUtils.same(raw, "bnb")
+                && !ScriptUtils.same(raw, "base")
+        ) {
             return lists.parseAddresses(raw);
         }
         return lists.resolveList(raw);
     }
 
-    /// @notice Where depth is measured on this chain: Uniswap on Ethereum and on BNB Chain, and nowhere elsewhere.
+    /// @notice Where depth is measured on this chain: Uniswap on Ethereum, on BNB Chain and on Base, and nowhere
+    ///         elsewhere.
     function markets() public view returns (Markets memory m) {
         if (block.chainid == 1) {
             m = Markets({
@@ -310,6 +318,13 @@ contract CheckToken is Script {
                 poolManager: BnbChainAddresses.POOL_MANAGER,
                 weth: BnbChainAddresses.WBNB,
                 usdc: BnbChainAddresses.USDT
+            });
+        } else if (block.chainid == BaseAddresses.CHAIN_ID) {
+            m = Markets({
+                v3Factory: BaseAddresses.UNISWAP_V3_FACTORY,
+                poolManager: BaseAddresses.POOL_MANAGER,
+                weth: BaseAddresses.WETH,
+                usdc: BaseAddresses.USDC
             });
         }
     }
@@ -913,8 +928,9 @@ contract CheckToken is Script {
         if (r.pools.length == 0) {
             console2.log(
                 block.chainid == 1 || block.chainid == BnbChainAddresses.CHAIN_ID
+                    || block.chainid == BaseAddresses.CHAIN_ID
                     ? "  no standard V3 pool or hookless V4 pool"
-                    : "  measured on Ethereum and BNB Chain only"
+                    : "  measured on Ethereum, BNB Chain and Base only"
             );
         }
         for (uint256 i = 0; i < r.pools.length; ++i) {
@@ -1026,6 +1042,8 @@ contract CheckToken is Script {
         if (pair == MainnetAddresses.USDC) return "USDC";
         if (pair == BnbChainAddresses.WBNB) return "WBNB";
         if (pair == BnbChainAddresses.USDT) return "USDT";
+        if (pair == BaseAddresses.WETH) return "WETH";
+        if (pair == BaseAddresses.USDC) return "USDC";
         return vm.toString(pair);
     }
 

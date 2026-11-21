@@ -18,8 +18,8 @@ source .env
 `DeployWeighted` deploys `WeightedIndexFactory` with the owner, `OWNER`, and the guardian's Safe, `GUARDIAN`, as its
 guardian. The factory's constructor deploys `WeightedMath` and the `WeightedHub` implementation every index is a clone
 of. The script then deploys the zap, the basket builder and `MintRequests` for that factory. It runs once on each
-chain, Ethereum and BNB Chain, each with that chain's own owner Safe and guardian's Safe. Listings follow through the
-factory's timelock.
+chain, Ethereum, BNB Chain and Base, each with that chain's own owner Safe and guardian's Safe. Listings follow
+through the factory's timelock.
 
 On BNB Chain the same commands run against a BNB Chain RPC, with `V5_WHITELIST=bnb` for the listings and `CHECK=bnb`
 for the admission check. The script resolves the router, USDC and USDT (the zap's and the builder's only currencies,
@@ -27,6 +27,14 @@ there as on Ethereum) from `script/BnbChainAddresses.sol` and refuses any other 
 the same Safe rules as on Ethereum. Before a first run there: the two Safes on BNB Chain, the source reading of the twelve coins, and
 `BNB_RPC_URL=... forge test --match-path 'test/fork/BnbChainAddresses.fork.t.sol'` passing on an archive RPC
 ([`design/2026-11-13-bnb-chain-deployment.md`](../design/2026-11-13-bnb-chain-deployment.md)).
+
+On Base the same commands run against a Base RPC, with `V5_WHITELIST=base` and `CHECK=base`. The script tells Base by
+its chain id, 8453, and by nothing else, since Ethereum's and BNB Chain's router addresses both have code there; it
+resolves the router, USDC and USDT from `script/BaseAddresses.sol`, refuses any other address, and holds the owner
+and the guardian to the same Safe rules. Before a first run there: the two Safes on Base, a reading of who mints
+Base's USDT and can replace its code, and
+`BASE_RPC_URL=... forge test --match-path 'test/fork/BaseAddresses.fork.t.sol'` passing on an archive RPC
+([`design/2026-11-21-base-deployment.md`](../design/2026-11-21-base-deployment.md)).
 
 No oracle is deployed, named or read: there is no `PYTH` variable, and an index rebalances through an auction on units
 alone (`design/2026-11-10-oracle-free-rebalance.md`). There is no relay either. A start of a rebalance is a plain call,
@@ -113,7 +121,8 @@ CHECK=<token,...> forge script script/CheckToken.s.sol --fork-url <any evm rpc>
 **Listings** go through `script/ConfigureWeighted.s.sol`, or the equivalent calls through the Safe:
 `proposeListing(token)` for each coin. A listing is a token and nothing else: no index reads a price, so no token
 carries a price id. `V5_WHITELIST=default` is the first four coins of `script/Listings.sol` (WETH, WBTC, LINK and UNI)
-and `V5_WHITELIST=wide` the other 76, 80 in all; on BNB Chain `V5_WHITELIST=bnb` is that chain's twelve. Safe mode
+and `V5_WHITELIST=wide` the other 167, 171 in all; on BNB Chain `V5_WHITELIST=bnb` is that chain's 116, and on Base
+`V5_WHITELIST=base` its sixteen. Safe mode
 labels each with its trust tier:
 
 ```bash

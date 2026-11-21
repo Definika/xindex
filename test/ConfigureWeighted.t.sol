@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {ConfigureWeighted} from "../script/ConfigureWeighted.s.sol";
 import {MainnetAddresses} from "../script/MainnetAddresses.sol";
 import {BnbChainAddresses} from "../script/BnbChainAddresses.sol";
+import {BaseAddresses} from "../script/BaseAddresses.sol";
 import {Listings} from "../script/Listings.sol";
 import {WeightedIndexFactory} from "../src/WeightedIndexFactory.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
@@ -915,5 +916,158 @@ contract ConfigureWeightedTest is Test {
         vm.setEnv("V5_MODE", "sideways");
         vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.UnknownMode.selector, "sideways"));
         configure.run();
+    }
+
+    // ---------------------------------------------------------------------
+    // Base
+    // ---------------------------------------------------------------------
+
+    /// @dev The Base list is `BaseAddresses`' table, resolved on chain 8453 alone: WETH and AERO, issued there, then
+    ///      ZRO and the thirteen copies Base's own bridge mints, each naming the coin of Ethereum's list it is a
+    ///      copy of. No wrapped xStock, no mint currency and no coin of another chain's list is on it.
+    function test_theBaseListIsTheTable() public {
+        vm.chainId(BaseAddresses.CHAIN_ID);
+        address[] memory list = configure.resolveList("base");
+        address[] memory tokens = BaseAddresses.all();
+        assertEq(list.length, 16, "WETH, AERO, ZRO and the thirteen copies of Base's bridge");
+        assertEq(list, tokens);
+        uint256[4] memory count;
+        uint256 copies = 0;
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            for (uint256 j = 0; j < i; ++j) {
+                assertTrue(tokens[i] != tokens[j], "one entry per token");
+            }
+            Listings.Tier tier = BaseAddresses.tierOf(tokens[i]);
+            assertTrue(tier != Listings.Tier.Unrecorded, "every listed coin is recorded");
+            ++count[uint256(tier)];
+            address remote = BaseAddresses.remoteOf(tokens[i]);
+            if (remote != address(0)) {
+                ++copies;
+                assertEq(uint8(tier), uint8(Listings.Tier.Bridged), "a copy of the bridge's is Bridged");
+                assertTrue(Listings.tierOf(remote) != Listings.Tier.Unrecorded, "of a coin Ethereum's list holds");
+                assertTrue(remote != tokens[i], "at another address than its coin's");
+            }
+        }
+        assertEq(copies, 13);
+        assertEq(list[0], BaseAddresses.WETH);
+        assertEq(count[uint256(Listings.Tier.Native)], 2, "WETH and AERO");
+        assertEq(count[uint256(Listings.Tier.Bridged)], 14, "ZRO and the thirteen copies");
+        assertEq(count[uint256(Listings.Tier.Custodial)], 0, "no stock and no custodian's coin");
+        assertEq(BaseAddresses.remoteOf(BaseAddresses.WETH), address(0));
+        assertEq(BaseAddresses.remoteOf(BaseAddresses.AERO), address(0));
+        assertEq(
+            BaseAddresses.remoteOf(BaseAddresses.ZRO), address(0), "the issuer's own token, no copy of the bridge's"
+        );
+        assertEq(configure.tierLabel(BaseAddresses.AERO), " (Native)");
+        assertEq(configure.tierLabel(BaseAddresses.UNI), " (Bridged)");
+        assertEq(configure.tierLabel(BaseAddresses.ZRO), " (Bridged)");
+        assertEq(configure.tierLabel(BaseAddresses.USDC), "", "a mint currency carries no tier");
+        assertEq(uint8(BaseAddresses.tierOf(BaseAddresses.USDT)), uint8(Listings.Tier.Unrecorded));
+        address[3] memory excluded = [
+            0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf, // cbBTC: Coinbase's custody, a custodian the lists do not have
+            0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196, // LINK: Chainlink's own cross-chain token, not the bridge's copy
+            MainnetAddresses.WAAPLX // no wrapped xStock stands on Base
+        ];
+        for (uint256 i = 0; i < excluded.length; ++i) {
+            assertEq(uint8(BaseAddresses.tierOf(excluded[i])), uint8(Listings.Tier.Unrecorded));
+        }
+
+        // The list is Base's alone, and the other chains' lists are not Base's.
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "wide", 8453));
+        configure.resolveList("wide");
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "bnb", 8453));
+        configure.resolveList("bnb");
+        vm.chainId(1);
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "base", 1));
+        configure.resolveList("base");
+        vm.chainId(BnbChainAddresses.CHAIN_ID);
+        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "base", 56));
+        configure.resolveList("base");
+    }
+
+    /// @dev CR-L08 for Base: the list is the release record, pinned against this table, written out by hand with the
+    ///      Ethereum token each copy names, and so are the market's addresses.
+    function test_CRL08_theBaseListIsTheReleaseRecord() public view {
+        address[] memory list = configure.baseList();
+        address[16] memory tokens = [
+            0x4200000000000000000000000000000000000006, // WETH
+            0x940181a94A35A4569E4529A3CDfB74e38FD98631, // AERO
+            0x6985884C4392D348587B19cb9eAAf157F13271cd, // ZRO
+            0xc3De830EA07524a0761646a6a4e4be0e114a3C83, // UNI
+            0x63706e401c06ac8513145b7687A14804d17f814b, // AAVE
+            0xBAa5CC21fd487B8Fcc2F632f3F4E8D37262a0842, // MORPHO
+            0x74F804B4140ee70830B3Eef4e690325841575F89, // FET
+            0x8Ee73c484A26e0A5df2Ee2a4960B789967dd0415, // CRV
+            0x0b3e328455c4059EEb9e3f84b5543F74E24e7E1b, // VIRTUAL
+            0xA99F6e6785Da0F5d6fB42495Fe424BCE029Eeb3E, // PENDLE
+            0xB4fDe59a779991bfB6a52253B51947828b982be3, // PEPE
+            0x0F4d237B09Cb37d207BA60353Dc254d4530D4dF1, // GRT
+            0x9e1028F5F1D5eDE59748FFceE5532509976840E0, // COMP
+            0x22e6966B799c4D5B13BE962E1D117b56327FDa66, // SNX
+            0xc5fecC3a29Fb57B5024eEc8a2239d4621e111CBE, // 1INCH
+            0xaB36452DbAC151bE02b16Ca17d8919826072f64a // RSR
+        ];
+        // The coin on Ethereum each copy of the bridge's names; zero for the three that are no copy.
+        address[16] memory remotes = [
+            address(0),
+            address(0),
+            address(0),
+            0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984, // UNI
+            0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9, // AAVE
+            0x58D97B57BB95320F9a05dC918Aef65434969c2B2, // MORPHO
+            0xaea46A60368A7bD060eec7DF8CBa43b7EF41Ad85, // FET
+            0xD533a949740bb3306d119CC777fa900bA034cd52, // CRV
+            0x44ff8620b8cA30902395A7bD3F2407e1A091BF73, // VIRTUAL
+            0x808507121B80c02388fAd14726482e061B8da827, // PENDLE
+            0x6982508145454Ce325dDbE47a25d4ec3d2311933, // PEPE
+            0xc944E90C64B2c07662A292be6244BDf05Cda44a7, // GRT
+            0xc00e94Cb662C3520282E6f5717214004A7f26888, // COMP
+            0xC011a73ee8576Fb46F5E1c5751cA3B9Fe0af2a6F, // SNX
+            0x111111111117dC0aa78b770fA6A738034120C302, // 1INCH
+            0x320623b8E4fF03373931769A31Fc52A4E78B5d70 // RSR
+        ];
+        assertEq(list.length, tokens.length);
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            assertEq(list[i], tokens[i]);
+            assertEq(BaseAddresses.remoteOf(list[i]), remotes[i]);
+        }
+        assertEq(BaseAddresses.remoteOf(address(this)), address(0), "a token off the list names nothing");
+        assertEq(BaseAddresses.USDC, 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913);
+        assertEq(BaseAddresses.USDT, 0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2);
+        assertEq(BaseAddresses.UNIVERSAL_ROUTER, 0x6fF5693b99212Da76ad316178A184AB56D299b43);
+        assertEq(BaseAddresses.POOL_MANAGER, 0x498581fF718922c3f8e6A244956aF099B2652b2b);
+        assertEq(BaseAddresses.UNISWAP_V3_FACTORY, 0x33128a8fC17869897dcE68Ed026d694621f6FDfD);
+        assertEq(BaseAddresses.STANDARD_BRIDGE, 0x4200000000000000000000000000000000000010);
+        assertEq(BaseAddresses.L1_STANDARD_BRIDGE, 0x3154Cf16ccdb4C6d922629664174b904d80F2C35);
+    }
+
+    /// @dev Base's mint currencies are never components, whatever a list names and whatever the deployment's own are
+    ///      (the whitelist policy, A7-22), and on Base they are its address book's, which may be named and not
+    ///      replaced.
+    function test_A722_theBaseMintCurrenciesAreNeverComponentsAndArePinned() public {
+        address[2] memory stables = [BaseAddresses.USDT, BaseAddresses.USDC];
+        for (uint256 i = 0; i < stables.length; ++i) {
+            vm.etch(stables[i], hex"00");
+            vm.mockCall(stables[i], abi.encodeWithSignature("decimals()"), abi.encode(uint8(6)));
+            address[] memory list = new address[](1);
+            list[0] = stables[i];
+            (bytes[] memory calls,) = configure.safeCalldata(factory, list, list, _none(), _currencies());
+            assertEq(calls.length, 0, "a mint currency is skipped");
+        }
+
+        vm.chainId(BaseAddresses.CHAIN_ID);
+        address[2] memory pinned = configure.mintCurrencies(address(0), address(0));
+        assertEq(pinned[0], BaseAddresses.USDC);
+        assertEq(pinned[1], BaseAddresses.USDT);
+        pinned = configure.mintCurrencies(BaseAddresses.USDC, BaseAddresses.USDT);
+        assertEq(pinned[1], BaseAddresses.USDT, "naming the address book's own is no override");
+        vm.expectRevert(
+            abi.encodeWithSelector(ConfigureWeighted.MintCurrencyOverride.selector, "V5_USDC", MainnetAddresses.USDC)
+        );
+        configure.mintCurrencies(MainnetAddresses.USDC, address(0));
+        vm.expectRevert(
+            abi.encodeWithSelector(ConfigureWeighted.MintCurrencyOverride.selector, "V5_USDT", BnbChainAddresses.USDT)
+        );
+        configure.mintCurrencies(address(0), BnbChainAddresses.USDT);
     }
 }

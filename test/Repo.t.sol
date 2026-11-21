@@ -19,7 +19,7 @@ import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 contract RepoTest is Test {
     /// @dev keccak256 of the files `test_A712_theCiConfigIsPinnedWhole` pins whole: CI's workflow and the two Foundry
     ///      configs it runs. A change to one fails that test, which prints the new hash, until it is pinned here.
-    bytes32 private constant WORKFLOW_HASH = 0x4eedfb771cd1dc8c660e84500269f7a1128d4a7ecd697d15b3aa276227b12f03;
+    bytes32 private constant WORKFLOW_HASH = 0xa3e5999468e15e7123a4d84f0fe1c38f4118afbbd9b61a4955f6a379978f2305;
     bytes32 private constant FOUNDRY_TOML_HASH = 0xed56be1c9acc47165fe8a9303665b35391357ee7d85ef998f8c0c74761a0c3c4;
     bytes32 private constant KEEPER_FOUNDRY_TOML_HASH =
         0x5426d5180cca7c4ac15d7fb182272a805a3ce19a143d6c6f8c158f61765d7592;
@@ -98,7 +98,8 @@ contract RepoTest is Test {
                 "        run: forge test -vvv\n",
                 "        env:\n",
                 "          MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}\n",
-                "          BNB_RPC_URL: ${{ secrets.BNB_RPC_URL }}\n"
+                "          BNB_RPC_URL: ${{ secrets.BNB_RPC_URL }}\n",
+                "          BASE_RPC_URL: ${{ secrets.BASE_RPC_URL }}\n"
             ),
             "the fork-test RPCs are passed to the tests"
         );

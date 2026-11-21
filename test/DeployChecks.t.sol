@@ -6,6 +6,7 @@ import {DeployChecks} from "../script/DeployChecks.sol";
 import {DeployWeighted} from "../script/DeployWeighted.s.sol";
 import {MainnetAddresses} from "../script/MainnetAddresses.sol";
 import {BnbChainAddresses} from "../script/BnbChainAddresses.sol";
+import {BaseAddresses} from "../script/BaseAddresses.sol";
 
 /// @notice Which chains the deployment checks pin to an address book, and how they tell the two apart. The rest of
 ///         `DeployChecks` is tested in `test/Scripts.t.sol`.
@@ -123,5 +124,69 @@ contract DeployChecksTest is Test {
         vm.chainId(31_337);
         assertTrue(checks.onBnbChain());
         assertEq(checks.pinnedRouter(), BnbChainAddresses.UNIVERSAL_ROUTER);
+    }
+
+    /// @dev Base is pinned to its own address book by its chain id, 8453, and by nothing else: BNB Chain's router and
+    ///      Ethereum's both have code on Base, replays that settle against nothing there (read on 2026-11-21), and
+    ///      before Base had a book the first of them handed a deployment on Base BNB Chain's.
+    function test_baseIsPinnedByItsChainIdWhateverRoutersStandThere() public {
+        assertEq(checks.BASE_UNIVERSAL_ROUTER(), BaseAddresses.UNIVERSAL_ROUTER);
+        vm.chainId(BaseAddresses.CHAIN_ID);
+        vm.etch(checks.BNB_UNIVERSAL_ROUTER(), hex"00");
+        vm.etch(checks.MAINNET_UNIVERSAL_ROUTER(), hex"00");
+        vm.etch(checks.BASE_UNIVERSAL_ROUTER(), hex"00");
+        assertTrue(checks.isPinnedChain());
+        assertTrue(checks.onBase());
+        assertFalse(checks.onBnbChain(), "chain 8453 is Base, whatever stands at BNB Chain's router address");
+        assertEq(checks.pinnedRouter(), BaseAddresses.UNIVERSAL_ROUTER);
+        assertEq(checks.pinnedUsdc(), BaseAddresses.USDC);
+        assertEq(checks.pinnedUsdt(), BaseAddresses.USDT);
+        assertEq(checks.resolveRouter(address(0)), BaseAddresses.UNIVERSAL_ROUTER);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                DeployChecks.MainnetOverride.selector, "UNIVERSAL_ROUTER", BnbChainAddresses.UNIVERSAL_ROUTER
+            )
+        );
+        checks.resolveRouter(BnbChainAddresses.UNIVERSAL_ROUTER);
+
+        // The roles are checked against Base's market there: the router, its PoolManager, the sixteen coins and the
+        // two mint currencies.
+        vm.mockCall(
+            BaseAddresses.UNIVERSAL_ROUTER, abi.encodeWithSignature("poolManager()"), abi.encode(address(0xbeef))
+        );
+        address[] memory market = checks.marketContracts(BaseAddresses.UNIVERSAL_ROUTER);
+        assertEq(market.length, 2 + BaseAddresses.COUNT + 2);
+        assertEq(market[2], BaseAddresses.WETH);
+        assertEq(market[market.length - 2], BaseAddresses.USDC);
+        assertEq(market[market.length - 1], BaseAddresses.USDT);
+    }
+
+    /// @dev Base's router address has code on Ethereum and on BNB Chain too (read on 2026-11-21), so no router's code
+    ///      names Base: under any id but 8453 the same state is not Base. On Ethereum's and BNB Chain's own ids
+    ///      their ids decide, and under any other the book is the one the routers there name, never Base's. A run
+    ///      against Base's state under another id is therefore still pinned, to BNB Chain's book, whose USDC address
+    ///      has no code on Base: it stops there.
+    function test_basesRouterReplayedElsewhereNamesNothing() public {
+        vm.etch(checks.BASE_UNIVERSAL_ROUTER(), hex"00");
+        vm.chainId(137);
+        assertFalse(checks.onBase());
+        assertFalse(checks.isPinnedChain(), "Base's router alone pins nothing");
+
+        vm.chainId(1);
+        assertFalse(checks.onBase());
+        assertEq(checks.pinnedRouter(), MainnetAddresses.UNIVERSAL_ROUTER);
+        vm.chainId(BnbChainAddresses.CHAIN_ID);
+        assertFalse(checks.onBase());
+        assertEq(checks.pinnedRouter(), BnbChainAddresses.UNIVERSAL_ROUTER);
+
+        // Base's state under an override: BNB Chain's router stands there, and the run resolves BNB Chain's book.
+        vm.chainId(31_337);
+        vm.etch(checks.BNB_UNIVERSAL_ROUTER(), hex"00");
+        assertTrue(checks.isPinnedChain(), "still pinned, whatever the chain id says");
+        assertFalse(checks.onBase());
+        address usdc = checks.pinnedUsdc();
+        assertEq(usdc, BnbChainAddresses.USDC);
+        vm.expectRevert(abi.encodeWithSelector(DeployChecks.AddressHasNoCode.selector, "USDC", usdc));
+        checks.resolveStable("USDC", address(0), usdc);
     }
 }
