@@ -10,10 +10,11 @@ Every earlier review in this repository is internal, the work of agents and of t
 
 ## 1. Commit
 
-The candidate is the branch `release/2026-11-21-candidate` at `3b269602777cfbd21fea1da5b8ce3f45af5e1561`. It is
-`main` at `5b7635f` with two things on top: the fixes of the audit of 2026-11-21
-(`audit/2026-11-21-consolidated-audit.md`), which changed all four deployed contracts, and the listing of Backed's
-wrapped xStocks (`design/2026-11-21-xstocks.md`), which changed no contract. This file is the one commit after it.
+The candidate is the branch `release/2026-11-21-candidate` at `720a2f767440c570d51e4e543e8419c733d90546`. It is
+`main` at `5b7635f` with three things on top: the fixes of the audit of 2026-11-21
+(`audit/2026-11-21-consolidated-audit.md`), which changed all four deployed contracts; the listing of Backed's
+wrapped xStocks (`design/2026-11-21-xstocks.md`), which changed no contract; and `MAX_COMPONENTS` raised from 100 to
+200, which moved the factory's release hash. This file is the one commit after it.
 Its gates were run where it was built, not in CI, since the branch has not been pushed:
 
 | Gate | Result |
@@ -21,14 +22,15 @@ Its gates were run where it was built, not in CI, since the branch has not been 
 | `forge fmt --check`, `forge build --sizes --deny warnings`, `forge lint -D notes` | clean, for the repository and for `keeper/` |
 | `forge test`, fork suites aside | 555 passing, none failing |
 | `forge coverage` | 100% of lines, statements, branches and functions on every file |
-| The mutation gate | 212 of 212 mutants killed |
+| The mutation gate | 218 of 218 mutants killed |
 | `python3 -I test/vectors/proofs.py` | every step proven |
 | Aderyn, `wake detect all src` | no finding, no detection |
-| Ethereum's five fork suites, on an archive RPC at the pinned block 26,033,838 | `IndexZap.fork` 12 of 12, `WeightedHub.fork` 6 of 6, `CheckToken.fork` 9 of 9, `MainnetAddresses.fork` 9 of 9, `Security.fork` 11 of 11; none skipped |
+| Ethereum's five fork suites, on an archive RPC at the pinned block 26,033,838 | `IndexZap.fork` 12 of 12, `WeightedHub.fork` 6 of 6 (171 of the 172 listed coins in one index: `issue` 10.5M gas, `redeem` 7.0M), `CheckToken.fork` 9 of 9, `MainnetAddresses.fork` 9 of 9, `Security.fork` 11 of 11; none skipped |
 | BNB Chain's fork suite, at its pinned block 134,768,771 | 17 of 17 |
 | `forge test --root keeper`, with its fork suite | 86 passing |
-| `node --test keeper/test/unit/*.test.mjs`, and the request filler's harness | 247 passing, and 16 |
-| The keeper's end-to-end test, on a mainnet fork at block 26,441,062 | 42 of 42 checks |
+| `node --test keeper/test/unit/*.test.mjs`, and the request filler's harness | 252 passing, and 17 |
+| The keeper's end-to-end test, on a mainnet fork at block 26,441,062 | 42 of 42 checks, on the commit before the keeper fixes of `e34e921`; not run since |
+| The restock's end-to-end test | Base and Avalanche 29 of 29 each; Optimism 17 of 29, OP's pools there too thin to buy |
 
 It is a candidate, not the freeze. What can still change `src/` before the freeze:
 
@@ -70,7 +72,7 @@ upgradeable: indexes are minimal clones of one implementation. No contract reads
 an oracle, and none is payable.
 
 Deployed sizes: `WeightedHub` 21,627 bytes (2,949 under EIP-170), `BasketBuilder` 16,809, `IndexZap` 14,690,
-`WeightedIndexFactory` 12,177 (its initcode, which carries the hub's and the math's, 38,478 of EIP-3860's 49,152),
+`WeightedIndexFactory` 12,197 (its initcode, which carries the hub's and the math's, 38,498 of EIP-3860's 49,152),
 `MintRequests` 5,889, `WeightedMath` 3,606.
 
 ### Secondary: what makes a deployment correct
@@ -99,7 +101,7 @@ and the web app (its own repository).
 ## 3. Build and run
 
 ```bash
-git clone --recurse-submodules <repo> && cd <repo> && git checkout 3b26960
+git clone --recurse-submodules <repo> && cd <repo> && git checkout 720a2f7
 forge build --sizes --deny warnings
 forge test                           # 555 tests without an RPC; the fork suites skip
 MAINNET_RPC_URL=<archive RPC> forge test --match-path 'test/fork/*'   # Ethereum's five fork suites
@@ -116,7 +118,7 @@ admission quotes; a public endpoint prunes the state before it ends. `docs/devel
 
 ## 4. The system in one page
 
-A wallet the factory's owner approved calls `createIndex` with two to a hundred listed coins, each with its units per
+A wallet the factory's owner approved calls `createIndex` with two to two hundred listed coins, each with its units per
 share and its weight, fixed for the index's life, plus its fee rates and rebalance interval (7 to 91 days). The
 factory clones the hub at a CREATE2 address whose salt commits to all of it. Two deployments share nothing: Ethereum
 and BNB Chain, each under its own Safes, each holding its own chain's tokens in kind.
@@ -228,9 +230,12 @@ In order:
    create, clone initialization (only initialized clones issue, redeem or rebalance), CREATE2 salt collisions.
 9. **The tokens the lists hold**: ERC-4626 wrappers whose transfers read a sanctions list and can be paused, USDT's
    fee switch, tokens that refuse or charge a transfer to oneself, and a ledger two addresses write.
-10. **Gas at 100 components** under EIP-7825's 2^24 cap, on mock tokens (`test_aHundredComponentsFitOneTransaction`):
-    `createIndex` about 5.3M, `redeemSkipping` with every component skipped 5.1M, a fill 4.2M, a start with a quote
-    1.4M, a fill under one 4.4M.
+10. **Gas at `MAX_COMPONENTS`, 200** (100 until 2026-11-21), under EIP-7825's 2^24 cap, on mock tokens
+    (`test_theMostComponentsFitOneTransaction`): `createIndex` about 13.3M, which grows with the square of the
+    count and bounds it, `redeemSkipping` with every component skipped 10.2M, `issue` 8.9M, a fill under a quote
+    8.8M, `redeem` 7.5M, a start with a quote 2.7M. We want the margin tried: a token that transfers dearer, a
+    repricing of gas (EIP-8037's state gas, live on Sepolia), and whether any holder of a 200-coin index can be left
+    without an exit that fits a transaction.
 
 ## 8. Accepted risks and known limitations
 
@@ -240,6 +245,9 @@ In order:
   the holders' value: 0.3 to 0.6% in an ordinary week, 5.0% in one fill after one coin of two doubled.
 - An approved creator can still create an index off its weights and drain up to a fifth of it per fill; the app
   shows every index's coins against its weights.
+- An index holds up to 200 coins because one transaction carries no more: creation uses four fifths of the gas cap
+  at that count. A wide index is never minted through the zap, and its fill fits a transaction only for an executor
+  that already holds the coins or moves some legs only.
 - Whoever holds an index's whole supply, a share or more, can walk its units.
 - The guardian can stall rebalancing with cancels until it is replaced, and for up to 91 days beyond with a sliver
   filled under a quote (RW-3).
@@ -294,7 +302,8 @@ Still open:
 - **Of the audit of 2026-11-21**, left as they are with their reasons in its record: CA-M11, CA-M15, CA-M19,
   CA-R2-01, CA-R2-06, CA-R2-08; and, before the restock's non-EVM signers run, CA-M14, CA-L7, CA-R2-12 and CA-R2-13.
   All are in the keeper, the restock or the scripts.
-- **RZ-6, RZ-13, RZ-15, RZ-16, RZ-19**: keeper and restock bookkeeping (out of scope).
+- **RZ-8, RZ-10, RZ-11, RZ-20, RZ-21**: keeper and restock, informational (out of scope). RZ-6, RZ-9, RZ-13, RZ-15,
+  RZ-16 and RZ-19 were fixed on 2026-11-21.
 - **XA-34**: one fork test keeps a bare `vm.expectRevert()`.
 
 ## 10. Assurance already done
