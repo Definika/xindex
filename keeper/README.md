@@ -27,8 +27,8 @@ Every block L, with T = L's timestamp + 12 (the one block a fill sent now can la
      word and replayed against the contracts' vectors, before anything is asked of the chain.
    - When the owner or guardian posted a quote with the proposal (`rebalanceQuote()`), the units named must hold it
      too: the bot gives the index as much more as the quote asks, and names nothing it would have to give away.
-   - A leg it cannot value keeps its units: a kept leg, a coin outside the catalogue, a share-priced Ondo leg
-     (RX-2), and a coin whose price is not the signed one, is older than a minute or carries a confidence interval
+   - A leg it cannot value keeps its units: a kept leg, a coin outside the catalogue, a share-priced leg, every
+     wrapped xStock among them (RX-2), and a coin whose price is not the signed one, is older than a minute or carries a confidence interval
      wider than 2% (RX-1, RX-9). A leg within `TRADE_COST_BPS` of its weight is not traded for its own sake.
    - It previews the settlement those units give and simulates the executor's whole fill exactly as block L+1 would
      run it (`eth_call` with block overrides), with the routes it quoted and the executor's stock. Profit = the USDC
@@ -100,7 +100,7 @@ Every block L, with T = L's timestamp + 12 (the one block a fill sent now can la
 
 The executor swaps through Uniswap V3 (SwapRouter02) along a route per coin, chosen for each auction by quoting every
 `token→USDC` and `token→WETH→USDC` pool at the leg's own size; a route losing more than `ROUTE_MAX_LOSS_BPS` against
-Pyth is not used. A coin without a usable route (Wormhole copies, Ondo stocks, Tether Gold) is served from the
+Pyth is not used. A coin without a usable route (Wormhole copies, Tether Gold) is served from the
 executor's **stock**: a coin the index sells is kept, and a coin it needs is delivered from stock, which the restock
 service keeps filled for the Wormhole copies it serves ([Restock](#restock)), and the operator for the rest. A coin
 leaves stock only within the **stock allowance** `OWNER` sets for it (`setStockAllowance(token, amount)`), and what the
@@ -151,13 +151,14 @@ filled at once. Shares leave that stock only within the stock allowance `OWNER` 
 the executor acquires earn no allowance of their own. The bot counts a share coming in at what redeeming it would
 bring, less `SLIPPAGE_BPS`, and a share going out at what issuing it again would cost, plus `SLIPPAGE_BPS`. Shares
 held move with the index: that risk is the operator's, and the default holds none. The bot builds no stock ahead of
-demand; an operator who wants some sends the executor shares. An index holding a share-priced Ondo leg has shares the
+demand; an operator who wants some sends the executor shares. An index holding a share-priced leg has shares the
 bot cannot value, so it keeps and delivers none of them.
 
-The twelve Ondo legs priced at their share's feed (AMZNon, TSMon, SPCXon, METAon, AVGOon, SKHYon, MUon, LLYon, AMDon,
-JPMon, WMTon, Von; `SHARE_PRICED_IDS` in `bot/config.mjs`) are worth sValue shares, which the bot cannot read. Keep
-their stock allowance at **zero**: the bot refuses any fill that would deliver them from stock, and counts any it keeps
-as worth nothing (RX-2). After a split or a reverse split the share's feed is off by the ratio. The bot logs `restock <coins>` and does not start or fill an
+The share-priced legs (`SHARE_PRICED_IDS` in `bot/config.mjs`) are every wrapped xStock, worth `convertToAssets`
+xStocks while its feed prices one, and the twelve Ondo legs priced at their share's feed, worth sValue shares, which
+left the list on 2026-11-21 and stay in `SHARE_PRICED_IDS` for a relisting. The bot reads neither ratio. Keep their stock allowance at
+**zero**: the bot refuses any fill that would deliver them from stock, and counts any it keeps as worth nothing
+(RX-2). Reading `convertToAssets` on chain, which would let the bot serve the wrapped xStocks, is not built yet. The bot logs `restock <coins>` and does not start or fill an
 auction its usable stock (the lower of the balance and the allowance) cannot cover. Usable stock comes first for a
 routed coin too; only the rest is bought. The executor's address must be able to hold and send every coin it stocks.
 
@@ -185,7 +186,7 @@ routed coin too; only the rest is bought. The executor's address must be able to
   search found, for at least the amount kept and at most 25 blocks old, so a coin trading under its feed (a depegged
   Wormhole or Binance-Peg copy) counts at what its pools pay. A coin whose pools exist but quote nothing, their sell
   side emptied as a depegged copy's is, counts as nothing; a quote the RPC failed to answer fails the check rather
-  than counting. Only a coin with no pool at all counts at Pyth: that is the Wormhole copies', Ondo stocks' and Tether
+  than counting. Only a coin with no pool at all counts at Pyth: that is the Wormhole copies' and Tether
   Gold's case, and a bridge incident or a copy trading under its coin's feed then turns float into a coin worth less
   than the bot booked. Only a wallet the factory's owner approved creates an index, so a stranger cannot build one to
   make the bot buy its other legs with the float; an index an approved creator built still can, up to the auction's

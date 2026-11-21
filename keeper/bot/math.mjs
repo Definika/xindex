@@ -59,8 +59,8 @@ export const keptUsd = (pythUsd, quoteUsdc) =>
 
 /// The dollar change one leg makes to the executor's stock: a coin the index sends out and no route sells is kept, at
 /// {keptUsd}, and a coin the index needs comes out of stock first, at Pyth price `price`. `quoteUsdc` is the best
-/// quote for selling `out`, or null. A share-priced Ondo leg kept counts as nothing: its feed prices a share, not the
-/// token, which is worth sValue shares the bot cannot read (RX-2).
+/// quote for selling `out`, or null. A share-priced leg kept counts as nothing: its feed prices a share, not the token,
+/// which is worth a number of shares the bot cannot read, a wrapped xStock's `convertToAssets` (RX-2).
 export function stockChangeUsd({ out, in: need, held, routed, decimals, price, quoteUsdc = null, sharePriced = false }) {
   const delivered = amountUsd(inventoryDelta({ out: 0n, in: need, held, routed }), decimals, price);
   const kept = routed ? 0n : out;
@@ -68,7 +68,7 @@ export function stockChangeUsd({ out, in: need, held, routed, decimals, price, q
   return delivered + keptUsd(amountUsd(kept, decimals, price), quoteUsdc);
 }
 
-/// Whether a leg would hand over share-priced Ondo stock: the executor delivers from stock first, within the owner's
+/// Whether a leg would hand over share-priced stock: the executor delivers from stock first, within the owner's
 /// allowance, and the bot cannot value that stock (RX-2). Such a fill waits until the owner sets that coin's stock
 /// allowance to zero, so the leg is bought instead.
 export const deliversSharePricedStock = ({ need, held, sharePriced }) => sharePriced && need > 0n && held > 0n;
