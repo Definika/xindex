@@ -6,7 +6,7 @@
 Xindex is a protocol for index tokens on Ethereum and, since 2026-11-13, on BNB Chain: two deployments of the same
 contracts that share nothing, each holding its own chain's tokens
 ([`design/2026-11-13-bnb-chain-deployment.md`](design/2026-11-13-bnb-chain-deployment.md)). A wallet the factory's
-owner approved creates an index of 2 to 100
+owner approved creates an index of 2 to 200
 listed assets at weights it chooses, and anyone can mint, redeem and trade it. Each index is an ERC-20 fully backed in
 kind: minting deposits the basket and redeeming returns it. A permissionless auction brings an index back toward its
 weights. No contract reads a price, a feed or an oracle, for any of it.

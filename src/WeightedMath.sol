@@ -119,7 +119,7 @@ contract WeightedMath is IWeightedMath {
             }
             if (next < lowest || next > highest) revert IWeightedHub.LegOutOfBounds(i, next, lowest, highest);
             if (next > type(uint96).max) revert SafeCast.SafeCastOverflowedUintDowncast(96, next);
-            // A weight is at most 1e4 and a score below 1e18 in size, so a hundred products fit with room to spare.
+            // A weight is at most 1e4 and a score below 1e18 in size, so an index's products fit with room to spare.
             // forge-lint: disable-next-line(unsafe-typecast)
             total += int256(weights[i]) * _score(_change(current, next));
         }

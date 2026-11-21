@@ -169,7 +169,7 @@ escrow as it was taken: the stablecoin of a mint request, the shares of a redeem
   price from `balanceOf(index)` and `totalSupply()`, and never use a thin DEX pool of the index token as an oracle.
 - **Starting units.** The app derives them from the creator's weights at its own prices (see "Create"); the factory
   takes them as given. `createIndex` reverts `UnitsOutOfRange` unless each lies in `[MIN_RAW_UNITS, maxUnitsOf(token)]`,
-  `InvalidComponentCount` outside 2 to `MAX_COMPONENTS` (100), `InvalidWeights` unless every weight is non-zero and
+  `InvalidComponentCount` outside 2 to `MAX_COMPONENTS` (200), `InvalidWeights` unless every weight is non-zero and
   they sum to 10,000, and `DuplicateToken` when a token is named twice. Offer the one-click zap only up to about 35
   components; a larger index mints in kind, through `MintRequests`, or through the basket builder over several
   transactions.
@@ -254,9 +254,12 @@ escrow as it was taken: the stablecoin of a mint request, the shares of a redeem
 - **Gas.** The zap costs 265k to 430k gas per component (measured on a mainnet fork at 20 components in v3, CR-I08:
   a mint 5.3M to 6.2M, a burn 5.1M with two V3 hops a leg to 8.6M with four). EIP-7825 caps a transaction at 2^24
   gas, so disable the zap above about 35 components, keep routes to two or three hops, and refuse or reroute any zap
-  call whose simulated gas exceeds about 14M. The in-kind paths fit at 100 components (about 3.7M for `redeem`, 5.1M
-  for `redeemSkipping` with every component skipped), and so does the basket builder: three `buy` calls of about 34
-  legs and one `mint` (`test_aHundredLegBasketFitsInThreeBuysAndAMint`, on mock pools, so the buys are a floor).
+  call whose simulated gas exceeds about 14M. The in-kind paths fit at `MAX_COMPONENTS`, 200 (about 8.9M for `issue`,
+  7.5M for `redeem`, 10.2M for `redeemSkipping` with every component skipped, on mock tokens), and so does the basket
+  builder: six `buy` calls of about 34 legs and one `mint` (`test_theWidestBasketFitsInSixBuysAndAMint`, on mock
+  pools, so the buys are a floor). Real tokens transfer dearer: an index of 171 of Ethereum's listed coins issued in
+  kind for 10.5M and redeemed for 7.0M on a fork of 2026-11-21. Simulate an index's own `issue` before creating it:
+  one too wide to issue in a transaction with its real tokens can be created and never minted.
 - **Approvals.** USDC supports `permit`; USDT does not, and its `approve` reverts when it changes a non-zero allowance
   to another non-zero value: if `allowance(user, zap)` is not 0, send `approve(zap, 0)` first. The same holds for
   `MintRequests`: a filler who lost a race, or a requester whose request reverted, keeps a non-zero USDT allowance. Index tokens support

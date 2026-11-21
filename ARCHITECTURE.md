@@ -15,7 +15,7 @@ tokens in kind, so an index lives on one chain and none spans both. The BNB Chai
 deploy checks and fork suite (`script/BnbChainAddresses.sol`); no contract changed for it, and everything below
 describes both deployments unless it names Ethereum's list, Wormhole or the restock service, which are Ethereum's.
 
-**On Ethereum one index holds up to 100 coins of the top 300** (the owner's decision of
+**On Ethereum one index holds up to 200 coins (100 until 2026-11-21), of the top 300 and of Backed's stocks** (the owner's decision of
 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). An index holds Ethereum ERC-20s in kind: the issuer's own
 contract where Ethereum has one, and otherwise the copy Wormhole's token bridge wraps from the chain that has it.
 Nothing crosses a chain inside a protocol contract: the app and the fillers bridge, the keeper's own executor among
@@ -93,7 +93,7 @@ OpenZeppelin's upgradeable ERC20 and ERC20Permit (clones skip constructors, so n
   per token in `totalClaims[token]`. A pending rebalance is its `eta` and keep mask, and, when its start posted one, a
   quote: a price per component (`uint128`), a tolerance and the proposal it belongs to; beside them `proposalCount`,
   `rebalanceNonce`, `lastRebalance` (creation, then each fill) and `restartAllowedAt`.
-- **initialize(name, symbol, components, config):** `FACTORY` only, once. 2 to 100 components, each with a non-zero token,
+- **initialize(name, symbol, components, config):** `FACTORY` only, once. 2 to 200 components, each with a non-zero token,
   non-zero units within `uint96` and a weight from 1 to `TOTAL_WEIGHT`; the weights sum to `TOTAL_WEIGHT` (10,000),
   and no two components share a token. Anything else is `InvalidComponents`. Fee rates, a referral share or an
   interval outside the hub's own outer bounds are `InvalidConfig`; the factory bounds each more tightly.
@@ -271,7 +271,7 @@ nothing to configure, and nobody else needed: no filler.
   `SharedBalance` (RW-10), and a redeem of an index naming both would be credited twice, so such a token is never
   listed.
   Recipients are checked as the zap's, plus any index (RT-21); every entry point shares one reentrancy guard; it never
-  calls `redeemSkipping` or `executeRebalance`. A hundred-leg basket fits three buys and one mint under EIP-7825
+  calls `redeemSkipping` or `executeRebalance`. The widest basket, 200 legs, fits six buys and one mint under EIP-7825
   (`test/BasketBuilder.t.sol`, on mock pools).
 
 ### MintRequests (`src/MintRequests.sol`)
@@ -280,7 +280,7 @@ An ownerless escrow for people who hold a stablecoin and want shares without swa
 requester escrows USDC or USDT for at least `minShares` shares of a factory index (`requestMint`), or shares for at
 least `minOut` of a stablecoin (`requestRedeem`), fillable until a deadline at most `MAX_REQUEST_DURATION` (30 days)
 away. Anyone fills by sending the requester what they asked for, and takes the escrow; the requester cancels at any
-time, and anyone refunds the escrow to the requester after the deadline. It is how a hundred-coin index is bought with
+time, and anyone refunds the escrow to the requester after the deadline. It is how a wide index is bought with
 USDC: a filler assembles the basket, wrapped legs included, and bridges on its own account. The keeper in `keeper/`
 fills requests at their limits (`fillMint`, `fillRedeem`, and several at once with `fillBatch`, which passes a
 seller's shares to a buyer and trades one basket for the difference), and anyone else may.
@@ -679,7 +679,7 @@ math holds nothing and reads nothing. No price enters either.
   asks the team, which creates the index and hands on its creator role, fee included (`transferCreator`,
   `acceptCreator`).
 - **Mint and burn** through the zap (up to about 35 components, on coins with a route), through the basket builder
-  over several transactions (any size, on coins with a route, the rest deposited in kind), in kind (up to 100), or at
+  over several transactions (any size, on coins with a route, the rest deposited in kind), in kind (up to 200), or at
   a limit through `MintRequests`, filled by anyone who holds or can issue the shares.
 - **Rebalance.** At most once per the index's interval, 7 to 91 days: anyone starts, a plain call, or the owner or
   guardian starts with a quote (section 3.9); 2 hours of notice; then a 4-hour auction in which an executor names the
@@ -757,28 +757,38 @@ Portal, each of which, without an Ethereum pool or a restock that has run from i
 as the five, and FIL's waits for a reading of its Binance-Peg source (`design/2026-10-10-one-index-wormhole-legs.md`, section
 2a, and `design/2026-10-18-pre-mainnet-readings.md`, section 3).
 
-**Up to 100 components.** Every path of the hub and the factory fits EIP-7825's per-transaction cap of 2^24 gas at
-100, measured on mock tokens with every account cold (`test_aHundredComponentsFitOneTransaction`):
+**Up to 200 components** (the owner's call of 2026-11-21, to hold as many as the contracts carry; 100 until then).
+Every path of the hub and the factory fits EIP-7825's per-transaction cap of 2^24 gas, 16.78M, at 200, measured on mock
+tokens with every account cold (`test_theMostComponentsFitOneTransaction`, which lets no path pass five sixths of the
+cap):
 
-| Operation at 100 components | Gas |
-|---|---|
-| `createIndex` | about 5.3M |
-| `issue` | about 4.5M |
-| `startRebalance` | about 94k |
-| `startRebalance` with a quote, which stores a price per component | about 1.4M |
-| `executeRebalance`, an executor that already holds the bought tokens | about 4.2M |
-| the same fill under a quote | about 4.4M |
-| `redeem` | about 3.7M |
-| `redeemSkipping`, every component skipped | about 5.1M |
-| `claim` | about 53k |
+| Operation | Gas at 100 components | at 200 |
+|---|---|---|
+| `createIndex` | about 5.3M | about 13.3M |
+| `issue` | about 4.5M | about 8.9M |
+| `startRebalance` with a quote, which stores a price per component | about 1.4M | about 2.7M |
+| `executeRebalance` under that quote, an executor that already holds the bought tokens | about 4.4M | about 8.8M |
+| `redeem` | about 3.7M | about 7.5M |
+| `redeemSkipping`, every component skipped | about 5.1M | about 10.2M |
+| `claim` | about 53k | about 53k |
 
-The hub is 21,341 bytes, 3,235 under EIP-170. Real tokens transfer dearer than mocks. The fork suite that issues,
-rebalances and redeems every coin forge-std can fund in one index (`test/fork/WeightedHub.fork.t.sol`) is rewritten
-for this rebalance and has not run on it yet, so no figure on real tokens is recorded for this build; the Pyth-priced
-build's are in section 11.
+Creation bounds the count: it compares every pair of components, so its gas grows with the square of the count
+(18.5M at 250, 56M at 500), and it passes the cap near 234. The limit is 200 and not 234 so that a path stays open
+on an index that already exists when a token transfers dearer than a mock or gas is repriced. Under the rules
+Sepolia has run since 2026-10-06 (EIP-8037), a new storage slot costs 97,920 of state gas: `redeemSkipping` of 100
+with every component skipped, which writes two slots a component, needed a limit of 23.1M there (measured on
+2026-10-26, commit `20ed37a`, not merged), so about 46M at 200, three quarters of Ethereum's block of 60M. A keep mask is one word, so no build of these contracts holds more than 256. More than that, 500
+or 1,000, needs creation, issue, redeem and the fill each spread over several transactions: another design.
+
+Real tokens transfer dearer than mocks. On a fork of Ethereum at block 26,033,838, with 171 of the 172 listed coins
+in one index, the 109 wrapped xStocks among them, `issue` in kind cost 10.5M and `redeem` 7.0M, every account cold
+(`testFork_everyCoinIssuesRebalancesAndRedeems`, which requires both to fit a transaction). An index's creator
+simulates its own `issue` first: one too wide to issue with its real tokens can be created and never minted. The hub
+is 21,627 bytes, 2,949 under EIP-170.
 
 A fill that swaps inside the call costs an estimated 150k a leg on top (v4's hybrid design, section 9.1), so swaps
-inside a 100-leg fill do not fit, and a fill that wide needs an executor with inventory. The zap stops near 35
+inside a 100-leg fill do not fit, still less a 200-leg one, and a fill that wide needs an executor with inventory, or
+names new units for some of the legs and leaves the rest at theirs. The zap stops near 35
 components (section 2).
 
 ## 7. Security model
@@ -853,7 +863,7 @@ components (section 2).
   without a transfer is not a component: Backed's xStocks are listed only as their wrappers (2026-11-21).
 - **Arithmetic.** Units below `2^96` (`SafeCast`), and at most `maxUnitsOf(token)`, never above `MAX_UNITS`, at
   creation. A leg's change `x` lies in `[−0.2, 1]` at 1e18 once the caps hold, so the score's numerator stays below
-  7e73, inside `int256`, and a hundred weighted scores fit with room to spare. Every product of shares and units, and
+  7e73, inside `int256`, and two hundred weighted scores fit with room to spare. Every product of shares and units, and
   each cap, goes through 512-bit `mulDiv`. Units beyond `uint96` stop a fill rather than wrap (V5-L3, RX-61).
 - **Operations.** `script/DeployWeighted.s.sol` deploys the factory (and through it the math and the hub's
   implementation), the zap, the basket builder and `MintRequests`. `OWNER` and `GUARDIAN`, the guardian's Safe, are
@@ -872,7 +882,7 @@ components (section 2).
 
 - **Unit and fuzz tests per contract:** `test/WeightedHub.t.sol`, `test/WeightedHub.fees.t.sol`,
   `test/WeightedHub.rebalance.t.sol` (exact settlements, the bar, the unit caps, the bound on and off the weights, keep
-  masks, reentrancy, a hundred components), `test/WeightedHub.states.t.sol` (the rebalance state machine's transition
+  masks, reentrancy, two hundred components), `test/WeightedHub.states.t.sol` (the rebalance state machine's transition
   matrix, section 3.1), `test/WeightedHub.quote.t.sol` (the quote of section 3.9: who may post one, what it must
   contain, the cap it puts on a lone executor, that it only refuses, that a wrong one stops its own proposal and nothing
   else, and that it ends with its proposal), `test/WeightedMath.vectors.t.sol` (431 settlements and 77 quote checks

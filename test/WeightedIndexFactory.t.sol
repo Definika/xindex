@@ -327,8 +327,10 @@ contract WeightedIndexFactoryTest is WeightedTest {
         vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.InvalidComponentCount.selector, 0));
         factory.createIndex("Weighted", "WGT", new IWeightedIndexFactory.ComponentSpec[](0), _params());
 
-        vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.InvalidComponentCount.selector, 101));
-        factory.createIndex("Weighted", "WGT", new IWeightedIndexFactory.ComponentSpec[](101), _params());
+        uint256 tooMany = factory.MAX_COMPONENTS() + 1;
+        assertEq(tooMany, 201);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.InvalidComponentCount.selector, tooMany));
+        factory.createIndex("Weighted", "WGT", new IWeightedIndexFactory.ComponentSpec[](tooMany), _params());
     }
 
     function test_createIndexRefusesAnUnlistedOrDelistedToken() public {
@@ -486,15 +488,18 @@ contract WeightedIndexFactoryTest is WeightedTest {
         assertEq(address(index).code, expected);
     }
 
-    function test_aHundredComponents() public {
-        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](100);
-        for (uint256 i = 0; i < 100; ++i) {
+    /// @dev An index of exactly MAX_COMPONENTS, two hundred, is created; one more is refused
+    ///      (`test_createIndexRefusesAnEmptyOrOversizedBasket`).
+    function test_theMostComponents() public {
+        uint256 n = factory.MAX_COMPONENTS();
+        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](n);
+        for (uint256 i = 0; i < n; ++i) {
             MockERC20 token = new MockERC20("T", "T", 18);
             _list(address(token));
-            specs[i] = _spec(address(token), 100, 1e18);
+            specs[i] = _spec(address(token), 10_000 / n, 1e18);
         }
         WeightedHub index = _create(specs);
-        assertEq(index.componentCount(), 100);
+        assertEq(index.componentCount(), 200);
     }
 
     // ---------------------------------------------------------------------

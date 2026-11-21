@@ -82,7 +82,7 @@ contract WeightedHubTest is WeightedTest {
 
     function test_initializeRefusesBadComponents() public {
         _expectInvalid(new IWeightedHub.ComponentInit[](0));
-        _expectInvalid(new IWeightedHub.ComponentInit[](101));
+        _expectInvalid(new IWeightedHub.ComponentInit[](201));
 
         IWeightedHub.ComponentInit[] memory one = new IWeightedHub.ComponentInit[](1);
         one[0] = IWeightedHub.ComponentInit(address(eth), ETH_UNITS, 10_000);

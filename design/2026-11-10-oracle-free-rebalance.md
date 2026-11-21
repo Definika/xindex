@@ -175,7 +175,9 @@ A simulation of the executor's best fill (20 equal coins, each moving 11% a week
 the way to its weights; `L` is a little under the logarithm, so the last few percent are not worth an executor's
 while. After a quarter's drift (each coin moving 40%) the unit caps bind and one fill goes about half the way.
 
-Gas, a hundred coins, mock tokens, each account cold (`test_aHundredComponentsFitOneTransaction`):
+Gas, a hundred coins, mock tokens, each account cold (`test_aHundredComponentsFitOneTransaction` then; since
+2026-11-21 the limit is two hundred and the test `test_theMostComponentsFitOneTransaction`, with its figures in
+`ARCHITECTURE.md`):
 
 | | With Pyth | Oracle-free |
 |---|---|---|

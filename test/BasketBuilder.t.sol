@@ -1338,11 +1338,13 @@ contract BasketBuilderTest is XindexTest {
     // Gas
     // ---------------------------------------------------------------------
 
-    /// @dev A hundred-leg basket, beyond what one zap transaction can swap, is bought in three calls and issued in
-    ///      one, each under EIP-7825's cap with every account cold. The mock router swaps for far less than a real
-    ///      pool, so the buys' figures are a floor; the mint's is the builder's own work and the index's.
-    function test_aHundredLegBasketFitsInThreeBuysAndAMint() public {
-        uint256 n = 100;
+    /// @dev The widest basket, MAX_COMPONENTS' two hundred legs, far beyond what one zap transaction can swap, is
+    ///      bought in six calls and issued in one, each under EIP-7825's cap with every account cold. The mock router
+    ///      swaps for far less than a real pool, so the buys' figures are a floor; the mint's is the builder's own work
+    ///      and the index's.
+    function test_theWidestBasketFitsInSixBuysAndAMint() public {
+        uint256 n = factory.MAX_COMPONENTS();
+        assertEq(n, 200);
         address[] memory tokens = new address[](n);
         uint256[] memory units = new uint256[](n);
         for (uint256 i = 0; i < n; ++i) {
@@ -1355,12 +1357,12 @@ contract BasketBuilderTest is XindexTest {
         }
         WeightedHub wide = _createIndex("Wide", "WIDE", tokens, units);
 
-        usdc.mint(alice, 1_000e6);
+        usdc.mint(alice, 2_000e6);
         vm.prank(alice);
-        usdc.approve(address(builder), 1_000e6);
+        usdc.approve(address(builder), 2_000e6);
         uint256 from = 0;
-        uint256[3] memory batch = [uint256(34), 33, 33];
-        for (uint256 b = 0; b < 3; ++b) {
+        uint256[6] memory batch = [uint256(34), 34, 33, 33, 33, 33];
+        for (uint256 b = 0; b < 6; ++b) {
             uint256[] memory components = new uint256[](batch[b]);
             IUniversalRouterSwaps.MintLeg[] memory legs = new IUniversalRouterSwaps.MintLeg[](batch[b]);
             for (uint256 k = 0; k < batch[b]; ++k) {

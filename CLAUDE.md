@@ -27,7 +27,7 @@ Ethereum") and, in part, the one-index decision below, which still describes the
 the same day the owner named which Wormhole copies leave Ethereum's list: the six wrapped from BNB Chain (XRP, ADA,
 LTC, DOT, ATOM and BNB), since BNB Chain's deployment holds those coins in kind; the nine from other chains stay.
 
-**The Ethereum deployment: one index holds up to 100 coins of the top 300** (the owner's decision
+**The Ethereum deployment: one index holds up to 200 coins (100 until 2026-11-21), of the top 300** (the owner's decision
 of 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). `WeightedIndexFactory`, `WeightedHub`, `IndexZap` and
 `MintRequests` hold Ethereum ERC-20s in kind: the issuer's own contract where Ethereum has one (71 candidates of the
 top 300 today), and otherwise a copy wrapped by Wormhole's token bridge from the chain that has it (17 from BNB Chain,
@@ -437,8 +437,11 @@ built on it and found in it.
   `audit/2026-11-21-external-audit-package.md` is its brief for external auditors, and replaces the package of
   2026-11-02, which described the Pyth-priced build). The owner's ask that day: "I need complete Xindex with all
   problems solved", ready for the audit that comes before it holds funds. What the candidate is, and what ran on it:
-  - The audit's fixes and the xStocks listing in one branch. No contract under `src/` differs from the audit
-    branch, and the release hashes did not move.
+  - The audit's fixes and the xStocks listing in one branch.
+  - `MAX_COMPONENTS` is 200, where it was 100 (the owner's call that day, under "Product decisions"; the design
+    rule "Two hundred is what the contracts carry"). It is the one change to `src/` since the audit branch, and it
+    moves the factory's release hash alone. The whole-list fork test now holds 171 of Ethereum's 172 coins in one
+    index and requires its issue and its redeem to fit a transaction: 10.5M and 7.0M.
   - The keeper's price of a wrapped xStock (above). An independent review of its first draft found six things, all
     fixed: a wrapper added through `PRICE_IDS` alone was valued at its feed (it fails closed by feed now, and
     `WRAPPED_TOKENS` names such a wrapper); two tests passed with their property broken; the rate was read one
@@ -448,11 +451,12 @@ built on it and found in it.
     2026-11-21 left for an archive node: Ethereum's five and BNB Chain's, 62 tests, none failed or skipped
     (`IndexZap.fork` 12 of 12 with `testFork_mintWithUSDC`, `WeightedHub.fork` 6 of 6 with its two whole-list
     tests, `CheckToken.fork` 9 of 9, `MainnetAddresses.fork` 9 of 9, `Security.fork` 9 of 9, BNB Chain's 17 of 17),
-    and the executor's 3 of 3.
+    and the executor's 3 of 3. They ran again on the raised limit: 64 tests, none failed or skipped.
   - Two fork tests added that day drive the audit's escrow rule on mainnet Tether, whose owner destroys the
     contract's USDT on the fork: no newcomer's request or deposit pays for it (`Security.fork` 11 of 11).
-  - The keeper's end-to-end test, 42 of 42 on a mainnet fork at block 26,441,062: the 29 checks of 2026-11-18; WRP, an index
-    of WETH and wGOOGLx wrapped the real way, started and filled, the wrapper kept and booked at its feed times its
+  - The keeper's end-to-end test, 42 of 42 on a mainnet fork at block 26,441,062, before the keeper fixes below and
+    not run since (its check that a fill mined past its deadline counts no strike has never run): the 29 checks of
+    2026-11-18; WRP, an index of WETH and wGOOGLx wrapped the real way, started and filled, the wrapper kept and booked at its feed times its
     rate of 78.9; and the first requests any run has filled against real pools, a bound mint and a bound redeem
     request on one index in one `fillBatch`, each at its limit. Two faults of the test itself were found on the
     way. viem's wait for a receipt reads it again only when the block number moves, and a chain that mines on
@@ -812,7 +816,7 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   2026-11-10 for this reason): do not reopen creation without an answer to this. The team creates on the weights, at
   the app's prices, and the app still shows every index's coins against its weights: an approved wallet that named
   units off them would make such an index all the same.
-- **Weights and constituents are fixed at creation,** two to a hundred components, so no listing or delisting
+- **Weights and constituents are fixed at creation,** two to two hundred components, so no listing or delisting
   reaches an existing index. The CREATE2 salt commits to every component's token, units and weight, and to the
   index's config: its fee rates, referral share and rebalance interval
   (LR-05: never switch back to CREATE). The gate and the listing flag are not terms of the index and not in the salt.
@@ -984,12 +988,23 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   `executeRebalance(newUnits, data, maxAmountsIn)` overload bounds that, and
   reverts `RebalanceMovedOn` when the settlement has grown past what the caller will deliver. Issue stays open through
   notice and auction, so a dust issue can grief an executor sized from an off-chain simulation: the callback arguments
-  are authoritative (DA-13). At `MAX_COMPONENTS` (100), every path of the hub and the factory fits a transaction under
-  EIP-7825's 2^24 gas cap on mock tokens (`test_aHundredComponentsFitOneTransaction`): `createIndex` about 5.3M,
-  `redeemSkipping` with every component skipped 5.1M, a fill 4.2M with an executor that holds the tokens; a start
-  with a quote 1.4M, and a fill under one 4.4M. Real tokens
-  transfer dearer, and swaps for 100 legs do not fit, so an atomic fill that wide needs an executor that already
-  holds the tokens.
+  are authoritative (DA-13). At `MAX_COMPONENTS` (200), every path of the hub and the factory fits a transaction under
+  EIP-7825's 2^24 gas cap on mock tokens (`test_theMostComponentsFitOneTransaction`): `createIndex` about 13.3M,
+  `redeemSkipping` with every component skipped 10.2M, `issue` 8.9M, a fill under a quote 8.8M with an executor that
+  holds the tokens, `redeem` 7.5M, and a start with a quote 2.7M. Real tokens transfer dearer (an index of 171 of
+  Ethereum's listed coins issues in kind for 10.5M and redeems for 7.0M on a fork, which
+  `testFork_everyCoinIssuesRebalancesAndRedeems` requires to fit), and swaps for that many legs do not fit, so an
+  atomic fill that wide needs an executor that already holds the tokens, or names new units for some legs only.
+- **Two hundred is what the contracts carry, with a sixth to spare.** `MAX_COMPONENTS` is bounded by a transaction's
+  gas, not by taste: creation compares every pair of components, so its gas grows with the square of the count
+  (5.3M at 100, 13.3M at 200, 18.5M at 250, 56M at 500) and passes the cap near 234; at 500 issue, redeem and the
+  fill each pass it too. The gas test lets no path at `MAX_COMPONENTS` pass five sixths of the cap: an index that
+  exists must keep an exit that fits a transaction when a token transfers dearer than a mock or gas is repriced, as
+  EIP-8037 reprices new storage on Sepolia (measured 2026-10-26, commit `20ed37a`, not merged: `redeemSkipping` of
+  100 with every component skipped needed a limit of 23.1M there). Do not raise the limit without measuring every
+  path again, never past the margin, and never past 256: a keep mask is one word. More than that needs creation,
+  issue, redeem and the fill spread over several transactions, which is another design. An index too wide to issue
+  with its own real tokens can be created and never minted, so its creator simulates `issue` first.
 - **Keep mask.** Only the owner or guardian can pass one. A kept component must keep its units exactly: no fill of
   that rebalance may move it, which is the guardian's answer to a coin being minted without limit. An executor
   needs no mask to leave a component alone: it names that component's current units. Either way `executeRebalance`
@@ -1064,8 +1079,8 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   builder's balance of every token covers the escrows. A buy is sized by `previewIssue` at the call less the escrow, a
   stale quote reverts `StaleRebalanceNonce`, and a leg a rebalance left short is named by `InsufficientEscrow` for one
   more buy. The pass-through legs honour their limits (DA-15), the recipients are checked as the zap's (RT-21), and
-  the builder never calls `redeemSkipping` or `executeRebalance` either. A hundred-leg basket fits three buys and one
-  mint under EIP-7825 (`test_aHundredLegBasketFitsInThreeBuysAndAMint`, on mock pools).
+  the builder never calls `redeemSkipping` or `executeRebalance` either. The widest basket, 200 legs, fits six buys
+  and one mint under EIP-7825 (`test_theWidestBasketFitsInSixBuysAndAMint`, on mock pools).
   - **The escrows' total.** `totalEscrow[token]` is the sum of every user's escrow of a token, moved with each
     credit and debit. Only the token's issuer can put the builder's balance under it, by taking part of the
     balance. While it is under, a deposit, a bought leg or a redeemed leg of that token reverts `Underbacked`, so a
@@ -1259,6 +1274,18 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
 
 ## Product decisions already made (do not re-litigate silently)
 
+**Up to 200 coins in one index** (the owner's call of 2026-11-21). The owner asked for 1,000, then 500, then, told
+why neither can work, for "as much as our contracts support". Measured that day: Ethereum caps a transaction at
+16.78M gas, and BNB Chain and Base show the same cap in their blocks; at 500 coins creating an index costs 56M and
+minting, redeeming and rebalancing 18.5M to 22M each, so such an index could be neither created nor left. Creation
+passes the cap near 234, and the limit is 200, the most that leaves every path a sixth of a transaction to spare (the
+design rule "Two hundred is what the contracts carry"). It replaces "up to 100 per index", unchanged since v1. What it
+gives: one index can hold all of Ethereum's list, 172 coins, or all of BNB Chain's 116. What it costs, said to the
+owner: the factory's release hash moves; a 200-coin index is minted in kind, through the builder in six buys, or
+through `MintRequests`, never through the zap, which stops near 35; and a fill of that many legs fits a transaction
+only for an executor that already holds the coins. 500 or 1,000 stays possible only as another design, with
+creation, issue, redeem and the fill each spread over several transactions; not taken.
+
 **Two deployments, each holding its chain's coins in kind** (the owner's call of 2026-11-13: "we are the ones who
 create indexes now. lets also create bnb chain factory or whatever is neccesery so on both sides we will have in kind
 tokens. we will have more little list on ETH but no problem"; `design/2026-11-13-bnb-chain-deployment.md`). Ethereum
@@ -1438,8 +1465,7 @@ streaming rate are not decided yet; the legal reading is counsel's.
 
 **Unchanged from earlier versions:** an owner Safe of at least three signatures; fixed constituents; no protocol bots
 or hot keys; component whitelist only; the burner chooses the exit stablecoin, USDC or USDT, or exits in kind; the mint
-currency is not tracked per holder;
-up to `MAX_COMPONENTS` (100) per index.
+currency is not tracked per holder.
 
 If a change would alter any of these, say so explicitly.
 

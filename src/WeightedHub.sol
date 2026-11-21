@@ -88,7 +88,7 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
 
     uint256 public constant SHARE_UNIT = 1e18;
     uint256 public constant MIN_COMPONENTS = 2;
-    uint256 public constant MAX_COMPONENTS = 100;
+    uint256 public constant MAX_COMPONENTS = 200;
     uint256 public constant TOTAL_WEIGHT = 1e4;
     uint256 private constant MAX_FEE_BPS = 125;
     uint256 private constant MAX_STREAMING_BPS = 600;
@@ -204,7 +204,8 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
 
         uint256 total = 0;
         // The tokens seen so far, in memory: comparing the calldata structs again for each pair cost 2.8M gas at a
-        // hundred components.
+        // hundred components. The comparison is of every pair, so it is what grows fastest with the count, and with
+        // the factory's own it is what bounds MAX_COMPONENTS.
         address[] memory tokens = new address[](n);
         for (uint256 i = 0; i < n; ++i) {
             ComponentInit calldata c = components_[i];

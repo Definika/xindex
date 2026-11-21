@@ -1112,13 +1112,17 @@ contract WeightedHubRebalanceTest is WeightedTest {
     /// @dev EIP-7825's cap on a transaction's gas.
     uint256 constant TX_GAS_CAP = 1 << 24;
 
-    /// @dev Every hub path at a hundred components fits EIP-7825's 2^24 cap, each measured as the transaction Foundry
-    ///      makes of the call, with every account it touches cold. The settlement is measured with an executor that
-    ///      already holds the tokens, so its figure is the hub's own work and the transfers: the listed tokens transfer
-    ///      dearer than MockERC20, and a fill that swaps a hundred legs does not fit, so an atomic fill that wide needs
-    ///      an executor that holds the tokens.
-    function test_aHundredComponentsFitOneTransaction() public {
-        uint256 n = 100;
+    /// @dev Every hub path at MAX_COMPONENTS, two hundred, fits EIP-7825's 2^24 cap, each measured as the transaction
+    ///      Foundry makes of the call, with every account it touches cold. Creation is the nearest to the cap, about
+    ///      13.3M: it compares every pair of components, so it grows with the square of the count and is what bounds
+    ///      MAX_COMPONENTS; no path may pass five sixths of the cap, so that a token that transfers dearer than
+    ///      MockERC20, or a repricing of gas, does not shut a path on an index that already exists. The settlement is
+    ///      measured with an executor that already holds the tokens, so its figure is the hub's own work and the
+    ///      transfers: a fill that swaps that many legs does not fit, so an atomic fill that wide needs an executor
+    ///      that holds the tokens.
+    function test_theMostComponentsFitOneTransaction() public {
+        uint256 n = factory.MAX_COMPONENTS();
+        assertEq(n, 200);
         IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](n);
         address[] memory tokens = new address[](n);
         uint256[] memory prices = new uint256[](n);
@@ -1126,7 +1130,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
             MockERC20 token = new MockERC20("T", "T", 18);
             tokens[i] = address(token);
             _list(address(token));
-            specs[i] = _spec(address(token), 100, 1e18);
+            specs[i] = _spec(address(token), 10_000 / n, 1e18);
             prices[i] = i % 2 == 0 ? 110 : 90;
         }
 
@@ -1213,7 +1217,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
 
     function _fits(string memory path, uint256 used) private {
         emit log_named_uint(path, used);
-        assertLt(used, TX_GAS_CAP, path);
+        assertLt(used, TX_GAS_CAP * 5 / 6, path);
     }
 
     // ---------------------------------------------------------------------

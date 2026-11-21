@@ -314,8 +314,31 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         for (uint256 i = 0; i < tokens.length; ++i) {
             IERC20(tokens[i]).forceApprove(address(index), need[i]);
         }
-        index.issue(shares, who);
         vm.stopPrank();
+        _cool(index, tokens);
+        uint256 gasBefore = gasleft();
+        vm.prank(who);
+        index.issue(shares, who);
+        _fitsATransaction("issue", tokens.length, gasBefore - gasleft());
+    }
+
+    /// @dev EIP-7825's cap on a transaction's gas.
+    uint256 constant TX_GAS_CAP = 1 << 24;
+
+    /// @dev Marks `index`, its factory and its tokens cold, as a transaction of its own finds them.
+    function _cool(WeightedHub index, address[] memory tokens) internal {
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            vm.cool(tokens[i]);
+        }
+        vm.cool(address(index));
+        vm.cool(address(factory));
+    }
+
+    /// @dev An in-kind path over `legs` real tokens must fit one transaction: a mock transfers for less than the
+    ///      listed tokens do, a wrapped xStock above all, so the unit suite's figures at MAX_COMPONENTS are a floor.
+    function _fitsATransaction(string memory path, uint256 legs, uint256 used) internal pure {
+        console2.log(path, "of real tokens, legs and gas:", legs, used);
+        assertLt(used, TX_GAS_CAP, path);
     }
 
     function _assertBacked(WeightedHub index) internal view {
@@ -465,8 +488,11 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         // Alice leaves in kind, every token arriving.
         address[] memory tokens = index.componentTokens();
         uint256[] memory expected = index.previewRedeem(5e18);
+        _cool(index, tokens);
+        uint256 redeemGas = gasleft();
         vm.prank(alice);
         index.redeem(5e18, alice);
+        _fitsATransaction("redeem", tokens.length, redeemGas - gasleft());
         for (uint256 i = 0; i < tokens.length; ++i) {
             assertGe(IERC20(tokens[i]).balanceOf(alice), expected[i], "every real token redeemed");
         }

@@ -42,7 +42,7 @@ contract DeployWeighted is DeployChecks {
     ///         mainnet broadcast is bound to (CF-5): `deploy` refuses to broadcast on a pinned chain from any other build (a
     ///         local edit, a lib/ checkout off foundry.lock, a FOUNDRY_* override), and `test_CF5_*` in
     ///         test/Scripts.t.sol fails until these equal the build, so only a reviewed, CI-green commit moves them.
-    bytes32 public constant FACTORY_INITCODE_HASH = 0xb327a21d8b4d8559bd43b5d025255c116932dad883929e6c214afe86c2bfdaf1;
+    bytes32 public constant FACTORY_INITCODE_HASH = 0x1a8022424f3cb0b1a3bdf8f3d6c149b480764d58d3fa95d211fa6820d6e709d0;
     /// @notice keccak256 of `IndexZap`'s init code, as above.
     bytes32 public constant ZAP_INITCODE_HASH = 0xbaadfe5668c0ced3f32af5ab073b5b8602f7ec2999e2aeb3b59d03ab11320e3b;
     /// @notice keccak256 of `BasketBuilder`'s init code, as above.

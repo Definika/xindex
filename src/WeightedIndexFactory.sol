@@ -80,7 +80,7 @@ import {WeightedMath} from "./WeightedMath.sol";
 // aderyn-fp-next-line(contract-locks-ether)
 contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, ReentrancyGuard {
     uint256 public constant MIN_COMPONENTS = 2;
-    uint256 public constant MAX_COMPONENTS = 100;
+    uint256 public constant MAX_COMPONENTS = 200;
     uint256 public constant TOTAL_WEIGHT = 1e4;
     uint256 public constant MIN_RAW_UNITS = 1e4;
     uint256 public constant MAX_UNITS = type(uint96).max >> 10;
