@@ -10,23 +10,26 @@ Every earlier review in this repository is internal, the work of agents and of t
 
 ## 1. Commit
 
-The candidate is the branch `release/2026-11-21-candidate` at `720a2f767440c570d51e4e543e8419c733d90546`. It is
-`main` at `5b7635f` with three things on top: the fixes of the audit of 2026-11-21
+The candidate is the branch `release/2026-11-21-candidate` at `fd3ef11e543bcfacff30a14a61e0663dc165b670`. It is
+`main` at `5b7635f` with five things on top: the fixes of the audit of 2026-11-21
 (`audit/2026-11-21-consolidated-audit.md`), which changed all four deployed contracts; the listing of Backed's
-wrapped xStocks (`design/2026-11-21-xstocks.md`), which changed no contract; and `MAX_COMPONENTS` raised from 100 to
-200, which moved the factory's release hash. This file is the one commit after it.
+wrapped xStocks (`design/2026-11-21-xstocks.md`), which changed no contract; `MAX_COMPONENTS` raised from 100 to
+200, which moved the factory's release hash; OP's Wormhole copy off Ethereum's list; and a third deployment, on
+Base (`design/2026-11-21-base-deployment.md`), an address book, a list, deploy checks and a fork suite, which
+changed no contract either. `src/` is as it was at `720a2f7`. This file is the one commit after it.
 Its gates were run where it was built, not in CI, since the branch has not been pushed:
 
 | Gate | Result |
 |---|---|
 | `forge fmt --check`, `forge build --sizes --deny warnings`, `forge lint -D notes` | clean, for the repository and for `keeper/` |
-| `forge test`, fork suites aside | 555 passing, none failing |
+| `forge test`, fork suites aside | 561 passing, none failing |
 | `forge coverage` | 100% of lines, statements, branches and functions on every file |
-| The mutation gate | 218 of 218 mutants killed |
+| The mutation gate | 223 of 223 mutants killed |
 | `python3 -I test/vectors/proofs.py` | every step proven |
-| Aderyn, `wake detect all src` | no finding, no detection |
+| Aderyn, `wake detect all src` | no finding, no detection, at `720a2f7`; `src/` has not changed since |
 | Ethereum's five fork suites, on an archive RPC at the pinned block 26,033,838 | `IndexZap.fork` 12 of 12, `WeightedHub.fork` 6 of 6 (170 of the 171 listed coins in one index: `issue` 10.4M gas, `redeem` 6.9M), `CheckToken.fork` 9 of 9, `MainnetAddresses.fork` 9 of 9, `Security.fork` 11 of 11; none skipped |
 | BNB Chain's fork suite, at its pinned block 134,768,771 | 17 of 17 |
+| Base's fork suite, at its pinned block 60,498,455, on a public node while that block was recent | 11 of 11 |
 | `forge test --root keeper`, with its fork suite | 86 passing |
 | `node --test keeper/test/unit/*.test.mjs`, and the request filler's harness | 252 passing, and 17 |
 | The keeper's end-to-end test, on a mainnet fork at block 26,441,062 | 42 of 42 checks, on the commit before the keeper fixes of `e34e921`; not run since |
@@ -41,7 +44,7 @@ It is a candidate, not the freeze. What can still change `src/` before the freez
 3. Any fix this audit asks for.
 
 The frozen commit is the one `DeployWeighted`'s four release hashes (`FACTORY_INITCODE_HASH`, `ZAP_INITCODE_HASH`,
-`BUILDER_INITCODE_HASH`, `REQUESTS_INITCODE_HASH`) are fixed at. On chains 1 and 56 the script deploys no other build
+`BUILDER_INITCODE_HASH`, `REQUESTS_INITCODE_HASH`) are fixed at. On chains 1, 56 and 8453 the script deploys no other build
 (`BuildNotReleased`, CF-5), and `test_CF5_theReleaseHashesAreThisBuilds` fails on any change to `src/`, a dependency
 or the compiler settings until the four are set again. Findings against the candidate carry over: we re-read each
 against the frozen commit.
@@ -79,8 +82,8 @@ Deployed sizes: `WeightedHub` 21,627 bytes (2,949 under EIP-170), `BasketBuilder
 
 | File | Why |
 |---|---|
-| `script/DeployWeighted.s.sol`, `script/DeployChecks.sol` | Refuse a weak owner (a Safe below 3 signatures, with a module, an EIP-7702 account), a guardian that is not a Safe of at least 2 signatures (CA-M4), overlapping roles, a market contract as a role, any market address but the chain's own book on chains 1 and 56, and any build but the released one |
-| `script/MainnetAddresses.sol`, `script/BnbChainAddresses.sol`, `script/Listings.sol` | The two address books and the lists: 171 coins on Ethereum, 116 on BNB Chain. `test_CRL08_theListsAreTheReleaseRecord` and `test_CRL08_theBnbListIsTheReleaseRecord` pin them against tables written independently |
+| `script/DeployWeighted.s.sol`, `script/DeployChecks.sol` | Refuse a weak owner (a Safe below 3 signatures, with a module, an EIP-7702 account), a guardian that is not a Safe of at least 2 signatures (CA-M4), overlapping roles, a market contract as a role, any market address but the chain's own book on chains 1, 56 and 8453, and any build but the released one |
+| `script/MainnetAddresses.sol`, `script/BnbChainAddresses.sol`, `script/BaseAddresses.sol`, `script/Listings.sol` | The three address books and the lists: 171 coins on Ethereum, 116 on BNB Chain, sixteen on Base. `test_CRL08_theListsAreTheReleaseRecord`, `test_CRL08_theBnbListIsTheReleaseRecord` and `test_CRL08_theBaseListIsTheReleaseRecord` pin them against tables written independently |
 | `script/ConfigureWeighted.s.sol` | Proposes and executes the listings through the owner's Safe |
 
 ### Optional: the keeper's executor
@@ -101,11 +104,12 @@ and the web app (its own repository).
 ## 3. Build and run
 
 ```bash
-git clone --recurse-submodules <repo> && cd <repo> && git checkout 720a2f7
+git clone --recurse-submodules <repo> && cd <repo> && git checkout fd3ef11
 forge build --sizes --deny warnings
-forge test                           # 555 tests without an RPC; the fork suites skip
+forge test                           # 561 tests without an RPC; the fork suites skip
 MAINNET_RPC_URL=<archive RPC> forge test --match-path 'test/fork/*'   # Ethereum's five fork suites
 BNB_RPC_URL=<archive RPC> forge test --match-path 'test/fork/BnbChainAddresses.fork.t.sol'
+BASE_RPC_URL=<archive RPC> forge test --match-path 'test/fork/BaseAddresses.fork.t.sol'
 forge coverage                       # 100% on every file
 python3 -I test/mutants/run.py       # the mutation gate
 python3 -I test/vectors/proofs.py    # the proof's chain behind the arithmetic, in exact rationals
@@ -120,8 +124,8 @@ admission quotes; a public endpoint prunes the state before it ends. `docs/devel
 
 A wallet the factory's owner approved calls `createIndex` with two to two hundred listed coins, each with its units per
 share and its weight, fixed for the index's life, plus its fee rates and rebalance interval (7 to 91 days). The
-factory clones the hub at a CREATE2 address whose salt commits to all of it. Two deployments share nothing: Ethereum
-and BNB Chain, each under its own Safes, each holding its own chain's tokens in kind.
+factory clones the hub at a CREATE2 address whose salt commits to all of it. Three deployments share nothing:
+Ethereum, BNB Chain and Base, each under its own Safes, each holding its own chain's tokens in kind.
 
 - **Issue** takes each component's backing for the shares (rounded up) and mints them; **redeem** burns shares and
   pays each component's backing (rounded down). Neither reads a price. `redeemSkipping` leaves named components in
@@ -156,6 +160,7 @@ and BNB Chain, each under its own Safes, each holding its own chain's tokens in 
 | Creator of an index | Gate minting to an allowlist and open it for good; hand the role on in two steps; earn its fees | Change components, weights, rates, or anyone's shares |
 | Executor (anyone) | Fill an auction at units of its own naming that clear the caps, the bar and any quote, and choose the block | Take beyond what the bar allows: the index's distance from its weights at the market's prices |
 | Wormhole's guardians (13 of 19) | Mint a wrapped copy's token or upgrade its bridge: the whole value of that leg (3 of Ethereum's 171 listings: SOL, AVAX, AERO) | Reach any other leg |
+| Base's bridge, and the keys that upgrade Base | Mint a copy, burn it out of any holder's balance, or upgrade either half of the bridge: the whole value of that leg (13 of Base's 16 listings) | Reach any other leg, or anything on Ethereum or BNB Chain |
 | Backed | Reprice every wrapped xStock (one key sets each xStock's multiplier), upgrade every wrapper and xStock (a 2-of-3 Safe), pause both layers (a 2-of-4 Safe), refuse sanctioned addresses: the whole value of those legs (109 of Ethereum's listings, 104 of BNB Chain's 116) | Reach any other leg |
 | Other token issuers | Pause, blacklist, and for some burn a holder's balance (WBTC, Tether Gold, every Binance-Peg coin on BNB Chain and others, labelled in the app) | Reach other legs: `redeemSkipping` leaves the frozen one behind |
 
@@ -308,7 +313,7 @@ Still open:
 
 ## 10. Assurance already done
 
-- **Tests.** 555 unit, fuzz and invariant tests without an RPC, and the fork suites on both chains' real
+- **Tests.** 561 unit, fuzz and invariant tests without an RPC, and the fork suites on all three chains' real
   tokens, Universal Router and pools (section 1's table). Coverage 100% of lines, statements, branches and functions
   on every file, mocks and scripts included. Invariant suites for the hub (the backing invariant under random issue,
   redeem, fees, claims, rebalances and freezes) and for `MintRequests`.
@@ -316,7 +321,7 @@ Still open:
 - **The exact model.** `test/vectors/settlement.py` (written from the spec, standard library only) generates 431
   settlement vectors and 77 quote vectors that `test/WeightedMath.vectors.t.sol` replays against the contract word
   for word; `test/vectors/proofs.py` checks the proof's chain on the model in exact rationals.
-- **Mutation gate.** 212 mutants as exact edits (`test/mutants/mutants.json`), every one killed, in CI.
+- **Mutation gate.** 223 mutants as exact edits (`test/mutants/mutants.json`), every one killed, in CI.
 - **Static analysis.** `forge lint` with notes denied, Wake (`wake detect all src`) and Aderyn report nothing on
   `src/`; each suppression carries its reason where it stands.
 - **End to end.** The keeper as its own process on an anvil fork of Ethereum, its prices confirmed by Pyth's real
@@ -327,5 +332,6 @@ Still open:
   deployed anywhere.
 
 What has not been done: an external audit; a formal proof of the hub or of `WeightedMath` itself; a deployment of
-this candidate on a testnet; a mainnet deployment; the keeper on BNB Chain; the web app's move to this candidate,
+this candidate on a testnet; a mainnet deployment; the keeper on BNB Chain and on Base; a reading of who mints
+Base's USDT and can replace its code; the web app's move to this candidate,
 which must value a wrapped xStock at its feed times its rate before any index holding one is created.
