@@ -94,8 +94,9 @@ token_i.balanceOf(index) >= floor(totalSupply × units_i × scale / 1e36) + tota
 **BNB Chain:** not deployed yet. Its address book, list and fork suite are built
 (`script/BnbChainAddresses.sol`, `test/fork/BnbChainAddresses.fork.t.sol`); it follows the same audit.
 
-**Base:** not deployed yet. Its address book, list and fork suite are built
-(`script/BaseAddresses.sol`, `test/fork/BaseAddresses.fork.t.sol`); it follows the same audit.
+**Base:** not deployed yet. Its address book, list and fork suites are built (`script/BaseAddresses.sol`,
+`test/fork/BaseAddresses.fork.t.sol`, and `test/fork/BaseStocks.fork.t.sol` for Coinbase's stock tokens, which it
+runs on Base's own node); it follows the same audit.
 
 **Sepolia** (testnet):
 

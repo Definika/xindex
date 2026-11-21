@@ -7,10 +7,10 @@ import {IERC165} from "@openzeppelin/contracts/interfaces/IERC165.sol";
 import {IERC1820Registry} from "@openzeppelin/contracts/interfaces/IERC1820Registry.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
-import {ConfigureWeighted} from "./ConfigureWeighted.s.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
 import {BnbChainAddresses} from "./BnbChainAddresses.sol";
 import {BaseAddresses} from "./BaseAddresses.sol";
+import {ScriptLists} from "./ScriptLists.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
 import {IAdminReads} from "./interfaces/IAdminReads.sol";
 import {IPoolManagerStorage} from "./interfaces/IPoolManagerStorage.sol";
@@ -253,6 +253,8 @@ contract CheckToken is Script {
     /// @dev Gas for each read and each simulated call; far more than any ERC-20 read or transfer needs.
     uint256 private constant READ_GAS = 300_000;
     uint256 private constant CALL_GAS = 1_000_000;
+    /// @dev The ether an account holds while the check calls a token as it.
+    uint256 private constant CALLER_ETHER = 1 ether;
     /// @dev The answer bytes a read or a call keeps, in the scratch space below the free memory pointer.
     uint256 private constant ONE_WORD = 0x20;
     uint256 private constant TWO_WORDS = 0x40;
@@ -291,15 +293,10 @@ contract CheckToken is Script {
     /// @notice CHECK's tokens: those of `ConfigureWeighted`'s `default` or `wide` list, which only chain 1 resolves,
     ///         its `bnb` list, which only chain 56 resolves, its `base` list, which only chain 8453 resolves, or
     ///         comma-separated addresses.
-    function resolveTokens(string memory raw) public returns (address[] memory tokens) {
-        ConfigureWeighted lists = new ConfigureWeighted();
-        if (
-            !ScriptUtils.same(raw, "default") && !ScriptUtils.same(raw, "wide") && !ScriptUtils.same(raw, "bnb")
-                && !ScriptUtils.same(raw, "base")
-        ) {
-            return lists.parseAddresses(raw);
-        }
-        return lists.resolveList(raw);
+    ///         The lists come from `ScriptLists`, which this script carries: it creates no contract to resolve them,
+    ///         since a script run on an OP Stack chain fails a creation by the script contract, which holds no ether.
+    function resolveTokens(string memory raw) public view returns (address[] memory tokens) {
+        return ScriptLists.isNamed(raw) ? ScriptLists.resolve(raw) : ScriptLists.parse(raw);
     }
 
     /// @notice Where depth is measured on this chain: Uniswap on Ethereum, on BNB Chain and on Base, and nowhere
@@ -342,6 +339,13 @@ contract CheckToken is Script {
         }
         r.symbol = ScriptUtils.symbolOf(token);
         (r.decimalsAnswered, r.decimals) = ScriptUtils.decimalsOf(token);
+        // A precompile of its chain that this EVM cannot execute, as Coinbase's stock tokens on Base are under
+        // Foundry before v1.8.4: no read or transfer below would run, and each would read as the token's fault.
+        if (!r.decimalsAnswered && ScriptUtils.isBarePrecompile(token.code)) {
+            r.verdict = Verdict.Review;
+            r.reason = "a precompile of its chain, which this EVM cannot execute: read it through the chain's node";
+            return r;
+        }
         // forge-lint: disable-next-line(unused-return) a token with no total supply reports zero
         (, r.totalSupply) = _word(token, abi.encodeCall(IERC20.totalSupply, ()));
         (r.registry, r.erc777, r.erc1363) = hooksOf(token);
@@ -490,10 +494,13 @@ contract CheckToken is Script {
     /// @dev Calls `token` as `from`; true when the call succeeded and answered nothing (Tether's style) or true. The call
     ///      gets CALL_GAS and only its answer's first word is kept: an old token's failed `assert` or `throw` burns all
     ///      the gas it is given, which would otherwise end the whole run.
+    ///      `from` is given ether first: a script run against an OP Stack chain fails a state-changing call from an
+    ///      account that holds none before the call runs, so every probe on Base read as a failed transfer.
     function _calls(address from, address token, bytes memory data) private returns (bool) {
         bool ok;
         uint256 size;
         uint256 word;
+        vm.deal(from, CALLER_ETHER);
         vm.prank(from);
         // Solidity copies a call's whole answer into memory; this keeps one word of it, in scratch space.
         // forge-lint: disable-next-line(inline-assembly)

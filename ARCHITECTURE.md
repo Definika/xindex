@@ -15,8 +15,9 @@ each, sharing nothing, each holding its own chain's tokens in kind, so an index 
 The BNB Chain side and the Base side are each an address book, a list, deploy checks and a fork suite
 (`script/BnbChainAddresses.sol`, `script/BaseAddresses.sol`); no contract changed for either, and everything below
 describes all three deployments unless it names Ethereum's list, Wormhole or the restock service, which are
-Ethereum's. Base lists sixteen coins: WETH and AERO, issued there, ZRO, and thirteen copies its own bridge mints of
-coins on Ethereum's list; it has none of Backed's stocks.
+Ethereum's. Base lists thirty-two tokens: WETH and AERO, issued there, ZRO, thirteen copies its own bridge mints
+of coins on Ethereum's list, the six Coinbase Wrapped coins, and Coinbase's ten stock tokens, which are precompiles
+of Base and are tested on Base's node (`design/2026-11-22-coinbase-on-base.md`).
 
 **On Ethereum one index holds up to 200 coins (100 until 2026-11-21), of the top 300 and of Backed's stocks** (the owner's decision of
 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). An index holds Ethereum ERC-20s in kind: the issuer's own

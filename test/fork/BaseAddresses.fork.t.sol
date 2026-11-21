@@ -48,7 +48,9 @@ contract BaseGuardianSafe {
 ///         on a fresh factory and through `CheckToken`, a whole deployment from the address book alone, and an index
 ///         of that deployment issued in kind, rebalanced with real transfers and redeemed, minted and burned through
 ///         the zap on Uniswap's real pools in USDC, ether refused, and bought and sold through `MintRequests` in
-///         both stablecoins. Skips when BASE_RPC_URL is unset.
+///         both stablecoins. Coinbase's ten stock tokens are precompiles of Base that this suite's EVM cannot
+///         execute: every test here that runs a token leaves them out, and `BaseStocks.fork.t.sol` drives them on
+///         Base's own node. Skips when BASE_RPC_URL is unset.
 ///         Run: BASE_RPC_URL=... forge test --match-path 'test/fork/BaseAddresses.fork.t.sol' -vvv
 contract BaseAddressesForkTest is Test, IRebalanceExecutor {
     using SafeERC20 for IERC20;
@@ -63,8 +65,8 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
     bytes32 constant ETHEREUM_ROUTER_CODEHASH = 0x6a5f46971b50c6e1b7eef97902311444e479d734e4f80ad88367783cf373fe7f;
     bytes32 constant BNB_ROUTER_CODEHASH = 0x4899c516cf2f0b82251ab88630a9b326d1a2668855c553f9f5a0ea2de993e63b;
     /// @dev Block the fork pins to; BASE_FORK_BLOCK overrides it for a non-archive RPC that only serves recent state.
-    ///      The suite passed whole here on 2026-11-21.
-    uint256 constant FORK_BLOCK = 60_498_455;
+    ///      The suite passed whole here on 2026-11-22.
+    uint256 constant FORK_BLOCK = 60_529_140;
 
     uint24 constant F500 = 500;
     uint24 constant F3000 = 3000;
@@ -103,8 +105,9 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
         assertEq(IERC20Metadata(token).decimals(), decimals);
     }
 
-    /// @dev Every token of the address book, by the symbol and decimals each answers on chain, written out here rather
-    ///      than read from the list.
+    /// @dev Every token of the address book this EVM can execute, by the symbol and decimals each answers on chain,
+    ///      written out here rather than read from the list. Coinbase's ten stocks answer on Base's node alone:
+    ///      `test/fork/BaseStocks.fork.t.sol` reads them there.
     function testFork_tokensAreWhatTheirNamesSay() public view {
         _assertToken(B.WETH, "WETH", 18);
         _assertToken(B.AERO, "AERO", 18);
@@ -122,6 +125,12 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
         _assertToken(B.SNX, "SNX", 18);
         _assertToken(B.ONEINCH, "1INCH", 18);
         _assertToken(B.RSR, "RSR", 18);
+        _assertToken(B.CBBTC, "cbBTC", 8);
+        _assertToken(B.CBETH, "cbETH", 18);
+        _assertToken(B.CBXRP, "cbXRP", 6);
+        _assertToken(B.CBDOGE, "cbDOGE", 8);
+        _assertToken(B.CBLTC, "cbLTC", 8);
+        _assertToken(B.CBADA, "cbADA", 6);
         _assertToken(B.USDC, "USDC", 6);
         _assertToken(B.USDT, "USDT", 6);
     }
@@ -146,6 +155,40 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
             bool namesTheBridge = answered && data.length == 32 && abi.decode(data, (address)) == B.STANDARD_BRIDGE;
             assertFalse(namesTheBridge, "issued here, not minted by the bridge");
         }
+    }
+
+    /// @dev The list without Coinbase's ten stocks: what this EVM can execute. The stocks are precompiles of Base, and
+    ///      their suite drives them on Base's node.
+    function _evmList() internal pure returns (address[] memory list) {
+        address[] memory all = B.all();
+        list = new address[](B.COUNT - B.STOCKS);
+        uint256 n = 0;
+        for (uint256 i = 0; i < all.length; ++i) {
+            if (!B.isStock(all[i])) list[n++] = all[i];
+        }
+        assertEq(n, list.length);
+    }
+
+    /// @dev Five of the six Coinbase Wrapped coins are issued on Base and name no bridge. cbETH is the copy Base's
+    ///      bridge mints of Ethereum's cbETH, which is not on Ethereum's list: it names that token and the bridge.
+    function testFork_theCoinbaseWrappedCoinsAreCoinbases() public view {
+        assertEq(IBridgedToken(B.CBETH).remoteToken(), 0xBe9895146f7AF43049ca1c1AE358B0541Ea49704, "Ethereum's cbETH");
+        assertEq(IBridgedToken(B.CBETH).bridge(), B.STANDARD_BRIDGE);
+        address[5] memory own = [B.CBBTC, B.CBXRP, B.CBDOGE, B.CBLTC, B.CBADA];
+        string[5] memory names = [
+            "Coinbase Wrapped BTC",
+            "Coinbase Wrapped XRP",
+            "Coinbase Wrapped DOGE",
+            "Coinbase Wrapped LTC",
+            "Coinbase Wrapped ADA"
+        ];
+        for (uint256 i = 0; i < own.length; ++i) {
+            assertEq(IERC20Metadata(own[i]).name(), names[i]);
+            (bool answered,) = own[i].staticcall{gas: 100_000}(abi.encodeCall(IBridgedToken.bridge, ()));
+            assertFalse(answered, "issued here, not minted by the bridge");
+            assertTrue(B.isCoinbaseWrapped(own[i]));
+        }
+        assertEq(IERC20Metadata(B.CBETH).name(), "Coinbase Wrapped Staked ETH");
     }
 
     /// @dev CR-I35 on Base: the router answers the PoolManager of the address book, and all three are the code read
@@ -236,11 +279,12 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
         });
     }
 
-    /// @dev Every entry of the Base list, as the listing script builds it, listed on a fresh factory, which records
-    ///      each token's on-chain decimals.
+    /// @dev Every entry of the Base list this EVM can execute, listed on a fresh factory, which records each token's
+    ///      on-chain decimals. The list the listing script builds is these and the ten stocks, which their own suite
+    ///      lists on Base's node.
     function testFork_theBaseListMatchesTheChain() public {
-        address[] memory list = new ConfigureWeighted().resolveList("base");
-        assertEq(list.length, B.COUNT);
+        assertEq(new ConfigureWeighted().resolveList("base").length, B.COUNT);
+        address[] memory list = _evmList();
         WeightedIndexFactory factory = new WeightedIndexFactory(address(this), address(0));
         _list(factory, list);
         for (uint256 i = 0; i < list.length; ++i) {
@@ -249,18 +293,32 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
         }
     }
 
-    /// @dev Every coin of the Base list passes `CheckToken` as listable, its transfers exact, with its powers recorded
-    ///      for the signers. WETH has none and AERO its Minter's mint. A copy of the bridge's can be minted, and
-    ///      burned out of any holder's balance, by the bridge alone, which is how a withdrawal to Ethereum works and
-    ///      what trusting the bridge means; none has an owner but MORPHO's, a proxy its issuer's Safe upgrades.
+    /// @dev Every coin of the Base list this EVM can execute passes `CheckToken` as listable, its transfers exact,
+    ///      with its powers recorded for the signers. WETH has none and AERO its Minter's mint. A copy of the bridge's
+    ///      can be minted, and burned out of any holder's balance, by the bridge alone, which is how a withdrawal to
+    ///      Ethereum works and what trusting the bridge means; none has an owner but MORPHO's, a proxy its issuer's
+    ///      Safe upgrades. Each of the five Coinbase Wrapped coins issued here is a proxy one key upgrades, with a
+    ///      mint, a pause and a blocklist. The ten stocks come out for review, unread: precompiles of Base.
     function testFork_everyBaseTokenPassesTheCheck() public {
         CheckToken checker = new CheckToken();
         address[] memory list = new ConfigureWeighted().baseList();
         for (uint256 i = 0; i < list.length; ++i) {
             CheckToken.Report memory r = checker.check(list[i], address(0), checker.markets());
             checker.log(r);
+            if (B.isStock(list[i])) {
+                assertEq(uint8(r.verdict), uint8(CheckToken.Verdict.Review), "a precompile is not judged here");
+                assertEq(uint8(r.transfers), uint8(CheckToken.Transfers.Untested));
+                continue;
+            }
             assertEq(uint8(r.transfers), uint8(CheckToken.Transfers.Exact), r.symbol);
             assertEq(uint8(r.verdict), uint8(CheckToken.Verdict.Listable), r.symbol);
+            if (B.isCoinbaseWrapped(list[i]) && list[i] != B.CBETH) {
+                uint256 coinbases = checker.MINT() | checker.PAUSE() | checker.BLACKLIST() | checker.UPGRADE();
+                assertEq(r.powers & coinbases, coinbases, "Coinbase mints, pauses, blocks an address and upgrades");
+                assertEq(r.powers & checker.DESTROY(), 0, "and destroys no holder's balance");
+                assertEq(uint8(r.admin.kind), uint8(CheckToken.Kind.Key), "one key upgrades it");
+                assertEq(uint8(r.owner.kind), uint8(CheckToken.Kind.Key), "and another owns it");
+            }
             if (B.remoteOf(list[i]) != address(0)) {
                 assertEq(r.powers & checker.MINT(), checker.MINT(), "the bridge mints a copy");
                 if (list[i] != B.MORPHO) assertEq(r.implementation, address(0), "and no key can replace its code");
@@ -273,18 +331,22 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
         assertEq(uint8(morpho.owner.kind), uint8(CheckToken.Kind.Safe), "MORPHO is upgraded through a Safe");
     }
 
-    /// @dev An index of the whole Base list on a deployment from the book, every coin weighted alike.
+    /// @dev An index of every coin of the Base list this EVM can execute, on a deployment from the book, the coins
+    ///      weighted alike.
     function _wholeListIndex() internal returns (WeightedHub index, address[] memory list) {
         (WeightedIndexFactory factory,,,) = _deploy();
-        list = B.all();
+        list = _evmList();
         _list(factory, list);
         factory.setApprovedCreator(address(this), true);
         IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](list.length);
         for (uint256 i = 0; i < list.length; ++i) {
-            // 16 coins at 625 each is 10,000.
-            specs[i] = IWeightedIndexFactory.ComponentSpec({token: list[i], weight: 625, units: 1e15});
+            // 22 coins: 455 for each of the first twelve and 454 for each other is 10,000. A thousandth of a coin of
+            // 18 decimals a share, and 1e5 raw units of the Coinbase Wrapped coins, of 6 or 8.
+            specs[i] = IWeightedIndexFactory.ComponentSpec({
+                token: list[i], weight: i < 12 ? 455 : 454, units: IERC20Metadata(list[i]).decimals() == 18 ? 1e15 : 1e5
+            });
         }
-        index = WeightedHub(factory.createIndex("Base Sixteen", "BASE16", specs, _params()));
+        index = WeightedHub(factory.createIndex("Base Twenty-Two", "BASE22", specs, _params()));
     }
 
     /// @dev Issues `shares` of `index` to `to` from coins dealt to it. Returns what the index took of each.
@@ -310,7 +372,7 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
     }
 
     /// @dev An index of the whole Base list issues in kind, which probes that the index can send each coin (RW-8),
-    ///      rebalances with real transfers, WETH leaving and each of the other fifteen coins coming in, so every real
+    ///      rebalances with real transfers, WETH leaving and each of the other twenty-one coins coming in, so every real
     ///      balance is read by the post-check, and the holder then leaves in kind at the new units.
     function testFork_anIndexOfTheWholeListIssuesRebalancesAndRedeemsInKind() public {
         (WeightedHub index, address[] memory list) = _wholeListIndex();

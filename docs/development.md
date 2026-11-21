@@ -38,6 +38,8 @@ BNB Chain's deployment and Base's each have a suite of their own, skipped when i
 ```bash
 BNB_RPC_URL=https://... forge test --match-path 'test/fork/BnbChainAddresses.fork.t.sol'
 BASE_RPC_URL=https://... forge test --match-path 'test/fork/BaseAddresses.fork.t.sol'
+# Coinbase's stock tokens, run on Base's node through eth_simulateV1, which the RPC must serve
+BASE_RPC_URL=https://... forge test --match-path 'test/fork/BaseStocks.fork.t.sol'
 # on a non-archive RPC, pin near the head: BNB_FORK_BLOCK=<recent block>, BASE_FORK_BLOCK=<recent block>
 ```
 

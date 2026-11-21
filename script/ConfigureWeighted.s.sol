@@ -8,6 +8,7 @@ import {MainnetAddresses} from "./MainnetAddresses.sol";
 import {BnbChainAddresses} from "./BnbChainAddresses.sol";
 import {BaseAddresses} from "./BaseAddresses.sol";
 import {Listings} from "./Listings.sol";
+import {ScriptLists} from "./ScriptLists.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
 
 /// @notice Drives the listing flow on `WeightedIndexFactory`. A listing is a token and nothing else: no index reads a
@@ -53,18 +54,13 @@ contract ConfigureWeighted is Script {
     uint8 public constant MIN_DECIMALS = 6;
     uint8 public constant MAX_DECIMALS = 18;
     /// @notice How many of `Listings`' coins the `default` list takes, listed first there: WETH, WBTC, LINK and UNI.
-    uint256 public constant DEFAULT_COUNT = 4;
+    uint256 public constant DEFAULT_COUNT = ScriptLists.DEFAULT_COUNT;
 
     /// @notice V5_MODE is not one of the modes above.
     error UnknownMode(string mode);
-    /// @notice V5_WHITELIST names a chain's list on another chain: `default` or `wide` off chain 1, `bnb` off chain 56,
-    ///         `base` off chain 8453.
-    error ListOffItsChain(string list, uint256 chainId);
     /// @notice A broadcasting mode needs an owner that can sign, and this factory's owner is a contract (a Safe on
     ///         mainnet). Use `safe` and submit the calldata it logs from the owner.
     error OwnerIsContract(address owner);
-    /// @notice The list names `token` twice (RT-24).
-    error DuplicateEntry(address token);
     /// @notice Off Ethereum, BNB Chain and Base the mint currency `name` must be given: only the deployment knows it.
     error MintCurrencyRequired(string name);
     /// @notice On Ethereum, BNB Chain and Base the mint currencies are the chain's address book's; `name` named
@@ -108,12 +104,12 @@ contract ConfigureWeighted is Script {
 
     /// @notice The first four of `Listings`: WETH, WBTC, LINK and UNI.
     function defaultMainnetList() public pure returns (address[] memory list) {
-        return _slice(0, DEFAULT_COUNT);
+        return ScriptLists.defaultMainnet();
     }
 
     /// @notice The rest of `Listings`: the wide list.
     function wideMainnetList() public pure returns (address[] memory list) {
-        return _slice(DEFAULT_COUNT, Listings.COUNT);
+        return ScriptLists.wideMainnet();
     }
 
     /// @notice The BNB Chain list, every coin of `BnbChainAddresses`.
@@ -126,41 +122,16 @@ contract ConfigureWeighted is Script {
         return BaseAddresses.all();
     }
 
-    function _slice(uint256 from, uint256 to) private pure returns (address[] memory list) {
-        address[] memory tokens = Listings.all();
-        list = new address[](to - from);
-        for (uint256 i = from; i < to; ++i) {
-            list[i - from] = tokens[i];
-        }
-    }
-
     /// @notice `default` and `wide` on chain 1 only, `bnb` on chain 56 only, `base` on chain 8453 only; anything else
-    ///         is parsed as comma-separated token addresses. Reverts on a token named twice (RT-24).
+    ///         is parsed as comma-separated token addresses. Reverts on a token named twice (RT-24). The lists are
+    ///         `ScriptLists`', which the admission check resolves the same way.
     function resolveList(string memory raw) public view returns (address[] memory list) {
-        bool isDefault = ScriptUtils.same(raw, "default");
-        if (isDefault || ScriptUtils.same(raw, "wide")) {
-            if (block.chainid != 1) revert ListOffItsChain(raw, block.chainid);
-            list = isDefault ? defaultMainnetList() : wideMainnetList();
-        } else if (ScriptUtils.same(raw, "bnb")) {
-            if (block.chainid != BnbChainAddresses.CHAIN_ID) revert ListOffItsChain(raw, block.chainid);
-            list = bnbList();
-        } else if (ScriptUtils.same(raw, "base")) {
-            if (block.chainid != BaseAddresses.CHAIN_ID) revert ListOffItsChain(raw, block.chainid);
-            list = baseList();
-        } else {
-            list = parseAddresses(raw);
-        }
-        _requireUnique(list);
+        return ScriptLists.resolve(raw);
     }
 
     /// @notice Comma-separated addresses; an empty string is an empty list.
     function parseAddresses(string memory raw) public pure returns (address[] memory addresses) {
-        if (bytes(raw).length == 0) return addresses;
-        string[] memory parts = vm.split(raw, ",");
-        addresses = new address[](parts.length);
-        for (uint256 i = 0; i < parts.length; ++i) {
-            addresses[i] = vm.parseAddress(vm.trim(parts[i]));
-        }
+        return ScriptLists.parse(raw);
     }
 
     /// @notice V5_LIST: `all` names every token of the list; anything else is parsed as addresses (RT-06).
@@ -182,7 +153,7 @@ contract ConfigureWeighted is Script {
         address[] memory relist,
         address[2] memory currencies
     ) public {
-        _requireUnique(list);
+        ScriptLists.requireUnique(list);
         _requireSigningOwner(factory);
         vm.startBroadcast();
         for (uint256 i = 0; i < list.length; ++i) {
@@ -202,7 +173,7 @@ contract ConfigureWeighted is Script {
         address[] memory relist,
         address[2] memory currencies
     ) public view returns (bytes[] memory calls, string[] memory labels) {
-        _requireUnique(list);
+        ScriptLists.requireUnique(list);
         bool[] memory chosen = new bool[](list.length);
         uint256 count = 0;
         for (uint256 i = 0; i < list.length; ++i) {
@@ -300,6 +271,13 @@ contract ConfigureWeighted is Script {
             return false;
         }
         (bool answered, uint8 decimals) = ScriptUtils.decimalsOf(token);
+        // One of Coinbase's stock tokens answers no call in an EVM without Base's precompiles, this script's own
+        // under Foundry before v1.8.4: its decimals are then the address book's, which the fork suite reads from
+        // Base's node. The factory reads them from the token itself when the proposal lands.
+        if (!answered && block.chainid == BaseAddresses.CHAIN_ID && BaseAddresses.isStock(token)) {
+            answered = true;
+            decimals = BaseAddresses.STOCK_DECIMALS;
+        }
         if (!answered || decimals < MIN_DECIMALS || decimals > MAX_DECIMALS) {
             console2.log("skipped, the whitelist policy needs 6 to 18 decimals", token);
             return false;
@@ -340,14 +318,6 @@ contract ConfigureWeighted is Script {
         address factoryOwner = Ownable(address(factory)).owner();
         bytes memory ownerCode = factoryOwner.code;
         if (ownerCode.length != 0 && !ScriptUtils.isDelegatedAccount(ownerCode)) revert OwnerIsContract(factoryOwner);
-    }
-
-    function _requireUnique(address[] memory list) private pure {
-        for (uint256 i = 1; i < list.length; ++i) {
-            for (uint256 j = 0; j < i; ++j) {
-                if (list[j] == list[i]) revert DuplicateEntry(list[i]);
-            }
-        }
     }
 
     // ---------------------------------------------------------------------

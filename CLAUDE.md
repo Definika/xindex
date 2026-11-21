@@ -29,10 +29,13 @@ LTC, DOT, ATOM and BNB), since BNB Chain's deployment holds those coins in kind;
 
 **A third deployment, on Base, since 2026-11-21** (the owner's call that day: "we have to add base",
 `design/2026-11-21-base-deployment.md`), built as scripts and tests like BNB Chain's, with no contract changed:
-`script/BaseAddresses.sol` (sixteen coins: WETH and AERO, issued there, ZRO, and thirteen copies Base's own bridge
-mints of coins on Ethereum's list, each proven on chain and labelled Bridged), `V5_WHITELIST=base`, `CHECK=base` and
-`test/fork/BaseAddresses.fork.t.sol`. Base has none of Backed's stocks: its factories stand there and have deployed
-no wrapper. The three deployments share nothing, and only wallets the owner approves create an index on any of them.
+`script/BaseAddresses.sol` (thirty-two tokens since 2026-11-22: WETH and AERO, issued there, ZRO, thirteen copies
+Base's own bridge mints of coins on Ethereum's list, each proven on chain and labelled Bridged, and, the owner's call
+of 2026-11-22, the six Coinbase Wrapped coins and Coinbase's ten stock tokens, Custodial,
+`design/2026-11-22-coinbase-on-base.md`), `V5_WHITELIST=base`, `CHECK=base`, `test/fork/BaseAddresses.fork.t.sol`
+and `test/fork/BaseStocks.fork.t.sol`. Coinbase's stocks are precompiles of Base that the pinned Foundry cannot
+execute, so their suite runs an index of them on Base's own node (`eth_simulateV1`). Backed has no xStock there.
+The three deployments share nothing, and only wallets the owner approves create an index on any of them.
 
 **The Ethereum deployment: one index holds up to 200 coins (100 until 2026-11-21), of the top 300** (the owner's decision
 of 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). `WeightedIndexFactory`, `WeightedHub`, `IndexZap` and
@@ -531,6 +534,31 @@ built on it and found in it.
     Uniswap routes few of them, Aerodrome holding most of Base's depth; an index lives on one chain.
   - Not done: the owner Safe and the guardian's Safe on Base; the `BASE_RPC_URL` secret; a reading of who mints
     Base's USDT and can replace its code; the keeper on Base, which has no preset or executor there; the app.
+- **Coinbase's coins and stocks on Base** (2026-11-22, the owner's calls: "add stocks on base also", then "add all
+  coinbase wrapped tokens in base"; `design/2026-11-22-coinbase-on-base.md`). No contract under `src/` changed.
+  - Base's list is thirty-two: the sixteen of 2026-11-21, the six Coinbase Wrapped coins (cbBTC, cbETH, cbXRP,
+    cbDOGE, cbLTC, cbADA) and Coinbase's ten stock tokens (NVDAc, METAc, AAPLc, GOOGLc, AMZNc, MSFTc, MSTRc, SNDKc,
+    SPCXc, TSLAc), all sixteen Custodial. cbBTC, refused the day before, is listed.
+  - A stock token is a B20 token, a precompile of Base whose code is the byte `0xef`: Foundry before v1.8.4, this
+    repository's pin among them, cannot execute one. `test/fork/BaseStocks.fork.t.sol` therefore asks the node: one
+    `eth_simulateV1` deploys the factory of this build, lists WETH and the ten, creates an index of all eleven,
+    issues it from real holders' tokens, rebalances it through an executor and redeems it, every balance exact.
+    `CheckToken` sends such a token for review unread; `ConfigureWeighted` takes its decimals from the book on Base.
+  - One token redeems for `multiplier()` shares, 1.0005 for NVDAc and 8 for SNDKc that day: whoever values a leg
+    reads it, as a wrapper's rate.
+  - Corrected: Backed's wrapper factory has deployed four wrappers on Base (wbCOIN, wbMSTR, wbNVDA, wbTSLA, over its
+    older tokens), which the record of 2026-11-21 missed; they stay off the list, as on Ethereum, for want of a
+    Pyth feed that names their tokens.
+  - Found on the way: `CHECK=base` had never run. A `forge script` run on an OP Stack chain fails a call or a
+    creation by an account without ether, so the check reverted before it read a token, and then read every
+    transfer as failed; and a read of a token's symbol or decimals was unbounded in gas and size. Fixed in the
+    scripts (`script/ScriptLists.sol`, `ScriptUtils`), mutants N11 to N19. The script run on Base then did not end
+    within ten minutes on a public node, for a reason not found; the fork suite prints the same reports.
+  - Fork suites on Base at block 60,529,140: `BaseAddresses.fork` 12 of 12, an index of the twenty-two other tokens
+    among them, and `BaseStocks.fork` 2 of 2.
+  - Not done: the stock tokens' roles read from the chain; a stock through the builder, `MintRequests` or the zap;
+    the node-run suite in CI; the keeper and the app on Base; the legal reading (Coinbase offers the stocks outside
+    the United States only).
 - Before any mainnet: a Hermes plan that serves the keeper its feeds (its price source is its own business now, and
   no contract waits on it); a run of the fork suites; an external audit (the red
   team of the oracle-free mechanism ran on 2026-11-14), then `DeployWeighted`'s release hashes fixed at the
@@ -609,7 +637,7 @@ to that chain's guardian's Safe,
 then `script/ConfigureWeighted.s.sol`, which lists each coin of `script/Listings.sol`; the owner then approves the
 wallets that create indexes (`setApprovedCreator`), and nobody can create one before. `script/CheckToken.s.sol` reports on every token before its first
 listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 171 in all, on Ethereum;
-`V5_WHITELIST=bnb` is BNB Chain's 116 and `V5_WHITELIST=base` Base's sixteen. On chains 1, 56 and 8453 the deploy script resolves the router and the
+`V5_WHITELIST=bnb` is BNB Chain's 116 and `V5_WHITELIST=base` Base's thirty-two. On chains 1, 56 and 8453 the deploy script resolves the router and the
 stablecoins from that chain's address book and refuses any other address
 (`DeployChecks.isPinnedChain`). Sepolia first needs its test market from
 `script/testnet/SetupTestMarket.s.sol`.
@@ -638,8 +666,8 @@ stablecoins from that chain's address book and refuses any other address
    engine or `script/BnbChainAddresses.sol` also needs the BNB Chain suite, `test/fork/BnbChainAddresses.fork.t.sol`,
    run with `BNB_RPC_URL`: CI runs it only once that secret exists, so until then it is run by hand. The same change,
    or one to `script/BaseAddresses.sol`, needs Base's suite, `test/fork/BaseAddresses.fork.t.sol`, run with
-   `BASE_RPC_URL` under the same rule. With all three variables set, `forge test --match-path 'test/fork/*'` lists
-   seven suites.
+   `BASE_RPC_URL` under the same rule, and with it `test/fork/BaseStocks.fork.t.sol`, which needs a node that serves
+   `eth_simulateV1`. With all three variables set, `forge test --match-path 'test/fork/*'` lists eight suites.
 5. The Wake VS Code analyzer reports no errors or warnings on `src/`. Its reentrancy detector does not model reentrancy
    guards; the documented suppressions are on the `redeem` call in `IndexZap._burnBasket`, the `permit` call in
    `IndexZap._tryPermit`, the `redeem` call in `BasketBuilder.redeem`, and the clone's `initialize` call in
@@ -1327,6 +1355,15 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   `test_CRL08_theBnbListIsTheReleaseRecord`.
 
 ## Product decisions already made (do not re-litigate silently)
+
+**Coinbase's coins and stocks on Base** (the owner's calls of 2026-11-22: "add stocks on base also", then, told that
+Base's stock tokens are Coinbase's and that Backed has deployed only four wrappers of older tokens there, "add all
+coinbase wrapped tokens in base"; `design/2026-11-22-coinbase-on-base.md`). Read as every token Coinbase issues on
+Base: the six Coinbase Wrapped coins and its ten stock tokens, all Custodial. It reverses, for Base, the refusal of
+cbBTC of 2026-11-21, and brings DOGE back on Base as Coinbase's own cbDOGE. The feed rule of 2026-11-19 is not applied
+to Coinbase's stocks: the owner named them. Said with it: Coinbase can block and pause all sixteen and upgrade the
+five coins it issues there; no stock token is one share; the stocks' evidence is a simulation by Base's node, not a
+local fork test; and Coinbase offers the stocks outside the United States only.
 
 **A third deployment, on Base** (the owner's call of 2026-11-21: "we have to add base . users should be able create
 indexes on bnb eth and base"; `design/2026-11-21-base-deployment.md`). It reverses "no Base deployment for now" of

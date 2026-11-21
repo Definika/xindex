@@ -11,25 +11,35 @@ import {MainnetAddresses} from "./MainnetAddresses.sol";
 ///         it on chain (tokens by symbol and decimals, each bridged copy by the Ethereum token and the bridge it
 ///         names, the router, the PoolManager and the V3 factory by their runtime code). No coin carries a price
 ///         feed: an index rebalances on units alone (`design/2026-11-10-oracle-free-rebalance.md`). Every address
-///         here was read on chain 8453 on 2026-11-21, at block 60,490,874.
-/// @dev The list is the owner's rule of that day: the coins issued on Base itself, and each coin of Ethereum's list
-///      whose copy Base's own bridge mints, proven on chain. Proven means three readings: the copy's `remoteToken()`
+///         here was read on chain 8453 on 2026-11-21, at block 60,490,874, and Coinbase's coins and stocks on
+///         2026-11-22 (`design/2026-11-22-coinbase-on-base.md`).
+/// @dev The list is the owner's rules of those two days: the coins issued on Base itself, each coin of Ethereum's
+///      list whose copy Base's own bridge mints, proven on chain, and every coin and stock Coinbase issues on Base. Proven means three readings: the copy's `remoteToken()`
 ///      is the coin's address in `MainnetAddresses`, its `bridge()` is Base's standard bridge ({STANDARD_BRIDGE}),
 ///      and on Ethereum the other half of that bridge ({L1_STANDARD_BRIDGE}) holds the copy's backing
 ///      (`deposits(remote, copy)`, at or above the copy's supply on Base for every one listed).
 ///      - Thirteen coins pass: UNI, AAVE, MORPHO, FET, CRV, VIRTUAL, PENDLE, PEPE, GRT, COMP, SNX, 1INCH and RSR.
 ///      - SHIB and EIGEN have a balance in the bridge on Ethereum and no copy was found for them: not listed.
 ///      - LINK on Base is Chainlink's own cross-chain token, not the bridge's copy: not listed.
-///      - No wrapped xStock is listed: Backed's factories stand on Base and have deployed no wrapper there (none of
-///        Ethereum's 109 has code at its address). A Base index holds crypto only.
-///      - cbBTC, Coinbase's bitcoin, is a custodian the lists do not have: not listed (the owner's call).
+///      - No wrapped xStock is listed: Backed has deployed no xStock on Base, and none of Ethereum's 109 wrappers
+///        has code at its address there. Its wrapper factory has deployed four wrappers of its older tokens (wbCOIN,
+///        wbMSTR, wbNVDA, wbTSLA), which Ethereum's list leaves out too: no Pyth feed names their tokens. The header
+///        of 2026-11-21 said Backed had deployed no wrapper there at all, which was wrong.
+///      - The stocks a Base index holds are Coinbase's ten, and cbBTC, refused on 2026-11-21 as a custodian the lists
+///        did not have, is listed with the other Coinbase Wrapped coins (the owner's call of 2026-11-22).
 library BaseAddresses {
     /// @notice Base's chain id.
     uint256 internal constant CHAIN_ID = 8453;
     /// @notice How many coins the list names.
-    uint256 internal constant COUNT = 16;
-    /// @notice How many of them are copies Base's bridge mints.
+    uint256 internal constant COUNT = 32;
+    /// @notice How many of them are copies Base's bridge mints of coins on Ethereum's list.
     uint256 internal constant BRIDGED = 13;
+    /// @notice How many of them are Coinbase Wrapped coins.
+    uint256 internal constant CB_COINS = 6;
+    /// @notice How many of them are Coinbase's stock tokens.
+    uint256 internal constant STOCKS = 10;
+    /// @notice The decimals each stock token answers on Base's node, where alone it answers.
+    uint8 internal constant STOCK_DECIMALS = 8;
 
     // ---------------------------------------------------------------------
     // Coins issued on Base, `Native`: ether wrapped as on Ethereum, and Aerodrome's AERO, minted by its own Minter
@@ -83,6 +93,55 @@ library BaseAddresses {
     address internal constant RSR = 0xaB36452DbAC151bE02b16Ca17d8919826072f64a;
 
     // ---------------------------------------------------------------------
+    // Coinbase Wrapped coins, `Custodial`: Coinbase holds the coin and mints the token (the owner's call of
+    // 2026-11-22, "add all coinbase wrapped tokens in base", which lifts the refusal of cbBTC of the day before).
+    // Five are issued on Base, each a proxy Coinbase upgrades, with a blocklist and a pause. cbETH is Base's bridge's
+    // copy of Ethereum's cbETH (`0xBe9895146f7AF43049ca1c1AE358B0541Ea49704`), Coinbase's staked ether, whose value
+    // rises against ether while every balance stays as it was.
+    // ---------------------------------------------------------------------
+    /// @dev "Coinbase Wrapped BTC", symbol cbBTC, 8 decimals.
+    address internal constant CBBTC = 0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf;
+    /// @dev "Coinbase Wrapped Staked ETH", symbol cbETH, 18 decimals.
+    address internal constant CBETH = 0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22;
+    /// @dev "Coinbase Wrapped XRP", symbol cbXRP, 6 decimals.
+    address internal constant CBXRP = 0xcb585250f852C6c6bf90434AB21A00f02833a4af;
+    /// @dev "Coinbase Wrapped DOGE", symbol cbDOGE, 8 decimals.
+    address internal constant CBDOGE = 0xcbD06E5A2B0C65597161de254AA074E489dEb510;
+    /// @dev "Coinbase Wrapped LTC", symbol cbLTC, 8 decimals.
+    address internal constant CBLTC = 0xcb17C9Db87B595717C857a08468793f5bAb6445F;
+    /// @dev "Coinbase Wrapped ADA", symbol cbADA, 6 decimals.
+    address internal constant CBADA = 0xcbADA732173e39521CDBE8bf59a6Dc85A9fc7b8c;
+
+    // ---------------------------------------------------------------------
+    // Coinbase's stock tokens, `Custodial` (the same call): one token is a claim on shares Coinbase's custodian
+    // holds, times the token's `multiplier()`, which a dividend raises while every balance stays as it was. 8
+    // decimals each. Each is a B20 token: a precompile of Base at a fixed address, whose only code is the byte
+    // 0xef. An EVM without Base's precompiles cannot execute one, Foundry's before v1.8.4 among them, so the fork
+    // suite drives these on Base's own node (`test/fork/BaseStocks.fork.t.sol`), and `CheckToken` does not read
+    // them. The issuer's roles can block an address, pause, and seize a balance no policy exempts.
+    // ---------------------------------------------------------------------
+    /// @dev "NVIDIA Corporation", symbol NVDAc.
+    address internal constant NVDAC = 0xb20000000000000000000078ee7ce2fE4908108C;
+    /// @dev Symbol METAc.
+    address internal constant METAC = 0xb2000000000000000000008bC8786B856E61707C;
+    /// @dev "Apple Inc.", symbol AAPLc.
+    address internal constant AAPLC = 0xb200000000000000000000C2e324d24d7eEcd1fb;
+    /// @dev Symbol GOOGLc.
+    address internal constant GOOGLC = 0xb2000000000000000000002D0BA3164cc74f58B7;
+    /// @dev Symbol AMZNc.
+    address internal constant AMZNC = 0xb200000000000000000000d9192b6B456483C2E8;
+    /// @dev Symbol MSFTc.
+    address internal constant MSFTC = 0xB200000000000000000000Ab99cFa739E253872B;
+    /// @dev Symbol MSTRc.
+    address internal constant MSTRC = 0xb2000000000000000000004884b426556b92883d;
+    /// @dev Symbol SNDKc.
+    address internal constant SNDKC = 0xb200000000000000000000397293Cb8cda9a10c5;
+    /// @dev "Space Exploration Technologies Corp.", symbol SPCXc.
+    address internal constant SPCXC = 0xb2000000000000000000007b9fcbd005511aCBd5;
+    /// @dev "Tesla Inc.", symbol TSLAc.
+    address internal constant TSLAC = 0xb2000000000000000000001e800a7f5189430cD0;
+
+    // ---------------------------------------------------------------------
     // The mint currencies, never components: Circle's USDC, issued on Base, and the token that answers "Tether USD"
     // and USDT there, which is no copy of the standard bridge's (it names no bridge); who can mint it and replace
     // its code was not read on 2026-11-21, and is to be read before a deployment. Six decimals each, as on Ethereum.
@@ -110,8 +169,8 @@ library BaseAddresses {
     /// @dev Uniswap V3's factory on Base, where `CheckToken` looks up a token's Uniswap pools.
     address internal constant UNISWAP_V3_FACTORY = 0x33128a8fC17869897dcE68Ed026d694621f6FDfD;
 
-    /// @notice Every coin of the list: the two issued on Base, ZRO, then the bridge's copies in the order Ethereum's
-    ///         list holds their coins.
+    /// @notice Every coin of the list: the two issued on Base, ZRO, the bridge's copies in the order Ethereum's list
+    ///         holds their coins, the Coinbase Wrapped coins, then Coinbase's stocks.
     function all() internal pure returns (address[] memory tokens) {
         tokens = new address[](COUNT);
         tokens[0] = WETH;
@@ -130,13 +189,45 @@ library BaseAddresses {
         tokens[13] = SNX;
         tokens[14] = ONEINCH;
         tokens[15] = RSR;
+        tokens[16] = CBBTC;
+        tokens[17] = CBETH;
+        tokens[18] = CBXRP;
+        tokens[19] = CBDOGE;
+        tokens[20] = CBLTC;
+        tokens[21] = CBADA;
+        address[STOCKS] memory stockTokens = stocks();
+        for (uint256 i = 0; i < STOCKS; ++i) {
+            tokens[BRIDGED + 3 + CB_COINS + i] = stockTokens[i];
+        }
+    }
+
+    /// @notice Coinbase's ten stock tokens, the B20 precompiles no EVM without Base's own can execute.
+    function stocks() internal pure returns (address[STOCKS] memory) {
+        return [NVDAC, METAC, AAPLC, GOOGLC, AMZNC, MSFTC, MSTRC, SNDKC, SPCXC, TSLAC];
+    }
+
+    /// @notice Whether `token` is one of Coinbase's stock tokens.
+    function isStock(address token) internal pure returns (bool) {
+        address[STOCKS] memory stockTokens = stocks();
+        for (uint256 i = 0; i < STOCKS; ++i) {
+            if (token == stockTokens[i]) return true;
+        }
+        return false;
+    }
+
+    /// @notice Whether `token` is one of the Coinbase Wrapped coins.
+    function isCoinbaseWrapped(address token) internal pure returns (bool) {
+        return token == CBBTC || token == CBETH || token == CBXRP || token == CBDOGE || token == CBLTC || token == CBADA;
     }
 
     /// @notice The tier of a token in the list, as `Listings.tierOf` gives Ethereum's: `Native` for WETH and AERO,
-    ///         `Bridged` for ZRO and every copy the bridge mints, `Unrecorded` for any token off the list.
+    ///         `Bridged` for ZRO and every copy the bridge mints of a coin on Ethereum's list, `Custodial` for every
+    ///         coin and stock Coinbase issues, cbETH among them though the bridge mints it, and `Unrecorded` for any
+    ///         token off the list.
     function tierOf(address token) internal pure returns (Listings.Tier) {
         if (token == WETH || token == AERO) return Listings.Tier.Native;
         if (token == ZRO || remoteOf(token) != address(0)) return Listings.Tier.Bridged;
+        if (isCoinbaseWrapped(token) || isStock(token)) return Listings.Tier.Custodial;
         return Listings.Tier.Unrecorded;
     }
 

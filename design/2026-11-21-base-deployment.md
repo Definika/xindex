@@ -31,8 +31,10 @@ Base, at block 60,490,874, and Ethereum's side of Base's bridge the same day.
 - **The stablecoins.** USDC (`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`), Circle's, and USDT
   (`0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2`), which answers "Tether USD" and names no bridge. Six decimals each.
   Who can mint that USDT and replace its code was not read.
-- **Backed.** Its xStock factory and its wrapper factory stand on Base at their Ethereum addresses, and have deployed
-  nothing: none of Ethereum's 109 wrappers has code at its address there. Base has no stock to list.
+- **Backed.** Its xStock factory and its wrapper factory stand on Base at their Ethereum addresses. None of
+  Ethereum's 109 wrappers has code at its address there. That the factories "have deployed nothing" was wrong:
+  the wrapper factory has deployed four wrappers of Backed's older tokens there, found on 2026-11-22
+  (`design/2026-11-22-coinbase-on-base.md`, section 2).
 - **The bridge's copies.** Base's bridge on Ethereum (`0x3154Cf16ccdb4C6d922629664174b904d80F2C35`) held a balance of
   18 of Ethereum's 62 listed coins. For 13 a copy was found on Base and proven: its `remoteToken()` is the coin's
   address in `MainnetAddresses`, its `bridge()` is Base's standard bridge
@@ -72,7 +74,8 @@ the bridge alone; MORPHO's copy is a proxy its issuer's Safe, 5 of 9, upgrades.
 
 ## 4. What it costs, said to the owner
 
-- **No stocks.** A Base index holds crypto only until Backed deploys wrappers there.
+- **No stocks.** A Base index holds crypto only until Backed deploys wrappers there. Superseded on 2026-11-22:
+  Coinbase's ten stock tokens are listed (`design/2026-11-22-coinbase-on-base.md`).
 - **Base's bridge is a party to thirteen of the sixteen.** The bridge mints and burns each copy, and the keys that
   upgrade Base can upgrade both of its halves: they reach the whole of each of those legs. It is the trust Base
   itself rests on, so it adds little beyond holding anything on Base, which is why these copies are listed where a

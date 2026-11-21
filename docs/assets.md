@@ -60,9 +60,10 @@ every coin `forge-std` can fund.
 
 ### Base
 
-`script/BaseAddresses.sol` lists sixteen assets for the Base deployment (`V5_WHITELIST=base`), the owner's call of
-2026-11-21 ([`design/2026-11-21-base-deployment.md`](../design/2026-11-21-base-deployment.md)), each held in kind
-there and none through Wormhole:
+`script/BaseAddresses.sol` lists thirty-two assets for the Base deployment (`V5_WHITELIST=base`), the owner's calls
+of 2026-11-21 and 2026-11-22 ([`design/2026-11-21-base-deployment.md`](../design/2026-11-21-base-deployment.md),
+[`design/2026-11-22-coinbase-on-base.md`](../design/2026-11-22-coinbase-on-base.md)), each held in kind there and
+none through Wormhole:
 
 - WETH and AERO, Native: ether wrapped, and Aerodrome's token, which its own Minter contract mints.
 - ZRO, Bridged, as on Ethereum: LayerZero's own omnichain token.
@@ -73,7 +74,18 @@ there and none through Wormhole:
   upgrade Base can upgrade both halves, so the app labels each with Base's bridge as its issuer. MORPHO's copy is a
   proxy its issuer's Safe, 5 of 9, upgrades.
 
-Base has no stock: Backed's factories stand there and have deployed no wrapper. Its mint currencies are Circle's USDC
+- cbBTC, cbETH, cbXRP, cbDOGE, cbLTC and cbADA, Custodial: the Coinbase Wrapped coins. Five are issued on Base,
+  each a proxy one account upgrades, with a mint, a pause and a blocklist. cbETH is Base's bridge's copy of
+  Ethereum's cbETH, Coinbase's staked ether, whose value rises against ether while balances stay fixed.
+- NVDAc, METAc, AAPLc, GOOGLc, AMZNc, MSFTc, MSTRc, SNDKc, SPCXc and TSLAc, Custodial: Coinbase's stock tokens, each
+  a claim on shares in Alpaca's custody times its `multiplier()`, which a dividend raises and a split multiplies
+  while balances stay fixed. Each is a B20 token, a precompile of Base: an EVM without Base's precompiles cannot
+  execute one, so `CheckToken` sends it for review unread, and `test/fork/BaseStocks.fork.t.sol` runs an index of
+  them on Base's own node. The issuer can block an address, pause, and move a balance no policy exempts. Coinbase
+  offers them outside the United States only.
+
+Backed's four wrappers on Base (wbCOIN, wbMSTR, wbNVDA, wbTSLA, over its older tokens) are not listed: no Pyth feed
+names their tokens, the rule Ethereum's list follows. Base's mint currencies are Circle's USDC
 and the token that answers USDT there, six decimals each; who can mint that USDT and replace its code is to be read
 before a deployment. Uniswap, the zap's one venue, routes WETH, AERO and VIRTUAL there; most of Base's depth sits on
 Aerodrome, so the other coins mint in kind or through `MintRequests`.

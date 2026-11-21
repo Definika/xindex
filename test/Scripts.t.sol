@@ -12,6 +12,7 @@ import {MainnetAddresses} from "../script/MainnetAddresses.sol";
 import {BnbChainAddresses} from "../script/BnbChainAddresses.sol";
 import {BaseAddresses} from "../script/BaseAddresses.sol";
 import {ConfigureWeighted} from "../script/ConfigureWeighted.s.sol";
+import {ScriptUtils} from "../script/ScriptUtils.sol";
 import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
 import {IndexZap} from "../src/IndexZap.sol";
 import {BasketBuilder} from "../src/BasketBuilder.sol";
@@ -1046,6 +1047,39 @@ contract ScriptsTest is Test {
         }
         address genuine = address(new RawAnswersToken(abi.encode("RAW"), eighteen));
         assertEq(_labelOf(configure, factory, genuine), string.concat("proposeListing RAW ", vm.toString(genuine)));
+    }
+
+    /// @dev A read of a token's symbol or decimals is bounded twice over. It keeps the answer's first 256 bytes, so an
+    ///      answer longer than any symbol reads as none instead of being copied whole. And it carries 300,000 gas, so a
+    ///      token that burns all it is given, as a precompile this EVM cannot execute does, takes that and no more: a
+    ///      run reads many such tokens and still ends.
+    function test_aTokensAnswerIsBoundedInSizeAndInGas() public {
+        ConfigureWeighted configure = new ConfigureWeighted();
+        WeightedIndexFactory factory = new WeightedIndexFactory(owner, guardian);
+        bytes memory long = new bytes(300);
+        for (uint256 i = 0; i < long.length; ++i) {
+            long[i] = "A";
+        }
+        address verbose = address(new RawAnswersToken(abi.encode(string(long)), abi.encode(uint256(18))));
+        assertEq(_labelOf(configure, factory, verbose), string.concat("proposeListing ? ", vm.toString(verbose)));
+        bytes memory fits = new bytes(192);
+        for (uint256 i = 0; i < fits.length; ++i) {
+            fits[i] = "B";
+        }
+        address wordy = address(new RawAnswersToken(abi.encode(string(fits)), abi.encode(uint256(18))));
+        assertEq(
+            _labelOf(configure, factory, wordy), string.concat("proposeListing ", string(fits), " ", vm.toString(wordy))
+        );
+
+        uint256 before = gasleft();
+        for (uint256 i = 0; i < 20; ++i) {
+            address burner = address(uint160(uint256(keccak256(abi.encode("burns all its gas", i)))));
+            vm.etch(burner, hex"ef");
+            assertEq(ScriptUtils.symbolOf(burner), "?");
+            (bool answered,) = ScriptUtils.decimalsOf(burner);
+            assertFalse(answered);
+        }
+        assertLt(before - gasleft(), 20 * 2 * 400_000, "each read cost its bound, not the gas that was left");
     }
 
     /// @dev Safe mode's one label for a first listing of `token`.

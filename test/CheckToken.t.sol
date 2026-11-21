@@ -9,6 +9,7 @@ import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol"
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {CheckToken} from "../script/CheckToken.s.sol";
 import {ConfigureWeighted} from "../script/ConfigureWeighted.s.sol";
+import {ScriptLists} from "../script/ScriptLists.sol";
 import {MainnetAddresses} from "../script/MainnetAddresses.sol";
 import {BnbChainAddresses} from "../script/BnbChainAddresses.sol";
 import {BaseAddresses} from "../script/BaseAddresses.sol";
@@ -16,6 +17,7 @@ import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockFeeToken} from "./mocks/MockFeeToken.sol";
 import {MockRebasingToken} from "./mocks/MockRebasingToken.sol";
 import {MockSelfRefusingToken, MockSelfLosingToken} from "./mocks/MockSelfTransferTokens.sol";
+import {MockEtherNeedyToken} from "./mocks/MockEtherNeedyToken.sol";
 import {MockERC1820Registry, MockERC1363Token} from "./mocks/MockHookRegistries.sol";
 import {
     MockBlacklistToken,
@@ -883,9 +885,9 @@ contract CheckTokenTest is Test {
         assertEq(parsed.length, 2);
         assertEq(parsed[1], b);
 
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "wide", block.chainid));
+        vm.expectRevert(abi.encodeWithSelector(ScriptLists.ListOffItsChain.selector, "wide", block.chainid));
         checker.resolveTokens("wide");
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "bnb", block.chainid));
+        vm.expectRevert(abi.encodeWithSelector(ScriptLists.ListOffItsChain.selector, "bnb", block.chainid));
         checker.resolveTokens("bnb");
         vm.chainId(1);
         ConfigureWeighted lists = new ConfigureWeighted();
@@ -904,6 +906,58 @@ contract CheckTokenTest is Test {
         assertEq(base.length, BaseAddresses.COUNT);
         assertEq(base[0], BaseAddresses.WETH);
         assertEq(base[15], BaseAddresses.RSR);
+        assertEq(base[16], BaseAddresses.CBBTC);
+        assertEq(base[31], BaseAddresses.TSLAC);
+    }
+
+    /// @dev A token that is a precompile of its chain has the byte 0xef for code, as Coinbase's stock tokens on Base
+    ///      do, and an EVM without that precompile cannot execute it: every read and transfer of the check would
+    ///      fail and read as the token's fault. The check says so and judges nothing; a token that answers is checked
+    ///      as any other, whatever its code.
+    function test_aPrecompileThisEvmCannotRunIsForReview() public {
+        address stock = BaseAddresses.NVDAC;
+        vm.etch(stock, hex"ef");
+        CheckToken.Report memory r = checker.check(stock, address(0), none);
+        assertEq(uint8(r.verdict), uint8(CheckToken.Verdict.Review));
+        assertEq(r.reason, "a precompile of its chain, which this EVM cannot execute: read it through the chain's node");
+        assertEq(uint8(r.transfers), uint8(CheckToken.Transfers.Untested), "nothing was probed");
+        checker.log(r);
+
+        // Two bytes are no bare precompile: the check runs, and refuses a token that answers no decimals.
+        address other = makeAddr("two bytes");
+        vm.etch(other, hex"ef00");
+        r = checker.check(other, address(0), none);
+        assertEq(uint8(r.verdict), uint8(CheckToken.Verdict.Refused));
+        assertEq(r.reason, "decimals outside the whitelist policy's 6 to 18");
+    }
+
+    /// @dev A `forge script` run against an OP Stack chain fails a state-changing call from an account that holds no
+    ///      ether before the call runs, so until 2026-11-22 every probe on Base read as a failed transfer. The check
+    ///      gives an account ether before it calls a token as it. A test run has no such rule: this token, which moves
+    ///      only for a caller that holds ether, stands in for it.
+    function test_theProbesCallersHoldEther() public {
+        MockEtherNeedyToken needy = new MockEtherNeedyToken();
+        address poor = makeAddr("no ether");
+        needy.mint(poor, 1);
+        vm.prank(poor);
+        vm.expectRevert("no ether");
+        needy.transfer(address(this), 1);
+
+        CheckToken.Transfers moved = checker.transfersOf(address(needy), 1e18, new address[](0));
+        assertEq(uint8(moved), uint8(CheckToken.Transfers.Exact), "every probe ran as an account that holds ether");
+    }
+
+    /// @dev The check resolves its tokens without creating a contract. Until 2026-11-22 it created a
+    ///      `ConfigureWeighted` for them, and a `forge script` run against an OP Stack chain fails a creation by the
+    ///      script contract, which holds no ether: every CHECK on Base reverted before it read a token. A test run
+    ///      has no such rule, so what is held here is the cause: the checker's nonce, which a creation would raise.
+    function test_resolvingTheTokensCreatesNoContract() public {
+        uint64 before = vm.getNonce(address(checker));
+        string memory two = string.concat(vm.toString(makeAddr("a")), ",", vm.toString(makeAddr("b")));
+        assertEq(checker.resolveTokens(two).length, 2);
+        vm.chainId(BaseAddresses.CHAIN_ID);
+        assertEq(checker.resolveTokens("base").length, BaseAddresses.COUNT);
+        assertEq(vm.getNonce(address(checker)), before, "resolving a list deploys nothing");
     }
 
     function test_run_readsTheEnvironment() public {

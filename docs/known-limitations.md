@@ -60,7 +60,11 @@ What the contracts do not protect against, and what an app built on them has to 
   named from it. An empty wrapper's rate is anyone's to raise, by leaving it a few raw units of the xStock; a
   wrapper that holds deposits moves only by a gift to its holders or by the multiplier. The keeper leaves a wrapper
   alone for about twenty minutes after its rate moves more than 1%, and then takes the new rate: a wait for its
-  operator, not a bound (`design/2026-11-21-xstocks.md`, section 8).
+  operator, not a bound (`design/2026-11-21-xstocks.md`, section 8). On Base, Coinbase's stock tokens are the same
+  case: one token redeems for its `multiplier()` shares, 1.0005 for NVDAc and 8 for SNDKc on 2026-11-22, which a
+  dividend raises and a split multiplies while balances stay fixed. Each is a precompile of Base that an EVM without
+  Base's precompiles cannot execute, so its evidence is a simulation run by Base's node, not a local fork test
+  (`design/2026-11-22-coinbase-on-base.md`).
 - **Rebalances clear only when the distance pays for the fill.** An executor fills when the index's distance from its
   weights covers its gas and its swaps, so small indexes on mainnet rarely rebalance, and a
   fresh index cannot rebalance until its own interval, 7 to 91 days, has passed since its creation. An unfilled auction expires, and for `REBALANCE_DELAY`

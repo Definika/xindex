@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {ConfigureWeighted} from "../script/ConfigureWeighted.s.sol";
+import {ScriptLists} from "../script/ScriptLists.sol";
 import {MainnetAddresses} from "../script/MainnetAddresses.sol";
 import {BnbChainAddresses} from "../script/BnbChainAddresses.sol";
 import {BaseAddresses} from "../script/BaseAddresses.sol";
@@ -404,18 +405,18 @@ contract ConfigureWeightedTest is Test {
 
     /// @dev Each named list resolves on its own chain only: Ethereum's two on chain 1, BNB Chain's on chain 56.
     function test_theNamedListsResolveOnlyOnTheirChain() public {
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "default", block.chainid));
+        vm.expectRevert(abi.encodeWithSelector(ScriptLists.ListOffItsChain.selector, "default", block.chainid));
         configure.resolveList("default");
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "wide", block.chainid));
+        vm.expectRevert(abi.encodeWithSelector(ScriptLists.ListOffItsChain.selector, "wide", block.chainid));
         configure.resolveList("wide");
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "bnb", block.chainid));
+        vm.expectRevert(abi.encodeWithSelector(ScriptLists.ListOffItsChain.selector, "bnb", block.chainid));
         configure.resolveList("bnb");
         vm.chainId(1);
         assertEq(configure.resolveList("default").length, configure.DEFAULT_COUNT());
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "bnb", 1));
+        vm.expectRevert(abi.encodeWithSelector(ScriptLists.ListOffItsChain.selector, "bnb", 1));
         configure.resolveList("bnb");
         vm.chainId(BnbChainAddresses.CHAIN_ID);
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "wide", 56));
+        vm.expectRevert(abi.encodeWithSelector(ScriptLists.ListOffItsChain.selector, "wide", 56));
         configure.resolveList("wide");
         assertEq(configure.resolveList("bnb").length, BnbChainAddresses.COUNT);
     }
@@ -654,13 +655,13 @@ contract ConfigureWeightedTest is Test {
     function test_RT24_aListNamingATokenTwiceIsRefused() public {
         address[] memory list = _list();
         list[1] = address(a);
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.DuplicateEntry.selector, address(a)));
+        vm.expectRevert(abi.encodeWithSelector(ScriptLists.DuplicateEntry.selector, address(a)));
         configure.safeCalldata(factory, list, _list(), _none(), _currencies());
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.DuplicateEntry.selector, address(a)));
+        vm.expectRevert(abi.encodeWithSelector(ScriptLists.DuplicateEntry.selector, address(a)));
         configure.propose(factory, list, _list(), _none(), _currencies());
 
         string memory raw = string.concat(vm.toString(address(a)), ",", vm.toString(address(a)));
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.DuplicateEntry.selector, address(a)));
+        vm.expectRevert(abi.encodeWithSelector(ScriptLists.DuplicateEntry.selector, address(a)));
         configure.resolveList(raw);
     }
 
@@ -929,7 +930,9 @@ contract ConfigureWeightedTest is Test {
         vm.chainId(BaseAddresses.CHAIN_ID);
         address[] memory list = configure.resolveList("base");
         address[] memory tokens = BaseAddresses.all();
-        assertEq(list.length, 16, "WETH, AERO, ZRO and the thirteen copies of Base's bridge");
+        assertEq(
+            list.length, 32, "WETH, AERO, ZRO, the bridge's thirteen copies, and Coinbase's six coins and ten stocks"
+        );
         assertEq(list, tokens);
         uint256[4] memory count;
         uint256 copies = 0;
@@ -952,7 +955,22 @@ contract ConfigureWeightedTest is Test {
         assertEq(list[0], BaseAddresses.WETH);
         assertEq(count[uint256(Listings.Tier.Native)], 2, "WETH and AERO");
         assertEq(count[uint256(Listings.Tier.Bridged)], 14, "ZRO and the thirteen copies");
-        assertEq(count[uint256(Listings.Tier.Custodial)], 0, "no stock and no custodian's coin");
+        assertEq(count[uint256(Listings.Tier.Custodial)], 16, "the six Coinbase Wrapped coins and the ten stocks");
+        address[10] memory stocks = BaseAddresses.stocks();
+        for (uint256 i = 0; i < stocks.length; ++i) {
+            assertEq(list[22 + i], stocks[i], "the stocks close the list");
+            assertTrue(BaseAddresses.isStock(stocks[i]));
+            assertFalse(BaseAddresses.isCoinbaseWrapped(stocks[i]));
+            assertEq(bytes1(bytes20(stocks[i])), bytes1(0xb2), "a B20 token's address starts with 0xb2");
+        }
+        assertTrue(BaseAddresses.isCoinbaseWrapped(BaseAddresses.CBADA));
+        assertFalse(BaseAddresses.isStock(BaseAddresses.CBBTC));
+        assertFalse(BaseAddresses.isStock(BaseAddresses.WETH));
+        assertFalse(BaseAddresses.isCoinbaseWrapped(BaseAddresses.WETH));
+        assertEq(BaseAddresses.remoteOf(BaseAddresses.CBETH), address(0), "cbETH's coin is not on Ethereum's list");
+        assertEq(configure.tierLabel(BaseAddresses.CBBTC), " (Custodial)");
+        assertEq(configure.tierLabel(BaseAddresses.CBETH), " (Custodial)");
+        assertEq(configure.tierLabel(BaseAddresses.NVDAC), " (Custodial)");
         assertEq(BaseAddresses.remoteOf(BaseAddresses.WETH), address(0));
         assertEq(BaseAddresses.remoteOf(BaseAddresses.AERO), address(0));
         assertEq(
@@ -964,24 +982,24 @@ contract ConfigureWeightedTest is Test {
         assertEq(configure.tierLabel(BaseAddresses.USDC), "", "a mint currency carries no tier");
         assertEq(uint8(BaseAddresses.tierOf(BaseAddresses.USDT)), uint8(Listings.Tier.Unrecorded));
         address[3] memory excluded = [
-            0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf, // cbBTC: Coinbase's custody, a custodian the lists do not have
             0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196, // LINK: Chainlink's own cross-chain token, not the bridge's copy
-            MainnetAddresses.WAAPLX // no wrapped xStock stands on Base
+            MainnetAddresses.WAAPLX, // no wrapped xStock stands on Base
+            0xDEc933e2392AD908263e70A386fbF34e703Ffe8F // wbCOIN: Backed's wrapper of an older token, which stands there
         ];
         for (uint256 i = 0; i < excluded.length; ++i) {
             assertEq(uint8(BaseAddresses.tierOf(excluded[i])), uint8(Listings.Tier.Unrecorded));
         }
 
         // The list is Base's alone, and the other chains' lists are not Base's.
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "wide", 8453));
+        vm.expectRevert(abi.encodeWithSelector(ScriptLists.ListOffItsChain.selector, "wide", 8453));
         configure.resolveList("wide");
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "bnb", 8453));
+        vm.expectRevert(abi.encodeWithSelector(ScriptLists.ListOffItsChain.selector, "bnb", 8453));
         configure.resolveList("bnb");
         vm.chainId(1);
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "base", 1));
+        vm.expectRevert(abi.encodeWithSelector(ScriptLists.ListOffItsChain.selector, "base", 1));
         configure.resolveList("base");
         vm.chainId(BnbChainAddresses.CHAIN_ID);
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "base", 56));
+        vm.expectRevert(abi.encodeWithSelector(ScriptLists.ListOffItsChain.selector, "base", 56));
         configure.resolveList("base");
     }
 
@@ -989,7 +1007,7 @@ contract ConfigureWeightedTest is Test {
     ///      Ethereum token each copy names, and so are the market's addresses.
     function test_CRL08_theBaseListIsTheReleaseRecord() public view {
         address[] memory list = configure.baseList();
-        address[16] memory tokens = [
+        address[32] memory tokens = [
             0x4200000000000000000000000000000000000006, // WETH
             0x940181a94A35A4569E4529A3CDfB74e38FD98631, // AERO
             0x6985884C4392D348587B19cb9eAAf157F13271cd, // ZRO
@@ -1005,9 +1023,26 @@ contract ConfigureWeightedTest is Test {
             0x9e1028F5F1D5eDE59748FFceE5532509976840E0, // COMP
             0x22e6966B799c4D5B13BE962E1D117b56327FDa66, // SNX
             0xc5fecC3a29Fb57B5024eEc8a2239d4621e111CBE, // 1INCH
-            0xaB36452DbAC151bE02b16Ca17d8919826072f64a // RSR
+            0xaB36452DbAC151bE02b16Ca17d8919826072f64a, // RSR
+            0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf, // cbBTC
+            0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22, // cbETH
+            0xcb585250f852C6c6bf90434AB21A00f02833a4af, // cbXRP
+            0xcbD06E5A2B0C65597161de254AA074E489dEb510, // cbDOGE
+            0xcb17C9Db87B595717C857a08468793f5bAb6445F, // cbLTC
+            0xcbADA732173e39521CDBE8bf59a6Dc85A9fc7b8c, // cbADA
+            0xb20000000000000000000078ee7ce2fE4908108C, // NVDAc
+            0xb2000000000000000000008bC8786B856E61707C, // METAc
+            0xb200000000000000000000C2e324d24d7eEcd1fb, // AAPLc
+            0xb2000000000000000000002D0BA3164cc74f58B7, // GOOGLc
+            0xb200000000000000000000d9192b6B456483C2E8, // AMZNc
+            0xB200000000000000000000Ab99cFa739E253872B, // MSFTc
+            0xb2000000000000000000004884b426556b92883d, // MSTRc
+            0xb200000000000000000000397293Cb8cda9a10c5, // SNDKc
+            0xb2000000000000000000007b9fcbd005511aCBd5, // SPCXc
+            0xb2000000000000000000001e800a7f5189430cD0 // TSLAc
         ];
-        // The coin on Ethereum each copy of the bridge's names; zero for the three that are no copy.
+        // The coin on Ethereum each copy of the bridge's names; zero for a token that is no such copy, the three
+        // first and every coin and stock of Coinbase's, which the loop below reads past the table's end.
         address[16] memory remotes = [
             address(0),
             address(0),
@@ -1029,8 +1064,9 @@ contract ConfigureWeightedTest is Test {
         assertEq(list.length, tokens.length);
         for (uint256 i = 0; i < tokens.length; ++i) {
             assertEq(list[i], tokens[i]);
-            assertEq(BaseAddresses.remoteOf(list[i]), remotes[i]);
+            assertEq(BaseAddresses.remoteOf(list[i]), i < remotes.length ? remotes[i] : address(0));
         }
+        assertEq(BaseAddresses.STOCK_DECIMALS, 8);
         assertEq(BaseAddresses.remoteOf(address(this)), address(0), "a token off the list names nothing");
         assertEq(BaseAddresses.USDC, 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913);
         assertEq(BaseAddresses.USDT, 0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2);
@@ -1039,6 +1075,28 @@ contract ConfigureWeightedTest is Test {
         assertEq(BaseAddresses.UNISWAP_V3_FACTORY, 0x33128a8fC17869897dcE68Ed026d694621f6FDfD);
         assertEq(BaseAddresses.STANDARD_BRIDGE, 0x4200000000000000000000000000000000000010);
         assertEq(BaseAddresses.L1_STANDARD_BRIDGE, 0x3154Cf16ccdb4C6d922629664174b904d80F2C35);
+    }
+
+    /// @dev One of Coinbase's stock tokens is a precompile of Base: its code is the byte 0xef, and in an EVM without
+    ///      Base's precompiles, this one, a call to it fails. The listing script then takes its decimals from the
+    ///      address book and builds the Safe's proposal all the same, on Base and for a stock only: another token
+    ///      that answers no decimals is skipped, and so is a stock under any other chain's id.
+    function test_aStockTheScriptCannotReadIsProposedOnBase() public {
+        address[] memory list = new address[](2);
+        list[0] = BaseAddresses.NVDAC;
+        list[1] = makeAddr("another precompile");
+        vm.etch(list[0], hex"ef");
+        vm.etch(list[1], hex"ef");
+        (bool answered,) = list[0].staticcall{gas: 100_000}(abi.encodeWithSignature("decimals()"));
+        assertFalse(answered, "this EVM cannot execute the token");
+
+        (bytes[] memory calls,) = configure.safeCalldata(factory, list, list, _none(), _currencies());
+        assertEq(calls.length, 0, "off Base nothing vouches for its decimals");
+
+        vm.chainId(BaseAddresses.CHAIN_ID);
+        (calls,) = configure.safeCalldata(factory, list, list, _none(), _currencies());
+        assertEq(calls.length, 1, "the stock is proposed, the other token skipped");
+        assertEq(calls[0], abi.encodeCall(WeightedIndexFactory.proposeListing, (BaseAddresses.NVDAC)));
     }
 
     /// @dev Base's mint currencies are never components, whatever a list names and whatever the deployment's own are

@@ -2965,12 +2965,12 @@
     "id": "N8",
     "what": "the Base list resolves on any chain",
     "origin": "design/2026-11-21-base-deployment.md",
-    "file": "script/ConfigureWeighted.s.sol",
+    "file": "script/ScriptLists.sol",
     "test": "test/ConfigureWeighted.t.sol",
     "edits": [
       {
-        "old": "            if (block.chainid != BaseAddresses.CHAIN_ID) revert ListOffItsChain(raw, block.chainid);\n            list = baseList();",
-        "new": "            list = baseList();"
+        "old": "            if (block.chainid != BaseAddresses.CHAIN_ID) revert ListOffItsChain(raw, block.chainid);\n            list = BaseAddresses.all();",
+        "new": "            list = BaseAddresses.all();"
       }
     ]
   },
@@ -2997,6 +2997,127 @@
       {
         "old": "        if (token == ZRO || remoteOf(token) != address(0)) return Listings.Tier.Bridged;",
         "new": "        if (token == ZRO) return Listings.Tier.Bridged;"
+      }
+    ]
+  },
+  {
+    "id": "N11",
+    "what": "the admission check calls a token as an account without ether, which a script run on an OP Stack chain fails before the call runs: every probe on Base read as a failed transfer",
+    "origin": "design/2026-11-22-coinbase-on-base.md",
+    "file": "script/CheckToken.s.sol",
+    "test": "test/CheckToken.t.sol",
+    "edits": [
+      {
+        "old": "        vm.deal(from, CALLER_ETHER);\n        vm.prank(from);",
+        "new": "        vm.prank(from);"
+      }
+    ]
+  },
+  {
+    "id": "N12",
+    "what": "the admission check creates the listing script to resolve its tokens, a creation by the script contract, which holds no ether: every CHECK on an OP Stack chain reverted",
+    "origin": "design/2026-11-22-coinbase-on-base.md",
+    "file": "script/CheckToken.s.sol",
+    "test": "test/CheckToken.t.sol",
+    "edits": [
+      {
+        "old": "import {ScriptLists} from \"./ScriptLists.sol\";",
+        "new": "import {ScriptLists} from \"./ScriptLists.sol\";\nimport {ConfigureWeighted} from \"./ConfigureWeighted.s.sol\";"
+      },
+      {
+        "old": "    function resolveTokens(string memory raw) public view returns (address[] memory tokens) {\n        return ScriptLists.isNamed(raw) ? ScriptLists.resolve(raw) : ScriptLists.parse(raw);",
+        "new": "    function resolveTokens(string memory raw) public returns (address[] memory tokens) {\n        ConfigureWeighted lists = new ConfigureWeighted();\n        return ScriptLists.isNamed(raw) ? lists.resolveList(raw) : lists.parseAddresses(raw);"
+      }
+    ]
+  },
+  {
+    "id": "N13",
+    "what": "a read of a token's symbol or decimals carries all the gas that is left: a token that burns what it is given, a precompile this EVM cannot execute among them, ends the run",
+    "origin": "design/2026-11-22-coinbase-on-base.md",
+    "file": "script/ScriptUtils.sol",
+    "test": "test/Scripts.t.sol",
+    "edits": [
+      {
+        "old": "        uint256 gasLimit = READ_GAS;",
+        "new": "        uint256 gasLimit = gasleft();"
+      }
+    ]
+  },
+  {
+    "id": "N14",
+    "what": "a read of a token's symbol copies the whole answer, whatever its size",
+    "origin": "design/2026-11-22-coinbase-on-base.md",
+    "file": "script/ScriptUtils.sol",
+    "test": "test/Scripts.t.sol",
+    "edits": [
+      {
+        "old": "            if gt(size, most) { size := most }\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "N15",
+    "what": "the admission check judges a precompile this EVM cannot execute as a token at fault: refused for its decimals",
+    "origin": "design/2026-11-22-coinbase-on-base.md",
+    "file": "script/CheckToken.s.sol",
+    "test": "test/CheckToken.t.sol",
+    "edits": [
+      {
+        "old": "        if (!r.decimalsAnswered && ScriptUtils.isBarePrecompile(token.code)) {",
+        "new": "        if (false && !r.decimalsAnswered && ScriptUtils.isBarePrecompile(token.code)) {"
+      }
+    ]
+  },
+  {
+    "id": "N16",
+    "what": "the listing script skips a Coinbase stock it cannot read, so the Safe's batch on Base proposes none of the ten",
+    "origin": "design/2026-11-22-coinbase-on-base.md",
+    "file": "script/ConfigureWeighted.s.sol",
+    "test": "test/ConfigureWeighted.t.sol",
+    "edits": [
+      {
+        "old": "        if (!answered && block.chainid == BaseAddresses.CHAIN_ID && BaseAddresses.isStock(token)) {",
+        "new": "        if (false && !answered && block.chainid == BaseAddresses.CHAIN_ID && BaseAddresses.isStock(token)) {"
+      }
+    ]
+  },
+  {
+    "id": "N17",
+    "what": "the address book's decimals vouch for a stock under any chain's id",
+    "origin": "design/2026-11-22-coinbase-on-base.md",
+    "file": "script/ConfigureWeighted.s.sol",
+    "test": "test/ConfigureWeighted.t.sol",
+    "edits": [
+      {
+        "old": "        if (!answered && block.chainid == BaseAddresses.CHAIN_ID && BaseAddresses.isStock(token)) {",
+        "new": "        if (!answered && BaseAddresses.isStock(token)) {"
+      }
+    ]
+  },
+  {
+    "id": "N18",
+    "what": "the address book's decimals vouch for any token the script cannot read on Base",
+    "origin": "design/2026-11-22-coinbase-on-base.md",
+    "file": "script/ConfigureWeighted.s.sol",
+    "test": "test/ConfigureWeighted.t.sol",
+    "edits": [
+      {
+        "old": "        if (!answered && block.chainid == BaseAddresses.CHAIN_ID && BaseAddresses.isStock(token)) {",
+        "new": "        if (!answered && block.chainid == BaseAddresses.CHAIN_ID) {"
+      }
+    ]
+  },
+  {
+    "id": "N19",
+    "what": "a coin or a stock of Coinbase's is listed with no tier",
+    "origin": "design/2026-11-22-coinbase-on-base.md",
+    "file": "script/BaseAddresses.sol",
+    "test": "test/ConfigureWeighted.t.sol",
+    "edits": [
+      {
+        "old": "        if (isCoinbaseWrapped(token) || isStock(token)) return Listings.Tier.Custodial;",
+        "new": "        if (isCoinbaseWrapped(token)) return Listings.Tier.Custodial;"
       }
     ]
   }

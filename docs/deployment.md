@@ -122,7 +122,9 @@ CHECK=<token,...> forge script script/CheckToken.s.sol --fork-url <any evm rpc>
 `proposeListing(token)` for each coin. A listing is a token and nothing else: no index reads a price, so no token
 carries a price id. `V5_WHITELIST=default` is the first four coins of `script/Listings.sol` (WETH, WBTC, LINK and UNI)
 and `V5_WHITELIST=wide` the other 167, 171 in all; on BNB Chain `V5_WHITELIST=bnb` is that chain's 116, and on Base
-`V5_WHITELIST=base` its sixteen. Safe mode
+`V5_WHITELIST=base` its thirty-two. On Base the script cannot read Coinbase's ten stock tokens under the pinned
+Foundry, which does not run Base's precompiles: it takes their decimals from `script/BaseAddresses.sol` and still
+builds their proposals, and the factory reads the real decimals when each lands. Safe mode
 labels each with its trust tier:
 
 ```bash
