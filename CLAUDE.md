@@ -389,7 +389,11 @@ built on it and found in it.
     an unread owner list as a count (CA-R2-17, CA-R2-18); CI's coverage gate fails a row cut short (CA-L11).
   - Mutants C1 to C43, all killed; B1 and B2 follow the rewritten line. The suite has 555 tests, the executor's 83,
     the bot's 232.
-  - Not done: the fork suites and the keeper's end-to-end tests on this change; a new Sepolia deployment, the
+  - Fork suites, on public RPCs pinned near the head on 2026-11-21: `Security.fork` 9 of 9, `MainnetAddresses.fork`
+    8 of 8, `WeightedHub.fork`'s four drills, BNB Chain's 13 of 13, the executor's 3 of 3, and `IndexZap.fork` 11 of
+    12 (`testFork_mintWithUSDC` misses its $100 floor at the head's prices, as on 2026-11-18). Left for an archive
+    run: `WeightedHub.fork`'s two whole-list tests and `CheckToken.fork`.
+  - Not done: the keeper's end-to-end tests on this change; a new Sepolia deployment, the
     executor included; the app and the backend (the bound request calls, `cancelRebalance(proposalId)` in the Safe
     batches, `Underbacked` as a state to show); and before the non-EVM signers run, CA-M14, CA-L7, CA-R2-12 and
     CA-R2-13.

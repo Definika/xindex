@@ -226,13 +226,19 @@ Run on the working tree of 2026-11-21, on the branch `fix/audit-2026-11-21`:
 - The mutation gate, `python3 -I test/mutants/run.py`: 196 of 196 mutants killed, the 45 this change adds or
   rewrites among them (C1 to C43, B1, B2).
 - Aderyn: no finding. `wake detect all src`: no detection.
+- The fork suites, on public RPCs pinned eight blocks under the head on 2026-11-21 (Ethereum near block 26,463,960,
+  BNB Chain at 134,900,245): `Security.fork` 9 of 9, `MainnetAddresses.fork` 8 of 8, `WeightedHub.fork`'s four
+  drills, BNB Chain's suite 13 of 13 with a Safe for its guardian, and the executor's fork test 3 of 3.
+  `IndexZap.fork` 11 of 12: `testFork_mintWithUSDC` misses its sanity floor of $100, the basket being worth $86.54 at
+  the head, as on 2026-11-18 (price, not code).
 
 ## Open
 
-- **The fork suites have not run on this change.** Gate 4 asks for them: the hub's cancel and claim, `MintRequests`
-  and the builder on the real stablecoins (`totalEscrow` and `Underbacked` against Tether's and Circle's contracts),
-  the deploy checks' guardian rule on both chains, and BNB Chain's suite, whose deployment now names a Safe for its
-  guardian.
+- **An archive run of the fork suites.** What a public node served passed (Gates, above). Left for an archive RPC at
+  the pinned block: `WeightedHub.fork`'s two whole-list tests, `CheckToken.fork`, and `IndexZap.fork`'s
+  `testFork_mintWithUSDC`, whose floor the head's prices miss. No fork test drives the new paths themselves: the
+  bound request, `Underbacked` on Tether's and Circle's real contracts, the partial claim and the bound cancel are
+  covered by the unit suites alone.
 - **The keeper's end-to-end tests have not run on this change**: the fills' new `expected` field, the bot's solver,
   the board's dating and the restock's planner are covered by unit and harness tests only.
 - **A new Sepolia deployment**, the executor included, before the bot of this build serves anything there.
