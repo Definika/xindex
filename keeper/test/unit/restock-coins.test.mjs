@@ -40,7 +40,8 @@ test("only BNB Chain and Algorand go without CCTP, and the gas coins are the thr
 });
 
 test("a subset of the coins is chosen by symbol, and an unknown symbol is refused", () => {
-  assert.deepEqual(coinsOf(null).map((c) => c.symbol), ["AVAX", "OP", "AERO"], "the served coins by default");
+  assert.deepEqual(coinsOf(null).map((c) => c.symbol), ["AVAX", "AERO"], "the served coins by default");
+  assert.deepEqual(coinsOf(["OP"]).map((c) => c.symbol), ["OP"], "OP, off the list since 2026-11-21, only when named");
   assert.ok(coinsOf(null).every((c) => CHAINS[c.chain].platform === "evm"), "each with its chain's adapter built");
   assert.deepEqual(coinsOf(["XRP", "SUI"]).map((c) => c.symbol), ["XRP", "SUI"]);
   assert.throws(() => coinsOf(["XRP", "DOGE"]), /unknown restock coins: DOGE/);

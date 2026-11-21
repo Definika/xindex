@@ -299,14 +299,15 @@ address was read on its chain on 2026-10-19:
 |---|---|---|---|
 | BNB Chain | XRP, ADA, LTC, DOT, BNB (as WBNB): off Ethereum's list since 2026-11-13, so served only when `RESTOCK_COINS` names one | PancakeSwap v3 | USDT, topped up by hand (CCTP mints no USDC there) |
 | Avalanche | AVAX (WAVAX) | Uniswap v3 | USDC, by CCTP |
-| Optimism | OP | Uniswap v3 | USDC, by CCTP |
+| Optimism | OP: off Ethereum's list since 2026-11-21, so served only when `RESTOCK_COINS` names it | Uniswap v3 | USDC, by CCTP |
 | Base | AERO | Uniswap v3 | USDC, by CCTP |
 
 OP was not bought on 2026-11-21: with OP near $0.07, Uniswap v3's deepest OP pool on Optimism held about $35,000 of
 USDC, and a purchase of $1,430 cost 4.7% over the pools' price, so no route passed `ROUTE_MAX_LOSS_BPS`, at that size
 or at any the halving reached (block 159,839,933; the end-to-end test's buy step and what follows it failed for
-that, 17 of its 29 checks passing). Until the pools deepen, or the restock is given another venue there, OP's stock is
-the operator's to add. Base and Avalanche passed the same test that day, 29 of 29 each.
+that, 17 of its 29 checks passing). On that the owner took OP's copy off Ethereum's list the same day; it stays in
+the table for a relisting once the pools deepen or the restock is given another venue there. Base and Avalanche
+passed the same test that day, 29 of 29 each.
 
 Depth read on 2026-10-19, selling $3,000: LTC 88 bps, DOT 73, OP 88; selling $10,000: XRP 26, ADA 102, AVAX 19,
 AERO 46. **ATOM is not served** (the owner's call of 2026-10-20): Binance-Peg ATOM, the only source its copy redeems
@@ -423,7 +424,7 @@ raising to what EIP-8037 allows (RX-36).
 | `EXECUTOR` | required | This bot's `KeeperExecutor`. |
 | `PYTH_API_KEY` | required | Hermes' API key, sent as `Authorization: Bearer`: the keeper's own price source. No contract reads a price. |
 | `HERMES_URL` | `https://pyth.dourolabs.app/hermes` | Hermes since 2026-08-26. |
-| `PRICE_IDS` | none | `token=id` pairs, comma-separated: Pyth ids for coins the catalogue (`bot/price-ids.mjs`, the 172 listed coins) does not hold, a testnet's for instance, or another feed for one it does. A coin without an id is left alone. The feed must price the token itself: a token that wraps what its feed prices is named in `WRAPPED_TOKENS` too, and one at a feed a wrapped xStock or an Ondo leg takes is left alone unless it is (RX-2). |
+| `PRICE_IDS` | none | `token=id` pairs, comma-separated: Pyth ids for coins the catalogue (`bot/price-ids.mjs`, the 171 listed coins) does not hold, a testnet's for instance, or another feed for one it does. A coin without an id is left alone. The feed must price the token itself: a token that wraps what its feed prices is named in `WRAPPED_TOKENS` too, and one at a feed a wrapped xStock or an Ondo leg takes is left alone unless it is (RX-2). |
 | `WRAPPED_TOKENS` | none | Addresses, comma-separated: ERC-4626 wrappers the catalogue does not hold, each already given in `PRICE_IDS` the feed of what it wraps. The bot values such a token at that feed times `convertToAssets`, read from it every round, as it does the catalogue's 109 wrapped xStocks (`MAINNET_WRAPPED`). |
 | `TRADE_COST_BPS` | `30` | What trading a leg is taken to cost when the bot names a fill's units: a leg within this of its weight is not traded for its own sake. |
 | `INDEXES` | every index | Comma-separated indexes to serve. Only wallets the factory's owner approved create indexes, so the set is the team's; a list still caps the bot's work. |

@@ -490,6 +490,8 @@ library MainnetAddresses {
     address internal constant APT = 0x8CDf7AF57E4c8B930e1B23c477c22f076530585e;
     /// @dev Pyth Network's PYTH (`PYTH_TOKEN`, since `PYTH` is Pyth's price contract below) as the bridge wraps Solana's mint HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3 (Wormhole chain 1): symbol PYTH, 6 decimals.
     address internal constant PYTH_TOKEN = 0xeFc0CED4B3D536103e76a1c4c74F0385C8F4Bdd3;
+    // OP's copy is off the list since 2026-11-21 (the owner's call), and kept here for a relisting: OP's pools on
+    // Optimism were too thin that day for the restock to buy it.
     /// @dev OP as the bridge wraps Optimism's 0x4200000000000000000000000000000000000042 (Wormhole chain 24): symbol OP, 18 decimals.
     address internal constant OP = 0x1df721D242E0783F8fCab4A9FfE4F35bdf329909;
     /// @dev BNB as the bridge wraps BNB Chain's WBNB (0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c, Wormhole chain 4), the wrapper of BNB itself rather than a Binance-Peg token: symbol WBNB, 18 decimals.

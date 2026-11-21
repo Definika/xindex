@@ -32,9 +32,11 @@ of 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). `WeightedIndexFa
 `MintRequests` hold Ethereum ERC-20s in kind: the issuer's own contract where Ethereum has one (71 candidates of the
 top 300 today), and otherwise a copy wrapped by Wormhole's token bridge from the chain that has it (17 from BNB Chain,
 nine of them Binance-Peg; 31 from Solana, Sui, Aptos, Base and the other chains Wormhole serves), labelled Bridged,
-Custodial as well when the source is Binance-Peg. The list stands at 172
+Custodial as well when the source is Binance-Peg. The list stands at 171
 (`script/Listings.sol`): 109 of them Backed's wrapped xStocks, US stocks and ETFs, since 2026-11-21 (the owner's call:
-xStocks in place of Ondo's 17 stocks, `design/2026-11-21-xstocks.md`), and of the 63 coins four Wormhole copies (SOL, AVAX, AERO and OP) since the copies of JUP, PYTH, SUI, APT
+xStocks in place of Ondo's 17 stocks, `design/2026-11-21-xstocks.md`), and of the 62 coins three Wormhole copies
+(SOL, AVAX and AERO) since OP's copy left on 2026-11-21 (the owner's call, "remove op for now": the restock found no
+route to buy OP on Optimism that day), the copies of JUP, PYTH, SUI, APT
 and ALGO left on 2026-11-18 (the owner's call: no Ethereum pool trades them, and the restock that would bridge their
 stock in from Solana, Sui, Aptos or Algorand has never run, `design/2026-11-18-bridged-coins-in-a-rebalance.md`), and
 the six wrapped from BNB Chain on 2026-11-13 (the owner's call: BNB Chain's deployment holds those coins in kind, so no
@@ -440,8 +442,9 @@ built on it and found in it.
   - The audit's fixes and the xStocks listing in one branch.
   - `MAX_COMPONENTS` is 200, where it was 100 (the owner's call that day, under "Product decisions"; the design
     rule "Two hundred is what the contracts carry"). It is the one change to `src/` since the audit branch, and it
-    moves the factory's release hash alone. The whole-list fork test now holds 171 of Ethereum's 172 coins in one
-    index and requires its issue and its redeem to fit a transaction: 10.5M and 7.0M.
+    moves the factory's release hash alone. The whole-list fork test now holds all but one of Ethereum's listed
+    coins in one index, 170 of 171 since OP left, and requires its issue and its redeem to fit a transaction: 10.4M
+    and 6.9M.
   - The keeper's price of a wrapped xStock (above). An independent review of its first draft found six things, all
     fixed: a wrapper added through `PRICE_IDS` alone was valued at its feed (it fails closed by feed now, and
     `WRAPPED_TOKENS` names such a wrapper); two tests passed with their property broken; the rate was read one
@@ -474,7 +477,9 @@ built on it and found in it.
   - The restock's end-to-end test on the audit's changes: Base and Avalanche 29 of 29 each. Optimism 17 of 29: no
     route bought $1,430 of OP within `ROUTE_MAX_LOSS_BPS`, Uniswap v3's deepest OP pool there holding about
     $35,000 of USDC with OP near $0.07, so the buy and what follows it failed, on depth and not on code. Until
-    the pools deepen or the restock has another venue there, OP's stock is the operator's to add.
+    the pools deepen or the restock has another venue there, OP's stock is the operator's to add. On that the
+    owner took OP's copy off Ethereum's list the same day ("remove op for now"): 171 coins, its address kept in
+    `MainnetAddresses` for a relisting, and the restock serves AVAX and AERO by default.
   - Gates on the candidate: 555 forge tests without an RPC, coverage 100% on every file, the mutation gate's
     218 mutants all killed, Aderyn and Wake silent, the executor's 86 tests with its fork suite, the bot's 251 unit
     tests and the filler's 17 in its harness.
@@ -560,7 +565,7 @@ Deployment, once on each chain, Ethereum and BNB Chain: `script/DeployWeighted.s
 to that chain's guardian's Safe,
 then `script/ConfigureWeighted.s.sol`, which lists each coin of `script/Listings.sol`; the owner then approves the
 wallets that create indexes (`setApprovedCreator`), and nobody can create one before. `script/CheckToken.s.sol` reports on every token before its first
-listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 172 in all, on Ethereum;
+listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 171 in all, on Ethereum;
 `V5_WHITELIST=bnb` is BNB Chain's 116. On chains 1 and 56 the deploy script resolves the router and the
 stablecoins from that chain's address book and refuses any other address
 (`DeployChecks.isPinnedChain`). Sepolia first needs its test market from
@@ -582,7 +587,7 @@ stablecoins from that chain's address book and refuses any other address
    `fill(id, amount)` passed every gate of the root project and broke the keeper's build.
 4. Fork tests green if the change touches `IndexZap`, the hub's rebalancing, routes, token behaviour, or anything
    router- or pool-related. Their summary must list the five Ethereum
-   `test/fork/` suites and 0 skipped. `WeightedHub.fork.t.sol` alone took about an hour at the 91-coin list (172 since 2026-11-21, its whole-list index
+   `test/fork/` suites and 0 skipped. `WeightedHub.fork.t.sol` alone took about an hour at the 91-coin list (171 since 2026-11-21, its whole-list index
    capped at `MAX_COMPONENTS`) on an archive RPC
    (Alchemy, Tenderly), nearly all of it the admission quotes on a cold RPC cache; a public endpoint prunes the state
    before it ends. They are also required when the deploy checks or `script/MainnetAddresses.sol` change, which
@@ -1280,7 +1285,7 @@ why neither can work, for "as much as our contracts support". Measured that day:
 minting, redeeming and rebalancing 18.5M to 22M each, so such an index could be neither created nor left. Creation
 passes the cap near 234, and the limit is 200, the most that leaves every path a sixth of a transaction to spare (the
 design rule "Two hundred is what the contracts carry"). It replaces "up to 100 per index", unchanged since v1. What it
-gives: one index can hold all of Ethereum's list, 172 coins, or all of BNB Chain's 116. What it costs, said to the
+gives: one index can hold all of Ethereum's list, 171 coins, or all of BNB Chain's 116. What it costs, said to the
 owner: the factory's release hash moves; a 200-coin index is minted in kind, through the builder in six buys, or
 through `MintRequests`, never through the zap, which stops near 35; and a fill of that many legs fits a transaction
 only for an executor that already holds the coins. 500 or 1,000 stays possible only as another design, with
@@ -1318,6 +1323,14 @@ those legs need a filler with stock, which the collaboration (an authorized part
 one key of Backed's sets every multiplier and so every wrapped leg's value; a 2-of-3 Safe upgrades them all; and the
 keeper did not value a wrapper until it read `convertToAssets`, which it does since the same day
 (`design/2026-11-21-xstocks.md`, sections 5 and 8).
+
+**OP's copy off the list** (the owner's call of 2026-11-21: "remove op for now"). The restock's end-to-end test
+could not buy OP on Optimism that day: with OP near $0.07, Uniswap v3's deepest OP pool there held about $35,000 of
+USDC, and $1,430 of OP cost 4.7% over the pools' price, past `ROUTE_MAX_LOSS_BPS` at every size the halving reached.
+No Ethereum pool trades the copy, so an index holding it would rebalance it from an operator's stock alone. It left
+`script/Listings.sol`, the keeper's catalogue and the restock's default coins; its address stays in
+`MainnetAddresses` and its row in the restock's table, for a relisting once its pools deepen or the restock has
+another venue there. AVAX's and AERO's copies, which the same test bought and bridged that day, stay, and SOL's.
 
 **Five Wormhole copies off the list** (the owner's call of 2026-11-18: "for now, let's just remove" them, since the
 team creates every index and tells partners what it holds). JUP, PYTH, SUI, APT and ALGO left `script/Listings.sol`:

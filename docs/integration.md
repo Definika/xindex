@@ -257,8 +257,8 @@ escrow as it was taken: the stablecoin of a mint request, the shares of a redeem
   call whose simulated gas exceeds about 14M. The in-kind paths fit at `MAX_COMPONENTS`, 200 (about 8.9M for `issue`,
   7.5M for `redeem`, 10.2M for `redeemSkipping` with every component skipped, on mock tokens), and so does the basket
   builder: six `buy` calls of about 34 legs and one `mint` (`test_theWidestBasketFitsInSixBuysAndAMint`, on mock
-  pools, so the buys are a floor). Real tokens transfer dearer: an index of 171 of Ethereum's listed coins issued in
-  kind for 10.5M and redeemed for 7.0M on a fork of 2026-11-21. Simulate an index's own `issue` before creating it:
+  pools, so the buys are a floor). Real tokens transfer dearer: an index of 170 of Ethereum's 171 listed coins issued
+  in kind for 10.4M and redeemed for 6.9M on a fork of 2026-11-21. Simulate an index's own `issue` before creating it:
   one too wide to issue in a transaction with its real tokens can be created and never minted.
 - **Approvals.** USDC supports `permit`; USDT does not, and its `approve` reverts when it changes a non-zero allowance
   to another non-zero value: if `allowance(user, zap)` is not 0, send `approve(zap, 0)` first. The same holds for

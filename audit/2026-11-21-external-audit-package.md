@@ -25,7 +25,7 @@ Its gates were run where it was built, not in CI, since the branch has not been 
 | The mutation gate | 218 of 218 mutants killed |
 | `python3 -I test/vectors/proofs.py` | every step proven |
 | Aderyn, `wake detect all src` | no finding, no detection |
-| Ethereum's five fork suites, on an archive RPC at the pinned block 26,033,838 | `IndexZap.fork` 12 of 12, `WeightedHub.fork` 6 of 6 (171 of the 172 listed coins in one index: `issue` 10.5M gas, `redeem` 7.0M), `CheckToken.fork` 9 of 9, `MainnetAddresses.fork` 9 of 9, `Security.fork` 11 of 11; none skipped |
+| Ethereum's five fork suites, on an archive RPC at the pinned block 26,033,838 | `IndexZap.fork` 12 of 12, `WeightedHub.fork` 6 of 6 (170 of the 171 listed coins in one index: `issue` 10.4M gas, `redeem` 6.9M), `CheckToken.fork` 9 of 9, `MainnetAddresses.fork` 9 of 9, `Security.fork` 11 of 11; none skipped |
 | BNB Chain's fork suite, at its pinned block 134,768,771 | 17 of 17 |
 | `forge test --root keeper`, with its fork suite | 86 passing |
 | `node --test keeper/test/unit/*.test.mjs`, and the request filler's harness | 252 passing, and 17 |
@@ -80,7 +80,7 @@ Deployed sizes: `WeightedHub` 21,627 bytes (2,949 under EIP-170), `BasketBuilder
 | File | Why |
 |---|---|
 | `script/DeployWeighted.s.sol`, `script/DeployChecks.sol` | Refuse a weak owner (a Safe below 3 signatures, with a module, an EIP-7702 account), a guardian that is not a Safe of at least 2 signatures (CA-M4), overlapping roles, a market contract as a role, any market address but the chain's own book on chains 1 and 56, and any build but the released one |
-| `script/MainnetAddresses.sol`, `script/BnbChainAddresses.sol`, `script/Listings.sol` | The two address books and the lists: 172 coins on Ethereum, 116 on BNB Chain. `test_CRL08_theListsAreTheReleaseRecord` and `test_CRL08_theBnbListIsTheReleaseRecord` pin them against tables written independently |
+| `script/MainnetAddresses.sol`, `script/BnbChainAddresses.sol`, `script/Listings.sol` | The two address books and the lists: 171 coins on Ethereum, 116 on BNB Chain. `test_CRL08_theListsAreTheReleaseRecord` and `test_CRL08_theBnbListIsTheReleaseRecord` pin them against tables written independently |
 | `script/ConfigureWeighted.s.sol` | Proposes and executes the listings through the owner's Safe |
 
 ### Optional: the keeper's executor
@@ -155,7 +155,7 @@ and BNB Chain, each under its own Safes, each holding its own chain's tokens in 
 | Approved creator | Create an index of listed coins, naming its units, weights, rates and interval within the caps | Anything on an index that exists; an approval is read at creation alone |
 | Creator of an index | Gate minting to an allowlist and open it for good; hand the role on in two steps; earn its fees | Change components, weights, rates, or anyone's shares |
 | Executor (anyone) | Fill an auction at units of its own naming that clear the caps, the bar and any quote, and choose the block | Take beyond what the bar allows: the index's distance from its weights at the market's prices |
-| Wormhole's guardians (13 of 19) | Mint a wrapped copy's token or upgrade its bridge: the whole value of that leg (4 of Ethereum's 172 listings: SOL, AVAX, AERO, OP) | Reach any other leg |
+| Wormhole's guardians (13 of 19) | Mint a wrapped copy's token or upgrade its bridge: the whole value of that leg (3 of Ethereum's 171 listings: SOL, AVAX, AERO) | Reach any other leg |
 | Backed | Reprice every wrapped xStock (one key sets each xStock's multiplier), upgrade every wrapper and xStock (a 2-of-3 Safe), pause both layers (a 2-of-4 Safe), refuse sanctioned addresses: the whole value of those legs (109 of Ethereum's listings, 104 of BNB Chain's 116) | Reach any other leg |
 | Other token issuers | Pause, blacklist, and for some burn a holder's balance (WBTC, Tether Gold, every Binance-Peg coin on BNB Chain and others, labelled in the app) | Reach other legs: `redeemSkipping` leaves the frozen one behind |
 

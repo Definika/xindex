@@ -58,8 +58,8 @@ contract ConfigureWeightedTest is Test {
         assertEq(first.length + wide.length, tokens.length);
         assertEq(
             tokens.length,
-            172,
-            "the list of 2026-10-06 and 2026-10-10's additions, less DOGE, SAND, RLB, BTT, SEI, BNB Chain's six, the five no restock has served and the 17 Ondo stocks, and the 109 wrapped xStocks of 2026-11-21"
+            171,
+            "the list of 2026-10-06 and 2026-10-10's additions, less DOGE, SAND, RLB, BTT, SEI, BNB Chain's six, the five no restock has served, OP and the 17 Ondo stocks, and the 109 wrapped xStocks of 2026-11-21"
         );
         for (uint256 i = 0; i < tokens.length; ++i) {
             assertEq(i < 4 ? first[i] : wide[i - 4], tokens[i]);
@@ -99,7 +99,7 @@ contract ConfigureWeightedTest is Test {
             ++count[uint256(tier)];
         }
         assertEq(count[uint256(Listings.Tier.Native)], 48, "22 of the wide list and 26 of the hundred-coin list");
-        assertEq(count[uint256(Listings.Tier.Bridged)], 13, "8, ZK and W, and 3 Wormhole copies");
+        assertEq(count[uint256(Listings.Tier.Bridged)], 12, "8, ZK and W, and 2 Wormhole copies");
         assertEq(count[uint256(Listings.Tier.Custodial)], 111, "WBTC, Tether Gold and the 109 wrapped xStocks");
         assertEq(uint8(Listings.tierOf(MainnetAddresses.WBTC)), uint8(Listings.Tier.Custodial));
         assertEq(uint8(Listings.tierOf(MainnetAddresses.ARB)), uint8(Listings.Tier.Bridged));
@@ -115,8 +115,12 @@ contract ConfigureWeightedTest is Test {
         );
         assertEq(uint8(Listings.tierOf(MainnetAddresses.W)), uint8(Listings.Tier.Bridged), "a mesh peer, home Solana");
         assertEq(uint8(Listings.tierOf(MainnetAddresses.AVAX)), uint8(Listings.Tier.Bridged), "a Wormhole copy");
-        assertEq(uint8(Listings.tierOf(MainnetAddresses.OP)), uint8(Listings.Tier.Bridged));
         assertEq(uint8(Listings.tierOf(MainnetAddresses.AERO)), uint8(Listings.Tier.Bridged));
+        // Wormhole's copy of OP, off since 2026-11-21: the restock found no route to buy it on Optimism
+        assertEq(uint8(Listings.tierOf(MainnetAddresses.OP)), uint8(Listings.Tier.Unrecorded), "OP is off the list");
+        for (uint256 j = 0; j < tokens.length; ++j) {
+            assertTrue(tokens[j] != MainnetAddresses.OP, "OP's copy is listed");
+        }
         // Wormhole's copies of the five coins with no Ethereum pool and no restock that has run, off since 2026-11-18
         address[5] memory unserved = [
             MainnetAddresses.JUP,
@@ -217,7 +221,7 @@ contract ConfigureWeightedTest is Test {
     function test_CRL08_theListsAreTheReleaseRecord() public view {
         address[] memory first = configure.defaultMainnetList();
         address[] memory wide = configure.wideMainnetList();
-        address[172] memory tokens = [
+        address[171] memory tokens = [
             0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2, // WETH
             0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599, // WBTC
             0x514910771AF9Ca656af840dff83E8264EcF986CA, // LINK
@@ -280,7 +284,6 @@ contract ConfigureWeightedTest is Test {
             0x320623b8E4fF03373931769A31Fc52A4E78B5d70, // RSR
             0x85f138bfEE4ef8e540890CFb48F620571d67Eda3, // AVAX
             0x750525C1877E30304F1E22b1b49b4C9DdE674ddF, // AERO
-            0x1df721D242E0783F8fCab4A9FfE4F35bdf329909, // OP
             0x5AA7649fdbDa47De64A07aC81D64B682AF9C0724, // wAAPLx
             0x5CC079963Fb70C0f987F65F539E3B61a6EBdf6Db, // wABBVx
             0xD812B37181Ae89801e4BB3F49E4C1FAF11fC0b57, // wABTx
@@ -392,7 +395,7 @@ contract ConfigureWeightedTest is Test {
             0x448bC811F60eac772775dD53421380E8D4DC4338 // wXOMx
         ];
         assertEq(first.length, 4);
-        assertEq(wide.length, 168);
+        assertEq(wide.length, 167);
         for (uint256 i = 0; i < tokens.length; ++i) {
             assertEq(i < 4 ? first[i] : wide[i - 4], tokens[i]);
         }

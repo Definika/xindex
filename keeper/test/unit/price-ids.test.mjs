@@ -9,13 +9,13 @@ test("the keeper's price ids are the list's coins, each at its address and PythI
   const listed = [...read("Listings.sol").matchAll(/tokens\[\d+\] = M\.(\w+);/g)].map((m) => m[1]);
   const addressOf = new Map([...read("MainnetAddresses.sol").matchAll(/address internal constant (\w+) = (0x[0-9a-fA-F]{40});/g)].map((m) => [m[1], m[2]]));
   const idOf = new Map([...read("PythIds.sol").matchAll(/bytes32 internal constant (\w+) = (0x[0-9a-f]{64});/g)].map((m) => [m[1], m[2]]));
-  assert.equal(listed.length, 172);
-  assert.equal(Object.keys(MAINNET_PRICE_IDS).length, 172);
+  assert.equal(listed.length, 171);
+  assert.equal(Object.keys(MAINNET_PRICE_IDS).length, 171);
   for (const name of listed) {
     assert.ok(addressOf.has(name) && idOf.has(name), `${name} has an address and an id`);
     assert.equal(MAINNET_PRICE_IDS[addressOf.get(name).toLowerCase()], idOf.get(name), name);
   }
-  assert.equal(new Set(Object.values(MAINNET_PRICE_IDS)).size, 172, "no two coins share a feed");
+  assert.equal(new Set(Object.values(MAINNET_PRICE_IDS)).size, 171, "no two coins share a feed");
 });
 
 test("the wrapped coins are the list's wrapped xStocks: the coins PythIds.sol prices at a feed for what they wrap", () => {
@@ -28,6 +28,6 @@ test("the wrapped coins are the list's wrapped xStocks: the coins PythIds.sol pr
   assert.equal(expected.length, 109, "every wrapper PythIds.sol records is listed");
   assert.deepEqual([...MAINNET_WRAPPED], expected, "in the list's order, lowercased");
   for (const token of MAINNET_WRAPPED) assert.ok(MAINNET_PRICE_IDS[token], `${token} has a feed`);
-  // No plain coin is taken for a wrapper: the catalogue's other 63 are priced at their feed alone.
-  assert.equal(Object.keys(MAINNET_PRICE_IDS).filter((t) => !MAINNET_WRAPPED.includes(t)).length, 63);
+  // No plain coin is taken for a wrapper: the catalogue's other 62 are priced at their feed alone.
+  assert.equal(Object.keys(MAINNET_PRICE_IDS).filter((t) => !MAINNET_WRAPPED.includes(t)).length, 62);
 });

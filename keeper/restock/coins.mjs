@@ -120,8 +120,10 @@ export const PRICE_IDS = Object.freeze({
 /// signers in their folders, for a relisting once a run has proven them. XRP, ADA, LTC, DOT and BNB, served until
 /// 2026-11-13, are no longer on Ethereum's list (the owner's call: BNB Chain's deployment holds those coins in kind),
 /// so nothing on Ethereum needs their copies; they stay in the table above, as their addresses stay in
-/// `MainnetAddresses`, for a relisting, and `RESTOCK_COINS` can still name one.
-export const DEFAULT_COINS = Object.freeze(["AVAX", "OP", "AERO"]);
+/// `MainnetAddresses`, for a relisting, and `RESTOCK_COINS` can still name one. OP left the list on 2026-11-21 (the
+/// owner's call): that day no route bought it on Optimism within ROUTE_MAX_LOSS_BPS, its deepest Uniswap v3 pool
+/// there holding about $35,000 of USDC. It stays in the table too.
+export const DEFAULT_COINS = Object.freeze(["AVAX", "AERO"]);
 
 /// The coins of `symbols` (`DEFAULT_COINS` when null), refusing a symbol the table does not know.
 export function coinsOf(symbols) {

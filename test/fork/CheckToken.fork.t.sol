@@ -12,9 +12,9 @@ import {ForkAddresses as A} from "./ForkAddresses.sol";
 ///         recorded, and WhiteBIT's WBT, which the WBT rule keeps off, is refused by it. Skips when MAINNET_RPC_URL is
 ///         unset.
 contract CheckTokenForkTest is Test {
-    /// @dev The wide list's coins before its wrapped xStocks: the 172 listed less the default four and the 109
+    /// @dev The wide list's coins before its wrapped xStocks: the 171 listed less the default four and the 109
     ///      wrappers.
-    uint256 constant WIDE_COINS = 59;
+    uint256 constant WIDE_COINS = 58;
 
     CheckToken checker;
 
