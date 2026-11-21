@@ -4,9 +4,10 @@
 // their basket sold. Any surplus over a limit is the filler's, which is why the app suggests limits. Requests are
 // ranked by dollars and pre-checked against their limit and their index's gate before any simulation, and one whose
 // simulation reverts is backed off (XS-7). Nothing on chain reads a price, so every price a fill is valued at is the
-// keeper's own: Hermes' latest, verified through Pyth's contract and refused when stale or wide (RX-1, RX-9). A coin
-// outside the keeper's price catalogue has none, and a request on an index holding one is not filled. What a fill may
-// spend of the float is bounded on chain by the executor's request allowance.
+// keeper's own: Hermes' latest, verified through Pyth's contract and refused when stale or wide (RX-1, RX-9), and for
+// a wrapped coin at the rate read from its wrapper (bot/rates.mjs). A coin outside the keeper's price catalogue has
+// none, nor has a wrapped one whose rate cannot be read or has just moved, and a request on an index holding one is
+// not filled. What a fill may spend of the float is bounded on chain by the executor's request allowance.
 //
 // Several requests on one index in one stablecoin are filled together when that pays better (`fillBatch`): the shares
 // the redeem requests escrowed go to the mint requests, the executor's own stock of the index's shares covers what
@@ -17,7 +18,7 @@
 import { encodeAbiParameters, encodeFunctionData, keccak256 } from "viem";
 import { failedRequests, revertedRequestFills, shortRequests, skippedRequests } from "./backoff.mjs";
 import { ABI, revertReason } from "./chain.mjs";
-import { FRESH_SECONDS, MAX_CONF_BPS, SHARE_PRICED_IDS, TX_GAS_CAP } from "./config.mjs";
+import { FRESH_SECONDS, MAX_CONF_BPS, TX_GAS_CAP } from "./config.mjs";
 import { priceKey } from "./hermes.mjs";
 import * as M from "./math.mjs";
 
@@ -37,9 +38,8 @@ export const requestHash = (request) => keccak256(encodeAbiParameters(REQUEST_TY
 export const batchHash = (requests) =>
   requests.reduce((running, r) => keccak256(encodeAbiParameters(PAIR_OF_HASHES, [running, requestHash(r)])), NO_REQUESTS);
 const same = (a, b) => a.toLowerCase() === b.toLowerCase();
-const sharePriced = (id) => SHARE_PRICED_IDS.includes(id.toLowerCase());
 
-export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth, staticsOf, log, needs }) {
+export function createRequestFiller({ chain, cfg, hermes, routes, rates, requests, pyth, staticsOf, log, needs }) {
   const known = new Map(); // id -> request, every request seen that was still open at the last scan
   const said = new Map(); // id -> the last reason logged, so a waiting request is not logged every block
   const info = new Map(); // lowercased index -> {shareUsd, mintAllowed}, read at the last scan (XS-7)
@@ -70,6 +70,10 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
     for (const [k, p] of verified) if (M.freshPrice(p, L.timestamp, FRESH_SECONDS, MAX_CONF_BPS)) fresh.set(k, p);
     return fresh;
   }
+
+  /// The price of each leg of `st` at block L, from the trusted prices `latest`: the feed's for a plain coin, the
+  /// feed's at the wrapper's rate for a wrapped one, and null for a coin with no trusted price or no steady rate.
+  const tokenPrices = (st, latest, L) => rates.priced(st, st.ids.map((id) => (id ? latest.get(priceKey(id)) : undefined)), L.number);
 
   /// Reads every request made since the last scan, and re-reads the known open ones, dropping those closed. A read
   /// that fails keeps its request as it was and is read again next scan (XS-11). The same multicall reads, for every
@@ -137,7 +141,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
     info.clear();
     for (const r of live) {
       const st = statics.get(r.index);
-      const prices = st ? st.ids.map((id) => (id ? latest.get(priceKey(id)) : undefined)) : [];
+      const prices = st ? await tokenPrices(st, latest, L) : [];
       const priced = st !== undefined && r.units !== null && prices.every(Boolean);
       const shareUsd = priced ? M.tvlUsd({ supply: 10n ** 18n, units: r.units, decimals: st.decimals, prices }) : null;
       info.set(r.index.toLowerCase(), { shareUsd, mintAllowed: r.mintAllowed, nonce: r.nonce });
@@ -151,7 +155,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
   /// quote plus SLIPPAGE_BPS, so a pool pushed against the fill stops it at that leg (RX-10). `key` names the fill in
   /// the route cache.
   async function basket(key, isMint, st, amounts, L) {
-    const latest = await trustedLatest(st.ids.filter(Boolean), L);
+    const prices = await tokenPrices(st, await trustedLatest(st.ids.filter(Boolean), L), L);
     const held = await chain.multicall(
       st.tokens.map((t) => ({ address: t, abi: ABI.erc20, functionName: "balanceOf", args: [cfg.executor] })),
       L.number,
@@ -173,10 +177,10 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
       const token = st.tokens[i];
       const amount = amounts[i];
       if (amount === 0n || same(token, cfg.chain.usdc)) continue; // a USDC leg is the float itself
-      const p = st.ids[i] ? latest.get(priceKey(st.ids[i])) : undefined;
-      if (!p) return { skip: `no fresh, verified price for ${token}` };
+      const p = prices[i];
+      if (!p) return { skip: `no fresh, verified price for ${token}${st.assetDecimals[i] === null ? "" : ", or no steady rate of the wrapper"}` };
       const dec = st.decimals[i];
-      const shared = sharePriced(st.ids[i]);
+      const shared = st.shared[i];
       const h = M.min(held[i].result, allowed[i].result);
       let route = null;
       if (isMint) {
@@ -370,10 +374,9 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
     const redeems = members.filter((m) => !m.request.isMint);
 
     // One share's worth each way, at Pyth: what issuing it costs and what redeeming it brings, the index's fee in both.
-    const latest = await trustedLatest(st.ids.filter(Boolean), L);
-    const prices = st.ids.map((id) => (id ? latest.get(priceKey(id)) : undefined));
+    const prices = await tokenPrices(st, await trustedLatest(st.ids.filter(Boolean), L), L);
     const worth = (amounts) => amounts.reduce((sum, a, i) => sum + M.amountUsd(a, st.decimals[i], prices[i]), 0);
-    const stockable = cfg.shareStockUsd > 0 && prices.every(Boolean) && !st.ids.some((id) => id && sharePriced(id));
+    const stockable = cfg.shareStockUsd > 0 && prices.every(Boolean) && !st.shared.some(Boolean);
     const shareWorth = stockable ? { buyUsd: worth(oneIssued), sellUsd: worth(oneRedeemed) } : null;
     const plan = M.planBatch({
       mints,

@@ -234,6 +234,20 @@ Run on the working tree of 2026-11-21, on the branch `fix/audit-2026-11-21`:
 
 ## Open
 
+**Note of the same day, on the release candidate** (`release/2026-11-21-candidate`, which holds these fixes and the
+xStocks listing). The first two items below are settled, and the third in part:
+
+- The fork suites ran on archive RPCs at their pinned blocks: Ethereum's five and BNB Chain's, 62 tests, none failed
+  or skipped, `WeightedHub.fork`'s two whole-list tests, `CheckToken.fork` and `testFork_mintWithUSDC` among them,
+  and the executor's 3 of 3.
+- Two fork tests now drive the escrow rule and the bound request on mainnet Tether, whose owner destroys the
+  contract's USDT on the fork: `test_CAH2_CAM1_noRequestPaysForAnEscrowTetherDestroyed` and
+  `test_CAH2_noDepositPaysForAnEscrowTetherDestroyed` (`test/fork/Security.fork.t.sol`, 11 of 11). The partial
+  claim and the bound cancel are still covered by the unit suites alone.
+- The keeper's end-to-end test ran, 42 of 42 on a mainnet fork at block 26,441,062: the bot's solver and the fills' `expected` on four auctions,
+  and a bound mint and a bound redeem request filled in one `fillBatch` against real pools, the first requests any
+  run of it has filled. The restock's end-to-end tests have not run on this change.
+
 - **An archive run of the fork suites.** What a public node served passed (Gates, above). Left for an archive RPC at
   the pinned block: `WeightedHub.fork`'s two whole-list tests, `CheckToken.fork`, and `IndexZap.fork`'s
   `testFork_mintWithUSDC`, whose floor the head's prices miss. No fork test drives the new paths themselves: the

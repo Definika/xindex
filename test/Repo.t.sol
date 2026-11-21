@@ -143,13 +143,14 @@ contract RepoTest is Test {
     ///      keeps the old check green.
     function test_I09_XS17_theKnownLimitationsAreDocumented() public view {
         string memory section = _section(_read("docs/known-limitations.md"), "# Known limitations\n");
-        string[21] memory anchors = [
+        string[22] memory anchors = [
             "**A lone executor keeps the index's distance from its weights.**",
             "**No contract reads a price.**",
             "**One fill may not land on the weights.**",
             "**Wrapped legs rest on Wormhole.**",
             "**A collapsing coin is still bought.**",
             "**An issuer's corporate action is not accounted for.**",
+            "**A wrapped xStock is not one share.**",
             "**Rebalances clear only when the distance pays for the fill.**",
             "**An index one holder owns can be walked.**",
             "**An exit sent during the auction can be overtaken by the fill.**",

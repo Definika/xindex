@@ -1,14 +1,15 @@
 // The keeper's settings, read from the environment and checked before anything runs. No dependencies, so the unit
 // tests run without `npm install`.
 
-import { MAINNET_PRICE_IDS } from "./price-ids.mjs";
+import { MAINNET_PRICE_IDS, MAINNET_WRAPPED } from "./price-ids.mjs";
 
 const WETH_ID = "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace";
 
 /// The chains the keeper runs on, by chain id (`CHAIN_ID`): the addresses it trades through on each, and the keeper's
 /// own price source there. No contract reads a price (since 2026-11-10): `pyth` is Pyth's contract, which the keeper
 /// alone asks to confirm that a price Hermes served is the signed one (RX-9, RY-7), and `priceIds` maps each coin the
-/// keeper can value to its Pyth id. A coin without an entry is one the keeper leaves alone.
+/// keeper can value to its Pyth id. A coin without an entry is one the keeper leaves alone. `wrapped` names the coins
+/// whose feed prices what they wrap: each is valued at its feed times the rate read from the wrapper (bot/rates.mjs).
 export const CHAINS = Object.freeze({
   1: Object.freeze({
     name: "Ethereum",
@@ -23,6 +24,7 @@ export const CHAINS = Object.freeze({
     ethPriceId: WETH_ID,
     pyth: "0x4305FB66699C3B2702D4d05CF36551390A4c69C6",
     priceIds: MAINNET_PRICE_IDS,
+    wrapped: MAINNET_WRAPPED,
   }),
   // The test deployment's market (docs/deployment.md, "Testnet (Sepolia)"): Uniswap V3 pools against tUSDC, the
   // FaucetToken the deployment mints with. Read on chain on 2026-10-31: SwapRouter02 and QuoterV2 answer factory()
@@ -47,6 +49,7 @@ export const CHAINS = Object.freeze({
       "0xc02f993785fc45cf48bf61c24dcbb11f9085a4e4": "0x8ac0c70fff57e9aefdf5edf44b51d62c2d433653cbb2cf5cc06bb115af04d221", // tLINK
       "0xc34fe6c23897ae506368cf3acb0db96d6d63bf85": "0x78d185a741d07edb3412b09008b7c5cfb9bbbd7d568bf00ba737b456ba171501", // tUNI
     }),
+    wrapped: Object.freeze([]),
   }),
 });
 
@@ -85,11 +88,14 @@ export const FRESH_SECONDS = 60n;
 /// The widest confidence interval a price the bot values anything at may carry, in basis points of the price (RX-1).
 export const MAX_CONF_BPS = 200n;
 
-/// The legs whose Pyth feed prices one share while each token is worth a number of shares the bot does not read
-/// (script/PythIds.sol): every wrapped xStock, worth `convertToAssets` xStocks (since 2026-11-21), and the twelve Ondo
-/// legs priced at the share's feed, each worth sValue shares (CF-3), which left the list on 2026-11-21 and stay here for
-/// a relisting. The bot never values these at Pyth: it names no new units for them, delivers none from stock and counts
-/// any it keeps as nothing (RX-2). `test/unit/config.test.mjs` pins the list against PythIds.sol.
+/// The feeds that price one share, or one xStock, while a token priced at them is worth some other number of those
+/// (script/PythIds.sol): every wrapped xStock's, worth `convertToAssets` xStocks, and the twelve Ondo legs priced at
+/// the share's feed, each worth sValue shares (CF-3), which left the list on 2026-11-21 and stay here for a relisting.
+/// A token at one of these is valued only when it is a wrapped coin whose rate the bot reads (`wrapped`, above, and
+/// WRAPPED_TOKENS). Any other is a share-priced leg: the bot names no new units for it, delivers none from stock and
+/// counts any it keeps as nothing (RX-2). So a wrapper the catalogue does not hold, added through PRICE_IDS alone, is
+/// left alone rather than valued at its feed as if it were one xStock. `test/unit/config.test.mjs` pins the list
+/// against PythIds.sol.
 export const SHARE_PRICED_IDS = Object.freeze(
   [
     "0x329635cf9e705e01ed2d842fafbb6c426d7e5630e75847740d89957222fd68b8", // AMZNon, Equity.Index.AMZN/USD
@@ -216,6 +222,19 @@ export const SHARE_PRICED_IDS = Object.freeze(
   ].map((id) => id.toLowerCase()),
 );
 
+/// How far back the keeper reads a wrapper's rate again before it values anything at the rate now, in blocks: about
+/// twenty minutes on Ethereum, and inside the recent state a full node keeps (geth's 128 blocks). A node that cannot
+/// serve that block fails the read, and the wrapper is then not valued, which the log says.
+export const RATE_LOOKBACK_BLOCKS = 100n;
+
+/// The furthest a wrapper's rate may have moved over RATE_LOOKBACK_BLOCKS for the keeper to value the wrapper, in
+/// basis points. A dividend moves an xStock's multiplier, and so its wrapper's rate, by a percent or less; one key of
+/// the issuer's can set any multiplier, and a split moves it by the split's factor at a moment the share's feed need not
+/// share. A rate that moved further values nothing, so the keeper leaves that leg alone, fills no request on an index
+/// holding it and counts none of it as stock, until the move is that many blocks old: time for an operator to look,
+/// not a judgment that the new rate is right.
+export const MAX_RATE_MOVE_BPS = 100n;
+
 export const ID = /^0x[0-9a-fA-F]{64}$/;
 export const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 export const KEY = /^0x[0-9a-fA-F]{64}$/;
@@ -291,6 +310,7 @@ export function parseConfig(env) {
     // alone rather than traded for nothing (bot/units.mjs).
     tradeCostBps: bps("TRADE_COST_BPS"),
     priceIds: null,
+    wrapped: null,
     maxFeeGwei: number("MAX_FEE_GWEI", { positive: true }),
     priorityFeeGwei: number("PRIORITY_FEE_GWEI", { min: 0 }),
     chain: CHAINS[get("CHAIN_ID")] ?? null,
@@ -332,6 +352,16 @@ export function parseConfig(env) {
     else priceIds[token.toLowerCase()] = id.toLowerCase();
   }
   config.priceIds = Object.freeze(priceIds);
+  // The wrapped coins, lowercased (bot/rates.mjs): the chain's own, and WRAPPED_TOKENS, addresses, for a wrapper the
+  // catalogue does not hold. Each needs a price id, the feed of what it wraps: a wrapper named here without one would
+  // be read every round and valued by nothing.
+  const wrapped = new Set((config.chain?.wrapped ?? []).map((t) => t.toLowerCase()));
+  for (const token of (get("WRAPPED_TOKENS") ?? "").split(",").map((s) => s.trim()).filter(Boolean)) {
+    if (!ADDRESS.test(token)) problems.push(`WRAPPED_TOKENS has an entry that is not an address: ${token}`);
+    else if (!priceIds[token.toLowerCase()]) problems.push(`WRAPPED_TOKENS names ${token}, which has no price id: add the feed of what it wraps to PRICE_IDS`);
+    else wrapped.add(token.toLowerCase());
+  }
+  config.wrapped = wrapped;
 
   if (problems.length) throw new Error(`keeper configuration:\n  ${problems.join("\n  ")}`);
   return Object.freeze(config);

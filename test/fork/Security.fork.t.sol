@@ -10,6 +10,7 @@ import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {IWeightedIndexFactory} from "../../src/interfaces/IWeightedIndexFactory.sol";
 import {IndexZap} from "../../src/IndexZap.sol";
 import {MintRequests} from "../../src/MintRequests.sol";
+import {BasketBuilder} from "../../src/BasketBuilder.sol";
 import {IMintRequests} from "../../src/interfaces/IMintRequests.sol";
 import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
 import {IUniversalRouterSwaps} from "../../src/interfaces/IUniversalRouterSwaps.sol";
@@ -31,6 +32,7 @@ interface IUsdtAdmin {
     function setParams(uint256 newBasisPoints, uint256 newMaxFee) external;
     function addBlackList(address user) external;
     function removeBlackList(address user) external;
+    function destroyBlackFunds(address user) external;
 }
 
 interface ISafeProxyFactory {
@@ -465,6 +467,110 @@ contract SecurityForkTest is Test {
         vm.stopPrank();
         assertGe(IERC20(A.USDT).balanceOf(requester), 999e6 + 400e6, "the limit arrived after the fee");
         assertEq(idx.balanceOf(user), 2e18, "the filler holds the shares it sold and got back");
+    }
+
+    /// @dev Tether's owner blacklists `holder`, destroys its USDT and lifts the blacklist: the one way a balance of
+    ///      USDT falls without a transfer.
+    function _tetherDestroys(address holder) internal {
+        address tether = IUsdtAdmin(A.USDT).owner();
+        vm.startPrank(tether);
+        IUsdtAdmin(A.USDT).addBlackList(holder);
+        IUsdtAdmin(A.USDT).destroyBlackFunds(holder);
+        IUsdtAdmin(A.USDT).removeBlackList(holder);
+        vm.stopPrank();
+    }
+
+    /// @dev CA-H2 and CA-M1 against mainnet Tether. A request bound to the basket it priced opens only at that nonce.
+    ///      Once Tether has destroyed the escrow of an open request, no newcomer's USDT is taken to stand in for it:
+    ///      the request reverts Underbacked on the real token, the first requester's cancel cannot be paid, USDC is
+    ///      another balance and still takes requests, and making the balance whole reopens USDT, each request then
+    ///      refunded from an escrow of its own.
+    function test_CAH2_CAM1_noRequestPaysForAnEscrowTetherDestroyed() public {
+        MintRequests requests = new MintRequests(address(factory), A.USDC, A.USDT);
+        WeightedHub idx = _create(A.WBTC, A.WETH);
+        address requester = makeAddr("requester");
+        address newcomer = makeAddr("newcomer");
+        uint256 nonce = idx.rebalanceNonce();
+        uint256 deadline = block.timestamp + 1 days;
+
+        deal(A.USDT, requester, 1_000e6);
+        vm.startPrank(requester);
+        IERC20(A.USDT).forceApprove(address(requests), 1_000e6);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.StaleRebalanceNonce.selector, nonce + 1, nonce));
+        requests.requestMint(address(idx), A.USDT, 1_000e6, 1e18, deadline, nonce + 1);
+        uint256 first = requests.requestMint(address(idx), A.USDT, 1_000e6, 1e18, deadline, nonce);
+        vm.stopPrank();
+        assertEq(requests.totalEscrow(A.USDT), 1_000e6);
+
+        _tetherDestroys(address(requests));
+        assertEq(IERC20(A.USDT).balanceOf(address(requests)), 0, "Tether took the escrow");
+        assertEq(requests.totalEscrow(A.USDT), 1_000e6, "which the request still records");
+
+        deal(A.USDT, newcomer, 1_000e6);
+        deal(A.USDC, newcomer, 500e6);
+        vm.startPrank(newcomer);
+        IERC20(A.USDT).forceApprove(address(requests), 1_000e6);
+        IERC20(A.USDC).forceApprove(address(requests), 500e6);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Underbacked.selector, A.USDT, 0, 1_000e6));
+        requests.requestMint(address(idx), A.USDT, 1_000e6, 1e18, deadline, nonce);
+        requests.requestMint(address(idx), A.USDC, 500e6, 1e18, deadline, nonce);
+        vm.stopPrank();
+        assertEq(IERC20(A.USDT).balanceOf(newcomer), 1_000e6, "the newcomer keeps its USDT");
+
+        // The request the burn caught is refunded whole or not at all.
+        vm.prank(requester);
+        (bool refunded,) = address(requests).call(abi.encodeCall(IMintRequests.cancel, (first)));
+        assertFalse(refunded, "nothing is left to refund it from");
+        assertTrue(requests.getRequest(first).open);
+
+        // Anyone makes the balance whole, and USDT takes requests again.
+        address donor = makeAddr("donor");
+        deal(A.USDT, donor, 1_000e6);
+        vm.prank(donor);
+        IERC20(A.USDT).safeTransfer(address(requests), 1_000e6);
+        vm.prank(newcomer);
+        uint256 second = requests.requestMint(address(idx), A.USDT, 1_000e6, 1e18, deadline, nonce);
+        vm.prank(requester);
+        requests.cancel(first);
+        vm.prank(newcomer);
+        requests.cancel(second);
+        assertEq(IERC20(A.USDT).balanceOf(requester), 1_000e6, "the first request is refunded from its own escrow");
+        assertEq(IERC20(A.USDT).balanceOf(newcomer), 1_000e6, "and the newcomer from its own");
+        assertEq(requests.totalEscrow(A.USDT), 0);
+    }
+
+    /// @dev CA-H2 against mainnet Tether, on the basket builder: after Tether destroyed the builder's USDT, a deposit
+    ///      of USDT is refused while the escrows it would pay for are uncovered, and taken again once they are whole.
+    function test_CAH2_noDepositPaysForAnEscrowTetherDestroyed() public {
+        BasketBuilder builder =
+            new BasketBuilder(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), A.USDC, A.USDT);
+        address newcomer = makeAddr("newcomer");
+        deal(A.USDT, user, 500e6);
+        vm.startPrank(user);
+        IERC20(A.USDT).forceApprove(address(builder), 500e6);
+        builder.deposit(A.USDT, 500e6);
+        vm.stopPrank();
+        assertEq(builder.escrowOf(user, A.USDT), 500e6);
+
+        _tetherDestroys(address(builder));
+        deal(A.USDT, newcomer, 600e6);
+        vm.startPrank(newcomer);
+        IERC20(A.USDT).forceApprove(address(builder), 600e6);
+        // The builder checks once the deposit has arrived: it would hold 300 USDT against escrows of 800.
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Underbacked.selector, A.USDT, 300e6, 800e6));
+        builder.deposit(A.USDT, 300e6);
+        vm.stopPrank();
+
+        address donor = makeAddr("donor");
+        deal(A.USDT, donor, 500e6);
+        vm.prank(donor);
+        IERC20(A.USDT).safeTransfer(address(builder), 500e6);
+        vm.prank(newcomer);
+        builder.deposit(A.USDT, 300e6);
+        vm.prank(user);
+        builder.withdraw(A.USDT, 500e6, user);
+        assertEq(IERC20(A.USDT).balanceOf(user), 500e6, "the first escrow leaves whole");
+        assertEq(builder.totalEscrow(A.USDT), 300e6);
     }
 
     /// @dev SA-01 against mainnet Tether. Tether checks only the sender of a transfer and `from` of a transferFrom,

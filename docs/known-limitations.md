@@ -54,6 +54,13 @@ What the contracts do not protect against, and what an app built on them has to 
   what a wrapper redeems for (`convertToAssets`) and reaches the holders as value. No contract prices a wrapper, so
   nothing misprices it. One key of Backed's sets every multiplier, to any value above zero, and so reprices every
   wrapped leg; nothing on chain bounds it (CF-3, `design/2026-11-21-xstocks.md`, section 5).
+- **A wrapped xStock is not one share.** One wrapper redeems for `convertToAssets` xStocks, and that rate differs
+  by wrapper: 1.0024 for wAAPLx, 0.9918 for wNVDAx, 78.9 for wGOOGLx and 1,001 for wMETAx on 2026-11-21. Whoever
+  values a wrapped leg multiplies its feed by that rate: the keeper does, the app must, and a new index's units are
+  named from it. An empty wrapper's rate is anyone's to raise, by leaving it a few raw units of the xStock; a
+  wrapper that holds deposits moves only by a gift to its holders or by the multiplier. The keeper leaves a wrapper
+  alone for about twenty minutes after its rate moves more than 1%, and then takes the new rate: a wait for its
+  operator, not a bound (`design/2026-11-21-xstocks.md`, section 8).
 - **Rebalances clear only when the distance pays for the fill.** An executor fills when the index's distance from its
   weights covers its gas and its swaps, so small indexes on mainnet rarely rebalance, and a
   fresh index cannot rebalance until its own interval, 7 to 91 days, has passed since its creation. An unfilled auction expires, and for `REBALANCE_DELAY`

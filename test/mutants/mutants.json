@@ -2626,5 +2626,229 @@
       }
     ],
     "runner": "node"
+  },
+  {
+    "id": "X1",
+    "what": "a wrapped coin is priced at its feed alone, its rate ignored",
+    "origin": "design/2026-11-21-xstocks.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/math.test.mjs",
+    "edits": [
+      {
+        "old": "  const price = (BigInt(p.price) * rate) / WAD;",
+        "new": "  const price = BigInt(p.price);"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "X2",
+    "what": "a wrapped coin's confidence interval rounds down at its rate",
+    "origin": "design/2026-11-21-xstocks.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/math.test.mjs",
+    "edits": [
+      {
+        "old": "conf: ceilDiv(BigInt(p.conf) * rate, WAD)",
+        "new": "conf: (BigInt(p.conf) * rate) / WAD"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "X3",
+    "what": "a wrapper without a steady rate is priced at its feed",
+    "origin": "design/2026-11-21-xstocks.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/math.test.mjs",
+    "edits": [
+      {
+        "old": "  if (rate === null) return null;",
+        "new": "  if (rate === null) return p;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "X4",
+    "what": "a rate that fell is steady however far it fell",
+    "origin": "design/2026-11-21-xstocks.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/math.test.mjs",
+    "edits": [
+      {
+        "old": "  const moved = now > before ? now - before : before - now;",
+        "new": "  const moved = now > before ? now - before : 0n;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "X5",
+    "what": "a rate is read in the wrapper's decimals, not its asset's",
+    "origin": "design/2026-11-21-xstocks.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/math.test.mjs",
+    "edits": [
+      {
+        "old": "export const rateWad = (assets, assetDecimals) => (assets * WAD) / 10n ** BigInt(assetDecimals);",
+        "new": "export const rateWad = (assets, assetDecimals) => (assets * WAD) / WAD;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "X6",
+    "what": "the rate is compared with itself: no look-back",
+    "origin": "design/2026-11-21-xstocks.md",
+    "file": "keeper/bot/rates.mjs",
+    "test": "keeper/test/unit/rates.test.mjs",
+    "edits": [
+      {
+        "old": "chain.multicall(calls, blockNumber - RATE_LOOKBACK_BLOCKS)",
+        "new": "chain.multicall(calls, blockNumber)"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "X7",
+    "what": "a rate that moved past the bound is still a rate",
+    "origin": "design/2026-11-21-xstocks.md",
+    "file": "keeper/bot/rates.mjs",
+    "test": "keeper/test/unit/rates.test.mjs",
+    "edits": [
+      {
+        "old": "      if (!M.rateSteady(rate, was, MAX_RATE_MOVE_BPS)) {",
+        "new": "      if (!M.rateSteady(rate, rate, MAX_RATE_MOVE_BPS)) {"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "X8",
+    "what": "a rate read in one block is served in the next",
+    "origin": "design/2026-11-21-xstocks.md",
+    "file": "keeper/bot/rates.mjs",
+    "test": "keeper/test/unit/rates.test.mjs",
+    "edits": [
+      {
+        "old": "    if (block !== blockNumber) {",
+        "new": "    if (block === null) {"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "X9",
+    "what": "a plain coin is read as a wrapper",
+    "origin": "design/2026-11-21-xstocks.md",
+    "file": "keeper/bot/rates.mjs",
+    "test": "keeper/test/unit/rates.test.mjs",
+    "edits": [
+      {
+        "old": "      if (st.assetDecimals[i] !== null && !cache.has(key)) unread.set(",
+        "new": "      if (!cache.has(key)) unread.set("
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "X10",
+    "what": "the rate is asked for one whole asset, not one whole wrapper",
+    "origin": "design/2026-11-21-xstocks.md",
+    "file": "keeper/bot/rates.mjs",
+    "test": "keeper/test/unit/rates.test.mjs",
+    "edits": [
+      {
+        "old": "args: [10n ** BigInt(w.decimals)]",
+        "new": "args: [10n ** BigInt(w.assetDecimals)]"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "X11",
+    "what": "a wrapper whose feed an Ondo leg took is share-priced, so never valued",
+    "origin": "design/2026-11-21-xstocks.md",
+    "file": "keeper/bot/rates.mjs",
+    "test": "keeper/test/unit/rates.test.mjs",
+    "edits": [
+      {
+        "old": "ids.map((id, i) => id !== null && assetDecimals[i] === null && sharePricedIds.includes(id.toLowerCase()));",
+        "new": "ids.map((id, i) => id !== null && sharePricedIds.includes(id.toLowerCase()));"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "X12",
+    "what": "a token at a wrapper's feed that the bot reads no rate for is valued at the feed",
+    "origin": "design/2026-11-21-xstocks.md",
+    "file": "keeper/bot/rates.mjs",
+    "test": "keeper/test/unit/rates.test.mjs",
+    "edits": [
+      {
+        "old": "ids.map((id, i) => id !== null && assetDecimals[i] === null && sharePricedIds.includes(id.toLowerCase()));",
+        "new": "ids.map((id, i) => id !== null && assetDecimals[i] === null && false);"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "X13",
+    "what": "a chain younger than the look-back compares the rate with whatever its first block answers",
+    "origin": "design/2026-11-21-xstocks.md",
+    "file": "keeper/bot/rates.mjs",
+    "test": "keeper/test/unit/rates.test.mjs",
+    "edits": [
+      {
+        "old": "    if (blockNumber <= RATE_LOOKBACK_BLOCKS) return none(",
+        "new": "    if (blockNumber < 0n) return none("
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "X14",
+    "what": "a look-back read that failed is not checked",
+    "origin": "design/2026-11-21-xstocks.md",
+    "file": "keeper/bot/rates.mjs",
+    "test": "keeper/test/unit/rates.test.mjs",
+    "edits": [
+      {
+        "old": "      if (now[k].status !== \"success\" || before[k].status !== \"success\") {",
+        "new": "      if (now[k].status !== \"success\") {"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "X15",
+    "what": "a wrapper named in WRAPPED_TOKENS without a feed is accepted",
+    "origin": "design/2026-11-21-xstocks.md",
+    "file": "keeper/bot/config.mjs",
+    "test": "keeper/test/unit/config.test.mjs",
+    "edits": [
+      {
+        "old": "    else if (!priceIds[token.toLowerCase()]) problems.push(",
+        "new": "    else if (token === null) problems.push("
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "X16",
+    "what": "a wrapped xStock's feed is off the share-priced ids",
+    "origin": "design/2026-11-21-xstocks.md",
+    "file": "keeper/bot/config.mjs",
+    "test": "keeper/test/unit/config.test.mjs",
+    "edits": [
+      {
+        "old": "    \"0xb911b0329028cd0283e4259c33809d62942bd2716a58084e5f31d64c00b5424e\", // wGOOGLx, Crypto.GOOGLX/USD\n",
+        "new": ""
+      }
+    ],
+    "runner": "node"
   }
 ]

@@ -411,8 +411,17 @@ built on it and found in it.
     burns only its own balance and sets any multiplier above zero, so it reprices every wrapped leg; that key owns 53
     of Ethereum's wrappers. Both layers pause (a 2-of-4 Safe) and refuse Chainalysis' sanctioned addresses. `CheckToken`
     finds every wrapper listable. No wrapper has a Uniswap pool.
-  - The keeper does not value a wrapper yet: every wrapped id is on `SHARE_PRICED_IDS` (RX-2) until it reads
-    `convertToAssets` on chain.
+  - The keeper values a wrapper at its feed times its rate, built the same day (the record's section 8):
+    `convertToAssets` of one whole wrapper, read from the wrapper each round (`keeper/bot/rates.mjs`,
+    `MAINNET_WRAPPED`, `M.atRate`), and read again 100 blocks earlier; a rate that moved more than 1% between the
+    two, or was not read, values nothing, so that leg keeps its units and no request on its index is filled. The
+    wait is the operator's twenty minutes, not a bound: the bot then takes the new rate. Read at block 26,464,080:
+    95 of the 109 wrappers are empty, at a rate of one; wAAPLx 1.0024, wNVDAx 0.9918, wGOOGLx 78.9, and wMETAx
+    1,001, an empty wrapper holding 1,000 raw units, since an empty wrapper's rate is anyone's to raise with dust.
+    So the app and whoever names a new index's units must read the rate too. It fails closed by feed:
+    `SHARE_PRICED_IDS` keeps every wrapper's feed, so a token at one that the bot reads no rate for, a wrapper
+    added through `PRICE_IDS` without `WRAPPED_TOKENS`, stays a share-priced leg (RX-2; an independent review of
+    the first draft found it valued at its feed). Mutants X1 to X16, all killed; the bot's unit suite has 247 tests.
   - Fork suites that day, on public RPCs near the head: BNB Chain's 17 of 17 at block 134,768,771, its new pin, among
     them every wrapper checked on chain and through `CheckToken`, and an index of WBNB and five wrappers issued and
     redeemed in kind on Backed's contracts (RW-8's probe included); Ethereum's `MainnetAddresses.fork` 9 of 9 and
@@ -421,8 +430,47 @@ built on it and found in it.
     `WeightedHub.fork`'s four drills. Left, as on 2026-11-18: `testFork_mintWithUSDC`, whose $100 sanity floor the
     basket's $83.75 misses (price, not code), and the hub's two whole-list tests, which the public node refused for
     archive state (HTTP 403) partway through discovery. An archive run settles all three.
-  - Not done: the keeper's `convertToAssets` pricing; the app; the authorized-participant route with Backed (the
-    owner's and counsel's); the hub's whole-list fork tests on an archive RPC.
+  - Not done: the app, which must price a wrapper at its rate; the authorized-participant route with Backed (the
+    owner's and counsel's), without which an operator adds the executor's stock of wrappers by hand; the keeper
+    on BNB Chain.
+- **The release candidate of 2026-11-21** (branch `release/2026-11-21-candidate`;
+  `audit/2026-11-21-external-audit-package.md` is its brief for external auditors, and replaces the package of
+  2026-11-02, which described the Pyth-priced build). The owner's ask that day: "I need complete Xindex with all
+  problems solved", ready for the audit that comes before it holds funds. What the candidate is, and what ran on it:
+  - The audit's fixes and the xStocks listing in one branch. No contract under `src/` differs from the audit
+    branch, and the release hashes did not move.
+  - The keeper's price of a wrapped xStock (above). An independent review of its first draft found six things, all
+    fixed: a wrapper added through `PRICE_IDS` alone was valued at its feed (it fails closed by feed now, and
+    `WRAPPED_TOKENS` names such a wrapper); two tests passed with their property broken; the rate was read one
+    call per wrapper (two calls now for all of an index's); a chain younger than the look-back compared a rate
+    with itself; and the end-to-end test priced NVDAon by a catalogue that no longer holds it.
+  - The fork suites on archive RPCs at their pinned blocks, which settles what the runs of 2026-11-18 and
+    2026-11-21 left for an archive node: Ethereum's five and BNB Chain's, 62 tests, none failed or skipped
+    (`IndexZap.fork` 12 of 12 with `testFork_mintWithUSDC`, `WeightedHub.fork` 6 of 6 with its two whole-list
+    tests, `CheckToken.fork` 9 of 9, `MainnetAddresses.fork` 9 of 9, `Security.fork` 9 of 9, BNB Chain's 17 of 17),
+    and the executor's 3 of 3.
+  - Two fork tests added that day drive the audit's escrow rule on mainnet Tether, whose owner destroys the
+    contract's USDT on the fork: no newcomer's request or deposit pays for it (`Security.fork` 11 of 11).
+  - The keeper's end-to-end test, 42 of 42 on a mainnet fork at block 26,441,062: the 29 checks of 2026-11-18; WRP, an index
+    of WETH and wGOOGLx wrapped the real way, started and filled, the wrapper kept and booked at its feed times its
+    rate of 78.9; and the first requests any run has filled against real pools, a bound mint and a bound redeem
+    request on one index in one `fillBatch`, each at its limit. Two faults of the test itself were found on the
+    way. viem's wait for a receipt reads it again only when the block number moves, and a chain that mines on
+    arrival moves it once, so a receipt missed at that one look timed the run out on a mined transaction: the test
+    polls the receipt itself. And a run that is killed leaves its anvil on the port, which later runs then
+    silently talked to: the test refuses to start while something answers there.
+  - Gates on the candidate: 555 forge tests without an RPC, coverage 100% on every file, the mutation gate's
+    212 mutants all killed, Aderyn and Wake silent, the executor's 86 tests with its fork suite, the bot's 247 unit
+    tests and the filler's 16 in its harness.
+  - RW-3 is not fixed, and the hub is unchanged. The rule noted on 2026-11-19 as the one to build, a fill under a
+    quote restarting only `MIN_REBALANCE_INTERVAL`, is the first of the two the red team's record had withdrawn:
+    every honestly quoted rebalance would then open its index to an unquoted auction a week later. The other
+    rules, the owner and guardian, or the owner alone, starting a week after such a fill, give a role a start the
+    state machine does not have today. Which rule, or none, is the owner's to choose.
+  - Not done: a push (the branch is local, so CI has not run on it); the app, which is pinned to the build
+    Sepolia runs, `5b7635f`, and moves with a Sepolia deployment of this candidate, the deployer's keystore being
+    the owner's; the keeper on BNB Chain, whose bot assumes a float of six decimals and twelve-second blocks; the
+    restock's end-to-end tests on the audit's changes; the external audit.
 - Before any mainnet: a Hermes plan that serves the keeper its feeds (its price source is its own business now, and
   no contract waits on it); a run of the fork suites; an external audit (the red
   team of the oracle-free mechanism ran on 2026-11-14), then `DeployWeighted`'s release hashes fixed at the
@@ -607,7 +655,8 @@ stablecoins from that chain's address book and refuses any other address
      `test_CAS01_...` or `test_CAR215_...`, and a node test `CA-M7: ...`: CA-H1's and CA-M6's in
      `keeper/test/KeeperExecutor.t.sol`; CA-H2's and CA-M1's in `test/MintRequests.t.sol`, CA-H2's builder half,
      CA-R2-15's and CA-R2-16's in `test/BasketBuilder.t.sol`; CA-S01's in `test/WeightedHub.t.sol`, CA-S02's in
-     `test/WeightedHub.rebalance.t.sol` and `test/WeightedHub.states.t.sol`; CA-M4's in `test/Scripts.t.sol`;
+     `test/WeightedHub.rebalance.t.sol` and `test/WeightedHub.states.t.sol`; CA-H2's and CA-M1's on mainnet
+     Tether in `test/fork/Security.fork.t.sol` (`test_CAH2_CAM1_...`, `test_CAH2_...`); CA-M4's in `test/Scripts.t.sol`;
      CA-R2-17's and CA-R2-18's in `test/CheckToken.t.sol`; the bot's, the restock's and the checker's in
      `keeper/test/unit/`, with their mutants C1 to C43. The record's "Status of the fixes" names every test, the
      ids fixed by documentation alone, the ones left as they are, and the wiring fixes that have no unit suite
@@ -1226,7 +1275,8 @@ xStock, whose balances move with a multiplier; the 17 Ondo stocks of 2026-10-10 
 Ondo and add xStocks only where it had none is reversed. Said to the owner before the build: no wrapper has a pool, so
 those legs need a filler with stock, which the collaboration (an authorized participant at Backed) is meant to give;
 one key of Backed's sets every multiplier and so every wrapped leg's value; a 2-of-3 Safe upgrades them all; and the
-keeper does not value a wrapper until it reads `convertToAssets` (`design/2026-11-21-xstocks.md`, section 5).
+keeper did not value a wrapper until it read `convertToAssets`, which it does since the same day
+(`design/2026-11-21-xstocks.md`, sections 5 and 8).
 
 **Five Wormhole copies off the list** (the owner's call of 2026-11-18: "for now, let's just remove" them, since the
 team creates every index and tells partners what it holds). JUP, PYTH, SUI, APT and ALGO left `script/Listings.sol`:

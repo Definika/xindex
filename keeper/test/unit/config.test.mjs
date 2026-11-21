@@ -105,7 +105,7 @@ test("INDEXES is lowercased and deduplicated", () => {
   assert.deepEqual(c.indexes, [a.toLowerCase()]);
 });
 
-test("RX-2: the share-priced ids are PythIds.sol's: the Ondo legs at the share's feed and every wrapped xStock", async () => {
+test("RX-2: the share-priced ids are PythIds.sol's: the Ondo legs at the share's feed and every wrapped xStock's", async () => {
   const { SHARE_PRICED_IDS } = await import("../../bot/config.mjs");
   const { readFileSync } = await import("node:fs");
   const source = readFileSync(new URL("../../../script/PythIds.sol", import.meta.url), "utf8");
@@ -115,6 +115,24 @@ test("RX-2: the share-priced ids are PythIds.sol's: the Ondo legs at the share's
   assert.equal(wrapped.length, 109);
   const share = [...ondo, ...wrapped];
   assert.deepEqual([...SHARE_PRICED_IDS].sort(), share.sort());
+});
+
+test("the wrapped coins are the chain's own, lowercased, each with a feed, and WRAPPED_TOKENS adds to them", async () => {
+  const { MAINNET_WRAPPED } = await import("../../bot/price-ids.mjs");
+  const c = parseConfig(VALID);
+  assert.equal(c.wrapped.size, 109);
+  assert.deepEqual([...c.wrapped], MAINNET_WRAPPED.map((t) => t.toLowerCase()));
+  for (const token of c.wrapped) assert.ok(c.priceIds[token], `${token} has a feed`);
+  assert.equal(parseConfig({ ...VALID, CHAIN_ID: "11155111" }).wrapped.size, 0, "Sepolia's test market wraps nothing");
+
+  // A wrapper the catalogue does not hold is named with the feed of what it wraps.
+  const token = `0x${"Cd".repeat(20)}`;
+  const id = `0x${"ab".repeat(32)}`;
+  const more = parseConfig({ ...VALID, PRICE_IDS: `${token}=${id}`, WRAPPED_TOKENS: ` ${token} ` });
+  assert.equal(more.wrapped.size, 110);
+  assert.ok(more.wrapped.has(token.toLowerCase()));
+  assert.throws(() => parseConfig({ ...VALID, WRAPPED_TOKENS: token }), /WRAPPED_TOKENS names 0xCdCd.* which has no price id/);
+  assert.throws(() => parseConfig({ ...VALID, WRAPPED_TOKENS: "0x12" }), /WRAPPED_TOKENS has an entry that is not an address: 0x12/);
 });
 
 test("the keeper values a chain's own coins, and PRICE_IDS adds to them or changes one", () => {
